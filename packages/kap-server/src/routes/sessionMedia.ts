@@ -29,6 +29,14 @@ import { defineRoute } from '../middleware/defineRoute';
 import { openApiDocumentJsonSchema } from '../middleware/schema';
 import { ErrorCode } from '../protocol/error-codes';
 import { envelopeSchema, errEnvelope } from '../protocol/envelope';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
+import { createMediaPreview, MediaPreviewUnavailableError } from '../services/mediaPreview';
+import { inlineMediaFile, inlineMediaId } from '../services/inlineMedia';
+import type { TranscriptService } from '../services/transcript/transcriptService';
+import { readSessionViewCanonicalEntity } from '../transport/klient/sessionViewReads';
+import type { TranscriptAttachment } from '@kiki/transcript';
+import { openContentOriginal } from '../services/contentOriginal';
+import { ContentChangedError } from '../transport/klient/boundedContent';
 
 interface SessionMediaRouteHost {
   get(
@@ -58,7 +66,7 @@ const sessionMediaParamSchema = z.object({
   file_id: z.string().min(1),
 });
 
-export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Scope): void {
+export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Scope, transcriptService?: TranscriptService): void {
   const errorResponse = openApiDocumentJsonSchema(envelopeSchema(z.null()), 'output');
   const route = defineRoute(
     {
@@ -80,23 +88,13 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       let operation: SessionOperationLease | undefined;
       let stream: Readable | undefined;
       try {
-        let file: SessionMediaFile | undefined;
-        if (file_id.startsWith('blobref:')) {
-          const summary = await core.accessor.get(ISessionIndex).get(session_id);
-          if (summary === undefined) {
-            r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id));
-            return;
-          }
-          file = await openPersistedToolMedia(core, session_id, summary.workspaceId, file_id);
-        } else {
-          operation = await acquireSessionOperation(core, session_id, 'operation');
-          if (operation.handle === undefined) {
-            r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id));
-            return;
-          }
-          file = await operation.handle.accessor.get(ISessionMediaStore).open(file_id);
-          file ??= await openStagedUpload(core, file_id);
+        const opened = await openSessionMedia(core, session_id, file_id, transcriptService);
+        operation = opened.operation;
+        if (!opened.sessionExists) {
+          r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id));
+          return;
         }
+        const file = opened.file;
         if (file === undefined) {
           return r.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', req.id)) as void;
         }
@@ -142,6 +140,7 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       try {
         await route.handler(req, reply);
       } catch (error) {
+        if (error instanceof ContentChangedError) { reply.code(409).send(errEnvelope(ErrorCode.PAGE_TOKEN_MISMATCH, error.message, req.id)); return; }
         requestLog(req)?.error({ err: error }, 'session media download failed');
         reply.code(500).send(errEnvelope(
           ErrorCode.INTERNAL_ERROR,
@@ -151,6 +150,82 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       }
     },
   );
+  const preview = defineRoute({
+    method: 'GET', path: '/sessions/{session_id}/media/{file_id}/preview', params: sessionMediaParamSchema,
+    querystring: z.object({ media_type: z.string().min(1).max(128).regex(/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/u).optional() }),
+    rawResponse: { 200: { type: 'string', format: 'binary' }, 206: { type: 'string', format: 'binary' }, 304: { type: 'null' }, 404: errorResponse, 415: errorResponse },
+    description: 'Small source-generated session media preview; media_type is a MIME hint, not file authorization', tags: ['files'],
+  }, async (req, reply) => {
+    const r = reply as unknown as SessionMediaReply;
+    const { session_id, file_id } = req.params;
+    const opened = await openSessionMedia(core, session_id, file_id, transcriptService);
+    try {
+      if (!opened.sessionExists) return r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id)) as void;
+      const file = opened.file;
+      if (file === undefined) return r.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', req.id)) as void;
+      const etag = `"preview-v1-${session_id}-${file_id}-${file.size}-${req.query.media_type ?? file.mediaType}"`;
+      r.header('etag', etag).header('accept-ranges', 'bytes');
+      if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) return r.code(304).send(null) as void;
+      const result = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => createMediaPreview(file, req.query.media_type, signal));
+      r.type(result.mime).header('content-disposition', buildContentDisposition(file.name, result.mime));
+      const range = parseRangeHeader(pickHeader(req.headers, 'range'), result.bytes.byteLength);
+      const bytes = range === null ? result.bytes : result.bytes.subarray(range.start, range.end + 1);
+      if (range !== null) r.code(206).header('content-range', `bytes ${range.start}-${range.end}/${result.bytes.byteLength}`);
+      else r.code(200);
+      return r.header('content-length', bytes.byteLength).send(Buffer.from(bytes)) as void;
+    } catch (error) {
+      if (!(error instanceof MediaPreviewUnavailableError)) throw error;
+      return r.code(415).send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id)) as void;
+    } finally {
+      opened.operation?.dispose();
+    }
+  });
+  app.get(preview.path, preview.options, preview.handler as unknown as Parameters<SessionMediaRouteHost['get']>[2]);
+  const canonicalIdRoute = defineRoute({
+    method: 'GET', path: '/sessions/{session_id}/media/*',
+    params: z.object({ session_id: z.string().min(1), '*': z.string().min(1) }),
+    querystring: z.object({ media_type: z.string().min(1).max(128).regex(/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/u).optional() }),
+    rawResponse: { 200: { type: 'string', format: 'binary' }, 206: { type: 'string', format: 'binary' } },
+    description: 'Canonical inline and original-content media IDs', tags: ['files'],
+  }, async (req, reply) => {
+    const wildcard = req.params['*'];
+    const isPreview = wildcard.endsWith('/preview');
+    const params = { session_id: req.params.session_id, file_id: isPreview ? wildcard.slice(0, -8) : wildcard };
+    try {
+      const request = { id: req.id, body: req.body, headers: req.headers, params, query: req.query };
+      if (isPreview) await preview.handler(request, reply);
+      else await route.handler(request, reply);
+    } catch (error) {
+      if (error instanceof ContentChangedError) { (reply as unknown as SessionMediaReply).code(409).send(errEnvelope(ErrorCode.PAGE_TOKEN_MISMATCH, error.message, req.id)); return; }
+      throw error;
+    }
+  });
+  app.get(canonicalIdRoute.path, canonicalIdRoute.options, canonicalIdRoute.handler as unknown as Parameters<SessionMediaRouteHost['get']>[2]);
+}
+
+async function openSessionMedia(core: Scope, sessionId: string, fileId: string, service?: TranscriptService): Promise<{ readonly sessionExists: boolean; readonly file?: SessionMediaFile; readonly operation?: SessionOperationLease }> {
+  if (fileId.startsWith('raw:')) return { sessionExists: true, file: service === undefined ? undefined : await openContentOriginal(service, sessionId, fileId) };
+  if (fileId.startsWith('inline:')) {
+    const parts = fileId.split(':');
+    if (service === undefined || parts.length !== 4 || !isPlainAgentId(parts[1]!) || !/^[A-Za-z0-9_-]+$/u.test(parts[2]!) || !/^[0-9a-f]{64}$/u.test(parts[3]!)) return { sessionExists: true };
+    const attachmentId = Buffer.from(parts[2]!, 'base64url').toString('utf8');
+    const entity = await readSessionViewCanonicalEntity(service, sessionId, { agentId: parts[1]!, ref: { source: { kind: 'attachment', id: attachmentId } } });
+    const attachment = entity as TranscriptAttachment | undefined;
+    return { sessionExists: true, file: attachment === undefined || inlineMediaId(attachment, parts[1]!) !== fileId ? undefined : inlineMediaFile(attachment) };
+  }
+  if (fileId.startsWith('blobref:')) {
+    const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+    return summary === undefined ? { sessionExists: false } : { sessionExists: true, file: await openPersistedToolMedia(core, sessionId, summary.workspaceId, fileId) };
+  }
+  const operation = await acquireSessionOperation(core, sessionId, 'operation');
+  if (operation.handle === undefined) return { sessionExists: false, operation };
+  try {
+    const file = await operation.handle.accessor.get(ISessionMediaStore).open(fileId) ?? await openStagedUpload(core, fileId);
+    return { sessionExists: true, file, operation };
+  } catch (error) {
+    operation.dispose();
+    throw error;
+  }
 }
 
 async function openPersistedToolMedia(

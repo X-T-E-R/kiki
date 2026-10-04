@@ -73,6 +73,9 @@ export const mcpServerTestResultSchema = z.object({
   output: z.string(),
 });
 
+export const mcpServerStopTargetSchema = z.object({ name: z.string().min(1), cwd: z.string().min(1).optional() });
+export const mcpServerStopResultSchema = z.object({ state: z.enum(['idle', 'stopped', 'unconfirmed']), output: z.string() });
+
 export const mcpServerLocatorSchema = z.discriminatedUnion('source', [
   z.object({ source: z.literal('global'), name: z.string().min(1) }),
   z.object({
@@ -167,6 +170,7 @@ export const mcpManagementContract = {
     input: z.tuple([mcpServerTestTargetSchema]),
     output: mcpServerTestResultSchema,
   },
+  stopServer: { input: z.tuple([mcpServerStopTargetSchema]), output: mcpServerStopResultSchema },
   listAuthStatuses: {
     input: z.tuple([mcpAuthStatusQuerySchema.optional()]),
     output: z.array(mcpServerAuthStatusSchema),

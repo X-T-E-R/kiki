@@ -1,3 +1,4 @@
+/* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import type { AgentMessageDeliveredEvent } from '@kiki/protocol';
 import { z } from 'zod';
 
@@ -16,5 +17,6 @@ export class AgentMessageDelivered extends Event2<Omit<AgentMessageDeliveredEven
   static override readonly observable = true;
   static override readonly schema = agentMessageDeliveredSchema;
 }
+export interface AgentMessageDelivered extends Omit<AgentMessageDeliveredEvent, 'type'> {}
 
 registerEvent2Class(AgentMessageDelivered);

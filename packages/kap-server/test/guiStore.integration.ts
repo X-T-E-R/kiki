@@ -32,7 +32,7 @@ function appOf(r: RunningServer): AppLike {
         ...request,
         headers: {
           ...request.headers,
-          authorization: `Bearer ${r.authTokenService.getToken()}`,
+          authorization: `Bearer ${r.localOwnerToken}`,
         },
       });
     },

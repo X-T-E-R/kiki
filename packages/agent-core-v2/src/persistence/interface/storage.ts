@@ -144,6 +144,7 @@ export interface StorageReadRange {
 export interface StorageReadOptions {
   readonly signal?: AbortSignal;
   readonly recoverMissing?: boolean;
+  readonly chunkBytes?: number;
 }
 
 export interface IFileSystemStorageService {

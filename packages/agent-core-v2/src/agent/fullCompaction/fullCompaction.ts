@@ -27,6 +27,7 @@ export interface IAgentFullCompactionService {
   isCompacting(): boolean;
   begin(input: FullCompactionInput): boolean;
   cancel(): void;
+  prepareModelSwitchSummary(history: readonly import('#/agent/contextMemory/types').ContextMessage[], signal: AbortSignal): Promise<string | undefined>;
   getAutoCompact(): import('./autoCompact').ResolvedAutoCompact;
   getDefaultAutoCompact(): import('./autoCompact').ResolvedAutoCompact;
   setAutoCompactOverride(tokens: number | null): void;

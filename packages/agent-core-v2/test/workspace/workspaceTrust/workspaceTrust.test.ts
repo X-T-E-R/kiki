@@ -117,16 +117,24 @@ describe('WorkspaceTrustService', () => {
     expect(second.isTrusted()).toBe(true);
   });
 
-  it('migrates a legacy Windows trust marker to the canonical key', async () => {
+  it('reads a historical typed-root marker without writing and migrates only in the owner', async () => {
     const docs = new JsonAtomicDocumentStore(new FileStorageService(homeDir));
-    const root = 'C:\\Users\\Foo\\Repo';
+    const root = 'C:/Users/Example/Project';
+    const legacyKey = 'wd_project_aba194281633';
+    const canonicalKey = 'wd_project_b891d593d88e';
     const record = { root, trustedAt: 1 };
-    await docs.set('workspace-trust', encodeWorkDirKey(root), record);
-
+    await docs.set('workspace-trust', legacyKey, record);
+    expect(encodeWorkDirKey(root)).toBe(canonicalKey);
     expect(await readWorkspaceTrust(docs, root)).toBe(true);
-    await expect(
-      docs.get('workspace-trust', encodeWorkDirKey('c:/users/foo/repo')),
-    ).resolves.toEqual(record);
+    expect(await docs.get('workspace-trust', canonicalKey)).toBeUndefined();
+    expect(await docs.get('workspace-trust', legacyKey)).toEqual(record);
+
+    const { service } = createService(root);
+    await service.ready;
+    expect(await docs.get('workspace-trust', canonicalKey)).toEqual(record);
+    expect(await docs.get('workspace-trust', legacyKey)).toBeUndefined();
+    await service.untrust();
+    expect(await readWorkspaceTrust(docs, root)).toBe(false);
   });
 
   it('shares one trust key across UNC and drive-letter spelling variants', async () => {
@@ -141,12 +149,14 @@ describe('WorkspaceTrustService', () => {
 
   it('deletes both canonical and legacy trust markers', async () => {
     const docs = new JsonAtomicDocumentStore(new FileStorageService(homeDir));
-    const root = 'C:\\Users\\Foo\\Repo';
-    const legacyKey = encodeWorkDirKey(root);
+    const root = 'C:/Users/Example/Project';
+    const legacyKey = 'wd_project_aba194281633';
     await docs.set('workspace-trust', legacyKey, { root, trustedAt: 1 });
     await writeWorkspaceTrust(docs, root, 2);
+    await writeWorkspaceTrust(docs, '/srv/other', 3);
 
-    await deleteWorkspaceTrust(docs, root);
+    await deleteWorkspaceTrust(docs, 'c:/users/example/project');
+    expect(await readWorkspaceTrust(docs, '/srv/other')).toBe(true);
 
     await expect(docs.get('workspace-trust', legacyKey)).resolves.toBeUndefined();
     await expect(readWorkspaceTrust(docs, root)).resolves.toBe(false);

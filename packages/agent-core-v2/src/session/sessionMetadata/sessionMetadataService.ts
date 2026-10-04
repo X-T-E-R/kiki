@@ -162,6 +162,24 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     });
   }
 
+  async updateAgent(agentId: string, updater: (current: AgentMeta) => AgentMeta): Promise<void> {
+    return this.enqueueUpdate(async () => {
+      await this.ready;
+      if (this.disposed) return;
+      const agents = this.data.agents;
+      const current = agents?.[agentId];
+      if (current === undefined) return;
+      const next = updater(structuredClone(current));
+      if (agentMetaEquals(current, next)) return;
+      try {
+        await this.applyUpdate({ agents: { ...agents, [agentId]: next } }, { touchUpdatedAt: false });
+      } catch (error) {
+        this.data = { ...this.data, agents };
+        throw error;
+      }
+    });
+  }
+
   async unregisterAgent(agentId: string): Promise<void> {
     return this.enqueueUpdate(async () => {
       await this.ready;

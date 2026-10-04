@@ -6,6 +6,7 @@
  */
 
 import { z } from 'zod';
+import { connectOriginalOAuthRequestSchema, originalOAuthProbeSchema, originalOAuthRequestSchema, oAuthSourceSchema } from '@kiki/protocol';
 
 import { maybe, noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
@@ -14,6 +15,7 @@ export const oAuthFlowStatusSchema = z.enum([
   'pending',
   'authenticated',
   'denied',
+  'failed',
   'expired',
   'cancelled',
 ]);
@@ -90,6 +92,8 @@ export const oAuthMethodStatusSchema = z.object({
   provider: z.string(),
   protocol: z.string(),
   signed_in: z.boolean(),
+  auth_source: oAuthSourceSchema.optional(),
+  connection_state: z.enum(['ready', 'refresh_required', 'reconnect_required', 'signed_out']).optional(),
   account: z.discriminatedUnion('state', [
     z.object({ state: z.literal('known'), id: z.string() }),
     z.object({ state: z.literal('unknown') }),
@@ -107,6 +111,8 @@ export const oAuthMethodStatusSchema = z.object({
 });
 
 export const authContract = {
+  probeOriginal: { input: z.tuple([originalOAuthRequestSchema]), output: originalOAuthProbeSchema },
+  connectOriginal: { input: z.tuple([connectOriginalOAuthRequestSchema]), output: originalOAuthProbeSchema },
   listMethods: { input: z.tuple([]), output: z.array(oAuthMethodStatusSchema) },
   startLogin: {
     input: z.tuple([z.string().optional(), oAuthLoginOptionsSchema.optional()]),

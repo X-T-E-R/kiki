@@ -44,7 +44,7 @@ defineKlientConformance('http', async () => {
   await server.core.accessor.get(ISessionIndex).prepare();
   const klient = createKlient({
     endpoint: `http://127.0.0.1:${server.port}`,
-    token: server.authTokenService.getToken(),
+    token: server.localOwnerToken,
   });
   return {
     klient,
@@ -74,7 +74,7 @@ it('converges interactions, metadata and providers changed in the HTTP black win
   }
   const klient = createKlient({
     endpoint: `http://127.0.0.1:${server.port}`,
-    token: server.authTokenService.getToken(), WebSocket: ControlledWebSocket,
+    token: server.localOwnerToken, WebSocket: ControlledWebSocket,
   });
   try {
     const created = await klient.global.sessions.create({ workDir: process.cwd(), title: 'before disconnect' });
@@ -147,7 +147,7 @@ it('persona REST supports action suffixes and character-card import/export', asy
     hostIdentity: TEST_CLIENT_IDENTITY, host: '127.0.0.1', port: 0, homeDir, logLevel: 'silent',
   });
   const klient = createKlient({
-    endpoint: `http://127.0.0.1:${server.port}`, token: server.authTokenService.getToken(),
+    endpoint: `http://127.0.0.1:${server.port}`, token: server.localOwnerToken,
   });
   try {
     if (klient.rest === undefined) throw new Error('HTTP REST facade is required');
@@ -177,7 +177,7 @@ it('persona REST supports action suffixes and character-card import/export', asy
     const expectedPersona = { id: 'example-persona', name: 'Example', avatarUrl: '/api/personas/example-persona/avatar' };
     const readSession = async () => {
       const response = await fetch(`http://127.0.0.1:${server.port}/api/sessions/${session.id}`, {
-        headers: { Authorization: `Bearer ${server.authTokenService.getToken()}` },
+        headers: { Authorization: `Bearer ${server.localOwnerToken}` },
       });
       return (await response.json() as { data: typeof session }).data;
     };
@@ -194,7 +194,8 @@ it('persona REST supports action suffixes and character-card import/export', asy
     expect((await klient.rest.bots.ensureHomeSession(created.definition.id)).homeSessionId).toBe(bot.homeSessionId);
     const botHome = getLiveSessionById(server.core.accessor, bot.homeSessionId!)!;
     await botHome.accessor.get(ISessionDeliveryService).ready;
-    expect(botHome.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentToolRegistryService).list().map((tool) => tool.name)).toContain('SendMessage');
+    expect(botHome.accessor.get(ISessionDeliveryService).effectiveMode()).toBe('reply');
+    expect(botHome.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentToolRegistryService).list().map((tool) => tool.name)).not.toContain('SendMessage');
     expect((await klient.rest.bots.update(created.definition.id, { hidden: true })).hidden).toBe(true);
     expect((await klient.rest.bots.list()).some((item) => item.personaId === created.definition.id)).toBe(true);
     await klient.session(bot.homeSessionId!).close();
@@ -204,7 +205,7 @@ it('persona REST supports action suffixes and character-card import/export', asy
     const personaStore = server.core.accessor.get(IPersonaStore);
     const manager = server.core.accessor.get(ISessionManager);
     const sessionsBeforeFailure = manager.list().map((entry) => entry.id).sort();
-    const failedSave = vi.spyOn(personaStore, 'updateState').mockRejectedValueOnce(new Error('state persistence failed'));
+    const failedSave = vi.spyOn(personaStore, 'claimHomeSession').mockRejectedValueOnce(new Error('state persistence failed'));
     await expect(botService.ensureHomeSession(imported.snapshot.definition.id)).rejects.toThrow('state persistence failed');
     failedSave.mockRestore();
     expect(manager.list().map((entry) => entry.id).sort()).toEqual(sessionsBeforeFailure);
@@ -262,7 +263,7 @@ it('SendMessage keeps immutable downloadable attachments and freezes delivery fo
   const workDir = join(homeDir, 'workspace');
   await mkdir(workDir);
   const server = await startServer({ hostIdentity: TEST_CLIENT_IDENTITY, host: '127.0.0.1', port: 0, homeDir, logLevel: 'silent' });
-  const klient = createKlient({ endpoint: `http://127.0.0.1:${server.port}`, token: server.authTokenService.getToken() });
+  const klient = createKlient({ endpoint: `http://127.0.0.1:${server.port}`, token: server.localOwnerToken });
   try {
     if (klient.rest === undefined) throw new Error('HTTP REST facade is required');
     await server.core.accessor.get(ISessionIndex).prepare();

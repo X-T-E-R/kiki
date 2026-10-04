@@ -39,6 +39,7 @@ const KIMI_CONFIG_DOMAINS = [
   'extraSkillDirs',
   'loopControl',
   'background',
+  'interaction',
   'subagent',
   'mcp',
   'image',

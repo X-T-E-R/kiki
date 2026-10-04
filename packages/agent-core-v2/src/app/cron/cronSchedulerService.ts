@@ -9,6 +9,7 @@ import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { ISessionManager, type SessionLease } from '#/app/sessionManager/sessionManager';
 import { LifecycleScope } from '#/app/scopes';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 import { type ClockSources, resolveClockSources, SYSTEM_CLOCKS } from './clock';
 import { type CronConfig, CRON_SECTION } from './configSection';
@@ -73,7 +74,6 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
   }
 
   private async start(): Promise<void> {
-    if (this.bootstrap.interactive === false) return;
     await this.config.ready;
     if (this.disposed) return;
     const cfg = this.getCronConfig();
@@ -82,15 +82,20 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
       this.bindSigusr1();
       return;
     }
-    try {
-      const watch = this._register(this.fsWatch.watch(join(this.bootstrap.homeDir, this.bootstrap.scope('cron'))));
-      this._register(watch.onDidChange(() => this.requestReload()));
-      void watch.ready.catch((error: unknown) => this.debugError('watch', error));
-    } catch (error) {
-      this.debugError('watch', error);
+    if (this.bootstrap.interactive !== false) {
+      try {
+        const watch = this._register(this.fsWatch.watch(join(this.bootstrap.homeDir, this.bootstrap.scope('cron'))));
+        this._register(watch.onDidChange(() => this.requestReload()));
+        void watch.ready.catch((error: unknown) => this.debugError('watch', error));
+      } catch (error) {
+        this.debugError('watch', error);
+      }
     }
     if (this.store.onDidChange !== undefined) {
       this._register(this.store.onDidChange(() => this.requestReload()));
+    }
+    if (this.bootstrap.interactive === false && this.sessions.onDidCreateSession !== undefined) {
+      this._register(this.sessions.onDidCreateSession(() => this.requestReload()));
     }
     this._register(this.config.onDidSectionChange((event) => {
       if (event.domain !== CRON_SECTION) return;
@@ -98,6 +103,7 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
       this.requestReload();
     }));
     this.configureRefresh();
+    if (cfg.disabled || cfg.pollIntervalMs === 0 || cfg.pollIntervalMs === null) return;
     void this.tick().catch((error: unknown) => this.debugError('initial tick', error));
   }
 
@@ -123,8 +129,13 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
 
   private async loadTasks(): Promise<void> {
     const tasks: CronTask[] = [];
-    for (const workspaceId of await this.store.listWorkspaceIds()) {
-      tasks.push(...await this.store.list({ workspaceId }));
+    const liveOwners = this.bootstrap.interactive === false
+      ? this.sessions.list().map((handle) => handle.accessor.get(ISessionContext)) : undefined;
+    const workspaceIds = liveOwners === undefined
+      ? await this.store.listWorkspaceIds() : [...new Set(liveOwners.map((owner) => owner.workspaceId))];
+    for (const workspaceId of workspaceIds) {
+      const entries = await this.store.list({ workspaceId });
+      tasks.push(...entries.filter((task) => liveOwners === undefined || liveOwners.some((owner) => owner.workspaceId === workspaceId && owner.sessionId === task.tags?.[CRON_SESSION_TAG])));
     }
     this.tasks = tasks;
   }
@@ -173,7 +184,9 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
   private async fireSession(sessionId: string): Promise<void> {
     let lease: SessionLease | undefined;
     try {
-      if (this.sessions.acquire !== undefined) {
+      if (this.bootstrap.interactive === false) {
+        if (this.sessions.get(sessionId) === undefined) return;
+      } else if (this.sessions.acquire !== undefined) {
         lease = await this.sessions.acquire(sessionId, 'cron-fire');
         if (lease === undefined) return;
       } else if ((await this.sessions.resume(sessionId)) === undefined) {

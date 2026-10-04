@@ -5,6 +5,9 @@ import {
   IAgentStateService,
   IAgentToolPolicyService,
   IConfigService,
+  IBootstrapService,
+  IHostFileSystem,
+  IHostEnvironment,
   IInstantiationService,
   ILogService,
   IModelCatalog,
@@ -26,7 +29,6 @@ import {
 import { projectSubagentCapabilities, type SubagentCapabilityCatalog } from '@kiki/agent-core-v2/agent/tools/agent/subagentCapabilities';
 import { isToolActiveComposed, type GlobalToolsPolicy } from '@kiki/agent-core-v2/agent/toolPolicy/evaluate';
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
-import { withDispatchPolicyDefaults } from '@kiki/agent-core-v2/session/subagent/configSection';
 import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/launchPolicy';
 import { subagentParentAgentId } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
 import type { AgentCapabilitiesQuery, AgentCapabilitiesProducerResponse, AgentPanelMetrics } from '@kiki/protocol';
@@ -40,12 +42,34 @@ import {
   snapshotPanelCapabilities,
 } from './agentPanelCapabilities';
 import { readAgentPanelMetrics, readPersistedAgentPanelMetrics } from './agentPanelMetrics';
-import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
+import { readPersistedAgentProfileSnapshot, type PersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 import { projectAgentModelMenu } from './agentModelMenu';
 import { IModelPricingService } from '../pricing/modelPricingService';
 import { getAgentToolContributions } from '@kiki/agent-core-v2/agent/toolRegistry/toolContribution';
 import { toolGroupForName } from '@kiki/agent-core-v2/agent/toolRegistry/toolGroups';
 import { panelAccountingKey } from '@kiki/agent-core-v2/agent/usage/panelAccounting';
+import { checkPromptFiles } from '@kiki/agent-core-v2/agent/profile/promptFileChecks';
+import { PROMPT_SECTION, type PromptConfig } from '@kiki/agent-core-v2/app/prompt/configSection';
+import { createUnscopedAgentProfileCatalog } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
+
+export async function acquireDraftProfileCatalog(core: Scope, query: { workspace_id?: string; cwd?: string }) {
+  if (query.workspace_id !== undefined) return acquireWorkspaceProfileCatalog(core, query);
+  const cwd = query.cwd!;
+  try {
+    if (!(await core.accessor.get(IHostFileSystem).stat(cwd)).isDirectory) return undefined;
+  } catch {
+    return undefined;
+  }
+  const preview = createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService), cwd);
+  try {
+    await Promise.all([preview.catalog.ready, preview.skills!.ready]);
+    return { workspaceId: preview.workspaceId, registry: preview.registry,
+      catalog: preview.catalog, skills: preview.skills!.catalog, dispose: preview.dispose };
+  } catch (error) {
+    preview.dispose();
+    throw error;
+  }
+}
 
 interface WorkspaceCatalogEntry {
   readonly catalog: SessionAgentProfileCatalogService;
@@ -168,6 +192,18 @@ export async function acquireWorkspaceProfileCatalog(
   }
 }
 
+async function persistedPromptDiagnostics(core: Scope, snapshot: PersistedAgentProfileSnapshot | undefined, checkAllPromptFiles?: boolean): Promise<import('@kiki/protocol').AgentPromptDiagnostics | undefined> {
+  const prompt = snapshot?.boundProfile?.promptBase?.promptDiagnostics;
+  if (prompt === undefined) return undefined;
+  const fileChecks = checkAllPromptFiles === true && snapshot?.boundProfile !== undefined ? await checkPromptFiles({
+    fs: core.accessor.get(IHostFileSystem), homeDir: core.accessor.get(IBootstrapService).homeDir,
+    pathClass: core.accessor.get(IHostEnvironment).pathClass,
+    profile: snapshot.boundProfile, model: core.accessor.get(IModelService).get(snapshot.modelAlias ?? ''),
+    modelAlias: snapshot.modelAlias ?? '', global: core.accessor.get(IConfigService).get<PromptConfig>(PROMPT_SECTION)?.overrides,
+  }) : undefined;
+  return { ...prompt, request: snapshot?.promptRequest, file_checks: fileChecks };
+}
+
 export async function agentCapabilities(
   core: Scope,
   query: AgentCapabilitiesQuery,
@@ -209,6 +245,7 @@ export async function agentCapabilities(
           unavailable_reason: 'Session or agent is not live; dispatch capabilities are unavailable',
           unavailable_reason_code: 'session_or_agent_not_live', targets: [],
           profile: snapshot === undefined ? undefined : frozenPanelModelProfile(core, snapshot, query.agent_id === 'main' ? 'main' : 'sub'),
+          prompt: await persistedPromptDiagnostics(core, snapshot, query.check_all_prompt_files),
           metrics: persisted,
         };
       }
@@ -251,12 +288,10 @@ export async function agentCapabilities(
         caller: {
           profileName: snapshot.profileName ?? resolution.profile.name,
           profileDefinitionId: snapshot.profileDefinitionId ?? resolution.profile.definitionId,
-          subagentPolicy: persistedBinding ? snapshot.subagentPolicy
-            : snapshot.subagentPolicy ?? resolution.profile.subagentPolicy,
-          subagentDeclaration: persistedBinding ? snapshot.subagentDeclaration
-            : snapshot.subagentDeclaration ?? resolution.profile.subagentDeclaration,
-          subagents: persistedBinding ? snapshot.subagents
-            : snapshot.subagents ?? resolution.profile.subagents,
+          canSpawnSubagents: persistedBinding ? snapshot.canSpawnSubagents : resolution.profile.canSpawnSubagents,
+          allowedSubagents: persistedBinding ? snapshot.allowedSubagents : resolution.profile.allowedSubagents,
+          preferredSubagents: persistedBinding ? snapshot.preferredSubagents : resolution.profile.preferredSubagents,
+          denySubagents: persistedBinding ? snapshot.denySubagents : resolution.profile.denySubagents,
           subagentLeases: persistedBinding ? snapshot.subagentLeases
             : snapshot.subagentLeases ?? resolution.profile.subagentLeases,
           spawnPolicy: persistedBinding ? snapshot.spawnPolicy
@@ -279,6 +314,7 @@ export async function agentCapabilities(
         })),
         ...panel,
         metrics: persisted,
+        prompt: await persistedPromptDiagnostics(core, snapshot, query.check_all_prompt_files),
       };
     }
     const owner = { profile: agent.accessor.get(IAgentProfileService).data().profileName, agent_id: agent.id };
@@ -314,9 +350,10 @@ export async function agentCapabilities(
     return {
       context: 'live', live: true, owner, available, unavailable_reason, unavailable_reason_code,
       targets, ...panel, metrics,
+      prompt: await agent.accessor.get(IAgentProfileService).getPromptDiagnostics({ checkAllPromptFiles: query.check_all_prompt_files }),
     };
   }
-  const workspace = await acquireWorkspaceProfileCatalog(core, query);
+  const workspace = await acquireDraftProfileCatalog(core, query);
   if (workspace === undefined) return 'workspace-not-found';
   try {
     const snapshot = workspace.catalog.snapshot();
@@ -342,8 +379,9 @@ export async function agentCapabilities(
     const input: SubagentCapabilityCatalog = {
       catalog: workspace.catalog,
       caller: { profileName: profile.name, profileDefinitionId: profile.definitionId,
-        subagentPolicy: profile.subagentPolicy, subagentDeclaration: profile.subagentDeclaration,
-        subagents: profile.subagents, subagentLeases: profile.subagentLeases,
+        canSpawnSubagents: profile.canSpawnSubagents, allowedSubagents: profile.allowedSubagents,
+        preferredSubagents: profile.preferredSubagents, denySubagents: profile.denySubagents,
+        subagentLeases: profile.subagentLeases,
         spawnPolicy: profile.spawnConstraints },
       profiles: workspace.catalog.list().filter((candidate) => candidate.main !== true),
       routes: workspace.catalog.listRoutes(),
@@ -369,8 +407,10 @@ export async function agentCapabilities(
         tools: profile.tools === undefined ? undefined : [...profile.tools],
         disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
         disabled_tool_groups: profile.disabledToolGroups === undefined ? undefined : [...profile.disabledToolGroups],
-        subagent_policy: profile.subagentPolicy ?? withDispatchPolicyDefaults(
-          core.accessor.get(IConfigService), profile, position).defaultPolicy,
+        can_spawn_subagents: profile.canSpawnSubagents,
+        allowed_subagents: profile.allowedSubagents === undefined ? undefined : [...profile.allowedSubagents],
+        preferred_subagents: profile.preferredSubagents === undefined ? undefined : [...profile.preferredSubagents],
+        deny_subagents: profile.denySubagents === undefined ? undefined : [...profile.denySubagents],
       },
       tools: getAgentToolContributions().map(({ options }) => {
         const active = isToolActiveComposed(policy, options.name, options.source);
@@ -411,11 +451,8 @@ function mergeAgentPanelMetrics(
 }
 
 function project(core: Pick<Scope, 'accessor'>, input: SubagentCapabilityCatalog,
-  position: 'main' | 'sub'): AgentCapabilitiesProducerResponse['targets'] {
-  const config = core.accessor.get(IConfigService);
-  return projectSubagentCapabilities({ ...input,
-    caller: withDispatchPolicyDefaults(config, input.caller, position),
-  }, {
+  _position: 'main' | 'sub'): AgentCapabilitiesProducerResponse['targets'] {
+  return projectSubagentCapabilities(input, {
     models: core.accessor.get(IModelService), modelCatalog: core.accessor.get(IModelCatalog),
     config: core.accessor.get(IConfigService), executors: core.accessor.get(IAgentExecutorRegistry),
     protocols: core.accessor.get(IProtocolAdapterRegistry),

@@ -30,7 +30,7 @@ import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interact
 import { ISessionSkillCatalog } from '@kiki/agent-core-v2/session/sessionSkillCatalog/skillCatalog';
 import { ISessionToolPolicyGate } from '@kiki/agent-core-v2/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { resolveRoleThinkingDefault, roleConstraintsFromProfile } from '@kiki/agent-core-v2/session/subagent/modelConstraints';
-import { SUBAGENT_SECTION, withDispatchPolicyDefaults, type SubagentConfig } from '@kiki/agent-core-v2/session/subagent/configSection';
+import { SUBAGENT_SECTION, type SubagentConfig } from '@kiki/agent-core-v2/session/subagent/configSection';
 import {
   resolveBoundPanelProfile,
   type PanelProfileDefinition,
@@ -48,7 +48,7 @@ type PanelBindingData = Partial<Pick<ProfileData,
   'effectiveThinkingLevel' | 'thinkingEffortSource' | 'routeDetached' |
   'profileSource' | 'bindingAdvisories' | 'executorId' | 'serviceTier' | 'activeToolNames' |
   'toolAllowPolicies' | 'disallowedTools' | 'disabledToolGroups' |
-  'subagentPolicy' | 'subagentDeclaration' | 'subagents' | 'executionRestriction' |
+  'canSpawnSubagents' | 'allowedSubagents' | 'preferredSubagents' | 'denySubagents' | 'executionRestriction' |
   'allowParentNotify' | 'spawnPolicy' | 'appliedLease' |
   'boundProfile'>> & { readonly thinkingEffortAdjusted?: boolean };
 
@@ -117,9 +117,10 @@ export async function snapshotPanelCapabilities(
     disallowedTools: persisted ? snapshot.disallowedTools : snapshot.disallowedTools ?? definition.disallowedTools,
     disabledToolGroups: persisted ? snapshot.disabledToolGroups : snapshot.disabledToolGroups ?? definition.disabledToolGroups,
     allowParentNotify: persisted ? snapshot.allowParentNotify : snapshot.allowParentNotify ?? definition.allowParentNotify,
-    subagentPolicy: snapshot.subagentPolicy ?? definition.subagentPolicy,
-    subagentDeclaration: snapshot.subagentDeclaration ?? definition.subagentDeclaration,
-    subagents: snapshot.subagents ?? definition.subagents,
+    canSpawnSubagents: persisted ? snapshot.canSpawnSubagents : snapshot.canSpawnSubagents ?? definition.canSpawnSubagents,
+    allowedSubagents: persisted ? snapshot.allowedSubagents : snapshot.allowedSubagents ?? definition.allowedSubagents,
+    preferredSubagents: persisted ? snapshot.preferredSubagents : snapshot.preferredSubagents ?? definition.preferredSubagents,
+    denySubagents: persisted ? snapshot.denySubagents : snapshot.denySubagents ?? definition.denySubagents,
     serviceTier: snapshot.serviceTier ?? definition.serviceTier,
     profileSource: snapshot.boundProfile?.fileSources === undefined ? 'registered' : 'profile-file',
   };
@@ -275,11 +276,12 @@ function panelProfile(
   position: 'main' | 'sub',
 ): AgentPanelProfile {
   const definition = resolution.profile ?? data.boundProfile;
-  const caller = withDispatchPolicyDefaults(scope.accessor.get(IConfigService), {
-    subagentPolicy: data.subagentPolicy ?? definition?.subagentPolicy,
-    subagentDeclaration: data.subagentDeclaration ?? definition?.subagentDeclaration,
-    subagents: data.subagents ?? definition?.subagents,
-  }, position);
+  const caller = {
+    canSpawnSubagents: data.canSpawnSubagents,
+    allowedSubagents: data.allowedSubagents,
+    preferredSubagents: data.preferredSubagents,
+    denySubagents: data.denySubagents,
+  };
   const routeDetached = data.routeDetached === true || inferRouteDetached(scope, data) ? true : undefined;
   const thinkingEffort = data.effectiveThinkingLevel ?? data.thinkingLevel;
   return {
@@ -304,7 +306,10 @@ function panelProfile(
     tools: data.activeToolNames === undefined ? undefined : [...data.activeToolNames],
     disallowed_tools: data.disallowedTools === undefined ? undefined : [...data.disallowedTools],
     disabled_tool_groups: data.disabledToolGroups === undefined ? undefined : [...data.disabledToolGroups],
-    subagent_policy: caller.defaultPolicy === 'strict' ? 'strict' : caller.subagentPolicy ?? caller.defaultPolicy,
+    can_spawn_subagents: caller.canSpawnSubagents,
+    allowed_subagents: caller.allowedSubagents === undefined ? undefined : [...caller.allowedSubagents],
+    preferred_subagents: caller.preferredSubagents === undefined ? undefined : [...caller.preferredSubagents],
+    deny_subagents: caller.denySubagents === undefined ? undefined : [...caller.denySubagents],
     execution_restriction: data.executionRestriction,
     locked_model: data.lockedModelAlias,
     locked_effort: data.lockedThinkingEffort,

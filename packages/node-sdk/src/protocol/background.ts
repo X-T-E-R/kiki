@@ -1,6 +1,6 @@
 /**
  * Background-task info as the SDK reports it. The engine models tasks as
- * `process` / `agent` / `question` kinds over one shared base; hosts render
+ * `process` / `agent` / `question` / `media` kinds over one shared base; hosts render
  * the union.
  */
 
@@ -61,4 +61,10 @@ export interface QuestionBackgroundTaskInfo extends BackgroundTaskInfoBase {
 export type BackgroundTaskInfo =
   | ProcessBackgroundTaskInfo
   | AgentBackgroundTaskInfo
-  | QuestionBackgroundTaskInfo;
+  | QuestionBackgroundTaskInfo
+  | MediaBackgroundTaskInfo;
+
+export interface MediaBackgroundTaskInfo extends BackgroundTaskInfoBase {
+  readonly kind: 'media';
+  readonly jobId: string;
+}

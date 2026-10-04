@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import {
   IModelCatalog,
+  ICronTaskPersistence,
   ISessionCronService,
   ISessionManager,
   getLiveSessionById,
@@ -122,7 +123,7 @@ describe('cron management routes', () => {
     overrides: Partial<Pick<CronTask, 'cron' | 'prompt' | 'recurring'>> = {},
   ): Promise<CronTask> {
     const cron = cronFor(sessionId);
-    const task = cron.addTask({
+    const task = await cron.addTask({
       cron: overrides.cron ?? '*/5 * * * *',
       prompt: overrides.prompt ?? `prompt for ${sessionId}`,
       recurring: overrides.recurring ?? true,
@@ -130,6 +131,31 @@ describe('cron management routes', () => {
     await cron.flushPersist();
     return task;
   }
+
+  it('returns errors for live pause/delete persistence failures without claiming saved state', async () => {
+    const sessionId = await createSession();
+    const task = await addTask(sessionId);
+    const cron = cronFor(sessionId);
+    const store = server!.core.accessor.get(ICronTaskPersistence);
+    const save = vi.spyOn(store, 'save').mockRejectedValueOnce(new Error('EIO pause fixture'));
+    const pauseResponse = await fetch(`${base}/api/cron/${task.id}:pause?session_id=${sessionId}`, { method: 'POST', headers: authHeaders(server as RunningServer) });
+    const pause = await pauseResponse.json() as Envelope<unknown>;
+    expect(pause.code).not.toBe(0);
+    expect(pause.msg).toContain('EIO pause fixture');
+    expect(cron.getTask(task.id)).toEqual(task);
+    save.mockRestore();
+    const remove = vi.spyOn(store, 'delete').mockRejectedValueOnce(new Error('EIO delete fixture'));
+    const deleteResponse = await fetch(`${base}/api/cron/${task.id}?session_id=${sessionId}`, { method: 'DELETE', headers: authHeaders(server as RunningServer) });
+    const deleted = await deleteResponse.json() as Envelope<unknown>;
+    expect(deleted.code).not.toBe(0);
+    expect(deleted.msg).toContain('EIO delete fixture');
+    expect(cron.getTask(task.id)).toEqual(task);
+    remove.mockRestore();
+    const listed = await request<{ items: CronTaskWire[] }>(`/api/cron?session_id=${sessionId}`);
+    expect(listed.data.items).toEqual([expect.objectContaining({ id: task.id, paused: false })]);
+    expect((await request(`/api/cron/${task.id}:pause?session_id=${sessionId}`, 'POST')).code).toBe(0);
+    expect((await request(`/api/cron/${task.id}?session_id=${sessionId}`, 'DELETE')).code).toBe(0);
+  });
 
   it('caps the cross-workspace list and exposes subsequent pages', async () => {
     const sessionId = await createSession();

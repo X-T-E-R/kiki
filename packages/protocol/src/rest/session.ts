@@ -36,10 +36,15 @@ export const createSessionResponseSchema = sessionSchema;
 export type CreateSessionResponse = z.infer<typeof createSessionResponseSchema>;
 
 export const listSessionsResponseSchema = pageResponseSchema(sessionSchema).extend({
+  next_cursor: z.string().optional(),
+  /** Space-wide live activity count, independent of this list's filters or page. */
+  busy_count: z.number().int().nonnegative().optional(),
   ephemeral: z.array(sessionSchema).optional(),
+  ephemeral_has_more: z.boolean().optional(),
+  ephemeral_next_cursor: z.string().optional(),
 });
 export type ListSessionsResponse = z.infer<typeof listSessionsResponseSchema>;
-export const listEphemeralSessionsResponseSchema = z.object({ items: z.array(sessionSchema) });
+export const listEphemeralSessionsResponseSchema = pageResponseSchema(sessionSchema).extend({ next_cursor: z.string().optional() });
 export type ListEphemeralSessionsResponse = z.infer<typeof listEphemeralSessionsResponseSchema>;
 export const endEphemeralSessionResponseSchema = z.object({
   ended: z.literal(true),
@@ -60,6 +65,7 @@ const booleanQueryParam = z.preprocess(
 
 export const listSessionsQuerySchema = cursorQuerySchema.and(
   z.object({
+    persona: z.string().min(1).optional(),
     busy: booleanQueryParam,
     include_archive: booleanQueryParam,
     include_ephemeral: booleanQueryParam,
@@ -74,6 +80,17 @@ export type GetSessionResponse = z.infer<typeof getSessionResponseSchema>;
 
 export const getSessionProfileResponseSchema = sessionSchema;
 export type GetSessionProfileResponse = z.infer<typeof getSessionProfileResponseSchema>;
+
+export const sessionPersonaSettingsSchema = z.object({
+  personaId: z.string().min(1).optional(),
+  boundRevision: z.string().min(1).optional(),
+  latestRevision: z.string().min(1).optional(),
+  hasUpdate: z.boolean(),
+  overrides: z.object({ profile: z.string().optional(), model: z.string().optional(), thinking: z.string().optional() }).optional(),
+}).strict();
+export type SessionPersonaSettings = z.infer<typeof sessionPersonaSettingsSchema>;
+export const applyPersonaSettingsRequestSchema = z.object({ restoreDefaults: z.boolean().optional() }).strict();
+export type ApplyPersonaSettingsRequest = z.infer<typeof applyPersonaSettingsRequestSchema>;
 
 export const MAX_SESSION_EXPORT_WEB_LOG_BYTES = 256 * 1024;
 

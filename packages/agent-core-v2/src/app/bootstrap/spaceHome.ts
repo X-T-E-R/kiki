@@ -14,6 +14,8 @@ export interface SpaceHome {
   readonly color?: string;
   readonly preset?: string;
   readonly baseHomeDir?: string;
+  readonly resourceBaseHomeDir?: string;
+  readonly sourceSelections?: import('#/persistence/backends/node-fs/spaceResourceProjection').SpaceSourceSelections;
   readonly inherit: {
     readonly config: boolean;
     readonly credentials: 'shared' | 'isolated';

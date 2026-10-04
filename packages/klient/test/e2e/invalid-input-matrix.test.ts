@@ -565,13 +565,20 @@ describe('l1: klient input validation', () => {
 
     await promptAndWait(ctx, []);
 
-    // klient's zod schema allows an empty array; the engine's prompt service
-    // only appends non-empty user messages. The default permission-mode
-    // reminder is the sole allowed user-role message on the wire.
+    // Empty prompt content is not appended. The two user-role messages are
+    // the first full runtime snapshot and the default permission reminder.
     expect(requests).toHaveLength(1);
     const userMessages = openAiUserMessages(0);
-    expect(userMessages.length).toBeGreaterThan(0);
-    expect(userMessages.every((message) => isPermissionReminder(message['content']))).toBe(true);
+    expect(userMessages).toHaveLength(2);
+    const permission = userMessages.filter((message) => isPermissionReminder(message['content']));
+    expect(permission).toHaveLength(1);
+    const runtime = userMessages.filter((message) => !isPermissionReminder(message['content']));
+    const runtimeText = runtime[0]?.['content'];
+    expect(typeof runtimeText).toBe('string');
+    expect(runtimeText).toMatch(/^<system-reminder>\nHost runtime snapshot rev 1\. Full snapshot; all sections replace earlier values\./);
+    expect(runtimeText).toContain(`\nWorking directory: ${ctx.workDir}\n`);
+    for (const heading of ['Runtime/workspace', 'Applicable workspace instructions', 'Scoped memory — Saved memory / as-of projection', 'Available skills', 'Plugin guidance']) expect(runtimeText).toContain(`## ${heading}\n`);
+    expect(runtimeText).toMatch(/\n<\/system-reminder>$/);
     expect(ctx.payloads('prompt.completed')[0]?.['reason']).toBe('completed');
   }, 30_000);
 });
@@ -960,11 +967,11 @@ describe('video blocks', () => {
       expect(String(wireError?.['message'])).toContain('Unsupported media type for base64 video');
 
       // The same v2-native payload is recorded on the klient error event, in
-      // order: turn.started → turn.ended → error → prompt.completed.
+      // order: turn.started → error → durable turn.ended → prompt.completed.
       const errorEvents = ctx.payloads('error');
       expect(errorEvents).toHaveLength(1);
       expect(errorEvents[0]?.['code']).toBe('provider.api_error');
-      expect(ctx.eventNames()).toEqual(['turn.started', 'turn.ended', 'error', 'prompt.completed']);
+      expect(ctx.eventNames()).toEqual(['turn.started', 'error', 'turn.ended', 'prompt.completed']);
       expect(ctx.payloads('prompt.completed')[0]?.['reason']).toBe('failed');
     } finally {
       await klient.global.config.set({ domain: 'loopControl', patch: { maxAttemptsPerStep: 10 } });
@@ -1146,7 +1153,7 @@ describe('provider HTTP errors', () => {
     const errorEvents = ctx.payloads('error');
     expect(errorEvents).toHaveLength(1);
     expect(errorEvents[0]?.['code']).toBe('provider.api_error');
-    expect(ctx.eventNames()).toEqual(['turn.started', 'turn.ended', 'error', 'prompt.completed']);
+    expect(ctx.eventNames()).toEqual(['turn.started', 'error', 'turn.ended', 'prompt.completed']);
   }, 30_000);
 
   it('a 400 structure error is retried once with the strict projection, then succeeds (l3 + engine fallback)', async () => {

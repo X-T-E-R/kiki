@@ -211,7 +211,7 @@ describe('server-v2 boot', () => {
     expect(meta.data.server_home_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(meta.data.server_home_id).not.toContain(home);
     expect(meta.data.server_id).toBe(server.serverId);
-    const ws = new WebSocket(`ws://127.0.0.1:${server.port}/api/klient/events`, `kimi-code.bearer.${token}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${server.port}/api/klient/events`, `kimi-code.bearer.${server.localOwnerToken}`);
     try {
       await new Promise<void>((resolve, reject) => {
         ws.once('open', resolve);
@@ -221,7 +221,8 @@ describe('server-v2 boot', () => {
       const rotated = await rotateServerToken(home);
       expect(rotated).not.toBe(token);
       expect((await fetch(`${base}/api/meta`, { headers: { Authorization: `Bearer ${token}` } })).status).toBe(401);
-      expect((await fetch(`${base}/api/meta`, { headers: { Authorization: `Bearer ${rotated}` } })).status).toBe(200);
+      expect((await fetch(`${base}/api/meta`, { headers: { Authorization: `Bearer ${rotated}` } })).status).toBe(403);
+      expect((await authedFetch(server, base, '/api/meta')).status).toBe(200);
       expect(await withTimeout(closed, 4_000)).toBe(4001);
     } finally {
       ws.terminate();

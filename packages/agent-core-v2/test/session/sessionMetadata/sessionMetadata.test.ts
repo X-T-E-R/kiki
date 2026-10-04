@@ -408,6 +408,60 @@ describe('SessionMetadata', () => {
     expect(await fresh.read()).toMatchObject({ title: 'still fine' });
   });
 
+  it('updates the latest agent in the serialized queue and preserves unrelated fields', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('child', { type: 'sub', parentAgentId: 'main', delegator: { kind: 'agent', agentId: 'main' }, labels: { original: 'saved' } });
+    const before = (await meta.read()).updatedAt;
+    const store = ix.get(IAtomicDocumentStore);
+    const set = store.set.bind(store);
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const writing = new Promise<void>((resolve) => { entered = resolve; });
+    vi.spyOn(store, 'set').mockImplementationOnce(async (...args) => { entered(); await gate; await set(...args); });
+    const first = meta.updateAgent('child', (current) => ({ ...current, labels: { ...current.labels, operation: 'accepted' } }));
+    await writing;
+    const second = meta.updateAgent('child', (current) => ({ ...current, status: 'completed', resultSummary: 'Original result' }));
+    const third = meta.updateAgent('child', (current) => ({ ...current, model: 'example/target', labels: { ...current.labels, run: 'new-run' } }));
+    release();
+    await Promise.all([first, second, third]);
+    expect((await createFreshMetadata(ix).read()).agents?.['child']).toEqual({ type: 'sub', parentAgentId: 'main',
+      delegator: { kind: 'agent', agentId: 'main' }, labels: { original: 'saved', operation: 'accepted', run: 'new-run' },
+      status: 'completed', resultSummary: 'Original result', model: 'example/target' });
+    expect((await meta.read()).updatedAt).toBe(before);
+  });
+
+  it('does not recreate an unregistered agent or write an unchanged update', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('child', { labels: { saved: 'state' } });
+    const set = vi.spyOn(ix.get(IAtomicDocumentStore), 'set');
+    await meta.updateAgent('child', (current) => current);
+    expect(set).not.toHaveBeenCalled();
+    await meta.unregisterAgent?.('child');
+    set.mockClear();
+    const updater = vi.fn((current: import('#/session/sessionMetadata/sessionMetadata').AgentMeta) => ({ ...current, status: 'completed' as const }));
+    await meta.updateAgent('child', updater);
+    expect(updater).not.toHaveBeenCalled();
+    expect(set).not.toHaveBeenCalled();
+    expect((await createFreshMetadata(ix).read()).agents?.['child']).toBeUndefined();
+  });
+
+  it('keeps the old agent on updater or Store failure and retries the actual Store write', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('child', { model: 'example/old', labels: { saved: 'state' } });
+    await expect(meta.updateAgent('child', (current) => { (current as { model: string }).model = 'mutated'; throw new Error('updater failed'); })).rejects.toThrow('updater failed');
+    expect((await meta.read()).agents?.['child']?.model).toBe('example/old');
+    const store = ix.get(IAtomicDocumentStore);
+    const set = store.set.bind(store);
+    const write = vi.spyOn(store, 'set').mockRejectedValueOnce(new Error('Store failed')).mockImplementation(set);
+    const updater = (current: import('#/session/sessionMetadata/sessionMetadata').AgentMeta) => ({ ...current, model: 'example/target' });
+    await expect(meta.updateAgent('child', updater)).rejects.toThrow('Store failed');
+    expect((await meta.read()).agents?.['child']?.model).toBe('example/old');
+    await meta.updateAgent('child', updater);
+    expect(write).toHaveBeenCalledTimes(2);
+    expect((await createFreshMetadata(ix).read()).agents?.['child']).toMatchObject({ model: 'example/target', labels: { saved: 'state' } });
+  });
+
   it('persists across instances', async () => {
     const meta = ix.get(ISessionMetadata);
     await meta.update({ title: 'persisted' });

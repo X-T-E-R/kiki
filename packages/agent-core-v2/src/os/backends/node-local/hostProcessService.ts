@@ -67,7 +67,7 @@ class HostProcess implements IHostProcess {
   private readonly _exitPromise: Promise<number>;
   private _disposed = false;
 
-  constructor(child: ChildProcess, mergeStderr: boolean) {
+  constructor(child: ChildProcess, mergeStderr: boolean, private readonly detached: boolean) {
     if (child.stdin === null || child.stdout === null) {
       throw new HostProcessError(
         HostProcessErrorCode.SpawnFailed,
@@ -129,7 +129,7 @@ class HostProcess implements IHostProcess {
     }
 
     try {
-      process.kill(-this.pid, signal ?? 'SIGTERM');
+      process.kill(this.detached ? -this.pid : this.pid, signal ?? 'SIGTERM');
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
       if (err.code === 'ESRCH') return;
@@ -185,7 +185,7 @@ export class HostProcessService implements IHostProcessService {
         },
       );
     }
-    return new HostProcess(child, options.mergeStderr ?? false);
+    return new HostProcess(child, options.mergeStderr ?? false, spawnOptions.detached === true);
   }
 }
 

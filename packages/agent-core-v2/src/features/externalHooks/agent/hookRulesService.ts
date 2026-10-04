@@ -21,6 +21,7 @@ import { IHookRulesSession, ISessionHookWorkspace } from '../session/hookRules';
 import { hookHash, matchesHook, renderHookInjection, type EffectiveHookRule, type HookBinding, type HookEvent, type HookEventName, type HookRulesSnapshot } from '../internal/rules';
 import { hookPartition, hookStateKey, HookRulesConfigured, HookStepPrepared, HookObserved, semanticRevision, type HookReceipt } from './hookState';
 import { IAgentHookRules } from './hookRules';
+import { IAgentExternalHooksService } from './agentExternalHooks';
 
 export class AgentHookRules extends Service implements IAgentHookRules {
   declare readonly _serviceBrand: undefined;
@@ -43,6 +44,7 @@ export class AgentHookRules extends Service implements IAgentHookRules {
     @ILogService private readonly log: ILogService,
     @IEventBus bus: IEventBus,
     @IInstantiationService instantiation: IInstantiationService,
+    @IAgentExternalHooksService _externalHooks: IAgentExternalHooksService,
     @ref(ISessionHookWorkspace) private readonly workspace: LiveRef<ISessionHookWorkspace>,
   ) {
     super();
@@ -198,19 +200,19 @@ export class AgentHookRules extends Service implements IAgentHookRules {
     this.rules.observe(event, rule.id);
   }
 
-  async inspect(): Promise<unknown> {
+  async inspect(): ReturnType<IAgentHookRules['inspect']> {
     await this.rules.ready;
     const snapshot = this.rules.snapshot();
     const binding = this.binding();
     const clock = this.states.get(hookStateKey);
-    return { ...snapshot, binding, clock, rules: snapshot.rules.map((rule, order) => {
+    return { revision: snapshot.revision, sources: [...snapshot.sources ?? []], diagnostics: [...snapshot.diagnostics], binding: { ...binding, executorId: binding.executorId ?? 'native' }, rules: snapshot.rules.map((rule, order) => {
       const unsupported = binding.executorId !== 'native' && ['step.before', 'step.after', 'tool.before', 'tool.after'].includes(rule.rule.event);
       const cadence = rule.rule.cadence;
       const stored = clock.rules[rule.id];
       const state = stored?.semanticHash === rule.semanticHash ? stored : undefined;
       const bucket = state?.buckets[hookPartition(binding.modelId ?? '', clock.turnId, cadence?.counterScope ?? 'agent')];
       const reason = rule.reason ?? (unsupported ? 'unsupported_executor' : undefined);
-      return { ...rule, active: rule.active && !unsupported, reason, text: undefined, order, authorization: reason ?? 'declarative', unsupported,
+      return { id: rule.id, path: rule.path, namespace: rule.namespace, event: rule.rule.event, action: { type: rule.rule.action.type }, active: rule.active && !unsupported, reason, order,
         resetPending: stored !== undefined && state === undefined,
         semanticRevision: state === undefined ? undefined : semanticRevision(state),
         completedSteps: bucket?.completed ?? 0,

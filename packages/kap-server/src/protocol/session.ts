@@ -100,6 +100,7 @@ export type Session = z.infer<typeof sessionSchema>;
 export const sessionCreateSchema = z.object({
   title: z.string().min(1).optional(),
   persona: z.string().min(1).optional(),
+  persona_home: z.boolean().optional(),
   metadata: sessionMetadataSchema.optional(),
   agent_config: wireSessionAgentConfigCreateSchema.optional(),
   workspace_id: workspaceIdSchema.optional(),

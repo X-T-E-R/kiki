@@ -122,6 +122,51 @@ describe('server-v2 /api model/provider catalog', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
+  it('isolates same-name and same-remote models by full entity id through read, save, runtime cache and restart', async () => {
+    await boot(CATALOG_TOML);
+    const firstId = 'kimi/shared-model';
+    const secondId = 'openai/shared-model';
+    for (const [id, provider_id, max_context_size, max_input_size] of [
+      [firstId, 'kimi', 400_000, 529_400],
+      [secondId, 'openai', 800_000, 600_000],
+    ] as const) {
+      const created = await postJson<Record<string, unknown>>('/api/models', {
+        id, provider_id, remote_id: 'shared-model', display_name: 'Shared Model',
+        pricing_model: 'shared-canonical', max_context_size, max_input_size,
+      });
+      expect(created.body.code).toBe(0);
+      expect(created.body.data).toMatchObject({ id, provider_id, max_context_size, max_input_size });
+    }
+    const firstPath = `/api/models/${encodeURIComponent(firstId)}`;
+    const secondPath = `/api/models/${encodeURIComponent(secondId)}`;
+    const first = (await getJson<Record<string, unknown>>(firstPath)).body.data;
+    const second = (await getJson<Record<string, unknown>>(secondPath)).body.data;
+    expect(first).toMatchObject({ id: firstId, max_context_size: 400_000, max_input_size: 529_400 });
+    expect(second).toMatchObject({ id: secondId, max_context_size: 800_000, max_input_size: 600_000 });
+    expect(typeof first['revision']).toBe('string');
+    const catalog = server!.core.accessor.get(IModelCatalog);
+    expect(catalog.get(firstId)).toMatchObject({ id: firstId, maxContextSize: 400_000, maxInputSize: 400_000 });
+    expect(catalog.get(secondId)).toMatchObject({ id: secondId, maxContextSize: 800_000, maxInputSize: 600_000 });
+    expect(catalog.get(firstId)).not.toBe(catalog.get(secondId));
+    const response = await fetch(`${base}${firstPath}`, {
+      method: 'PATCH',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ base_revision: first['revision'], max_context_size: 300_000, auto_compact: 200_000 }),
+    } as never);
+    const saved = await response.json() as Envelope<Record<string, unknown>>;
+    expect(saved.code).toBe(0);
+    expect(saved.data).toMatchObject({ id: firstId, max_context_size: 300_000, max_input_size: 529_400, auto_compact: 200_000 });
+    expect((await getJson<Record<string, unknown>>(firstPath)).body.data).toEqual(saved.data);
+    expect((await getJson<Record<string, unknown>>(secondPath)).body.data).toEqual(second);
+    expect(catalog.get(firstId)).toMatchObject({ id: firstId, maxContextSize: 300_000, maxInputSize: 300_000, autoCompact: 200_000 });
+    expect(catalog.get(secondId)).toMatchObject({ id: secondId, maxContextSize: 800_000, maxInputSize: 600_000, autoCompact: undefined });
+    await server!.close();
+    server = undefined;
+    await boot();
+    expect((await getJson<Record<string, unknown>>(firstPath)).body.data).toMatchObject({ id: firstId, max_context_size: 300_000, max_input_size: 529_400, auto_compact: 200_000 });
+    expect((await getJson<Record<string, unknown>>(secondPath)).body.data).toEqual(second);
+  });
+
   it('creates, projects, persists and explicitly clears the pricing model independently of the wire id', async () => {
     await boot(CATALOG_TOML);
     const created = await postJson('/api/models', { id: 'priced-alias', provider_id: 'kimi',
@@ -586,6 +631,8 @@ describe('server-v2 /api model/provider catalog', () => {
       getCachedAccessToken: async () => undefined,
       getRegion: () => 'mainland-cn',
       listMethods: async () => [],
+      probeOriginal: async () => { throw new Error('unused'); },
+      connectOriginal: async () => { throw new Error('unused'); },
     };
   }
 

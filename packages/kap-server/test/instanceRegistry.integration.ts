@@ -13,6 +13,7 @@ import {
 } from '../src/instanceRegistry';
 import { type RunningServer, idleExitBlocked, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
+import { authHeaders } from './helpers/auth';
 
 let tmpDir: string;
 let instancesDir: string;
@@ -222,6 +223,48 @@ describe('createInstanceRegistry — update', () => {
     await reg.update({ workspaces: ['C:\\repo-b', 'C:\\repo-a'] });
     expect(readInstance(reg.serverId).workspaces).toEqual(['C:\\repo-a', 'C:\\repo-b']);
     await reg.release();
+  });
+
+  it('removes equivalent served roots without dropping a neighboring root or later additions', async () => {
+    const registry = createInstanceRegistry({ instancesDir, now: () => 1000 });
+    const reg = await registry.register({ ...baseInfo, workspaces: ['C:\\repo-a', 'c:/REPO-A/', 'C:\\repo-ab'] });
+    await Promise.all([
+      reg.update({ removedWorkspaces: ['C:/Repo-A/'] }),
+      reg.update({ workspaces: ['C:\\repo-c'] }),
+    ]);
+    await reg.update({});
+    expect(readInstance(reg.serverId).workspaces).toEqual(['C:\\repo-ab', 'C:\\repo-c']);
+    await reg.release();
+  });
+
+  it('withdraws an unregistered served workspace while retaining another root', async () => {
+    const first = join(tmpDir, 'first');
+    const second = join(tmpDir, 'second');
+    mkdirSync(first);
+    mkdirSync(second);
+    const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0,
+      homeDir: join(tmpDir, 'home'), instancesDir, logLevel: 'silent' });
+    try {
+      const base = `http://127.0.0.1:${server.port}`;
+      const create = async (cwd: string) => {
+        const response = await fetch(`${base}/api/sessions`, { method: 'POST',
+          headers: authHeaders(server, { 'content-type': 'application/json' }),
+          body: JSON.stringify({ metadata: { cwd } }) });
+        const body = await response.json() as { code: number; data: { workspace_id: string } };
+        expect(body.code).toBe(0);
+        return body.data.workspace_id;
+      };
+      const firstId = await create(first);
+      await create(second);
+      const registry = createInstanceRegistry({ instancesDir });
+      expect((await registry.listLive())[0]?.workspaces).toEqual([first, second]);
+      const response = await fetch(`${base}/api/workspaces/${firstId}`, {
+        method: 'DELETE', headers: authHeaders(server),
+      });
+      expect((await response.json() as { code: number }).code).toBe(0);
+      expect((await registry.listLive())[0]?.workspaces).toEqual([second]);
+      expect(existsSync(first)).toBe(true);
+    } finally { await server.close(); }
   });
 
   it('does not retain a failed workspace update for the next heartbeat', async () => {
@@ -438,7 +481,7 @@ describe('startServer — instance registry wiring', () => {
     const lease = await fetch(`${base}/api/leases`, {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${running.authTokenService.getToken()}`,
+        authorization: `Bearer ${running.localOwnerToken}`,
         'content-type': 'application/json',
       },
       body: '{}',

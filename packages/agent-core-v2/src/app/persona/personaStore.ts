@@ -27,6 +27,9 @@ export interface PersonaSummary {
   readonly job?: string;
   readonly revision: string;
   readonly archived: boolean;
+  readonly homeSessionId?: string;
+  readonly pinned?: boolean;
+  readonly hidden?: boolean;
   readonly avatarMime?: PersonaAvatarMime;
   readonly avatarShape?: PersonaAvatarShape;
 }
@@ -37,10 +40,16 @@ export interface PersonaState {
   readonly homeSessionId?: string;
   readonly pinned?: boolean;
   readonly hidden?: boolean;
+  readonly pausedCronTasks?: readonly { readonly workspaceId: string; readonly taskId: string; readonly wasPaused: boolean }[];
   readonly [key: string]: unknown;
 }
 
 export type PersonaStatePatch = Partial<Omit<PersonaState, 'version'>>;
+
+export interface PersonaLifecycleHooks {
+  beforeArchive(id: string, state: PersonaState, record: (patch: PersonaStatePatch) => Promise<void>): Promise<PersonaStatePatch>;
+  beforeDelete(id: string): Promise<void>;
+}
 
 export interface PersonaPutInput {
   readonly definition?: PersonaDefinition;
@@ -162,7 +171,9 @@ export interface IPersonaStore {
   duplicate(id: string, options?: PersonaDuplicateOptions | string): Promise<PersonaSnapshot>;
   archive(id: string, archived?: boolean): Promise<PersonaState>;
   getState(id: string): Promise<PersonaState>;
-  updateState(id: string, patch: PersonaStatePatch): Promise<PersonaState>;
+  updateState(id: string, patch: PersonaStatePatch, validate?: (current: PersonaState) => Promise<void>): Promise<PersonaState>;
+  claimHomeSession(id: string, sessionId: string, expectedHomeSessionId?: string): Promise<PersonaState>;
+  setLifecycleHooks(hooks: PersonaLifecycleHooks | undefined): void;
   delete(id: string, expectedRevision?: string): Promise<PersonaDeleteResult>;
   previewImport(input: PersonaImportInput): Promise<PersonaImportPreview>;
   importCard(input: PersonaImportInput, options?: { readonly id?: string }): Promise<PersonaImportResult>;

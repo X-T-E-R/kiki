@@ -35,6 +35,7 @@ import { WebSearchTool } from '#/agent/tools/web-search/webSearchTool';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import { Emitter, Event } from '#/_base/event';
+import { ErrorCodes } from '#/errors';
 import { IConfigService, type ConfigChangedEvent } from '#/app/config/config';
 import { NB_SEARCH_SECTION, NB_SEARCH_SOURCE_SECTION } from '#/app/nbSearch/configSection';
 import { INbSearchService, type NbSearchTestStatus } from '#/app/nbSearch/nbSearch';
@@ -61,7 +62,7 @@ const { createRuntimeMock } = vi.hoisted(() => ({ createRuntimeMock: vi.fn() }))
 
 vi.mock('@nb-corp/nb-search', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@nb-corp/nb-search')>()),
-  createNbSearchRuntime: createRuntimeMock,
+  createCapturedNbSearchRuntime: (captured: import('@nb-corp/nb-search').ResolvedConfiguration, options: import('@nb-corp/nb-search').CreateNbSearchRuntimeOptions) => createRuntimeMock({ ...options, config: captured.config, captured }),
 }));
 
 const CAPABILITIES: CapabilityEnvelope = {
@@ -254,6 +255,7 @@ function stubService(overrides: Partial<INbSearchService> = {}): INbSearchServic
     captureFetchFileIdentity: vi.fn().mockResolvedValue({ dev: '1', ino: '1' }),
     toolDescription: () => 'Fixture capability snapshot',
     test: vi.fn().mockResolvedValue(testStatus()),
+    keyUsage: vi.fn().mockResolvedValue({ provider_instance_id: 'exa.default', provider_id: 'exa', balance_supported: false, keys: [] }),
     validateConfiguration: vi.fn().mockResolvedValue(undefined),
     readManagedCredential: vi.fn().mockResolvedValue(undefined),
     writeManagedCredential: vi.fn().mockResolvedValue(undefined),
@@ -560,12 +562,10 @@ describe('NbSearchSourceStore', () => {
     expect(stat).not.toHaveBeenCalled();
     expect(fs.lstat).not.toHaveBeenCalled();
     expect(fs.readBytes).not.toHaveBeenCalled();
-    expect(write).toHaveBeenCalledTimes(1);
-    expect(write.mock.calls[0]?.[0]).toBe('cache/nb-search');
-    expect(write.mock.calls[0]?.[1]).toMatch(/^isolated-config\.\d+\.\d+\.json$/);
-    expect(write.mock.calls[0]?.[2]).toEqual(new TextEncoder().encode('{}'));
-    expect(write.mock.calls[0]?.[3]).toEqual({ atomic: true });
-    expect(source.env['NB_SEARCH_CONFIG']).toBe(`/fixture/cache/nb-search/${String(write.mock.calls[0]?.[1])}`);
+    expect(write).not.toHaveBeenCalled();
+    expect(source.env['NB_SEARCH_CONFIG']).toBe('/fixture/cache/nb-search/config.json');
+    expect(source.resolved?.config).toBe(source.config);
+    expect(source.resolved?.config_revision).toBe(source.expectedRevision);
   });
 
   it('keeps concurrent source stores on the same filesystem isolated', async () => {
@@ -580,7 +580,9 @@ describe('NbSearchSourceStore', () => {
       const sources = await Promise.all(Array.from({ length: 20 }, (_, index) => (index % 2 === 0 ? first : second)
         .withSource(false, undefined, (value) => value)));
       expect(sources.every((source) => source.status.availability === 'ready')).toBe(true);
-      expect(new Set(sources.map((source) => source.env['NB_SEARCH_CONFIG'])).size).toBe(2);
+      expect(new Set(sources.map((source) => source.resolved)).size).toBe(20);
+      expect(new Set(sources.map((source) => source.resolved?.config)).size).toBe(20);
+      expect(new Set(sources.map((source) => source.env['NB_SEARCH_CONFIG'])).size).toBe(1);
       expect(new Set(sources.map((source) => source.env['NB_SEARCH_HOME'])).size).toBe(1);
       expect(new Set(sources.map((source) => source.env['NB_SEARCH_JOBS_ROOT'])).size).toBe(1);
     } finally {
@@ -615,7 +617,8 @@ describe('NbSearchSourceStore', () => {
         issues: ['LOCAL_CONFIG_INVALID_IGNORED', 'CONFIGURATION_ERROR:defaults.search_lane'],
       });
       expect(source.env['NB_SEARCH_EXA_API_KEY']).toBeUndefined();
-      expect(source.env['NB_SEARCH_CONFIG']).toMatch(/isolated-config\.\d+\.\d+\.json$/);
+      expect(source.resolved?.config).toBe(source.config);
+      expect(write).not.toHaveBeenCalled();
       expect(JSON.stringify(source)).not.toContain('"search_lane":42');
       expect(JSON.stringify(source)).not.toContain('fixture-local-key');
     } finally {
@@ -636,8 +639,12 @@ describe('NbSearchSourceStore', () => {
       const source = await ix.get(INbSearchSourceStore).withSource(true, undefined, (value) => value);
       expect(source.status).toMatchObject({ availability: 'ready', local_config: 'present', local_credentials: 'missing', issues: [] });
       expect(source.config?.defaults?.search_lane).toBe('exa.search');
-      expect(source.env['NB_SEARCH_CONFIG']).toMatch(/isolated-config\.\d+\.\d+\.json$/);
-      expect(source.env['NB_SEARCH_CONFIG']).not.toBe('/fixture/nb-search/config.json');
+      expect(source.resolved?.config).toBe(source.config);
+      expect(write).not.toHaveBeenCalled();
+      const donor = await vi.importActual<typeof import('@nb-corp/nb-search')>('@nb-corp/nb-search');
+      read.mockRejectedValue(new Error('A second configuration read is prohibited.'));
+      expect((await donor.createCapturedNbSearchRuntime(source.resolved!, { env: source.env }).capabilities({})).search.default_lane).toBe('exa.search');
+      expect(read).toHaveBeenCalledTimes(2);
     } finally {
       read.mockRestore();
       lock.mockRestore();
@@ -969,11 +976,61 @@ describe('NbSearchService', () => {
     });
     await service.search('query');
 
-    expect(createRuntimeMock).toHaveBeenLastCalledWith({
+    expect(createRuntimeMock).toHaveBeenLastCalledWith(expect.objectContaining({
       env: {},
-      config: { defaults: { search_lane: 'tavily.search' } },
-    });
+      config: expect.objectContaining({ defaults: expect.objectContaining({ search_lane: 'tavily.search' }) }),
+      captured: expect.objectContaining({ config_revision: expect.stringMatching(/^config-4-/) }),
+    }));
     expect(second.search).toHaveBeenCalled();
+  });
+
+  it('reads key usage only on demand through the real donor, caches remote GETs, and returns unknown for unsupported balances without secrets', async () => {
+    const donor = await vi.importActual<typeof import('@nb-corp/nb-search')>('@nb-corp/nb-search');
+    await mkdir(resolve('.tmp'), { recursive: true });
+    const fixture = await mkdtemp(join(resolve('.tmp'), 'nb-search-key-usage-'));
+    const path = join(fixture, 'config.json');
+    await writeFile(path, '{}');
+    const env = { NB_SEARCH_HOME: fixture, NB_SEARCH_CONFIG: path, NB_SEARCH_TAVILY_API_KEY: 'fixture-first,fixture-second', NB_SEARCH_EXA_API_KEY: 'fixture-exa-one,fixture-exa-two' };
+    const requests: HttpRequest[] = [];
+    const blocked = vi.fn(() => { throw new Error('External network prohibited.'); });
+    vi.stubGlobal('fetch', blocked);
+    createRuntimeMock.mockImplementation((options) => donor.createNbSearchRuntime({ ...options, http_transport: {
+      send: async <T>(request: HttpRequest): Promise<import('@nb-corp/nb-search').HttpResponse<T>> => {
+        requests.push(request);
+        return { status: 200, body: { key: { usage: 3, limit: 10 } } as T };
+      },
+    } }));
+    ix.get(INbSearchSourceStore).withSource = async (reuse, _config, use) => use({ env, status: {
+      reuse_local_config: reuse, layers: ['defaults', 'environment', 'kiki'], local_config: 'ignored', availability: 'ready', issues: [],
+    } });
+    ix.get(IConfigService).get = (() => undefined) as IConfigService['get'];
+    const service = ix.get(INbSearchService);
+    try {
+      await service.capabilities();
+      await service.test();
+      expect(requests).toHaveLength(0);
+      const first = await service.keyUsage('tavily.default', false);
+      expect(requests).toHaveLength(2);
+      expect(requests.every((request) => request.method === 'GET' && request.url.endsWith('/usage'))).toBe(true);
+      expect(first).toMatchObject({ provider_id: 'tavily', balance_supported: true, keys: [
+        { key_index: 1, state: 'ready', usage: { scope: 'key', unit: 'credits', used: 3, limit: 10, remaining: 7 } },
+        { key_index: 2, state: 'ready', usage: { remaining: 7 } },
+      ] });
+      expect(await service.keyUsage('tavily.default', false)).toEqual(first);
+      expect(requests).toHaveLength(2);
+      await service.keyUsage('tavily.default', true);
+      expect(requests).toHaveLength(4);
+      expect(await service.keyUsage('exa.default', false)).toEqual({ provider_instance_id: 'exa.default', provider_id: 'exa', balance_supported: false, keys: [
+        { key_index: 1, state: 'unknown' }, { key_index: 2, state: 'unknown' },
+      ] });
+      expect(requests).toHaveLength(4);
+      expect(JSON.stringify(first)).not.toContain('fixture-');
+      await expect(service.keyUsage('missing-instance', false)).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      expect(blocked).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      await rm(fixture, { recursive: true, force: true });
+    }
   });
 
   it('keeps the key scheduler across synchronous calls, then resets it when credentials change', async () => {
@@ -1229,7 +1286,8 @@ describe('nb-search tool adapters', () => {
     const result = await execute(execution, signal);
     expect(result.isError).toBe(expected.action === 'cancel');
     expect(service.fetch).toHaveBeenCalledTimes(1);
-    expect(service.fetch).toHaveBeenCalledWith(expected, { requestId: 'call_test', signal });
+    const forwarded = expected.action === 'run' && expected.source.kind === 'url' ? { ...expected, source: { ...expected.source, url: new URL(expected.source.url).href } } : expected;
+    expect(service.fetch).toHaveBeenCalledWith(forwarded, { requestId: 'call_test', signal });
     if (typeof result.output !== 'string') throw new Error('expected text output');
     const output = result.output;
     if ((expected.action === 'run' && expected.execution === 'async') || expected.action === 'get') {
@@ -1389,8 +1447,8 @@ describe('nb-search tool adapters', () => {
     const result = await execute(execution, controller.signal);
 
     expect(result.isError).toBe(false);
-    expect(execution).toMatchObject({ display: { kind: 'url_fetch', url: 'https://example.com' } });
-    expect(service.fetch).toHaveBeenCalledWith({ action: 'run', source: { kind: 'url', url: 'https://example.com' } }, {
+    expect(execution).toMatchObject({ display: { kind: 'url_fetch', url: 'https://example.com/' } });
+    expect(service.fetch).toHaveBeenCalledWith({ action: 'run', source: { kind: 'url', url: 'https://example.com/' } }, {
       requestId: 'call_test',
       signal: controller.signal,
     });

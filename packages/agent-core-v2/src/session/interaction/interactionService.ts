@@ -29,6 +29,7 @@ import {
 interface Pending {
   readonly interaction: Interaction;
   readonly resolve: (response: unknown) => void;
+  readonly detached: boolean;
 }
 
 const RECENTLY_RESOLVED_TTL_MS = 60_000;
@@ -106,9 +107,10 @@ export class SessionInteractionService extends Service implements ISessionIntera
     }
   }
 
-  request<TPayload, TResponse>(req: InteractionRequest<TPayload>): Promise<TResponse> {
+  request<TPayload, TResponse>(req: InteractionRequest<TPayload>, onAccepted?: () => void): Promise<TResponse> {
     return new Promise<TResponse>((resolve) => {
       this.park(req, resolve as (response: unknown) => void);
+      onAccepted?.();
     });
   }
 
@@ -124,6 +126,7 @@ export class SessionInteractionService extends Service implements ISessionIntera
     if (!this.consumers.delete(id)) return;
     for (const interaction of this.listPending()) {
       if (interaction.kind !== 'approval' && interaction.kind !== 'question') continue;
+      if (this.pending.get(interaction.id)?.detached === true) continue;
       if (this.hasConsumer(interaction.origin)) continue;
       this.respond(interaction.id, { cancelled: true, reason: 'no_consumer' });
     }
@@ -185,7 +188,7 @@ export class SessionInteractionService extends Service implements ISessionIntera
       origin,
       createdAt: Date.now(),
     };
-    this.pending.set(id, { interaction, resolve });
+    this.pending.set(id, { interaction, resolve, detached: req.detached === true });
     this.recordRequest(interaction);
     this._onDidChangePending.fire({ pending: [...this.pending.keys()] });
     return interaction;

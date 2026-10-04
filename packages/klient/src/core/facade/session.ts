@@ -109,9 +109,9 @@ export interface SessionFacade {
   get(): Promise<SessionMeta>;
   setTitle(title: string): Promise<void>;
   /**
-   * Generate and apply a title from the main agent's first prompts via the
-   * managed `chat_title` tool. `undefined` when generation is unavailable
-   * (no managed OAuth login, no prompt yet, or a custom title is set).
+   * Generate and apply a title with the explicitly selected session title model.
+   * `undefined` when no model is selected, the feature is off, text is unavailable,
+   * or an existing title is protected. Model failures reject and keep the title.
    * `force` regenerates anyway, overwriting a generated or custom title.
    * `source` picks the conversation excerpt: `user_prompts` (default),
    * `first_turn` (opening prompt + first reply; strict), or `digest`

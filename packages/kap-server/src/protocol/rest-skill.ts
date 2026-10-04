@@ -27,6 +27,7 @@ export type ActivateSkillAttachment = z.infer<typeof activateSkillAttachmentSche
 
 export const activateSkillRequestSchema = z.object({
   args: z.string().optional(),
+  user_input: z.string().optional(),
   attachments: z.array(activateSkillAttachmentSchema).optional(),
 });
 export type ActivateSkillRequest = z.infer<typeof activateSkillRequestSchema>;

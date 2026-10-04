@@ -28,6 +28,18 @@ describe('promptSubmissionSchema', () => {
     expect(parsed.plan_mode).toBeUndefined();
   });
 
+  it('preserves after_model_switch and rejects an empty dependency id', () => {
+    const parsed = promptSubmissionSchema.parse({
+      content: [{ type: 'text', text: 'continue' }],
+      after_model_switch: 'switch-1',
+    });
+    expect(parsed.after_model_switch).toBe('switch-1');
+    expect(promptSubmissionSchema.safeParse({
+      content: [{ type: 'text', text: 'continue' }],
+      after_model_switch: '',
+    }).success).toBe(false);
+  });
+
   it('accepts metadata', () => {
     const parsed = promptSubmissionSchema.parse({
       content: [{ type: 'text', text: 'hi' }],

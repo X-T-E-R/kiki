@@ -80,7 +80,7 @@ describe('WebBridge pinned supply chain and readiness', () => {
   it('marks observed daemon, extension and enabled plugin ready without claiming their identities are authenticated', async () => {
     const { entry, calls } = fixture(root, { status: { running: true, version: 'v2.0.22', extension_connected: true }, plugin: true });
     const service = new CapabilityService(undefined as never, undefined as never, undefined as never,
-      stubLog(), undefined as never, [entry]);
+      stubLog(), undefined as never, undefined as never, [entry]);
     const status = await service.getCapability('kimi-webbridge');
     expect(status.state).toBe('ready');
     expect(status.steps.filter((step) => !step.optional).map((step) => [step.id, step.state]))
@@ -124,7 +124,7 @@ describe('WebBridge pinned supply chain and readiness', () => {
   ])('leaves a $expected functional layer missing', async ({ status: daemonStatus, expected }) => {
     const { entry } = fixture(root, { status: daemonStatus, plugin: true });
     const service = new CapabilityService(undefined as never, undefined as never, undefined as never,
-      stubLog(), undefined as never, [entry]);
+      stubLog(), undefined as never, undefined as never, [entry]);
     const status = await service.getCapability('kimi-webbridge');
     expect(status.state).not.toBe('ready');
     expect(status.steps.find((step) => step.id === expected)?.state).toBe('missing');
@@ -139,7 +139,7 @@ describe('WebBridge pinned supply chain and readiness', () => {
     const { entry, plugins } = fixture(root, { status: { running: true, version: 'v2.0.22', extension_connected: true } });
     plugins.listPlugins = vi.fn(async () => [{ id: 'kimi-webbridge', ...pluginState }]) as never;
     const service = new CapabilityService(undefined as never, undefined as never, undefined as never,
-      stubLog(), undefined as never, [entry]);
+      stubLog(), undefined as never, undefined as never, [entry]);
     const status = await service.getCapability('kimi-webbridge');
     expect(status.state).toBe('partial');
     expect(status.steps.find((step) => step.id === 'skill')?.state).toBe('missing');

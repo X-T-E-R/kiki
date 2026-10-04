@@ -264,6 +264,7 @@ function mapKind(k: AgentTaskInfo['kind']): TaskKind {
     case 'agent':
       return 'subagent';
     case 'question':
+    case 'media':
       return 'tool';
   }
 }

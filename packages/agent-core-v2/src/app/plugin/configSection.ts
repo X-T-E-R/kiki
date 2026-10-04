@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { mediaSourceSchema } from '@kiki/protocol';
 
 import { type EnvBindings, envBindings, stripEnvBoundFields } from '#/app/config/config';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
@@ -9,6 +10,7 @@ export const PLUGINS_SECTION = 'plugins';
 
 export const PluginsSectionSchema = z.object({
   marketplaceUrl: z.string().trim().optional(),
+  marketplaceSources: z.array(mediaSourceSchema).max(1000).optional(),
 });
 
 export type PluginsSection = z.infer<typeof PluginsSectionSchema>;

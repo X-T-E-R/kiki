@@ -65,7 +65,7 @@ describe('server-v2 appearance pack routes', () => {
   function inject(req: { method: string; url: string; payload?: unknown; headers?: Record<string, string> }): Promise<InjectResponse> {
     const running = server as RunningServer;
     const app = running.app as unknown as { inject: (value: unknown) => Promise<InjectResponse> };
-    return app.inject({ ...req, headers: { ...req.headers, authorization: `Bearer ${running.authTokenService.getToken()}` } });
+    return app.inject({ ...req, headers: { ...req.headers, authorization: `Bearer ${running.localOwnerToken}` } });
   }
 
   const install = async (zip: Buffer, replace = false) => {
@@ -243,7 +243,7 @@ describe('appearance pack space inheritance', () => {
     try {
       const app = space.app as unknown as { inject: (value: unknown) => Promise<InjectResponse> };
       const call = (req: { method: string; url: string; payload?: unknown; headers?: Record<string, string> }): Promise<InjectResponse> =>
-        app.inject({ ...req, headers: { ...req.headers, authorization: `Bearer ${space.authTokenService.getToken()}` } });
+        app.inject({ ...req, headers: { ...req.headers, authorization: `Bearer ${space.localOwnerToken}` } });
 
       const listed = (await call({ method: 'GET', url: '/api/appearance/packs' })).json() as { data: ListAppearancePacksResponse };
       expect(listed.data.items.map((item) => item.id)).toEqual(['fixture-dusk']);

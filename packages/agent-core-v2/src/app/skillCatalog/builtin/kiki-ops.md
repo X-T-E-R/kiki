@@ -1,7 +1,7 @@
 ---
 name: kiki-ops
-description: 'Configure or troubleshoot Kiki itself: first-run, provider/default-model, config.toml, tui.toml, WebSearch/FetchURL, sessions, subagents, background tasks, requirements board, approvals, MCP, plugins, themes, errors. Do not use for ordinary tasks.'
-when_to_use: The user asks how Kiki works or how to change it - stop approval prompts or pick a permission mode, plan mode or /goal, scheduled (cron) prompts, plugins or skills, connecting the GUI or a token, adding a provider or switching model, web search, subagents or agent profiles, a Kiki error message, or where a GUI feature is and how to use it.
+description: 'Use when configuring or fixing Kiki: providers/default-model, config.toml hot reload, concurrency limits/queues/429, Usage, tui.toml, WebSearch/FetchURL, sessions, subagents, MCP, approvals, plugins. Do not use for ordinary tasks or another app.'
+when_to_use: The user asks how Kiki works or how to change it - first-run setup, request concurrency or queued requests, model/provider limits, 429 or request.queue_timeout errors, whether edits need a restart, Usage controls, memory maintenance reminders, effective prompts or Check all branches, cockpit/preview controls, permission or plan mode, /goal, scheduled (cron) prompts, background tasks, requirements board, themes, skills, GUI connection, providers or models, web search, subagents or agent profiles, or a Kiki error.
 ---
 
 # Kiki operations (kiki-ops)
@@ -11,9 +11,9 @@ Help the user use, configure, and troubleshoot the installed Kiki. Creating or e
 ## Decision path
 
 1. **Classify the intent.** Question → answer. Change → configure. Breakage → troubleshoot. If the user only needs where a control is, name it and stop.
-2. **Check state before asking.** Read the config or run a read-only check (`/status`, `/mcp`, `Cron` with `action=list`, `TaskList`). Ask only for what you cannot infer.
+2. **Check state when needed.** For explanation-only questions, use documented defaults without reading private configuration. For diagnosis or edits, resolve the connected server host and actual `KIKI_HOME` before reading config or running a read-only check (`/status`, `/mcp`, `Cron` with `action=list`, `TaskList`); do not assume the browser's machine or default home is the target. Ask only for what you cannot infer.
 3. **One change at a time.** Say what changes and where (GUI location, or file + key), make it, verify.
-4. **Verify the effect, not the write.** Re-read the setting and exercise it (one search, one tool call, the profile in the dispatch list). Report what was verified and what still needs `/reload` or a new session.
+4. **Verify the effect, not the write.** Re-read the effective setting and check the relevant surface (Usage rules/counts, one search, the dispatch list). Report the observed result and the setting's actual apply timing.
 
 ## Ground truth: installed docs
 
@@ -23,14 +23,17 @@ Docs matching this version live in `<KIKI_HOME>/docs/{en,zh}/` (`KIKI_HOME`, els
 | --- | --- |
 | GUI layout, queue, approvals; modes (permission, plan, shell) | `guides/interface.md`, `guides/interaction.md` |
 | Goals; sessions, fork, export, requirements board | `guides/goals.md`, `guides/sessions.md` |
-| Every `config.toml` key; providers, env vars, data paths | `configuration/*.md` |
+| Request concurrency, model/provider targets, queue errors, config hot reload | Read `configuration/config-files.md` → `[request_governance]` and Applying configuration changes; read `guides/settings.md` → Usage for GUI controls |
+| Memory maintenance reminders | Read `configuration/config-files.md` → Continuity reminder settings before choosing `memory_maintenance` |
+| Effective prompts, Check all branches, cockpit/preview controls | Read `guides/settings.md` → Session controls; use `customization/agents.md` → Rebuilding a session context / Instruction Files for reload and scoped rules |
+| Every other `config.toml` key; providers, env vars, data paths | `configuration/*.md` |
 | Subagents, profiles, peer threads; skills, plugins, hooks, themes | `customization/*.md` |
 | Slash commands, CLI, tools (incl. cron); MCP, server token | `reference/*.md`, `server/{mcp,local-server}.md` |
 
 ## Where things are
 
-- **GUI Settings** (`/settings/<id>`): General (language, theme, composer) · Models & providers (Connections / Available models / Defaults — default permission mode and Reviewer are under Defaults) · Agents · Subagent rules · Agent communication · Plan & tasks · Skills · MCP · Plugins · Tools & automations (tool policy, hooks) · Search & retrieval · Workspaces · Connection · Advanced · About & updates.
-- **Elsewhere in the GUI:** Task board (`/board`), Scheduled tasks (`/cron`), Dispatch capabilities (right rail); per-session model, permission mode, and plan mode in the composer.
+- **GUI Settings** (`/settings/<id>`): General (language, theme, composer) · Models & providers (Connections / Available models / Defaults — default permission mode and Reviewer are under Defaults) · Agents · Subagent rules · Agent communication · Tasks · Skills · MCP · Plugins · Search & retrieval · Browser control · Computer control · Permissions (tool policy) · Hooks · Workspaces · Connection · Advanced · About & updates.
+- **Elsewhere in the GUI:** Usage (`/usage`: History opens by default for tokens/cost; Live contains Request details and Concurrency limits; legacy `?panel=limits` links focus the rules on Live), Task board (`/board`), Scheduled tasks (`/cron`), Dispatch capabilities (right rail); per-session model, permission mode, and plan mode in the composer.
 - **TUI:** `/login`, `/provider`, `/model`, `/permission`, `/plan`, `/goal`, `/mcp`, `/plugins`, `/theme`, `/settings`. **CLI:** `kiki doctor`, `kiki provider`, `kiki export`.
 - **Files in `<KIKI_HOME>`:** `config.toml`, `credentials/credentials.toml` (secrets), `tui.toml` (terminal only), `mcp.json`. Project MCP: repo-root `.mcp.json`, then `.kiki/mcp.json`; later wins by server name.
 
@@ -42,6 +45,9 @@ Docs matching this version live in `<KIKI_HOME>/docs/{en,zh}/` (`KIKI_HOME`, els
 - **Search and fetch.** The default `WebSearch` lane, `github.repositories`, covers repositories only. General web search needs a provider lane, its credential (Search & retrieval → Services & credentials, or the slot's env var on the server), and `[nb_search.defaults] search_lane`. `FetchURL` works keyless. Keys never go in `config.toml`.
 - **Connection.** The desktop app finds or starts a local server itself. A browser needs the URL and the token in `<KIKI_HOME>/server.token`; `kiki web rotate-token` replaces a leaked one; `kiki doctor` checks reachability.
 - **Subagents vs threads.** `AgentRun` starts a child in this session that reports back. `ThreadCreate` opens an independent session, only when the user asks.
+- **Memory reminders.** Read the continuity settings before changing `[loop_control.continuity_cadence] memory_maintenance`. Omitted/`true` enables periodic maintenance during active work; `false` disables only that periodic reminder, not standing-instruction or pre-compaction checks, memory tools, approvals, or TodoList notes. No useful lasting change means no write. Do not duplicate pending memory proposals.
+- **Session prompt diagnostics.** Header ⋯ → Effective prompts opens a drawer independently of the rail, even on narrow screens. Read the current identity, source/override states and latest actual-request evidence; a displayed composition is not proof it was sent. Check all branches is explicit and does not activate other identities. Use Rebuild context only when the user wants a source refresh, while idle.
+- **Cockpit.** On desktop widths, the right-panel Standard / Cockpit selector temporarily gives the cockpit the preview space. Standard / Exit cockpit restores preview content, tabs, draft and width; exiting leaves the standard rail open. Opening a file, agent detail or skill preview restores the preview workspace. Do not suggest clearing preview state or changing the saved standard-panel width.
 
 ## First-run and guided setup
 
@@ -63,9 +69,18 @@ Prefer the GUI page or a dedicated command. For a direct edit:
 1. Resolve the real path and read the file; on a parse error, stop instead of overwriting.
 2. Confirm key, type, and section in `configuration/config-files.md`; keep unrelated entries and comments.
 3. Back up with a timestamp, write, re-read. Never overwrite a user file without permission.
-4. Apply: `/reload` in the TUI for `config.toml` (the server also watches `config.toml` and `credentials/credentials.toml`; confirm the effect), `/reload-tui` for `tui.toml`. Profile, skill, and MCP changes may need a new session or **Rebuild context**.
+4. Verify automatic reload for `config.toml` and `credentials/credentials.toml`: Kiki waits for stable content and retries incomplete saves. A parse failure retains the last valid configuration; fix the diagnostic instead of overwriting. Request rules re-evaluate queued work without a restart. Session defaults apply to new sessions; `identity` needs a process restart. Use `/reload-tui` for `tui.toml`; `/reload` remains an explicit TUI reload, not a required step for every edit. For profile, skill, and MCP edits, follow the topic's documented apply timing.
 
 For a deprecation warning, rename exactly the named key and keep its value; env-var warnings are fixed where the variable is set.
+
+## Request limits, queues, and 429
+
+Read the installed `configuration/config-files.md` → `[request_governance]` before choosing a rule. Use the existing request-governance capability rather than inventing a subagent scheduling workaround.
+
+1. **Identify what is limited.** Concurrent native model requests → `request_governance`; simultaneous child runs → `[subagent] max_direct_children/max_total_subagents`; Bash/background tasks → `[background]`; search/fetch calls → `[nb_search.execution]`. A request slot lasts through stream cleanup, not tool work or retry backoff. External executors are unmanaged.
+2. **Choose the target and scope.** `models` uses exact canonical `[models]` keys, not display names, upstream model names, or alternate aliases. `providers` uses exact `[providers]` keys. IDs in one list share a combined cap; different selectors are AND, and all matching enabled rules apply. `global` shares capacity across this Kiki service's sessions, not independent CLI processes; `each_session` shares a bucket within each session's main/subagent tree. Add `subagents_only = true` only if main/system requests should be excluded.
+3. **Inspect before adjusting.** Usage → Live shows active/queued counts; expand Request details for waiting time and blocking rule IDs. Stale counts are not current capacity. Usage → Live → Concurrency limits edits or pauses rules. `request.limit_rejected` means a full `reject` rule, `request.queue_full` means the shared queue is full, and `request.queue_timeout` means the cumulative local wait budget was exhausted. These do not automatically retry. Provider HTTP 429 / `provider.rate_limit` is separate: check the provider message, quota/balance, and `Retry-After`; `[retry]` controls transient retries, not exhausted quota.
+4. **Apply and check.** Save the smallest matching rule, then verify it in Usage and check queued work. No rules means no cap; `enabled = false` pauses a rule; omit `max_concurrent` for no cap (zero is invalid). Rule edits automatically re-evaluate waiters and leave active streams running. Stop cancels a queued turn without sending it. Do not send paid test requests unless the task authorizes them. This is concurrency control, not a requests-per-minute, token, or money budget.
 
 ## Troubleshooting
 
@@ -74,5 +89,3 @@ For a deprecation warning, rename exactly the named key and keep its value; env-
 - **MCP server needs OAuth:** call its `mcp__<server>__authenticate` tool and show the URL verbatim.
 - **Turn exceeded the step limit:** raise `loop_control.max_steps_per_turn`.
 - **Anything else:** `<KIKI_HOME>/logs/kimi-code.log` and the session's `logs/`; `kiki export` or `/export-debug-zip` for bug reports.
-
-Keep secrets out of chat, logs, and examples, and keep the GUI machine and the server host apart when they differ.

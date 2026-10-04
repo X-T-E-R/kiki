@@ -45,6 +45,17 @@ export interface AgentModelConstraints {
   readonly preferredEfforts?: readonly string[];
 }
 
+export interface AgentModelPromptContent {
+  readonly promptMode?: AgentModelProfilePromptMode;
+  readonly prompt?: string;
+}
+
+export interface AgentModelPromptLayer {
+  readonly source: 'profile' | 'lease';
+  readonly sourcePath?: string;
+  readonly entries: readonly AgentModelProfile[];
+}
+
 export interface AgentModelProfile extends AgentModelParameters, AgentModelConstraints {
   readonly alias: string;
   readonly contextStrategy?: ContextStrategy;
@@ -54,6 +65,8 @@ export interface AgentModelProfile extends AgentModelParameters, AgentModelConst
   readonly promptMode?: AgentModelProfilePromptMode;
   readonly prompt?: string;
   readonly promptOverrides?: PromptOverrides;
+  readonly main?: import('./promptOverrides').PromptIdentityBranch<AgentModelPromptContent>;
+  readonly independent?: import('./promptOverrides').PromptIdentityBranch<AgentModelPromptContent>;
 }
 
 export type AgentRecommendedModel = AgentModelProfile;
@@ -170,6 +183,10 @@ export interface AgentProfile extends AgentModelParameters, AgentModelConstraint
   readonly disabledToolGroups?: readonly ToolGroupId[];
   readonly subagentPolicy?: AgentSubagentPolicy;
   readonly subagentDeclaration?: SubagentDeclaration;
+  readonly canSpawnSubagents?: boolean;
+  readonly allowedSubagents?: readonly string[];
+  readonly preferredSubagents?: readonly string[];
+  readonly denySubagents?: readonly string[];
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnConstraints?: SpawnConstraints;
@@ -184,6 +201,8 @@ export interface AgentProfile extends AgentModelParameters, AgentModelConstraint
   readonly denyModels?: readonly string[];
   readonly allowedEfforts?: readonly string[];
   readonly modelProfiles?: readonly AgentModelProfile[];
+  readonly modelPromptLayers?: readonly AgentModelPromptLayer[];
+  readonly modelPromptBase?: readonly AgentModelPromptLayer[];
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
   readonly promptOverrides?: PromptOverrides;
@@ -206,6 +225,10 @@ export interface AgentProfileRouteDefinition {
   readonly prompt: string;
   readonly tools?: readonly string[];
   readonly disallowedTools?: readonly string[];
+  readonly canSpawnSubagents?: boolean;
+  readonly allowedSubagents?: readonly string[];
+  readonly preferredSubagents?: readonly string[];
+  readonly denySubagents?: readonly string[];
   readonly subagents?: readonly string[];
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;

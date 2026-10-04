@@ -7,6 +7,7 @@ export const oauthFlowStatusEnum = z.enum([
   'pending',
   'authenticated',
   'denied',
+  'failed',
   'expired',
   'cancelled',
 ]);

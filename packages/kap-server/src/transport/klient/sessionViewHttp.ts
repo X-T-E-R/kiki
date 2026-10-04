@@ -2,6 +2,7 @@ import { ISessionManager, type IDisposable, type Scope } from '@kiki/agent-core-
 import {
   sessionViewSubscribeInputSchema,
   sessionViewTranscriptCatchUpInputSchema,
+  sessionViewTranscriptContentInputSchema,
   sessionViewTranscriptPageInputSchema,
 } from '@kiki/klient';
 import { RPCError, type KlientFrame } from '@kiki/klient/host';
@@ -15,14 +16,17 @@ import {
 } from '@kiki/transcript';
 import { okEnvelope } from '../../protocol/envelope';
 import { withReplyCloseSignal } from '../../procedures/requestSignal';
-import { assembleBrowseSnapshot, SnapshotNotFoundError } from '../../routes/snapshot';
+import { assembleBrowseSnapshot, assembleBrowseSnapshotSource, SnapshotNotFoundError } from '../../routes/snapshot';
 import type { TranscriptService } from '../../services/transcript/transcriptService';
 import type { SessionEventBroadcaster } from '../ws/v1/sessionEventBroadcaster';
 import {
   readColdSessionViewBaseline,
   readSessionViewTranscriptCatchUp,
+  readSessionViewTranscriptContent,
   readSessionViewTranscriptPage,
+  TranscriptDetailCursorError,
 } from './sessionViewReads';
+import { ContentChangedError, readContentSegment } from './boundedContent';
 import { SessionViewTarget } from './sessionViewTarget';
 import { recordSessionViewTiming } from './sessionViewTiming';
 
@@ -34,6 +38,27 @@ export interface SessionViewHttpOptions {
 }
 
 export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts: SessionViewHttpOptions): void {
+  app.post(`${KLIENT_SESSION_VIEW_PATH}/:sessionId/transcript/content`, async (req, reply) => {
+    const service = opts.sessionViewTranscriptService;
+    if (service === undefined) throw new RPCError(50001, 'session view unavailable');
+    const parsed = sessionViewTranscriptContentInputSchema.safeParse(req.body);
+    if (!parsed.success) return reply.send({ code: 40001, msg: 'invalid content reference', data: null, request_id: req.id });
+    const { sessionId } = req.params as { sessionId: string };
+    try {
+      const data = await withReplyCloseSignal(reply, async (signal) => {
+        if (parsed.data.ref.source.kind !== 'snapshot') return readSessionViewTranscriptContent(service, sessionId, { ...parsed.data, signal });
+        const broadcaster = opts.sessionViewBroadcaster;
+        if (broadcaster === undefined) throw new RPCError(50001, 'session view unavailable');
+        const snapshot = await assembleBrowseSnapshotSource(scope, broadcaster, sessionId);
+        signal.throwIfAborted();
+        return readContentSegment(snapshot, parsed.data.ref);
+      });
+      return reply.send(data === undefined ? { code: 40401, msg: 'content unavailable', data: null, request_id: req.id } : okEnvelope(data, req.id));
+    } catch (error) {
+      if (error instanceof ContentChangedError) return reply.send({ code: 40922, msg: error.message, data: null, request_id: req.id });
+      throw error;
+    }
+  });
   app.get(`${KLIENT_SESSION_VIEW_PATH}/:sessionId/snapshot`, async (req, reply) => {
     const broadcaster = opts.sessionViewBroadcaster;
     if (broadcaster === undefined) throw new RPCError(50001, 'session view unavailable');
@@ -57,17 +82,22 @@ export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts
       return reply.send({ code: 40001, msg: TRANSCRIPT_CLIENT_UPGRADE_MESSAGE, data: null, request_id: req.id });
     }
     const parsed = sessionViewTranscriptPageInputSchema.safeParse({
-      agentId: query['agent_id'], beforeTurn: query['before_turn'], afterTurn: query['after_turn'],
+      agentId: query['agent_id'], beforeTurn: query['before_turn'], beforeItem: query['before_item'], afterTurn: query['after_turn'], afterItem: query['after_item'],
       pageSize: query['page_size'] === undefined ? undefined : Number(query['page_size']),
     });
     if (!parsed.success) return reply.send({ code: 40001, msg: 'invalid transcript page input', data: null, request_id: req.id });
     const { sessionId } = req.params as { sessionId: string };
-    const data = await withReplyCloseSignal(reply, (signal) =>
-      readSessionViewTranscriptPage(service, sessionId, { ...parsed.data, signal }),
-    );
-    return reply.send(data === undefined
-      ? { code: 40401, msg: `session not found: ${sessionId}`, data: null, request_id: req.id }
-      : okEnvelope({ ...data, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION }, req.id));
+    try {
+      const data = await withReplyCloseSignal(reply, (signal) =>
+        readSessionViewTranscriptPage(service, sessionId, { ...parsed.data, signal }),
+      );
+      return reply.send(data === undefined
+        ? { code: 40401, msg: `session not found: ${sessionId}`, data: null, request_id: req.id }
+        : okEnvelope({ ...data, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION }, req.id));
+    } catch (error) {
+      if (error instanceof TranscriptDetailCursorError) return reply.send({ code: 40001, msg: error.message, data: null, request_id: req.id });
+      throw error;
+    }
   });
 
   app.get(`${KLIENT_SESSION_VIEW_PATH}/:sessionId/transcript/catch-up`, async (req, reply) => {

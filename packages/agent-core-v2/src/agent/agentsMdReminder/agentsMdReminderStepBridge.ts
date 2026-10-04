@@ -2,7 +2,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import { Disposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
-import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 
 import { IAgentAgentsMdReminderService } from './agentsMdReminder';
 
@@ -20,14 +20,14 @@ export class AgentAgentsMdReminderStepBridge
   declare readonly _serviceBrand: undefined;
 
   constructor(
-    @IAgentLoopService loop: IAgentLoopService,
+    @IAgentContextInjectorService injector: IAgentContextInjectorService,
     @IAgentAgentsMdReminderService reminder: IAgentAgentsMdReminderService,
   ) {
     super();
     this._register(
-      loop.hooks.onWillBeginStep.register('agentsMdReminder', async (_ctx, next) => {
+      injector.register('agents_md', async () => {
         await reminder.flushStepHead();
-        await next();
+        return undefined;
       }),
     );
   }

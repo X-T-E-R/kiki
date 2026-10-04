@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import type { SubagentDispatchCaller } from '@kiki/agent-profiles/subagentDispatch';
 
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { isPlainObject } from '#/app/config/toml';
@@ -33,8 +32,7 @@ export const SubagentConfigSchema = z.object({
   maxDirectChildren: z.number().int().min(0).optional(),
   maxTotalSubagents: z.number().int().min(0).optional(),
   defaultProfile: z.string().optional(),
-  mainDispatchPolicy: z.enum(['advisory', 'strict']).optional(),
-  subagentDispatchPolicy: z.enum(['advisory', 'strict']).optional(),
+
   allowedTools: z.array(z.string()).optional(),
 });
 
@@ -75,21 +73,6 @@ export function resolveDispatchCapacityLimits(config: IConfigService): {
 
 export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;
 
-/** Resolve the host policy floor independently of the caller's role declaration. */
-export function withDispatchPolicyDefaults<T extends SubagentDispatchCaller>(
-  config: IConfigService,
-  caller: T,
-  position: 'main' | 'sub',
-): T & { readonly defaultPolicy: 'advisory' | 'strict' } {
-  const section = config.get<SubagentConfig | undefined>(SUBAGENT_SECTION);
-  return {
-    ...caller,
-    defaultPolicy: position === 'main'
-      ? section?.mainDispatchPolicy ?? 'advisory'
-      : section?.subagentDispatchPolicy ?? 'strict',
-  };
-}
-
 export const DEFAULT_SUBAGENT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 export const SUBAGENT_TIMEOUT_ENV = 'KIKI_SUBAGENT_TIMEOUT_MS';
 
@@ -120,7 +103,7 @@ registerConfigSection(SUBAGENT_SECTION, SubagentConfigSchema, {
   env: subagentEnvBindings,
   stripEnv: stripSubagentEnv,
   collectDiagnostics: (rawSection) =>
-    collectRemovedKeyDiagnostics(SUBAGENT_SECTION, rawSection, ['default_effort']),
+    collectRemovedKeyDiagnostics(SUBAGENT_SECTION, rawSection, ['default_effort', 'main_dispatch_policy', 'subagent_dispatch_policy']),
 });
 
 export function resolveSubagentTimeoutMs(config: IConfigService): number {
@@ -318,6 +301,7 @@ export function addSubagentBindingSchemaConstraints(
     { not: { allOf: [{ required: ['resume'] }, { anyOf: ['profile', 'profile_file', 'route', 'name'].map((field) => ({ required: [field] })) }] } },
     { not: { allOf: [{ required: ['profile_file'] }, { anyOf: ['profile', 'route'].map((field) => ({ required: [field] })) }] } },
     conditionalSchema,
+    { if: { required: ['new_window'] }, [conditionalSchemaKeyword]: { required: ['resume'] } },
   ];
 }
 

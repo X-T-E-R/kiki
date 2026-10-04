@@ -21,6 +21,7 @@
  */
 
 import { z } from 'zod';
+import { contentRefSchema } from '@kiki/transcript';
 
 import { approvalRequestSchema } from '../approval';
 import { messageSchema } from '../message';
@@ -92,6 +93,7 @@ export const snapshotSubagentSchema = taskSchema.extend({
 export type SnapshotSubagent = z.infer<typeof snapshotSubagentSchema>;
 
 export const sessionSnapshotResponseSchema = z.object({
+  contentRefs: z.array(contentRefSchema).optional(),
   /** Durable event watermark this snapshot is consistent with. */
   as_of_seq: z.number().int().nonnegative(),
   /** Journal epoch — pass back via the WS cursor for invalidation detection. */

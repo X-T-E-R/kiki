@@ -12,6 +12,7 @@ export const oauthFlowStatusEnum = z.enum([
   'pending',
   'authenticated',
   'denied',
+  'failed',
   'expired',
   'cancelled',
 ]);
@@ -118,3 +119,28 @@ export const managedUsageResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('error'), message: z.string(), status: z.number().int().optional() }),
 ]);
 export type ManagedUsageResult = z.infer<typeof managedUsageResultSchema>;
+
+export const originalOAuthStateSchema = z.enum(['ready', 'refresh_required', 'signed_out', 'unreadable', 'unsupported', 'account_changed', 'refresh_failed']);
+export const originalOAuthStorageBackendSchema = z.enum(['file', 'keyring', 'encrypted', 'ephemeral']).nullable();
+export const originalOAuthRequestSchema = z.object({
+  provider: z.enum(['openai-codex', 'grok-build']),
+  home_dir: z.string().min(1).optional(),
+});
+export type OriginalOAuthRequest = z.infer<typeof originalOAuthRequestSchema>;
+export const connectOriginalOAuthRequestSchema = originalOAuthRequestSchema.extend({ expected_account_id: z.string().min(1) });
+export type ConnectOriginalOAuthRequest = z.infer<typeof connectOriginalOAuthRequestSchema>;
+export const originalOAuthProbeSchema = z.object({
+  provider: z.enum(['openai-codex', 'grok-build']),
+  home_dir: z.string(),
+  storage_backend: originalOAuthStorageBackendSchema,
+  state: originalOAuthStateSchema,
+  account: z.discriminatedUnion('state', [z.object({ state: z.literal('known'), id: z.string() }), z.object({ state: z.literal('unknown') })]),
+  can_connect: z.boolean(),
+  reason: z.string().optional(),
+});
+export type OriginalOAuthProbe = z.infer<typeof originalOAuthProbeSchema>;
+export const oAuthSourceSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('kiki') }),
+  z.object({ kind: z.literal('local_original'), home_dir: z.string(), storage_backend: originalOAuthStorageBackendSchema, source_state: originalOAuthStateSchema }),
+]);
+export type OAuthSource = z.infer<typeof oAuthSourceSchema>;

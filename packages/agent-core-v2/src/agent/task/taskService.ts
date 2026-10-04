@@ -5,7 +5,8 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
 import type { ContentPart } from '#/kosong/contract/message';
 
-import { Disposable } from '#/_base/di/lifecycle';
+import { Disposable, toDisposable } from '#/_base/di/lifecycle';
+import type { MediaTaskInfo } from './types';
 import { ILogService } from '#/_base/log/log';
 import { defineState } from '#/state/state';
 import {
@@ -278,6 +279,13 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private exitSuppressionArmed = false;
   private readonly persistence: AgentTaskPersistence;
   private notificationRestoreQueue: Promise<void> = Promise.resolve();
+  private mediaRecovery?: (info: MediaTaskInfo) => Promise<AgentTask | undefined>;
+
+  registerMediaRecovery(handler: (info: MediaTaskInfo) => Promise<AgentTask | undefined>) {
+    if (this.mediaRecovery !== undefined) throw new Error('Media task recovery is already registered');
+    this.mediaRecovery = handler;
+    return toDisposable(() => { if (this.mediaRecovery === handler) this.mediaRecovery = undefined; });
+  }
 
   constructor(
     @ITelemetryService private readonly telemetry: ITelemetryService,
@@ -1202,6 +1210,13 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const persistence = this.persistence;
     for (const [taskId, info] of this.ghosts) {
       if (TERMINAL_STATUSES.has(info.status)) continue;
+      if (info.kind === 'media' && this.mediaRecovery !== undefined) {
+        const recovered = await this.mediaRecovery(info);
+        if (recovered !== undefined) {
+          this.registerTask(recovered, { taskId, detached: true });
+          continue;
+        }
+      }
       const updated: AgentTaskInfo = {
         ...info,
         status: 'lost',
@@ -1241,6 +1256,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       const receipt = await this.persistence.commitTerminalTask(info, entry.finalOutput);
       entry.receipt = receipt;
       entry.receiptVerification = 'verified';
+      if (entry.finalOutput !== undefined) {
+        entry.outputPersistStarted = true;
+        entry.pendingOutput = [];
+        entry.pendingOutputBytes = 0;
+      }
       entry.finalOutput = undefined;
     }).catch(async (error: unknown) => {
       this.log.error('task receipt persistence failed; execution status retained without receipt', {
@@ -1440,7 +1460,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (this.marksTerminalNotificationSuppressed(entry)) {
       entry.terminalNotificationSuppressed = true;
     }
-    if (entry.visible && (this.isDetached(entry) || entry.outputPersistStarted)) await this.commitTerminal(entry);
+    if (entry.visible && (this.isDetached(entry) || entry.outputPersistStarted ||
+      (entry.finalOutput !== undefined && Buffer.byteLength(entry.finalOutput, 'utf-8') > MAX_OUTPUT_BYTES))) {
+      await this.commitTerminal(entry);
+    }
     this.fireTerminalEffects(entry);
     foregroundRelease?.resolve('terminal');
     this.resolveWaiters(entry);
@@ -1546,9 +1569,16 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private notificationAdmission(info: AgentTaskInfo): StepRequestAdmission {
     const goal = this.currentGoal();
     const lastEnded = this.states.has(turnKey) ? this.states.get(turnKey).lastEnded : undefined;
-    return goal !== null || info.goalId !== undefined ||
-      this.loop.status().lastTurnResult === 'cancelled' || lastEnded?.reason === 'cancelled'
-      ? 'activeOrNextTurn' : 'activeOrNewTurn';
+    if (this.loop.status().lastTurnResult === 'cancelled' || lastEnded?.reason === 'cancelled') {
+      return 'activeOrNextTurn';
+    }
+    if (goal?.status === 'blocked' && info.goalId === goal.goalId &&
+      (goal.budgetLimits.tokenBudget === undefined || goal.tokensUsed < goal.budgetLimits.tokenBudget) &&
+      (goal.budgetLimits.turnBudget === undefined || goal.turnsUsed < goal.budgetLimits.turnBudget) &&
+      (goal.budgetLimits.wallClockBudgetMs === undefined || goal.wallClockMs < goal.budgetLimits.wallClockBudgetMs)) {
+      return 'activeOrNewTurn';
+    }
+    return goal !== null || info.goalId !== undefined ? 'activeOrNextTurn' : 'activeOrNewTurn';
   }
 
   private async commitMaterializedNotifications(): Promise<void> {

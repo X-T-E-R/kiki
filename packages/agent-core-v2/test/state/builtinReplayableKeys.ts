@@ -1,6 +1,7 @@
 import type { ReplayableStateKey } from '#/state/state';
 
-import { contextMemoryKey } from '#/agent/contextMemory/contextOps';
+import { contextMemoryKey, contextRevisionKey } from '#/agent/contextMemory/contextOps';
+import { modelSwitchCompletionsKey, modelSwitchContinuityKey } from '#/agent/modelSwitch/modelSwitchOps';
 import { staleGuardKey } from '#/features/staleGuard/staleGuardOps';
 import { fullCompactionKey } from '#/agent/fullCompaction/compactionOps';
 import { autoCompactOverrideKey } from '#/agent/fullCompaction/autoCompactOps';
@@ -19,7 +20,8 @@ import {
 import { permissionRulesKey } from '#/agent/permissionRules/permissionRulesOps';
 import { pluginSessionStartSnapshotKey } from '#/agent/plugin/agentPluginOps';
 import { promptAdmissionKey, promptRetryReceiptKey } from '#/agent/prompt/promptOps';
-import { promptQueueKey, promptResolutionKey } from '#/agent/prompt/promptService';
+import { promptIdentityKey, promptQueueKey, promptResolutionKey } from '#/agent/prompt/promptService';
+import { modelSwitchQueueKey } from '#/agent/prompt/modelSwitchQueueOps';
 import { profileActiveToolsKey, profileKey } from '#/agent/profile/profileOps';
 import { runtimeBindingKey } from '#/agent/runtimeBinding/runtimeBindingOps';
 import { skillKey } from '#/agent/skill/skillOps';
@@ -30,6 +32,7 @@ import { usageKey } from '#/agent/usage/usageOps';
 import { panelAccountingKey } from '#/agent/usage/panelAccounting';
 import { userToolKey } from '#/agent/userTool/userToolOps';
 import { planKey } from '#/features/plan/planOps';
+import { agentMessageMaterializationsKey, agentMessageReceiptsKey } from '#/session/agentCollaboration/messageReceiptState';
 import { cronKey } from '#/session/cron/cronOps';
 import { interactionKey } from '#/session/interaction/interactionOps';
 import { todoKey } from '#/session/todo/todoOps';
@@ -39,6 +42,9 @@ import { hookStateKey } from '#/features/externalHooks/agent/hookState';
 
 export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] = [
   contextMemoryKey,
+  contextRevisionKey,
+  modelSwitchCompletionsKey,
+  modelSwitchContinuityKey,
   staleGuardKey,
   fullCompactionKey,
   autoCompactOverrideKey,
@@ -57,7 +63,9 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   promptAdmissionKey,
   promptRetryReceiptKey,
   promptResolutionKey,
+  promptIdentityKey,
   promptQueueKey,
+  modelSwitchQueueKey,
   profileKey,
   profileActiveToolsKey,
   runtimeBindingKey,
@@ -69,6 +77,8 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   panelAccountingKey,
   userToolKey,
   planKey,
+  agentMessageReceiptsKey,
+  agentMessageMaterializationsKey,
   cronKey,
   interactionKey,
   todoKey,

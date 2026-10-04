@@ -1,4 +1,6 @@
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { basename, dirname } from 'pathe';
+import { instructionVersion } from '#/agent/agentsMdReminder/instructionCoverage';
 import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
@@ -277,7 +279,7 @@ export class ReadTool implements IReadTool {
           } catch (error) {
             return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
-          const result = tagSshResult(await this.execution(lease.runtime.fs!, args, path), inspected);
+          const result = tagSshResult(await this.execution(lease.runtime.fs!, args, path, inspected.identity.runtimeId), inspected);
           return this.resultTruncation.isSpillFilePath(path)
             ? { ...result, spillExempt: true as const }
             : result;
@@ -288,7 +290,7 @@ export class ReadTool implements IReadTool {
     };
   }
 
-  private async execution(fs: IHostFileSystem, args: ReadInput, safePath: string): Promise<ExecutableToolResult> {
+  private async execution(fs: IHostFileSystem, args: ReadInput, safePath: string, runtimeId: string): Promise<ExecutableToolResult> {
     try {
       let stat: Awaited<ReturnType<IHostFileSystem['stat']>>;
       try {
@@ -319,7 +321,13 @@ export class ReadTool implements IReadTool {
       let lines: AsyncIterable<string>;
       let sourceStartLine = 1;
       let detectedEncoding: UtfTextEncoding | undefined;
-      if (!detection.seemsBinary && detection.encoding !== 'utf-8') {
+      let instructionContent: string | undefined;
+      if (basename(safePath).toLowerCase() === 'agents.md' && !detection.seemsBinary) {
+        instructionContent = detection.encoding === 'utf-8' ? await fs.readText(safePath, { errors: 'strict' })
+          : decodeUtfText(await fs.readBytes(safePath), detection.encoding);
+        lines = decodedLines(splitLinesKeepingTerminator(instructionContent));
+        detectedEncoding = detection.encoding === 'utf-8' ? undefined : detection.encoding;
+      } else if (!detection.seemsBinary && detection.encoding !== 'utf-8') {
         if (stat.size > TRANSCODE_MAX_BYTES) {
           return {
             isError: true,
@@ -350,25 +358,12 @@ export class ReadTool implements IReadTool {
         }
       }
 
-      if (lineOffset < 0) {
-        return await this.readTail(
-          args.path,
-          lines,
-          lineOffset,
-          effectiveLimit,
-          requestedLines,
-          detectedEncoding,
-        );
-      }
-      return await this.readForward(
-        args.path,
-        lines,
-        lineOffset,
-        effectiveLimit,
-        requestedLines,
-        sourceStartLine,
-        detectedEncoding,
-      );
+      const result = lineOffset < 0
+        ? await this.readTail(args.path, lines, lineOffset, effectiveLimit, requestedLines, detectedEncoding)
+        : await this.readForward(args.path, lines, lineOffset, effectiveLimit, requestedLines, sourceStartLine, detectedEncoding);
+      if (instructionContent === undefined || result.readRange === undefined) return result;
+      return { ...result, fileRead: { ...result.readRange, file: { path: safePath, runtimeId,
+        version: instructionVersion(instructionContent), scope: basename(dirname(safePath)).toLowerCase() === '.kiki' ? dirname(dirname(safePath)) : dirname(safePath) } } };
     } catch (error) {
       if (isTextDecodeError(error)) {
         return { isError: true, output: notUtf8DecodableFileOutput(args.path) };
@@ -538,6 +533,8 @@ export class ReadTool implements IReadTool {
     return {
       output: input.renderedLines.join('\n'),
       note: `<system>${this.finishMessage(input)}</system>`,
+      readRange: { startLine: input.startLine, endLine: input.startLine + input.renderedLines.length - 1,
+        totalLines: input.totalLines, truncated: input.truncatedLineNumbers.length > 0 || input.maxBytesReached },
     };
   }
 

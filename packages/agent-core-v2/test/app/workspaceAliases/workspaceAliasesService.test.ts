@@ -173,9 +173,34 @@ describe('WorkspaceAliasesService (file-backed)', () => {
     await fsp.appendFile(join(homeDir, 'session_index.jsonl'), 'not-json\n{}\n', 'utf8');
 
     const aliases = build();
-    expect((await aliases.resolveAliasIds(typedId)).toSorted()).toEqual(
-      [typedId, typedLegacyId, indexOnlyId].toSorted(),
-    );
+    for (const id of [typedId, typedLegacyId, indexOnlyId]) {
+      expect((await aliases.resolveAliasIds(id)).toSorted()).toEqual(
+        [typedId, typedLegacyId, indexOnlyId].toSorted(),
+      );
+    }
+    expect(await aliases.resolveAliasIds('wd_missing_000000000000')).toEqual(['wd_missing_000000000000']);
+  });
+
+  it('resolves known storage buckets without merging different or ambiguous roots', async () => {
+    const root = '/srv/Project';
+    const other = '/srv/project';
+    const canonical = encodeWorkDirKey(root);
+    const otherId = encodeWorkDirKey(other);
+    const storageId = 'wd_old_123456789abc';
+    const ambiguousId = 'wd_shared_123456789abc';
+    await writeWorkspacesJson({ [canonical]: { root, name: 'project', created_at: '2026-01-01T00:00:00.000Z', last_opened_at: '2026-01-01T00:00:00.000Z' } });
+    await seedSessionIndex([
+      { sessionId: 's1', sessionDir: `sessions/${storageId}/s1`, workDir: root },
+      { sessionId: 's2', sessionDir: `sessions/${ambiguousId}/s2`, workDir: root },
+      { sessionId: 's3', sessionDir: `sessions/${ambiguousId}/s3`, workDir: other },
+    ]);
+    const storage = new CountingStorage(homeDir);
+    const aliases = build(undefined, storage);
+    expect((await aliases.resolveAliasIds(storageId)).toSorted()).toEqual([canonical, storageId].toSorted());
+    const reads = storage.reads;
+    expect(await aliases.resolveAliasIds(ambiguousId)).toEqual([ambiguousId]);
+    expect(await aliases.resolveAliasIds(otherId)).toEqual([otherId]);
+    expect(storage.reads).toBe(reads);
   });
 
   it('resolveAliasIds keeps unknown ids and POSIX roots singleton', async () => {

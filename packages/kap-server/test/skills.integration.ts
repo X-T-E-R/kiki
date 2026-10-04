@@ -304,6 +304,21 @@ describe('server-v2 /api skills', () => {
       });
     });
 
+    it('carries the exact slash input through REST into the saved activation origin', async () => {
+      const id = await createSession();
+      await createMainAgent(id);
+      const userInput = '/kiki-ops --help\nExplain this second line.';
+      const activated = await postJson(`/api/sessions/${id}/skills/kiki-ops:activate`, {
+        args: '--help\nExplain this second line.', user_input: userInput,
+      });
+      expect(activated.body.code).toBe(0);
+      const messages = await getJson<{ items: Array<{ role: string; metadata?: { origin?: { kind?: string; userInput?: string } }; content: Array<{ type: string; text?: string }> }> }>(`/api/sessions/${id}/messages`);
+      const user = messages.body.data.items.filter(message => message.role === 'user');
+      expect(user).toHaveLength(1);
+      expect(user[0]?.metadata?.origin).toMatchObject({ kind: 'skill_activation', userInput });
+      expect(user[0]?.content.some(part => part.text?.includes('<skill-loaded'))).toBe(true);
+    });
+
     it('derives the session title from the first skill activation', async () => {
       const id = await createSession();
       await createMainAgent(id);

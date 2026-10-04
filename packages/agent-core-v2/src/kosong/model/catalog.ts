@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { generationParametersSchema } from '@kiki/protocol';
+import { generationParametersSchema, modelBehaviorWireSchema, modelBehaviorToWire } from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ModelCapability } from '#/kosong/contract/capability';
@@ -20,9 +20,9 @@ import {
 } from '../requestIdentity/requestIdentityPolicy';
 
 import type { ModelInspection } from './inspection';
-import type { ModelRecord } from './model';
+import type { ModelRecord, ModelUsagePosition } from './model';
 import { effectiveModelConfig } from './modelAuth';
-import { parametersToWire, type GenerationParameters } from './parameters';
+import { parametersToWire, type GenerationParameters, type ResolvedModelUsage } from './parameters';
 import type { ModelRequester } from './modelRequester';
 
 export interface AuthProvider {
@@ -64,6 +64,7 @@ export interface Model {
   readonly requestParams?: ModelRecord['requestParams'];
   readonly serviceTier?: ServiceTier;
   readonly generationParameters?: GenerationParameters;
+  readonly usageParameters?: Readonly<Record<ModelUsagePosition, ResolvedModelUsage>>;
   readonly preferredThinkingEffort?: string;
   readonly alwaysThinking: boolean;
   readonly providerType?: string;
@@ -104,6 +105,7 @@ export const modelCatalogItemSchema = z.object({
   default_effort: z.string().optional(),
   service_tier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
   parameters: generationParametersSchema.optional(),
+  behavior: modelBehaviorWireSchema.optional(),
   request_identity: RequestIdentityPolicyWireSchema.optional(),
   images: imagePolicyWireSchema.optional(),
 });
@@ -185,6 +187,7 @@ export function toProtocolModel(
     service_tier: model.serviceTier,
     pricing_model: record.pricingModel,
     parameters: parametersToWire(record.parameters),
+    behavior: modelBehaviorToWire(record.behavior),
     request_identity: requestIdentityToWire(record.requestIdentity),
     images: imagePolicyToWire(record.images),
   };
@@ -211,6 +214,7 @@ export function toProtocolModelFallback(
     service_tier: effective.serviceTier,
     pricing_model: record.pricingModel,
     parameters: parametersToWire(record.parameters),
+    behavior: modelBehaviorToWire(record.behavior),
     request_identity: requestIdentityToWire(record.requestIdentity),
     images: imagePolicyToWire(record.images),
   };

@@ -9,6 +9,7 @@
  */
 
 import type { IAgentLoopService } from '@kiki/agent-core-v2/agent/loop/loop';
+import { createAgentMedia, type AgentMediaFacade } from './media.js';
 import type { IAgentCommandService } from '@kiki/agent-core-v2/agent/command/agentCommand';
 import type { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import type { IAgentContextInjectorService } from '@kiki/agent-core-v2/agent/contextInjector/contextInjector';
@@ -34,6 +35,7 @@ import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/
 
 import type { McpServerConfig } from '../../contract/mcp.js';
 import type { AgentTaskInfo } from '../../contract/agent/schemas.js';
+import type { ModelSwitchMode } from '../../contract/agent/modelSwitch.js';
 import type { ScopeRef } from '../channel.js';
 import type { ScopedCaller } from './session.js';
 
@@ -60,6 +62,13 @@ export type ContextStrategy = ReturnType<IAgentFullCompactionService['getContext
 export type ContextStrategyStatus = ReturnType<IAgentFullCompactionService['getContextStrategy']>;
 
 export interface AgentFacade {
+  readonly media: AgentMediaFacade;
+  switchModel(input: Parameters<IAgentPromptService['switchModel']>[0]): ReturnType<IAgentPromptService['switchModel']>;
+  getModelSwitch(operationId: string): Promise<ReturnType<IAgentPromptService['getModelSwitch']>>;
+  listModelSwitches(): Promise<ReturnType<IAgentPromptService['listModelSwitches']>>;
+  updateModelSwitch(input: Parameters<IAgentPromptService['switchModel']>[0], expectedRevision?: number): ReturnType<IAgentPromptService['updateModelSwitch']>;
+  cancelModelSwitch(operationId: string): ReturnType<IAgentPromptService['cancelModelSwitch']>;
+  recoverModelSwitch(operationId: string, action: 'retry' | 'keep_original', mode?: ModelSwitchMode): ReturnType<IAgentPromptService['recoverModelSwitch']>;
   prompt(input: Parameters<IAgentPromptService['submit']>[0]): Promise<PromptLaunchResult>;
   /** Wait for this prompt's terminal receipt, not ordinary turn events. Aborting stops only the wait. */
   prompt(
@@ -178,6 +187,13 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
     ) as Promise<PromptLaunchResult | Awaited<ReturnType<IAgentPromptService['submitAndWait']>>>;
   }
   return {
+    media: createAgentMedia((service, method, args, options) => call(scope, service, method, args, options)),
+    switchModel: (input) => call(scope, 'agentPromptService', 'switchModel', [input]) as ReturnType<AgentFacade['switchModel']>,
+    getModelSwitch: (id) => call(scope, 'agentPromptService', 'getModelSwitch', [id]) as ReturnType<AgentFacade['getModelSwitch']>,
+    listModelSwitches: () => call(scope, 'agentPromptService', 'listModelSwitches', []) as ReturnType<AgentFacade['listModelSwitches']>,
+    updateModelSwitch: (input, revision) => call(scope, 'agentPromptService', 'updateModelSwitch', revision === undefined ? [input] : [input, revision]) as ReturnType<AgentFacade['updateModelSwitch']>,
+    cancelModelSwitch: (id) => call(scope, 'agentPromptService', 'cancelModelSwitch', [id]) as ReturnType<AgentFacade['cancelModelSwitch']>,
+    recoverModelSwitch: (id, action, mode) => call(scope, 'agentPromptService', 'recoverModelSwitch', mode === undefined ? [id, action] : [id, action, mode]) as ReturnType<AgentFacade['recoverModelSwitch']>,
     prompt,
     promptWithSkills: (input) =>
       call(scope, 'agentSkillService', 'promptWithSkills', [input]) as Promise<PromptWithSkillsResult>,

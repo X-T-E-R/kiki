@@ -77,6 +77,7 @@ export class WorkspaceInstructionsService
         agentsMd: result.content,
         agentsMdWarning: result.warning,
         agentsMdPaths: result.paths,
+        agentsMdFiles: result.files,
       };
       const changed =
         next.agentsMd !== this.current.agentsMd ||
@@ -94,6 +95,7 @@ export class WorkspaceInstructionsService
     const currentAgentsMd = (): string | undefined => this.current.agentsMd;
     const currentWarning = (): string | undefined => this.current.agentsMdWarning;
     const currentPaths = (): readonly string[] | undefined => this.current.agentsMdPaths;
+    const currentFiles = () => this.current.agentsMdFiles;
     return {
       _serviceBrand: undefined,
       ready: this.ready,
@@ -106,6 +108,9 @@ export class WorkspaceInstructionsService
       },
       get agentsMdPaths() {
         return currentPaths();
+      },
+      get agentsMdFiles() {
+        return currentFiles();
       },
     };
   }

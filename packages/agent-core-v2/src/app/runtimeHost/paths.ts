@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { chmod, lstat, link, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 
 import { acquireFileLock } from '#/persistence/backends/node-fs/fileLock';
 
@@ -80,20 +80,29 @@ function randomToken(): string {
 }
 
 function endpointId(canonicalHomeDir: string): string {
-  const digest = createHash('sha256').update(canonicalHomeDir).digest('hex');
-  return process.platform === 'win32' ? digest.slice(0, 40) : digest;
+  return createHash('sha256').update(canonicalHomeDir).digest('hex');
 }
 
 export function namedPipePath(canonicalHomeDir: string): string {
-  return `\\\\.\\pipe\\${PIPE_PREFIX}${endpointId(canonicalHomeDir)}`;
+  return `\\\\.\\pipe\\${PIPE_PREFIX}${endpointId(canonicalHomeDir).slice(0, 40)}`;
 }
 
 export function unixSocketPath(canonicalHomeDir: string): string {
-  return join(runtimeDirFor(canonicalHomeDir), `${SOCK_PREFIX}${endpointId(canonicalHomeDir)}.sock`);
+  return join(runtimeDirFor(canonicalHomeDir), 'runtime.sock');
 }
 
 export function endpointPathFor(platform: NodeJS.Platform, canonicalHomeDir: string): string {
-  return platform === 'win32' ? namedPipePath(canonicalHomeDir) : unixSocketPath(canonicalHomeDir);
+  if (platform === 'win32') return namedPipePath(canonicalHomeDir);
+  const endpoint = unixSocketPath(canonicalHomeDir);
+  const limit = platform === 'linux' ? 107 : 103;
+  const bytes = Buffer.byteLength(endpoint, 'utf8');
+  if (bytes > limit) {
+    throw new HomeRuntimeError(
+      'runtime.invalid_config',
+      `runtime socket path is ${bytes} UTF-8 bytes; ${platform} supports at most ${limit}; use a shorter canonical KIKI_HOME`,
+    );
+  }
+  return endpoint;
 }
 
 export function runtimeTokenPath(canonicalHomeDir: string): string {
@@ -111,10 +120,10 @@ export function isEndpointInRuntimeHostDir(canonicalHomeDir: string, candidate: 
 }
 
 export function isEndpointPathRecognized(canonicalHomeDir: string, endpointPath: string): boolean {
-  if (endpointPath.startsWith('\\\\.\\pipe\\')) return true;
+  if (endpointPath.startsWith('\\\\.\\pipe\\')) return endpointPath === namedPipePath(canonicalHomeDir);
   if (!isEndpointInRuntimeHostDir(canonicalHomeDir, endpointPath)) return false;
-  const base = endpointPath.slice(endpointPath.lastIndexOf(sep) + 1);
-  return base.startsWith(PIPE_PREFIX) || base.startsWith(SOCK_PREFIX);
+  const rel = relative(resolve(runtimeDirFor(canonicalHomeDir)), resolve(endpointPath));
+  return rel === 'runtime.sock' || rel === `${SOCK_PREFIX}${endpointId(canonicalHomeDir)}.sock`;
 }
 
 export function isAddrInUse(error: unknown): boolean {

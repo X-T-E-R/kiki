@@ -6,6 +6,8 @@ import {
 } from './agentProfile';
 import type { AgentProfileContribution } from './agentProfileContribution';
 import { resolveAgentProfileRoute } from './agentProfileRoute';
+import { modelPromptLayers } from './modelProfileOverlay';
+import { overlaySubagentPermissions } from './subagentPermissions';
 import type {
   AgentProfileCatalogSnapshot,
   AgentProfileDiagnostic,
@@ -228,22 +230,16 @@ function resolveInheritedCandidate(
   const candidate = candidates[index]?.profile;
   if (candidate === undefined) throw new AgentProfileInheritanceError('unknown');
   const inheritsPrompt = candidate.systemPromptMode === 'inherit';
-  const inheritsSubagents = candidate.subagentDeclaration?.kind === 'inherit';
-  if (!inheritsPrompt && !inheritsSubagents) return candidate;
+  if (!inheritsPrompt) return candidate;
   const lower = candidates[index + 1] === undefined
     ? undefined
     : resolveInheritedCandidate(candidates, index + 1);
   if (inheritsPrompt && lower === undefined) throw new AgentProfileInheritanceError(candidate.name);
-  let resolved = candidate;
-  if (inheritsSubagents && lower !== undefined) {
-    resolved = {
-      ...resolved,
-      subagentDeclaration: lower.subagentDeclaration,
-      subagents: lower.subagents,
-      subagentLeases: lower.subagentLeases,
-    };
-  }
-  if (!inheritsPrompt) return resolved;
+  const resolved = {
+    ...candidate,
+    ...overlaySubagentPermissions(lower!, candidate),
+    subagentLeases: candidate.subagentLeases ?? lower!.subagentLeases,
+  };
   const lowerLayers = lower!.promptOverrideLayers
     ?? (lower!.promptOverrides === undefined ? [] : [lower!.promptOverrides]);
   const promptOverrideLayers = candidate.promptOverrides === undefined
@@ -252,6 +248,7 @@ function resolveInheritedCandidate(
   return {
     ...resolved,
     promptOverrideLayers,
+    modelPromptLayers: [...modelPromptLayers(lower!), ...modelPromptLayers(candidate)],
     systemPrompt: lower!.systemPrompt,
     renderSystemPrompt: lower!.renderSystemPrompt,
   };

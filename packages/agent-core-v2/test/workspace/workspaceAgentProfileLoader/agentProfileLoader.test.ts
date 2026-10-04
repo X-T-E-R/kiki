@@ -40,7 +40,12 @@ import { HostFsWatchService } from '#/os/backends/node-local/hostFsWatchService'
 import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
-import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IAtomicDocumentStore, IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { createUnscopedAgentProfileCatalog } from '#/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
+import { IAppStateService } from '#/app/state/appState';
+import { AppStateService } from '#/app/state/appStateService';
+import { BuiltinSkillSource, IBuiltinSkillSource } from '#/app/skillCatalog/builtinSkillSource';
+import { encodeLegacyWorkDirKey, encodeWorkDirKey } from '#/_base/utils/workdir-slug';
 import {
   IHostFsWatchService,
   type HostFsChange,
@@ -63,7 +68,11 @@ import { IExplicitAgentProfileLoader } from '#/workspace/workspaceAgentProfileLo
 import { IFlagService } from '#/app/flag/flag';
 import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
 import { isToolActive } from '#/agent/toolPolicy/evaluate';
-import { resolveSubagentDispatch } from '#/app/agentProfileCatalog/subagentDispatch';
+import { resolveSubagentDispatch, resolveSubagentTarget } from '#/app/agentProfileCatalog/subagentDispatch';
+import { IModelService } from '#/kosong/model/model';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { createTestAgent } from '../../harness';
 import { parseAgentRouteFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentRouteFile';
 import { resolveAgentSourceGraph } from '#/workspace/workspaceAgentProfileLoader/internal/agentSourceGraph';
 import type { AgentFileDefinition } from '#/workspace/workspaceAgentProfileLoader/internal/types';
@@ -128,14 +137,15 @@ function workspaceContextStub(workDir: string): IWorkspaceContext {
 }
 
 function workspaceTrustStub(trusted: boolean): IWorkspaceTrust {
+  const changes = new Emitter<{ trusted: boolean }>();
   return {
     _serviceBrand: undefined,
     ready: Promise.resolve(),
     get: async () => trusted,
     isTrusted: () => trusted,
-    trust: async () => {},
-    untrust: async () => {},
-    onDidChange: Event.None as IWorkspaceTrust['onDidChange'],
+    trust: async () => { trusted = true; changes.fire({ trusted }); },
+    untrust: async () => { trusted = false; changes.fire({ trusted }); },
+    onDidChange: changes.event,
   };
 }
 
@@ -186,7 +196,7 @@ function sourceParentMd(
   extraLease = '',
   extraProfile = '',
 ): string {
-  return `---\nname: ${name}\ndescription: ${name}\n${extraProfile}subagents:\n  - "*"\n  - name: ${alias}\n    source: ${source}\n${extraLease}---\n\nYou are ${name}.\n`;
+  return `---\nname: ${name}\ndescription: ${name}\n${extraProfile}allowed_subagents:\n  - "*"\n  - name: ${alias}\n    source: ${source}\n${extraLease}---\n\nYou are ${name}.\n`;
 }
 
 function privateAgentMd(name: string, description: string, extra = ''): string {
@@ -257,6 +267,7 @@ function pluginStub(
   return {
     _serviceBrand: undefined,
     onDidReload: reloadEmitter !== undefined ? reloadEmitter.event : () => ({ dispose: () => {} }),
+    onWillChange: () => ({ dispose: () => {} }),
     onDidMutate: () => ({ dispose: () => {} }),
     listPlugins: async () => [],
     previewPlugin: async () => { throw new Error('unused'); },
@@ -350,6 +361,9 @@ interface StackOptions {
   readonly fsWatch?: IHostFsWatchService;
   readonly routesEnabled?: boolean;
   readonly workspaceTrusted?: boolean;
+  readonly workspaceTrust?: IWorkspaceTrust;
+  readonly executors?: IAgentExecutorRegistry;
+  readonly documents?: IAtomicTomlDocumentStore;
   readonly userAgentProfileHomeDir?: string;
   readonly atomicTextWriter?: (path: string, text: string) => Promise<void>;
   readonly space?: StubSpaceOptions;
@@ -379,13 +393,16 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       [IBootstrapService, bootstrap],
       [IHostFileSystem, hostFs],
       [IHostProcessService, { _serviceBrand: undefined }],
-      [IAtomicTomlDocumentStore, inMemoryDocuments()],
+      [IAppStateService, new SyncDescriptor(AppStateService)],
+      [IAtomicTomlDocumentStore, opts?.documents ?? inMemoryDocuments()],
+      [IAtomicDocumentStore, opts?.documents ?? inMemoryDocuments()],
       [IHostFsWatchService, opts?.fsWatch ?? fsWatchStub()],
       [IWorkspaceContext, workspaceContext],
-      [IWorkspaceTrust, workspaceTrustStub(opts?.workspaceTrusted ?? true)],
+      [IWorkspaceTrust, opts?.workspaceTrust ?? workspaceTrustStub(opts?.workspaceTrusted ?? true)],
       [IPluginService, pluginStub(opts?.pluginAgentRoots ?? [], opts?.pluginReloadEmitter)],
       [IFlagService, flags],
-      [IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService)],
+      [IBuiltinSkillSource, new SyncDescriptor(BuiltinSkillSource)],
+      [IAgentExecutorRegistry, opts?.executors ?? new SyncDescriptor(AgentExecutorRegistryService)],
       [IAgentProfileRegistry, new SyncDescriptor(AgentProfileRegistryService)],
       [IShippedAgentProfileSource, new SyncDescriptor(ShippedAgentProfileSourceService)],
       [
@@ -439,6 +456,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
   );
 
   return {
+    container,
     registry,
     writer,
     builtinLoader,
@@ -487,6 +505,101 @@ async function withStack(
 describe('agent profile loaders + session catalog', () => {
   beforeEach(() => {
     _clearAgentProfileContributionsForTests();
+  });
+
+  it('refreshes external selections on trust changes without reviving revoked last-good profiles', async () => {
+    await withFixture(async (fixture) => {
+      const root = join(fixture.workDir, '.kiki', 'agents');
+      const externalMd = '---\nname: helper\ndescription: external helper\nexecutor: sample-acp\n---\n\nhelper';
+      const external = await writeAgent(root, 'helper.md', externalMd);
+      const native = await writeAgent(root, 'native-helper.md', agentMd('native-helper', 'native helper'));
+      const parent = await writeAgent(root, 'team.md', sourceParentMd('team', 'private-helper', './_private/helper.md'));
+      await writeAgent(join(root, '_private'), 'helper.md', externalMd);
+      await writeAgent(join(root, '.routes', 'helper'), 'brief.md', routeMd('helper.brief', 'helper', 'Brief'));
+      await writeAgent(join(fixture.homeDir, 'agents'), 'user-helper.md', externalMd.replace('name: helper', 'name: user-helper'));
+      const trust = workspaceTrustStub(false);
+      const executors = { validateBinding: () => ({ ok: true, binding: {} }) } as unknown as IAgentExecutorRegistry;
+      await withStack(fixture, { workspaceTrust: trust, executors, routesEnabled: true }, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.get('helper')).toBeUndefined();
+        await trust.trust();
+        await stack.workspaceLoader.ready;
+        expect(stack.catalog.resolveSelection({ profile: 'helper' }).profile.executor).toBe('sample-acp');
+        expect(stack.catalog.resolveSelection({ route: 'helper.brief' }).profile.executor).toBe('sample-acp');
+        const team = stack.catalog.get('team')!;
+        expect(stack.catalog.getScopedBinding(team.definitionId, 'private-helper')?.status).toBe('ready');
+        const frozen = stack.catalog.snapshot();
+        const caller = {
+          profileName: 'team', profileDefinitionId: team.definitionId, allowedSubagents: ['helper', 'private-helper', 'native-helper', 'user-helper'],
+        };
+        await rm(external);
+        await stack.workspaceLoader.reload();
+        expect(stack.catalog.get('helper')).toBeUndefined();
+        expect(resolveSubagentDispatch(stack.catalog, caller, { profileName: 'helper', snapshot: frozen }).selection.profile).toBe(frozen.resolvableProfiles?.get('helper'));
+        expect(resolveSubagentDispatch(stack.catalog, caller, { routeId: 'helper.brief', snapshot: frozen }).selection.route).toBe(frozen.routes.get('helper.brief'));
+        await writeFile(external, externalMd);
+        await stack.workspaceLoader.reload();
+        await writeFile(external, 'invalid frontmatter');
+        await writeFile(native, 'invalid frontmatter');
+        await writeFile(parent, 'invalid frontmatter');
+        await stack.workspaceLoader.reload();
+        expect(stack.catalog.get('helper')?.executor).toBe('sample-acp');
+        expect(stack.catalog.get('native-helper')).toBeDefined();
+        await trust.untrust();
+        expect(stack.catalog.get('helper')).toBeUndefined();
+        expect(() => stack.catalog.resolveSelection({ profile: 'helper' })).toThrow();
+        expect(() => stack.catalog.resolveSelection({ route: 'helper.brief' })).toThrow();
+        expect(stack.catalog.getScopedBinding(team.definitionId, 'private-helper')?.status).toBe('unavailable');
+        expect(frozen.resolvableProfiles?.get('helper')?.executor).toBe('sample-acp');
+        expect(() => resolveSubagentDispatch(stack.catalog, caller, { profileName: 'private-helper', snapshot: frozen })).toThrow(/trusted workspace profile source/);
+        expect(() => resolveSubagentDispatch(stack.catalog, caller, { profileName: 'helper', snapshot: frozen })).toThrow(/trusted workspace profile source/);
+        expect(() => resolveSubagentDispatch(stack.catalog, caller, { routeId: 'helper.brief', snapshot: frozen })).toThrow(/trusted workspace profile source/);
+        expect(resolveSubagentDispatch(stack.catalog, caller, { profileName: 'native-helper', snapshot: frozen }).selection.profile).toBe(frozen.resolvableProfiles?.get('native-helper'));
+        expect(resolveSubagentDispatch(stack.catalog, caller, { profileName: 'user-helper', snapshot: frozen }).selection.profile.executor).toBe('sample-acp');
+        await stack.workspaceLoader.ready;
+        await stack.workspaceLoader.reload();
+        expect(stack.catalog.get('helper')).toBeUndefined();
+        expect(stack.catalog.get('native-helper')).toBeDefined();
+        expect(() => resolveSubagentDispatch(stack.catalog, caller, { profileName: 'private-helper', snapshot: frozen })).toThrow(/trusted workspace profile source/);
+        expect(() => resolveSubagentDispatch(stack.catalog, caller, { profileName: 'helper', snapshot: frozen })).toThrow(/trusted workspace profile source/);
+        expect(() => resolveSubagentDispatch(stack.catalog, caller, { routeId: 'helper.brief', snapshot: frozen })).toThrow(/trusted workspace profile source/);
+        await writeFile(external, externalMd);
+        await stack.workspaceLoader.reload();
+        expect(stack.registry.entries().find((entry) => entry.sourceId === 'workspace')?.contribution.skipped).toEqual(expect.arrayContaining([expect.objectContaining({ path: external, code: 'agent_executor.source_not_allowed' })]));
+        expect(stack.catalog.get('helper')).toBeUndefined();
+        await trust.trust();
+        await stack.workspaceLoader.ready;
+        expect(stack.catalog.resolveSelection({ profile: 'helper' }).profile.executor).toBe('sample-acp');
+        expect(resolveSubagentDispatch(stack.catalog, caller, { profileName: 'helper', snapshot: frozen }).selection.profile).toBe(frozen.resolvableProfiles?.get('helper'));
+        expect(resolveSubagentDispatch(stack.catalog, caller, { profileName: 'private-helper', snapshot: frozen }).selection.profile.executor).toBe('sample-acp');
+        expect(resolveSubagentDispatch(stack.catalog, caller, { routeId: 'helper.brief', snapshot: frozen }).selection.route).toBe(frozen.routes.get('helper.brief'));
+      });
+    });
+  });
+
+  it('keeps legacy trust preview read-only in a disposable draft catalog', async () => {
+    await withFixture(async (fixture) => {
+      const documents = inMemoryDocuments();
+      const legacyKey = encodeLegacyWorkDirKey(fixture.workDir);
+      const canonicalKey = encodeWorkDirKey(fixture.workDir);
+      await documents.set('workspace-trust', legacyKey, { root: fixture.workDir, trustedAt: 1 });
+      const writes = vi.spyOn(documents, 'set');
+      const deletes = vi.spyOn(documents, 'delete');
+      await writeAgent(join(fixture.workDir, '.kiki', 'agents'), 'helper.md', '---\nname: helper\ndescription: helper\nexecutor: sample-acp\n---\n\nhelper');
+      const executors = { validateBinding: () => ({ ok: true, binding: {} }) } as unknown as IAgentExecutorRegistry;
+      await withStack(fixture, { documents, executors }, async (stack) => {
+        const draft = createUnscopedAgentProfileCatalog(stack.container, fixture.workDir);
+        try {
+          await Promise.all([draft.catalog.ready, draft.skills?.ready]);
+          expect(draft.catalog.get('helper')?.executor, JSON.stringify({ entries: draft.registry.entries(), warnings: stack.warnings })).toBe('sample-acp');
+          expect(writes).not.toHaveBeenCalled();
+          expect(deletes).not.toHaveBeenCalled();
+          if (legacyKey !== canonicalKey) expect(await documents.get('workspace-trust', canonicalKey)).toBeUndefined();
+        } finally {
+          draft.dispose();
+        }
+      });
+    });
   });
 
   it('strictly validates route prompt composition modes', () => {
@@ -710,13 +823,40 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it('writes identity branches and lease preservation and clears paired model prompts without losing omitted fields', async () => {
+    await withFixture(async (fixture) => {
+      await writeAgent(join(fixture.homeDir, 'agents'), 'lead.md', agentMd('lead', 'Lead'));
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const fields = { fields: { 'system.language': 'COMMON' }, main: { fields: { 'system.shared': 'MAIN' } } };
+        const first = await stack.writer.update({ name: 'lead', scope: 'user', promptOverrides: fields, modelProfiles: [{ alias: 'fixture/a', promptMode: 'append', prompt: 'COMMON MODEL', main: { promptMode: 'prepend', prompt: 'MAIN MODEL' }, independent: 'off', promptOverrides: fields }], allowedSubagents: [{ name: 'explore', modelPrompts: 'replace', modelProfiles: [{ alias: 'fixture/a', promptMode: 'append', prompt: 'LEASE', promptOverrides: { fields: { 'system.shared': 'LEASE FIELD' } } }] }] });
+        expect(first.profile.promptOverrides).toEqual(fields);
+        expect(first.profile.modelProfiles?.[0]?.main).toEqual({ promptMode: 'prepend', prompt: 'MAIN MODEL' });
+        expect(first.profile.subagentLeases?.['explore']?.modelPrompts).toBe('replace');
+        const untouched = await stack.writer.update({ name: 'lead', scope: 'user', modelProfiles: [{ alias: 'fixture/a', when: 'edited' }], allowedSubagents: [{ name: 'explore', thinkingEffort: 'high' }] });
+        expect(untouched.profile.modelProfiles?.[0]?.main).toEqual(first.profile.modelProfiles?.[0]?.main);
+        expect(untouched.profile.subagentLeases?.['explore']?.modelPrompts).toBe('replace');
+        const same = await stack.writer.update({ name: 'lead', scope: 'user', modelProfiles: [{ alias: 'fixture/a', main: null, independent: null, promptOverrides: null }] });
+        expect(same.profile.modelProfiles?.[0]).toMatchObject({ prompt: 'COMMON MODEL', promptMode: 'append' });
+        expect(same.profile.modelProfiles?.[0]?.main).toBeUndefined();
+        expect(same.profile.modelProfiles?.[0]?.promptOverrides).toBeUndefined();
+        await expect(stack.writer.update({ name: 'lead', scope: 'user', modelProfiles: [{ alias: 'fixture/a', prompt: null }] })).rejects.toMatchObject({ code: 'validation.failed' });
+        const cleared = await stack.writer.update({ name: 'lead', scope: 'user', promptOverrides: null, modelProfiles: [{ alias: 'fixture/a', prompt: null, promptMode: null }], allowedSubagents: [{ name: 'explore', modelPrompts: 'preserve' }] });
+        expect(cleared.profile.modelProfiles?.[0]?.prompt).toBeUndefined();
+        expect(cleared.profile.modelProfiles?.[0]?.promptMode).toBeUndefined();
+        expect(cleared.profile.promptOverrides).toBeUndefined();
+        expect(cleared.profile.subagentLeases?.['explore']?.modelPrompts).toBe('preserve');
+      });
+    });
+  });
+
   it('patches main, executor, role models, subagents and model profiles while keeping untouched lease keys', async () => {
     await withFixture(async (fixture) => {
       const original = [
         '---',
         'name: lead',
         'description: Lead',
-        'subagents:',
+        'allowed_subagents:',
         '  - explore',
         '  - name: worker',
         '    model_alias: fixture/a',
@@ -741,8 +881,10 @@ describe('agent profile loaders + session catalog', () => {
           main: true,
           allowedModels: ['fixture/a', 'fixture/b'],
           allowedEfforts: ['high', 'max'],
-          subagentPolicy: 'strict',
-          subagents: ['worker', { name: 'explore', thinkingEffort: 'max' }, { name: 'review', modelAlias: 'fixture/b' }],
+          canSpawnSubagents: true,
+          preferredSubagents: ['explore'],
+          denySubagents: ['blocked'],
+          allowedSubagents: ['worker', { name: 'explore', thinkingEffort: 'max' }, { name: 'review', modelAlias: 'fixture/b' }],
           modelProfiles: [
             { alias: 'fixture/b', when: 'short reviews', thinkingEffort: 'high' },
             { alias: 'fixture/a', when: 'very long tasks' },
@@ -753,8 +895,10 @@ describe('agent profile loaders + session catalog', () => {
           main: true,
           allowedModels: ['fixture/a', 'fixture/b'],
           allowedEfforts: ['high', 'max'],
-          subagentPolicy: 'strict',
-          subagents: ['worker', 'explore', 'review'],
+          canSpawnSubagents: true,
+          preferredSubagents: ['explore'],
+          denySubagents: ['blocked'],
+          allowedSubagents: ['worker', 'explore', 'review'],
         });
         expect(result.profile.subagentLeases?.['explore']).toMatchObject({ thinkingEffort: 'max' });
         expect(result.profile.subagentLeases?.['review']).toMatchObject({ modelAlias: 'fixture/b' });
@@ -768,14 +912,113 @@ describe('agent profile loaders + session catalog', () => {
 
         const cleared = await stack.writer.update({
           name: 'lead', scope: 'user', main: null, allowedModels: null, allowedEfforts: null,
-          subagentPolicy: null, subagents: null, modelProfiles: null,
+          canSpawnSubagents: null, preferredSubagents: null, denySubagents: null, allowedSubagents: null, modelProfiles: null,
         });
         expect(cleared.profile.main).toBeUndefined();
         expect(cleared.profile.allowedModels).toBeUndefined();
-        expect(cleared.profile.subagents).toBeUndefined();
+        expect(cleared.profile.allowedSubagents).toBeUndefined();
+        expect(cleared.profile.preferredSubagents).toBeUndefined();
+        expect(cleared.profile.denySubagents).toBeUndefined();
+        expect(cleared.profile.canSpawnSubagents).toBeUndefined();
         expect(cleared.profile.modelProfiles).toBeUndefined();
         expect(cleared.profile.disallowedTools).toEqual(['Write']);
         expect(cleared.profile.tools).toEqual(['Read', 'Bash']);
+      });
+    });
+  });
+
+  it('keeps complete leases through GUI draft opening, reordering, writer merge and reload', async () => {
+    const { fileURLToPath } = await import('node:url');
+    const guiDraftModule = fileURLToPath(new URL('../../../../../apps/kiki-gui/src/components/settings/profileEditor/profileDraft.ts', import.meta.url));
+    const { draftFromProfile, openAllowedSubagents, patchBody } = await import(guiDraftModule);
+    const { namedAgentProfileSchema } = await import('@kiki/protocol');
+    const { parseFrontmatter } = await import('#/_base/text/frontmatter');
+    await withFixture(async (fixture) => {
+      const root = join(fixture.homeDir, 'agents');
+      const leases = [
+        { name: 'research', source: './_private/research.md' },
+        { name: 'leaf', can_spawn_subagents: false },
+        { name: 'scoped', allowed_subagents: [], preferred_subagents: ['explore'], deny_subagents: ['worker'] },
+        { name: 'guarded', deny_models: ['fixture/blocked'], tools: [], disallowed_tools: ['Bash'] },
+        { name: 'pinned', model_alias: 'fixture/a', thinking_effort: 'high', model_prompts: 'replace', model_profiles: [{ alias: 'fixture/a', prompt_mode: 'append', prompt: 'LEASE MODEL PROMPT' }] },
+      ];
+      const authorLeases = leases.map((lease) => lease.name === 'guarded'
+        ? { name: 'guarded', deny_models: ['fixture/blocked'], tools: [], disallowedTools: ['Bash'] } : lease);
+      const path = await writeAgent(root, 'lead.md', `---\nname: lead\ndescription: Lead\nallowed_subagents: ${JSON.stringify([...authorLeases, 'reviewer'])}\n---\nLead body.`);
+      await writeAgent(join(root, '_private'), 'research.md', '---\nname: researcher\ndescription: Research\nprivate: true\n---\nSOURCE BODY');
+      const profile = namedAgentProfileSchema.parse({
+        name: 'lead', description: 'Lead', main: false, source: 'user', disabled: false,
+        source_file: path, workspace_id: 'fixture', routes: [], allowed_subagents: [...leases, 'reviewer'],
+      });
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const baseline = draftFromProfile(profile);
+        const opened: readonly { name: string }[] = openAllowedSubagents(baseline.subagentPolicy.allowedSubagents);
+        for (const rows of [opened, [opened[0]!, ...opened.slice(1).toReversed()]]) {
+          const patch = patchBody(profile, baseline, {
+            ...baseline, subagentPolicy: { ...baseline.subagentPolicy, allowedSubagents: rows },
+          });
+          expect(patch.allowed_subagents).toEqual(rows.map((entry) => entry.name));
+          const allowedSubagents = (patch.allowed_subagents as readonly unknown[]).map((entry) => {
+            if (typeof entry !== 'string') throw new Error('Expected unchanged leases to use sparse names');
+            return entry;
+          });
+          await stack.writer.update({ name: 'lead', scope: 'user', allowedSubagents });
+          const data = parseFrontmatter(await readFile(path, 'utf8')).data;
+          expect(data).toMatchObject({ allowed_subagents: ['*', ...rows.slice(1).map((entry) => authorLeases.find((lease) => lease.name === entry.name))] });
+          await stack.userLoader.reload();
+          await stack.ready();
+          const loaded = stack.catalog.get('lead')!;
+          expect(loaded.allowedSubagents).toBeUndefined();
+          expect(Object.keys(loaded.subagentLeases!)).toEqual(rows.slice(1).map((entry) => entry.name));
+          expect(loaded.subagentLeases!['research']).toMatchObject({ source: './_private/research.md' });
+          expect(loaded.subagentLeases!['leaf']).toMatchObject({ canSpawnSubagents: false });
+          expect(loaded.subagentLeases!['scoped']).toMatchObject({ allowedSubagents: [], preferredSubagents: ['explore'], denySubagents: ['worker'] });
+          expect(loaded.subagentLeases!['guarded']).toMatchObject({ denyModels: ['fixture/blocked'], tools: [], disallowedTools: ['Bash'] });
+          expect(loaded.subagentLeases!['pinned']).toMatchObject({ modelAlias: 'fixture/a', thinkingEffort: 'high', modelPrompts: 'replace', modelProfiles: [{ alias: 'fixture/a', prompt: 'LEASE MODEL PROMPT' }] });
+        }
+      });
+    });
+  });
+
+  it('round-trips sparse permission edits through loading, scoped dispatch, binding and cold replay', async () => {
+    await withFixture(async (fixture) => {
+      const root = join(fixture.homeDir, 'agents');
+      await writeAgent(root, 'agent.md', agentMd('agent', 'Default'));
+      await writeAgent(root, 'lead.md', agentMd('lead', 'Lead'));
+      await writeAgent(join(root, '_private'), 'research.md', '---\nname: researcher\ndescription: Research\nprivate: true\nmodel_alias: mock-model\n---\nFROZEN SOURCE BODY');
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        await stack.writer.update({ name: 'lead', scope: 'user', canSpawnSubagents: true,
+          preferredSubagents: ['explore'], denySubagents: ['reviewer'],
+          allowedSubagents: ['*', 'research', { name: 'research', source: './_private/research.md',
+            canSpawnSubagents: false, preferredSubagents: ['explore'], promptMode: 'append', prompt: 'LEASE BODY' }] });
+        const updated = await stack.writer.update({ name: 'lead', scope: 'user',
+          allowedSubagents: ['*', { name: 'research', description: 'Edited', preferredSubagents: null }] });
+        expect(updated.profile).toMatchObject({ canSpawnSubagents: true, preferredSubagents: ['explore'], denySubagents: ['reviewer'] });
+        expect(updated.profile.allowedSubagents).toBeUndefined();
+        expect(updated.profile.subagentLeases?.['research']).toMatchObject({ source: './_private/research.md', canSpawnSubagents: false, prompt: 'LEASE BODY' });
+        expect(updated.profile.subagentLeases?.['research']?.preferredSubagents).toBeUndefined();
+        await stack.ready();
+        const caller = stack.catalog.get('lead')!;
+        const ctx = createTestAgent();
+        try {
+          await ctx.get(ISessionMetadata).registerAgent('main', { type: 'main' });
+          const target = resolveSubagentTarget(stack.catalog, { ...caller, profileName: 'lead', profileDefinitionId: caller.definitionId },
+            { profileName: 'research' }, ctx.get(IModelService));
+          expect(target.scoped).toBe(true);
+          expect(target.decision).toMatchObject({ allowed: true, recommendationStatus: 'allowed_nonpreferred' });
+          expect(target.effectiveProfile.canSpawnSubagents).toBe(false);
+          const svc = ctx.get(IAgentProfileService);
+          await svc.bind({ resolvedProfile: target.effectiveProfile, model: 'mock-model', delegationPosition: 'sub',
+            lease: target.lease, spawnPolicy: target.spawnPolicy, dispatchDecision: target.decision });
+          expect(svc.data()).toMatchObject({ modelAlias: 'mock-model', canSpawnSubagents: false });
+          expect(svc.data().systemPrompt).toContain('FROZEN SOURCE BODY');
+          expect(svc.data().systemPrompt).toContain('LEASE BODY');
+          await ctx.expectResumeMatches();
+        } finally {
+          await ctx.dispose();
+        }
       });
     });
   });
@@ -800,13 +1043,13 @@ describe('agent profile loaders + session catalog', () => {
 
   it('writes and clears soft recommendations while preserving nested advice on structured edits', async () => {
     await withFixture(async (fixture) => {
-      const original = '---\nname: lead\ndescription: Lead\nspawn_constraints:\n  preferred_models: [fast]\nsubagents:\n  - name: explore\n    preferred_efforts: [max]\nmodel_profiles:\n  - alias: fast\n    preferred_efforts: [max]\n---\nLead body.';
+      const original = '---\nname: lead\ndescription: Lead\nspawn_constraints:\n  preferred_models: [fast]\nallowed_subagents:\n  - name: explore\n    preferred_efforts: [max]\nmodel_profiles:\n  - alias: fast\n    preferred_efforts: [max]\n---\nLead body.';
       await writeAgent(join(fixture.homeDir, 'agents'), 'lead.md', original);
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
         const result = await stack.writer.update({ name: 'lead', scope: 'user', preferredModels: ['fast'],
           discouragedModels: ['premium'], preferredEfforts: ['max'], spawnConstraints: { allowedModels: ['fast', 'premium'] },
-          subagents: [{ name: 'explore', thinkingEffort: 'high' }], modelProfiles: [{ alias: 'fast', when: 'Small tasks' }] });
+          allowedSubagents: [{ name: 'explore', thinkingEffort: 'high' }], modelProfiles: [{ alias: 'fast', when: 'Small tasks' }] });
         expect(result.profile).toMatchObject({ preferredModels: ['fast'], discouragedModels: ['premium'], preferredEfforts: ['max'],
           spawnConstraints: { allowedModels: ['fast', 'premium'], preferredModels: ['fast'] },
           subagentLeases: { explore: { preferredEfforts: ['max'] } }, modelProfiles: [{ alias: 'fast', preferredEfforts: ['max'] }] });
@@ -825,7 +1068,7 @@ describe('agent profile loaders + session catalog', () => {
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
         const before = await readFile(profilePath, 'utf8');
-        await expect(stack.writer.update({ name: 'lead', scope: 'user', subagents: ['explore', 'explore'] }))
+        await expect(stack.writer.update({ name: 'lead', scope: 'user', allowedSubagents: [{ name: 'explore', modelAlias: 'one' }, { name: 'explore', modelAlias: 'two' }] }))
           .rejects.toMatchObject({ code: 'validation.failed' });
         await expect(stack.writer.update({ name: 'lead', scope: 'user', modelProfiles: [{ alias: 'has space' }] }))
           .rejects.toMatchObject({ code: 'validation.failed' });
@@ -1111,7 +1354,7 @@ describe('agent profile loaders + session catalog', () => {
       await writeAgent(
         root,
         'reviewer.md',
-        `---\nname: reviewer\ndescription: reviewer\ntools: [Read, Bash]\ndisallowedTools: [Write]\nsubagents: [explore, coder]\nservice_tier: priority\nrequest_params:\n  base: true\n  service_tier: auto\n---\n\nBASE REVIEWER`,
+        `---\nname: reviewer\ndescription: reviewer\ntools: [Read, Bash]\ndisallowedTools: [Write]\nallowed_subagents: [explore, coder]\nservice_tier: priority\nrequest_params:\n  base: true\n  service_tier: auto\n---\n\nBASE REVIEWER`,
       );
       await writeAgent(
         join(root, '.routes', 'reviewer'),
@@ -1120,7 +1363,7 @@ describe('agent profile loaders + session catalog', () => {
           'reviewer.ui-k3',
           'reviewer',
           'ROUTE OVERLAY',
-          `whenToUse: UI review\nmodel_alias: route-model\nthinking_effort: high\ntools: [Read]\ndisallowedTools: [Bash]\nsubagents: [explore, added]\nservice_tier: null\nrequest_params:\n  route: true\n  service_tier: flex\n`,
+          `whenToUse: UI review\nmodel_alias: route-model\nthinking_effort: high\ntools: [Read]\ndisallowedTools: [Bash]\nallowed_subagents: [explore, added]\nservice_tier: null\nrequest_params:\n  route: true\n  service_tier: flex\n`,
         ),
       );
 
@@ -1141,7 +1384,7 @@ describe('agent profile loaders + session catalog', () => {
         expect(isToolActive(effective, 'Bash')).toBe(false);
         expect(isToolActive(effective, 'Write')).toBe(false);
         expect(effective.disallowedTools).toEqual(['Bash']);
-        expect(effective.subagents).toEqual(['explore', 'added']);
+        expect(effective.allowedSubagents).toEqual(['explore']);
         expect(effective.serviceTier).toBeUndefined();
         expect(effective.requestParams).toEqual({ base: true, route: true });
         expect(
@@ -2032,7 +2275,7 @@ describe('agent profile loaders + session catalog', () => {
         private: false,
         description: 'parent',
         override: false,
-        subagents: undefined,
+        allowedSubagents: undefined,
         subagentLeases: {
           writer: {
             name: 'writer',
@@ -2095,7 +2338,7 @@ describe('agent profile loaders + session catalog', () => {
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
         const frozen = stack.catalog.snapshot();
-        const caller = { profileName: 'tester', subagents: ['m3-worker'] };
+        const caller = { profileName: 'tester', allowedSubagents: ['m3-worker'] };
         expect(stack.catalog.list().map((profile) => profile.name)).toContain('m3-worker');
 
         await writeFile(profilePath, privateAgentMd('m3-worker', 'private worker'));
@@ -2261,7 +2504,7 @@ describe('agent profile loaders + session catalog', () => {
       const root = join(fixture.workDir, '.kiki', 'agents');
       const outside = await writeAgent(fixture.workDir, 'outside-writer.md', privateAgentMd('writer', 'outside'));
       await writeAgent(root, 'escape.md', sourceParentMd('escape', 'writer', '../../outside-writer.md'));
-      await writeAgent(root, 'repeat.md', `---\nname: repeat\ndescription: repeat\nsubagents:\n  - name: writer-a\n    source: ./_private/writer.md\n    model_alias: model-a\n  - name: writer-b\n    source: ./_private/writer.md\n    model_alias: model-b\n---\n\nrepeat\n`);
+      await writeAgent(root, 'repeat.md', `---\nname: repeat\ndescription: repeat\nallowed_subagents:\n  - name: writer-a\n    source: ./_private/writer.md\n    model_alias: model-a\n  - name: writer-b\n    source: ./_private/writer.md\n    model_alias: model-b\n---\n\nrepeat\n`);
       await writeAgent(root, 'repeat-two.md', sourceParentMd('repeat-two', 'writer', './_private/writer.md', '    model_alias: model-c\n'));
       await writeAgent(join(root, '_private'), 'writer.md', privateAgentMd('writer', 'shared'));
       await mkdir(join(root, '_private'), { recursive: true });
@@ -2299,7 +2542,7 @@ describe('agent profile loaders + session catalog', () => {
       await writeAgent(privateRoot, 'b.md', sourceParentMd('b', 'a', './a.md', '', 'private: true\n'));
       await writeAgent(root, 'deep-parent.md', sourceParentMd('deep-parent', 'level-1', './_private/level-1.md'));
       for (let level = 1; level <= 9; level += 1) {
-        const next = level === 9 ? '' : `subagents:\n  - name: level-${String(level + 1)}\n    source: ./level-${String(level + 1)}.md\n`;
+        const next = level === 9 ? '' : `allowed_subagents:\n  - name: level-${String(level + 1)}\n    source: ./level-${String(level + 1)}.md\n`;
         await writeAgent(privateRoot, `level-${String(level)}.md`, `---\nname: level-${String(level)}\ndescription: level ${String(level)}\nprivate: true\n${next}---\n\nlevel ${String(level)}\n`);
       }
 
@@ -2360,7 +2603,7 @@ describe('agent profile loaders + session catalog', () => {
   it.runIf(process.platform === 'win32')('deduplicates source paths across Windows casing', async () => {
     await withFixture(async (fixture) => {
       const root = join(fixture.workDir, '.kiki', 'agents');
-      await writeAgent(root, 'team.md', `---\nname: team\ndescription: team\nsubagents:\n  - name: writer-lower\n    source: ./_private/writer.md\n  - name: writer-upper\n    source: ./_PRIVATE/WRITER.md\n---\n\nteam\n`);
+      await writeAgent(root, 'team.md', `---\nname: team\ndescription: team\nallowed_subagents:\n  - name: writer-lower\n    source: ./_private/writer.md\n  - name: writer-upper\n    source: ./_PRIVATE/WRITER.md\n---\n\nteam\n`);
       await writeAgent(join(root, '_Private'), 'writer.md', agentMd('writer', 'writer'));
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();

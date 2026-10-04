@@ -10,6 +10,7 @@
 import { z } from 'zod';
 
 import type { EventRegistration } from '../types.js';
+import { modelSwitchQueuedEventSchema, modelSwitchStatusEventSchema } from './modelSwitch.js';
 
 /**
  * Scope-stream registration (`kind: 'stream'`). Declared structurally here
@@ -334,6 +335,8 @@ export const agentStatusUpdatedEventSchema = z.looseObject({
 
 /** Public event name → payload type. Keys must stay in sync with `agentEvents`. */
 export interface AgentEventPayloads {
+  'prompt.model_switch_queued': z.infer<typeof modelSwitchQueuedEventSchema>;
+  'prompt.model_switch_status': z.infer<typeof modelSwitchStatusEventSchema>;
   'turn.step.started': z.infer<typeof turnStepStartedEventSchema>;
   'turn.step.interrupted': z.infer<typeof turnStepInterruptedEventSchema>;
   'turn.step.retrying': z.infer<typeof turnStepRetryingEventSchema>;
@@ -371,6 +374,8 @@ export type AgentEventName = keyof AgentEventPayloads;
 
 /** Public event name → stream binding + payload schema. */
 export const agentEvents = {
+  'prompt.model_switch_queued': { kind: 'stream', name: 'events', type: 'prompt.model_switch_queued', schema: modelSwitchQueuedEventSchema },
+  'prompt.model_switch_status': { kind: 'stream', name: 'events', type: 'prompt.model_switch_status', schema: modelSwitchStatusEventSchema },
   'turn.step.started': { kind: 'stream', name: 'events', type: 'turn.step.started', schema: turnStepStartedEventSchema },
   'turn.step.interrupted': { kind: 'stream', name: 'events', type: 'turn.step.interrupted', schema: turnStepInterruptedEventSchema },
   'turn.step.retrying': { kind: 'stream', name: 'events', type: 'turn.step.retrying', schema: turnStepRetryingEventSchema },

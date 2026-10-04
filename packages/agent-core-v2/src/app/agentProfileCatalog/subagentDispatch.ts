@@ -29,6 +29,7 @@ import type { SpawnConstraints, SubagentLease } from './subagentLease';
 import {
   scopedBinding,
   type AgentProfileCatalogSnapshot,
+  type AgentProfileDiagnostic,
 } from './scopedAgentProfile';
 
 export interface SubagentDispatchCaller {
@@ -36,6 +37,10 @@ export interface SubagentDispatchCaller {
   readonly profileName?: string;
   readonly subagentPolicy?: AgentProfile['subagentPolicy'];
   readonly subagentDeclaration?: AgentProfile['subagentDeclaration'];
+  readonly canSpawnSubagents?: boolean;
+  readonly allowedSubagents?: readonly string[];
+  readonly preferredSubagents?: readonly string[];
+  readonly denySubagents?: readonly string[];
   readonly subagents?: readonly string[];
   readonly defaultPolicy?: AgentProfile['subagentPolicy'];
 }
@@ -52,6 +57,7 @@ export interface SubagentDispatchCatalog {
   list(): readonly AgentProfile[];
   listRoutes?(): readonly AgentProfileRouteCatalogEntry[];
   snapshot?(): AgentProfileCatalogSnapshot;
+  sourceRejection?(profile: AgentProfile): AgentProfileDiagnostic | undefined;
   resolveSelection(input: {
     readonly profile?: string;
     readonly route?: string;
@@ -112,7 +118,8 @@ export function assertSubagentDispatchAllowed(
   const allowed = names.length === 0 ? 'none' : names.join(', ');
   throw new Error2(
     ErrorCodes.AGENT_TYPE_NOT_ALLOWED,
-    `Profile "${decision.requestedProfile}" is not allowed by strict subagent policy. Allowed profiles: ${allowed}.`,
+    decision.canSpawnSubagents === false ? 'This agent cannot create subagents (can_spawn_subagents: false). Existing children can still be resumed.'
+      : `Preset profile "${decision.requestedProfile}" is blocked by allowed_subagents or deny_subagents. Allowed presets: ${decision.declaration.kind === 'all' ? 'all except denied' : allowed}.`,
     {
       details: {
         profileName: decision.requestedProfile,
@@ -225,6 +232,14 @@ export function resolveSubagentDispatch(
       route,
     };
   }
+  if ((selection.profile.executor ?? 'native') !== 'native') {
+    const rejection = catalog.sourceRejection?.(selection.baseProfile);
+    if (rejection?.code === 'agent_executor.source_not_allowed') throw new Error2(
+      scoped ? ErrorCodes.SCOPED_PROFILE_UNAVAILABLE : ErrorCodes.PROFILE_UNKNOWN,
+      rejection.message,
+      { details: { profileName: selection.baseProfile.name, diagnostic: rejection.code, source: selection.baseProfile.sourcePath } },
+    );
+  }
   if (selection.route !== undefined) {
     const profileName = selection.baseProfile.name;
     const current = catalog.get(profileName);
@@ -280,7 +295,7 @@ export function resolveSubagentTarget(
   const dispatched = appliedDispatchProfile(
     profile,
     selection.baseProfile.name,
-    caller,
+    input.selectionKind === 'profile_file' ? { ...caller, profileName: caller.profileName ?? '', subagentLeases: undefined } : caller,
     resolved.snapshot?.defaultProfile ?? catalog.getDefault(),
     resolveId,
   );
@@ -311,5 +326,5 @@ function callerNamesTarget(
 ): boolean {
   if (caller.subagentLeases?.[profileName] !== undefined) return true;
   if (caller.profileDefinitionId === undefined) return false;
-  return caller.subagentDeclaration?.kind === 'set' || caller.subagents !== undefined;
+  return caller.allowedSubagents?.includes(profileName) === true || caller.preferredSubagents?.includes(profileName) === true;
 }

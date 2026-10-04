@@ -6,6 +6,7 @@ export type {
   SessionViewTranscriptCatchUpInput,
   SessionViewTranscriptDetail,
   SessionViewTranscriptDetailInput,
+  SessionViewTranscriptEntitiesInput,
   SessionViewTranscriptFacade,
   SessionViewTranscriptPageInput,
 } from './core/facade/session-view.js';

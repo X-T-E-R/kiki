@@ -1,49 +1,28 @@
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import type { CognitionConfig } from '#/kosong/model/model';
-import { IModelService } from '#/kosong/model/model';
-import { IHostEnvironment } from '#/os/interface/hostEnvironment';
-import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 
 import {
   IAgentCognitionAnchorService,
   type CognitionAnchorProjectionInput,
 } from './cognitionAnchor';
-import { cognitionPathRefs, readCognitionSlot } from './cognitionFiles';
 
 const DEFAULT_ANCHOR_STEPS = 1;
 const DEFAULT_ANCHOR_SCOPE = 'session';
-
 const FIRST_TURN_ID = 0;
 
-/** `cognition` domain — `IAgentCognitionAnchorService` implementation (Agent scope): request-time
- *  projection of `[models.<alias>.cognition].anchor` onto turn LLM requests, with the anchor file
- *  loaded once and cached. Whether a request is anchored is a function of `source.step`,
- *  `anchorSteps`, `anchorScope`, and the turn id. */
+/** Projects the current binding's anchor onto eligible turn requests. */
 export class AgentCognitionAnchorService implements IAgentCognitionAnchorService {
   declare readonly _serviceBrand: undefined;
 
-  private cachedText: string | undefined;
-  private hasCachedText = false;
-  private inflight: Promise<string | undefined> | undefined;
-
   constructor(
     @IAgentProfileService private readonly profile: IAgentProfileService,
-    @IModelService private readonly models: IModelService,
-    @IBootstrapService private readonly bootstrap: IBootstrapService,
-    @IHostFileSystem private readonly fs: IHostFileSystem,
-    @IHostEnvironment private readonly hostEnv: IHostEnvironment,
   ) {}
 
   async project(input: CognitionAnchorProjectionInput): Promise<string | undefined> {
-    if (input.sourceType !== 'turn' || input.turnId === undefined) return undefined;
-    const cognition = this.cognition();
-    const refs = cognitionPathRefs(cognition?.anchor);
-    if (refs.length === 0) return undefined;
-
-    if (input.hasExplicitSystemPrompt) return undefined;
+    if (input.sourceType !== 'turn' || input.turnId === undefined || input.hasExplicitSystemPrompt) return undefined;
+    const binding = input.binding ?? await this.profile.getCognitionBinding();
+    const cognition = binding.config;
     if (!stepWithinAnchorWindow(input.step, cognition?.anchorSteps ?? DEFAULT_ANCHOR_STEPS)) {
       return undefined;
     }
@@ -53,37 +32,7 @@ export class AgentCognitionAnchorService implements IAgentCognitionAnchorService
     ) {
       return undefined;
     }
-    return this.loadAnchor(refs);
-  }
-
-  private cognition(): CognitionConfig | undefined {
-    const alias = this.profile.data().modelAlias;
-    if (alias === undefined || alias.length === 0) return undefined;
-    return this.models.get(alias)?.cognition;
-  }
-
-  private async loadAnchor(refs: readonly string[]): Promise<string | undefined> {
-    if (this.hasCachedText) return this.cachedText;
-    if (this.inflight !== undefined) return this.inflight;
-    this.inflight = readCognitionSlot(
-      this.fs,
-      this.bootstrap.homeDir,
-      'anchor',
-      refs,
-      this.hostEnv.pathClass,
-    ).then(
-      (text) => {
-        this.cachedText = text;
-        this.hasCachedText = true;
-        this.inflight = undefined;
-        return text;
-      },
-      (error: unknown) => {
-        this.inflight = undefined;
-        throw error;
-      },
-    );
-    return this.inflight;
+    return binding.anchor;
   }
 }
 

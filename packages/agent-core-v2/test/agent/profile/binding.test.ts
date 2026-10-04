@@ -6,6 +6,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { Event } from '#/_base/event';
 import { IMemoryStore } from '#/app/memory/memoryStore';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
+import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
+import { IAgentPlanService } from '#/features/plan/plan';
 import { ErrorCodes } from '#/errors';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { ConfigTarget, IConfigService } from '#/app/config/config';
@@ -29,7 +33,8 @@ import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import type { ToolCall } from '#/kosong/contract/message';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
-import { IAgentProfileService, type ProfileBindingSnapshot, type ResolvedAgentProfile } from '#/agent/profile/profile';
+import { IAgentProfileService, type PreparedModelSwitchBinding, type ProfileBindingSnapshot, type ResolvedAgentProfile } from '#/agent/profile/profile';
+import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
 import { freezeBoundProfile } from '#/agent/profile/boundProfile';
 import { RESEARCH_READONLY_TOOLS } from '#/agent/profile/executionRestriction';
 import { ProfileErrors } from '#/agent/profile/errors';
@@ -43,6 +48,9 @@ import { SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IAtomicDocumentStore, type IAtomicDocumentStore as AtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { readPersistedAgentProfileSnapshot } from '#/session/agentProfileSnapshot';
+import type { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import type { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
@@ -116,13 +124,6 @@ function resumeProfile(
     systemPrompt: () => 'resume profile',
     ...overrides,
   });
-}
-
-function prepareResumeBinding(
-  profile: IAgentProfileService,
-  input: Parameters<IAgentProfileService['prepareResumeBinding']>[0],
-): Promise<() => void | Promise<void>> {
-  return Promise.resolve().then(() => profile.prepareResumeBinding(input));
 }
 
 function missingProfileCatalog(): ISessionAgentProfileCatalog {
@@ -347,6 +348,24 @@ function singleProfileCatalog(profile: AgentProfile): ISessionAgentProfileCatalo
 describe('AgentProfileService.bind', () => {
   let ctx: TestAgentContext;
   let homeDir: string;
+  let resumeOperation = 0;
+
+  async function commitResumeBinding(binding: PreparedModelSwitchBinding): Promise<void> {
+    const metadata = ctx.get(ISessionMetadata);
+    if ((await metadata.read()).agents?.['main'] === undefined) await metadata.registerAgent('main', { type: 'main' });
+    const receipt = await ctx.get(IAgentModelSwitchService).execute({
+      operationId: `profile-resume-${++resumeOperation}`, model: binding.model, thinking: binding.thinking, mode: 'direct',
+    }, { binding });
+    expect(receipt.state, JSON.stringify(receipt.error)).toBe('completed');
+  }
+
+  async function prepareResumeBinding(
+    profile: IAgentProfileService,
+    input: Parameters<IAgentProfileService['prepareResumeBinding']>[0],
+  ): Promise<() => Promise<void>> {
+    const binding = await profile.prepareResumeBinding(input);
+    return () => commitResumeBinding(binding);
+  }
 
   beforeAll(() => {
     registerAgentProfile({
@@ -533,7 +552,10 @@ describe('AgentProfileService.bind', () => {
     ], { signal: new AbortController().signal, turnId: 0 })) executed.push(execution);
     expect(executed).toHaveLength(1);
     expect(executed[0]!.result.isError === true, JSON.stringify(executed[0]!.result)).toBe(!active);
-    if (!active) expect(executed[0]!.result.output).toContain('disabled by the active tool policy');
+    if (!active) {
+      expect(ctx.get(IAgentToolRegistryService).resolve('MemoryRead')).toBeUndefined();
+      expect(executed[0]!.result.output).toBe('Tool "MemoryRead" not found');
+    }
     await ctx.get(ISessionToolPolicy).setDisabledTools(['MemoryRead']);
     expect(policy.isToolActive('MemoryRead')).toBe(false);
   });
@@ -1301,6 +1323,7 @@ describe('AgentProfileService.bind', () => {
     await expect(svc.setModel(RESUME_NEW_MODEL)).rejects.toThrow(/restrict_models_to_menu/);
     await expect(prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: true })).rejects.toThrow(/restrict_models_to_menu/);
     await expect(prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL })).rejects.toThrow(/allow_model_change/);
+    await expect(prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, newWindow: true })).rejects.toThrow(/restrict_models_to_menu/);
     await expect(prepareResumeBinding(svc, { callerConstraints: [{ allowedModels: [RESUME_NEW_MODEL] }] })).rejects.toThrow(/allowed_models/);
     await (await prepareResumeBinding(svc, {}))();
     expect(svc.data()).toEqual(before);
@@ -1333,6 +1356,21 @@ describe('AgentProfileService.bind', () => {
     await (await prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: true }))();
     expect(svc.data().modelAlias).toBe(RESUME_NEW_MODEL);
     expect(svc.data().boundProfile?.modelMenuConstraint?.defaultAlias).toBe(RESUME_OLD_MODEL);
+    await ctx.expectResumeMatches();
+  });
+
+  it('admits explicit new-window model changes purely without expanding the frozen menu', async () => {
+    const svc = await bindNativeResumeProfile(resumeProfile({ restrictModelsToMenu: true,
+      modelProfiles: [{ alias: RESUME_NEW_MODEL, when: 'An informational condition' }] }));
+    const before = svc.data();
+    const prepared = await svc.prepareResumeBinding({ modelAlias: RESUME_NEW_MODEL, newWindow: true, allowParentNotify: false });
+    expect(svc.data()).toEqual(before);
+    expect(prepared).toMatchObject({ model: RESUME_NEW_MODEL, config: { allowParentNotify: false } });
+    prepared.assertCurrent();
+    await commitResumeBinding(prepared);
+    expect(svc.data()).toMatchObject({ modelAlias: RESUME_NEW_MODEL, allowParentNotify: false });
+    expect(svc.data().boundProfile?.modelMenuConstraint).toEqual(before.boundProfile?.modelMenuConstraint);
+    await expect(svc.prepareResumeBinding({ modelAlias: `${RESUME_PROVIDER}/missing-model`, newWindow: true })).rejects.toThrow();
     await ctx.expectResumeMatches();
   });
 
@@ -1706,11 +1744,11 @@ describe('AgentProfileService.bind', () => {
     expect(profile.resolveModelContext()).toMatchObject({ maxOutputSize: 500, modelCapabilities: { max_context_tokens: 1200, max_input_tokens: 1200 } });
     expect(profile.resolveRequestParams()).toMatchObject({ sampling: { temperature: 0.4, topP: 0.8 }, requestParams: { seed: 42 }, serviceTier: 'flex' });
     const effortOnly = await profile.prepareResumeBinding({ thinkingEffort: 'low' });
-    await effortOnly();
+    await commitResumeBinding(effortOnly);
     expect(profile.data().thinkingLevel).toBe('low');
-    await (await profile.prepareResumeBinding({ modelAlias: RESUME_NEW_MODEL }))();
+    await commitResumeBinding(await profile.prepareResumeBinding({ modelAlias: RESUME_NEW_MODEL }));
     expect(profile.data().thinkingLevel).toBe('low');
-    await (await profile.prepareResumeBinding({ modelAlias: RESUME_OLD_MODEL, allowModelChange: true }))();
+    await commitResumeBinding(await profile.prepareResumeBinding({ modelAlias: RESUME_OLD_MODEL, allowModelChange: true }));
     expect(profile.data().thinkingLevel).toBe(pinned ? 'medium' : 'low');
     await profile.setModel('new-model');
     expect(profile.data().thinkingLevel).toBe('max');
@@ -1832,7 +1870,7 @@ describe('AgentProfileService.bind', () => {
     const before = await documents.get<{ agents: Record<string, { model: string }> }>(scope, 'state.json');
     expect(before?.agents['main']?.model).toBe(RESUME_OLD_MODEL);
     if (method === 'setModel') await svc.setModel(RESUME_NEW_MODEL);
-    else await (await svc.prepareResumeBinding({ modelAlias: RESUME_NEW_MODEL, allowModelChange: true, thinkingEffort: 'high' }))();
+    else await commitResumeBinding(await svc.prepareResumeBinding({ modelAlias: RESUME_NEW_MODEL, allowModelChange: true, thinkingEffort: 'high' }));
     const after = await documents.get<{ agents: Record<string, unknown> }>(scope, 'state.json');
     expect(after?.agents['main']).toMatchObject({ model: RESUME_NEW_MODEL, displayName: 'kept-label', parentAgentId: 'parent', type: 'sub',
       thinkingEffort: svc.data().thinkingLevel });
@@ -2052,8 +2090,8 @@ describe('AgentProfileService.bind', () => {
     const svc = ctx.get(IAgentProfileService);
     await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL, thinking: 'off' });
     expect(svc.data().thinkingLevel).toBe('off');
-    const apply = await svc.prepareResumeBinding({});
-    await apply();
+    const binding = await svc.prepareResumeBinding({});
+    await commitResumeBinding(binding);
     expect(svc.data().thinkingLevel).toBe('off');
     await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
     expect(svc.data().thinkingLevel).toBe('on');
@@ -2073,7 +2111,7 @@ describe('AgentProfileService.bind', () => {
     expect(svc.data().allowParentNotify).toBe(false);
   });
 
-  it('validates a native resume change without mutation and applies both values in one update', async () => {
+  it('validates a native resume change without mutation and commits both values through one model-switch fact', async () => {
     const svc = await bindNativeResumeProfile(
       resumeProfile({ allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL] }),
     );
@@ -2093,11 +2131,8 @@ describe('AgentProfileService.bind', () => {
 
     await apply();
 
-    expect(update).toHaveBeenCalledTimes(1);
-    expect(update).toHaveBeenCalledWith(expect.objectContaining({
-      modelAlias: RESUME_NEW_MODEL,
-      thinkingLevel: 'high',
-    }));
+    expect(update).not.toHaveBeenCalled();
+    expect(svc.data()).toMatchObject({ modelAlias: RESUME_NEW_MODEL, thinkingLevel: 'high' });
     await ctx.get(IWireService).flush();
     expect(svc.data()).toMatchObject({
       modelAlias: RESUME_NEW_MODEL,
@@ -2150,8 +2185,8 @@ describe('AgentProfileService.bind', () => {
 
     await apply();
 
-    expect(update).toHaveBeenCalledTimes(1);
-    const changed = update.mock.calls[0]?.[0];
+    expect(update).not.toHaveBeenCalled();
+    const changed = svc.data();
     expect(changed).toMatchObject({
       modelAlias: RESUME_NEW_MODEL,
       thinkingLevel: 'high',
@@ -2228,11 +2263,7 @@ describe('AgentProfileService.bind', () => {
       allowModelChange: true,
     });
     await apply();
-    expect(update).toHaveBeenCalledTimes(1);
-    expect(update).toHaveBeenCalledWith(expect.objectContaining({
-      modelAlias: RESUME_NEW_MODEL,
-      thinkingLevel: 'high',
-    }));
+    expect(update).not.toHaveBeenCalled();
     expect(svc.data()).toMatchObject({ modelAlias: RESUME_NEW_MODEL, thinkingLevel: 'high' });
   });
 
@@ -2258,9 +2289,12 @@ describe('AgentProfileService.bind', () => {
       prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: false }),
     ).rejects.toThrow(
       new RegExp(
-        `from "${RESUME_OLD_MODEL}" to "${RESUME_NEW_MODEL}".*allow_model_change`,
+        `from "${RESUME_OLD_MODEL}" to "${RESUME_NEW_MODEL}".*allow_model_change.*new_window`,
       ),
     );
+    await expect(svc.prepareResumeBinding({ modelAlias: RESUME_NEW_MODEL })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID,
+      details: { previousModel: RESUME_OLD_MODEL, requestedModel: RESUME_NEW_MODEL, requiredParameter: 'allow_model_change',
+        confirmationChoices: [{ parameter: 'allow_model_change', value: true, mode: 'direct' }, { parameter: 'new_window', value: true, mode: 'fresh' }] } });
     expect(svc.data()).toMatchObject({
       modelAlias: RESUME_OLD_MODEL,
       thinkingLevel: 'low',
@@ -2489,6 +2523,159 @@ describe('AgentProfileService.bind', () => {
         environment: expect.any(Object),
       },
     });
+  });
+
+  it('registers and executes read-only memory in a child main-profile binding with a frozen private view', async () => {
+    const childScope = makeAgentScopeContext({ agentId: 'agent-tools', parentAgentId: 'main', agentScope: 'agents/agent-tools' });
+    const search = vi.fn<IMemoryStore['search']>(async () => []);
+    const get = vi.fn<IMemoryStore['get']>(async () => undefined);
+    const original = resumeProfile({ main: true });
+    ctx = createTestAgent(
+      { ...nativeResumeOptions(), cwd: homeDir, initialConfig: { ...nativeResumeOptions().initialConfig, memory: { enabled: true, approval: 'auto', workspaces: {} } } },
+      agentService(IAgentScopeContext, childScope),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)),
+      appServices((reg) => reg.definePartialInstance(IMemoryStore, { search, get })),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: original.name, delegationPosition: 'sub', memoryReadContext: { id: 'reader-persona', shared: [] } });
+    await ctx.get(IAgentToolActivationService).activate();
+    const registry = ctx.get(IAgentToolRegistryService);
+    expect(registry.resolve('Read')).toBeDefined();
+    expect(registry.resolve('MemorySearch')).toBeDefined();
+    expect(registry.resolve('MemoryRead')).toBeDefined();
+    for (const name of ['MemoryWrite', 'ThreadList', 'ThreadRead', 'ThreadWait', 'ThreadCreate', 'ThreadSend', 'AskUserQuestion', 'Cron', 'EnterPlanMode']) expect(registry.resolve(name)).toBeUndefined();
+    const results: ToolExecutionResult[] = [];
+    for await (const result of ctx.get(IAgentToolExecutorService).execute([
+      { id: 'search', type: 'function', name: 'MemorySearch', arguments: JSON.stringify({ query: 'private guidance' }) },
+      { id: 'read', type: 'function', name: 'MemoryRead', arguments: JSON.stringify({ id: 'm_private' }) },
+    ], { signal: new AbortController().signal, turnId: 1 })) results.push(result);
+    expect(results.map((result) => result.result.isError === true)).toEqual([false, false]);
+    expect(search.mock.calls[0]?.[0]).toEqual([{ kind: 'persona', personaId: 'reader-persona' }, { kind: 'persona_workspace', personaId: 'reader-persona', workspaceId: 'test-workspace' }]);
+    expect(get.mock.calls.map((call) => call[0])).toEqual([{ kind: 'persona', personaId: 'reader-persona' }, { kind: 'persona_workspace', personaId: 'reader-persona', workspaceId: 'test-workspace' }]);
+    expect(profile.data().personaId).toBeUndefined();
+    expect(await ctx.get(IAgentMemorySnapshot).get()).toBe('');
+  });
+
+  it('replaces child tool defaults, commits resume overrides, withdraws stale tools and restores the saved layers', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    const original = resumeProfile({ main: true, tools: ['Read'], disallowedTools: ['Write'] });
+    const childScope = makeAgentScopeContext({ agentId: 'agent-tools', parentAgentId: 'main', agentScope: 'agents/agent-tools' });
+    const readThread = vi.fn(async () => ({ thread: { hostId: 'local', workspaceId: 'workspace-1', sessionId: 'peer' }, turns: [] }));
+    const build = () => createTestAgent(
+      { ...nativeResumeOptions(), persistence, cwd: homeDir, initialConfig: { ...nativeResumeOptions().initialConfig, threadCommunication: { enabled: true } } },
+      agentService(IAgentScopeContext, childScope),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)),
+      appServices((reg) => reg.definePartialInstance(IThreadCommunicationService, { hostId: 'local', isWorkspaceEnabled: async () => true, readThread })),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    ctx = build();
+    const profile = ctx.get(IAgentProfileService);
+    await ctx.get(ISessionMetadata).registerAgent('agent-tools', { type: 'sub', parentAgentId: 'main' });
+    await profile.bind({ profile: original.name, delegationPosition: 'sub', toolOverride: { tools: ['*', 'ThreadRead'], disallowedTools: ['Bash'] }, memoryReadContext: { id: 'reader-persona', shared: [] } });
+    await ctx.get(IAgentToolActivationService).activate();
+    const registry = ctx.get(IAgentToolRegistryService);
+    expect(registry.resolve('Grep')).toBeDefined();
+    expect(registry.resolve('ThreadRead')).toBeDefined();
+    expect(registry.resolve('ThreadList')).toBeUndefined();
+    expect(registry.resolve('ThreadSend')).toBeUndefined();
+    expect(registry.resolve('Write')).toBeUndefined();
+    expect(registry.resolve('Bash')).toBeUndefined();
+    const result: ToolExecutionResult[] = [];
+    for await (const value of ctx.get(IAgentToolExecutorService).execute([{ id: 'peer-read', type: 'function', name: 'ThreadRead', arguments: JSON.stringify({ thread: { workspace_id: 'workspace-1', session_id: 'peer' } }) }], { signal: new AbortController().signal, turnId: 1 })) result.push(value);
+    expect(result[0]?.result.isError).not.toBe(true);
+    expect(readThread).toHaveBeenCalledWith(expect.objectContaining({ caller: { hostId: 'local', workspaceId: 'test-workspace', sessionId: 'test-session' } }));
+    await commitResumeBinding(await profile.prepareResumeBinding({ toolOverride: { tools: [], disallowedTools: [] } }));
+    expect(profile.data().activeToolNames).toEqual([]);
+    expect(profile.data().disallowedTools).toEqual(['Write']);
+    expect(registry.resolve('ThreadRead')).toBeUndefined();
+    expect(ctx.get(IAgentToolPolicyService).isToolActive('ThreadRead')).toBe(false);
+    await commitResumeBinding(await profile.prepareResumeBinding({}));
+    expect(profile.data().toolOverride).toEqual({ tools: [], disallowedTools: [] });
+    await ctx.get(IWireService).flush();
+    const projected = await readPersistedAgentProfileSnapshot({
+      storage: { size: async () => persistence.records.length, mtime: async () => 1 } as unknown as IFileSystemStorageService,
+      appendLog: { read: async function* () { yield* persistence.records; } } as unknown as IAppendLogStore,
+    }, 'test-workspace', 'test-session', 'agent-tools', undefined);
+    expect(projected).toMatchObject({ activeToolNames: [], disallowedTools: ['Write'], toolOverride: { tools: [], disallowedTools: [] }, memoryReadContext: { id: 'reader-persona', shared: [] } });
+    await ctx.dispose();
+    ctx = build();
+    await ctx.restorePersisted();
+    await ctx.get(IAgentToolActivationService).activate();
+    const restored = ctx.get(IAgentProfileService);
+    expect(restored.data().toolOverride).toEqual({ tools: [], disallowedTools: [] });
+    expect(restored.data().disallowedTools).toEqual(['Write']);
+    expect(ctx.get(IAgentToolRegistryService).resolve('ThreadRead')).toBeUndefined();
+    expect(ctx.get(IAgentMemorySnapshot).getPersona()).toEqual({ id: 'reader-persona', shared: [] });
+    await ctx.get(ISessionMetadata).registerAgent('agent-tools', { type: 'sub', parentAgentId: 'main' });
+    await commitResumeBinding(await restored.prepareResumeBinding({ toolOverride: { tools: ['*', 'ThreadRead'] } }));
+    expect(ctx.get(IAgentToolRegistryService).resolve('ThreadRead')).toBeDefined();
+    expect(ctx.get(IAgentToolPolicyService).isToolActive('Write')).toBe(false);
+  });
+
+  it('refreshes the child Skill prompt projection when a same-model resume replaces tools', async () => {
+    const original = normalizeAgentProfile({ name: 'resume-profile', modelAlias: RESUME_OLD_MODEL, tools: ['Read'], systemPrompt: (context) => `skill-active:${String(context.skillActive)}` });
+    ctx = createTestAgent(
+      { ...nativeResumeOptions(), cwd: homeDir },
+      agentService(IAgentScopeContext, makeAgentScopeContext({ agentId: 'agent-tools', parentAgentId: 'main', agentScope: 'agents/agent-tools' })),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const profile = ctx.get(IAgentProfileService);
+    await ctx.get(ISessionMetadata).registerAgent('agent-tools', { type: 'sub', parentAgentId: 'main' });
+    await profile.bind({ profile: original.name, delegationPosition: 'sub', toolOverride: { tools: ['*'] } });
+    expect(profile.data().systemPrompt).toContain('skill-active:true');
+    await commitResumeBinding(await profile.prepareResumeBinding({ toolOverride: { tools: [] } }));
+    expect(profile.data().systemPrompt).toContain('skill-active:false');
+    await commitResumeBinding(await profile.prepareResumeBinding({ toolOverride: { tools: ['*'] } }));
+    expect(profile.data().systemPrompt).toContain('skill-active:true');
+  });
+
+  it('activates child CronList without granting create or delete actions through the Cron wrapper', async () => {
+    const original = resumeProfile();
+    ctx = createTestAgent(
+      { ...nativeResumeOptions(), cwd: homeDir },
+      agentService(IAgentScopeContext, makeAgentScopeContext({ agentId: 'agent-tools', parentAgentId: 'main', agentScope: 'agents/agent-tools' })),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    await ctx.get(IAgentProfileService).bind({ profile: original.name, delegationPosition: 'sub', toolOverride: { tools: ['*', 'CronList'] } });
+    await ctx.get(IAgentToolActivationService).activate();
+    const registry = ctx.get(IAgentToolRegistryService);
+    expect(registry.resolve('Cron')).toBeDefined();
+    expect(registry.resolve('CronList')).toBeDefined();
+    expect(registry.resolve('CronCreate')).toBeUndefined();
+    expect(registry.resolve('CronDelete')).toBeUndefined();
+    const results: ToolExecutionResult[] = [];
+    for await (const result of ctx.get(IAgentToolExecutorService).execute([
+      { id: 'list', type: 'function', name: 'Cron', arguments: JSON.stringify({ action: 'list' }) },
+      { id: 'create', type: 'function', name: 'Cron', arguments: JSON.stringify({ action: 'create', cron: '* * * * *', prompt: 'must not schedule' }) },
+    ], { signal: new AbortController().signal, turnId: 1 })) results.push(result);
+    const listed = results.find((result) => result.toolCallId === 'list')?.result;
+    expect(listed?.isError).not.toBe(true);
+    expect(listed?.output).toContain('cron_jobs: 0');
+    expect(results.find((result) => result.toolCallId === 'create')?.result).toMatchObject({ isError: true, output: expect.stringContaining('Cron action create is disabled') });
+  });
+
+  it('keeps true selection ceilings and inherited read-only restrictions after child plan exit', async () => {
+    const original = resumeProfile({ tools: ['Read'], toolAllowPolicies: [['Read']] });
+    ctx = createTestAgent(
+      { ...nativeResumeOptions(), cwd: homeDir },
+      agentService(IAgentScopeContext, makeAgentScopeContext({ agentId: 'agent-tools', parentAgentId: 'main', agentScope: 'agents/agent-tools' })),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    await ctx.get(IAgentProfileService).bind({ profile: original.name, delegationPosition: 'sub', executionRestriction: 'research-readonly', toolOverride: { tools: ['*', 'ThreadRead', 'Write'] } });
+    const plan = ctx.get(IAgentPlanService);
+    await plan.enter('child-plan');
+    expect((await plan.status())?.path).toContain('/agents/agent-tools/plans/child-plan.md');
+    plan.exit();
+    expect(ctx.get(IAgentProfileService).data().executionRestriction).toBe('research-readonly');
+    expect(ctx.get(IAgentToolPolicyService).isToolActive('Read')).toBe(true);
+    expect(ctx.get(IAgentToolPolicyService).isToolActive('Write')).toBe(false);
+    expect(ctx.get(IAgentToolPolicyService).isToolActive('ThreadRead')).toBe(false);
+    await ctx.get(IAgentToolActivationService).activate();
+    expect(ctx.get(IAgentToolRegistryService).resolve('Write')).toBeUndefined();
   });
 
   it.each(['changed', 'missing'] as const)(

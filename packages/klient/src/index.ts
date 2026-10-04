@@ -26,6 +26,9 @@ export type {
   NotificationProviderDescriptor,
   NotificationDelivery,
   HttpRestBinaryFile,
+  HttpRestMediaOptions,
+  HttpRestMediaReceipt,
+  HttpRestMediaSink,
   HttpRestConfigPatch,
   HttpRestCronTask,
   HttpRestCronTaskQuery,
@@ -146,6 +149,8 @@ export {
   sessionViewSignalSchema,
   sessionViewSubscribeInputSchema,
   sessionViewTranscriptCatchUpInputSchema,
+  sessionViewTranscriptContentInputSchema,
+  sessionViewTranscriptContentOutputSchema,
   sessionViewTranscriptPageInputSchema,
 } from './contract/session/view.js';
 export type { AgentEventPayloads } from './contract/agent/events.js';

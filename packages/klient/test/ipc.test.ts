@@ -1,13 +1,16 @@
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createConnection } from 'node:net';
+import { once } from 'node:events';
 
-import { ConfigTarget, IConfigService, IMcpManagementService } from '@kiki/agent-core-v2';
+import { ConfigTarget, IConfigService, IMcpManagementService, ISessionIndex, ISessionManager } from '@kiki/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
 
 import { defineKlientConformance } from './helpers/conformance.js';
 import { createKlient, serveKlientIpc, type KlientIpcHost } from '../src/transports/ipc/index.js';
 import { IpcChannel } from '../src/transports/ipc/channel.js';
+import { normalizeIpcSocketPath } from '../src/transports/ipc/codec.js';
 import { makeEngine, type TestEngine } from './helpers/engine.js';
 
 vi.setConfig({ hookTimeout: 120_000, testTimeout: 60_000 });
@@ -209,5 +212,110 @@ describe('ipc transport specifics', () => {
       await klient.close();
     }
     await teardown();
+  });
+
+  it('keeps a UTF-8 argument intact when the socket splits a codepoint', async () => {
+    // NDJSON frames are not message-aligned: `node:net` may cut one
+    // multi-byte sequence in half. Decoding each chunk on its own would turn
+    // the cut into U+FFFD, so both directions decode across chunk boundaries.
+    const socketPath = await setup();
+    const sock = createConnection(normalizeIpcSocketPath(socketPath));
+    await once(sock, 'connect');
+    try {
+      sock.write(`${JSON.stringify({ type: 'hello' })}\n`);
+      const created = await app.accessor
+        .get(ISessionManager)
+        .create({ workDir: homeDir });
+      const bytes = Buffer.from(
+        `${JSON.stringify({ type: 'call', id: 'utf8', scope: 'session', sessionId: created.id, service: 'sessionMetadata', method: 'setTitle', arg: ['中文😀'] })}\n`,
+      );
+      const split = bytes.indexOf(Buffer.from('中')) + 1;
+      sock.write(bytes.subarray(0, split));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      sock.write(bytes.subarray(split));
+      await vi.waitFor(async () => {
+        const summary = await app.accessor.get(ISessionIndex).get(created.id);
+        expect(summary?.title).toBe('中文😀');
+      }, { timeout: 5_000 });
+      await app.accessor.get(ISessionManager).close(created.id);
+    } finally {
+      sock.destroy();
+      await teardown();
+    }
+  });
+
+  it('returns the underlying requester iterator when a stream is cancelled', async () => {
+    // Cancelling must stop the engine-side request, not just the frame pump:
+    // the HTTP transport's `active.cancel()` already aborts and returns.
+    let requestSignal: AbortSignal | undefined;
+    let released: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => { released = resolve; });
+    const returned = vi.fn(async () => ({ done: true, value: undefined }));
+    const requester = {
+      request: (_input: unknown, signal: AbortSignal) => {
+        requestSignal = signal;
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: async () => { await pending; return { done: true, value: undefined }; },
+            return: returned,
+          }),
+        };
+      },
+    };
+    const scope = { accessor: { get: () => ({ getRequester: () => requester }) } };
+    const socketPath = join(homeDir, 'cancel.sock');
+    const cancelHost = await serveKlientIpc({ scope: scope as never, socketPath });
+    const channel = new IpcChannel({ socketPath });
+    try {
+      const iterator = channel.stream({}, 'modelResolver', 'generate', ['synthetic', {}, {}])[Symbol.asyncIterator]();
+      const first = iterator.next();
+      await vi.waitFor(() => expect(requestSignal).toBeDefined(), { timeout: 5_000 });
+      await iterator.return?.();
+      await vi.waitFor(() => expect(returned).toHaveBeenCalled(), { timeout: 5_000 });
+      expect(requestSignal!.aborted).toBe(true);
+      await first;
+    } finally {
+      released?.();
+      await channel.close();
+      await cancelHost.close();
+      await teardown();
+    }
+  });
+
+  it('returns the underlying requester iterator when the socket disconnects', async () => {
+    let requestSignal: AbortSignal | undefined;
+    let released: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => { released = resolve; });
+    const returned = vi.fn(async () => ({ done: true, value: undefined }));
+    const requester = {
+      request: (_input: unknown, signal: AbortSignal) => {
+        requestSignal = signal;
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: async () => { await pending; return { done: true, value: undefined }; },
+            return: returned,
+          }),
+        };
+      },
+    };
+    const scope = { accessor: { get: () => ({ getRequester: () => requester }) } };
+    const socketPath = join(homeDir, 'disconnect.sock');
+    const dropHost = await serveKlientIpc({ scope: scope as never, socketPath });
+    const channel = new IpcChannel({ socketPath });
+    try {
+      const iterator = channel.stream({}, 'modelResolver', 'generate', ['synthetic', {}, {}])[Symbol.asyncIterator]();
+      // `close()` fails the pending `next()`; attach the handler first so the
+      // teardown rejection is observed rather than left unhandled.
+      const first = iterator.next().catch(() => undefined);
+      await vi.waitFor(() => expect(requestSignal).toBeDefined(), { timeout: 5_000 });
+      await channel.close();
+      await vi.waitFor(() => expect(returned).toHaveBeenCalled(), { timeout: 5_000 });
+      expect(requestSignal!.aborted).toBe(true);
+      await first;
+    } finally {
+      released?.();
+      await dropHost.close();
+      await teardown();
+    }
   });
 });

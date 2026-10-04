@@ -25,6 +25,7 @@ import type { McpServerEntry } from '#/mcpCore/connection-manager';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IAgentMcpService } from './mcp';
 import { qualifyMcpToolName } from '#/mcpCore/tool-naming';
+import { isComputerMcpConfig } from '#/mcpCore/computer';
 import type { MCPClient, MCPToolDefinition } from '#/mcpCore/types';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
@@ -300,6 +301,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
             attachmentStore: () =>
               this.instantiation.invokeFunction((accessor) => accessor.get(ISessionMediaStore)),
             providerType: () => this.profile.getModelProviderType(),
+            computerControl: isComputerMcpConfig(this.mcpHandle.connectionManager.configOf(serverName)),
             reconnect: (signal) => this.reconnectForToolCall(serverName, client, signal),
             isRemoved: () =>
               this.mcpHandle.connectionManager.get(serverName)?.status === 'removed',

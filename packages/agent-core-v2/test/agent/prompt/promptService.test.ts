@@ -233,6 +233,9 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     registerAgent: async (_agentId: string, next: Record<string, unknown>) => {
       agentMeta = next;
     },
+    updateAgent: async (_agentId: string, updater: Parameters<ISessionMetadata['updateAgent']>[1]) => {
+      agentMeta = { ...updater(structuredClone(agentMeta)) };
+    },
   };
   let activeTasks: readonly AgentTaskInfo[] = [];
   const taskService = { list: vi.fn(() => activeTasks) };

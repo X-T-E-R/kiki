@@ -1,12 +1,11 @@
 import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 import { MODEL_CONSTRAINT_KEYS, parseModelConstraintFields } from './modelConstraintFields';
+import { parsePromptOverrides } from './promptOverrides';
 import type {
   AgentModelProfile,
   AgentModelProfilePromptMode,
-  AgentSubagentPolicy,
   RequestParams,
   ServiceTier,
-  SubagentDeclaration,
 } from './agentProfile';
 
 export class SubagentLeaseParseError extends Error {
@@ -32,6 +31,10 @@ interface SubagentLeaseOverlay {
   readonly allowedEfforts?: readonly string[];
   readonly tools?: readonly string[] | null;
   readonly disallowedTools?: readonly string[];
+  readonly canSpawnSubagents?: boolean;
+  readonly allowedSubagents?: readonly string[];
+  readonly preferredSubagents?: readonly string[];
+  readonly denySubagents?: readonly string[];
   readonly subagents?: readonly string[] | null;
   readonly promptMode?: SubagentLeasePromptMode;
   readonly prompt?: string;
@@ -39,6 +42,7 @@ interface SubagentLeaseOverlay {
   readonly serviceTier?: ServiceTier | null;
   readonly requestParams?: RequestParams | null;
   readonly modelProfiles?: readonly AgentModelProfile[];
+  readonly modelPrompts?: 'preserve' | 'replace';
 }
 
 export interface NamedSubagentLease extends SubagentLeaseOverlay {
@@ -66,8 +70,7 @@ export interface SpawnConstraints {
 }
 
 export interface ParsedSubagentField {
-  readonly declaration?: SubagentDeclaration;
-  readonly subagents?: readonly string[];
+  readonly allowedSubagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
 }
 
@@ -87,13 +90,17 @@ const LEASE_KEYS = new Set([
   'preferred_efforts',
   'tools',
   'disallowedTools',
-  'subagents',
+  'can_spawn_subagents',
+  'allowed_subagents',
+  'preferred_subagents',
+  'deny_subagents',
   'prompt',
   'prompt_mode',
   'delegation_notice',
   'service_tier',
   'request_params',
   'model_profiles',
+  'model_prompts',
 ]);
 
 const FORBIDDEN_LEASE_KEYS = new Set(['main', 'override', 'id', 'profile', 'spawn_constraints']);
@@ -123,35 +130,22 @@ const MODEL_PROFILE_ENTRY_KEYS = new Set([
   'request_params',
   'context_budget',
   'max_completion_tokens',
+  'prompt_overrides',
 ]);
 
 export function parseSubagentList(
   value: unknown,
   filePath: string,
-  policy?: AgentSubagentPolicy,
 ): ParsedSubagentField {
-  if (value === undefined) {
-    return policy === undefined ? {} : { declaration: { kind: 'inherit' } };
-  }
-  if (value === null) {
-    if (policy === undefined) return {};
-    throw new SubagentLeaseParseError(
-      `Frontmatter field "subagents" in ${filePath} cannot be null when subagent_policy is set; omit it to inherit, use [] for none, or ["*"] for all`,
-    );
-  }
+  if (value === undefined || value === null) return {};
   if (typeof value === 'string') {
     const names = splitCommaList(value);
-    if (names === undefined) {
-      if (policy === undefined) return {};
-      throw new SubagentLeaseParseError(
-        `Frontmatter field "subagents" in ${filePath} cannot be empty when subagent_policy is set; omit it to inherit, use [] for none, or ["*"] for all`,
-      );
-    }
-    return parsedSubagentNames(names, undefined, filePath, policy);
+    if (names === undefined) return {};
+    return parsedSubagentNames(names, undefined, filePath);
   }
   if (!Array.isArray(value)) {
     throw new SubagentLeaseParseError(
-      `Frontmatter field "subagents" in ${filePath} must be a comma-separated string or a list of names or mappings`,
+      `Frontmatter field "allowed_subagents" in ${filePath} must be a comma-separated string or a list of names or mappings`,
     );
   }
   const names: string[] = [];
@@ -160,55 +154,54 @@ export function parseSubagentList(
   for (const [index, item] of value.entries()) {
     if (typeof item === 'string') {
       const name = item.trim();
-      if (name === '') {
-        throw new SubagentLeaseParseError(
-          `Frontmatter field "subagents[${index}]" in ${filePath} must be a non-empty string or a mapping`,
-        );
-      }
-      recordName(name, seen, filePath, index);
-      names.push(name);
+      if (name === '') throw new SubagentLeaseParseError(`Frontmatter field "allowed_subagents[${index}]" in ${filePath} must be a non-empty string or a mapping`);
+      if (!seen.has(name)) { seen.add(name); names.push(name); }
       continue;
     }
-    if (!isRecord(item)) {
-      throw new SubagentLeaseParseError(
-        `Frontmatter field "subagents[${index}]" in ${filePath} must be a non-empty string or a mapping`,
-      );
-    }
-    const lease = parseLeaseMapping(item, filePath, index, policy !== undefined);
-    recordName(lease.name, seen, filePath, index);
-    names.push(lease.name);
-    Object.defineProperty(leases, lease.name, {
-      value: lease,
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
+    if (!isRecord(item)) throw new SubagentLeaseParseError(`Frontmatter field "allowed_subagents[${index}]" in ${filePath} must be a non-empty string or a mapping`);
+    const lease = parseLeaseMapping(item, filePath, index);
+    if (Object.hasOwn(leases, lease.name)) throw new SubagentLeaseParseError(`Frontmatter field "allowed_subagents" in ${filePath} declares more than one lease for "${lease.name}"`);
+    if (!seen.has(lease.name)) { seen.add(lease.name); names.push(lease.name); }
+    Object.defineProperty(leases, lease.name, { value: lease, enumerable: true, configurable: true, writable: true });
   }
-  return parsedSubagentNames(names, leases, filePath, policy);
+  return parsedSubagentNames(names, leases, filePath);
 }
 
 function parsedSubagentNames(
   names: readonly string[],
   leases: Readonly<Record<string, SubagentLease>> | undefined,
   filePath: string,
-  policy: AgentSubagentPolicy | undefined,
 ): ParsedSubagentField {
-  const hasWildcard = names.includes('*');
-  if (policy !== undefined && hasWildcard && names.length !== 1) {
-    throw new SubagentLeaseParseError(
-      `Frontmatter field "subagents" in ${filePath} cannot mix "*" with named recommendations when subagent_policy is set`,
-    );
-  }
-  const declaration: SubagentDeclaration | undefined = policy === undefined
-    ? undefined
-    : hasWildcard
-      ? { kind: 'all' }
-      : { kind: 'set', names };
+  validateSubagentNames(names, 'allowed_subagents', filePath, true);
   return {
-    ...(declaration === undefined ? {} : { declaration }),
-    subagents: normalizeAllowlist(names),
-    ...(leases === undefined || Object.keys(leases).length === 0 ? {} : { subagentLeases: leases }),
+    allowedSubagents: normalizeAllowlist([...new Set(names)]),
+    subagentLeases: leases === undefined || Object.keys(leases).length === 0 ? undefined : leases,
   };
+}
+
+export function parseSubagentPermissions(value: Record<string, unknown>, filePath: string, prefix = ''): import('./subagentPermissions').SubagentPermissions {
+  for (const key of ['subagents', 'subagent_policy']) {
+    if (Object.hasOwn(value, key)) throw new SubagentLeaseParseError(`Frontmatter field "${prefix}${key}" in ${filePath} has been removed; use allowed_subagents, preferred_subagents, deny_subagents, and can_spawn_subagents`);
+  }
+  const canSpawn = value['can_spawn_subagents'];
+  if (canSpawn !== undefined && canSpawn !== null && typeof canSpawn !== 'boolean') throw new SubagentLeaseParseError(`Frontmatter field "${prefix}can_spawn_subagents" in ${filePath} must be a boolean or null`);
+  const list = (key: string, wildcard: boolean) => {
+    const names = parseStringList(value[key], `${prefix}${key}`, filePath);
+    if (names !== undefined) validateSubagentNames(names, `${prefix}${key}`, filePath, wildcard);
+    return names === undefined ? undefined : [...new Set(names)];
+  };
+  return {
+    canSpawnSubagents: typeof canSpawn === 'boolean' ? canSpawn : undefined,
+    allowedSubagents: normalizeAllowlist(list('allowed_subagents', true) ?? ['*']),
+    preferredSubagents: list('preferred_subagents', false),
+    denySubagents: list('deny_subagents', true),
+  };
+}
+
+function validateSubagentNames(names: readonly string[], field: string, filePath: string, wildcard: boolean): void {
+  for (const name of names) {
+    if ((name !== '*' && !AGENT_NAME_PATTERN.test(name)) || (name === '*' && !wildcard)) throw new SubagentLeaseParseError(`Frontmatter field "${field}" in ${filePath} must contain profile names${wildcard ? ' or "*"' : ''}`);
+  }
 }
 
 export function parseSpawnConstraints(
@@ -240,21 +233,20 @@ function parseLeaseMapping(
   item: Record<string, unknown>,
   filePath: string,
   index: number,
-  strictSyntax: boolean,
 ): SubagentLease {
   for (const key of Object.keys(item)) {
     if (FORBIDDEN_LEASE_KEYS.has(key)) {
       throw new SubagentLeaseParseError(
-        `Frontmatter field "subagents[${index}].${key}" in ${filePath} cannot be overlaid on a subagent lease`,
+        `Frontmatter field "allowed_subagents[${index}].${key}" in ${filePath} cannot be overlaid on a subagent lease`,
       );
     }
     if (!LEASE_KEYS.has(key)) {
       throw new SubagentLeaseParseError(
-        `Frontmatter field "subagents[${index}]" in ${filePath} contains unknown key "${key}"`,
+        `Frontmatter field "allowed_subagents[${index}]" in ${filePath} contains unknown key "${key}"`,
       );
     }
   }
-  const prefix = `subagents[${index}]`;
+  const prefix = `allowed_subagents[${index}]`;
   const name = requiredString(item['name'], `${prefix}.name`, filePath);
   if (name.includes('.')) {
     throw new SubagentLeaseParseError(
@@ -284,6 +276,10 @@ function parseLeaseMapping(
   if (promptMode !== undefined && prompt !== undefined) {
     validateLeasePrompt(promptMode, prompt, prefix, filePath);
   }
+  const modelPrompts = item['model_prompts'];
+  if (modelPrompts !== undefined && (modelPrompts !== 'preserve' && modelPrompts !== 'replace' || !Array.isArray(item['model_profiles']))) {
+    throw new SubagentLeaseParseError(`Frontmatter field "${prefix}.model_prompts" in ${filePath} must be preserve or replace and requires model_profiles`);
+  }
   const description = optionalString(item['description'], `${prefix}.description`, filePath);
   const whenToUse = optionalString(item['whenToUse'], `${prefix}.whenToUse`, filePath);
   const thinkingEffort = optionalString(
@@ -292,22 +288,7 @@ function parseLeaseMapping(
     filePath,
   );
 
-  const rawSubagentValue = item['subagents'];
-  const rawSubagents = parseStringList(rawSubagentValue, `${prefix}.subagents`, filePath);
-  if (strictSyntax && Object.hasOwn(item, 'subagents')) {
-    if (rawSubagentValue === null || rawSubagents === undefined) {
-      throw new SubagentLeaseParseError(
-        `Frontmatter field "${prefix}.subagents" in ${filePath} cannot be null or empty when subagent_policy is set`,
-      );
-    }
-    if (rawSubagents.includes('*') && rawSubagents.length !== 1) {
-      throw new SubagentLeaseParseError(
-        `Frontmatter field "${prefix}.subagents" in ${filePath} cannot mix "*" with named entries when subagent_policy is set`,
-      );
-    }
-  }
-  const subagents =
-    rawSubagents === undefined ? undefined : rawSubagents.includes('*') ? null : rawSubagents;
+  const permissions = parseSubagentPermissions(item, filePath, `${prefix}.`);
   return {
     name,
     ...(source === undefined ? {} : { source }),
@@ -322,7 +303,7 @@ function parseLeaseMapping(
     ...(parseStringList(item['disallowedTools'], `${prefix}.disallowedTools`, filePath) === undefined
       ? {}
       : { disallowedTools: parseStringList(item['disallowedTools'], `${prefix}.disallowedTools`, filePath) }),
-    ...(subagents === undefined ? {} : { subagents }),
+    ...permissions,
     ...(promptMode === undefined ? {} : { promptMode, prompt }),
     ...(parseDelegationNotice(item['delegation_notice'], `${prefix}.delegation_notice`, filePath) === undefined
       ? {}
@@ -339,20 +320,11 @@ function parseLeaseMapping(
     ...(parseRequestParams(item['request_params'], `${prefix}.request_params`, filePath) === undefined
       ? {}
       : { requestParams: parseRequestParams(item['request_params'], `${prefix}.request_params`, filePath) }),
+    modelPrompts,
     ...(parseModelProfiles(item['model_profiles'], `${prefix}.model_profiles`, filePath) === undefined
       ? {}
       : { modelProfiles: parseModelProfiles(item['model_profiles'], `${prefix}.model_profiles`, filePath) }),
   };
-}
-
-function recordName(name: string, seen: Set<string>, filePath: string, index: number): void {
-  if (seen.has(name)) {
-    throw new SubagentLeaseParseError(
-      `Frontmatter field "subagents" in ${filePath} lists "${name}" more than once`,
-    );
-  }
-  seen.add(name);
-  void index;
 }
 
 function normalizeAllowlist(names: readonly string[]): readonly string[] | undefined {
@@ -457,12 +429,17 @@ function parseModelProfiles(
     if (promptMode !== undefined && prompt !== undefined) {
       validateLeasePrompt(promptMode, prompt, prefix, filePath);
     }
+    const promptOverrides = item['prompt_overrides'] === undefined ? undefined : parsePromptOverrides(item['prompt_overrides'], `${prefix}.prompt_overrides in ${filePath}`);
+    if (promptOverrides?.main !== undefined || promptOverrides?.independent !== undefined) {
+      throw new SubagentLeaseParseError(`Frontmatter field "${prefix}.prompt_overrides" in ${filePath} only applies to children and cannot declare main or independent branches`);
+    }
     out.push({
       alias,
       when,
       thinkingEffort,
       promptMode,
       prompt,
+      promptOverrides,
       ...parseModelConstraintFields(item, filePath, `${prefix}.`),
       serviceTier: parseServiceTier(item['service_tier'], `${prefix}.service_tier`, filePath) ?? undefined,
       requestParams: parseRequestParams(item['request_params'], `${prefix}.request_params`, filePath) ?? undefined,

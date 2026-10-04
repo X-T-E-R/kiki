@@ -11,7 +11,7 @@ describe('AgentRun dispatch recommendations', () => {
   let ctx: TestAgentContext | undefined;
   afterEach(async () => { await ctx?.dispose(); });
 
-  function agentRun(mainDispatchPolicy: 'advisory' | 'strict') {
+  function agentRun(allowedSubagents?: readonly string[]) {
     const preferred = normalizeAgentProfile({
       name: 'explore', description: 'Preferred explorer', modelAlias: 'mock-model', systemPrompt: () => '',
     });
@@ -33,36 +33,37 @@ describe('AgentRun dispatch recommendations', () => {
       reload: async () => {},
     } as unknown as ISessionAgentProfileCatalog;
     ctx = createTestAgent(
-      configServices(() => ({ providers: {}, subagent: { mainDispatchPolicy } })),
+      configServices(() => ({ providers: {} })),
       sessionService(ISessionAgentProfileCatalog, catalog),
     );
     ctx.get(IAgentProfileService).applyBindingSnapshot({
-      profileName: 'agent', thinkingLevel: 'off', systemPrompt: 'parent', subagents: ['explore'],
+      profileName: 'agent', thinkingLevel: 'off', systemPrompt: 'parent',
+      preferredSubagents: ['explore'], allowedSubagents,
     });
     return ctx.get(ISubagentTool);
   }
 
-  function description(mainDispatchPolicy: 'advisory' | 'strict'): string {
-    return agentRun(mainDispatchPolicy).description;
+  function description(allowedSubagents?: readonly string[]): string {
+    return agentRun(allowedSubagents).description;
   }
 
-  it('promotes preferred profiles while advisory callers still see nonpreferred targets', () => {
-    const text = description('advisory');
+  it('promotes preferred profiles without hiding nonpreferred permitted targets', () => {
+    const text = description();
     expect(text).toContain('Available profiles (pass via profile; preferred first):');
     expect(text).toContain('- explore: Preferred explorer');
     expect(text).toContain('- worker: Other worker');
     expect(text.indexOf('- explore:')).toBeLessThan(text.indexOf('- worker:'));
   });
 
-  it('never lists a blocked target to a strict caller', () => {
-    const text = description('strict');
+  it('never lists a preset outside a hard allowed set', () => {
+    const text = description(['explore']);
     expect(text).toContain('Available profiles (pass via profile; preferred first):');
     expect(text).toContain('- explore: Preferred explorer');
     expect(text).not.toContain('- worker: Other worker');
   });
 
   it('keeps a catalog main profile out of the description and capability projection', () => {
-    const tool = agentRun('advisory');
+    const tool = agentRun();
     expect(tool.description).toContain('- explore: Preferred explorer');
     expect(tool.description).not.toContain('- agent: Main agent profile');
     expect(tool.description).not.toContain('Main agent profile');

@@ -1,7 +1,8 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { IPluginService, type PluginTheme, type Scope } from '@kiki/agent-core-v2';
+import { IBootstrapService, IPluginService, type PluginTheme, type Scope } from '@kiki/agent-core-v2';
+import { resolveSpaceInheritance } from '@kiki/agent-core-v2/app/bootstrap/spaceInheritance';
 import {
   PLUGIN_SKIN_ID_PATTERN,
   SKIN_ID_PATTERN,
@@ -34,6 +35,7 @@ interface SkinsRouteHost {
 export interface SkinsRouteOptions {
   /** Absolute themes directory; `<homeDir>/themes` in production. */
   readonly themesDir: string;
+  readonly inheritedThemesDirs?: readonly string[];
 }
 
 const MAX_SKIN_BYTES = 64 * 1024;
@@ -131,6 +133,14 @@ export function registerSkinsRoutes(
   core: Scope,
   opts: SkinsRouteOptions,
 ): void {
+  let inherited = opts.inheritedThemesDirs;
+  if (inherited === undefined) {
+    try {
+      const source = resolveSpaceInheritance(core.accessor.get(IBootstrapService));
+      inherited = source.appearance && source.baseHomeDir !== undefined ? [join(source.baseHomeDir, 'themes')] : [];
+    } catch { inherited = []; }
+  }
+  const roots = [opts.themesDir, ...inherited];
   const listRoute = defineRoute(
     {
       method: 'GET',
@@ -143,15 +153,12 @@ export function registerSkinsRoutes(
     async (req, reply) => {
       const items: SkinSummary[] = [];
       const skipped: { file: string; reason: string }[] = [];
-      let entries: string[] = [];
-      try {
-        const dir = await readdir(opts.themesDir, { withFileTypes: true });
-        entries = dir.filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-          .map((entry) => entry.name);
-      } catch {
-        entries = [];
+      const entries = new Map<string, string>();
+      for (const root of roots) {
+        const directory = await readdir(root, { withFileTypes: true }).catch(() => []);
+        for (const entry of directory) if (entry.isFile() && entry.name.endsWith('.json') && !entries.has(entry.name)) entries.set(entry.name, root);
       }
-      for (const file of entries.sort()) {
+      for (const [file, root] of [...entries].sort(([a], [b]) => a.localeCompare(b))) {
         const id = file.slice(0, -'.json'.length);
         if (!SKIN_ID_PATTERN.test(id)) {
           skipped.push({ file, reason: 'filename is not a valid skin id' });
@@ -159,7 +166,7 @@ export function registerSkinsRoutes(
         }
         let parsed;
         try {
-          parsed = parseSkinFile(await readSkinJson(opts.themesDir, id), id);
+          parsed = parseSkinFile(await readSkinJson(root, id), id);
         } catch (error) {
           skipped.push({ file, reason: error instanceof Error ? error.message : 'unreadable' });
           continue;
@@ -224,7 +231,13 @@ export function registerSkinsRoutes(
       }
       let parsed;
       try {
-        parsed = parseSkinFile(await readSkinJson(opts.themesDir, skinId), skinId);
+        let file: unknown;
+        for (const root of roots) {
+          try { file = await readSkinJson(root, skinId); break; }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        }
+        if (file === undefined) throw new Error('skin not found');
+        parsed = parseSkinFile(file, skinId);
       } catch {
         reply.send(errEnvelope(ErrorCode.FS_PATH_NOT_FOUND, 'skin not found', req.id));
         return;

@@ -23,6 +23,8 @@ import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile'
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { isToolActive, isToolActiveComposed } from '#/agent/toolPolicy/evaluate';
+import { isSubagentToolAllowed } from '@kiki/agent-profiles/subagentToolPolicy';
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
 import { AgentToolActivationService } from '#/agent/toolActivation/toolActivationService';
 import {
@@ -204,6 +206,11 @@ describe('AgentToolActivationService', () => {
         reg.defineInstance(IAgentScopeContext, scopeContext);
         reg.definePartialInstance(IAgentToolPolicyService, {
           isToolActive: () => true,
+          isToolActiveForDisclosure: (name, source) => isToolActive({
+            tools: name === SELECT_TOOLS_TOOL_NAME || name === 'CallTool' ? undefined : profileData.activeToolNames,
+            disallowedTools: profileData.disallowedTools,
+            disabledToolGroups: (profileData as ProfileData).disabledToolGroups,
+          }, name, source),
         });
         reg.definePartialInstance(IConfigService, {
           get: (() => ({ notify_parent: notifyParent })) as IConfigService['get'],
@@ -497,23 +504,12 @@ describe('AgentToolActivationService', () => {
     expect(capabilities.find((capability) => capability.name === 'Alpha')?.group).toBeUndefined();
   });
 
-  it('only offers AskUserQuestion outside subagent scopes', () => {
-    const record = savedContributions.find(
-      (contribution) => contribution.options.name === 'AskUserQuestion',
-    );
+  it('uses the shared explicit opt-in instead of a registration identity veto for AskUserQuestion', () => {
+    const record = savedContributions.find((contribution) => contribution.options.name === 'AskUserQuestion');
     expect(record).toBeDefined();
-    const when = record!.options.when!;
-    const scopeFor = (parentAgentId: string | undefined): IAgentScopeContext => ({
-      _serviceBrand: undefined,
-      agentId: parentAgentId === undefined ? 'main' : 'agent-1',
-      parentAgentId,
-      scope: () => 'agents/scope',
-    });
-    const accessorFor = (parentAgentId: string | undefined) =>
-      ({ get: (id: unknown) => (id === IAgentScopeContext ? scopeFor(parentAgentId) : undefined) }) as never;
-
-    expect(when(accessorFor(undefined))).toBe(true);
-    expect(when(accessorFor('main'))).toBe(false);
+    expect(record!.options.when).toBeUndefined();
+    expect(isSubagentToolAllowed({}, 'AskUserQuestion')).toBe(false);
+    expect(isSubagentToolAllowed({ explicitProfileTools: ['*', 'AskUserQuestion'] }, 'AskUserQuestion')).toBe(true);
   });
 
   it('offers AgentNotify only when parent, binding, global config, and tool policy allow it', () => {
@@ -732,6 +728,10 @@ describe('AgentToolActivationService', () => {
         [IAgentProfileService, { data: () => profileData as ProfileData }],
         [IEventBus, { subscribe: () => toDisposable(() => {}) }],
         [IAgentScopeContext, mainScopeContext],
+        [IAgentToolPolicyService, { isToolActiveForDisclosure: (name: string) => isToolActiveComposed({
+          profile: { tools: name === SELECT_TOOLS_TOOL_NAME || name === 'CallTool' ? undefined : profileData.activeToolNames, disallowedTools: profileData.disallowedTools },
+          subagent: (extra.find(([id]) => id === IAgentScopeContext)?.[1] as IAgentScopeContext | undefined)?.parentAgentId === undefined ? undefined : { explicitProfileTools: profileData.activeToolNames },
+        }, name) }],
         [
           IAgentRuntimeService,
           {

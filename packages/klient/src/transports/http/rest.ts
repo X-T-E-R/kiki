@@ -9,6 +9,10 @@ import type {
   HttpRestRequestOptions,
 } from '../../core/facade/http-rest.js';
 import { personaAvatarForm, personaCardForm } from './persona-form.js';
+import { createConnectionsFacade } from './connections.js';
+import { createWebAccessFacade } from './web-access.js';
+import { createThreadBridgesFacade } from './thread-bridges.js';
+import { createUsageExportFacade } from './usage-export.js';
 import type {
   ActivateSkillRequest,
   AuthSummary,
@@ -67,6 +71,10 @@ export interface HttpRestTransport {
 
 export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFacade {
   return {
+    webAccess: createWebAccessFacade(transport),
+    connections: createConnectionsFacade(transport),
+    threadBridges: createThreadBridgesFacade(transport),
+    usageExport: createUsageExportFacade(transport),
     healthz: async (baseUrlOverride) => {
       try {
         const data = await transport.json<{ readonly ok?: boolean } | null>('/healthz', {
@@ -108,6 +116,19 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       reset: (platform, target = {}) => transport.json('/gui/shortcuts/reset', { method: 'POST', query: { platform }, body: target }),
     },
 
+    browser: {
+      list: () => transport.json('/browser/connections'),
+      upsert: (id, input) => transport.json(`/browser/connections/${encodeURIComponent(id)}`, { method: 'PUT', body: input }),
+      remove: (id) => transport.json(`/browser/connections/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+      setDefault: (browser) => transport.json('/browser/default', { method: 'PUT', body: { browser } }),
+      status: (id) => transport.json(`/browser/connections/${encodeURIComponent(id)}:status`),
+      tabs: (id) => transport.json(`/browser/connections/${encodeURIComponent(id)}:tabs`),
+      catalog: (id, options) => transport.json(`/browser/connections/${encodeURIComponent(id)}:catalog`, { query: { includeSchema: options?.includeSchema } }),
+      check: (id) => transport.json(`/browser/connections/${encodeURIComponent(id)}:check`, { method: 'POST', body: {} }),
+      connect: (id) => transport.json(`/browser/connections/${encodeURIComponent(id)}:connect`, { method: 'POST', body: {} }),
+      disconnect: (id) => transport.json(`/browser/connections/${encodeURIComponent(id)}:disconnect`, { method: 'POST', body: {} }),
+    },
+
     ssh: {
       list: (workspaceId) => transport.json('/ssh/hosts', { query: { workspace_id: workspaceId } }),
       discover: () => transport.json('/ssh/hosts:discover'),
@@ -117,7 +138,11 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       remove: (id, workspaceId) => transport.json(`/ssh/hosts/${encodeURIComponent(id)}`, {
         method: 'DELETE', query: { workspace_id: workspaceId },
       }),
+      configSync: () => transport.json('/ssh/config-sync'),
       setConfigSync: (enabled) => transport.json('/ssh/config-sync', { method: 'PUT', body: { enabled } }),
+      hostKeys: (id, workspaceId) => transport.json(`/ssh/hosts/${encodeURIComponent(id)}:host-keys`, {
+        query: { workspace_id: workspaceId },
+      }),
       connectionApproval: () => transport.json('/ssh/connection-approval'),
       setConnectionApproval: (enabled) => transport.json('/ssh/connection-approval', { method: 'PUT', body: { enabled } }),
       writeBack: (id, workspaceId) => transport.json(`/ssh/hosts/${encodeURIComponent(id)}:write-back`, {
@@ -154,7 +179,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     sessions: {
       list: (query: HttpRestListSessionsQuery = {}) => transport.json<import('@kiki/protocol').ListSessionsResponse>('/sessions', {
         query: {
-          page_size: query.page_size ?? 100,
+          page_size: query.page_size ?? 50,
           before_id: query.before_id,
           after_id: query.after_id,
           busy: query.busy,
@@ -163,9 +188,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
           archived_only: query.archived_only,
           exclude_empty: query.exclude_empty,
           workspace_id: query.workspace_id,
+          persona: query.persona,
         },
       }),
-      listEphemeral: () => transport.json<import('@kiki/protocol').ListEphemeralSessionsResponse>('/sessions/ephemeral'),
+      listEphemeral: (query = {}) => transport.json<import('@kiki/protocol').ListEphemeralSessionsResponse>('/sessions/ephemeral', { query: { ...query, page_size: query.page_size ?? 50 } }),
       create: (body: SessionCreate) => transport.json<Session>('/sessions', { method: 'POST', body }),
       saveEphemeral: (sessionId: string) => transport.json<Session>(`/sessions/${encodeURIComponent(sessionId)}/ephemeral/save`, { method: 'POST', body: {} }),
       endEphemeral: (sessionId: string, body = {}) => transport.json<import('@kiki/protocol').EndEphemeralSessionResponse>(`/sessions/${encodeURIComponent(sessionId)}/ephemeral/end`, { method: 'POST', body }),
@@ -180,6 +206,9 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/auto-compact`,
         { method: 'PATCH', body: input },
       ),
+      inspectHooks: (sessionId: string, agentId: string) => transport.json<import('@kiki/protocol').AgentHooksInspect>(
+        `/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/hooks`,
+      ),
       undo: (sessionId: string, body = {}) => transport.json(
         `/sessions/${encodeURIComponent(sessionId)}:undo`,
         { method: 'POST', body },
@@ -187,6 +216,12 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       updateProfile: (sessionId: string, body: UpdateSessionProfileRequest) => transport.json<Session>(
         `/sessions/${encodeURIComponent(sessionId)}/profile`,
         { method: 'POST', body },
+      ),
+      getPersonaSettings: (sessionId: string) => transport.json<import('@kiki/protocol').SessionPersonaSettings>(
+        `/sessions/${encodeURIComponent(sessionId)}/persona-settings`,
+      ),
+      applyPersonaSettings: (sessionId: string, input = {}) => transport.json<import('@kiki/protocol').SessionPersonaSettings>(
+        `/sessions/${encodeURIComponent(sessionId)}/persona-settings`, { method: 'POST', body: input },
       ),
       archive: (sessionId: string) => transport.json('/sessions/' + encodeURIComponent(sessionId) + ':archive', {
         method: 'POST', body: {},
@@ -242,9 +277,17 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         { method: 'POST', body, signal: options?.signal, timeoutMs: options?.timeoutMs },
       ),
       media: async (sessionId: string, fileId: string, options) => readBinary(
-        transport,
+        transport, `/sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(fileId)}`,
+        { signal: options?.signal, timeoutMs: options?.timeoutMs, headers: mediaHeaders(options) },
+      ),
+      mediaPreview: async (sessionId: string, fileId: string, options) => readBinary(
+        transport, `/sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(fileId)}/preview`,
+        { query: { media_type: options?.mediaType }, signal: options?.signal, timeoutMs: options?.timeoutMs, headers: mediaHeaders(options) }, 64 * 1024,
+      ),
+      downloadMedia: (sessionId, fileId, sink, options) => transport.raw(
         `/sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(fileId)}`,
-        { headers: options?.ifNoneMatch === undefined ? undefined : { 'if-none-match': options.ifNoneMatch } },
+        { method: 'GET', expectBinary: true, signal: options?.signal, timeoutMs: options?.timeoutMs ?? 0, headers: mediaHeaders(options) },
+        (response) => consumeMedia(response, sink, options?.signal),
       ),
       export: (sessionId: string) => transport.raw(
         `/sessions/${encodeURIComponent(sessionId)}/export`,
@@ -289,6 +332,9 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         query: { includeArchived: options?.includeArchived },
       }),
       get: (id) => transport.json<PersonaSnapshot>(`/personas/${encodeURIComponent(id)}`),
+      ensureHome: (id) => transport.json(`/personas/${encodeURIComponent(id)}/home`, { method: 'POST' }),
+      setHome: (id, sessionId) => transport.json(`/personas/${encodeURIComponent(id)}/home`, { method: 'PUT', body: { sessionId } }),
+      updateState: (id, body) => transport.json(`/personas/${encodeURIComponent(id)}/state`, { method: 'PATCH', body }),
       put: (input) => transport.json<PersonaSnapshot>(`/personas/${encodeURIComponent(input.definition.id)}`, {
         method: 'PUT',
         body: input,
@@ -374,6 +420,11 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     homes: {
       presets: () => transport.json<import('@kiki/protocol').SpacePresetsResponse>('/homes/presets'),
       list: () => transport.json<import('@kiki/protocol').ListSpacesResponse>('/homes'),
+      detail: (id) => transport.json<import('@kiki/protocol').SpaceDetail>(`/homes/${encodeURIComponent(id)}/settings`),
+      preview: (id, body) => transport.json<import('@kiki/protocol').SpacePreview>(`/homes/${encodeURIComponent(id)}/settings/preview`, { method: 'POST', body }),
+      apply: (id, body) => transport.json<import('@kiki/protocol').SpaceMutationResponse>(`/homes/${encodeURIComponent(id)}/settings/apply`, { method: 'POST', body }),
+      undo: (id, undo_id) => transport.json<import('@kiki/protocol').SpaceMutationResponse>(`/homes/${encodeURIComponent(id)}/settings/undo`, { method: 'POST', body: { undo_id } }),
+      importPreferences: (id, body) => transport.json<import('@kiki/protocol').SpacePreferenceImportResponse>(`/homes/${encodeURIComponent(id)}/settings/import-preferences`, { method: 'POST', body }),
       create: (body) => transport.json<import('@kiki/protocol').SpaceRecord>('/homes', { method: 'POST', body }),
       attach: (body) => transport.json<import('@kiki/protocol').SpaceRecord>('/homes:attach', { method: 'POST', body }),
       sshCopyCandidates: (id) => transport.json<import('@kiki/protocol').SshCopyCandidatesResponse>(`/homes/${encodeURIComponent(id)}/ssh-copy-candidates`),
@@ -432,6 +483,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     nbSearch: {
       capabilities: () => transport.json('/nb-search/capabilities'),
+      keyUsage: (instanceId, refresh = false, options) => transport.json('/nb-search/keys/usage', {
+        method: 'POST', body: { instance_id: instanceId, refresh },
+        signal: options?.signal, timeoutMs: options?.timeoutMs,
+      }),
       test: (options) => transport.json('/nb-search/test', {
         signal: options?.signal,
         timeoutMs: options?.timeoutMs,
@@ -531,9 +586,14 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         }),
       ),
       readHostFileBytes: (path: string, options) => readBinary(transport, '/fs:content', {
-        query: { path },
-        headers: options?.ifNoneMatch === undefined ? undefined : { 'if-none-match': options.ifNoneMatch },
+        query: { path }, signal: options?.signal, timeoutMs: options?.timeoutMs, headers: mediaHeaders(options),
       }),
+      readHostMediaPreview: (path, options) => readBinary(transport, '/fs:content', {
+        query: { path, preview: 'media' }, signal: options?.signal, timeoutMs: options?.timeoutMs, headers: mediaHeaders(options),
+      }, 64 * 1024),
+      downloadHostFile: (path, sink, options) => transport.raw('/fs:content', {
+        method: 'GET', expectBinary: true, query: { path }, signal: options?.signal, timeoutMs: options?.timeoutMs ?? 0, headers: mediaHeaders(options),
+      }, (response) => consumeMedia(response, sink, options?.signal)),
       workspaceFsSearch: (workspace: string, body, options) => transport.json<FsSearchResponse>('/workspace/fs:search', {
         method: 'POST',
         body: { ...body, workspace },
@@ -649,32 +709,65 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
   };
 }
 
+function mediaHeaders(options?: import('../../core/facade/http-rest.js').HttpRestMediaOptions): Record<string, string> {
+  return { ...(options?.ifNoneMatch === undefined ? {} : { 'if-none-match': options.ifNoneMatch }), ...(options?.range === undefined ? {} : { range: options.range }) };
+}
+
+function mediaMetadata(response: Response): Omit<import('../../core/facade/http-rest.js').HttpRestMediaReceipt, 'bytes'> {
+  const mime = response.headers.get('content-type')?.split(';', 1)[0]?.trim() || 'application/octet-stream';
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/iu.exec(response.headers.get('content-disposition') ?? '');
+  let name = match?.[1];
+  if (name !== undefined) { try { name = decodeURIComponent(name); } catch {} }
+  const contentRange = response.headers.get('content-range') ?? undefined;
+  const length = contentRange?.match(/\/(\d+)$/u)?.[1] ?? response.headers.get('content-length');
+  const total = length === null || length === undefined ? undefined : Number(length);
+  return { mime, name, etag: response.headers.get('etag') ?? undefined, contentRange, totalBytes: total !== undefined && Number.isSafeInteger(total) && total >= 0 ? total : undefined, notModified: response.status === 304 };
+}
+
+async function consumeMedia(response: Response, sink: import('../../core/facade/http-rest.js').HttpRestMediaSink, signal?: AbortSignal, maxBytes = Infinity): Promise<import('../../core/facade/http-rest.js').HttpRestMediaReceipt> {
+  const metadata = mediaMetadata(response);
+  let bytes = 0;
+  signal?.throwIfAborted();
+  if (response.body === null) return { ...metadata, bytes };
+  const reader = response.body.getReader();
+  const onAbort = () => { void reader.cancel(signal?.reason).catch(() => {}); };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  let complete = false;
+  try {
+    for (;;) {
+      signal?.throwIfAborted();
+      const chunk = await reader.read();
+      signal?.throwIfAborted();
+      if (chunk.done) { complete = true; break; }
+      for (let offset = 0; offset < chunk.value.byteLength; offset += 64 * 1024) {
+        signal?.throwIfAborted();
+        const value = chunk.value.subarray(offset, Math.min(chunk.value.byteLength, offset + 64 * 1024));
+        bytes += value.byteLength;
+        if (bytes > maxBytes) throw new Error('Media preview exceeds its byte budget');
+        await sink(value, { ...metadata, bytes });
+      }
+    }
+    return { ...metadata, bytes };
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    if (!complete) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
 async function readBinary(
   transport: HttpRestTransport,
   path: string,
   options?: Pick<HttpRestJsonOptions, 'query' | 'signal' | 'timeoutMs' | 'expectBinary' | 'headers'>,
+  maxBytes?: number,
 ) {
-  return transport.raw(
-    path,
-    { ...options, method: 'GET', expectBinary: true },
-    async (response) => {
-      const mime = response.headers.get('content-type')?.split(';', 1)[0]?.trim() || 'application/octet-stream';
-      const disposition = response.headers.get('content-disposition') ?? '';
-      const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/iu.exec(disposition);
-      let name = match?.[1];
-      if (name !== undefined) {
-        try {
-          name = decodeURIComponent(name);
-        } catch {
-        }
-      }
-      return {
-        bytes: new Uint8Array(await response.arrayBuffer()),
-        mime,
-        name,
-        etag: response.headers.get('etag') ?? undefined,
-        notModified: response.status === 304,
-      };
-    },
-  );
+  return transport.raw(path, { ...options, method: 'GET', expectBinary: true }, async (response) => {
+    if (maxBytes === undefined) return { ...mediaMetadata(response), bytes: new Uint8Array(await response.arrayBuffer()) };
+    const chunks: Uint8Array[] = [];
+    const receipt = await consumeMedia(response, (chunk) => { chunks.push(chunk); }, options?.signal, maxBytes);
+    const bytes = new Uint8Array(receipt.bytes);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return { ...receipt, bytes };
+  });
 }

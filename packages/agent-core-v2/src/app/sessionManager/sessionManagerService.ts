@@ -1,5 +1,7 @@
 
 import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
+import { IInstantiationService } from '#/_base/di/instantiation';
+import { setColdSessionArchived } from '#/workspace/sessionLifecycle/coldSessionArchive';
 import { Emitter, type Event, type IWaitUntil } from '#/_base/event';
 import { ScopeActivation, registerScopedService, type ISessionScopeHandle } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
@@ -95,6 +97,7 @@ export class SessionManager implements ISessionManager {
     @ISessionIndex private readonly index: ISessionIndex,
     @IConfigService private readonly config?: IConfigService,
     @IFlagService private readonly flags?: IFlagService,
+    @IInstantiationService private readonly instantiation?: IInstantiationService,
   ) {
     void this.startEvictionScheduler();
   }
@@ -109,7 +112,12 @@ export class SessionManager implements ISessionManager {
     const create = () =>
       this.runWorkspaceOperation(
         workspaceId,
-        () => this.controllerForWorkspace(workspaceId).create(options),
+        () => {
+          if (options.sessionId !== undefined && this.sessions.has(options.sessionId)) {
+            throw new Error2(ErrorCodes.SESSION_ALREADY_EXISTS, `Session "${options.sessionId}" already exists`);
+          }
+          return this.controllerForWorkspace(workspaceId).create(options);
+        },
         () => lease.dispose(),
       );
     if (options.sessionId === undefined) return create();
@@ -309,8 +317,15 @@ export class SessionManager implements ISessionManager {
       if (target === undefined) {
         throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `temporary session ${sessionId} does not exist`);
       }
-      await this.runWorkspaceOperation(target.workspaceId, () => target.controller.saveEphemeral(sessionId));
-      this.ephemeral.delete(sessionId);
+      let saved = false;
+      try {
+        await this.runWorkspaceOperation(target.workspaceId, () => target.controller.saveEphemeral(sessionId));
+        saved = true;
+      } finally {
+        if (saved || await this.index.get(sessionId, target.workspaceId).catch(() => undefined) !== undefined) {
+          this.ephemeral.delete(sessionId);
+        }
+      }
     });
   }
 
@@ -354,6 +369,10 @@ export class SessionManager implements ISessionManager {
     if (this.isEphemeral(sessionId)) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'temporary sessions cannot be archived');
     }
+    if (!this.sessions.has(sessionId)) {
+      await this.instantiation!.invokeFunction((accessor) => setColdSessionArchived(accessor, sessionId, true));
+      return;
+    }
     const target = await this.controllerForSession(sessionId);
     if (target === undefined) return;
     await this.runWorkspaceOperation(
@@ -386,7 +405,8 @@ export class SessionManager implements ISessionManager {
 
   async delete(sessionId: string): Promise<void> {
     await this.serializeLifecycle(sessionId, async () => {
-      const target = await this.controllerForSession(sessionId);
+      const temporary = this.ephemeral.get(sessionId);
+      const target = temporary === undefined ? await this.controllerForSession(sessionId) : { ...temporary, release: undefined };
       if (target === undefined) {
         throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
       }

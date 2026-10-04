@@ -10,7 +10,7 @@ import {
   KIMI_MCP_CLIENT_NAME,
   KIMI_MCP_CLIENT_VERSION,
   MCP_LIVENESS_PROBE_TIMEOUT_MS,
-  toMcpToolDefinition,
+  listAllMcpTools,
   toMcpToolResult,
   type UnexpectedCloseListener,
   type UnexpectedCloseReason,
@@ -99,11 +99,7 @@ export class HttpMcpClient implements MCPClient {
   }
 
   async listTools(): Promise<MCPToolDefinition[]> {
-    const result = await this.client.listTools(
-      undefined,
-      buildRequestOptions(this.startupTimeoutMs, undefined),
-    );
-    return result.tools.map(toMcpToolDefinition);
+    return listAllMcpTools(this.client, this.startupTimeoutMs);
   }
 
   getServerCapabilities(): ServerCapabilities | undefined {

@@ -76,6 +76,7 @@ export function stubLoopWithHooks(options: StubLoopOptions = {}): StubLoop {
     tryAcquireQuiescence: () => toDisposable(() => {}),
     hasPendingRequests: () => queue.hasPendingRequests(), registerLoopErrorHandler: errorHandlers.register,
     settled: () => Promise.resolve(),
+    recoverPersistence: async () => true,
     drainNextBatch(context) { const batch = queue.takeNextBatch(); if (!batch) return undefined; materialize(batch.driver, context); for (const r of batch.merged) materialize(r, context); return batch; },
   };
   return stub;

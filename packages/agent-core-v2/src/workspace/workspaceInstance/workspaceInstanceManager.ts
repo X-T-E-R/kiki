@@ -34,6 +34,7 @@ export interface IWorkspaceInstanceManager {
   snapshot(): WorkspaceInstancesSnapshot;
   close(workspaceId: string): Promise<void>;
   addProvider(factory: RuntimeProviderFactory): Promise<{ dispose(): void | Promise<void> }>;
+  prepareSshRuntime(workspaceId: string): Promise<void>;
 }
 
 export const IWorkspaceInstanceManager: ServiceIdentifier<IWorkspaceInstanceManager> = createDecorator<IWorkspaceInstanceManager>('workspaceInstanceManager');

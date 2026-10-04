@@ -72,6 +72,7 @@ export const promptSubmissionSchema = z.object({
   // A different name replaces the target agent's current base-profile binding.
   profile: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
+  after_model_switch: z.string().min(1).optional(),
   thinking: promptThinkingSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
   plan_gate: promptPlanGateSchema.optional(),

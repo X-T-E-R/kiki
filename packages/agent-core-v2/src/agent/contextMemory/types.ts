@@ -2,6 +2,7 @@ import type { ContentPart, Message } from '#/kosong/contract/message';
 
 import type { AgentTaskStatus } from '#/agent/task/task';
 import type { ThreadRef } from '#/app/threadCommunication/threadCommunication';
+import type { BridgedThreadMetadata } from '#/app/threadCommunication/threadMailboxStore';
 
 export type SkillSource = 'project' | 'user' | 'extra' | 'builtin';
 
@@ -28,6 +29,7 @@ export interface SkillActivationOrigin {
   readonly skillName: string;
   readonly skillArgs?: string | undefined;
   readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+  readonly userInput?: string;
   readonly skillType?: string | undefined;
   readonly skillPath?: string | undefined;
   readonly skillSource?: SkillSource | undefined;
@@ -103,6 +105,12 @@ export interface PeerThreadOrigin {
   readonly acceptedAt: number;
 }
 
+export interface BridgedPeerOrigin extends BridgedThreadMetadata {
+  readonly kind: 'bridged_peer';
+  readonly messageId: string;
+  readonly acceptedAt: number;
+}
+
 export interface AgentMessageOrigin {
   readonly kind: 'agent_message';
   readonly messageId: string;
@@ -137,6 +145,7 @@ export type PromptOrigin =
   | HookResultOrigin
   | RetryOrigin
   | PeerThreadOrigin
+  | BridgedPeerOrigin
   | AgentMessageOrigin
   | PersonaGreetingOrigin
   | RoomMessageOrigin;
@@ -156,6 +165,8 @@ export type ContextMessage = Message & {
   readonly origin?: PromptOrigin | undefined;
   readonly isError?: boolean;
   readonly note?: string;
+  readonly fileRead?: import('#/agent/agentsMdReminder/instructionCoverage').FileReadDisclosure;
+  readonly memoryReceipt?: import('#/tool/toolContract').MemoryWriteReceipt;
   readonly source?: ContextMessageSource;
   readonly toolCallSources?: Readonly<Record<string, ContextMessageSource>>;
 };

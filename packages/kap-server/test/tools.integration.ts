@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
+import { searchSubagentToolCatalog } from '../../session-core/src/settings/subagentToolSettings';
 
 interface Envelope<T> {
   code: number;
@@ -190,6 +191,9 @@ describe('server-v2 /api tools + mcp', () => {
       const plugin = tools.find((t) => t.name === 'plugin__demo__echo');
       expect(plugin).toMatchObject({ source: 'plugin' });
       expect(plugin?.mcp_server_id).toBeUndefined();
+      expect(searchSubagentToolCatalog(tools, 'Bash')[0]?.name).toBe('Bash');
+      expect(searchSubagentToolCatalog(tools, 'myserver search', 'mcp')[0]?.name).toBe('mcp__myserver__search');
+      expect(searchSubagentToolCatalog(tools, 'demo echo', 'plugin')[0]?.name).toBe('plugin__demo__echo');
     });
 
     it('accepts an explicit session_id query', async () => {

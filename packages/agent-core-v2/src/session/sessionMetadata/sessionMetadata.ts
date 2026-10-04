@@ -6,6 +6,7 @@ import type { SessionWorktree } from '#/app/git/worktreeModel';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 export interface AgentMeta {
+  readonly personaId?: string;
   readonly homedir?: string;
   readonly type?: 'main' | 'sub' | 'independent';
   readonly parentAgentId?: string | null;
@@ -53,6 +54,7 @@ export interface SessionMeta {
   readonly forkedFrom?: string;
   readonly agents?: Readonly<Record<string, AgentMeta>>;
   readonly custom?: Record<string, unknown>;
+  readonly sshHosts?: Readonly<Record<string, string>>;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
   readonly usage?: SessionUsageSummary;
 }
@@ -86,6 +88,8 @@ export interface ISessionMetadata {
   ): Promise<boolean>;
   setArchived(archived: boolean): Promise<void>;
   registerAgent(agentId: string, meta: AgentMeta): Promise<void>;
+  /** Applies a synchronous update to the latest registered agent inside the serialized write queue. Missing agents are not recreated. */
+  updateAgent(agentId: string, updater: (current: AgentMeta) => AgentMeta): Promise<void>;
   unregisterAgent?(agentId: string): Promise<void>;
   /**
    * True when the on-disk document could not vouch for its agent registry: either this instance

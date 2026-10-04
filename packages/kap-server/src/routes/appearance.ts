@@ -23,7 +23,8 @@ import {
   type AppearancePack,
   type AppearancePackSummary,
 } from '@kiki/protocol';
-import type { Scope } from '@kiki/agent-core-v2';
+import { IBootstrapService, type Scope } from '@kiki/agent-core-v2';
+import { resolveSpaceInheritance } from '@kiki/agent-core-v2/app/bootstrap/spaceInheritance';
 import { readSpaceHome } from '@kiki/agent-core-v2/app/bootstrap/spaceHome';
 import { z } from 'zod';
 
@@ -277,7 +278,7 @@ async function listPacks(
   const seen = new Set<string>();
   for (const dir of [themesDir, ...inheritedDirs]) {
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries.filter((item) => item.isDirectory()).map((item) => item.name).sort()) {
+    for (const entry of entries.filter((item) => item.isDirectory() || item.isSymbolicLink()).map((item) => item.name).toSorted()) {
       if (!APPEARANCE_PACK_ID_PATTERN.test(entry) || seen.has(entry)) continue;
       seen.add(entry);
       const packDir = join(dir, entry);
@@ -356,7 +357,13 @@ function sendError(reply: AppearanceReply, req: AppearanceRequest, error: unknow
  */
 export function registerAppearanceRoutes(app: AppearanceRouteHost, _core: Scope, opts: AppearanceRouteOptions): void {
   const { themesDir } = opts;
-  const inheritedDirs = opts.inheritedThemesDirs ?? inheritedThemeDirs(themesDir);
+  let inheritedDirs = opts.inheritedThemesDirs;
+  if (inheritedDirs === undefined) {
+    try {
+      const source = resolveSpaceInheritance(_core.accessor.get(IBootstrapService));
+      inheritedDirs = source.appearance && source.baseHomeDir !== undefined ? [join(source.baseHomeDir, 'themes')] : [];
+    } catch { inheritedDirs = inheritedThemeDirs(themesDir); }
+  }
   app.register(async (scoped) => {
     scoped.addContentTypeParser(ZIP_TYPES, { parseAs: 'buffer', bodyLimit: APPEARANCE_LIMITS.packBytes }, (_req, body, done) => {
       done(null, body);

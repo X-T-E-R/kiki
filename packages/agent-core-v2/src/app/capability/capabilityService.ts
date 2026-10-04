@@ -12,6 +12,8 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IProviderService } from '#/kosong/provider/provider';
 import { IHostProcessService } from '#/os/interface/hostProcess';
+import { IMcpManagementService } from '#/app/mcpManagement/mcpManagement';
+import { createKikiComputerEntry } from './entries/kikiComputer';
 
 import { ICapabilityService } from './capability';
 import { CapabilityErrors } from './errors';
@@ -53,6 +55,7 @@ export class CapabilityService extends Disposable implements ICapabilityService 
     @IHostProcessService hostProcess: IHostProcessService,
     @ILogService private readonly log: ILogService,
     @IProviderService providers: IProviderService,
+    @IMcpManagementService computerMcp: IMcpManagementService,
     entriesOverride?: readonly CapabilityEntry[],
   ) {
     super();
@@ -66,6 +69,7 @@ export class CapabilityService extends Disposable implements ICapabilityService 
         userHomeDir: homedir(),
         plugins,
         hostProcess,
+        computerMcp,
         resolveRegion: () => {
           const oauth = providers.get(KIMI_CODE_PROVIDER_NAME)?.oauth;
           return resolveKimiRegion({
@@ -81,6 +85,7 @@ export class CapabilityService extends Disposable implements ICapabilityService 
       this.entries = new Map<CapabilityId, CapabilityEntry>([
         ['kimi-cu', createKimiCuEntry(ctx)],
         ['kimi-webbridge', createKimiWebbridgeEntry(ctx)],
+        ['kiki-computer', createKikiComputerEntry(ctx)],
       ]);
     }
   }

@@ -1508,6 +1508,64 @@ describe('AgentTaskService', () => {
     });
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it.each([false, true])('retains a complete large UTF-8 final receipt across archive and restore, detached=%s', async (detached) => {
+    const docs = mapBackedDocs();
+    const bytes = new InMemoryStorageService();
+    ix.set(IAtomicDocumentStore, docs);
+    ix.set(IFileSystemStorageService, bytes);
+    const svc = ix.get(IAgentTaskService);
+    const text = 'HEAD-MUST-SURVIVE\n' + '🙂'.repeat(512 * 1024) + '\nTAIL-MUST-SURVIVE';
+    const task: AgentTask = {
+      idPrefix: 'agent', kind: 'agent', description: 'large final result',
+      start: async (sink) => {
+        sink.setFinalOutput!(text);
+        await sink.settle({ status: 'completed' });
+      },
+      toInfo: (base) => ({ ...base, kind: 'agent', agentId: 'child' }),
+    };
+    const taskId = svc.registerTask(task, { detached });
+    await svc.wait(taskId);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const snapshot = await svc.getOutputSnapshot(taskId, 32 * 1024);
+    expect(snapshot).toMatchObject({
+      truncated: true, fullOutputAvailable: true,
+      outputSizeBytes: Buffer.byteLength(text, 'utf8'),
+    });
+    expect(snapshot.preview.endsWith('TAIL-MUST-SURVIVE')).toBe(true);
+    expect(snapshot.preview).not.toContain('\uFFFD');
+    expect(snapshot.previewBytes).toBeLessThanOrEqual(32 * 1024);
+    expect(svc.getTask(taskId)).toMatchObject({ receiptVerification: 'verified', receipt: { contentState: 'final' } });
+    expect(await svc.readOutput(taskId)).toBe(text);
+    const restored = buildAgentIx('main', docs, bytes).get(IAgentTaskService) as TaskServiceTestManager;
+    await restored.loadFromDisk();
+    expect(await restored.readOutput(taskId)).toBe(text);
+    let offset = 0;
+    let paged = '';
+    for (;;) {
+      const page = await restored.getOutputPage(taskId, offset, 32 * 1024);
+      expect(page).toBeDefined();
+      paged += page!.text;
+      offset = page!.nextOffset;
+      if (!page!.hasMore) break;
+    }
+    expect(paged).toBe(text);
+    expect(offset).toBe(Buffer.byteLength(text, 'utf8'));
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each([1024 * 1024 - 1, 1024 * 1024, 1024 * 1024 + 1])('preserves final output at the foreground byte boundary %s', async (size) => {
+    ix.set(IFileSystemStorageService, new InMemoryStorageService());
+    const svc = ix.get(IAgentTaskService);
+    const text = 'H' + 'x'.repeat(size - 2) + 'T';
+    const taskId = svc.registerTask({
+      idPrefix: 'agent', kind: 'agent', description: 'boundary result',
+      start: async (sink) => { sink.setFinalOutput!(text); await sink.settle({ status: 'completed' }); },
+      toInfo: (base) => ({ ...base, kind: 'agent' }),
+    }, { detached: false });
+    await svc.wait(taskId);
+    expect(await svc.readOutput(taskId)).toBe(text);
+    expect((await svc.getOutputSnapshot(taskId, 0)).fullOutputAvailable).toBe(size > 1024 * 1024);
+  });
+
   it('keeps a buffered UTF-8 tail within the byte limit without splitting a character', async () => {
     ix.set(IFileSystemStorageService, new InMemoryStorageService());
     const svc = ix.get(IAgentTaskService);

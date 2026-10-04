@@ -338,6 +338,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
           catalog: accessor.get(IModelCatalog),
           memory: accessor.get(IAgentContextMemoryService),
           workspace: accessor.get(ISessionWorkspaceContext),
+          owner: { sessionId: this.session.sessionId, agentId: this.scopeContext.agentId, parentAgentId: this.scopeContext.parentAgentId },
           log: this.log,
         }, context, policyName, policyReason));
       } catch {

@@ -55,6 +55,7 @@ export type AgentConfigUpdateData = Partial<{
 export interface SystemPromptContext extends AgentProfileContext {
   readonly agentsMdWarning?: string;
   readonly agentsMdPaths?: readonly string[];
+  readonly agentsMdFiles?: readonly import('#/agent/agentsMdReminder/instructionCoverage').InstructionFile[];
 }
 
 export type ResolvedAgentProfile = AgentProfile;
@@ -62,9 +63,24 @@ export type ResolvedAgentProfile = AgentProfile;
 export type ThinkingEffortSource = 'forced' | 'adjusted';
 export type ProfileBindingSource = 'registered' | 'profile-file';
 
+export interface ToolBindingOverride {
+  readonly tools?: readonly string[];
+  readonly disallowedTools?: readonly string[];
+}
+
+export interface ProfileToolPolicyBase {
+  readonly tools?: readonly string[];
+  readonly toolAllowPolicies?: readonly (readonly string[])[];
+  readonly disallowedTools?: readonly string[];
+}
+
 export interface ProfileData extends AgentConfigData {
+  readonly toolOverride?: ToolBindingOverride;
+  readonly toolPolicyBase?: ProfileToolPolicyBase;
+  readonly memoryReadContext?: import('#/app/memory/memorySnapshot').MemoryPersonaContext;
   readonly personaId?: string;
   readonly personaRevision?: string;
+  readonly personaOverrides?: Readonly<{ profile?: string; model?: string; thinking?: string }>;
   readonly persona?: import('@kiki/agent-profiles/personaFile').PersonaSnapshot;
   readonly roomPrompt?: string;
   readonly effectiveThinkingLevel?: ThinkingEffort;
@@ -89,6 +105,10 @@ export interface ProfileData extends AgentConfigData {
   readonly disabledToolGroups?: readonly ToolGroupId[];
   readonly subagentPolicy?: AgentProfile['subagentPolicy'];
   readonly subagentDeclaration?: AgentProfile['subagentDeclaration'];
+  readonly canSpawnSubagents?: boolean;
+  readonly allowedSubagents?: readonly string[];
+  readonly preferredSubagents?: readonly string[];
+  readonly denySubagents?: readonly string[];
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly dispatchDecision?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision;
@@ -102,6 +122,7 @@ export interface ProfileData extends AgentConfigData {
 }
 
 export type ProfileUpdateData = Partial<{
+  personaOverrides: NonNullable<ProfileData['personaOverrides']>;
   promptBase: import('./boundProfile').BoundPromptBase;
   modelAlias: string;
   profileName: string;
@@ -118,8 +139,12 @@ export type ProfileUpdateData = Partial<{
 }>;
 
 export interface ProfileBindingSnapshot {
+  readonly toolOverride?: ToolBindingOverride;
+  readonly toolPolicyBase?: ProfileToolPolicyBase;
+  readonly memoryReadContext?: import('#/app/memory/memorySnapshot').MemoryPersonaContext;
   readonly personaId?: string;
   readonly personaRevision?: string;
+  readonly personaOverrides?: Readonly<{ profile?: string; model?: string; thinking?: string }>;
   readonly persona?: import('@kiki/agent-profiles/personaFile').PersonaSnapshot;
   readonly roomPrompt?: string;
   readonly modelAlias?: string;
@@ -152,6 +177,10 @@ export interface ProfileBindingSnapshot {
   readonly disabledToolGroups?: readonly ToolGroupId[];
   readonly subagentPolicy?: AgentProfile['subagentPolicy'];
   readonly subagentDeclaration?: AgentProfile['subagentDeclaration'];
+  readonly canSpawnSubagents?: boolean;
+  readonly allowedSubagents?: readonly string[];
+  readonly preferredSubagents?: readonly string[];
+  readonly denySubagents?: readonly string[];
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly dispatchDecision?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision;
@@ -193,6 +222,16 @@ export interface ProfileSetEffortResult {
   readonly effort: string;
 }
 
+export interface PreparedModelSwitchBinding {
+  readonly model: string;
+  readonly thinking: string;
+  readonly config: import('./profileOps').ConfigUpdatePayload;
+  readonly maxContextTokens: number | undefined;
+  readonly reservedTokens: number | undefined;
+  assertCurrent(): void;
+  syncMetadata(): Promise<void>;
+}
+
 export interface BindingSelectionValue {
   readonly source: BindingValueSource;
   readonly requestedValue?: string;
@@ -209,7 +248,11 @@ export interface BindingConstraintInput {
 }
 
 export interface BindAgentInput {
+  readonly toolOverride?: ToolBindingOverride;
+  readonly memoryReadContext?: import('#/app/memory/memorySnapshot').MemoryPersonaContext;
   readonly persona?: string;
+  readonly personaSnapshot?: import('@kiki/agent-profiles/personaFile').PersonaSnapshot;
+  readonly personaOverrides?: NonNullable<ProfileData['personaOverrides']>;
   readonly roomPrompt?: string;
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly allowParentNotify?: boolean;
@@ -235,17 +278,22 @@ export interface IAgentProfileService {
   update(changed: ProfileUpdateData): void;
   applyBindingSnapshot(snapshot: ProfileBindingSnapshot): void;
   bind(input: BindAgentInput): Promise<void>;
+  applyPersonaSettings(restoreDefaults?: boolean): Promise<void>;
   setModel(model: string): Promise<ProfileSetModelResult>;
+  prepareModelSwitchBinding(model: string, thinking?: string): Promise<PreparedModelSwitchBinding>;
   setEffort(level: string): ProfileSetEffortResult;
   setThinking(level: string): void;
   validateBinding(binding: ExecutorBinding): ExecutorValidationResult;
   prepareResumeBinding(input: {
+    readonly toolOverride?: ToolBindingOverride;
     readonly modelAlias?: string;
     readonly thinkingEffort?: string;
     readonly allowModelChange?: boolean;
+    readonly newWindow?: boolean;
     readonly allowParentNotify?: boolean;
     readonly callerConstraints?: readonly (BindingConstraintInput | SpawnConstraints)[];
-  }): Promise<() => void | Promise<void>>;
+  }): Promise<PreparedModelSwitchBinding>;
+  syncBindingMetadata(): Promise<void>;
   publishBindingAdvisories(): void;
   republishStatus(): void;
   getModel(): string;
@@ -256,6 +304,9 @@ export interface IAgentProfileService {
   reconcileMemorySnapshot(): Promise<void>;
   rebuildPromptContext(): Promise<void>;
   preparePromptConfiguration(): Promise<boolean>;
+  getCognitionBinding(): Promise<import('#/agent/cognition/cognitionConfig').CognitionBinding>;
+  getCognitionSnapshot(): import('#/agent/cognition/cognitionConfig').CognitionBinding | undefined;
+  getPromptDiagnostics(options?: { readonly checkAllPromptFiles?: boolean }): Promise<import('@kiki/protocol').AgentPromptDiagnostics>;
   getAgentsMdWarning(): string | undefined;
   data(): ProfileData;
   getEffectiveThinkingLevel(): ThinkingEffort;

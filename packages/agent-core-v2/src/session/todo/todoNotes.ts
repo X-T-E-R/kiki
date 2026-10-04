@@ -12,13 +12,23 @@ export interface NotesMeta {
   readonly writtenStep: string;
   readonly coveredMessageId: string;
   readonly windowEpoch: number;
+  readonly reviewedMessageId?: string;
+  readonly reviewedWindowEpoch?: number;
 }
 
 export function coveredMessageIndex(history: readonly ContextMessage[], meta?: NotesMeta): number {
-  if (meta === undefined) return -1;
-  if (meta.coveredMessageId === 'compaction_summary') return history.findLastIndex((message) => message.origin?.kind === 'compaction_summary');
-  return history.findIndex((message) => message.id === meta.coveredMessageId ||
-    (meta.coveredMessageId.startsWith('toolcall:') && message.toolCalls.some((call) => call.id === meta.coveredMessageId.slice(9))));
+  const boundary = meta?.reviewedMessageId;
+  if (boundary === undefined) return -1;
+  return history.findIndex((message) => message.id === boundary ||
+    (boundary.startsWith('toolcall:') && message.toolCalls.some((call) => call.id === boundary.slice(9))));
+}
+
+export function compactionDirectivesBudget(notes: TodoNotes | undefined, text: string): { sectionChars: number; totalChars: number; exceeded: boolean } {
+  const previous = notes?.directives ?? '';
+  const candidate = !previous || text.includes(previous) ? text : previous.includes(text) ? previous : `${previous}\n${text}`;
+  const sectionChars = candidate.length;
+  const totalChars = NOTE_SECTIONS.reduce((sum, key) => sum + (key === 'directives' ? sectionChars : notes?.[key]?.length ?? 0), 0);
+  return { sectionChars, totalChars, exceeded: sectionChars > 1_500 || totalChars > 7_500 };
 }
 
 export function mergeTodoNotes(current: TodoNotes | undefined, patch: TodoNotes | null): TodoNotes | undefined {
@@ -30,12 +40,10 @@ export function mergeTodoNotes(current: TodoNotes | undefined, patch: TodoNotes 
     if (text.length === 0) delete next[key];
     else next[key] = text;
   }
-  if (NOTE_SECTIONS.some((key) => (next[key]?.length ?? 0) > 1_500)) {
-    throw new Error('Each working notes section must be at most 1,500 characters.');
-  }
-  if (NOTE_SECTIONS.reduce((sum, key) => sum + (next[key]?.length ?? 0), 0) > 7_500) {
-    throw new Error('Working notes must be at most 7,500 characters in total.');
-  }
+  const oversized = NOTE_SECTIONS.find((key) => (next[key]?.length ?? 0) > 1_500);
+  if (oversized !== undefined) throw new Error(`Working notes section notes.${oversized} has ${next[oversized]!.length} characters (limit: 1,500).`);
+  const total = NOTE_SECTIONS.reduce((sum, key) => sum + (next[key]?.length ?? 0), 0);
+  if (total > 7_500) throw new Error(`Working notes have ${total} characters in total (limit: 7,500).`);
   return Object.keys(next).length === 0 ? undefined : next;
 }
 

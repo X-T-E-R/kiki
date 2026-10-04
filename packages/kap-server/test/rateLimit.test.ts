@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createAuthHook } from '../src/middleware/auth';
+import { authenticatedAuthorization, createAuthHook } from '../src/middleware/auth';
 import {
   createAuthFailureLimiter,
   type AuthFailureLimiter,
@@ -139,6 +139,35 @@ describe('createAuthHook bypass policy (URL encoding)', () => {
     const res = await app.inject({ method: 'GET', url: '/%61pi/healthz' });
     expect(res.statusCode).toBe(404);
   });
+});
+
+it('keeps successful request authorization private while redacting logs and retaining refusal and bypass behavior', async () => {
+  for (const useAudience of [false, true]) {
+    const observed: { header: string | undefined; authenticated: string | undefined }[] = [];
+    const app = Fastify();
+    app.addHook('onRequest', createAuthHook(fixedImpl(), {
+      authorizeRequest: useAudience ? async (token, _request, reply) => {
+        if (token === TOKEN) return true;
+        await reply.code(403).send({ error: 'refused' });
+        return false;
+      } : undefined,
+    }));
+    app.addHook('onResponse', async (request) => {
+      observed.push({ header: request.headers.authorization, authenticated: authenticatedAuthorization(request) });
+    });
+    app.get('/api/sessions', async () => ({ ok: true }));
+    app.get('/api/healthz', async () => ({ ok: true }));
+    try {
+      expect((await app.inject({ url: '/api/sessions', headers: { authorization: `Bearer ${TOKEN}` } })).statusCode).toBe(200);
+      expect(observed.pop()).toEqual({ header: '[redacted]', authenticated: `Bearer ${TOKEN}` });
+      expect((await app.inject({ url: '/api/sessions', headers: { authorization: 'Bearer wrong' } })).statusCode).toBe(useAudience ? 403 : 401);
+      expect(observed.pop()).toEqual({ header: '[redacted]', authenticated: undefined });
+      expect((await app.inject({ url: '/api/sessions' })).statusCode).toBe(401);
+      expect(observed.pop()).toEqual({ header: undefined, authenticated: undefined });
+      expect((await app.inject({ url: '/api/healthz', headers: { authorization: `Bearer ${TOKEN}` } })).statusCode).toBe(200);
+      expect(observed.pop()).toEqual({ header: `Bearer ${TOKEN}`, authenticated: undefined });
+    } finally { await app.close(); }
+  }
 });
 
 describe('createAuthFailureLimiter (unit)', () => {

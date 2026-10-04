@@ -6,7 +6,7 @@ import { Emitter } from '#/_base/event';
 import { IModelService } from '#/kosong/model/model';
 import { IHookRulesRegistry } from '../app/hookRules';
 import { loadHookRules } from '../internal/loadRules';
-import { hookHash, hookOrder, type HookEvent, type HookRulesSnapshot } from '../internal/rules';
+import { hookHash, hookOrder, retainFailedHookSources, type HookEvent, type HookRulesSnapshot } from '../internal/rules';
 import { IHookRulesSession, ISessionHookWorkspace } from './hookRules';
 
 export class HookRulesSession extends Disposable implements IHookRulesSession {
@@ -38,14 +38,18 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
     const trusted = this.workspace.current?.trust.isTrusted() === true;
     const rules = [...global.rules, ...this.project.rules.map((entry) => !trusted ? { ...entry, active: false, reason: 'workspace_untrusted' } : entry)]
       .map((entry) => disabled.includes('*') || disabled.includes(entry.id) ? { ...entry, active: false, reason: 'disabled' } : entry).toSorted(hookOrder);
-    return { revision: hookHash([global.revision, this.project.revision, trusted, disabled]), rules, diagnostics: [...global.diagnostics, ...this.project.diagnostics] };
+    return { sources: [...global.sources ?? [], ...this.project.sources ?? []], revision: hookHash([global.revision, this.project.revision, trusted, disabled]), rules, diagnostics: [...global.diagnostics, ...this.project.diagnostics] };
   }
 
   observe(event: HookEvent, hookId: string): void { this.observed.fire({ ...event, hookId }); }
 
   reload(): Promise<void> {
     this.pending = this.pending.then(() => this.load()).catch((error) => {
-      this.project = { revision: hookHash(String(error)), rules: [], diagnostics: [{ path: '.kiki/hooks.toml', message: String(error) }] };
+      const workspace = this.workspace.current;
+      const path = workspace?.runtime.path.join(workspace.root, '.kiki', 'hooks.toml') ?? '.kiki/hooks.toml';
+      const status = typeof error === 'object' && error !== null && 'code' in error ? 'unavailable' : 'invalid';
+      this.project = retainFailedHookSources(this.project, { revision: hookHash(String(error)), rules: [],
+        sources: [{ namespace: 'workspace', path, status }], diagnostics: [{ path, message: String(error) }] });
       this.changed.fire();
     });
     return this.pending;
@@ -61,7 +65,8 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
     this.subscriptions.add(workspace.trust.onDidChange(() => { void this.reload(); }));
     const file = runtime.path.join(root, '.kiki', 'hooks.toml');
     if (runtime.fs === undefined) {
-      this.project = { revision: 'unsupported', rules: [], diagnostics: [{ path: file, message: 'workspace hooks unsupported: runtime has no filesystem capability' }] };
+      this.project = retainFailedHookSources(this.project, { revision: 'unsupported', rules: [], sources: [{ namespace: 'workspace', path: file, status: 'unavailable' }], diagnostics: [{ path: file, message: 'workspace hooks unsupported: runtime has no filesystem capability' }] });
+      this.changed.fire();
       return;
     }
     if (runtime.watch !== undefined) {
@@ -74,9 +79,10 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
       if (typeof error === 'object' && error !== null && 'code' in error && (error.code === 'os.fs.not_found' || error.code === 'ENOENT')) config = undefined;
       else throw error;
     }
-    this.project = config === undefined ? { revision: 'absent', rules: [], diagnostics: [] } : await loadHookRules([
+    const next = config === undefined ? { revision: 'absent', rules: [], diagnostics: [], sources: [{ namespace: 'workspace', path: file, status: 'absent' as const }] } : await loadHookRules([
       { namespace: 'workspace', path: file, root, config, trusted: workspace.trust.isTrusted(), mutable: true },
     ], runtime.fs, runtime.path, (alias) => this.models.resolveId(alias));
+    this.project = retainFailedHookSources(this.project, next);
     if (runtime.watch !== undefined) {
       for (const watched of (this.project.watchPaths ?? []).filter((watched) => watched !== file)) {
         const handle = this.subscriptions.add(runtime.watch.watch(watched));

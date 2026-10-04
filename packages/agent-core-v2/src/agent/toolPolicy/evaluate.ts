@@ -1,10 +1,10 @@
-import picomatch from 'picomatch';
+import { isToolActive as isProfileToolActive } from '@kiki/agent-profiles/toolPolicy';
 import { isSubagentToolAllowed, type SubagentToolPolicy } from '@kiki/agent-profiles/subagentToolPolicy';
 
 import { isMcpToolName, type ToolSource } from '#/tool/toolContract';
 import { allowsResearchTool, type ExecutionRestriction } from '#/agent/profile/executionRestriction';
 import { toolGroupForName } from '#/agent/toolRegistry/toolGroups';
-import { canonicalToolName, legacyToolNames } from './toolAliases';
+import { legacyToolNames } from './toolAliases';
 import type { ToolGroupId } from '@kiki/agent-profiles/toolGroups';
 
 export interface ToolActivationPolicy {
@@ -23,30 +23,7 @@ export function isToolActive(
   if (policy.executionRestriction === 'research-readonly' && !allowsResearchTool(name, source)) {
     return false;
   }
-  const allowPolicies = [policy.tools, ...(policy.toolAllowPolicies ?? [])].filter(
-    (candidate): candidate is readonly string[] => candidate !== undefined,
-  );
-  for (const allowPolicy of allowPolicies) {
-    const allowed =
-      source !== 'mcp'
-        ? allowPolicy.includes(name) ||
-          (canonicalToolName(name) !== undefined && allowPolicy.includes(canonicalToolName(name)!)) ||
-          legacyToolNames(name).some((legacy) => allowPolicy.includes(legacy))
-        : allowPolicy
-            .filter((pattern) => isMcpToolName(pattern))
-            .some((pattern) => picomatch.isMatch(name, pattern));
-    if (!allowed) return false;
-  }
-  if (policy.disallowedTools !== undefined) {
-    if (source !== 'mcp'
-      ? policy.disallowedTools.includes(name) ||
-        (canonicalToolName(name) !== undefined && policy.disallowedTools.includes(canonicalToolName(name)!)) ||
-        (legacyToolNames(name).length > 0 &&
-          legacyToolNames(name).every((legacy) => policy.disallowedTools!.includes(legacy)))
-      : isDeniedByMcpGlob(policy.disallowedTools, name)) {
-      return false;
-    }
-  }
+  if (!isProfileToolActive(policy, name, source)) return false;
   if (policy.disabledToolGroups !== undefined && policy.disabledToolGroups.length > 0) {
     const group = toolGroupForName(name);
     if (
@@ -59,12 +36,6 @@ export function isToolActive(
     }
   }
   return true;
-}
-
-function isDeniedByMcpGlob(patterns: readonly string[], name: string): boolean {
-  return patterns
-    .filter((pattern) => isMcpToolName(pattern))
-    .some((pattern) => picomatch.isMatch(name, pattern));
 }
 
 export interface GlobalToolsPolicy {

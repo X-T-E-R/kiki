@@ -20,6 +20,10 @@ import {
   type ToolUpdate,
 } from '#/tool/toolContract';
 import { ToolOutputAccumulator } from '#/tool/output-accumulator';
+import { coveredInstructions } from '#/agent/agentsMdReminder/instructionCoverage';
+import { foldLoopEvent } from '#/agent/contextMemory/loopEventFold';
+import { ContextAppendLoopEvent } from '#/agent/contextMemory/contextEvents';
+import { advanceContinuityClock, initialContinuityClock } from '#/session/todo/continuityState';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import type {
   BeforeToolExecuteEvent,
@@ -287,6 +291,34 @@ describe('AgentToolExecutorService', () => {
         output: 'truncated output',
       }),
     );
+  });
+
+  it.each([false, true])('preserves read and memory metadata through hooks and real consumer folds (isError=%s)', async (isError) => {
+    const readRange = { startLine: 1, endLine: 1, totalLines: 1, truncated: false };
+    const fileRead = { ...readRange, file: {
+      path: '/workspace/sub/AGENTS.md', runtimeId: 'local', scope: '/workspace/sub', version: 'v1',
+    } };
+    const memoryReceipt = { action: 'create' as const, id: 'memory-1', revision: 'r1', status: 'active', operationId: 'op1' };
+    registry.register(new TestTool('ContractResult', {
+      result: { output: 'read and saved', isError, readRange, fileRead, memoryReceipt },
+    }));
+    executor.hooks.onDidExecuteTool.register('metadata-observer', async (ctx, next) => {
+      expect(ctx.result).toMatchObject({ readRange, fileRead, memoryReceipt });
+      ctx.result = { ...ctx.result, output: 'hook retained metadata' };
+      await next();
+    });
+    const [result] = await execute([toolCall('contract-result', 'ContractResult', {})]);
+    expect(result).toMatchObject({ readRange, fileRead, memoryReceipt, output: 'hook retained metadata' });
+    const event = { type: 'tool.result' as const, toolCallId: 'contract-result', result: result! };
+    let history = foldLoopEvent([], { type: 'step.begin', uuid: 'step-1' });
+    history = foldLoopEvent(history, { type: 'tool.call', stepUuid: 'step-1', toolCallId: 'contract-result', name: 'ContractResult' });
+    history = foldLoopEvent(history, event);
+    expect(history.find((message) => message.role === 'tool')?.fileRead).toEqual(fileRead);
+    expect(coveredInstructions(history, 'posix').size).toBe(isError ? 0 : 1);
+    const clock = advanceContinuityClock(initialContinuityClock(), new ContextAppendLoopEvent({ event }));
+    expect(clock.memoryMaintenance?.receipts).toEqual(isError ? [] : [
+      { ...memoryReceipt, source: 'unassociated:contract-result' },
+    ]);
   });
 
   it('preserves internal result notes without exposing them on protocol tool.result events', async () => {
@@ -671,7 +703,7 @@ describe('AgentToolExecutorService', () => {
     expect(results).toEqual(expect.arrayContaining([
       expect.objectContaining({ output: 'first result', stopBatchAfterThis: true }),
       expect.objectContaining({
-        output: 'Tool skipped because a previous tool call stopped the turn.',
+        output: 'Tool skipped because a previous tool call stopped this batch.',
         isError: true,
       }),
     ]));
@@ -1262,6 +1294,28 @@ describe('truncation pipeline', () => {
 
   afterEach(async () => {
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it('marks read disclosures truncated after the real output spill and preserves the memory receipt', async () => {
+    const readRange = { startLine: 1, endLine: 1, totalLines: 1, truncated: false };
+    const fileRead = { ...readRange, file: {
+      path: '/workspace/AGENTS.md', runtimeId: 'local', scope: '/workspace', version: 'v1',
+    } };
+    const memoryReceipt = { action: 'update' as const, id: 'memory-1', revision: 'r2', status: 'active', operationId: 'op2' };
+    registry.register(new TestTool('Read', {
+      result: { output: 'x'.repeat(50_001), readRange, fileRead, memoryReceipt },
+    }));
+    const [result] = await execute([toolCall('read-spill', 'Read', {})]);
+    expect(result).toMatchObject({
+      truncated: true, readRange: { ...readRange, truncated: true },
+      fileRead: { ...fileRead, truncated: true }, memoryReceipt,
+    });
+    let history = foldLoopEvent([], { type: 'step.begin', uuid: 'step-1' });
+    history = foldLoopEvent(history, { type: 'tool.call', stepUuid: 'step-1', toolCallId: 'read-spill', name: 'Read' });
+    history = foldLoopEvent(history, { type: 'tool.result', toolCallId: 'read-spill', result: result! });
+    expect(coveredInstructions(history, 'posix').size).toBe(0);
+    expect(fileRead.truncated).toBe(false);
+    expect(readRange.truncated).toBe(false);
   });
 
   it('spills oversized output to disk and renders a pointer for the model', async () => {

@@ -212,6 +212,14 @@ describe('EventDispatcherService', () => {
     expect(journal).toEqual([]);
   });
 
+  it('never treats a failed durable dispatch as a successful flush-only recovery', async () => {
+    const event = new FailingEvent({});
+    await expect(dispatcher.dispatchDurably(event)).rejects.toThrow('fold failure');
+    await expect(dispatcher.dispatchDurably(event)).rejects.toThrow('fold failure');
+    expect(agentState.get(counterKey).value).toBe(0);
+    expect(journal).toEqual([]);
+  });
+
   it('returns the same reference from getState when a fold is a no-op', async () => {
     const before = agentState.get(counterKey);
     await dispatcher.dispatch(new CounterSet({ value: 0 }));
@@ -433,6 +441,22 @@ describe('EventDispatcherService', () => {
     await third.dispatcher.restore();
     expect(reads).toBe(2);
     expect(third.state.get(checkpointedKey).items).toEqual(['x', 'y']);
+
+    identity = { size: 123, mtimeMs: 456, headHash: 'head-a' };
+    documents.set('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1', { ...persisted as object, replayAbi: 0 });
+    const upgraded = create();
+    await upgraded.dispatcher.restore();
+    expect(reads).toBe(3);
+    expect(upgraded.state.get(checkpointedKey)).toEqual(second.state.get(checkpointedKey));
+    expect(upgraded.dispatcher.checkpointDepth(checkpointedKey)).toBe(second.dispatcher.checkpointDepth(checkpointedKey));
+
+    const stableIdentity = wire.journalIdentity!;
+    wire.journalIdentity = async () => {
+      await first.dispatcher.dispatch(new ItemAdd({ item: 'concurrent' }));
+      return stableIdentity();
+    };
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(false);
+    wire.journalIdentity = stableIdentity;
   });
 
   it('binds checkpoints to the journal head hash across same-size rewrites and legacy envelopes', async () => {

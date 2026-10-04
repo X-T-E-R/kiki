@@ -1,11 +1,13 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event } from '#/_base/event';
+import type { InstructionFile } from '#/agent/agentsMdReminder/instructionCoverage';
 import type { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
 
 export interface WorkspaceInstructionsSnapshot {
   readonly agentsMd: string | undefined;
   readonly agentsMdWarning: string | undefined;
   readonly agentsMdPaths: readonly string[] | undefined;
+  readonly agentsMdFiles?: readonly InstructionFile[];
 }
 
 export interface IWorkspaceInstructionsService {

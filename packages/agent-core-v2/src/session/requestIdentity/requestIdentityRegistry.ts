@@ -157,7 +157,7 @@ export class RequestIdentityRegistry implements IRequestIdentityRegistry {
       : undefined;
     const threadId =
       dimensions.threadIdentity
-        ? input.parentAgentId === undefined
+        ? input.agentId === 'main'
           ? (sharedSessionId ?? stableUuid(identitySeed, this.session.sessionId, 'thread', input.agentId))
           : stableUuid(identitySeed, this.session.sessionId, 'thread', input.agentId)
         : undefined;

@@ -5,8 +5,8 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { resolvePath } from '#/_base/utils/paths';
 import { ErrorCodes, Error2 } from '#/errors';
 import { IBootstrapService, resolveKikiHome } from '#/app/bootstrap/bootstrap';
-import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
-import { loadMcpJsonLayer, loadMcpServersDetailed } from '#/app/mcpConfig/configLoader';
+import { resolveSpaceInheritance, resolveSpaceMcpBaseSelection } from '#/app/bootstrap/spaceInheritance';
+import { loadMcpJsonLayer, loadMcpServersDetailed, selectSpaceMcpBase } from '#/app/mcpConfig/configLoader';
 import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -32,7 +32,7 @@ export class McpRegistryService implements IMcpRegistryService {
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
   ) {
     const inheritance = resolveSpaceInheritance(bootstrap);
-    this.inheritedHomeDir = inheritance.mcp ? inheritance.baseHomeDir : undefined;
+    this.inheritedHomeDir = inheritance.mcp ? bootstrap.baseHomeDir : undefined;
   }
 
   /** Lists entries for a query. `cwd` stays absolute but case-preserving: the canonical form is a
@@ -55,6 +55,7 @@ export class McpRegistryService implements IMcpRegistryService {
           cwd,
           homeDir: this.bootstrap.homeDir,
           baseHomeDir: this.inheritedHomeDir,
+          baseSelection: resolveSpaceMcpBaseSelection(this.bootstrap),
         });
         for (const [name, config] of Object.entries(detailed.servers)) {
           const origin = detailed.origins[name] ?? this.store.path;
@@ -101,7 +102,7 @@ export class McpRegistryService implements IMcpRegistryService {
   private async pushInheritedEntries(out: McpRegistryEntry[]): Promise<void> {
     if (this.inheritedHomeDir === undefined) return;
     const basePath = join(resolveKikiHome(this.inheritedHomeDir), 'mcp.json');
-    const servers = await loadMcpJsonLayer(this.fs, basePath);
+    const servers = selectSpaceMcpBase(await loadMcpJsonLayer(this.fs, basePath), resolveSpaceMcpBaseSelection(this.bootstrap));
     const present = new Set(out.map((entry) => entry.name));
     for (const [name, config] of Object.entries(servers)) {
       if (present.has(name)) continue;

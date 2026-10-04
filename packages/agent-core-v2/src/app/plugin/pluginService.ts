@@ -17,6 +17,7 @@ import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 import { PluginManager } from './manager';
 import {
+  type PluginChangeEvent,
   type GetPluginInfoInput,
   type InstallPluginInput,
   IPluginService,
@@ -65,6 +66,9 @@ export class PluginService extends Service implements IPluginService {
   private snapshotLoaded = false;
   private loadError: Error | undefined;
   private mutationQueue: Promise<void> = Promise.resolve();
+  private changing: { readonly affected?: readonly string[]; draining: boolean } | undefined;
+  private readonly onWillChangeEmitter = this._register(new AsyncEmitter<PluginChangeEvent>());
+  readonly onWillChange: Event<PluginChangeEvent> = this.onWillChangeEmitter.event;
   private readonly onDidReloadEmitter = this._register(new AsyncEmitter<PluginReloadEvent>());
   private readonly onDidMutateEmitter = this._register(new Emitter<PluginMutationSummary>());
 
@@ -99,19 +103,24 @@ export class PluginService extends Service implements IPluginService {
   }
 
   installPlugin(input: InstallPluginInput): Promise<PluginSummary> {
-    return this.runNotifiedMutation(async () => {
+    return this.awaitReloadDelivery(this.runSerializedOperation(async () => {
       if (input.fingerprint === undefined) {
         throw new Error2(PluginErrors.codes.PLUGIN_LOAD_FAILED, 'Preview this plugin before installing');
       }
-      const record = await this.manager.install(input.source, input);
-      const info = this.manager.info(record.id);
-      if (info === undefined)
-        throw new BugIndicatingError(`Plugin "${record.id}" missing right after install`);
-      const notification = await this.reloadAndNotify({
-        mutation: { kind: 'install', id: record.id },
-      });
-      return { result: info, notification };
-    });
+      let finish: (() => void) | undefined;
+      try {
+        const record = await this.manager.install(input.source, input, async (id) => {
+          finish = await this.beginPluginChange([id]);
+        });
+        const info = this.manager.info(record.id);
+        if (info === undefined)
+          throw new BugIndicatingError(`Plugin "${record.id}" missing right after install`);
+        const notification = await this.reloadAndNotify({
+          mutation: { kind: 'install', id: record.id },
+        });
+        return { result: info, notification };
+      } finally { finish?.(); }
+    }));
   }
 
   rollbackPlugin(input: { readonly id: string }): Promise<PluginSummary> {
@@ -119,7 +128,7 @@ export class PluginService extends Service implements IPluginService {
       const record = await this.manager.rollback(input.id);
       const notification = await this.reloadAndNotify({ mutation: { kind: 'rollback', id: record.id } });
       return { result: this.manager.info(record.id)!, notification };
-    });
+    }, [input.id]);
   }
 
   setPluginEnabled(input: SetPluginEnabledInput): Promise<void> {
@@ -129,7 +138,7 @@ export class PluginService extends Service implements IPluginService {
         mutation: { kind: input.enabled ? 'enable' : 'disable', id: input.id },
       });
       return { result: undefined, notification };
-    });
+    }, [input.id]);
   }
 
   setPluginMcpServerEnabled(input: SetPluginMcpServerEnabledInput): Promise<void> {
@@ -139,7 +148,7 @@ export class PluginService extends Service implements IPluginService {
         mutation: { kind: 'mcp-server', id: input.id },
       });
       return { result: undefined, notification };
-    });
+    }, []);
   }
 
   removePlugin(input: RemovePluginInput): Promise<void> {
@@ -158,12 +167,12 @@ export class PluginService extends Service implements IPluginService {
         mutation: { kind: 'remove', id: input.id },
       });
       return { result: undefined, notification };
-    });
+    }, [input.id]);
   }
 
   reloadPlugins(): Promise<ReloadSummary> {
     const reload = this.awaitReloadDelivery(
-      this.enqueueMutation(async () => {
+      this.enqueueMutation(() => this.withPluginChange(undefined, async () => {
         try {
           const notification = await this.reloadAndNotify();
           return { result: notification.summary, notification };
@@ -175,7 +184,7 @@ export class PluginService extends Service implements IPluginService {
             { cause: this.loadError, details: { kimiHomeDir: this.homeDir } },
           );
         }
-      }),
+      })),
     );
     this.initialLoadPromise ??= reload.then(
       () => undefined,
@@ -190,14 +199,36 @@ export class PluginService extends Service implements IPluginService {
     const summary = await this.manager.reload();
     this.snapshotLoaded = true;
     this.loadError = undefined;
-    const delivery = this.onDidReloadEmitter.fireAsyncConcurrent(summary, NO_ABORT);
+    const affected = options?.mutation === undefined ? undefined : options.mutation.kind === 'mcp-server' ? [] : [options.mutation.id];
+    const delivery = this.onDidReloadEmitter.fireAsyncConcurrent({ ...summary, affected }, NO_ABORT);
     if (options?.mutation !== undefined)
       this.onDidMutateEmitter.fire({ ...summary, mutation: options.mutation });
     return { summary, delivery };
   }
 
-  private runNotifiedMutation<T>(operation: () => Promise<PluginMutationOutcome<T>>): Promise<T> {
-    return this.awaitReloadDelivery(this.runSerializedOperation(operation));
+  private runNotifiedMutation<T>(
+    operation: () => Promise<PluginMutationOutcome<T>>,
+    affected: readonly string[],
+  ): Promise<T> {
+    return this.awaitReloadDelivery(this.runSerializedOperation(() => this.withPluginChange(affected, operation)));
+  }
+
+  private async beginPluginChange(affected: readonly string[] | undefined): Promise<() => void> {
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    this.changing = { affected: affected?.map((id) => id.toLowerCase()), draining: true };
+    await this.onWillChangeEmitter.fireAsyncConcurrent({ affected: this.changing.affected, finished }, NO_ABORT);
+    this.changing.draining = false;
+    return () => {
+      this.changing = undefined;
+      finish();
+    };
+  }
+
+  private async withPluginChange<T>(affected: readonly string[] | undefined, operation: () => Promise<T>): Promise<T> {
+    const finish = await this.beginPluginChange(affected);
+    try { return await operation(); }
+    finally { finish(); }
   }
 
   private async awaitReloadDelivery<T>(operation: Promise<PluginMutationOutcome<T>>): Promise<T> {
@@ -207,7 +238,8 @@ export class PluginService extends Service implements IPluginService {
   }
 
   getPluginInfo(input: GetPluginInfoInput): Promise<PluginInfo> {
-    return this.runManagementRead(async () => {
+    const read = async () => {
+      this.assertLoaded();
       const info = this.manager.info(input.id);
       if (info === undefined) {
         throw new Error2(
@@ -217,7 +249,12 @@ export class PluginService extends Service implements IPluginService {
         );
       }
       return info;
-    });
+    };
+    if (this.snapshotLoaded && (this.changing?.draining === true ||
+      (this.changing?.affected !== undefined && !this.changing.affected.includes(input.id.toLowerCase())))) {
+      return read();
+    }
+    return this.runManagementRead(read);
   }
 
   listPluginCommands(): Promise<readonly PluginCommandDef[]> {

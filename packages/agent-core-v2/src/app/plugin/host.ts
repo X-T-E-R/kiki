@@ -3,6 +3,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
 import { toolContributionSchema, type PluginTool } from './contributions';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
 
@@ -31,14 +32,19 @@ interface Call {
   readonly resolve: (value: unknown) => void;
   readonly reject: (reason: Error) => void;
   readonly onProgress?: (update: ToolUpdate) => void;
+  readonly media?: PluginMediaApi;
+  readonly connection?: () => Promise<unknown>;
 }
 
 export class PluginHost {
   private child: ChildProcessWithoutNullStreams | undefined;
   private readonly pending = new Map<number, Call>();
   private readonly registered = new Set<string>();
+  private readonly registeredSources = new Set<string>();
+  private readonly registeredProviders = new Set<string>();
   private nextId = 0;
   private ready?: Promise<void>;
+  private exited: Promise<void> = Promise.resolve();
   private idle?: ReturnType<typeof setTimeout>;
   private stopped = false;
 
@@ -46,11 +52,69 @@ export class PluginHost {
     readonly id: string,
     private readonly entry: string,
     private readonly definitions: readonly PluginTool[],
+    private readonly sources: readonly SessionSourceDefinition[] = [],
+    private readonly providers: readonly MediaProviderDefinition[] = [],
   ) {}
+
+  async requestMediaProvider(providerId: string, action: 'describe' | 'submit' | 'poll' | 'cancel' | 'voices', input: unknown, signal: AbortSignal, settings: Record<string, unknown>, context: { jobId: string; stagingDir: string; connection?: () => Promise<unknown> }, onProgress?: (update: ToolUpdate) => void): Promise<unknown> {
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    signal.throwIfAborted();
+    await this.start();
+    if (!this.registeredProviders.has(providerId)) throw new Error(`Plugin ${this.id} did not register media provider ${providerId}`);
+    signal.throwIfAborted();
+    clearTimeout(this.idle);
+    const id = ++this.nextId;
+    return new Promise((resolve, reject) => {
+      const finish = (error?: Error, value?: unknown) => {
+        signal.removeEventListener('abort', cancel);
+        this.pending.delete(id);
+        if (error) reject(error); else resolve(value);
+        this.scheduleIdle();
+      };
+      const cancel = () => {
+        this.send({ method: 'cancel', params: { id } });
+        finish(signal.reason instanceof Error ? signal.reason : new Error('Media reception stopped locally'));
+      };
+      signal.addEventListener('abort', cancel, { once: true });
+      this.pending.set(id, { resolve: (value) => finish(undefined, value), reject: (error) => finish(error), onProgress, connection: context.connection });
+      this.send({ id, method: 'media-provider-request', params: { providerId, action, input, settings, jobId: context.jobId, stagingDir: context.stagingDir } });
+    });
+  }
+
+  async requestSource(sourceId: string, action: 'discover' | 'probe' | 'parse', args: unknown, signal: AbortSignal, settings: Record<string, unknown>): Promise<unknown> {
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    signal.throwIfAborted();
+    await this.start();
+    if (!this.registeredSources.has(sourceId)) throw new Error(`Plugin ${this.id} did not register source ${sourceId}`);
+    signal.throwIfAborted();
+    clearTimeout(this.idle);
+    const id = ++this.nextId;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.send({ method: 'cancel', params: { id } });
+        finish(new Error('Session source page timed out'));
+      }, 300_000);
+      timeout.unref();
+      const cancel = () => {
+        this.send({ method: 'cancel', params: { id } });
+        finish(signal.reason instanceof Error ? signal.reason : new Error('Import cancelled'));
+      };
+      const finish = (error?: Error, value?: unknown) => {
+        clearTimeout(timeout);
+        signal.removeEventListener('abort', cancel);
+        this.pending.delete(id);
+        if (error) reject(error); else resolve(value);
+        this.scheduleIdle();
+      };
+      signal.addEventListener('abort', cancel, { once: true });
+      this.pending.set(id, { resolve: (value) => { finish(undefined, value); }, reject: (error) => { finish(error); } });
+      this.send({ id, method: 'source-request', params: { sourceId, action, args, settings } });
+    });
+  }
 
   get running(): boolean { return this.child !== undefined; }
 
-  async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean } = {}): Promise<ExecutableToolResult> {
+  async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean; readonly media?: PluginMediaApi } = {}): Promise<ExecutableToolResult> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
     await this.start();
     if (!this.registered.has(name)) throw new Error(`Plugin ${this.id} did not register ${name}`);
@@ -70,8 +134,9 @@ export class PluginHost {
         },
         reject: (error) => { signal.removeEventListener('abort', cancel); reject(error); this.scheduleIdle(); },
         onProgress,
+        media: scope.media,
       });
-      this.send({ id: requestId, method: 'execute', params: { name, args, settings, ...scope } });
+      this.send({ id: requestId, method: 'execute', params: { name, args, settings, workspaceRoot: scope.workspaceRoot, approvedPaths: scope.approvedPaths, imageIn: scope.imageIn } });
     });
   }
 
@@ -111,6 +176,11 @@ export class PluginHost {
     });
   }
 
+  stopAndWait(): Promise<void> {
+    this.stop();
+    return this.exited;
+  }
+
   stop(): void {
     this.stopped = true;
     this.terminate(new Error(`Plugin ${this.id} unloaded`));
@@ -129,11 +199,7 @@ export class PluginHost {
       const child = spawn(process.execPath, args, {
         cwd: path.dirname(this.entry),
         env: {
-          PATH: process.env['PATH'],
-          Path: process.env['Path'],
-          SystemRoot: process.env['SystemRoot'],
-          TEMP: process.env['TEMP'],
-          TMP: process.env['TMP'],
+          ...process.env,
           ELECTRON_RUN_AS_NODE: process.versions['electron'] === undefined ? undefined : '1',
           KIKI_CACHE_DIR: process.env['KIKI_CACHE_DIR'],
           KIKI_PLUGIN_ROOT: path.dirname(this.entry),
@@ -141,6 +207,10 @@ export class PluginHost {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       this.child = child;
+      this.exited = new Promise<void>((resolveExit) => {
+        child.once('exit', () => resolveExit());
+        child.once('error', () => resolveExit());
+      });
       let handshake = false;
       const startupTimeout = setTimeout(() => {
         const error = new Error(`Plugin ${this.id} RPC handshake timed out`);
@@ -162,8 +232,20 @@ export class PluginHost {
             const expected = this.definitions.find((item) => item.name === tool.name);
             if (expected === undefined || JSON.stringify(tool) !== JSON.stringify(expected)) throw new Error(`Plugin ${this.id} registered a changed tool definition: ${tool.name}`);
             this.registered.add(tool.name);
+          } else if (message.method === 'register-source') {
+            if (!handshake || message.params?.version !== PLUGIN_RPC_VERSION) throw new Error('Plugin registered before handshake');
+            const definition = sessionSourceDefinitionSchema.parse(message.params?.definition);
+            const expected = this.sources.find((item) => item.id === definition.id);
+            if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredSources.has(definition.id)) throw new Error('Plugin source definition mismatch');
+            this.registeredSources.add(definition.id);
+          } else if (message.method === 'register-media-provider') {
+            if (!handshake || message.params?.version !== PLUGIN_RPC_VERSION) throw new Error('Plugin registered before handshake');
+            const definition = mediaProviderDefinitionSchema.parse(message.params?.definition);
+            const expected = this.providers.find((item) => item.id === definition.id);
+            if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredProviders.has(definition.id)) throw new Error('Plugin media provider definition mismatch');
+            this.registeredProviders.add(definition.id);
           } else if (message.method === 'ready') {
-            if (!handshake || this.registered.size !== this.definitions.length) throw new Error('Plugin registered an incomplete tool set');
+            if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length) throw new Error('Plugin registered incomplete contributions');
             clearTimeout(startupTimeout);
             resolve();
             this.scheduleIdle();
@@ -171,6 +253,23 @@ export class PluginHost {
             throw new Error(message.params?.message ?? 'Plugin registration failed');
           } else if (message.method === 'progress') {
             this.pending.get(message.params?.id)?.onProgress?.(message.params.update);
+          } else if (message.method === 'media-call') {
+            const { id, callId, action, input } = message.params ?? {};
+            const call = this.pending.get(id);
+            const bridge = call?.media;
+            void Promise.resolve().then(() => {
+              if (action === 'connection') {
+                if (call === undefined) throw new Error('Provider connection request is no longer active');
+                return call.connection?.();
+              }
+              if (bridge === undefined) throw new Error('Media bridge is unavailable outside an admitted session tool call');
+              if (action === 'generate') return bridge.generate(input);
+              if (action === 'media') return bridge.media(input);
+              throw new Error('Unsupported media bridge action');
+            }).then(
+              (result) => this.send({ method: 'media-result', params: { callId, result } }),
+              (error) => this.send({ method: 'media-result', params: { callId, error: String(error) } }),
+            );
           } else if (message.id !== undefined) {
             const call = this.pending.get(message.id);
             this.pending.delete(message.id);
@@ -212,6 +311,8 @@ export class PluginHost {
     const child = this.child;
     this.child = undefined;
     this.registered.clear();
+    this.registeredSources.clear();
+    this.registeredProviders.clear();
     for (const call of this.pending.values()) call.reject(reason);
     this.pending.clear();
     if (child !== undefined && !child.killed) child.kill();

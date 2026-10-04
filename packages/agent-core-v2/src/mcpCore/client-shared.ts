@@ -1,5 +1,6 @@
 import { getCoreVersion } from '#/_base/version';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
 import type { MCPClient, MCPToolDefinition, MCPToolResult } from './types';
 
@@ -57,6 +58,28 @@ export function buildRequestOptions(
 ): McpRequestOptions | undefined {
   if (timeoutMs === undefined && signal === undefined) return undefined;
   return { timeout: timeoutMs, signal };
+}
+
+export async function listAllMcpTools(
+  client: Pick<Client, 'listTools'>,
+  timeoutMs?: number,
+): Promise<MCPToolDefinition[]> {
+  const tools: MCPToolDefinition[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const result = await client.listTools(cursor === undefined ? undefined : { cursor },
+      buildRequestOptions(timeoutMs, undefined));
+    tools.push(...result.tools.map(toMcpToolDefinition));
+    cursor = result.nextCursor;
+    if (cursor !== undefined) {
+      if (seenCursors.has(cursor)) {
+        throw new McpError(ErrorCode.InvalidRequest, 'MCP tools/list returned a repeated pagination cursor');
+      }
+      seenCursors.add(cursor);
+    }
+  } while (cursor !== undefined);
+  return tools;
 }
 
 interface SdkListedTool {

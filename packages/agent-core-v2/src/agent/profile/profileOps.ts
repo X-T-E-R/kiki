@@ -1,14 +1,16 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
-import { nothing, original } from 'immer';
+import { castDraft, nothing, original } from 'immer';
 import { z } from 'zod';
 
 import type { BindingAdvisory } from '@kiki/agent-profiles/bindingAdvisory';
+import { upgradePersistedSubagentPermissions } from '@kiki/agent-profiles/persistedSubagentPermissions';
 
 import type { EnvironmentDisclosureSnapshot } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { SpawnConstraints, SubagentLease } from '#/app/agentProfileCatalog/subagentLease';
 import { Event2 } from '#/app/event/event2';
 import type { RequestParams, ServiceTier, ThinkingEffort } from '#/kosong/contract/provider';
 import { defineState } from '#/state/state';
+import { AgentModelSwitch } from '#/agent/modelSwitch/modelSwitchEvent';
 import { TOOL_GROUP_ID_SCHEMA, type ToolGroupId } from '@kiki/agent-profiles/toolGroups';
 
 import { ProfileError, ProfileErrors } from './profile';
@@ -24,8 +26,11 @@ const ExecutorOptionsSchema = z.record(
 );
 
 export interface ProfileModelState {
+  readonly toolOverride?: import('./profile').ToolBindingOverride;
+  readonly memoryReadContext?: import('#/app/memory/memorySnapshot').MemoryPersonaContext;
   readonly personaId?: string;
   readonly personaRevision?: string;
+  readonly personaOverrides?: import('./profile').ProfileData['personaOverrides'];
   readonly persona?: import('@kiki/agent-profiles/personaFile').PersonaSnapshot;
   readonly roomPrompt?: string;
   readonly modelAlias?: string;
@@ -56,6 +61,10 @@ export interface ProfileModelState {
   readonly disabledToolGroups?: readonly ToolGroupId[];
   readonly subagentPolicy?: import('#/app/agentProfileCatalog/agentProfileCatalog').AgentSubagentPolicy;
   readonly subagentDeclaration?: import('#/app/agentProfileCatalog/agentProfileCatalog').SubagentDeclaration;
+  readonly canSpawnSubagents?: boolean;
+  readonly allowedSubagents?: readonly string[];
+  readonly preferredSubagents?: readonly string[];
+  readonly denySubagents?: readonly string[];
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly dispatchDecision?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision;
@@ -65,7 +74,15 @@ export interface ProfileModelState {
   readonly toolAllowPolicies?: readonly (readonly string[])[];
 }
 
+const personaOverridesSchema = z.object({ profile: z.string().optional(), model: z.string().optional(), thinking: z.string().optional() }).readonly();
+
+const toolOverrideSchema = z.object({ tools: z.array(z.string()).readonly().optional(), disallowedTools: z.array(z.string()).readonly().optional() }).readonly();
+const memoryReadContextSchema = z.object({ id: z.string(), shared: z.array(z.enum(['global', 'workspace'])).readonly().optional() }).readonly();
+
 const profileBindSchema = z.object({
+  toolOverride: toolOverrideSchema.optional(),
+  memoryReadContext: memoryReadContextSchema.optional(),
+  personaOverrides: personaOverridesSchema.optional(),
   personaId: z.string().optional(),
   personaRevision: z.string().optional(),
   persona: z.custom<import('@kiki/agent-profiles/personaFile').PersonaSnapshot>().optional(),
@@ -100,13 +117,17 @@ const profileBindSchema = z.object({
   disabledToolGroups: z.array(TOOL_GROUP_ID_SCHEMA).readonly().optional(),
   subagentPolicy: z.enum(['advisory', 'strict']).optional(),
   subagentDeclaration: z.custom<import('#/app/agentProfileCatalog/agentProfileCatalog').SubagentDeclaration>().optional(),
+  canSpawnSubagents: z.boolean().optional(),
+  allowedSubagents: z.array(z.string()).readonly().optional(),
+  preferredSubagents: z.array(z.string()).readonly().optional(),
+  denySubagents: z.array(z.string()).readonly().optional(),
   subagents: z.array(z.string()).readonly().optional(),
   subagentLeases: z.custom<Readonly<Record<string, SubagentLease>>>().optional(),
   dispatchDecision: z.custom<import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision>().optional(),
   spawnPolicy: z.custom<SpawnConstraints>().optional(),
   appliedLease: z.custom<SubagentLease>().optional(),
   boundProfile: z.custom<import('./boundProfile').BoundProfile>().optional(),
-});
+}).transform(upgradePersistedSubagentPermissions);
 
 export class ProfileBind extends Event2<z.infer<typeof profileBindSchema>> {
   static override readonly type = 'profile.bind';
@@ -116,6 +137,8 @@ export class ProfileBind extends Event2<z.infer<typeof profileBindSchema>> {
 export interface ProfileBind extends z.infer<typeof profileBindSchema> {}
 
 const configUpdateSchema = z.object({
+  toolOverride: toolOverrideSchema.optional(),
+  personaOverrides: personaOverridesSchema.optional(),
   promptBase: z.custom<import('./boundProfile').BoundPromptBase>().optional(),
   modelAlias: z.string().optional(),
   profileName: z.string().optional(),
@@ -181,8 +204,11 @@ export const profileKey = defineState(
   }),
 ).replayable({ schema: z.custom<ProfileModelState>() })
   .on(ProfileBind, (s, e) => ({
+    toolOverride: e.toolOverride,
+    memoryReadContext: e.memoryReadContext,
     personaId: e.personaId,
     personaRevision: e.personaRevision,
+    personaOverrides: e.personaOverrides,
     persona: e.persona,
     roomPrompt: e.roomPrompt,
     modelAlias: e.modelAlias ?? s.modelAlias,
@@ -211,9 +237,10 @@ export const profileKey = defineState(
     agentsMdPaths: e.agentsMdPaths ?? s.agentsMdPaths,
     disallowedTools: e.disallowedTools,
     disabledToolGroups: e.disabledToolGroups,
-    subagentPolicy: e.subagentPolicy,
-    subagentDeclaration: e.subagentDeclaration,
-    subagents: e.subagents,
+    canSpawnSubagents: e.canSpawnSubagents,
+    allowedSubagents: e.allowedSubagents,
+    preferredSubagents: e.preferredSubagents,
+    denySubagents: e.denySubagents,
     subagentLeases: e.subagentLeases,
     dispatchDecision: e.dispatchDecision,
     spawnPolicy: e.spawnPolicy,
@@ -221,8 +248,13 @@ export const profileKey = defineState(
     boundProfile: e.boundProfile,
     toolAllowPolicies: e.toolAllowPolicies,
   }))
-  .on(ConfigUpdate, (s, e) => {
-    if (e.promptBase !== undefined && s.boundProfile !== undefined) s.boundProfile = { ...s.boundProfile, promptBase: e.promptBase };
+  .on(ConfigUpdate, applyConfigUpdate)
+  .on(AgentModelSwitch, (s, e) => applyConfigUpdate(s, e.config));
+
+function applyConfigUpdate(s: import('immer').Draft<ProfileModelState>, e: ConfigUpdatePayload): void {
+    if (e.toolOverride !== undefined) s.toolOverride = castDraft(e.toolOverride);
+    if (e.personaOverrides !== undefined) s.personaOverrides = e.personaOverrides;
+    if (e.promptBase !== undefined && s.boundProfile !== undefined) s.boundProfile = { ...s.boundProfile, promptBase: castDraft(e.promptBase) };
     if (e.modelAlias !== undefined && e.modelAlias !== s.modelAlias) {
       s.modelAlias = e.modelAlias;
     }
@@ -267,7 +299,7 @@ export const profileKey = defineState(
     ) {
       s.disabledToolGroups = e.disabledToolGroups as ToolGroupId[];
     }
-  });
+}
 
 function stringArrayEqual(
   a: readonly string[] | undefined,

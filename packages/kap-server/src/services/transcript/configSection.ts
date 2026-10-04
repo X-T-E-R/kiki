@@ -27,6 +27,6 @@ registerFlagDefinition({
   title: 'transcript resident window',
   description: 'Keep completed transcript history in a bounded resident tail backed by durable history.',
   env: 'KIKI_EXPERIMENTAL_TRANSCRIPT_RESIDENT_WINDOW',
-  default: false,
+  default: true,
   surface: 'core',
 });

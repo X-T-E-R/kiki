@@ -1,5 +1,6 @@
 import SUBAGENT_NOTICE_DEFAULT from './delegation-sub-notice.md?raw';
 import { renderPrompt } from './renderPrompt';
+import { isToolActive } from './toolPolicy';
 import { customPromptVariables } from './promptConfig';
 import { applySystemPromptFields } from './systemPromptFields';
 
@@ -12,7 +13,7 @@ import {
 export const TASK_AGENT_ROLE_PREFIX = SUBAGENT_NOTICE_DEFAULT;
 
 export function skillActiveFor(tools: readonly string[]): boolean {
-  return tools.includes('Skill');
+  return isToolActive({ tools }, 'Skill');
 }
 
 const WINDOWS_NOTES =

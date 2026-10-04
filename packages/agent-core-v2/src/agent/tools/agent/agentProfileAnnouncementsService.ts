@@ -4,76 +4,66 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { llmRequestTraceKey } from '#/agent/llmRequester/llmRequestOps';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISubagentTool } from './agent';
 
 type VisibleProfiles = ReturnType<ISubagentTool['visibleProfileDescriptions']>;
+export interface ProfileDirectoryDisclosure { readonly entries: readonly (readonly [string, { readonly line: string; readonly signature: string }])[] }
 
 export function describeProfileDelta(before: VisibleProfiles, after: VisibleProfiles): string | undefined {
   const added: string[] = [];
   const updated: string[] = [];
-  const removed: string[] = [];
+  const unavailable: string[] = [];
   for (const [name, profile] of after) {
     const old = before.get(name);
     if (old === undefined) added.push(profile.line);
     else if (old.signature !== profile.signature) updated.push(profile.line);
   }
-  for (const name of before.keys()) {
-    if (!after.has(name)) removed.push(name);
-  }
-  if (added.length === 0 && updated.length === 0 && removed.length === 0) return undefined;
-  const sections = [
-    added.length > 0 ? `<agent_profiles_added>\n${added.sort().join('\n')}\n</agent_profiles_added>` : undefined,
-    updated.length > 0 ? `<agent_profiles_updated>\n${updated.sort().join('\n')}\n</agent_profiles_updated>` : undefined,
-    removed.length > 0 ? `<agent_profiles_removed>\n${removed.sort().join('\n')}\n</agent_profiles_removed>` : undefined,
-  ];
-  return sections.filter((section): section is string => section !== undefined).join('\n');
+  for (const name of before.keys()) if (!after.has(name)) unavailable.push(name);
+  if (!added.length && !updated.length && !unavailable.length) return undefined;
+  return ['The dispatchable profile directory for this caller changed. These entries replace the corresponding earlier entries; unavailability does not mean a file was deleted.',
+    added.length ? `Available now:\n${added.sort().join('\n')}` : '',
+    updated.length ? `Updated:\n${updated.sort().join('\n')}` : '',
+    unavailable.length ? `Now unavailable to this caller:\n${unavailable.sort().join('\n')}` : ''].filter(Boolean).join('\n\n');
 }
 
-export interface IAgentProfileAnnouncementsService { readonly _serviceBrand: undefined }
+export interface IAgentProfileAnnouncementsService {
+  readonly _serviceBrand: undefined;
+
+}
 export const IAgentProfileAnnouncementsService = createDecorator<IAgentProfileAnnouncementsService>('agentProfileAnnouncementsService');
 
 export class AgentProfileAnnouncementsService extends Service implements IAgentProfileAnnouncementsService {
   declare readonly _serviceBrand: undefined;
-  private previous: VisibleProfiles | undefined;
-  private dirty = false;
 
   constructor(
     @ISessionAgentProfileCatalog catalog: ISessionAgentProfileCatalog,
     @ISubagentTool agentRun: ISubagentTool,
     @IAgentToolPolicyService policy: IAgentToolPolicyService,
     @IAgentContextInjectorService injector: IAgentContextInjectorService,
-    @ILogService private readonly log: ILogService,
+    @ILogService log: ILogService,
+    @IAgentStateService states: IAgentStateService,
   ) {
     super();
-    if (!policy.isToolActive('AgentRun')) return;
-    this._register(catalog.onDidChange(() => {
-      this.dirty = true;
-    }));
-    void catalog.ready
-      .then(() => {
-        this.previous ??= agentRun.visibleProfileDescriptions();
-      })
-      .catch((error: unknown) => {
-        this.log.warn('failed to baseline the visible agent profiles for change announcements', { error });
-      });
-    this._register(injector.register('agent_profile_changes', async () => {
-      if (!this.dirty || !policy.isToolActive('AgentRun')) return undefined;
-      await catalog.ready;
+    this._register(injector.register<ProfileDirectoryDisclosure>('agent_profile_changes', async ({ lastDisclosure }) => {
+      if (!policy.isToolActive('AgentRun')) return undefined;
+      try { await catalog.ready; } catch (error) {
+        log.warn('failed to read the visible agent profiles for change announcements', { error });
+        return undefined;
+      }
+      const schema = states.get(llmRequestTraceKey).advertisedProfiles;
+      if (lastDisclosure === undefined && schema === undefined) return undefined;
+      const before = lastDisclosure === undefined ? new Map(schema?.map((entry) => [entry.name, { line: entry.line, signature: entry.signature }]))
+        : new Map(lastDisclosure.entries);
       const current = agentRun.visibleProfileDescriptions();
-      const delta = this.previous === undefined ? undefined : describeProfileDelta(this.previous, current);
-      this.previous = current;
-      this.dirty = false;
-      return delta;
+      const delta = describeProfileDelta(before, current);
+      if (delta === undefined) return undefined;
+      return { content: delta, disclosure: { entries: [...current] } };
     }));
   }
 }
 
-registerScopedService(
-  LifecycleScope.Agent,
-  IAgentProfileAnnouncementsService,
-  AgentProfileAnnouncementsService,
-  ScopeActivation.OnScopeCreated,
-  'agent',
-);
+registerScopedService(LifecycleScope.Agent, IAgentProfileAnnouncementsService, AgentProfileAnnouncementsService, ScopeActivation.OnScopeCreated, 'agent');

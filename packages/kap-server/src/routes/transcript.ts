@@ -63,15 +63,17 @@ const transcriptQueryCoercion = z
   .object({
     agent_id: z.string().min(1),
     before_turn: z.string().min(1).optional(),
+    before_item: z.string().min(1).max(512).optional(),
     after_turn: z.string().min(1).optional(),
+    after_item: z.string().min(1).optional(),
     page_size: z.coerce.number().int().min(1).max(100).optional(),
     transcript_coverage_version: z.string().optional(),
   })
   .superRefine((value, ctx) => {
-    if (value.before_turn !== undefined && value.after_turn !== undefined) {
+    if ([value.before_turn, value.before_item, value.after_turn, value.after_item].filter((entry) => entry !== undefined).length > 1) {
       ctx.addIssue({
         code: 'custom',
-        message: 'before_turn and after_turn are mutually exclusive',
+        message: 'before_turn, before_item, after_turn and after_item are mutually exclusive',
         path: ['before_turn'],
         params: { code: ErrorCode.VALIDATION_FAILED },
       });
@@ -149,15 +151,19 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, TRANSCRIPT_CLIENT_UPGRADE_MESSAGE, req.id));
         return;
       }
-      const data = await withReplyCloseSignal(replySignalSource(reply), (signal) =>
-        readSessionViewTranscriptPage(transcriptService, session_id, {
-          agentId: query.agent_id,
-          beforeTurn: query.before_turn,
-          afterTurn: query.after_turn,
-          pageSize: query.page_size,
-          signal,
-        }),
-      );
+      let data;
+      try {
+        data = await withReplyCloseSignal(replySignalSource(reply), (signal) =>
+          readSessionViewTranscriptPage(transcriptService, session_id, {
+            agentId: query.agent_id, beforeTurn: query.before_turn, beforeItem: query.before_item,
+            afterTurn: query.after_turn, afterItem: query.after_item, pageSize: query.page_size, signal,
+          }),
+        );
+      } catch (error) {
+        if (!(error instanceof TranscriptDetailCursorError)) throw error;
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
+        return;
+      }
       if (data === undefined) {
         sendSessionNotFound(reply, req.id, session_id);
         return;
@@ -307,12 +313,14 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
           agent_id !== undefined ? [agent_id] : store.agents().map((d) => d.agentId);
         const agents = [];
         for (const agentId of agentIds) {
-          await transcriptService.ensureAgentHistory(session_id, agentId);
-          const transcript = store.ensureAgent(agentId);
-          const attachments = transcript.getAttachments();
+          const transcript = await transcriptService.ensureAgentHistory(session_id, agentId);
+          if (transcript === undefined) { sendSessionNotFound(reply, req.id, session_id); return; }
+          const snapshot = await transcriptService.readFullAgentSnapshot(session_id, agentId, transcript);
+          if (snapshot === undefined) { sendSessionNotFound(reply, req.id, session_id); return; }
+          const attachments = new Map(snapshot.attachments.map((attachment) => [attachment.attachmentId, attachment]));
           agents.push({
             agent_id: agentId,
-            ...projectUserMessages(transcript.getItems(), (id) => attachments.get(id)),
+            ...projectUserMessages(snapshot.items, (id) => attachments.get(id)),
           });
         }
         reply.send(okEnvelope({ agents }, req.id));
@@ -381,14 +389,11 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
 
       const store = transcriptService.forSessionLive(session_id);
       if (store !== undefined) {
-        await transcriptService.whenReady(session_id);
-        await transcriptService.ensureAgentHistory(session_id, agent_id);
-        const transcript = store.ensureAgent(agent_id);
-        const plans = projectPlans(
-          transcript.getItems(),
-          [...transcript.getInteractions().values()],
-          tool_call_id,
-        );
+        const transcript = await transcriptService.ensureAgentHistory(session_id, agent_id);
+        if (transcript === undefined) { sendSessionNotFound(reply, req.id, session_id); return; }
+        const snapshot = await transcriptService.readFullAgentSnapshot(session_id, agent_id, transcript);
+        if (snapshot === undefined) { sendSessionNotFound(reply, req.id, session_id); return; }
+        const plans = projectPlans(snapshot.items, snapshot.interactions, tool_call_id);
         if (tool_call_id !== undefined && plans.length === 0) {
           sendToolCallNotFound(reply, req.id, tool_call_id);
           return;

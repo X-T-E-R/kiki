@@ -11,6 +11,8 @@ import { ErrorCodes, Error2 } from '#/errors';
 import { McpConnectionManager } from '#/mcpCore/connection-manager';
 import { McpServerConfigSchema, type McpServerConfig } from '#/mcpCore/config-schema';
 import { toMcpServerConfigView } from '#/mcpCore/configView';
+import { isComputerMcpConfig, type ComputerMcpStopResult } from '#/mcpCore/computer';
+import { allowComputerMcp, captureComputerMcpStop } from '#/mcpCore/client-stdio';
 import {
   AlreadyAuthorizedError,
   type BeginAuthorizationResult,
@@ -95,6 +97,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
     const name = normalizeServerName(server.name);
     await this.guardMutation(name, query);
     await this.store.add({ ...server, name });
+    if (server.transport === 'stdio' && isComputerMcpConfig(server) && server.enabled !== false) allowComputerMcp(name, server);
     return this.listServers(query);
   }
 
@@ -105,6 +108,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
     const name = normalizeServerName(server.name);
     await this.guardMutation(name, query);
     await this.store.update({ ...server, name });
+    if (server.transport === 'stdio' && isComputerMcpConfig(server) && server.enabled !== false) allowComputerMcp(name, server);
     return this.listServers(query);
   }
 
@@ -124,6 +128,33 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
     return this.withProbe(resolved, target.cwd, (manager) =>
       standaloneTestResult(resolved.name, manager),
     );
+  }
+
+  async stopServer(target: { readonly name: string; readonly cwd?: string }): Promise<ComputerMcpStopResult> {
+    const name = normalizeServerName(target.name);
+    const query = { cwd: target.cwd };
+    const matches = (await this.registry.list(query)).filter((entry) => entry.name === name);
+    const entry = matches[0];
+    if (entry === undefined) throw new Error2(ErrorCodes.MCP_SERVER_NOT_FOUND, `MCP server "${name}" was not found`);
+    if (matches.length !== 1 || entry.config.transport !== 'stdio' || !isComputerMcpConfig(entry.config)) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Stop requires one unambiguous cua-driver stdio MCP configuration');
+    }
+    const stop = captureComputerMcpStop(name, entry.config, target.cwd);
+    let saved = false;
+    let saveError: string | undefined;
+    if (entry.source === 'global' && entry.mutable) {
+      try {
+        await this.store.disableIfUnchanged({ name, ...entry.config });
+        saved = true;
+      } catch (error) {
+        saveError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    const result = await stop();
+    const persistence = saved ? 'The global MCP configuration is disabled; all other fields were preserved.' :
+      saveError === undefined ? 'Read-only configuration was not changed; this stop applies only to this service process.' :
+        `Configuration could not be disabled: ${saveError}. Admission remains closed in this service process.`;
+    return { state: result.state, output: `${result.output}\n${persistence}` };
   }
 
   private async guardMutation(name: string, query: McpRegistryQuery): Promise<void> {

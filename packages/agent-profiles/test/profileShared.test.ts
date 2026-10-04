@@ -378,6 +378,19 @@ describe('renderSystemPromptResult', () => {
     expect(prompt).toContain('SKILLS');
   });
 
+  it('ranks the cheapest reliable tool first and keeps computer control last', () => {
+    const prompt = renderSystemPromptResult('', {}, { skillActive: true }).text;
+    const toolUse = prompt.split('# Intent, Continuity, and Tool Use\n')[1]!.split('# Reply Quality')[0]!;
+
+    expect(toolUse).toContain('start from whatever the user already told you works');
+    expect(toolUse).toContain('an existing CLI, MCP server, API, or short script');
+    expect(toolUse).toContain('repetitive work is where this pays off most');
+    expect(toolUse).toContain('a dedicated script or structured tool beats browser control');
+    expect(toolUse).toContain('Computer control is the last resort');
+    expect(toolUse).toContain('do not build a more complicated script just to avoid a GUI');
+    expect(toolUse).toContain('do not have to fail with one tool before trying the next');
+  });
+
   it('omits the skills section when the profile disables the Skill tool', () => {
     const prompt = renderSystemPromptResult('', { skills: 'SKILLS' }, { skillActive: false }).text;
 

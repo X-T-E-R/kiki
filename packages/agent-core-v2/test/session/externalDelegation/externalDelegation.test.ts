@@ -19,6 +19,7 @@ import { AgentActivityUpdated, IAgentActivityView, type AgentActivityState } fro
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentModelSwitchService, type ModelSwitchReceipt } from '#/agent/modelSwitch/modelSwitch';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import {
   constrainPermissionMode,
@@ -205,6 +206,10 @@ describe('SessionExternalDelegationService', () => {
       registerAgent: async (agentId, meta) => {
         agentMetas[agentId] = meta;
       },
+      updateAgent: async (agentId, updater) => {
+        const current = agentMetas[agentId];
+        if (current !== undefined) agentMetas[agentId] = updater(structuredClone(current));
+      },
     });
     ix.stub(ISessionExternalDelegationProvisionStore, {
       read: async () => provision,
@@ -317,7 +322,27 @@ describe('SessionExternalDelegationService', () => {
             thinkingEffort: binding.thinkingEffort ?? thinkingLevel,
           },
         }),
-        prepareResumeBinding: async () => () => {},
+        prepareResumeBinding: async (input) => ({
+          model: input.modelAlias ?? modelAlias, thinking: input.thinkingEffort ?? thinkingLevel,
+          config: { modelAlias: input.modelAlias ?? modelAlias, thinkingEffort: input.thinkingEffort ?? thinkingLevel },
+          maxContextTokens: executorId === 'native' ? 100_000 : undefined,
+          reservedTokens: executorId === 'native' ? 0 : undefined,
+          assertCurrent: () => {}, syncMetadata: async () => {},
+        }),
+      });
+      const switchReceipts = new Map<string, ModelSwitchReceipt>();
+      agent.stub(IAgentModelSwitchService, {
+        get: (operationId) => switchReceipts.get(operationId),
+        execute: async (input, execution) => {
+          execution?.binding?.assertCurrent();
+          const receipt: ModelSwitchReceipt = { operationId: input.operationId, agentId: id,
+            state: 'completed', fromModel: modelAlias, toModel: input.model, mode: input.mode };
+          modelAlias = input.model;
+          thinkingLevel = input.thinking ?? thinkingLevel;
+          switchReceipts.set(input.operationId, receipt);
+          await execution?.binding?.syncMetadata();
+          return receipt;
+        },
       });
       permissionModes.set(id, 'auto');
       const setPermissionMode = (mode: PermissionMode): void => {

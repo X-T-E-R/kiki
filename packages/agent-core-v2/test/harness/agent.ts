@@ -1,4 +1,5 @@
 import { IRequestAdmission, type RequestAdmissionPort } from '#/kosong/model/requestAdmission';
+import { BrowserConfigSchema, BROWSER_CONFIG_SECTION } from '#/app/browser/browserConfig';
 import { EventEmitter } from 'node:events';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { Readable, type Writable } from 'node:stream';
@@ -21,6 +22,8 @@ import { WorkspaceStateService } from '#/workspace/state/workspaceStateService';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
+import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
+import { AgentModelSwitchService } from '#/agent/modelSwitch/modelSwitchService';
 import { BUILTIN_REPLAYABLE_STATE_KEYS } from '../state/builtinReplayableKeys';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
@@ -195,7 +198,7 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IWireService } from '#/wire/wire';
 import { WireService } from '#/wire/wireService';
 import { TurnPrompt } from '#/agent/loop/turnOps';
-import { type CognitionConfig, IModelService, type ModelsSection } from '#/kosong/model/model';
+import { type CognitionConfig, IModelService, type ModelsSection, type ModelUsagePolicy } from '#/kosong/model/model';
 import {
   DEFAULT_MODEL_SECTION,
   DEFAULT_PROVIDER_SECTION,
@@ -267,6 +270,7 @@ interface ModelConfigForConfig {
   readonly capabilities?: readonly string[];
   readonly supportEfforts?: readonly string[];
   readonly defaultEffort?: string;
+  readonly usage?: ModelUsagePolicy;
   readonly cognition?: CognitionConfig;
   readonly promptOverrides?: PromptOverrides;
 }
@@ -1036,8 +1040,8 @@ class ConfigBackedModelCatalog extends ModelCatalog {
       ...requester,
       request: (
         input: Parameters<ModelRequester['request']>[0],
-        signal?: AbortSignal,
-        params?: ModelRequestParams,
+        signal: AbortSignal | undefined,
+        params: Parameters<ModelRequester['request']>[2],
       ) => requester.request(input, signal, { cacheKey, ...params }),
     };
   }
@@ -1381,6 +1385,7 @@ export class AgentTestContext {
               IAgentFullCompactionService,
               new SyncDescriptor(AgentFullCompactionService),
             );
+            reg.defineDescriptor(IAgentModelSwitchService, new SyncDescriptor(AgentModelSwitchService));
             reg.defineDescriptor(
               IAgentPermissionRulesService,
               new SyncDescriptor(AgentPermissionRulesService),
@@ -1531,6 +1536,7 @@ export class AgentTestContext {
     this.get(IAgentLLMRequesterService);
     this.get(IAgentFullCompactionService);
     this.get(IAgentProfileService);
+    this.get(IAgentModelSwitchService);
     const agentState = this.get(IAgentStateService);
     const expected = new Set(BUILTIN_REPLAYABLE_STATE_KEYS.map((key) => key.name));
     const contributed = new Set(agentState.replayableKeys().map((key) => key.name));
@@ -2531,10 +2537,11 @@ function configService(readConfig: () => KimiConfig): IConfigService {
     readonly value: unknown;
     readonly previousValue: unknown;
   }>();
-  const valueFor = (domain: string): unknown =>
-    memory.has(domain)
-      ? memory.get(domain)
-      : (effectiveConfig() as Record<string, unknown>)[domain];
+  const valueFor = (domain: string): unknown => {
+    if (memory.has(domain)) return memory.get(domain);
+    const value = (effectiveConfig() as Record<string, unknown>)[domain];
+    return value === undefined && domain === BROWSER_CONFIG_SECTION ? BrowserConfigSchema.parse({}) : value;
+  };
   const replace = (domain: string, value: unknown): Promise<void> => {
     const previousValue = valueFor(domain);
     memory.set(domain, value);

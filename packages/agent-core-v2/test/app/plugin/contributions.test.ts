@@ -53,7 +53,7 @@ describe('plugin extension compatibility and consent', () => {
     }
   });
 
-  it('requires renewed consent when tool descriptions or permission declarations change', async () => {
+  it('keeps one-time source consent when declarations change and requires consent for another source', async () => {
     const home = await temp();
     const root = await temp();
     const manager = new PluginManager({ kimiHomeDir: home });
@@ -65,8 +65,8 @@ describe('plugin extension compatibility and consent', () => {
     const update = await manager.preview(root);
     expect(update.changes).toContain('permissions changed');
     expect(update.changes).toContain('tool definitions changed');
-    await expect(manager.install(root, { fingerprint: update.fingerprint })).rejects.toThrow('consent required');
-    await manager.install(root, { fingerprint: update.fingerprint, consent: true });
+    expect(update.consentRequired).toBe(false);
+    await manager.install(root, { fingerprint: update.fingerprint });
     expect(manager.info('example')?.manifest?.kiki?.tools?.[0]?.description).toBe('Changed description');
     expect(manager.info('example')?.rollback?.source).toBe('local-path');
     await manager.rollback('example');
@@ -75,6 +75,12 @@ describe('plugin extension compatibility and consent', () => {
     const reloaded = new PluginManager({ kimiHomeDir: home });
     await reloaded.load();
     expect(reloaded.info('example')?.manifest?.kiki?.tools?.[0]?.description).toBe('Echo value');
+    const replacement = await temp();
+    await makeSource(replacement);
+    const replacementPlan = await reloaded.preview(replacement);
+    expect(replacementPlan.consentRequired).toBe(true);
+    await expect(reloaded.install(replacement, { fingerprint: replacementPlan.fingerprint })).rejects.toThrow('consent required');
+    await reloaded.install(replacement, { fingerprint: replacementPlan.fingerprint, consent: true });
   });
 
   it('rejects files changed since preview', async () => {

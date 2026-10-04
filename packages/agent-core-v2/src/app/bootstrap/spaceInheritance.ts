@@ -18,18 +18,24 @@ export interface SpaceInheritance {
   readonly genericRoots: boolean;
 }
 
+export function resolveSpaceMcpBaseSelection(input: SpaceInheritanceInput) {
+  return { follow: (input.space?.sourceSelections?.groups?.['mcp'] ?? (input.space?.inherit.mcp !== false ? 'follow' : 'fixed')) === 'follow', selections: input.space?.sourceSelections?.selections };
+}
+
 export function resolveSpaceInheritance(input: SpaceInheritanceInput): SpaceInheritance {
   const inherit = input.space?.inherit;
-  const baseHomeDir = input.baseHomeDir;
+  const baseHomeDir = input.space?.resourceBaseHomeDir ?? input.baseHomeDir;
+  const selections = input.space?.sourceSelections?.selections;
+  const follows = (domain: string) => Object.entries(selections ?? {}).some(([id, item]) => id.startsWith(`resource:${domain}:`) && item.mode === 'follow' && item.excluded !== true);
   const active = baseHomeDir !== undefined;
   return {
     baseHomeDir,
-    agents: active && inherit?.agents !== false,
-    instructions: active ? inherit?.instructions ?? true : false,
-    skills: active && inherit?.skills !== false,
-    mcp: active && inherit?.mcp !== false,
-    appearance: active && inherit?.appearance !== false,
-    plugins: active && inherit?.plugins === true,
+    agents: active && (inherit?.agents !== false || follows('agents')),
+    instructions: active ? inherit?.instructions === 'stack' ? 'stack' : inherit?.instructions !== false || follows('instructions') : false,
+    skills: active && (inherit?.skills !== false || follows('skills')),
+    mcp: active && (inherit?.mcp !== false || follows('mcp')),
+    appearance: active && (inherit?.appearance !== false || follows('appearance')),
+    plugins: active && (inherit?.plugins === true || follows('plugins')),
     genericRoots: inherit?.genericRoots !== false,
   };
 }

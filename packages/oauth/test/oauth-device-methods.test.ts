@@ -1,6 +1,11 @@
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  createGrokBuildMethod,
+  parseGrokBuildModels,
+  FileTokenStorage,
   createGitHubCopilotMethod,
   createOpenAICodexMethod,
   githubCopilotBaseUrlFromToken,
@@ -62,6 +67,7 @@ describe('OAuth method registry', () => {
       'kimi-code',
       'github-copilot',
       'openai-codex',
+      'grok-build',
     ]);
     expect(oauthMethodFor('managed:github-copilot')?.id).toBe('github-copilot');
     expect(isDeviceOAuthMethod('kimi-code')).toBe(false);
@@ -236,6 +242,55 @@ describe('ChatGPT (Codex) method', () => {
     expect(token).toMatchObject({ accessToken: access, refreshToken: 'rt-new', expiresIn: 3600 });
   });
 
+  it('keeps an unrotated refresh token and derives lifetime when expires_in is omitted', async () => {
+    const token = await createOpenAICodexMethod(fakeFetch({
+      'https://auth.openai.com/oauth/token': () => json({ access_token: access }),
+    })).refresh('refresh-existing');
+    expect(token).toMatchObject({ refreshToken: 'refresh-existing', expiresIn: 3600 });
+  });
+
+  it.each(['refresh_token_expired', 'refresh_token_reused', 'refresh_token_invalidated'])('marks %s permanent without leaking error detail', async (code) => {
+    const method = createOpenAICodexMethod(fakeFetch({
+      'https://auth.openai.com/oauth/token': () => json({ error: { code, message: 'private-refresh' } }, 400),
+    }));
+    await expect(method.refresh('private-refresh')).rejects.toMatchObject({ name: 'OAuthUnauthorizedError' });
+    await expect(method.refresh('private-refresh')).rejects.not.toThrow('private-refresh');
+  });
+
+  it('rejects empty device identifiers before publishing the login step', async () => {
+    const method = createOpenAICodexMethod(fakeFetch({
+      'https://auth.openai.com/api/accounts/deviceauth/usercode': () => json({ device_auth_id: '', user_code: '' }),
+    }));
+    await expect(method.requestDevice()).rejects.toThrow(/missing fields/);
+  });
+
+  it('persists independent Codex login and rotation across reopen in its existing Kiki account home', async () => {
+    const root = resolve('.tmp/oauth-contract');
+    await mkdir(root, { recursive: true });
+    const home = await mkdtemp(join(root, 'codex-'));
+    try {
+      const fetchImpl = fakeFetch({
+        'https://auth.openai.com/api/accounts/deviceauth/usercode': () => json({ device_auth_id: 'device-example', user_code: 'CODE-1234', interval: '1' }),
+        'https://auth.openai.com/api/accounts/deviceauth/token': () => json({ authorization_code: 'auth-example', code_verifier: 'verifier-example' }),
+        'https://auth.openai.com/oauth/token': (_url, init) => {
+          const form = new URLSearchParams(String(init?.body));
+          return form.get('grant_type') === 'refresh_token'
+            ? json({ access_token: access, refresh_token: 'rotated-example', expires_in: 3600 })
+            : json({ access_token: access, refresh_token: 'refresh-example', expires_in: 3600 });
+        },
+      });
+      const options = { homeDir: home, fetchImpl, sleep: async () => {} };
+      await new OAuthDeviceMethods(options).login('openai-codex');
+      const reopened = new OAuthDeviceMethods(options);
+      expect(await reopened.connectionState('openai-codex')).toBe('ready');
+      await reopened.tokenProvider('openai-codex').getAccessToken({ force: true });
+      expect(JSON.parse(await readFile(join(home, 'credentials/openai-codex.json'), 'utf8')).refresh_token).toBe('rotated-example');
+      expect(await new OAuthDeviceMethods(options).getCachedAccessToken('openai-codex')).toBe(access);
+      await reopened.logout('openai-codex');
+      expect(await new OAuthDeviceMethods(options).connectionState('openai-codex')).toBe('signed_out');
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
   it('ships a static model catalog', async () => {
     const models = await createOpenAICodexMethod(fakeFetch({})).listModels(access);
     expect(models.length).toBeGreaterThan(0);
@@ -359,6 +414,23 @@ describe('applyOAuthMethodConfig', () => {
     expect(empty.defaultModel).toBe('github-copilot/gpt-4.1');
   });
 
+  it.each(['openai-codex', 'grok-build'])('keeps %s identity inheritance and explicit selections on model refresh', (id) => {
+    const accountMethod = oauthMethodFor(id)!;
+    const config: ManagedKimiConfigShape = { providers: {} };
+    const refresh = () => applyOAuthMethodConfig(config, accountMethod, { baseUrl: accountMethod.defaultBaseUrl, models });
+    refresh();
+    refresh();
+    expect(config.providers[accountMethod.providerName]).not.toHaveProperty('requestIdentity');
+    config.providers[accountMethod.providerName] = { ...config.providers[accountMethod.providerName], requestIdentity: { profile: 'custom:example' } };
+    refresh();
+    expect(config.providers[accountMethod.providerName]!['requestIdentity']).toEqual({ profile: 'custom:example' });
+    const inherited: Record<string, unknown> = { ...config.providers[accountMethod.providerName] };
+    delete inherited['requestIdentity'];
+    config.providers[accountMethod.providerName] = inherited;
+    refresh();
+    expect(config.providers[accountMethod.providerName]).not.toHaveProperty('requestIdentity');
+  });
+
   it('drops aliases upstream stopped listing and clears everything on sign-out', () => {
     const config: ManagedKimiConfigShape = { providers: {} };
     applyOAuthMethodConfig(config, method, { baseUrl: 'https://x.example.test', models });
@@ -370,5 +442,172 @@ describe('applyOAuthMethodConfig', () => {
     expect(cleared).toMatchObject({ removedProvider: true, removedModels: ['github-copilot/o-resp'], defaultModelCleared: true });
     expect(config.models?.['my-copilot-alias']).toBeDefined();
     expect(config.defaultModel).toBeUndefined();
+  });
+});
+
+
+describe('Grok Build managed device method', () => {
+  const access = jwt({ sub: 'user-example', exp: Math.floor(Date.now() / 1000) + 3600 });
+  const responseToken = { access_token: access, refresh_token: 'refresh-example', expires_in: 3600 };
+  const catalog = { data: [
+    { model: 'grok-example', name: 'Grok Example', contextWindow: 256000, apiBackend: 'responses',
+      reasoningEfforts: [{ value: 'high', default: true }, { value: 'xhigh' }] },
+  ] };
+
+  it('ports the public device grant and provisions the original Build session protocol', async () => {
+    const fetchImpl = fakeFetch({
+      'https://auth.x.ai/oauth2/device/code': (_url, init) => {
+        const form = new URLSearchParams(String(init?.body));
+        expect(form.get('client_id')).toBe('b1a00492-073a-47ea-816f-4c329264a828');
+        expect(form.get('scope')).toContain('grok-cli:access');
+        expect(form.get('referrer')).toBe('kiki');
+        return json({ device_code: 'device-example', user_code: 'ABCD-1234', verification_uri: 'https://auth.x.ai/device', expires_in: 300, interval: 5 });
+      },
+      'https://auth.x.ai/oauth2/token': (_url, init) => {
+        const form = new URLSearchParams(String(init?.body));
+        expect(form.get('grant_type')).toBe('urn:ietf:params:oauth:grant-type:device_code');
+        expect(form.get('device_code')).toBe('device-example');
+        return json(responseToken);
+      },
+      'https://cli-chat-proxy.grok.com/v1/models': (_url, init) => {
+        expect(init?.headers).toMatchObject({ Authorization: `Bearer ${access}`, 'X-XAI-Token-Auth': 'xai-grok-cli', 'x-userid': 'user-example' });
+        return json(catalog);
+      },
+    });
+    const method = createGrokBuildMethod(fetchImpl);
+    const device = await method.requestDevice();
+    expect(device).toMatchObject({ userCode: 'ABCD-1234', verificationUriComplete: 'https://auth.x.ai/device', interval: 5 });
+    expect(await method.pollDevice(device.deviceCode)).toMatchObject({ kind: 'success', token: { refreshToken: 'refresh-example' } });
+    const models = await method.listModels(access);
+    expect(models[0]).toMatchObject({ id: 'grok-example', protocol: 'openai_responses', contextLength: 256000, supportEfforts: ['high', 'xhigh'], defaultEffort: 'high' });
+    const config: ManagedKimiConfigShape = { providers: { api: { type: 'openai', apiKey: 'YOUR_API_KEY' } }, defaultModel: 'api/existing', models: { 'api/existing': { provider: 'api', model: 'existing' } } };
+    applyOAuthMethodConfig(config, method, { baseUrl: method.baseUrlFor(access), headers: method.requestHeaders(access), models });
+    expect(config.providers['managed:grok-build']).toMatchObject({ baseUrl: 'https://cli-chat-proxy.grok.com/v1', type: 'openai', oauth: { key: 'oauth/grok-build' }, customHeaders: { 'X-XAI-Token-Auth': 'xai-grok-cli', 'x-authenticateresponse': 'authenticate-response', 'x-grok-client-identifier': 'kiki' } });
+    expect(config.models?.['grok-build/grok-example']).toMatchObject({ protocol: 'openai_responses' });
+    expect(config.defaultModel).toBe('api/existing');
+    expect(JSON.stringify(config)).not.toContain(access);
+    expect(JSON.stringify(config)).not.toContain('refresh-example');
+    clearOAuthMethodConfig(config, method);
+    expect(config.providers['api']).toMatchObject({ apiKey: 'YOUR_API_KEY' });
+    expect(config.defaultModel).toBe('api/existing');
+  });
+
+  it.each([
+    ['authorization_pending', 'pending'], ['slow_down', 'pending'],
+    ['access_denied', 'denied'], ['authorization_denied', 'denied'], ['expired_token', 'expired'],
+  ])('maps %s without forwarding secret server descriptions', async (error, kind) => {
+    const method = createGrokBuildMethod(fakeFetch({ 'https://auth.x.ai/oauth2/token': () => json({ error, error_description: 'private-token' }, 400) }));
+    const result = await method.pollDevice('device-example');
+    expect(result.kind).toBe(kind);
+    expect(JSON.stringify(result)).not.toContain('private-token');
+  });
+
+  it('retains an unrotated refresh token and reports invalid_grant as reconnect-required', async () => {
+    let rejected = false;
+    const method = createGrokBuildMethod(fakeFetch({
+      'https://auth.x.ai/oauth2/token': (_url, init) => {
+        expect(new URLSearchParams(String(init?.body)).get('refresh_token')).toBe('old-example');
+        return rejected ? json({ error: 'invalid_grant', error_description: 'old-example' }, 400) : json({ access_token: access, expires_in: 3600 });
+      },
+    }));
+    expect((await method.refresh('old-example')).refreshToken).toBe('old-example');
+    rejected = true;
+    await expect(method.refresh('old-example')).rejects.toMatchObject({ name: 'OAuthUnauthorizedError' });
+  });
+
+  it('rejects unsafe verification URLs and validates poll bounds', async () => {
+    const reply = { device_code: 'd', user_code: 'U-CODE', verification_uri: 'file:///private', interval: 'NaN', expires_in: -2 };
+    const method = createGrokBuildMethod(fakeFetch({ 'https://auth.x.ai/oauth2/device/code': () => json(reply) }));
+    await expect(method.requestDevice()).rejects.toThrow(/http/);
+    reply.verification_uri = 'https://auth.x.ai/device';
+    expect(await method.requestDevice()).toMatchObject({ expiresIn: 300, interval: 5 });
+    reply.user_code = 'BAD\nCODE';
+    await expect(method.requestDevice()).rejects.toThrow(/valid fields/);
+  });
+
+  it('uses only supported catalog routes and never forwards server supplied credentials', () => {
+    expect(parseGrokBuildModels({ data: [
+      { id: 'visible', api_backend: 'chat_completions', context_window: 128000 },
+      { id: 'hidden', hidden: true },
+      { id: 'remote', base_url: 'https://untrusted.example.test/v1', apiKey: 'private-token' },
+      { id: 'unsupported', api_backend: 'custom' },
+      { id: 'responses', api_backend: 'responses', capabilities: { reasoning_effort: ['low', 'high'], default_reasoning_effort: 'high' } },
+    ] }).map((model) => [model.id, model.protocol, model.defaultEffort])).toEqual([
+      ['visible', 'openai', undefined], ['responses', 'openai_responses', 'high'],
+    ]);
+  });
+
+  it('persists fresh and rotated tokens across reopen, preserves Codex layout, and tombstones revoked refresh', async () => {
+    const root = resolve('.tmp/oauth-contract');
+    await mkdir(root, { recursive: true });
+    const home = await mkdtemp(join(root, 'grok-'));
+    try {
+      const oldHome = join(home, 'kimi-home');
+      const newHome = join(home, 'kiki-home');
+      const codexStorage = new FileTokenStorage(join(oldHome, 'credentials'));
+      await codexStorage.save('openai-codex', { accessToken: 'old-codex-example', refreshToken: 'old-codex-refresh', expiresAt: 9999999999, expiresIn: 3600, tokenType: 'Bearer', scope: '' });
+      let rejected = false;
+      let refreshCount = 0;
+      const fetchImpl = fakeFetch({
+        'https://auth.x.ai/oauth2/device/code': () => json({ device_code: 'd', user_code: 'U-CODE', verification_uri: 'https://auth.x.ai/device', interval: 1, expires_in: 300 }),
+        'https://auth.x.ai/oauth2/token': (_url, init) => {
+          const form = new URLSearchParams(String(init?.body));
+          if (form.get('grant_type') === 'refresh_token') {
+            refreshCount += 1;
+            expect(form.get('refresh_token')).toBe(refreshCount === 1 ? 'refresh-example' : 'rotated-example');
+            return rejected ? json({ error: 'invalid_grant' }, 400) : json({ ...responseToken, refresh_token: 'rotated-example' });
+          }
+          return json(responseToken);
+        },
+      });
+      const options = { homeDir: oldHome, grokHomeDir: newHome, fetchImpl, sleep: async () => {} };
+      const first = new OAuthDeviceMethods(options);
+      expect(await first.login('grok-build')).toBe(access);
+      expect(await first.getCachedAccessToken('openai-codex')).toBe('old-codex-example');
+      const reopened = new OAuthDeviceMethods(options);
+      expect(await reopened.connectionState('grok-build')).toBe('ready');
+      await Promise.all([reopened.tokenProvider('grok-build').getAccessToken({ force: true }), reopened.tokenProvider('grok-build').getAccessToken({ force: true })]);
+      expect(refreshCount).toBe(1);
+      const stored = JSON.parse(await readFile(join(newHome, 'credentials/grok-build.json'), 'utf8'));
+      expect(stored.refresh_token).toBe('rotated-example');
+      expect(await codexStorage.load('grok-build')).toBeUndefined();
+      expect(await new FileTokenStorage(join(newHome, 'credentials')).load('openai-codex')).toBeUndefined();
+      rejected = true;
+      await expect(reopened.tokenProvider('grok-build').getAccessToken({ force: true })).rejects.toMatchObject({ name: 'OAuthUnauthorizedError' });
+      const afterReopen = new OAuthDeviceMethods(options);
+      expect(await afterReopen.connectionState('grok-build')).toBe('reconnect_required');
+      expect(await afterReopen.getCachedAccessToken('grok-build')).toBeUndefined();
+      await afterReopen.logout('grok-build');
+      expect(await new OAuthDeviceMethods(options).connectionState('grok-build')).toBe('signed_out');
+      expect((await codexStorage.load('openai-codex'))?.accessToken).toBe('old-codex-example');
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
+  it('honors expiry and slow_down without silently requesting another code', async () => {
+    let now = 1000;
+    const sleeps: number[] = [];
+    const storage = new MemoryTokenStorage();
+    const fetchImpl = fakeFetch({
+      'https://auth.x.ai/oauth2/device/code': () => json({ device_code: 'd', user_code: 'U-CODE', verification_uri: 'https://auth.x.ai/device', interval: 1, expires_in: 4 }),
+      'https://auth.x.ai/oauth2/token': () => json({ error: 'slow_down' }, 400),
+    });
+    const methods = new OAuthDeviceMethods({ homeDir: '/unused', storage, fetchImpl, now: () => now,
+      sleep: async (ms) => { sleeps.push(ms); now += ms / 1000; }, disableCrossProcessLock: true });
+    await expect(methods.login('grok-build')).rejects.toMatchObject({ name: 'DeviceCodeTimeoutError' });
+    expect(sleeps).toEqual([1000, 3000]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(storage.tokens.size).toBe(0);
+  });
+
+  it('does not persist a late approved token after cancellation', async () => {
+    const controller = new AbortController();
+    const storage = new MemoryTokenStorage();
+    const fetchImpl = fakeFetch({
+      'https://auth.x.ai/oauth2/device/code': () => json({ device_code: 'd', user_code: 'U-CODE', verification_uri: 'https://auth.x.ai/device', interval: 1, expires_in: 300 }),
+      'https://auth.x.ai/oauth2/token': () => { controller.abort(); return json(responseToken); },
+    });
+    const methods = new OAuthDeviceMethods({ homeDir: '/unused', storage, fetchImpl, sleep: async () => {}, disableCrossProcessLock: true });
+    await expect(methods.login('grok-build', { signal: controller.signal })).rejects.toThrow(/aborted/);
+    expect(storage.tokens.size).toBe(0);
   });
 });

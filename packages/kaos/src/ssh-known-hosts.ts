@@ -2,6 +2,27 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'pathe';
+import ssh2 from 'ssh2';
+
+export interface SshKnownHostRecord {
+  readonly file: string;
+  readonly line: number;
+  readonly hostPattern: string;
+  readonly algorithm: string;
+  readonly fingerprint?: string;
+  readonly marker?: string;
+  readonly status: 'recorded' | 'revoked' | 'unsupported' | 'invalid';
+  readonly reason?: string;
+}
+
+export interface SshKnownHostsInspection {
+  readonly hostname: string;
+  readonly port: number;
+  readonly label: string;
+  readonly state: 'recorded' | 'unrecorded' | 'unavailable';
+  readonly records: readonly SshKnownHostRecord[];
+  readonly files: readonly { readonly path: string; readonly state: 'read' | 'missing' | 'unavailable'; readonly reason?: string }[];
+}
 
 export interface UnknownSshKey {
   readonly hostname: string;
@@ -32,20 +53,27 @@ function matchesHost(pattern: string, label: string): boolean {
   return regex.test(label);
 }
 
-function matchingEntries(text: string, label: string): { marker?: string; algorithm: string; key: string }[] {
-  const results: { marker?: string; algorithm: string; key: string }[] = [];
-  for (const line of text.split(/\r?\n/)) {
+function matchingEntries(text: string, label: string, issues?: string[]): { marker?: string; algorithm: string; key: string; line: number; hostPattern: string }[] {
+  const results: ReturnType<typeof matchingEntries> = [];
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
     if (!line.trim() || line.startsWith('#')) continue;
     const fields = line.trim().split(/\s+/);
     const marker = fields[0]?.startsWith('@') ? fields.shift() : undefined;
     const hosts = fields.shift();
     const algorithm = fields.shift();
     const key = fields.shift();
-    if (!hosts || !algorithm || !key) continue;
+    if (!hosts || issues === undefined && (!algorithm || !key)) continue;
     const patterns = hosts.split(',');
+    if (patterns.some((pattern) => /^!?\|/.test(pattern) && !/^!?\|1\|[^|]+\|[^|]+$/.test(pattern))) {
+      issues?.push(`unsupported-host-hash:line:${index + 1}`);
+    }
     if (patterns.some((pattern) => pattern.startsWith('!') && matchesHost(pattern.slice(1), label))) continue;
     if (patterns.some((pattern) => !pattern.startsWith('!') && matchesHost(pattern, label))) {
-      results.push({ marker, algorithm, key });
+      if (!algorithm || !key) {
+        issues?.push(`invalid-record:line:${index + 1}`);
+        continue;
+      }
+      results.push({ marker, algorithm, key, line: index + 1, hostPattern: hosts });
     }
   }
   return results;
@@ -68,6 +96,39 @@ export class SshKnownHosts {
       }
     }));
     return all.flat();
+  }
+
+  async inspect(hostname: string, port: number): Promise<SshKnownHostsInspection> {
+    const label = hostLabel(hostname, port);
+    const records: SshKnownHostRecord[] = [];
+    const files: SshKnownHostsInspection['files'][number][] = [];
+    for (const file of this.files) {
+      let text: string;
+      try {
+        text = await readFile(file, 'utf8');
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        files.push({ path: file, state: code === 'ENOENT' ? 'missing' : 'unavailable', reason: code ?? 'read-failed' });
+        continue;
+      }
+      const issues: string[] = [];
+      const entries = matchingEntries(text, label, issues);
+      files.push({ path: file, state: issues.length > 0 ? 'unavailable' : 'read', reason: issues.length > 0 ? issues.join(';') : undefined });
+      for (const entry of entries) {
+        const parsed = ssh2.utils.parseKey(`${entry.algorithm} ${entry.key}`);
+        const key = parsed instanceof Error || Array.isArray(parsed) ? undefined : parsed.getPublicSSH();
+        const valid = key !== undefined && key.toString('base64') === entry.key;
+        const status = !valid ? 'invalid' : entry.marker === '@revoked' ? 'revoked'
+          : entry.marker === undefined ? 'recorded' : 'unsupported';
+        records.push({ file, line: entry.line, hostPattern: entry.hostPattern, algorithm: entry.algorithm,
+          fingerprint: valid ? `SHA256:${createHash('sha256').update(key).digest('base64').replace(/=+$/, '')}` : undefined,
+          marker: entry.marker, status,
+          reason: !valid ? 'invalid-public-key' : status === 'unsupported' ? `unsupported-marker:${entry.marker}` : undefined });
+      }
+    }
+    const unavailable = files.some((file) => file.state === 'unavailable') ||
+      records.some((record) => record.status === 'unsupported' || record.status === 'invalid');
+    return { hostname, port, label, state: unavailable ? 'unavailable' : records.length > 0 ? 'recorded' : 'unrecorded', records, files };
   }
 
   async verify(hostname: string, port: number, rawKey: Buffer, trustUnknown: TrustUnknownKey): Promise<boolean> {

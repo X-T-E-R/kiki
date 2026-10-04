@@ -520,6 +520,8 @@ function publicPromptOrigin(origin: PromptOrigin) {
       return { kind: origin.kind, event: origin.event, blocked: origin.blocked };
     case 'retry':
       return { kind: origin.kind, trigger: origin.trigger };
+    case 'bridged_peer':
+      return { ...origin, source: { hostId: origin.source.hostId, workspaceId: origin.source.workspaceId, sessionId: origin.source.sessionId } };
     case 'peer_thread':
       return {
         kind: origin.kind,

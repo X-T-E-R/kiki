@@ -71,7 +71,7 @@ function appOf(r: RunningServer): AppLike {
         ...request,
         headers: {
           ...request.headers,
-          authorization: `Bearer ${r.authTokenService.getToken()}`,
+          authorization: `Bearer ${r.localOwnerToken}`,
         },
       });
     },
@@ -589,7 +589,7 @@ describe('persona avatar HTTP lifecycle', () => {
   async function request(r: RunningServer, path: string, init: RequestInit = {}): Promise<Response> {
     return fetch(`http://127.0.0.1:${r.port}/api${path}`, {
       ...init,
-      headers: { ...init.headers, authorization: `Bearer ${r.authTokenService.getToken()}` },
+      headers: { ...init.headers, authorization: `Bearer ${r.localOwnerToken}` },
     });
   }
 

@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { loadDispatchProfileFile, inheritProfileFileSources } from '#/session/dispatch/profileFile';
 import { freezeBoundProfile } from '#/agent/profile/boundProfile';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
+import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { createTestAgent } from '../../harness';
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -15,7 +17,7 @@ it('freezes a scoped profile source graph through JSON and resolves it without r
   const original = normalizeAgentProfile({ name: 'coder', systemPrompt: () => 'original' });
   const catalog = { get: () => original, getDefault: () => original, list: () => [original] } as unknown as ISessionAgentProfileCatalog;
   const files = new Map([
-    ['/workspace/team.md', '---\nname: coder\ndescription: Team\nmodel_alias: model-a\nsubagents:\n  - name: research\n    source: ./_private/research.md\n---\nROOT SOURCE'],
+    ['/workspace/team.md', '---\nname: coder\ndescription: Team\nmodel_alias: model-a\nallowed_subagents:\n  - name: research\n    source: ./_private/research.md\n---\nROOT SOURCE'],
     ['/workspace/_private/research.md', '---\nname: research\ndescription: Research\nprivate: true\nmodel_alias: model-a\ntools: [Read]\n---\nFROZEN RESEARCH SOURCE'],
   ]);
   const readText = vi.fn(async (path: string) => {
@@ -28,7 +30,7 @@ it('freezes a scoped profile source graph through JSON and resolves it without r
     realpath: async (path: string) => path, readText,
   } as unknown as IHostFileSystem });
   const runtime: Runtime = fake;
-  const caller: ProfileData = { thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY, subagents: ['coder', 'research'], activeToolNames: ['Read'] };
+  const caller: ProfileData = { thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY, allowedSubagents: ['coder', 'research'], activeToolNames: ['Read'] };
   const loaded = await loadDispatchProfileFile('team.md', runtime, { workDir: '/workspace' }, catalog, caller);
   const bound = JSON.parse(JSON.stringify(freezeBoundProfile(loaded.snapshot.publicProfiles.get('coder')!)));
   expect(Object.keys(bound.fileSources.sourceDefinitions)).toHaveLength(1);
@@ -49,28 +51,29 @@ describe('profile file runtime isolation', () => {
   it('retains tool ceilings without promoting explicit advisory recommendations to a hard ceiling', async () => {
     const ctx = createTestAgent();
     try {
+      await ctx.get(ISessionMetadata).registerAgent('main', { type: 'main' });
       const catalog = ctx.get(ISessionAgentProfileCatalog);
       const fake = new FakeRuntime({ workspaceId: 'test', runtimeId: 'test', generation: '1' });
       Object.defineProperty(fake, 'fs', { value: {
         realpath: async (path: string) => path,
-        readText: async () => '---\nname: coder\ndescription: File role\npreferred_models: [preferred-model]\ntools: [Read, Write]\nsubagents: [coder, explore]\n---\nFile role',
+        readText: async () => '---\nname: coder\ndescription: File role\npreferred_models: [preferred-model]\ntools: [Read, Write]\nallowed_subagents: [coder, explore]\n---\nFile role',
       } as unknown as IHostFileSystem });
       const loaded = await loadDispatchProfileFile('role.md', fake, { workDir: '/workspace' }, catalog, {
         thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
         activeToolNames: ['Read'], disallowedTools: ['Bash'],
-        subagentPolicy: 'advisory', subagents: ['explore'],
+        preferredSubagents: ['explore'],
       });
       const svc = ctx.get(IAgentProfileService);
       await svc.bind({
         resolvedProfile: loaded.snapshot.publicProfiles.get('coder')!, model: 'mock-model',
         delegationPosition: 'sub',
-        lease: { name: 'coder', tools: ['Read', 'Write'], disallowedTools: [], subagents: ['coder', 'explore'] },
+        lease: { name: 'coder', tools: ['Read', 'Write'], disallowedTools: [], allowedSubagents: ['coder', 'explore'] },
       });
       const policy = ctx.get(IAgentToolPolicyService);
       expect(policy.isToolActive('Read')).toBe(true);
       expect(policy.isToolActive('Write')).toBe(false);
       expect(svc.data().disallowedTools).toContain('Bash');
-      expect(svc.data().subagents).toEqual(['coder', 'explore']);
+      expect(svc.data().allowedSubagents).toEqual(['coder', 'explore']);
       expect(svc.data().bindingAdvisories).toEqual([
         expect.objectContaining({
           code: 'model_not_preferred',
@@ -78,8 +81,8 @@ describe('profile file runtime isolation', () => {
           effectiveValue: 'mock-model',
         }),
       ]);
-      const apply = await svc.prepareResumeBinding({});
-      await apply();
+      const binding = await svc.prepareResumeBinding({});
+      expect(await ctx.get(IAgentModelSwitchService).execute({ operationId: 'profile-file-resume', model: binding.model, thinking: binding.thinking, mode: 'direct' }, { binding })).toMatchObject({ state: 'completed' });
       expect(policy.isToolActive('Write')).toBe(false);
       expect(JSON.stringify(svc.data().boundProfile)).toContain('/workspace/role.md');
       await ctx.expectResumeMatches();
@@ -87,42 +90,22 @@ describe('profile file runtime isolation', () => {
       await ctx.dispose();
     }
   });
-  it('does not freeze advisory recommendations into a pinned file hard ceiling', async () => {
+  it('keeps a file definition’s own preset permissions without copying its caller’s selection list', async () => {
     const original = normalizeAgentProfile({ name: 'coder', systemPrompt: () => '' });
     const catalog = { getDefault: () => original, list: () => [original] } as unknown as ISessionAgentProfileCatalog;
     const fake = new FakeRuntime({ workspaceId: 'test', runtimeId: 'test', generation: '1' });
     Object.defineProperty(fake, 'fs', { value: {
       realpath: async (path: string) => path,
-      readText: async () => '---\nname: reviewer\ndescription: File role\nsubagent_policy: advisory\nsubagents: [researcher]\n---\nFile role',
+      readText: async () => '---\nname: reviewer\ndescription: File role\nallowed_subagents: [researcher, explore]\npreferred_subagents: [researcher]\n---\nFile role',
     } as unknown as IHostFileSystem });
     const loaded = await loadDispatchProfileFile('role.md', fake, { workDir: '/workspace' }, catalog, {
       thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
-      subagentPolicy: 'advisory', subagentDeclaration: { kind: 'set', names: ['explore'] },
-      subagents: ['explore'],
+      allowedSubagents: [], preferredSubagents: ['explore'], denySubagents: ['reviewer'],
     });
-    expect(loaded.snapshot.publicProfiles.get('reviewer')).toMatchObject({
-      subagentPolicy: 'advisory',
-      subagents: ['researcher'],
-    });
-  });
-
-  it('propagates an explicit strict caller subagent ceiling into a profile file', async () => {
-    const original = normalizeAgentProfile({ name: 'coder', systemPrompt: () => '' });
-    const catalog = { getDefault: () => original, list: () => [original] } as unknown as ISessionAgentProfileCatalog;
-    const fake = new FakeRuntime({ workspaceId: 'test', runtimeId: 'test', generation: '1' });
-    Object.defineProperty(fake, 'fs', { value: {
-      realpath: async (path: string) => path,
-      readText: async () => '---\nname: reviewer\ndescription: File role\nsubagents: [researcher, explore]\n---\nFile role',
-    } as unknown as IHostFileSystem });
-    const loaded = await loadDispatchProfileFile('role.md', fake, { workDir: '/workspace' }, catalog, {
-      thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
-      subagentPolicy: 'strict', subagentDeclaration: { kind: 'set', names: ['explore'] },
-      subagents: ['explore'],
-    });
-    expect(loaded.snapshot.publicProfiles.get('reviewer')).toMatchObject({
-      subagentPolicy: 'strict',
-      subagents: ['explore'],
-    });
+    const profile = loaded.snapshot.publicProfiles.get('reviewer')!;
+    expect(profile).toMatchObject({ allowedSubagents: ['researcher', 'explore'], preferredSubagents: ['researcher'] });
+    expect(profile.denySubagents).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(freezeBoundProfile(profile))).fileSources.callerCeiling).not.toHaveProperty('allowedSubagents');
   });
 
   it('loads a main profile file as a role for explicit dispatch', async () => {

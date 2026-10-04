@@ -80,6 +80,8 @@ export class DynamicPromptInjection extends Service implements IDynamicPromptInj
         : `Only the sections below replace earlier values; other sections unchanged since revision ${previous.revision}.`;
       return { content: `Host runtime snapshot rev ${snapshot.revision}. ${scope} An empty section marked (none) means removed. Workspace and plugin instructions apply within their stated scope; memory is reference data. System policy and current human input take precedence.\n\n${changed.map(([, text]) => text).join('\n\n')}`,
         disclosure: { revision: snapshot.revision, sectionHash: snapshot.hash, sectionHashes,
+          instructions: changed.some(([name]) => name === 'instructions') ? { mode: 'replace', files: snapshot.context.agentsMdFiles ?? [] } : undefined,
+          sectionBytes: Object.fromEntries(changed.map(([name, text]) => [name, Buffer.byteLength(text, 'utf8')])),
           previousRevision: previous?.sectionHashes === undefined ? undefined : previous.revision } };
     }));
   }

@@ -8,6 +8,8 @@ import { TaskErrors } from '#/agent/task/errors';
 import { ThreadCommunicationErrors } from '#/app/threadCommunication/errors';
 import { ProtocolErrors } from '#/kosong/protocol/errors';
 import { ConfigErrors } from '#/app/config/errors';
+import { BrowserErrors } from '#/app/browser/errors';
+export { BrowserErrors } from '#/app/browser/errors';
 import { CapabilityErrors } from '#/app/capability/errors';
 import { CronErrors } from '#/app/cron/errors';
 import { DebugErrors } from '#/debug/errors';
@@ -93,6 +95,7 @@ export const ErrorCodes = {
   ...ThreadCommunicationErrors.codes,
   ...ProtocolErrors.codes,
   ...ConfigErrors.codes,
+  ...BrowserErrors.codes,
   ...CapabilityErrors.codes,
   ...CronErrors.codes,
   ...DebugErrors.codes,

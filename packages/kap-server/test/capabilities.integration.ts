@@ -63,12 +63,17 @@ describe('server-v2 /api capabilities', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
-  it('lists both built-in capabilities with the documented shape', async () => {
+  it('lists built-in capabilities including the pinned open-source computer entry', async () => {
     const { body } = await getJson<unknown>('/api/capabilities');
     expect(body.code).toBe(0);
     const parsed = listCapabilitiesResponseSchema.parse(body.data);
     const ids = parsed.capabilities.map((c) => c.id).toSorted();
-    expect(ids).toEqual(['kimi-cu', 'kimi-webbridge']);
+    expect(ids).toEqual(['kiki-computer', 'kimi-cu', 'kimi-webbridge']);
+    const computer = parsed.capabilities.find((capability) => capability.id === 'kiki-computer');
+    expect(computer?.plan?.artifact.version).toBe('0.32.0');
+    expect(computer?.plan?.artifact.url).toContain('cua-driver-rs-v0.32.0');
+    expect(computer?.state).toBe('not_installed');
+    expect(computer?.steps.find((step) => step.id === 'desktop-access')?.optional).toBe(true);
     for (const capability of parsed.capabilities) {
       expect(capabilityStatusSchema.parse(capability)).toBeTruthy();
       expect(capability.install.running).toBe(false);

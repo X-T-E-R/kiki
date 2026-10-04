@@ -125,7 +125,9 @@ describe('continuity cadence', () => {
     const result = tracker.evaluate({ ...input, clock: clock() })!;
     expect(result.disclosure.triggers).toEqual(['T1', 'T0']);
     expect(result.content).not.toContain('ongoing work');
-    expect(tracker.evaluate({ ...input, clock: clock() })).toBeUndefined();
+    expect(tracker.evaluate({ ...input, clock: clock() })).toEqual(result);
+    const committed = advanceContinuityClock(clock(), new ContextAppendMessage({ message: { role: 'user', content: [], toolCalls: [], origin: { kind: 'injection', variant: 'todo_list_reminder', disclosure: result.disclosure } } }));
+    expect(tracker.evaluate({ ...input, clock: committed })).toBeUndefined();
   });
   it('backs off to 16U and becomes silent after two reminders across epochs/restart', () => {
     let state = clock();
@@ -133,7 +135,7 @@ describe('continuity cadence', () => {
     const result = new TodoListReminderTracker().evaluate(input)!;
     state = advanceContinuityClock(state, new ContextAppendMessage({ message: { role: 'user', content: [], toolCalls: [], origin: { kind: 'injection', variant: 'todo_list_reminder', disclosure: result.disclosure } } }));
     expect(new TodoListReminderTracker().evaluate({ ...input, clock: { ...state, humanTurnOrdinal: 23 } })).toBeUndefined();
-    const second = new TodoListReminderTracker().evaluate({ ...input, epoch: 1, notes: { goal: 'task' }, notesMeta: { rev: 1, hash: 'h', coveredMessageId: 'none', writtenStep: 't1.0', writtenTurn: 1, windowEpoch: 0 }, clock: { ...state, humanTurnOrdinal: 24 } })!;
+    const second = new TodoListReminderTracker().evaluate({ ...input, epoch: 1, notes: { goal: 'task' }, notesMeta: { rev: 1, hash: 'h', coveredMessageId: 'none', writtenStep: 't1.0', writtenTurn: 1, windowEpoch: 0, reviewedWindowEpoch: 1 }, clock: { ...state, humanTurnOrdinal: 24 } })!;
     expect(second.disclosure.triggers).toContain('T0');
     state = advanceContinuityClock({ ...state, humanTurnOrdinal: 24 }, new ContextAppendMessage({ message: { role: 'user', content: [], toolCalls: [], origin: { kind: 'injection', variant: 'todo_list_reminder', disclosure: second.disclosure } } }));
     expect(new TodoListReminderTracker().evaluate({ ...input, clock: { ...state, humanTurnOrdinal: 100 } })).toBeUndefined();
@@ -152,15 +154,21 @@ describe('continuity cadence', () => {
   it('T2 requires uncovered work and covers T0/T1; complete handoff needs no P1', () => {
     const tracker = new TodoListReminderTracker();
     const input = { ...base, epoch: 1, history: [work], clock: clock(), threshold: 100_000, currentTokens: 85_000, estimateMessage: () => 16_000 };
-    expect(tracker.evaluate(input)?.disclosure.triggers).toEqual(['T2']);
-    expect(tracker.evaluate(input)?.disclosure.triggers).not.toContain('T2');
+    const candidate = tracker.evaluate(input)!;
+    expect(candidate.disclosure.triggers).toEqual(['T2']);
+    expect(tracker.evaluate(input)).toEqual(candidate);
+    const delivered: ContextMessage = { role: 'user', content: [], toolCalls: [], origin: { kind: 'injection', variant: 'todo_list_reminder', disclosure: candidate.disclosure } };
+    expect(tracker.evaluate({ ...input, history: [...input.history, delivered] })?.disclosure.triggers).not.toContain('T2');
     expect(new TodoListReminderTracker().evaluate({ ...input, history: [] })?.disclosure.triggers).not.toContain('T2');
     const memoryReminder = new TodoListReminderTracker().evaluate({ ...input, memoryAvailable: true });
-    expect(memoryReminder?.content).toContain('prefer update, use affirmative current-rule wording');
-    expect(memoryReminder?.content).toContain('retire covered or obsolete entries under the existing approval policy');
+    expect(memoryReminder?.disclosure.memory).toBeUndefined();
+    expect(memoryReminder?.content).not.toContain('MemoryWrite');
     expect(new TodoListReminderTracker().evaluate(input)?.content).not.toContain('MemoryWrite');
     const summary: ContextMessage = { role: 'user', toolCalls: [], origin: { kind: 'compaction_summary' }, content: [{ type: 'text', text: '## Working notes\ngoal: task\nnext: finish\n\n## Notes metadata\nrevision 2\n\n## User input since notes\n(none)' }] };
-    expect(new TodoListReminderTracker().evaluate({ ...base, epoch: 1, history: [summary] })).toBeUndefined();
+    expect(new TodoListReminderTracker().evaluate({ ...base, epoch: 1, history: [summary] })?.disclosure.triggers).toContain('P1');
+    const reviewed: ContextMessage = { role: 'assistant', id: 'reviewed', content: [], toolCalls: [] };
+    expect(new TodoListReminderTracker().evaluate({ ...base, epoch: 1, history: [summary, reviewed], notes: { goal: 'task', next: 'finish' },
+      notesMeta: { rev: 2, hash: 'h', writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: '', windowEpoch: 1, reviewedMessageId: 'reviewed', reviewedWindowEpoch: 1 } })).toBeUndefined();
   });
   it('rejects both forwarded E1 audit examples at the provenance gate', () => {
     for (const text of ['不要清理这些文件', '不能把回填现象直接当线上根因']) {
@@ -172,7 +180,10 @@ describe('continuity cadence', () => {
     expect(tracker.evaluate({ ...base, history: [user('ordinary request')] })).toBeUndefined();
     for (const [index, text] of ['并发只能四个', '放开旧并发限制，最多五个', '取消旧并发限制'].entries()) {
       const history = [user(text, index + 2)];
-      expect(tracker.evaluate({ ...base, history })?.disclosure.triggers).toContain('E1');
+      const candidate = tracker.evaluate({ ...base, history })!;
+      expect(candidate.disclosure.triggers).toContain('E1');
+      expect(tracker.evaluate({ ...base, history })).toEqual(candidate);
+      history.push({ role: 'user', content: [], toolCalls: [], origin: { kind: 'injection', variant: 'todo_list_reminder', disclosure: candidate.disclosure } });
       expect(tracker.evaluate({ ...base, history })).toBeUndefined();
     }
   });
@@ -243,7 +254,9 @@ describe('review regression boundaries', () => {
     const summary: ContextMessage = { role: 'user', toolCalls: [], origin: { kind: 'compaction_summary' }, content: [{ type: 'text', text: `## User input since notes\n${block}\n\nApply Standing directives at their recorded scope.\n\n## TODO List\n(none)` }] };
     const input = { ...base, todos: [], epoch: 1, history: [summary], notes: { goal: 'task' }, notesMeta: { rev: 1, hash: 'h', coveredMessageId: 'none', writtenStep: 't1.0', writtenTurn: 1, windowEpoch: 0 } };
     const result = new TodoListReminderTracker().evaluate(input);
-    expect(result?.disclosure.triggers.includes('P1') ?? false).toBe(block !== '(none)');
+    expect(result?.disclosure.triggers).toContain('P1');
+    expect(result?.content).toContain('Existing TodoList notes persist');
+    expect(result?.content).toContain('Do not rebuild the whole notebook');
   });
   it('bounds replay deduplication and preserves the latest input and step retries', () => {
     let state = initialContinuityClock();
@@ -304,9 +317,10 @@ describe('standing-rule review boundaries', () => {
   it('describes whole-list writes without injecting or reciting the list', () => {
     const result = new TodoListReminderTracker().evaluate({ ...base, history: [work], clock: clock() });
     expect(result?.disclosure.triggers).toEqual(['T0']);
-    expect(result?.content).toContain('a todos write replaces the list');
-    expect(result?.content).toContain('include every item you still need');
-    expect(result?.content).toContain('Omit todos when unchanged');
+    expect(result?.content).toContain('the supplied array replaces the list');
+    expect(result?.content).toContain('keep every item still needed');
+    expect(result?.content).toContain('Update todos only if their state changed');
+    expect(result?.content).toContain('Omit notes unless a notes section also changed');
     expect(result?.content).not.toContain('ongoing work');
   });
   it('does not cool unrelated unclassified references across human inputs', () => {

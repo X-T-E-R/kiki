@@ -207,6 +207,21 @@ describe('ReadTool', () => {
     expect(execution.matchesRule?.('/var/**')).toBe(false);
   });
 
+  it('binds complete and partial AGENTS reads to the version actually returned', async () => {
+    const { instructionVersion } = await import('#/agent/agentsMdReminder/instructionCoverage');
+    const { fs, readText } = createSpiedFs('rule one\nrule two\nrule three');
+    const tool = createReadTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+    const first = await execute(tool, { path: '/tmp/AGENTS.md', n_lines: 1 });
+    expect(first.fileRead).toMatchObject({ file: { path: '/tmp/AGENTS.md', scope: '/tmp', runtimeId: 'local', version: instructionVersion('rule one\nrule two\nrule three') }, startLine: 1, endLine: 1, truncated: false });
+    expect(first.fileRead?.totalLines).toBeUndefined();
+    readText.mockResolvedValue('changed rule');
+    const complete = await execute(tool, { path: '/tmp/AGENTS.md' });
+    expect(complete.output).toBe('1\tchanged rule');
+    expect(complete.fileRead).toMatchObject({ file: { version: instructionVersion('changed rule') }, startLine: 1, endLine: 1, totalLines: 1, truncated: false });
+    readText.mockResolvedValue('x'.repeat(MAX_LINE_LENGTH + 1));
+    expect((await execute(tool, { path: '/tmp/AGENTS.md' })).fileRead?.truncated).toBe(true);
+  });
+
   it('reads text content with stable one-based line numbers', async () => {
     const tool = toolWithContent('alpha\nbeta\n');
 
@@ -214,6 +229,7 @@ describe('ReadTool', () => {
 
     expect(result).toEqual({
       output: '1\talpha\n2\tbeta',
+      readRange: { startLine: 1, endLine: 2, totalLines: 2, truncated: false },
       note: readNote(
         '2 lines read starting at line 1. Total lines in file: 2. End of file.',
       ),
@@ -263,6 +279,7 @@ describe('ReadTool', () => {
 
     expect(result).toEqual({
       output: '2\tb\n3\tc',
+      readRange: { startLine: 2, endLine: 3, totalLines: undefined, truncated: false },
       note: readNote(
         '2 lines read starting at line 2. Total lines in file: at least 4. More lines are available. Continue with line_offset=4.',
       ),
@@ -276,6 +293,7 @@ describe('ReadTool', () => {
 
     expect(result).toEqual({
       output: '',
+      readRange: { startLine: 0, endLine: -1, totalLines: 2, truncated: false },
       note: readNote('No lines read. Total lines in file: 2. End of file.'),
     });
   });
@@ -287,6 +305,7 @@ describe('ReadTool', () => {
 
     expect(result).toEqual({
       output: '3\tc\n4\td\n5\te',
+      readRange: { startLine: 3, endLine: 5, totalLines: 5, truncated: false },
       note: readNote(
         '3 lines read starting at line 3. Total lines in file: 5. End of file.',
       ),

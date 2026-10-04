@@ -7,6 +7,7 @@ import {
 import { parseAgentFileText } from './agentFile';
 import { agentProfileFromFile } from './agentProfileFromFile';
 import { parseFrontmatter } from './frontmatter';
+import { overlaySubagentPermissions } from './subagentPermissions';
 import type { SkippedAgentFile } from './agentFileTypes';
 import type { HostFs } from './hostFs';
 import { isHostFsUnavailable } from './hostFs';
@@ -94,17 +95,8 @@ function loadUpgradedSystemMd(
       disallowedTools: Object.hasOwn(parsed.data, 'disallowedTools')
         ? definition.disallowedTools
         : builtinDefault.disallowedTools,
-      subagentDeclaration: definition.subagentPolicy === undefined
-        ? undefined
-        : Object.hasOwn(parsed.data, 'subagents')
-          ? definition.subagentDeclaration
-          : builtinDefault.subagentDeclaration ?? (builtinDefault.subagents === undefined
-            ? { kind: 'all' }
-            : { kind: 'set', names: builtinDefault.subagents }),
-      subagents: Object.hasOwn(parsed.data, 'subagents')
-        ? definition.subagents
-        : builtinDefault.subagents,
-      subagentLeases: Object.hasOwn(parsed.data, 'subagents')
+      ...overlaySubagentPermissions(builtinDefault, definition),
+      subagentLeases: Object.hasOwn(parsed.data, 'allowed_subagents')
         ? definition.subagentLeases
         : builtinDefault.subagentLeases,
       spawnConstraints: Object.hasOwn(parsed.data, 'spawn_constraints')

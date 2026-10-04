@@ -48,13 +48,16 @@ export const SubagentToolInputSchema = z.preprocess(
         'Optional stable name for the new subagent, unique within this session (lowercase letters, digits, and underscores; "root" is reserved). Use it to address the same agent again with resume, AgentSend, or AgentList instead of tracking its generated ID. Rejected together with resume.',
       ),
     profile_file: z.string().trim().min(1).optional().describe('Explicit profile Markdown file, absolute or workspace-relative. Only for new agents; mutually exclusive with profile and route. This is a role definition, not a shared prompt template.'),
-    allow_model_change: z.boolean().optional().describe('Required true when resume explicitly changes model_alias to a different canonical model. Does not bypass role, caller, route or executor restrictions.'),
+    allow_model_change: z.boolean().optional().describe('Confirm an explicit model_alias change to a different canonical model on resume while retaining context. A changed model requires this or new_window to be true; new_window:true takes precedence. This field requires resume and model_alias and does not bypass role, caller, route or executor restrictions.'),
+    new_window: z.boolean().optional().describe('Resume the same child with fresh context while preserving task state and history, without calling the old model. Requires resume. Also confirms an explicit canonical model change; false does not veto allow_model_change:true.'),
     allow_parent_notify: z.boolean().optional().describe('Override AgentNotify availability for this child. On a new agent, omission uses the selected profile setting, which defaults to enabled. On resume, omission preserves the saved setting. This cannot override the global [agents].notify_parent switch or tool policy.'),
+    tools: z.array(z.string().trim().min(1)).optional().describe('Replace the resolved child tool selection. A lone * keeps the ordinary tool surface; combine * with concrete names to opt in to subagent capabilities. [] selects no business tools. New agents default to the profile selection; omission on resume preserves the saved override. Existing deny, caller ceilings, feature gates and read-only restrictions still apply. Native executor only.'),
+    disallowed_tools: z.array(z.string().trim().min(1)).optional().describe('Additional denied tools for this child binding. Omission on resume preserves the saved call-level deny; an explicit list replaces that layer, and [] clears only that layer, not profile or ancestor denies. Native executor only.'),
     resume: z
       .string()
       .optional()
       .describe(
-        'Name or agent ID of an existing direct child. Do not pass name, profile, profile_file, or route. Omitted effort/model keep the saved binding. An explicit effort applies to the next idle run; changing model_alias also requires allow_model_change: true.',
+        'Name or agent ID of an existing direct child. Do not pass name, profile, profile_file, or route. Omitted effort/model keep the saved binding. An explicit effort applies to the next idle run; changing model_alias requires allow_model_change:true or new_window:true. A running child cannot be resumed.',
       ),
     background: z
       .boolean()
@@ -89,6 +92,9 @@ export const SubagentToolInputSchema = z.preprocess(
     if (args.allow_model_change !== undefined && (!args.resume?.trim() || args.model_alias === undefined)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'allow_model_change requires resume and model_alias' });
     }
+    if (args.new_window !== undefined && !args.resume?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'new_window requires resume; it continues an existing child with fresh context', path: ['new_window'] });
+    }
     if (args.resume?.trim() && args.name !== undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -122,6 +128,7 @@ export interface ISubagentTool extends AgentTool<SubagentToolInput> {
   readonly _serviceBrand: undefined;
   dispatchCatalog(): import('./subagentCapabilities').SubagentCapabilityCatalog;
   visibleProfileDescriptions(): ReadonlyMap<string, { readonly line: string; readonly signature: string }>;
+  advertisedProfileDescriptions(): ReturnType<ISubagentTool['visibleProfileDescriptions']>;
 }
 
 export const ISubagentTool = createDecorator<ISubagentTool>('subagentTool');

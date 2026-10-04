@@ -193,7 +193,9 @@ async function collect(
   let toolCalls: readonly ToolCall[] = [];
   let usage: unknown;
   let finishReason: string | undefined;
-  for await (const event of requester.request(input, signal)) {
+  for await (const event of requester.request(input, signal, {
+    attribution: { logicalRequestId: crypto.randomUUID(), purpose: 'connectivity_probe', waitBudget: { waitedMs: 0 } },
+  })) {
     events.push(event.type === 'part' ? `part:${event.part.type}` : event.type);
     if (event.type === 'part' && event.part.type === 'text') text += event.part.text;
     if (event.type === 'usage') usage = event.usage;
@@ -727,7 +729,9 @@ async function probeBoundaries(): Promise<void> {
     };
     const ac = new AbortController();
     try {
-      for await (const event of makeRequester(staticKey('sk-probe')).request(PING_INPUT, ac.signal)) {
+      for await (const event of makeRequester(staticKey('sk-probe')).request(PING_INPUT, ac.signal, {
+        attribution: { logicalRequestId: crypto.randomUUID(), purpose: 'connectivity_probe', waitBudget: { waitedMs: 0 } },
+      })) {
         if (event.type === 'part') ac.abort();
       }
       throw new Error('expected an abort');

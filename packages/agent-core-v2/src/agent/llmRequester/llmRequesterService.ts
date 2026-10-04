@@ -16,6 +16,7 @@ import { injectDelegationContext } from '#/agent/profile/delegationContext';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import type { ISubagentTool } from '#/agent/tools/agent/agent';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentMediaResolverService } from '#/agent/media/mediaResolver';
 import { IAgentUsageService } from '#/agent/usage/usage';
@@ -70,6 +71,7 @@ import type {
 import { getProviderDefinition, usesKimiToolSchema } from '#/kosong/provider/providerDefinition';
 import {
   REQUEST_IDENTITY_RESERVED_HEADERS,
+  defaultOAuthRequestIdentity,
   type RequestIdentityPolicy,
   type ResolvedRequestIdentityPolicy,
 } from '#/kosong/requestIdentity/requestIdentityPolicy';
@@ -185,6 +187,7 @@ interface TurnRequestConfig {
   readonly systemPrompt: string;
   readonly promptFields: ResolvedPromptFieldOverrides;
   readonly promptPrepared: boolean;
+  readonly cognition?: import('#/agent/cognition/cognitionConfig').CognitionBinding;
   readonly providerConfig: ProviderConfig | undefined;
   readonly requestIdentity: ResolvedRequestIdentityPolicy;
 }
@@ -870,11 +873,13 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     );
     const resolvedSystemPrompt =
       overrides.systemPrompt ?? turnConfig?.systemPrompt ?? this.profile.getSystemPrompt();
+    const cognition = turnConfig?.cognition ?? await this.profile.getCognitionBinding();
     const anchoredPrompt = await this.cognitionAnchor.project({
       sourceType: overrides.source?.type,
       turnId: overrides.source?.type === 'turn' ? overrides.source.turnId : undefined,
       step: overrides.source?.type === 'turn' ? overrides.source.step : undefined,
       hasExplicitSystemPrompt: overrides.systemPrompt !== undefined,
+      binding: cognition,
     });
     const promptFields = anchoredPrompt === undefined
       ? turnConfig?.promptFields ?? this.profile.getPromptFieldSnapshot()
@@ -908,7 +913,14 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       tools: this.toolsForRequest(overrides, promptFields, promptVariables),
       messages: [...messages],
       source: overrides.source,
-      logFields: logFieldsForSource(overrides.source),
+      logFields: {
+        ...logFieldsForSource(overrides.source),
+        anchorApplied: anchoredPrompt !== undefined,
+        cognitionRevision: cognition.revision,
+        bindingRevision: cognition.bindingRevision,
+        anchorSteps: cognition.config?.anchor === undefined ? undefined : cognition.config.anchorSteps ?? 1,
+        anchorScope: cognition.config?.anchor === undefined ? undefined : cognition.config.anchorScope ?? 'session',
+      },
     };
   }
 
@@ -949,6 +961,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         ...snapshot,
         systemPrompt: this.profile.getSystemPrompt(),
         promptFields: this.profile.getPromptFieldSnapshot(),
+        cognition: this.profile.getCognitionSnapshot(),
         promptPrepared: true,
       };
       this.turnConfigs.set(turnId, snapshot);
@@ -963,6 +976,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         params: this.profile.resolveRequestParams(),
         systemPrompt: this.profile.getSystemPrompt(),
         promptFields: this.profile.getPromptFieldSnapshot(),
+        cognition: this.profile.getCognitionSnapshot(),
         promptPrepared: preparePrompt,
         providerConfig,
         requestIdentity: this.resolveRequestIdentityPolicy(resolved, providerConfig),
@@ -979,6 +993,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     const modelId = this.modelService.resolveId(resolved.modelAlias) ?? resolved.modelAlias;
     const modelConfig = this.modelService.get(modelId);
     return this.identityCatalog.resolveLayers(
+      defaultOAuthRequestIdentity(providerConfig),
       this.config.get<RequestIdentityPolicy | undefined>(REQUEST_IDENTITY_SECTION),
       providerConfig?.requestIdentity,
       modelConfig?.requestIdentity,
@@ -1042,8 +1057,14 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     const modelId =
       input.modelAlias === undefined ? undefined : this.modelService.resolveId(input.modelAlias);
     const modelConfig = modelId === undefined ? undefined : this.modelService.get(modelId);
+    const agentRun = this.tools.resolve('AgentRun') as ISubagentTool | undefined;
+    const advertisedTool = wireTools.find((tool) => tool.name === 'AgentRun');
+    const advertisedProfiles = advertisedTool !== undefined && typeof agentRun?.advertisedProfileDescriptions === 'function'
+      ? [...agentRun.advertisedProfileDescriptions()].filter(([, entry]) => advertisedTool.description.includes(entry.line))
+        .map(([name, entry]) => ({ name, ...entry })) : undefined;
     const payload: LlmRequestPayload = {
       kind: requestKindForRecord(fields),
+      advertisedProfiles,
       provider: input.protocol,
       model: input.modelName,
       modelAlias: input.modelAlias,
@@ -1069,6 +1090,11 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       attempt: stringField(fields, 'attempt'),
       projection: projectionField(fields),
       droppedCount: numberField(fields, 'droppedCount'),
+      anchorApplied: typeof fields['anchorApplied'] === 'boolean' ? fields['anchorApplied'] : undefined,
+      cognitionRevision: numberField(fields, 'cognitionRevision'),
+      bindingRevision: stringField(fields, 'bindingRevision'),
+      anchorSteps: numberField(fields, 'anchorSteps'),
+      anchorScope: fields['anchorScope'] === 'turn' || fields['anchorScope'] === 'session' ? fields['anchorScope'] : undefined,
     };
     void this.dispatcher.dispatch(new LlmRequest(payload));
   }

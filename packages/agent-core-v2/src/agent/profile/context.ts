@@ -1,4 +1,5 @@
-import { basename, join, normalize } from 'pathe';
+import { basename, dirname, join, normalize } from 'pathe';
+import { instructionVersion, type InstructionFile } from '#/agent/agentsMdReminder/instructionCoverage';
 
 import { findGitWorkTree } from '#/app/git/workTree';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -7,8 +8,7 @@ import type { SystemPromptContext } from './profile';
 
 export const AGENTS_MD_RECOMMENDED_MAX_BYTES = 32 * 1024;
 
-export const LIST_DIR_ROOT_WIDTH = 30;
-export const LIST_DIR_CHILD_WIDTH = 10;
+export const LIST_DIR_ROOT_WIDTH = 20;
 
 interface ProfileContextDeps {
   readonly fs: IHostFileSystem;
@@ -21,6 +21,7 @@ export interface PreparedSystemPromptContext extends SystemPromptContext {
   readonly cwdListing?: string;
   readonly agentsMd?: string;
   readonly agentsMdPaths?: readonly string[];
+  readonly agentsMdFiles?: readonly InstructionFile[];
   readonly additionalDirsInfo?: string;
   readonly agentsMdWarning?: string;
 }
@@ -41,7 +42,7 @@ export async function prepareSystemPromptContext(
 ): Promise<PreparedSystemPromptContext> {
   const additionalDirs = dedupeDirs(options?.additionalDirs ?? []);
   const [cwdListing, agentsMdResult, additionalDirsInfo] = await Promise.all([
-    options?.cwdListing ?? listDirectory(deps, workDir, { collapseHiddenDirs: true }),
+    options?.cwdListing ?? listDirectory(deps, workDir),
     options?.preloadedAgentsMd !== undefined
       ? Promise.resolve(options.preloadedAgentsMd)
       : loadAgentsMdForRoots(deps, brandHome, [workDir], { inheritance: options?.inheritance }),
@@ -51,6 +52,7 @@ export async function prepareSystemPromptContext(
     cwdListing,
     agentsMd: agentsMdResult.content,
     agentsMdPaths: agentsMdResult.paths,
+    agentsMdFiles: agentsMdResult.files,
     additionalDirsInfo,
     agentsMdWarning: agentsMdResult.warning,
   };
@@ -79,6 +81,7 @@ export interface LoadedAgentsMd {
   readonly content: string;
   readonly warning: string | undefined;
   readonly paths: readonly string[];
+  readonly files?: readonly InstructionFile[];
 }
 
 export const AGENTS_MD_PLAIN_NAMES = ['AGENTS.md', 'agents.md'] as const;
@@ -171,9 +174,11 @@ export async function loadAgentsMdForRoots(
   const stack = inheritance?.instructions === 'stack';
   const workspaceFiles: { dotKiki: string | undefined; plain: string | undefined }[] = [];
   const workspaceRoots = new Set<string>();
+  const nestedDirectories = new Set<string>();
   for (const workDir of workDirs) {
     const rootWorkDir = normalize(workDir);
     const projectRoot = (await findGitWorkTree(deps.fs, rootWorkDir))?.root ?? rootWorkDir;
+    for (const directory of instructionDirectories(projectRoot, rootWorkDir).slice(1)) nestedDirectories.add(directory);
     if (workspaceRoots.has(projectRoot)) continue;
     workspaceRoots.add(projectRoot);
     workspaceFiles.push({
@@ -207,6 +212,13 @@ export async function loadAgentsMdForRoots(
     if (plain !== undefined) await collect(plain);
   }
 
+  for (const directory of nestedDirectories) {
+    const dotKiki = await findAgentsMdPath(deps, join(directory, '.kiki'));
+    const plain = await findAgentsMdPath(deps, directory);
+    if (dotKiki !== undefined) await collect(dotKiki);
+    if (plain !== undefined) await collect(plain);
+  }
+
   const content = renderAgentFiles(discovered);
   const totalBytes = byteLength(content);
   if (totalBytes > AGENTS_MD_RECOMMENDED_MAX_BYTES) {
@@ -218,7 +230,9 @@ export async function loadAgentsMdForRoots(
   }
   const warning = loadWarnings.length > 0 ? loadWarnings.join('\n') : undefined;
   const paths = discovered.map((file) => normalize(file.path));
-  return { content, warning, paths };
+  const files = await Promise.all(discovered.map(async (file) => ({ path: normalize(await deps.fs.realpath(file.path)), version: instructionVersion(file.content),
+    scope: basename(dirname(file.path)).toLowerCase() === '.kiki' ? dirname(dirname(file.path)) : dirname(file.path), runtimeId: 'local' })));
+  return { content, warning, paths, files };
 }
 
 export interface AgentsMdWatchRoot {
@@ -247,10 +261,9 @@ export async function agentsMdWatchRoots(
     ...(baseDir === undefined
       ? []
       : [{ root: baseDir, candidates: [join(baseDir, 'AGENTS.md')] }]),
-    {
-      root: projectRoot,
-      candidates: [join(projectRoot, 'AGENTS.md'), dotKikiAgentsMdPath(projectRoot)],
-    },
+    ...instructionDirectories(projectRoot, rootWorkDir).map((root) => ({
+      root, candidates: [join(root, 'AGENTS.md'), dotKikiAgentsMdPath(root)],
+    })),
   ];
 }
 
@@ -273,6 +286,19 @@ export async function findProjectRoot(
 ): Promise<string> {
   const rootWorkDir = normalize(workDir);
   return (await findGitWorkTree(deps.fs, rootWorkDir))?.root ?? rootWorkDir;
+}
+
+export function instructionDirectories(root: string, target: string, pathClass: 'posix' | 'win32' = 'posix'): readonly string[] {
+  const directories = [normalize(target)];
+  const key = (path: string) => pathClass === 'win32' ? normalize(path).toLowerCase() : normalize(path);
+  const boundary = key(root);
+  while (key(directories[0]!) !== boundary) {
+    const parent = dirname(directories[0]!);
+    if (parent === directories[0]) return [normalize(target)];
+    directories.unshift(parent);
+  }
+  directories[0] = normalize(root);
+  return directories;
 }
 
 interface AgentFile {
@@ -355,10 +381,6 @@ function dedupeDirs(dirs: readonly string[]): string[] {
   return result;
 }
 
-interface ListDirectoryOptions {
-  readonly collapseHiddenDirs?: boolean;
-}
-
 interface Entry {
   readonly name: string;
   readonly isDir: boolean;
@@ -385,14 +407,9 @@ async function collectEntries(
   return { entries: all.slice(0, maxWidth), total: all.length, readable: true };
 }
 
-function shouldCollapseDirectory(entry: Entry, options: ListDirectoryOptions): boolean {
-  return options.collapseHiddenDirs === true && entry.isDir && entry.name.startsWith('.');
-}
-
 async function listDirectory(
   deps: ProfileContextDeps,
   workDir: string,
-  options: ListDirectoryOptions = {},
 ): Promise<string> {
   const lines: string[] = [];
   const { entries, total, readable } = await collectEntries(deps, workDir, LIST_DIR_ROOT_WIDTH);
@@ -406,35 +423,11 @@ async function listDirectory(
     const isLast = i === entries.length - 1 && remaining === 0;
     const connector = isLast ? '└── ' : '├── ';
 
-    if (isDir) {
-      lines.push(`${connector}${name}/`);
-      if (shouldCollapseDirectory(entry, options)) continue;
-      const childPrefix = isLast ? '    ' : '│   ';
-      const childDir = join(workDir, name);
-      const child = await collectEntries(deps, childDir, LIST_DIR_CHILD_WIDTH);
-      if (!child.readable) {
-        lines.push(`${childPrefix}└── [not readable]`);
-        continue;
-      }
-      const childRemaining = child.total - child.entries.length;
-      for (let j = 0; j < child.entries.length; j++) {
-        const ce = child.entries[j];
-        if (ce === undefined) continue;
-        const cIsLast = j === child.entries.length - 1 && childRemaining === 0;
-        const cConnector = cIsLast ? '└── ' : '├── ';
-        const suffix = ce.isDir ? '/' : '';
-        lines.push(`${childPrefix}${cConnector}${ce.name}${suffix}`);
-      }
-      if (childRemaining > 0) {
-        lines.push(`${childPrefix}└── ... and ${String(childRemaining)} more`);
-      }
-    } else {
-      lines.push(`${connector}${name}`);
-    }
+    lines.push(`${connector}${name}${isDir ? '/' : ''}`);
   }
 
   if (remaining > 0) {
-    lines.push(`└── ... and ${String(remaining)} more entries`);
+    lines.push(`└── ... and ${String(remaining)} more entries; use Glob to explore`);
   }
 
   return lines.length > 0 ? lines.join('\n') : '(empty directory)';

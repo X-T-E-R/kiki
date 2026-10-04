@@ -68,7 +68,8 @@ interface WorkspaceRouteHost {
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 
-export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): void {
+export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope,
+  onWorkspaceRemoved?: (workspace: string) => void | Promise<void>): void {
   const listRoute = defineRoute(
     {
       method: 'GET',
@@ -214,6 +215,7 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): 
       }
       await core.accessor.get(IWorkspaceInstanceManager).close(workspace_id);
       await registry.delete(workspace_id);
+      await onWorkspaceRemoved?.(existing.root);
       requestLog(req)?.info({ workspace_id, live_sessions_closed: true }, 'workspace deleted');
       reply.send(okEnvelope({ deleted: true as const }, req.id));
     },

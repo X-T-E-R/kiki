@@ -18,6 +18,9 @@ import type { FastifyInstance } from 'fastify';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 
 import { TerminalHttpConnection } from './terminalHttp';
+import { peerAudience, isPeerFrameAllowed, isPeerProcedureAllowed, isWebProcedureAllowed, projectPeerBusEvent } from '../../services/connections/audience';
+import { webPrincipal } from '../../services/webAccess';
+import { BROKER_WS_BUFFER_BYTES, BROKER_WS_MESSAGE_BYTES } from '../../services/connections/manager';
 import { okEnvelope } from '../../protocol/envelope';
 import { selectWsBearerProtocol } from '../ws/bearerProtocol';
 import { registerSessionViewHttp, SessionViewHttpConnection, type SessionViewHttpOptions } from './sessionViewHttp';
@@ -42,7 +45,7 @@ export function registerKlientHttp(
   app: FastifyInstance,
   scope: Scope,
   opts: RegisterKlientHttpOptions = {},
-): WebSocketServer {
+): WebSocketServer & { readonly peerServer: WebSocketServer } {
   const dispatcher = createKlientDispatcher(scope);
   registerSessionViewHttp(app, scope, opts);
 
@@ -54,6 +57,7 @@ export function registerKlientHttp(
     reply.raw.once('close', abort);
     try {
       const { procedure, params } = parseKlientCallRequest(req.body);
+      if ((peerAudience(req) !== undefined && !isPeerProcedureAllowed(procedure)) || (webPrincipal(req) !== undefined && !isWebProcedureAllowed(procedure))) throw new RPCError(40301, 'local_owner_required');
       const data = await dispatcher.call(
         scopeRefFromProcedure(procedure),
         procedure.service,
@@ -77,9 +81,10 @@ export function registerKlientHttp(
     handleProtocols: selectWsBearerProtocol,
     maxPayload: opts.maxPayloadBytes ?? KLIENT_HTTP_MAX_PAYLOAD_BYTES,
   });
+  const peerServer = new WebSocketServer({ noServer: true, handleProtocols: selectWsBearerProtocol, maxPayload: BROKER_WS_MESSAGE_BYTES, perMessageDeflate: false });
   const connections = new Set<KlientHttpConnection>();
-  wss.on('connection', (socket) => {
-    const connection = new KlientHttpConnection(socket, dispatcher, app, opts, scope);
+  for (const server of [wss, peerServer]) server.on('connection', (socket, request) => {
+    const connection = new KlientHttpConnection(socket, dispatcher, app, opts, scope, peerAudience(request) !== undefined, webPrincipal(request) !== undefined);
     connections.add(connection);
     const dispose = (): void => {
       connection.dispose();
@@ -91,10 +96,9 @@ export function registerKlientHttp(
   app.addHook('preClose', () => {
     for (const connection of connections) connection.dispose();
     connections.clear();
-    for (const socket of wss.clients) socket.terminate();
-    wss.close();
+    for (const server of [wss, peerServer]) { for (const socket of server.clients) socket.terminate(); server.close(); }
   });
-  return wss;
+  return Object.assign(wss, { peerServer });
 }
 
 class KlientHttpConnection {
@@ -112,8 +116,10 @@ class KlientHttpConnection {
     private readonly app: Pick<FastifyInstance, 'log'>,
     opts: RegisterKlientHttpOptions,
     scope: Scope,
+    private readonly peer = false,
+    private readonly browser = false,
   ) {
-    this.terminals = new TerminalHttpConnection(scope, opts.enableTerminals === true, (frame) => this.send(frame));
+    this.terminals = new TerminalHttpConnection(scope, opts.enableTerminals === true && !peer, (frame) => this.send(frame));
     this.sessionViews = new SessionViewHttpConnection(opts.sessionViewBroadcaster,
       (frame) => this.send(frame), (id, error) => this.sendError('view_error', id, error),
       { core: scope, service: opts.sessionViewTranscriptService });
@@ -130,7 +136,9 @@ class KlientHttpConnection {
     if (this.closed) return;
     this.lastInboundAt = Date.now();
     const frame = decodeJsonFrame(rawDataToString(data));
-    if (frame === undefined || this.sessionViews.receive(frame) || this.terminals.receive(frame)) return;
+    if (frame === undefined) return;
+    if ((this.peer && !isPeerFrameAllowed(frame)) || (this.browser && typeof frame.service === 'string' && !isWebProcedureAllowed({ service: frame.service, method: typeof frame.method === 'string' ? frame.method : '' }))) { this.socket.close(1008, 'local_owner_required'); this.dispose(); return; }
+    if (this.sessionViews.receive(frame) || this.terminals.receive(frame)) return;
     const id = typeof frame.id === 'string' ? frame.id : '';
     switch (frame.type) {
       case 'subscribe':
@@ -164,6 +172,11 @@ class KlientHttpConnection {
         scope,
         source,
         (data) => {
+          if (this.peer && source.kind === 'stream' && source.name === 'events') {
+            const projected = projectPeerBusEvent(frame.scope, data);
+            if (projected !== undefined) this.send({ type: 'event', id, data: projected });
+            return;
+          }
           this.send({ type: 'event', id, data });
         },
         (error) => {
@@ -269,7 +282,9 @@ class KlientHttpConnection {
   private send(frame: KlientFrame): void {
     if (this.closed || this.socket.readyState !== this.socket.OPEN) return;
     try {
-      this.socket.send(encodeJsonFrame(frame));
+      const encoded = encodeJsonFrame(frame);
+      if (this.peer && this.socket.bufferedAmount + Buffer.byteLength(encoded) > BROKER_WS_BUFFER_BYTES) { this.socket.close(4008, 'slow consumer; reload current window'); this.dispose(); return; }
+      this.socket.send(encoded);
     } catch {
     }
   }

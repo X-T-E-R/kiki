@@ -1,14 +1,26 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash, generateKeyPairSync } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   IAgentLifecycleService, IAgentRuntimeService, ISessionApprovalService, ISessionInteractionService,
   ISessionManager, ISessionStateService,
-  ISshHostService, sessionSshHostsKey, type Scope,
+  ISshConnectionGateService, ISshHostService, sessionSshHostsKey, type Scope,
 } from '@kiki/agent-core-v2';
 import { SessionStateService } from '@kiki/agent-core-v2/session/state/sessionStateService';
 import { ErrorCode } from '@kiki/protocol';
+import Fastify from 'fastify';
+import { DisposableStore } from '@kiki/agent-core-v2/_base/di/lifecycle';
+import { createServices } from '@kiki/agent-core-v2/_base/di/test';
+import { IBootstrapService } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
+import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
+import { SshHostService } from '@kiki/agent-core-v2/app/ssh/sshService';
+import { TomlAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
+import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
+import { ISshCredentialStore } from '@kiki/agent-core-v2/persistence/interface/sshCredentialStore';
+import { ISshHostDocumentStore } from '@kiki/agent-core-v2/persistence/interface/sshHostDocumentStore';
+import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 
 import { registerSshRoutes } from '../src/routes/ssh';
 import { startServer } from '../src/start';
@@ -40,6 +52,7 @@ describe('SSH management REST routes', () => {
       upsert: vi.fn(async (input: { id: string; name: string; roots: string[] }) => { record = { ...record, ...input }; }),
       remove: vi.fn(async () => undefined),
       setSyncSshConfig: vi.fn(async () => undefined),
+      configSync: vi.fn(async () => ({ enabled: false, source: 'home' as const })),
       connectionApprovalEnabled: vi.fn(async () => false),
       setConnectionApproval: vi.fn(async () => undefined),
       copySharedCredentialsToIsolated: vi.fn(async () => [{ hostId: 'dev', workspaceId: undefined, copied: 1 }]),
@@ -68,7 +81,8 @@ describe('SSH management REST routes', () => {
     expect((await request('GET', '/ssh/hosts/:tail', undefined, 'dev:status')).data).toMatchObject({ state: 'idle', generation: 0 });
     expect((await request('GET', '/ssh/hosts/:tail', undefined, 'absent:status')).code).toBe(ErrorCode.SSH_HOST_NOT_FOUND);
     expect((await request('GET', '/ssh/hosts::discover')).data).toMatchObject({ hosts: [{ id: 'dev' }] });
-    expect((await request('PUT', '/ssh/config-sync', { enabled: false })).data).toEqual({ enabled: false });
+    expect((await request('GET', '/ssh/config-sync')).data).toEqual({ enabled: false, source: 'home' });
+    expect((await request('PUT', '/ssh/config-sync', { enabled: false })).data).toEqual({ enabled: false, source: 'home' });
     expect(hosts.setSyncSshConfig).toHaveBeenCalledWith(false);
     expect((await request('GET', '/ssh/connection-approval')).data).toEqual({ enabled: false });
     expect((await request('PUT', '/ssh/connection-approval', { enabled: true })).data).toEqual({ enabled: true });
@@ -105,7 +119,12 @@ describe('SSH management REST routes', () => {
     };
     const release = vi.fn();
     const decideSsh = vi.fn();
+    const setSessionHosts = vi.fn(async (update: (current: Readonly<Record<string, string>>) => Readonly<Record<string, string>>) => {
+      await Promise.resolve();
+      state.set(sessionSshHostsKey, update(state.get(sessionSshHostsKey)));
+    });
     const agent = { accessor: { get: (token: unknown) => {
+      if (token === ISshConnectionGateService) return { ready: Promise.resolve(), setSessionHosts };
       expect(token).toBe(IAgentRuntimeService);
       return { inspect: () => ({ identity: { workspaceId: 'workspace' } }) };
     } } };
@@ -148,6 +167,7 @@ describe('SSH management REST routes', () => {
     vi.mocked(hosts.resolveTarget).mockResolvedValueOnce({ hostname: 'redirect.example.test', user: 'tester', port: 22, identityFiles: [], userKnownHostsFiles: [] });
     expect((await request('PUT')).code).toBe(ErrorCode.VALIDATION_FAILED);
     expect(state.get(sessionSshHostsKey)).toEqual({});
+    expect(setSessionHosts).toHaveBeenCalledTimes(3);
     expect(hosts.connect).not.toHaveBeenCalled();
     let secretResponse: unknown;
     const submit = routes.get('POST /sessions/:session_id/ssh/approvals/:approval_id')!;
@@ -212,6 +232,71 @@ describe('SSH management REST routes', () => {
       expect((await request('/api/ssh/hosts/dev:other', 'POST')).code).toBe(ErrorCode.VALIDATION_FAILED);
     } finally {
       await server.close();
+    }
+  });
+});
+
+
+describe('S5 real SSH REST authority with Fastify inject', () => {
+  it('saves and GETs settings without hosts and projects local records without opening a server or SSH connection', async () => {
+    await mkdir(join(home, '.ssh'), { recursive: true });
+    const config = join(home, '.ssh', 'config');
+    const knownHosts = join(home, '.ssh', 'known_hosts').replaceAll('\\', '/');
+    await writeFile(config, '');
+    const publicKey = generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
+    const raw = Buffer.concat([Buffer.from([0, 0, 0, 11]), Buffer.from('ssh-ed25519'), Buffer.from([0, 0, 0, 32]), publicKey]);
+    const knownText = `example.test ssh-ed25519 ${raw.toString('base64')}\n`;
+    await writeFile(knownHosts, knownText);
+    const disposables = new DisposableStore();
+    const ix = createServices(disposables, { additionalServices: (registry) => {
+      registry.defineInstance(IFileSystemStorageService, new FileStorageService(home, 0o700, 0o600));
+      registry.define(ISshHostDocumentStore, TomlAtomicDocumentStore);
+      registry.definePartialInstance(IBootstrapService, { homeDir: home, osHomeDir: home });
+      registry.definePartialInstance(IFlagService, { enabled: () => true });
+      registry.definePartialInstance(ISshCredentialStore, { read: async () => { throw new Error('Unexpected credential read'); }, forget: async () => undefined });
+      registry.define(ISshHostService, SshHostService);
+      registry.definePartialInstance(ISessionManager, {});
+    } });
+    const hosts = ix.get(ISshHostService);
+    const connect = vi.spyOn(hosts, 'connect');
+    const app = Fastify();
+    app.setValidatorCompiler(() => () => true);
+    app.setSerializerCompiler(() => (data) => JSON.stringify(data));
+    registerSshRoutes(app as unknown as Parameters<typeof registerSshRoutes>[0], { accessor: ix } as unknown as Scope);
+    const request = async (url: string, method: 'GET' | 'PUT' = 'GET', payload?: Record<string, unknown>) => {
+      const response = await app.inject({ url, method, payload });
+      expect(response.statusCode, response.body).toBe(200);
+      return response.json<{ code: number; data: Record<string, unknown> }>();
+    };
+    try {
+      expect((await request('/ssh/config-sync')).data).toEqual({ enabled: true, source: 'default' });
+      expect((await request('/ssh/hosts')).data).toEqual({ hosts: [] });
+      for (const enabled of [false, true, false]) {
+        expect((await request('/ssh/config-sync', 'PUT', { enabled })).data).toEqual({ enabled, source: 'home' });
+        expect((await request('/ssh/config-sync')).data).toEqual({ enabled, source: 'home' });
+        expect((await request('/ssh/hosts')).data).toEqual({ hosts: [] });
+      }
+      await writeFile(config, `Host dev\n  HostName example.test\n  User tester\n  UserKnownHostsFile ${knownHosts}\n`);
+      expect((await request('/ssh/hosts/dev', 'PUT', { name: 'Saved', hostname: 'example.test', user: 'tester' })).code).toBe(0);
+      await request('/ssh/config-sync', 'PUT', { enabled: true });
+      expect((await request('/ssh/hosts')).data).toMatchObject({ hosts: [{ source: 'kiki', id: 'dev' }] });
+      expect((await request('/ssh/config-sync')).data).toEqual({ enabled: true, source: 'home' });
+      expect((await request('/ssh/hosts/dev:host-keys')).data).toMatchObject({ hostId: 'dev', hostname: 'example.test',
+        state: 'recorded', records: [{ status: 'recorded', algorithm: 'ssh-ed25519',
+          fingerprint: `SHA256:${createHash('sha256').update(raw).digest('base64').replace(/=+$/, '')}` }] });
+      expect(await readFile(knownHosts, 'utf8')).toBe(knownText);
+      await writeFile(knownHosts, 'example.test ssh-rsa invalid-key\n');
+      expect((await request('/ssh/hosts/dev:host-keys')).data).toMatchObject({ state: 'unavailable', records: [{ status: 'invalid', reason: 'invalid-public-key' }] });
+      expect((await request('/ssh/hosts/missing:host-keys')).code).toBe(ErrorCode.SSH_HOST_NOT_FOUND);
+      expect((await request('/ssh/hosts/dev:unsupported')).code).toBe(ErrorCode.VALIDATION_FAILED);
+      expect(connect).not.toHaveBeenCalled();
+      await writeFile(join(home, 'ssh', 'hosts.toml'), 'sync_ssh_config = "false"\n');
+      const failed = await app.inject('/ssh/config-sync');
+      expect(failed.statusCode).toBe(500);
+      expect(failed.json()).not.toHaveProperty('data.enabled');
+    } finally {
+      await app.close();
+      disposables.dispose();
     }
   });
 });

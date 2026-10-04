@@ -75,6 +75,7 @@ import {
   type PromptSkillActivation,
 } from '../protocol/rest-prompt';
 import { z } from 'zod';
+import { modelSwitchInputSchema, modelSwitchReceiptSchema, queuedModelSwitchSchema, modelSwitchActionSchema } from '../protocol/rest-model-switch';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import {
@@ -368,6 +369,64 @@ async function validateProfileSelection(
 }
 
 export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
+  const switchParams = z.object({ session_id: z.string().min(1), agent_id: z.string().min(1) });
+  const operationParams = switchParams.extend({ operation_id: z.string().min(1) });
+  const switchPath = '/sessions/{session_id}/agents/{agent_id}/model-switches';
+  const switchList = defineRoute({ method: 'GET', path: switchPath, params: switchParams,
+    success: { data: z.array(queuedModelSwitchSchema) }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
+    description: 'Read model switch queue and operation states', tags: ['prompts'], operationId: 'listModelSwitches' }, async (req, reply) => {
+    try {
+      await withSessionOperation(core, req.params.session_id, async (handle) => {
+        const resolved = await resolvePromptFromSession(core, requireSession(handle, req.params.session_id), req.params.agent_id);
+        reply.send(okEnvelope(resolved.prompt.listModelSwitches(), req.id));
+      });
+    } catch (error) { sendMappedError(reply, req, error); }
+  });
+  app.get(switchList.path, switchList.options, switchList.handler as Parameters<PromptRouteHost['get']>[2]);
+  const switchSubmit = defineRoute({ method: 'POST', path: switchPath, params: switchParams, body: modelSwitchInputSchema,
+    success: { data: modelSwitchReceiptSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
+    description: 'Queue a model and context switch at the agent idle boundary', tags: ['prompts'], operationId: 'switchModel' }, async (req, reply) => {
+    try {
+      await withSessionOperation(core, req.params.session_id, async (handle) => {
+        const resolved = await resolvePromptFromSession(core, requireSession(handle, req.params.session_id), req.params.agent_id);
+        reply.send(okEnvelope(await resolved.prompt.switchModel(req.body), req.id));
+      });
+    } catch (error) { sendMappedError(reply, req, error); }
+  });
+  app.post(switchSubmit.path, switchSubmit.options, switchSubmit.handler as Parameters<PromptRouteHost['post']>[2]);
+  const switchRead = defineRoute({ method: 'GET', path: `${switchPath}/{operation_id}`, params: operationParams,
+    success: { data: modelSwitchReceiptSchema.nullable() }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
+    description: 'Read a model switch by its idempotent operation ID', tags: ['prompts'], operationId: 'getModelSwitch' }, async (req, reply) => {
+    try {
+      await withSessionOperation(core, req.params.session_id, async (handle) => {
+        const resolved = await resolvePromptFromSession(core, requireSession(handle, req.params.session_id), req.params.agent_id);
+        reply.send(okEnvelope(resolved.prompt.getModelSwitch(req.params.operation_id) ?? null, req.id));
+      });
+    } catch (error) { sendMappedError(reply, req, error); }
+  });
+  app.get(switchRead.path, switchRead.options, switchRead.handler as Parameters<PromptRouteHost['get']>[2]);
+  const switchAction = defineRoute({ method: 'POST', path: `${switchPath}/{operation_id}`, params: operationParams, body: modelSwitchActionSchema,
+    success: { data: modelSwitchReceiptSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
+    description: 'Edit, cancel, reorder, hold or recover a model switch operation', tags: ['prompts'], operationId: 'recoverModelSwitch' }, async (req, reply) => {
+    try {
+      await withSessionOperation(core, req.params.session_id, async (handle) => {
+        const resolved = await resolvePromptFromSession(core, requireSession(handle, req.params.session_id), req.params.agent_id);
+        const id = req.params.operation_id;
+        const action = req.body;
+        let receipt;
+        if (action.action === 'update') receipt = await resolved.prompt.updateModelSwitch({ ...action.input, operationId: id }, action.expectedRevision);
+        else if (action.action === 'cancel') receipt = await resolved.prompt.cancelModelSwitch(id);
+        else if (action.action === 'move' || action.action === 'hold') {
+          if (action.action === 'move') resolved.prompt.move(id, action.targetIndex);
+          else resolved.prompt.setEditHold(id, action.held);
+          receipt = resolved.prompt.getModelSwitch(id);
+        } else receipt = await resolved.prompt.recoverModelSwitch(id, action.action, action.mode);
+        if (receipt === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, `Unknown model switch ${id}`);
+        reply.send(okEnvelope(receipt, req.id));
+      });
+    } catch (error) { sendMappedError(reply, req, error); }
+  });
+  app.post(switchAction.path, switchAction.options, switchAction.handler as Parameters<PromptRouteHost['post']>[2]);
   const listRoute = defineRoute(
     {
       method: 'GET',
@@ -498,9 +557,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             req.body.goal_follow_up_timing === undefined &&
             req.body.goal_initial_status === undefined &&
             req.body.goal_control === undefined &&
-            req.body.persona_greeting_reply === undefined
+            req.body.persona_greeting_reply === undefined &&
+            req.body.after_model_switch === undefined
             ? undefined
             : {
+                afterModelSwitch: req.body.after_model_switch,
                 profile: req.body.profile,
                 model: req.body.model,
                 thinking: req.body.thinking,
@@ -853,6 +914,10 @@ export function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][num
     created_at: prompt.createdAt,
     append_timing: prompt.appendTiming ?? 'agent_idle',
     revision: prompt.revision ?? 0,
+    model: prompt.execution?.model,
+    thinking: prompt.execution?.thinking,
+    after_model_switch: prompt.execution?.afterModelSwitch,
+    queue_index: prompt.queueIndex,
   };
 }
 

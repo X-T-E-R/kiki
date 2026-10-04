@@ -39,7 +39,8 @@ describe('session transcript detail reads', () => {
     const service = {
       forSessionLive: () => store,
       whenReady: async () => undefined,
-      ensureAgentHistory: async () => undefined,
+      ensureAgentHistory: async () => transcript,
+      reconcileQuestionSnapshot: (_sessionId: string, snapshot: ReturnType<AgentTranscript['snapshot']>) => snapshot,
     } as unknown as TranscriptService;
 
     await expect(readSessionViewTranscriptDetail(service, 's1', {
@@ -52,8 +53,9 @@ describe('session transcript detail reads', () => {
       agentId: 'main', kind: 'attachment', id: 'attachment-1',
     })).resolves.toEqual({
       session_id: 's1', agent_id: 'main', kind: 'attachment',
-      attachment: expect.objectContaining({ attachmentId: 'attachment-1', source: expect.objectContaining({ kind: 'url' }) }),
+      attachment: expect.objectContaining({ attachmentId: 'attachment-1', source: { kind: 'session_media', fileId: expect.stringMatching(/^inline:main:/) } }),
     });
+    expect(transcript.getAttachment('attachment-1')?.source).toEqual({ kind: 'url', url: `data:image/png;base64,${'A'.repeat(8_192)}` });
     await expect(readSessionViewTranscriptDetail(service, 's1', {
       agentId: 'main', kind: 'prompt', id: 'prompt-1',
     })).resolves.toEqual({
@@ -80,7 +82,8 @@ describe('session transcript detail reads', () => {
     const service = {
       forSessionLive: () => store,
       whenReady: async () => undefined,
-      ensureAgentHistory: async () => undefined,
+      ensureAgentHistory: async () => transcript,
+      reconcileQuestionSnapshot: (_sessionId: string, snapshot: ReturnType<AgentTranscript['snapshot']>) => snapshot,
     } as unknown as TranscriptService;
 
     const first = await readSessionViewTranscriptDetails(service, 's1', {

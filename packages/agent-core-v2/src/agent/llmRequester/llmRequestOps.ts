@@ -13,6 +13,8 @@ export interface LlmRequestToolSchema {
 
 export interface LlmRequestTraceState {
   readonly seenToolsHashes: readonly string[];
+  readonly advertisedProfiles?: readonly { readonly name: string; readonly line: string; readonly signature: string }[];
+  readonly lastRequest?: import('@kiki/protocol').AgentPromptRequest;
 }
 
 const llmToolEntrySchema = z.object({
@@ -53,6 +55,12 @@ const llmRequestSchema = z.object({
   attempt: z.string().optional(),
   projection: z.enum(['strict', 'media-degraded', 'media-stripped', 'strict-media-degraded', 'strict-media-stripped']).optional(),
   droppedCount: z.number().optional(),
+  anchorApplied: z.boolean().optional(),
+  cognitionRevision: z.number().int().optional(),
+  bindingRevision: z.string().optional(),
+  anchorSteps: z.number().int().positive().optional(),
+  anchorScope: z.enum(['session', 'turn']).optional(),
+  advertisedProfiles: z.array(z.object({ name: z.string(), line: z.string(), signature: z.string() })).readonly().optional(),
 });
 
 export type LlmRequestPayload = z.infer<typeof llmRequestSchema>;
@@ -64,6 +72,15 @@ export class LlmRequest extends Event2<LlmRequestPayload> {
 }
 export interface LlmRequest extends LlmRequestPayload {}
 
+export function promptRequestEvidence(e: LlmRequest): import('@kiki/protocol').AgentPromptRequest {
+  return {
+    system_prompt_hash: e.systemPromptHash, tools_hash: e.toolsHash, model_alias: e.modelAlias,
+    turn_step: e.turnStep, attempt: e.attempt, at: e.time, anchor_applied: e.anchorApplied,
+    cognition_revision: e.cognitionRevision, binding_revision: e.bindingRevision,
+    anchor_steps: e.anchorSteps, anchor_scope: e.anchorScope,
+  };
+}
+
 export const llmRequestTraceKey = defineState(
   'llm.requestTrace',
   (): LlmRequestTraceState => ({ seenToolsHashes: [] }),
@@ -72,4 +89,7 @@ export const llmRequestTraceKey = defineState(
     if (s.seenToolsHashes.includes(e.hash)) return;
     s.seenToolsHashes = [...s.seenToolsHashes, e.hash];
   })
-  .on(LlmRequest, () => {});
+  .on(LlmRequest, (s, e) => {
+    s.lastRequest = promptRequestEvidence(e);
+    if (e.kind === 'loop') s.advertisedProfiles = e.advertisedProfiles?.map((entry) => ({ ...entry }));
+  });

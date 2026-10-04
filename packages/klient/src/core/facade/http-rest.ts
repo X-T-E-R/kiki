@@ -217,6 +217,24 @@ export interface HttpRestBinaryFile {
   readonly notModified?: boolean;
 }
 
+export interface HttpRestMediaOptions extends HttpRestRequestOptions {
+  readonly ifNoneMatch?: string;
+  readonly range?: string;
+  readonly mediaType?: string;
+}
+
+export interface HttpRestMediaReceipt {
+  readonly bytes: number;
+  readonly mime: string;
+  readonly name?: string;
+  readonly etag?: string;
+  readonly contentRange?: string;
+  readonly totalBytes?: number;
+  readonly notModified: boolean;
+}
+
+export type HttpRestMediaSink = (chunk: Uint8Array, progress: HttpRestMediaReceipt) => void | Promise<void>;
+
 export interface HttpRestSessionArchive {
   readonly blob: Blob;
   readonly filename: string;
@@ -271,6 +289,10 @@ export type HttpRestConfigPatch = PatchConfigRequest & {
  * arbitrary URL or untyped request escape hatch.
  */
 export interface HttpRestFacade {
+  readonly webAccess: import('./web-access.js').WebAccessFacade;
+  readonly connections: import('./connections.js').ConnectionsFacade;
+  readonly threadBridges: import('./thread-bridges.js').ThreadBridgesFacade;
+  readonly usageExport: import('./usage-export.js').UsageExportFacade;
   healthz(baseUrlOverride?: string): Promise<boolean>;
   meta(): Promise<MetaResponse & { readonly experimental_flags?: Record<string, boolean> }>;
   renewLease(body: { readonly lease_id?: string }): Promise<{
@@ -294,12 +316,27 @@ export interface HttpRestFacade {
     reset(platform: import('@kiki/protocol').ShortcutPlatform, target?: { platform?: import('@kiki/protocol').ShortcutPlatform; action?: import('@kiki/protocol').ShortcutAction }): Promise<import('@kiki/protocol').ShortcutResponse>;
   };
 
+  readonly browser: {
+    list(): Promise<import('@kiki/protocol').BrowserControlList>;
+    upsert(id: string, input: import('@kiki/protocol').BrowserConnectionInput): Promise<{ readonly connection: import('@kiki/protocol').BrowserConnection }>;
+    remove(id: string): Promise<{ readonly removed: true }>;
+    setDefault(browser?: string): Promise<{ readonly browser?: string }>;
+    status(id: string): Promise<import('@kiki/protocol').BrowserStatus>;
+    tabs(id: string): Promise<import('@kiki/protocol').BrowserTabsResponse>;
+    catalog(id: string, options?: { includeSchema?: boolean }): Promise<import('@kiki/protocol').BrowserCatalogResponse>;
+    check(id: string): Promise<import('@kiki/protocol').BrowserStatus>;
+    connect(id: string): Promise<import('@kiki/protocol').BrowserStatus>;
+    disconnect(id: string): Promise<import('@kiki/protocol').BrowserStatus>;
+  };
+
   readonly ssh: {
     list(workspaceId?: string): Promise<{ readonly hosts: readonly import('@kiki/protocol').SshHost[] }>;
     discover(): Promise<{ readonly hosts: readonly import('@kiki/protocol').SshHost[] }>;
     upsert(id: string, host: import('@kiki/protocol').SshHostInput, workspaceId?: string): Promise<{ readonly host: import('@kiki/protocol').SshHost }>;
     remove(id: string, workspaceId?: string): Promise<{ readonly removed: true }>;
-    setConfigSync(enabled: boolean): Promise<{ readonly enabled: boolean }>;
+    configSync(): Promise<import('@kiki/protocol').SshConfigSyncSettings>;
+    setConfigSync(enabled: boolean): Promise<import('@kiki/protocol').SshConfigSyncSettings>;
+    hostKeys(id: string, workspaceId?: string): Promise<import('@kiki/protocol').SshHostKeys>;
     connectionApproval(): Promise<{ readonly enabled: boolean }>;
     setConnectionApproval(enabled: boolean): Promise<{ readonly enabled: boolean }>;
     writeBack(id: string, workspaceId?: string): Promise<{ readonly written: true }>;
@@ -322,15 +359,18 @@ export interface HttpRestFacade {
 
   readonly sessions: {
     list(query?: HttpRestListSessionsQuery): Promise<import('@kiki/protocol').ListSessionsResponse>;
-    listEphemeral(): Promise<import('@kiki/protocol').ListEphemeralSessionsResponse>;
+    listEphemeral(query?: Pick<HttpRestListSessionsQuery, 'before_id' | 'page_size' | 'workspace_id' | 'persona'>): Promise<import('@kiki/protocol').ListEphemeralSessionsResponse>;
     create(body: SessionCreate): Promise<Session>;
     saveEphemeral(sessionId: string): Promise<Session>;
     endEphemeral(sessionId: string, body?: { readonly worktree?: 'keep' | 'remove' }): Promise<import('@kiki/protocol').EndEphemeralSessionResponse>;
     compact(sessionId: string, body?: { readonly instruction?: string }): Promise<import('@kiki/protocol').CompactSessionResponse>;
     getAutoCompact(sessionId: string, agentId: string): Promise<import('@kiki/protocol').AutoCompactStatus>;
     setAutoCompact(sessionId: string, agentId: string, input: import('@kiki/protocol').AutoCompactWrite): Promise<import('@kiki/protocol').AutoCompactWriteResult>;
+    inspectHooks(sessionId: string, agentId: string): Promise<import('@kiki/protocol').AgentHooksInspect>;
     undo(sessionId: string, body?: { readonly count?: number; readonly page_size?: number }): Promise<import('@kiki/protocol').UndoSessionResponse>;
     updateProfile(sessionId: string, body: UpdateSessionProfileRequest): Promise<Session>;
+    getPersonaSettings(sessionId: string): Promise<import('@kiki/protocol').SessionPersonaSettings>;
+    applyPersonaSettings(sessionId: string, input?: import('@kiki/protocol').ApplyPersonaSettingsRequest): Promise<import('@kiki/protocol').SessionPersonaSettings>;
     archive(sessionId: string): Promise<ArchiveSessionResponse>;
     restore(sessionId: string): Promise<RestoreSessionResponse>;
     goal(sessionId: string): Promise<GoalSnapshot | null>;
@@ -354,7 +394,9 @@ export interface HttpRestFacade {
       body: { readonly query: string; readonly limit?: number },
       options?: HttpRestRequestOptions,
     ): Promise<FsSearchResponse>;
-    media(sessionId: string, fileId: string, options?: { readonly ifNoneMatch?: string }): Promise<HttpRestBinaryFile>;
+    media(sessionId: string, fileId: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
+    mediaPreview(sessionId: string, fileId: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
+    downloadMedia(sessionId: string, fileId: string, sink: HttpRestMediaSink, options?: HttpRestMediaOptions): Promise<HttpRestMediaReceipt>;
     export(sessionId: string): Promise<HttpRestSessionArchive>;
   };
 
@@ -363,6 +405,9 @@ export interface HttpRestFacade {
   readonly personas: {
     list(options?: { readonly includeArchived?: boolean }): Promise<readonly PersonaSummary[]>;
     get(id: string): Promise<PersonaSnapshot>;
+    ensureHome(id: string): Promise<{ readonly homeSessionId: string }>;
+    setHome(id: string, sessionId: string): Promise<import('@kiki/protocol').PersonaState>;
+    updateState(id: string, input: import('@kiki/protocol').PersonaStateUpdate): Promise<import('@kiki/protocol').PersonaState>;
     put(input: PersonaPutInput): Promise<PersonaSnapshot>;
     duplicate(id: string, options?: { readonly id?: string; readonly name?: string }): Promise<PersonaSnapshot>;
     archive(id: string, archived?: boolean): Promise<{ readonly version: 1; readonly archived: boolean }>;
@@ -400,6 +445,11 @@ export interface HttpRestFacade {
   readonly homes: {
     presets(): Promise<import('@kiki/protocol').SpacePresetsResponse>;
     list(): Promise<import('@kiki/protocol').ListSpacesResponse>;
+    detail(id: string): Promise<import('@kiki/protocol').SpaceDetail>;
+    preview(id: string, body: import('@kiki/protocol').SpacePlanRequest): Promise<import('@kiki/protocol').SpacePreview>;
+    apply(id: string, body: import('@kiki/protocol').SpaceApplyRequest): Promise<import('@kiki/protocol').SpaceMutationResponse>;
+    undo(id: string, undoId: string): Promise<import('@kiki/protocol').SpaceMutationResponse>;
+    importPreferences(id: string, body: import('@kiki/protocol').SpacePreferenceImport): Promise<import('@kiki/protocol').SpacePreferenceImportResponse>;
     create(body: import('@kiki/protocol').CreateSpaceRequest): Promise<import('@kiki/protocol').SpaceRecord>;
     attach(body: import('@kiki/protocol').AttachSpaceRequest): Promise<import('@kiki/protocol').SpaceRecord>;
     sshCopyCandidates(id: string): Promise<import('@kiki/protocol').SshCopyCandidatesResponse>;
@@ -439,6 +489,8 @@ export interface HttpRestFacade {
   readonly nbSearch: {
     capabilities(): Promise<import('@kiki/protocol').NbSearchCapabilities>;
     test(options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').NbSearchTestStatus>;
+    /** User-requested only; cold/expired caches may make remote usage calls. Never needed to save settings. */
+    keyUsage(instanceId: string, refresh?: boolean, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').NbSearchKeyUsageView>;
     readCredential(instanceId: string, reveal: boolean): Promise<import('@kiki/protocol').NbSearchManagedCredentialView>;
     writeCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string): Promise<import('@kiki/protocol').NbSearchManagedCredentialView>;
   };
@@ -500,7 +552,9 @@ export interface HttpRestFacade {
   readonly filesystem: {
     readHostFile(path: string): Promise<string>;
     previewHostFile(path: string, maxBytes: number): Promise<{ readonly text: string; readonly truncated: boolean }>;
-    readHostFileBytes(path: string, options?: { readonly ifNoneMatch?: string }): Promise<HttpRestBinaryFile>;
+    readHostFileBytes(path: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
+    readHostMediaPreview(path: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
+    downloadHostFile(path: string, sink: HttpRestMediaSink, options?: HttpRestMediaOptions): Promise<HttpRestMediaReceipt>;
     workspaceFsSearch(
       workspace: string,
       body: { readonly query: string; readonly limit?: number },

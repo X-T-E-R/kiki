@@ -47,6 +47,9 @@ export const personaSummarySchema = z.object({
   job: z.string().optional(),
   revision: z.string().min(1),
   archived: z.boolean(),
+  homeSessionId: z.string().min(1).optional(),
+  pinned: z.boolean().optional(),
+  hidden: z.boolean().optional(),
   avatarMime: z.string().min(1).optional(),
   avatarShape: personaAvatarShapeSchema.optional(),
 }).strict();
@@ -84,12 +87,19 @@ export const personaArchiveInputSchema = z.object({
 }).strict();
 export type PersonaArchiveInput = z.infer<typeof personaArchiveInputSchema>;
 
+export const personaHomeInputSchema = z.object({ sessionId: z.string().min(1) }).strict();
+export type PersonaHomeInput = z.infer<typeof personaHomeInputSchema>;
+export const personaHomeResponseSchema = z.object({ homeSessionId: z.string().min(1) }).strict();
+export const personaStateUpdateSchema = z.object({ pinned: z.boolean().optional(), hidden: z.boolean().optional() }).strict();
+export type PersonaStateUpdate = z.infer<typeof personaStateUpdateSchema>;
+
 export const personaStateSchema = z.object({
   version: z.literal(1),
   archived: z.boolean(),
   homeSessionId: z.string().min(1).optional(),
   pinned: z.boolean().optional(),
   hidden: z.boolean().optional(),
+  pausedCronTasks: z.array(z.object({ workspaceId: z.string(), taskId: z.string(), wasPaused: z.boolean() }).strict()).optional(),
 }).strict();
 export type PersonaState = z.infer<typeof personaStateSchema>;
 

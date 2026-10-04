@@ -11,7 +11,7 @@ import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { HOOKS_SECTION, type HooksConfig } from '../configSection';
 import { loadHookRules, type HookRuleSource } from '../internal/loadRules';
-import { hookHash, type HookRulesSnapshot } from '../internal/rules';
+import { hookHash, retainFailedHookSources, type HookRulesSnapshot } from '../internal/rules';
 import { IHookRulesRegistry } from './hookRules';
 
 export class HookRulesRegistry extends Disposable implements IHookRulesRegistry {
@@ -45,7 +45,8 @@ export class HookRulesRegistry extends Disposable implements IHookRulesRegistry 
 
   reload(): Promise<void> {
     this.pending = this.pending.then(() => this.load()).catch((error) => {
-      this.current = { revision: hookHash(String(error)), rules: [], diagnostics: [{ path: this.bootstrap.configPath, message: String(error) }] };
+      const sources = this.current.sources ?? [...new Set(this.current.rules.map((rule) => rule.namespace))].map((namespace) => ({ namespace, path: this.bootstrap.configPath }));
+      this.current = retainFailedHookSources(this.current, { revision: hookHash(String(error)), rules: [], sources: sources.map((source) => ({ ...source, status: 'unavailable' })), diagnostics: [{ path: this.bootstrap.configPath, message: String(error) }] });
       this.changed.fire();
     });
     return this.pending;
@@ -62,9 +63,13 @@ export class HookRulesRegistry extends Disposable implements IHookRulesRegistry 
     }
     const snapshot = await loadHookRules(sources, this.fs, { ...path, separator: path.sep }, (alias) => this.models.resolveId(alias));
     this.disabledIds = [...new Set([...this.disabledIds, ...snapshot.disabled ?? []])];
-    this.current = { ...snapshot, diagnostics: [...snapshot.diagnostics, ...this.config.diagnostics().filter((entry) => entry.domain === HOOKS_SECTION).map((entry) => ({ path: this.bootstrap.configPath, message: entry.message }))] };
+    const diagnostics = this.config.diagnostics().filter((entry) => entry.domain === HOOKS_SECTION).map((entry) => ({ path: this.bootstrap.configPath, message: entry.message }));
+    this.current = retainFailedHookSources(this.current, { ...snapshot,
+      sources: diagnostics.length === 0 ? snapshot.sources : [...snapshot.sources?.filter((source) => source.namespace !== 'user') ?? [], { namespace: 'user', path: this.bootstrap.configPath, status: 'invalid' }],
+      diagnostics: [...snapshot.diagnostics, ...diagnostics],
+    });
     this.watches.clear();
-    for (const file of snapshot.watchPaths ?? []) {
+    for (const file of this.current.watchPaths ?? []) {
       const handle = this.watches.add(this.watch.watch(file));
       this.watches.add(handle.onDidChange(() => { void this.reload(); }));
     }

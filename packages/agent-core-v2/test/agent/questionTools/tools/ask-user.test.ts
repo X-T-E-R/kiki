@@ -361,29 +361,20 @@ describe('AskUserQuestionTool', () => {
     expect(telemetryTrack).toHaveBeenCalledWith('question_dismissed', { trace_id: undefined });
   });
 
-  it('resolves question service error responses as dismissed answers', async () => {
-    const { tool } = makeTool({
-      request: async () => {
-        throw new Error2(CoreErrors.codes.INTERNAL, 'question broker error');
-      },
-    });
+  it('reports question service failures without claiming a user dismissal', async () => {
+    const { tool } = makeTool({ request: async () => { throw new Error2(CoreErrors.codes.INTERNAL, 'question broker error'); } });
+    const result = await executeTool(tool, { turnId: 0, toolCallId: 'call_question', args: input(), signal });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('question broker error');
+    expect(result.output).not.toContain('dismissed');
+  });
 
-    const result = await executeTool(tool, {
-      turnId: 0,
-      toolCallId: 'call_question',
-      args: input(),
-      signal,
-    });
-
-    expect(result).toMatchObject({ isError: false });
-    expect(result.output).toContain('dismissed');
-    expect(typeof result.output).toBe('string');
-    const output = typeof result.output === 'string' ? result.output : '';
-    expect(JSON.parse(output)).toEqual({
-      answers: {},
-      note: 'User dismissed the question without answering.',
-    });
-    expect(result.output).not.toContain('Do NOT call this tool again');
+  it.each(['no_consumer', 'turn_ended', 'agent_closed', 'aborted'] as const)('reports %s without fabricating a user response', async (reason) => {
+    const { tool, telemetryTrack } = makeTool({ request: async () => ({ cancelled: true, reason }) });
+    const result = await executeTool(tool, { turnId: 0, toolCallId: 'call_question', args: input(), signal });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(String(result.output))).toMatchObject({ cancelled: true, reason });
+    expect(telemetryTrack).not.toHaveBeenCalledWith('question_dismissed', expect.anything());
   });
 
   it('propagates aborts while waiting for the question service', async () => {

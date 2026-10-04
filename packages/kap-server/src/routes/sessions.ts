@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
+import { IBotService } from '@kiki/agent-core-v2/app/bot/bot';
+import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
 import type { AgentMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { NegotiatedExecutorCapabilities } from '@kiki/agent-core-v2/app/agentExecutor/capabilities';
 import { readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
@@ -114,6 +117,9 @@ import type { SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBro
 import { parseActionSuffix } from './action-suffix';
 import { applyAgentRuntimeControls, applySessionAgentConfig } from './sessionAgentConfig';
 import { updateSessionProfile } from './sessionProfile';
+import { registerPersonaSettingsRoutes } from './personaSettings';
+import { boundedListPreview } from '../transport/klient/boundedContent';
+import { jsonBytes } from '@kiki/transcript';
 
 interface SessionRouteHost {
   post(
@@ -140,7 +146,7 @@ const booleanQueryParam = z.preprocess((value) => {
   return value;
 }, z.boolean().optional());
 
-const DEFAULT_SESSION_LIST_PAGE_SIZE = 20;
+const DEFAULT_SESSION_LIST_PAGE_SIZE = 50;
 
 const sessionsListQueryCoercion = z
   .object({
@@ -153,6 +159,7 @@ const sessionsListQueryCoercion = z
     exclude_empty: booleanQueryParam,
     archived_only: booleanQueryParam,
     workspace_id: workspaceIdSchema.optional(),
+    persona: z.string().min(1).optional(),
   })
   .superRefine((value, ctx) => {
     if (value.before_id !== undefined && value.after_id !== undefined) {
@@ -270,6 +277,7 @@ export function registerSessionsRoutes(
   onWorkspaceServed: ((workspace: string) => void | Promise<void>) | undefined,
   leaseRegistry: LeaseRegistry,
 ): void {
+  registerPersonaSettingsRoutes(app, core);
   const overlayResourcesBySession = new Map<string, Set<string>>();
   const releaseSessionOverlays = (sessionId: string) => {
     const resources = overlayResourcesBySession.get(sessionId);
@@ -283,15 +291,28 @@ export function registerSessionsRoutes(
   core.accessor.get(ISessionManager).onDidArchiveSession?.(({ sessionId }) => {
     releaseSessionOverlays(sessionId);
   });
-  const ephemeralSessions = async (workspaceId?: string): Promise<Session[]> => {
-    const handles = core.accessor.get(ISessionManager).listEphemeral();
-    return Promise.all(handles.filter((handle) => {
-      return workspaceId === undefined || handle.accessor.get(ISessionContext).workspaceId === workspaceId;
-    }).map(async (handle) => {
+  const ephemeralSessions = async (query: { workspace_id?: string; persona?: string; before_id?: string; page_size?: number }, budget = 62 * 1024) => {
+    const eligible = core.accessor.get(ISessionManager).listEphemeral().filter((handle) => {
+      const persona = handle.accessor.get(IAgentLifecycleService).get('main')?.accessor.get(IAgentProfileService).data().personaId;
+      return (query.workspace_id === undefined || handle.accessor.get(ISessionContext).workspaceId === query.workspace_id)
+        && (query.persona === undefined || persona === query.persona);
+    });
+    const anchor = query.before_id === undefined ? -1 : eligible.findIndex((handle) => handle.id === query.before_id);
+    const handles = query.before_id !== undefined && anchor < 0 ? [] : eligible.slice(anchor + 1);
+    const items: Session[] = [];
+    let bytes = 2;
+    for (const handle of handles) {
+      if (items.length >= (query.page_size ?? DEFAULT_SESSION_LIST_PAGE_SIZE)) break;
       const ctx = handle.accessor.get(ISessionContext);
       const meta = await handle.accessor.get(ISessionMetadata).read();
-      return toWireSession({ ...meta, workspaceId: ctx.workspaceId }, ctx.cwd, resolveSessionFacts(core, handle.id), undefined, true);
-    }));
+      const session = boundedListPreview(toWireSession({ ...meta, workspaceId: ctx.workspaceId }, ctx.cwd, resolveSessionFacts(core, handle.id), undefined, true));
+      const size = jsonBytes(session) + 1;
+      if (bytes + size > budget) break;
+      items.push(session);
+      bytes += size;
+    }
+    const more = items.length < handles.length;
+    return { items, has_more: more, next_cursor: more ? items.at(-1)?.id : undefined };
   };
   const createRoute = defineRoute(
     {
@@ -325,7 +346,7 @@ export function registerSessionsRoutes(
           );
           return;
         }
-        if (callerCwd !== undefined && callerCwd !== workspace.root) {
+        if (callerCwd !== undefined && canonicalWorkspaceRoot(callerCwd) !== canonicalWorkspaceRoot(workspace.root)) {
           reply.send(
             buildValidationEnvelope(
               [
@@ -348,6 +369,17 @@ export function registerSessionsRoutes(
       let worktreeId: string | undefined;
       let createdSessionId: string | undefined;
       try {
+        const persona = body.persona === undefined ? undefined : await core.accessor.get(IPersonaStore).get(body.persona);
+        if (body.persona !== undefined && (await core.accessor.get(IPersonaStore).getState(body.persona)).archived) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Restore the archived persona before starting a conversation.');
+        }
+        if (workDir === undefined && persona !== undefined) {
+          const configured = persona.definition.homeWorkspace;
+          workDir = configured === undefined
+            ? join(core.accessor.get(IBootstrapService).homeDir, 'bots', persona.definition.id)
+            : (await registry.get(configured))?.root ?? configured;
+          if (persona.definition.homeWorkspace === undefined) await core.accessor.get(IHostFileSystem).mkdir(workDir, { recursive: true });
+        }
         let autoWorkspaceName: string | undefined;
         if (workDir === undefined) {
           const date = new Date().toISOString().slice(0, 10);
@@ -381,7 +413,7 @@ export function registerSessionsRoutes(
           workDir,
           sessionId: createdSessionId,
           ephemeral: body.ephemeral,
-          delivery: body.delivery,
+          delivery: body.delivery ?? persona?.definition.delivery,
           worktree: worktree === undefined ? undefined : {
             worktreeId: worktree.id, branch: worktree.branch,
             sourceRoot: worktree.repo.sourceRoot, baseRef: worktree.base.ref,
@@ -419,6 +451,12 @@ export function registerSessionsRoutes(
           || body.agent_config?.plan_mode !== undefined
         ) {
           await applyAgentRuntimeControls(await ensureMainAgent(handle), body.agent_config);
+        }
+        if (body.metadata !== undefined) await handle.accessor.get(ISessionMetadata).update({ custom: body.metadata });
+        if (body.persona !== undefined && body.persona_home === true && body.ephemeral !== true) {
+          await core.accessor.get(IBotService).claimHomeSession(body.persona, handle.id).catch((error) => {
+            requestLog(req)?.warn({ session_id: handle.id, error: toErrorMessage(error) }, 'daily chat claim skipped; conversation retained');
+          });
         }
         const meta = await handle.accessor.get(ISessionMetadata).read();
         const session = toWireSession(
@@ -467,7 +505,7 @@ export function registerSessionsRoutes(
       method: 'GET',
       path: '/sessions',
       querystring: sessionsListQueryCoercion,
-      success: { data: pageResponseSchema(sessionSchema).extend({ ephemeral: z.array(sessionSchema).optional() }) },
+      success: { data: pageResponseSchema(sessionSchema).extend({ next_cursor: z.string().optional(), busy_count: z.number().int().nonnegative().optional(), ephemeral: z.array(sessionSchema).optional(), ephemeral_has_more: z.boolean().optional(), ephemeral_next_cursor: z.string().optional() }) },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.WORKSPACE_NOT_FOUND]: {},
@@ -478,12 +516,28 @@ export function registerSessionsRoutes(
     },
     async (req, reply) => {
       const raw = req.query;
+      let before = raw.before_id;
+      let after = raw.after_id;
+      if (before?.startsWith('next:')) {
+        try {
+          const cursor = z.object({ before: z.string().min(1), after: z.string().min(1) }).parse(JSON.parse(Buffer.from(before.slice(5), 'base64url').toString('utf8')));
+          before = cursor.before;
+          after = cursor.after;
+        } catch {
+          reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'invalid session page cursor', req.id));
+          return;
+        }
+      }
       const archivedOnly = raw.archived_only === true;
 
       const workspaces = await core.accessor.get(IWorkspaceService).list();
       const roots = new Map(workspaces.map((w) => [w.id, w.root]));
 
-      if (raw.workspace_id !== undefined && !roots.has(raw.workspace_id)) {
+      const workspaceIds =
+        raw.workspace_id === undefined
+          ? undefined
+          : await core.accessor.get(IWorkspaceAliases).resolveAliasIds(raw.workspace_id);
+      if (workspaceIds !== undefined && !workspaceIds.some((id) => roots.has(id))) {
         reply.send(
           errEnvelope(
             ErrorCode.WORKSPACE_NOT_FOUND,
@@ -493,13 +547,25 @@ export function registerSessionsRoutes(
         );
         return;
       }
-
-      const workspaceIds =
-        raw.workspace_id === undefined
-          ? undefined
-          : await core.accessor.get(IWorkspaceAliases).resolveAliasIds(raw.workspace_id);
       const index = core.accessor.get(ISessionIndex);
       const includeArchived = archivedOnly ? true : raw.include_archive;
+      const personaNames = new Map<string, Promise<string>>();
+      const project = async (summary: SessionSummary, cwd: string, facts = resolveSessionFacts(core, summary.id, summary.usage)): Promise<Session> => {
+        if (facts.live === false) {
+          const personaId = await core.accessor.get(IBotService).sessionPersonaId(summary);
+          if (personaId !== undefined) {
+            let name = personaNames.get(personaId);
+            if (name === undefined) {
+              name = core.accessor.get(IPersonaStore).get(personaId).then((snapshot) => snapshot?.definition.name ?? personaId);
+              personaNames.set(personaId, name);
+            }
+            facts = { ...facts, agentConfig: { model: '', persona: {
+              id: personaId, name: await name, avatarUrl: `/api/personas/${encodeURIComponent(personaId)}/avatar`,
+            } } };
+          }
+        }
+        return toWireSession(summary, cwd, facts);
+      };
 
       interface Eligible {
         readonly summary: SessionSummary;
@@ -510,8 +576,7 @@ export function registerSessionsRoutes(
       const collect = async (pageSize: number): Promise<{ visible: Eligible[]; hasMore: boolean }> => {
         const wanted = pageSize + 1;
         const collected: Eligible[] = [];
-        let before = raw.before_id;
-        const after = raw.after_id;
+        let pageBefore = before;
         const afterCursor = after !== undefined ? await index.get(after) : undefined;
         const newerThanCursor = (summary: SessionSummary): boolean =>
           afterCursor === undefined ||
@@ -522,8 +587,8 @@ export function registerSessionsRoutes(
             workspaceIds,
             includeArchived,
             limit: wanted - collected.length,
-            before,
-            after: before === undefined ? after : undefined,
+            before: pageBefore,
+            after: pageBefore === undefined ? after : undefined,
           });
           if (page.items.length === 0) break;
           let exhausted = false;
@@ -534,65 +599,36 @@ export function registerSessionsRoutes(
             }
             const cwd = summary.cwd ?? roots.get(summary.workspaceId);
             if (cwd === undefined) continue;
+            if (raw.persona !== undefined && !(await core.accessor.get(IBotService).sessionBelongsToPersona(summary, raw.persona))) continue;
             if (raw.exclude_empty === true && (summary.lastPrompt ?? '').length === 0) continue;
-            if (archivedOnly) {
-              if (!summary.archived) continue;
-              const facts = resolveSessionFacts(core, summary.id, summary.usage);
-              if (raw.busy !== undefined && facts.busy !== raw.busy) continue;
-              collected.push({ summary, cwd, facts });
-            } else {
-              collected.push({ summary, cwd });
-            }
+            if (archivedOnly && !summary.archived) continue;
+            const facts = raw.busy !== undefined ? resolveSessionFacts(core, summary.id, summary.usage) : undefined;
+            if (raw.busy !== undefined && facts?.busy !== raw.busy) continue;
+            collected.push({ summary, cwd, facts });
           }
           if (exhausted || page.nextCursor === undefined) break;
-          before = page.nextCursor;
+          pageBefore = page.nextCursor;
         }
         return { visible: collected.slice(0, pageSize), hasMore: collected.length > pageSize };
       };
 
-      if (!archivedOnly && raw.page_size === undefined) {
-        const page = await index.listRecent({
-          workspaceIds,
-          includeArchived,
-          before: raw.before_id,
-          after: raw.after_id,
-        });
-        const eligible: Eligible[] = [];
-        for (const summary of page.items) {
-          const cwd = summary.cwd ?? roots.get(summary.workspaceId);
-          if (cwd === undefined) continue;
-          if (raw.exclude_empty === true && (summary.lastPrompt ?? '').length === 0) continue;
-          eligible.push({ summary, cwd });
-        }
-        const projected = eligible.map(({ summary, cwd }) =>
-          toWireSession(
-            summary,
-            cwd,
-            resolveSessionFacts(core, summary.id, summary.usage),
-          ),
-        );
-        const items =
-          raw.busy !== undefined
-            ? projected.filter((session) => session.busy === raw.busy)
-            : projected;
-        reply.send(okEnvelope({ items, has_more: false, ephemeral: raw.include_ephemeral === true ? await ephemeralSessions(raw.workspace_id) : undefined }, req.id));
-        return;
-      }
-
       const pageSize = raw.page_size ?? DEFAULT_SESSION_LIST_PAGE_SIZE;
       const { visible, hasMore } = await collect(pageSize);
-      const projected = visible.map(({ summary, cwd, facts }) =>
-        toWireSession(
-          summary,
-          cwd,
-          facts ?? resolveSessionFacts(core, summary.id, summary.usage),
-        ),
-      );
-      const items =
-        raw.busy !== undefined && !archivedOnly
-          ? projected.filter((session) => session.busy === raw.busy)
-          : projected;
-      reply.send(okEnvelope({ items, has_more: hasMore, ephemeral: raw.include_ephemeral === true ? await ephemeralSessions(raw.workspace_id) : undefined }, req.id));
+      const projected = await Promise.all(visible.map(async ({ summary, cwd, facts }) => boundedListPreview(await project(summary, cwd, facts))));
+      const ephemeral = raw.include_ephemeral === true ? await ephemeralSessions({ workspace_id: raw.workspace_id, persona: raw.persona }, 24 * 1024) : undefined;
+      const items: Session[] = [];
+      let bytes = 2048 + jsonBytes(ephemeral);
+      for (const session of projected) {
+        const size = jsonBytes(session) + 1;
+        if (bytes + size > 64 * 1024) break;
+        items.push(session);
+        bytes += size;
+      }
+      const more = hasMore || items.length < projected.length;
+      const last = items.at(-1)?.id;
+      const nextCursor = more && last !== undefined ? after === undefined ? last : `next:${Buffer.from(JSON.stringify({ before: last, after })).toString('base64url')}` : undefined;
+      const busyCount = core.accessor.get(ISessionManager).list().filter((session) => session.accessor.get(ISessionActivityView).state().busy).length;
+      reply.send(okEnvelope({ items, has_more: more, next_cursor: nextCursor, busy_count: busyCount, ephemeral: ephemeral?.items, ephemeral_has_more: ephemeral?.has_more, ephemeral_next_cursor: ephemeral?.next_cursor }, req.id));
     },
   );
   app.get(
@@ -605,12 +641,13 @@ export function registerSessionsRoutes(
     {
       method: 'GET',
       path: '/sessions/ephemeral',
-      success: { data: z.object({ items: z.array(sessionSchema) }) },
+      querystring: z.object({ before_id: z.string().min(1).optional(), page_size: z.coerce.number().int().min(1).max(100).optional(), workspace_id: workspaceIdSchema.optional(), persona: z.string().min(1).optional() }),
+      success: { data: pageResponseSchema(sessionSchema).extend({ next_cursor: z.string().optional() }) },
       description: 'List live temporary sessions',
       tags: ['sessions'],
     },
     async (req, reply) => {
-      reply.send(okEnvelope({ items: await ephemeralSessions() }, req.id));
+      reply.send(okEnvelope(await ephemeralSessions(req.query), req.id));
     },
   );
   app.get(ephemeralListRoute.path, ephemeralListRoute.options, ephemeralListRoute.handler as Parameters<SessionRouteHost['get']>[2]);
@@ -830,7 +867,7 @@ export function registerSessionsRoutes(
         [ErrorCode.SESSION_NOT_FOUND]: {},
         [ErrorCode.SESSION_TITLE_UNAVAILABLE]: {},
       },
-      description: 'Generate the session title via the managed chat_title tool',
+      description: 'Generate the session title with the explicitly selected title model',
       tags: ['sessions'],
     },
     async (req, reply) => {
@@ -847,7 +884,7 @@ export function registerSessionsRoutes(
           if (title === undefined) {
             reply.send(errEnvelope(
               ErrorCode.SESSION_TITLE_UNAVAILABLE,
-              'session title generation is unavailable (no managed OAuth login, no prompt yet, or the backend request failed)',
+              'Title generation requires a selected session_title.model, the title feature enabled, and conversation text; existing titles require force.',
               req.id,
             ));
             return;
@@ -1811,6 +1848,9 @@ function sendMappedError(
       case 'session.not_found':
       case 'agent.not_found':
         reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, requestId, err.stack));
+        return;
+      case ErrorCodes.SESSION_TITLE_GENERATION_FAILED:
+        reply.send(errEnvelope(ErrorCode.SESSION_TITLE_UNAVAILABLE, err.message, requestId));
         return;
       case 'session.fork_active_turn':
       case ErrorCodes.SESSION_BUSY:

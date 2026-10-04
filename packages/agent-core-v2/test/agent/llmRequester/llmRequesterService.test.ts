@@ -237,6 +237,7 @@ function createService(
     readonly promptRefresh?: () => Promise<void>;
     readonly systemPrompt?: () => string;
     readonly tools?: readonly ToolInfo[];
+    readonly advertisedProfiles?: ReadonlyMap<string, { line: string; signature: string }>;
   } = {},
 ) {
   const ix = disposables.add(new TestInstantiationService());
@@ -269,6 +270,8 @@ function createService(
       customPromptVariables(options.promptConfig?.value.variables),
     ),
     getPromptFieldSnapshot: () => promptFields(),
+    getCognitionSnapshot: () => ({ position: 'main', modelAlias: selectedModelAlias(), revision: 0, contentRevision: 'fixture' }),
+    getCognitionBinding: async () => ({ position: 'main', modelAlias: selectedModelAlias(), revision: 0, contentRevision: 'fixture' }),
     refreshSystemPrompt: options.promptRefresh ?? (async () => undefined),
     preparePromptConfiguration: (() => {
       let signature = '';
@@ -316,7 +319,9 @@ function createService(
   const context = {
     get: () => options.contextMessages ?? history,
   };
-  const tools = { list: () => options.tools ?? [] };
+  const tools = { list: () => options.tools ?? [], resolve: (name: string) => name === 'AgentRun' && options.advertisedProfiles !== undefined
+    ? { name: 'AgentRun', description: '', parameters: {}, resolveExecution: () => ({ isError: true as const, output: 'not used' }),
+      advertisedProfileDescriptions: () => options.advertisedProfiles! } : undefined };
   const hostRequestHeaders = options.hostRequestHeaders ?? {
     'X-Msh-Device-Name': 'example-host',
     'X-Msh-Device-Model': 'Example Model',
@@ -576,6 +581,21 @@ describe('AgentLLMRequesterService parameter budgets', () => {
 });
 
 describe('AgentLLMRequesterService native tool and shared prompt preparation', () => {
+  it('records only profiles actually advertised by the request schema and none when AgentRun is absent', async () => {
+    const line = '- explore: Scoped evidence';
+    const advertisedProfiles = new Map([
+      ['explore', { line, signature: 'visible-signature' }],
+      ['hidden', { line: '- hidden: Not shown', signature: 'hidden-signature' }],
+    ]);
+    const { service, records } = createService(createRequester({ value: 0 }, null), undefined, {
+      tools: [{ name: 'AgentRun', source: 'builtin', description: `Launch\n${line}`, parameters: {} }], advertisedProfiles,
+    });
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    await service.request({ tools: [], source: { type: 'operation', requestKind: 'test' } });
+    const requests = records.filter((record) => record.type === 'llm.request');
+    expect(requests[0]?.['advertisedProfiles']).toEqual([{ name: 'explore', line, signature: 'visible-signature' }]);
+    expect(requests[1]?.['advertisedProfiles']).toBeUndefined();
+  });
   it.each(['main', 'standalone-child'])('sends lane schema, freshly prepared descriptions and shared guidance once for %s', async (agentId) => {
     const inputs: ModelRequestInput[] = [];
     let description = 'not prepared';

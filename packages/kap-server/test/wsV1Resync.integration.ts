@@ -270,7 +270,7 @@ describe('server-v2 /api/ws resync', () => {
   }
 
   function withToken<T extends Record<string, unknown>>(payload: T): T & { token: string } {
-    return { ...payload, token: server!.authTokenService.getToken() };
+    return { ...payload, token: server!.localOwnerToken };
   }
 
   function emitAgentEvent(sessionId: string, event: Event2<any>): void {
@@ -304,7 +304,7 @@ describe('server-v2 /api/ws resync', () => {
     expect(snapshotResponse.status).toBe(200);
     expect((await snapshotResponse.json() as { code: number }).code).toBe(0);
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const c = await openConn(wsUrl, server!.authTokenService.getToken());
+      const c = await openConn(wsUrl, server!.localOwnerToken);
       try {
         await c.next((frame) => frame.type === 'server_hello');
         c.send({ type: 'client_hello', id: 'hello', payload: withToken({ client_id: 'example-client' }) });
@@ -380,7 +380,7 @@ describe('server-v2 /api/ws resync', () => {
 
   it('server_hello then client_hello ack with accepted subscription', async () => {
     const sid = await createSession();
-    const c = await openConn(wsUrl, server!.authTokenService.getToken());
+    const c = await openConn(wsUrl, server!.localOwnerToken);
 
     const hello = await c.next((f) => f.type === 'server_hello');
     expect(hello.payload).toMatchObject({ protocol_version: 2 });
@@ -400,7 +400,7 @@ describe('server-v2 /api/ws resync', () => {
   it('delivers a sequenced durable event to a subscribed connection', async () => {
     const sid = await createSession();
     await ensureMainAgent(sid);
-    const c = await openConn(wsUrl, server!.authTokenService.getToken());
+    const c = await openConn(wsUrl, server!.localOwnerToken);
     await c.next((f) => f.type === 'server_hello');
     c.send({ type: 'client_hello', id: 'h1', payload: withToken({ client_id: 'cli', subscriptions: [sid] }) });
     await c.next((f) => f.type === 'ack' && f.id === 'h1');
@@ -420,7 +420,7 @@ describe('server-v2 /api/ws resync', () => {
     const sid = await createSession();
     await ensureMainAgent(sid);
 
-    const c1 = await openConn(wsUrl, server!.authTokenService.getToken());
+    const c1 = await openConn(wsUrl, server!.localOwnerToken);
     await c1.next((f) => f.type === 'server_hello');
     c1.send({ type: 'client_hello', id: 'h1', payload: withToken({ client_id: 'cli', subscriptions: [sid] }) });
     await c1.next((f) => f.type === 'ack' && f.id === 'h1');
@@ -430,7 +430,7 @@ describe('server-v2 /api/ws resync', () => {
     c1.ws.close();
     await c1.closed;
 
-    const c2 = await openConn(wsUrl, server!.authTokenService.getToken());
+    const c2 = await openConn(wsUrl, server!.localOwnerToken);
     await c2.next((f) => f.type === 'server_hello');
     c2.send({
       type: 'client_hello',
@@ -448,7 +448,7 @@ describe('server-v2 /api/ws resync', () => {
 
   it('sends resync_required on epoch mismatch', async () => {
     const sid = await createSession();
-    const c = await openConn(wsUrl, server!.authTokenService.getToken());
+    const c = await openConn(wsUrl, server!.localOwnerToken);
     await c.next((f) => f.type === 'server_hello');
     c.send({
       type: 'client_hello',
@@ -478,7 +478,7 @@ describe('server-v2 /api/ws resync', () => {
     ]);
 
     const liveTranscript = new AgentTranscript('main');
-    const c1 = await openConn(wsUrl, server!.authTokenService.getToken());
+    const c1 = await openConn(wsUrl, server!.localOwnerToken);
     await c1.next((f) => f.type === 'server_hello');
     c1.send({
       type: 'client_hello',
@@ -540,7 +540,7 @@ describe('server-v2 /api/ws resync', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'second answer' }], toolCalls: [] },
     ]);
 
-    const c2 = await openConn(wsUrl, server!.authTokenService.getToken());
+    const c2 = await openConn(wsUrl, server!.localOwnerToken);
     await c2.next((f) => f.type === 'server_hello');
     c2.send({
       type: 'client_hello',
@@ -611,7 +611,7 @@ describe('server-v2 /api/ws resync', () => {
     await boot();
     expect(await resumeSessionById(server!.core.accessor, sid)).toBeDefined();
 
-    const c3 = await openConn(wsUrl, server!.authTokenService.getToken());
+    const c3 = await openConn(wsUrl, server!.localOwnerToken);
     await c3.next((f) => f.type === 'server_hello');
     c3.send({
       type: 'client_hello',
@@ -675,7 +675,7 @@ describe('server-v2 /api/ws resync', () => {
     const agents = session!.accessor.get(IAgentLifecycleService);
     const sub = await agents.create({ agentId: 'agent-0' });
 
-    const c = await openConn(wsUrl, server!.authTokenService.getToken());
+    const c = await openConn(wsUrl, server!.localOwnerToken);
     await c.next((f) => f.type === 'server_hello');
     c.send({
       type: 'client_hello',

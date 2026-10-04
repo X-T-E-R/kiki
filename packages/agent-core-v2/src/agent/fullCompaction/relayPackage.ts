@@ -53,7 +53,7 @@ function sourceCoordinates(source: ContextMessageSource | undefined): string {
   return fields.length === 0 ? 'source coordinate unavailable' : `source {${fields.join(', ')}}`;
 }
 
-function historyPointer(
+export function historyPointer(
   input: RelayInput,
   source: ContextMessageSource | undefined,
   query?: string,
@@ -89,7 +89,7 @@ export function userInputSinceNotes(input: Pick<RelayInput, 'history' | 'compact
   const watermark = coveredMessageIndex(input.history, input.meta);
   const after = watermark >= input.compactCount ? [] : section.slice(watermark + 1);
   const users = after.filter((message) => message.role === 'user' && originalHumanText(message) !== undefined);
-  return input.meta === undefined ? users.slice(-5) : users;
+  return users;
 }
 
 export function renderUserInputSinceNotes(input: RelayInput): { text: string; count: number; fits: boolean } {
@@ -124,7 +124,30 @@ export function renderStandingDirectives(input: RelayInput): string {
     `## Standing directives\n${directives}${memory}${references}`,
     renderUserInputSinceNotes(input).text,
     'Apply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user\'s own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.',
-  ].join('\n\n');
+    renderPendingHandoffReviews(input),
+  ].filter(Boolean).join('\n\n');
+}
+
+export function renderPendingHandoffReviews(input: RelayInput): string {
+  const watermark = coveredMessageIndex(input.history, input.meta);
+  const summaries = input.history.slice(watermark + 1, input.compactCount).filter((message) => message.origin?.kind === 'compaction_summary');
+  const pointers = new Set<string>();
+  const candidates = new Set<string>();
+  for (const message of summaries) {
+    const text = textOf(message);
+    const inherited = text.split(/^## Pending handoff reviews[ \t]*\r?\n/m)[1]?.split(/^## [^\r\n]+/m)[0];
+    const humanInput = text.split(/^## User input since notes[ \t]*\r?\n/m)[1]?.split(/^## [^\r\n]+/m)[0];
+    for (const line of [...inherited?.split('\n') ?? [], ...humanInput?.split('\n') ?? []]) if (line.startsWith('- ')) pointers.add(line);
+    for (const block of text.split(/^## Pending directive review[ \t]*\r?\n/m).slice(1)) {
+      const candidate = block.split(/^## [^\r\n]+/m)[0]?.trim();
+      if (candidate && candidate !== '(none)') candidates.add(candidate);
+    }
+    if (message.source !== undefined) pointers.add(`- ${historyPointer(input, sourceOf(message))} · ${sourceCoordinates(sourceOf(message))}`);
+    if (pointers.size === 0) pointers.add(`- ${historyPointer(input, sourceOf(message), text.split('\n').find((line) => line.trim() && !line.startsWith('The conversation so far'))?.slice(0, 120))} · ${sourceCoordinates(sourceOf(message))}`);
+  }
+  if (summaries.length === 0) return '';
+  return [`## Pending handoff reviews\nThese earlier handoffs have not been explicitly reconciled with notes. Check their original human sources before acknowledging review; summary candidates are not a second set of current rules.\n${[...pointers].join('\n')}`,
+    candidates.size > 0 ? `## Pending directive review\n${[...candidates].join('\n\n')}` : ''].filter(Boolean).join('\n\n');
 }
 
 export function renderLinkedBoardCards(input: RelayInput): string {
@@ -137,7 +160,7 @@ export function renderPendingReceipts(input: RelayInput): string {
   const section = input.history.slice(0, input.compactCount);
   const after = section.slice(coveredMessageIndex(section, input.meta) + 1);
   const pending = after.filter((message) => message.role === 'user' &&
-    ['task', 'cron_job', 'cron_missed', 'system_trigger', 'hook_result', 'peer_thread', 'agent_message', 'room_message'].includes(message.origin?.kind ?? ''));
+    ['task', 'cron_job', 'cron_missed', 'system_trigger', 'hook_result', 'peer_thread', 'bridged_peer', 'agent_message', 'room_message'].includes(message.origin?.kind ?? ''));
   if (pending.length === 0) return '';
   let budget = 6_000;
   const entries = pending.toReversed().map((message) => {
@@ -145,6 +168,7 @@ export function renderPendingReceipts(input: RelayInput): string {
     const id = origin.kind === 'task' ? `task ${origin.taskId} (${origin.status}, ${origin.notificationId})`
       : origin.kind === 'cron_job' ? `cron ${origin.jobId}`
       : origin.kind === 'agent_message' ? `agent ${origin.senderAgentId} (${origin.senderTaskName}, ${origin.messageId})`
+      : origin.kind === 'bridged_peer' ? `space ${origin.sourceHomeId} ${JSON.stringify(origin.source)} (${origin.messageId})`
       : origin.kind === 'peer_thread' ? `peer ${JSON.stringify(origin.source)} (${origin.messageId})`
       : origin.kind === 'room_message' ? `room ${origin.roomId} (${origin.messageId})` : origin.kind;
     const query = origin.kind === 'task' ? origin.taskId : origin.kind === 'cron_job' ? origin.jobId : id;
@@ -193,7 +217,7 @@ export function renderRelay(input: RelayInput): string {
     `## Working notes\n${renderTodoNotes(input.notes) || '(empty)'}`,
     renderStandingDirectives(input),
     renderLinkedBoardCards(input),
-    `## Notes metadata\nrevision ${input.meta?.rev ?? 0} · covered ${input.meta?.writtenStep ?? 'none'}`,
+    `## Notes metadata\nrevision ${input.meta?.rev ?? 0} · written ${input.meta?.writtenStep ?? 'none'} · reviewed ${input.meta?.reviewedMessageId ?? 'not confirmed'}`,
     input.todos.length > 0 ? renderTodoList(input.todos, '## TODO List') : '',
     lastAssistant ? `## Last conclusion\n${textOf(lastAssistant).slice(-6_000)}${conclusionPointer}` : '',
     evidence.length > 0 ? `## Evidence since notes\n${evidence.join('\n')}` : '',

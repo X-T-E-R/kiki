@@ -27,6 +27,7 @@ export class EnterPlanModeTool implements IEnterPlanModeTool {
       description: 'Requesting to enter plan mode',
       display: { kind: 'plan_enter' },
       approvalRule: this.name,
+      stopBatchAfterThis: true,
       execute: async ({ metadata }) => {
         const before = await this.planMode.status();
         if (before !== null) {

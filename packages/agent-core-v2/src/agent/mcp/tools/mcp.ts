@@ -6,6 +6,7 @@ import { isAbortError } from '#/_base/utils/abort';
 import type { ExecutableTool, ExecutableToolContext } from '#/tool/toolContract';
 import { mcpResultToExecutableOutput, type McpOutputOptions } from '#/agent/mcp/output';
 import type { MCPClient, MCPToolResult } from '#/mcpCore/types';
+import { computerToolDescription } from '#/mcpCore/computer';
 import {
   isMcpConnectionClosedError,
   isMcpMalformedResultError,
@@ -20,6 +21,7 @@ interface McpToolOptions {
   readonly providerType?: () => string | undefined;
   readonly reconnect?: (signal?: AbortSignal) => Promise<MCPClient | undefined>;
   readonly isRemoved?: () => boolean;
+  readonly computerControl?: boolean;
 }
 
 export function createMcpTool(
@@ -32,7 +34,7 @@ export function createMcpTool(
     activeClient.callTool(tool.name, (args ?? {}) as Record<string, unknown>, signal);
   return {
     name: qualifiedName,
-    description: tool.description,
+    description: options.computerControl === true ? computerToolDescription(tool.name, tool.description) : tool.description,
     parameters: tool.parameters,
     resolveExecution: (args) => ({
       approvalRule: qualifiedName,
@@ -57,6 +59,7 @@ export function createMcpTool(
           originalsDir: options.originalsDir,
           telemetry: options.telemetry,
           providerType: options.providerType?.(),
+          preserveStructuredContent: options.computerControl,
         });
       },
     }),
@@ -79,6 +82,13 @@ async function retryAfterReconnect(
     isMcpMalformedResultError(e);
   if (reconnect === undefined || isUnrecoverable(error)) {
     throw error;
+  }
+  if (options.computerControl === true) {
+    throw new Error2(
+      ErrorCodes.MCP_COMPUTER_OUTCOME_UNKNOWN,
+      `${toErrorMessage(error)}. Computer action outcome is unknown; the call was not replayed. Reconnect and observe before a new action.`,
+      { cause: error },
+    );
   }
 
   let failure = error;

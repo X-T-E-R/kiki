@@ -211,7 +211,10 @@ export type {
 export type { OAuthTokenTransactionOptions } from './oauth-token-transaction';
 export { OAuthTokenTransaction } from './oauth-token-transaction';
 
+export { createGrokBuildMethod, GROK_BUILD_METHOD, parseGrokBuildModels } from './grok-build';
+
 export type {
+  OAuthConnectionState,
   OAuthDeviceMethod,
   OAuthMethodDescriptor,
   OAuthMethodId,
@@ -252,3 +255,8 @@ export type {
   ApplyOAuthMethodConfigResult,
   ClearOAuthMethodConfigResult,
 } from './oauth-method-config';
+
+export { LocalOriginalOAuthError, LocalOriginalOAuthService } from './local-original';
+export type { LocalOriginalOAuthOptions } from './local-original';
+export { LocalOriginalOAuthBackendSchema, LocalOriginalOAuthProviderSchema, LocalOriginalOAuthSourceRefSchema } from './local-original-types';
+export type { LocalOriginalOAuthBackend, LocalOriginalOAuthProbe, LocalOriginalOAuthProvider, LocalOriginalOAuthSourceRef, LocalOriginalOAuthState, OriginalOAuthKeyring, OriginalOAuthNative } from './local-original-types';

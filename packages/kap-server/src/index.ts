@@ -5,6 +5,7 @@ export type { Envelope } from './envelope';
 export { classify } from './security/bindClassify';
 export type { BindClass } from './security/bindClassify';
 export { readServerToken, rotateServerToken, serverTokenPath } from './services/auth/persistentToken';
+export { readLocalOwnerToken, LOCAL_OWNER_FILE } from './services/auth/localOwner';
 export { createServerLogger } from './services/pinoLoggerService';
 export type {
   CreateLoggerOptions,

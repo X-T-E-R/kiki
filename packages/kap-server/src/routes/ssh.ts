@@ -1,11 +1,11 @@
 import {
   Error2, ErrorCodes, IAgentRuntimeService, ISessionApprovalService, ISessionInteractionService, ISessionManager, ISessionStateService, ISshHostService,
-  sessionSshHostsKey, sshHostFingerprint, type Scope,
+  ISshConnectionGateService, sessionSshHostsKey, sshHostFingerprint, type Scope, type SshConnectionGateService,
 } from '@kiki/agent-core-v2';
 import { parseTransientSshTarget } from '@kiki/agent-core-v2/app/ssh/sshConfig';
 import {
   ErrorCode, sshHostInputSchema, sshHostResponseSchema, sshHostsResponseSchema,
-  sshHostStatusSchema, sshSessionHostsResponseSchema, sshApprovalSubmitSchema,
+  sshHostStatusSchema, sshSessionHostsResponseSchema, sshApprovalSubmitSchema, sshConfigSyncSettingsSchema, sshHostKeysSchema,
   copySharedSshCredentialsRequestSchema, copySharedSshCredentialsResponseSchema,
 } from '@kiki/protocol';
 import { z } from 'zod';
@@ -90,13 +90,21 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
   });
   app.delete(remove.path, remove.options, remove.handler as SshHandler);
 
+  const syncStatus = defineRoute({
+    method: 'GET', path: '/ssh/config-sync',
+    success: { data: sshConfigSyncSettingsSchema }, tags: ['ssh'],
+  }, async (req, reply) => {
+    reply.send(okEnvelope(await hosts().configSync(), req.id));
+  });
+  app.get(syncStatus.path, syncStatus.options, syncStatus.handler as SshHandler);
+
   const sync = defineRoute({
     method: 'PUT', path: '/ssh/config-sync',
     body: z.object({ enabled: z.boolean() }),
-    success: { data: z.object({ enabled: z.boolean() }) }, tags: ['ssh'],
+    success: { data: sshConfigSyncSettingsSchema }, tags: ['ssh'],
   }, async (req, reply) => {
     await hosts().setSyncSshConfig(req.body.enabled);
-    reply.send(okEnvelope({ enabled: req.body.enabled }, req.id));
+    reply.send(okEnvelope(await hosts().configSync(), req.id));
   });
   app.put(sync.path, sync.options, sync.handler as SshHandler);
 
@@ -139,10 +147,10 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
   const actionParams = z.object({ tail: z.string().min(1) });
   const status = defineRoute({
     method: 'GET', path: '/ssh/hosts/{tail}', params: actionParams, querystring,
-    success: { data: sshHostStatusSchema }, tags: ['ssh'],
+    success: { data: z.union([sshHostStatusSchema, sshHostKeysSchema]) }, tags: ['ssh'],
     errors: { [ErrorCode.SSH_HOST_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
   }, async (req, reply) => {
-    const action = parseActionSuffix({ tail: req.params.tail, allowedActions: ['status'], resourceLabel: 'ssh host' });
+    const action = parseActionSuffix({ tail: req.params.tail, allowedActions: ['status', 'host-keys'], resourceLabel: 'ssh host' });
     if (action.kind !== 'action' || !hostId.safeParse(action.id).success) {
       reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Unsupported SSH host action', req.id));
       return;
@@ -151,7 +159,9 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
       reply.send(errEnvelope(ErrorCode.SSH_HOST_NOT_FOUND, 'Unknown SSH host', req.id));
       return;
     }
-    reply.send(okEnvelope(hosts().status(action.id, req.query.workspace_id), req.id));
+    reply.send(okEnvelope(action.action === 'host-keys'
+      ? await hosts().hostKeys(action.id, req.query.workspace_id)
+      : hosts().status(action.id, req.query.workspace_id), req.id));
   });
   app.get(status.path, status.options, status.handler as SshHandler);
 
@@ -213,7 +223,7 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
     success: { data: sshHostResponseSchema }, tags: ['ssh'],
     errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.SSH_HOST_NOT_FOUND]: {} },
   }, async (req, reply) => {
-    await withSessionSsh(core, req.params.session_id, async (state, workspaceId) => {
+    await withSessionSsh(core, req.params.session_id, async (_state, workspaceId, gate) => {
       const host = (await hosts().list(workspaceId)).find((entry) => entry.id === req.params.host_id);
       if (host === undefined) {
         reply.send(errEnvelope(ErrorCode.SSH_HOST_NOT_FOUND, 'Unknown SSH host', req.id));
@@ -225,7 +235,7 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'SSH host changed while joining session', req.id));
         return;
       }
-      state.set(sessionSshHostsKey, { ...state.get(sessionSshHostsKey), [host.id]: fingerprint });
+      await gate.setSessionHosts((joined) => ({ ...joined, [host.id]: fingerprint }));
       reply.send(okEnvelope({ host }, req.id));
     });
   });
@@ -236,11 +246,13 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
     success: { data: z.object({ removed: z.literal(true) }) }, tags: ['ssh'],
     errors: { [ErrorCode.SESSION_NOT_FOUND]: {} },
   }, async (req, reply) => {
-    await withSessionSsh(core, req.params.session_id, async (state, workspaceId) => {
+    await withSessionSsh(core, req.params.session_id, async (_state, workspaceId, gate) => {
+      await gate.setSessionHosts((current) => {
+        const joined = { ...current };
+        delete joined[req.params.host_id];
+        return joined;
+      });
       await hosts().removeTransient(req.params.host_id, workspaceId, req.params.session_id);
-      const joined = { ...state.get(sessionSshHostsKey) };
-      delete joined[req.params.host_id];
-      state.set(sessionSshHostsKey, joined);
       reply.send(okEnvelope({ removed: true }, req.id));
     });
   });
@@ -281,12 +293,14 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
 
 async function withSessionSsh<T>(
   core: Scope, sessionId: string,
-  work: (state: ISessionStateService, workspaceId: string) => Promise<T>,
+  work: (state: ISessionStateService, workspaceId: string, gate: SshConnectionGateService) => Promise<T>,
 ): Promise<T> {
   return withSessionOperation(core, sessionId, async (session) => {
     if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
     const agent = await ensureMainAgent(session);
+    const gate = agent.accessor.get(ISshConnectionGateService);
+    await gate.ready;
     const workspaceId = agent.accessor.get(IAgentRuntimeService).inspect().identity.workspaceId;
-    return work(session.accessor.get(ISessionStateService), workspaceId);
+    return work(session.accessor.get(ISessionStateService), workspaceId, gate);
   });
 }

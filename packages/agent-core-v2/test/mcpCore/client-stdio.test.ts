@@ -1,11 +1,13 @@
 import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { isComputerMcpConfig, computerToolDescription } from '#/mcpCore/computer';
 import { join } from 'pathe';
 import { describe, expect, it, vi } from 'vitest';
 
 import { Error2 } from '#/errors';
-import { mergeStdioEnv, StdioMcpClient, type StdioMcpClientOptions } from '#/mcpCore/client-stdio';
+import { mergeStdioEnv, StdioMcpClient, captureComputerMcpStop, allowComputerMcp, type StdioMcpClientOptions } from '#/mcpCore/client-stdio';
 import type { McpServerStdioConfig } from '#/mcpCore/config-schema';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
@@ -21,11 +23,12 @@ import {
 function createClient(
   config: McpServerStdioConfig,
   options: Partial<StdioMcpClientOptions> = {},
+  osKind = 'Linux',
 ): StdioMcpClient {
   const runtime = Object.assign(
     new FakeRuntime(
       { workspaceId: 'workspace', runtimeId: 'local', generation: 'test' },
-      { capabilities: ['process'], pathClass: hostProcessPathClass },
+      { capabilities: ['process'], pathClass: hostProcessPathClass, environment: { osKind } },
     ),
     { process: new HostProcessService() },
   );
@@ -47,6 +50,173 @@ function createClient(
 }
 
 describe('StdioMcpClient', () => {
+  const computerFixture = fileURLToPath(new URL('./fixtures/computer-stdio-server.mjs', import.meta.url));
+  const computerClient = (options: Partial<StdioMcpClientOptions> = {}, env?: Record<string, string>) =>
+    createClient({ transport: 'stdio', command: process.execPath, args: [computerFixture], env },
+      { computerControl: true, ...options });
+
+  it('discovers all 151 tools through real stdio SDK pagination requests', async () => {
+    const client = createClient({ transport: 'stdio', command: process.execPath, args: [computerFixture],
+      env: { KIKI_TEST_TOOL_PAGES: '1' } });
+    try {
+      await client.connect();
+      const tools = await client.listTools();
+      expect(tools.map((tool) => tool.name)).toEqual(Array.from({ length: 151 }, (_, index) => `tool_${index}`));
+      expect(tools[150]?.inputSchema).toEqual({ type: 'object', properties: {} });
+    } finally { await client.close(); }
+  });
+
+  it('recognizes direct cua MCP configuration without treating other commands as cua', () => {
+    expect(isComputerMcpConfig({ transport: 'stdio', command: 'C:\\driver\\cua-driver.exe', args: ['mcp'] })).toBe(true);
+    expect(isComputerMcpConfig({ transport: 'stdio', command: '/opt/cua-driver', args: ['mcp'] })).toBe(true);
+    expect(isComputerMcpConfig({ transport: 'stdio', command: 'other', args: ['mcp'] })).toBe(false);
+    expect(isComputerMcpConfig({ transport: 'stdio', command: 'cua-driver', args: ['doctor'] })).toBe(false);
+  });
+
+  it('adds only the necessary action outcome hint while preserving observation descriptions', () => {
+    expect(computerToolDescription('list_windows', 'List exact windows.')).toBe('List exact windows.');
+    expect(computerToolDescription('type_text', 'Type foreground text.')).toContain('observe again');
+    const upstream = 'Click the exact window. Do not replay unconfirmed input.';
+    expect(computerToolDescription('click', upstream)).toBe(upstream);
+  });
+
+  it('captures running children and closes admission before any awaited stop work', async () => {
+    const name = 'capture-fixture';
+    const config: McpServerStdioConfig = { transport: 'stdio', command: process.execPath, args: [computerFixture] };
+    const client = createClient(config, { serverName: name, computerControl: true });
+    try {
+      await client.connect();
+      const stop = captureComputerMcpStop(name, config);
+      await expect(client.callTool('type_text', {})).rejects.toMatchObject({ code: 'mcp.server_disabled' });
+      const repeated = captureComputerMcpStop(name, config);
+      expect((await stop()).state).toBe('stopped');
+      expect((await repeated()).state).toBe('stopped');
+      expect((await captureComputerMcpStop(name, config)()).state).toBe('idle');
+    } finally { await client.close(); allowComputerMcp(name, config); }
+  });
+
+  it('waits for an in-progress child spawn before confirming a scoped stop', async () => {
+    const name = 'starting-fixture';
+    const config: McpServerStdioConfig = { transport: 'stdio', command: process.execPath, args: [computerFixture] };
+    const spawnOriginal = HostProcessService.prototype.spawn;
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn').mockImplementation(async function (this: HostProcessService, ...args) {
+      await wait;
+      return spawnOriginal.apply(this, args);
+    });
+    const client = createClient(config, { serverName: name, computerControl: true });
+    try {
+      const connecting = client.connect().catch((error: unknown) => error);
+      await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
+      let stopped = false;
+      const stopping = captureComputerMcpStop(name, config)().then((result) => { stopped = true; return result; });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      release();
+      expect((await stopping).state).toBe('stopped');
+      await connecting;
+      const process = await spawn.mock.results[0]!.value;
+      expect(process.exitCode).not.toBeNull();
+    } finally { release(); await client.close(); spawn.mockRestore(); allowComputerMcp(name, config); }
+  });
+
+  it('releases a failed spawn without claiming a child remains active', async () => {
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn').mockRejectedValueOnce(new Error('fixture spawn failure'));
+    const first = computerClient();
+    const second = computerClient();
+    try {
+      await expect(first.connect()).rejects.toThrow('fixture spawn failure');
+      await second.connect();
+      expect((await second.callTool('type_text', { delay: 1 })).isError).toBe(false);
+    } finally { await first.close(); await second.close(); spawn.mockRestore(); }
+  });
+
+  it('retains occupancy after a tool deadline even if the late response is discarded, then recovers after EOF exit', async () => {
+    const first = computerClient({ toolCallTimeoutMs: 20 });
+    const second = computerClient();
+    try {
+      await first.connect(); await second.connect();
+      await expect(first.callTool('type_text', { delay: 100 })).rejects.toThrow();
+      await expect(second.callTool('type_text', {})).rejects.toMatchObject({ code: 'mcp.computer_busy' });
+      await first.close();
+      expect((await second.callTool('type_text', { delay: 1 })).isError).toBe(false);
+    } finally { await first.close(); await second.close(); }
+  });
+
+  it('reports unconfirmed exit on kill failure and keeps admission blocked until actual child exit', async () => {
+    const name = 'kill-failure-fixture';
+    const config: McpServerStdioConfig = { transport: 'stdio', command: process.execPath, args: [computerFixture], env: { KIKI_TEST_IGNORE_EOF: '1' } };
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+    const first = createClient(config, { computerControl: true, serverName: name, drainTimeoutMs: 20 });
+    const second = computerClient();
+    let kill: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await first.connect(); await second.connect();
+      const process = await spawn.mock.results[0]!.value;
+      kill = vi.spyOn(process, 'kill').mockRejectedValue(new Error('fixture termination failure'));
+      expect((await captureComputerMcpStop(name, config)()).state).toBe('unconfirmed');
+      await expect(second.callTool('type_text', {})).rejects.toMatchObject({ code: 'mcp.computer_busy' });
+      expect((await captureComputerMcpStop(name, config)()).state).toBe('unconfirmed');
+      kill.mockRestore();
+      await process.kill(); await process.wait();
+      expect((await second.callTool('type_text', { delay: 1 })).isError).toBe(false);
+    } finally {
+      kill?.mockRestore(); await first.close().catch(() => undefined); await second.close();
+      spawn.mockRestore(); allowComputerMcp(name, config);
+    }
+  });
+
+  it('cancels only the waiter and retains desktop occupancy until the original result arrives', async () => {
+    const first = computerClient();
+    const second = computerClient();
+    try {
+      await first.connect();
+      await second.connect();
+      const signal = new AbortController();
+      const pending = first.callTool('type_text', { delay: 200 }, signal.signal);
+      await vi.waitFor(() => expect(first.stderrSnapshot()).toContain('dispatched'));
+      signal.abort();
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      await expect(second.callTool('type_text', {})).rejects.toMatchObject({ code: 'mcp.computer_busy' });
+      await vi.waitFor(async () => {
+        const result = await second.callTool('type_text', { delay: 1 });
+        expect(result.structuredContent).toEqual({ effect: 'unknown', delivery: 'foreground', route: 'fixture', summary: 'sent' });
+      });
+    } finally { await first.close(); await second.close(); }
+  });
+
+  it('requests EOF and waits for pending work to drain before close resolves', async () => {
+    const client = computerClient();
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+    try {
+      await client.connect();
+      const process = await spawn.mock.results[0]!.value;
+      const kill = vi.spyOn(process, 'kill');
+      const pending = client.callTool('type_text', { delay: 200 });
+      await vi.waitFor(() => expect(client.stderrSnapshot()).toContain('dispatched'));
+      await client.close();
+      await pending.catch(() => undefined);
+      expect(client.stderrSnapshot()).toContain('eof');
+      expect(client.stderrSnapshot()).toContain('drained');
+      expect(process.exitCode).toBe(0);
+      expect(kill).not.toHaveBeenCalled();
+    } finally { await client.close(); spawn.mockRestore(); }
+  });
+
+  it('terminates only its own child after an EOF drain timeout and confirms exit', async () => {
+    const client = computerClient({ drainTimeoutMs: 20 }, { KIKI_TEST_IGNORE_EOF: '1' });
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+    try {
+      await client.connect();
+      const process = await spawn.mock.results[0]!.value;
+      const kill = vi.spyOn(process, 'kill');
+      await client.close();
+      expect(client.stderrSnapshot()).toContain('eof');
+      expect(kill).toHaveBeenCalledOnce();
+      expect(process.exitCode).not.toBeNull();
+    } finally { await client.close(); spawn.mockRestore(); }
+  });
   it('rejects unsupported executor at construction time', () => {
     expect(
       () =>
@@ -363,6 +533,23 @@ describe('StdioMcpClient', () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(closes).toEqual([]);
   }, 15000);
+
+  it('does not treat a proxy child exit as external daemon action termination', async () => {
+    const name = 'proxy-fixture';
+    const config: McpServerStdioConfig = { transport: 'stdio', command: process.execPath, args: [computerFixture] };
+    const proxy = createClient(config, { computerControl: true, serverName: name }, 'macOS');
+    const next = computerClient();
+    try {
+      await proxy.connect(); await next.connect();
+      const pending = proxy.callTool('type_text', { delay: 200 });
+      await vi.waitFor(() => expect(proxy.stderrSnapshot()).toContain('dispatched'));
+      const result = await captureComputerMcpStop(name, config)();
+      await pending.catch(() => undefined);
+      expect(result).toMatchObject({ state: 'unconfirmed', output: expect.stringContaining('external daemon') });
+      await expect(next.callTool('type_text', {})).rejects.toMatchObject({ code: 'mcp.computer_busy' });
+      expect((await captureComputerMcpStop(name, config)()).state).toBe('unconfirmed');
+    } finally { await proxy.close().catch(() => undefined); await next.close(); }
+  });
 });
 
 describe('mergeStdioEnv', () => {

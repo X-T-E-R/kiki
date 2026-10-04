@@ -1,4 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
+import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
+import { ISessionApprovalService } from '@kiki/agent-core-v2/session/approval/approval';
+import { SessionApprovalService } from '@kiki/agent-core-v2/session/approval/approvalService';
+import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
+import { SessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interactionService';
+import { ISessionStateService } from '@kiki/agent-core-v2/session/state/sessionState';
+import { SessionStateService } from '@kiki/agent-core-v2/session/state/sessionStateService';
 
 import type {
   EventSourceRef,
@@ -74,6 +82,50 @@ const SUMMARY = {
 };
 
 describe('facade routing', () => {
+  it('preserves exact external option ids through default validation to the real broker and keeps SSH on its dedicated path', async () => {
+    const ix = new TestInstantiationService();
+    ix.set(ISessionStateService, new SessionStateService());
+    ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+    ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
+    const broker = ix.get(ISessionApprovalService);
+    ix.get(ISessionInteractionService).acquireConsumer('facade-test');
+    const channel = new FakeChannel();
+    const call = vi.spyOn(channel, 'call').mockImplementation(async (scope, service, method, args) => {
+      expect(scope).toEqual({ sessionId: 'session-1' });
+      expect(service).toBe('sessionApprovalService');
+      expect(method).toBe('decide');
+      const [id, response] = args as Parameters<typeof broker.decide>;
+      broker.decide(id, response);
+      return undefined;
+    });
+    const klient = createKlientFromChannel(channel);
+    try {
+      for (const selectedOptionId of ['allow-once', 'allow-always', 'allow']) {
+        const response = { decision: 'approved' as const, selectedOptionId };
+        const pending = broker.request({
+          id: 'external', toolName: 'external', action: 'run',
+          display: { kind: 'external_permission', summary: 'Test approval', options: [
+            { id: 'allow-once', label: 'Allow once', kind: 'allow_once' },
+            { id: 'allow-always', label: 'Allow always', kind: 'allow_always' },
+          ] },
+        });
+        await klient.session('session-1').approvals.decide('external', response);
+        expect(call).toHaveBeenLastCalledWith({ sessionId: 'session-1' }, 'sessionApprovalService', 'decide', ['external', response], undefined);
+        await expect(pending).resolves.toEqual(selectedOptionId === 'allow' ? { decision: 'cancelled' } : response);
+      }
+      const sshRequest = { toolName: 'SSH', action: 'connect', display: { kind: 'command' as const, command: 'SSH' },
+        ssh: { kind: 'host_key' as const, hostname: 'example.test', user: 'tester', port: 22 } };
+      const generic = broker.request({ ...sshRequest, id: 'ssh-generic' });
+      await klient.session('session-1').approvals.decide('ssh-generic', { decision: 'approved', selectedOptionId: 'allow-once' });
+      await expect(generic).resolves.toEqual({ decision: 'cancelled' });
+      const dedicated = broker.request({ ...sshRequest, id: 'ssh-dedicated' });
+      broker.decideSsh('ssh-dedicated', { decision: 'approved' });
+      await expect(dedicated).resolves.toEqual({ decision: 'approved' });
+    } finally {
+      await klient.close();
+      ix.dispose();
+    }
+  });
   it('admits a potentially slow resume without the generic call deadline and preserves missing-session results', async () => {
     const channel = new FakeChannel();
     const call = vi.spyOn(channel, 'call');
@@ -180,6 +232,18 @@ describe('facade routing', () => {
       method: 'status',
       args: [undefined],
     });
+  });
+
+  it('routes original OAuth probe and connect through the public facade and safe contract', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const probe = { provider: 'openai-codex', home_dir: 'C:/synthetic/codex', storage_backend: 'encrypted', state: 'ready', account: { state: 'known', id: 'account-a' }, can_connect: true };
+    channel.results.set('oauthService.probeOriginal', probe);
+    channel.results.set('oauthService.connectOriginal', probe);
+    expect(await klient.global.auth.probeOriginal({ provider: 'openai-codex', home_dir: 'C:/synthetic/codex' })).toEqual(probe);
+    expect(await klient.global.auth.connectOriginal({ provider: 'openai-codex', home_dir: 'C:/synthetic/codex', expected_account_id: 'account-a' })).toEqual(probe);
+    expect(channel.calls[0]).toMatchObject({ service: 'oauthService', method: 'probeOriginal', args: [{ provider: 'openai-codex', home_dir: 'C:/synthetic/codex' }] });
+    expect(channel.calls[1]).toMatchObject({ service: 'oauthService', method: 'connectOriginal', args: [{ provider: 'openai-codex', home_dir: 'C:/synthetic/codex', expected_account_id: 'account-a' }] });
   });
 
   it('forwards the login region option through the wire contract', async () => {

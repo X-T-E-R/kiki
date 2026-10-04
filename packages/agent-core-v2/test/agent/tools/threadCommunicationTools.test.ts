@@ -9,10 +9,12 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import type { ServicesAccessor } from '#/_base/di/instantiation';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { getAgentToolContributions } from '#/agent/toolRegistry/toolContribution';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { IThreadCreateTool, ThreadCreateTool, ThreadCreateToolInputSchema } from '#/agent/tools/thread-communication/threadCreateTool';
@@ -38,7 +40,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 
 describe('thread communication tools', () => {
-  it('registers exactly five main-only tools', () => {
+  it('keeps sending main-only and leaves the other four tools to shared opt-in policy', () => {
     const records = getAgentToolContributions().filter(
       (record) => record.options.domain === 'threadCommunication',
     );
@@ -51,8 +53,10 @@ describe('thread communication tools', () => {
     ]);
     const main = accessorFor('main');
     const subagent = accessorFor('worker-1');
-    expect(records.every((record) => record.options.when?.(main) === true)).toBe(true);
-    expect(records.every((record) => record.options.when?.(subagent) === false)).toBe(true);
+    const send = records.find((record) => record.options.name === 'ThreadSend')!;
+    expect(send.options.when?.(main)).toBe(true);
+    expect(send.options.when?.(subagent)).toBe(false);
+    expect(records.filter((record) => record !== send).every((record) => record.options.when === undefined)).toBe(true);
   });
 
   it('enforces strict bounded input schemas', () => {
@@ -109,6 +113,7 @@ describe('thread communication tools', () => {
       ix.set(ISessionContext, session);
       ix.stub(IRoomService, {});
       ix.stub(IAgentScopeContext, { agentId: 'main' });
+      ix.stub(IAgentContextMemoryService, { get: () => [] });
       ix.set(ISendMessageToThreadTool, new SyncDescriptor(SendMessageToThreadTool));
       const tool = ix.get(ISendMessageToThreadTool);
     const execution = tool.resolveExecution({
@@ -152,6 +157,7 @@ describe('thread communication tools', () => {
       ix.set(ISessionContext, { _serviceBrand: undefined, sessionId: 'thread-a', workspaceId: 'workspace-a' } as ISessionContext);
       ix.stub(IRoomService, { postBotMessage: async (...args: unknown[]) => { posted.push(args); return undefined; } });
       ix.stub(IAgentScopeContext, { agentId });
+      ix.stub(IAgentContextMemoryService, {});
       ix.set(ISendMessageToThreadTool, new SyncDescriptor(SendMessageToThreadTool));
       const execution = ix.get(ISendMessageToThreadTool).resolveExecution({ room: 'room-a', content: 'hello room' });
       if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
@@ -198,6 +204,16 @@ describe('thread communication tools', () => {
     });
   });
 
+  it('records a child creator without making the created thread a child session', async () => {
+    const { tool, metadata, lifecycle, targetPermission } = createThreadFixture({ callerAgentId: 'worker-1', callerMode: 'auto' });
+    const result = await executeThreadCreate(tool, {});
+    expect(result.isError).not.toBe(true);
+    expect((await metadata.read()).custom).toEqual({ [CREATED_BY_SESSION_ID_KEY]: 'ambient-a', [CREATED_BY_AGENT_ID_KEY]: 'worker-1' });
+    expect(lifecycle.create).toHaveBeenCalledExactlyOnceWith({ agentId: 'main' });
+    expect(targetPermission.setModeCeiling).toHaveBeenCalledExactlyOnceWith('auto');
+    expect(lifecycle.broadcastPermissionMode).toHaveBeenCalledExactlyOnceWith('auto');
+  });
+
   it('binds an enabled main profile to the new session', async () => {
     const { tool, create, lifecycle } = createThreadFixture();
     const result = await executeThreadCreate(tool, { profile: 'main-alt' });
@@ -236,6 +252,17 @@ describe('thread communication tools', () => {
       workDir: '/ambient/workspace',
       mainAgentBinding: { profile: undefined, persona: 'lin-lan', model: undefined, thinking: undefined, strictThinking: false },
     });
+  });
+
+  it('reports and validates the profile actually selected by a persona binding', async () => {
+    const { tool } = createThreadFixture({ boundProfile: 'main-alt' });
+    const result = await executeThreadCreate(tool, { persona: 'fixture-persona' });
+    expect(JSON.parse(result.output as string)).toMatchObject({ profile: 'main-alt' });
+    const invalid = createThreadFixture({ boundProfile: 'worker' });
+    await expect(executeThreadCreate(invalid.tool, { persona: 'fixture-persona', prompt: 'Start' }))
+      .rejects.toThrow('not a main-agent profile');
+    expect(invalid.remove).toHaveBeenCalledExactlyOnceWith('session-new');
+    expect(invalid.prompt.enqueue).not.toHaveBeenCalled();
   });
 
   it('applies initial runtime controls before starting the first prompt', async () => {
@@ -435,8 +462,11 @@ function createThreadFixture(options: {
   planActive?: boolean;
   custom?: Record<string, unknown>;
   callerMode?: PermissionMode;
+  callerAgentId?: string;
+  boundProfile?: string;
 } = {}) {
   const ix = disposables.add(new TestInstantiationService());
+  let profileName = options.boundProfile;
   let title: string | undefined;
   let custom = options.custom ?? {};
   const calls: string[] = [];
@@ -463,7 +493,10 @@ function createThreadFixture(options: {
   };
   const targetPermission = { setModeCeiling: vi.fn() };
   const lifecycle = {
-    create: vi.fn<IAgentLifecycleService['create']>(async () => agent),
+    create: vi.fn<IAgentLifecycleService['create']>(async (input) => {
+      profileName ??= input?.binding?.profile;
+      return agent;
+    }),
     broadcastPermissionMode: vi.fn(() => { calls.push('permission'); }),
   };
   const agent = {
@@ -474,6 +507,7 @@ function createThreadFixture(options: {
         if (id === IAgentLifecycleService) return lifecycle;
         if (id === IAgentPlanService) return plan;
         if (id === IAgentPermissionModeService) return targetPermission;
+        if (id === IAgentProfileService) return { data: () => ({ profileName }) };
         throw new Error(`Unexpected agent service: ${String(id)}`);
       },
     },
@@ -509,7 +543,7 @@ function createThreadFixture(options: {
   const remove = vi.fn<ISessionManager['delete']>(async () => {});
   ix.stub(ISessionManager, { create, delete: remove });
   ix.stub(ISessionContext, { cwd: '/ambient/workspace', sessionId: 'ambient-a' });
-  ix.stub(IAgentScopeContext, { agentId: 'main' });
+  ix.stub(IAgentScopeContext, { agentId: options.callerAgentId ?? 'main' });
   ix.stub(IAgentPermissionModeService, { mode: options.callerMode ?? 'review' });
   ix.set(IThreadCreateTool, new SyncDescriptor(ThreadCreateTool));
   return { tool: ix.get(IThreadCreateTool), create, remove, metadata, lifecycle, targetPermission, plan, prompt, calls };

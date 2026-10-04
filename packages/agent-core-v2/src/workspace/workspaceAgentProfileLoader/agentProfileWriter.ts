@@ -14,24 +14,15 @@ export interface AgentProfileRouteUpdate {
 }
 
 /**
- * One `subagents` entry. A bare name keeps that entry's existing lease mapping
+ * One `allowed_subagents` entry. A bare name keeps that entry's existing lease mapping
  * untouched; a mapping merges the given keys onto it (`null` deletes a key).
  */
 export type AgentProfileSubagentUpdate =
   | string
-  | {
-      readonly name: string;
-      readonly modelAlias?: string | null;
-      readonly thinkingEffort?: string | null;
-      readonly allowedModels?: readonly string[] | null;
-    };
+  | import('@kiki/agent-profiles/modelPromptProjection').SubagentLeasePatch;
 
 /** One `model_profiles` entry keyed by alias; unlisted per-model keys are preserved. */
-export interface AgentProfileModelProfileUpdate {
-  readonly alias: string;
-  readonly when?: string | null;
-  readonly thinkingEffort?: string | null;
-}
+export type AgentProfileModelProfileUpdate = import('@kiki/agent-profiles/modelPromptProjection').AgentModelProfilePatch;
 
 export interface AgentProfileCreateRequest {
   readonly name: string;
@@ -67,8 +58,10 @@ export interface AgentProfileWriteRequest {
   readonly preferredModels?: readonly string[] | null;
   readonly discouragedModels?: readonly string[] | null;
   readonly preferredEfforts?: readonly string[] | null;
-  readonly subagents?: readonly AgentProfileSubagentUpdate[] | null;
-  readonly subagentPolicy?: 'advisory' | 'strict' | null;
+  readonly allowedSubagents?: readonly AgentProfileSubagentUpdate[] | null;
+  readonly canSpawnSubagents?: boolean | null;
+  readonly preferredSubagents?: readonly string[] | null;
+  readonly denySubagents?: readonly string[] | null;
   readonly spawnConstraints?: {
     readonly allowedModels?: readonly string[];
     readonly denyModels?: readonly string[];
@@ -79,6 +72,7 @@ export interface AgentProfileWriteRequest {
     readonly disallowedTools?: readonly string[];
   } | null;
   readonly modelProfiles?: readonly AgentProfileModelProfileUpdate[] | null;
+  readonly promptOverrides?: import('@kiki/agent-profiles/promptOverrides').PromptOverrides | null;
   readonly serviceTier?: ServiceTier | null;
   readonly autoCompact?: number | null;
   readonly tools?: readonly string[] | null;

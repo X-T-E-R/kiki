@@ -369,8 +369,7 @@ async function deleteCronTask(core: Scope, located: LocatedCronTask): Promise<bo
     const live = located.sessionId === undefined ? undefined : manager.get(located.sessionId);
     if (live !== undefined) {
       const cron = live.accessor.get(ISessionCronService);
-      if (cron.removeTasks([located.task.id]).length === 0) return false;
-      await cron.flushPersist();
+      if ((await cron.removeTasks([located.task.id])).length === 0) return false;
       return true;
     }
     const current = await store.get(located.workspaceId, located.task.id);

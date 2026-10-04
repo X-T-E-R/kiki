@@ -1084,6 +1084,30 @@ describe('FileSessionIndex (read model)', () => {
     expect(new Set(walked).size).toBe(specs.length);
   });
 
+  it('drains more than one thousand ties across sixteen real shards in canonical order', async () => {
+    const store = build();
+    const summaries = [
+      summary('newer', { updatedAt: 110 }),
+      ...Array.from({ length: 1201 }, (_, i) => summary(`tie-${String(i).padStart(4, '0')}`, { updatedAt: 100 })),
+      summary('older-z', { updatedAt: 90 }),
+      summary('older-a', { updatedAt: 90 }),
+    ];
+    await queryStore.batch(summaries.map((value) => ({
+      kind: 'put' as const,
+      collection: sessionCollection(1),
+      key: value.id,
+      value: { ...value, [recencyColumn(1)]: value.updatedAt },
+      columns: { [recencyColumn(1)]: value.updatedAt },
+    })));
+    await queryStore.setCheckpoint(SESSION_INDEX_MANIFEST, { seq: 1, sourceMaxMtimeMs: 110 });
+
+    const walked = await walkPages(store, { workspaceIds: [workspaceId] }, 50);
+    expect(walked).toEqual(canonicalIds(summaries));
+    expect(new Set(walked).size).toBe(summaries.length);
+    expect((await store.listRecent({ after: 'tie-0600', limit: 50 })).items.map((item) => item.id))
+      .toEqual(canonicalIds(summaries.filter((item) => item.updatedAt > 100 || item.updatedAt === 100 && item.id > 'tie-0600')).slice(0, 50));
+  });
+
   it('listRecent treats a cache entry missing required fields as a cold miss', async () => {
     await seedSession('s1', { title: 'on-disk', createdAt: 1, updatedAt: 2 });
     const store = build();

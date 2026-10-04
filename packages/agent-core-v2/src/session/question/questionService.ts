@@ -3,10 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { LifecycleScope } from '#/app/scopes';
 
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import {
-  isInteractionCancellation,
-  ISessionInteractionService,
-} from '#/session/interaction/interaction';
+import { ISessionInteractionService } from '#/session/interaction/interaction';
 
 import {
   type QuestionRequest,
@@ -21,27 +18,31 @@ export class SessionQuestionService implements ISessionQuestionService {
 
   request(
     req: QuestionRequest,
-    options?: { signal?: AbortSignal; agentId?: string; detached?: boolean },
+    options?: { signal?: AbortSignal; agentId?: string; detached?: boolean; onAccepted?: () => void },
   ): Promise<QuestionResult> {
-    if (!this.interaction.hasConsumer({ agentId: options?.agentId })) return Promise.resolve(null);
+    if (options?.signal?.aborted) return Promise.resolve({ cancelled: true, reason: 'aborted' });
+    if (options?.detached !== true && !this.interaction.hasConsumer({ agentId: options?.agentId })) {
+      return Promise.resolve({ cancelled: true, reason: 'no_consumer' });
+    }
     const id = requestId(req);
-    const pending = this.interaction.request<QuestionRequest, unknown>({
+    const pending = this.interaction.request<QuestionRequest, QuestionResult>({
       id,
       kind: 'question',
       payload: req,
+      detached: options?.detached,
       origin: {
         turnId: options?.detached === true ? undefined : req.turnId,
         agentId: options?.agentId,
       },
-    }).then((response) => (isInteractionCancellation(response) ? null : (response as QuestionResult)));
+    }, options?.onAccepted);
 
     const signal = options?.signal;
     if (signal !== undefined) {
       if (signal.aborted) {
-        this.dismiss(id);
+        this.interaction.respond(id, { cancelled: true, reason: 'aborted' });
       } else {
         const onAbort = (): void => {
-          this.dismiss(id);
+          this.interaction.respond(id, { cancelled: true, reason: 'aborted' });
         };
         signal.addEventListener('abort', onAbort, { once: true });
         void pending.finally(() => {

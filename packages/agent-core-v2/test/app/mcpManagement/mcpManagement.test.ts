@@ -170,6 +170,36 @@ describe('McpManagementService', () => {
     await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
+  it('stops the current-process scope and preserves every other field when disabling a global computer entry', async () => {
+    const server: GlobalMcpServerConfig = { name: 'kiki-computer', transport: 'stdio', command: '/fixture/cua-driver',
+      args: ['mcp'], executor: 'local', runtime_id: 'local', env: { TOKEN: 'fixture-secret' }, toolTimeoutMs: 1234 };
+    await management.addServer(server);
+    const result = await management.stopServer({ name: server.name });
+    expect(result).toMatchObject({ state: 'idle', output: expect.stringContaining('not a statement about the whole desktop') });
+    expect(await store.get(server.name)).toEqual({ ...server, enabled: false });
+    expect((await management.getServer(server.name)).config).toMatchObject({ enabled: false, envKeys: ['TOKEN'] });
+    await management.updateServer(server);
+  });
+
+  it('rejects non-cua and ambiguous stop requests before disabling any configuration', async () => {
+    await management.addServer(stdioServer('other'));
+    await expect(management.stopServer({ name: 'other' })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    await management.addServer({ name: 'plugin-demo:cua', transport: 'stdio', command: '/fixture/cua-driver', args: ['mcp'] });
+    pluginEntries = [{ name: 'plugin-demo:cua', pluginId: 'demo', serverName: 'cua',
+      config: { transport: 'stdio', command: '/plugin/cua-driver', args: ['mcp'] } }];
+    await expect(management.stopServer({ name: 'plugin-demo:cua' })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    expect((await store.get('plugin-demo:cua')).enabled).not.toBe(false);
+  });
+
+  it('does not rewrite a read-only plugin when stopping the service-owned process scope', async () => {
+    pluginEntries = [{ name: 'plugin-demo:cua', pluginId: 'demo', serverName: 'cua',
+      config: { transport: 'stdio', command: '/fixture/cua-driver', args: ['mcp'] } }];
+    const result = await management.stopServer({ name: 'plugin-demo:cua' });
+    expect(result).toMatchObject({ state: 'idle', output: expect.stringContaining('Read-only configuration was not changed') });
+    expect(await store.list()).toEqual([]);
+    expect(pluginEntries[0]?.config.enabled).toBeUndefined();
+  });
+
   async function startHttpServer(): Promise<{ url: string }> {
     const server = await startInProcessHttpMcpServer();
     httpServers.push(server);

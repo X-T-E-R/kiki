@@ -1,11 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
-import { CronTool } from '#/agent/tools/cron/cronTool';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CronTool, ICronTool } from '#/agent/tools/cron/cronTool';
 import { GoalTool } from '#/agent/tools/goal/goalTool';
-import type { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { TestInstantiationService } from '#/_base/di/test';
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { ToolExecution } from '#/tool/toolContract';
-import type { ICronCreateTool } from '#/agent/tools/cron/cron-create/cron-create';
-import type { ICronListTool } from '#/agent/tools/cron/cron-list/cron-list';
-import type { ICronDeleteTool } from '#/agent/tools/cron/cron-delete/cron-delete';
+import { ICronCreateTool } from '#/agent/tools/cron/cron-create/cron-create';
+import { ICronListTool } from '#/agent/tools/cron/cron-list/cron-list';
+import { ICronDeleteTool } from '#/agent/tools/cron/cron-delete/cron-delete';
 import type { ICreateGoalTool } from '#/agent/tools/goal/create-goal/create-goal';
 import type { IGetGoalTool } from '#/agent/tools/goal/get-goal/get-goal';
 import type { ISetGoalBudgetTool } from '#/agent/tools/goal/set-goal-budget/set-goal-budget';
@@ -21,12 +24,23 @@ function legacy(name: string) {
 const policy = (allowed: string[]) => ({ isToolActive: (name: string) => allowed.includes(name) }) as IAgentToolPolicyService;
 
 describe('merged Cron tool', () => {
+  let ix: TestInstantiationService;
+  afterEach(() => ix?.dispose());
+  function cronTool(create: ReturnType<typeof legacy>, list: ReturnType<typeof legacy>, remove: ReturnType<typeof legacy>, allowed: string[]) {
+    ix = new TestInstantiationService();
+    ix.stub(ICronCreateTool, create);
+    ix.stub(ICronListTool, list);
+    ix.stub(ICronDeleteTool, remove);
+    ix.set(IAgentToolPolicyService, policy(allowed));
+    ix.stub(ISessionContext, { ephemeral: false });
+    ix.set(ICronTool, new SyncDescriptor(CronTool));
+    return ix.get(ICronTool);
+  }
   it('dispatches each action to its legacy implementation and keeps the approval rule', async () => {
     const create = legacy('CronCreate');
     const list = legacy('CronList');
     const remove = legacy('CronDelete');
-    const tool = new CronTool(create as unknown as ICronCreateTool, list as unknown as ICronListTool,
-      remove as unknown as ICronDeleteTool, policy(['CronCreate', 'CronList', 'CronDelete']));
+    const tool = cronTool(create, list, remove, ['CronCreate', 'CronList', 'CronDelete']);
     const created = await tool.resolveExecution({ action: 'create', cron: '0 9 * * *', prompt: 'Check CI', recurring: true });
     const listed = await tool.resolveExecution({ action: 'list' });
     const deleted = await tool.resolveExecution({ action: 'delete', id: 'job-id' });
@@ -40,8 +54,7 @@ describe('merged Cron tool', () => {
 
   it('rejects disabled actions and malformed inputs without invoking legacy tools', async () => {
     const create = legacy('CronCreate');
-    const tool = new CronTool(create as unknown as ICronCreateTool, legacy('CronList') as unknown as ICronListTool,
-      legacy('CronDelete') as unknown as ICronDeleteTool, policy(['CronList']));
+    const tool = cronTool(create, legacy('CronList'), legacy('CronDelete'), ['CronList']);
     expect((await tool.resolveExecution({ action: 'create', cron: '* * * * *', prompt: 'check', recurring: true })).isError).toBe(true);
     expect((await tool.resolveExecution({ action: 'create', cron: '', prompt: '', recurring: true })).isError).toBe(true);
     expect(create.resolveExecution).not.toHaveBeenCalled();

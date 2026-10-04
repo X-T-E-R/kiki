@@ -1,5 +1,6 @@
 import { Disposable, DisposableMap, DisposableStore } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
+import { ILogService } from '#/_base/log/log';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -8,6 +9,8 @@ import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { agentMessageMaterializationsKey, agentMessageReceiptsKey } from './messageReceiptState';
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { IWireService } from '#/wire/wire';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -48,6 +51,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   private readonly subscriptions = this._register(new DisposableMap<string>());
   private readonly deliveryTails = new Map<string, Promise<void>>();
   private readonly wakeTails = new Map<string, Promise<void>>();
+  private readonly receiptTails = new Map<string, Promise<void>>();
   private readonly claimed = new Map<string, ClaimedAgentMessage>();
 
   constructor(
@@ -57,6 +61,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @ISessionDispatchService private readonly dispatch: ISessionDispatchService,
     @ISessionManager private readonly sessions: ISessionManager,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
     for (const handle of lifecycle.list()) this.attach(handle);
@@ -334,10 +339,16 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   }
 
   private hasMessage(handle: IAgentScopeHandle, messageId: string): boolean {
-    return handle.accessor.get(IAgentContextMemoryService).get().some((entry) =>
-      (entry.origin?.kind === 'agent_message' && entry.origin.messageId === messageId) ||
-      (entry.origin?.kind === 'user' && entry.id === messageId),
-    );
+    return handle.accessor.get(IAgentStateService).get(agentMessageMaterializationsKey)[messageId] === true ||
+      handle.accessor.get(IAgentContextMemoryService).get().some((entry) =>
+        (entry.origin?.kind === 'agent_message' && entry.origin.messageId === messageId) ||
+        (entry.origin?.kind === 'user' && entry.id === messageId),
+      );
+  }
+
+  private hasAppliedMessage(handle: IAgentScopeHandle, pending: ClaimedAgentMessage): boolean {
+    return (pending.flushed && pending.queued.message.senderKind === 'user') ||
+      this.hasMessage(handle, pending.queued.message.messageId);
   }
 
   private async claimNext(handle: IAgentScopeHandle): Promise<ClaimedAgentMessage | undefined> {
@@ -353,38 +364,52 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   private async completeClaim(
     handle: IAgentScopeHandle,
     pending: ClaimedAgentMessage,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (!pending.flushed) {
       await handle.accessor.get(IWireService).flush();
       pending.flushed = true;
     }
-    if (await this.store.markDelivered(pending.queued.claim)) {
+    try {
       await this.recordDeliveryReceipt(pending.queued.message);
+    } catch (error) {
+      this.log.warn('Agent message receipt persistence failed; retaining the mailbox claim for recovery', {
+        messageId: pending.queued.message.messageId,
+        sourceAgentId: pending.queued.message.sourceAgentId,
+        targetAgentId: handle.id,
+        error,
+      });
+      return false;
     }
+    await this.store.markDelivered(pending.queued.claim);
     if (this.claimed.get(handle.id) === pending) this.claimed.delete(handle.id);
+    return true;
   }
 
   private async recordDeliveryReceipt(message: AgentMessageAcceptance['message']): Promise<void> {
     if (message.senderKind === 'user') return;
-    let sender = this.lifecycle.get(message.sourceAgentId);
-    if (sender === undefined) {
-      const meta = (await this.metadata.read()).agents?.[message.sourceAgentId];
-      if (meta === undefined) return;
-      sender = await this.lifecycle.create({
-        agentId: message.sourceAgentId,
-        forkedFrom: meta.forkedFrom,
-        labels: labelsFromAgentMeta(meta),
-        delegator: delegatorRef(meta),
-        restoreBinding: {},
-      });
-    }
-    await sender.accessor.get(IEventDispatcher).dispatch(new AgentMessageDelivered({
-      messageId: message.messageId,
-      targetAgentId: message.targetAgentId,
-      status: 'delivered',
-      deliveredAt: new Date().toISOString(),
-    }));
-    await sender.accessor.get(IWireService).flush();
+    await serializeForAgent(this.receiptTails, message.sourceAgentId, async () => {
+      let sender = this.lifecycle.get(message.sourceAgentId);
+      if (sender === undefined) {
+        const meta = (await this.metadata.read()).agents?.[message.sourceAgentId];
+        if (meta === undefined) return;
+        sender = await this.lifecycle.create({
+          agentId: message.sourceAgentId,
+          forkedFrom: meta.forkedFrom,
+          labels: labelsFromAgentMeta(meta),
+          delegator: delegatorRef(meta),
+        });
+      }
+      const receipts = sender.accessor.get(IAgentStateService).get(agentMessageReceiptsKey);
+      if (receipts[message.messageId] !== true) {
+        await sender.accessor.get(IEventDispatcher).dispatch(new AgentMessageDelivered({
+          messageId: message.messageId,
+          targetAgentId: message.targetAgentId,
+          status: 'delivered',
+          deliveredAt: new Date().toISOString(),
+        }));
+      }
+      await sender.accessor.get(IWireService).flush();
+    });
   }
 
   private async prepareExternalDelivery(
@@ -395,8 +420,8 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       const pending = await this.claimNext(handle);
       if (pending === undefined) return undefined;
       const message = pending.queued.message;
-      if (this.hasMessage(handle, message.messageId)) {
-        await this.completeClaim(handle, pending);
+      if (this.hasAppliedMessage(handle, pending)) {
+        if (!await this.completeClaim(handle, pending)) return undefined;
         continue;
       }
       const contextMessage = toContextMessage(message);
@@ -413,7 +438,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   ): Promise<void> {
     const pending = this.claimed.get(handle.id);
     if (pending?.queued.message.messageId !== messageId) return;
-    if (!this.hasMessage(handle, messageId)) {
+    if (!this.hasAppliedMessage(handle, pending)) {
       handle.accessor.get(IAgentContextMemoryService).appendObservable(
         toContextMessage(pending.queued.message),
       );
@@ -437,10 +462,10 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       const pending = await this.claimNext(handle);
       if (pending === undefined) return;
       const message = pending.queued.message;
-      if (!this.hasMessage(handle, message.messageId) && !await apply(toContextMessage(message))) {
+      if (!this.hasAppliedMessage(handle, pending) && !await apply(toContextMessage(message))) {
         return;
       }
-      await this.completeClaim(handle, pending);
+      if (!await this.completeClaim(handle, pending)) return;
     }
   }
 

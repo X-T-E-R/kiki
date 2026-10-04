@@ -98,25 +98,26 @@ describe('real password path (verifyPassword)', () => {
     return server;
   }
 
-  it('accepts the password as a bearer token and sets security headers', async () => {
+  it('validates the password for limited handshake and sets security headers', async () => {
     const server = await bootPublic();
-    const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/remote-connections/handshake`, {
       headers: { authorization: 'Bearer test-pw' },
     });
     expect(res.status).toBe(200);
+    expect((await fetch(`http://127.0.0.1:${server.port}/api/sessions`, { headers: { authorization: 'Bearer test-pw' } })).status).toBe(403);
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('content-security-policy')).toBe(
       "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'",
     );
   });
 
-  it('accepts the persistent token on a public bind', async () => {
+  it('requires directed admission even for a valid persistent token on a public bind', async () => {
     const server = await bootPublic();
     const token = server.authTokenService.getToken();
     const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
       headers: { authorization: `Bearer ${token}` },
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
   });
 
   it('rejects wrong and missing credentials with 401', async () => {

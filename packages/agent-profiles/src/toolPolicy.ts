@@ -1,4 +1,5 @@
 import picomatch from 'picomatch';
+import { canonicalToolName, legacyToolNames } from './toolAliases';
 
 export type ToolSource = 'builtin' | 'user' | 'mcp' | 'plugin';
 
@@ -17,6 +18,12 @@ export function isMcpToolName(name: string): boolean {
   return name.startsWith('mcp__');
 }
 
+export function isToolExplicitlyNamed(tools: readonly string[] | undefined, name: string): boolean {
+  return tools !== undefined && (tools.includes(name) ||
+    (canonicalToolName(name) !== undefined && tools.includes(canonicalToolName(name)!)) ||
+    legacyToolNames(name).some((legacy) => tools.includes(legacy)));
+}
+
 export function isToolActive(
   policy: ToolActivationPolicy,
   name: string,
@@ -26,16 +33,18 @@ export function isToolActive(
     (candidate): candidate is readonly string[] => candidate !== undefined,
   );
   for (const allowPolicy of allowPolicies) {
-    const allowed =
-      source !== 'mcp'
-        ? allowPolicy.includes(name)
-        : allowPolicy
-            .filter((pattern) => isMcpToolName(pattern))
-            .some((pattern) => picomatch.isMatch(name, pattern));
+    const allowed = allowPolicy.includes('*') || (source !== 'mcp'
+      ? isToolExplicitlyNamed(allowPolicy, name)
+      : allowPolicy.filter((pattern) => isMcpToolName(pattern)).some((pattern) => picomatch.isMatch(name, pattern)));
     if (!allowed) return false;
   }
   if (policy.disallowedTools === undefined) return true;
-  if (source !== 'mcp') return !policy.disallowedTools.includes(name);
+  if (source !== 'mcp') {
+    return !(policy.disallowedTools.includes(name) ||
+      (canonicalToolName(name) !== undefined && policy.disallowedTools.includes(canonicalToolName(name)!)) ||
+      (legacyToolNames(name).length > 0 &&
+        legacyToolNames(name).every((legacy) => policy.disallowedTools!.includes(legacy))));
+  }
   return !policy.disallowedTools
     .filter((pattern) => isMcpToolName(pattern))
     .some((pattern) => picomatch.isMatch(name, pattern));

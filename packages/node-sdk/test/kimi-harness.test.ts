@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createKimiHarness, ImageLimits, KimiHarness, SDKRpcClientBase } from '#/index';
 
@@ -28,14 +28,14 @@ class StubRpc extends SDKRpcClientBase {
   }
 }
 
-function makeHarnessWithRpc(rpc: SDKRpcClientBase): KimiHarness {
+function makeHarnessWithRpc(rpc: SDKRpcClientBase, onClose: () => void | Promise<void> = () => undefined): KimiHarness {
   return new KimiHarness(rpc, {
     homeDir: '/tmp/home',
     configPath: '/tmp/config.toml',
     auth: { status: async () => ({ providers: [] }) } as never,
     telemetry: recordingTelemetry([]),
     ensureConfigFile: async () => undefined,
-    onClose: () => undefined,
+    onClose,
   });
 }
 
@@ -139,5 +139,81 @@ describe('KimiHarness file ops', () => {
     } finally {
       await harness.close();
     }
+  });
+});
+
+describe('KimiHarness close', () => {
+  function closingRpc(closeSession = vi.fn(async (_input: { sessionId: string }) => {})) {
+    let id = 0;
+    return {
+      createSession: vi.fn(async () => ({ id: `session-${++id}`, workDir: '/example' })),
+      closeSession,
+      clearSessionHandlers: vi.fn(),
+    };
+  }
+
+  it('closes each session and its host exactly once across concurrent and repeated close', async () => {
+    const rpc = closingRpc();
+    const closeHost = vi.fn(async () => {});
+    const harness = makeHarnessWithRpc(rpc as never, closeHost);
+    await harness.createSession({ workDir: '/example' });
+    await harness.createSession({ workDir: '/example' });
+    const closing = harness.close();
+    expect(harness.close()).toBe(closing);
+    await closing;
+    await harness.close();
+    expect(rpc.closeSession).toHaveBeenCalledTimes(2);
+    expect(harness.sessions.size).toBe(0);
+    expect(closeHost).toHaveBeenCalledOnce();
+  });
+
+  it('settles every session before host teardown and preserves a single session rejection', async () => {
+    const failure = new Error('session close failed');
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const rpc = closingRpc(vi.fn(async ({ sessionId }) => {
+      if (sessionId === 'session-1') throw failure;
+      await pending;
+    }));
+    const closeHost = vi.fn(async () => {});
+    const harness = makeHarnessWithRpc(rpc as never, closeHost);
+    await harness.createSession({ workDir: '/example' });
+    await harness.createSession({ workDir: '/example' });
+    const closing = harness.close();
+    const rejected = expect(closing).rejects.toBe(failure);
+    await Promise.resolve();
+    expect(closeHost).not.toHaveBeenCalled();
+    release();
+    await rejected;
+    expect(harness.sessions.size).toBe(0);
+    expect(rpc.clearSessionHandlers).toHaveBeenCalledTimes(2);
+    expect(closeHost).toHaveBeenCalledOnce();
+    await expect(harness.close()).rejects.toBe(failure);
+    expect(closeHost).toHaveBeenCalledOnce();
+  });
+
+  it('preserves the host rejection and never retries host close', async () => {
+    const failure = new Error('host close failed');
+    const closeHost = vi.fn(async () => { throw failure; });
+    const harness = makeHarnessWithRpc(closingRpc() as never, closeHost);
+    await harness.createSession({ workDir: '/example' });
+    await expect(harness.close()).rejects.toBe(failure);
+    await expect(harness.close()).rejects.toBe(failure);
+    expect(closeHost).toHaveBeenCalledOnce();
+    expect(harness.sessions.size).toBe(0);
+  });
+
+  it('retains both session and host errors', async () => {
+    const sessionError = new Error('session close failed');
+    const hostError = new Error('host close failed');
+    const rpc = closingRpc(vi.fn(async () => { throw sessionError; }));
+    const closeHost = vi.fn(async () => { throw hostError; });
+    const harness = makeHarnessWithRpc(rpc as never, closeHost);
+    await harness.createSession({ workDir: '/example' });
+    const error = await harness.close().catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([sessionError, hostError]);
+    await expect(harness.close()).rejects.toBe(error);
+    expect(closeHost).toHaveBeenCalledOnce();
   });
 });

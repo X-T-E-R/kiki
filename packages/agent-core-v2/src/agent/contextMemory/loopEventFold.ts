@@ -61,6 +61,8 @@ export type LoopRecordedEvent =
         readonly isError?: boolean;
         readonly note?: string;
         readonly errorCode?: string;
+        readonly fileRead?: import('#/agent/agentsMdReminder/instructionCoverage').FileReadDisclosure;
+        readonly memoryReceipt?: import('#/tool/toolContract').MemoryWriteReceipt;
       };
       readonly parentUuid?: string;
     };
@@ -195,6 +197,8 @@ function createLoopEventFoldWithState(
               ),
               isError: event.result.isError,
               note: event.result.note,
+              fileRead: event.result.fileRead,
+              memoryReceipt: event.result.memoryReceipt,
             },
             time,
             source,

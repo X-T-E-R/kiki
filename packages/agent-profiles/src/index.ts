@@ -25,5 +25,6 @@ export * from './subagentLease';
 export * from './systemFile';
 export * from './systemPromptFields';
 export * from './toolGroups';
+export * from './toolAliases';
 
 export const SCHEMA_VERSION = 1;

@@ -1,9 +1,46 @@
 import { z } from 'zod';
 
 import { requestIdentityPolicySchema } from '../modelCatalog';
+import { interactionConfigSchema, askUserQuestionGuardWireSchema } from '../questionGuard';
+import { hooksConfigSchema } from './hooksConfig';
 import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema } from './nbSearch';
 import { requestGovernanceConfigPatchSchema } from './requestGovernance';
 import { spaceUiConfigSchema, spaceUiConfigPatchSchema } from './space';
+
+export const modelSwitchModeSchema = z.enum(['direct', 'compact', 'fresh']);
+
+const modelSwitchPatternSchema = z.string().min(1).refine((value) => value.trim().length > 0, {
+  message: 'Model pattern must not be blank',
+});
+
+export const modelSwitchRuleSchema = z.object({
+  id: z.string().min(1).refine((value) => value.trim().length > 0),
+  enabled: z.boolean().default(true),
+  from_models: z.array(modelSwitchPatternSchema).min(1).optional(),
+  to_models: z.array(modelSwitchPatternSchema).min(1).optional(),
+  mode: modelSwitchModeSchema,
+  confirm: z.boolean().optional(),
+}).strict();
+
+export const modelSwitchRulesSchema = z.array(modelSwitchRuleSchema).refine(
+  (rules) => new Set(rules.map((rule) => rule.id)).size === rules.length,
+  { message: 'Model switch rule IDs must be unique' },
+);
+
+export const modelSwitchConfigSchema = z.object({
+  default_mode: modelSwitchModeSchema.default('direct'),
+  confirm: z.boolean().default(true),
+  rules: modelSwitchRulesSchema.default([]),
+}).strict();
+export type ModelSwitchConfig = z.infer<typeof modelSwitchConfigSchema>;
+export type ModelSwitchRule = z.infer<typeof modelSwitchRuleSchema>;
+export type ModelSwitchMode = z.infer<typeof modelSwitchModeSchema>;
+
+export const modelSwitchConfigPatchSchema = z.object({
+  default_mode: modelSwitchModeSchema.optional(),
+  confirm: z.boolean().optional(),
+  rules: modelSwitchRulesSchema.optional(),
+}).strict();
 
 export const taskBoardStorageConfigSchema = z.object({
   storage: z.discriminatedUnion('mode', [
@@ -36,8 +73,6 @@ export const subagentConfigResponseSchema = z.object({
   maxDirectChildren: z.number().int().nonnegative().optional(),
   maxTotalSubagents: z.number().int().nonnegative().optional(),
   defaultProfile: z.string().optional(),
-  mainDispatchPolicy: z.enum(['advisory', 'strict']).optional(),
-  subagentDispatchPolicy: z.enum(['advisory', 'strict']).optional(),
   allowedTools: z.array(z.string()).optional(),
 });
 
@@ -52,8 +87,14 @@ export const agentsConfigResponseSchema = z.object({
   delegation: agentsDelegationConfigSchema.optional(),
 });
 
+export const sessionTitleTriggerSchema = z.enum([
+  'first_user_message', 'first_turn_completed', 'context_compacted',
+]);
+export type SessionTitleTrigger = z.infer<typeof sessionTitleTriggerSchema>;
+
 export const sessionTitleConfigResponseSchema = z.object({
   model: z.string().optional(),
+  triggers: z.array(sessionTitleTriggerSchema).optional(),
 });
 
 export const planConfigResponseSchema = z.object({
@@ -159,15 +200,15 @@ export const sessionResidencyConfigPatchSchema = z.object({
   max_queued_restores: z.number().int().min(0).max(64).optional(),
 }).strict();
 
-export const interactionConfigResponseSchema = z.object({
-  askUserQuestion: z.enum(['background', 'blocking']),
-});
+export const interactionConfigResponseSchema = interactionConfigSchema;
 
 export const interactionConfigPatchSchema = z.object({
   ask_user_question: z.enum(['background', 'blocking']).optional(),
+  ask_user_question_guard: askUserQuestionGuardWireSchema.optional(),
 }).strict();
 
 export const configResponseSchema = z.object({
+  model_switch: modelSwitchConfigSchema.optional(),
   space_ui: spaceUiConfigSchema.optional(),
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
   default_provider: z.string().optional(),
@@ -184,7 +225,7 @@ export const configResponseSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: permissionConfigResponseSchema.optional(),
   interaction: interactionConfigResponseSchema.optional(),
-  hooks: z.array(z.unknown()).optional(),
+  hooks: hooksConfigSchema.optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
   nb_search_source: nbSearchSourceConfigSchema.optional(),
   prompt: promptConfigSchema.optional(),
@@ -208,6 +249,7 @@ export const configResponseSchema = z.object({
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
 
 export const patchConfigRequestSchema = z.object({
+  model_switch: modelSwitchConfigPatchSchema.optional(),
   space_ui: spaceUiConfigPatchSchema.optional(),
   providers: z.record(z.string(), z.unknown()).optional(),
   default_provider: z.string().optional(),
@@ -224,7 +266,7 @@ export const patchConfigRequestSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: permissionConfigPatchSchema.optional(),
   interaction: interactionConfigPatchSchema.optional(),
-  hooks: z.array(z.unknown()).optional(),
+  hooks: hooksConfigSchema.optional(),
   services: z.never().optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
   nb_search_source: nbSearchSourceConfigSchema.optional(),
@@ -241,8 +283,7 @@ export const patchConfigRequestSchema = z.object({
     max_direct_children: z.number().int().nonnegative().optional(),
     max_total_subagents: z.number().int().nonnegative().optional(),
     default_profile: z.string().optional(),
-    main_dispatch_policy: z.enum(['advisory', 'strict']).optional(),
-    subagent_dispatch_policy: z.enum(['advisory', 'strict']).optional(),
+
     allowed_tools: z.array(z.string()).optional(),
   }).optional(),
   agents: z.object({
@@ -251,9 +292,7 @@ export const patchConfigRequestSchema = z.object({
     delegation: agentsDelegationConfigSchema.optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
-  session_title: z.object({
-    model: z.string().optional(),
-  }).optional(),
+  session_title: sessionTitleConfigResponseSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   skip_builtin_profile_installation: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),

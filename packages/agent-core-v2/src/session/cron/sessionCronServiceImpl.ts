@@ -28,15 +28,13 @@ import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle'
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
-import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import type { Turn } from '#/agent/loop/loop';
 import { BugIndicatingError } from '#/errors';
 
-import { ICronCreateTool } from '#/agent/tools/cron/cron-create/cron-create';
-import { ICronListTool } from '#/agent/tools/cron/cron-list/cron-list';
-import { ICronDeleteTool } from '#/agent/tools/cron/cron-delete/cron-delete';
-import { ICronTool } from '#/agent/tools/cron/cronTool';
-
+import '#/agent/tools/cron/cron-create/cronCreateTool';
+import '#/agent/tools/cron/cron-list/cronListTool';
+import '#/agent/tools/cron/cron-delete/cronDeleteTool';
+import '#/agent/tools/cron/cronTool';
 import { CronAdd, CronDelete, CronCursor, CronFired, cronKey } from './cronOps';
 import { ISessionCronService, type CronLoadOptions } from './sessionCronService';
 
@@ -153,19 +151,6 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
       }),
     );
 
-    this.registerCronTools(handle);
-  }
-
-  private registerCronTools(handle: IAgentScopeHandle): void {
-    const registry = handle.accessor.get(IAgentToolRegistryService);
-    const tools = [
-      ...(this.ctx.ephemeral === true ? [] : [handle.accessor.get(ICronTool), handle.accessor.get(ICronCreateTool)]),
-      handle.accessor.get(ICronListTool),
-      ...(this.ctx.ephemeral === true ? [] : [handle.accessor.get(ICronDeleteTool)]),
-    ];
-    for (const tool of tools) {
-      this._register(registry.register(tool, { source: 'builtin' }));
-    }
   }
 
   now(): number {
@@ -185,7 +170,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     return this.getCronConfig().disabled;
   }
 
-  addTask(init: CronTaskInit): CronTask {
+  async addTask(init: CronTaskInit): Promise<CronTask> {
     if (this.ctx.ephemeral === true) throw new Error('temporary sessions cannot schedule cron tasks');
     const task: CronTask = {
       ...init,
@@ -193,36 +178,41 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
       createdAt: this.clocks.wallNow(),
       tags: { ...init.tags, [CRON_SESSION_TAG]: this.ctx.sessionId },
     };
-    this.tasks.set(task.id, task);
-    this.dispatchCron(new CronAdd({ task }));
-    void this.persistEnqueue(task.id, () =>
-      this.store.save(this.ctx.workspaceId, task),
-    );
+    await this.persistEnqueue(task.id, async () => {
+      await this.store.save(this.ctx.workspaceId, task);
+      this.tasks.set(task.id, task);
+      this.dispatchCron(new CronAdd({ task }));
+    });
     return task;
   }
 
-  removeTasks(ids: readonly string[]): readonly string[] {
+  async removeTasks(ids: readonly string[]): Promise<readonly string[]> {
     if (this.ctx.ephemeral === true) throw new Error('temporary sessions cannot modify cron tasks');
-    const removed = this.removeByIds(ids);
-    if (removed.length === 0) return removed;
-
-    this.dispatchCron(new CronDelete({ ids: removed }));
-    for (const id of removed) {
-      void this.persistEnqueue(id, () =>
-        this.store.delete(this.ctx.workspaceId, id),
-      );
-    }
-    return removed;
+    const results = await Promise.all([...new Set(ids)].map(async (id) => {
+      let removed = false;
+      await this.persistEnqueue(id, async () => {
+        if (!this.tasks.has(id)) return;
+        await this.store.delete(this.ctx.workspaceId, id);
+        const deleted = this.removeByIds([id]);
+        this.dispatchCron(new CronDelete({ ids: deleted }));
+        removed = deleted.length > 0;
+      });
+      return removed ? id : undefined;
+    }));
+    return results.filter((id): id is string => id !== undefined);
   }
 
   async setTaskPaused(id: string, paused: boolean): Promise<CronTask | undefined> {
     if (this.ctx.ephemeral === true) throw new Error('temporary sessions cannot modify cron tasks');
-    const existing = this.tasks.get(id);
-    if (existing === undefined) return undefined;
-    const updated: CronTask = { ...existing, paused };
-    this.tasks.set(id, updated);
-    this.dispatchCron(new CronAdd({ task: updated }));
-    await this.persistEnqueue(id, () => this.store.save(this.ctx.workspaceId, updated));
+    let updated: CronTask | undefined;
+    await this.persistEnqueue(id, async () => {
+      const existing = this.tasks.get(id);
+      if (existing === undefined) return;
+      updated = { ...existing, paused };
+      await this.store.save(this.ctx.workspaceId, updated);
+      this.tasks.set(id, updated);
+      this.dispatchCron(new CronAdd({ task: updated }));
+    });
     return updated;
   }
 
@@ -279,10 +269,10 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
           ...task,
           tags: { ...task.tags, [CRON_SESSION_TAG]: this.ctx.sessionId },
         };
-        this.adopt(claimed);
-        void this.persistEnqueue(claimed.id, () =>
+        await this.persistEnqueue(claimed.id, () =>
           this.store.save(this.ctx.workspaceId, claimed),
         );
+        this.adopt(claimed);
         continue;
       }
       this.adopt(task);
@@ -365,34 +355,26 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     }
 
     this.inFlight.add(task.id);
-    let delivered = false;
     try {
-      delivered = await this.deliverDue(task, coalescedCount);
-    } catch (error) {
-      this.debugLog(
-        `deliverDue threw for task ${task.id}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+      const delivered = await this.deliverDue(task, coalescedCount);
+      if (!delivered) return;
+      if (task.recurring === false) {
+        await this.removeTasks([task.id]);
+        this.lastSeenAt.delete(task.id);
+        this.seededFromStore.delete(task.id);
+      } else {
+        const advancedTo = lastDueMs ?? now;
+        this.lastSeenAt.set(task.id, advancedTo);
+        await this.advanceCursor(task.id, advancedTo);
+      }
     } finally {
       this.inFlight.delete(task.id);
-    }
-    if (!delivered) return;
-
-    if (task.recurring === false) {
-      this.removeTasks([task.id]);
-      this.lastSeenAt.delete(task.id);
-      this.seededFromStore.delete(task.id);
-    } else {
-      const advancedTo = lastDueMs ?? now;
-      this.lastSeenAt.set(task.id, advancedTo);
-      this.advanceCursor(task.id, advancedTo);
     }
   }
 
   async flushPersist(): Promise<void> {
     const inFlight = Array.from(this.persistQueues.values());
-    await Promise.allSettled(inFlight);
+    await Promise.all(inFlight);
   }
 
   handleMissed(
@@ -439,7 +421,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     const stale = this.isStaleAt(task, firedAt);
     const delivered = await this.deliverFire(task, { coalescedCount, firedAt });
     if (delivered && stale && task.recurring !== false) {
-      const removed = this.removeTasks([task.id]);
+      const removed = await this.removeTasks([task.id]);
       if (removed.length > 0) this.emitDeleted(task.id);
     }
     return delivered;
@@ -494,12 +476,12 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     }
   }
 
-  private advanceCursor(id: string, lastFiredAt: number): void {
+  private async advanceCursor(id: string, lastFiredAt: number): Promise<void> {
     const updated = this.markFired(id, lastFiredAt);
     if (updated === undefined) return;
 
     this.dispatchCron(new CronCursor({ id, lastFiredAt }));
-    void this.persistEnqueue(id, () =>
+    await this.persistEnqueue(id, () =>
       this.store.save(this.ctx.workspaceId, updated),
     );
   }
@@ -655,7 +637,6 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     const next = prev
       .catch(() => {})
       .then(() => work())
-      .catch(() => {})
       .finally(() => {
         if (this.persistQueues.get(id) === next) {
           this.persistQueues.delete(id);

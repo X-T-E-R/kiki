@@ -24,6 +24,7 @@ export interface McpOutputOptions {
   readonly originalsDir?: string;
   readonly telemetry?: ITelemetryService;
   readonly providerType?: string;
+  readonly preserveStructuredContent?: boolean;
 }
 
 export const MCP_MAX_BINARY_PART_BYTES = 10 * 1024 * 1024;
@@ -174,7 +175,8 @@ export async function mcpResultToExecutableOutput(
     part.type === 'text' ? part.text.trim().length > 0 : true,
   );
   const structuredExtras: Record<string, unknown> = {};
-  if (result.structuredContent !== undefined && !hasUsableContent) {
+  if (result.structuredContent !== undefined &&
+      (options.preserveStructuredContent === true || !hasUsableContent)) {
     structuredExtras['structuredContent'] = result.structuredContent;
   }
   if (result._meta !== undefined) {
@@ -184,7 +186,7 @@ export async function mcpResultToExecutableOutput(
     }
   }
   if (Object.keys(structuredExtras).length > 0) {
-    const serialized = serializeStructuredExtras(structuredExtras);
+    const serialized = serializeStructuredExtras(structuredExtras, options.preserveStructuredContent);
     if (serialized !== undefined) {
       wrapped.push({
         type: 'text',
@@ -349,9 +351,9 @@ async function saveAttachment(
   return { path, reference: buildDaemonFileUrl(fileId) };
 }
 
-function serializeStructuredExtras(extras: Record<string, unknown>): string | undefined {
+function serializeStructuredExtras(extras: Record<string, unknown>, preserve?: boolean): string | undefined {
   try {
-    return JSON.stringify(extras).replaceAll('</mcp-result-extras>', '');
+    return JSON.stringify(extras).replaceAll('</mcp-result-extras>', preserve === true ? '\\u003c/mcp-result-extras>' : '');
   } catch {
     return undefined;
   }

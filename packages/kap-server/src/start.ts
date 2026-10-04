@@ -90,6 +90,21 @@ import {
 } from './middleware/hostnames';
 import { createOriginHook, isOriginAllowed, parseCorsOrigins } from './middleware/origin';
 import { createSecurityHeadersHook } from './middleware/securityHeaders';
+import { createKimiDeviceId } from '@kiki/oauth';
+import { CONNECTION_PROTOCOL } from '@kiki/protocol';
+import { loadOrCreateLocalOwnerToken } from './services/auth/localOwner';
+import { ConnectionAdmission, AdmissionError } from './services/connections/admission';
+import { ConnectionAudience, peerGrant, isWebPathAllowed } from './services/connections/audience';
+import { WebAccess, webPrincipal, setWebPrincipal, type WebPrincipal } from './services/webAccess';
+import { startWebListener } from './webListener';
+import { registerWebAccessRoutes } from './routes/webAccess';
+import { IBootstrapService } from '@kiki/agent-core-v2';
+import { registerSpaceThreadBridge, isSpaceThreadBridgeDataRequest, authorizeSpaceThreadBridgeRequest, type SpaceThreadBridge } from './services/threadBridge/bridge';
+import { RemoteConnectionManager } from './services/connections/manager';
+import { SshRemoteConnector } from './services/sshRemote/connector';
+import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
+import { SpaceSummaryProjection } from './services/connections/spaceSummary';
+import { resolveLocalSpaceTransport } from './services/connections/localSpace';
 import { createAuthHook } from './middleware/auth';
 import { GuiStoreService } from './services/guiStore/guiStoreService';
 import { TranscriptService } from './services/transcript/transcriptService';
@@ -128,6 +143,8 @@ import {
   drainModelPricingDisposals,
   IModelPricingService,
 } from './pricing/modelPricingService';
+import { UsageExportRuntime } from './usage/export/runtime';
+import { registerUsageExportRoutes } from './routes/usageExport';
 
 export interface ServerHostIdentity extends KimiHostIdentity {
   /** Fills the `${product_name}` slot in the base system prompt. Defaults render the CLI text. */
@@ -156,6 +173,7 @@ export interface ServerStartOptions {
    * means the marketplace is unconfigured and is not fetched.
    */
   readonly pluginMarketplaceUrl?: string;
+  readonly browserDriverPath?: string;
   readonly configPath?: string;
   readonly modelAccountHomeDir?: string;
   readonly configReadOnly?: boolean;
@@ -177,6 +195,7 @@ export interface ServerStartOptions {
   readonly allowRemoteShutdown?: boolean;
   readonly authTokenService?: IAuthTokenService;
   readonly disableAuth?: boolean;
+  readonly sshRemoteConnector?: SshRemoteConnector;
   /**
    * Custom browser tab title for this web UI instance (the CLI's
    * `--web-title`). Surfaced as `web_title` in `GET /api/meta` so the web
@@ -237,6 +256,9 @@ export interface RunningServer {
   readonly core: Scope;
   readonly connectionRegistry: IConnectionRegistry;
   readonly authTokenService: IAuthTokenService;
+  readonly localOwnerToken: string;
+  readonly admission: ConnectionAdmission;
+  readonly remoteConnections: RemoteConnectionManager;
   readonly serverId: string;
   readonly host: string;
   readonly port: number;
@@ -259,11 +281,14 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   )) {
     throw new Error('SSH-managed servers require loopback, persistent bearer authentication, and no debug or idle shutdown');
   }
-  const serverHomeId = host === '127.0.0.1' && opts.disableAuth !== true &&
-    opts.authTokenService === undefined && opts.rpcToken === undefined
-    ? await loadOrCreateServerHomeId(homeDir, opts.sshManaged === true)
-    : undefined;
+  const serverHomeId = await loadOrCreateServerHomeId(homeDir, opts.sshManaged === true);
+  const localOwnerToken = await loadOrCreateLocalOwnerToken(homeDir);
+  const connectionIdentity = { homeId: serverHomeId, hostId: createKimiDeviceId(homeDir), protocol: CONNECTION_PROTOCOL } as const;
+  const admission = new ConnectionAdmission(homeDir, connectionIdentity, opts.disableAuth === true ? 'dangerous_auth_bypass' : undefined);
   const serverVersion = opts.serverVersion ?? getServerVersion();
+  const sshRemote = opts.sshRemoteConnector ?? new SshRemoteConnector({ serverVersion });
+  const remoteConnections = new RemoteConnectionManager(homeDir, connectionIdentity, sshRemote, (spaceId, target, signal) => resolveLocalSpaceTransport(core, spaceId, target, signal));
+  await Promise.all([admission.ready(), remoteConnections.ready()]);
   const buildId = opts.buildId ?? process.env['KIKI_BUILD_ID'];
   const buildChannel = opts.buildChannel ?? process.env['KIKI_BUILD_CHANNEL'];
   const startedAt = Date.now();
@@ -308,12 +333,14 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     authTokenService = opts.authTokenService;
   } else {
     const tokenStore = await createTokenStore(homeDir, { managed: opts.sshManaged === true });
-    managedTokenStore = opts.sshManaged === true ? tokenStore : undefined;
+    managedTokenStore = tokenStore;
     const passwordHash = opts.sshManaged === true ? undefined : await resolvePasswordHash();
     passwordConfigured = passwordHash !== undefined;
     authTokenService = createAuthTokenService({ tokenStore, passwordHash });
   }
   const validateCredential = createCredentialValidator(authTokenService, opts.rpcToken);
+  const audience = new ConnectionAudience(admission, localOwnerToken, validateCredential, () => core.accessor.get(IBootstrapService).spaceId ?? 'main');
+  let threadBridge: SpaceThreadBridge | undefined;
   const logging = resolveLoggingConfig({ homeDir, env: process.env });
   const navigationDb = HistoryNavigationDb.lazy(join(homeDir, 'server', 'history-navigation.sqlite'));
   let locator: HistoryLocatorStore | undefined;
@@ -335,6 +362,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
           ...opts.hostIdentity,
         }),
         skillDirs: opts.skillDirs,
+        browserDriverPath: opts.browserDriverPath,
         userSkillDir: opts.userSkillDir,
         displayName: opts.hostIdentity.displayName,
         replyStyleGuide: opts.hostIdentity.replyStyleGuide,
@@ -358,6 +386,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     }
   }
   await core.accessor.get(IModelPricingService).ready;
+  const usageExport = core.accessor.get(IFlagService).enabled('usage_export') ? new UsageExportRuntime(core, homeDir) : undefined;
 
   const runPostListenWarmup = async (): Promise<void> => {
     try {
@@ -387,6 +416,11 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     disableRequestLogging: true,
     genReqId: (req) => resolveRequestId(req.headers),
   }) as unknown as FastifyInstance;
+  const webRequests = new WeakSet<IncomingMessage>();
+  const web = new WebAccess(homeDir, serverHomeId, (input) => {
+    if (opts.sshManaged === true || opts.disableAuth === true) throw new AdmissionError(403, 'web_access_unavailable');
+    return startWebListener(app, input, webRequests);
+  });
   let seatResolver!: SeatResolver;
   const seatDelegationAuth = exposureClass === 'loopback'
     ? createSeatKlientDelegationAuth(() => seatResolver)
@@ -405,27 +439,63 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     disable: opts.sshManaged === true ? false : opts.disableHostCheck ?? isHostCheckDisabled(),
   });
   const allowedOrigins = opts.sshManaged === true ? [] : opts.corsOrigins ?? parseCorsOrigins();
-  app.addHook('onRequest', hostCheck.onRequest);
+  app.addHook('onRequest', async (request, reply) => {
+    if (webRequests.has(request.raw) && (!web.status().enabled || !web.hostAllowed(request.headers.host))) return reply.code(403).send({ code: 40101, msg: 'web_host_not_allowed' });
+    if (!web.hostAllowed(request.headers.host)) return hostCheck.onRequest(request, reply);
+  });
   app.addHook('onRequest', createOriginHook({ allowedOrigins }));
-  if (opts.disableAuth !== true) {
-    app.addHook(
-      'onRequest',
-      createAuthHook(authTokenService, {
-        bypassSeatDelegation: exposureClass === 'loopback',
-        limiter: authFailureLimiter,
-        validateCredential,
-      }),
-    );
-  } else {
+  const authHook = createAuthHook(authTokenService, {
+    bypassSeatDelegation: exposureClass === 'loopback',
+    limiter: authFailureLimiter,
+    validateCredential,
+    authorizeCookie: async (request, reply) => {
+      try {
+        const principal = web.authenticate(request.raw);
+        const path = decodeURIComponent(request.url.split('?', 1)[0]!);
+        if (!isWebPathAllowed(request.method, path)) throw new AdmissionError(403, 'local_owner_required');
+        setWebPrincipal(request, principal); setWebPrincipal(request.raw, principal);
+        reply.header('set-cookie', web.refreshCookie(request.raw));
+        const detach = web.attach(principal, () => { request.raw.destroy(); reply.raw.destroy(); });
+        reply.raw.once('close', detach);
+        return true;
+      } catch (error) {
+        if (!(error instanceof AdmissionError)) throw error;
+        await reply.code(error.status).send({ code: 40101, msg: error.reason }); return false;
+      }
+    },
+    authorizeRequest: async (token, request, reply) => {
+      if (isSpaceThreadBridgeDataRequest(request)) {
+        if (threadBridge === undefined) { await reply.code(503).send({ code: 40101, msg: 'bridge_unavailable' }); return false; }
+        return authorizeSpaceThreadBridgeRequest(threadBridge, token, request, reply);
+      }
+      return audience.authorize(token, request, reply);
+    },
+  });
+  app.addHook('onRequest', async (request, reply) => {
+    let path: string;
+    try { path = decodeURIComponent(request.url.split('?', 1)[0]!); } catch { return authHook(request, reply); }
+    if (path.startsWith('/api/web-access')) reply.header('cache-control', 'no-store');
+    if (request.headers.authorization === undefined && ((path === '/api/web-access/session' && request.method === 'GET') || (['/api/web-access/exchange', '/api/web-access/logout'].includes(path) && request.method === 'POST'))) return;
+    if (webRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
+    const d24 = /^\/api\/(?:web-access|remote-connections|thread-bridges|thread-bridge|usage-export)(?:\/|$)/.test(path);
+    if (opts.disableAuth !== true || d24 || peerGrant(request.headers) !== undefined) return authHook(request, reply);
+  });
+  if (opts.disableAuth === true) {
     logger.warn(
       { host, exposureClass },
-      'DANGEROUS: bearer-token auth is DISABLED (--dangerous-bypass-auth) — every REST and WebSocket route accepts unauthenticated requests',
+      'DANGEROUS: legacy REST and WebSocket authentication is disabled; connection management still requires local owner and peer admission is unavailable',
     );
   }
   if (exposureClass !== 'loopback') {
     app.addHook('onSend', createSecurityHeadersHook({ tls: false }));
   }
 
+  app.addHook('onSend', async (request, reply, payload) => {
+    if (webPrincipal(request) !== undefined || request.url.startsWith('/api/web-access') || reply.statusCode === 401 || reply.statusCode === 403) reply.header('cache-control', 'no-store');
+    reply.header('x-content-type-options', 'nosniff');
+    return payload;
+  });
+  registerWebAccessRoutes(app, web);
   const shutdownController = new AbortController();
   app.addHook('onResponse', async () => {
     if (shutdownController.signal.aborted) app.server.closeIdleConnections();
@@ -445,6 +515,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     if (idleTimer !== undefined) clearInterval(idleTimer);
     if (authMonitor !== undefined) clearInterval(authMonitor);
     const closeErrors: unknown[] = [];
+    try { await web.close(); } catch (error) { closeErrors.push(error); }
     try {
       leaseRegistry.dispose();
     } catch (error) {
@@ -705,6 +776,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     transcriptService,
     leaseRegistry,
     onWorkspaceServed: (workspace) => registration.update({ workspaces: [workspace] }),
+    onWorkspaceRemoved: (workspace) => registration.update({ removedWorkspaces: [workspace] }),
     dangerousBypassAuth: opts.disableAuth === true,
     externalDelegation: externalDelegationState,
     apiV2: {
@@ -757,8 +829,14 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     sessionViewBroadcaster: broadcaster,
     sessionViewTranscriptService: transcriptService,
   });
+  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote);
+  threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal);
+  if (usageExport !== undefined) { registerUsageExportRoutes(app, usageExport.service); app.addHook('preClose', () => usageExport.close()); }
+  const spaceSummary = new SpaceSummaryProjection(core);
+  app.get('/api/space-summary', async (_request, reply) => reply.send({ code: 0, msg: 'OK', data: spaceSummary.read() }));
+  app.addHook('onClose', () => spaceSummary.dispose());
   const wssV1 = registerWsV1(core, {
-    validateCredential,
+    validateCredential: (token) => audience.authorizeSocket(token, { url: WS_PATH_V1, headers: {} } as IncomingMessage).then(() => true, () => false),
     registry: connectionRegistry,
     broadcaster,
     fsWatchBridge,
@@ -772,7 +850,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       const next = managedTokenStore.generation();
       if (next === authGeneration) return;
       authGeneration = next;
-      for (const socket of [...wssV1.clients, ...wssKlient.clients]) {
+      admission.closeAll();
+      for (const socket of [...wssV1.clients, ...wssKlient.clients, ...wssKlient.peerServer.clients, ...wssBroker.clients]) {
         if (wsAuthGeneration.get(socket) !== next) socket.close(4001, 'server authentication changed');
       }
     }, 250);
@@ -787,12 +866,13 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     const url = req.url ?? '';
     const isV1 = url === WS_PATH_V1 || url.startsWith(`${WS_PATH_V1}?`);
     const isKlient = url === KLIENT_EVENTS_PATH || url.startsWith(`${KLIENT_EVENTS_PATH}?`);
-    if (!isV1 && !isKlient) {
+    const isBroker = CONNECTION_BROKER_WS.test(url);
+    if (!isV1 && !isKlient && !isBroker) {
       socket.destroy();
       return;
     }
 
-    if (!hostCheck.isAllowed(req.headers.host)) {
+    if ((webRequests.has(req) && (!web.status().enabled || !web.hostAllowed(req.headers.host))) || (!web.hostAllowed(req.headers.host) && !hostCheck.isAllowed(req.headers.host))) {
       logger.warn(
         { remoteAddress: req.socket.remoteAddress, path: url, reason: 'host_not_allowed' },
         'ws upgrade rejected',
@@ -812,52 +892,42 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     }
 
     const admittedGeneration = managedTokenStore?.generation();
-    if (opts.disableAuth !== true) {
-      const authHeader = req.headers.authorization;
-      const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : null;
+    let admitted: Awaited<ReturnType<ConnectionAudience['authorizeSocket']>> = 'local';
+    let browser: WebPrincipal | undefined;
+    if (opts.disableAuth !== true || isBroker || peerGrant(req.headers) !== undefined) {
+      const header = req.headers.authorization;
       const protocolToken = extractWsBearerToken(req.headers['sec-websocket-protocol']);
-      const candidate = bearerToken !== null && bearerToken.length > 0 ? bearerToken : protocolToken;
-      let ok = false;
-      if (candidate !== null) {
-        try {
-          ok = await validateCredential(candidate);
-        } catch (error) {
-          logger.warn(
-            {
-              err: error,
-              remoteAddress: req.socket.remoteAddress,
-              path: url,
-              reason: 'credential_validation_error',
-            },
-            'ws upgrade rejected',
-          );
-          ok = false;
-        }
-      }
-      if (!ok || (admittedGeneration !== undefined && admittedGeneration !== managedTokenStore?.generation())) {
-        logger.warn(
-          {
-            remoteAddress: req.socket.remoteAddress,
-            path: url,
-            reason: candidate === null ? 'missing_credential' : 'invalid_credential',
-          },
-          'ws upgrade rejected',
-        );
-        (socket as Socket).write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
-        (socket as Socket).destroy();
+      const hasBearerProtocol = req.headers['sec-websocket-protocol']?.split(',').some((entry) => entry.trim().startsWith('kimi-code.bearer.')) === true;
+      const candidate = header === undefined ? hasBearerProtocol ? protocolToken ?? '' : null : header.startsWith('Bearer ') ? header.slice(7) : '';
+      try {
+        if (header === undefined && !hasBearerProtocol) {
+          web.requireOrigin(req); browser = web.authenticate(req); setWebPrincipal(req, browser);
+        } else admitted = await audience.authorizeSocket(candidate, req);
+        if (isBroker && admitted !== 'local') throw new AdmissionError(403, 'local_owner_required');
+        if (admittedGeneration !== undefined && admittedGeneration !== managedTokenStore?.generation()) throw new AdmissionError(401, 'authentication_changed');
+      } catch (error) {
+        const status = error instanceof AdmissionError ? error.status : 401;
+        (socket as Socket).write(`HTTP/1.1 ${status} Unauthorized\r\nConnection: close\r\n\r\n`);
+        socket.destroy();
         return;
       }
     }
-
     (socket as Socket).setNoDelay(true);
-    const wss = isV1 ? wssV1 : wssKlient;
+    const wss = isBroker ? wssBroker : isV1 ? wssV1 : admitted === 'local' ? wssKlient : wssKlient.peerServer;
     wss.handleUpgrade(req, socket, head, (ws) => {
       if (admittedGeneration !== undefined) {
         wsAuthGeneration.set(ws, admittedGeneration);
-        if (admittedGeneration !== managedTokenStore?.generation()) {
-          ws.close(4001, 'server authentication changed');
-          return;
-        }
+        if (admittedGeneration !== managedTokenStore?.generation()) { ws.close(4001, 'server authentication changed'); return; }
+      }
+      if (browser !== undefined) {
+        const detach = web.attach(browser, () => ws.terminate()); ws.once('close', detach);
+        if (ws.readyState !== 1) return;
+      }
+      if (admitted !== 'local') {
+        const detach = admission.attach(admitted.grantId, () => { ws.terminate(); });
+        ws.once('close', detach);
+        try { admission.authorize((req.headers['x-kiki-connection-grant'] as string | undefined) ?? req.headers['sec-websocket-protocol']?.split(',').find((p) => p.trim().startsWith('kiki.grant.'))?.trim().slice(11)); }
+        catch { ws.close(4001, 'connection revoked'); return; }
       }
       wss.emit('connection', ws, req);
     });
@@ -914,6 +984,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
 
   await registration.update({ port: boundPort });
+  try { await web.ready(); } catch (error) { await close(); throw error; }
+  remoteConnections.start();
+  usageExport?.start();
   try {
     core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService);
   } catch (error) {
@@ -942,7 +1015,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
           session.accessor.get(ISessionActivityView).state(),
           session.accessor.get(ISessionInteractionService).listPending('user_tool').length,
         ));
-      if (leaseRegistry.activeCount() > 0 || busy) {
+      if (web.status().enabled || leaseRegistry.activeCount() > 0 || admission.activeCount() > 0 || remoteConnections.activeCount() > 0 || busy) {
         idleSince = Date.now();
         return;
       }
@@ -958,6 +1031,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     core,
     connectionRegistry,
     authTokenService,
+    localOwnerToken,
+    admission,
+    remoteConnections,
     serverId: registration.serverId,
     host,
     port: boundPort,

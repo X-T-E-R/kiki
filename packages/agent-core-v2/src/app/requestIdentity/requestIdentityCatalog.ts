@@ -24,17 +24,20 @@ import { Error2 } from '#/_base/errors/errors';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import {
+  DEFAULT_PROVIDER_SECTION,
   MODELS_SECTION,
   PROVIDERS_SECTION,
   REQUEST_IDENTITY_SECTION,
 } from '#/app/kosongConfig/configSection';
 import type { ModelsSection } from '#/kosong/model/model';
+import { resolveModelProviderId } from '#/kosong/model/modelAuth';
 import type { ProvidersSection } from '#/kosong/provider/provider';
 import { LifecycleScope } from '#/app/scopes';
 import type { Protocol } from '#/kosong/protocol/protocol';
 import { RequestIdentityErrors } from '#/kosong/requestIdentity/errors';
 import {
   builtinRequestIdentityProfileAxes,
+  defaultOAuthRequestIdentity,
   registerRequestIdentityProfileLookup,
   requestIdentityToWire,
   resolveRequestIdentityLayersWith,
@@ -211,14 +214,14 @@ export class RequestIdentityCatalog extends Disposable implements IRequestIdenti
     const models = this.config.get<ModelsSection | undefined>(MODELS_SECTION) ?? {};
     const rows: RequestIdentityUsage[] = [this.usageRow({ scope: 'global', label: 'global' }, [global])];
     for (const [providerId, provider] of Object.entries(providers)) {
-      rows.push(this.usageRow({ scope: 'provider', provider_id: providerId, label: providerId }, [global, provider.requestIdentity]));
+      rows.push(this.usageRow({ scope: 'provider', provider_id: providerId, label: providerId }, [defaultOAuthRequestIdentity(provider), global, provider.requestIdentity]));
     }
     for (const [modelId, model] of Object.entries(models)) {
-      const providerId = model.provider ?? model.providerId;
+      const providerId = resolveModelProviderId(model, this.config.get<string | undefined>(DEFAULT_PROVIDER_SECTION));
       const provider = providerId === undefined ? undefined : providers[providerId];
       rows.push(this.usageRow(
         { scope: 'model', provider_id: providerId, model_id: modelId, label: model.displayName ?? modelId },
-        [global, provider?.requestIdentity, model.requestIdentity],
+        [defaultOAuthRequestIdentity(provider), global, provider?.requestIdentity, model.requestIdentity],
       ));
     }
     return rows;

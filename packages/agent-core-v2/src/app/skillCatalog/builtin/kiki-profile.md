@@ -11,7 +11,7 @@ For a character's identity, voice, greetings, dialogue examples or avatar, load 
 
 ## Where profiles live
 
-Kiki discovers profile files by scope; more specific scopes win on a name collision: **Explicit (`--agent-file` / `profile_file`) > Project > Extra > User > Built-in copies > Plugin**.
+Kiki discovers profile files by scope; more specific scopes win on a name collision: **Explicit (`--agent-file`) > Project > Extra > User > Built-in copies > Plugin**. Separately, `AgentRun.profile_file` parses a new role definition for that dispatch; it does not register or replace a catalog preset.
 
 | Scope | Location |
 | --- | --- |
@@ -42,7 +42,7 @@ thinking_effort: high
 preferred_efforts: [high]
 tools: [Read, Grep, Glob]
 disallowedTools: [Bash]
-subagents: [explore]
+preferred_subagents: [explore]
 ---
 
 You are a strict code reviewer. Read the diff, then report findings grouped by severity…
@@ -86,9 +86,11 @@ The body is rendered as a template on every prompt build. Useful variables: `${s
 | `preferred_efforts` | **Soft** effort recommendations; deviations continue with `effort_not_preferred`, without lowering effort |
 | `spawn_constraints` | Descendant rules: hard `allowed_models`, `deny_models`, `allowed_efforts`, `disallowed_tools`; soft `preferred_models`, `discouraged_models`, `preferred_efforts`. No model/effort pins |
 | `model_profiles` | Per-alias recipes: required `alias`; optional `when`, `thinking_effort`, all six hard/soft list fields, `prompt_mode` (`prepend`/`append`/`wrap`), `prompt`, `prompt_overrides`, request fields and budgets. `when` guides dispatch, not automatic selection; defaults use the first match, hard lists from all matching entries apply, including when a lease replaces their defaults |
-| `tools` / `disallowedTools` | Omit `tools` or use a lone `*` for no added allowlist; `tools: []` disables all tools. Other policy limits still apply; `mcp__server__*` globs match MCP; deny applies after allow |
+| `tools` / `disallowedTools` | Omit `tools`, use a lone `*`, or pair `*` with names for no added allowlist; `tools: []` disables all tools. A concrete name also opts that one tool in for this profile as a subagent, so `["*", ThreadRead]` keeps the ordinary tools; `*` alone opts in nothing and crosses no deny. A subagent tool opt-in holds when either this list or the server-wide `allowed_tools` names the tool, and a finite `tools` list then filters it: a tool the list leaves out stays blocked even if the server opens it, which is why the unrestricted form is `["*", ThreadRead]` rather than a bare name. `disallowedTools` still denies either. Other policy limits still apply; `mcp__server__*` globs match MCP; deny applies after allow |
 | `disabled-tool-groups` | Withhold built-in groups such as `shell` or `web`; a tool named in `tools` survives unless explicitly denied |
-| `subagents` / `subagent_policy` | Recommended child roles; global strict enforces a declared list (`[]` = no new children), advisory records deviations. Omit or `*` for no named restriction. Legacy `strict` can tighten advisory; legacy `advisory` cannot lower global strict |
+| `preferred_subagents` | Soft preset-role recommendations; other visible, hard-permitted presets remain available with an advisory. Does not select a default or grant access; `[]` clears preference |
+| `allowed_subagents` / `deny_subagents` | Hard preset selection boundaries, including routes by base role and scoped aliases. Omit / `null` adds no layer restriction; allowed `[]` permits no presets, not a full leaf. Allowed `*` leaves the layer open while retaining name/source/lease mappings; deny `*` excludes all presets |
+| `can_spawn_subagents` | `false` makes a full leaf: no new preset or Markdown-file children. Omit / `null` adds no closure; `true` cannot reopen a base or lease's `false`. Existing children can still resume |
 | `executor` | Omit for the native engine. External IDs are built in or configured under `[agent_executors.<id>]` in `config.toml`. For an external main agent, `allow_kiki_subagents: true` enables Kiki delegation over local stdio MCP |
 | `service_tier` | `auto`, `default`, `flex`, or `priority` |
 | `request_params` | Scalar map (string/number/boolean) sent with every request |
@@ -96,9 +98,13 @@ The body is rendered as a template on every prompt build. Useful variables: `${s
 | `prompt_overrides` | Field-level prompt overrides; see below |
 | `delegation_notice` | For native execution, `auto` (default) injects a position-based handoff notice for subagents or independent host agents unless `[agents.delegation] sub = false` / `independent = false`; main binds never inject it; `off` skips it. External prompt composition uses `executor_prompt`; its default `include: []` adds no delegation notice automatically |
 
-Apply model/effort lists consistently across profile, caller lease, `spawn_constraints`, and matching `model_profiles` entries. Allowsets intersect; denials accumulate. Advisory role dispatch, explicit pins, manual selections, and resume cannot bypass hard rules. Global role policies (`[subagent].main_dispatch_policy = "advisory"`, `subagent_dispatch_policy = "strict"` by default) are independent of model enforcement; prefer those global controls for new configuration.
+For child-role guidance, prefer `preferred_subagents`; write hard preset boundaries only when the user requests them. Across base profile, route and caller lease, allowed preset sets intersect, denials accumulate and `false` remains closed; the nearest explicit preference replaces earlier recommendations. `allowed_subagents` may mix `"*"`, bare names and name/source/lease mappings: normalize the open domain, retain mappings and ignore repeated bare names. Two mappings for one alias are ambiguous and fail validation.
 
-Hard allowlists accept YAML lists or comma-separated strings: omitted / `null` or a lone `"*"` adds no restriction; `[]` permits nothing. Never mix `*` with names, and never use wildcards in deny/discouraged lists. Empty deny lists forbid nothing. Soft lists do not select models or grant provider capabilities; even an empty intersection of preferences only advises. Hard violations return `profile.constraint_violation` without silently switching model or lowering effort: select a permitted value, or ask the user to revise the hard rule, then retry. A rejected resume keeps the saved binding unchanged.
+An explicit `profile_file` supplies a new definition without preset registration. Its `name` does not make it a same-name preset, so caller preset allow/deny lists and same-name leases do not apply. Do not copy the caller's preset selection list into the file child's downstream rules. Keep the file's own rules and the actual inherited model/tool/workspace/path boundaries. To prohibit every new child, write `can_spawn_subagents: false`; `allowed_subagents: []` prohibits only presets. Neither gate retargets or disables existing-child resume.
+
+Old author keys `subagents` / `subagent_policy` and host `main_dispatch_policy` / `subagent_dispatch_policy` are removed. Migrate advice-only names to `preferred_subagents`, true preset boundaries to `allowed_subagents` / `deny_subagents`, and old leaf roles to `can_spawn_subagents: false`. Keep source/lease mappings under `allowed_subagents`; do not alter model recipes, tools or prompt bodies as a side effect. Saved bindings upgrade without reselecting identity, model, source or prompt. Structured updates preserve omitted fields; `null` deletes a declaration and `[]` writes an explicit empty list.
+
+Apply model/effort lists across profile, caller lease, `spawn_constraints`, and matching `model_profiles` entries. Allowsets intersect; denials accumulate. Preset preferences, explicit pins, manual selections, and resume cannot bypass hard rules. Model hard allowlists accept YAML lists or comma-separated strings: omitted / `null` or a lone `"*"` adds no restriction, `[]` permits nothing, and mixed wildcards are invalid. Model deny/discouraged lists do not accept wildcards. Soft model lists do not select models or grant capabilities. Hard model violations return `profile.constraint_violation` without changing the saved binding or silently selecting an alternative.
 
 With `restrict_models_to_menu` off, the menu is not exhaustive; other hard rules still apply. With it on, only the original default and declared menu are candidates. The default needs no duplicate entry. Route / lease pins, explicit choices, saved bindings, and lease menu replacements cannot expand the frozen domain; replacing entries with a subset or an empty list does not narrow it either — use a hard allowlist to narrow it. Original entry hard rules remain.
 

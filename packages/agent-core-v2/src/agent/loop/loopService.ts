@@ -51,6 +51,7 @@ import {
   createMaxStepsExceededError,
   IAgentLoopService,
   isMaxStepsExceededError,
+  TurnPersistenceError,
   type AfterStepContext,
   type BeforeStepContext,
   type AgentLoopStatus,
@@ -119,6 +120,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private readonly settleWaiters: Array<() => void> = [];
   private quiescenceDepth = 0;
   private activeRequestTrace: LLMRequestTrace | undefined;
+  private finalization: { readonly turn: Turn; readonly result: TurnResult; readonly event: TurnEnded; error?: unknown } | undefined;
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -187,7 +189,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     void assignment.catch(() => undefined);
     this.pendingAssignments.set(request, assignment);
 
-    if (this.quiescenceDepth > 0) {
+    if (this.quiescenceDepth > 0 || this.finalization !== undefined) {
       if (options?.at === 'head') this.heldAdmissions.unshift({ request, options });
       else this.heldAdmissions.push({ request, options });
     } else {
@@ -241,6 +243,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     return {
       state: this.activeTurnJob === undefined ? 'idle' : 'running',
       activeTurnId: this.activeTurnJob?.turn.id,
+      finalizing: this.finalization !== undefined,
+      persistenceFailure: this.finalization?.error === undefined ? undefined : {
+        executionOutcome: this.finalization.result.type, message: toErrorMessage(this.finalization.error),
+      },
       lastTurnResult: this.lastTurnResult,
       pendingTurnIds: this.pendingTurns.map((job) => job.turn.id),
       hasPendingRequests: this.hasPendingRequests(),
@@ -311,7 +317,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private cancelActiveTurn(turnId: number | undefined, cancellation: unknown): boolean {
     const job = this.activeTurnJob;
     if (job === undefined || (turnId !== undefined && job.turn.id !== turnId)) return false;
-    if (job.controller.signal.aborted) return true;
+    if (job.controller.signal.aborted || this.finalization?.turn === job.turn) return true;
     void this.dispatcher.dispatch(
       new TurnCancel({ turnId: job.turn.id, target: 'active', reason: cancelReasonFor(cancellation) }),
     );
@@ -547,7 +553,6 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       return result;
     } finally {
       this.settleTurnReady(ready, result);
-      this.releaseActiveTurn(turn, result);
       releaseCapacity?.();
       const traceId =
         result?.type === 'completed'
@@ -558,9 +563,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         const interruptReason =
           result.type === 'completed' ? undefined : interruptReasonFor(result);
         const durationMs = Date.now() - startedAt;
-        void this.dispatcher.dispatch(
-          new TurnEnded({ turnId: turn.id, reason: result.type, error, durationMs, interruptReason }),
-        );
+        this.finalization = { turn, result, event: new TurnEnded({ turnId: turn.id, reason: result.type, error, durationMs, interruptReason }) };
         if (error !== undefined) void this.dispatcher.dispatch(new AgentErrorEvent(error));
         if (interruptReason !== undefined) {
           const interrupted: TurnInterruptedEvent = {
@@ -587,18 +590,32 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         trace_id: traceId,
       };
       turnTelemetry.track2('turn_ended', ended);
-      const flushQueuedWireRecordsBeforeTurnExit = async (): Promise<void> => {
-        try {
-          await this.dispatcher.flush();
-        } catch (flushError) {
-          onUnexpectedError(flushError);
-        }
-      };
-      await flushQueuedWireRecordsBeforeTurnExit();
+      if (!(await this.recoverPersistence())) {
+        throw new TurnPersistenceError(turn.id, result ?? { type: 'failed', steps: 0, error: this.finalization?.error }, this.finalization?.error);
+      }
+    }
+  }
+
+  async recoverPersistence(): Promise<boolean> {
+    const finalization = this.finalization;
+    if (finalization === undefined) return true;
+    try {
+      await this.dispatcher.dispatchDurably(finalization.event);
+    } catch (error) {
+      finalization.error = error;
+      onUnexpectedError(error);
+      return false;
+    }
+    if (this.finalization !== finalization) return true;
+    this.finalization = undefined;
+    if (this.activeTurnJob?.turn === finalization.turn) {
       this.activeRequestTrace = undefined;
       this.lastRequestTraceId = undefined;
-      this.pumpTurns();
     }
+    this.quiescenceDepth += 1;
+    this.releaseActiveTurn(finalization.turn, finalization.result);
+    this.releaseQuiescence();
+    return true;
   }
 
   private resultFromTurnError(turn: Turn, error: unknown): TurnResult {
@@ -1128,7 +1145,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           type: 'tool.result',
           parentUuid: toolCallUuids.get(toolResult.toolCallId) ?? randomUUID(),
           toolCallId: toolResult.toolCallId,
-          result: { output: result.output, isError: result.isError, note: result.note },
+          result: { output: result.output, isError: result.isError, note: result.note, memoryReceipt: result.memoryReceipt,
+            fileRead: result.fileRead === undefined ? undefined : { ...result.fileRead, truncated: result.truncated === true || result.fileRead.truncated } },
         });
         await this.hooks.onDidAppendToolResult.run({
           toolCallId: toolResult.toolCallId,

@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { modelBehaviorWireSchema, modelBehaviorPatchSchema } from './questionGuard';
+export * from './questionGuard';
 
 export const providerCatalogStatusSchema = z.enum([
   'connected',
@@ -104,6 +106,40 @@ export const generationParametersPatchSchema = z.object({
 }).strict();
 export type GenerationParametersPatch = z.infer<typeof generationParametersPatchSchema>;
 
+export const modelUsageParametersSchema = generationParametersSchema.pick({
+  thinking_effort: true, service_tier: true, max_completion_tokens: true,
+}).extend({
+  auto_compact: z.number().int().positive().safe().optional(),
+  context_budget: z.number().int().positive().safe().optional(),
+}).strict();
+export type ModelUsageParametersWire = z.infer<typeof modelUsageParametersSchema>;
+export const modelUsagePolicySchema = z.object({
+  main: modelUsageParametersSchema.optional(),
+  independent: modelUsageParametersSchema.optional(),
+}).strict();
+export type ModelUsagePolicyWire = z.infer<typeof modelUsagePolicySchema>;
+export const modelUsageParametersPatchSchema = generationParametersPatchSchema.pick({
+  thinking_effort: true, service_tier: true, max_completion_tokens: true,
+}).extend({
+  auto_compact: modelUsageParametersSchema.shape.auto_compact.unwrap().nullable().optional(),
+  context_budget: modelUsageParametersSchema.shape.context_budget.unwrap().nullable().optional(),
+}).strict();
+export const modelUsagePolicyPatchSchema = z.object({
+  main: modelUsageParametersPatchSchema.nullable().optional(),
+  independent: modelUsageParametersPatchSchema.nullable().optional(),
+}).strict();
+export type ModelUsagePolicyPatch = z.infer<typeof modelUsagePolicyPatchSchema>;
+export const modelUsageEffectiveSchema = z.object({
+  main: modelUsageParametersSchema,
+  sub: modelUsageParametersSchema,
+  independent: modelUsageParametersSchema,
+});
+export const modelUsageSourcesSchema = z.object({
+  main: z.record(z.string(), z.string()),
+  sub: z.record(z.string(), z.string()),
+  independent: z.record(z.string(), z.string()),
+});
+
 export const imageMimeSchema = z.preprocess(
   (value) => {
     if (typeof value !== 'string') return value;
@@ -161,6 +197,7 @@ export const modelCatalogItemSchema = z.object({
   default_effort: z.string().optional(),
   service_tier: serviceTierSchema.optional(),
   parameters: generationParametersSchema.optional(),
+  behavior: modelBehaviorWireSchema.optional(),
   request_identity: requestIdentityPolicySchema.optional(),
   images: imagePolicySchema.optional(),
 });
@@ -258,7 +295,7 @@ export type ModelIssue = z.infer<typeof modelIssueSchema>;
  * uses snake_case; `overrides` keys are the same snake_case model fields.
  */
 const cognitionPathRefSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
-export const modelCognitionSchema = z
+const modelCognitionContentSchema = z
   .object({
     overlay: cognitionPathRefSchema.optional(),
     steering: cognitionPathRefSchema.optional(),
@@ -268,13 +305,42 @@ export const modelCognitionSchema = z
     anchor_scope: z.enum(['session', 'turn']).optional(),
   })
   .strict();
+const modelCognitionBranchSchema = z.union([
+  z.enum(['same', 'off']),
+  modelCognitionContentSchema.refine((value) => Object.values(value).some((field) => field !== undefined), {
+    message: 'Set at least one cognition field or use off',
+  }),
+]);
+export const modelCognitionSchema = modelCognitionContentSchema.extend({
+  main: modelCognitionBranchSchema.optional(),
+  independent: modelCognitionBranchSchema.optional(),
+}).superRefine((value, ctx) => {
+  const hasCommon = Object.entries(value).some(([key, field]) => key !== 'main' && key !== 'independent' && field !== undefined);
+  for (const position of ['main', 'independent'] as const) {
+    if (value[position] === 'same' && !hasCommon) {
+      ctx.addIssue({ code: 'custom', path: [position], message: 'same requires common cognition fields' });
+    }
+  }
+});
 export type ModelCognitionWire = z.infer<typeof modelCognitionSchema>;
-export const modelPromptOverridesSchema = z
-  .object({
-    files: z.array(z.string().trim().min(1)).optional(),
-    fields: z.record(z.string(), z.string()).optional(),
-  })
-  .strict();
+const modelPromptOverrideContentSchema = z.object({
+  files: z.array(z.string().trim().min(1)).optional(),
+  fields: z.record(z.string(), z.string()).optional(),
+}).strict();
+const hasOverrideContent = (value: z.infer<typeof modelPromptOverrideContentSchema>): boolean =>
+  (value.files?.length ?? 0) > 0 || Object.keys(value.fields ?? {}).length > 0;
+const modelPromptOverrideBranchSchema = z.union([
+  z.enum(['same', 'off']),
+  modelPromptOverrideContentSchema.refine(hasOverrideContent, { message: 'Set files or fields, or use off' }),
+]);
+export const modelPromptOverridesSchema = modelPromptOverrideContentSchema.extend({
+  main: modelPromptOverrideBranchSchema.optional(),
+  independent: modelPromptOverrideBranchSchema.optional(),
+}).superRefine((value, ctx) => {
+  for (const position of ['main', 'independent'] as const) {
+    if (value[position] === 'same' && !hasOverrideContent(value)) ctx.addIssue({ code: 'custom', path: [position], message: 'same requires common files or fields' });
+  }
+});
 export const modelRequestParamsSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
 export const modelOverridesSchema = z.record(z.string(), z.unknown());
 
@@ -304,6 +370,10 @@ export const modelEntitySchema = z.object({
   parameters: generationParametersSchema.optional(),
   effective_parameters: generationParametersSchema,
   parameter_sources: z.record(z.string(), z.string()),
+  behavior: modelBehaviorWireSchema.optional(),
+  usage: modelUsagePolicySchema.optional(),
+  usage_effective: modelUsageEffectiveSchema.optional(),
+  usage_sources: modelUsageSourcesSchema.optional(),
   request_identity: requestIdentityPolicySchema.optional(),
   images: imagePolicySchema.optional(),
   aliases: z.array(z.string()).optional(),
@@ -344,6 +414,8 @@ export const patchModelRequestSchema = z
     adaptive_thinking: z.boolean().nullable().optional(),
     service_tier: serviceTierSchema.nullable().optional(),
     parameters: generationParametersPatchSchema.nullable().optional(),
+    behavior: modelBehaviorPatchSchema.nullable().optional(),
+    usage: modelUsagePolicyPatchSchema.nullable().optional(),
     request_identity: requestIdentityPolicySchema.nullable().optional(),
     images: imagePolicyPatchSchema.nullable().optional(),
     aliases: z.array(z.string().min(1)).nullable().optional(),
@@ -380,6 +452,8 @@ export const createModelRequestSchema = z
     adaptive_thinking: z.boolean().optional(),
     service_tier: serviceTierSchema.optional(),
     parameters: generationParametersSchema.optional(),
+    behavior: modelBehaviorWireSchema.optional(),
+    usage: modelUsagePolicySchema.optional(),
     request_identity: requestIdentityPolicySchema.optional(),
     images: imagePolicySchema.optional(),
   })
@@ -440,6 +514,7 @@ const modelDraftSchema = z.object({
 });
 
 export const createProviderModelSchema = modelDraftSchema.extend({
+  behavior: modelBehaviorWireSchema.optional(),
   request_identity: requestIdentityPolicySchema.optional(),
 });
 export type CreateProviderModel = z.infer<typeof createProviderModelSchema>;

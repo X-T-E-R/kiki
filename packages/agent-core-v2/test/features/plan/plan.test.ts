@@ -585,7 +585,7 @@ describe('Plan service', () => {
       expect(ctx.llmCalls).toHaveLength(1);
       expect(toolResultText(context.get())).toContain('Plan rejected by user');
       expect(toolResultText(context.get())).toContain(
-        'Tool skipped because a previous tool call stopped the turn.',
+        'Tool skipped because a previous tool call stopped this batch.',
       );
     });
 

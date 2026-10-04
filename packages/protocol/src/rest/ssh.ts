@@ -28,6 +28,37 @@ export const sshHostStatusSchema = z.object({
 }).passthrough();
 export type SshHostStatus = z.infer<typeof sshHostStatusSchema>;
 
+export const sshConfigSyncSettingsSchema = z.object({
+  enabled: z.boolean(),
+  source: z.enum(['home', 'base', 'default']),
+});
+export type SshConfigSyncSettings = z.infer<typeof sshConfigSyncSettingsSchema>;
+
+export const sshHostKeysSchema = z.object({
+  hostId: z.string(),
+  workspaceId: z.string().optional(),
+  hostname: z.string(),
+  port: z.number().int().min(1).max(65535),
+  label: z.string(),
+  state: z.enum(['recorded', 'unrecorded', 'unavailable']),
+  records: z.array(z.object({
+    file: z.string(),
+    line: z.number().int().min(1),
+    hostPattern: z.string(),
+    algorithm: z.string(),
+    fingerprint: z.string().optional(),
+    marker: z.string().optional(),
+    status: z.enum(['recorded', 'revoked', 'unsupported', 'invalid']),
+    reason: z.string().optional(),
+  })),
+  files: z.array(z.object({
+    path: z.string(),
+    state: z.enum(['read', 'missing', 'unavailable']),
+    reason: z.string().optional(),
+  })),
+});
+export type SshHostKeys = z.infer<typeof sshHostKeysSchema>;
+
 export const sshHostsResponseSchema = z.object({ hosts: z.array(sshHostSchema) });
 export const sshHostResponseSchema = z.object({ host: sshHostSchema });
 export const sshSessionHostsResponseSchema = z.object({ hosts: z.array(z.object({

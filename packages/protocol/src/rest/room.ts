@@ -21,6 +21,7 @@ export const roomDocumentSchema = z.object({
   members: z.array(roomMemberSchema), host: roomMemberIdSchema, mode: z.literal('mention'),
   budget: roomBudgetSchema, workspace: z.string(), createdAt: z.string(),
   pinned: z.boolean().optional(), archived: z.boolean().optional(),
+  legacyBotGate: z.boolean().optional(),
   generation: z.number().int().nonnegative(), paused: z.boolean(), pauseReason: z.enum(['budget', 'manual']).optional(),
   budgetUsed: z.number().int().nonnegative(), userMessageCount: z.number().int().nonnegative(),
   cursors: z.record(z.string(), z.string().optional()),

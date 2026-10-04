@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import { fetchRoutingConfigSchema, fetchRoutingCapabilitySchema } from '@nb-corp/nb-search/contracts';
+
+export { fetchRoutingConfigSchema, fetchRoutingCapabilitySchema, fetchRouteRuleSchema, fetchRouteDecisionSchema, selectFetchRoute, canonicalFetchUrl, pathMatchesGlob, BUILTIN_FETCH_ROUTE_RULES, FETCH_ROUTING_PACKAGE } from '@nb-corp/nb-search/contracts';
+export type { FetchRoutingConfig, FetchRouteRule, FetchRouteDecision, FetchRoutingCapability } from '@nb-corp/nb-search/contracts';
 
 export const nbSearchSourceConfigSchema = z.object({
   reuse_local_config: z.boolean().default(true),
@@ -42,6 +46,29 @@ export const nbSearchManagedCredentialViewSchema = z.object({
   value: z.string().optional(),
 }).strict();
 export type NbSearchManagedCredentialView = z.infer<typeof nbSearchManagedCredentialViewSchema>;
+
+/** Explicit user request only: even refresh=false can query remote balances on a cold/expired cache. */
+export const nbSearchKeyUsageRequestSchema = z.object({
+  instance_id: z.string().min(1).max(256),
+  refresh: z.boolean().default(false),
+}).strict();
+export const nbSearchKeyUsageViewSchema = z.object({
+  provider_instance_id: z.string(),
+  provider_id: z.string(),
+  balance_supported: z.boolean(),
+  keys: z.array(z.object({
+    key_index: z.number().int().min(1).max(32),
+    state: z.enum(['unknown', 'ready', 'cooldown', 'invalid', 'exhausted']),
+    cooldown_until: z.string().optional(),
+    usage: z.object({
+      scope: z.enum(['key', 'team']), unit: z.literal('credits'),
+      used: z.number().nullable(), limit: z.number().nullable(), remaining: z.number().nullable(),
+      checked_at: z.string(),
+    }).optional(),
+    usage_error: z.enum(['unavailable', 'invalid_response']).optional(),
+  }).strict()),
+}).strict();
+export type NbSearchKeyUsageView = z.infer<typeof nbSearchKeyUsageViewSchema>;
 
 const fetchInputKindSchema = z.enum(['url', 'inline_text', 'inline_bytes', 'file']);
 const fetchRepresentationSchema = z.enum(['markdown', 'text']);
@@ -98,6 +125,17 @@ const fileScopeSchema = z
   })
   .strict();
 
+export const nbSearchConfigurationViewSchema = z.object({
+  lanes: z.record(z.string(), laneConfigSchema),
+  presets: z.record(z.string(), presetConfigSchema),
+  provider_instance_ids: z.array(z.string()),
+  default_search_lane: z.string().optional(),
+  fetch_chains: z.array(fetchChainConfigSchema),
+  routing: fetchRoutingConfigSchema.optional(),
+  file_scopes: z.array(fileScopeSchema),
+});
+export type NbSearchConfigurationView = z.infer<typeof nbSearchConfigurationViewSchema>;
+
 const qualityPatchSchema = z
   .object({
     min_content_chars: z.number().int().min(0).max(10_000_000).optional(),
@@ -153,7 +191,7 @@ export const nbSearchConfigPatchSchema = z
       .optional(),
     presets: z.record(z.string().min(1), presetConfigSchema.nullable()).nullable().optional(),
     fetch: z
-      .object({ file_scopes: z.array(fileScopeSchema).max(64).nullable().optional() })
+      .object({ file_scopes: z.array(fileScopeSchema).max(64).nullable().optional(), routing: fetchRoutingConfigSchema.nullable().optional() })
       .strict()
       .nullable()
       .optional(),
@@ -264,6 +302,8 @@ const fetchPipelineCapabilitySchema = z
 export const nbSearchCapabilitiesSchema = z
   .object({
     config_source: nbSearchConfigSourceStatusSchema.optional(),
+    configuration: nbSearchConfigurationViewSchema.optional(),
+    inherited_configuration: nbSearchConfigurationViewSchema.optional(),
     schema_version: z.literal('3.0'),
     revision: z.string(),
     providers: z
@@ -291,6 +331,7 @@ export const nbSearchCapabilitiesSchema = z
         inputs: z.array(z.object({ kind: fetchInputKindSchema, enabled: z.boolean() }).passthrough()),
         chains: z.array(fetchChainConfigSchema),
         pipelines: z.array(fetchPipelineCapabilitySchema),
+        routing: fetchRoutingCapabilitySchema.optional(),
         limits: z.object({
           max_source_bytes: z.number().int(),
           max_response_bytes: z.number().int(),

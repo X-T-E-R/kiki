@@ -51,7 +51,6 @@ import {
 const READ_MODEL_FLAG = 'persistence_minidb_readmodel';
 const RECONCILE_INTERVAL_MS = 10 * 60_000;
 const DEGRADED_RETRY_MS = 5_000;
-const TIE_REPAIR_LIMIT = 1_000;
 const UNBOUNDED = Number.MAX_SAFE_INTEGER;
 
 function canonicalOrder(a: SessionSummary, b: SessionSummary): number {
@@ -573,36 +572,30 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     const strip = (records: SessionSummary[]): SessionSummary[] =>
       records.map((record) => stripRecencyField(generation, record));
 
-    const page =
-      query.childOf !== undefined
-        ? await this.windowedPage(
-            (bounds, fetchLimit) => {
-              const base = this.queryStore
-                .query<SessionSummary>(collection)
-                .where(filter)
-                .orderBy('updatedAt', 'desc')
-                .limit(fetchLimit);
-              const q =
-                Object.keys(bounds).length > 0 ? base.whereColumn(column, bounds) : base;
-              return q.execute().then((p) => strip([...p.items]));
-            },
-            cursor.bounds,
-            limit,
-          )
-        : await this.windowedPage(
-            (bounds, fetchLimit) =>
-              this.queryStore
-                .pageByColumn<SessionSummary>(collection, {
-                  column,
-                  dir: 'desc',
-                  filter,
-                  bounds,
-                  limit: fetchLimit,
-                })
-                .then((p) => strip([...p.items])),
-            cursor.bounds,
-            limit,
-          );
+    const page = await this.windowedPage(
+      (bounds, fetchLimit, canonicalTie) => {
+        if (query.childOf !== undefined || canonicalTie) {
+          const base = this.queryStore
+            .query<SessionSummary>(collection)
+            .where(filter)
+            .orderBy(canonicalTie ? 'id' : 'updatedAt', 'desc')
+            .limit(fetchLimit);
+          const q = Object.keys(bounds).length > 0 ? base.whereColumn(column, bounds) : base;
+          return q.execute().then((p) => strip([...p.items]));
+        }
+        return this.queryStore
+          .pageByColumn<SessionSummary>(collection, {
+            column,
+            dir: 'desc',
+            filter,
+            bounds,
+            limit: fetchLimit,
+          })
+          .then((p) => strip([...p.items]));
+      },
+      cursor.bounds,
+      limit,
+    );
     return this.mergePending(page, query, pending, cursor.position);
   }
 
@@ -665,32 +658,27 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     ]);
   }
 
-  /**
-   * Canonical keyset window: fetch `limit + 1` rows under `bounds`; when the
-   * window is full, re-fetch the boundary tie group (`updatedAt` equal to the
-   * window's minimum) and merge, so a page cut inside a same-millisecond tie
-   * group never drops or duplicates an item across pages. Rows are re-sorted
-   * into the canonical (`updatedAt` desc, `id` desc) order — the engine's
-   * cross-shard tie order is deterministic but not canonical.
-   */
   private async windowedPage(
-    fetch: (bounds: ColumnBounds, limit: number) => Promise<SessionSummary[]>,
+    fetch: (bounds: ColumnBounds, limit: number, canonicalTie: boolean) => Promise<SessionSummary[]>,
     bounds: ColumnBounds,
     limit: number,
   ): Promise<Page<SessionSummary>> {
-    const raw = await fetch(bounds, limit + 1);
+    const raw = await fetch(bounds, limit + 1, false);
     if (raw.length <= limit) {
       return { items: raw.toSorted(canonicalOrder) };
     }
     const minUpdatedAt = Math.min(...raw.map((summary) => summary.updatedAt));
-    const tie = await fetch({ gte: minUpdatedAt, lte: minUpdatedAt }, TIE_REPAIR_LIMIT);
+    if (raw.filter((summary) => summary.updatedAt === minUpdatedAt).length === 1) {
+      const items = raw.toSorted(canonicalOrder).slice(0, limit);
+      return { items, nextCursor: items.at(-1)!.id };
+    }
+    const tie = await fetch({ gte: minUpdatedAt, lte: minUpdatedAt }, limit + 1, true);
     const merged = new Map<string, SessionSummary>();
     for (const summary of tie) merged.set(summary.id, summary);
     for (const summary of raw) merged.set(summary.id, summary);
     const items = [...merged.values()].toSorted(canonicalOrder);
     const kept = items.slice(0, limit);
-    const hasMore = items.length > limit || tie.length >= TIE_REPAIR_LIMIT;
-    return { items: kept, nextCursor: hasMore ? kept.at(-1)!.id : undefined };
+    return { items: kept, nextCursor: kept.at(-1)!.id };
   }
 
   /**

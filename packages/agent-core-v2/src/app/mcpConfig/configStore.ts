@@ -8,6 +8,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
 import { ErrorCodes, Error2 } from '#/errors';
 import { McpServerConfigSchema, type McpServerConfig } from '#/mcpCore/config-schema';
+import { mcpServerConfigsEqual } from '#/mcpCore/connection-manager';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
 export type GlobalMcpServerConfig = McpServerConfig & { readonly name: string };
@@ -22,6 +23,7 @@ export interface IMcpConfigStore {
   get(name: string): Promise<GlobalMcpServerConfig>;
   add(server: GlobalMcpServerConfig): Promise<readonly GlobalMcpServerConfig[]>;
   update(server: GlobalMcpServerConfig): Promise<readonly GlobalMcpServerConfig[]>;
+  disableIfUnchanged(server: GlobalMcpServerConfig): Promise<void>;
   remove(name: string): Promise<readonly GlobalMcpServerConfig[]>;
 }
 
@@ -99,6 +101,27 @@ export class McpConfigStore extends Disposable implements IMcpConfigStore {
         [normalized.name]: persistedEntry(normalized),
       });
       return this.list();
+    });
+  }
+
+  disableIfUnchanged(server: GlobalMcpServerConfig): Promise<void> {
+    return this.mutate(async () => {
+      const expected = parseServerInput(server);
+      const file = await this.read();
+      const current = file.servers.find((entry) => entry.name === expected.name);
+      if (current === undefined) throw serverNotFound(expected.name);
+      if (!mcpServerConfigsEqual(
+        { ...persistedEntry(current), enabled: undefined },
+        { ...persistedEntry(expected), enabled: undefined },
+      )) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, `MCP server "${expected.name}" changed before it could be disabled`);
+      }
+      const raw = file.rawServers[expected.name];
+      if (!isRecord(raw)) throw configError(`Invalid MCP server "${expected.name}" in global config`);
+      await this.write(file, {
+        ...file.rawServers,
+        [expected.name]: { ...raw, enabled: false },
+      });
     });
   }
 

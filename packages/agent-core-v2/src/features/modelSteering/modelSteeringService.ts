@@ -7,7 +7,6 @@ import {
 import { cognitionPathRefs, readCognitionSlot } from '#/agent/cognition/cognitionFiles';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { IModelService } from '#/kosong/model/model';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 
@@ -27,7 +26,6 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
   constructor(
     @IAgentContextInjectorService injector: IAgentContextInjectorService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
-    @IModelService private readonly models: IModelService,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @IHostEnvironment private readonly hostEnv: IHostEnvironment,
@@ -42,14 +40,12 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
     isNewTurn,
   }: ContextInjectionContext): Promise<ContextInjectionContent | undefined> {
     if (!isNewTurn) return undefined;
-    const alias = this.profile.data().modelAlias;
-    if (alias === undefined || alias.length === 0) return undefined;
-    const record = this.models.get(alias);
+    const binding = await this.profile.getCognitionBinding();
     const text = await readCognitionSlot(
       this.fs,
       this.bootstrap.homeDir,
       'steering',
-      cognitionPathRefs(record?.cognition?.steering),
+      cognitionPathRefs(binding.config?.steering),
       this.hostEnv.pathClass,
     );
     if (text === undefined) return undefined;

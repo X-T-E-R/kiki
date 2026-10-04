@@ -107,3 +107,11 @@ describe('prompt overrides', () => {
     }).values['system.shared']).toBe('');
   });
 });
+
+describe('prompt override identity schema', () => {
+  it('accepts only nonempty independent objects and same with common content', () => {
+    expect(PromptOverridesSchema.safeParse({ main: { fields: { 'system.language': 'MAIN' } } }).success).toBe(true);
+    expect(PromptOverridesSchema.safeParse({ fields: { 'system.language': 'COMMON' }, main: 'same', independent: 'off' }).success).toBe(true);
+    for (const value of [{ main: 'same' }, { main: {} }, { main: { files: [], fields: {} } }, { main: true }, { main: { main: 'off' } }, { independent: { files: ['../escape.toml'] } }]) expect(PromptOverridesSchema.safeParse(value).success).toBe(false);
+  });
+});

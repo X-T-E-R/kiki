@@ -35,6 +35,7 @@ export interface RoomDocument {
   readonly createdAt: string;
   readonly pinned?: boolean;
   readonly archived?: boolean;
+  readonly legacyBotGate?: boolean;
   readonly generation: number;
   readonly paused: boolean;
   readonly pauseReason?: RoomPauseReason;

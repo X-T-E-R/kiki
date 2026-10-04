@@ -14,6 +14,13 @@ import type { ModelRecord } from './model';
 import type { ResolvedModelAuthMaterial } from './model.types';
 import { drivesThinkingThroughTraits } from './thinking';
 
+export function resolveModelProviderId(
+  model: Pick<ModelRecord, 'providerId' | 'provider'>,
+  defaultProvider: string | undefined,
+): string | undefined {
+  return model.providerId ?? model.provider ?? defaultProvider;
+}
+
 export function resolveModelAuthMaterial(
   args: {
     readonly modelId: string;

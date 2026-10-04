@@ -24,9 +24,7 @@ export const GENERIC_SUBAGENT_PROFILE: AgentProfile = normalizeAgentProfile({
     'TaskOutput',
     'TaskStop',
   ],
-  subagentPolicy: 'strict',
-  subagentDeclaration: { kind: 'set', names: [] },
-  subagents: [],
+  canSpawnSubagents: false,
   renderSystemPrompt: (context) =>
     renderSystemPromptResult(GENERIC_SUBAGENT_ROLE, context, { skillActive: true }),
 });

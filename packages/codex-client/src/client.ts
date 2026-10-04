@@ -48,6 +48,8 @@ interface ActiveTurn {
   readonly seenMessageDeltas: Set<string>;
   readonly seenReasoningSummaryDeltas: Set<string>;
   usage?: CodexTurnCompletion['usage'];
+  interruption?: Promise<boolean>;
+  interruptTimer?: NodeJS.Timeout;
 }
 
 export class CodexAppServerClient {
@@ -61,6 +63,8 @@ export class CodexAppServerClient {
   #requestSequence = 0;
   #frameSequence = 0;
   #terminalError: unknown;
+  #shutdownPromise: Promise<void> | undefined;
+  #transportCleanup: Promise<void> | undefined;
   #activeTurn: ActiveTurn | undefined;
   #startingTurnThreadId: string | undefined;
   #turnSignal: AbortSignal | undefined;
@@ -176,10 +180,13 @@ export class CodexAppServerClient {
       cursor = value['nextCursor'] === null || typeof value['nextCursor'] === 'string'
         ? value['nextCursor']
         : undefined;
-      if (typeof cursor === 'string' && !cursors.add(cursor)) {
-        const error = new CodexClientError('protocol', 'model/list repeated a cursor');
-        await this.#break(error);
-        throw error;
+      if (typeof cursor === 'string') {
+        if (cursors.has(cursor)) {
+          const error = new CodexClientError('protocol', 'model/list repeated a cursor');
+          await this.#break(error);
+          throw error;
+        }
+        cursors.add(cursor);
       }
     } while (cursor !== undefined && cursor !== null);
     return { data: models, nextCursor: null };
@@ -200,18 +207,16 @@ export class CodexAppServerClient {
     const threadId = requiredString(params['threadId'], 'turn/start params.threadId');
     this.#startingTurnThreadId = threadId;
     this.#turnSignal = signal;
-    let resultValue: unknown;
+    let turnId: string;
     try {
-      resultValue = await this.request('turn/start', params, signal);
+      const result = object(await this.request('turn/start', params, signal), 'turn/start result');
+      const turn = object(result['turn'], 'turn/start result.turn');
+      turnId = requiredString(turn['id'], 'turn/start result.turn.id');
+      if (this.#state !== 'ready') throw asError(this.#terminalError, closedError(this.#state));
     } catch (error) {
-      this.#startingTurnThreadId = undefined;
-      this.#turnSignal = undefined;
-      this.#earlyNotifications.length = 0;
+      this.#clearStartingTurn();
       throw error;
     }
-    const result = object(resultValue, 'turn/start result');
-    const turn = object(result['turn'], 'turn/start result.turn');
-    const turnId = requiredString(turn['id'], 'turn/start result.turn.id');
     let resolve!: (value: CodexTurnCompletion) => void;
     let reject!: (error: unknown) => void;
     const completion = new Promise<CodexTurnCompletion>((innerResolve, innerReject) => {
@@ -256,61 +261,77 @@ export class CodexAppServerClient {
     return this.#requestCore(method, params, this.descriptor.requestTimeoutMs, signal);
   }
 
-  async shutdown(reason?: unknown): Promise<void> {
+  shutdown(reason?: unknown): Promise<void> {
+    return this.#shutdownPromise ??= this.#shutdown(reason);
+  }
+
+  async #shutdown(reason?: unknown): Promise<void> {
     if (this.#state === 'closed') return;
-    if (this.#state === 'closing') {
-      await this.#process?.wait().catch(() => undefined);
-      return;
+    const error = reason ?? new CodexClientError('closed', 'Codex client shut down');
+    if (this.#state !== 'broken') {
+      this.#setState('closing');
+      const active = this.#activeTurn;
+      if (active !== undefined) await this.#interrupt(active).catch(() => undefined);
     }
-    this.#setState('closing');
-    const active = this.#activeTurn;
-    if (active !== undefined) await this.#interrupt(active).catch(() => undefined);
-    this.#rejectPending(reason ?? new CodexClientError('closed', 'Codex client shut down'));
-    const process = this.#process;
-    if (process === undefined) {
+    this.#rejectPending(error);
+    this.#clearStartingTurn();
+    try {
+      await this.#closeTransport(false);
+    } finally {
+      this.#finishActiveTurn(undefined, this.#terminalError ?? error);
       this.#setState('closed');
-      return;
     }
+  }
+
+  #interrupt(active: ActiveTurn): Promise<boolean> {
+    if (this.#activeTurn !== active || this.#state === 'broken' || this.#state === 'closed') {
+      return Promise.resolve(false);
+    }
+    return active.interruption ??= this.#sendInterrupt(active);
+  }
+
+  async #sendInterrupt(active: ActiveTurn): Promise<boolean> {
     const grace = this.descriptor.shutdownGraceMs ?? 3_000;
-    let timer: NodeJS.Timeout | undefined;
+    try {
+      await this.#requestCore('turn/interrupt', {
+        threadId: active.threadId,
+        turnId: active.turnId,
+      }, grace);
+      if (this.#activeTurn === active && this.#state === 'turning') {
+        active.interruptTimer = setTimeout(() => {
+          void this.#break(new CodexClientError('timeout', 'Codex interrupted turn did not complete within the shutdown grace'));
+        }, grace);
+      }
+      return true;
+    } catch (error) {
+      await this.#break(error);
+      return false;
+    }
+  }
+
+  #closeTransport(force: boolean): Promise<void> {
+    return this.#transportCleanup ??= this.#disposeTransport(force);
+  }
+
+  async #disposeTransport(force: boolean): Promise<void> {
+    const process = this.#process;
+    if (process === undefined) return;
+    const grace = this.descriptor.shutdownGraceMs ?? 3_000;
     try {
       process.stdin.end();
-      await Promise.race([
-        process.wait(),
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, grace);
-        }),
-      ]);
+      if (!force) await waitWithinGrace(process, grace);
       if (process.exitCode === null) {
         await process.kill('SIGTERM').catch(() => undefined);
-        await Promise.race([
-          process.wait(),
-          new Promise<void>((resolve) => setTimeout(resolve, Math.max(250, grace))),
-        ]);
+        await waitWithinGrace(process, Math.max(250, grace));
       }
       if (process.exitCode === null) await process.kill('SIGKILL').catch(() => undefined);
+      await process.wait();
     } finally {
-      if (timer !== undefined) clearTimeout(timer);
       try {
         await process.dispose();
       } finally {
         if (this.#process === process) this.#process = undefined;
-        this.#setState('closed');
       }
-    }
-  }
-
-  async #interrupt(active: ActiveTurn): Promise<boolean> {
-    if (this.#activeTurn !== active) return false;
-    try {
-      await this.request('turn/interrupt', {
-        threadId: active.threadId,
-        turnId: active.turnId,
-      });
-      return true;
-    } catch (error) {
-      if (this.#state !== 'broken' && this.#state !== 'closed') throw error;
-      return false;
     }
   }
 
@@ -325,8 +346,7 @@ export class CodexAppServerClient {
     const timeoutMs = timeoutOverride ?? 30_000;
     const response = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.#pending.delete(id);
-        reject(new CodexClientError('timeout', `${method} timed out after ${timeoutMs}ms`));
+        this.#takePending(id)?.reject(new CodexClientError('timeout', `${method} timed out after ${timeoutMs}ms`));
         void this.#break(new CodexClientError('timeout', `${method} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       const abortSignal = signal;
@@ -516,11 +536,7 @@ export class CodexAppServerClient {
       mapped.completion.threadId === active.threadId &&
       mapped.completion.turnId === active.turnId
     ) {
-      active.events.end();
-      active.resolve({ ...mapped.completion, stderrTail: this.stderrTail(), usage: active.usage });
-      this.#activeTurn = undefined;
-      this.#turnSignal = undefined;
-      if (this.#state === 'turning') this.#setState('ready');
+      this.#finishActiveTurn({ ...mapped.completion, stderrTail: this.stderrTail(), usage: active.usage });
     }
   }
 
@@ -631,33 +647,41 @@ export class CodexAppServerClient {
     this.#responders.clear();
   }
 
-  async #break(error: unknown): Promise<void> {
-    if (this.#state === 'broken' || this.#state === 'closed') return;
-    this.#terminalError = error;
-    this.#setState('broken');
-    this.#rejectPending(error);
-    this.#earlyNotifications.length = 0;
-    this.#stdoutBuffer = '';
+  #clearStartingTurn(): void {
     this.#startingTurnThreadId = undefined;
     this.#turnSignal = undefined;
+    this.#earlyNotifications.length = 0;
+  }
+
+  #finishActiveTurn(completed?: CodexTurnCompletion, error?: unknown): void {
     const active = this.#activeTurn;
-    if (active !== undefined) {
+    if (active === undefined) return;
+    this.#activeTurn = undefined;
+    this.#clearStartingTurn();
+    if (active.interruptTimer !== undefined) clearTimeout(active.interruptTimer);
+    if (completed !== undefined) {
+      active.events.end();
+      active.resolve(completed);
+    } else {
       active.events.fail(error);
       active.reject(error);
-      this.#activeTurn = undefined;
     }
-    const process = this.#process;
-    if (process !== undefined) {
-      try {
-        process.stdin.end();
-        await process.kill('SIGTERM').catch(() => undefined);
-      } finally {
-        try {
-          await process.dispose();
-        } finally {
-          if (this.#process === process) this.#process = undefined;
-        }
-      }
+    if (this.#state === 'turning') this.#setState('ready');
+  }
+
+  async #break(error: unknown): Promise<void> {
+    if (this.#state === 'closed') return;
+    if (this.#state !== 'broken') {
+      this.#terminalError = error;
+      this.#setState('broken');
+      this.#rejectPending(error);
+      this.#clearStartingTurn();
+      this.#stdoutBuffer = '';
+    }
+    try {
+      await this.#closeTransport(true);
+    } finally {
+      this.#finishActiveTurn(undefined, this.#terminalError);
     }
   }
 
@@ -672,6 +696,18 @@ export class CodexAppServerClient {
         });
       } catch {}
     }
+  }
+}
+
+async function waitWithinGrace(process: HostProcessLike, grace: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      process.wait(),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, grace); }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

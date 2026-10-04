@@ -36,6 +36,7 @@ export interface MemoryEntry {
   readonly superseded_by?: string;
   readonly supersedes?: string;
   readonly supersedes_revision?: string;
+  readonly pending_action?: 'update' | 'archive';
   readonly revision: string;
 }
 export interface MemoryMutation {
@@ -129,6 +130,7 @@ function decode(raw: string): MemoryEntry {
     superseded_by: typeof meta['superseded_by'] === 'string' ? meta['superseded_by'] : undefined,
     supersedes: typeof meta['supersedes'] === 'string' ? meta['supersedes'] : undefined,
     supersedes_revision: typeof meta['supersedes_revision'] === 'string' ? meta['supersedes_revision'] : undefined,
+    pending_action: meta['pending_action'] === 'update' || meta['pending_action'] === 'archive' ? meta['pending_action'] : undefined,
     revision: revision(raw),
   };
 }
@@ -211,6 +213,15 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     const scope = input.scope;
     const base = await this.scopes.resolve(scope);
     return this.serializedWrite(base, async () => {
+      let target = input.id === undefined ? undefined : await this.raw(base, input.id);
+      const candidate = target === undefined ? undefined : decode(target.text);
+      let accepted: typeof target;
+      if (candidate?.status === 'pending' && candidate.pending_action !== undefined && !input.pending) {
+        if (input.action !== 'update' || candidate.revision !== input.expectedRevision || candidate.supersedes === undefined || candidate.supersedes_revision === undefined) throw new Error('Memory revision conflict');
+        accepted = target;
+        input = { ...input, action: candidate.pending_action, id: candidate.supersedes, expectedRevision: candidate.supersedes_revision };
+        target = await this.raw(base, input.id!);
+      }
       if (!input.reason.trim()) throw new Error('Memory reason is required');
       if (!TYPES.includes(input.type)) throw new Error('Invalid memory type');
       if (!input.title.trim() || input.title.length > 200 || !input.body.trim() || input.body.length > 1_500) throw new Error('Memory title or body length is invalid');
@@ -218,7 +229,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
       const body = redactMemorySecrets(input.body.trim());
       const reason = redactMemorySecrets(input.reason.trim());
       const isCreate = input.action === 'create' || input.action === 'supersede';
-      const target = input.id === undefined ? undefined : await this.raw(base, input.id);
+      const isProposal = input.pending === true && candidate?.status !== 'pending' && (input.action === 'update' || input.action === 'archive');
       if (isCreate === (target !== undefined) && input.action !== 'supersede') throw new Error(isCreate ? 'Memory already exists' : 'Memory not found');
       if (!isCreate && (input.expectedRevision === undefined || revision(target!.text) !== input.expectedRevision)) throw new Error('Memory revision conflict');
       if (input.action === 'supersede' && (target === undefined || input.expectedRevision === undefined || revision(target.text) !== input.expectedRevision)) throw new Error('Memory revision conflict');
@@ -227,7 +238,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
         if (entries.filter((entry) => entry.status === 'active').length >= 300) throw new Error('Memory scope is full; merge existing entries');
         if (input.action === 'create' && entries.some((entry) => entry.status === 'active' && entry.title.toLowerCase() === title.toLowerCase())) throw new Error('Similar memory already exists; update or supersede it');
       }
-      const id = isCreate ? `m_${new Date().toISOString().slice(0, 10).replaceAll('-', '')}_${randomBytes(5).toString('hex')}` : input.id!;
+      const id = isCreate || isProposal ? `m_${new Date().toISOString().slice(0, 10).replaceAll('-', '')}_${randomBytes(5).toString('hex')}` : input.id!;
       const now = new Date().toISOString();
       const old = target === undefined ? undefined : decode(target.text);
       const superseded = input.action === 'supersede' ? target : old?.supersedes !== undefined && !input.pending ? await this.raw(base, old.supersedes) : undefined;
@@ -236,10 +247,11 @@ export class MemoryStore extends Disposable implements IMemoryStore {
         id, type: input.type, title, body,
         status: input.pending ? 'pending' : input.action === 'archive' ? 'archived' : 'active',
         pinned: input.pinned ?? (isCreate ? false : old?.pinned) ?? false,
-        created: isCreate ? now : old?.created ?? now, updated: now,
+        created: isCreate || isProposal ? now : old?.created ?? now, updated: now,
         source: input.source, reason,
-        supersedes: input.action === 'supersede' && input.pending ? input.id : undefined,
-        supersedes_revision: input.action === 'supersede' && input.pending ? input.expectedRevision : undefined,
+        supersedes: input.pending ? input.action === 'supersede' || isProposal ? input.id : old?.supersedes : undefined,
+        supersedes_revision: input.pending ? input.action === 'supersede' || isProposal ? input.expectedRevision : old?.supersedes_revision : undefined,
+        pending_action: isProposal ? input.action as 'update' | 'archive' : input.pending ? old?.pending_action : undefined,
       };
       const key = entryKey(id, entry.status === 'pending');
       const encoded = encode(entry);
@@ -250,7 +262,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
         await this.commit(scope, base, superseded.key, superseded, encode(oldEntry), 'supersede_previous', previous.id, input.source.writer, op);
       }
       try {
-        await this.commit(scope, base, key, isCreate ? undefined : target, encoded, input.action, id, input.source.writer, op);
+        await this.commit(scope, base, key, isCreate || isProposal ? undefined : target, encoded, input.action, id, input.source.writer, op);
       } catch (error) {
         if (superseded !== undefined && !input.pending && (await this.raw(base, id))?.text !== encoded) {
           const current = await this.raw(base, superseded.key.slice(superseded.key.lastIndexOf('/') + 1, -3));
@@ -260,7 +272,8 @@ export class MemoryStore extends Disposable implements IMemoryStore {
         }
         throw error;
       }
-      if (!isCreate && target!.key !== key) await this.storage.delete(base, target!.key);
+      if (!isCreate && !isProposal && target!.key !== key) await this.storage.delete(base, target!.key);
+      if (accepted !== undefined) await this.commit(scope, base, accepted.key, accepted, undefined, 'accept_proposal', candidate!.id, input.source.writer, op);
       return { entry: decode(encode(entry)), operationId: op };
     });
   }

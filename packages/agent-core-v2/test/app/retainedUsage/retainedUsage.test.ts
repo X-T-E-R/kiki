@@ -13,6 +13,7 @@ import {
   RETAINED_USAGE_VERSION,
   type RetainedDeletedSessionUsage,
   type RetainedUsageListQuery,
+  type RetainedUsageRecord,
 } from '#/app/retainedUsage/retainedUsage';
 import { RetainedUsageService } from '#/app/retainedUsage/retainedUsageService';
 import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
@@ -215,6 +216,70 @@ describe('RetainedUsageService', () => {
       { workspaceId: 'workspace-1', time: 150, model: 'model-a', usage },
     ]);
     expect(await listItems(restarted.service)).toEqual([]);
+  });
+
+  it('does not double-count a committed ephemeral source after removal fails and retention retries', async () => {
+    const first = build();
+    const scope = 'ephemeral/workspace-1/retry-source';
+    first.appendLog.append(`${scope}/agents/main`, AGENT_WIRE_RECORD_KEY, {
+      type: 'usage.record', time: 150, model: 'model-a', usage,
+    });
+    await first.appendLog.flush();
+    await first.service.retainEphemeralUsage!(scope, 'workspace-1');
+    const remove = vi.spyOn(fsp, 'rm').mockRejectedValueOnce(new Error('source-remove-failed'));
+    await expect(fsp.rm(join(homeDir, scope), { recursive: true })).rejects.toThrow('source-remove-failed');
+    remove.mockRestore();
+    const ledgerBefore = await fsp.readFile(join(homeDir, 'store/ephemeral-totals-v1.jsonl'), 'utf8');
+    const restarted = build();
+    await restarted.service.retainEphemeralUsage!(scope, 'workspace-1');
+    expect(await fsp.readFile(join(homeDir, 'store/ephemeral-totals-v1.jsonl'), 'utf8')).toBe(ledgerBefore);
+    const native = await restarted.service.listEphemeralUsage!(listQuery());
+    const exported = [];
+    for await (const event of restarted.service.readExportUsage!(true)) if (event.kind === 'ephemeral') exported.push(event.record);
+    expect(native.complete).toBe(true);
+    expect(native.items).toEqual([{ workspaceId: 'workspace-1', time: 150, model: 'model-a', usage }]);
+    expect(exported).toEqual(native.items);
+  });
+
+  it('completes a partially appended ephemeral source once and preserves genuine equal records', async () => {
+    const { service, appendLog } = build();
+    const scope = 'ephemeral/workspace-1/partial-source';
+    for (let i = 0; i < 2; i++) appendLog.append(`${scope}/agents/main`, AGENT_WIRE_RECORD_KEY, {
+      type: 'usage.record', time: 150, model: 'model-a', usage,
+    });
+    await appendLog.flush();
+    const original = appendLog.append.bind(appendLog);
+    let writes = 0;
+    const failure = vi.spyOn(appendLog, 'append').mockImplementation((scope, key, record, options) => {
+      if (key === 'ephemeral-totals-v1.jsonl' && ++writes === 3) throw new Error('append-failed');
+      original(scope, key, record, options);
+    });
+    await expect(service.retainEphemeralUsage!(scope, 'workspace-1')).rejects.toThrow('append-failed');
+    failure.mockRestore();
+    await appendLog.flush();
+    expect(await service.listEphemeralUsage!(listQuery())).toMatchObject({ items: [], complete: false });
+    await service.retainEphemeralUsage!(scope, 'workspace-1');
+    await service.retainEphemeralUsage!(scope, 'workspace-1');
+    const native = await service.listEphemeralUsage!(listQuery());
+    const exported = [];
+    for await (const event of service.readExportUsage!(true)) if (event.kind === 'ephemeral') exported.push(event.record);
+    expect(native.complete).toBe(true);
+    expect(native.items).toHaveLength(2);
+    expect(native.items.reduce((n, record) => n + record.usage.inputOther, 0)).toBe(usage.inputOther * 2);
+    expect(exported).toEqual(native.items);
+    expect((await service.listEphemeralUsage!(listQuery({ workspaceIds: ['workspace-2'], recordLimit: 0 }))).complete).toBe(true);
+  });
+
+  it('keeps anonymous ephemeral history distinct without guessing from equal token values', async () => {
+    const { service, appendLog } = build();
+    for (let i = 0; i < 2; i++) appendLog.append('store', 'ephemeral-totals-v1.jsonl', {
+      workspaceId: 'workspace-1', time: 150, model: 'model-a', usage,
+    });
+    await appendLog.flush();
+    expect((await service.listEphemeralUsage!(listQuery())).items).toHaveLength(2);
+    const exported = [];
+    for await (const event of service.readExportUsage!(true)) if (event.kind === 'ephemeral') exported.push(event.record);
+    expect(exported).toHaveLength(2);
   });
 
   it('preserves known, unknown, and absent usage provenance across retention restart', async () => {
@@ -476,6 +541,21 @@ describe('RetainedUsageService', () => {
     });
     expect(storage.chunksRead).toBe(1);
     expect(storage.bytesRead).toBeLessThan(new TextEncoder().encode(ledger).byteLength);
+    expect(storage.bytesRead).toBe(64 * 1024);
+    storage.bytesRead = 0; storage.chunksRead = 0;
+    const full = await service.listDeletedSessions(listQuery({ recordLimit: 20_001 }));
+    expect(full.complete).toBe(true);
+    expect(full.scannedRecords).toBe(20_001);
+    expect(full.items[0]?.records).toHaveLength(20_000);
+    expect(full.items[0]?.records.reduce((sum, record) => sum + record.usage.inputOther, 0)).toBe(20_000 * usage.inputOther);
+    expect(storage.bytesRead).toBe(Buffer.byteLength(ledger));
+    expect(storage.chunksRead).toBeGreaterThan(1);
+    const iterator = service.readExportUsage!(false);
+    const exported: RetainedUsageRecord[] = [];
+    for (let i = 0; i < 100; i++) expect((await iterator.next()).value?.kind).toBe('progress');
+    for await (const event of iterator) if (event.kind === 'session') exported.push(...event.snapshot.records);
+    expect(exported).toHaveLength(20_000);
+    expect(exported.reduce((sum, record) => sum + record.usage.inputOther, 0)).toBe(20_000 * usage.inputOther);
   });
 
   it('does not read or parse an oversized record beyond the record budget', async () => {
@@ -533,6 +613,7 @@ describe('RetainedUsageService', () => {
     }
     expect(storage.chunksRead).toBe(1);
     expect(storage.bytesRead).toBeLessThan(fileBytes / 10);
+    expect(storage.bytesRead).toBe(64 * 1024);
     expect(parsedOversizedEntry).toBe(false);
   });
 

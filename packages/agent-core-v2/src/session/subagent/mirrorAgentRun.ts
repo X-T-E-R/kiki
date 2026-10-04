@@ -281,9 +281,7 @@ async function recordAgentOutcome(
 ): Promise<void> {
   try {
     const metadata = requester.accessor.get(ISessionMetadata);
-    const current = (await metadata.read()).agents?.[agentId];
-    if (current === undefined) return;
-    await metadata.registerAgent(agentId, { ...current, ...outcome });
+    await metadata.updateAgent(agentId, (current) => ({ ...current, ...outcome }));
   } catch (error) {
     requester.accessor.get(ILogService)?.warn('subagent outcome metadata write failed', {
       agentId,

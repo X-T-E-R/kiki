@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
+import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
+import { resolveAuthoredRequestIdentity } from '#/kosong/requestIdentity/requestIdentityPolicy';
+import { projectRequestIdentity } from '#/kosong/requestIdentity/requestIdentityProjector';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import {
   IRequestIdentityInstallation,
+  IRequestIdentityRegistry,
   RequestIdentityInstallation,
   RequestIdentityRegistry,
 } from '#/session/requestIdentity/requestIdentityRegistry';
@@ -37,7 +41,7 @@ function createInstallation(store: RegistryStore): RequestIdentityInstallation {
 function createRegistry(
   store: RegistryStore = {},
   options: { sessionId?: string; installationId?: string } = {},
-): RequestIdentityRegistry {
+): IRequestIdentityRegistry {
   const sessionId = options.sessionId ?? 'session-internal-key';
   const ix = new TestInstantiationService();
   ix.stub(ISessionContext, {
@@ -68,10 +72,98 @@ function createRegistry(
       store.value = structuredClone(value);
     },
   });
-  return ix.createInstance(RequestIdentityRegistry);
+  ix.set(IRequestIdentityRegistry, new SyncDescriptor(RequestIdentityRegistry));
+  return ix.get(IRequestIdentityRegistry);
 }
 
 describe('request identity registry', () => {
+  it('isolates Codex parent and sibling threads while preserving session lineage across retries and resume', async () => {
+    const store: RegistryStore = {};
+    const registry = createRegistry(store);
+    const policy = resolveAuthoredRequestIdentity({ preset: 'codex_compatible' });
+    const dimensions = {
+      installationIdentity: true,
+      sharedSessionIdentity: true,
+      agentSessionIdentity: false,
+      threadIdentity: true,
+      logicalRequestIdentity: true,
+      turnIndex: false,
+      turnState: true,
+    } as const;
+    const project = async (
+      identities: IRequestIdentityRegistry,
+      agentId: string,
+      parentAgentId?: string,
+      turnKey = 'turn:0',
+    ) => projectRequestIdentity({
+      policy,
+      protocol: 'openai_responses',
+      model: 'example-model',
+      rawSessionId: 'session-internal-key',
+      rawAgentId: agentId,
+      parentAgentId,
+      subagentKind: parentAgentId === undefined ? undefined : 'agent',
+      isKimiProvider: false,
+      snapshot: await identities.snapshot({
+        agentId, parentAgentId, turnKey, compactionWindow: 0, logicalIdKind: 'uuidv7', dimensions,
+      }),
+      runtimeVersion: '1.0.0',
+      platform: 'linux',
+      arch: 'x64',
+    });
+    const root = await project(registry, 'main');
+    const child = await project(registry, 'agent-0', 'main');
+    const sibling = await project(registry, 'agent-1', 'main');
+    const retry = await project(registry, 'agent-0', 'main');
+    const next = await project(registry, 'agent-0', 'main', 'turn:1');
+    const resumed = await project(createRegistry(store), 'agent-0', 'main');
+    const sessionId = root.wire?.responsesClientMetadata?.['session_id'];
+    const threadIds = [root, child, sibling].map((projection) => projection.headers?.['thread-id']);
+
+    expect(sessionId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(new Set(threadIds).size).toBe(3);
+    for (const projection of [root, child, sibling, retry, next, resumed]) {
+      const metadata = projection.wire?.responsesClientMetadata;
+      const canonical = JSON.parse(metadata?.['x-codex-turn-metadata'] ?? '{}') as Record<string, string>;
+      expect(projection.headers?.['session-id']).toBe(sessionId);
+      expect(projection.cacheKey).toBe(sessionId);
+      expect(metadata?.['session_id']).toBe(sessionId);
+      expect(metadata?.['thread_id']).toBe(projection.headers?.['thread-id']);
+      expect(projection.headers?.['x-client-request-id']).toBe(metadata?.['thread_id']);
+      expect(canonical['session_id']).toBe(sessionId);
+      expect(canonical['thread_id']).toBe(metadata?.['thread_id']);
+    }
+    expect(root.headers?.['thread-id']).toBe(sessionId);
+    expect(child.headers?.['x-codex-parent-thread-id']).toBe(root.headers?.['thread-id']);
+    expect(sibling.headers?.['x-codex-parent-thread-id']).toBe(root.headers?.['thread-id']);
+    for (const projection of [retry, next, resumed]) {
+      expect(projection.headers?.['thread-id']).toBe(child.headers?.['thread-id']);
+    }
+    expect(retry.wire?.responsesClientMetadata?.['turn_id']).toBe(child.wire?.responsesClientMetadata?.['turn_id']);
+    expect(resumed.wire?.responsesClientMetadata?.['turn_id']).toBe(child.wire?.responsesClientMetadata?.['turn_id']);
+    expect(next.wire?.responsesClientMetadata?.['turn_id']).not.toBe(child.wire?.responsesClientMetadata?.['turn_id']);
+  });
+
+  it('keeps independent agents without a local parent distinct from main and each other', async () => {
+    const registry = createRegistry();
+    const snapshot = (identities: IRequestIdentityRegistry, agentId: string, parentAgentId?: string) =>
+      identities.snapshot({ agentId, parentAgentId, turnKey: 'turn:0', compactionWindow: 0, logicalIdKind: 'uuidv7' });
+    const root = await snapshot(registry, 'main');
+    const first = await snapshot(registry, 'agent-0');
+    const second = await snapshot(registry, 'agent-1');
+    const retry = await snapshot(registry, 'agent-0');
+    const resumed = await snapshot(createRegistry(), 'agent-0');
+    const attached = await snapshot(registry, 'agent-0', 'main');
+
+    expect(first.sharedSessionId).toBe(root.sharedSessionId);
+    expect(second.sharedSessionId).toBe(root.sharedSessionId);
+    expect(new Set([root.threadId, first.threadId, second.threadId]).size).toBe(3);
+    expect(first.parentThreadId).toBeUndefined();
+    expect(retry.threadId).toBe(first.threadId);
+    expect(resumed.threadId).toBe(first.threadId);
+    expect(attached.threadId).toBe(first.threadId);
+  });
+
   it('performs no identity or document allocation when every dimension is disabled', async () => {
     const store: RegistryStore = {};
     const snapshot = await createRegistry(store).snapshot({

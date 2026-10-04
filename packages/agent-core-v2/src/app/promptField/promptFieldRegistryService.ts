@@ -1,7 +1,10 @@
 import {
   mergeResolvedPromptOverrides,
   resolvePromptOverrideLayer,
+  selectPromptOverrides,
+  type PromptDelegationPosition,
   type PromptOverrideSurface,
+  type PromptOverrideSource,
   type ResolvedPromptOverrides,
 } from '@kiki/agent-profiles/promptOverrides';
 import { join } from 'pathe';
@@ -115,7 +118,7 @@ export class PromptFieldRegistryService extends Disposable implements IPromptFie
     assertSurface(input.profileModel, ['profile-model']);
     const layers = [];
     for (const scope of [input.global, input.model, input.profile, input.profileModel]) {
-      const layer = await this.resolveScope(scope);
+      const layer = await this.resolveScope(scope, input.context?.delegationPosition ?? 'main');
       if (layer !== undefined) layers.push(layer);
     }
     return this.validate(
@@ -125,13 +128,15 @@ export class PromptFieldRegistryService extends Disposable implements IPromptFie
     );
   }
 
-  private async resolveScope(scope: PromptOverrideScopeInput | undefined): Promise<ResolvedPromptOverrides | undefined> {
+  private async resolveScope(scope: PromptOverrideScopeInput | undefined, position: PromptDelegationPosition): Promise<ResolvedPromptOverrides | undefined> {
     if (scope?.overrides === undefined) return undefined;
     const declarations = Array.isArray(scope.overrides) ? scope.overrides : [scope.overrides];
     const layers = [];
-    for (const declaration of declarations) {
+    for (const [declarationIndex, declaration] of declarations.entries()) {
+      const selected = selectPromptOverrides(declaration, position);
+      if (selected === undefined) continue;
       const files = [];
-      for (const ref of declaration.files ?? []) {
+      for (const ref of selected.files ?? []) {
         files.push(await readPromptOverrideFile(
           this.fs,
           this.bootstrap.homeDir,
@@ -140,16 +145,19 @@ export class PromptFieldRegistryService extends Disposable implements IPromptFie
         ));
         this.watchFile(ref);
       }
-      layers.push(resolvePromptOverrideLayer({
+      const resolved = resolvePromptOverrideLayer({
         surface: scope.surface,
         files,
-        inline: declaration.fields,
+        inline: selected.fields,
         fieldPolicy: (id) => {
           const definition = this.definitions.get(id);
           return definition === undefined ? undefined : { allowEmpty: definition.allowEmpty };
         },
         inlinePath: scope.sourcePath,
-      }));
+      });
+      const branch = position === 'sub' ? undefined : declaration[position];
+      const selection: PromptOverrideSource['selection'] = typeof branch === 'object' && position !== 'sub' ? position : 'common';
+      layers.push({ ...resolved, sources: Object.fromEntries(Object.entries(resolved.sources).map(([id, sources]) => [id, sources.map((source) => ({ ...source, selection, declarationIndex }))])) });
     }
     return mergeResolvedPromptOverrides(...layers);
   }

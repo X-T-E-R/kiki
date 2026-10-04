@@ -43,9 +43,11 @@ const MAX_DRAIN = 100;
 const HISTORY_TAIL = 500;
 const REPLAY_CHECKPOINT_SCOPE = 'replay-checkpoints';
 const REPLAY_CHECKPOINT_KEY = 'engine-v1';
+export const REPLAY_ABI_VERSION = 1;
 
 interface ReplayCheckpointEnvelope {
   readonly format: 1;
+  readonly replayAbi: number;
   readonly wire: {
     readonly size: number;
     readonly mtimeMs: number;
@@ -140,6 +142,10 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
   private dispatching = false;
   private queue: QueuedEvent[] = [];
   private drainDepth = 0;
+  private liveRevision = 0;
+  private readonly deferredObservable = new Set<Event2<any>>();
+  private readonly durableInFlight = new Map<Event2<any>, Promise<void>>();
+  private readonly durableDispatchFailures = new WeakMap<Event2<any>, { readonly error: unknown }>();
 
   constructor(
     @IWireService private readonly wire: IWireService,
@@ -206,6 +212,34 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     }
     this.rollback(key, meta, patchId - 1);
     meta.checkpoints = meta.checkpoints.filter((id) => id < patchId);
+  }
+
+  dispatchDurably(event: Event2<any>): Promise<void> {
+    const current = this.durableInFlight.get(event);
+    if (current !== undefined) return current;
+    const pending = this.commitDurably(event).finally(() => { this.durableInFlight.delete(event); });
+    this.durableInFlight.set(event, pending);
+    return pending;
+  }
+
+  private async commitDurably(event: Event2<any>): Promise<void> {
+    const failure = this.durableDispatchFailures.get(event);
+    if (failure !== undefined) throw failure.error;
+    if (!this.deferredObservable.has(event)) {
+      this.deferredObservable.add(event);
+      try { await this.dispatch(event); }
+      catch (error) {
+        this.durableDispatchFailures.set(event, { error });
+        throw error;
+      }
+    }
+    try {
+      await this.flush();
+    } catch {
+      await this.flush();
+    }
+    this.deferredObservable.delete(event);
+    if ((event.constructor as Event2Class).observable) this.eventBus.publish(event);
   }
 
   dispatch(event: Event2<any>): Promise<void> {
@@ -295,7 +329,8 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         .replayable.blobs?.dehydrate;
       this.wire.appendRecord(event.serialize(), dehydrator);
     }
-    if (cls.observable) {
+    this.liveRevision += 1;
+    if (cls.observable && !this.deferredObservable.has(event)) {
       this.eventBus.publish(event);
     }
   }
@@ -399,7 +434,8 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         .filter((key) => key.replayable.durable)
         .toSorted((left, right) => left.name.localeCompare(right.name));
       await this.wire.flush();
-      const wire = await this.wire.journalIdentity();
+      if (this.deferredObservable.size > 0) return false;
+      const revision = this.liveRevision;
       const payload: ReplayCheckpointPayload = {
         states: keys.map((key) => ({
           name: key.name,
@@ -407,11 +443,15 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
           meta: structuredClone(this.ensureMeta(key)),
         })),
       };
+      const graph = encodeReplayCheckpointGraph(payload);
+      const wire = await this.wire.journalIdentity();
+      if (revision !== this.liveRevision || this.deferredObservable.size > 0) return false;
       const envelope: ReplayCheckpointEnvelope = {
         format: 1,
+        replayAbi: REPLAY_ABI_VERSION,
         wire,
         stateNames: keys.map((key) => key.name),
-        graph: encodeReplayCheckpointGraph(payload),
+        graph,
       };
       await docs.set(checkpointScope, REPLAY_CHECKPOINT_KEY, envelope);
       return true;
@@ -431,7 +471,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         checkpointScope,
         REPLAY_CHECKPOINT_KEY,
       );
-      if (envelope?.format !== 1) return false;
+      if (envelope?.format !== 1 || envelope.replayAbi !== REPLAY_ABI_VERSION) return false;
       const wire = await this.wire.journalIdentity();
       if (wire.size !== envelope.wire.size || wire.mtimeMs !== envelope.wire.mtimeMs) return false;
       if (envelope.wire.headHash === undefined || envelope.wire.headHash !== wire.headHash) {

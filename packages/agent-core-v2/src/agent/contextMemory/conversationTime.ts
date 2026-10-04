@@ -1,4 +1,5 @@
 import { registerUndoableProtocol } from '#/state/state';
+import { AgentModelSwitch } from '#/agent/modelSwitch/modelSwitchEvent';
 
 import {
   ContextAppendMessage,
@@ -13,6 +14,7 @@ export function isUndoAnchorOrigin(origin: ContextMessage['origin']): boolean {
     origin === undefined ||
     origin.kind === 'user' ||
     origin.kind === 'peer_thread' ||
+    origin.kind === 'bridged_peer' ||
     origin.kind === 'agent_message' ||
     (origin.kind === 'room_message' && origin.targeted)
   ) return true;
@@ -50,6 +52,7 @@ registerUndoableProtocol({
     clear: ContextClear,
     undo: ContextUndo,
   },
+  checkpointBoundaries: [{ event: AgentModelSwitch, shouldClear: (event) => (event as AgentModelSwitch).context !== undefined }],
   isUndoAnchor: (message) => isUndoAnchor(message as ContextMessage),
   isValidUndoCount,
 });

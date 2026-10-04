@@ -248,27 +248,13 @@ describe('loadSystemMdProfile', () => {
     expect(profile?.systemPrompt({})).toBe('body only');
   });
 
-  it('inherits recommendations only for an explicit subagent policy and keeps omission implicit', async () => {
-    const builtin = normalizeAgentProfile({
-      ...BUILTIN_DEFAULT,
-      subagentPolicy: 'advisory',
-      subagentDeclaration: { kind: 'set', names: ['explore'] },
-      subagents: ['explore'],
-    });
-    await writeFile(join(home, SYSTEM_MD_FILENAME), '---\nsubagent_policy: advisory\n---\n\nbody\n');
+  it('inherits hard ceilings and overrides soft preferences on SYSTEM.md without host policy modes', async () => {
+    const builtin = normalizeAgentProfile({ ...BUILTIN_DEFAULT, allowedSubagents: ['explore', 'worker'], preferredSubagents: ['explore'], denySubagents: ['reviewer'] });
     const { warn } = collectWarnings();
-    const advisory = await loadProfile(hostFs, builtin, warn);
-    expect(advisory).toMatchObject({
-      subagentPolicy: 'advisory',
-      subagentDeclaration: { kind: 'set', names: ['explore'] },
-      subagents: ['explore'],
-    });
-
-    await writeFile(join(home, SYSTEM_MD_FILENAME), '---\n---\n\nunmarked upgraded\n');
-    const unmarked = await loadProfile(hostFs, builtin, warn);
-    expect(unmarked?.subagentPolicy).toBeUndefined();
-    expect(unmarked?.subagentDeclaration).toBeUndefined();
-    expect(unmarked?.subagents).toEqual(['explore']);
+    await writeFile(join(home, SYSTEM_MD_FILENAME), '---\npreferred_subagents: [worker]\nallowed_subagents: ["*"]\n---\nbody');
+    expect(await loadProfile(hostFs, builtin, warn)).toMatchObject({ allowedSubagents: ['explore', 'worker'], preferredSubagents: ['worker'], denySubagents: ['reviewer'] });
+    await writeFile(join(home, SYSTEM_MD_FILENAME), '---\ncan_spawn_subagents: false\npreferred_subagents: []\n---\nbody');
+    expect(await loadProfile(hostFs, builtin, warn)).toMatchObject({ canSpawnSubagents: false, preferredSubagents: [], allowedSubagents: ['explore', 'worker'] });
   });
 
   it('defaults an upgraded SYSTEM.md description to the builtin when omitted', async () => {

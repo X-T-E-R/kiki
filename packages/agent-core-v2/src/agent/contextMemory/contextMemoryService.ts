@@ -40,6 +40,7 @@ import {
   assertContextImportFits,
   computeUndoCut,
   contextMemoryKey,
+  contextRevisionKey,
   isFullyUndoable,
   type UndoCut,
 } from './contextOps';
@@ -56,6 +57,7 @@ export class AgentContextMemoryService extends Disposable implements IAgentConte
   ) {
     super();
     this.agentState.contributeState(contextMemoryKey);
+    this.agentState.contributeState(contextRevisionKey);
   }
 
   private get tokenEstimateFns(): TokenEstimate {

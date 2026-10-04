@@ -13,6 +13,7 @@ import {
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import type { SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import {
+  setColdSessionArchived,
   setSessionArchivedBatch,
 } from '#/workspace/sessionLifecycle/coldSessionArchive';
 
@@ -85,6 +86,25 @@ function coldPathAccessor(options: ColdPathOptions): ServicesAccessor {
 }
 
 describe('setSessionArchivedBatch', () => {
+  it('resolves cold archive dependencies before the invocation accessor expires', async () => {
+    const recorded: SessionSummary[] = [];
+    const source = coldPathAccessor({
+      storeGet: async () => ({ id: 's1', createdAt: 1, updatedAt: 2, archived: false }),
+      onMirrorRecord: (value) => recorded.push(value),
+    });
+    let expired = false;
+    const scopedAccessor: ServicesAccessor = {
+      get<T>(id: ServiceIdentifier<T>): T {
+        if (expired) throw new Error('invocation accessor expired');
+        return source.get(id);
+      },
+    };
+    const archiving = setColdSessionArchived(scopedAccessor, 's1', true);
+    expired = true;
+    await expect(archiving).resolves.toBe('updated');
+    expect(recorded).toEqual([expect.objectContaining({ id: 's1', archived: true })]);
+  });
+
   it('maps a metadata read failure to a per-item internal error, not not_found', async () => {
     const outcomes = await setSessionArchivedBatch(
       coldPathAccessor({

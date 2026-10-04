@@ -129,6 +129,27 @@ describe('PromptFieldRegistryService', () => {
     _clearPromptFieldContributionsForTests();
   });
 
+  it('selects each declaration before merging and does not read unselected files', async () => {
+    const created = createRegistry();
+    services = created.services;
+    const input = {
+      global: { surface: 'global' as const, overrides: { fields: { 'system.language': 'GLOBAL' } } },
+      profile: { surface: 'profile' as const, overrides: { files: ['missing.toml'], fields: { 'system.language': 'ROLE' }, main: 'off' as const } },
+      context: { delegationPosition: 'main' as const },
+    };
+    expect((await created.registry.resolve(input)).values['system.language']).toBe('GLOBAL');
+    await expect(created.registry.resolve({ ...input, context: { delegationPosition: 'sub' } })).rejects.toThrow();
+    const declarations = [
+      { fields: { 'system.language': 'LOWER' } },
+      { fields: { 'system.language': 'COMMON' }, main: { fields: { 'system.shared': 'MAIN ONLY' } } },
+    ];
+    const main = await created.registry.resolve({ profile: { surface: 'profile', overrides: declarations }, context: { delegationPosition: 'main' } });
+    const sub = await created.registry.resolve({ profile: { surface: 'profile', overrides: declarations }, context: { delegationPosition: 'sub' } });
+    expect(main.values).toEqual({ 'system.language': 'LOWER', 'system.shared': 'MAIN ONLY' });
+    expect(sub.values).toEqual({ 'system.language': 'COMMON' });
+    expect(main.fields.find((field) => field.id === 'system.shared')?.sources.at(-1)?.selection).toBe('main');
+  });
+
   it('registers system, delegation, and static tool field definitions', () => {
     const ids = new Set(BUILTIN_PROMPT_FIELD_DEFINITIONS.map((field) => field.id));
     expect(ids).toContain('system.language');

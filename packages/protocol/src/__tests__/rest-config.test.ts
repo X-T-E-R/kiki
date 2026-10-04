@@ -8,6 +8,24 @@ import {
 } from '../rest/nbSearch';
 
 describe('config REST protocol', () => {
+  it('preserves legacy and declarative hooks through response and patch schemas', () => {
+    const legacy = [{ event: 'PreToolUse', command: 'echo example', matcher: '^Read$', timeout: 600 }];
+    const hooks = {
+      schemaVersion: 2, enabled: false, disabled: ['project.reminder'], files: ['hooks/example.toml'], legacy,
+      rules: [
+        { id: 'reminder', event: 'step.before', priority: -10, enabled: true,
+          match: { models: ['example/model'], profiles: ['example'], routes: ['native'], executors: ['native'], agentRoles: ['root'], tools: ['Read'], statuses: ['success'], sources: ['user'], outcomes: ['completed'] },
+          cadence: { everyCompletedSteps: 3, counterScope: 'turn', partitionBy: 'model' }, action: { type: 'inject', textFile: 'guidance/example.txt' } },
+        { id: 'audit', event: 'turn.after', priority: 200, enabled: false, match: {}, action: { type: 'observe' } },
+        { id: 'greeting', event: 'prompt.submit', priority: 100, enabled: true, match: {}, action: { type: 'inject', text: 'Example guidance' } },
+      ],
+    };
+    for (const value of [legacy, hooks]) {
+      expect(configResponseSchema.parse({ hooks: value }).hooks).toEqual(value);
+      expect(patchConfigRequestSchema.parse({ hooks: value }).hooks).toEqual(value);
+    }
+  });
+
   it('preserves space UI defaults and validates partial user patches', () => {
     expect(configResponseSchema.parse({ space_ui: { defaultSkin: 'linen', landingPage: '/bots', plugins: [] } }).space_ui)
       .toEqual({ defaultSkin: 'linen', landingPage: '/bots', plugins: [] });
@@ -23,13 +41,13 @@ describe('config REST protocol', () => {
     }
   });
 
-  it('preserves independent dispatch policy settings through request and response schemas', () => {
-    const patch = { subagent: { main_dispatch_policy: 'strict', subagent_dispatch_policy: 'advisory' } };
-    expect(patchConfigRequestSchema.parse(patch)).toEqual(patch);
+  it('omits removed host dispatch policies from the typed request and response', () => {
+    expect(patchConfigRequestSchema.parse({ subagent: {
+      main_dispatch_policy: 'strict', subagent_dispatch_policy: 'advisory', allowed_tools: ['Read'],
+    } })).toEqual({ subagent: { allowed_tools: ['Read'] } });
     expect(configResponseSchema.parse({ subagent: {
-      mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory',
-    } }).subagent).toEqual({ mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory' });
-    expect(patchConfigRequestSchema.safeParse({ subagent: { subagent_dispatch_policy: 'off' } }).success).toBe(false);
+      mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory', allowedTools: ['Read'],
+    } }).subagent).toEqual({ allowedTools: ['Read'] });
   });
 
   it('round-trips the subagent default_model and the top-level fast_model, clearing each with null', () => {

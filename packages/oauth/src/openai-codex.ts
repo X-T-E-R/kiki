@@ -79,11 +79,15 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-function tokenFromResponse(data: unknown, operation: 'exchange' | 'refresh'): TokenInfo {
+function tokenFromResponse(data: unknown, operation: 'exchange' | 'refresh', priorRefresh?: string): TokenInfo {
   if (!isRecord(data)) throw new OAuthError(`ChatGPT token ${operation} returned no JSON body.`);
   const accessToken = data['access_token'];
-  const refreshToken = data['refresh_token'];
-  const expiresIn = Number(data['expires_in']);
+  const refreshToken = typeof data['refresh_token'] === 'string' && data['refresh_token'].length > 0
+    ? data['refresh_token'] : priorRefresh;
+  const now = Math.floor(Date.now() / 1000);
+  const exp = typeof accessToken === 'string' ? decodeJwtPayload(accessToken)?.['exp'] : undefined;
+  const expiresIn = data['expires_in'] === undefined
+    ? (typeof exp === 'number' ? exp - now : 3600) : Number(data['expires_in']);
   if (typeof accessToken !== 'string' || accessToken.length === 0) {
     throw new OAuthError(`ChatGPT token ${operation} response is missing access_token.`);
   }
@@ -99,6 +103,7 @@ function tokenFromResponse(data: unknown, operation: 'exchange' | 'refresh'): To
   return {
     accessToken,
     refreshToken,
+    idToken: typeof data['id_token'] === 'string' && data['id_token'].length > 0 ? data['id_token'] : undefined,
     expiresAt: Math.floor(Date.now() / 1000) + expiresIn,
     scope: typeof data['scope'] === 'string' ? data['scope'] : '',
     tokenType: typeof data['token_type'] === 'string' ? data['token_type'] : 'Bearer',
@@ -125,7 +130,8 @@ export function createOpenAICodexMethod(fetchImpl: typeof fetch = fetch): OAuthD
     const deviceAuthId = data['device_auth_id'];
     const userCode = data['user_code'];
     const interval = typeof data['interval'] === 'string' ? Number(data['interval']) : data['interval'];
-    if (typeof deviceAuthId !== 'string' || typeof userCode !== 'string') {
+    if (typeof deviceAuthId !== 'string' || deviceAuthId.length === 0
+      || typeof userCode !== 'string' || userCode.length === 0) {
       throw new OAuthError('ChatGPT device authorization response is missing fields.');
     }
     return {
@@ -204,14 +210,17 @@ export function createOpenAICodexMethod(fetchImpl: typeof fetch = fetch): OAuthD
       signal: AbortSignal.timeout(30_000),
     });
     const data = await readJson(response);
-    const errorCode = isRecord(data) ? data['error'] : undefined;
-    if (response.status === 401 || response.status === 403 || errorCode === 'invalid_grant') {
+    const rawError = isRecord(data) ? data['error'] : undefined;
+    const errorCode = isRecord(rawError) ? rawError['code'] : rawError ?? (isRecord(data) ? data['code'] : undefined);
+    const permanent = typeof errorCode === 'string'
+      && ['invalid_grant', 'refresh_token_expired', 'refresh_token_reused', 'refresh_token_invalidated'].includes(errorCode);
+    if (response.status === 401 || response.status === 403 || permanent) {
       throw new OAuthUnauthorizedError('ChatGPT rejected the refresh token; sign in again.');
     }
     if (!response.ok) {
       throw new OAuthError(`ChatGPT token refresh failed (HTTP ${response.status}).`);
     }
-    return tokenFromResponse(data, 'refresh');
+    return tokenFromResponse(data, 'refresh', refreshToken);
   };
 
   const requestHeaders = (accessToken: string): Record<string, string> => {

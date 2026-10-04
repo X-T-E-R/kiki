@@ -212,7 +212,7 @@ export function preflightRequestIdentityProjection(
     throw unsupported('Claude Code-compatible request identity only supports Anthropic Messages');
   }
   if (policy.lineage.format === 'grok_build' && protocol === 'other') {
-    throw unsupported('Grok Build-compatible request identity requires Responses or Messages');
+    throw unsupported('Grok Build-compatible request identity requires Chat Completions, Responses or Messages');
   }
   if (policy.client.userAgent === 'none' && protocol === 'other') {
     throw unsupported('true none requires an adapter with a final fetch suppression seam');
@@ -384,9 +384,10 @@ function requiredSnapshot<T>(value: T | undefined, dimension: string): T {
   return value;
 }
 
-function protocolFamily(protocol: Protocol): 'responses' | 'messages' | 'other' {
+function protocolFamily(protocol: Protocol): 'responses' | 'messages' | 'chat' | 'other' {
   if (protocol === 'openai_responses') return 'responses';
   if (protocol === 'anthropic') return 'messages';
+  if (protocol === 'openai') return 'chat';
   return 'other';
 }
 

@@ -63,7 +63,7 @@ describe('server-v2 GET /api/connections', () => {
 
   function connect(): Promise<WebSocket> {
     return new Promise((resolve, reject) => {
-      const token = (server as RunningServer).authTokenService.getToken();
+      const token = (server as RunningServer).localOwnerToken;
       const ws = new WebSocket(wsUrl, [`kimi-code.bearer.${token}`]);
       ws.once('message', () => resolve(ws));
       ws.once('error', reject);

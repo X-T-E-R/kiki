@@ -146,7 +146,7 @@ describe('Computer Use publisher assets and guarded preparation', () => {
     const { entry, calls, plugins } = fixture(root, { platform: 'win32', arch: 'x64', plugin: true,
       windowsCuExecutableSha256: sha256, doctor: 'version=0.3.6\nmcp=true\nhelper=embedded' });
     const service = new CapabilityService(undefined as never, undefined as never, undefined as never,
-      stubLog(), undefined as never, [entry]);
+      stubLog(), undefined as never, undefined as never, [entry]);
     const status = await service.getCapability('kimi-cu');
     expect(status.state).toBe('ready');
     expect(status.steps.filter((step) => !step.optional).map((step) => [step.id, step.state]))
@@ -166,7 +166,7 @@ describe('Computer Use publisher assets and guarded preparation', () => {
     plugins.listPlugins = vi.fn(async () => [{ id: 'kimi-cu-win', enabled: true, state: 'ok',
       enabledMcpServerCount: 0, mcpServerCount: 1 }]) as never;
     const service = new CapabilityService(undefined as never, undefined as never, undefined as never,
-      stubLog(), undefined as never, [entry]);
+      stubLog(), undefined as never, undefined as never, [entry]);
     const status = await service.getCapability('kimi-cu');
     expect(status.state).toBe('partial');
     expect(status.steps.find((step) => step.id === 'plugin'))
@@ -217,7 +217,7 @@ describe('Computer Use publisher assets and guarded preparation', () => {
     await chmod(binary, 0o755);
     await writeFile(path.join(contents, 'Info.plist'), '<key>CFBundleShortVersionString</key><string>0.6.1</string>');
     const service = new CapabilityService(undefined as never, undefined as never, undefined as never,
-      stubLog(), undefined as never, [entry]);
+      stubLog(), undefined as never, undefined as never, [entry]);
     const status = await service.getCapability('kimi-cu');
     expect(status.state).toBe('ready');
     expect(status.steps.filter((step) => !step.optional).map((step) => [step.id, step.state]))

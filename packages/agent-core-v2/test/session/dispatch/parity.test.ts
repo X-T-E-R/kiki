@@ -18,12 +18,15 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentLoopService, type AgentLoopStatus } from '#/agent/loop/loop';
+import { IAgentModelSwitchService, type ModelSwitchReceipt } from '#/agent/modelSwitch/modelSwitch';
 import {
   constrainPermissionMode,
   IAgentPermissionModeService,
 } from '#/agent/permissionMode/permissionMode';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
+import { assertNativeToolOverride, mergeToolBindingOverride } from '#/agent/profile/toolBinding';
+import { resumeFingerprint } from '#/session/dispatch/resume';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -159,7 +162,7 @@ const parityProfile = normalizeAgentProfile({
   tools: ['Read', 'Write'],
   toolAllowPolicies: [['Read'], ['Write']],
   disallowedTools: ['Bash'],
-  subagents: [],
+  allowedSubagents: [],
   executor: 'native',
   modelAlias: 'parity-model',
   thinkingEffort: 'high',
@@ -514,6 +517,7 @@ function createLane(
   const taskRecords = new Map<string, TaskRecord>();
   const stateByAgent = new Map<string, AgentStateService>();
   const profileByAgent = new Map<string, ProfileData>();
+  const modelSwitchReceipts = new Map<string, ModelSwitchReceipt>();
   const contextByAgent = new Map<string, string[]>();
   const permissionModeByAgent = new Map<string, PermissionMode>();
   const permissionCeilingByAgent = new Map<string, PermissionMode>();
@@ -552,11 +556,30 @@ function createLane(
     id: agentId,
     accessor: {
       get: ((serviceId: unknown) => {
+        if (serviceId === IAgentMemorySnapshot) return { getPersona: () => profileByAgent.get(agentId)?.memoryReadContext };
         if (serviceId === IAgentActivityView) {
           return { _serviceBrand: undefined, state: () => ({ lifecycle: 'ready', background: [] }) } satisfies IAgentActivityView;
         }
         if (serviceId === IAgentLifecycleService) return lifecycle;
         if (serviceId === ISessionSubagentService) return subagents;
+        if (serviceId === IAgentModelSwitchService) {
+          return { _serviceBrand: undefined, onDidChange: Event.None as Event<ModelSwitchReceipt>,
+            get: (id) => modelSwitchReceipts.get(`${agentId}:${id}`),
+            execute: async (input, execution) => {
+              const data = profileByAgent.get(agentId)!;
+              const binding = execution?.binding;
+              binding?.assertCurrent();
+              const receipt: ModelSwitchReceipt = { operationId: input.operationId, agentId, state: 'completed',
+                fromModel: data.modelAlias!, toModel: input.model, mode: input.mode };
+              Object.assign(data, { modelAlias: input.model, thinkingLevel: input.thinking ?? data.thinkingLevel });
+              if (binding?.config.allowParentNotify !== undefined) Object.assign(data, { allowParentNotify: binding.config.allowParentNotify });
+              if (binding?.config.toolOverride !== undefined) Object.assign(data, { toolOverride: binding.config.toolOverride });
+              modelSwitchReceipts.set(`${agentId}:${input.operationId}`, receipt);
+              await binding?.syncMetadata();
+              return receipt;
+            },
+          } satisfies IAgentModelSwitchService;
+        }
         if (serviceId === IAgentProfileService) {
           const data = profileByAgent.get(agentId)!;
           return {
@@ -582,11 +605,15 @@ function createLane(
                 },
               };
             },
-            prepareResumeBinding: async (input: Parameters<IAgentProfileService['prepareResumeBinding']>[0]) => () => {
+            prepareResumeBinding: async (input: Parameters<IAgentProfileService['prepareResumeBinding']>[0]) => {
               probe.resumeBindings.push(input);
-              if (input.allowParentNotify !== undefined) {
-                (data as { allowParentNotify?: boolean }).allowParentNotify = input.allowParentNotify;
-              }
+              assertNativeToolOverride(data.executorId, input.toolOverride);
+              return {
+                model: input.modelAlias ?? data.modelAlias!, thinking: input.thinkingEffort ?? data.thinkingLevel,
+                config: { modelAlias: input.modelAlias ?? data.modelAlias!, thinkingEffort: input.thinkingEffort ?? data.thinkingLevel,
+                  allowParentNotify: input.allowParentNotify, toolOverride: mergeToolBindingOverride(data.toolOverride, input.toolOverride) },
+                maxContextTokens: 100_000, reservedTokens: 0, assertCurrent: () => {}, syncMetadata: async () => {},
+              };
             },
             republishStatus: () => {},
           };
@@ -726,7 +753,7 @@ function createLane(
     profileName: 'agent',
     thinkingLevel: 'off',
     systemPrompt: '',
-    subagents: [profile.name],
+    preferredSubagents: [profile.name],
     subagentLeases: profile === parityProfile ? { [profile.name]: parityLease } : undefined,
     spawnPolicy: profile === parityProfile ? paritySpawnPolicy : undefined,
   });
@@ -774,10 +801,13 @@ function createLane(
       allowParentNotify: binding?.allowParentNotify ?? prior?.allowParentNotify ?? resolved.allowParentNotify,
       activeToolNames: resolved.tools,
       disallowedTools: resolved.disallowedTools,
+      toolOverride: binding?.toolOverride ?? prior?.toolOverride,
+      memoryReadContext: binding?.memoryReadContext ?? prior?.memoryReadContext,
       executorId: resolved.executor,
-      subagentPolicy: leased.subagentPolicy,
-      subagentDeclaration: leased.subagentDeclaration,
-      subagents: leased.subagents,
+      canSpawnSubagents: leased.canSpawnSubagents,
+      allowedSubagents: leased.allowedSubagents,
+      preferredSubagents: leased.preferredSubagents,
+      denySubagents: leased.denySubagents,
       dispatchDecision: binding?.dispatchDecision,
       spawnPolicy: binding?.spawnPolicy,
       appliedLease: binding?.lease,
@@ -937,6 +967,18 @@ function createLane(
         stopReason: record.stopReason,
       });
     },
+    getTaskSnapshot: async (taskId: string) => {
+      const record = taskRecords.get(taskId);
+      return record?.task.toInfo({ taskId, description: record.task.description, status: record.status,
+        startedAt: record.startedAt, endedAt: record.endedAt, stopReason: record.stopReason });
+    },
+    getOutputSnapshot: async (taskId: string, maxBytes: number) => {
+      const output = Buffer.from(taskRecords.get(taskId)?.output ?? '', 'utf8');
+      const preview = output.subarray(Math.max(0, output.byteLength - maxBytes)).toString('utf8');
+      return { outputSizeBytes: output.byteLength, previewBytes: Buffer.byteLength(preview, 'utf8'),
+        preview, truncated: output.byteLength > maxBytes, fullOutputAvailable: true,
+        outputPath: `/fixture/tasks/${taskId}/output.log` };
+    },
     readOutput: async (taskId: string) => taskRecords.get(taskId)?.output ?? '',
   };
 
@@ -972,6 +1014,10 @@ function createLane(
     setArchived: async () => {},
     registerAgent: async (agentId: string, meta: AgentMeta) => {
       metadataAgents[agentId] = meta;
+    },
+    updateAgent: async (agentId: string, updater: (current: AgentMeta) => AgentMeta) => {
+      const current = metadataAgents[agentId];
+      if (current !== undefined) metadataAgents[agentId] = updater(structuredClone(current));
     },
   } as ISessionMetadata;
 
@@ -1482,6 +1528,31 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(external.taskRecords.size).toBe(0);
   });
 
+  it('passes fresh-only through AgentRun and reuses one run and task for a repeated tool-call identity', async () => {
+    const lane = createLane(disposables, 'internal');
+    await lane.runInternal({ profile: 'coder', name: 'repeat_child', prompt: 'start', description: 'Spawn', background: true });
+    await complete(lane, 0);
+    const args = SubagentToolInputSchema.parse({ resume: 'repeat_child', new_window: true, prompt: 'Resume once', description: 'Resume', background: true });
+    const context = { turnId: 2, toolCallId: 'stable-resume-call', args, signal: new AbortController().signal };
+    const tool = lane.ix.get(ISubagentTool);
+    const [first, second] = await Promise.all([executeTool(tool, context), executeTool(tool, context)]);
+    expect(first.isError).not.toBe(true);
+    expect(second).toEqual(first);
+    expect(lane.probe.resumeBindings.at(-1)).toMatchObject({ newWindow: true });
+    expect(lane.subagentRun).toHaveBeenCalledTimes(2);
+    expect(lane.taskRecords.size).toBe(2);
+    await complete(lane, 1);
+    lane.ix.set(ISubagentTool, new SyncDescriptor(SubagentTool));
+    const recovered = await executeTool(lane.ix.get(ISubagentTool), context);
+    expect(recovered.isError).not.toBe(true);
+    expect(fieldMap(outputText(recovered.output))['task_id']).toBe(fieldMap(outputText(first.output))['task_id']);
+    expect(lane.subagentRun).toHaveBeenCalledTimes(2);
+    expect(lane.taskRecords.size).toBe(2);
+    const conflict = await executeTool(lane.ix.get(ISubagentTool), { ...context, args: { ...args, prompt: 'Different request' } });
+    expect(conflict.isError).toBe(true);
+    expect(outputText(conflict.output)).toContain('different request');
+  });
+
   it('shares the tree limit across main, child and grandchild dispatch and retains cancelled descendants until settlement', async () => {
     const lane = createLane(disposables, 'internal', { capacity: { maxDirectChildren: 16, maxTotalSubagents: 2 } });
     const dispatch = lane.ix.get(ISessionDispatchService);
@@ -1492,9 +1563,9 @@ describe('AgentRun and dispatch parity golden', () => {
       runtime: lane.ix.get(IAgentRuntimeService).inspect(), signal: controller.signal,
     });
     const parent = await dispatch.launch(input('main'));
-    Object.assign(parent.child.agent.accessor.get(IAgentProfileService).data(), { subagents: ['coder'] });
+    Object.assign(parent.child.agent.accessor.get(IAgentProfileService).data(), { allowedSubagents: ['coder'] });
     const grandchild = await dispatch.launch(input(parent.child.agentId));
-    Object.assign(grandchild.child.agent.accessor.get(IAgentProfileService).data(), { subagents: ['coder'] });
+    Object.assign(grandchild.child.agent.accessor.get(IAgentProfileService).data(), { allowedSubagents: ['coder'] });
     await expect(dispatch.launch(input(grandchild.child.agentId))).rejects.toMatchObject({
       code: 'dispatch.limit_exceeded', details: { layer: 'tree', current: 2, limit: 2 },
     });
@@ -1524,7 +1595,7 @@ describe('AgentRun and dispatch parity golden', () => {
       list: () => [parityProfile, reviewer],
     });
     Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), {
-      subagentLeases: { coder: { ...parityLease, subagents: ['reviewer'] } },
+      subagentLeases: { coder: { ...parityLease, allowedSubagents: ['reviewer'] } },
     });
     const dispatch = lane.ix.get(ISessionDispatchService);
     const runtime = lane.ix.get(IAgentRuntimeService).inspect();
@@ -1536,7 +1607,7 @@ describe('AgentRun and dispatch parity golden', () => {
     const started = await child.started;
     expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
     expect(child.child.agent.accessor.get(IAgentProfileService).data()).toMatchObject({
-      subagentDeclaration: { kind: 'set', names: [] }, subagents: [],
+      allowedSubagents: [],
     });
 
     await expect(dispatch.launch({
@@ -1583,7 +1654,7 @@ describe('AgentRun and dispatch parity golden', () => {
   it('loads profile_file through AgentRun without registering its name or hardening unmarked recommendations', async () => {
     const lane = createLane(disposables, 'internal');
     const runtime = lane.ix.get(IAgentRuntimeService).inspect();
-    const readText = vi.fn(async () => '---\nname: coder\ndescription: File role\nmodel_alias: parity-model\nthinking_effort: high\ntools: [Read, Write, Bash]\nsubagents: [coder, outside]\n---\nFILE INSTRUCTIONS');
+    const readText = vi.fn(async () => '---\nname: coder\ndescription: File role\nmodel_alias: parity-model\nthinking_effort: high\ntools: [Read, Write, Bash]\nallowed_subagents: [coder, outside]\n---\nFILE INSTRUCTIONS');
     Object.defineProperty(runtime, 'fs', { value: { realpath: async (path: string) => path, readText } });
     Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), { activeToolNames: ['Read'], disallowedTools: ['Bash'], spawnPolicy: undefined, subagentLeases: undefined });
     const original = lane.ix.get(ISessionAgentProfileCatalog).get('coder');
@@ -1596,7 +1667,7 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(bound.sourcePath).toBe('/workspace/custom.md');
     expect(bound.toolAllowPolicies).toContainEqual(['Read']);
     expect(bound.disallowedTools).toContain('Bash');
-    expect(bound.subagents).toEqual(['coder', 'outside']);
+    expect(bound.allowedSubagents).toEqual(['coder', 'outside']);
     expect(bound.systemPrompt({})).toContain('FILE INSTRUCTIONS');
     await complete(lane, 0);
     const overridden = await lane.runInternal({ profile_file: 'custom.md', model_alias: 'outside-model', prompt: 'continue', description: 'Override model', background: true });
@@ -1609,38 +1680,36 @@ describe('AgentRun and dispatch parity golden', () => {
     await expect(lane.ix.get(ISubagentTool).resolveExecution({ profile_file: '/outside/custom.md', prompt: 'fail', description: 'Outside path' })).rejects.toMatchObject({ code: 'fs.path_escapes' });
   });
 
-  it('allows advisory profile_file deviations, records them, and keeps strict profile_file admission', async () => {
+  it('creates an unregistered MD despite preset restrictions and resumes it without a same-name preset model lease', async () => {
     const lane = createLane(disposables, 'internal');
     const runtime = lane.ix.get(IAgentRuntimeService).inspect();
-    Object.defineProperty(runtime, 'fs', { value: {
-      realpath: async (path: string) => path,
-      readText: async () => '---\nname: reviewer\ndescription: File reviewer\nmodel_alias: parity-model\nsubagent_policy: strict\nsubagents: []\n---\nREVIEW',
-    } });
+    const readText = vi.fn(async () => '---\nname: reviewer\ndescription: File reviewer\nmodel_alias: parity-model\ncan_spawn_subagents: false\n---\nREVIEW');
+    Object.defineProperty(runtime, 'fs', { value: { realpath: async (path: string) => path, readText } });
     const caller = lane.handles.get('main')!.accessor.get(IAgentProfileService).data();
     Object.assign(caller, {
-      subagentPolicy: 'advisory',
-      subagentDeclaration: { kind: 'set', names: ['explore'] },
-      subagents: ['explore'],
+      allowedSubagents: [], preferredSubagents: ['explore'], denySubagents: ['reviewer'],
+      subagentLeases: { reviewer: { name: 'reviewer', modelAlias: 'main-model', allowedModels: ['main-model'] } },
     });
     const allowed = await lane.runInternal({
-      profile_file: 'reviewer.md', prompt: 'review', description: 'Review', background: true,
+      profile_file: 'reviewer.md', name: 'file_review', prompt: 'review', description: 'Review', background: true,
     });
     expect(allowed.isError).not.toBe(true);
-    expect(allowed.output).toContain('dispatch_policy: advisory');
-    expect(allowed.output).toContain('recommendation_status: allowed_nonpreferred');
-    expect(allowed.output).toContain('recommendation_deviation: true');
+    expect(allowed.output).toContain('dispatch_policy: fixed');
+    expect(allowed.output).toContain('recommendation_status: unconfigured');
     expect(allowed.output).toContain('selection_kind: profile_file');
-
-    Object.assign(caller, {
-      subagentPolicy: 'strict',
-      subagentDeclaration: { kind: 'set', names: ['explore'] },
-      subagents: ['explore'],
-    });
-    const blocked = await lane.runInternal({
-      profile_file: 'reviewer.md', prompt: 'review', description: 'Review', background: true,
-    });
+    expect(lane.lifecycleCreate.mock.calls[0]![0]!.binding).toMatchObject({ model: 'parity-model', dispatchDecision: { version: 2, selectionKind: 'profile_file' } });
+    expect(lane.lifecycleCreate.mock.calls[0]![0]!.binding!.lease).toBeUndefined();
+    await complete(lane, 0);
+    Object.assign(caller, { canSpawnSubagents: false });
+    const resumed = await lane.runInternal({ resume: 'file_review', prompt: 'continue', description: 'Continue', background: true });
+    expect(resumed.isError).not.toBe(true);
+    expect(lane.probe.resumeBindings.at(-1)?.callerConstraints).not.toContainEqual(expect.objectContaining({ ruleSource: 'caller-lease:reviewer' }));
+    expect(lane.handles.get('agent_child_1')!.accessor.get(IAgentProfileService).data().modelAlias).toBe('parity-model');
+    expect(readText).toHaveBeenCalledTimes(1);
+    await complete(lane, 1);
+    const blocked = await lane.runInternal({ profile_file: 'reviewer.md', prompt: 'review', description: 'Review', background: true });
     expect(blocked.isError).toBe(true);
-    expect(blocked.output).toContain('strict subagent policy');
+    expect(blocked.output).toContain('can_spawn_subagents: false');
     expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
   });
 
@@ -1648,9 +1717,8 @@ describe('AgentRun and dispatch parity golden', () => {
     const lane = createLane(disposables, 'internal');
     const caller = lane.handles.get('main')!.accessor.get(IAgentProfileService).data();
     Object.assign(caller, {
-      subagentPolicy: undefined,
-      subagentDeclaration: { kind: 'set', names: ['coder'] },
-      subagents: ['coder'],
+      allowedSubagents: undefined,
+      preferredSubagents: ['coder'],
     });
     const result = await lane.runInternal({
       prompt: 'work', description: 'Generic default', background: true,
@@ -1682,6 +1750,43 @@ describe('AgentRun and dispatch parity golden', () => {
     });
     return { lane: createLane(disposables, 'internal', { profile: main }), main };
   }
+
+  it('passes call-layer tools and the frozen caller memory view through launch and saved-child resume', async () => {
+    const { lane } = mainProfileLane();
+    Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), { memoryReadContext: { id: 'caller-reader', shared: [] } });
+    const initial = await lane.runInternal({ profile: 'solo', name: 'tool_child', tools: ['*', 'ThreadRead'], disallowed_tools: ['Bash'], prompt: 'work', description: 'Tool child', background: true });
+    expect(initial.isError).not.toBe(true);
+    expect(lane.lifecycleCreate.mock.calls[0]![0]!.binding).toMatchObject({ toolOverride: { tools: ['*', 'ThreadRead'], disallowedTools: ['Bash'] }, memoryReadContext: { id: 'caller-reader', shared: [] } });
+    await complete(lane, 0);
+    const resumed = await lane.runInternal({ resume: 'tool_child', tools: [], disallowed_tools: [], prompt: 'continue', description: 'Clear call layer', background: true });
+    expect(resumed.isError).not.toBe(true);
+    expect(lane.probe.resumeBindings.at(-1)?.toolOverride).toEqual({ tools: [], disallowedTools: [] });
+    expect(lane.handles.get('agent_child_1')!.accessor.get(IAgentProfileService).data().toolOverride).toEqual({ tools: [], disallowedTools: [] });
+    await complete(lane, 1);
+    expect((await lane.runInternal({ resume: 'tool_child', prompt: 'continue', description: 'Keep call layer', background: true })).isError).not.toBe(true);
+    expect(lane.handles.get('agent_child_1')!.accessor.get(IAgentProfileService).data().toolOverride).toEqual({ tools: [], disallowedTools: [] });
+  });
+
+  it('distinguishes omitted, empty and star tool overrides in the durable resume fingerprint', () => {
+    const request = { kind: 'prompt' as const, prompt: 'continue' };
+    const options = { requesterAgentId: 'main', signal: new AbortController().signal };
+    const omitted = resumeFingerprint(request, options);
+    expect(resumeFingerprint(request, { ...options, toolOverride: {} })).toBe(omitted);
+    const empty = resumeFingerprint(request, { ...options, toolOverride: { tools: [] } });
+    const star = resumeFingerprint(request, { ...options, toolOverride: { tools: ['*'] } });
+    const clearDeny = resumeFingerprint(request, { ...options, toolOverride: { disallowedTools: [] } });
+    expect(new Set([omitted, empty, star, clearDeny]).size).toBe(4);
+  });
+
+  it('rejects external tool overrides before lifecycle creation or execution', async () => {
+    const externalProfile = normalizeAgentProfile({ ...parityProfile, executor: 'grok-acp' });
+    const lane = createLane(disposables, 'internal', { profile: externalProfile });
+    const result = await lane.runInternal({ profile: 'coder', tools: [], prompt: 'work', description: 'Unsupported controls', background: true });
+    expect(result.isError).toBe(true);
+    expect(outputText(result.output)).toContain('does not support AgentRun tools or disallowed_tools overrides');
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+    expect(lane.probe.runs).toHaveLength(0);
+  });
 
   it('dispatches an explicitly named main profile as a subagent and hints ThreadCreate once', async () => {
     const { lane } = mainProfileLane();
@@ -1751,15 +1856,13 @@ describe('AgentRun and dispatch parity golden', () => {
   it('keeps strict caller policy authoritative for an explicitly named main profile', async () => {
     const { lane } = mainProfileLane();
     Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), {
-      subagentPolicy: 'strict',
-      subagentDeclaration: { kind: 'set', names: ['explore'] },
-      subagents: ['explore'],
+      allowedSubagents: ['explore'],
     });
     const blocked = await lane.runInternal({
       prompt: 'work', description: 'Blocked main profile', profile: 'solo', background: true,
     });
     expect(blocked.isError).toBe(true);
-    expect(outputText(blocked.output)).toContain('strict subagent policy');
+    expect(outputText(blocked.output)).toContain('allowed_subagents or deny_subagents');
     expect(lane.lifecycleCreate).not.toHaveBeenCalled();
   });
 
@@ -2532,6 +2635,33 @@ describe('AgentRun and dispatch parity golden', () => {
       '[summary]',
       'text result',
     ].join('\n'));
+  });
+
+  it.each([true, false])('delivers a bounded large foreground receipt with honest complete-file availability=%s', async (available) => {
+    const internal = createLane(disposables, 'internal');
+    const text = 'HEAD-MUST-SURVIVE\n' + 'x'.repeat(2 * 1024 * 1024) + '\nTAIL-MUST-SURVIVE';
+    if (!available) {
+      vi.spyOn(internal.ix.get(IAgentTaskService), 'getOutputSnapshot').mockResolvedValue({
+        outputSizeBytes: Buffer.byteLength(text, 'utf8'), previewBytes: 32 * 1024,
+        preview: text.slice(-32 * 1024), truncated: true, fullOutputAvailable: false,
+      });
+    }
+    const pending = internal.runInternal({
+      prompt: 'inspect large receipt', description: 'Inspect receipt', profile: 'coder', background: false,
+    });
+    await complete(internal, 0, text);
+    const output = outputText((await pending).output);
+    expect(fieldMap(output)).toMatchObject({
+      task_id: 'task_1', agent_id: 'agent_child_1', actual_profile: 'coder', status: 'completed',
+      truncated: 'true', full_output_available: String(available),
+      output_size_bytes: String(Buffer.byteLength(text, 'utf8')), preview_bytes: String(32 * 1024),
+    });
+    expect(fieldMap(output)['output_path']).toBe(available ? '/fixture/tasks/task_1/output.log' : undefined);
+    expect(output).toContain('[output_preview_tail]');
+    expect(output).not.toContain('[summary]');
+    expect(output).toContain(available ? 'TaskOutput with offset and max_bytes' : 'no complete output file is available');
+    expect(output.endsWith('TAIL-MUST-SURVIVE')).toBe(true);
+    expect(Buffer.byteLength(output, 'utf8')).toBeLessThan(40 * 1024);
   });
 
   it.each(['failed', 'timed_out'] as const)('includes the task id in a %s foreground receipt', async (status) => {

@@ -488,10 +488,18 @@ export function resolveAuthoredRequestIdentity(
   return resolveRequestIdentityLayers(policy);
 }
 
+export function defaultOAuthRequestIdentity(
+  provider: Pick<ProviderConfig, 'oauth'> | undefined,
+): RequestIdentityPolicy | undefined {
+  if (provider?.oauth?.key === 'oauth/openai-codex') return { profile: 'codex' };
+  if (provider?.oauth?.key === 'oauth/grok-build') return { profile: 'grok_build' };
+  return undefined;
+}
+
 export function resolveProviderRequestIdentity(
   provider: ProviderConfig | undefined,
 ): ResolvedRequestIdentityPolicy {
-  return resolveRequestIdentityLayers(provider?.requestIdentity);
+  return resolveRequestIdentityLayers(defaultOAuthRequestIdentity(provider), provider?.requestIdentity);
 }
 
 function expandProfileLayer(

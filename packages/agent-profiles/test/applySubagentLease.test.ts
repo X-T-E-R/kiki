@@ -15,6 +15,7 @@ import {
 import type { SubagentLease } from '#/subagentLease';
 import { parseAgentFileText } from '#/agentFile';
 import { agentProfileFromFile } from '#/agentProfileFromFile';
+import { modelPromptLayers, applyMatchedModelProfilePrompt } from '#/modelProfileOverlay';
 
 function child(overrides: Partial<AgentProfile> = {}): AgentProfile {
   return normalizeAgentProfile({
@@ -25,7 +26,7 @@ function child(overrides: Partial<AgentProfile> = {}): AgentProfile {
     modelAlias: 'gpt-5.6-sol',
     thinkingEffort: 'medium',
     tools: ['Read', 'Grep', 'Glob'],
-    subagents: ['reviewer'],
+    allowedSubagents: ['reviewer'],
     systemPrompt: () => 'EXPLORE BODY',
     ...overrides,
   });
@@ -113,7 +114,7 @@ describe('applyLease', () => {
     expect(applied.denyModels).toEqual(['gpt-5.6-sol']);
     expect(applied.tools).toEqual(['Bash', 'Read']);
     expect(applied.description).toBe('caller explore');
-    expect(applied.subagents).toEqual(['reviewer']);
+    expect(applied.allowedSubagents).toEqual(['reviewer']);
     expect(child().tools).toEqual(['Read', 'Grep', 'Glob']);
   });
 
@@ -174,7 +175,7 @@ describe('applyLease', () => {
 
   it.each([
     'allowed_models: []',
-    'subagents:\n  - name: explore\n    allowed_models: []',
+    'allowed_subagents:\n  - name: explore\n    allowed_models: []',
     'spawn_constraints:\n  allowed_models: []',
   ])('blocks parsed empty model allowlists at every policy boundary: %s', (fields) => {
     const definition = parseAgentFileText({ path: '/agents/explore.md', source: 'user', text: `---\nname: explore\ndescription: test\n${fields}\n---\nBODY` });
@@ -185,35 +186,23 @@ describe('applyLease', () => {
     expect(routePermittedByProfile({ modelAlias: 'example' }, applied)).toBe(false);
   });
 
-  it('keeps a * subagents overlay unrestricted when no strict set ceiling exists', () => {
-    const open = applyLease(child({ subagents: undefined }), { name: 'explore', subagents: null });
-    expect(open.subagents).toBeUndefined();
-    const advisory = applyLease(child({ subagentPolicy: 'advisory' }), { name: 'explore', subagents: null });
-    expect(advisory.subagents).toBeUndefined();
+  it('narrows preset sets, accumulates deny and lets the nearest preference replace rather than intersect', () => {
+    const base = child({ allowedSubagents: ['explore', 'reviewer'], preferredSubagents: ['explore'], denySubagents: ['blocked'] });
+    const applied = applyLease(base, { name: 'explore', allowedSubagents: ['reviewer', 'worker'], preferredSubagents: ['reviewer'], denySubagents: ['other'] });
+    expect(applied).toMatchObject({ allowedSubagents: ['reviewer'], preferredSubagents: ['reviewer'], denySubagents: ['blocked', 'other'] });
+    expect(applyLease(applied, { name: 'explore', preferredSubagents: [] }).preferredSubagents).toEqual([]);
+    expect(applyLease(base, { name: 'explore' }).allowedSubagents).toEqual(['explore', 'reviewer']);
   });
 
-  it('caps declared sets for implicit and explicit strict policies without forcing advisory admission', () => {
-    expect(applyLease(child({ subagents: [] }), { name: 'explore', subagents: null })).toMatchObject({
-      subagentDeclaration: { kind: 'set', names: [] }, subagents: [],
-    });
-    expect(applyLease(child({ subagentDeclaration: { kind: 'set', names: ['reviewer'] }, subagents: ['reviewer'] }), {
-      name: 'explore', subagents: ['explore'],
-    })).toMatchObject({ subagentDeclaration: { kind: 'set', names: [] }, subagents: [] });
-    expect(applyLease(child({ subagentPolicy: 'strict', subagents: [] }), {
-      name: 'explore', subagents: null,
-    })).toMatchObject({ subagentPolicy: 'strict', subagents: [] });
-    expect(applyLease(child({ subagentPolicy: 'advisory', subagents: ['explore'] }), {
-      name: 'explore', subagents: ['reviewer'],
-    })).toMatchObject({
-      subagentPolicy: 'advisory',
-      subagentDeclaration: { kind: 'set', names: ['reviewer'] },
-      subagents: ['reviewer'],
-    });
-    const routed = resolveAgentProfileRoute({
-      id: 'explore.open', profile: 'explore', description: 'open', promptMode: 'inherit', prompt: '',
-      subagents: undefined, overriddenFields: ['subagents'], path: '/agents/.routes/explore/open.md',
-    }, child({ subagentPolicy: 'strict', subagents: [] }));
-    expect(routed.effectiveProfile).toMatchObject({ subagentPolicy: 'strict', subagents: [] });
+  it('keeps false sticky across route and lease, without treating an empty preset set as false', () => {
+    const route = { id: 'explore.open', profile: 'explore', description: 'open', promptMode: 'inherit' as const, prompt: '', canSpawnSubagents: true, overriddenFields: ['can_spawn_subagents'], path: '/agents/.routes/explore/open.md' };
+    const routed = resolveAgentProfileRoute(route, child({ canSpawnSubagents: false, allowedSubagents: [] }));
+    expect(applyLease(routed.effectiveProfile, { name: 'explore', canSpawnSubagents: true }).canSpawnSubagents).toBe(false);
+    const empty = applyLease(child({ allowedSubagents: [] }), { name: 'explore', allowedSubagents: undefined });
+    expect(empty.allowedSubagents).toEqual([]);
+    expect(empty.canSpawnSubagents).toBeUndefined();
+    const narrowed = resolveAgentProfileRoute({ ...route, allowedSubagents: ['reviewer'], preferredSubagents: ['reviewer'], denySubagents: ['blocked'] }, child({ allowedSubagents: ['reviewer', 'worker'], denySubagents: ['other'], preferredSubagents: ['worker'] })).effectiveProfile;
+    expect(narrowed).toMatchObject({ allowedSubagents: ['reviewer'], preferredSubagents: ['reviewer'], denySubagents: ['other', 'blocked'] });
   });
 
   it('overrides a child model pin with the lease pin', () => {
@@ -331,5 +320,21 @@ describe('appliedDispatchProfile', () => {
       },
     );
     expect(result.profile.modelAlias).toBe('grok-4.6');
+  });
+});
+
+describe('caller lease model prompts', () => {
+  it('preserves original prompts by default, replaces explicitly, and never duplicates on reapplication', () => {
+    const base = child({ modelProfiles: [{ alias: 'fast', promptMode: 'append', prompt: 'ORIGINAL', promptOverrides: { fields: { 'system.language': 'ORIGINAL FIELD' } }, allowedEfforts: ['high'] }], allowedModels: ['fast'] });
+    const lease: SubagentLease = { name: 'explore', modelProfiles: [{ alias: 'fast', promptMode: 'append', prompt: 'LEASE' }] };
+    const render = (profile: AgentProfile) => modelPromptLayers(profile).reduce((text, layer) => applyMatchedModelProfilePrompt(text, layer.entries, 'fast', (id) => id, 'sub'), 'BODY');
+    const preserved = applyLease(base, lease);
+    expect(render(preserved)).toBe('BODY\n\nORIGINAL\n\nLEASE');
+    expect(render(applyLease(preserved, lease))).toBe(render(preserved));
+    const replaced = applyLease(base, { ...lease, modelPrompts: 'replace' });
+    expect(render(replaced)).toBe('BODY\n\nLEASE');
+    expect(replaced.modelConstraintProfiles).toEqual(base.modelProfiles);
+    expect(replaced.allowedModels).toEqual(['fast']);
+    expect(modelPromptLayers(preserved)[0]?.entries[0]?.promptOverrides?.fields?.['system.language']).toBe('ORIGINAL FIELD');
   });
 });

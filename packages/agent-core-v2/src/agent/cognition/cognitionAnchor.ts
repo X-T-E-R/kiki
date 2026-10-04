@@ -5,6 +5,7 @@ export interface CognitionAnchorProjectionInput {
   readonly turnId: number | undefined;
   readonly step: number | undefined;
   readonly hasExplicitSystemPrompt: boolean;
+  readonly binding?: import('./cognitionConfig').CognitionBinding;
 }
 
 /** `cognition` domain — first-turn system-prompt anchor contract (Agent scope). Projects a slim

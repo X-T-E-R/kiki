@@ -51,11 +51,17 @@ function start(config: Partial<MemoryConfig> = { enabled: true }): { store: IMem
       }
     }, listWorkspaceIds: async () => [workspaceId] }],
     [IConfigService, { _serviceBrand: undefined, get: () => settings }],
-    [ICapabilitySnapshotService, { _serviceBrand: undefined, ready: Promise.resolve(), memoryAvailable: () => memoryEnabled(settings, workspaceId), threadEnabled: () => true, toolAvailable: () => true, refresh: () => ({ memory: true, thread: true }) }],
+    [ICapabilitySnapshotService, { _serviceBrand: undefined, ready: Promise.resolve(), memoryAvailable: () => memoryEnabled(settings, workspaceId), threadEnabled: () => true, toolAvailable: (tool: string) => memoryEnabled(settings, workspaceId) && (tool !== 'MemoryWrite' || settings.approval !== 'off'), refresh: () => ({ memory: true, thread: true }) }],
   ] });
   const session = app.createChild(LifecycleScope.Session, 'memory-test', { seeds: [[ISessionContext, makeSessionContext({ sessionId: 'session_one', workspaceId, cwd: home, sessionDir: home, sessionScope: 'sessions/test' })]] });
   const agent = session.createChild(LifecycleScope.Agent, 'main', { seeds: [[IAgentScopeContext, makeAgentScopeContext({ agentId: 'main', agentScope: 'sessions/test/main' })]] });
   return { store: app.accessor.get(IMemoryStore), snapshot: agent.accessor.get(IAgentMemorySnapshot), storage, writeTool: agent.accessor.get(IMemoryWriteTool), searchTool: agent.accessor.get(IMemorySearchTool), readTool: agent.accessor.get(IMemoryReadTool) };
+}
+
+function reopen(): ReturnType<typeof start> {
+  app?.dispose();
+  app = undefined;
+  return start();
 }
 
 async function create(store: IMemoryStore, scope: MemoryScope = workspace, body = 'Use pnpm for this project.') {
@@ -389,6 +395,59 @@ describe('memory persistence and snapshot', () => {
     await store.undo(workspace, accepted.operationId);
     expect((await store.get(workspace, first.entry.id))?.status).toBe('active');
     expect((await store.get(workspace, proposal.entry.id))?.status).toBe('pending');
+  });
+
+  it.each(['update', 'archive'] as const)('preserves the original across review %s, discard and store reopen', async (action) => {
+    const first = start();
+    const original = await create(first.store);
+    const proposal = await first.store.put({ action, scope: workspace, id: original.entry.id, expectedRevision: original.entry.revision, title: 'Candidate', body: 'Use yarn instead.', type: 'project', reason: 'Review requested', source: { writer: 'agent' }, pending: true });
+    expect(proposal.entry.id).not.toBe(original.entry.id);
+    expect(proposal.entry.pending_action).toBe(action);
+    expect(proposal.entry.supersedes).toBe(original.entry.id);
+    expect(await first.store.get(workspace, original.entry.id)).toEqual(original.entry);
+    const reopened = reopen();
+    expect(await reopened.store.get(workspace, original.entry.id)).toEqual(original.entry);
+    await reopened.store.delete(workspace, proposal.entry.id, proposal.entry.revision);
+    app?.dispose();
+    app = undefined;
+    const discarded = start();
+    expect(await discarded.store.get(workspace, original.entry.id)).toEqual(original.entry);
+    expect(await discarded.store.get(workspace, proposal.entry.id)).toBeUndefined();
+  });
+
+  it.each(['update', 'archive'] as const)('accepts review %s on the original ID after store reopen', async (action) => {
+    const first = start();
+    const original = await create(first.store);
+    const proposal = await first.store.put({ action, scope: workspace, id: original.entry.id, expectedRevision: original.entry.revision, title: 'Candidate', body: 'Use yarn instead.', type: 'project', reason: 'Review requested', source: { writer: 'agent' }, pending: true });
+    const reopened = reopen();
+    const savedCandidate = (await reopened.store.get(workspace, proposal.entry.id))!;
+    const candidate = (await reopened.store.put({ action: 'update', scope: workspace, id: savedCandidate.id, expectedRevision: savedCandidate.revision, title: savedCandidate.title, body: 'Use yarn offline.', type: savedCandidate.type, reason: 'Edited proposal', source, pending: true })).entry;
+    expect(candidate.id).toBe(savedCandidate.id);
+    expect(candidate.pending_action).toBe(action);
+    expect(candidate.supersedes_revision).toBe(original.entry.revision);
+    expect(await reopened.store.get(workspace, original.entry.id)).toEqual(original.entry);
+    const accepted = await reopened.store.put({ action: 'update', scope: workspace, id: candidate.id, expectedRevision: candidate.revision, title: candidate.title, body: candidate.body, type: candidate.type, reason: 'Accepted by user', source });
+    expect(accepted.entry.id).toBe(original.entry.id);
+    expect(accepted.entry.status).toBe(action === 'archive' ? 'archived' : 'active');
+    expect(accepted.entry.created).toBe(original.entry.created);
+    expect(await reopened.store.get(workspace, candidate.id)).toBeUndefined();
+    app?.dispose();
+    app = undefined;
+    const confirmed = start();
+    expect(await confirmed.store.get(workspace, original.entry.id)).toEqual(accepted.entry);
+    await confirmed.store.undo(workspace, accepted.operationId);
+    expect(await confirmed.store.get(workspace, original.entry.id)).toEqual(original.entry);
+    expect((await confirmed.store.get(workspace, candidate.id))?.status).toBe('pending');
+  });
+
+  it('rejects a review decision when the original revision changed and retains the proposal', async () => {
+    const { store } = start();
+    const original = await create(store);
+    const proposal = await store.put({ action: 'update', scope: workspace, id: original.entry.id, expectedRevision: original.entry.revision, title: 'Candidate', body: 'Use yarn instead.', type: 'project', reason: 'Review requested', source: { writer: 'agent' }, pending: true });
+    const updated = await store.put({ action: 'update', scope: workspace, id: original.entry.id, expectedRevision: original.entry.revision, title: 'Current rule', body: 'Use pnpm offline.', type: 'project', reason: 'User edit', source });
+    await expect(store.put({ action: 'update', scope: workspace, id: proposal.entry.id, expectedRevision: proposal.entry.revision, title: proposal.entry.title, body: proposal.entry.body, type: 'project', reason: 'Accepted', source })).rejects.toThrow('revision conflict');
+    expect(await store.get(workspace, original.entry.id)).toEqual(updated.entry);
+    expect(await store.get(workspace, proposal.entry.id)).toEqual(proposal.entry);
   });
 
   it('loads manually edited Markdown after explicit snapshot invalidation', async () => {
@@ -810,4 +869,28 @@ describe('memory projection fidelity and committed refresh', () => {
     expect(await snapshot.refreshIfDirty()).toContain('Second edit.');
     expect(await snapshot.refreshIfDirty()).toBeUndefined();
   });
+});
+
+ it.each(['off', 'auto', 'review'] as const)('keeps existing memory readable and projected under approval=%s', async (approval) => {
+  const { store, snapshot, readTool, searchTool, writeTool } = start({ approval });
+  const saved = await create(store);
+  expect(await snapshot.get()).toContain(saved.entry.id);
+  expect(await snapshot.resolveReferences(`[${saved.entry.id}]`)).toEqual([expect.stringContaining('Build preferences')]);
+  const context = { turnId: 1, toolCallId: 'memory', signal: new AbortController().signal };
+  for (const execution of [readTool.resolveExecution({ id: saved.entry.id }), searchTool.resolveExecution({ query: 'Build preferences' })]) {
+    if (!('execute' in execution)) throw new Error('expected executable memory retrieval');
+    const result = await execution.execute(context);
+    expect(result.isError).not.toBe(true);
+    expect(result.output).toContain(saved.entry.id);
+  }
+  const execution = writeTool.resolveExecution({ action: 'create', type: 'user', title: 'New preference', body: 'Prefer concise replies', reason: 'test' });
+  if (!('execute' in execution)) throw new Error('expected executable memory write');
+  const result = await execution.execute(context);
+  if (approval === 'off') {
+    expect(result.isError).toBe(true);
+    expect(await store.list(workspace)).toHaveLength(1);
+  } else {
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.output as string).status).toBe(approval === 'review' ? 'pending' : 'active');
+  }
 });

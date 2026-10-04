@@ -63,7 +63,7 @@ it.each(['minidb', 'sqlite'] as const)('preserves searchService integration case
     const log = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as unknown as ILogService;
     legacy = new GlobalSearchService(sessionIndex, bootstrap, log, flags);
     legacy.syncDebounceMs = 0;
-    legacy.setLiveTranscriptSource({ forSessionLive: () => undefined, whenReady: async () => {}, ensureAgentHistory: async () => {} });
+    legacy.setLiveTranscriptSource({ forSessionLive: () => undefined, whenReady: async () => {}, ensureAgentHistory: async () => undefined });
     await legacy.reindex();
   } else {
     sqlite = await SqliteSearchIndex.open(join(home, 'sqlite', 'search.db'));

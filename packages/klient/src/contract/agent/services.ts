@@ -12,6 +12,7 @@ import { maybe, noResult } from '../helpers.js';
 import { mcpServerConfigSchema } from '../mcp.js';
 import type { ServiceContract } from '../types.js';
 import { goalSnapshotSchema } from './events.js';
+import { modelSwitchInputSchema, modelSwitchModeSchema, modelSwitchReceiptSchema, queuedModelSwitchSchema } from './modelSwitch.js';
 import {
   promptTerminalResultSchema,
   activateSkillPayloadSchema,
@@ -72,6 +73,18 @@ export const agentGoalContract = {
 } satisfies ServiceContract;
 
 export const agentPromptContract = {
+  switchModel: { input: z.tuple([modelSwitchInputSchema]), output: modelSwitchReceiptSchema },
+  getModelSwitch: { input: z.tuple([z.string()]), output: maybe(modelSwitchReceiptSchema) },
+  listModelSwitches: { input: z.tuple([]), output: z.array(queuedModelSwitchSchema) },
+  updateModelSwitch: { input: z.tuple([modelSwitchInputSchema, z.number().int().nonnegative().optional()]), output: modelSwitchReceiptSchema },
+  cancelModelSwitch: { input: z.tuple([z.string()]), output: modelSwitchReceiptSchema },
+  recoverModelSwitch: {
+    input: z.union([
+      z.tuple([z.string(), z.literal('retry'), modelSwitchModeSchema.optional()]),
+      z.tuple([z.string(), z.literal('keep_original')]),
+    ]),
+    output: modelSwitchReceiptSchema,
+  },
   submit: {
     input: z.tuple([promptPayloadSchema]),
     output: maybe(promptLaunchResultSchema),

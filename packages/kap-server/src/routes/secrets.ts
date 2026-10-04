@@ -1,4 +1,4 @@
-import { IConfigService, IMcpRegistryService, INbSearchService, type Scope } from '@kiki/agent-core-v2';
+import { IBrowserConnectionStore, IConfigService, IMcpRegistryService, INbSearchService, type Scope } from '@kiki/agent-core-v2';
 import { ENV_MODEL_PROVIDER_KEY, type ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
 import { explainProviderEndpoint } from '@kiki/agent-core-v2/kosong/provider/providerDefinition';
 import { revealSecretRequestSchema, revealedSecretSchema, type RevealedSecret, type SecretRef } from '@kiki/protocol';
@@ -55,6 +55,7 @@ async function revealSecret(core: Scope, ref: SecretRef, notifications: Notifica
   switch (ref.kind) {
     case 'provider_api_key': return revealProviderKey(core, ref.provider_id);
     case 'reviewer_api_key': return revealReviewerKey(core);
+    case 'browser_endpoint': return withValue({ source: 'kiki' }, await core.accessor.get(IBrowserConnectionStore).revealEndpoint(ref.browser_id));
     case 'nb_search_credential': {
       const view = await core.accessor.get(INbSearchService).readManagedCredential(ref.instance_id, true);
       const source = view.source === 'managed' ? 'kiki' : view.source;

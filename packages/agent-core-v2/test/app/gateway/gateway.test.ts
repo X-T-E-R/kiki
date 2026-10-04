@@ -70,6 +70,13 @@ describe('RestGateway', () => {
 
     const promptService: IAgentPromptService = {
       _serviceBrand: undefined,
+      switchModel: async () => { throw new Error('unexpected model switch'); },
+      getModelSwitch: () => undefined,
+      listModelSwitches: () => [],
+      lookup: () => undefined,
+      updateModelSwitch: async () => { throw new Error('unexpected model switch update'); },
+      cancelModelSwitch: async () => { throw new Error('unexpected model switch cancellation'); },
+      recoverModelSwitch: async () => { throw new Error('unexpected model switch recovery'); },
       enqueue: () => Promise.resolve({ id: 'p', launched: Promise.resolve(undefined) } as never),
       submit: () => Promise.resolve(undefined),
       submitAndWait: async () => {

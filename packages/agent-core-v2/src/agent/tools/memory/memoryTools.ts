@@ -71,8 +71,8 @@ function assertReadable(kind: z.infer<typeof scopeSchema>, persona: MemoryPerson
     throw new Error(`Bound persona cannot read ${kind} memory.`);
   }
 }
-function available(snapshot: ICapabilitySnapshotService, session: ISessionContext): boolean {
-  return snapshot.memoryAvailable(session.workspaceId, session.sessionId);
+function available(snapshot: ICapabilitySnapshotService, session: ISessionContext, tool = 'MemoryWrite'): boolean {
+  return snapshot.toolAvailable(tool, session.workspaceId, session.sessionId);
 }
 
 export interface IMemoryWriteTool extends AgentTool<z.infer<typeof writeSchema>> { readonly _serviceBrand: undefined }
@@ -104,7 +104,8 @@ export class MemoryWriteTool implements IMemoryWriteTool {
           source: { writer: 'agent', session: this.session.sessionId, turn: turnId },
           pending: this.config.get<MemoryConfig>(MEMORY_SECTION).approval === 'review',
         });
-        return { output: JSON.stringify({ id: result.entry.id, title: result.entry.title, scope: scope.kind, status: result.entry.status, revision: result.entry.revision, operation_id: result.operationId, reference_hint: result.entry.status === 'pending'
+        return { memoryReceipt: { action: parsed.data.action, id: result.entry.id, revision: result.entry.revision,
+          status: result.entry.status, operationId: result.operationId }, output: JSON.stringify({ id: result.entry.id, title: result.entry.title, scope: scope.kind, status: result.entry.status, revision: result.entry.revision, operation_id: result.operationId, reference_hint: result.entry.status === 'pending'
           ? 'Awaiting review; not active memory. Do not cite this pending entry as an effective standing rule. Follow direct user instructions for the current task independently of storage review.'
           : `Reference it in TodoList notes.directives as [${result.entry.id}] if it constrains the current task.` }) };
       } catch (error) { return { isError: true, output: error instanceof Error ? error.message : String(error) }; }
@@ -129,7 +130,7 @@ export class MemorySearchTool implements IMemorySearchTool {
     const parsed = searchSchema.safeParse(args);
     if (!parsed.success) return { isError: true, output: parsed.error.message };
     return { approvalRule: this.name, accesses: ToolAccesses.none(), execute: async () => {
-      if (!available(this.capabilities, this.session)) return { isError: true, output: 'Memory is disabled.' };
+      if (!available(this.capabilities, this.session, this.name)) return { isError: true, output: 'Memory is disabled.' };
       try {
         const persona = this.memorySnapshot.getPersona();
         if (parsed.data.scope !== undefined) assertReadable(parsed.data.scope, persona);
@@ -159,7 +160,7 @@ export class MemoryReadTool implements IMemoryReadTool {
     const parsed = readSchema.safeParse(args);
     if (!parsed.success || (parsed.data?.id === undefined && parsed.data?.ids === undefined)) return { isError: true, output: 'Provide id or ids (up to 10).' };
     return { approvalRule: this.name, accesses: ToolAccesses.none(), execute: async () => {
-      if (!available(this.capabilities, this.session)) return { isError: true, output: 'Memory is disabled.' };
+      if (!available(this.capabilities, this.session, this.name)) return { isError: true, output: 'Memory is disabled.' };
       try {
         const visible = scopes(this.session, this.memorySnapshot.getPersona());
         const items = await Promise.all((parsed.data.ids ?? [parsed.data.id!]).map(async (id) => {
@@ -178,5 +179,5 @@ export class MemoryReadTool implements IMemoryReadTool {
 const when = (accessor: ServicesAccessor): boolean =>
   accessor.get(IAgentScopeContext).agentId === 'main';
 registerAgentToolService(IMemoryWriteTool, MemoryWriteTool, { name: 'MemoryWrite', domain: 'memory', when: (accessor) => !accessor.get(ISessionContext).ephemeral && when(accessor) });
-registerAgentToolService(IMemorySearchTool, MemorySearchTool, { name: 'MemorySearch', domain: 'memory', when });
-registerAgentToolService(IMemoryReadTool, MemoryReadTool, { name: 'MemoryRead', domain: 'memory', when });
+registerAgentToolService(IMemorySearchTool, MemorySearchTool, { name: 'MemorySearch', domain: 'memory' });
+registerAgentToolService(IMemoryReadTool, MemoryReadTool, { name: 'MemoryRead', domain: 'memory' });

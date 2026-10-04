@@ -65,9 +65,16 @@ export class ModelRequesterImpl implements ModelRequester {
 
   request(
     input: ModelRequestInput,
-    signal?: AbortSignal,
-    params?: ModelRequestParams,
+    signal: AbortSignal | undefined,
+    params: ModelRequestParams & { readonly attribution: RequestAttribution },
   ): AsyncIterable<ModelRequestEvent> {
+    const attribution = params?.attribution;
+    if (attribution === undefined || !attribution.logicalRequestId || !attribution.purpose || attribution.waitBudget === undefined ||
+      (attribution.sessionId === undefined
+        ? attribution.purpose !== 'connectivity_probe' || attribution.agentId !== undefined || attribution.parentAgentId !== undefined
+        : !attribution.sessionId || !attribution.agentId)) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, 'Model request requires explicit session or system attribution');
+    }
     const queue = new AsyncEventQueue<ModelRequestEvent>();
     const controller = new AbortController();
     const requestSignal = signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal]);
@@ -112,7 +119,7 @@ export class ModelRequesterImpl implements ModelRequester {
     input: ModelRequestInput,
     signal: AbortSignal | undefined,
     queue: AsyncEventQueue<ModelRequestEvent>,
-    params?: ModelRequestParams,
+    params: ModelRequestParams & { readonly attribution: RequestAttribution },
   ): Promise<void> {
     signal?.throwIfAborted();
     const configured = this.model.generationParameters;
@@ -132,6 +139,8 @@ export class ModelRequesterImpl implements ModelRequester {
     if (isApiDefault(configured?.temperature)) delete modelRequestParams['temperature'];
     if (isApiDefault(configured?.topP)) delete modelRequestParams['top_p'];
     const rawRequestParams = { ...modelRequestParams, ...params?.requestParams };
+    const serviceTier = params?.serviceTier ?? configured?.serviceTier ?? this.model.serviceTier;
+    if (isApiDefault(serviceTier)) delete rawRequestParams['service_tier'];
     const provider = this.resolveChatProvider();
 
     let requestStartedAt = Date.now();
@@ -143,7 +152,7 @@ export class ModelRequesterImpl implements ModelRequester {
     const options: GenerateOptions = {
       signal,
       cacheKey: params?.cacheKey,
-      serviceTier: params?.serviceTier ?? (isApiDefault(configured?.serviceTier) ? undefined : this.model.serviceTier),
+      serviceTier: isApiDefault(serviceTier) ? undefined : serviceTier,
       headers: params?.headers,
       requestParams: stripKikiReservedRequestParams(rawRequestParams),
       sampling: {
@@ -171,9 +180,7 @@ export class ModelRequesterImpl implements ModelRequester {
       responseFormat: input.responseFormat,
     };
 
-    const attribution: RequestAttribution = params?.attribution ?? {
-      logicalRequestId: randomUUID(), purpose: 'system', waitBudget: { waitedMs: 0 },
-    };
+    const attribution = params.attribution;
     let result: GenerateResult;
     try {
       result = await this.runWithAuthRefresh(

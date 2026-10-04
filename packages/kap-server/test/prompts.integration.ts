@@ -47,6 +47,7 @@ import {
   projectPromptSnapshot,
   watchPromptSettlements,
 } from '../src/routes/prompts';
+import { modelSwitchActionSchema } from '../src/protocol/rest-model-switch';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders, bearerToken } from './helpers/auth';
 
@@ -307,6 +308,93 @@ describe('server-v2 /api prompts', () => {
     }, { before: 'context-injector' });
     return child;
   }
+
+  it('validates recover mode only for retry actions', () => {
+    expect(modelSwitchActionSchema.parse({ action: 'retry', mode: 'fresh' })).toEqual({ action: 'retry', mode: 'fresh' });
+    expect(modelSwitchActionSchema.parse({ action: 'keep_original' })).toEqual({ action: 'keep_original' });
+    expect(modelSwitchActionSchema.parse({ action: 'cancel' })).toEqual({ action: 'cancel' });
+    expect(modelSwitchActionSchema.safeParse({ action: 'keep_original', mode: 'fresh' }).success).toBe(false);
+    expect(modelSwitchActionSchema.safeParse({ action: 'cancel', mode: 'fresh' }).success).toBe(false);
+  });
+
+  it('switches through REST and klient events at idle with dependent delivery and one live/cold timeline identity', async () => {
+    const models: string[] = [];
+    const provider = createHttpServer((request, response) => {
+      let body = '';
+      request.on('data', (chunk) => { body += String(chunk); });
+      request.on('end', () => {
+        models.push((JSON.parse(body) as { model: string }).model);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify({ id: 'switch-response', choices: [{ index: 0, delta: { content: 'Done.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+      });
+    });
+    await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    const klient = createHttpKlient({ endpoint: base, token: server!.localOwnerToken });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      const mutations = server!.core.accessor.get(IModelCatalogMutationService);
+      await mutations.updateProvider('stub', { base_url: `http://127.0.0.1:${address.port}/v1` });
+      await mutations.updateModel('stub', { max_context_size: 100000 });
+      await mutations.updateModel('stub-alt', { max_context_size: 100000 });
+      const id = await createSession(home as string);
+      await createMainAgent(id);
+      const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+      await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub' });
+      const loop = main.accessor.get(IAgentLoopService);
+      loop.hooks.onWillBeginStep.register('model-switch-current-turn', async () => { await gate; });
+      const agent = klient.session(id).agent('main');
+      const observed: unknown[] = [];
+      let completed!: () => void;
+      const completion = new Promise<void>((resolve) => { completed = resolve; });
+      const subscription = agent.events.on('prompt.model_switch_status', (event) => {
+        observed.push(event.receipt);
+        if (event.operationId === 'http-switch' && event.receipt.state === 'completed') completed();
+      });
+      const queuedSubscription = agent.events.on('prompt.model_switch_queued', (event) => { observed.push(event.entry.receipt); });
+      await Promise.all([subscription.ready, queuedSubscription.ready]);
+      const active = await call('POST', `/api/sessions/${id}/prompts`, { prompt_id: 'old-active', content: [{ type: 'text', text: 'Complete the current turn.' }] });
+      expect(active.body.code).toBe(0);
+      const path = `/api/sessions/${id}/agents/main/model-switches`;
+      const accepted = await call('POST', path, { operationId: 'http-switch', model: 'stub-alt', mode: 'direct' });
+      expect(accepted.body.data).toMatchObject({ state: 'pending', operationId: 'http-switch' });
+      const cancelled = await agent.switchModel({ operationId: 'cancelled-choice', model: 'stub-alt', mode: 'fresh' });
+      expect(cancelled.state).toBe('pending');
+      expect(await agent.cancelModelSwitch('cancelled-choice')).toMatchObject({ state: 'cancelled' });
+      const dependent = await klient.session(id).commands.submit({ prompt_id: 'new-dependent', after_model_switch: 'http-switch', content: [{ type: 'text', text: 'Continue on the committed model.' }] });
+      expect(dependent).toMatchObject({ prompt_id: 'new-dependent', status: 'queued' });
+      expect(main.accessor.get(IAgentProfileService).getModel()).toBe('stub');
+      let finishDependent!: () => void;
+      const dependentCompletion = new Promise<void>((resolve) => { finishDependent = resolve; });
+      const promptSubscription = agent.events.on('prompt.completed', (event) => { if (event.promptId === 'new-dependent') finishDependent(); });
+      await promptSubscription.ready;
+      release();
+      await Promise.all([completion, dependentCompletion]);
+      await loop.settled();
+      promptSubscription.dispose();
+      queuedSubscription.dispose();
+      expect(await agent.getModelSwitch('http-switch')).toMatchObject({ state: 'completed', binding: { model: 'stub-alt' } });
+      expect(models).toEqual(['stub', 'stub-alt']);
+      expect(observed).toEqual(expect.arrayContaining([expect.objectContaining({ operationId: 'http-switch', state: 'preparing' }), expect.objectContaining({ operationId: 'http-switch', state: 'completed' })]));
+      const read = await call('GET', `${path}/http-switch`);
+      expect(read.body.data).toMatchObject({ state: 'completed' });
+      const live = await klient.session(id).view.transcript.page({ agentId: 'main' });
+      const liveMarkers = live.items.filter((item) => item.kind === 'marker' && item.markerId === 'model-switch:http-switch');
+      expect(liveMarkers).toHaveLength(1);
+      expect(liveMarkers[0]).toMatchObject({ payload: { operationId: 'http-switch', mode: 'direct', state: 'completed' } });
+      subscription.dispose();
+      await closeSessionById(server!.core.accessor, id);
+      const cold = await klient.session(id).view.transcript.page({ agentId: 'main' });
+      expect(cold.items.filter((item) => item.kind === 'marker' && item.markerId === 'model-switch:http-switch')).toEqual(liveMarkers);
+      expect(models).toHaveLength(2);
+    } finally {
+      release();
+      await klient.close();
+      await new Promise<void>((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()));
+    }
+  });
 
   it('projects a queued send-now message once at its step boundary live and after cold reopening', async () => {
     const provider = createHttpServer((request, response) => {
@@ -2229,7 +2317,7 @@ describe('server-v2 /api prompts', () => {
     expect(main.accessor.get(IAgentPromptService).list().active).toBeUndefined();
     expect(turn.signal.aborted).toBe(false);
 
-    const client = new KikiClient({ baseUrl: base, token: server!.authTokenService.getToken() });
+    const client = new KikiClient({ baseUrl: base, token: server!.localOwnerToken });
     try {
       expect(await client.abortTurn(otherId, turn.id)).toEqual({ aborted: false });
       expect(await client.abortTurn(id, turn.id + 1)).toEqual({ aborted: false });
@@ -2294,7 +2382,7 @@ describe('server-v2 /api prompts', () => {
     }
     expect(prompt.list().active?.id).toBe('active-http');
     expect(prompt.list().pending.map((item) => item.id)).toEqual(['queued-http']);
-    const klient = createHttpKlient({ endpoint: base, token: server!.authTokenService.getToken() });
+    const klient = createHttpKlient({ endpoint: base, token: server!.localOwnerToken });
     try {
       await klient.session(id).agent('main').stopTask({ taskId: ids[1]! });
       expect(tasks.getTask(ids[1]!)?.status).toBe('killed');

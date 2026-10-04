@@ -1,10 +1,11 @@
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
-import { createDecorator, type ServicesAccessor } from '#/_base/di/instantiation';
+import { createDecorator } from '#/_base/di/instantiation';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { constrainPermissionMode, IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -90,11 +91,13 @@ export class ThreadCreateTool implements IThreadCreateTool {
         try {
           const catalog = handle.accessor.get(ISessionAgentProfileCatalog);
           await catalog.ready;
-          const profile = input.profile === undefined ? catalog.getDefault() : catalog.get(input.profile);
+          const main = await ensureMainAgent(handle);
+          const profileName = main.accessor.get(IAgentProfileService).data().profileName ?? input.profile;
+          const profile = profileName === undefined ? catalog.getDefault() : catalog.get(profileName);
           if (profile === undefined) {
             throw new Error2(
               ErrorCodes.PROFILE_UNKNOWN,
-              `Agent profile "${input.profile}" is unavailable or disabled. Choose an enabled main-agent profile.`,
+              `Agent profile "${profileName}" is unavailable or disabled. Choose an enabled main-agent profile.`,
             );
           }
           if (profile.main !== true) {
@@ -114,7 +117,6 @@ export class ThreadCreateTool implements IThreadCreateTool {
               [CREATED_BY_AGENT_ID_KEY]: this.caller.agentId,
             },
           }, { touchUpdatedAt: false });
-          const main = await ensureMainAgent(handle);
           main.accessor.get(IAgentPermissionModeService).setModeCeiling(callerMode);
           main.accessor.get(IAgentLifecycleService).broadcastPermissionMode(requestedMode);
           if (input.plan_mode !== undefined) {
@@ -164,12 +166,7 @@ export class ThreadCreateTool implements IThreadCreateTool {
   }
 }
 
-function mainAgentOnly(accessor: ServicesAccessor): boolean {
-  return accessor.get(IAgentScopeContext).agentId === 'main';
-}
-
 registerAgentToolService(IThreadCreateTool, ThreadCreateTool, {
   name: 'ThreadCreate',
   domain: 'threadCommunication',
-  when: mainAgentOnly,
 });

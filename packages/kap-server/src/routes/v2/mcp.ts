@@ -387,6 +387,23 @@ export function registerV2McpRoutes(app: V2McpRouteHost, core: Scope): void {
     testServerRoute.handler as Parameters<V2McpRouteHost['post']>[2],
   );
 
+  const stopServerRoute = defineRoute(
+    {
+      method: 'POST', path: '/mcp/servers::stop',
+      body: z.object({ name: serverNameSchema, cwd: z.string().min(1).optional() }),
+      success: { data: z.object({ state: z.enum(['idle', 'stopped', 'unconfirmed']), output: z.string() }) },
+      errors: namedServerErrorSchemas,
+      description: 'Close admission and stop matching cua stdio children owned by this service process. External daemons are not terminated.',
+      tags: ['v2-mcp'],
+    },
+    async (req, reply) => {
+      try { reply.send(okEnvelope(await management().stopServer(req.body), req.id)); }
+      catch (err) { sendMappedError(reply, req.id, err); }
+    },
+  );
+  app.post(stopServerRoute.path, stopServerRoute.options,
+    stopServerRoute.handler as Parameters<V2McpRouteHost['post']>[2]);
+
   const inspectServersRoute = defineRoute(
     {
       method: 'POST',

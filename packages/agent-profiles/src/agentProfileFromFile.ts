@@ -9,15 +9,14 @@ import type { AgentProfileContribution } from './agentProfileContribution';
 import type { AgentFileDefinition, AgentFileDiscoveryResult } from './agentFileTypes';
 import type { ExecutorValidator } from './ports';
 import { renderPromptTemplateResult } from './profileShared';
+import { isToolActive } from './toolPolicy';
 
 export function agentProfileFromFile(
   definition: AgentFileDefinition,
   basePrompt: (context: AgentProfileContext) => SystemPromptRenderResult,
   builtinPrompt?: (context: AgentProfileContext) => SystemPromptRenderResult,
 ): AgentProfile {
-  const skillActive =
-    (definition.tools === undefined || definition.tools.includes('Skill')) &&
-    !(definition.disallowedTools ?? []).includes('Skill');
+  const skillActive = isToolActive(definition, 'Skill');
   return normalizeAgentProfile({
     fileDefinition: structuredClone(definition),
     name: definition.name,
@@ -33,9 +32,10 @@ export function agentProfileFromFile(
     tools: definition.tools,
     disallowedTools: definition.disallowedTools,
     disabledToolGroups: definition.disabledToolGroups,
-    subagentPolicy: definition.subagentPolicy,
-    subagentDeclaration: definition.subagentDeclaration,
-    subagents: definition.subagents,
+    canSpawnSubagents: definition.canSpawnSubagents,
+    allowedSubagents: definition.allowedSubagents,
+    preferredSubagents: definition.preferredSubagents,
+    denySubagents: definition.denySubagents,
     subagentLeases: definition.subagentLeases,
     spawnConstraints: definition.spawnConstraints,
     executor: definition.executor,
@@ -101,6 +101,7 @@ export function profilesFromDiscovery(
   const diagnostics = [...result.diagnostics];
   const skipped = [...result.skipped];
   const sourceDefinitions = new Map<string, AgentProfile>();
+  const sourceFailureCodes = new Map<string, string>();
   for (const [definitionId, definition] of result.sourceDefinitions) {
     const validated = validateExecutorProfile(
       agentProfileFromFile(definition, basePrompt, builtinPrompt),
@@ -109,8 +110,9 @@ export function profilesFromDiscovery(
     if (validated.error === undefined) {
       sourceDefinitions.set(definitionId, validated.profile);
     } else {
+      sourceFailureCodes.set(definitionId, validated.code ?? 'agent_executor.invalid_profile');
       diagnostics.push({
-        code: 'agent_executor.invalid_profile',
+        code: validated.code ?? 'agent_executor.invalid_profile',
         severity: 'error',
         message: validated.error,
         path: definition.path,
@@ -130,7 +132,7 @@ export function profilesFromDiscovery(
             binding.sourceDefinitionId !== undefined && sourceProfile === undefined;
           const diagnostic = executorUnavailable
             ? {
-                code: 'agent_executor.invalid_profile',
+                code: sourceFailureCodes.get(binding.sourceDefinitionId!) ?? 'agent_executor.invalid_profile',
                 severity: 'error' as const,
                 message: `Scoped profile "${alias}" has an unavailable executor binding`,
                 path: binding.source,
@@ -175,7 +177,7 @@ export function profilesFromDiscovery(
       skipped.push({
         path: definition.path,
         reason: validated.error,
-        code: 'agent_executor.invalid_profile',
+        code: validated.code ?? 'agent_executor.invalid_profile',
       });
     }
   }
@@ -194,12 +196,13 @@ export function profilesFromDiscovery(
 function validateExecutorProfile(
   profile: AgentProfile,
   validation: ExecutorProfileValidation | undefined,
-): { readonly profile: AgentProfile; readonly error?: string } {
+): { readonly profile: AgentProfile; readonly error?: string; readonly code?: string } {
   if (validation === undefined || profile.executor === 'native') return { profile };
   profile = captureProfileModelMenu(profile);
   if (!validation.allowExternal) {
     return {
       profile,
+      code: 'agent_executor.source_not_allowed',
       error:
         validation.reason ??
         `External executor "${profile.executor}" is not allowed for this profile source`,

@@ -174,6 +174,7 @@ export function compactionUserMessageDisposition(
   switch (origin.kind) {
     case 'user':
     case 'peer_thread':
+    case 'bridged_peer':
     case 'agent_message':
       return 'keep';
     case 'room_message':

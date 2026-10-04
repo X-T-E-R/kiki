@@ -251,7 +251,7 @@ export class RoomService extends Disposable implements IRoomService {
       const created = await this.materializeMembers(id, members, workspace, prompt);
       const room: RoomDocument = {
         version: 1, id, name, members: created, host, mode, budget, workspace,
-        createdAt: new Date().toISOString(), generation: 0, paused: false,
+        createdAt: new Date().toISOString(), generation: 0, paused: false, legacyBotGate: false,
         budgetUsed: 0, userMessageCount: 0,
         cursors: Object.fromEntries(created.map((member) => [member.sessionId, undefined])),
         pendingWakes: [],
@@ -390,9 +390,11 @@ export class RoomService extends Disposable implements IRoomService {
   }
 
   private async validateMembers(members: readonly RoomMemberInput[]): Promise<void> {
-    if (members.some((member) => member.kind !== 'thread')) this.ensureBotEnabled();
     for (const member of members) {
-      if (member.kind !== 'thread') continue;
+      if (member.kind !== 'thread') {
+        if ((await this.personas.getState(member.personaId)).archived) invalid('Restore the archived persona before adding it to a room.');
+        continue;
+      }
       const summary = await this.sessionIndex.get(member.sessionId);
       if (summary === undefined || summary.archived) invalid('Only existing unarchived threads can join a room.');
       if (isChildSession(summary.custom)) invalid('Subagents cannot join rooms; communicate through their parent thread.');
@@ -447,7 +449,7 @@ export class RoomService extends Disposable implements IRoomService {
     const text = requiredMessageText(input.text);
     return this.withRoomLock(roomId, async () => {
       const room = await this.requireRoom(roomId);
-      if (room.members.some((member) => member.kind === 'persona')) this.ensureBotEnabled();
+      if (room.legacyBotGate !== false && room.members.some((member) => member.kind === 'persona')) this.ensureBotEnabled();
       const existing = input.idempotencyKey === undefined ? undefined : await this.findMessage(roomId, `user:${input.idempotencyKey}`);
       if (existing !== undefined) return existing;
       const cards = await this.loadPersonaCards(room.members);
@@ -511,6 +513,7 @@ export class RoomService extends Disposable implements IRoomService {
         if (existing.text !== text) throw new Error2(ErrorCodes.THREAD_IDEMPOTENCY_CONFLICT, 'Room send key was already used for different content.');
         return existing;
       }
+      if (room.legacyBotGate !== false && member.kind === 'persona') this.ensureBotEnabled();
       if ((room.paused && room.pauseReason !== 'manual') || room.budgetUsed >= room.budget.botMessagesPerUserMessage) return undefined;
       const cards = await this.loadPersonaCards(room.members);
       if (input.mentions?.some((id) => !cards.has(id))) invalid('A mentioned room member was not found.');
@@ -570,7 +573,7 @@ export class RoomService extends Disposable implements IRoomService {
   async continue(roomId: string): Promise<RoomDocument> {
     return this.withRoomLock(roomId, async () => {
       const room = await this.requireRoom(roomId);
-      if (room.members.some((member) => member.kind === 'persona')) this.ensureBotEnabled();
+      if (room.legacyBotGate !== false && room.members.some((member) => member.kind === 'persona')) this.ensureBotEnabled();
       if (!room.paused) return room;
       const pending = room.pauseReason === 'budget' ? [...(room.pendingWakes ?? [])] : [];
       const next: RoomDocument = {

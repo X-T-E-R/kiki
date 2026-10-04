@@ -3,9 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ConfigChanged, IConfigService, IEventService } from '@kiki/agent-core-v2';
+import { HooksConfigSchema } from '@kiki/agent-core-v2/features/externalHooks/configSection';
+import { ExternalHooksRunnerService } from '@kiki/agent-core-v2/features/externalHooks/app/externalHooksRunnerService';
+import { configResponseSchema as sharedConfigResponseSchema, patchConfigRequestSchema as sharedPatchConfigRequestSchema, hooksConfigSchema } from '@kiki/protocol';
 import { IRequestGovernance } from '@kiki/agent-core-v2/app/requestGovernance/requestGovernance';
 import type { RequestAttempt } from '@kiki/agent-core-v2/kosong/model/requestAdmission';
-import { configResponseSchema, type ConfigResponse } from '../src/protocol/rest-config';
+import { configResponseSchema, patchConfigRequestSchema, type ConfigResponse } from '../src/protocol/rest-config';
 import { ErrorCode } from '../src/protocol/error-codes';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -19,6 +22,56 @@ interface Envelope<T> {
   data: T;
   request_id: string;
 }
+
+describe('hooks config schema parity', () => {
+  it('keeps engine, server and browser schemas on the same config contract', () => {
+    const rule = { id: 'example', event: 'step.before', action: { type: 'inject', text: 'Example guidance' } };
+    const legacy = { event: 'PreToolUse', command: 'echo example', matcher: '^Read$', timeout: 600 };
+    const valid = [
+      [], [legacy], [{ ...legacy, command: ' ', timeout: 1 }],
+      { schemaVersion: 2 },
+      { schemaVersion: 2, enabled: false, disabled: [''], files: [' '], rules: [rule], legacy: [legacy] },
+      { schemaVersion: 2, rules: [{ ...rule, action: { type: 'inject', textFile: 'guidance/example.txt' }, cadence: { everyCompletedSteps: 3 } }] },
+      { schemaVersion: 2, rules: [{ ...rule, event: 'prompt.submit' }] },
+      ...['prompt.submit', 'step.before', 'step.after', 'turn.after', 'session.start', 'turn.stopping', 'tool.before', 'tool.after'].map((event) => ({ schemaVersion: 2, rules: [{ ...rule, event, action: { type: 'observe' } }] })),
+    ];
+    const invalidRules = [
+      { ...rule, id: '-invalid' }, { ...rule, event: 'unknown' }, { ...rule, priority: 1.5 }, { ...rule, enabled: 1 },
+      { ...rule, extra: true }, { ...rule, match: { unknown: [] } }, { ...rule, match: { models: [] } },
+      { ...rule, match: { profiles: [''] } }, { ...rule, match: { agentRoles: ['child'] } },
+      { ...rule, match: { statuses: ['unknown'] } }, { ...rule, match: { sources: ['unknown'] } }, { ...rule, match: { outcomes: ['unknown'] } },
+      { ...rule, cadence: { everyCompletedSteps: 0 } }, { ...rule, cadence: { everyCompletedSteps: 1.5 } },
+      { ...rule, cadence: { everyCompletedSteps: 1, counterScope: 'session' } }, { ...rule, cadence: { everyCompletedSteps: 1, partitionBy: 'profile' } },
+      { ...rule, event: 'prompt.submit', cadence: { everyCompletedSteps: 1 } },
+      ...['step.after', 'turn.after', 'session.start', 'turn.stopping', 'tool.before', 'tool.after'].map((event) => ({ ...rule, event })),
+      ...['command', 'gate', 'block', 'continue'].map((type) => ({ ...rule, action: { type } })),
+      { ...rule, action: { type: 'inject' } }, { ...rule, action: { type: 'inject', text: ' ' } },
+      { ...rule, action: { type: 'inject', text: 'example', textFile: 'example.txt' } }, { ...rule, action: { type: 'inject', textFile: '' } },
+      { ...rule, action: { type: 'observe', text: 'example' } },
+    ];
+    const invalid = [
+      null, true, '[]', 2, {}, { schemaVersion: 1 }, { schema_version: 2 },
+      { schemaVersion: 2, enabled: 1 }, { schemaVersion: 2, disabled: [1] }, { schemaVersion: 2, files: [''] },
+      { schemaVersion: 2, rules: {} }, { schemaVersion: 2, legacy: {} }, { schemaVersion: 2, unknown: true },
+      ...[{}, { ...legacy, event: 'unknown' }, { ...legacy, command: '' }, { ...legacy, matcher: '[' }, { ...legacy, timeout: 0 }, { ...legacy, timeout: 601 }, { ...legacy, timeout: 1.5 }, { ...legacy, cwd: 'example' }, { ...legacy, env: {} }].flatMap((hook) => [[hook], { schemaVersion: 2, legacy: [hook] }]),
+      ...invalidRules.map((invalidRule) => ({ schemaVersion: 2, rules: [invalidRule] })),
+    ];
+    for (const [values, expected] of [[valid, true], [invalid, false]] as const) {
+      for (const value of values) {
+        const engine = HooksConfigSchema.safeParse(value);
+        expect(engine.success, JSON.stringify(value)).toBe(expected);
+        const shared = hooksConfigSchema.safeParse(value);
+        expect(shared.success, JSON.stringify(value)).toBe(expected);
+        if (engine.success && shared.success) expect(shared.data).toEqual(engine.data);
+        for (const schema of [configResponseSchema, patchConfigRequestSchema, sharedConfigResponseSchema, sharedPatchConfigRequestSchema]) {
+          const result = schema.safeParse({ hooks: value });
+          expect(result.success, JSON.stringify(value)).toBe(expected);
+          if (result.success && engine.success) expect(result.data.hooks).toEqual(engine.data);
+        }
+      }
+    }
+  });
+});
 
 describe('server-v2 /api/config', () => {
   let server: RunningServer | undefined;
@@ -34,6 +87,7 @@ describe('server-v2 /api/config', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     if (server !== undefined) {
       await server.close();
@@ -82,6 +136,137 @@ describe('server-v2 /api/config', () => {
   async function readCredentialsFile(): Promise<string> {
     return readFile(join(home as string, 'credentials', 'credentials.toml'), 'utf-8').catch(() => '');
   }
+
+  it('round trips question frequency guard through global REST and cold config reload', async () => {
+    await boot('[search]\nenabled=false\n[interaction]\nask_user_question="blocking"\n');
+    expect((await getConfig()).interaction).toEqual({ askUserQuestion: 'blocking' });
+    const patch = { interaction: { ask_user_question_guard: { enabled: true, max_per_user_round: 2, max_per_window: 4, window_ms: 120000 } } };
+    expect(sharedPatchConfigRequestSchema.parse(patch).interaction).toEqual(patch.interaction);
+    const edited = await patchConfig(patch);
+    expect(edited.interaction).toEqual({ askUserQuestion: 'blocking', askUserQuestionGuard: { enabled: true, maxPerUserRound: 2, maxPerWindow: 4, windowMs: 120000 } });
+    expect(sharedConfigResponseSchema.parse(edited).interaction).toEqual(edited.interaction);
+    const text = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(text).toContain('ask_user_question_guard'); expect(text).toContain('max_per_user_round = 2'); expect(text).not.toContain('maxPerUserRound');
+    await server!.close(); server = undefined; await boot();
+    expect((await getConfig()).interaction).toEqual(edited.interaction);
+    const disabled = await patchConfig({ interaction: { ask_user_question_guard: { enabled: false } } });
+    expect(disabled.interaction?.askUserQuestionGuard).toEqual({ enabled: false, maxPerUserRound: 2, maxPerWindow: 4, windowMs: 120000 });
+  });
+
+  it('round trips file-configured v2 hooks through REST without executing legacy commands', async () => {
+    const marker = join(home as string, 'hook-executed');
+    const command = `node -e ${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'executed')`)}`;
+    const trigger = vi.spyOn(ExternalHooksRunnerService.prototype, 'trigger');
+    await boot(`[hooks]
+schema_version = 2
+enabled = false
+disabled = ["project.reminder"]
+files = ["hooks/example.toml"]
+[[hooks.rules]]
+id = "reminder"
+event = "step.before"
+priority = -10
+enabled = true
+[hooks.rules.match]
+models = ["example/model"]
+profiles = ["example"]
+routes = ["native"]
+executors = ["native"]
+agent_roles = ["root"]
+tools = ["Read"]
+statuses = ["success"]
+sources = ["user"]
+outcomes = ["completed"]
+[hooks.rules.cadence]
+every_completed_steps = 3
+counter_scope = "turn"
+partition_by = "model"
+[hooks.rules.action]
+type = "inject"
+text_file = "guidance/example.txt"
+[[hooks.rules]]
+id = "audit"
+event = "turn.after"
+priority = 200
+enabled = false
+[hooks.rules.match]
+[hooks.rules.action]
+type = "observe"
+[[hooks.rules]]
+id = "greeting"
+event = "prompt.submit"
+[hooks.rules.action]
+type = "inject"
+text = "Example guidance"
+[[hooks.legacy]]
+event = "SessionStart"
+command = ${JSON.stringify(command)}
+matcher = "^Read$"
+timeout = 600
+`);
+    const expected = {
+      schemaVersion: 2, enabled: false, disabled: ['project.reminder'], files: ['hooks/example.toml'],
+      legacy: [{ event: 'SessionStart', command, matcher: '^Read$', timeout: 600 }],
+      rules: [
+        { id: 'reminder', event: 'step.before', priority: -10, enabled: true,
+          match: { models: ['example/model'], profiles: ['example'], routes: ['native'], executors: ['native'], agentRoles: ['root'], tools: ['Read'], statuses: ['success'], sources: ['user'], outcomes: ['completed'] },
+          cadence: { everyCompletedSteps: 3, counterScope: 'turn', partitionBy: 'model' }, action: { type: 'inject', textFile: 'guidance/example.txt' } },
+        { id: 'audit', event: 'turn.after', priority: 200, enabled: false, match: {}, action: { type: 'observe' } },
+        { id: 'greeting', event: 'prompt.submit', priority: 100, enabled: true, match: {}, action: { type: 'inject', text: 'Example guidance' } },
+      ],
+    };
+    const before = await readFile(join(home as string, 'config.toml'), 'utf8');
+    const hooks = (await getConfig()).hooks;
+    expect(hooks).toEqual(expected);
+    expect(sharedConfigResponseSchema.parse({ hooks }).hooks).toEqual(expected);
+    expect(await readFile(join(home as string, 'config.toml'), 'utf8')).toBe(before);
+    expect((await patchConfig(sharedPatchConfigRequestSchema.parse({ hooks }))).hooks).toEqual(expected);
+    expect((await getConfig()).hooks).toEqual(expected);
+    const stored = await readFile(join(home as string, 'config.toml'), 'utf8');
+    expect(stored).toContain('text_file');
+    expect(stored).toContain('every_completed_steps');
+    expect(stored).toContain('agent_roles');
+    await server!.close();
+    server = undefined;
+    await boot();
+    expect((await getConfig()).hooks).toEqual(expected);
+    expect(await readFile(marker, 'utf8').catch(() => undefined)).toBeUndefined();
+    expect(trigger).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy hooks, edits v2 rules, rejects invalid saves and switches shapes through REST', async () => {
+    const trigger = vi.spyOn(ExternalHooksRunnerService.prototype, 'trigger');
+    await boot('[[hooks]]\nevent = "PreToolUse"\ncommand = "echo example"\nmatcher = "^Read$"\ntimeout = 600\n');
+    const legacy = [{ event: 'PreToolUse', command: 'echo example', matcher: '^Read$', timeout: 600 }];
+    expect((await getConfig()).hooks).toEqual(legacy);
+    expect((await patchConfig({ hooks: [{ ...legacy[0], timeout: 1 }] })).hooks).toEqual([{ ...legacy[0], timeout: 1 }]);
+    const first = (await patchConfig({ hooks: { schemaVersion: 2, rules: [
+      { id: 'reminder', event: 'prompt.submit', action: { type: 'inject', text: 'Example guidance' } },
+      { id: 'audit', event: 'turn.after', action: { type: 'observe' } },
+    ], legacy } })).hooks;
+    expect(first).toEqual({ schemaVersion: 2, enabled: true, disabled: [], files: [], legacy, rules: [
+      { id: 'reminder', event: 'prompt.submit', priority: 100, enabled: true, match: {}, action: { type: 'inject', text: 'Example guidance' } },
+      { id: 'audit', event: 'turn.after', priority: 100, enabled: true, match: {}, action: { type: 'observe' } },
+    ] });
+    const edited = HooksConfigSchema.parse({ schemaVersion: 2, enabled: false, rules: [{ id: 'reminder', event: 'prompt.submit', action: { type: 'inject', text: 'Edited guidance' } }] });
+    expect((await patchConfig({ hooks: edited })).hooks).toEqual(edited);
+    expect((await getConfig()).hooks).toEqual(edited);
+    const path = join(home as string, 'config.toml');
+    const before = await readFile(path, 'utf8');
+    for (const hooks of [null, {}, { schemaVersion: 2, unknown: true }, { schemaVersion: 2, rules: [{ id: 'invalid', event: 'step.before', action: { type: 'command', command: 'echo example' } }] }, { schemaVersion: 2, rules: [{ id: 'invalid', event: 'turn.after', action: { type: 'inject', text: 'example' } }] }, [{ event: 'PreToolUse', command: 'echo example', timeout: 601 }]]) {
+      const response = await authedFetch(server as RunningServer, base, '/api/config', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ hooks }),
+      });
+      expect((await response.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
+      expect(await readFile(path, 'utf8')).toBe(before);
+      expect((await getConfig()).hooks).toEqual(edited);
+    }
+    expect((await patchConfig({ hooks: legacy })).hooks).toEqual(legacy);
+    expect((await getConfig()).hooks).toEqual(legacy);
+    expect((await patchConfig({ hooks: [] })).hooks).toEqual([]);
+    expect((await getConfig()).hooks).toEqual([]);
+    expect(trigger).not.toHaveBeenCalled();
+  });
 
   it('restores a space-local override through REST without changing the main space', async () => {
     const main = home as string;
@@ -168,6 +353,12 @@ describe('server-v2 /api/config', () => {
     const pinned = await patchConfig({ session_title: { model: 'kimi-for-coding' }, replace_domains: ['session_title'] });
     expect(pinned.session_title).toEqual({ model: 'kimi-for-coding' });
     expect((await getConfig()).session_title).toEqual({ model: 'kimi-for-coding' });
+    const moments = { model: 'kimi-for-coding', triggers: ['first_user_message', 'context_compacted'] };
+    for (const schema of [sharedConfigResponseSchema, sharedPatchConfigRequestSchema]) expect(schema.parse({ session_title: moments }).session_title).toEqual(moments);
+    expect((await patchConfig({ session_title: moments, replace_domains: ['session_title'] })).session_title).toEqual(moments);
+    expect((await getConfig()).session_title).toEqual(moments);
+    expect((await patchConfig({ session_title: { model: 'kimi-for-coding', triggers: [] }, replace_domains: ['session_title'] })).session_title).toEqual({ model: 'kimi-for-coding', triggers: [] });
+    expect((await getConfig()).session_title?.triggers).toEqual([]);
     const cleared = await patchConfig({ session_title: {}, replace_domains: ['session_title'] });
     expect(cleared.session_title?.model).toBeUndefined();
     expect((await getConfig()).session_title?.model).toBeUndefined();

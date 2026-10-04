@@ -8,7 +8,9 @@ import type {
   KimiOAuthTokenRef,
   KimiRegion,
   OAuthDeviceMethods,
+  LocalOriginalOAuthService,
 } from '@kiki/oauth';
+import type { ConnectOriginalOAuthRequest, OriginalOAuthProbe, OriginalOAuthRequest, OAuthSource } from '@kiki/protocol';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { Error2 } from '#/_base/errors/errors';
 
@@ -47,6 +49,8 @@ export interface IOAuthService {
   getCachedAccessToken(provider: string, oauthRef?: OAuthRef): Promise<string | undefined>;
   getRegion(): KimiRegion;
   listMethods(): Promise<readonly OAuthMethodStatus[]>;
+  probeOriginal(request: OriginalOAuthRequest): Promise<OriginalOAuthProbe>;
+  connectOriginal(request: ConnectOriginalOAuthRequest): Promise<OriginalOAuthProbe>;
 }
 
 export interface OAuthMethodStatus {
@@ -55,6 +59,8 @@ export interface OAuthMethodStatus {
   readonly provider: string;
   readonly protocol: string;
   readonly signed_in: boolean;
+  readonly auth_source?: OAuthSource;
+  readonly connection_state?: 'ready' | 'refresh_required' | 'reconnect_required' | 'signed_out';
   readonly account: { readonly state: 'known'; readonly id: string } | { readonly state: 'unknown' };
   readonly quota: {
     readonly state: 'known';
@@ -87,6 +93,7 @@ export interface IOAuthToolkit {
     options?: { readonly oauthRef?: KimiOAuthTokenRef; readonly baseUrl?: string },
   ): Promise<AuthManagedUserInfoResult>;
   readonly deviceMethods?: OAuthDeviceMethods;
+  readonly originalSources?: LocalOriginalOAuthService;
 }
 
 export const IOAuthToolkit: ServiceIdentifier<IOAuthToolkit> =

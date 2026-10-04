@@ -34,6 +34,7 @@ import { loadCapturedMessageHistoryTail } from '../services/messages/messageHist
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import { readAgentRuntimeControls } from './sessionAgentConfig';
 import { resolveSessionFacts, toWireSession } from './sessions';
+import { boundedEntity } from '../transport/klient/boundedContent';
 
 const SNAPSHOT_MESSAGE_PAGE_SIZE = 100;
 
@@ -107,13 +108,17 @@ export function registerSnapshotRoutes(app: SnapshotRouteHost, deps: SnapshotRou
   app.get(route.path, route.options, route.handler as Parameters<SnapshotRouteHost['get']>[2]);
 }
 
-export async function assembleBrowseSnapshot(
+export async function assembleBrowseSnapshot(core: Scope, broadcaster: SessionEventBroadcaster, sessionId: string): Promise<SessionSnapshotResponse> {
+  return boundedEntity(await assembleBrowseSnapshotSource(core, broadcaster, sessionId), { kind: 'snapshot', id: '' }, 24 * 1024);
+}
+
+export async function assembleBrowseSnapshotSource(
   core: Scope,
   broadcaster: SessionEventBroadcaster,
   sessionId: string,
 ): Promise<SessionSnapshotResponse> {
   if (core.accessor.get(ISessionManager).get(sessionId) !== undefined) {
-    return assembleSnapshot(core, broadcaster, sessionId, 'transcript');
+    return assembleSnapshotSource(core, broadcaster, sessionId, 'transcript');
   }
   const summary = await core.accessor.get(ISessionIndex).get(sessionId);
   if (summary === undefined) throw new SnapshotNotFoundError(sessionId);
@@ -147,7 +152,11 @@ export async function assembleBrowseSnapshot(
   };
 }
 
-export async function assembleSnapshot(
+export async function assembleSnapshot(...args: Parameters<typeof assembleSnapshotSource>): Promise<SessionSnapshotResponse> {
+  return boundedEntity(await assembleSnapshotSource(...args), { kind: 'snapshot', id: '' }, 24 * 1024);
+}
+
+async function assembleSnapshotSource(
   core: Scope,
   broadcaster: SessionEventBroadcaster,
   sessionId: string,

@@ -1,15 +1,60 @@
 import { isAbsolute, normalize } from 'pathe';
 import { z } from 'zod';
 
-export interface PromptOverrides {
+export type PromptDelegationPosition = 'main' | 'sub' | 'independent';
+export type PromptIdentityBranch<T> = 'same' | 'off' | T;
+
+export interface PromptOverrideContent {
   readonly files?: readonly string[];
   readonly fields?: Readonly<Record<string, string>>;
 }
 
-export const PromptOverridesSchema: z.ZodType<PromptOverrides> = z.object({
-  files: z.array(z.string().trim().min(1)).optional(),
+export interface PromptOverrides extends PromptOverrideContent {
+  readonly main?: PromptIdentityBranch<PromptOverrideContent>;
+  readonly independent?: PromptIdentityBranch<PromptOverrideContent>;
+}
+
+const PromptOverridePathSchema = z.string().trim().min(1).refine((value) => {
+  try { validatePromptOverridePath(value); return true; } catch { return false; }
+}, { message: 'Prompt override paths must be relative to and inside the Kiki home directory' });
+const PromptOverrideContentSchema = z.object({
+  files: z.array(PromptOverridePathSchema).optional(),
   fields: z.record(z.string(), z.string()).optional(),
 }).strict();
+const hasPromptOverrideContent = (value: PromptOverrideContent): boolean =>
+  (value.files?.length ?? 0) > 0 || Object.keys(value.fields ?? {}).length > 0;
+const PromptOverrideBranchSchema = z.union([
+  z.enum(['same', 'off']),
+  PromptOverrideContentSchema.refine(hasPromptOverrideContent, { message: 'Set files or fields, or use off' }),
+]);
+export const PromptOverridesSchema: z.ZodType<PromptOverrides> = PromptOverrideContentSchema.extend({
+  main: PromptOverrideBranchSchema.optional(),
+  independent: PromptOverrideBranchSchema.optional(),
+}).superRefine((value, ctx) => {
+  for (const position of ['main', 'independent'] as const) {
+    if (value[position] === 'same' && !hasPromptOverrideContent(value)) {
+      ctx.addIssue({ code: 'custom', path: [position], message: 'same requires common files or fields' });
+    }
+  }
+});
+
+export function selectPromptIdentityContent<T>(
+  common: T | undefined,
+  branch: PromptIdentityBranch<T> | undefined,
+): T | undefined {
+  if (branch === 'off') return undefined;
+  return branch === undefined || branch === 'same' ? common : branch;
+}
+
+export function selectPromptOverrides(
+  overrides: PromptOverrides,
+  position: PromptDelegationPosition = 'main',
+): PromptOverrideContent | undefined {
+  return selectPromptIdentityContent(
+    { files: overrides.files, fields: overrides.fields },
+    position === 'sub' ? undefined : overrides[position],
+  );
+}
 
 export const PromptOverrideDocumentSchema = z.object({
   schema_version: z.literal(1),
@@ -26,6 +71,7 @@ export type PromptOverrideSurface =
   | 'model'
   | 'profile'
   | 'profile-model'
+  | 'caller-lease-model'
   | 'system';
 
 export interface PromptOverrideSource {
@@ -34,6 +80,8 @@ export interface PromptOverrideSource {
   readonly path?: string;
   readonly fileIndex?: number;
   readonly line?: number;
+  readonly selection?: 'common' | 'main' | 'independent';
+  readonly declarationIndex?: number;
 }
 
 export interface ResolvedPromptOverrides {

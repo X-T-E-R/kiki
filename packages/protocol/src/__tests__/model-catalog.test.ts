@@ -11,6 +11,8 @@ import {
   listProvidersResponseSchema,
   modelCatalogItemSchema,
   patchModelRequestSchema,
+  modelUsagePolicySchema,
+  createModelRequestSchema,
   patchProviderRequestSchema,
   providerCatalogItemSchema,
   providerCatalogStatusSchema,
@@ -235,5 +237,21 @@ describe('model catalog schemas', () => {
       default_model: 'k2',
       model,
     });
+  });
+});
+
+
+describe('model usage identity contract', () => {
+  it('preserves omission, API default, off and sparse null clears', () => {
+    const usage = { main: { thinking_effort: 'off', service_tier: { kind: 'api_default' }, auto_compact: 160000 }, independent: { context_budget: 200000, max_completion_tokens: 8000 } };
+    expect(modelUsagePolicySchema.parse(usage)).toEqual(usage);
+    expect(createModelRequestSchema.parse({ provider_id: 'edge', remote_id: 'remote', usage }).usage).toEqual(usage);
+    const patch = { usage: { main: { service_tier: null, thinking_effort: 'high' }, independent: null } };
+    expect(patchModelRequestSchema.parse(patch)).toEqual(patch);
+    expect(patchModelRequestSchema.parse({ usage: null })).toEqual({ usage: null });
+    expect(modelUsagePolicySchema.safeParse({ sub: { thinking_effort: 'high' } }).success).toBe(false);
+    expect(modelUsagePolicySchema.safeParse({ main: { provider_id: 'other' } }).success).toBe(false);
+    expect(modelUsagePolicySchema.safeParse({ main: { auto_compact: 0 } }).success).toBe(false);
+    expect(modelUsagePolicySchema.safeParse({ main: { thinking_effort: { kind: 'api_default' } } }).success).toBe(false);
   });
 });

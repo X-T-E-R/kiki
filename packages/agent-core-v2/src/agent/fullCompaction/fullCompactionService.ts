@@ -30,7 +30,7 @@ import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { renderTodoList, type TodoItem } from '#/session/todo/todoItem';
-import { renderTodoNotes } from '#/session/todo/todoNotes';
+import { compactionDirectivesBudget, renderTodoNotes } from '#/session/todo/todoNotes';
 import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IConfigService } from '#/app/config/config';
@@ -718,6 +718,60 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     }
   }
 
+  private startSummaryRequest(messages: readonly Message[], maxOutputSize: number, signal: AbortSignal, turnId?: number, droppedCount = 0) {
+    return this.llmRequester.start({ messages, maxOutputSize, source: {
+      type: 'operation', turnId, requestKind: 'full_compaction', logFields: { droppedCount },
+    } }, undefined, signal);
+  }
+
+  async prepareModelSwitchSummary(history: readonly ContextMessage[], signal: AbortSignal): Promise<string | undefined> {
+    if (!history.some((message) => message.role === 'assistant' || message.role === 'tool' || message.origin?.kind === 'compaction_summary')) return undefined;
+    const model = this.profile.resolveModelContext();
+    const instruction = renderPrompt(compactionInstructionTemplate, { custom_instruction_block: '' }).trimEnd();
+    const messages: Message[] = [...stripDynamicToolContext(history), createUserMessage(instruction)];
+    const tokensBefore = this.requestTokens(history);
+    const notes = this.todo.getNotes?.(this.scope.agentId) ?? {};
+    const [liveEntries, memoryReferences, linkedBoardCards] = await Promise.all([
+      this.memorySnapshot.liveSessionEntries(),
+      this.memorySnapshot.resolveReferences([notes.notes?.directives, notes.notes?.decided].filter(Boolean).join('\n')),
+      this.readLinkedBoardCards(),
+    ]);
+    const relayInput: RelayInput = {
+      history, compactCount: history.length, agentId: this.scope.agentId,
+      sessionId: this.session.sessionId, epoch: this.states.get(contextWindowEpochKey),
+      notes: notes.notes, meta: notes.meta, todos: this.currentTodos(),
+      estimateText: (text) => this.tokenCounting.estimateText(text),
+      memoryEntries: liveEntries.map((entry) => `- [${entry.id}] ${entry.title}`), memoryReferences, linkedBoardCards,
+    };
+    const startedAt = Date.now();
+    const maxAttempts = model.compactionMaxAttempts ?? MAX_COMPACTION_RETRY_ATTEMPTS;
+    let retryCount = 0;
+    while (true) {
+      signal.throwIfAborted();
+      try {
+        const request = this.startSummaryRequest(messages, model.maxOutputSize ?? DEFAULT_COMPACTION_MAX_COMPLETION_TOKENS, signal);
+        const attempt = collectSummary(await request.result);
+        this.telemetry.track2('compaction_finished', {
+          source: 'manual', tokens_before: tokensBefore, tokens_after: this.tokenCounting.estimateText(attempt.summary),
+          duration_ms: Date.now() - startedAt, compacted_count: history.length, retry_count: retryCount, round: 1,
+          thinking_effort: model.thinkingLevel, trace_id: attempt.traceId, strategy: 'summarize', ...usageTelemetry(attempt.usage),
+        });
+        return this.postProcessSummary(attempt.summary, relayInput);
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        if (retryCount + 1 >= maxAttempts || (!(error instanceof CompactionTruncatedError) && !isRetryableCompactionError(error))) {
+          this.telemetry.track2('compaction_failed', { source: 'manual', tokens_before: tokensBefore,
+            duration_ms: Date.now() - startedAt, round: 1, retry_count: retryCount,
+            thinking_effort: model.thinkingLevel, error_type: error instanceof Error ? error.name : 'Unknown', strategy: 'summarize' });
+          throw error;
+        }
+        const status = findAPIStatusError(error);
+        await sleepForRetry(status?.retryAfterMs == null ? retryBackoffDelay(retryCount) : Math.min(status.retryAfterMs, 60_000), signal);
+        retryCount += 1;
+      }
+    }
+  }
+
   private async compactionRound(
     active: ActiveCompaction,
     data: Readonly<CompactionBeginData>,
@@ -843,20 +897,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         requestAttempts += 1;
 
         try {
-          const request = this.llmRequester.start(
-            {
-              messages,
-              maxOutputSize: compactionMaxOutputSize,
-              source: {
-                type: 'operation',
-                turnId: active.originTurnId,
-                requestKind: 'full_compaction',
-                logFields: { droppedCount },
-              },
-            },
-            undefined,
-            signal,
-          );
+          const request = this.startSummaryRequest(messages, compactionMaxOutputSize, signal, active.originTurnId, droppedCount);
           active.trace = request.trace;
           attempt = collectSummary(await request.result);
           break;
@@ -936,6 +977,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         throw compactionCancelledReason(active);
       }
 
+      const summarizedDirectives = attempt.summary.split(/^## (?:Standing directives|Pending directive review)[ \t]*\r?\n/m)[1]?.split(/^## [^\r\n]+/m)[0]?.trim();
+      const directiveBudget = summarizedDirectives && summarizedDirectives !== '(none)' ? compactionDirectivesBudget(notes.notes, summarizedDirectives) : undefined;
+      if (directiveBudget?.exceeded) reasons.push('notes_directives_budget');
       const summary = this.postProcessSummary(attempt.summary, { ...relayInput, compactCount });
       const result = this.context.applyCompaction({
         summary,
@@ -945,16 +989,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         summaryOutputTokens: attempt.usage?.output,
         requestOverheadTokens: this.requestTokens([]),
         droppedCount: droppedCount === 0 ? undefined : droppedCount,
-        ...(choice.shadow || choice.strategy !== 'summarize' ? { strategy: 'summarize' as const, shapeVersion: 1, reasonCodes: reasons, fallbackFrom } : {}),
+        ...(choice.shadow || choice.strategy !== 'summarize' || directiveBudget?.exceeded ? { strategy: 'summarize' as const, shapeVersion: 1, reasonCodes: reasons, fallbackFrom } : {}),
       });
-      const summarizedDirectives = attempt.summary.split(/^## Standing directives[ \t]*\r?\n/m)[1]?.split(/^## [^\r\n]+/m)[0]?.trim();
-      if (summarizedDirectives) {
-        try {
-          this.todo.setCompactionDirectives(summarizedDirectives, active.originTurnId ?? notes.meta?.writtenTurn ?? 0, this.scope.agentId);
-        } catch (error) {
-          this.log.warn('failed to record directives from compaction summary', { error });
-        }
-      }
 
       const properties: CompactionFinishedEvent = {
         turn_id: active.originTurnId,
@@ -1027,7 +1063,11 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     const todos = this.currentTodos();
     const notes = renderTodoNotes(this.todo.getNotes?.(this.scope.agentId)?.notes);
     const receipts = renderPendingReceipts(input);
-    return [summary.trim(), todos.length ? renderTodoList(todos, '## TODO List') : '',
+    const candidate = summary.trim().replaceAll(/^## Standing directives[ \t]*$/gm, '## Pending directive review');
+    const extracted = candidate.split(/^## Pending directive review[ \t]*\r?\n/m)[1]?.split(/^## [^\r\n]+/m)[0]?.trim();
+    const budget = extracted && extracted !== '(none)' ? compactionDirectivesBudget(input.notes, extracted) : undefined;
+    const notice = extracted ? `Summary candidates have not changed current notes. Reconcile them with original human sources before an explicit TodoList update.${budget?.exceeded ? ` Automatic promotion skipped: budget. Required directives ${budget.sectionChars}/1500 characters, notes total ${budget.totalChars}/7500; notes revision ${input.meta?.rev ?? 0} is unchanged. The complete candidate remains above.` : ''}` : '';
+    return [candidate, notice ? `## Directive review status\n${notice}` : '', todos.length ? renderTodoList(todos, '## TODO List') : '',
       notes ? `## Working notes\n${notes}` : '', renderStandingDirectives(input), renderLinkedBoardCards(input), receipts].filter(Boolean).join('\n\n');
   }
 

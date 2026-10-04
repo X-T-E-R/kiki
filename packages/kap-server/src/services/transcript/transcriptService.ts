@@ -79,7 +79,7 @@ const MAIN_AGENT_ID = 'main';
 const WIRE_FILE = 'wire.jsonl';
 const STATE_FILE = 'state.json';
 const TRANSCRIPT_CHECKPOINT_COLLECTION = '__transcript_projection_checkpoint__';
-const TRANSCRIPT_CHECKPOINT_FORMAT = 4;
+const TRANSCRIPT_CHECKPOINT_FORMAT = 5;
 const TRANSCRIPT_CHECKPOINT_MIN_RECORDS = 256;
 const TRANSCRIPT_CHECKPOINT_MAX_WIRE_BYTES = 8 << 20;
 const OPS_JOURNAL_COMPACT_MIN_HEAD = 1024;
@@ -328,6 +328,7 @@ export class TranscriptService {
   private readonly opsJournalLimits: Required<TranscriptOpsJournalLimits>;
   private readonly wireRecordReader: NonNullable<TranscriptServiceDeps['wireRecordReader']>;
   private readonly coldSnapshotFlights = new Map<string, ColdSnapshotFlight>();
+  private readonly residencyMaintenance = new Map<string, Promise<void>>();
   private readonly coldSnapshotCache = new Map<string, ColdSnapshotCacheEntry>();
   private coldSnapshotCacheBytes = 0;
   private readonly unverifiedResident = new Map<string, { transcript: AgentTranscript; bytes: number }>();
@@ -561,30 +562,43 @@ export class TranscriptService {
     await this.live.get(sessionId)?.ready;
   }
 
-  /**
-   * Ensure one agent's persisted history is replayed into the live store
-   * (idempotent per agent; the main agent is already covered by the initial
-   * backfill). Awaited by full-read consumers for the `agent_id` they serve,
-   * so any agent's transcript — including subagents that are not
-   * materialized in this process — comes back established.
-   */
-  async ensureAgentHistory(sessionId: string, agentId: string): Promise<void> {
+  /** Return an established projection; dormant agents use the bounded cold cache, not the live store. */
+  async ensureAgentHistory(sessionId: string, agentId: string, options: { readonly fullHistory?: boolean } = {}): Promise<AgentTranscript | undefined> {
+    const establish = async (transcript: AgentTranscript | undefined): Promise<AgentTranscript | undefined> => {
+      if (transcript === undefined || !options.fullHistory || !transcript.hasMoreOlder) return transcript;
+      const snapshot = await this.readFullAgentSnapshot(sessionId, agentId, transcript);
+      if (snapshot === undefined) return undefined;
+      const full = new AgentTranscript(agentId);
+      full.apply([{ op: 'reset', agentId, snapshot }]);
+      return full;
+    };
     const entry = this.live.get(sessionId);
     if (entry === undefined) return;
     await entry.ready;
     await entry.pendingDisposals.get(agentId);
     this.assertReadableAgent(sessionId, agentId);
+    const session = getLiveSessionById(this.deps.core.accessor, sessionId);
+    if (agentId !== MAIN_AGENT_ID && session?.accessor.get(IAgentLifecycleService).get(agentId) === undefined) {
+      const snapshot = await this.readColdSnapshot(sessionId, agentId);
+      if (snapshot === undefined) return;
+      const transcript = new AgentTranscript(agentId);
+      transcript.apply([{ op: 'reset', agentId, snapshot: this.reconcileQuestionSnapshot(sessionId, snapshot) }]);
+      if (this.live.get(sessionId) === entry) {
+        entry.store.describeAgent({ agentId, type: 'sub', ...entry.store.agents().find((agent) => agent.agentId === agentId) });
+      }
+      return transcript;
+    }
     let backfill = entry.agentBackfills.get(agentId);
     const history = entry.agentHistory.get(agentId);
     if (history?.status === 'failed') {
       const changed = await this.historyFailureChanged(sessionId, agentId, history);
       this.assertReadableAgent(sessionId, agentId);
-      if (!changed) return;
+      if (!changed) return establish(entry.store.getAgent(agentId));
       if (entry.agentBackfills.get(agentId) === backfill) entry.agentBackfills.delete(agentId);
       backfill = entry.agentBackfills.get(agentId);
     }
     if (backfill === undefined) {
-      if (agentId === MAIN_AGENT_ID && history?.status !== 'failed') return;
+      if (agentId === MAIN_AGENT_ID && history?.status !== 'failed') return establish(entry.store.getAgent(agentId));
       entry.agentHistory.set(agentId, { status: 'pending' });
       backfill = this.backfillAgent(sessionId, entry.store, agentId);
       entry.agentBackfills.set(agentId, backfill);
@@ -596,6 +610,7 @@ export class TranscriptService {
       entry.binding.seedPendingInteractions(agentId);
       entry.binding.seedPrompts(agentId);
       this.reconcileQueuedPrompts(sessionId, entry.store, agentId);
+      return establish(entry.store.getAgent(agentId));
     }
   }
 
@@ -647,7 +662,21 @@ export class TranscriptService {
         interactions.set(interaction.interactionId, { ...interaction, state: 'pending', response: undefined });
       }
     }
-    return { ...snapshot, interactions: [...interactions.values()] };
+    return this.reconcileQuestionSnapshot(sessionId, { ...snapshot, interactions: [...interactions.values()] });
+  }
+
+  reconcileQuestionSnapshot(sessionId: string, snapshot: AgentTranscriptSnapshot): AgentTranscriptSnapshot {
+    const session = getLiveSessionById(this.deps.core.accessor, sessionId);
+    const pendingIds = new Set(session?.accessor.get(ISessionInteractionService).listPending('question').map((entry) => entry.id) ?? []);
+    return {
+      ...snapshot,
+      interactions: snapshot.interactions.map((interaction) =>
+        interaction.interactionKind === 'question' &&
+        (interaction.state === 'pending' || (interaction.state === 'cancelled' && interaction.response === undefined)) &&
+        !pendingIds.has(interaction.interactionId)
+          ? { ...interaction, state: 'cancelled', response: { cancelled: true, reason: 'agent_closed' } }
+          : interaction),
+    };
   }
 
   /** Initial backfill: main-agent history + the full roster from session metadata. */
@@ -761,7 +790,7 @@ export class TranscriptService {
       });
     }
     const materialized = transcript.snapshot();
-    entry.agentToolCallStates.set(agentId, toolCallStateFromSnapshot(materialized));
+    entry.agentToolCallStates.set(agentId, toolCallStateFromSnapshot({ ...materialized, toolCallCountKnown: !failed }));
     const failureSignature = failed
       ? await this.historyFailureSignature(sessionId, agentId)
       : undefined;
@@ -773,6 +802,39 @@ export class TranscriptService {
       this.dispatchToolCallCount(sessionId, transcript, countToolCallFrames(materialized.items), true);
     }
     entry.binding.finishReplay(agentId);
+    if (snapshot !== undefined) this.releaseDurableHistory(entry, agentId, snapshot);
+  }
+
+  private releaseDurableHistory(entry: LiveEntry, agentId: string, snapshot: AgentTranscriptSnapshot): void {
+    const limits = this.resolveResidentLimits();
+    const transcript = entry.store.getAgent(agentId);
+    if (limits === undefined || transcript === undefined) return;
+    const released = transcript.releaseDurableHistory(snapshot, limits);
+    if (released.length === 0) return;
+    const ids = new Set(released);
+    const promptIds = snapshot.items.flatMap((item) => item.kind === 'turn' && ids.has(item.turnId) && item.promptId !== undefined ? [item.promptId] : []);
+    entry.binding.releaseDurableTurns(agentId, released, promptIds);
+  }
+
+  private scheduleResidencyMaintenance(sessionId: string, agentId: string, entry: LiveEntry): void {
+    const key = `${sessionId}\0${agentId}`;
+    const transcript = entry.store.getAgent(agentId);
+    const limits = this.resolveResidentLimits();
+    const wire = entry.agentWires.get(agentId);
+    if (transcript === undefined || limits === undefined || wire === undefined || this.residencyMaintenance.has(key)) return;
+    const report = transcript.residentReport();
+    if (report.turns <= limits.tailTurns && report.estimatedBytes <= limits.maxBytes) return;
+    let maintenance!: Promise<void>;
+    maintenance = Promise.resolve().then(async () => {
+      await wire.flush();
+      const snapshot = await this.readColdSnapshot(sessionId, agentId, () => this.liveActiveTurnIds(sessionId, agentId, undefined));
+      if (snapshot !== undefined && this.live.get(sessionId) === entry && entry.agentWires.get(agentId) === wire) this.releaseDurableHistory(entry, agentId, snapshot);
+    }).catch((error: unknown) => {
+      this.deps.logger?.warn({ sessionId, agentId, error }, 'transcript: durability clearance failed; keeping resident history');
+    }).finally(() => {
+      if (this.residencyMaintenance.get(key) === maintenance) this.residencyMaintenance.delete(key);
+    });
+    this.residencyMaintenance.set(key, maintenance);
   }
 
   onSessionOps(sessionId: string, listener: TranscriptOpsListener): IDisposable | undefined {
@@ -934,6 +996,7 @@ export class TranscriptService {
       this.dispatchOps(sessionId, event);
       return;
     }
+    if (event.ops.some((operation) => operation.op === 'turn.upsert' && operation.turn.state !== 'running')) this.scheduleResidencyMaintenance(sessionId, event.agentId, entry);
     const transcript = entry.store.getAgent(event.agentId);
     let state = entry.agentToolCallStates.get(event.agentId);
     if (state === undefined && transcript !== undefined) {
@@ -1909,13 +1972,25 @@ export class TranscriptService {
     const journal = entry.opsJournals.get(agentId);
     if (journal !== undefined) this.disposeOpsJournal(entry, journal);
     entry.opsJournals.set(agentId, { epoch: randomUUID(), nextSeq: 1, start: 0, batches: [], bytes: 0 });
+    this.releaseDurableHistory(entry, agentId, snapshot);
+  }
+
+  /** Recover evicted history into a request-local projection and overlay current live facts. */
+  async readFullAgentSnapshot(sessionId: string, agentId: string, transcript: AgentTranscript, signal?: AbortSignal): Promise<AgentTranscriptSnapshot | undefined> {
+    if (!transcript.hasMoreOlder) return transcript.snapshot();
+    const cold = await this.readColdSnapshot(sessionId, agentId, undefined, signal);
+    if (cold === undefined) return undefined;
+    const merged = new AgentTranscript(agentId);
+    merged.apply([{ op: 'reset', agentId, snapshot: cold }]);
+    merged.apply(snapshotToOps(transcript.snapshot()));
+    return this.reconcileQuestionSnapshot(sessionId, merged.snapshot());
   }
 
   private resolveResidentLimits(): TranscriptResidentLimits | undefined {
     if (this.deps.residentLimits === false) return undefined;
     if (this.deps.residentLimits !== undefined) return this.deps.residentLimits;
     const flags = this.deps.core.accessor.get(IFlagService) as IFlagService | undefined;
-    if (flags?.enabled(TRANSCRIPT_RESIDENT_WINDOW_FLAG_ID) !== true) return undefined;
+    if (flags?.enabled(TRANSCRIPT_RESIDENT_WINDOW_FLAG_ID) === false) return undefined;
     const configured = (this.deps.core.accessor.get(IConfigService) as IConfigService | undefined)
       ?.get<TranscriptMemoryConfig>(TRANSCRIPT_MEMORY_SECTION);
     const config = { ...DEFAULT_TRANSCRIPT_MEMORY_CONFIG, ...configured };

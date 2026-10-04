@@ -71,6 +71,37 @@ describe('HostProcessService', () => {
     });
   });
 
+  it.skipIf(process.platform === 'win32').each([false, true])('delivers SIGTERM and observes actual exit with detached=%s on POSIX', async (detached) => {
+    const svc = ix.get(IHostProcessService);
+    const proc = await svc.spawn(process.execPath, ['-e',
+      'process.on("SIGTERM", () => process.exit(23)); process.stdout.write("ready"); setInterval(() => {}, 1000);',
+    ], { detached });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        timeout = setTimeout(() => { reject(new Error('child readiness timed out')); }, 1_500);
+        proc.stdout.once('data', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
+      await proc.kill('SIGTERM');
+      const code = await Promise.race([
+        proc.wait(),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => { reject(new Error('kill returned without child exit')); }, 1_500);
+        }),
+      ]);
+      expect(code).toBe(23);
+      expect(proc.exitCode).toBe(23);
+    } finally {
+      clearTimeout(timeout);
+      if (proc.exitCode === null) process.kill(proc.pid, 'SIGKILL');
+      await proc.wait();
+      await proc.dispose();
+    }
+  });
+
   it('terminates a running process with kill()', async () => {
     const svc = ix.get(IHostProcessService);
     const proc = await svc.spawn('node', ['-e', 'setTimeout(() => {}, 30000)']);

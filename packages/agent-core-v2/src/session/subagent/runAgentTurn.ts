@@ -5,8 +5,8 @@ import { linkAbortSignal, userCancellationReason } from '#/_base/utils/abort';
 import type { AgentExecutorAgentContext } from '#/app/agentExecutor/agentExecutor';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
-import { Error2, ErrorCodes, toKimiErrorPayload, type KimiErrorPayload } from '#/errors';
-import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { Error2, ErrorCodes, fromErrorPayload, toKimiErrorPayload, type KimiErrorPayload } from '#/errors';
+import { IAgentPromptService, type PromptInput } from '#/agent/prompt/prompt';
 import { IAgentLoopService, type Turn, type TurnResult } from '#/agent/loop/loop';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import type { AgentProfileSummaryPolicy } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -34,15 +34,39 @@ export async function runAgentTurn(
 ): Promise<AgentRunHandle> {
   options.signal.throwIfAborted();
   const promptService = target.accessor.get(IAgentPromptService);
+  const promptInput: PromptInput | undefined = request.kind === 'prompt' ? { id: request.promptId, message: {
+    role: 'user', content: [{ type: 'text', text: request.prompt }], toolCalls: [],
+    origin: request.origin ?? AGENT_RUN_PROMPT_ORIGIN,
+  }, signal: options.signal } : undefined;
+  if (request.kind === 'prompt' && request.promptId !== undefined) {
+    const previous = promptService.lookup(request.promptId, promptInput);
+    if (previous?.phase === 'launched') {
+      throw new Error2(ErrorCodes.REQUEST_INVALID,
+        'This resume prompt was already delivered, but its completion is not confirmed. Inspect the original turn or task before choosing a new resume; it will not be delivered again.',
+        { details: { promptId: request.promptId, turnId: previous.turnId, phase: previous.phase } });
+    }
+    if (previous?.phase === 'terminal') {
+      const terminal = previous.terminal;
+      if (terminal?.turnId === undefined || terminal.result === undefined) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'This resume prompt already settled without starting a turn. Inspect its saved prompt result; it will not be delivered again.',
+          { details: { promptId: request.promptId, state: terminal?.state } });
+      }
+      const result: TurnResult = terminal.result.type === 'failed'
+        ? { ...terminal.result, error: fromErrorPayload(terminal.result.error) }
+        : terminal.result.type === 'cancelled' ? { ...terminal.result, reason: fromErrorPayload(terminal.result.reason) } : terminal.result;
+      const turn: Turn = { id: terminal.turnId, state: result.type, signal: options.signal, ready: Promise.resolve(),
+        result: Promise.resolve(result), cancel: () => false };
+      const completion = Promise.resolve().then(() => {
+        classifyTurnResult(result);
+        return { summary: latestAssistantText(target.accessor.get(IAgentContextMemoryService).get().filter((message) => message.source?.turnId === terminal.turnId)) };
+      });
+      return { agentId: target.id, turn, completion };
+    }
+  }
   let turn: Turn | undefined;
   try {
-    turn = request.kind === 'prompt'
-      ? await (await promptService.enqueue({ message: {
-          role: 'user',
-          content: [{ type: 'text', text: request.prompt }],
-          toolCalls: [],
-          origin: request.origin ?? AGENT_RUN_PROMPT_ORIGIN,
-        }, signal: options.signal })).launched
+    turn = promptInput !== undefined
+      ? await (await promptService.enqueue(promptInput)).launched
       : request.kind === 'mailbox'
         ? await (await promptService.enqueue({
             message: request.message,

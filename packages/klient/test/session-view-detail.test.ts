@@ -4,7 +4,7 @@ import { createKlient } from '../src/transports/http/index.js';
 import { KlientValidationError } from '../src/core/validation.js';
 
 function envelope(data: unknown): Response {
-  return { ok: true, status: 200, json: () => Promise.resolve({ code: 0, msg: 'success', data, request_id: 'r1' }) } as Response;
+  return new Response(JSON.stringify({ code: 0, msg: 'success', data, request_id: 'r1' }), { headers: { 'content-type': 'application/json' } });
 }
 
 const task = {

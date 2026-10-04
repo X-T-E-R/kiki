@@ -4,9 +4,10 @@ import {
   type AgentProfile,
   type AgentProfileRouteCatalogEntry,
 } from './agentProfile';
-import { applyModelProfilePromptDelta, resolveProfileThinkingDefault } from './modelProfileOverlay';
+import { applyModelProfilePromptDelta, modelPromptLayers, resolveProfileThinkingDefault } from './modelProfileOverlay';
 import type { ModelAliasResolver } from './ports';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
+import { overlaySubagentPermissions } from './subagentPermissions';
 
 export type AliasIdentity = (alias: string) => string | undefined;
 
@@ -50,26 +51,7 @@ export function applyLease(
   const toolAllowPolicies = toolsDeclared ? undefined : profile.toolAllowPolicies;
   const disallowedTools =
     lease.disallowedTools !== undefined ? lease.disallowedTools : profile.disallowedTools;
-  const subagentsDeclared = lease.subagents !== undefined;
-  const overlaidSubagents =
-    lease.subagents === null
-      ? undefined
-      : lease.subagents !== undefined
-        ? lease.subagents
-        : profile.subagents;
-  const declaredSubagents = profile.subagentDeclaration?.kind === 'set'
-    ? profile.subagentDeclaration.names
-    : profile.subagentDeclaration === undefined ? profile.subagents : undefined;
-  const strictCeiling = profile.subagentPolicy === 'strict'
-    || (profile.subagentPolicy === undefined && declaredSubagents !== undefined);
-  const subagents = strictCeiling && subagentsDeclared
-    ? intersectAllowlists(declaredSubagents ?? profile.subagents, overlaidSubagents)
-    : overlaidSubagents;
-  const subagentDeclaration = !subagentsDeclared || (profile.subagentPolicy === undefined && !strictCeiling)
-    ? profile.subagentDeclaration
-    : subagents === undefined
-      ? { kind: 'all' as const }
-      : { kind: 'set' as const, names: subagents };
+  const permissions = overlaySubagentPermissions(profile, lease);
   const serviceTier =
     lease.serviceTier === undefined
       ? profile.serviceTier
@@ -77,6 +59,11 @@ export function applyLease(
         ? undefined
         : lease.serviceTier;
   const requestParams = mergeRequestParams(profile.requestParams, lease.requestParams);
+  const modelPromptBase = profile.modelPromptBase ?? modelPromptLayers(profile);
+  const promptLayers = lease.modelProfiles === undefined ? modelPromptLayers(profile) : [
+    ...(lease.modelPrompts === 'replace' ? [] : modelPromptBase),
+    { source: 'lease' as const, entries: lease.modelProfiles },
+  ];
   return normalizeAgentProfile({
     ...profile,
     description: lease.description ?? profile.description,
@@ -84,8 +71,7 @@ export function applyLease(
     tools,
     toolAllowPolicies,
     disallowedTools,
-    subagentDeclaration,
-    subagents,
+    ...permissions,
     modelAlias: lease.modelAlias ?? profile.modelAlias,
     thinkingEffort: lease.thinkingEffort ?? (lease.modelAlias === undefined ? profile.thinkingEffort
       : resolveProfileThinkingDefault(profile, lease.modelAlias, resolveId ?? ((id) => id))),
@@ -97,6 +83,8 @@ export function applyLease(
     preferredEfforts: intersectAllowlists(profile.preferredEfforts, lease.preferredEfforts),
     modelConstraintProfiles: [...(profile.modelConstraintProfiles ?? []), ...(lease.modelProfiles === undefined ? [] : profile.modelProfiles ?? [])],
     modelProfiles: lease.modelProfiles ?? profile.modelProfiles,
+    modelPromptBase,
+    modelPromptLayers: promptLayers,
     modelMenuDiagnostics: profile.restrictModelsToMenu !== true ? profile.modelMenuDiagnostics : [
       ...(profile.modelMenuDiagnostics ?? []),
       ...[...(lease.modelProfiles ?? []).map((entry) => entry.alias), ...(lease.modelAlias === undefined ? [] : [lease.modelAlias])]

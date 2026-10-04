@@ -6,10 +6,13 @@ import { AsyncQueue } from '../src/asyncQueue';
 import { CodexAppServerClient } from '../src/client';
 import type { HostProcessLike, HostProcessServiceLike } from '../src/types';
 
-function scriptedProcess(userAgent?: string): {
+function scriptedProcess(userAgent?: string, turnResult?: (index: number) => unknown, holdExit = false): {
   readonly process: HostProcessLike;
   readonly stdout: PassThrough;
   readonly dispose: ReturnType<typeof vi.fn>;
+  readonly methods: string[];
+  readonly kill: ReturnType<typeof vi.fn>;
+  exit(): void;
 } {
   const stdout = new PassThrough();
   const stderr = new PassThrough();
@@ -19,6 +22,14 @@ function scriptedProcess(userAgent?: string): {
     resolveExit = resolve;
   });
   let input = '';
+  let turnStarts = 0;
+  const methods: string[] = [];
+  const exit = (): void => {
+    if (exitCode !== null) return;
+    exitCode = 0;
+    resolveExit(0);
+  };
+  const kill = vi.fn(async () => { if (!holdExit) exit(); });
   const stdin = new Writable({
     write(chunk, _encoding, callback) {
       input += chunk.toString();
@@ -27,6 +38,13 @@ function scriptedProcess(userAgent?: string): {
         const line = input.slice(0, newline);
         input = input.slice(newline + 1);
         const frame = JSON.parse(line) as { id?: string; method?: string; params?: unknown };
+        if (frame.method !== undefined) methods.push(frame.method);
+        if (frame.method === 'turn/start' && frame.id !== undefined && turnResult !== undefined) {
+          stdout.write(`${JSON.stringify({ id: frame.id, result: turnResult(++turnStarts) })}\n`);
+        }
+        if (frame.method === 'turn/interrupt' && frame.id !== undefined) {
+          stdout.write(`${JSON.stringify({ id: frame.id, result: {} })}\n`);
+        }
         if (frame.method === 'initialize' && frame.id !== undefined) {
           stdout.write(`${JSON.stringify({ id: frame.id, result: { userAgent } })}\n`);
         }
@@ -48,6 +66,9 @@ function scriptedProcess(userAgent?: string): {
   return {
     stdout,
     dispose,
+    methods,
+    kill,
+    exit,
     process: {
       pid: 1,
       get exitCode() {
@@ -57,12 +78,7 @@ function scriptedProcess(userAgent?: string): {
       stdout,
       stderr,
       wait: () => wait,
-      kill: async () => {
-        if (exitCode === null) {
-          exitCode = 0;
-          resolveExit(0);
-        }
-      },
+      kill,
       dispose,
     },
   };
@@ -117,7 +133,8 @@ describe('CodexAppServerClient limits and observers', () => {
     );
     await client.connect();
 
-    await expect(client.listModels()).rejects.toMatchObject({ code: 'protocol' });
+    await expect(client.listModels()).rejects.toMatchObject({ code: 'protocol', message: 'model/list repeated a cursor' });
+    expect(fixture.methods.filter((method) => method === 'model/list')).toHaveLength(2);
     expect(client.status().state).toBe('broken');
     expect(fixture.dispose).toHaveBeenCalledOnce();
   });
@@ -162,5 +179,157 @@ describe('CodexAppServerClient limits and observers', () => {
 
     expect(client.status().state).toBe('broken');
     expect(fixture.dispose).toHaveBeenCalledOnce();
+  });
+});
+
+function turnClient(fixture: ReturnType<typeof scriptedProcess>): CodexAppServerClient {
+  return new CodexAppServerClient({ spawn: async () => fixture.process }, {
+    id: 'fixture', command: 'fixture', shutdownGraceMs: 5,
+  });
+}
+
+function completeTurn(stdout: PassThrough, turnId = 'turn-1', status = 'completed'): void {
+  stdout.write(`${JSON.stringify({ method: 'turn/completed', params: {
+    threadId: 'thread-1', turn: { id: turnId, status },
+  } })}\n`);
+}
+
+describe('Codex turn settlement', () => {
+  it('settles a normal completion once and admits the next turn', async () => {
+    const fixture = scriptedProcess(undefined, (index) => ({ turn: { id: `turn-${index}` } }));
+    const client = turnClient(fixture);
+    await client.connect();
+    const first = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal);
+    completeTurn(fixture.stdout);
+    completeTurn(fixture.stdout);
+    await expect(first.completion).resolves.toMatchObject({ status: 'completed' });
+    await expect(first.events[Symbol.asyncIterator]().next()).resolves.toMatchObject({ done: true });
+    expect(client.status()).toMatchObject({ state: 'ready', turnId: undefined, threadId: undefined });
+    expect(await first.cancel()).toBe(false);
+    const second = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal);
+    completeTurn(fixture.stdout, 'turn-2');
+    await second.completion;
+    await client.shutdown();
+    expect(fixture.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('sends one interrupt during repeated active shutdown and settles after process exit', async () => {
+    const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }), true);
+    const client = turnClient(fixture);
+    await client.connect();
+    const handle = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal);
+    const completion = handle.completion.catch((error: unknown) => error);
+    let settled = false;
+    void completion.then(() => { settled = true; });
+    const shutdown = client.shutdown();
+    const repeated = client.shutdown();
+    expect(repeated).toBe(shutdown);
+    await vi.waitFor(() => expect(fixture.kill).toHaveBeenCalled(), { interval: 1 });
+    expect(settled).toBe(false);
+    expect(fixture.methods.filter((method) => method === 'turn/interrupt')).toHaveLength(1);
+    fixture.exit();
+    await shutdown;
+    expect(await completion).toMatchObject({ code: 'closed' });
+    await expect(handle.events[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'closed' });
+    expect(client.status()).toMatchObject({ state: 'closed', turnId: undefined, threadId: undefined, pid: undefined });
+    expect(fixture.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('bounds abort ACK without terminal and deduplicates direct cancel', async () => {
+    const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }), true);
+    const client = turnClient(fixture);
+    await client.connect();
+    const signal = new AbortController();
+    const handle = await client.startTurn({ threadId: 'thread-1' }, signal.signal);
+    const completion = handle.completion.catch((error: unknown) => error);
+    let settled = false;
+    void completion.then(() => { settled = true; });
+    signal.abort(new Error('cancelled'));
+    expect(await handle.cancel()).toBe(true);
+    expect(await handle.cancel()).toBe(true);
+    await vi.waitFor(() => expect(fixture.kill).toHaveBeenCalled(), { interval: 1 });
+    expect(settled).toBe(false);
+    expect(fixture.methods.filter((method) => method === 'turn/interrupt')).toHaveLength(1);
+    fixture.exit();
+    expect(await completion).toMatchObject({ code: 'timeout' });
+    await expect(handle.events[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'timeout' });
+    expect(client.status()).toMatchObject({ state: 'broken', turnId: undefined });
+    await client.shutdown();
+    expect(fixture.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('accepts interrupted terminal before grace and keeps the connection reusable', async () => {
+    const fixture = scriptedProcess(undefined, (index) => ({ turn: { id: `turn-${index}` } }));
+    const client = turnClient(fixture);
+    await client.connect();
+    const handle = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal);
+    await handle.cancel();
+    completeTurn(fixture.stdout, 'turn-1', 'interrupted');
+    await expect(handle.completion).resolves.toMatchObject({ status: 'interrupted' });
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(client.status().state).toBe('ready');
+    const second = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal);
+    completeTurn(fixture.stdout, 'turn-2');
+    await second.completion;
+    await client.shutdown();
+  });
+
+  it.each(['eof', 'exit'] as const)('settles an active turn on unexpected %s', async (kind) => {
+    const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }));
+    const client = turnClient(fixture);
+    await client.connect();
+    const handle = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal);
+    const completion = handle.completion.catch((error: unknown) => error);
+    if (kind === 'eof') fixture.stdout.end();
+    else fixture.exit();
+    expect(await completion).toMatchObject({ code: 'closed' });
+    await expect(handle.events[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'closed' });
+    expect(fixture.dispose).toHaveBeenCalledOnce();
+    await client.shutdown();
+  });
+
+  it.each([false, true])('discards early events and the starting signal after malformed response, aborted=%s', async (abort) => {
+    const fixture = scriptedProcess(undefined, (index) => {
+      if (index === 1) {
+        fixture.stdout.write(`${JSON.stringify({ method: 'item/agentMessage/delta', params: {
+          itemId: 'stale-message', delta: 'STALE',
+        } })}\n`);
+        return { turn: {} };
+      }
+      return { turn: { id: 'turn-2' } };
+    });
+    let requestSignal: AbortSignal | undefined;
+    const client = new CodexAppServerClient({ spawn: async () => fixture.process }, {
+      id: 'fixture', command: 'fixture', shutdownGraceMs: 5,
+    }, { onServerRequest: async (_request, responder, signal) => {
+      requestSignal = signal;
+      await responder.respond({});
+    } });
+    await client.connect();
+    const controller = new AbortController();
+    const starting = client.startTurn({ threadId: 'thread-1' }, controller.signal);
+    if (abort) controller.abort(new Error('cancel during response'));
+    await expect(starting).rejects.toMatchObject({ code: 'protocol' });
+    fixture.stdout.write(`${JSON.stringify({ id: 'server-request', method: 'fixture/request', params: {} })}\n`);
+    expect(requestSignal?.aborted).toBe(true);
+    expect(requestSignal).not.toBe(controller.signal);
+    const handle = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal);
+    completeTurn(fixture.stdout, 'turn-2');
+    await handle.completion;
+    await expect(handle.events[Symbol.asyncIterator]().next()).resolves.toMatchObject({ done: true });
+    await client.shutdown();
+  });
+
+  it.each([null, {}, { turn: {} }, { turn: { id: 1 } }])('clears malformed turn/start admission for %j', async (malformed) => {
+    const fixture = scriptedProcess(undefined, (index) => index === 1 ? malformed : { turn: { id: 'turn-2' } });
+    const client = turnClient(fixture);
+    await client.connect();
+    await expect(client.startTurn({ threadId: 'thread-1' }, new AbortController().signal)).rejects.toMatchObject({ code: 'protocol' });
+    expect(client.status().state).toBe('ready');
+    const handle = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal);
+    expect(fixture.methods.filter((method) => method === 'turn/start')).toHaveLength(2);
+    completeTurn(fixture.stdout, 'turn-2');
+    await handle.completion;
+    await client.shutdown();
   });
 });

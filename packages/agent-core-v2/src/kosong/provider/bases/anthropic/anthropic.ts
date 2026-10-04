@@ -63,7 +63,7 @@ import {
 import { mergeConsecutiveUserMessages } from '../merge-user-messages';
 import {
   mergeProviderRequestAuth,
-  requestIdentityFetch,
+  requestIdentityFetchForAuth,
   mergeRequestHeaders,
   resolveAuthBackedClient,
 } from '../request-auth';
@@ -972,6 +972,18 @@ export class AnthropicChatProvider implements ChatProvider {
       };
     }
 
+    if (kwargs.thinking?.type === 'enabled' && kwargs.thinking.budget_tokens !== undefined && kwargs.max_tokens !== undefined) {
+      if (kwargs.max_tokens <= 1024) {
+        throw new ChatProviderError(
+          'Anthropic budget thinking requires max_tokens greater than 1024; increase the output cap or disable thinking for a model that supports it.',
+        );
+      }
+      kwargs = {
+        ...kwargs,
+        thinking: { ...kwargs.thinking, budget_tokens: Math.min(kwargs.thinking.budget_tokens, kwargs.max_tokens - 1) },
+      };
+    }
+
     const requestKwargs: Record<string, unknown> = {};
     if (kwargs.max_tokens !== undefined) {
       requestKwargs['max_tokens'] = kwargs.max_tokens;
@@ -1139,7 +1151,7 @@ export class AnthropicChatProvider implements ChatProvider {
     return resolveAuthBackedClient(
       { cachedClient: this._client, clientFactory: this._clientFactory },
       auth,
-      (a) => this._buildClient(this._requireApiKey(a)),
+      (a) => this._buildClient(this._requireApiKey(a), a),
     );
   }
 
@@ -1182,13 +1194,13 @@ export class AnthropicChatProvider implements ChatProvider {
     return defaultHeaders;
   }
 
-  private _buildClient(apiKey: string): Anthropic {
+  private _buildClient(apiKey: string, auth?: ProviderRequestAuth): Anthropic {
     return new Anthropic({
       apiKey,
       authToken: null,
       baseURL: this._baseUrl ?? null,
       defaultHeaders: this._buildDefaultHeaders(apiKey),
-      fetch: requestIdentityFetch,
+      fetch: requestIdentityFetchForAuth(auth),
       maxRetries: 0,
     });
   }

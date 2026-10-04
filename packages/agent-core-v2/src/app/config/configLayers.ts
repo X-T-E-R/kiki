@@ -5,6 +5,26 @@ export function mergeConfigLayers(base: Record<string, unknown>, home: Record<st
   return deepMerge(base, home);
 }
 
+export function selectSpaceBaseConfig(base: Record<string, unknown>, follow: boolean, selections?: Record<string, { mode: 'follow' | 'fixed' }>): Record<string, unknown> {
+  const result = structuredClone(follow ? base : {});
+  for (const [id, selection] of Object.entries(selections ?? {})) {
+    if (!id.startsWith('config:')) continue;
+    const path = id.slice(7).split('.');
+    let target = result;
+    let source: unknown = base;
+    for (const key of path.slice(0, -1)) {
+      if (!isPlainObject(target[key])) target[key] = {};
+      target = target[key] as Record<string, unknown>;
+      source = isPlainObject(source) ? source[key] : undefined;
+    }
+    const key = path.at(-1)!;
+    const value = isPlainObject(source) ? source[key] : undefined;
+    if (selection.mode === 'follow' && value !== undefined) target[key] = value;
+    else delete target[key];
+  }
+  return result;
+}
+
 export function leafOrigins(
   value: unknown,
   base: unknown,

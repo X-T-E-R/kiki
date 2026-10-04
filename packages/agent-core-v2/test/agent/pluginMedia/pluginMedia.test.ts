@@ -1,0 +1,78 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Readable } from 'node:stream';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { MediaJob } from '@kiki/protocol';
+import { IAgentPluginMediaService } from '#/agent/pluginMedia/pluginMedia';
+import { IPluginMediaService } from '#/app/pluginMedia/pluginMedia';
+import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentTaskService } from '#/agent/task/task';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { createTestAgent, homeDirServices, taskServices, type TestAgentContext } from '../../harness';
+
+let root: string;
+let ctx: TestAgentContext;
+beforeEach(async () => {
+  const scratch = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../.tmp');
+  await mkdir(scratch, { recursive: true });
+  root = await mkdtemp(path.join(scratch, 'agent-media-'));
+  ctx = createTestAgent(homeDirServices(root), taskServices());
+});
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await ctx.dispose();
+  await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+});
+it('snapshots session file_id and admitted runtime paths to host staging while retaining URL references', async () => {
+  const files = ctx.get(ISessionMediaStore);
+  const data = Buffer.from('session-original-bytes');
+  await files.materialize({ fileId: 'f_input_fixture', name: 'input.png', mimeType: 'image/png', size: data.length, stream: () => Readable.from([data]) });
+  const bridge = ctx.get(IAgentPluginMediaService);
+  const fs = new HostFileSystem();
+  const signal = new AbortController().signal;
+  const cached = await bridge.snapshotInput({ file_id: 'f_input_fixture' }, 'cached', fs, signal);
+  expect(cached).not.toHaveProperty('file_id');
+  expect(await readFile((cached as { path: string }).path, 'utf8')).toBe('session-original-bytes');
+  const input = path.join(root, 'runtime-input.png'); await writeFile(input, 'runtime-original-bytes');
+  const copied = await bridge.snapshotInput({ path: input }, 'path', fs, signal);
+  expect((copied as { path: string }).path).not.toBe(input);
+  expect(await readFile((copied as { path: string }).path, 'utf8')).toBe('runtime-original-bytes');
+  const url = { url: 'https://fixture.invalid/image.png' };
+  expect(await bridge.snapshotInput(url, 'url', fs, signal)).toBe(url);
+});
+it('enforces job session/agent ownership and passes only admitted generation parameters', async () => {
+  const media = ctx.get(IPluginMediaService);
+  const bridge = ctx.get(IAgentPluginMediaService);
+  const own = { sessionId: ctx.get(ISessionContext).sessionId, agentId: ctx.get(IAgentScopeContext).agentId };
+  const stored = vi.spyOn(media, 'stored').mockResolvedValue({ owner: { ...own, agentId: 'other-agent' } } as Awaited<ReturnType<IPluginMediaService['stored']>>);
+  const cancel = vi.spyOn(media, 'cancel').mockResolvedValue({ state: 'stopped' } as MediaJob);
+  const resume = vi.spyOn(media, 'resume').mockResolvedValue({ state: 'succeeded' } as MediaJob);
+  const job = vi.spyOn(media, 'job').mockResolvedValue({ state: 'succeeded' } as MediaJob);
+  await expect(bridge.cancel('media-fixture')).rejects.toThrow('another session or agent');
+  await expect(bridge.resume('media-fixture')).rejects.toThrow('another session or agent');
+  expect(cancel).not.toHaveBeenCalled(); expect(resume).not.toHaveBeenCalled();
+  stored.mockResolvedValue({ owner: { ...own, sessionId: 'other-session' } } as Awaited<ReturnType<IPluginMediaService['stored']>>);
+  await expect(bridge.cancel('media-fixture')).rejects.toThrow('another session or agent');
+  stored.mockResolvedValue({ owner: own } as Awaited<ReturnType<IPluginMediaService['stored']>>);
+  expect(await bridge.cancel('media-fixture')).toMatchObject({ state: 'stopped' });
+  expect(await bridge.resume('media-fixture')).toMatchObject({ state: 'succeeded' });
+  expect(cancel).toHaveBeenCalledWith('media-fixture'); expect(resume).toHaveBeenCalledWith('media-fixture'); expect(job).toHaveBeenCalledWith('media-fixture');
+  const request = { kind: 'image' as const, prompt: 'admitted' };
+  const start = vi.spyOn(media, 'start');
+  await expect(bridge.api('tool-fixture', request).generate({ request: { ...request, prompt: 'changed' } })).rejects.toThrow('changed after tool/path admission');
+  expect(start).not.toHaveBeenCalled();
+});
+it('settles automatic foreground generation through the existing Task release and suppresses duplicate terminal notification', async () => {
+  const media = ctx.get(IPluginMediaService);
+  const job: MediaJob = { schemaVersion: 1, job_id: 'media-0123456789abcdef0123456789abcdef', request_id: 'foreground-fixture', owner_session_id: ctx.get(ISessionContext).sessionId, owner_agent_id: ctx.get(IAgentScopeContext).agentId, provider: 'fixture/synthetic', state: 'running', phase: 'submit', can_resume: false, artifacts: [], created_at: 1, updated_at: 1 };
+  vi.spyOn(media, 'start').mockResolvedValue(job);
+  vi.spyOn(media, 'run').mockImplementation(async () => { job.state = 'succeeded'; return job; });
+  vi.spyOn(media, 'job').mockImplementation(async () => job);
+  vi.spyOn(media, 'bindTask').mockImplementation(async (_id, taskId) => { job.task_id = taskId; return job; });
+  const request = { kind: 'image' as const, prompt: 'admitted' };
+  expect(await ctx.get(IAgentPluginMediaService).api('foreground-fixture', request).generate({ request })).toMatchObject({ state: 'succeeded', task_id: expect.stringMatching(/^media-/) });
+  await vi.waitFor(() => expect(ctx.get(IAgentTaskService).getTask(job.task_id!)).toMatchObject({ kind: 'media', jobId: job.job_id, status: 'completed', terminalNotificationSuppressed: true }));
+});

@@ -10,7 +10,7 @@ import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedA
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { isToolActive } from '#/agent/toolPolicy/evaluate';
-import { CALL_TOOL_NAME, SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolContribution } from '#/agent/toolRegistry/toolContribution';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
@@ -31,6 +31,7 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
     @IInstantiationService private readonly instantiationService: IInstantiationService,
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
+    @IAgentToolPolicyService private readonly policyService: IAgentToolPolicyService,
     @ISessionToolPolicyGate private readonly toolPolicyGate: ISessionToolPolicyGate,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @IEventBus eventBus: IEventBus,
@@ -97,10 +98,7 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
         if (this.toolRegistry.resolve(options.name) !== undefined) continue;
         if (!this.runtimeAllows(record)) continue;
         if (!isToolActive(workspaceVeto, options.name, source)) continue;
-        const disclosureControl = options.name === SELECT_TOOLS_TOOL_NAME || options.name === CALL_TOOL_NAME;
-        const policyActive = isToolActive(disclosureControl
-          ? { disallowedTools: policy.disallowedTools, disabledToolGroups: policy.disabledToolGroups }
-          : policy, options.name, source);
+        const policyActive = this.policyService.isToolActiveForDisclosure(options.name, source);
         const compatibilityActive = options.name === SEND_MESSAGE_TOOL_NAME &&
           this.isLegacyShippedMessageBinding(policy, options.name, source);
         if (!policyActive && !compatibilityActive) continue;
@@ -150,7 +148,9 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
   private refreshConditionalRecords(): void {
     this.instantiationService.invokeFunction((accessor) => {
       for (const record of this.contributions.items) {
-        if (record.options.when?.(accessor) === false) this.deactivateRecord(record);
+        if (record.options.when?.(accessor) === false || !this.policyService.isToolActiveForDisclosure(record.options.name, record.options.source ?? 'builtin')) {
+          this.deactivateRecord(record);
+        }
       }
     });
     this.activateRecords(this.contributions.items);

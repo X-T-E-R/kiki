@@ -2,6 +2,9 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import type { McpServerConfigView } from '#/mcpCore/configView';
+import type { ComputerMcpStopResult } from '#/mcpCore/computer';
+
+export type McpServerStopResult = ComputerMcpStopResult;
 import type { McpRevealedOAuthCredential, McpStoredOAuthCredential, McpStoredOAuthIdentity } from '#/mcpCore/oauth/service';
 import type {
   McpRegistryPluginOrigin,
@@ -124,6 +127,9 @@ export interface IMcpManagementService {
   removeServer(name: string, query?: McpRegistryQuery): Promise<readonly McpManagedServer[]>;
 
   testServer(target: McpServerTestTarget): Promise<McpServerTestResult>;
+
+  /** Stops only matching cua stdio children owned by this service process, not external daemons. */
+  stopServer(target: { readonly name: string; readonly cwd?: string }): Promise<McpServerStopResult>;
 
   /**
    * Legacy auth-status surface: per-server OAuth state over the registry

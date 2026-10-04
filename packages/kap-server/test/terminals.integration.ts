@@ -268,7 +268,7 @@ describe('server-v2 /api/sessions/{sid}/terminals', () => {
         wires.push(this);
       }
     }
-    const klient = createKlient({ endpoint: base, token: server!.authTokenService.getToken(), WebSocket: CountingWebSocket as unknown as typeof globalThis.WebSocket });
+    const klient = createKlient({ endpoint: base, token: server!.localOwnerToken, WebSocket: CountingWebSocket as unknown as typeof globalThis.WebSocket });
     const signals: TerminalSignal[] = [];
     const off = klient.terminal.onTerminalSignal((signal) => signals.push(signal));
     const subscription = klient.events.on('config.changed', () => undefined);
@@ -388,7 +388,7 @@ describe('server-v2 /api/sessions/{sid}/terminals', () => {
   it('bridges terminal attach, input, output, resize, reconnect replay, detach, close and exit', async () => {
     const sid = await createSession(work as string);
     const terminal = (await post<Terminal>(`/api/sessions/${sid}/terminals`, {})).data;
-    const token = (server as RunningServer).authTokenService.getToken();
+    const token = (server as RunningServer).localOwnerToken;
     const url = `ws://127.0.0.1:${(server as RunningServer).port}/api/ws`;
     const session = getLiveSessionById((server as RunningServer).core.accessor, sid);
     expect(session).toBeDefined();
@@ -535,7 +535,7 @@ describe('server-v2 /api/sessions/{sid}/terminals', () => {
 
     const conn = await openTerminalConn(
       `ws://127.0.0.1:${(server as RunningServer).port}/api/ws`,
-      (server as RunningServer).authTokenService.getToken(),
+      (server as RunningServer).localOwnerToken,
     );
     await conn.next((frame) => frame.type === 'server_hello');
     conn.send({
@@ -563,7 +563,7 @@ describe('server-v2 /api/sessions/{sid}/terminals', () => {
     const sid = await createSession(work as string);
     const conn = await openTerminalConn(
       `ws://127.0.0.1:${(server as RunningServer).port}/api/ws`,
-      (server as RunningServer).authTokenService.getToken(),
+      (server as RunningServer).localOwnerToken,
     );
     await conn.next((frame) => frame.type === 'server_hello');
 

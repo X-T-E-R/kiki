@@ -4,10 +4,10 @@ import { applyContextCompactionRecord } from '#/agent/contextMemory/contextOps';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { evaluateFreshEligibility } from '#/agent/fullCompaction/freshEligibility';
 import { renderPendingReceipts, renderRelay, renderStandingDirectives, type RelayInput } from '#/agent/fullCompaction/relayPackage';
-import { hashTodoNotes, mergeTodoNotes } from '#/session/todo/todoNotes';
+import { compactionDirectivesBudget, hashTodoNotes, mergeTodoNotes } from '#/session/todo/todoNotes';
 
 const user = (text: string, origin: ContextMessage['origin'] = { kind: 'user' }): ContextMessage => ({ role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin });
-const meta = { rev: 1, hash: hashTodoNotes({ next: 'act' }), writtenTurn: 4, writtenStep: 't4.1', coveredMessageId: 'toolcall:notes', windowEpoch: 0 };
+const meta = { rev: 1, hash: hashTodoNotes({ next: 'act' }), writtenTurn: 4, writtenStep: 't4.1', coveredMessageId: 'toolcall:notes', windowEpoch: 0, reviewedMessageId: 'toolcall:notes', reviewedWindowEpoch: 0 };
 const assistant: ContextMessage = { role: 'assistant', content: [], toolCalls: [{ id: 'notes', type: 'function', name: 'TodoList', arguments: '{}' }],
   source: { turnId: 2, stepId: 'step-notes', step: 1 },
   toolCallSources: { notes: { turnId: 2, stepId: 'step-notes', step: 1, frameId: 'step-notes.notes', toolCallId: 'notes' } } };
@@ -39,7 +39,7 @@ describe('relay-v1 zero-model contract', () => {
     const notesCall = { ...assistant, toolCalls: [{ ...assistant.toolCalls[0]!, id: 'notes423' }] };
     const steer: ContextMessage = { ...user('哦你也可以直接 pin grok 模型，都行的', { kind: 'user' }), source: { turnId: 424, stepId: 't424.1' } };
     const history = [user('x'.repeat(120_000)), notesCall, steer, user('x'.repeat(120_000))];
-    const notesMeta = { ...meta, coveredMessageId: 'toolcall:notes423', writtenTurn: 423, writtenStep: 't423.1' };
+    const notesMeta = { ...meta, coveredMessageId: 'toolcall:notes423', reviewedMessageId: 'toolcall:notes423', writtenTurn: 423, writtenStep: 't423.1' };
     const handoff: RelayInput = { ...input, history, compactCount: 3, meta: notesMeta, notes: { goal: 'Choose model', directives: 'Pin grok if the profile is unavailable.' },
       memoryEntries: ['- [m_20260929_89b2ad94e2] Pin Grok if the profile fails'] };
     const relay = renderRelay(handoff);
@@ -91,6 +91,39 @@ describe('relay-v1 zero-model contract', () => {
     expect(summary).toContain('HistoryRead {ref:"h1_real-frame"}');
     expect(summary).toContain('ref:"h1_real-frame"');
     expect(summary).not.toContain('turn:4');
+  });
+
+  it('does not retire unreviewed human constraints after a next-only write or two renewals', () => {
+    const original = { ...user('Do not publish until approval.'), source: { turnId: 5, ref: 'human-rule-ref' } };
+    const legacyMeta = { rev: 2, hash: 'new-next', writtenTurn: 6, writtenStep: 't6.1', coveredMessageId: 'toolcall:notes', windowEpoch: 0 };
+    const first = renderRelay({ ...input, meta: legacyMeta, history: [original, assistant], compactCount: 2 });
+    expect(first).toContain('Do not publish until approval.');
+    expect(first).toContain('HistoryRead {ref:"human-rule-ref"}');
+    const summary = { ...user(first, { kind: 'compaction_summary' }), source: { ref: 'first-handoff-ref' } };
+    const second = renderRelay({ ...input, history: [summary, assistant], compactCount: 2, meta: { ...legacyMeta, windowEpoch: 1 } });
+    expect(second).toContain('HistoryRead {ref:"first-handoff-ref"}');
+    expect(second).toContain('## Pending handoff reviews');
+    const third = renderRelay({ ...input, history: [{ ...user(second, { kind: 'compaction_summary' }), source: { ref: 'second-handoff-ref' } }], compactCount: 1, meta: legacyMeta });
+    expect(third).toContain('HistoryRead {ref:"first-handoff-ref"}');
+    expect(third).toContain('HistoryRead {ref:"second-handoff-ref"}');
+    const result = evaluateFreshEligibility({ history: [summary, assistant], compactCount: 2, notes: { next: 'run tests' }, meta: { ...legacyMeta, windowEpoch: 1 },
+      windowEpoch: 1, strategy: 'fresh', threshold: 100000, projectedTokens: 1, historyAvailable: true, estimateMessage: () => 1 });
+    expect(result.safe).toBe(false);
+    expect(result.reasons).toContain('handoff_unreviewed');
+    expect(result.reasons).toContain('notes_previous_window');
+  });
+
+  it('checks complete compaction candidates against section and total budgets without modifying old text', () => {
+    const original = { directives: ' KEEP_OLD_RULE ' };
+    const candidate = `${'N'.repeat(1500)}\n${original.directives}`;
+    expect(compactionDirectivesBudget(original, candidate)).toEqual({ sectionChars: candidate.length, totalChars: candidate.length, exceeded: true });
+    expect(original).toEqual({ directives: ' KEEP_OLD_RULE ' });
+    const full = { directives: 'old', goal: 'g'.repeat(1500), decided: 'd'.repeat(1500), evidence: 'e'.repeat(1500), files: 'f'.repeat(1500), next: 'n'.repeat(1497) };
+    const budget = compactionDirectivesBudget(full, 'new\nexception');
+    expect(budget.sectionChars).toBe(17);
+    expect(budget.totalChars).toBe(7514);
+    expect(budget.exceeded).toBe(true);
+    expect(full.directives).toBe('old');
   });
 
   it('merges or clears notes independently and rejects oversized updates', () => {

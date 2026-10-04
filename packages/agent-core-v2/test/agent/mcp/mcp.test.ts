@@ -79,6 +79,10 @@ class FakeMcpManager {
     return this.resolvedEntries.get(name);
   }
 
+  configOf(name: string) {
+    return name === 'kiki-computer' ? { transport: 'stdio' as const, command: 'cua-driver', args: ['mcp'] } : undefined;
+  }
+
   getRemoteServerUrl(name: string): string | undefined {
     return name === 'needs-auth' ? 'https://example.com/mcp' : undefined;
   }
@@ -576,6 +580,24 @@ describe('AgentMcpService', () => {
     });
     return { promise, resolve: resolvePromise };
   }
+
+  it('does not replay a computer call after transport loss', async () => {
+    const manager = new FakeMcpManager();
+    const counter = { calls: 0 };
+    const deadClient = countingClient(throwingClient(fakeMcpClient()), counter);
+    let reconnects = 0;
+    manager.reconnectHandler = async () => { reconnects += 1; };
+    manager.setResolved('kiki-computer', deadClient, await discoverTools(deadClient));
+    createService(manager);
+    manager.connect('kiki-computer');
+    const tool = ix.get(IAgentToolRegistryService).resolve('mcp__kiki-computer__echo');
+    expect(tool).toBeDefined();
+    await expect(executeTool(tool!, {
+      turnId: 1, toolCallId: 'tc-computer', args: { text: 'sent once' }, signal: new AbortController().signal,
+    })).rejects.toMatchObject({ code: 'mcp.computer_outcome_unknown' });
+    expect(counter.calls).toBe(1);
+    expect(reconnects).toBe(0);
+  });
 
   it('reconnects the server and retries the call once when the transport dies', async () => {
     const manager = new FakeMcpManager();

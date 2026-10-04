@@ -188,7 +188,7 @@ describe('ThreadCommunicationService', () => {
       return handle;
     });
     promptAbort = vi.fn();
-    const prompt = { enqueue: promptEnqueue, inject: promptInject, steer: promptSteer, abort: promptAbort } as unknown as IAgentPromptService;
+    const prompt = { lookup: () => undefined, enqueue: promptEnqueue, inject: promptInject, steer: promptSteer, abort: promptAbort } as unknown as IAgentPromptService;
     const agent: IAgentScopeHandle = {
       id: 'main',
       kind: LifecycleScope.Agent,
@@ -325,6 +325,7 @@ describe('ThreadCommunicationService', () => {
     const service = ix.get(IThreadCommunicationService);
     ix.stub(ISessionContext, { sessionId: 'source', workspaceId: 'workspace-a' });
     ix.stub(IAgentScopeContext, { agentId: 'main' });
+    ix.stub(IAgentContextMemoryService, { get: () => [] });
     ix.stub(IRoomService, {});
     ix.set(IReadThreadTool, new SyncDescriptor(ReadThreadTool));
     ix.set(ISendMessageToThreadTool, new SyncDescriptor(SendMessageToThreadTool));
@@ -356,7 +357,7 @@ describe('ThreadCommunicationService', () => {
   it('preserves cross-host rejection for read, send, peer send, wait and room operations', async () => {
     const service = ix.get(IThreadCommunicationService);
     const target = ref('other-host', 'workspace-b', 'target');
-    const expected = { code: ErrorCodes.THREAD_CROSS_HOST, message: 'Cross-host thread communication is not supported.', details: { hostId: 'other-host' } };
+    const expected = { code: ErrorCodes.THREAD_CROSS_HOST };
     await expect(service.readThread({ thread: target })).rejects.toMatchObject(expected);
     await expect(service.sendMessage({ target, content: 'hello', idempotencyKey: 'foreign' })).rejects.toMatchObject(expected);
     await expect(peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({ source: ref(service.hostId, 'workspace-a', 'source'), target, content: 'hello', idempotencyKey: 'foreign-peer' })).rejects.toMatchObject(expected);

@@ -79,7 +79,7 @@ export class DeliveryReminderService extends Service implements IAgentDeliveryRe
 }
 
 function shouldRemind(origin: PromptOrigin): boolean {
-  return origin.kind === 'user' || origin.kind === 'peer_thread' || (origin.kind === 'room_message' && origin.targeted);
+  return origin.kind === 'user' || origin.kind === 'peer_thread' || origin.kind === 'bridged_peer' || (origin.kind === 'room_message' && origin.targeted);
 }
 
 function hasAssistantText(messages: readonly { readonly role: string; readonly content: readonly { readonly type: string; readonly text?: string }[] }[]): boolean {

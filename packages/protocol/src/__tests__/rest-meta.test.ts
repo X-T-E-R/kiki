@@ -30,6 +30,16 @@ describe('metaResponseSchema', () => {
     expect(metaResponseSchema.safeParse({ ...sample, server_home_id: '/home/user/.kiki' }).success).toBe(false);
   });
 
+  it('identifies the current registry space without guessing for older servers', () => {
+    expect(metaResponseSchema.parse(sample).current_space_id).toBeUndefined();
+    for (const current_space_id of ['main', 'h-acme']) {
+      expect(metaResponseSchema.parse({ ...sample, current_space_id }).current_space_id).toBe(current_space_id);
+    }
+    for (const current_space_id of ['46aca369-50e8-4fd3-9c45-606d084450ed', '/home/user/.kiki', '', 'h-ACME']) {
+      expect(metaResponseSchema.safeParse({ ...sample, current_space_id }).success).toBe(false);
+    }
+  });
+
   it('round-trips a well-formed payload', () => {
     const parsed: MetaResponse = metaResponseSchema.parse(sample);
     expect(parsed.server_version).toBe('0.1.0');

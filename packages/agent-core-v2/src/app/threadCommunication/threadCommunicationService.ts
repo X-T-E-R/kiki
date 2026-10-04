@@ -69,6 +69,10 @@ import { ThreadActivityCursorExpiredError, ThreadMailboxBacklogError } from './m
 import { threadDeliveryReasonCode } from './deliveryFailure';
 import {
   SEND_PEER_THREAD_MESSAGE,
+  SPACE_THREAD_ROUTER,
+  RECHECK_BRIDGED_THREADS,
+  ACCEPT_BRIDGED_THREAD_MESSAGE,
+  type SpaceThreadConnector,
   type IThreadPeerSendCapability,
   type SendPeerThreadMessageInput,
 } from './peerThreadCapability';
@@ -149,6 +153,50 @@ interface RoomDeliveryReceipt {
 export class ThreadCommunicationService extends Disposable implements IThreadCommunicationService, IThreadPeerSendCapability {
   declare readonly _serviceBrand: undefined;
   readonly hostId: string;
+
+  private connector?: SpaceThreadConnector;
+  private readonly pendingBridgeClaims = new Map<string, ThreadDeliveryClaim>();
+  private bridgeRecheckFlight?: Promise<void>;
+
+  [RECHECK_BRIDGED_THREADS](targets: readonly ThreadRef[]): Promise<void> {
+    if (this.bridgeRecheckFlight !== undefined) return this.bridgeRecheckFlight;
+    const flight = this.recheckBridgedThreads(targets); this.bridgeRecheckFlight = flight;
+    void flight.finally(() => { if (this.bridgeRecheckFlight === flight) this.bridgeRecheckFlight = undefined; }).catch(() => {});
+    return flight;
+  }
+
+  private async recheckBridgedThreads(targets: readonly ThreadRef[]): Promise<void> {
+    for (const claim of this.pendingBridgeClaims.values()) {
+      if (claim.leaseUntil <= Date.now()) { this.pendingBridgeClaims.delete(claim.message.messageId); continue; }
+      const delivery = await this.deliverClaim(claim);
+      if (delivery !== 'pending') this.pendingBridgeClaims.delete(claim.message.messageId);
+    }
+    for (const target of targets) await this.requestTargetDrain(target);
+  }
+
+  [SPACE_THREAD_ROUTER](connector: SpaceThreadConnector | undefined): void {
+    this.connector = connector;
+  }
+
+  async [ACCEPT_BRIDGED_THREAD_MESSAGE](input: {
+    producer: Extract<ThreadMessageProducer, { kind: 'bridged_peer' }>;
+    target: ThreadRef;
+    content: string;
+    idempotencyKey: string;
+  }): Promise<SendThreadMessageResult> {
+    if (this.connector === undefined) throw new Error2(ErrorCodes.THREAD_CROSS_HOST, 'No space bridge is installed.');
+    await this.connector.beforeDelivery({ ...input, messageId: '', acceptedAt: Date.now(), targetSeq: 0 });
+    return this.sendProducedMessage(input);
+  }
+
+  private needsBridge(ref: ThreadRef): boolean {
+    return ref.bridgeId !== undefined || ref.connectionId !== undefined || !['local', '', this.hostId].includes(ref.hostId);
+  }
+
+  private requireConnector(): SpaceThreadConnector {
+    if (this.connector === undefined) throw new Error2(ErrorCodes.THREAD_CROSS_HOST, 'An approved space bridge is required.');
+    return this.connector;
+  }
 
   private readonly observedSessions = new Map<string, DisposableStore>();
   private recovery: Promise<void> | undefined;
@@ -298,6 +346,10 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   async listThreads(input: ListThreadsInput = {}): Promise<ListThreadsResult> {
     await this.ensureRecovery();
     if (!(await this.globalEnabled(input.caller))) return { threads: [] };
+    if (input.bridgeId !== undefined || input.connectionId !== undefined) {
+      await this.requireBridgeCaller(input.caller);
+      return this.requireConnector().list(input);
+    }
     const limit = boundedLimit(input.limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
     const decoded = input.cursor === undefined ? undefined : decodeCursor(input.cursor, 'list');
     if (decoded !== undefined && decoded.workspaceId !== input.workspaceId) {
@@ -341,7 +393,13 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   async readThread(input: ReadThreadInput): Promise<ReadThreadResult> {
+    input.signal?.throwIfAborted();
     await this.ensureRecovery();
+    if (this.needsBridge(input.thread)) {
+      const connector = this.requireConnector();
+      await this.requireBridgeCaller(input.caller);
+      return connector.read(input);
+    }
     input = { ...input, thread: this.requireLocalHost(input.thread) };
     const summary = await this.requireThread(input.thread, input.caller);
     const limit = boundedLimit(input.limit, DEFAULT_READ_LIMIT, MAX_READ_LIMIT);
@@ -431,8 +489,10 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   async [SEND_PEER_THREAD_MESSAGE](input: SendPeerThreadMessageInput): Promise<SendThreadMessageResult> {
     await this.ensureRecovery();
     validateSendInput(input);
-    input = { ...input, source: this.requireLocalHost(input.source), target: this.requireLocalHost(input.target) };
-    await this.requireThread(input.source, input.source, input.allowWhenDisabled !== true);
+    input = { ...input, source: this.requireLocalHost(input.source) };
+    await this.requireThread(input.source, input.source, this.needsBridge(input.target) || input.allowWhenDisabled !== true);
+    if (this.needsBridge(input.target)) return this.requireConnector().send(input);
+    input = { ...input, target: this.requireLocalHost(input.target) };
     if (sameThread(input.source, input.target)) {
       throw new Error2(ErrorCodes.THREAD_SELF_SEND, 'A thread cannot send a message to itself.');
     }
@@ -523,19 +583,23 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         `ThreadWait accepts between 1 and ${MAX_WAIT_THREADS} threads.`,
       );
     }
-    input = { ...input, threads: input.threads.map((item) => ({ ...item, thread: this.requireLocalHost(item.thread) })) };
+    input.signal?.throwIfAborted();
+    const timeoutMs = boundedTimeout(input.timeoutMs);
     const seen = new Set<string>();
     for (const item of input.threads) {
-      const key = threadIdentity(item.thread);
-      if (seen.has(key)) {
-        throw new Error2(ErrorCodes.REQUEST_INVALID, 'ThreadWait contains duplicate threads.');
-      }
+      const key = threadIdentity({ ...item.thread, hostId: ['local', ''].includes(item.thread.hostId) ? this.hostId : item.thread.hostId });
+      if (seen.has(key)) throw new Error2(ErrorCodes.REQUEST_INVALID, 'ThreadWait contains duplicate threads.');
       seen.add(key);
-      if (!(await this.globalEnabled(input.caller)) || !(await this.workspaceEnabled(item.thread.workspaceId))) {
-        throw threadDisabled(item.thread.workspaceId);
-      }
     }
-    const timeoutMs = boundedTimeout(input.timeoutMs);
+    if (input.threads.some((item) => this.needsBridge(item.thread))) {
+      const connector = this.requireConnector();
+      await this.requireBridgeCaller(input.caller);
+      return connector.wait({ ...input, timeoutMs });
+    }
+    input = { ...input, threads: input.threads.map((item) => ({ ...item, thread: this.requireLocalHost(item.thread) })) };
+    for (const item of input.threads) {
+      if (!(await this.globalEnabled(input.caller)) || !(await this.workspaceEnabled(item.thread.workspaceId))) throw threadDisabled(item.thread.workspaceId);
+    }
     const baselines = await Promise.all(
       input.threads.map(async (item) => {
         if (item.cursor !== undefined) {
@@ -568,10 +632,10 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         return { threads: results, timedOut: false };
       }
       if (this.closing || Date.now() >= deadline) return { threads: results, timedOut: true };
-      await Promise.race([
+      await waitWithSignal(Promise.race([
         sleep(Math.min(WAIT_POLL_MS, Math.max(0, deadline - Date.now()))),
         this.shutdownSignal,
-      ]);
+      ]), input.signal);
     }
   }
 
@@ -600,7 +664,6 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   async isWorkspaceEnabled(workspaceId: string, caller?: ThreadCaller): Promise<boolean> {
-    await this.ensureRecovery();
     return this.globalEnabled(caller).then(async (enabled) => enabled && this.workspaceEnabled(workspaceId));
   }
 
@@ -617,12 +680,17 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   private requireLocalHost(ref: ThreadRef): ThreadRef {
     const hostId = ref.hostId === 'local' || ref.hostId === '' || ref.hostId === undefined ? this.hostId : ref.hostId;
-    if (hostId !== this.hostId) {
-      throw new Error2(ErrorCodes.THREAD_CROSS_HOST, 'Cross-host thread communication is not supported.', {
+    if (hostId !== this.hostId || ref.bridgeId !== undefined || ref.connectionId !== undefined) {
+      throw new Error2(ErrorCodes.THREAD_CROSS_HOST, 'The local mailbox accepts only this home; peer tools need an approved space bridge for another home.', {
         details: { hostId: ref.hostId },
       });
     }
     return { ...ref, hostId };
+  }
+
+  private async requireBridgeCaller(caller?: ThreadCaller): Promise<void> {
+    if (caller === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Space thread operations require an executing thread.');
+    await this.requireThread({ ...caller, hostId: this.hostId }, caller);
   }
 
   private async requireThread(ref: ThreadRef, caller?: ThreadCaller, requireCommunication = true): Promise<SessionSummary> {
@@ -821,6 +889,14 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     let prompt: IAgentPromptService;
     let handle: PromptHandle;
     try {
+      if (message.producer.kind === 'bridged_peer') {
+        if (await this.requireConnector().beforeDelivery(message) === 'pending') {
+          this.pendingBridgeClaims.set(message.messageId, claim);
+          return 'pending';
+        }
+        this.pendingBridgeClaims.delete(message.messageId);
+        await this.requireThread(message.target, message.target);
+      }
       const allowWhenDisabled = message.producer.kind === 'peer_thread' && message.producer.allowWhenDisabled === true;
       const requireCommunication = message.producer.kind === 'room' ? message.producer.requireCommunication === true : !allowWhenDisabled;
       if (requireCommunication && !(await this.globalEnabled(message.target))) return 'pending';
@@ -831,7 +907,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       }
       const main = await ensureMainAgent(session);
       prompt = main.accessor.get(IAgentPromptService);
-      const origin: PromptOrigin = message.producer.kind === 'peer_thread'
+      const origin: PromptOrigin = message.producer.kind === 'bridged_peer'
+        ? { ...message.producer, messageId: message.messageId, acceptedAt: message.acceptedAt }
+        : message.producer.kind === 'peer_thread'
         ? {
             kind: 'peer_thread',
             source: {
@@ -851,19 +929,16 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
               generation: message.producer.generation,
             }
           : USER_PROMPT_ORIGIN;
-      const text = message.producer.kind === 'peer_thread'
-        ? `Message from thread ${await this.threadLabel(message.producer.source)}:\n\n${message.content}`
-        : message.content;
-      handle = await prompt.enqueue({
-        id: message.messageId,
-        message: {
-          id: message.messageId,
-          role: 'user',
-          content: [{ type: 'text', text }],
-          toolCalls: [],
-          origin,
-        },
-      });
+      const text = message.producer.kind === 'bridged_peer'
+        ? `Verified message from space ${message.producer.sourceHomeId} · thread ${message.producer.source.sessionId} (${message.producer.location}):\n\n${message.content}`
+        : message.producer.kind === 'peer_thread'
+          ? `Message from thread ${await this.threadLabel(message.producer.source)}:\n\n${message.content}`
+          : message.content;
+      const input = { id: message.messageId, message: { id: message.messageId, role: 'user' as const,
+        content: [{ type: 'text' as const, text }], toolCalls: [], origin } };
+      const prior = prompt.lookup(message.messageId, input);
+      if (prior !== undefined && prior.phase !== 'pending') return this.acknowledgeClaim(claim);
+      handle = await prompt.enqueue(input);
     } catch (error) {
       if (roomReceipt !== undefined) this.rejectRoomDelivery(message.messageId, error);
       if (this.closing) return 'pending';
@@ -921,11 +996,18 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   private async acknowledgeClaim(
     claim: ThreadDeliveryClaim,
   ): Promise<SendThreadMessageResult['delivery']> {
-    const changed = await this.mailbox.acknowledgeDelivery(claim, {
-      requestId: threadMailboxClaimRequestId('thread-ack', claim),
-      signal: this.mailboxController.signal,
-    });
-    return changed ? 'delivered' : 'pending';
+    try {
+      const changed = await this.mailbox.acknowledgeDelivery(claim, {
+        requestId: threadMailboxClaimRequestId('thread-ack', claim),
+        signal: this.mailboxController.signal,
+      });
+      return changed ? 'delivered' : 'pending';
+    } catch (error) {
+      if (claim.message.producer.kind !== 'bridged_peer') throw error;
+      if (!this.closing) this.pendingBridgeClaims.set(claim.message.messageId, claim);
+      this.log.warn('Bridge prompt is durable; mailbox acknowledgement will retry', { messageId: claim.message.messageId });
+      return 'pending';
+    }
   }
 
   private async recordUndeliverable(
@@ -1052,6 +1134,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         reason,
         origin: origin.kind,
         peer: origin.peer,
+        bridgedPeer: origin.bridgedPeer,
         input: turn.input,
         output: turn.output.join(''),
       });
@@ -1258,7 +1341,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
 function publicTurnOrigin(
   origin: PromptOrigin,
-): { readonly kind: 'user' | 'peer'; readonly peer?: ThreadTurn['peer'] } | undefined {
+): { readonly kind: ThreadTurn['origin']; readonly peer?: ThreadTurn['peer']; readonly bridgedPeer?: ThreadTurn['bridgedPeer'] } | undefined {
+  if (origin.kind === 'bridged_peer') return { kind: 'bridged_peer', bridgedPeer: origin };
   if (origin.kind === 'peer_thread') {
     return { kind: 'peer', peer: { source: origin.source, messageId: origin.messageId } };
   }

@@ -1,6 +1,7 @@
 import { AGENT_NAME_PATTERN } from '../agentName';
 import { z } from 'zod';
 import { executorPromptSchema } from '../executorPrompt';
+import { modelPromptOverridesSchema } from '../modelCatalog';
 
 const modelAliasSchema = z.string().min(1).regex(/^\S+$/, 'model alias must not contain whitespace');
 const optionalProfileStringSchema = z.string().trim().min(1).nullable().optional();
@@ -8,6 +9,15 @@ const profileStringListSchema = z.array(z.string().trim().min(1)).nullable().opt
 const serviceTierSchema = z.enum(['auto', 'default', 'flex', 'priority']);
 const promptModeSchema = z.enum(['prepend', 'append', 'wrap']);
 const requestParamsSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
+
+export const agentModelPromptContentSchema = z.object({
+  prompt_mode: promptModeSchema,
+  prompt: z.string().trim().min(1),
+}).strict().superRefine((value, ctx) => {
+  const slots = value.prompt.split('${parent_prompt}').length - 1 + value.prompt.split('${base_prompt}').length - 1;
+  if (value.prompt_mode === 'wrap' ? slots !== 1 : slots !== 0) ctx.addIssue({ code: 'custom', path: ['prompt'], message: value.prompt_mode === 'wrap' ? 'wrap requires parent_prompt or base_prompt exactly once' : 'append/prepend cannot reference parent_prompt or base_prompt' });
+});
+export const agentModelPromptBranchSchema = z.union([z.enum(['same', 'off']), agentModelPromptContentSchema]);
 
 export const namedAgentModelProfileSchema = z.object({
   alias: z.string(),
@@ -26,6 +36,9 @@ export const namedAgentModelProfileSchema = z.object({
   preferred_efforts: z.array(z.string()).optional(),
   prompt_mode: promptModeSchema.optional(),
   prompt: z.string().optional(),
+  main: agentModelPromptBranchSchema.optional(),
+  independent: agentModelPromptBranchSchema.optional(),
+  prompt_overrides: modelPromptOverridesSchema.optional(),
 });
 export type NamedAgentModelProfile = z.infer<typeof namedAgentModelProfileSchema>;
 
@@ -71,13 +84,17 @@ export const namedAgentSubagentLeaseSchema = z.object({
   preferred_efforts: z.array(z.string()).optional(),
   tools: z.array(z.string()).nullable().optional(),
   disallowed_tools: z.array(z.string()).optional(),
-  subagents: z.array(z.string()).nullable().optional(),
+  can_spawn_subagents: z.boolean().nullable().optional(),
+  allowed_subagents: profileStringListSchema,
+  preferred_subagents: profileStringListSchema,
+  deny_subagents: profileStringListSchema,
   prompt_mode: promptModeSchema.optional(),
   prompt: z.string().optional(),
   delegation_notice: z.enum(['auto', 'off']).optional(),
   service_tier: serviceTierSchema.nullable().optional(),
   request_params: requestParamsSchema.nullable().optional(),
   model_profiles: z.array(namedAgentModelProfileSchema).optional(),
+  model_prompts: z.enum(['preserve', 'replace']).optional(),
 });
 export type NamedAgentSubagentLease = z.infer<typeof namedAgentSubagentLeaseSchema>;
 
@@ -150,9 +167,12 @@ export const namedAgentProfileSchema = z.object({
   tools: z.array(z.string()).optional(),
   disallowed_tools: z.array(z.string()).optional(),
   model_profiles: z.array(namedAgentModelProfileSchema).optional(),
+  prompt_overrides: modelPromptOverridesSchema.optional(),
   spawn_constraints: namedAgentSpawnConstraintsSchema.optional(),
-  subagent_policy: z.enum(['advisory', 'strict']).optional(),
-  subagents: z.array(z.union([z.string(), namedAgentSubagentLeaseSchema])).optional(),
+  can_spawn_subagents: z.boolean().optional(),
+  allowed_subagents: z.array(z.union([z.string(), namedAgentSubagentLeaseSchema])).optional(),
+  preferred_subagents: z.array(z.string()).optional(),
+  deny_subagents: z.array(z.string()).optional(),
   /** Same-source files that lost name discovery to this profile. */
   shadowed_files: z.array(z.string()).optional(),
   /** External executor field applicability, keyed by wire field name; absent for native execution. */
@@ -201,6 +221,7 @@ export const agentCapabilitiesQuerySchema = z.union([
   z.object({
     session_id: z.string().trim().min(1),
     agent_id: z.string().trim().min(1),
+    check_all_prompt_files: z.union([z.boolean(), z.enum(['true', 'false']).transform((value) => value === 'true')]).optional(),
   }).strict(),
   z.object({
     workspace_id: z.string().trim().min(1),
@@ -299,7 +320,7 @@ export const agentCapabilityTargetSchema = z.object({
   model_source: agentCapabilityModelSourceSchema.optional(),
   thinking_effort: z.string().optional(),
   effort_source: agentCapabilityEffortSourceSchema.optional(),
-  dispatch_policy: z.enum(['advisory', 'strict']).optional(),
+  dispatch_policy: z.literal('fixed').optional(),
   recommendation_status: z.enum(['preferred', 'allowed_nonpreferred', 'blocked', 'unconfigured']).optional(),
   advisory_deviation: z.boolean().optional(),
   defaults_available: z.boolean(),
@@ -371,7 +392,10 @@ export const agentPanelProfileSchema = z.object({
   tools: z.array(z.string()).optional(),
   disallowed_tools: z.array(z.string()).optional(),
   disabled_tool_groups: z.array(z.string()).optional(),
-  subagent_policy: z.enum(['advisory', 'strict']).optional(),
+  can_spawn_subagents: z.boolean().optional(),
+  allowed_subagents: z.array(z.string()).optional(),
+  preferred_subagents: z.array(z.string()).optional(),
+  deny_subagents: z.array(z.string()).optional(),
   execution_restriction: z.string().optional(),
   locked_model: z.string().optional(),
   locked_effort: z.string().optional(),
@@ -396,6 +420,65 @@ export const agentPanelMetricsSchema = z.object({
 });
 export type AgentPanelMetrics = z.infer<typeof agentPanelMetricsSchema>;
 
+export const agentPromptSourceSchema = z.object({
+  surface: z.string(),
+  kind: z.enum(['file', 'inline']),
+  path: z.string().optional(),
+  line: z.number().int().optional(),
+  order: z.number().int().optional(),
+});
+export const agentPromptChannelSchema = z.object({
+  id: z.string(),
+  channel: z.enum(['system', 'tool', 'delegation', 'model_profile', 'cognition_overlay', 'cognition_steering', 'cognition_anchor']),
+  state: z.enum(['effective', 'inactive', 'shadowed', 'unsupported']),
+  selection: z.enum(['common', 'main', 'independent', 'off']).optional(),
+  reason: z.string().optional(),
+  sources: z.array(agentPromptSourceSchema).readonly(),
+  anchor_steps: z.number().int().positive().optional(),
+  anchor_scope: z.enum(['session', 'turn']).optional(),
+});
+export const agentPromptRequestSchema = z.object({
+  system_prompt_hash: z.string(),
+  tools_hash: z.string(),
+  model_alias: z.string().optional(),
+  turn_step: z.string().optional(),
+  attempt: z.string().optional(),
+  anchor_applied: z.boolean().optional(),
+  at: z.number(),
+  cognition_revision: z.number().int().optional(),
+  binding_revision: z.string().optional(),
+  anchor_steps: z.number().int().positive().optional(),
+  anchor_scope: z.enum(['session', 'turn']).optional(),
+});
+export const agentPromptDiagnosticsSchema = z.object({
+  identity: z.object({
+    delegation_position: z.enum(['main', 'sub', 'independent']),
+    profile: z.string().optional(),
+    model_alias: z.string().optional(),
+    executor: z.string(),
+  }),
+  binding_revision: z.string().optional(),
+  disk_revision: z.string().optional(),
+  disk_changed: z.boolean().optional(),
+  disk_error: z.string().optional(),
+  apply_on: z.literal('next-binding-or-context-rebuild'),
+  lease_model_prompts: z.enum(['preserve', 'replace']).optional(),
+  channels: z.array(agentPromptChannelSchema).readonly(),
+  request: agentPromptRequestSchema.optional(),
+  file_checks: z.array(z.object({
+    surface: z.string(),
+    branch: z.enum(['common', 'main', 'independent']),
+    channel: z.enum(['prompt_overrides', 'cognition_overlay', 'cognition_steering', 'cognition_anchor']),
+    path: z.string(),
+    status: z.enum(['ok', 'error']),
+    reason: z.string().optional(),
+    model_alias: z.string().optional(),
+  })).readonly().optional(),
+});
+export type AgentPromptDiagnostics = z.infer<typeof agentPromptDiagnosticsSchema>;
+export type AgentPromptChannel = z.infer<typeof agentPromptChannelSchema>;
+export type AgentPromptRequest = z.infer<typeof agentPromptRequestSchema>;
+
 export const agentCapabilitiesResponseSchema = z.object({
   context: z.enum(['live', 'draft']),
   live: z.boolean().optional(),
@@ -408,6 +491,7 @@ export const agentCapabilitiesResponseSchema = z.object({
   tools: z.array(agentPanelToolSchema).optional(),
   skills: z.array(agentPanelSkillSchema).optional(),
   metrics: z.record(z.string(), agentPanelMetricsSchema).optional(),
+  prompt: agentPromptDiagnosticsSchema.optional(),
 });
 export type AgentCapabilitiesResponse = z.infer<typeof agentCapabilitiesResponseSchema>;
 
@@ -483,20 +567,36 @@ export type CreateNamedAgentProfileRequest = z.infer<typeof createNamedAgentProf
 
 export const updateNamedAgentSubagentEntrySchema = z.union([
   z.string().trim().min(1),
-  z.object({
+  namedAgentSubagentLeaseSchema.omit({ scope: true, status: true, diagnostic: true, diagnostic_code: true }).extend({
     name: z.string().trim().min(1),
     model_alias: modelAliasSchema.nullable().optional(),
     thinking_effort: optionalProfileStringSchema,
     allowed_models: profileStringListSchema,
-  }).strict(),
+    model_profiles: z.lazy(() => z.array(updateNamedAgentModelProfileEntrySchema)).optional(),
+  }).strict().superRefine((value, ctx) => {
+    for (const [index, entry] of (value.model_profiles ?? []).entries()) {
+      if ((entry.main !== undefined && entry.main !== null) || (entry.independent !== undefined && entry.independent !== null) || entry.prompt_overrides?.main !== undefined || entry.prompt_overrides?.independent !== undefined) ctx.addIssue({ code: 'custom', path: ['model_profiles', index], message: 'Caller lease model prompts only apply to children; main and independent branches are not allowed' });
+    }
+  }),
 ]);
 export type UpdateNamedAgentSubagentEntry = z.infer<typeof updateNamedAgentSubagentEntrySchema>;
 
-export const updateNamedAgentModelProfileEntrySchema = z.object({
+export const updateNamedAgentModelProfileEntrySchema = namedAgentModelProfileSchema.extend({
   alias: modelAliasSchema,
   when: optionalProfileStringSchema,
   thinking_effort: optionalProfileStringSchema,
-}).strict();
+  prompt_mode: promptModeSchema.nullable().optional(),
+  prompt: z.string().nullable().optional(),
+  main: agentModelPromptBranchSchema.nullable().optional(),
+  independent: agentModelPromptBranchSchema.nullable().optional(),
+  prompt_overrides: modelPromptOverridesSchema.nullable().optional(),
+}).strict().superRefine((value, ctx) => {
+  if ((value.prompt === undefined) !== (value.prompt_mode === undefined) || (value.prompt === null) !== (value.prompt_mode === null)) ctx.addIssue({ code: 'custom', path: ['prompt'], message: 'Set prompt and prompt_mode together, or set both to null to remove the common prompt' });
+  if (value.prompt !== undefined && value.prompt !== null && value.prompt_mode !== undefined && value.prompt_mode !== null) {
+    const parsed = agentModelPromptContentSchema.safeParse({ prompt: value.prompt, prompt_mode: value.prompt_mode });
+    if (!parsed.success) for (const issue of parsed.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+  }
+});
 export type UpdateNamedAgentModelProfileEntry = z.infer<typeof updateNamedAgentModelProfileEntrySchema>;
 
 export const agentModelMenuDraftSchema = z.object({
@@ -552,11 +652,14 @@ export const updateNamedAgentProfileRequestSchema = z.object({
    * Whole ordered list. A bare name keeps that entry's existing lease mapping
    * untouched; a mapping merges the given keys onto it (`null` deletes a key).
    */
-  subagents: z.array(updateNamedAgentSubagentEntrySchema).nullable().optional(),
-  subagent_policy: z.enum(['advisory', 'strict']).nullable().optional(),
+  allowed_subagents: z.array(updateNamedAgentSubagentEntrySchema).nullable().optional(),
+  can_spawn_subagents: z.boolean().nullable().optional(),
+  preferred_subagents: profileStringListSchema,
+  deny_subagents: profileStringListSchema,
   spawn_constraints: namedAgentSpawnConstraintsSchema.nullable().optional(),
   /** Whole ordered list keyed by alias; unlisted per-model keys are preserved. */
   model_profiles: z.array(updateNamedAgentModelProfileEntrySchema).nullable().optional(),
+  prompt_overrides: modelPromptOverridesSchema.nullable().optional(),
   service_tier: serviceTierSchema.nullable().optional(),
   auto_compact: z.number().int().positive().safe().nullable().optional(),
   tools: profileStringListSchema,
@@ -582,10 +685,13 @@ export const updateNamedAgentProfileRequestSchema = z.object({
     value.preferred_models !== undefined ||
     value.discouraged_models !== undefined ||
     value.preferred_efforts !== undefined ||
-    value.subagents !== undefined ||
-    value.subagent_policy !== undefined ||
+    value.allowed_subagents !== undefined ||
+    value.can_spawn_subagents !== undefined ||
+    value.preferred_subagents !== undefined ||
+    value.deny_subagents !== undefined ||
     value.spawn_constraints !== undefined ||
     value.model_profiles !== undefined ||
+    value.prompt_overrides !== undefined ||
     value.service_tier !== undefined ||
     value.auto_compact !== undefined ||
     value.tools !== undefined ||

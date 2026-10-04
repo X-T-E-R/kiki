@@ -198,7 +198,7 @@ describe('startServer allowedHosts — env + option merge', () => {
       logLevel: 'silent',
       allowedHosts: ['opt-only.example.com'],
     });
-    const token = server.authTokenService.getToken();
+    const token = server.localOwnerToken;
     const probe = async (host: string): Promise<number> => {
       const res = await (server as RunningServer).app.inject({
         method: 'GET',

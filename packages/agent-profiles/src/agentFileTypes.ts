@@ -46,6 +46,10 @@ export interface AgentFileDefinition {
   readonly disabledToolGroups?: readonly ToolGroupId[];
   readonly subagentPolicy?: AgentSubagentPolicy;
   readonly subagentDeclaration?: SubagentDeclaration;
+  readonly canSpawnSubagents?: boolean;
+  readonly allowedSubagents?: readonly string[];
+  readonly preferredSubagents?: readonly string[];
+  readonly denySubagents?: readonly string[];
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnConstraints?: SpawnConstraints;

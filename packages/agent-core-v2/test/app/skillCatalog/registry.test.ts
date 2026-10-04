@@ -142,10 +142,11 @@ describe('InMemorySkillCatalog model skill listing', () => {
 
     const rendered = registry.getModelSkillListing();
 
-    expect(rendered).toContain('DISREGARD any earlier skill listings');
+    expect(rendered).toContain('Current available skills replace earlier listings');
     expect(rendered).toContain('- review: Review code');
     expect(rendered).toContain('  When to use: When reviewing changes.');
-    expect(rendered).toContain('  Path: /tmp/user/review/SKILL.md');
+    expect(rendered).not.toContain('  Path:');
+    expect(registry.getSkill('review')?.path).toBe('/tmp/user/review/SKILL.md');
     expect(rendered).not.toContain('private');
     expect(rendered).not.toContain('flow-only');
     expect(rendered).not.toContain('sub-step');
@@ -170,20 +171,20 @@ describe('InMemorySkillCatalog model skill listing', () => {
     expect(rendered).not.toContain('...');
   });
 
-  it('truncates long descriptions within the 250-character limit', () => {
-    const description = 'a'.repeat(300);
+  it('keeps full trigger descriptions beyond the old 250-character limit', () => {
+    const description = `${'a'.repeat(300)} Use this skill for a complete recovery.`;
     const rendered = makeRegistry([makeSkill('demo', 'user', description)]).getModelSkillListing();
 
-    expect(rendered).toContain(`- demo: ${'a'.repeat(247)}...`);
-    expect(rendered).not.toContain('a'.repeat(250));
+    expect(rendered).toContain(`- demo: ${description}`);
+    expect(rendered).not.toContain('...');
   });
 
-  it('does not split a grapheme cluster at the truncation boundary', () => {
+  it('keeps complete grapheme clusters and the following trigger text', () => {
     const description = `${'a'.repeat(248)}😀${'b'.repeat(100)}`;
     const rendered = makeRegistry([makeSkill('demo', 'user', description)]).getModelSkillListing();
 
-    expect(rendered).toContain(`- demo: ${'a'.repeat(247)}...`);
-    expect(rendered).not.toContain('😀');
+    expect(rendered).toContain(`- demo: ${description}`);
+    expect(rendered).toContain('😀');
     expect(rendered).not.toMatch(
       /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
     );

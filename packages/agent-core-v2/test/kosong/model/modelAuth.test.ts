@@ -5,6 +5,7 @@ import '#/kosong/provider/providers/kimi/kimi.contrib';
 import '#/kosong/provider/providers/standard.contrib';
 import type { ProviderConfig } from '#/kosong/provider/provider';
 import type { ModelRecord } from '#/kosong/model/model';
+import { resolveGenerationParameters, resolveModelUsage, patchModelUsagePolicy } from '#/kosong/model/parameters';
 import {
   deriveProviderId,
   effectiveModelConfig,
@@ -132,5 +133,30 @@ describe('deriveProviderId', () => {
   it('keys flat providers by the baseUrl origin', () => {
     expect(deriveProviderId('https://api.example.test/v1')).toBe('api.example.test');
     expect(deriveProviderId('not-a-url')).toBe('not-a-url');
+  });
+});
+
+
+describe('model usage parameter resolution', () => {
+  it('inherits each field, keeps sub common, and preserves all hard budget ceilings', () => {
+    const model: ModelRecord = {
+      contextBudget: 250000, autoCompact: 200000,
+      parameters: { thinkingEffort: 'medium', serviceTier: 'flex', maxCompletionTokens: 16000 },
+      usage: { main: { thinkingEffort: 'high', autoCompact: 160000, contextBudget: 300000, maxCompletionTokens: 8000 }, independent: { thinkingEffort: 'off', serviceTier: { kind: 'api_default' } } },
+    };
+    const generation = resolveGenerationParameters({ defaults: { serviceTier: 'priority' } }, model);
+    expect(resolveModelUsage(generation, model, 'main').values).toEqual({ thinkingEffort: 'high', serviceTier: 'flex', autoCompact: 160000, contextBudget: 250000, maxCompletionTokens: 8000 });
+    expect(resolveModelUsage(generation, model, 'sub').values).toEqual({ thinkingEffort: 'medium', serviceTier: 'flex', autoCompact: 200000, contextBudget: 250000, maxCompletionTokens: 16000 });
+    expect(resolveModelUsage(generation, model, 'independent').values).toMatchObject({ thinkingEffort: 'off', serviceTier: { kind: 'api_default' }, contextBudget: 250000 });
+    expect(resolveModelUsage(generation, model, 'main').sources).toMatchObject({ thinkingEffort: { detail: '[models.*.usage.main.thinkingEffort]' }, serviceTier: { detail: '[models.*.parameters]' }, contextBudget: { detail: '[models.*.contextBudget]' } });
+    expect(model.usage?.main?.contextBudget).toBe(300000);
+  });
+
+  it('merges new parameter branches per field and clears only requested local overrides', () => {
+    const current = { main: { thinkingEffort: 'high', autoCompact: 160000 }, independent: { thinkingEffort: 'low' } };
+    expect(patchModelUsagePolicy(current, { main: { thinking_effort: null, service_tier: { kind: 'api_default' } } })).toEqual({ main: { autoCompact: 160000, serviceTier: { kind: 'api_default' } }, independent: { thinkingEffort: 'low' } });
+    expect(patchModelUsagePolicy(current, { main: null })).toEqual({ independent: { thinkingEffort: 'low' } });
+    expect(patchModelUsagePolicy(current, null)).toBeUndefined();
+    expect(current.main.thinkingEffort).toBe('high');
   });
 });

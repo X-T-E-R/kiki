@@ -2,6 +2,7 @@ import type { Runtime } from '#/runtime/runtime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { resolvePathAccessPath } from '#/tool/path-access';
 import { loadDispatchProfileFile, inheritProfileFileSources } from '#/session/dispatch/profileFile';
+import { assertResumeFingerprint, readResumeRecord, resumeFingerprint, writeResumeRecord } from '#/session/dispatch/resume';
 import { evaluateDispatchAdmission, tightenDispatchLaunchPolicy, type DispatchLaunchPolicy } from '#/session/dispatch/launchPolicy';
 import {
   isAbortError,
@@ -13,6 +14,7 @@ import { toInputJsonSchema } from '#/tool/input-schema';
 import { matchesStringRuleSubject } from '#/tool/rule-match';
 import {
   IAgentTaskService,
+  type AgentTaskOutputSnapshot,
   type RegisterAgentTaskOptions,
 } from '#/agent/task/task';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -66,7 +68,6 @@ import {
   resolveDefaultSubagentProfileName,
   resolveDefaultSubagentTarget,
   resolveSubagentTimeoutMs,
-  withDispatchPolicyDefaults,
 } from '#/session/subagent/configSection';
 import {
   GENERIC_SUBAGENT_PROFILE,
@@ -111,8 +112,10 @@ export class SubagentTool implements ISubagentTool {
   private readonly isMainCaller: boolean;
   private readonly canRunInBackground: () => boolean;
   private readonly notifiedMainProfiles = new Set<string>();
+  private readonly resumeExecutions = new Map<string, { readonly fingerprint: string; readonly promise: Promise<ExecutableToolResult> }>();
   private catalogReady = false;
   private frozenDescription: string | undefined;
+  private advertised: ReturnType<ISubagentTool['visibleProfileDescriptions']> = new Map();
 
   constructor(
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
@@ -159,10 +162,14 @@ export class SubagentTool implements ISubagentTool {
       : AGENT_DESCRIPTION_BASE.replace(`\n\n${PARENT_NOTIFY_DESCRIPTION}`, '');
     let description = `${agentDescription}\n\nSubagent timeout: ${timeoutDescription}.\n\n${backgroundDescription}`;
     const { caller: own } = this.dispatchCatalog();
+    description += own.canSpawnSubagents === false
+      ? '\n\nThis profile cannot create new subagents (can_spawn_subagents: false). Existing children may still be resumed.'
+      : '\n\nallowed_subagents and deny_subagents constrain preset profile/route selection only. Preferred profiles are soft guidance, never permission or automatic fallback. profile_file supplies a new definition directly, not a preset selected by its name; it retains the existing tool, model, workspace and path constraints.';
     const targets = this.projectedTargets();
     const preferred = targets.profiles.filter((profile) =>
       evaluateSubagentDispatchDecision(this.catalog, own, profile.name).recommendationStatus === 'preferred');
     const ordered = [...preferred, ...targets.profiles.filter((profile) => !preferred.includes(profile))];
+    this.advertised = this.profileDescriptions(ordered.slice(0, 8));
     const typeLines = compactProfileDescriptions(ordered);
     if (typeLines) {
       description += `\n\nAvailable profiles (pass via profile; preferred first):\n${typeLines}`;
@@ -177,8 +184,7 @@ export class SubagentTool implements ISubagentTool {
   }
 
   dispatchCatalog(): import('./subagentCapabilities').SubagentCapabilityCatalog {
-    const caller = withDispatchPolicyDefaults(this.config, this.profile.data(),
-      this.callerAgentId === 'main' ? 'main' : 'sub');
+    const caller = this.profile.data();
     return {
       catalog: this.catalog,
       caller,
@@ -188,11 +194,21 @@ export class SubagentTool implements ISubagentTool {
     };
   }
 
+  advertisedProfileDescriptions(): ReturnType<ISubagentTool['visibleProfileDescriptions']> { return this.advertised; }
+
   visibleProfileDescriptions(): ReadonlyMap<string, { readonly line: string; readonly signature: string }> {
-    return new Map(this.projectedTargets().profiles.map((profile) => [
-      profile.name,
-      { line: compactProfileDescriptions([profile]), signature: JSON.stringify(profile) },
-    ]));
+    const { caller } = this.dispatchCatalog();
+    const profiles = this.projectedTargets().profiles;
+    const preferred = profiles.filter((profile) => evaluateSubagentDispatchDecision(this.catalog, caller, profile.name).recommendationStatus === 'preferred');
+    return this.profileDescriptions([...preferred, ...profiles.filter((profile) => !preferred.includes(profile))].slice(0, 8));
+  }
+
+  private profileDescriptions(profiles: readonly AgentProfile[]): ReturnType<ISubagentTool['visibleProfileDescriptions']> {
+    return new Map(profiles.map((profile) => {
+      const line = compactProfileDescriptions([profile]);
+      return [profile.name, { line, signature: JSON.stringify({ line, model: profile.modelAlias, menu: profile.modelProfiles,
+        allowed: profile.allowedModels, denied: profile.denyModels, restrictModelsToMenu: profile.restrictModelsToMenu }) }];
+    }));
   }
 
   private projectedTargets(): ReturnType<typeof projectSubagentModelCatalog> {
@@ -360,11 +376,10 @@ export class SubagentTool implements ISubagentTool {
       );
     }
     const resumeRef = args.resume?.trim();
-    const caller = withDispatchPolicyDefaults(this.config, this.profile.data(),
-      this.callerAgentId === 'main' ? 'main' : 'sub');
+    const caller = this.profile.data();
     const fileTarget = args.profile_file === undefined ? undefined
       : await loadDispatchProfileFile(args.profile_file, runtime, this.workspace, this.catalog,
-          { ...caller, subagentPolicy: caller.subagentPolicy ?? caller.defaultPolicy }, snapshot);
+          caller, snapshot);
     const fileProfile = fileTarget === undefined
       ? undefined
       : fileTarget.snapshot.publicProfiles.get(fileTarget.profileName);
@@ -385,8 +400,11 @@ export class SubagentTool implements ISubagentTool {
             {
               signal: controller.signal, requesterAgentId: this.callerAgentId, capturedLaunchPolicy: policy,
               allowParentNotify: args.allow_parent_notify,
-              bindingOverride: args.model_alias === undefined && args.effort === undefined ? undefined : {
+              toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
+              operationId: `resume:${this.callerAgentId}:${parentTurnId}:${toolCallId}`,
+              bindingOverride: args.model_alias === undefined && args.effort === undefined && args.new_window === undefined ? undefined : {
                 modelAlias: args.model_alias, thinkingEffort: args.effort, allowModelChange: args.allow_model_change,
+                newWindow: args.new_window,
               },
             },
           )
@@ -406,6 +424,7 @@ export class SubagentTool implements ISubagentTool {
             modelAlias: normalizeSubagentBindingValue(args.model_alias, 'model_alias'),
             thinkingEffort: normalizeSubagentBindingValue(args.effort, 'effort'),
             allowParentNotify: args.allow_parent_notify,
+            toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
             runtime,
             workDir: this.workspace.workDir,
             signal: controller.signal,
@@ -455,6 +474,27 @@ export class SubagentTool implements ISubagentTool {
 
   private async execution(
     args: SubagentToolInput,
+    context: ExecutableToolContext,
+    snapshot: AgentProfileCatalogSnapshot | undefined,
+    capturedLaunchPolicy: DispatchLaunchPolicy,
+    runInBackground: boolean,
+  ): Promise<ExecutableToolResult> {
+    if (!args.resume?.trim()) return this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground);
+    const key = `${context.turnId}:${context.toolCallId}`;
+    const fingerprint = JSON.stringify(args);
+    const previous = this.resumeExecutions.get(key);
+    if (previous !== undefined) {
+      if (previous.fingerprint !== fingerprint) return { isError: true, output: 'This resume tool call already belongs to a different request. Retry its original arguments.' };
+      return previous.promise;
+    }
+    const promise = this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground);
+    this.resumeExecutions.set(key, { fingerprint, promise });
+    void promise.then((result) => { if (result.isError) this.resumeExecutions.delete(key); }, () => { this.resumeExecutions.delete(key); });
+    return promise;
+  }
+
+  private async executeOnce(
+    args: SubagentToolInput,
     { toolCallId, signal, steerSignal, turnId }: ExecutableToolContext,
     snapshot: AgentProfileCatalogSnapshot | undefined,
     capturedLaunchPolicy: DispatchLaunchPolicy,
@@ -480,6 +520,24 @@ export class SubagentTool implements ISubagentTool {
         return { output: BACKGROUND_AGENT_UNAVAILABLE, isError: true };
       }
       const timeoutMs = resolveSubagentTimeoutMs(this.config);
+      const resumeOperationId = isResume ? `resume:${this.callerAgentId}:${turnId}:${toolCallId}` : undefined;
+      if (resumeOperationId !== undefined) {
+        const child = await this.dispatch.resolveOwnedChild({ kind: 'agent', agentId: this.callerAgentId }, resumeAgentId!);
+        const saved = readResumeRecord((await this.metadata.read()).agents?.[child.agentId], resumeOperationId);
+        if (saved !== undefined) {
+          assertResumeFingerprint(saved.fingerprint, resumeFingerprint({ kind: 'prompt', prompt: args.prompt }, {
+            signal, requesterAgentId: this.callerAgentId, allowParentNotify: args.allow_parent_notify,
+            toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
+            bindingOverride: { modelAlias: args.model_alias, thinkingEffort: args.effort,
+              allowModelChange: args.allow_model_change, newWindow: args.new_window },
+          }));
+          const task = saved.taskId === undefined ? undefined : await this.tasks.getTaskSnapshot(saved.taskId);
+          if (task !== undefined) {
+            return { output: `task_id: ${saved.taskId}\nagent_id: ${child.agentId}\nactual_profile: ${child.profileName}\nstatus: ${task.status}\nresume_operation_id: ${resumeOperationId}\nnext_step: This resume was already started. Use TaskOutput to read its original result.`,
+              isError: task.status === 'failed' || task.status === 'killed' || task.status === 'timed_out' };
+          }
+        }
+      }
       const runtimeLease = this.runtime.acquire(args.profile_file === undefined ? ['process'] : ['process', 'fs']);
 
       const controller = new AbortController();
@@ -513,7 +571,14 @@ export class SubagentTool implements ISubagentTool {
 
       let taskId: string | undefined;
       try {
+        const resumeRecord = resumeOperationId === undefined ? undefined
+          : readResumeRecord((await this.metadata.read()).agents?.[handle.agentId], resumeOperationId);
+        const allocatedTaskId = resumeRecord?.taskId ?? (resumeRecord === undefined ? undefined : this.tasks.allocateTaskId?.('agent'));
+        if (resumeRecord !== undefined && allocatedTaskId !== undefined) {
+          await writeResumeRecord(this.metadata, handle.agentId, { ...resumeRecord, taskId: allocatedTaskId });
+        }
         const registerOptions: RegisterAgentTaskOptions = {
+          taskId: allocatedTaskId,
           detached: runInBackground,
           timeoutMs,
           detachTimeoutMs: timeoutMs,
@@ -531,6 +596,7 @@ export class SubagentTool implements ISubagentTool {
           ),
           registerOptions,
         );
+        if (resumeRecord !== undefined) await writeResumeRecord(this.metadata, handle.agentId, { ...resumeRecord, taskId });
         await this.dispatch.recordRun(handle.agentId, taskId);
         signal.removeEventListener('abort', abortBeforeRegister);
         const requester = this.lifecycle.get(this.callerAgentId);
@@ -612,8 +678,12 @@ export class SubagentTool implements ISubagentTool {
   ): Promise<ExecutableToolResult> {
     const info = this.tasks.getTask(taskId);
     if (info?.status === 'completed') {
+      const snapshot = await this.tasks.getOutputSnapshot(taskId, 32 * 1024);
+      const large = snapshot.outputSizeBytes > 1024 * 1024;
+      const result = large ? snapshot.preview : await this.tasks.readOutput(taskId);
       return {
-        output: this.withMainProfileNotice(handle, formatForegroundAgentSuccess(taskId, handle, await this.tasks.readOutput(taskId))),
+        output: this.withMainProfileNotice(handle, formatForegroundAgentSuccess(taskId, handle, result,
+          large ? snapshot : undefined)),
       };
     }
     const timedOut = info?.status === 'timed_out';
@@ -679,14 +749,31 @@ function formatBackgroundAgentResult(
   ].join('\n');
 }
 
-function formatForegroundAgentSuccess(taskId: string, handle: SubagentHandle, result: string): string {
+function formatForegroundAgentSuccess(
+  taskId: string,
+  handle: SubagentHandle,
+  result: string,
+  snapshot?: AgentTaskOutputSnapshot,
+): string {
   return [
     `task_id: ${taskId}`,
     `agent_id: ${handle.agentId}`,
     ...bindingResultLines(handle),
     'status: completed',
+    ...(snapshot === undefined ? [] : [
+      `output_size_bytes: ${snapshot.outputSizeBytes}`,
+      `preview_bytes: ${snapshot.previewBytes}`,
+      `truncated: ${snapshot.truncated}`,
+      `full_output_available: ${snapshot.fullOutputAvailable}`,
+      ...(snapshot.outputPath === undefined ? [
+        'The preview is incomplete and no complete output file is available.',
+      ] : [
+        `output_path: ${snapshot.outputPath}`,
+        'Read the output file for the complete result, or use TaskOutput with offset and max_bytes to read it in pages.',
+      ]),
+    ]),
     '',
-    '[summary]',
+    snapshot === undefined ? '[summary]' : '[output_preview_tail]',
     result,
   ].join('\n');
 }

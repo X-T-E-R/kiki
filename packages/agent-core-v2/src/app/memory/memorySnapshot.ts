@@ -81,7 +81,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
   async liveSessionEntries(): Promise<readonly MemoryEntry[]> {
     if (this.agent.agentId !== 'main') return [];
     const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
-    if (!memoryEnabled(settings, this.session.workspaceId) || settings.approval === 'off') return [];
+    if (!memoryEnabled(settings, this.session.workspaceId)) return [];
     try {
       const store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore));
       const scopes = this.readScopes();
@@ -94,7 +94,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
   async resolveReferences(text: string): Promise<readonly string[]> {
     if (this.agent.agentId !== 'main') return [];
     const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
-    if (!memoryEnabled(settings, this.session.workspaceId) || settings.approval === 'off') return [];
+    if (!memoryEnabled(settings, this.session.workspaceId)) return [];
     const ids = [...new Set([...text.matchAll(/\[(m_[a-zA-Z0-9_]+)\]/g)].map((match) => match[1]!))].slice(0, 20);
     if (ids.length === 0) return [];
     let store: IMemoryStore;
@@ -160,7 +160,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
   invalidate(): void { this.frozen = undefined; this.frozenRelated = []; }
 
   private async render(settings: MemoryConfig): Promise<string> {
-    if (!memoryEnabled(settings, this.session.workspaceId) || settings.approval === 'off' || settings.budget === 0) {
+    if (!memoryEnabled(settings, this.session.workspaceId) || settings.budget === 0) {
       this.lastKnown = '';
       this.frozenRelated = [];
       return memoryStatus(settings, this.session.workspaceId, this.persona, 'disabled');
@@ -189,7 +189,7 @@ export async function renderMemorySnapshot(
   persona?: MemoryPersonaContext,
 ): Promise<{ readonly text: string; readonly related: readonly string[] }> {
   const budget = settings?.budget ?? 0;
-  if (!memoryEnabled(settings, workspaceId) || settings?.approval === 'off' || budget === 0) {
+  if (!memoryEnabled(settings, workspaceId) || budget === 0) {
     return { text: memoryStatus(settings, workspaceId, persona, 'disabled'), related: [] };
   }
   const shared = normalizeShared(persona?.shared);

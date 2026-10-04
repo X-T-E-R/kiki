@@ -59,13 +59,14 @@ import {
   type NamedAgentProfile,
 } from '@kiki/protocol';
 import { z } from 'zod';
+import { modelProfileToWire, modelProfileUpdateFromWire, subagentLeaseUpdateFromWire } from '@kiki/agent-core-v2/app/agentProfileCatalog/modelProfileOverlay';
 import { createUnscopedAgentProfileCatalog } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
-import { acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
+import { acquireDraftProfileCatalog, acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
 import { previewExecutorPrompt } from './executorPromptPreview';
 import { applyAgentModelMenuDraft, projectAgentModelMenu } from './agentModelMenu';
 import { resumeLocalSession } from './localSessionResume';
@@ -402,14 +403,14 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
         return;
       }
 
-      const workspaceCatalog = await acquireWorkspaceProfileCatalog(core, req.query);
+      const workspaceCatalog = await acquireDraftProfileCatalog(core, req.query);
       if (workspaceCatalog === undefined) {
         reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, 'Workspace does not exist', req.id));
         return;
       }
       try {
         const { catalog, workspaceId: resolvedWorkspaceId } = workspaceCatalog;
-        const entries = registry.entries().filter((entry) =>
+        const entries = ('registry' in workspaceCatalog ? workspaceCatalog.registry : registry).entries().filter((entry) =>
           entry.workspaceKey === undefined || entry.workspaceKey === resolvedWorkspaceId
         );
         const catalogs = new Map([[resolvedWorkspaceId, { catalog, snapshot: catalog.snapshot() }]]);
@@ -645,13 +646,10 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
           allowedModels: req.body.allowed_models,
           denyModels: req.body.deny_models,
           allowedEfforts: req.body.allowed_efforts,
-          subagents: req.body.subagents?.map((entry) => typeof entry === 'string' ? entry : {
-            name: entry.name,
-            modelAlias: entry.model_alias,
-            thinkingEffort: entry.thinking_effort,
-            allowedModels: entry.allowed_models,
-          }) ?? req.body.subagents,
-          subagentPolicy: req.body.subagent_policy,
+          allowedSubagents: req.body.allowed_subagents?.map((entry) => typeof entry === 'string' ? entry : subagentLeaseUpdateFromWire(entry)) ?? req.body.allowed_subagents,
+          canSpawnSubagents: req.body.can_spawn_subagents,
+          preferredSubagents: req.body.preferred_subagents,
+          denySubagents: req.body.deny_subagents,
           spawnConstraints: req.body.spawn_constraints === null ? null : req.body.spawn_constraints === undefined
             ? undefined : {
                 allowedModels: req.body.spawn_constraints.allowed_models,
@@ -662,11 +660,8 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
                 preferredEfforts: req.body.spawn_constraints.preferred_efforts,
                 disallowedTools: req.body.spawn_constraints.disallowed_tools,
               },
-          modelProfiles: req.body.model_profiles?.map((entry) => ({
-            alias: entry.alias,
-            when: entry.when,
-            thinkingEffort: entry.thinking_effort,
-          })) ?? req.body.model_profiles,
+          modelProfiles: req.body.model_profiles?.map(modelProfileUpdateFromWire) ?? req.body.model_profiles,
+          promptOverrides: req.body.prompt_overrides,
           serviceTier: req.body.service_tier,
           autoCompact: req.body.auto_compact,
           tools: req.body.tools,
@@ -941,6 +936,7 @@ function toNamedAgentProfile(
     tools: profile.tools === undefined ? undefined : [...profile.tools],
     disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
     model_profiles: profile.modelProfiles?.map(toNamedAgentModelProfile),
+    prompt_overrides: profile.promptOverrides as NamedAgentProfile['prompt_overrides'],
     spawn_constraints: profile.spawnConstraints === undefined
       ? undefined
       : {
@@ -960,8 +956,10 @@ function toNamedAgentProfile(
             ? undefined
             : [...profile.spawnConstraints.disallowedTools],
         },
-    subagent_policy: profile.subagentPolicy,
-    subagents: profile.subagents?.map((name) => {
+    can_spawn_subagents: profile.canSpawnSubagents,
+    preferred_subagents: profile.preferredSubagents === undefined ? undefined : [...profile.preferredSubagents],
+    deny_subagents: profile.denySubagents === undefined ? undefined : [...profile.denySubagents],
+    allowed_subagents: (profile.allowedSubagents ?? (Object.keys(profile.subagentLeases ?? {}).length === 0 ? undefined : ['*', ...Object.keys(profile.subagentLeases!)]))?.map((name) => {
       const lease = profile.subagentLeases?.[name];
       const binding = lease?.source === undefined
         ? undefined
@@ -1014,8 +1012,10 @@ function executorFields(
     context_budget: ignored('Context budgets are controlled by the external executor'),
     auto_compact: ignored('Compaction is controlled by the external executor'),
     max_completion_tokens: ignored('Output limits are controlled by the external executor'),
-    subagents: applied,
-    subagent_policy: applied,
+    can_spawn_subagents: applied,
+    allowed_subagents: applied,
+    preferred_subagents: applied,
+    deny_subagents: applied,
     spawn_constraints: applied,
     routes: applied,
     model_profiles: applied,
@@ -1047,32 +1047,13 @@ function scopedBindingFor(
 function toNamedAgentModelProfile(
   modelProfile: NonNullable<AgentProfile['modelProfiles']>[number],
 ): NonNullable<NamedAgentProfile['model_profiles']>[number] {
-  return {
-    alias: modelProfile.alias,
-    when: modelProfile.when,
-    context_budget: modelProfile.contextBudget,
-    auto_compact: modelProfile.autoCompact,
-    max_completion_tokens: modelProfile.maxCompletionTokens,
-    service_tier: modelProfile.serviceTier,
-    request_params: modelProfile.requestParams === undefined ? undefined : { ...modelProfile.requestParams },
-    thinking_effort: modelProfile.thinkingEffort,
-    allowed_models: modelProfile.allowedModels === undefined ? undefined : [...modelProfile.allowedModels],
-    deny_models: modelProfile.denyModels === undefined ? undefined : [...modelProfile.denyModels],
-    preferred_models: modelProfile.preferredModels === undefined ? undefined : [...modelProfile.preferredModels],
-    discouraged_models: modelProfile.discouragedModels === undefined ? undefined : [...modelProfile.discouragedModels],
-    preferred_efforts: modelProfile.preferredEfforts === undefined ? undefined : [...modelProfile.preferredEfforts],
-    allowed_efforts: modelProfile.allowedEfforts === undefined
-      ? undefined
-      : [...modelProfile.allowedEfforts],
-    prompt_mode: modelProfile.promptMode,
-    prompt: modelProfile.prompt,
-  };
+  return modelProfileToWire(modelProfile);
 }
 
 function toNamedAgentSubagentLease(
   lease: NonNullable<AgentProfile['subagentLeases']>[string],
   binding?: ScopedAgentProfileBinding,
-): Exclude<NonNullable<NamedAgentProfile['subagents']>[number], string> {
+): Exclude<NonNullable<NamedAgentProfile['allowed_subagents']>[number], string> {
   const status = lease.source === undefined ? undefined : binding?.status ?? 'unavailable';
   return {
     name: lease.name,
@@ -1095,9 +1076,10 @@ function toNamedAgentSubagentLease(
     disallowed_tools: lease.disallowedTools === undefined
       ? undefined
       : [...lease.disallowedTools],
-    subagents: lease.subagents === undefined || lease.subagents === null
-      ? lease.subagents
-      : [...lease.subagents],
+    can_spawn_subagents: lease.canSpawnSubagents,
+    allowed_subagents: lease.allowedSubagents === undefined ? undefined : [...lease.allowedSubagents],
+    preferred_subagents: lease.preferredSubagents === undefined ? undefined : [...lease.preferredSubagents],
+    deny_subagents: lease.denySubagents === undefined ? undefined : [...lease.denySubagents],
     prompt_mode: lease.promptMode,
     prompt: lease.prompt,
     delegation_notice: lease.delegationNotice,
@@ -1106,6 +1088,7 @@ function toNamedAgentSubagentLease(
       ? lease.requestParams
       : { ...lease.requestParams },
     model_profiles: lease.modelProfiles?.map(toNamedAgentModelProfile),
+    model_prompts: lease.modelPrompts,
   };
 }
 
@@ -1141,7 +1124,7 @@ function scopedBindingDiagnostic(
 function scopedBindingDiagnosticCode(
   binding: ScopedAgentProfileBinding | undefined,
   status: ScopedAgentProfileBinding['status'] | undefined,
-): Exclude<NonNullable<NamedAgentProfile['subagents']>[number], string>['diagnostic_code'] {
+): Exclude<NonNullable<NamedAgentProfile['allowed_subagents']>[number], string>['diagnostic_code'] {
   if (binding?.diagnostic === undefined) {
     return status === 'unavailable' ? AgentProfileSourceDiagnosticCodes.UNAVAILABLE : undefined;
   }

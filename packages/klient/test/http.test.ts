@@ -111,7 +111,7 @@ function fakeWebSocket(server: FakeWebSocketServer): typeof WebSocket {
 }
 
 function jsonResponse(envelope: Record<string, unknown>): Response {
-  return { json: () => Promise.resolve(envelope) } as Response;
+  return new Response(JSON.stringify(envelope), { headers: { 'content-type': 'application/json' } });
 }
 
 function okEnvelope(data: unknown): Record<string, unknown> {

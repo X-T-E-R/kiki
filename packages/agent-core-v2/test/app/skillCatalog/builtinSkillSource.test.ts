@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parse as parseToml } from 'smol-toml';
 import { parsePersonaFileText } from '@kiki/agent-profiles';
@@ -7,9 +8,14 @@ import { HooksConfigSchema, HooksV2ConfigSchema, hooksFromToml } from '#/feature
 import { matchesHook, type EffectiveHookRule } from '#/features/externalHooks/internal/rules';
 import PERSONA_REFERENCE from '../../../src/app/skillCatalog/builtin/kiki-persona/references/authoring.md?raw';
 import HOOKS_REFERENCE from '../../../src/app/skillCatalog/builtin/kiki-hooks/references/authoring.md?raw';
+import PLUGIN_REFERENCE from '../../../src/app/skillCatalog/builtin/kiki-plugin/references/authoring.md?raw';
 
 import { TestInstantiationService } from '#/_base/di/test';
 import { IConfigService } from '#/app/config/config';
+import { ConfigRegistry } from '#/app/config/configService';
+import { applySectionToToml, transformTomlData } from '#/app/config/toml';
+import { LOOP_CONTROL_SECTION, LoopControlSchema } from '#/agent/loop/configSection';
+import { RequestGovernanceConfigSchema, requestGovernanceFromToml } from '#/app/requestGovernance/configSection';
 import { IFlagService } from '#/app/flag/flag';
 import { BUILTIN_SKILLS, visibleBuiltinSkills } from '#/app/skillCatalog/builtin/builtin';
 import { EXAMPLE_AGENT_PROFILE_TEMPLATES } from '#/app/shippedAgentProfiles/examples/exampleAgentProfiles';
@@ -21,7 +27,7 @@ import { parseAgentFileText } from '#/workspace/workspaceAgentProfileLoader/inte
 import { stubFlag } from '../flag/stubs';
 import { StubConfigService } from '../../kosong/stubs';
 
-const PRODUCT_SKILLS = ['kiki-ops', 'kiki-profile', 'kiki-persona', 'kiki-hooks', 'kiki-appearance', 'kiki-as-subagent', 'tool-workflows'];
+const PRODUCT_SKILLS = ['kiki-ops', 'kiki-profile', 'kiki-persona', 'kiki-hooks', 'kiki-plugin', 'kiki-appearance', 'kiki-as-subagent', 'tool-workflows'];
 const KIKI_OPS_TRIGGERS = [
   'first-run',
   'provider',
@@ -38,6 +44,15 @@ const KIKI_OPS_TRIGGERS = [
   'mcp',
   'plugins',
   'themes',
+  'concurrency',
+  'queued requests',
+  '429',
+  'hot reload',
+  'usage',
+  'memory maintenance',
+  'effective prompts',
+  'check all branches',
+  'cockpit',
 ];
 const NEUTRAL_SKILLS = BUILTIN_SKILLS.map((s) => s.name).filter(
   (name) => !PRODUCT_SKILLS.includes(name),
@@ -75,9 +90,11 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(ops?.metadata.disableModelInvocation).not.toBe(true);
     expect(ops?.metadata.isSubSkill).not.toBe(true);
     expect(ops?.description.toLowerCase()).toContain('do not use for ordinary');
-    const description = ops?.description.toLowerCase() ?? '';
+    expect(ops?.description).toContain('or another app');
+    const catalog = new InMemorySkillCatalog();
+    catalog.registerBuiltinSkill(ops!);
     for (const trigger of KIKI_OPS_TRIGGERS) {
-      expect(description).toContain(trigger);
+      expect(catalog.getModelSkillListing().toLowerCase()).toContain(trigger);
     }
     expect(BUILTIN_SKILLS.some((skill) => skill.name.startsWith('kiki-ops.'))).toBe(false);
   });
@@ -104,6 +121,20 @@ describe('BuiltinSkillSource product-skill switch', () => {
     const catalog = new InMemorySkillCatalog();
     catalog.registerBuiltinSkill(skill);
     expect(catalog.getModelSkillListing()).toContain(exclusion);
+  });
+
+  it('bundles the kiki-plugin authoring reference and keeps its scope limits visible', () => {
+    const plugin = BUILTIN_SKILLS.find((entry) => entry.name === 'kiki-plugin')!;
+    expect(plugin.path).toBe('builtin://kiki-plugin');
+    expect(plugin.dir).toBe('builtin://kiki-plugin');
+    expect(plugin.metadata.isSubSkill).not.toBe(true);
+    expect(plugin.metadata.disableModelInvocation).not.toBe(true);
+    expect(plugin.content).toContain(`## references/authoring.md\n\n${PLUGIN_REFERENCE}`);
+    const catalog = new InMemorySkillCatalog();
+    catalog.registerBuiltinSkill(plugin);
+    const listing = catalog.getModelSkillListing();
+    expect(listing).toContain('extend a local Kiki plugin');
+    expect(listing).toContain('Not for installing, enabling, or browsing plugins');
   });
 
   it('routes persona identity and hook authoring out of the general operations skill', () => {
@@ -229,6 +260,27 @@ describe('BuiltinSkillSource product-skill switch', () => {
     }
   });
 
+  it('separates preset permissions, recommendations, and explicit file definitions', () => {
+    const content = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-profile')!.content;
+    for (const needle of [
+      'Soft preset-role recommendations',
+      'Does not select a default or grant access',
+      'allowed `[]` permits no presets, not a full leaf',
+      '`false` makes a full leaf: no new preset or Markdown-file children',
+      'Existing children can still resume',
+      'it does not register or replace a catalog preset',
+      'caller preset allow/deny lists and same-name leases do not apply',
+      "Do not copy the caller's preset selection list",
+      'Structured updates preserve omitted fields; `null` deletes a declaration',
+    ]) expect(content).toContain(needle);
+    const examples = [...content.matchAll(/```markdown\n([\s\S]*?)```/g)].map((match, index) =>
+      parseAgentFileText({ path: `/examples/profile-${index}.md`, source: 'user', text: match[1]! }),
+    );
+    expect(examples.find((profile) => profile.name === 'implementer')).toMatchObject({ preferredSubagents: ['explore'] });
+    expect(examples.find((profile) => profile.name === 'implementer')?.allowedSubagents).toBeUndefined();
+    expect(examples.find((profile) => profile.name === 'reviewer')).toMatchObject({ canSpawnSubagents: false });
+  });
+
   it('defaults profile authoring to soft preferences and asks consent for hard rules', () => {
     const content = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-profile')?.content ?? '';
     expect(content).toContain('Users usually need soft preferences, especially for main-agent profiles');
@@ -293,8 +345,97 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(ops).toBeDefined();
     catalog.registerBuiltinSkill(ops!);
     const listing = catalog.getModelSkillListing().toLowerCase();
-    for (const trigger of KIKI_OPS_TRIGGERS.slice(0, 10)) {
+    for (const trigger of KIKI_OPS_TRIGGERS) {
       expect(listing).toContain(trigger);
+    }
+  });
+
+  it('routes request-limit operations through installed docs and keeps reload timing specific', () => {
+    const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops')!;
+    expect(ops.path).toBe('builtin://kiki-ops');
+    expect(ops.content).toContain('Read the installed `configuration/config-files.md`');
+    expect(ops.content).toContain('read `guides/settings.md`');
+    for (const code of ['request.limit_rejected', 'request.queue_full', 'request.queue_timeout', 'provider.rate_limit']) {
+      expect(ops.content).toContain(code);
+    }
+    expect(ops.content).toContain('exact canonical `[models]` keys');
+    expect(ops.content).toContain('not independent CLI processes');
+    expect(ops.content).toContain('External executors are unmanaged');
+    expect(ops.content).toContain('Rule edits automatically re-evaluate waiters and leave active streams running');
+    expect(ops.content).toContain('`identity` needs a process restart');
+    expect(ops.content).toContain('not a required step for every edit');
+    expect(ops.content).toContain('History opens by default');
+    expect(ops.content).toContain('expand Request details');
+    expect(ops.content).toContain('Usage → Live → Concurrency limits');
+    expect(ops.content).toContain('legacy `?panel=limits` links focus the rules on Live');
+    expect(ops.content).not.toContain('Usage → Limits');
+    expect(ops.content).not.toContain('Apply: `/reload` in the TUI for `config.toml`');
+  });
+
+  it('routes memory and session controls without activating unused prompts or discarding preview state', () => {
+    const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops')!.content;
+    for (const contract of [
+      'Read `configuration/config-files.md` → Continuity reminder settings',
+      'Read `guides/settings.md` → Session controls',
+      'For explanation-only questions, use documented defaults without reading private configuration',
+      'resolve the connected server host and actual `KIKI_HOME`',
+      '`false` disables only that periodic reminder',
+      'not standing-instruction or pre-compaction checks, memory tools, approvals, or TodoList notes',
+      'Header ⋯ → Effective prompts',
+      'a displayed composition is not proof it was sent',
+      'Check all branches is explicit and does not activate other identities',
+      'Standard / Exit cockpit restores preview content, tabs, draft and width',
+      'exiting leaves the standard rail open',
+      'Do not suggest clearing preview state',
+    ]) expect(ops).toContain(contract);
+  });
+
+  it.each([
+    ['en', 'opens **History** by default', 'Live → Concurrency limits', 'Request details'],
+    ['zh', '默认打开「历史」', '实时 → 并发限制', '请求详情'],
+  ])('keeps the %s Usage guide on the history/live/external-sync sections and legacy limits route', (locale, defaultTab, rulePath, details) => {
+    const text = readFileSync(new URL(`../../../../../docs/${locale}/guides/settings.md`, import.meta.url), 'utf8');
+    const usage = text.split('## Usage\n')[1]!.split('\n## ')[0]!;
+    expect(usage.match(/^- \*\*/gm)).toHaveLength(3);
+    expect(usage).toContain(defaultTab);
+    expect(usage).toContain(details);
+    expect(usage).toContain('/usage?panel=limits');
+    expect(text).toContain(rulePath);
+  });
+
+  it('keeps bilingual request-governance examples valid and equivalent to the runtime schema', () => {
+    const configurations = ['en', 'zh'].map((locale) => {
+      const text = readFileSync(new URL(`../../../../../docs/${locale}/configuration/config-files.md`, import.meta.url), 'utf8');
+      const section = text.split('## `[request_governance]`')[1]!.split('\n## ')[0]!;
+      const examples = [...section.matchAll(/```toml\n([\s\S]*?)```/g)].map((match) => match[1]!);
+      expect(examples).toHaveLength(2);
+      return RequestGovernanceConfigSchema.parse(requestGovernanceFromToml(parseToml(examples.join('\n'))['request_governance']));
+    });
+    expect(configurations[0]).toEqual(configurations[1]);
+    expect(configurations[0]).toMatchObject({
+      schemaVersion: 1, maxWaitMs: 300000, maxQueueSize: 1024,
+      rules: [
+        { id: 'shared-provider', scope: 'global', providers: ['example-provider'], maxConcurrent: 2, overflow: 'queue', enabled: true },
+        { id: 'session-model-children', scope: 'each_session', models: ['example-model'], subagentsOnly: true, maxConcurrent: 1, maxWaitMs: 60000 },
+      ],
+    });
+  });
+
+  it.each(['en', 'zh'])('loads the %s continuity examples through the real TOML adapter and round-trips the memory switch', (locale) => {
+    const registry = new ConfigRegistry();
+    try {
+      const text = readFileSync(new URL(`../../../../../docs/${locale}/configuration/config-files.md`, import.meta.url), 'utf8');
+      const examples = [...text.matchAll(/```toml\n(\[loop_control\.continuity_cadence\][\s\S]*?)```/g)];
+      expect(examples).toHaveLength(2);
+      const values = examples.map((match) => LoopControlSchema.parse(transformTomlData(parseToml(match[1]!), registry)[LOOP_CONTROL_SECTION]));
+      expect(values[0]?.continuityCadence).toEqual({ ageHumanTurns: 6, cooldownHumanTurns: 8, longTaskSteps: 24 });
+      expect(values[1]?.continuityCadence).toEqual({ memoryMaintenance: false });
+      const raw: Record<string, unknown> = {};
+      applySectionToToml(raw, LOOP_CONTROL_SECTION, values[1], registry);
+      expect(raw).toEqual({ loop_control: { continuity_cadence: { memory_maintenance: false } } });
+      expect(LoopControlSchema.parse(transformTomlData(raw, registry)[LOOP_CONTROL_SECTION])).toEqual(values[1]);
+    } finally {
+      registry.dispose();
     }
   });
 

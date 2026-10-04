@@ -77,6 +77,7 @@ export interface SkillActivationOrigin {
   readonly skillName: string;
   readonly skillArgs?: string;
   readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+  readonly userInput?: string;
   readonly skillType?: string;
   readonly skillPath?: string;
   readonly skillSource?: SkillSource;
@@ -246,6 +247,7 @@ export type KimiErrorCode =
   | 'session.id_required'
   | 'session.id_empty'
   | 'session.title_empty'
+  | 'session.title_generation_failed'
   | 'session.state_not_found'
   | 'session.state_invalid'
   | 'session.fork_active_turn'
@@ -423,10 +425,16 @@ export interface QuestionTaskInfo extends TaskInfoBase {
   readonly toolCallId?: string;
 }
 
+export interface MediaTaskInfo extends TaskInfoBase {
+  readonly kind: 'media';
+  readonly jobId: string;
+}
+
 export type TaskInfo =
   | ProcessTaskInfo
   | AgentTaskInfo
-  | QuestionTaskInfo;
+  | QuestionTaskInfo
+  | MediaTaskInfo;
 
 export interface CompactionResult {
   readonly summary: string;
@@ -1274,6 +1282,7 @@ export const skillActivationOriginSchema = z.object({
   skillName: z.string(),
   skillArgs: z.string().optional(),
   trigger: z.enum(['user-slash', 'model-tool', 'nested-skill']),
+  userInput: z.string().optional(),
   skillType: z.string().optional(),
   skillPath: z.string().optional(),
   skillSource: skillSourceSchema.optional(),
@@ -1438,6 +1447,7 @@ export const kimiErrorCodeSchema = z.enum([
   'session.id_required',
   'session.id_empty',
   'session.title_empty',
+  'session.title_generation_failed',
   'session.state_not_found',
   'session.state_invalid',
   'session.fork_active_turn',
@@ -1618,10 +1628,13 @@ export const questionTaskInfoSchema = taskInfoBaseSchema.extend({
   toolCallId: z.string().optional(),
 }) satisfies z.ZodType<QuestionTaskInfo>;
 
+export const mediaTaskInfoSchema = taskInfoBaseSchema.extend({ kind: z.literal('media'), jobId: z.string() }) satisfies z.ZodType<MediaTaskInfo>;
+
 export const taskInfoSchema = z.discriminatedUnion('kind', [
   processTaskInfoSchema,
   agentTaskInfoSchema,
   questionTaskInfoSchema,
+  mediaTaskInfoSchema,
 ]) satisfies z.ZodType<TaskInfo>;
 
 export const compactionResultSchema = z.object({

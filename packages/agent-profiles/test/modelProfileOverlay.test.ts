@@ -81,3 +81,13 @@ describe('model profile overlay matching and prompt composition', () => {
     expect(applyMatchedModelProfilePrompt('BODY', dup, 'mock-model', resolveId)).toBe('FIRST\n\nBODY');
   });
 });
+
+describe('model prompt identity selection', () => {
+  it('defaults to common for all positions and replaces only the model body', () => {
+    const entry: AgentModelProfile = { alias: 'mock-model', promptMode: 'append', prompt: 'COMMON', main: { promptMode: 'prepend', prompt: 'MAIN' }, independent: 'off' };
+    expect(applyMatchedModelProfilePrompt('BODY', [entry], 'mock-model', resolveId, 'main')).toBe('MAIN\n\nBODY');
+    expect(applyMatchedModelProfilePrompt('BODY', [entry], 'mock-model', resolveId, 'sub')).toBe('BODY\n\nCOMMON');
+    expect(applyMatchedModelProfilePrompt('BODY', [entry], 'mock-model', resolveId, 'independent')).toBe('BODY');
+    for (const position of ['main', 'sub', 'independent'] as const) expect(applyMatchedModelProfilePrompt('BODY', [{ ...entry, main: 'same', independent: undefined }], 'mock-model', resolveId, position)).toBe('BODY\n\nCOMMON');
+  });
+});

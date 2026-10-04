@@ -24,7 +24,7 @@ function appOf(r: RunningServer): AppLike {
       const request = req as { headers?: Record<string, string> };
       return app.inject({
         ...request,
-        headers: { ...request.headers, authorization: `Bearer ${r.authTokenService.getToken()}` },
+        headers: { ...request.headers, authorization: `Bearer ${r.localOwnerToken}` },
       });
     },
   };

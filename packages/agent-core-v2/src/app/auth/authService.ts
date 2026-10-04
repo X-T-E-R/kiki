@@ -8,6 +8,7 @@ import {
   kimiCodeBaseUrl,
   kimiRegionLoginHosts,
   OAuthError,
+  OAuthAccessDeniedError,
   applyManagedKimiCodeConfig,
   applyOAuthMethodConfig,
   clearOAuthMethodConfig,
@@ -27,7 +28,14 @@ import {
   type DeviceAuthorization,
   type KimiRegion,
   type ManagedKimiConfigShape,
+  LocalOriginalOAuthService,
+  LocalOriginalOAuthError,
+  type LocalOriginalOAuthProbe,
+  type LocalOriginalOAuthSourceRef,
 } from '@kiki/oauth';
+import { connectOriginalOAuthRequestSchema, originalOAuthRequestSchema, type ConnectOriginalOAuthRequest, type OriginalOAuthProbe, type OriginalOAuthRequest } from '@kiki/protocol';
+import { parse as parseToml } from 'smol-toml';
+import { originalOAuthKeyring } from '#/persistence/backends/node-fs/originalOAuthKeyring';
 import type {
   OAuthFlowSnapshot,
   OAuthFlowStart,
@@ -51,6 +59,7 @@ import {
   effectiveModelConfig,
   nonEmpty,
   resolveModelAuthMaterial,
+  resolveModelProviderId,
 } from '#/kosong/model/modelAuth';
 import { IModelService, type ModelRecord } from '#/kosong/model/model';
 import {
@@ -120,14 +129,60 @@ export class OAuthService extends Disposable implements IOAuthService {
     }));
   }
 
+  private originalSources(): LocalOriginalOAuthService {
+    if (this.toolkit.originalSources === undefined) throw new OAuthError('Original account sources are not available in this Kiki host.');
+    return this.toolkit.originalSources;
+  }
+
+  private originalProbeDto(probe: LocalOriginalOAuthProbe): OriginalOAuthProbe {
+    return { provider: probe.provider, home_dir: probe.homeDir, storage_backend: probe.storageBackend,
+      state: probe.state, account: probe.account, can_connect: probe.canConnect, reason: probe.reason };
+  }
+
+  async probeOriginal(request: OriginalOAuthRequest): Promise<OriginalOAuthProbe> {
+    const input = originalOAuthRequestSchema.parse(request);
+    return this.originalProbeDto(await this.originalSources().probe(input.provider, input.home_dir));
+  }
+
+  connectOriginal(request: ConnectOriginalOAuthRequest): Promise<OriginalOAuthProbe> {
+    const input = connectOriginalOAuthRequestSchema.parse(request);
+    const provider = providerKeyFor(input.provider);
+    this.abortExisting(provider);
+    return this.enqueueAuthMutation(async () => {
+      const source = await this.originalSources().connect(input.provider, input.home_dir, input.expected_account_id);
+      const accessToken = await this.originalSources().getAccessToken(source);
+      await this.provisionDeviceMethod(provider, accessToken, undefined, source);
+      return this.originalProbeDto(await this.originalSources().probe(source.provider, source.homeDir, source));
+    });
+  }
+
   async listMethods(): Promise<readonly OAuthMethodStatus[]> {
     return Promise.all(OAUTH_METHODS.map(async (method): Promise<OAuthMethodStatus> => {
+      const source = this.providerService.get(method.providerName)?.oauth?.source;
+      if (source !== undefined) {
+        const probe = await this.originalSources().probe(source.provider, source.homeDir, source);
+        const signedIn = probe.state === 'ready' || probe.state === 'refresh_required';
+        return { id: method.id, label: method.label, provider: method.providerName, protocol: method.protocol,
+          signed_in: signedIn, connection_state: signedIn ? probe.state as 'ready' | 'refresh_required' : probe.state === 'signed_out' ? 'signed_out' : 'reconnect_required',
+          account: probe.account, quota: { state: 'unknown' },
+          auth_source: { kind: 'local_original', home_dir: probe.homeDir, storage_backend: probe.storageBackend, source_state: probe.state } };
+      }
       let signedIn = false;
+      let connectionState: OAuthMethodStatus['connection_state'] = 'signed_out';
       try {
         signedIn = this.providerService.get(method.providerName)?.oauth !== undefined
           && nonEmpty(await this.getCachedAccessToken(method.providerName)) !== undefined;
+        connectionState = signedIn ? 'ready' : 'signed_out';
+        if (isDeviceOAuthMethod(method.id) && this.toolkit.deviceMethods !== undefined) {
+          connectionState = await this.toolkit.deviceMethods.connectionState(method.id);
+          signedIn = signedIn && (connectionState === 'ready' || connectionState === 'refresh_required');
+          if (!signedIn && (connectionState === 'ready' || connectionState === 'refresh_required')) {
+            connectionState = 'reconnect_required';
+          }
+        }
       } catch {
         signedIn = false;
+        connectionState = 'reconnect_required';
       }
       let account: OAuthMethodStatus['account'] = { state: 'unknown' };
       let quota: OAuthMethodStatus['quota'] = { state: 'unknown' };
@@ -170,6 +225,8 @@ export class OAuthService extends Disposable implements IOAuthService {
         provider: method.providerName,
         protocol: method.protocol,
         signed_in: signedIn,
+        auth_source: { kind: 'kiki' },
+        connection_state: connectionState,
         account,
         quota,
       };
@@ -290,16 +347,27 @@ export class OAuthService extends Disposable implements IOAuthService {
     }
     state.controller.abort();
     this.setTerminal(state, 'cancelled');
+    if (isDeviceOAuthMethod(state.provider) && state.tokenGranted && state.device !== undefined) {
+      return this.enqueueAuthMutation(async () => {
+        await this.deviceMethods().logout(state.provider);
+        await this.deprovisionDeviceMethod(state.provider);
+        return { cancelled: true, status: 'cancelled' };
+      });
+    }
     return Promise.resolve({ cancelled: true, status: 'cancelled' });
   }
 
   async logout(requested = KIMI_CODE_PROVIDER_NAME): Promise<OAuthLogoutResponse> {
     const provider = providerKeyFor(requested);
     if (isDeviceOAuthMethod(provider)) {
-      await this.deviceMethods().logout(provider);
       this.abortExisting(provider);
-      await this.deprovisionDeviceMethod(provider);
-      return { logged_out: true, provider };
+      return this.enqueueAuthMutation(async () => {
+        const source = this.providerService.get(provider)?.oauth?.source;
+        if (source === undefined) await this.deviceMethods().logout(provider);
+        else await this.originalSources().disconnect(source);
+        await this.deprovisionDeviceMethod(provider);
+        return { logged_out: true, provider };
+      });
     }
     const oauthRef =
       provider === KIMI_CODE_PROVIDER_NAME
@@ -327,12 +395,25 @@ export class OAuthService extends Disposable implements IOAuthService {
     }
   }
 
+  private originalSource(provider: string, oauthRef?: OAuthRef): LocalOriginalOAuthSourceRef | undefined {
+    const source = (oauthRef ?? this.providerService.get(providerKeyFor(provider))?.oauth)?.source;
+    if (source !== undefined && (providerKeyFor(source.provider) !== providerKeyFor(provider) ||
+      (oauthRef ?? this.providerService.get(providerKeyFor(provider))?.oauth)?.key !== oauthMethodFor(source.provider)?.oauthKey)) {
+      throw new LocalOriginalOAuthError('unsupported', 'The original OAuth source does not match this provider.');
+    }
+    return source;
+  }
+
   resolveTokenProvider(provider: string, oauthRef?: OAuthRef): BearerTokenProvider | undefined {
+    const source = this.originalSource(provider, oauthRef);
+    if (source !== undefined) return this.originalSources().tokenProvider(source);
     if (isDeviceOAuthMethod(provider)) return this.deviceMethods().tokenProvider(provider);
     return this.toolkit.tokenProvider(provider, this.resolveRuntimeOAuthRef(provider, oauthRef));
   }
 
   getCachedAccessToken(provider: string, oauthRef?: OAuthRef): Promise<string | undefined> {
+    const source = this.originalSource(provider, oauthRef);
+    if (source !== undefined) return this.originalSources().getCachedAccessToken(source);
     if (isDeviceOAuthMethod(provider)) return this.deviceMethods().getCachedAccessToken(provider);
     return this.toolkit.getCachedAccessToken(provider, this.resolveRuntimeOAuthRef(provider, oauthRef));
   }
@@ -374,10 +455,13 @@ export class OAuthService extends Disposable implements IOAuthService {
       });
       login.then(
         async (accessToken) => {
-          if (state.status !== 'pending') return;
+          if (state.status !== 'pending') {
+            if (!settled) reject(new OAuthError('Login cancelled.'));
+            return;
+          }
           state.tokenGranted = true;
           try {
-            await this.provisionDeviceMethod(provider, accessToken);
+            await this.enqueueAuthMutation(() => this.provisionDeviceMethod(provider, accessToken, state));
             if (state.status === 'pending') this.setTerminal(state, 'authenticated');
           } catch (error) {
             this.log.warn('oauth device method provisioning failed', {
@@ -407,19 +491,32 @@ export class OAuthService extends Disposable implements IOAuthService {
     });
   }
 
-  private async provisionDeviceMethod(provider: string, accessToken: string): Promise<RefreshOAuthProviderModelsResponse['changed'][number]> {
+  private enqueueAuthMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.refreshChain.then(operation);
+    this.refreshChain = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private async provisionDeviceMethod(provider: string, accessToken: string, flow?: FlowState, source?: LocalOriginalOAuthSourceRef): Promise<RefreshOAuthProviderModelsResponse['changed'][number]> {
     const method = this.deviceMethods().method(provider);
     const models = await method.listModels(accessToken);
     await this.config.reload();
+    if (flow?.controller.signal.aborted === true) throw new OAuthError('Login cancelled.');
+    const previousSource = this.providerService.get(method.providerName)?.oauth?.source;
     const next = structuredClone(this.readUserConfigShape());
     const applied = applyOAuthMethodConfig(next, method, {
       baseUrl: method.baseUrlFor(accessToken),
       headers: method.requestHeaders(accessToken),
       models,
     });
+    if (source !== undefined) {
+      const configured = next.providers[method.providerName];
+      next.providers[method.providerName] = { ...configured, oauth: { storage: 'file', key: method.oauthKey, source } };
+    }
     await this.config.replace(PROVIDERS_SECTION, next.providers);
     await this.config.replace(MODELS_SECTION, next.models ?? {});
     await this.config.replace(DEFAULT_MODEL_SECTION, next.defaultModel);
+    if (previousSource !== undefined && JSON.stringify(previousSource) !== JSON.stringify(source)) await this.originalSources().disconnect(previousSource);
     return { provider_id: provider, provider_name: method.label, added: applied.added, removed: applied.removed };
   }
 
@@ -487,8 +584,9 @@ export class OAuthService extends Disposable implements IOAuthService {
       if (!isDeviceOAuthMethod(method.providerName)) continue;
       if (this.providerService.get(method.providerName)?.oauth === undefined) continue;
       try {
-        const token = await this.deviceMethods().tokenProvider(method.providerName).getAccessToken();
-        const change = await this.provisionDeviceMethod(method.providerName, token);
+        const oauthRef = this.providerService.get(method.providerName)?.oauth;
+        const token = await this.resolveTokenProvider(method.providerName, oauthRef)!.getAccessToken();
+        const change = await this.provisionDeviceMethod(method.providerName, token, undefined, oauthRef?.source);
         if (change.added === 0 && change.removed === 0) unchanged.push(method.providerName);
         else changed.push(change);
       } catch (error) {
@@ -765,7 +863,10 @@ export class OAuthService extends Disposable implements IOAuthService {
   private handleFailure(state: FlowState, err: unknown): void {
     if (state.status !== 'pending') return;
     state.errorMessage = err instanceof Error ? err.message : String(err);
-    this.setTerminal(state, classifyFailure(err));
+    const status = classifyFailure(err);
+    const method = oauthMethodFor(state.provider)?.id;
+    this.setTerminal(state, (method === 'openai-codex' || method === 'grok-build') && status === 'denied'
+      && !(err instanceof OAuthAccessDeniedError) ? 'failed' : status);
   }
 
   private setTerminal(state: FlowState, status: OAuthFlowStatus): void {
@@ -859,7 +960,7 @@ export class AuthSummaryService implements IAuthSummaryService {
     }
 
     const model = effectiveModelConfig(configured);
-    const providerId = model.providerId ?? model.provider;
+    const providerId = resolveModelProviderId(model, this.providerService.getDefaultProvider());
     const provider = providerId === undefined ? undefined : this.providerService.get(providerId);
     if (providerId !== undefined && provider === undefined) {
       throw new AuthModelNotResolvedError(modelId, providerId);
@@ -1083,6 +1184,7 @@ function managedModel(
 class OAuthToolkitService extends KimiOAuthToolkit implements IOAuthToolkit {
   declare readonly _serviceBrand: undefined;
   readonly deviceMethods: OAuthDeviceMethods;
+  readonly originalSources = new LocalOriginalOAuthService({ keyring: originalOAuthKeyring, parseConfig: parseToml });
   constructor(@IBootstrapService bootstrap: IBootstrapService) {
     super({
       homeDir: bootstrap.modelAccountHomeDir,
@@ -1092,6 +1194,7 @@ class OAuthToolkitService extends KimiOAuthToolkit implements IOAuthToolkit {
     this.deviceMethods = new OAuthDeviceMethods({
       homeDir: bootstrap.modelAccountHomeDir,
       credentialsDir: `${bootstrap.modelAccountHomeDir}/credentials`,
+      grokHomeDir: bootstrap.credentialsHomeDir,
     });
   }
 }

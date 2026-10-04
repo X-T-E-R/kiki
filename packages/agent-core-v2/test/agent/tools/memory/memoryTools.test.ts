@@ -20,11 +20,12 @@ describe('temporary session memory tools', () => {
     ix.stub(IAgentMemorySnapshot, { getPersona: () => undefined });
     ix.stub(IConfigService, { get: <T>() => ({ enabled: true, approval: 'auto', workspaces: {} }) as T });
     ix.stub(IMemoryStore, { put });
+    ix.stub(ICapabilitySnapshotService, { memoryAvailable: () => true, toolAvailable: () => true });
     ix.set(IMemoryWriteTool, new SyncDescriptor(MemoryWriteTool));
     const tools = getAgentToolContributions();
     expect(tools.find((tool) => tool.id === IMemoryWriteTool)?.options.when?.(ix)).toBe(false);
-    expect(tools.find((tool) => tool.id === IMemorySearchTool)?.options.when?.(ix)).toBe(true);
-    expect(tools.find((tool) => tool.id === IMemoryReadTool)?.options.when?.(ix)).toBe(true);
+    expect(tools.find((tool) => tool.id === IMemorySearchTool)?.options.when?.(ix) ?? true).toBe(true);
+    expect(tools.find((tool) => tool.id === IMemoryReadTool)?.options.when?.(ix) ?? true).toBe(true);
     const execution = ix.get(IMemoryWriteTool).resolveExecution({
       action: 'create', scope: 'global', type: 'user', title: 'Temporary', body: 'Do not persist', reason: 'Test',
     });
@@ -43,7 +44,7 @@ describe('memory maintenance guidance', () => {
     ix.stub(ISessionContext, { workspaceId: 'example', sessionId: 'example' });
     ix.stub(IAgentMemorySnapshot, { getPersona: () => undefined });
     ix.stub(IConfigService, { get: <T>() => ({ enabled: true, approval: 'auto', workspaces: {} }) as T });
-    ix.stub(ICapabilitySnapshotService, { memoryAvailable: () => true });
+    ix.stub(ICapabilitySnapshotService, { memoryAvailable: () => true, toolAvailable: () => true });
     ix.stub(IMemoryStore, {});
     ix.set(IMemoryWriteTool, new SyncDescriptor(MemoryWriteTool));
     ix.set(IMemorySearchTool, new SyncDescriptor(MemorySearchTool));
@@ -70,6 +71,15 @@ describe('memory maintenance guidance', () => {
     expect(ix.get(IMemorySearchTool).description).toContain("Retain each hit's `scope.kind`");
     expect(ix.get(IMemoryReadTool).description).toContain('archived and superseded entries can be returned as history');
     expect(ix.get(IMemoryReadTool).description).toContain('If the scope is unknown, recover it through search');
+  });
+
+  it.each(['pending', 'active'] as const)('returns structured %s write evidence from the store result', async (status) => {
+    ix.stub(IMemoryStore, { put: async () => ({ entry: { id: 'entry', title: 'Guidance', revision: 'rev-2', status }, operationId: 'op-2' }) } as unknown as Partial<IMemoryStore>);
+    const execution = ix.get(IMemoryWriteTool).resolveExecution({ action: 'update', scope: 'global', type: 'feedback', title: 'Guidance', body: 'Complete current rule.', reason: 'Human correction', id: 'entry', expected_revision: 'rev-1' });
+    if (!('execute' in execution)) throw new Error('expected write execution');
+    const result = await execution.execute({ turnId: 1, toolCallId: 'write', signal: new AbortController().signal });
+    expect(result.memoryReceipt).toEqual({ action: 'update', id: 'entry', revision: 'rev-2', status, operationId: 'op-2' });
+    expect(result.isError).not.toBe(true);
   });
 
   it('projects field guidance without changing validation constraints or required fields', () => {

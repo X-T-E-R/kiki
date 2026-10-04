@@ -994,6 +994,10 @@ function stubSessionMetadata(meta: SessionMeta): ISessionMetadata {
     setGeneratedTitleIfUncustomized: async () => false,
     setArchived: async () => {},
     registerAgent: async () => {},
+    updateAgent: async (agentId, updater) => {
+      const current = meta.agents?.[agentId];
+      if (current !== undefined) meta = { ...meta, agents: { ...meta.agents, [agentId]: updater(structuredClone(current)) } };
+    },
   };
 }
 

@@ -1,0 +1,13 @@
+{
+  "name": "fixture-media",
+  "version": "0.1.0",
+  "x-kiki": {
+    "engines": { "kiki": ">=0.4.0" },
+    "entry": "./entry.mjs",
+    "permissions": { "fs": "outside", "secrets": true },
+    "mediaProviders": [{ "schemaVersion": 1, "id": "synthetic", "label": "Synthetic media", "kinds": ["image", "video", "tts"], "resumeVersion": 1, "connectionSetting": "connectionId" }],
+    "settings": { "schemaVersion": 1, "schema": { "type": "object", "properties": {
+      "remoteDir": { "type": "string" }, "apiKey": { "type": "string", "secret": true }, "connectionId": { "type": "string" }
+    } } }
+  }
+}

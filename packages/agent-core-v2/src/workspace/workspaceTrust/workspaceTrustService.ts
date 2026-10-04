@@ -6,7 +6,7 @@ import { IWorkspaceStateService } from '#/workspace/state/workspaceState';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 
 import { IWorkspaceTrust, type WorkspaceTrustChange } from './workspaceTrust';
-import { deleteWorkspaceTrust, readWorkspaceTrust, writeWorkspaceTrust } from './trustRecord';
+import { deleteWorkspaceTrust, migrateWorkspaceTrust, readWorkspaceTrust, writeWorkspaceTrust } from './trustRecord';
 
 export const workspaceTrustTrustedKey = defineState<boolean>(
   'workspaceTrust.trusted',
@@ -50,6 +50,7 @@ export class WorkspaceTrustService extends Disposable implements IWorkspaceTrust
   }
 
   async trust(): Promise<void> {
+    await this.ready;
     if (this.trusted) return;
     await writeWorkspaceTrust(this.docs, this.root, Date.now());
     this.trusted = true;
@@ -57,13 +58,23 @@ export class WorkspaceTrustService extends Disposable implements IWorkspaceTrust
   }
 
   async untrust(): Promise<void> {
+    await this.ready;
     if (!this.trusted) return;
     await deleteWorkspaceTrust(this.docs, this.root);
     this.trusted = false;
     this.changeEmitter.fire({ trusted: false });
   }
 
+  protected migrateLegacyTrust(): Promise<void> {
+    return migrateWorkspaceTrust(this.docs, this.root);
+  }
+
   private async initialize(): Promise<void> {
     this.trusted = await readWorkspaceTrust(this.docs, this.root);
+    if (this.trusted) {
+      try {
+        await this.migrateLegacyTrust();
+      } catch {}
+    }
   }
 }

@@ -407,6 +407,7 @@ export class McpConnectionManager implements McpConnectionView {
         throw new Error('MCP stdio requires runtime_id and runtime binding');
       }
       return new StdioMcpClient(config, {
+        serverName: name,
         startupTimeoutMs,
         toolCallTimeoutMs,
         defaultCwd: this.options.stdioCwd,
@@ -480,14 +481,22 @@ export class McpConnectionManager implements McpConnectionView {
   private async closeClient(entry: InternalEntry): Promise<void> {
     if (entry.client === undefined) return;
     const client = entry.client;
-    entry.client = undefined;
-    await this.closeRuntimeClient(client);
+    try {
+      await this.closeRuntimeClient(client);
+      entry.client = undefined;
+    } catch (error) {
+      entry.status = 'failed';
+      entry.error = error instanceof Error ? error.message : String(error);
+      this.emit(entry);
+      throw error;
+    }
   }
 
   private async closeRuntimeClient(client: RuntimeMcpClient): Promise<void> {
     try {
       await client.close();
-    } catch {
+    } catch (error) {
+      if (error instanceof Error2 && error.code === ErrorCodes.MCP_COMPUTER_STOP_UNCONFIRMED) throw error;
     }
   }
 

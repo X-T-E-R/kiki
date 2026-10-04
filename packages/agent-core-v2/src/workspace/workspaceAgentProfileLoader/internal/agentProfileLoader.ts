@@ -48,6 +48,31 @@ export abstract class AgentProfileLoaderBase extends Service {
     return undefined;
   }
 
+  protected prepareContribution(contribution: AgentProfileContribution): AgentProfileContribution {
+    return contribution;
+  }
+
+  protected refreshLastGoodContribution(): void {
+    if (this.lastGoodContribution !== undefined) this.publish(this.lastGoodContribution);
+  }
+
+  private publish(input: AgentProfileContribution): void {
+    const contribution = this.prepareContribution(input);
+    const registration = {
+      sourceId: this.sourceId,
+      priority: this.priority,
+      workspaceKey: this.workspaceKey,
+      contribution,
+    };
+    if (this.registry !== undefined) {
+      this.contributionHandle.value = this.registry.register(registration);
+    } else {
+      const handle = this.provide(AgentProfileContribution, registration);
+      this.contributionHandle.value = { dispose: () => void handle.dispose() };
+    }
+    this.lastGoodContribution = contribution;
+  }
+
   private enqueue(): Promise<void> {
     const current = this.tail.catch(() => undefined).then(() => this.loadAndContribute());
     this.tail = current;
@@ -56,20 +81,7 @@ export abstract class AgentProfileLoaderBase extends Service {
 
   private async loadAndContribute(): Promise<void> {
     try {
-      const contribution = this.withLastGoodEntries(await this.load());
-      const registration = {
-        sourceId: this.sourceId,
-        priority: this.priority,
-        workspaceKey: this.workspaceKey,
-        contribution,
-      };
-      if (this.registry !== undefined) {
-        this.contributionHandle.value = this.registry.register(registration);
-      } else {
-        const handle = this.provide(AgentProfileContribution, registration);
-        this.contributionHandle.value = { dispose: () => void handle.dispose() };
-      }
-      this.lastGoodContribution = contribution;
+      this.publish(this.withLastGoodEntries(await this.load()));
     } catch (error) {
       if (this.fatal) throw error;
       this.log.warn(`agent profile loader "${this.sourceId}" load failed: ${String(error)}`);
@@ -81,7 +93,7 @@ export abstract class AgentProfileLoaderBase extends Service {
     if (previous === undefined || contribution.skipped === undefined) return contribution;
     const invalidProfilePaths = new Set(
       contribution.skipped
-        .filter((entry) => entry.code?.startsWith('agent_profile_route.') !== true)
+        .filter((entry) => entry.code?.startsWith('agent_profile_route.') !== true && entry.code !== 'agent_executor.source_not_allowed')
         .map((entry) => this.pathKey(entry.path)),
     );
     const invalidRoutePaths = new Set(

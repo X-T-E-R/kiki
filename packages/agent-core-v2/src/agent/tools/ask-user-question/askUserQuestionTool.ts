@@ -4,7 +4,7 @@ import { CoreErrors } from '#/_base/errors/codes';
 import { Error2 } from '#/_base/errors/errors';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { isAbortError } from '#/_base/utils/abort';
-import { ref, type LiveRef, type ServicesAccessor } from '#/_base/di/instantiation';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
@@ -23,6 +23,7 @@ import type {
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
 import { ISessionQuestionService } from '#/session/question/question';
+import { isInteractionCancellation } from '#/session/interaction/interaction';
 import type {
   QuestionAnswers,
   QuestionAnswerMethod,
@@ -38,6 +39,7 @@ import {
 } from './ask-user-question';
 import DESCRIPTION from './ask-user.md?raw';
 import { QuestionBackgroundTask } from './question-background-task';
+import { IQuestionFrequencyGuard, QUESTION_FREQUENCY_REMINDER, type QuestionAdmission } from './questionFrequencyGuard';
 
 const QUESTION_DISMISSED_MESSAGE = 'User dismissed the question without answering.';
 
@@ -49,6 +51,8 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
   readonly name = 'AskUserQuestion' as const;
   readonly description: string;
   readonly parameters: Record<string, unknown>;
+  private readonly activeCalls = new Map<string, Promise<ExecutableToolResult>>();
+  private readonly recentCalls = new Map<string, Promise<ExecutableToolResult>>();
 
   constructor(
     @ISessionQuestionService private readonly question: ISessionQuestionService,
@@ -60,6 +64,7 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
     @ref(ISessionMetadata) private readonly metadata?: LiveRef<ISessionMetadata>,
     @ref(IAgentActivityView) private readonly activity?: LiveRef<IAgentActivityView>,
     @ref(IRoomService) private readonly rooms?: LiveRef<IRoomService>,
+    @ref(IQuestionFrequencyGuard) private readonly frequency?: LiveRef<IQuestionFrequencyGuard>,
   ) {
     this.description = this.isBlocking()
       ? DESCRIPTION
@@ -83,10 +88,28 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
     };
   }
 
-  private async execution(
+  private execution(args: AskUserQuestionInput, context: ExecutableToolContext): Promise<ExecutableToolResult> {
+    if (this.frequency?.current === undefined) return this.executeOnce(args, context);
+    const key = `${context.turnId}:${context.toolCallId}`;
+    const existing = this.activeCalls.get(key) ?? this.recentCalls.get(key);
+    if (existing !== undefined) return existing;
+    const pending = this.executeOnce(args, context);
+    this.activeCalls.set(key, pending);
+    const remember = (): void => {
+      this.activeCalls.delete(key);
+      this.recentCalls.set(key, pending);
+      if (this.recentCalls.size > 128) this.recentCalls.delete(this.recentCalls.keys().next().value!);
+    };
+    void pending.then(remember, remember);
+    return pending;
+  }
+
+  private async executeOnce(
     args: AskUserQuestionInput,
-    { toolCallId, signal, turnId, trace }: ExecutableToolContext,
+    { toolCallId, signal, turnId, step, trace }: ExecutableToolContext,
   ): Promise<ExecutableToolResult> {
+    const guard = this.frequency?.current;
+    const attempt = guard?.attempt({ turnId, step });
     const uniquenessError = questionUniquenessError(args.questions);
     if (uniquenessError !== null) {
       return { isError: true, output: uniquenessError };
@@ -104,12 +127,14 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
       if (this.rooms?.current === undefined) return { isError: true, output: 'Room questions are unavailable.' };
       room = { id: roomId, sessionId: metadata!.id };
     }
+    const admission = attempt === undefined ? undefined : guard!.admit(attempt);
+    if (guard !== undefined && admission === undefined) return { isError: true, output: QUESTION_FREQUENCY_REMINDER };
     const messageMode = this.delivery?.current?.effectiveMode() === 'message';
     if (messageMode || (args.background === true && !this.isBlocking())) {
-      return this.executeInBackground({ ...args, background: true }, { toolCallId, turnId, signal, trace }, room);
+      return this.executeInBackground({ ...args, background: true }, { toolCallId, turnId, signal, trace }, room, admission);
     }
 
-    return this.executeQuestion(this.isBlocking() ? { ...args, background: false } : args, { toolCallId, turnId, signal, trace }, room);
+    return this.executeQuestion(this.isBlocking() ? { ...args, background: false } : args, { toolCallId, turnId, signal, trace }, room, admission);
   }
 
   private inputSchema(): z.ZodType<AskUserQuestionInput> {
@@ -125,8 +150,10 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
       trace,
     }: Pick<ExecutableToolContext, 'toolCallId' | 'signal' | 'turnId' | 'trace'>,
     room?: { readonly id: string; readonly sessionId: string },
+    admission?: QuestionAdmission,
   ): ExecutableToolResult {
     if (signal.aborted) {
+      admission?.release();
       signal.throwIfAborted();
     }
 
@@ -135,13 +162,14 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
     try {
       taskId = this.tasks.registerTask(
         new QuestionBackgroundTask(
-          (taskSignal) => this.executeQuestion(args, { toolCallId, turnId, signal: taskSignal, trace }, room),
+          (taskSignal) => this.executeQuestion(args, { toolCallId, turnId, signal: taskSignal, trace }, room, admission),
           description,
           { questionCount: args.questions.length, toolCallId },
         ),
         { detached: true },
       );
     } catch (error) {
+      admission?.release();
       return {
         isError: true,
         output: error instanceof Error ? error.message : String(error),
@@ -169,8 +197,10 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
       trace,
     }: Pick<ExecutableToolContext, 'toolCallId' | 'signal' | 'turnId' | 'trace'>,
     room?: { readonly id: string; readonly sessionId: string },
+    admission?: QuestionAdmission,
   ): Promise<ExecutableToolResult> {
     try {
+      signal.throwIfAborted();
       const request = () => this.question.request(
         {
           turnId,
@@ -185,12 +215,18 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
             multiSelect: q.multi_select,
           })),
         },
-        { signal, agentId: this.scopeContext.agentId, detached: args.background === true },
+        { signal, agentId: this.scopeContext.agentId, detached: args.background === true, onAccepted: admission?.accepted },
       );
       const result = room === undefined
         ? await request()
         : await this.rooms!.current!.runQuestion(room.id, room.sessionId, request, signal);
 
+      if (isInteractionCancellation(result)) {
+        return {
+          isError: true,
+          output: JSON.stringify({ cancelled: true, reason: result.reason, note: 'The question ended without a user answer. This is not a user dismissal or authorization.' }),
+        };
+      }
       const normalized = normalizeQuestionResult(result);
       if (normalized === null || Object.keys(normalized.answers).length === 0) {
         const properties: QuestionDismissedEvent = {
@@ -220,7 +256,12 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
         };
       }
 
-      return dismissedQuestionResult();
+      return {
+        isError: true,
+        output: `Question failed before receiving an answer: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    } finally {
+      admission?.release();
     }
   }
 }
@@ -228,8 +269,6 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
 registerAgentToolService(IAskUserQuestionTool, AskUserQuestionTool, {
   name: 'AskUserQuestion',
   domain: 'questionTools',
-  when: (accessor: ServicesAccessor) =>
-    accessor.get(IAgentScopeContext).parentAgentId === undefined,
 });
 
 function questionDescription(questions: AskUserQuestionInput['questions']): string {
@@ -252,7 +291,7 @@ function dismissedQuestionResult(): ExecutableToolResult {
 function normalizeQuestionResult(
   result: QuestionResult,
 ): { readonly answers: QuestionAnswers; readonly method?: QuestionAnswerMethod | undefined } | null {
-  if (result === null) return null;
+  if (result === null || isInteractionCancellation(result)) return null;
   if (isQuestionResponse(result)) {
     return {
       answers: result.answers,

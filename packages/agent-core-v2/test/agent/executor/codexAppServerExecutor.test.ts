@@ -1,4 +1,8 @@
+import { PassThrough, Writable } from 'node:stream';
+import { DispatchCapacity } from '#/session/dispatch/capacity';
 import {
+  CodexAppServerClient,
+  type HostProcessLike,
   CodexClientError,
   CodexRemoteError,
   type CodexServerRequestHandler,
@@ -83,6 +87,7 @@ interface HarnessOptions {
   readonly steerResponse?: unknown;
   readonly permissionMode?: { mode: 'manual' | 'auto' | 'yolo' };
   readonly kikiSubagents?: boolean;
+  readonly clientFactory?: ConstructorParameters<typeof CodexAppServerExecutorSession>[1];
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -220,7 +225,7 @@ function createHarness(options: HarnessOptions = {}) {
     [ISessionWorkspaceContext, workspace],
     [IWireService, wire],
     [IAgentExecutorRegistry, { recordNegotiated: vi.fn() }],
-    [ISessionMetadata, { read: async () => ({ agents: {} }), registerAgent: vi.fn() }],
+    [ISessionMetadata, { read: async () => ({ agents: {} }), registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) }],
   ]);
   const context: AgentExecutorContext = {
     agent: {
@@ -361,6 +366,7 @@ function createHarness(options: HarnessOptions = {}) {
   const createSession = (executorContext: AgentExecutorContext) => new CodexAppServerExecutorSession(
     executorContext,
     (processes, handler) => {
+      if (options.clientFactory !== undefined) return options.clientFactory(processes, handler);
       serverHandler = handler;
       let state: 'cold' | 'ready' = 'cold';
       return {
@@ -418,7 +424,10 @@ function createExecutionHarness(options: HarnessOptions = {}) {
   const harness = createHarness({ ...options, deferTurnCompletion: true });
   const ix = new TestInstantiationService();
   const agentId = harness.context.agent.id;
-  ix.stub(ISessionDispatchService, { reserveExecution: () => () => {} });
+  const capacity = new DispatchCapacity();
+  ix.stub(ISessionDispatchService, { reserveExecution: (id) => capacity.reserve('main', {
+    maxDirectChildren: 1, maxTotalSubagents: 1,
+  }, id) });
   ix.set(IAgentContextMemoryService, harness.memory);
   ix.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary: async () => {} });
   ix.stub(ISessionTodoService, { getTodos: () => [], getNotes: () => ({}) });
@@ -431,7 +440,7 @@ function createExecutionHarness(options: HarnessOptions = {}) {
       provider: { create: harness.createSession },
     }),
   } as unknown as IAgentExecutorRegistry);
-  ix.stub(ISessionMetadata, { read: async () => ({ id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} }), registerAgent: vi.fn() });
+  ix.stub(ISessionMetadata, { read: async () => ({ id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} }), registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) });
   ix.set(IAgentProfileService, {
     _serviceBrand: undefined,
     data: () => harness.context.binding,
@@ -460,6 +469,7 @@ function createExecutionHarness(options: HarnessOptions = {}) {
   return {
     ix,
     execution,
+    capacity,
     starts: harness.starts,
     prompts: harness.prompts,
     pendingTurns: harness.pendingTurns,
@@ -1176,5 +1186,123 @@ describe('Codex native MCP elicitation', () => {
       await run.completion;
       expect(harness.serverResults).toEqual([{ action: 'accept', content: { choice: 'safe' } }]);
     } finally { await harness.session.shutdown(); }
+  });
+});
+
+function realProtocolProcess() {
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const methods: string[] = [];
+  let exitCode: number | null = null;
+  let resolveExit!: (code: number) => void;
+  const exited = new Promise<number>((resolve) => { resolveExit = resolve; });
+  let releaseDispose!: () => void;
+  const disposal = new Promise<void>((resolve) => { releaseDispose = resolve; });
+  const dispose = vi.fn(async () => { await disposal; });
+  const kill = vi.fn(async () => {});
+  let turnIndex = 0;
+  const stdin = new Writable({
+    write(chunk, _encoding, callback) {
+      for (const line of String(chunk).trim().split('\n')) {
+        const frame = JSON.parse(line) as { id?: string; method?: string };
+        if (frame.method !== undefined) methods.push(frame.method);
+        if (frame.id === undefined) continue;
+        let result: unknown = {};
+        if (frame.method === 'model/list') result = { data: [{ id: 'gpt-test' }], nextCursor: null };
+        if (frame.method === 'thread/start' || frame.method === 'thread/resume') result = { thread: { id: 'thread-1' } };
+        if (frame.method === 'turn/start') result = { turn: { id: `turn-${++turnIndex}` } };
+        stdout.write(`${JSON.stringify({ id: frame.id, result })}\n`);
+      }
+      callback();
+    },
+  });
+  const process: HostProcessLike = {
+    pid: 42, get exitCode() { return exitCode; }, stdin, stdout, stderr,
+    wait: () => exited, kill, dispose,
+  };
+  return {
+    process, stdout, methods, dispose, kill, releaseDispose,
+    exit: () => { exitCode = 0; resolveExit(0); },
+    complete: (status = 'completed') => {
+      stdout.write(`${JSON.stringify({ method: 'item/agentMessage/delta', params: {
+        threadId: 'thread-1', turnId: `turn-${turnIndex}`, itemId: 'message-1', delta: 'done',
+      } })}\n`);
+      stdout.write(`${JSON.stringify({ method: 'turn/completed', params: {
+        threadId: 'thread-1', turn: { id: `turn-${turnIndex}`, status },
+      } })}\n`);
+    },
+  };
+}
+
+describe('real Codex client through execution settlement and capacity', () => {
+  it.each(['abort', 'shutdown', 'eof'] as const)('retains capacity until process exit and disposal on %s', async (kind) => {
+    const fixture = realProtocolProcess();
+    const harness = createExecutionHarness({ clientFactory: (_processes, onServerRequest) =>
+      new CodexAppServerClient({ spawn: async () => fixture.process }, {
+        id: 'fixture', command: 'fixture', shutdownGraceMs: 5,
+      }, { onServerRequest }) });
+    const signal = new AbortController();
+    let shutdown: Promise<void> | undefined;
+    try {
+      const handle = await harness.execution.run({ kind: 'prompt', prompt: 'work' }, { signal: signal.signal });
+      const completion = handle.completion.catch((error: unknown) => error);
+      let settled = false;
+      void completion.then(() => { settled = true; });
+      const reserve = () => harness.capacity.reserve('main', { maxDirectChildren: 1, maxTotalSubagents: 1 }, 'codex-agent');
+      if (kind === 'abort') signal.abort(new Error('cancelled'));
+      if (kind === 'shutdown') shutdown = harness.execution.shutdown(new Error('closed'));
+      if (kind === 'eof') fixture.stdout.end();
+      await vi.waitFor(() => expect(fixture.kill).toHaveBeenCalled(), { interval: 1 });
+      expect(settled).toBe(false);
+      expect(() => reserve()).toThrow(/already starting or running/);
+      if (kind !== 'eof') expect(fixture.methods.filter((method) => method === 'turn/interrupt')).toHaveLength(1);
+      fixture.exit();
+      await vi.waitFor(() => expect(fixture.dispose).toHaveBeenCalledOnce(), { interval: 1 });
+      expect(settled).toBe(false);
+      expect(() => reserve()).toThrow(/already starting or running/);
+      fixture.releaseDispose();
+      expect(await completion).toBeInstanceOf(Error);
+      await harness.execution.settled();
+      expect((await handle.turn.result).type).toBe(kind === 'eof' ? 'failed' : 'cancelled');
+      const release = reserve();
+      release();
+      if (shutdown !== undefined) {
+        await shutdown;
+        expect(harness.runtimeLease.dispose).toHaveBeenCalledOnce();
+      }
+      expect(fixture.dispose).toHaveBeenCalledOnce();
+    } finally {
+      fixture.exit();
+      fixture.releaseDispose();
+      await shutdown;
+      await harness.execution.shutdown();
+      harness.ix.dispose();
+    }
+  });
+
+  it('records normal terminal output, releases capacity and runs a later turn on the same client', async () => {
+    const fixture = realProtocolProcess();
+    const harness = createExecutionHarness({ clientFactory: (_processes, onServerRequest) =>
+      new CodexAppServerClient({ spawn: async () => fixture.process }, {
+        id: 'fixture', command: 'fixture', shutdownGraceMs: 5,
+      }, { onServerRequest }) });
+    try {
+      for (let index = 0; index < 2; index++) {
+        const handle = await harness.execution.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+        fixture.complete();
+        await expect(handle.completion).resolves.toMatchObject({ summary: 'done' });
+        await harness.execution.settled();
+        const release = harness.capacity.reserve('main', { maxDirectChildren: 1, maxTotalSubagents: 1 }, 'codex-agent');
+        release();
+        expect((await handle.turn.result).type).toBe('completed');
+      }
+      expect(fixture.methods.filter((method) => method === 'turn/start')).toHaveLength(2);
+      expect(fixture.methods.filter((method) => method === 'thread/start')).toHaveLength(1);
+    } finally {
+      fixture.exit();
+      fixture.releaseDispose();
+      await harness.execution.shutdown();
+      harness.ix.dispose();
+    }
   });
 });

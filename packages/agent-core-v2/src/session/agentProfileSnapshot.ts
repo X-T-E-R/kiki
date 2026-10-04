@@ -13,27 +13,32 @@ import {
   profileKey,
   type ProfileModelState,
 } from '#/agent/profile/profileOps';
+import { AgentModelSwitch } from '#/agent/modelSwitch/modelSwitchEvent';
+import { effectiveToolBinding } from '#/agent/profile/toolBinding';
 import { subagentProfileName } from '#/session/agentLifecycle/subagentMetadata';
+import { LlmRequest, promptRequestEvidence } from '#/agent/llmRequester/llmRequestOps';
 
 type PersistedProfileFields = Pick<ProfileModelState,
-  'personaId' | 'personaRevision' | 'persona' | 'roomPrompt' |
+  'personaId' | 'personaRevision' | 'personaOverrides' | 'persona' | 'roomPrompt' |
   'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
   'lockedModelAlias' | 'lockedThinkingEffort' | 'executionRestriction' |
   'allowParentNotify' | 'executorId' | 'executorProtocol' | 'thinkingLevel' | 'thinkingEffortAdjusted' |
   'bindingAdvisories' | 'serviceTier' | 'toolAllowPolicies' | 'disallowedTools' | 'disabledToolGroups' |
-  'subagentPolicy' | 'subagentDeclaration' | 'subagents' | 'subagentLeases' |
-  'spawnPolicy' | 'appliedLease' | 'boundProfile'>;
+  'canSpawnSubagents' | 'allowedSubagents' | 'preferredSubagents' | 'denySubagents' | 'subagentLeases' |
+  'spawnPolicy' | 'appliedLease' | 'boundProfile' | 'toolOverride' | 'memoryReadContext'>;
 
 export interface PersistedAgentProfileSnapshot extends Omit<PersistedProfileFields, 'thinkingLevel'> {
   readonly source: 'wire' | 'metadata';
   readonly thinkingLevel?: string;
   readonly activeToolNames?: readonly string[];
   readonly activeToolsKnown: boolean;
+  readonly promptRequest?: import('@kiki/protocol').AgentPromptRequest;
 }
 
-export interface AgentProfileSnapshotHost {
-  readonly accessor: ServicesAccessor;
-}
+export type AgentProfileSnapshotHost = { readonly accessor: ServicesAccessor } | {
+  readonly storage: IFileSystemStorageService;
+  readonly appendLog: IAppendLogStore;
+};
 
 interface PersistedAgentProfileCacheEntry {
   readonly size: number;
@@ -48,6 +53,7 @@ const persistedAgentProfileCaches = new WeakMap<AgentProfileSnapshotHost, Map<st
 const PROFILE_EVENT_CLASSES: ReadonlyMap<string, Event2Class> = new Map<string, Event2Class>([
   [ProfileBind.type, ProfileBind],
   [ConfigUpdate.type, ConfigUpdate],
+  [AgentModelSwitch.type, AgentModelSwitch],
   [ToolsSetActiveTools.type, ToolsSetActiveTools],
   [ToolsResetActiveTools.type, ToolsResetActiveTools],
 ]);
@@ -73,7 +79,8 @@ export async function readPersistedAgentProfileSnapshot(
     sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId),
     agentId,
   );
-  const storage = core.accessor.get(IFileSystemStorageService);
+  const storage = 'accessor' in core ? core.accessor.get(IFileSystemStorageService) : core.storage;
+  const appendLog = 'accessor' in core ? core.accessor.get(IAppendLogStore) : core.appendLog;
   let size: number;
   let mtimeMs: number;
   try {
@@ -97,7 +104,7 @@ export async function readPersistedAgentProfileSnapshot(
   let snapshot: PersistedAgentProfileSnapshot | undefined;
   try {
     snapshot = await scanPersistedAgentProfileSnapshot(
-      core.accessor.get(IAppendLogStore),
+      appendLog,
       scope,
       signal,
     ) ?? metadataSnapshot(metadata);
@@ -118,7 +125,13 @@ async function scanPersistedAgentProfileSnapshot(
   let activeToolNames: readonly string[] | undefined;
   let activeToolsKnown = false;
   let profileStateSeen = false;
+  let promptRequest: import('@kiki/protocol').AgentPromptRequest | undefined;
   for await (const record of appendLog.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, { signal })) {
+    if (record.type === LlmRequest.type) {
+      const request = event2FromRecord(LlmRequest, record);
+      if (request instanceof LlmRequest) promptRequest = promptRequestEvidence(request);
+      continue;
+    }
     const cls = PROFILE_EVENT_CLASSES.get(record.type);
     if (cls === undefined) continue;
     const event = event2FromRecord(cls, record);
@@ -127,7 +140,7 @@ async function scanPersistedAgentProfileSnapshot(
       activeToolNames = event.activeToolNames;
       activeToolsKnown = true;
       profileStateSeen = true;
-    } else if (event instanceof ConfigUpdate) {
+    } else if (event instanceof ConfigUpdate || event instanceof AgentModelSwitch) {
       profileStateSeen = true;
     } else if (event instanceof ToolsSetActiveTools) {
       activeToolNames = event.names;
@@ -142,10 +155,14 @@ async function scanPersistedAgentProfileSnapshot(
     if (next !== undefined) state = next;
   }
   if (!profileStateSeen) return undefined;
+  const toolPolicy = effectiveToolBinding({ tools: activeToolNames, toolAllowPolicies: state.toolAllowPolicies, disallowedTools: state.disallowedTools }, state.toolOverride, state.boundProfile);
   return {
     source: 'wire',
+    toolOverride: state.toolOverride,
+    memoryReadContext: state.memoryReadContext,
     personaId: state.personaId,
     personaRevision: state.personaRevision,
+    personaOverrides: state.personaOverrides,
     persona: state.persona,
     roomPrompt: state.roomPrompt,
     modelAlias: state.modelAlias,
@@ -162,18 +179,20 @@ async function scanPersistedAgentProfileSnapshot(
     thinkingEffortAdjusted: state.thinkingEffortAdjusted,
     bindingAdvisories: state.bindingAdvisories,
     serviceTier: state.serviceTier,
-    activeToolNames,
+    activeToolNames: toolPolicy.tools,
     activeToolsKnown,
-    toolAllowPolicies: state.toolAllowPolicies,
-    disallowedTools: state.disallowedTools,
+    toolAllowPolicies: toolPolicy.toolAllowPolicies,
+    disallowedTools: toolPolicy.disallowedTools,
     disabledToolGroups: state.disabledToolGroups,
-    subagentPolicy: state.subagentPolicy,
-    subagentDeclaration: state.subagentDeclaration,
-    subagents: state.subagents,
+    canSpawnSubagents: state.canSpawnSubagents,
+    allowedSubagents: state.allowedSubagents,
+    preferredSubagents: state.preferredSubagents,
+    denySubagents: state.denySubagents,
     subagentLeases: state.subagentLeases,
     spawnPolicy: state.spawnPolicy,
     appliedLease: state.appliedLease,
     boundProfile: state.boundProfile,
+    promptRequest,
   };
 }
 

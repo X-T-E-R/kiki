@@ -44,7 +44,7 @@ describe('server-v2 WS bearer subprotocol', () => {
   });
 
   it('accepts a valid bearer subprotocol', async () => {
-    const token = server?.authTokenService.getToken() ?? '';
+    const token = server?.localOwnerToken ?? '';
     const ws = await openWs(wsUrl, `${WS_BEARER_PROTOCOL_PREFIX}${token}`);
     sockets.push(ws);
     expect(ws.protocol).toBe(`${WS_BEARER_PROTOCOL_PREFIX}${token}`);

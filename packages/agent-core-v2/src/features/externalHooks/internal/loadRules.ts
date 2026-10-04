@@ -32,18 +32,16 @@ export async function loadHookRules(
   const duplicateIds = new Set<string>();
   const watchPaths = new Set(sources.map((source) => path.resolve(source.path)));
   const disabled: { source: HookRuleSource; ids: readonly string[] }[] = [];
-  const diagnostic = (source: HookRuleSource, message: string, hookId?: string): void => { diagnostics.push({ path: source.path, hookId, message }); };
+  const sourceStates = new Map(sources.map((source) => [source.namespace, { namespace: source.namespace, path: source.path, status: 'loaded' as 'loaded' | 'invalid' | 'unavailable' }]));
+  const diagnostic = (source: HookRuleSource, message: string, hookId?: string): void => {
+    diagnostics.push({ path: source.path, hookId, message });
+    if (hookId === undefined) sourceStates.get(source.namespace)!.status = 'invalid';
+  };
   async function boundedPath(source: HookRuleSource, ref: string): Promise<string> {
-    if (path.isAbsolute(ref) || /^[a-z]+:/i.test(ref)) throw new Error(`hook file must be a relative path: ${ref}`);
     const candidate = path.resolve(path.dirname(source.path), ref);
-    const lexical = path.relative(source.root, candidate);
-    if (lexical === '..' || lexical.startsWith(`..${path.separator}`) || path.isAbsolute(lexical)) throw new Error(`hook file escapes declaration scope: ${ref}`);
     watchPaths.add(candidate);
-    const root = await fs.realpath(source.root);
     const file = await fs.realpath(candidate);
     watchPaths.add(file);
-    const relative = path.relative(root, file);
-    if (relative === '..' || relative.startsWith(`..${path.separator}`) || path.isAbsolute(relative)) throw new Error(`hook file escapes declaration scope: ${ref}`);
     return file;
   }
   async function visit(source: HookRuleSource, depth: number): Promise<void> {
@@ -93,15 +91,19 @@ export async function loadHookRules(
         seenFiles.add(identity);
         const raw = parse(await fs.readText(file));
         await visit({ ...source, path: file, config: raw['hooks'], enabled: source.enabled !== false && config.enabled }, depth + 1);
-      } catch (error) { diagnostic(source, String(error)); }
+      } catch (error) {
+        diagnostic(source, String(error));
+        if (typeof error === 'object' && error !== null && 'code' in error) sourceStates.get(source.namespace)!.status = 'unavailable';
+      }
     }
   }
   for (const source of sources) {
     try {
       const file = await boundedPath(source, path.basename(source.path));
       seenFiles.add(`${source.namespace}:${file}`);
+      sourceStates.get(source.namespace)!.path = file;
       await visit({ ...source, path: file }, 0);
-    } catch (error) { diagnostic(source, String(error)); }
+    } catch (error) { diagnostic(source, String(error)); sourceStates.get(source.namespace)!.status = 'unavailable'; }
   }
   for (const { source, ids } of disabled) {
     for (const id of ids) {
@@ -113,7 +115,7 @@ export async function loadHookRules(
     if (disabled.some(({ source, ids }) => (source.namespace === 'user' || source.namespace === rule.namespace) && ids.includes(rule.id))) return { ...rule, active: false, reason: 'disabled' };
     return rule;
   }).toSorted(hookOrder);
-  return { revision: hookHash(effective.map((rule) => [rule.id, rule.contentHash, rule.reason])), rules: effective, diagnostics, watchPaths: [...watchPaths],
+  return { sources: [...sourceStates.values()], revision: hookHash(effective.map((rule) => [rule.id, rule.contentHash, rule.reason])), rules: effective, diagnostics, watchPaths: [...watchPaths],
     disabled: disabled.filter(({ source }) => source.namespace === 'user').flatMap(({ ids }) => ids),
   };
 }

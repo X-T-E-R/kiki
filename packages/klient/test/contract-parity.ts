@@ -50,6 +50,7 @@ import type {
   McpServerInspection,
   McpServerLocator,
   McpServerTestResult,
+  McpServerStopResult,
   McpServerTestTarget,
 } from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
 import type {
@@ -347,6 +348,7 @@ import {
   mcpServerLocatorSchema,
   mcpServerSourceSchema,
   mcpServerTestResultSchema,
+  mcpServerStopResultSchema,
   mcpServerTestTargetSchema,
   mcpStoredOAuthCredentialSchema,
   mcpStoredOAuthIdentitySchema,
@@ -400,6 +402,12 @@ import {
 import type { AssertWire, MutableDeep } from './helpers/typeAssert.js';
 import type { AgentFacade } from '../src/core/facade/agent.js';
 import type { ManagedUsageResult as EngineManagedUsageResult } from '@kiki/agent-core-v2/app/auth/oauthProtocol';
+import type { IPluginImportService } from '@kiki/agent-core-v2/app/pluginImport/pluginImport';
+import { importsContract } from '../src/contract/global/imports.js';
+const _importOutputs: { [Method in keyof typeof importsContract]: AssertWire<(typeof importsContract)[Method]['output'], Awaited<ReturnType<IPluginImportService[Method]>>> } = {
+  sources: true, discover: true, preview: true, start: true, jobs: true, job: true,
+  cancel: true, resume: true, archives: true, read: true,
+};
 
 /** One-directional: the engine type must be assignable TO the schema's infer. */
 type AssertEngineToWire<TSchema extends z.ZodType, TEngine> = [MutableDeep<TEngine>] extends [
@@ -605,6 +613,7 @@ const _mcpServerTestTarget: AssertWire<typeof mcpServerTestTargetSchema, McpServ
   true;
 const _mcpServerTestResult: AssertWire<typeof mcpServerTestResultSchema, McpServerTestResult> =
   true;
+const _mcpServerStopResult: AssertWire<typeof mcpServerStopResultSchema, McpServerStopResult> = true;
 const _mcpServerLocator: AssertWire<typeof mcpServerLocatorSchema, McpServerLocator> = true;
 const _mcpServerAuthState: AssertWire<typeof mcpServerAuthStateSchema, McpServerAuthState> = true;
 const _mcpServerInspection: AssertWire<typeof mcpServerInspectionSchema, McpServerInspection> =

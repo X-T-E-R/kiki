@@ -6,6 +6,8 @@ export interface ThreadRef {
   readonly sessionId: string;
   readonly personaId?: string;
   readonly name?: string;
+  readonly bridgeId?: string;
+  readonly connectionId?: string;
 }
 
 export interface ThreadSummary {
@@ -22,6 +24,9 @@ export interface ThreadCaller {
 }
 
 export interface ListThreadsInput {
+  readonly bridgeId?: string;
+  readonly connectionId?: string;
+  readonly signal?: AbortSignal;
   readonly caller?: ThreadCaller;
   readonly workspaceId?: string;
   readonly cursor?: string;
@@ -38,7 +43,8 @@ export interface ThreadTurn {
   readonly startedAt?: number;
   readonly endedAt: number;
   readonly reason: 'completed' | 'cancelled' | 'failed' | 'blocked';
-  readonly origin: 'user' | 'peer';
+  readonly origin: 'user' | 'peer' | 'bridged_peer';
+  readonly bridgedPeer?: import('./threadMailboxStore').BridgedThreadMetadata & { readonly messageId: string };
   readonly peer?: {
     readonly source: ThreadRef;
     readonly messageId: string;
@@ -48,6 +54,8 @@ export interface ThreadTurn {
 }
 
 export interface ReadThreadInput {
+  readonly signal?: AbortSignal;
+  readonly contentRef?: import('@kiki/protocol').BridgeContentRef;
   readonly caller?: ThreadCaller;
   readonly thread: ThreadRef;
   readonly cursor?: string;
@@ -58,6 +66,7 @@ export interface ReadThreadResult {
   readonly thread: ThreadRef;
   readonly turns: readonly ThreadTurn[];
   readonly nextCursor?: string;
+  readonly view?: import('@kiki/protocol').BridgeReadView;
 }
 
 export interface SendThreadMessageInput {
@@ -115,6 +124,7 @@ export interface WaitThreadInput {
 }
 
 export interface WaitThreadsInput {
+  readonly signal?: AbortSignal;
   readonly caller?: ThreadCaller;
   readonly threads: readonly WaitThreadInput[];
   readonly timeoutMs?: number;

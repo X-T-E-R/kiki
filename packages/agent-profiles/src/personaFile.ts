@@ -221,7 +221,7 @@ function optionalString(value: unknown, field: string, path: string): string | u
 }
 
 function isPermissionKey(key: string): boolean {
-  return key === 'tools' || key === 'disallowedTools' || key === 'disabled-tool-groups' || key === 'subagents' || key === 'executor';
+  return key === 'tools' || key === 'disallowedTools' || key === 'disabled-tool-groups' || key === 'subagents' || key === 'allowed_subagents' || key === 'preferred_subagents' || key === 'deny_subagents' || key === 'can_spawn_subagents' || key === 'executor';
 }
 
 function unique(values: readonly string[]): readonly string[] {

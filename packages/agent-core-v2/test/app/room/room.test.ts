@@ -87,7 +87,7 @@ interface FakeSession extends ISessionScopeHandle {
 }
 
 function fakeMeta(id: string): ISessionMetadata {
-  const value: SessionMeta = {
+  let value: SessionMeta = {
     id,
     version: 2,
     createdAt: 1,
@@ -107,6 +107,10 @@ function fakeMeta(id: string): ISessionMetadata {
     setGeneratedTitleIfUncustomized: async () => false,
     setArchived: async () => {},
     registerAgent: async () => {},
+    updateAgent: async (agentId, updater) => {
+      const current = value.agents?.[agentId];
+      if (current !== undefined) value = { ...value, agents: { ...value.agents, [agentId]: updater(structuredClone(current)) } };
+    },
   };
 }
 
@@ -117,6 +121,7 @@ function setup(enabled = true, wakeError?: unknown, flatListing = false): {
   closeMember(sessionId: string): void;
   setActivity(sessionId: string, state: SessionActivityState): void;
   legacyReads(): number;
+  botEnabled(): boolean;
   seedRoom(room: RoomDocument): Promise<void>;
   room: Promise<RoomDocument>;
 } {
@@ -129,6 +134,7 @@ function setup(enabled = true, wakeError?: unknown, flatListing = false): {
   const waiters = new Map<string, () => void>();
   const released = new Set<string>();
   let sequence = 0;
+  const personaStates = new Map(['alpha', 'bravo', 'charlie'].map((id) => [id, { version: 1 as const, archived: false }]));
   const personas = {
     _serviceBrand: undefined,
     onDidChange: Event.None,
@@ -143,6 +149,12 @@ function setup(enabled = true, wakeError?: unknown, flatListing = false): {
       revision: 'r1',
     }),
     list: async () => [],
+    getState: async (id: string) => personaStates.get(id) ?? { version: 1 as const, archived: false },
+    updateState: async (id: string, patch: { readonly archived?: boolean }) => {
+      const next = { ...(personaStates.get(id) ?? { version: 1 as const, archived: false }), ...patch };
+      personaStates.set(id, next);
+      return next;
+    },
   } as unknown as IPersonaStore;
   const sessionManager = {
     _serviceBrand: undefined,
@@ -226,6 +238,7 @@ function setup(enabled = true, wakeError?: unknown, flatListing = false): {
     closeMember: (sessionId) => { sessions.delete(sessionId); },
     setActivity: (sessionId, state) => { activities.set(sessionId, state); },
     legacyReads: () => logs.reads,
+    botEnabled: () => enabled,
     seedRoom: (value) => documents.set(`rooms/${value.id}`, 'room.json', value),
     release: (messageId) => {
       const resolve = waiters.get(messageId);
@@ -545,9 +558,12 @@ describe('RoomService', () => {
     expect(shown).toEqual(['first', 'third']);
     expect((await service.usage(room.id)).questions?.queued).toBe(0);
   });
-  it('requires the bot feature gate before creating a room', async () => {
-    const { room } = setup(false);
-    await expect(room).rejects.toThrow('Bot mode is disabled');
+  it('creates a legal persona room without requiring the bot feature gate', async () => {
+    const { room, botEnabled } = setup(false);
+    const created = await room;
+    expect(botEnabled()).toBe(false);
+    expect(created).toMatchObject({ id: 'release-room', name: 'Release', workspace: '/workspace', host: 'alpha', legacyBotGate: false });
+    expect(created.members.filter((member) => member.kind === 'persona').map((member) => member.personaId)).toEqual(['alpha', 'bravo', 'charlie']);
   });
 
   it('recognizes mentions immediately before full-width punctuation', async () => {

@@ -18,6 +18,8 @@ The REST schemas in `packages/protocol/src/rest/{persona,bot,room}.ts` and klien
 
 ## Configuration and persistence
 
+Persona writes and imports validate the serialized UTF-8 files before changing assets or memory: `persona.md` is limited to 1 MiB, and `examples.md` and `extensions.json` to 256 KiB each. A rejected replacement preserves the previous files and revision. Recovery writes and deletion operate on the stored bytes rather than requiring the old definition to parse; deletion still runs persona lifecycle cleanup and memory removal before removing assets, and revision checks remain inside the persona lock.
+
 Avatar framing is Kiki-local metadata in `personas/<id>/avatar.json` (`version: 1`, `shape: circle | square`), outside the frozen persona revision. Missing or invalid metadata keeps legacy framing. Uploads without a shape clear previous framing, and duplication copies it. `PUT /api/personas/{id}/avatar` accepts the optional multipart `shape` field; lists expose `avatarShape`. `DELETE /api/personas/{id}/avatar` is idempotent for an existing persona and removes only the avatar and framing metadata. Upload and deletion use the persona write lock and compensate partial storage failures; a missing persona remains an error. `packages/kap-server/test/files.integration.ts` verifies these routes over real HTTP, including shape persistence across a server restart and oversized upload rejection.
 
 `BotConfig` uses `maxHandoffsPerHour` and `roomBudget` internally. The config codec produces `max_handoffs_per_hour` and `room_budget` on disk; do not put snake_case fields in the internal schema. The default is disabled. Persona selection remains available independently.

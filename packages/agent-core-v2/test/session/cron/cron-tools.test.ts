@@ -93,8 +93,8 @@ function createToolHarness(options: {
     now: () => now,
     list: () => store.list(),
     getTask: (id) => tasks.get(id),
-    addTask: (init) => store.add(init, now),
-    removeTasks: (ids) => ids.filter((id) => tasks.delete(id)),
+    addTask: async (init) => store.add(init, now),
+    removeTasks: async (ids) => ids.filter((id) => tasks.delete(id)),
     setTaskPaused: async (id, paused) => {
       const task = tasks.get(id);
       if (task === undefined) return undefined;

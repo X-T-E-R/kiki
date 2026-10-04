@@ -34,6 +34,7 @@ export function isFatalRuntimeError(error: unknown): boolean {
   return error instanceof HomeRuntimeError && (
     error.code === 'runtime.connection_fatal' ||
     error.code === 'runtime.io_failed' ||
+    error.code === 'runtime.invalid_config' ||
     error.code === 'runtime.identity_mismatch' ||
     error.code === 'runtime.token_mismatch' ||
     error.code === 'runtime.protocol_mismatch'

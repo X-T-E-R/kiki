@@ -2,9 +2,9 @@ import { z } from 'zod';
 import CRON_DESCRIPTION from './cron.md?raw';
 
 import { createDecorator } from '#/_base/di/instantiation';
-import { LifecycleScope } from '#/app/scopes';
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import type { AgentTool, ToolExecution } from '#/tool/toolContract';
 import { ICronCreateTool, CronCreateInputSchema } from './cron-create/cron-create';
@@ -33,6 +33,7 @@ export class CronTool implements ICronTool {
     @ICronListTool private readonly list: ICronListTool,
     @ICronDeleteTool private readonly remove: ICronDeleteTool,
     @IAgentToolPolicyService private readonly policy: IAgentToolPolicyService,
+    @ISessionContext private readonly session: ISessionContext,
   ) {}
 
   async resolveExecution(input: CronInput): Promise<ToolExecution> {
@@ -40,7 +41,7 @@ export class CronTool implements ICronTool {
     if (!parsed.success) return { isError: true, output: parsed.error.message };
     const action = parsed.data.action;
     const oldName = action === 'create' ? 'CronCreate' : action === 'list' ? 'CronList' : 'CronDelete';
-    if (!this.policy.isToolActive(oldName)) {
+    if ((this.session.ephemeral === true && action !== 'list') || !this.policy.isToolActive(oldName)) {
       return { isError: true, output: `Cron action ${action} is disabled by the active tool policy.` };
     }
     const execution = await (action === 'create' ? this.create.resolveExecution(parsed.data)
@@ -51,4 +52,4 @@ export class CronTool implements ICronTool {
   }
 }
 
-registerScopedService(LifecycleScope.Agent, ICronTool, CronTool, ScopeActivation.OnScopeCreated, 'cron');
+registerAgentToolService(ICronTool, CronTool, { name: 'Cron', domain: 'cron' });

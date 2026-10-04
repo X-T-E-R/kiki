@@ -4,6 +4,7 @@ import { ErrorCodes, Error2 } from '#/errors';
 import type { ContentPart } from '#/kosong/contract/message';
 import { estimateTokensForMessages } from '#/kosong/contract/tokens';
 import { defineState } from '#/state/state';
+import { AgentModelSwitch } from '#/agent/modelSwitch/modelSwitchEvent';
 import type { PartsTransformer } from '#/wire/record';
 import type { WireRecord } from '#/wire/record';
 
@@ -17,6 +18,7 @@ import {
   ContextAppendMessage,
   ContextApplyCompaction,
   ContextClear,
+  ContextUndo,
   type ContextApplyCompactionPayload,
 } from './contextEvents';
 import { isPromptOwnedInjection, isUndoAnchor } from './conversationTime';
@@ -74,6 +76,12 @@ async function dehydrateRecord(
     }
     return record;
   }
+  if (record.type === 'agent.model_switch') {
+    const messages = record['context'] as readonly ContextMessage[] | undefined;
+    if (messages === undefined) return record;
+    const { changed, result } = await dehydrateMessages(messages, transform);
+    return changed ? { ...record, context: result } : record;
+  }
   return record;
 }
 
@@ -105,7 +113,17 @@ export const contextMemoryKey = defineState('contextMemory', (): ContextMessage[
       readContextCompactionShapeInput(e as unknown as ContextApplyCompactionPayload),
     );
     return resetFold([...result.messages]) as ContextMessage[];
-  });
+  })
+  .on(AgentModelSwitch, (_s, e) => e.context === undefined ? undefined : resetFold([...e.context]) as ContextMessage[]);
+
+export const contextRevisionKey = defineState('contextMemory.revision', () => 0)
+  .replayable({ schema: z.number().int().nonnegative() })
+  .on(ContextAppendMessage, (revision) => revision + 1)
+  .on(ContextAppendLoopEvent, (revision) => revision + 1)
+  .on(ContextClear, (revision) => revision + 1)
+  .on(ContextApplyCompaction, (revision) => revision + 1)
+  .on(ContextUndo, (revision) => revision + 1)
+  .on(AgentModelSwitch, (revision, e) => e.context === undefined ? revision : revision + 1);
 
 interface UnknownRecord {
   readonly [key: string]: unknown;

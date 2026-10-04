@@ -67,6 +67,8 @@ describe('server-v2 GET /api/oauth/usage', () => {
       getCachedAccessToken: async () => undefined,
       getRegion: () => 'mainland-cn',
       listMethods: async () => [],
+      probeOriginal: async () => { throw new Error('unused'); },
+      connectOriginal: async () => { throw new Error('unused'); },
     };
   }
 
@@ -199,6 +201,8 @@ describe('server-v2 GET /api/oauth/userinfo', () => {
       getCachedAccessToken: async () => undefined,
       getRegion: () => 'mainland-cn',
       listMethods: async () => [],
+      probeOriginal: async () => { throw new Error('unused'); },
+      connectOriginal: async () => { throw new Error('unused'); },
     };
   }
 

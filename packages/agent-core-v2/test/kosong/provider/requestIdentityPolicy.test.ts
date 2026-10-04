@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   requestIdentityFromWire,
   requestIdentityToWire,
+  defaultOAuthRequestIdentity,
   resolveAuthoredRequestIdentity,
   resolveProviderRequestIdentity,
   resolveRequestIdentityLayers,
@@ -132,6 +133,32 @@ describe('request identity policy', () => {
 
   it('defaults an omitted policy to Kimi Code', () => {
     expect(resolveProviderRequestIdentity(undefined).preset).toBe('kimi_code');
+  });
+
+  it.each([['oauth/openai-codex', 'codex'], ['oauth/grok-build', 'grok_build']] as const)(
+    'uses the %s OAuth identity only below explicit global/provider/model layers', (key, profile) => {
+      const provider = { type: 'openai_responses', oauth: { storage: 'file' as const, key } };
+      const defaults = defaultOAuthRequestIdentity(provider);
+      expect(resolveProviderRequestIdentity(provider).profile).toBe(profile);
+      expect(resolveRequestIdentityLayers(defaults, { profile: 'none' }).profile).toBe('none');
+      expect(resolveRequestIdentityLayers(defaults, { profile: 'kimi_code' }).profile).toBe('kimi_code');
+      expect(resolveRequestIdentityLayers(defaults, undefined, { profile: 'opencode' }).profile).toBe('opencode');
+      expect(resolveRequestIdentityLayers(defaults, { profile: 'none' }, undefined, { profile }).profile).toBe(profile);
+      expect(resolveRequestIdentityLayersWith((id) => id === 'custom:example'
+        ? { preset: 'opencode_compatible' } : id === profile
+          ? { preset: profile === 'codex' ? 'codex_compatible' : 'grok_build_compatible' } : undefined,
+      defaults, { profile: 'custom:example' }).profile).toBe('custom:example');
+      expect(provider).not.toHaveProperty('requestIdentity');
+    },
+  );
+
+  it('projects Grok Build lineage and none through the Chat Completions final fetch seam', () => {
+    const input = { protocol: 'openai' as const, model: 'grok-example', rawSessionId: 'session-example',
+      rawAgentId: 'agent-example', isKimiProvider: false, snapshot: SNAPSHOT,
+      runtimeVersion: '1.0.0', platform: 'linux' as const, arch: 'x64' };
+    expect(projectRequestIdentity({ ...input, policy: resolveAuthoredRequestIdentity({ profile: 'grok_build' }) }).headers)
+      .toMatchObject({ 'x-grok-session-id': SNAPSHOT.agentSessionId, 'x-grok-req-id': SNAPSHOT.logicalId });
+    expect(projectRequestIdentity({ ...input, policy: resolveAuthoredRequestIdentity({ profile: 'none' }) }).wire?.suppressIdentity).toBe(true);
   });
 
   it('resolves no authored layers byte-for-byte as the built-in Kimi policy', () => {

@@ -33,6 +33,7 @@ import {
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
+import { authenticatedForwardHeaders } from '../middleware/auth';
 import { ErrorCode } from '../protocol/error-codes';
 import {
   installPluginRequestSchema,
@@ -365,6 +366,11 @@ export function registerPluginsRoutes(
           reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled', req.id));
           return;
         }
+        if (req.body.method === 'plugin.call') {
+          const result = await core.accessor.get(IPluginHostService).requestPanel(info.id, req.params.panel_id, req.body.action, req.body.args);
+          reply.send(okEnvelope({ result }, req.id));
+          return;
+        }
         const summary = await core.accessor.get(ISessionIndex).get(req.body.session_id);
         if (summary === undefined) {
           reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id));
@@ -381,8 +387,9 @@ export function registerPluginsRoutes(
           const response = await app.inject({
             method: 'POST', url: `/api/sessions/${encodeURIComponent(summary.id)}/prompts`,
             headers: {
-              host: String(req.headers['host'] ?? '127.0.0.1'),
-              authorization: `Bearer ${opts.serverToken()}`,
+              host: typeof req.headers['host'] === 'string' ? req.headers['host'] : '127.0.0.1',
+              ...authenticatedForwardHeaders(req),
+              'x-kiki-connection-grant': typeof req.headers['x-kiki-connection-grant'] === 'string' ? req.headers['x-kiki-connection-grant'] : '',
             },
             payload: { content: [{ type: 'text', text: req.body.text }] },
           });
@@ -391,8 +398,6 @@ export function registerPluginsRoutes(
           reply.send(okEnvelope({ result: result.data }, req.id));
           return;
         }
-        const result = await core.accessor.get(IPluginHostService).requestPanel(info.id, req.params.panel_id, req.body.action, req.body.args);
-        reply.send(okEnvelope({ result }, req.id));
       } catch (error) { reply.send(mapPluginError(error, req.id)); }
     },
   );

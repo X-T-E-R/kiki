@@ -28,6 +28,7 @@ export const approvalResponseSchema = z.object({
   scope: z.literal('session').optional(),
   feedback: z.string().optional(),
   selectedLabel: z.string().optional(),
+  selectedOptionId: z.string().optional(),
 });
 
 export const sessionApprovalContract = {

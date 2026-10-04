@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { WebSocket } from 'ws';
 import { WsConnectionV1, type WsConnectionV1Options } from '../src/transport/ws/v1/wsConnectionV1';
+import { SessionViewHttpConnection } from '../src/transport/klient/sessionViewHttp';
+import { sessionViewSignalSchema } from '@kiki/klient/contract/session/view';
 
 import type {
   AgentActivityState,
@@ -1324,6 +1326,19 @@ describe('SessionEventBroadcaster', () => {
     const result = await bc.getBufferedSince('s1', { seq: 0 });
     expect(result.resyncRequired).toBe('journal_gap');
     expect(result.events).toEqual([]);
+    const send = vi.fn();
+    const errors = vi.fn();
+    const connection = new SessionViewHttpConnection(bc, send, errors);
+    try {
+      connection.receive({ type: 'view_attach', id: 'gap-view', sessionId: 's1', data: {
+        generation: 1, input: { sessionCursor: { seq: 0 }, transcriptGrades: {} },
+      } });
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'resyncRequired', reason: 'journal_gap' }) })));
+      await Promise.resolve();
+      const signals = send.mock.calls.map(([frame]) => sessionViewSignalSchema.parse(frame.data));
+      expect(signals.some((signal) => signal.type === 'ready' || signal.type === 'sessionCursorAdvanced')).toBe(false);
+      expect(errors).not.toHaveBeenCalled();
+    } finally { connection.dispose(); }
   });
 
   const TURN_STARTED_WIRE_KEYS = ['agentId', 'origin', 'prompt', 'sessionId', 'turnId', 'type'];

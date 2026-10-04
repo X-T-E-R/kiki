@@ -80,7 +80,7 @@ describe('GUI shared client against an isolated KAP host', () => {
       }));
     });
     endpoint = `http://127.0.0.1:${host.port}`;
-    client = new KikiClient({ baseUrl: endpoint, token: host.authTokenService.getToken() });
+    client = new KikiClient({ baseUrl: endpoint, token: host.localOwnerToken });
   });
 
   afterEach(async () => {
@@ -124,6 +124,62 @@ describe('GUI shared client against an isolated KAP host', () => {
     await vi.waitFor(() => expect(requests).toHaveLength(count), { timeout: 10000 });
     await vi.waitFor(async () => expect(await client.klient.session(id).status()).toBe('idle'), { timeout: 10000 });
   }
+
+  it('automatically generates a configured title after the first real reply and exposes it to clients', async () => {
+    await client.patchConfig({ session_title: { model: 'second' }, replace_domains: ['session_title'] });
+    const id = await session();
+    const other = new KikiClient({ baseUrl: endpoint, token: host.localOwnerToken });
+    const controllers = [client, other].map((connection) => new SessionController(connection.sessions, connection.sessionView(id), id));
+    const updates = [vi.fn(), vi.fn()];
+    const subscriptions = [client, other].map((connection, index) => connection.klient.events.on('session.metaUpdated', updates[index]!));
+    try {
+      await Promise.all(controllers.map((controller) => controller.open()));
+      await Promise.all(subscriptions.map((subscription) => subscription.ready));
+      await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'Plan a small garden' }] });
+      await vi.waitFor(() => {
+        for (const controller of controllers) {
+          controller.flushFrames();
+          expect(controller.getState().session?.title).toBe('local model completed');
+        }
+      }, { timeout: 10000 });
+      expect((await client.klient.session(id).get()).title).toBe('local model completed');
+      expect(requests.map((request) => request.model)).toEqual(['first', 'second']);
+      expect(JSON.stringify(requests[1]!.messages)).toContain('assistant: local model completed');
+      for (const update of updates) expect(update.mock.calls.filter(([event]) => event.patch.title === 'local model completed')).toHaveLength(1);
+      await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'Add a pond' }] });
+      await settled(id, 3);
+      expect(requests.filter((request) => request.model === 'second')).toHaveLength(1);
+    } finally {
+      for (const controller of controllers) controller.close();
+      for (const subscription of subscriptions) subscription.dispose();
+      await other.klient.close();
+    }
+  });
+
+  it('requires an explicit title model and keeps empty moments manual-only with actionable REST failures', async () => {
+    await client.patchConfig({ fast_model: 'second' });
+    const id = await session();
+    await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'Keep my garden plan' }] });
+    await settled(id, 1);
+    async function generate(): Promise<{ code: number; msg: string; data: { title?: string } }> {
+      return (await fetch(`${endpoint}/api/sessions/${id}/title/generate`, {
+        method: 'POST', headers: { authorization: `Bearer ${host.localOwnerToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ force: true }),
+      })).json();
+    }
+    expect((await generate()).code).toBe(40923);
+    expect(requests).toHaveLength(1);
+    await client.patchConfig({ session_title: { model: 'second', triggers: [] }, replace_domains: ['session_title'] });
+    await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'Include a pond' }] });
+    await settled(id, 2);
+    expect(await generate()).toMatchObject({ code: 0, data: { title: 'local model completed' } });
+    expect(requests.map((request) => request.model)).toEqual(['first', 'first', 'second']);
+    await client.patchConfig({ session_title: { model: 'missing-title-model', triggers: [] }, replace_domains: ['session_title'] });
+    const failed = await generate();
+    expect(failed.code).toBe(40923); expect(failed.msg).toContain('missing-title-model');
+    expect((await client.klient.session(id).get()).title).toBe('local model completed');
+    expect(requests).toHaveLength(3);
+  });
 
   it.each(['EOF', 'remaining bytes'] as const)('waits for media %s then naturally releases its newly idle connection during close', async (waitFor) => {
     const id = await session();
@@ -195,7 +251,7 @@ describe('GUI shared client against an isolated KAP host', () => {
     await host.close();
     host = await startServer({ hostIdentity: TEST_HOST_IDENTITY, homeDir: home, instancesDir: join(home, 'instances'), host: '127.0.0.1', port: 0, logLevel: 'silent' });
     endpoint = `http://127.0.0.1:${host.port}`;
-    client = new KikiClient({ baseUrl: endpoint, token: host.authTokenService.getToken() });
+    client = new KikiClient({ baseUrl: endpoint, token: host.localOwnerToken });
     for (const reopen of [0, 1]) {
       const actual = client.klient.session(id).view;
       const shell = await actual.snapshot();
@@ -239,10 +295,10 @@ describe('GUI shared client against an isolated KAP host', () => {
       await host.close();
       host = await startServer({ hostIdentity: TEST_HOST_IDENTITY, homeDir: home, instancesDir: join(home, 'instances'), host: '127.0.0.1', port: 0, logLevel: 'silent' });
       endpoint = `http://127.0.0.1:${host.port}`;
-      client = new KikiClient({ baseUrl: endpoint, token: host.authTokenService.getToken() });
+      client = new KikiClient({ baseUrl: endpoint, token: host.localOwnerToken });
       expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
       const response = await fetch(`${endpoint}/api/sessions/${id}/transcript?agent_id=main&transcript_coverage_version=2`, {
-        headers: { authorization: `Bearer ${host.authTokenService.getToken()}` },
+        headers: { authorization: `Bearer ${host.localOwnerToken}` },
       });
       const cold = await response.json() as { code: number; data: { tasks: { agentId?: string; state: string }[] } };
       expect(cold.code).toBe(0);
@@ -325,7 +381,7 @@ describe('GUI shared client against an isolated KAP host', () => {
     await client.abortPrompt(id, pending.prompt_id);
     await vi.waitFor(async () => expect(await client.klient.session(id).status()).toBe('idle'), { timeout: 10000 });
     for (const path of ['/api/v1/healthz', '/api/v2/sessions', '/api/v1/sessions']) {
-      const response = await fetch(endpoint + path, { headers: { authorization: `Bearer ${host.authTokenService.getToken()}` } });
+      const response = await fetch(endpoint + path, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
       expect(response.status, path).toBe(404);
       await response.arrayBuffer();
     }

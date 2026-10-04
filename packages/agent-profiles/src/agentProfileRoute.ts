@@ -5,7 +5,9 @@ import type {
   ResolvedAgentProfileRoute,
 } from './agentProfile';
 import { renderPromptTemplateResult } from './profileShared';
+import { isToolActive } from './toolPolicy';
 import { resolveProfileThinkingDefault } from './modelProfileOverlay';
+import { overlaySubagentPermissions } from './subagentPermissions';
 
 export function resolveAgentProfileRoute(
   route: AgentProfileRouteDefinition,
@@ -16,16 +18,7 @@ export function resolveAgentProfileRoute(
   const tools = route.tools !== undefined ? route.tools : base.tools;
   const disallowedTools =
     route.disallowedTools !== undefined ? route.disallowedTools : base.disallowedTools;
-  const subagentsDeclared = route.overriddenFields.includes('subagents');
-  const overlaidSubagents = subagentsDeclared ? route.subagents : base.subagents;
-  const subagents = base.subagentPolicy === 'strict' && subagentsDeclared
-    ? intersectSubagentLists(base.subagents, overlaidSubagents)
-    : overlaidSubagents;
-  const subagentDeclaration = base.subagentPolicy === undefined || !subagentsDeclared
-    ? base.subagentDeclaration
-    : subagents === undefined
-      ? { kind: 'all' as const }
-      : { kind: 'set' as const, names: subagents };
+  const permissions = overlaySubagentPermissions(base, route);
   const toolAllowPolicies =
     route.tools !== undefined
       ? undefined
@@ -59,8 +52,7 @@ export function resolveAgentProfileRoute(
         ? undefined
         : toolAllowPolicies,
     disallowedTools,
-    subagentDeclaration,
-    subagents,
+    ...permissions,
     modelAlias: route.modelAlias ?? base.modelAlias,
     thinkingEffort: route.thinkingEffort ?? (route.modelAlias === undefined ? base.thinkingEffort
       : resolveProfileThinkingDefault(base, route.modelAlias, resolveId)),
@@ -74,11 +66,7 @@ export function resolveAgentProfileRoute(
           : route.promptMode === 'append'
             ? `\${parent_prompt}\n\n${route.prompt}`
             : route.prompt;
-      const skillActive =
-        [effective.tools, ...(effective.toolAllowPolicies ?? [])]
-          .filter((policy): policy is readonly string[] => policy !== undefined)
-          .every((policy) => policy.includes('Skill')) &&
-        !(effective.disallowedTools ?? []).includes('Skill');
+      const skillActive = isToolActive(effective, 'Skill');
       return renderPromptTemplateResult(
         template,
         context,
@@ -100,14 +88,4 @@ export function resolveAgentProfileRoute(
     lockedModelAlias: route.modelAlias,
     lockedThinkingEffort: route.thinkingEffort,
   };
-}
-
-function intersectSubagentLists(
-  left: readonly string[] | undefined,
-  right: readonly string[] | undefined,
-): readonly string[] | undefined {
-  if (left === undefined) return right;
-  if (right === undefined) return left;
-  const allowed = new Set(right);
-  return left.filter((name) => allowed.has(name));
 }

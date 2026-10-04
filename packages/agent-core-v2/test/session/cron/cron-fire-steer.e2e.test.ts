@@ -110,7 +110,8 @@ function createAppScheduler(
   const services = createServices(disposables, {
     additionalServices: (reg) => {
       reg.defineInstance(IConfigService, config);
-      reg.defineInstance(IBootstrapService, ctx.get(IBootstrapService));
+      const bootstrap = ctx.get(IBootstrapService);
+      reg.defineInstance(IBootstrapService, { interactive: true, homeDir: bootstrap.homeDir, scope: (name) => bootstrap.scope(name) } as IBootstrapService);
       reg.defineInstance(IHostFsWatchService, {
         _serviceBrand: undefined,
         watch: () => ({ ready: Promise.resolve(), onDidChange: Event.None as Event<HostFsChange>, dispose: () => {} }),
@@ -243,14 +244,14 @@ describe('cron-fired prompt admission', () => {
     const manualRequest = ctx.llmCalls.at(-1)!;
     const manualUser = manualRequest.history.findLast((message) => message.role === 'user');
     expect(manualUser === undefined ? '' : textOf(manualUser)).toContain('fire me');
-    cron.removeTasks([jobId!]);
+    await cron.removeTasks([jobId!]);
     await cron.flushPersist();
   });
 
   it('queues a due fire while the agent is busy', async () => {
     const prompts = ctx.get(IAgentPromptService);
     const cron = ctx.get(ISessionCronService);
-    const task = cron.addTask({ cron: '* * * * *', prompt: 'queued cron fire', recurring: true });
+    const task = await cron.addTask({ cron: '* * * * *', prompt: 'queued cron fire', recurring: true });
     const callsBefore = ctx.llmCalls.length;
     await ctx.rpc.setPermission({ mode: 'manual' });
     ctx.mockNextResponse({
@@ -286,7 +287,7 @@ describe('cron-fired prompt admission', () => {
         .toContain('queued cron fire');
     } finally {
       await ctx.rpc.setPermission({ mode: 'yolo' });
-      cron.removeTasks([task.id]);
+      await cron.removeTasks([task.id]);
       await cron.flushPersist();
     }
   });
@@ -294,7 +295,7 @@ describe('cron-fired prompt admission', () => {
   it('keeps a cron fire independent from the active goal', async () => {
     const cron = ctx.get(ISessionCronService);
     const goals = ctx.get(IAgentGoalService);
-    const task = cron.addTask({ cron: '* * * * *', prompt: 'independent scheduled work', recurring: true });
+    const task = await cron.addTask({ cron: '* * * * *', prompt: 'independent scheduled work', recurring: true });
     await goals.createGoal({ objective: 'ongoing foreground goal' });
     await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 1_000, turnBudget: 2 } });
     const callsBefore = ctx.llmCalls.length;
@@ -317,14 +318,14 @@ describe('cron-fired prompt admission', () => {
       ).toBe(false);
     } finally {
       await goals.cancelGoal();
-      cron.removeTasks([task.id]);
+      await cron.removeTasks([task.id]);
       await cron.flushPersist();
     }
   });
 
   it('resumes a cold session, admits a due one-shot, and deletes it durably', async () => {
     const cron = ctx.get(ISessionCronService);
-    const task = cron.addTask({ cron: '* * * * *', prompt: 'cold one-shot', recurring: false });
+    const task = await cron.addTask({ cron: '* * * * *', prompt: 'cold one-shot', recurring: false });
     await cron.flushPersist();
     const callsBefore = ctx.llmCalls.length;
     const appScheduler = createAppScheduler(ctx);
@@ -351,7 +352,7 @@ describe('cron-fired prompt admission', () => {
 
   it('fires once when the app tick overlaps the former live-session tick boundary', async () => {
     const cron = ctx.get(ISessionCronService);
-    const task = cron.addTask({ cron: '* * * * *', prompt: 'boundary fire', recurring: true });
+    const task = await cron.addTask({ cron: '* * * * *', prompt: 'boundary fire', recurring: true });
     await cron.flushPersist();
     const callsBefore = ctx.llmCalls.length;
     const appScheduler = createAppScheduler(ctx, true);
@@ -367,7 +368,7 @@ describe('cron-fired prompt admission', () => {
       const user = request.history.findLast((message) => message.role === 'user');
       expect(user === undefined ? '' : textOf(user)).toContain('boundary fire');
     } finally {
-      cron.removeTasks([task.id]);
+      await cron.removeTasks([task.id]);
       await cron.flushPersist();
       appScheduler.dispose();
     }
@@ -375,7 +376,7 @@ describe('cron-fired prompt admission', () => {
 
   it('does not miss or duplicate a fire across eviction immediately before and after delivery', async () => {
     const cron = ctx.get(ISessionCronService);
-    const task = cron.addTask({ cron: '* * * * *', prompt: 'eviction boundary', recurring: true });
+    const task = await cron.addTask({ cron: '* * * * *', prompt: 'eviction boundary', recurring: true });
     await cron.flushPersist();
     const callsBefore = ctx.llmCalls.length;
     const appScheduler = createAppScheduler(ctx, true);
@@ -399,7 +400,7 @@ describe('cron-fired prompt admission', () => {
         ),
       ).toBe(true);
     } finally {
-      cron.removeTasks([task.id]);
+      await cron.removeTasks([task.id]);
       await cron.flushPersist();
       appScheduler.dispose();
     }
@@ -407,7 +408,7 @@ describe('cron-fired prompt admission', () => {
 
   it('does not resume a cold session for a paused due task', async () => {
     const cron = ctx.get(ISessionCronService);
-    const task = cron.addTask({ cron: '* * * * *', prompt: 'paused fire', recurring: true });
+    const task = await cron.addTask({ cron: '* * * * *', prompt: 'paused fire', recurring: true });
     await cron.setTaskPaused(task.id, true);
     const callsBefore = ctx.llmCalls.length;
     const appScheduler = createAppScheduler(ctx);
@@ -420,7 +421,7 @@ describe('cron-fired prompt admission', () => {
       expect(ctx.llmCalls).toHaveLength(callsBefore);
       expect(cron.getTask(task.id)?.paused).toBe(true);
     } finally {
-      cron.removeTasks([task.id]);
+      await cron.removeTasks([task.id]);
       await cron.flushPersist();
       appScheduler.dispose();
     }
@@ -428,7 +429,7 @@ describe('cron-fired prompt admission', () => {
 
   it('delivers one final stale fire from the app scheduler and removes the task', async () => {
     const cron = ctx.get(ISessionCronService);
-    const task = cron.addTask({ cron: '* * * * *', prompt: 'stale final fire', recurring: true });
+    const task = await cron.addTask({ cron: '* * * * *', prompt: 'stale final fire', recurring: true });
     await cron.flushPersist();
     const session = ctx.get(ISessionContext);
     const staleTask = { ...task, createdAt: cron.now() - 8 * 24 * 60 * 60 * 1000 };
@@ -454,5 +455,23 @@ describe('cron-fired prompt admission', () => {
     } finally {
       appScheduler.dispose();
     }
+  });
+
+  it('returns a failed save as a tool error instead of a scheduled reminder ACK', async () => {
+    const cron = ctx.get(ISessionCronService);
+    const before = [...cron.list()];
+    const save = vi.spyOn(ctx.get(ICronTaskPersistence), 'save').mockRejectedValueOnce(new Error('ENOSPC fixture'));
+    try {
+      ctx.mockNextResponse({ type: 'function', id: 'call_failed_cron', name: 'CronCreate', arguments: JSON.stringify({ cron: '* * * * *', prompt: 'must not be acknowledged', recurring: false }) });
+      ctx.mockNextResponse({ type: 'text', text: 'save failed' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'schedule fixture reminder' }] });
+      await ctx.untilTurnEnd();
+      const result = ctx.contextData().history.findLast((message) => message.role === 'tool');
+      expect(result).toBeDefined();
+      expect(textOf(result!)).toContain('ENOSPC fixture');
+      expect(textOf(result!)).not.toMatch(/^id: /m);
+      expect(cron.list()).toEqual(before);
+      expect(save).toHaveBeenCalledOnce();
+    } finally { save.mockRestore(); }
   });
 });

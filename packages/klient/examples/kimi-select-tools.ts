@@ -219,7 +219,9 @@ async function collect(
   let text = '';
   let toolCalls: Collected['toolCalls'] = [];
   let finishReason: string | undefined;
-  for await (const event of requester.request(input, signal)) {
+  for await (const event of requester.request(input, signal, {
+    attribution: { logicalRequestId: crypto.randomUUID(), purpose: 'connectivity_probe', waitBudget: { waitedMs: 0 } },
+  })) {
     if (event.type === 'part' && event.part.type === 'text') text += event.part.text;
     if (event.type === 'finish') {
       finishReason = event.providerFinishReason ?? event.rawFinishReason;

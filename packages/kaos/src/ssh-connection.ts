@@ -5,7 +5,8 @@ import type { HostVerifier } from 'ssh2';
 import { SSHKaos } from './ssh';
 import { SshKnownHosts, type TrustUnknownKey } from './ssh-known-hosts';
 
-export type { TrustUnknownKey, UnknownSshKey } from './ssh-known-hosts';
+export { SshKnownHosts } from './ssh-known-hosts';
+export type { TrustUnknownKey, UnknownSshKey, SshKnownHostsInspection, SshKnownHostRecord } from './ssh-known-hosts';
 
 export interface SshConnectionHost {
   readonly hostname: string;

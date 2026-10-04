@@ -1,5 +1,5 @@
 import { INbSearchService, type Scope } from '@kiki/agent-core-v2';
-import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialReadSchema, nbSearchManagedCredentialWriteSchema, nbSearchManagedCredentialViewSchema } from '@kiki/protocol';
+import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialReadSchema, nbSearchManagedCredentialWriteSchema, nbSearchManagedCredentialViewSchema, nbSearchKeyUsageRequestSchema, nbSearchKeyUsageViewSchema } from '@kiki/protocol';
 import { ManagedCredentialError } from '@kiki/agent-core-v2/app/nbSearch/managedCredentials';
 
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -60,6 +60,21 @@ export function registerNbSearchRoutes(app: NbSearchRouteHost, core: Scope): voi
     testRoute.options,
     testRoute.handler as Parameters<NbSearchRouteHost['get']>[2],
   );
+
+  const usageRoute = defineRoute({
+    method: 'POST', path: '/nb-search/keys/usage', body: nbSearchKeyUsageRequestSchema,
+    success: { data: nbSearchKeyUsageViewSchema },
+    errors: { [ErrorCode.VALIDATION_FAILED]: {} },
+    description: 'On-demand secret-free key health and balances. Cold or expired caches can query provider usage endpoints even without refresh.',
+    tags: ['nb-search'],
+  }, async (req, reply) => {
+    try {
+      reply.send(okEnvelope(await core.accessor.get(INbSearchService).keyUsage(req.body.instance_id, req.body.refresh), req.id));
+    } catch {
+      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Key usage is unavailable for the selected instance; check configuration and retry.', req.id));
+    }
+  });
+  app.post(usageRoute.path, usageRoute.options, usageRoute.handler as Parameters<NbSearchRouteHost['post']>[2]);
 
   const readRoute = defineRoute({
     method: 'POST', path: '/nb-search/credentials/read', body: nbSearchManagedCredentialReadSchema,

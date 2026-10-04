@@ -67,7 +67,7 @@ describe('ISessionQuestionService (Session scope facade over the interaction ker
     interaction.releaseConsumer('test-consumer');
     const questions = session.accessor.get(ISessionQuestionService);
 
-    await expect(questions.request(makeRequest('q1'))).resolves.toBeNull();
+    await expect(questions.request(makeRequest('q1'))).resolves.toEqual({ cancelled: true, reason: 'no_consumer' });
     expect(questions.listPending()).toEqual([]);
   });
 
@@ -155,7 +155,7 @@ describe('ISessionQuestionService (Session scope facade over the interaction ker
 
     interaction.cancelPendingForTurn(3);
 
-    await expect(foreground).resolves.toBeNull();
+    await expect(foreground).resolves.toEqual({ cancelled: true, reason: 'turn_ended' });
     expect(questions.listPending().map((request) => request.id)).toEqual(['q-bg']);
     expect(questions.listPending()[0]?.turnId).toBe(3);
 
@@ -163,60 +163,55 @@ describe('ISessionQuestionService (Session scope facade over the interaction ker
     await expect(detached).resolves.toEqual({ answers: { q_0: 'Yes' } });
   });
 
-  it('translates an interaction cancellation into a dismissed question result', async () => {
+  it('preserves cancellation reasons instead of treating them as user dismissals', async () => {
     const interaction = session.accessor.get(ISessionInteractionService);
     const questions = session.accessor.get(ISessionQuestionService);
-    const resolved: { id: string; response: unknown }[] = [];
-    disposables.add(interaction.onDidResolve((resolution) => resolved.push(resolution)));
-
     const pending = questions.request({ ...makeRequest('q1'), turnId: 2 });
     interaction.cancelPendingForTurn(2);
-
-    await expect(pending).resolves.toBeNull();
-    expect(resolved).toEqual([
-      { id: 'q1', response: { cancelled: true, reason: 'turn_ended' } },
-    ]);
-    expect(questions.listPending()).toEqual([]);
+    await expect(pending).resolves.toEqual({ cancelled: true, reason: 'turn_ended' });
+    const closed = questions.request(makeRequest('q2'));
+    interaction.respond('q2', { cancelled: true, reason: 'agent_closed' });
+    await expect(closed).resolves.toEqual({ cancelled: true, reason: 'agent_closed' });
   });
 
-  it('translates an agent-close cancellation instead of treating it as answers', async () => {
+  it('preserves abort cancellation for pre-aborted and pending requests', async () => {
     const interaction = session.accessor.get(ISessionInteractionService);
     const questions = session.accessor.get(ISessionQuestionService);
-
-    const pending = questions.request(makeRequest('q1'));
-    interaction.respond('q1', { cancelled: true, reason: 'agent_closed' });
-
-    await expect(pending).resolves.toBeNull();
-  });
-
-  it('request with a pre-aborted signal resolves null and parks nothing', async () => {
-    const questions = session.accessor.get(ISessionQuestionService);
-    const controller = new AbortController();
-    controller.abort();
-
-    await expect(
-      questions.request(makeRequest('q1'), { signal: controller.signal }),
-    ).resolves.toBeNull();
-    expect(questions.listPending()).toEqual([]);
-  });
-
-  it('aborting a parked request dismisses it and resolves the caller with null', async () => {
-    const interaction = session.accessor.get(ISessionInteractionService);
-    const questions = session.accessor.get(ISessionQuestionService);
-
-    const resolved: { id: string; response: unknown }[] = [];
-    disposables.add(interaction.onDidResolve((r) => resolved.push(r)));
-
     const controller = new AbortController();
     const pending = questions.request(makeRequest('q1'), { signal: controller.signal });
-    expect(questions.listPending().map((r) => r.id)).toEqual(['q1']);
-
     controller.abort();
-
-    await expect(pending).resolves.toBeNull();
+    await expect(pending).resolves.toEqual({ cancelled: true, reason: 'aborted' });
+    await expect(questions.request(makeRequest('q2'), { signal: controller.signal })).resolves.toEqual({ cancelled: true, reason: 'aborted' });
     expect(questions.listPending()).toEqual([]);
-    expect(resolved).toEqual([{ id: 'q1', response: null }]);
     expect(interaction.isRecentlyResolved('q1')).toBe(true);
+  });
+
+  it('keeps detached questions across consumer loss and accepts the answer once after reconnect', async () => {
+    const interaction = session.accessor.get(ISessionInteractionService);
+    const questions = session.accessor.get(ISessionQuestionService);
+    const resolutions: unknown[] = [];
+    disposables.add(interaction.onDidResolve((value) => resolutions.push(value)));
+    const foreground = questions.request(makeRequest('q-fg'));
+    const background = questions.request(makeRequest('q-bg'), { detached: true });
+    interaction.releaseConsumer('test-consumer');
+    await expect(foreground).resolves.toEqual({ cancelled: true, reason: 'no_consumer' });
+    expect(questions.listPending().map((request) => request.id)).toEqual(['q-bg']);
+    interaction.acquireConsumer('reconnected');
+    questions.answer('q-bg', { answers: { 'Pick one': 'Yes' } });
+    questions.answer('q-bg', { answers: { 'Pick one': 'No' } });
+    await expect(background).resolves.toEqual({ answers: { 'Pick one': 'Yes' } });
+    expect(resolutions).toHaveLength(2);
+    expect(questions.listPending()).toEqual([]);
+  });
+
+  it('parks detached questions during a disconnected window until explicitly dismissed', async () => {
+    const interaction = session.accessor.get(ISessionInteractionService);
+    interaction.releaseConsumer('test-consumer');
+    const questions = session.accessor.get(ISessionQuestionService);
+    const pending = questions.request(makeRequest('q1'), { detached: true });
+    expect(questions.listPending()).toHaveLength(1);
+    questions.dismiss('q1');
+    await expect(pending).resolves.toBeNull();
   });
 
   it('an answer that arrives before the abort still wins', async () => {

@@ -1,6 +1,5 @@
-import { LifecycleScope } from '#/app/scopes';
-
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { ToolExecution } from '#/tool/toolContract';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -39,7 +38,7 @@ export class CronDeleteTool implements ICronDeleteTool {
       description: `Deleting cron ${args.id}`,
       approvalRule: this.name,
       execute: async () => {
-        const removed = this.cron.removeTasks([args.id]);
+        const removed = await this.cron.removeTasks([args.id]);
         if (removed.length === 0) {
           return {
             isError: true,
@@ -58,10 +57,6 @@ export class CronDeleteTool implements ICronDeleteTool {
   }
 }
 
-registerScopedService(
-  LifecycleScope.Agent,
-  ICronDeleteTool,
-  CronDeleteTool,
-  ScopeActivation.OnScopeCreated,
-  'cron',
-);
+registerAgentToolService(ICronDeleteTool, CronDeleteTool, {
+  name: 'CronDelete', domain: 'cron', when: (accessor) => !accessor.get(ISessionContext).ephemeral,
+});

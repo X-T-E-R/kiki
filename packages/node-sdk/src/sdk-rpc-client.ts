@@ -781,8 +781,12 @@ export class SDKRpcClient extends SDKRpcClientBase {
     return this.klient.global.plugins.list();
   }
 
-  override async installPlugin(source: string): Promise<PluginSummary> {
-    return this.klient.global.plugins.install(source);
+  override previewPlugin(input: import('@kiki/protocol').PluginPreviewRequest): Promise<import('@kiki/protocol').PluginInstallPlan> {
+    return this.klient.global.plugins.preview(input);
+  }
+
+  override async installPlugin(source: string, options?: Omit<import('@kiki/protocol').PluginInstallRequest, 'source'>): Promise<PluginSummary> {
+    return this.klient.global.plugins.install(options === undefined ? source : { source, ...options });
   }
 
   override async setPluginEnabled(id: string, enabled: boolean): Promise<void> {
@@ -1397,9 +1401,9 @@ export class SDKRpcClient extends SDKRpcClientBase {
   /**
    * v2-only (`ISessionTitleService`, session scope). Like `renameSession`, a
    * closed session is resumed, titled, and closed again so generation does
-   * not leak a live session. `undefined` means generation was unavailable
-   * (no managed OAuth login, no prompt yet, or a custom title is set) — the
-   * current title is kept.
+   * not leak a live session. `undefined` means no session title model is selected,
+   * the feature is off, conversation text is unavailable, or an existing title is
+   * protected without force. Model/provider failures reject; the current title is kept.
    */
   override async generateSessionTitle(
     input: GenerateSessionTitleInput,

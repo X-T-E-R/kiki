@@ -1,6 +1,7 @@
 /** App-scoped peer-thread communication contract mirrored from agent-core-v2. */
 
 import { z } from 'zod';
+import { contentRefSchema, contentSegmentSchema, transcriptResponseSchema } from '@kiki/transcript';
 
 import { maybe, noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
@@ -9,6 +10,8 @@ export const threadRefSchema = z.object({
   hostId: z.string().trim().min(1),
   workspaceId: z.string().trim().min(1),
   sessionId: z.string().trim().min(1),
+  bridgeId: z.string().uuid().optional(),
+  connectionId: z.string().uuid().optional(),
 });
 
 export const threadSummarySchema = z.object({
@@ -35,7 +38,10 @@ export const threadTurnSchema = z.object({
   startedAt: z.number().int().nonnegative().optional(),
   endedAt: z.number().int().nonnegative(),
   reason: z.enum(['completed', 'cancelled', 'failed', 'blocked']),
-  origin: z.enum(['user', 'peer']),
+  origin: z.enum(['user', 'peer', 'bridged_peer']),
+  bridgedPeer: z.object({ source: threadRefSchema, sourceHomeId: z.string().uuid(), targetHomeId: z.string().uuid(), bridgeId: z.string().uuid(),
+    revision: z.number().int().positive(), location: z.enum(['local', 'network']), createdAt: z.number(), expiresAt: z.number(), sourceSeq: z.number(),
+    causeId: z.string(), hop: z.number(), messageId: z.string() }).optional(),
   peer: z
     .object({ source: threadRefSchema, messageId: z.string().min(1) })
     .optional(),
@@ -45,14 +51,24 @@ export const threadTurnSchema = z.object({
 
 export const readThreadInputSchema = z.object({
   thread: threadRefSchema,
+  contentRef: contentRefSchema.optional(),
   cursor: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(100).optional(),
 });
 
+type PageTurn = Extract<z.infer<typeof transcriptResponseSchema>['items'][number], { kind: 'turn' }>;
+type WirePageTurn = Omit<PageTurn, 'execution'> & { execution?: Omit<NonNullable<PageTurn['execution']>, 'losses'> & { losses: string[] } };
+const wirePageTurn = (item: PageTurn): WirePageTurn => ({
+  ...item, execution: item.execution === undefined ? undefined : { ...item.execution, losses: [...item.execution.losses] },
+});
+const threadTranscriptPageSchema = transcriptResponseSchema.transform((page) => ({
+  ...page, items: page.items.map((item) => item.kind === 'turn' ? wirePageTurn(item) : item),
+}));
 export const readThreadResultSchema = z.object({
   thread: threadRefSchema,
   turns: z.array(threadTurnSchema),
   nextCursor: z.string().optional(),
+  view: z.object({ transcript: threadTranscriptPageSchema.optional(), segment: contentSegmentSchema.optional() }).optional(),
 });
 
 export const sendThreadMessageInputSchema = z

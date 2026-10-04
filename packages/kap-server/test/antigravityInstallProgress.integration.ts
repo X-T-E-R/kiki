@@ -34,7 +34,7 @@ describe('Antigravity install progress over the shared WebSocket', () => {
       if (url.startsWith('https://dl.google.com/')) return new Response('missing', { status: 404 });
       return realFetch(input, init);
     });
-    const client = createKlient({ endpoint: base, token: server!.authTokenService.getToken() });
+    const client = createKlient({ endpoint: base, token: server!.localOwnerToken });
     const received: { stage: string; installId: string; version: string }[] = [];
     const subscription = client.events.on('executors.antigravityInstallProgress', (progress) => received.push(progress));
     try {

@@ -163,7 +163,7 @@ describe('loadAgentsMd brand home (KIKI_HOME)', () => {
 });
 
 describe('loadAgentsMd workspace boundaries', () => {
-  it('does not inject nested or arbitrary instruction files', async () => {
+  it('loads applicable ancestors without scanning unrelated subtrees', async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), 'kimi-agents-project-'));
     extraDirs.push(projectRoot);
     const leaf = join(projectRoot, 'packages', 'app');
@@ -179,8 +179,8 @@ describe('loadAgentsMd workspace boundaries', () => {
     const result = await loadAgentsMd({ fs, homeDir }, leaf);
 
     expect(result).toContain('root instructions');
-    expect(result).not.toContain('packages instructions');
-    expect(result).not.toContain('leaf instructions');
+    expect(result).toContain('packages instructions');
+    expect(result).toContain('leaf instructions');
     expect(result).not.toContain('documentation instructions');
   });
 
@@ -461,6 +461,20 @@ describe('stable dynamic prefix layout', () => {
 });
 
 describe('sampled directory and stable template boundaries', () => {
+  it('samples one directory level up to 20 entries while retaining complete instruction text', async () => {
+    await mkdir(join(workDir, 'source'), { recursive: true });
+    await writeFile(join(workDir, 'source', 'not-expanded.ts'), 'nested');
+    const rule = 'Complete instruction, including its applicability and exception.\n'.repeat(100);
+    await writeFile(join(workDir, 'AGENTS.md'), rule);
+    await Promise.all(Array.from({ length: 25 }, (_, i) => writeFile(join(workDir, `entry-${String(i).padStart(2, '0')}.txt`), 'entry')));
+    const result = await prepareSystemPromptContext({ fs, homeDir }, workDir);
+    expect(result.cwdListing).toContain('source/');
+    expect(result.cwdListing).not.toContain('not-expanded.ts');
+    expect(result.cwdListing).toContain('more entries; use Glob to explore');
+    expect(result.cwdListing!.split('\n').filter((line) => /[├└]──/.test(line)).length).toBeLessThanOrEqual(21);
+    expect(result.agentsMd).toContain(rule.trim());
+    expect(result.agentsMdFiles).toMatchObject([{ path: normalize(await fs.realpath(join(workDir, 'AGENTS.md'))), scope: workDir, runtimeId: 'local' }]);
+  });
   it('reuses directory samples without filesystem reads while instructions change', async () => {
     const { vi } = await import('vitest');
     const reads = vi.spyOn(fs, 'readdir');

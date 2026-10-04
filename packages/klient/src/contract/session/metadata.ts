@@ -65,6 +65,7 @@ export const sessionMetaSchema = z.object({
   forkedFrom: z.string().optional(),
   agents: z.record(z.string(), agentMetaSchema).optional(),
   custom: z.record(z.string(), z.unknown()).optional(),
+  sshHosts: z.record(z.string(), z.string()).optional(),
   lastTurnReason: z.enum(['completed', 'cancelled', 'failed']).optional(),
 });
 
@@ -83,6 +84,7 @@ export const sessionMetaPatchSchema = z.object({
   forkedFrom: z.string().optional(),
   agents: z.record(z.string(), agentMetaSchema).optional(),
   custom: z.record(z.string(), z.unknown()).optional(),
+  sshHosts: z.record(z.string(), z.string()).optional(),
   lastTurnReason: z.enum(['completed', 'cancelled', 'failed']).optional(),
 });
 
@@ -103,6 +105,7 @@ export const sessionMetaKeySchema = z.enum([
   'forkedFrom',
   'agents',
   'custom',
+  'sshHosts',
   'lastTurnReason',
   'usage',
 ]);

@@ -33,6 +33,12 @@ export async function applySessionAgentConfig(
       const current = profile.data();
       const requestedModel = agentConfig.model === '' ? undefined : agentConfig.model;
       await profile.bind({
+        personaSnapshot: current.persona,
+        personaOverrides: current.personaId === undefined ? undefined : {
+          ...current.personaOverrides, profile: agentConfig.profile,
+          model: agentConfig.model === undefined || agentConfig.model === '' ? current.personaOverrides?.model : agentConfig.model,
+          thinking: agentConfig.thinking ?? current.personaOverrides?.thinking,
+        },
         profile: agentConfig.profile,
         model: requestedModel ?? (current.modelAlias === '' ? undefined : current.modelAlias),
         thinking: agentConfig.thinking ?? current.thinkingLevel,
@@ -45,6 +51,9 @@ export async function applySessionAgentConfig(
       }
       throw error;
     }
+  }
+  if (agentConfig.profile !== undefined && currentProfile === agentConfig.profile && profile.data().personaId !== undefined) {
+    profile.update({ personaOverrides: { ...profile.data().personaOverrides, profile: agentConfig.profile } });
   }
   if (agentConfig.model !== undefined && agentConfig.model !== '') {
     await profile.setModel(agentConfig.model);

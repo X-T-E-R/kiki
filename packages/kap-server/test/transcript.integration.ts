@@ -631,6 +631,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
       const transcripts = new Map<string, AgentTranscript>();
       let subscription: SessionViewSubscription | undefined;
       let ready = 0;
+      let recoveryReason: string | undefined;
       try {
         const snapshot = await klient.session(id).view.snapshot();
         if (phase === 'restart') expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
@@ -639,6 +640,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
           transcriptGrades: { '*': 'turn', main: 'delta' },
         }, (signal) => {
           if (signal.type === 'ready') ready += 1;
+          if (signal.type === 'resyncRequired') recoveryReason = signal.reason;
           if (signal.type !== 'transcript') return;
           const event = signal.event;
           const transcript = transcripts.get(event.agent_id) ?? new AgentTranscript(event.agent_id);
@@ -669,7 +671,12 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
           expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
           await expect(createSessionTransport(klient).resolveApproval(id, 'missing-approval', { decision: 'rejected' })).rejects.toMatchObject({ code: 40404 });
           expect(getLiveSessionById(server!.core.accessor, id)).toBeDefined();
-          await vi.waitFor(() => expect(ready).toBeGreaterThan(5));
+          await vi.waitFor(() => expect(recoveryReason).toBe('epoch_changed'));
+          expect(ready).toBe(5);
+          const fresh = await klient.session(id).view.snapshot();
+          subscription.updateSessionCursor({ seq: fresh.as_of_seq, epoch: fresh.epoch });
+          subscription.setTranscriptGrades({ '*': 'turn', main: 'delta' });
+          await vi.waitFor(() => expect(ready).toBe(6));
           mainAgentBus(id).publish(serverEvent({ type: 'turn.started', turnId: 99, origin: { kind: 'user' } }));
           mainAgentBus(id).publish(serverEvent({ type: 'turn.ended', turnId: 99, reason: 'completed' }));
           await vi.waitFor(() => expect(transcripts.get('main')?.snapshot().items.filter((item) => item.kind === 'turn' && item.turnId === 't99')).toHaveLength(1));
@@ -679,6 +686,57 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
         await klient.close();
       }
     }
+  });
+
+  it('shows a restart-orphaned question as cancelled in cold and resumed reads without recreating a waiter', async () => {
+    const id = await createSession();
+    await ensureMainAgent(id);
+    const path = childWirePath(id, 'main');
+    await server!.close();
+    server = undefined;
+    await writeFile(path, `${JSON.stringify({ type: 'interaction.request', id: 'question-orphan', kind: 'question', agentId: 'main', origin: { agentId: 'main' }, request: { questions: [{ question: 'Pick one', options: [{ label: 'Yes' }] }] }, time: Date.now() })}\n`, { flag: 'a' });
+    await boot();
+    const cold = await getJson<TranscriptContract>(`/api/sessions/${id}/transcript?agent_id=main`);
+    expect(cold.body.code).toBe(0);
+    expect(cold.body.data.interactions).toContainEqual(expect.objectContaining({ interactionId: 'question-orphan', state: 'cancelled', response: { cancelled: true, reason: 'agent_closed' } }));
+    expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+    await resumeSessionById(server!.core.accessor, id);
+    const resumed = await getJson<TranscriptContract>(`/api/sessions/${id}/transcript?agent_id=main`);
+    expect(resumed.body.data.interactions).toContainEqual(expect.objectContaining({ interactionId: 'question-orphan', state: 'cancelled', response: { cancelled: true, reason: 'agent_closed' } }));
+    expect(getLiveSessionById(server!.core.accessor, id)!.accessor.get(ISessionInteractionService).listPending('question')).toEqual([]);
+  });
+
+  it('keeps a live detached question answerable through real WebSocket detach and reattach', async () => {
+    const id = await createSession();
+    await ensureMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const interaction = session.accessor.get(ISessionInteractionService);
+    const questions = session.accessor.get(ISessionQuestionService);
+    const connect = () => createKlient({ endpoint: base, token: bearerToken(server!), WebSocket: WebSocket as unknown as typeof globalThis.WebSocket });
+    const attach = async (client: ReturnType<typeof createKlient>) => {
+      const snapshot = await client.session(id).view.snapshot();
+      const signals: SessionViewSignal[] = [];
+      const subscription = client.session(id).view.subscribe({ sessionCursor: { seq: snapshot.as_of_seq, epoch: snapshot.epoch }, transcriptGrades: { main: 'delta' } }, signal => signals.push(signal));
+      await vi.waitFor(() => expect(signals.some(signal => signal.type === 'ready')).toBe(true));
+      return subscription;
+    };
+    const first = connect();
+    const subscription = await attach(first);
+    const answer = questions.request({ id: 'question-live', turnId: 7, toolCallId: 'call-live', questions: [{ question: 'Pick one', options: [{ label: 'Yes' }, { label: 'No' }] }] }, { agentId: 'main', detached: true });
+    await vi.waitFor(() => expect(interaction.hasConsumer({ agentId: 'main' })).toBe(true));
+    subscription.close();
+    await first.close();
+    await vi.waitFor(() => expect(interaction.hasConsumer({ agentId: 'main' })).toBe(false));
+    expect(questions.listPending().map(request => request.id)).toEqual(['question-live']);
+    const second = connect();
+    const restored = await attach(second);
+    try {
+      const page = await second.session(id).view.transcript.page({ agentId: 'main' });
+      expect(page.interactions).toContainEqual(expect.objectContaining({ interactionId: 'question-live', state: 'pending' }));
+      const response = await fetch(`${base}/api/sessions/${id}/questions/question-live`, { method: 'POST', headers: authHeaders(server!, { 'content-type': 'application/json' }), body: JSON.stringify({ answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } }, method: 'click' }) });
+      expect((await response.json() as Envelope<unknown>).code).toBe(0);
+      await expect(answer).resolves.toEqual({ answers: { 'Pick one': 'Yes' } });
+    } finally { restored.close(); await second.close(); }
   });
 
   it('rebuilds the main agent for a cold session from the wire records', async () => {

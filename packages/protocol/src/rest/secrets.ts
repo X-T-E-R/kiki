@@ -19,6 +19,7 @@ const mcpScope = { server: z.string().min(1).max(256), cwd: z.string().min(1).op
 export const secretRefSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('provider_api_key'), provider_id: z.string().min(1).max(256) }).strict(),
   z.object({ kind: z.literal('reviewer_api_key') }).strict(),
+  z.object({ kind: z.literal('browser_endpoint'), browser_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/) }).strict(),
   z.object({ kind: z.literal('mcp_env'), ...mcpScope, key: z.string().min(1).max(256) }).strict(),
   z.object({ kind: z.literal('mcp_header'), ...mcpScope, key: z.string().min(1).max(256) }).strict(),
   z.object({ kind: z.literal('mcp_bearer_env'), ...mcpScope }).strict(),

@@ -20,6 +20,8 @@ import { IConfigService } from '#/app/config/config';
 import { LOOP_CONTROL_SECTION, type LoopControl } from '#/agent/loop/configSection';
 import { MEMORY_SECTION, memoryEnabled, type MemoryConfig } from '#/app/memory/configSection';
 import { continuityClockKey } from './continuityState';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 import { ISessionTodoService } from './sessionTodo';
@@ -46,7 +48,7 @@ export class SessionTodoService extends Service implements ISessionTodoService {
   readonly onDidChangeAgent = this.onDidChangeAgentEmitter.event;
 
   private readonly agentBindings = new Map<string, IDisposable[]>();
-  private readonly lastKnownTodos = new Map<string, { items: readonly TodoItem[]; rev?: number }>();
+  private readonly lastKnownTodos = new Map<string, { items: readonly TodoItem[]; meta?: NotesMeta }>();
   private readonly reminderTrackers = new Map<string, TodoListReminderTracker>();
   private readonly decisionKeys = new Map<string, string>();
 
@@ -96,46 +98,30 @@ export class SessionTodoService extends Service implements ISessionTodoService {
     return { notes: current.notes, meta: current.notesMeta };
   }
 
-  setNotes(patch: TodoNotes | null, source: { turnId: number; step: number; toolCallId: string }, agentId = MAIN_AGENT_ID): void {
+  setNotes(patch: TodoNotes | null, source: { turnId: number; step: number; toolCallId: string; reviewHandoff?: boolean }, agentId = MAIN_AGENT_ID): void {
     const handle = this.agentLifecycle.get(agentId);
     if (handle === undefined) return;
     const states = handle.accessor.get(IAgentStateService);
     const current = readTodoState(states.get(todoKey));
     const notes = mergeTodoNotes(current.notes, patch);
     const hash = hashTodoNotes(notes);
+    const same = hashTodoNotes(current.notes) === hash;
     const history = handle.accessor.get(IAgentContextMemoryService).get();
-    const assistant = history.findLast((message) => message.role === 'assistant' && message.toolCalls.some((call) => call.id === source.toolCallId));
-    const same = current.notesMeta?.hash === hash;
+    const assistant = source.reviewHandoff ? history.findLast((message) => message.role === 'assistant' && message.toolCalls.some((call) => call.id === source.toolCallId)) : undefined;
+    if (source.reviewHandoff && assistant === undefined) throw new Error('Handoff review requires a tool call in the current conversation. No state was changed.');
+    if (same && !source.reviewHandoff) return;
+    const epoch = states.get(contextWindowEpochKey);
     const meta: NotesMeta = {
-      rev: same ? current.notesMeta!.rev : (current.notesMeta?.rev ?? 0) + 1,
+      rev: same ? current.notesMeta?.rev ?? 0 : (current.notesMeta?.rev ?? 0) + 1,
       hash,
-      writtenTurn: source.turnId,
-      writtenStep: `t${source.turnId}.${source.step}`,
-      coveredMessageId: same ? current.notesMeta!.coveredMessageId : assistant?.id ?? `toolcall:${source.toolCallId}`,
-      windowEpoch: states.get(contextWindowEpochKey),
+      writtenTurn: same ? current.notesMeta?.writtenTurn ?? source.turnId : source.turnId,
+      writtenStep: same ? current.notesMeta?.writtenStep ?? `t${source.turnId}.${source.step}` : `t${source.turnId}.${source.step}`,
+      coveredMessageId: current.notesMeta?.coveredMessageId ?? '',
+      windowEpoch: same ? current.notesMeta?.windowEpoch ?? epoch : epoch,
+      reviewedMessageId: source.reviewHandoff ? assistant?.id ?? `toolcall:${source.toolCallId}` : current.notesMeta?.reviewedMessageId,
+      reviewedWindowEpoch: source.reviewHandoff ? epoch : current.notesMeta?.reviewedWindowEpoch,
     };
     void handle.accessor.get(IEventDispatcher).dispatch(new ToolsUpdateStore({ key: 'todo_notes', value: { notes, notesMeta: meta } }));
-    this.publishTodos(handle);
-  }
-
-  setCompactionDirectives(directives: string, turnId: number, agentId = MAIN_AGENT_ID): void {
-    const handle = this.agentLifecycle.get(agentId);
-    const text = directives.trim();
-    if (handle === undefined || !text || text === '(none)') return;
-    const states = handle.accessor.get(IAgentStateService);
-    const current = readTodoState(states.get(todoKey));
-    const previous = current.notes?.directives?.trim() ?? '';
-    const combined = !previous || text.includes(previous) ? text : previous.includes(text) ? previous : `${previous}\n${text}`;
-    const otherLength = Object.entries(current.notes ?? {}).reduce((sum, [key, value]) => sum + (key === 'directives' ? 0 : value.length), 0);
-    const clipped = combined.slice(0, Math.max(0, Math.min(1_500, 7_500 - otherLength)));
-    if (!clipped || clipped === previous) return;
-    const notes = mergeTodoNotes(current.notes, { directives: clipped });
-    const meta: NotesMeta = {
-      rev: (current.notesMeta?.rev ?? 0) + 1, hash: hashTodoNotes(notes),
-      writtenTurn: turnId, writtenStep: `t${turnId}.0`,
-      coveredMessageId: 'compaction_summary', windowEpoch: states.get(contextWindowEpochKey),
-    };
-    void handle.accessor.get(IEventDispatcher).dispatch(new ToolsUpdateStore({ key: 'todo_notes', value: { notes, notesMeta: meta, writer: 'compaction' } }));
     this.publishTodos(handle);
   }
 
@@ -158,7 +144,7 @@ export class SessionTodoService extends Service implements ISessionTodoService {
 
   private publishTodos(handle: IAgentScopeHandle): void {
     const { items: todos, notesMeta } = readTodoState(handle.accessor.get(IAgentStateService).get(todoKey));
-    this.lastKnownTodos.set(handle.id, { items: todos, rev: notesMeta?.rev });
+    this.lastKnownTodos.set(handle.id, { items: todos, meta: notesMeta });
     this.onDidChangeAgentEmitter.fire({ agentId: handle.id, todos });
     if (handle.id === MAIN_AGENT_ID) this.onDidChangeEmitter.fire(todos);
   }
@@ -186,14 +172,14 @@ export class SessionTodoService extends Service implements ISessionTodoService {
 
   private activateAgent(handle: IAgentScopeHandle): void {
     const initial = readTodoState(handle.accessor.get(IAgentStateService).get(todoKey));
-    this.lastKnownTodos.set(handle.id, { items: initial.items, rev: initial.notesMeta?.rev });
+    this.lastKnownTodos.set(handle.id, { items: initial.items, meta: initial.notesMeta });
     this.trackAgentBinding(
       handle.id,
       handle.accessor.get(IEventBus).subscribe(ContextUndone, () => {
         const current = readTodoState(handle.accessor.get(IAgentStateService).get(todoKey));
         const previous = this.lastKnownTodos.get(handle.id);
         const itemsChanged = !todoItemsEqual(current.items, previous?.items ?? []);
-        const notesChanged = previous?.rev !== current.notesMeta?.rev;
+        const notesChanged = JSON.stringify(previous?.meta) !== JSON.stringify(current.notesMeta);
         if (!itemsChanged && !notesChanged) return;
         this.publishTodos(handle);
         this.publishRollback(handle, current, itemsChanged, notesChanged);
@@ -212,6 +198,9 @@ export class SessionTodoService extends Service implements ISessionTodoService {
     const clock = handle.accessor.get(IAgentStateService).get(continuityClockKey);
     const epoch = handle.accessor.get(IAgentStateService).get(contextWindowEpochKey);
     const cues = config.get<LoopControl>(LOOP_CONTROL_SECTION).directiveCues;
+    const session = handle.accessor.get(ISessionContext);
+    const memoryAvailable = handle.id === MAIN_AGENT_ID && session.ephemeral !== true && memoryEnabled(settings, session.workspaceId) &&
+      settings.approval !== 'off' && toolPolicy.isToolActive('MemoryWrite', 'builtin') && handle.accessor.get(IAgentToolRegistryService).resolve('MemoryWrite') !== undefined;
     return this.reminderTrackers.get(handle.id)?.evaluate({
       active: toolPolicy.isToolActive(TODO_LIST_TOOL_NAME, 'builtin'),
       history: memory.get(), todos: state.items, notes: state.notes, notesMeta: state.notesMeta,
@@ -230,9 +219,9 @@ export class SessionTodoService extends Service implements ISessionTodoService {
           inputRevision: clock.humanInputRevision, stateRevision: clock.stateRevision,
           legacyCandidate: decision.classId === 'E1' && legacyDirectiveShadow(clock.latestInput?.text ?? '', cues) }));
       },
-      memoryAvailable: handle.id === MAIN_AGENT_ID && memoryEnabled(settings, handle.accessor.get(ISessionContext).workspaceId) && settings.approval !== 'off',
+      memoryAvailable,
+      running: memoryAvailable && handle.accessor.get(IAgentLoopService).status().state === 'running',
       estimateMessage: (message) => counting.estimateMessage(message),
-      onNearWindow: (epoch) => { void handle.accessor.get(IEventDispatcher).dispatch(new ToolsUpdateStore({ key: 'todo_reminder', value: epoch })); },
     });
   }
 

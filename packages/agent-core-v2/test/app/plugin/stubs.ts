@@ -16,6 +16,7 @@ interface StubPluginServiceOptions {
 export function stubPluginService(options: StubPluginServiceOptions): IPluginService {
   return {
     _serviceBrand: undefined,
+    onWillChange: Event.None as IPluginService['onWillChange'],
     onDidReload: options.reloadEmitter?.event ?? (Event.None as IPluginService['onDidReload']),
     onDidMutate: options.mutateEmitter?.event ?? (Event.None as IPluginService['onDidMutate']),
     listPlugins: async () => [],

@@ -35,6 +35,7 @@ import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { LocalRuntimeProviderFactory } from '#/runtime/localRuntime';
 import { SshRuntimeProviderFactory } from '#/runtime/sshRuntime';
 import { NATIVE_SSH_FLAG_ID } from '#/app/ssh/flag';
+import { ISshHostService } from '#/app/ssh/sshService';
 import { canonicalWorkspaceRoot } from '#/_base/utils/paths';
 import type { Runtime, RuntimeBinding, RuntimeCapability, RuntimeLease } from '#/runtime/runtime';
 import { RuntimeError, RuntimeRegistry } from '#/runtime/runtimeRegistry';
@@ -65,6 +66,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
   private readonly references = new Map<string, number>();
   private readonly evictionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly closing = new Map<string, Promise<void>>();
+  private readonly sshPreparations = new Map<string, Promise<void>>();
   private disposed = false;
   private readonly changeEmitter = new Emitter<{ workspaceId: string; instance?: WorkspaceInstance }>();
   readonly onDidChange = this.changeEmitter.event;
@@ -217,6 +219,28 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     } };
   }
 
+  prepareSshRuntime(workspaceId: string): Promise<void> {
+    if (!this.flags.enabled(NATIVE_SSH_FLAG_ID)) return Promise.reject(new Error('Native SSH is disabled'));
+    const pending = this.sshPreparations.get(workspaceId);
+    if (pending !== undefined) return pending;
+    const instance = this.instances.get(workspaceId);
+    const lease = instance === undefined ? undefined : this.retain(instance);
+    if (lease === undefined) return Promise.reject(new RuntimeError('runtime.not_found', `workspace ${workspaceId} is not materialized`));
+    const preparation = (async () => {
+      try {
+        if (!this.attachments.get(workspaceId)?.has('ssh')) {
+          await this.attach(instance!, this.providers.get('ssh') ?? new SshRuntimeProviderFactory());
+        }
+        const hosts = this.instantiation.invokeFunction((accessor) => accessor.get(ISshHostService));
+        await hosts.refreshRuntimeHosts(workspaceId);
+      } finally {
+        lease.dispose();
+      }
+    })().finally(() => this.sshPreparations.delete(workspaceId));
+    this.sshPreparations.set(workspaceId, preparation);
+    return preparation;
+  }
+
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
@@ -291,6 +315,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     this.cancelEviction(workspaceId);
     const pending = this.requests.get(`id:${workspaceId}`) ?? this.inflight.get(workspaceId);
     if (pending !== undefined) await pending.catch(() => undefined);
+    await this.sshPreparations.get(workspaceId)?.catch(() => undefined);
     const instance = this.instances.get(workspaceId);
     if (instance === undefined) return;
     await this.sessionManager.current?.closeWorkspace?.(workspaceId);

@@ -11,6 +11,10 @@ import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryServi
 import { IAgentUserToolService, type UserToolRegistration } from '#/agent/userTool/userTool';
 import { AgentUserToolService } from '#/agent/userTool/userToolService';
 import { userToolKey } from '#/agent/userTool/userToolOps';
+import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { SessionInteractionService } from '#/session/interaction/interactionService';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
@@ -176,12 +180,16 @@ describe('AgentUserToolService (wire-backed)', () => {
     ixChild.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
     const childProfile = createProfileStub();
     ixChild.stub(IAgentProfileService, childProfile);
-    ixChild.stub(ISessionInteractionService, createInteractionStub());
+    ixChild.set(ISessionStateService, new SessionStateService());
+    ixChild.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
     ixChild.set(IAgentUserToolService, new SyncDescriptor(AgentUserToolService));
 
     registerTestAgentWire(ixChild, testWireScope(SCOPE, 'user-tool-child'), {
       log: ixChild.get(IAppendLogStore),
     });
+    ixChild.stub(IAgentScopeContext, makeAgentScopeContext({
+      agentId: 'child-a', parentAgentId: 'main', agentScope: 'child-a',
+    }));
     const childDispatcher = registerTestEventDispatcher(ixChild);
     const childAgentState = ixChild.get(IAgentStateService);
     const child = ixChild.get(IAgentUserToolService);
@@ -204,6 +212,33 @@ describe('AgentUserToolService (wire-backed)', () => {
     expect(childRecords).toEqual([
       { type: 'tools.register_user_tool', ...toolA, time: expect.any(Number) },
     ]);
+
+    const interactions = ixChild.get(ISessionInteractionService);
+    const execution = await childRegistry.resolve(toolA.name)!.resolveExecution({ query: 'x' });
+    if (!('execute' in execution)) throw new Error('expected a runnable execution');
+    const run = (signal = new AbortController().signal) => execution.execute({
+      turnId: 7, toolCallId: 'custom-7', signal,
+    });
+    const pendingResult = run();
+    const [pending] = interactions.listPending('user_tool');
+    expect(pending?.origin).toEqual({ agentId: 'child-a', turnId: 7 });
+    interactions.cancelPendingForTurn(7, 'main');
+    interactions.cancelPendingForTurn(7, 'child-b');
+    expect(interactions.listPending('user_tool')).toEqual([pending]);
+    interactions.respond(pending!.id, { output: 'child completed' });
+    await expect(pendingResult).resolves.toEqual({ output: 'child completed' });
+    interactions.respond(pending!.id, { output: 'late duplicate' });
+    expect(interactions.listPending()).toEqual([]);
+
+    const cancelled = run();
+    interactions.cancelPendingForTurn(7, 'child-a');
+    await expect(cancelled).resolves.toEqual({ cancelled: true, reason: 'turn_ended' });
+    const controller = new AbortController();
+    const aborted = run(controller.signal);
+    controller.abort();
+    await expect(aborted).rejects.toThrow();
+    expect(interactions.listPending()).toEqual([]);
+    await childDispatcher.flush();
   });
 
   it('re-registering an equal tool is a no-op on the model (same reference)', () => {

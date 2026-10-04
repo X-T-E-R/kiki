@@ -6,11 +6,23 @@ import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { ToolsUpdateStore } from './todoOps';
 import { hashTodoNotes, type TodoNotes } from './todoNotes';
 import type { TodoReminderDisclosure } from './todoListReminder';
+import { initialMemoryMaintenance, type MemoryMaintenanceState } from './memoryCadence';
 
 export interface ContinuityClock {
   readonly humanTurnOrdinal: number;
   readonly humanInputRevision: number;
   readonly workStepOrdinal: number;
+  readonly workTokens?: number;
+  readonly stepTokens?: number;
+  readonly lastTodoStep?: number;
+  readonly lastTodoReminderU?: number;
+  readonly lastTodoReminderStep?: number;
+  readonly lastNotesReminderU?: number;
+  readonly lastNotesReminderStep?: number;
+  readonly memoryMaintenance?: MemoryMaintenanceState;
+  readonly successfulWork?: boolean;
+  readonly notesRenewalEpoch?: number;
+  readonly notesRebuildEpoch?: number;
   readonly lastTodoU: number;
   readonly lastNotesU: number;
   readonly lastNotesStep: number;
@@ -36,7 +48,9 @@ export interface ContinuityClock {
 export function initialContinuityClock(): ContinuityClock {
   return { humanTurnOrdinal: 0, humanInputRevision: 0, workStepOrdinal: 0, lastTodoU: 0, lastNotesU: 0,
     lastNotesStep: 0, lastProgressU: 0, lastProgressStep: 0, progressCount: 0, todoReminderCount: 0, notesReminderCount: 0, stateRevision: 0, todoHash: '', notesHash: hashTodoNotes(undefined),
-    humanBoundary: false, inputIds: [], stepIds: [], deliveredInputs: [], pollingCalls: [], substantial: false };
+    humanBoundary: false, inputIds: [], stepIds: [], deliveredInputs: [], pollingCalls: [], substantial: false,
+    workTokens: 0, stepTokens: 0, lastTodoStep: 0, lastTodoReminderU: 0, lastTodoReminderStep: 0,
+    lastNotesReminderU: 0, lastNotesReminderStep: 0, memoryMaintenance: initialMemoryMaintenance() };
 }
 
 export function isHumanOrigin(origin: PromptOrigin | undefined): boolean {
@@ -66,16 +80,34 @@ export function advanceContinuityClock(state: ContinuityClock, event: TurnPrompt
   }
   if (event.type === ContextAppendLoopEvent.type) {
     const loop = (event as ContextAppendLoopEvent).event;
-    if (loop.type === 'step.begin') return { ...state, openStep: loop.uuid, substantial: false, pollingCalls: [] };
-    if (loop.type === 'content.part' && loop.part.type === 'text' && loop.part.text.trim()) return { ...state, substantial: true };
-    if (loop.type === 'tool.result' && !state.pollingCalls.includes(loop.toolCallId) && !loop.result.isError &&
-      (typeof loop.result.output !== 'string' || loop.result.output.trim().length > 0)) return { ...state, substantial: true };
-    if (loop.type === 'tool.call' && ['TaskWait', 'TaskOutput', 'TaskList', 'AgentList'].includes(loop.name)) {
-      return { ...state, substantial: false, pollingCalls: [...state.pollingCalls, loop.toolCallId] };
+    if (loop.type === 'step.begin') return { ...state, openStep: loop.uuid, substantial: false, successfulWork: false, stepTokens: 0, pollingCalls: [] };
+    if (loop.type === 'content.part' && loop.part.type === 'text' && loop.part.text.trim()) return { ...state, substantial: true,
+      stepTokens: (state.stepTokens ?? 0) + Math.ceil(loop.part.text.length / 4) };
+    const maintenance = state.memoryMaintenance ?? initialMemoryMaintenance();
+    if (loop.type === 'tool.call' && loop.name === 'MemoryWrite') {
+      const source = maintenance.offer?.inputRevision === state.humanInputRevision ? maintenance.offer.source : `unassociated:${loop.toolCallId}`;
+      return { ...state, memoryMaintenance: { ...maintenance, calls: { ...maintenance.calls, [loop.toolCallId]: source } } };
     }
+    if (loop.type === 'tool.result') {
+      const { [loop.toolCallId]: source, ...calls } = maintenance.calls;
+      const receipt = loop.result.isError ? undefined : loop.result.memoryReceipt;
+      const memoryMaintenance = { ...maintenance, calls,
+        receipts: receipt === undefined ? maintenance.receipts : [...maintenance.receipts.filter((entry) => entry.id !== receipt.id).slice(-255),
+          { ...receipt, source: source ?? `unassociated:${loop.toolCallId}` }] };
+      const text = typeof loop.result.output === 'string' ? loop.result.output : loop.result.output.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n');
+      const useful = !state.pollingCalls.includes(loop.toolCallId) && !loop.result.isError && text.trim().length > 0;
+      return { ...state, memoryMaintenance, substantial: state.substantial || useful, successfulWork: state.successfulWork || useful,
+        stepTokens: (state.stepTokens ?? 0) + (useful ? Math.ceil(text.length / 4) : 0) };
+    }
+    if (loop.type === 'tool.call' && ['TaskWait', 'TaskOutput', 'TaskList', 'AgentList', 'TodoList'].includes(loop.name)) {
+      return { ...state, substantial: state.successfulWork === true, stepTokens: state.successfulWork ? state.stepTokens : 0,
+        pollingCalls: [...state.pollingCalls, loop.toolCallId] };
+    }
+    if (loop.type === 'tool.call') return { ...state, substantial: state.successfulWork === true };
     const stepId = loop.type === 'step.end' ? loop.turnId === undefined || loop.step === undefined ? loop.uuid : `t${loop.turnId}.${loop.step}` : undefined;
     if (stepId !== undefined && state.substantial && !state.stepIds.includes(stepId)) {
-      return { ...state, workStepOrdinal: state.workStepOrdinal + 1, stepIds: [...state.stepIds.slice(-255), stepId], substantial: false };
+      return { ...state, workStepOrdinal: state.workStepOrdinal + 1, workTokens: (state.workTokens ?? 0) + (state.stepTokens ?? 0),
+        stepIds: [...state.stepIds.slice(-255), stepId], substantial: false, stepTokens: 0 };
     }
     return state;
   }
@@ -84,7 +116,7 @@ export function advanceContinuityClock(state: ContinuityClock, event: TurnPrompt
     if (update.key === 'todo') {
       const hash = JSON.stringify(update.value);
       if (hash === state.todoHash) return state;
-      return { ...state, todoHash: hash, lastTodoU: state.humanTurnOrdinal, progressCount: 0, todoReminderCount: 0, stateRevision: state.stateRevision + 1 };
+      return { ...state, todoHash: hash, lastTodoU: state.humanTurnOrdinal, lastTodoStep: state.workStepOrdinal, progressCount: 0, todoReminderCount: 0, stateRevision: state.stateRevision + 1 };
     }
     if (update.key === 'todo_notes') {
       const hash = hashTodoNotes((update.value as { notes?: TodoNotes }).notes);
@@ -103,11 +135,27 @@ export function advanceContinuityClock(state: ContinuityClock, event: TurnPrompt
     ? [...(state.historyReferences ?? []).filter((item) => item.topic !== disclosure.historyTopic).slice(-255),
       { topic: disclosure.historyTopic, humanTurnOrdinal: state.humanTurnOrdinal, stateRevision: state.stateRevision }]
     : state.historyReferences;
-  if (!disclosure?.triggers.some((trigger) => trigger === 'T0' || trigger === 'T1')) return { ...state, deliveredInputs: delivered, historyReferences };
-  return { ...state, deliveredInputs: delivered, historyReferences, lastProgressU: state.humanTurnOrdinal,
+  const maintenance = state.memoryMaintenance ?? initialMemoryMaintenance();
+  const offer = disclosure?.memory;
+  const memoryMaintenance = offer === undefined ? state.memoryMaintenance : { ...maintenance, offer,
+    inputIds: offer.reason === 'M1' && disclosure?.inputId !== undefined
+      ? [...maintenance.inputIds.filter((id) => id !== disclosure.inputId).slice(-255), disclosure.inputId] : maintenance.inputIds,
+    periodicEpoch: offer.reason === 'M3' ? offer.epoch : maintenance.periodicEpoch,
+    renewalEpoch: offer.reason === 'M2' ? offer.epoch : maintenance.renewalEpoch };
+  const common = { ...state, deliveredInputs: delivered, historyReferences, memoryMaintenance,
+    notesRenewalEpoch: disclosure?.triggers.includes('T2') ? disclosure.epoch : state.notesRenewalEpoch,
+    notesRebuildEpoch: disclosure?.triggers.includes('P1') ? disclosure.epoch : state.notesRebuildEpoch };
+  if (!disclosure?.triggers.some((trigger) => trigger === 'T0' || trigger === 'T1')) return common;
+  const todo = disclosure.triggers.includes('T0');
+  const notes = disclosure.triggers.includes('T1');
+  return { ...common, lastProgressU: state.humanTurnOrdinal,
     lastProgressStep: state.workStepOrdinal, progressCount: state.progressCount + 1,
-    todoReminderCount: state.todoReminderCount + (disclosure.triggers.includes('T0') ? 1 : 0),
-    notesReminderCount: state.notesReminderCount + (disclosure.triggers.includes('T1') ? 1 : 0) };
+    lastTodoReminderU: todo ? state.humanTurnOrdinal : state.lastTodoReminderU,
+    lastTodoReminderStep: todo ? state.workStepOrdinal : state.lastTodoReminderStep,
+    lastNotesReminderU: notes ? state.humanTurnOrdinal : state.lastNotesReminderU,
+    lastNotesReminderStep: notes ? state.workStepOrdinal : state.lastNotesReminderStep,
+    todoReminderCount: state.todoReminderCount + (todo ? 1 : 0),
+    notesReminderCount: state.notesReminderCount + (notes ? 1 : 0) };
 }
 
 export const continuityClockKey = defineState('todo.continuityClock', initialContinuityClock)

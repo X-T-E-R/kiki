@@ -596,9 +596,14 @@ export class Session {
     return this.rpc.listPlugins();
   }
 
-  async installPlugin(source: string): Promise<PluginSummary> {
+  previewPlugin(input: import('@kiki/protocol').PluginPreviewRequest): Promise<import('@kiki/protocol').PluginInstallPlan> {
     this.ensureOpen();
-    return this.rpc.installPlugin(source);
+    return this.rpc.previewPlugin(input);
+  }
+
+  async installPlugin(source: string, options?: Omit<import('@kiki/protocol').PluginInstallRequest, 'source'>): Promise<PluginSummary> {
+    this.ensureOpen();
+    return this.rpc.installPlugin(source, options);
   }
 
   async setPluginEnabled(id: string, enabled: boolean): Promise<void> {

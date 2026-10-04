@@ -94,7 +94,11 @@ export function kikiShimFiles(launch: KikiCliLaunch, platform: string): readonly
 }
 
 function renderPosixShim(args: readonly string[]): string {
-  return `#!/bin/sh\nexec ${args.map(quoteDouble).join(' ')} "$@"\n`;
+  return `#!/bin/sh\nexec ${args.map(quoteShell).join(' ')} "$@"\n`;
+}
+
+function quoteShell(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function renderCmdShim(launch: KikiCliLaunch): string {

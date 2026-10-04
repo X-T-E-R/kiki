@@ -8,6 +8,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { IMcpManagementService } from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
 import { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
+import { IFlagService as importFlags } from '@kiki/agent-core-v2/app/flag/flag';
 
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -655,6 +656,16 @@ export function defineKlientConformance(
       expect(typeof status.loggedIn).toBe('boolean');
     });
 
+    it('global import read models share the session-independent facade across transports', async () => {
+      const flags = target.app.accessor.get(importFlags);
+      flags.setConfigOverrides({ plugin_import: true });
+      try {
+        expect(await target.klient.global.imports.sources()).toEqual([]);
+        expect(await target.klient.global.imports.jobs()).toEqual({ items: [], cursor: null });
+        expect(await target.klient.global.imports.archives()).toEqual({ items: [], cursor: null });
+      } finally { flags.setConfigOverrides({}); }
+    });
+
     it('global mcp round-trips user-level server CRUD', async () => {
       const mcp = target.klient.global.mcp;
       const cwd = await mkdtemp(join(tmpdir(), 'klient-conf-mcp-crud-'));
@@ -699,6 +710,19 @@ export function defineKlientConformance(
       } finally {
         await rm(cwd, { recursive: true, force: true });
       }
+    });
+
+    it('global mcp stop preserves configuration and distinguishes scoped idle from desktop idle', async () => {
+      const mcp = target.klient.global.mcp;
+      const name = 'conf-computer';
+      try {
+        await mcp.add({ server: { name, transport: 'stdio', command: '/fixture/cua-driver', args: ['mcp'], executor: 'local' } });
+        const stopped = await mcp.stop({ name });
+        expect(stopped).toMatchObject({ state: 'idle', output: expect.stringContaining('service process') });
+        expect((await mcp.get({ name })).config).toMatchObject({ enabled: false, command: '/fixture/cua-driver', args: ['mcp'] });
+        await mcp.update({ server: { name, transport: 'stdio', command: 'ordinary-command' } });
+        await expect(mcp.stop({ name })).rejects.toMatchObject({ name: 'RPCError', code: 40001 });
+      } finally { await mcp.remove({ name }); }
     });
 
     it('global mcp probes an inline server config without persisting it', async () => {

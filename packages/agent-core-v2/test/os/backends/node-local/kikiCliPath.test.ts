@@ -1,4 +1,8 @@
+import { execFile } from 'node:child_process';
+import { copyFile, link, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import {
   applyKikiCliEnv,
@@ -106,12 +110,58 @@ describe('toShellExecutablePath', () => {
 });
 
 describe('kikiShimFiles', () => {
+  it('quotes shell metacharacters literally, including embedded single quotes', () => {
+    const path = "/opt/中文 $HOME `id` \"quote\" \\slash/a'b";
+    const files = kikiShimFiles({ kind: 'executable', executable: path }, 'linux');
+    expect(files[0]?.content).toBe("#!/bin/sh\nexec '/opt/中文 $HOME `id` \"quote\" \\slash/a'\\''b' \"$@\"\n");
+  });
+
+  it.each(([
+    ['portable', "中文 space $KIKI_SHIM_UNSET `echo expanded` 'quote'"],
+    ['posix', "中文 space $KIKI_SHIM_UNSET `echo expanded` 'quote' \"double\" \\backslash"],
+  ] as const).filter(([kind]) => kind !== 'posix' || process.platform !== 'win32'))('executes the %s path and forwards argument boundaries through a real sh', async (_kind, directory) => {
+    const scratch = fileURLToPath(new URL('../../../../../../.tmp/', import.meta.url));
+    await mkdir(scratch, { recursive: true });
+    const root = await mkdtemp(join(scratch, 'shim-'));
+    try {
+      const install = join(root, directory);
+      await mkdir(install);
+      const node = join(install, process.platform === 'win32' ? 'node.exe' : 'node');
+      await link(process.execPath, node).catch(() => copyFile(process.execPath, node));
+      const entry = join(install, 'main.mjs');
+      await writeFile(entry, 'process.stdout.write(JSON.stringify(process.argv.slice(2)));');
+      const shellPath = process.platform === 'win32' ? toShellExecutablePath : (path: string) => path;
+      const args = ['中文 with space', '$literal', '`literal`', '"double"', "single'quote", '\\', ''];
+      const forwarderNode = process.platform === 'win32' ? node.replaceAll('\\', '/') : node;
+      const forwarderEntry = process.platform === 'win32' ? entry.replaceAll('\\', '/') : entry;
+      const launch = await ensureKikiCliShim({
+        kikiHome: root,
+        platform: 'linux',
+        isSea: () => false,
+        execPath: forwarderNode,
+        argv: [forwarderNode, forwarderEntry],
+      });
+      expect(launch).toBeDefined();
+      const shellOptions = { timeout: 5_000, cwd: root };
+      const runner = join(root, 'runner.sh');
+      await writeFile(runner, "#!/bin/sh\nexec ./bin/shim/kiki '中文 with space' '$literal' '`literal`' '\"double\"' \"single'quote\" '\\' ''\n");
+      const result = await promisify(execFile)('sh', [shellPath(runner)], shellOptions);
+      expect(JSON.parse(result.stdout)).toEqual(args);
+      const executable = kikiShimFiles({ kind: 'executable', executable: forwarderNode }, 'linux')[0]!;
+      const executableShim = join(root, 'executable-shim');
+      await writeFile(executableShim, executable.content);
+      const version = await promisify(execFile)('sh', [shellPath(executableShim), '--version'], shellOptions);
+      expect(version.stdout.trim()).toBe(process.version);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
   it('renders only the sh forwarder on POSIX', () => {
     const files = kikiShimFiles({ kind: 'executable', executable: '/opt/kiki/kiki-server' }, 'linux');
     expect(files).toEqual([
       {
         name: 'kiki',
-        content: '#!/bin/sh\nexec "/opt/kiki/kiki-server" "$@"\n',
+        content: "#!/bin/sh\nexec '/opt/kiki/kiki-server' \"$@\"\n",
         mode: 0o755,
       },
     ]);
@@ -122,7 +172,7 @@ describe('kikiShimFiles', () => {
     expect(files).toEqual([
       {
         name: 'kiki',
-        content: `#!/bin/sh\nexec "${toShellExecutablePath(SEA_EXE)}" "$@"\n`,
+        content: `#!/bin/sh\nexec '${toShellExecutablePath(SEA_EXE)}' "$@"\n`,
         mode: 0o755,
       },
       {
@@ -138,7 +188,7 @@ describe('kikiShimFiles', () => {
     expect(files).toEqual([
       {
         name: 'kiki',
-        content: `#!/bin/sh\nexec "${toShellExecutablePath(NODE_EXE)}" "${toShellExecutablePath(NODE_ENTRY)}" "$@"\n`,
+        content: `#!/bin/sh\nexec '${toShellExecutablePath(NODE_EXE)}' '${toShellExecutablePath(NODE_ENTRY)}' "$@"\n`,
         mode: 0o755,
       },
       {

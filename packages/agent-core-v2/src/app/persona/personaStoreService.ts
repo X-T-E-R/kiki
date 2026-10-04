@@ -37,6 +37,7 @@ import {
   type PersonaImportPreview,
   type PersonaImportResult,
   type PersonaListOptions,
+  type PersonaLifecycleHooks,
   type PersonaMemoryImportEntry,
   type PersonaMemoryHooks,
   type PersonaPutInput,
@@ -70,6 +71,7 @@ export class PersonaStore extends Disposable implements IPersonaStore {
   private readonly changeEmitter = this._register(new Emitter<void>());
   private readonly externalChangeDebounce = this._register(new TimeoutTimer());
   private memoryHooks: PersonaMemoryHooks | undefined;
+  private lifecycleHooks: PersonaLifecycleHooks | undefined;
   readonly onDidChange = this.changeEmitter.event;
 
   constructor(
@@ -120,6 +122,9 @@ export class PersonaStore extends Disposable implements IPersonaStore {
           job: snapshot.definition.job,
           revision: snapshot.revision,
           archived: state.archived,
+          homeSessionId: state.homeSessionId,
+          pinned: state.pinned === true,
+          hidden: state.hidden === true,
           avatarMime: avatar?.mimeType,
           avatarShape: avatar === undefined ? undefined : await this.readAvatarShape(name),
         });
@@ -136,21 +141,25 @@ export class PersonaStore extends Disposable implements IPersonaStore {
     assertPersonaId(id);
     const definition: PersonaDefinition = { ...normalized.definition, id };
     const personaText = serializePersonaFile(definition);
+    this.validateDefinitionText(id, personaText);
+    const extensionsText = normalized.extensions === undefined ? undefined : JSON.stringify(normalized.extensions, null, 2);
+    if (extensionsText !== undefined) assertTextSize(EXTENSIONS_FILE, extensionsText, MAX_EXTENSIONS_BYTES);
     let examples: string | undefined;
     let before: ReadonlyMap<string, Uint8Array> | undefined;
     let mutated = false;
     try {
       await this.withLock(id, async () => {
         before = await this.snapshotFiles(id);
-        const existingRaw = await this.readRaw(id, PERSONA_FILE, MAX_PERSONA_BYTES);
-        const existingExamples = await this.readRaw(id, EXAMPLES_FILE, MAX_EXAMPLES_BYTES);
+        const existingRaw = decodeOptional(before.get(PERSONA_FILE));
+        const existingExamples = decodeOptional(before.get(EXAMPLES_FILE));
         if (normalized.createOnly === true && existingRaw !== undefined) throw new Error(`Persona already exists: ${id}`);
         if (normalized.expectedRevision !== undefined) {
           const currentRevision = existingRaw === undefined ? undefined : personaRevision(existingRaw, existingExamples);
           if (currentRevision !== normalized.expectedRevision) throw new Error(`Persona revision conflict for ${id}`);
         }
         examples = normalized.examplesProvided ? normalized.examples : existingExamples;
-        if (examples !== undefined && textEncoder.encode(examples).byteLength > MAX_EXAMPLES_BYTES) throw new Error('Persona examples exceed the size limit');
+        if (examples !== undefined) assertTextSize(EXAMPLES_FILE, examples, MAX_EXAMPLES_BYTES);
+        if (!normalized.extensionsProvided) await this.readJson(id, EXTENSIONS_FILE, MAX_EXTENSIONS_BYTES);
         mutated = true;
         await this.writeRaw(id, PERSONA_FILE, personaText);
         if (normalized.examplesProvided) {
@@ -158,8 +167,8 @@ export class PersonaStore extends Disposable implements IPersonaStore {
           else await this.writeRaw(id, EXAMPLES_FILE, examples);
         }
         if (normalized.extensionsProvided) {
-          if (normalized.extensions === undefined) await this.storage.delete(this.scope(id), EXTENSIONS_FILE);
-          else await this.writeJson(id, EXTENSIONS_FILE, normalized.extensions, MAX_EXTENSIONS_BYTES);
+          if (extensionsText === undefined) await this.storage.delete(this.scope(id), EXTENSIONS_FILE);
+          else await this.writeRaw(id, EXTENSIONS_FILE, extensionsText);
         }
         await this.updateCatalog((ids) => [...new Set([...ids, id])]);
       });
@@ -191,7 +200,33 @@ export class PersonaStore extends Disposable implements IPersonaStore {
   }
 
   async archive(id: string, archived = true): Promise<PersonaState> {
-    return this.updateState(id, { archived });
+    const state = await this.withLock(id, async () => {
+      if (await this.get(id) === undefined) throw new Error(`Persona not found: ${id}`);
+      const current = await this.readState(id);
+      const patch = archived ? await this.lifecycleHooks?.beforeArchive(id, current, (patch) => this.writeJson(id, STATE_FILE, { ...current, ...patch }, 8 * 1024)) : undefined;
+      const next = { ...current, ...patch, archived, version: 1 as const };
+      await this.writeJson(id, STATE_FILE, next, 8 * 1024);
+      return next;
+    });
+    this.changeEmitter.fire();
+    return state;
+  }
+
+  setLifecycleHooks(hooks: PersonaLifecycleHooks | undefined): void {
+    this.lifecycleHooks = hooks;
+  }
+
+  async claimHomeSession(id: string, sessionId: string, expectedHomeSessionId?: string): Promise<PersonaState> {
+    const state = await this.withLock(id, async () => {
+      if (await this.get(id) === undefined) throw new Error(`Persona not found: ${id}`);
+      const current = await this.readState(id);
+      if (current.homeSessionId !== expectedHomeSessionId || current.archived) return current;
+      const next = { ...current, homeSessionId: sessionId };
+      await this.writeJson(id, STATE_FILE, next, 8 * 1024);
+      return next;
+    });
+    this.changeEmitter.fire();
+    return state;
   }
 
   async getState(id: string): Promise<PersonaState> {
@@ -200,12 +235,13 @@ export class PersonaStore extends Disposable implements IPersonaStore {
     return this.readState(id);
   }
 
-  async updateState(id: string, patch: PersonaStatePatch): Promise<PersonaState> {
+  async updateState(id: string, patch: PersonaStatePatch, validate?: (current: PersonaState) => Promise<void>): Promise<PersonaState> {
     assertPersonaId(id);
     if (await this.get(id) === undefined) throw new Error(`Persona not found: ${id}`);
     let state: PersonaState = { version: 1, archived: false };
     await this.withLock(id, async () => {
       const current = await this.readState(id);
+      await validate?.(current);
       state = { ...current, ...patch, version: 1 };
       if (typeof state.archived !== 'boolean') throw new Error('Persona state archived must be a boolean');
       await this.writeJson(id, STATE_FILE, state, 8 * 1024);
@@ -217,9 +253,15 @@ export class PersonaStore extends Disposable implements IPersonaStore {
   async delete(id: string, expectedRevision?: string): Promise<PersonaDeleteResult> {
     assertPersonaId(id);
     return this.withLock(id, async () => {
-      const snapshot = await this.get(id);
-      if (snapshot === undefined) return { memory: { status: 'committed' as const } };
-      if (expectedRevision !== undefined && expectedRevision !== snapshot.revision) throw new Error(`Persona revision conflict for ${id}`);
+      const keys = await this.storage.list(this.scope(id));
+      if (keys.length === 0) return { memory: { status: 'committed' as const } };
+      if (expectedRevision !== undefined) {
+        const raw = await this.storage.read(this.scope(id), PERSONA_FILE, { recoverMissing: false });
+        const examples = await this.storage.read(this.scope(id), EXAMPLES_FILE, { recoverMissing: false });
+        const revision = raw === undefined ? undefined : personaRevision(textDecoder.decode(raw), decodeOptional(examples));
+        if (expectedRevision !== revision) throw new Error(`Persona revision conflict for ${id}`);
+      }
+      await this.lifecycleHooks?.beforeDelete(id);
       const memory = await this.deleteMemory(id);
       if (memory.status !== 'committed') return { memory };
       for (const key of await this.storage.list(this.scope(id))) await this.storage.delete(this.scope(id), key);
@@ -243,7 +285,11 @@ export class PersonaStore extends Disposable implements IPersonaStore {
       await normalizeAvatar(parsed.avatar.data, detectAvatarMime(parsed.avatar.data, parsed.avatar.mimeType));
     }
     const personaText = serializePersonaFile(definition);
-    let examples: string | undefined = preview.examples;
+    this.validateDefinitionText(id, personaText);
+    const examples = preview.examples;
+    if (examples !== undefined) assertTextSize(EXAMPLES_FILE, examples, MAX_EXAMPLES_BYTES);
+    const extensionsText = preview.extensions === undefined ? undefined : JSON.stringify(preview.extensions, null, 2);
+    if (extensionsText !== undefined) assertTextSize(EXTENSIONS_FILE, extensionsText, MAX_EXTENSIONS_BYTES);
     let before: ReadonlyMap<string, Uint8Array> | undefined;
     let mutated = false;
     let memory: PersonaImportResult['memory'] = { status: 'committed', count: 0 };
@@ -254,7 +300,7 @@ export class PersonaStore extends Disposable implements IPersonaStore {
         mutated = true;
         await this.writeRaw(id, PERSONA_FILE, personaText);
         if (examples !== undefined && examples.length > 0) await this.writeRaw(id, EXAMPLES_FILE, examples);
-        if (preview.extensions !== undefined) await this.writeJson(id, EXTENSIONS_FILE, preview.extensions, MAX_EXTENSIONS_BYTES);
+        if (extensionsText !== undefined) await this.writeRaw(id, EXTENSIONS_FILE, extensionsText);
         await this.updateCatalog((ids) => [...new Set([...ids, id])]);
         if (parsed.avatar !== undefined) await this.writeAvatarUnlocked(id, parsed.avatar);
         if (parsed.assets !== undefined) await this.writeAssetsUnlocked(id, parsed.assets);
@@ -396,6 +442,12 @@ export class PersonaStore extends Disposable implements IPersonaStore {
     };
   }
 
+  private validateDefinitionText(id: string, text: string): void {
+    assertPersonaId(id);
+    assertTextSize(PERSONA_FILE, text, MAX_PERSONA_BYTES);
+    parsePersonaFileText({ path: this.path(id, PERSONA_FILE), id, text });
+  }
+
   private async readRaw(id: string, key: string, limit: number): Promise<string | undefined> {
     const size = await this.storage.size(this.scope(id), key);
     if (size === undefined) return undefined;
@@ -420,7 +472,7 @@ export class PersonaStore extends Disposable implements IPersonaStore {
 
   private async writeJson(id: string, key: string, value: unknown, limit: number): Promise<void> {
     const text = JSON.stringify(value, null, 2);
-    if (textEncoder.encode(text).byteLength > limit) throw new Error(`${key} exceeds the size limit`);
+    assertTextSize(key, text, limit);
     await this.writeRaw(id, key, text);
   }
 
@@ -534,8 +586,8 @@ export class PersonaStore extends Disposable implements IPersonaStore {
 
   private async readState(id: string): Promise<PersonaState> {
     const value = await this.readJson(id, STATE_FILE, 8 * 1024);
-    if (!isRecord(value) || value['version'] !== 1 || typeof value['archived'] !== 'boolean') return { version: 1, archived: false };
-    return value as PersonaState;
+    if (!isRecord(value) || value['version'] !== 1 || typeof value['archived'] !== 'boolean') return { version: 1, archived: false, pinned: false, hidden: false };
+    return { ...value, pinned: value['pinned'] === true, hidden: value['hidden'] === true } as PersonaState;
   }
 
   private async findAvatar(id: string): Promise<{ readonly key: string; readonly mimeType: PersonaAvatarMime; readonly extension: AvatarExtension } | undefined> {
@@ -682,6 +734,14 @@ function isPersonaDefinition(input: PersonaPutInput | PersonaDefinition): input 
 
 function assertPersonaId(id: string): void {
   if (!PERSONA_ID_PATTERN.test(id)) throw new Error(`Invalid persona id "${id}"`);
+}
+
+function assertTextSize(key: string, text: string, limit: number): void {
+  if (textEncoder.encode(text).byteLength > limit) throw new Error(`Persona file ${key} exceeds the size limit`);
+}
+
+function decodeOptional(bytes: Uint8Array | undefined): string | undefined {
+  return bytes === undefined ? undefined : textDecoder.decode(bytes);
 }
 
 function derivePersonaId(name: string): string {

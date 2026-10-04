@@ -26,6 +26,7 @@ interface CatalogSnapshot {
 
 interface SessionIndexSnapshot {
   readonly idsByRootKey: ReadonlyMap<string, readonly string[]>;
+  readonly rootKeyById: ReadonlyMap<string, string>;
 }
 
 function rootKeyIndex<T>(
@@ -90,8 +91,8 @@ export class WorkspaceAliasesService extends Disposable implements IWorkspaceAli
       const [catalog, index] = await Promise.all([this.catalog(), this.sessionIndex()]);
       if (generation !== this.invalidationGeneration) continue;
       const entry = catalog.byId.get(id);
-      if (entry === undefined) return [id];
-      const rootKey = workspaceRootKey(entry.root);
+      const rootKey = entry === undefined ? index.rootKeyById.get(id) : workspaceRootKey(entry.root);
+      if (rootKey === undefined) return [id];
       const fromCatalog = catalog.idsByRootKey.get(rootKey);
       const fromIndex = index.idsByRootKey.get(rootKey);
       if (fromCatalog === undefined) return fromIndex ?? [id];
@@ -167,7 +168,22 @@ export class WorkspaceAliasesService extends Disposable implements IWorkspaceAli
         if (storageId !== undefined && !ids.includes(storageId)) ids.push(storageId);
         idsByRootKey.set(key, ids);
       }
-      const snapshot: SessionIndexSnapshot = { idsByRootKey };
+      const rootsById = new Map<string, Set<string>>();
+      for (const [rootKey, ids] of idsByRootKey) {
+        for (const id of ids) {
+          const roots = rootsById.get(id) ?? new Set<string>();
+          roots.add(rootKey);
+          rootsById.set(id, roots);
+        }
+      }
+      const rootKeyById = new Map<string, string>();
+      for (const [id, roots] of rootsById) {
+        if (roots.size === 1) rootKeyById.set(id, [...roots][0]!);
+      }
+      for (const [rootKey, ids] of idsByRootKey) {
+        idsByRootKey.set(rootKey, ids.filter((id) => rootKeyById.get(id) === rootKey));
+      }
+      const snapshot: SessionIndexSnapshot = { idsByRootKey, rootKeyById };
       if (generation === this.invalidationGeneration) {
         this.sessionIndexCache = {
           snapshot,

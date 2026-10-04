@@ -375,9 +375,8 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       const store = transcript.forSessionLive(sessionId);
       let turn: TranscriptTurn | undefined;
       if (store !== undefined) {
-        await transcript.whenReady(sessionId);
-        await transcript.ensureAgentHistory(sessionId, agentId);
-        turn = store.getAgent(agentId)?.snapshot().items.find(
+        const projection = await transcript.ensureAgentHistory(sessionId, agentId);
+        turn = projection?.snapshot().items.find(
           (item): item is TranscriptTurn => item.kind === 'turn' && item.ordinal === ordinal,
         );
       }

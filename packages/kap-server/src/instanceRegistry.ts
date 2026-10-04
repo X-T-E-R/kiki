@@ -3,6 +3,7 @@ import { mkdir, open, readdir, readFile, rename, stat, unlink } from 'node:fs/pr
 import { join } from 'node:path';
 
 import { resolveKikiHome } from '@kiki/agent-core-v2';
+import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
 import { ulid } from 'ulid';
 
 /** Default cadence for refreshing `heartbeat_at`. */
@@ -40,7 +41,7 @@ interface ServerInstanceDisk {
 
 export interface InstanceRegistration {
   readonly serverId: string;
-  update(patch: { port?: number; workspaces?: readonly string[] }): Promise<void>;
+  update(patch: { port?: number; workspaces?: readonly string[]; removedWorkspaces?: readonly string[] }): Promise<void>;
   release(): Promise<void>;
 }
 
@@ -230,12 +231,18 @@ export function createInstanceRegistry(options: InstanceRegistryOptions = {}): I
       };
 
       let pendingWrites = Promise.resolve();
-      const write = (patch?: { port?: number; workspaces?: readonly string[] }): Promise<void> => {
+      const write = (patch?: Parameters<InstanceRegistration['update']>[0]): Promise<void> => {
         const current = pendingWrites.then(async () => {
           if (state.released) return;
           const port = patch?.port ?? state.port;
           const workspaces = new Set(state.workspaces);
           for (const workspace of patch?.workspaces ?? []) workspaces.add(workspace);
+          if (patch?.removedWorkspaces !== undefined) {
+            const removed = new Set(patch.removedWorkspaces.map(canonicalWorkspaceRoot));
+            for (const workspace of workspaces) {
+              if (removed.has(canonicalWorkspaceRoot(workspace))) workspaces.delete(workspace);
+            }
+          }
           const full: ServerInstanceInfo = {
             serverId,
             pid: info.pid,

@@ -86,6 +86,10 @@ export interface AgentRecordEvents {
     activeToolNames?: readonly string[];
     /** v2 profile denylist, applied on top of `activeToolNames`. */
     disallowedTools?: readonly string[];
+    canSpawnSubagents?: boolean;
+    allowedSubagents?: readonly string[];
+    preferredSubagents?: readonly string[];
+    denySubagents?: readonly string[];
     subagents?: readonly string[];
   };
 

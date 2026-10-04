@@ -316,6 +316,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     generation: number,
   ): Promise<IAgentScopeHandle> {
     let priorAgentMeta: AgentMeta | undefined;
+    let appliedAgentMeta: AgentMeta | undefined;
+    let bootstrapBinding: AgentMeta | undefined;
+    const appliedLabels: Record<string, string> = {};
     const agentScope = this.ctx.scope(`agents/${agentId}`);
     const agentHomedir = join(this.bootstrap.homeDir, agentScope);
     const parentAgentId =
@@ -351,7 +354,15 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       this.subscribeUsage(handle);
       this.onWillCreateEmitter.fire(handle);
       await handle.accessor.get(IEventDispatcher).restore();
+      const beforeBinding = handle.accessor.get(IAgentProfileService).data();
+      const writesBinding = opts.binding !== undefined || (opts.restoreBinding !== undefined &&
+        beforeBinding.profileName === undefined && beforeBinding.routeId === undefined);
       const restoreFellBack = await this.bindBootstrap(handle, opts);
+      const binding = handle.accessor.get(IAgentProfileService).data();
+      if (writesBinding) bootstrapBinding = { model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
+        executor: binding.executorId ?? 'native', executorProtocol: binding.executorProtocol,
+        negotiated: priorAgentMeta?.executor === binding.executorId ? priorAgentMeta?.negotiated : undefined,
+        allowKikiSubagents: binding.allowKikiSubagents };
       if (opts.restoreBinding !== undefined) {
         await this.validateRestoredBinding(handle, opts.restoreBinding, restoreFellBack);
       }
@@ -363,26 +374,34 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       }
       const delegationPosition = resolveDelegationPosition(agentId, opts.delegator);
       this.assertCreateStillCurrent(agentId, slot, generation);
-      await this.sessionMetadata.registerAgent(agentId, {
-        ...priorAgentMeta,
-        homedir: agentHomedir,
-        type: delegationPosition,
-        parentAgentId,
-        delegator: opts.delegator,
-        forkedFrom: opts.forkedFrom,
-        labels: withSubagentProfile(
-          opts.labels,
-          delegationPosition === 'main' ? undefined : profile.profileName,
-        ),
-        displayName: priorAgentMeta?.displayName ?? profile.routeId ?? profile.profileName,
-        userLabel: opts.userLabel ?? priorAgentMeta?.userLabel,
-        model: profile.modelAlias,
-        thinkingEffort: profile.effectiveThinkingLevel ?? profile.thinkingLevel,
-        executor: profile.executorId ?? 'native',
-        executorProtocol: profile.executorProtocol,
-        negotiated: priorAgentMeta?.executor === profile.executorId ? priorAgentMeta?.negotiated : undefined,
-        allowKikiSubagents: profile.allowKikiSubagents,
-      });
+      const requestedLabels = withSubagentProfile(opts.labels, delegationPosition === 'main' ? undefined : profile.profileName);
+      const applyIdentity = (current: AgentMeta): AgentMeta => {
+        const labels = { ...current.labels };
+        for (const [key, value] of Object.entries(requestedLabels ?? {})) {
+          if (key === 'profileName' || value !== priorAgentMeta?.labels?.[key] || current.labels?.[key] === priorAgentMeta?.labels?.[key]) {
+            labels[key] = value;
+            if (current.labels?.[key] !== value) appliedLabels[key] = value;
+          }
+        }
+        appliedAgentMeta = {
+          ...current, homedir: agentHomedir, type: delegationPosition, parentAgentId, delegator: opts.delegator,
+          forkedFrom: opts.forkedFrom, labels: current.labels === undefined && requestedLabels === undefined ? undefined : labels,
+          displayName: current.displayName ?? profile.routeId ?? profile.profileName,
+          userLabel: opts.userLabel ?? current.userLabel,
+          model: profile.modelAlias, thinkingEffort: profile.effectiveThinkingLevel ?? profile.thinkingLevel,
+          executor: profile.executorId ?? 'native', executorProtocol: profile.executorProtocol,
+          negotiated: current.executor === profile.executorId ? current.negotiated : undefined,
+          allowKikiSubagents: profile.allowKikiSubagents,
+        };
+        return appliedAgentMeta;
+      };
+      if (priorAgentMeta === undefined) {
+        await this.sessionMetadata.registerAgent(agentId, applyIdentity({}));
+      } else {
+        await this.sessionMetadata.updateAgent(agentId, applyIdentity);
+        if (appliedAgentMeta === undefined) throw new Error2(ErrorCodes.AGENT_REMOVED,
+          `Agent "${agentId}" was unregistered before its creation completed`, { details: { agentId } });
+      }
       this.assertCreateStillCurrent(agentId, slot, generation);
       slot.handle = handle;
       if (opts.deferCreateEvent === true) slot.deferredCreateEvent = true;
@@ -393,8 +412,28 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       if (slot.handle === handle) slot.handle = undefined;
       if (priorAgentMeta === undefined) {
         await this.sessionMetadata.unregisterAgent?.(agentId).catch(() => {});
-      } else {
-        await this.sessionMetadata.registerAgent(agentId, priorAgentMeta).catch(() => {});
+      } else if (appliedAgentMeta !== undefined || bootstrapBinding !== undefined) {
+        const prior = priorAgentMeta;
+        const written = appliedAgentMeta ?? bootstrapBinding!;
+        await this.sessionMetadata.updateAgent(agentId, (current) => {
+          const next = { ...current };
+          const bindingKeys = ['model', 'thinkingEffort', 'executor', 'executorProtocol', 'negotiated', 'allowKikiSubagents'] as const;
+          const keys = appliedAgentMeta === undefined ? bindingKeys
+            : [...bindingKeys, 'homedir', 'type', 'parentAgentId', 'delegator', 'forkedFrom', 'displayName', 'userLabel'] as const;
+          for (const key of keys) {
+            if (JSON.stringify(current[key]) === JSON.stringify(written[key])) Object.assign(next, { [key]: prior[key] });
+          }
+          if (Object.keys(appliedLabels).length > 0) {
+            const labels = { ...current.labels };
+            for (const [key, value] of Object.entries(appliedLabels)) {
+              if (labels[key] !== value) continue;
+              if (prior.labels?.[key] === undefined) delete labels[key];
+              else labels[key] = prior.labels[key]!;
+            }
+            next.labels = labels;
+          }
+          return next;
+        }).catch(() => {});
       }
       try {
         handle.dispose();

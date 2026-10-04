@@ -1,6 +1,7 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ScopeSeed } from '#/_base/di/scope';
 import type { Event } from '#/_base/event';
+import type { InstructionFile } from '#/agent/agentsMdReminder/instructionCoverage';
 
 export interface ISessionInstructionsProvider {
   readonly _serviceBrand: undefined;
@@ -9,6 +10,7 @@ export interface ISessionInstructionsProvider {
   readonly agentsMd: string | undefined;
   readonly agentsMdWarning: string | undefined;
   readonly agentsMdPaths: readonly string[] | undefined;
+  readonly agentsMdFiles?: readonly InstructionFile[];
   readonly onDidChange: Event<void>;
 }
 

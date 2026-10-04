@@ -6,7 +6,7 @@ import { ILogService } from '#/_base/log/log';
 import { subtreeWatchFilter } from '#/_base/utils/paths';
 import { TimeoutTimer } from '#/_base/utils/timer';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
+import { resolveSpaceInheritance, resolveSpaceMcpBaseSelection } from '#/app/bootstrap/spaceInheritance';
 import { IConfigService } from '#/app/config/config';
 import { loadMcpServers, resolveMcpJsonPaths } from '#/app/mcpConfig/configLoader';
 import { MCP_SECTION, type McpSection } from '#/app/mcpConfig/configSection';
@@ -52,7 +52,7 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
   ) {
     super();
     const inheritance = resolveSpaceInheritance(bootstrap);
-    this.inheritedHomeDir = inheritance.mcp ? inheritance.baseHomeDir : undefined;
+    this.inheritedHomeDir = inheritance.mcp ? bootstrap.baseHomeDir : undefined;
     this.ready = this.initialize().catch((error: unknown) => {
       this.log.error('mcp config initial load failed', { error });
     });
@@ -112,6 +112,7 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
         homeDir: this.bootstrap.homeDir,
         baseHomeDir: this.inheritedHomeDir,
         includeProject: this.trust.isTrusted(),
+        baseSelection: resolveSpaceMcpBaseSelection(this.bootstrap),
       }),
       this.plugins.enabledMcpServers(),
     ]);
@@ -173,6 +174,7 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
         homeDir: this.bootstrap.homeDir,
         baseHomeDir: this.inheritedHomeDir,
         includeProject: this.trust.isTrusted(),
+        baseSelection: resolveSpaceMcpBaseSelection(this.bootstrap),
       });
       this.fileServers = new Map(Object.entries(fresh));
       await this.publishIfChanged();

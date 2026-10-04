@@ -29,6 +29,7 @@ import {
   type PluginInfo,
   type PluginMcpServerEntry,
   type PluginMcpServerInfo,
+  type PluginManifest,
   type PluginRecord,
   type PluginRollback,
   type PluginSource,
@@ -102,13 +103,13 @@ export class PluginManager {
       const parsed = await parseManifest(candidate.root);
       assertInstallable(parsed);
       const fingerprint = await fingerprintDirectory(candidate.root);
-      return buildInstallPlan(parsed.manifest!, fingerprint, this.records.get(normalizePluginId(parsed.manifest!.name))?.manifest);
+      return buildInstallPlan(parsed.manifest!, fingerprint, previousSourceManifest(this.records.get(normalizePluginId(parsed.manifest!.name)), candidate));
     } finally {
       if (candidate.tempDir !== undefined) await rm(candidate.tempDir, { recursive: true, force: true });
     }
   }
 
-  async install(source: string, options: { readonly sha256?: string; readonly fingerprint?: string; readonly consent?: boolean } = {}): Promise<PluginRecord> {
+  async install(source: string, options: { readonly sha256?: string; readonly fingerprint?: string; readonly consent?: boolean } = {}, beforeReplace?: (id: string) => Promise<void>): Promise<PluginRecord> {
     const candidate = await preparePluginSource(source, options.sha256);
     let managedCopy: ManagedPluginCopy | undefined;
     let previousRollback: string | undefined;
@@ -125,10 +126,11 @@ export class PluginManager {
       const id = normalizePluginId(parsed.manifest!.name);
       if (options.fingerprint !== undefined) {
         const actual = await fingerprintDirectory(candidate.root);
-        const plan = buildInstallPlan(parsed.manifest!, actual, this.records.get(id)?.manifest);
+        const plan = buildInstallPlan(parsed.manifest!, actual, previousSourceManifest(this.records.get(id), candidate));
         if (actual !== options.fingerprint) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Plugin changed since installation preview');
         if (plan.consentRequired && options.consent !== true) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Installation consent required for plugin changes');
       }
+      await beforeReplace?.(id);
       managedCopy = await copyPluginToManagedRoot(this.kimiHomeDir, id, candidate.root);
       const normalizedRoot = managedCopy.root;
       if (options.fingerprint !== undefined && await fingerprintDirectory(normalizedRoot) !== options.fingerprint) {
@@ -525,6 +527,14 @@ interface PreparedPluginSource {
   readonly source: PluginSource;
   readonly github?: PluginGithubMetadata;
   readonly zipSha256?: string;
+}
+
+function previousSourceManifest(record: PluginRecord | undefined, candidate: PreparedPluginSource): PluginManifest | undefined {
+  if (record?.source !== candidate.source) return undefined;
+  const sameSource = candidate.source === 'github'
+    ? record.github?.owner === candidate.github?.owner && record.github?.repo === candidate.github?.repo
+    : record.originalSource === candidate.originalSource;
+  return sameSource ? record.manifest : undefined;
 }
 
 function assertInstallable(parsed: ParsedManifestResult): void {

@@ -32,7 +32,7 @@ import {
 } from './config';
 import { deepEqual, deepMerge, describeUnknownError, isPlainObject } from './configPure';
 import { readConfigDocumentSnapshot, writeConfigDocument } from './configDocument';
-import { leafOrigins, mergeConfigLayers } from './configLayers';
+import { leafOrigins, mergeConfigLayers, selectSpaceBaseConfig } from './configLayers';
 import { mergeConfigCredentials, splitConfigCredentials } from './credentials';
 import {
   ConfigSectionContribution,
@@ -403,7 +403,14 @@ export class ConfigService extends Disposable implements IConfigService {
         };
         const home = await read(this.documentStore, this.configKey);
         const baseStore = this.bootstrap.baseConfigDocumentStore;
-        const base = baseStore === undefined ? undefined : await read(baseStore, 'config.toml', this.bootstrap.space?.inherit.config !== false, this.bootstrap.space?.inherit.credentials !== 'isolated');
+        const inheritConfig = this.bootstrap.space?.inherit.config !== false;
+        const selections = this.bootstrap.space?.sourceSelections?.selections;
+        const readBaseConfig = inheritConfig || Object.entries(selections ?? {}).some(([id, item]) => id.startsWith('config:') && item.mode === 'follow');
+        const base = baseStore === undefined ? undefined : await read(baseStore, 'config.toml', readBaseConfig, this.bootstrap.space?.inherit.credentials !== 'isolated');
+        if (base !== undefined) {
+          const parts = splitConfigCredentials(base.data);
+          base.data = mergeConfigCredentials(selectSpaceBaseConfig(parts.config, inheritConfig, selections), parts.credentials);
+        }
         const baseData = base?.data ?? this.baseSnake;
         if (this.watchClosed) return;
         if (!this.tainted && deepEqual(home.data, this.homeSnake) && deepEqual(baseData, this.baseSnake)) {
@@ -830,9 +837,12 @@ export class ConfigService extends Disposable implements IConfigService {
     if (baseStore !== undefined) {
       try {
         const inheritConfig = this.bootstrap.space?.inherit.config !== false;
-        const baseConfig = inheritConfig
+        const selections = this.bootstrap.space?.sourceSelections?.selections;
+        const readBaseConfig = inheritConfig || Object.entries(selections ?? {}).some(([id, item]) => id.startsWith('config:') && item.mode === 'follow');
+        const baseSnapshot = readBaseConfig
           ? await readConfigDocumentSnapshot(baseStore, 'config.toml', { recoverMissing: false })
           : { data: {}, text: undefined };
+        const baseConfig = { ...baseSnapshot, data: selectSpaceBaseConfig(baseSnapshot.data, inheritConfig, selections) };
         const shared = this.bootstrap.space?.inherit.credentials !== 'isolated';
         const baseCredentials = shared
           ? await readConfigDocumentSnapshot(baseStore, CREDENTIALS_KEY, { recoverMissing: false })

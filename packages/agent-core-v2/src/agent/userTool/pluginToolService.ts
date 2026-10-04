@@ -1,4 +1,6 @@
+import { mediaRequestSchema, type MediaRequest } from '@kiki/protocol';
 import { createDecorator } from '#/_base/di/instantiation';
+import { IAgentPluginMediaService, mediaInputRefs } from '#/agent/pluginMedia/pluginMedia';
 import { type IDisposable } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -33,6 +35,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
     @IAgentProfileService private readonly profile: IAgentProfileService,
+    @IAgentPluginMediaService private readonly media?: IAgentPluginMediaService,
   ) {
     super();
     this._register(this.plugins.onDidReload((event) => {
@@ -73,7 +76,12 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
     });
     const workspace: WorkspaceConfig = { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
-    const fileTargets: { field: string; raw: string; path: string; operation: 'read' | 'write' }[] = [];
+    const fileTargets: { field?: string; inputIndex?: number; raw: string; path: string; operation: 'read' | 'write' }[] = [];
+    let request: MediaRequest | undefined;
+    if (definition.mediaInputs === true) {
+      if (this.media === undefined) return { isError: true, output: 'Media host is unavailable' };
+      request = mediaRequestSchema.parse((args as { request?: unknown })?.request);
+    }
     const accesses: ToolAccesses[number][] = [];
     const lease = this.runtime.acquire(['fs']);
     try {
@@ -93,6 +101,14 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
         const admitted = await resolveRealPathAccess(raw, { env, workspace, operation }, lease.runtime.fs!);
         fileTargets.push({ field: field[1]!, raw, path: admitted.path, operation });
         accesses.push({ ...access, path: admitted.path, implicitExternal: admitted.implicitExternal });
+      }
+      if (request !== undefined) {
+        for (const [inputIndex, ref] of mediaInputRefs(request).entries()) {
+          if (!('path' in ref)) continue;
+          const admitted = await resolveRealPathAccess(ref.path, { env, workspace, operation: 'read' }, lease.runtime.fs!);
+          fileTargets.push({ inputIndex, raw: ref.path, path: admitted.path, operation: 'read' });
+          accesses.push({ kind: 'file', operation: 'read', path: admitted.path, implicitExternal: admitted.implicitExternal });
+        }
       }
     } finally { lease.dispose(); }
     const path = fileTargets[0]?.path;
@@ -115,19 +131,29 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
             }
           }
           const resolvedArgs = { ...(args as Record<string, unknown>) };
+          const admittedRequest = request === undefined ? undefined : structuredClone(request);
+          const refs = admittedRequest === undefined ? [] : mediaInputRefs(admittedRequest);
           const approvedPaths: string[] = [];
           for (const target of fileTargets) {
-            resolvedArgs[target.field] = target.path;
+            if (target.field !== undefined) resolvedArgs[target.field] = target.path;
+            else if (target.inputIndex !== undefined) Object.assign(refs[target.inputIndex]!, { path: target.path });
             if (isWithinDirectory(target.path, view.workDir, env.pathClass)) continue;
             const missingCreate = definition.name === 'office_create' &&
               await current.runtime.fs!.stat(target.path).then(() => false, () => true);
             approvedPaths.push(missingCreate ? current.runtime.path.dirname(target.path) : target.path);
           }
+          for (const [index, ref] of refs.entries()) {
+            const snapshot = await this.media!.snapshotInput(ref, `${String(resolvedArgs['request_id'] ?? context.toolCallId)}/${index}`, current.runtime.fs!, context.signal);
+            for (const key of Object.keys(ref)) Reflect.deleteProperty(ref, key);
+            Object.assign(ref, snapshot);
+          }
+          if (admittedRequest !== undefined) resolvedArgs['request'] = admittedRequest;
           return await this.hosts.execute(pluginId, definition.name, resolvedArgs, context.signal, context.onUpdate, {
             workspaceRoot: view.workDir,
             approvedPaths,
             imageIn: this.profile.getModelCapabilities().image_in,
-          });
+            media: this.media?.api(context.toolCallId, admittedRequest),
+          }, definition);
         } finally { current.dispose(); }
       },
     };

@@ -13,6 +13,7 @@ export interface InteractionRequest<TPayload = unknown> {
   readonly kind: InteractionKind;
   readonly payload: TPayload;
   readonly origin?: InteractionOrigin;
+  readonly detached?: boolean;
 }
 
 export interface Interaction<TPayload = unknown> {
@@ -23,7 +24,7 @@ export interface Interaction<TPayload = unknown> {
   readonly createdAt: number;
 }
 
-export type InteractionCancellationReason = 'turn_ended' | 'agent_closed' | 'no_consumer';
+export type InteractionCancellationReason = 'turn_ended' | 'agent_closed' | 'no_consumer' | 'aborted';
 
 export interface InteractionCancellation {
   readonly cancelled: true;
@@ -33,7 +34,7 @@ export interface InteractionCancellation {
 export function isInteractionCancellation(response: unknown): response is InteractionCancellation {
   if (typeof response !== 'object' || response === null) return false;
   const value = response as { readonly cancelled?: unknown; readonly reason?: unknown };
-  return value.cancelled === true && (value.reason === 'turn_ended' || value.reason === 'agent_closed' || value.reason === 'no_consumer');
+  return value.cancelled === true && (value.reason === 'turn_ended' || value.reason === 'agent_closed' || value.reason === 'no_consumer' || value.reason === 'aborted');
 }
 
 export interface InteractionResolution {
@@ -63,7 +64,7 @@ export function interactionCoverageIncludes(
 export interface ISessionInteractionService {
   readonly _serviceBrand: undefined;
 
-  request<TPayload, TResponse>(req: InteractionRequest<TPayload>): Promise<TResponse>;
+  request<TPayload, TResponse>(req: InteractionRequest<TPayload>, onAccepted?: () => void): Promise<TResponse>;
   enqueue<TPayload>(req: InteractionRequest<TPayload>): Interaction;
   acquireConsumer(id: string, coverage?: InteractionConsumerCoverage): void;
   releaseConsumer(id: string): void;

@@ -43,6 +43,7 @@ function fakeService(
     undefined as never,
     log,
     undefined as never,
+    undefined as never,
     entries,
   );
 }

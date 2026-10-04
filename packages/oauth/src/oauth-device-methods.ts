@@ -9,9 +9,11 @@
 import { join } from 'node:path';
 
 import { createGitHubCopilotMethod, GITHUB_COPILOT_METHOD } from './github-copilot';
+import { createGrokBuildMethod, GROK_BUILD_METHOD } from './grok-build';
 import { resolveKikiHome } from './home';
 import { OAuthManager, type LoginOptions, type OAuthManagerOptions } from './oauth-manager';
-import type { OAuthDeviceMethod, OAuthMethodDescriptor, OAuthMethodId } from './oauth-method-types';
+import { OAuthUnauthorizedError } from './errors';
+import { decodeJwtPayload, type OAuthDeviceMethod, type OAuthMethodDescriptor, type OAuthMethodId } from './oauth-method-types';
 import { createOpenAICodexMethod, openaiCodexAccountId, OPENAI_CODEX_METHOD } from './openai-codex';
 import { FileTokenStorage, type TokenStorage } from './storage';
 import { classifyToken } from './token-state';
@@ -33,11 +35,13 @@ export const OAUTH_METHODS: readonly OAuthMethodDescriptor[] = [
   KIMI_CODE_METHOD,
   GITHUB_COPILOT_METHOD,
   OPENAI_CODEX_METHOD,
+  GROK_BUILD_METHOD,
 ];
 
 const DEVICE_METHOD_FACTORIES: Readonly<Partial<Record<OAuthMethodId, (fetchImpl: typeof fetch) => OAuthDeviceMethod>>> = {
   'github-copilot': createGitHubCopilotMethod,
   'openai-codex': createOpenAICodexMethod,
+  'grok-build': createGrokBuildMethod,
 };
 
 export function oauthMethodById(id: string): OAuthMethodDescriptor | undefined {
@@ -73,6 +77,7 @@ function storageNameFor(method: OAuthMethodDescriptor): string {
 export interface OAuthDeviceMethodsOptions {
   readonly homeDir?: string | undefined;
   readonly credentialsDir?: string | undefined;
+  readonly grokHomeDir?: string;
   readonly storage?: TokenStorage | undefined;
   readonly fetchImpl?: typeof fetch | undefined;
   readonly now?: OAuthManagerOptions['now'];
@@ -116,6 +121,7 @@ function copilotQuota(payload: unknown): OAuthAccountDetails['quota'] {
 export class OAuthDeviceMethods {
   private readonly homeDir: string;
   private readonly storage: TokenStorage;
+  private readonly grokStorage: TokenStorage;
   private readonly options: OAuthDeviceMethodsOptions;
   private readonly managers = new Map<OAuthMethodId, OAuthManager>();
   private readonly methods = new Map<OAuthMethodId, OAuthDeviceMethod>();
@@ -125,6 +131,12 @@ export class OAuthDeviceMethods {
     this.homeDir = options.homeDir ?? resolveKikiHome();
     this.storage =
       options.storage ?? new FileTokenStorage(options.credentialsDir ?? join(this.homeDir, 'credentials'));
+    this.grokStorage = options.grokHomeDir === undefined ? this.storage
+      : options.storage ?? new FileTokenStorage(join(options.grokHomeDir, 'credentials'));
+  }
+
+  private storageFor(method: OAuthMethodDescriptor): TokenStorage {
+    return method.id === 'grok-build' ? this.grokStorage : this.storage;
   }
 
   method(idOrProvider: string): OAuthDeviceMethod {
@@ -145,8 +157,8 @@ export class OAuthDeviceMethods {
     if (manager !== undefined) return manager;
     manager = new OAuthManager({
       config: { name: storageNameFor(method), oauthHost: method.defaultBaseUrl, clientId: method.id },
-      storage: this.storage,
-      configDir: this.homeDir,
+      storage: this.storageFor(method),
+      configDir: method.id === 'grok-build' ? this.options.grokHomeDir ?? this.homeDir : this.homeDir,
       now: this.options.now,
       sleep: this.options.sleep,
       deviceCodeTimeoutMs: this.options.deviceCodeTimeoutMs,
@@ -162,14 +174,15 @@ export class OAuthDeviceMethods {
   /** Reuse a still-valid token, otherwise run the device flow. Returns the access token. */
   async login(idOrProvider: string, options: LoginOptions = {}): Promise<string> {
     const manager = this.manager(idOrProvider);
+    const singleDeviceFlow = this.method(idOrProvider).id !== 'github-copilot';
     if (await manager.hasToken()) {
       try {
         return await manager.ensureFresh();
-      } catch {
-        // Fall through to a fresh device flow when the stored token is dead.
+      } catch (error) {
+        if (singleDeviceFlow && !(error instanceof OAuthUnauthorizedError)) throw error;
       }
     }
-    return (await manager.login(options)).accessToken;
+    return (await manager.login(singleDeviceFlow ? { ...options, restartOnExpiry: false } : options)).accessToken;
   }
 
   logout(idOrProvider: string): Promise<void> {
@@ -180,13 +193,29 @@ export class OAuthDeviceMethods {
     return this.manager(idOrProvider).getCachedAccessToken();
   }
 
+  async connectionState(idOrProvider: string): Promise<import('./oauth-method-types').OAuthConnectionState> {
+    const method = this.method(idOrProvider);
+    const state = classifyToken(await this.storageFor(method).load(storageNameFor(method)));
+    if (state.kind === 'missing') return 'signed_out';
+    if (state.kind === 'revoked') return 'reconnect_required';
+    const now = this.options.now?.() ?? Math.floor(Date.now() / 1000);
+    if (state.token.expiresAt !== 0 && state.token.expiresAt <= now) {
+      return state.token.refreshToken.length > 0 ? 'refresh_required' : 'reconnect_required';
+    }
+    return 'ready';
+  }
+
   async getAccountDetails(idOrProvider: string): Promise<OAuthAccountDetails> {
     const descriptor = oauthMethodFor(idOrProvider);
     if (descriptor === undefined || !isDeviceOAuthMethod(descriptor.id)) return {};
-    const state = classifyToken(await this.storage.load(storageNameFor(descriptor)));
+    const state = classifyToken(await this.storageFor(descriptor).load(storageNameFor(descriptor)));
     if (state.kind !== 'valid') return {};
     if (descriptor.id === 'openai-codex') {
       return { accountId: openaiCodexAccountId(state.token.accessToken) };
+    }
+    if (descriptor.id === 'grok-build') {
+      const sub = decodeJwtPayload(state.token.accessToken)?.['sub'];
+      return { accountId: typeof sub === 'string' && sub.length > 0 ? sub : undefined };
     }
     if (descriptor.id !== 'github-copilot' || state.token.refreshToken.length === 0) return {};
     const fetchImpl = this.options.fetchImpl ?? globalThis.fetch;

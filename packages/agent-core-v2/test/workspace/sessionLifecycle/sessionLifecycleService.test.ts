@@ -15,6 +15,12 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import type { SessionClosedEvent } from '#/workspace/sessionLifecycle/sessionLifecycle';
 import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 import { SessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLifecycleService';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IEventDispatcher } from '#/state/eventDispatcher';
+import { createTestAgent, permissionModeServices } from '../../harness';
+import { PromptEnqueued } from '#/agent/prompt/promptService';
 
 function accessor(
   entries: ReadonlyArray<readonly [ServiceIdentifier<unknown>, unknown]>,
@@ -43,7 +49,7 @@ interface Fixture {
   readonly drainRetirements: { fail: boolean };
 }
 
-function fixture(terminalService?: ISessionTerminalService): Fixture {
+function fixture(terminalService?: ISessionTerminalService, agentAccessor?: ServicesAccessor): Fixture {
   const terminals = { live: 0 };
   const drainRetirements = { fail: false };
   const closed: SessionClosedEvent[] = [];
@@ -65,7 +71,7 @@ function fixture(terminalService?: ISessionTerminalService): Fixture {
       ISessionActivityView,
       { state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' }) },
     ],
-    [IAgentLifecycleService, { countPendingBackgroundTasks: () => 0, list: () => [] }],
+    [IAgentLifecycleService, { countPendingBackgroundTasks: () => 0, list: () => agentAccessor === undefined ? [] : [{ id: 'main', accessor: agentAccessor }], remove: () => { throw new Error('unload must not cancel logical work'); } }],
     [ISessionTerminalService, terminalService ?? { countLiveTerminals: () => terminals.live }],
     [ISessionMetadata, { usage: () => undefined, update: async () => {} }],
   ]);
@@ -246,4 +252,61 @@ describe('SessionLifecycleService unload', () => {
     await expect(fx.service.unload('session-1')).resolves.toBe(true);
     expect(fx.dispose).toHaveBeenCalledTimes(1);
   });
+});
+
+it.each(['pending', 'launching', 'recovery', 'finalizing'] as const)('blocks runtime unload for %s work and never calls cancellation', async (kind) => {
+  const promptState = { pending: kind === 'pending' || kind === 'recovery' ? [{ id: 'queued' }] : [], launching: kind === 'launching' ? { id: 'launching' } : undefined, hold: kind === 'recovery' ? { reason: 'recovery', count: 1 } : undefined };
+  const fx = fixture(undefined, accessor([
+    [IAgentPromptService, { list: () => promptState }],
+    [IAgentLoopService, { status: () => ({ state: kind === 'finalizing' ? 'running' : 'idle', pendingTurnIds: [], hasPendingRequests: false }) }],
+    [IAgentExecutionService, { status: () => ({ state: 'idle' }) }],
+    [IEventDispatcher, { saveReplayCheckpoint: async () => true }],
+  ]));
+  try {
+    expect(await fx.service.unload('session-1')).toBe(false);
+    expect(fx.service.get('session-1')).toBe(fx.handle);
+    expect(fx.dispose).not.toHaveBeenCalled();
+  } finally { fx.service.dispose(); }
+});
+
+it('rechecks queued prompts after asynchronous preparation before disposing the runtime', async () => {
+  let pending: object[] = [];
+  const fx = fixture(undefined, accessor([
+    [IAgentPromptService, { list: () => ({ pending }) }],
+    [IAgentLoopService, { status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }) }],
+    [IAgentExecutionService, { status: () => ({ state: 'idle' }) }],
+    [IEventDispatcher, { saveReplayCheckpoint: async () => true }],
+  ]));
+  try {
+    fx.mirror.hold();
+    const unloading = fx.service.unload('session-1');
+    await drainMicrotasks();
+    pending = [{ id: 'arrived-during-save' }];
+    fx.mirror.release();
+    expect(await unloading).toBe(false);
+    expect(fx.dispose).not.toHaveBeenCalled();
+  } finally { fx.mirror.release(); fx.service.dispose(); }
+});
+
+it('keeps a durable recovered prompt through an unload attempt and resumes its own message', async () => {
+  const ctx = createTestAgent(permissionModeServices('yolo'));
+  const fx = fixture(undefined, { get: (id) => ctx.get(id) });
+  try {
+    const dispatcher = ctx.get(IEventDispatcher);
+    await dispatcher.dispatch(new PromptEnqueued({ schemaVersion: 1, promptId: 'recovered', userMessageId: 'recovered', createdAt: '2026-01-01T00:00:00.000Z',
+      message: { role: 'user', id: 'recovered', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Retained task' }], toolCalls: [] },
+      goalId: null, alreadyMaterialized: false, appendTiming: 'agent_idle', revision: 0, queueIndex: 0,
+    }));
+    await dispatcher.hooks.onDidRestore.run({});
+    const prompt = ctx.get(IAgentPromptService);
+    expect(prompt.list().hold).toEqual({ reason: 'recovery', count: 1 });
+    expect(await fx.service.unload('session-1')).toBe(false);
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['recovered']);
+    expect((await ctx.persistedWireRecords()).some((record) => record.type === 'prompt.aborted')).toBe(false);
+    ctx.mockNextResponse({ type: 'text', text: 'Resumed retained task' });
+    await prompt.steer(['recovered']);
+    await ctx.untilTurnEnd();
+    expect(prompt.list().pending).toEqual([]);
+    expect(JSON.stringify(ctx.lastLlmInput())).toContain('Retained task');
+  } finally { fx.service.dispose(); await ctx.dispose(); }
 });

@@ -1901,6 +1901,41 @@ describe('Anthropic thinking keep (context-management overlay)', () => {
   });
 });
 
+describe('model generation wire consistency', () => {
+  it('sends typed service tier ahead of raw conflicts in Chat and Responses', async () => {
+    const options: GenerateOptions = { serviceTier: 'priority', requestParams: { service_tier: 'flex', extra_field: true } };
+    const chat = await captureOpenAIBody(new OpenAILegacyChatProvider({ model: 'example-model', apiKey: 'fixture-key' }), options);
+    const responses = await captureResponsesBody(new OpenAIResponsesChatProvider({ model: 'example-model', apiKey: 'fixture-key' }), options);
+    expect(chat['service_tier']).toBe('priority');
+    expect(responses['service_tier']).toBe('priority');
+    expect(chat['extra_field']).toBe(true);
+  });
+
+  it.each([1025, 8192, 64000])('fits budget thinking strictly beneath the final %s-token cap', async (cap) => {
+    const provider = new AnthropicChatProvider({ model: 'claude-sonnet-4-5', apiKey: 'fixture-key', stream: false, adaptiveThinking: false });
+    const { params } = await captureAnthropicBody(provider, { thinking: { effort: 'high' }, maxCompletionTokens: cap });
+    expect(params['max_tokens']).toBe(cap);
+    expect(params['thinking']).toEqual({ type: 'enabled', budget_tokens: Math.min(32000, cap - 1) });
+    const remaining = await captureAnthropicBody(provider, { thinking: { effort: 'high' }, maxCompletionTokens: 8192, maxContextTokens: 10000, usedContextTokens: 8000 });
+    expect(remaining.params['max_tokens']).toBe(2000);
+    expect(remaining.params['thinking']).toEqual({ type: 'enabled', budget_tokens: 1999 });
+  });
+
+  it.each([1, 1024])('rejects an impossible budget at cap %s rather than raising the user cap', async (cap) => {
+    const provider = new AnthropicChatProvider({ model: 'claude-sonnet-4-5', apiKey: 'fixture-key', stream: false, adaptiveThinking: false });
+    await expect(provider.generate('', [], [], { thinking: { effort: 'high' }, maxCompletionTokens: cap })).rejects.toThrow('requires max_tokens greater than 1024');
+  });
+
+  it('keeps legal adaptive, off and Kimi hook semantics outside budget coordination', async () => {
+    const adaptive = new AnthropicChatProvider({ model: 'claude-opus-4-6', apiKey: 'fixture-key', stream: false });
+    const off = new AnthropicChatProvider({ model: 'claude-sonnet-4-5', apiKey: 'fixture-key', stream: false, adaptiveThinking: false });
+    const kimi = registry.createChatProvider({ protocol: 'anthropic', providerType: 'kimi', modelName: 'kimi-k2', apiKey: 'fixture-key' });
+    expect((await captureAnthropicBody(adaptive, { thinking: { effort: 'high' }, maxCompletionTokens: 1024 })).params['thinking']).toEqual({ type: 'adaptive', display: 'summarized' });
+    expect((await captureAnthropicBody(off, { thinking: { effort: 'off' }, maxCompletionTokens: 1024 })).params['thinking']).toEqual({ type: 'disabled' });
+    expect((await captureAnthropicBody(kimi, { thinking: { effort: 'high' }, maxCompletionTokens: 1024 })).params['thinking']).toEqual({ type: 'enabled' });
+  });
+});
+
 describe('Anthropic max-tokens profile', () => {
   it('returns per-version Messages-API caps for known Claude models', () => {
     expect(resolveDefaultMaxTokens('claude-fable-5')).toBe(128000);

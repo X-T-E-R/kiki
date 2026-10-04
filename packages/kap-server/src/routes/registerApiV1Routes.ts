@@ -1,4 +1,4 @@
-import { IConfigService, type Scope } from '@kiki/agent-core-v2';
+import { IBootstrapService, IConfigService, type Scope } from '@kiki/agent-core-v2';
 import { FiberState } from '@kiki/agent-core-v2/_base/di/fiber';
 import { IFeatureManager } from '@kiki/agent-core-v2/app/feature/featureManager';
 import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
@@ -13,6 +13,7 @@ import type { LeaseRegistry } from '../services/leaseRegistry';
 import { registerAgentProfilesRoute } from './agentProfiles';
 import { registerAutoCompactRoutes } from './autoCompact';
 import { registerContextStrategyRoutes } from './contextStrategy';
+import { registerAgentHooksRoutes } from './agents';
 import { registerLeaseRoutes } from './leases';
 import { registerApprovalsRoutes } from './approvals';
 import { registerAuthRoute } from './auth';
@@ -45,6 +46,7 @@ import { registerQuestionsRoutes } from './questions';
 import { registerRuntimeRoutes } from './runtime';
 import { registerSearchRoutes } from './search';
 import { registerSshRoutes } from './ssh';
+import { registerBrowserRoutes } from './browser';
 import { registerSessionMediaRoutes } from './sessionMedia';
 import { registerSessionExportRoute } from './sessionExport';
 import { registerSessionsRoutes } from './sessions';
@@ -101,6 +103,7 @@ export interface RegisterApiV1RoutesOptions {
   readonly transcriptService: TranscriptService;
   readonly leaseRegistry: LeaseRegistry;
   readonly onWorkspaceServed: (workspace: string) => void | Promise<void>;
+  readonly onWorkspaceRemoved?: (workspace: string) => void | Promise<void>;
   /**
    * Catalog URL resolver for the `/plugins/marketplace` route. `undefined`
    * means no marketplace is configured (option, env, and config.toml all
@@ -147,6 +150,7 @@ export async function registerApiV1Routes(
         buildChannel: opts.buildChannel,
         serverId: opts.serverId,
         serverHomeId: opts.serverHomeId,
+        currentSpaceId: core.accessor.get(IBootstrapService).spaceId ?? 'main',
         startedAt: opts.startedAt,
         enableTerminals: opts.enableTerminals !== false,
         dangerousBypassAuth: opts.dangerousBypassAuth === true,
@@ -197,6 +201,7 @@ export async function registerApiV1Routes(
       );
       registerAutoCompactRoutes(apiV1 as unknown as Parameters<typeof registerAutoCompactRoutes>[0], core);
       registerContextStrategyRoutes(apiV1 as unknown as Parameters<typeof registerContextStrategyRoutes>[0], core);
+      registerAgentHooksRoutes(apiV1 as unknown as Parameters<typeof registerAgentHooksRoutes>[0], core);
       registerRuntimeRoutes(apiV1 as unknown as Parameters<typeof registerRuntimeRoutes>[0], core);
       registerSessionExportRoute(
         apiV1 as unknown as Parameters<typeof registerSessionExportRoute>[0],
@@ -228,6 +233,7 @@ export async function registerApiV1Routes(
       );
       registerSearchRoutes(apiV1 as unknown as Parameters<typeof registerSearchRoutes>[0], core);
       registerSshRoutes(apiV1 as unknown as Parameters<typeof registerSshRoutes>[0], core);
+      registerBrowserRoutes(apiV1 as unknown as Parameters<typeof registerBrowserRoutes>[0], core);
       registerMemoryRoutes(apiV1 as unknown as Parameters<typeof registerMemoryRoutes>[0], core);
       registerCronRoutes(apiV1 as unknown as Parameters<typeof registerCronRoutes>[0], core);
       registerTasksRoutes(apiV1 as unknown as Parameters<typeof registerTasksRoutes>[0], core);
@@ -246,6 +252,7 @@ export async function registerApiV1Routes(
       registerWorkspacesRoutes(
         apiV1 as unknown as Parameters<typeof registerWorkspacesRoutes>[0],
         core,
+        opts.onWorkspaceRemoved,
       );
       registerWorktreeRoutes(apiV1 as unknown as Parameters<typeof registerWorktreeRoutes>[0], core);
       registerWorkspaceFsRoutes(
@@ -258,6 +265,7 @@ export async function registerApiV1Routes(
       registerSessionMediaRoutes(
         apiV1 as unknown as Parameters<typeof registerSessionMediaRoutes>[0],
         core,
+        opts.transcriptService,
       );
       registerFsRoutes(apiV1 as unknown as Parameters<typeof registerFsRoutes>[0], core);
       registerGuiStoreRoutes(apiV1 as unknown as Parameters<typeof registerGuiStoreRoutes>[0], opts.guiStore);

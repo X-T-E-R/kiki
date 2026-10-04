@@ -4,6 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import type { ModelRecord } from '#/kosong/model/model';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { ModelRequesterImpl } from '#/kosong/model/modelRequesterImpl';
+import type { GenerateOptions } from '#/kosong/contract/provider';
+import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import {
   configServices,
   createTestAgent,
@@ -599,5 +604,36 @@ describe('ConfigState.provider applies global KIKI_MODEL_* request config', () =
 
     expect(capturedProvider).toMatchObject({ name: 'anthropic' });
     expect(capturedOptions?.thinking?.effort).toBe('max');
+  });
+});
+
+
+describe('profile sampling source boundaries', () => {
+  it.each([0, { kind: 'api_default' } as const])('does not promote model legacy sampling over structured %j', async (temperature) => {
+    const ctx = createTestAgent({ initialConfig: { models: { audit: { provider: 'test-provider', model: 'audit', maxContextSize: 10000, requestParams: { temperature: 0.7, top_p: 0.8, extra_field: true }, parameters: { temperature, topP: { kind: 'api_default' } } } as TestProtocolModelConfig } } });
+    try {
+      const profile = ctx.get(IAgentProfileService);
+      profile.update({ modelAlias: 'audit' });
+      let captured: GenerateOptions | undefined;
+      const registry = {
+        createChatProvider: () => ({ name: 'fake', modelName: 'audit', thinkingEffort: null, generate: async (_system: unknown, _tools: unknown, _history: unknown, options: GenerateOptions) => {
+          captured = options;
+          return { id: 'response', usage: null, finishReason: 'completed', rawFinishReason: 'stop', traceId: null, async *[Symbol.asyncIterator]() { yield { type: 'text', text: 'ok' }; } };
+        } }),
+      } as unknown as IProtocolAdapterRegistry;
+      const requester = new ModelRequesterImpl(ctx.get(IModelCatalog).get('audit'), registry);
+      const request = async () => {
+        for await (const _event of requester.request({ systemPrompt: 'sys', tools: [], messages: [] }, undefined, { ...profile.resolveRequestParams(), attribution: { logicalRequestId: 'fixture', sessionId: 'fixture-session', agentId: 'main', purpose: 'test', waitBudget: { waitedMs: 0 } } })) { }
+      };
+      await request();
+      expect(captured?.sampling).toEqual({ temperature: typeof temperature === 'number' ? 0 : undefined, topP: undefined });
+      expect(captured?.requestParams?.['extra_field']).toBe(true);
+      if (typeof temperature !== 'number') expect(captured?.requestParams).not.toHaveProperty('temperature');
+      expect(captured?.requestParams).not.toHaveProperty('top_p');
+      await profile.applyProfile(normalizeAgentProfile({ name: 'fixture', tools: [], modelAlias: 'audit', systemPrompt: () => 'sys', requestParams: { temperature: 0.2, extra_profile: true }, modelProfiles: [{ alias: 'audit', requestParams: { temperature: 0.4, top_p: 0 } }] }));
+      await request();
+      expect(captured?.sampling).toEqual({ temperature: 0.4, topP: 0 });
+      expect(captured?.requestParams).toMatchObject({ extra_field: true, extra_profile: true });
+    } finally { await ctx.dispose(); }
   });
 });

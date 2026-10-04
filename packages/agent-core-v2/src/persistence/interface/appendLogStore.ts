@@ -31,6 +31,7 @@ export interface AppendLogTruncation {
 export interface AppendLogReadOptions {
   readonly onTruncate?: (truncation: AppendLogTruncation) => void;
   readonly signal?: AbortSignal;
+  readonly chunkBytes?: number;
 }
 
 export interface AppendLogWrite {

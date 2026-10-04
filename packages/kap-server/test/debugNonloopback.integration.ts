@@ -39,7 +39,7 @@ async function tmpHome(): Promise<string> {
 }
 
 async function probeDebug(server: RunningServer): Promise<number> {
-  const token = server.authTokenService.getToken();
+  const token = server.localOwnerToken;
   const res = await fetch(`http://127.0.0.1:${server.port}/api/debug/channels`, {
     headers: { authorization: `Bearer ${token}` },
   });

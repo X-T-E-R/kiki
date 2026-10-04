@@ -110,7 +110,9 @@ export class AgentContextInjectorService extends Service implements IAgentContex
 
   private async inject(isNewTurn: boolean): Promise<void> {
     const parts: CapabilityDeltaPart[] = [];
-    const entries = [...this.entries].toSorted((a, b) => Number(a.name === 'runtime_snapshot') - Number(b.name === 'runtime_snapshot'));
+    const priority = (name: string) => name === 'profile_capabilities_changed' || name === 'capabilities_rebuilt' ? -2
+      : name === 'runtime_snapshot' ? -1 : name === 'agents_md' ? 1 : 0;
+    const entries = [...this.entries].toSorted((a, b) => priority(a.name) - priority(b.name));
     for (const entry of entries.filter((entry) => !entry.name.startsWith('hook_rule/'))) {
       await this.injectEntry(entry, isNewTurn, parts);
     }

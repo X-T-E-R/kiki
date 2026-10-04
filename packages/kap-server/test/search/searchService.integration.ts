@@ -160,7 +160,7 @@ function makeFlags(workerEnabled: boolean): IFlagService {
 const noLiveSource: LiveTranscriptSource = {
   forSessionLive: () => undefined,
   whenReady: async () => {},
-  ensureAgentHistory: async () => {},
+  ensureAgentHistory: async () => undefined,
 };
 
 function makeService(home: string, index: ISessionIndex): GlobalSearchService {
@@ -2229,6 +2229,7 @@ describe('GlobalSearchService', () => {
         },
         ensureAgentHistory: async (sessionId, agentId) => {
           calls?.ensureAgentHistory.push([sessionId, agentId]);
+          return stores.get(sessionId)?.getAgent(agentId);
         },
       };
     }
@@ -2674,7 +2675,7 @@ describe('GlobalSearchService', () => {
         whenReady: async () => {
           throw new Error('backfill boom');
         },
-        ensureAgentHistory: async () => {},
+        ensureAgentHistory: async () => undefined,
       });
 
       await expect(

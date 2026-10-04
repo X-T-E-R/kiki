@@ -9,6 +9,10 @@
 export type { PersonaAvatarData } from '@kiki/protocol';
 import { createGlobalBots, createGlobalRooms, type GlobalBotsFacade, type GlobalRoomsFacade } from './botRooms.js';
 export type { GlobalBotsFacade, GlobalRoomsFacade } from './botRooms.js';
+import { createGlobalImports, type GlobalImportsFacade } from './imports.js';
+export type { GlobalImportsFacade } from './imports.js';
+import { createGlobalMedia, type GlobalMediaFacade } from './media.js';
+export type { GlobalMediaFacade } from './media.js';
 
 import type {
   AgentCapabilitiesQuery,
@@ -18,6 +22,9 @@ import type {
   PersonaPutInput,
   PersonaSnapshot,
   PersonaSummary,
+  OriginalOAuthRequest,
+  ConnectOriginalOAuthRequest,
+  OriginalOAuthProbe,
 } from '@kiki/protocol';
 import type { BoardClient, BoardOverviewClient } from '../../contract/board/types.js';
 import type {
@@ -72,6 +79,7 @@ import type {
   McpServerLocator,
   McpServerTestResult,
   McpServerTestTarget,
+  McpServerStopResult,
 } from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
 import type { McpRevealedOAuthCredential, McpStoredOAuthCredential, McpStoredOAuthIdentity } from '@kiki/agent-core-v2/mcpCore/oauth/service';
 import type {
@@ -299,6 +307,8 @@ export interface GlobalKosongFacade {
 }
 
 export interface GlobalAuthFacade {
+  probeOriginal(request: OriginalOAuthRequest): Promise<OriginalOAuthProbe>;
+  connectOriginal(request: ConnectOriginalOAuthRequest): Promise<OriginalOAuthProbe>;
   status(provider?: string): Promise<AuthStatus>;
   summarize(): Promise<readonly AuthStatus[]>;
   /**
@@ -333,7 +343,8 @@ export interface GlobalCapabilitiesFacade {
 export interface GlobalPluginsFacade {
   list(): Promise<readonly PluginSummary[]>;
   info(id: string): Promise<PluginInfo>;
-  install(source: string): Promise<PluginSummary>;
+  preview(input: import('@kiki/protocol').PluginPreviewRequest): Promise<import('@kiki/protocol').PluginInstallPlan>;
+  install(input: string | import('@kiki/protocol').PluginInstallRequest): Promise<PluginSummary>;
   setEnabled(input: { id: string; enabled: boolean }): Promise<void>;
   setMcpServerEnabled(input: { id: string; server: string; enabled: boolean }): Promise<void>;
   remove(id: string): Promise<void>;
@@ -383,6 +394,8 @@ export interface GlobalMcpFacade {
   remove(input: { name: string; cwd?: string }): Promise<readonly McpManagedServer[]>;
   /** Probe a real connection: a registry `name`, or an inline `server` config as-is. */
   test(input: McpServerTestTarget): Promise<McpServerTestResult>;
+  /** Stop this service's cua stdio children; idle does not mean the whole desktop is idle. */
+  stop(input: { name: string; cwd?: string }): Promise<McpServerStopResult>;
   /** The locator-addressed catalog plus a batched real-connection probe of OAuth candidates. */
   inspect(input?: {
     targets?: readonly McpServerLocator[];
@@ -468,6 +481,8 @@ export interface GlobalFacade {
   readonly auth: GlobalAuthFacade;
   readonly flags: GlobalFlagsFacade;
   readonly plugins: GlobalPluginsFacade;
+  readonly imports: GlobalImportsFacade;
+  readonly media: GlobalMediaFacade;
   readonly capabilities: GlobalCapabilitiesFacade;
   readonly hostFs: GlobalHostFsFacade;
   readonly threads: GlobalThreadsFacade;
@@ -707,6 +722,8 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
     },
 
     auth: {
+      probeOriginal: (request) => call('oauthService', 'probeOriginal', [request]) as Promise<OriginalOAuthProbe>,
+      connectOriginal: (request) => call('oauthService', 'connectOriginal', [request]) as Promise<OriginalOAuthProbe>,
       status: (provider) => call('oauthService', 'status', [provider]) as Promise<AuthStatus>,
       summarize: () => call('authSummaryService', 'summarize', []) as Promise<readonly AuthStatus[]>,
       ensureReady: (modelOverride) =>
@@ -731,11 +748,18 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       snapshot: () => call('flagService', 'snapshot', []) as Promise<Record<string, boolean>>,
     },
 
+    imports: createGlobalImports(call),
+    media: createGlobalMedia(call),
     plugins: {
       list: () => call('pluginService', 'listPlugins', []) as Promise<readonly PluginSummary[]>,
       info: (id) => call('pluginService', 'getPluginInfo', [{ id }]) as Promise<PluginInfo>,
-      install: (source) =>
-        call('pluginService', 'installPlugin', [{ source }]) as Promise<PluginSummary>,
+      preview: (input) => call('pluginService', 'previewPlugin', [input]) as Promise<import('@kiki/protocol').PluginInstallPlan>,
+      install: async (input) => {
+        if (typeof input !== 'string') return call('pluginService', 'installPlugin', [input]) as Promise<PluginSummary>;
+        const plan = await call('pluginService', 'previewPlugin', [{ source: input }]) as import('@kiki/protocol').PluginInstallPlan;
+        if (plan.consentRequired) throw new Error(`Plugin ${plan.id} requires one-time consent to trusted code with full account permissions. Preview its contributions and pass { source, fingerprint, consent: true }.`);
+        return call('pluginService', 'installPlugin', [{ source: input, fingerprint: plan.fingerprint, consent: false }]) as Promise<PluginSummary>;
+      },
       setEnabled: (input) => call('pluginService', 'setPluginEnabled', [input]) as Promise<void>,
       setMcpServerEnabled: (input) =>
         call('pluginService', 'setPluginMcpServerEnabled', [input]) as Promise<void>,
@@ -838,6 +862,8 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
         >,
       test: (target) =>
         call('mcpManagementService', 'testServer', [target]) as Promise<McpServerTestResult>,
+      stop: (target) =>
+        call('mcpManagementService', 'stopServer', [target]) as Promise<McpServerStopResult>,
       inspect: (input) =>
         call('mcpManagementService', 'inspectServers', [
           input?.targets,

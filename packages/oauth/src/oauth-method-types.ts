@@ -9,7 +9,9 @@
 import type { DevicePollResult } from './oauth';
 import type { DeviceAuthorization, TokenInfo } from './types';
 
-export type OAuthMethodId = 'kimi-code' | 'github-copilot' | 'openai-codex';
+export type OAuthMethodId = 'kimi-code' | 'github-copilot' | 'openai-codex' | 'grok-build';
+
+export type OAuthConnectionState = 'ready' | 'refresh_required' | 'reconnect_required' | 'signed_out';
 
 /** Wire protocol a provisioned provider (or one of its models) speaks. */
 export type OAuthMethodProtocol = 'openai' | 'openai_responses' | 'anthropic';
@@ -49,7 +51,7 @@ export interface OAuthDeviceMethod extends OAuthMethodDescriptor {
   requestDevice(): Promise<DeviceAuthorization>;
   /** Poll with the `deviceCode` the matching {@link requestDevice} returned. */
   pollDevice(deviceCode: string): Promise<DevicePollResult>;
-  refresh(refreshToken: string): Promise<TokenInfo>;
+  refresh(refreshToken: string, context?: { readonly principalType?: string; readonly principalId?: string }): Promise<TokenInfo>;
   /** Base URL for inference, possibly derived from the access token. */
   baseUrlFor(accessToken: string): string;
   /** Per-request headers derived from the access token. */

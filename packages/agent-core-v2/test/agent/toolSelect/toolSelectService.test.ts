@@ -233,6 +233,8 @@ class FakeLoopService implements IAgentLoopService {
 
   cancelFromUser(): void {}
 
+  async recoverPersistence(): Promise<boolean> { return true; }
+
   enqueue(_request: StepRequest, _options?: StepEnqueueOptions): EnqueueReceipt {
     throw new Error('unused in this suite');
   }

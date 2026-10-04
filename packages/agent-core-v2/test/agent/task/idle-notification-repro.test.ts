@@ -22,6 +22,7 @@ import { runAgentTurn } from '#/session/subagent/runAgentTurn';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentGoalService } from '#/agent/goal/goal';
 import {
   agentService,
   sessionService,
@@ -273,6 +274,71 @@ describe('task notification → main agent (real Agent instance)', () => {
         await ctx.dispose();
       }
     });
+
+    it('BLOCKED GOAL: live child completion wakes idle main without resuming the goal', async () => {
+      const goals = ctx.get(IAgentGoalService);
+      const goal = await goals.createGoal({ objective: 'finish delegated work' });
+      await goals.markBlocked({ reason: 'waiting for a dependency' });
+      const completion = createControlledPromise<{ result: string }>();
+      const taskId = background.registerTask(agentTask(completion, 'authorized dependency'));
+      expect(background.getTask(taskId)?.goalId).toBe(goal.goalId);
+      ctx.mockNextResponse({ type: 'text', text: 'waiting for child' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'continue authorized dependency' }] });
+      await ctx.untilTurnEnd();
+      await loop.settled();
+      const enqueue = vi.spyOn(loop, 'enqueue');
+      ctx.mockNextResponse({ type: 'text', text: 'dependency received, goal remains blocked' });
+      const ended = ctx.untilTurnEnd();
+      completion.resolve({ result: 'dependency ready' });
+      await background.wait(taskId);
+      await vi.waitFor(() => expect(enqueue.mock.calls.some(([r]) => r.kind === 'task_notification')).toBe(true));
+      expect(enqueue.mock.calls.find(([r]) => r.kind === 'task_notification')![0].admission).toBe('activeOrNewTurn');
+      await ended;
+      await loop.settled();
+      expect(notifiedCount(ctx)).toBe(1);
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).toContain('dependency ready');
+      expect(goals.getGoal().goal?.status).toBe('blocked');
+      expect(ctx.context.get().filter((m) => m.origin?.kind === 'system_trigger' && m.origin.name === 'goal_continuation')).toHaveLength(0);
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it.each(['paused', 'cancelled', 'complete', 'replaced', 'token budget', 'turn budget', 'time budget'] as const)(
+      'GOAL CONTROL: %s retains completion until an authorized prompt', async (control) => {
+        const goals = ctx.get(IAgentGoalService);
+        const goal = await goals.createGoal({ objective: 'finish delegated work' });
+        const completion = createControlledPromise<{ result: string }>();
+        const task = control === 'complete'
+          ? new QuestionBackgroundTask(async () => ({ output: (await completion).result }), 'controlled dependency', { questionCount: 1 })
+          : agentTask(completion, 'controlled dependency');
+        const taskId = background.registerTask(task);
+        if (control === 'paused') await goals.pauseGoal();
+        else if (control === 'cancelled') await goals.cancelGoal();
+        else if (control === 'complete') await goals.markComplete();
+        else if (control === 'replaced') {
+          await goals.markBlocked();
+          await goals.createGoal({ objective: 'new work', replace: true });
+          await goals.markBlocked();
+          expect(goals.getGoal().goal?.goalId).not.toBe(goal.goalId);
+        } else {
+          const budgetLimits = control === 'token budget' ? { tokenBudget: 0 }
+            : control === 'turn budget' ? { turnBudget: 0 } : { wallClockBudgetMs: 0 };
+          await goals.setBudgetLimits({ budgetLimits });
+        }
+        const enqueue = vi.spyOn(loop, 'enqueue');
+        completion.resolve({ result: 'retained dependency result' });
+        await background.wait(taskId);
+        await vi.waitFor(() => expect(enqueue.mock.calls.some(([r]) => r.kind === 'task_notification')).toBe(true));
+        expect(enqueue.mock.calls.find(([r]) => r.kind === 'task_notification')![0].admission).toBe('activeOrNextTurn');
+        expect(notifiedCount(ctx)).toBe(0);
+        expect(ctx.llmCalls).toHaveLength(0);
+        ctx.mockNextResponse({ type: 'text', text: 'authorized handling' });
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'inspect retained completion' }] });
+        await ctx.untilTurnEnd();
+        await loop.settled();
+        expect(notifiedCount(ctx)).toBe(1);
+        expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).toContain('retained dependency result');
+      }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
+    );
 
     it('IDLE: completed bg agent notification auto-launches a turn that consumes it', async () => {
       expect(loop.status().activeTurnId).toBeUndefined();

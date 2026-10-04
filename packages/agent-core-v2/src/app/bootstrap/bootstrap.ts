@@ -24,8 +24,10 @@ import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDo
 import { FileSkillDiscovery } from '#/app/skillCatalog/fileSkillDiscovery';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import { readSpaceHome, type SpaceHome } from './spaceHome';
+import { prepareSpaceResourceProjection, readSpaceSourceSelections } from '#/persistence/backends/node-fs/spaceResourceProjection';
 
 export interface HostArgs {
+  readonly browserDriverPath?: string;
   readonly agentFiles?: readonly string[];
   readonly skillDirs?: readonly string[];
   readonly userSkillDir?: string;
@@ -35,6 +37,7 @@ export interface HostArgs {
 }
 
 export interface HostArgsInput {
+  readonly browserDriverPath?: string;
   readonly agentFiles?: readonly string[];
   readonly skillDirs?: readonly string[];
   readonly userSkillDir?: string;
@@ -45,6 +48,7 @@ export interface HostArgsInput {
 
 export function resolveHostArgs(input: HostArgsInput | undefined): HostArgs {
   return {
+    browserDriverPath: input?.browserDriverPath,
     agentFiles: input?.agentFiles,
     skillDirs: input?.skillDirs,
     userSkillDir: input?.userSkillDir,
@@ -143,8 +147,17 @@ export function resolveBootstrapOptions(input: BootstrapInput): IBootstrapOption
   const env = input.env ?? process.env;
   const osHomeDir = input.osHomeDir ?? homedir();
   const homeDir = resolveKikiHome(input.homeDir, env, osHomeDir);
-  const { space, diagnostic } = readSpaceHome(homeDir);
+  const parsed = readSpaceHome(homeDir);
+  let space = parsed.space;
+  const diagnostic = parsed.diagnostic;
   const baseHomeDir = space?.baseHomeDir;
+  if (space !== undefined && baseHomeDir !== undefined) {
+    const sourceSelections = readSpaceSourceSelections(homeDir);
+    const hasResourceSelections = Object.keys(sourceSelections?.selections ?? {}).some((id) => id.startsWith('resource:')) || Object.keys(sourceSelections?.groups ?? {}).some((domain) => !['config', 'credentials', 'generic_roots'].includes(domain));
+    const resourceBaseHomeDir = sourceSelections === undefined || !hasResourceSelections ? undefined
+      : prepareSpaceResourceProjection(homeDir, baseHomeDir, sourceSelections, space.inherit as unknown as Record<string, unknown>);
+    space = { ...space, sourceSelections, resourceBaseHomeDir };
+  }
   const credentialsHomeDir = baseHomeDir !== undefined && space?.inherit.credentials === 'shared' ? baseHomeDir : homeDir;
   const configPath = input.configPath ?? join(homeDir, 'config.toml');
   return {

@@ -417,7 +417,7 @@ describe('server-v2 /api fs:content', () => {
   });
 
   it('shared facade distinguishes file documents from download error envelopes', async () => {
-    const client = createKlient({ endpoint: base, token: server!.authTokenService.getToken() });
+    const client = createKlient({ endpoint: base, token: server!.localOwnerToken });
     try {
       const document = '{"code":40409,"msg":"this is a document","data":null}\n';
       const file = join(dir as string, 'document.json');
@@ -470,6 +470,31 @@ describe('server-v2 /api fs:content', () => {
     const res = await getContent('/dev/null');
     const body = (await res.json()) as Envelope<null>;
     expect(body.code).toBe(40001);
+  });
+
+  it('generates a bounded source media preview under the existing host-file authorization and preserves original bytes', async () => {
+    const path = join(dir!, 'preview.bmp');
+    const width = 800;
+    const height = 600;
+    const bytes = Buffer.alloc(54 + width * 3 * height);
+    bytes.write('BM'); bytes.writeUInt32LE(bytes.length, 2); bytes.writeUInt32LE(54, 10);
+    bytes.writeUInt32LE(40, 14); bytes.writeInt32LE(width, 18); bytes.writeInt32LE(height, 22);
+    bytes.writeUInt16LE(1, 26); bytes.writeUInt16LE(24, 28);
+    await writeFile(path, bytes);
+    const client = createKlient({ endpoint: base, token: server!.localOwnerToken });
+    const preview = await client.rest!.filesystem.readHostMediaPreview(path);
+    expect(preview.mime).toBe('image/jpeg');
+    expect(preview.bytes.byteLength).toBeLessThanOrEqual(64 * 1024);
+    expect(preview.bytes.byteLength).toBeGreaterThan(0);
+    const cached = await client.rest!.filesystem.readHostMediaPreview(path, { ifNoneMatch: preview.etag });
+    expect(cached.notModified).toBe(true);
+    const raw = await fetch(`${base}/api/fs:content?path=${encodeURIComponent(path)}&preview=media`, { headers: authHeaders(server!, { range: 'bytes=0-15' }) });
+    expect(raw.status).toBe(206);
+    expect(raw.headers.get('content-range')).toBe(`bytes 0-15/${preview.bytes.byteLength}`);
+    expect(new Uint8Array(await raw.arrayBuffer())).toEqual(preview.bytes.subarray(0, 16));
+    const original = await client.rest!.filesystem.readHostFileBytes(path);
+    expect(original.bytes).toEqual(new Uint8Array(bytes));
+    await client.close();
   });
 
   it('does not serve the double-colon URL', async () => {

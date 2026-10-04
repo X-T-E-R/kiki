@@ -10,6 +10,7 @@ import { createKimiConfigRpc, createKimiHarness, ErrorCodes, KimiError } from '#
 
 import {
   ensureConfigFile,
+  KimiConfigPatchSchema,
   loadRuntimeConfigSafe,
   migrateThinkingEffortMaxToHigh,
   parseConfigString,
@@ -82,7 +83,6 @@ print_wait_ceiling_s = 3600
 [subagent]
 default_profile = "general"
 allowed_tools = ["Read", "Grep"]
-main_dispatch_policy = "advisory"
 
 [nb_search.provider_instances."exa.team"]
 provider_id = "exa"
@@ -161,6 +161,29 @@ describe('resolveModelAlias', () => {
 });
 
 describe('SDK config TOML', () => {
+  it('round-trips global and model question frequency behavior with explicit false and snake-case keys', async () => {
+    expect(KimiConfigPatchSchema.parse({ interaction: { askUserQuestionGuard: { enabled: true } } }).interaction).toEqual({ askUserQuestionGuard: { enabled: true } });
+    const path = join(await makeTempDir(), 'config.toml');
+    const config = parseConfigString('[interaction]\nask_user_question="blocking"\n[interaction.ask_user_question_guard]\nenabled=true\nmax_per_user_round=2\nmax_per_window=5\nwindow_ms=120000\n[models.example]\nprovider="example"\nmodel="remote-example"\nmax_context_size=8192\n[models.example.behavior.ask_user_question_guard]\nenabled=false\nmax_per_window=4\n');
+    expect(config.interaction).toEqual({ askUserQuestion: 'blocking', askUserQuestionGuard: { enabled: true, maxPerUserRound: 2, maxPerWindow: 5, windowMs: 120000 } });
+    expect(config.models?.['example']?.behavior).toEqual({ askUserQuestionGuard: { enabled: false, maxPerWindow: 4 } });
+    await writeConfigFile(path, config);
+    const cold = readConfigFile(path); expect(cold.interaction).toEqual(config.interaction); expect(cold.models?.['example']?.behavior).toEqual(config.models?.['example']?.behavior);
+    const text = await readFile(path, 'utf8'); expect(text).toContain('ask_user_question_guard'); expect(text).toContain('max_per_window = 4'); expect(text).not.toContain('maxPerWindow');
+    expect(() => parseConfigString('[interaction]\nask_user_question_guard=true\n')).toThrow();
+    expect(() => parseConfigString('[interaction.ask_user_question_guard]\nmax_per_window=0\n')).toThrow();
+    expect(() => parseConfigString('[models.example]\nprovider="example"\nmodel="remote"\nmax_context_size=8192\n[models.example.behavior]\nask_user_question_guard=true\n')).toThrow();
+  });
+  it('round-trips nested cognition and prompt-field identity branches with snake-case wire keys', async () => {
+    const path = join(await makeTempDir(), 'config.toml');
+    const config = parseConfigString('[models.example]\nprovider = "example"\nmodel = "example"\nmax_context_size = 128000\n[models.example.cognition]\noverlay = "cognition/common.md"\nindependent = "off"\n[models.example.cognition.main]\noverlay = "cognition/common.md"\nsteering = "cognition/main.md"\nanchor_steps = 2\nanchor_scope = "turn"\n[models.example.prompt_overrides]\nmain = "off"\n[models.example.prompt_overrides.fields]\n"system.shared" = "COMMON FIELD"\n[models.example.prompt_overrides.independent.fields]\n"system.shared" = "INDEPENDENT FIELD"\n');
+    expect(config.models?.['example']?.cognition).toMatchObject({ independent: 'off', main: { anchorSteps: 2, anchorScope: 'turn', steering: 'cognition/main.md' } });
+    await writeConfigFile(path, config);
+    expect(readConfigFile(path).models).toEqual(config.models);
+    expect(await readFile(path, 'utf8')).toContain('anchor_steps = 2');
+    expect(await readFile(path, 'utf8')).not.toContain('anchorSteps');
+  });
+
   it('round-trips model parameter overrides and preserves wire parameter spelling', async () => {
     const path = join(await makeTempDir(), 'config.toml');
     const text = `
@@ -284,6 +307,11 @@ search_lane = "exa.search"
     })).resolves.toBeUndefined();
   });
 
+  it('omits removed host dispatch policies from typed SDK config without losing tool opt-ins', () => {
+    const config = parseConfigString('[subagent]\nmain_dispatch_policy = "strict"\nsubagent_dispatch_policy = "advisory"\nallowed_tools = ["Read"]\n', 'legacy-host-policy.toml');
+    expect(config.subagent).toEqual({ allowedTools: ['Read'] });
+  });
+
   it('parses the documented config shape and keeps TUI-only fields in raw', () => {
     const config = parseConfigString(COMPLETE_TOML, 'complete.toml');
 
@@ -328,7 +356,6 @@ search_lane = "exa.search"
     expect(config.subagent).toEqual({
       defaultProfile: 'general',
       allowedTools: ['Read', 'Grep'],
-      mainDispatchPolicy: 'advisory',
     });
     expect(config.nbSearch?.defaults?.search_lane).toBe('team.search');
     expect(config.nbSearch?.credential_slots?.['exa.team']).toEqual({
@@ -569,8 +596,6 @@ describe('KimiHarness config API', () => {
   it('returns experimental feature metadata through the harness', async () => {
     // The master switch off, so every flag reports its own resolution.
     vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '0');
-    // A flag turned on against its default, and one turned off against a
-    // default-on flag: both must report `env` as the deciding source.
     vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', '1');
     vi.stubEnv('KIKI_EXPERIMENTAL_TASK_WAIT', '0');
     const homeDir = await makeTempDir();
@@ -583,12 +608,18 @@ describe('KimiHarness config API', () => {
     // the model-inheritance removal.)
     expect(features.map((feature) => feature.id)).toEqual([
       'agent-profile-routes',
+      'native_ssh',
       'session_idle_eviction',
       'auto_session_title',
+      'native_browser',
+      'local_session_resume',
+      'plugin_import',
+      'media_generation',
       'task_wait',
       'tool-select',
       'subagent_release_idle',
       'persistence_minidb_readmodel',
+      'task_board',
       'image_format_conversion',
       'external_delegation_mcp',
     ]);
@@ -609,10 +640,10 @@ describe('KimiHarness config API', () => {
       id: 'tool-select',
       title: 'Tool select (progressive tool disclosure)',
       description:
-        'Keep MCP tool schemas out of the immutable top-level tools[]; the model loads them on demand via the SelectTools tool. Only takes effect on models whose capability catalog declares dynamically loaded tools.',
+        'Keep MCP and plugin tool schemas out of top-level tools[]; SelectTools loads them into messages. Enabled by default for Kimi, OpenAI chat/responses, and Anthropic protocols when tool use is available.',
       surface: 'core',
       env: 'KIKI_EXPERIMENTAL_TOOL_SELECT',
-      defaultEnabled: false,
+      defaultEnabled: true,
       enabled: true,
       source: 'env',
     });

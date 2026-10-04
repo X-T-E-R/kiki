@@ -2,6 +2,9 @@ import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 import { parseSystemMdProfile } from '@kiki/agent-profiles/systemFile';
 import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
 import { KikiContextSchema } from '@kiki/agent-profiles/agentProfile';
+import { modelProfilePatchToWire, subagentLeasePatchToWire } from '@kiki/agent-profiles/modelPromptProjection';
+import { PromptOverridesSchema } from '@kiki/agent-profiles/promptOverrides';
+import { updateNamedAgentModelProfileEntrySchema, updateNamedAgentSubagentEntrySchema } from '@kiki/protocol';
 import { join } from 'pathe';
 
 import { atomicCreate, atomicWrite } from '#/_base/utils/fs';
@@ -82,10 +85,13 @@ const TOP_LEVEL_KEYS = new Set([
   'preferredModels',
   'discouragedModels',
   'preferredEfforts',
-  'subagents',
-  'subagentPolicy',
+  'allowedSubagents',
+  'canSpawnSubagents',
+  'preferredSubagents',
+  'denySubagents',
   'spawnConstraints',
   'modelProfiles',
+  'promptOverrides',
   'serviceTier',
   'autoCompact',
   'tools',
@@ -275,9 +281,9 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     if (request.preferredModels !== undefined) nextProfileText = updateFrontmatterScalar(nextProfileText, 'preferred_models', request.preferredModels);
     if (request.discouragedModels !== undefined) nextProfileText = updateFrontmatterScalar(nextProfileText, 'discouraged_models', request.discouragedModels);
     if (request.preferredEfforts !== undefined) nextProfileText = updateFrontmatterScalar(nextProfileText, 'preferred_efforts', request.preferredEfforts);
-    if (request.subagentPolicy !== undefined) {
-      nextProfileText = updateFrontmatterScalar(nextProfileText, 'subagent_policy', request.subagentPolicy);
-    }
+    if (request.canSpawnSubagents !== undefined) nextProfileText = updateFrontmatterScalar(nextProfileText, 'can_spawn_subagents', request.canSpawnSubagents);
+    if (request.preferredSubagents !== undefined) nextProfileText = updateFrontmatterScalar(nextProfileText, 'preferred_subagents', request.preferredSubagents);
+    if (request.denySubagents !== undefined) nextProfileText = updateFrontmatterScalar(nextProfileText, 'deny_subagents', request.denySubagents);
     if (request.spawnConstraints !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'spawn_constraints', request.spawnConstraints === null
         ? null : {
@@ -290,15 +296,18 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
             disallowed_tools: request.spawnConstraints.disallowedTools,
           });
     }
-    if (request.subagents !== undefined) {
-      nextProfileText = updateFrontmatterScalar(nextProfileText, 'subagents', request.subagents === null
+    if (request.allowedSubagents !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'allowed_subagents', request.allowedSubagents === null
         ? null
-        : mergeSubagentEntries(frontmatterField(nextProfileText, 'subagents'), request.subagents));
+        : mergeSubagentEntries(frontmatterField(nextProfileText, 'allowed_subagents'), request.allowedSubagents));
     }
     if (request.modelProfiles !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'model_profiles', request.modelProfiles === null
         ? null
         : mergeModelProfileEntries(frontmatterField(nextProfileText, 'model_profiles'), request.modelProfiles));
+    }
+    if (request.promptOverrides !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'prompt_overrides', request.promptOverrides === null ? null : { ...request.promptOverrides });
     }
     if (request.serviceTier !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'service_tier', request.serviceTier);
@@ -540,10 +549,9 @@ function validateRequest(request: AgentProfileWriteRequest): void {
   validateStringList(request.preferredModels, 'preferredModels', issues);
   validateStringList(request.discouragedModels, 'discouragedModels', issues);
   validateStringList(request.preferredEfforts, 'preferredEfforts', issues);
-  if (request.subagentPolicy !== undefined && request.subagentPolicy !== null
-    && request.subagentPolicy !== 'advisory' && request.subagentPolicy !== 'strict') {
-    issues.push({ path: 'subagentPolicy', message: 'subagentPolicy must be advisory, strict, or null' });
-  }
+  if (request.canSpawnSubagents !== undefined && request.canSpawnSubagents !== null && typeof request.canSpawnSubagents !== 'boolean') issues.push({ path: 'canSpawnSubagents', message: 'canSpawnSubagents must be boolean or null' });
+  validateStringList(request.preferredSubagents, 'preferredSubagents', issues);
+  validateStringList(request.denySubagents, 'denySubagents', issues);
   if (request.spawnConstraints !== undefined && request.spawnConstraints !== null) {
     if (!isRecord(request.spawnConstraints)) {
       issues.push({ path: 'spawnConstraints', message: 'spawnConstraints must be a mapping or null' });
@@ -558,8 +566,12 @@ function validateRequest(request: AgentProfileWriteRequest): void {
       }
     }
   }
-  validateSubagentUpdates(request.subagents, issues);
+  validateSubagentUpdates(request.allowedSubagents, issues);
   validateModelProfileUpdates(request.modelProfiles, issues);
+  if (request.promptOverrides !== undefined && request.promptOverrides !== null) {
+    const parsed = PromptOverridesSchema.safeParse(request.promptOverrides);
+    if (!parsed.success) for (const issue of parsed.error.issues) issues.push({ path: `promptOverrides.${issue.path.join('.')}`, message: issue.message });
+  }
   if (request.prompt !== undefined && typeof request.prompt !== 'string') {
     issues.push({ path: 'prompt', message: 'prompt must be a string' });
   }
@@ -612,10 +624,13 @@ function validateRequest(request: AgentProfileWriteRequest): void {
     request.preferredModels,
     request.discouragedModels,
     request.preferredEfforts,
-    request.subagents,
-    request.subagentPolicy,
+    request.allowedSubagents,
+    request.canSpawnSubagents,
+    request.preferredSubagents,
+    request.denySubagents,
     request.spawnConstraints,
     request.modelProfiles,
+    request.promptOverrides,
     request.serviceTier,
     request.autoCompact,
     request.tools,
@@ -733,7 +748,7 @@ function withKeyUpdates(
 
 function mergeSubagentEntries(
   current: unknown,
-  updates: NonNullable<AgentProfileWriteRequest['subagents']>,
+  updates: NonNullable<AgentProfileWriteRequest['allowedSubagents']>,
 ): unknown[] {
   const existing = new Map<string, Record<string, unknown>>();
   if (Array.isArray(current)) {
@@ -749,6 +764,27 @@ function mergeSubagentEntries(
       model_alias: entry.modelAlias,
       thinking_effort: entry.thinkingEffort,
       allowed_models: entry.allowedModels,
+      source: entry.source,
+      description: entry.description,
+      whenToUse: entry.whenToUse,
+      deny_models: entry.denyModels,
+      allowed_efforts: entry.allowedEfforts,
+      preferred_models: entry.preferredModels,
+      discouraged_models: entry.discouragedModels,
+      preferred_efforts: entry.preferredEfforts,
+      tools: entry.tools,
+      disallowedTools: entry.disallowedTools,
+      can_spawn_subagents: entry.canSpawnSubagents,
+      allowed_subagents: entry.allowedSubagents,
+      preferred_subagents: entry.preferredSubagents,
+      deny_subagents: entry.denySubagents,
+      prompt_mode: entry.promptMode,
+      prompt: entry.prompt,
+      delegation_notice: entry.delegationNotice,
+      service_tier: entry.serviceTier,
+      request_params: entry.requestParams,
+      model_prompts: entry.modelPrompts,
+      model_profiles: entry.modelProfiles === undefined ? undefined : mergeModelProfileEntries(prior?.['model_profiles'], entry.modelProfiles),
     });
     return Object.keys(merged).length === 1 ? name : merged;
   });
@@ -764,37 +800,36 @@ function mergeModelProfileEntries(
       if (isRecord(item) && typeof item['alias'] === 'string') existing.set(item['alias'], item);
     }
   }
-  return updates.map((entry) => withKeyUpdates(existing.get(entry.alias) ?? { alias: entry.alias }, {
-    when: entry.when,
-    thinking_effort: entry.thinkingEffort,
-  }));
+  return updates.map((entry) => withKeyUpdates(existing.get(entry.alias) ?? { alias: entry.alias }, modelProfilePatchToWire(entry)));
 }
 
 function validateSubagentUpdates(value: unknown, issues: ValidationIssue[]): void {
   if (value === undefined || value === null) return;
   if (!Array.isArray(value)) {
-    issues.push({ path: 'subagents', message: 'subagents must be an array or null' });
+    issues.push({ path: 'allowedSubagents', message: 'allowedSubagents must be an array or null' });
     return;
   }
   const seen = new Set<string>();
   value.forEach((entry, index) => {
-    const path = `subagents.${index}`;
+    const path = `allowedSubagents.${index}`;
     const name = typeof entry === 'string' ? entry : isRecord(entry) ? entry['name'] : undefined;
     if (typeof name !== 'string' || name.trim() === '') {
       issues.push({ path, message: 'subagent entries must name a profile' });
       return;
     }
-    if (seen.has(name.trim())) issues.push({ path, message: `duplicate subagent ${name.trim()}` });
-    seen.add(name.trim());
     if (!isRecord(entry)) return;
+    if (seen.has(name.trim())) issues.push({ path, message: `duplicate lease for ${name.trim()}` });
+    seen.add(name.trim());
     for (const key of Object.keys(entry)) {
-      if (!['name', 'modelAlias', 'thinkingEffort', 'allowedModels'].includes(key)) {
+      if (!['name', 'source', 'description', 'whenToUse', 'modelAlias', 'thinkingEffort', 'allowedModels', 'denyModels', 'allowedEfforts', 'preferredModels', 'discouragedModels', 'preferredEfforts', 'tools', 'disallowedTools', 'canSpawnSubagents', 'allowedSubagents', 'preferredSubagents', 'denySubagents', 'promptMode', 'prompt', 'delegationNotice', 'serviceTier', 'requestParams', 'modelPrompts', 'modelProfiles'].includes(key)) {
         issues.push({ path: `${path}.${key}`, message: `field "${key}" is not editable` });
       }
     }
     validateModelAlias(entry['modelAlias'], `${path}.modelAlias`, issues);
     validateOptionalString(entry['thinkingEffort'], `${path}.thinkingEffort`, issues);
     validateStringList(entry['allowedModels'], `${path}.allowedModels`, issues);
+    const parsed = updateNamedAgentSubagentEntrySchema.safeParse(subagentLeasePatchToWire(entry as unknown as Exclude<import('./agentProfileWriter').AgentProfileSubagentUpdate, string>));
+    if (!parsed.success) for (const issue of parsed.error.issues) issues.push({ path: `${path}.${issue.path.join('.')}`, message: issue.message });
   });
 }
 
@@ -814,12 +849,14 @@ function validateModelProfileUpdates(value: unknown, issues: ValidationIssue[]):
     if (seen.has(entry['alias'])) issues.push({ path, message: `duplicate model profile ${entry['alias']}` });
     seen.add(entry['alias']);
     for (const key of Object.keys(entry)) {
-      if (!['alias', 'when', 'thinkingEffort'].includes(key)) {
+      if (!['alias', 'when', 'thinkingEffort', 'promptMode', 'prompt', 'main', 'independent', 'promptOverrides', 'contextBudget', 'autoCompact', 'maxCompletionTokens', 'serviceTier', 'requestParams', 'allowedModels', 'denyModels', 'allowedEfforts', 'preferredModels', 'discouragedModels', 'preferredEfforts'].includes(key)) {
         issues.push({ path: `${path}.${key}`, message: `field "${key}" is not editable` });
       }
     }
     validateOptionalString(entry['when'], `${path}.when`, issues);
     validateOptionalString(entry['thinkingEffort'], `${path}.thinkingEffort`, issues);
+    const parsed = updateNamedAgentModelProfileEntrySchema.safeParse(modelProfilePatchToWire(entry as unknown as import('./agentProfileWriter').AgentProfileModelProfileUpdate));
+    if (!parsed.success) for (const issue of parsed.error.issues) issues.push({ path: `${path}.${issue.path.join('.')}`, message: issue.message });
   });
 }
 

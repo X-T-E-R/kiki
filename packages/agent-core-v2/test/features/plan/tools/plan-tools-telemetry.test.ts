@@ -1,7 +1,9 @@
 import type { ToolCall } from '#/kosong/contract/message';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { IAgentPlanService, PlanData } from '#/features/plan/plan';
+import { IAgentPlanService, type PlanData } from '#/features/plan/plan';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { ToolAccesses } from '#/tool/toolContract';
 import { EnterPlanModeTool } from '#/features/plan/tools/enter-plan-mode/enterPlanModeTool';
 import { type ExitPlanModeInput } from '#/features/plan/tools/exit-plan-mode/exit-plan-mode';
 import { ExitPlanModeTool } from '#/features/plan/tools/exit-plan-mode/exitPlanModeTool';
@@ -287,6 +289,61 @@ describe('AgentPlanService EnterPlanMode telemetry', () => {
       });
     });
   }
+});
+
+describe('EnterPlanMode batch boundary', () => {
+  it('skips same-batch Write/Edit and rechecks plan-file writes on the next execution', async () => {
+    const ctx = createTestAgent(
+      execEnvServices({ hostFs: createFakeHostFs({
+        mkdir: vi.fn().mockResolvedValue(undefined), readText: vi.fn().mockResolvedValue(''),
+      }) }),
+      permissionModeServices('auto'),
+    );
+    try {
+      const executor = ctx.get(IAgentToolExecutorService);
+      const registry = ctx.get(IAgentToolRegistryService);
+      const writes: string[] = [];
+      for (const name of ['Write', 'Edit']) {
+        registry.register({
+          name, description: 'Count test writes without changing files.',
+          parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+          resolveExecution: (args: { path: string }) => ({
+            approvalRule: name, accesses: ToolAccesses.writeFile(args.path),
+            execute: async () => { writes.push(args.path); return { output: 'fake write completed' }; },
+          }),
+        });
+      }
+      const call = (id: string, name: string, path?: string): ToolCall => ({
+        type: 'function', id, name, arguments: JSON.stringify(path === undefined ? {} : { path }),
+      });
+      const run = async (calls: ToolCall[]) => {
+        const results: ToolResult[] = [];
+        for await (const item of executor.execute(calls, { turnId: 1, signal: new AbortController().signal })) results.push(item.result);
+        return results;
+      };
+      expect((await run([call('before', 'Write', '/workspace/before.txt')]))[0]?.isError).toBeFalsy();
+      const batch = await run([
+        call('enter', 'EnterPlanMode'), call('write', 'Write', '/workspace/product.txt'),
+        call('edit', 'Edit', '/workspace/product.txt'),
+      ]);
+      expect(batch).toEqual(expect.arrayContaining([
+        expect.objectContaining({ output: expect.stringContaining('Plan mode is now active'), stopBatchAfterThis: true }),
+      ]));
+      expect(batch.filter((result) => result.isError)).toHaveLength(2);
+      expect(writes).toEqual(['/workspace/before.txt']);
+      for (const name of ['Write', 'Edit']) {
+        const [denied] = await run([call(`denied-${name}`, name, '/workspace/another.txt')]);
+        expect(denied?.isError).toBe(true);
+        expect(denied?.output).toContain('plan');
+      }
+      const plan = await ctx.get(IAgentPlanService).status();
+      expect(plan?.path).toBeDefined();
+      for (const name of ['Write', 'Edit']) {
+        expect((await run([call(`plan-${name}`, name, plan!.path)]))[0]?.isError).toBeFalsy();
+      }
+      expect(writes).toEqual(['/workspace/before.txt', plan!.path, plan!.path]);
+    } finally { await ctx.dispose(); }
+  });
 });
 
 describe('ExitPlanModeTool telemetry', () => {

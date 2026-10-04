@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -16,6 +16,9 @@ import {
   type IOAuthService as IOAuthServiceType,
   type ISessionScopeHandle,
   IAgentConversationUndoService,
+  IAgentContextMemoryService,
+  IWireService,
+  setSessionArchivedBatch,
   IAgentGoalService,
   IAgentLifecycleService,
   IAgentUsageService,
@@ -23,7 +26,10 @@ import {
   IAtomicDocumentStore,
   IEventBus,
   IEventService,
+  IFileSystemStorageService,
+  IWorkspaceInstanceManager,
   ISessionContext,
+  ISessionActivityView,
   ISessionIndex,
   ISessionIndexMirror,
   ISessionAgentProfileCatalog,
@@ -41,15 +47,17 @@ import {
   sessionDirOf,
   type ServiceIdentifier,
   type ScopeSeed,
+  type SessionSummary,
 } from '@kiki/agent-core-v2';
 import { Event, type IWaitUntil } from '@kiki/agent-core-v2/_base/event';
 import { TurnStarted } from '@kiki/agent-core-v2/agent/loop/turnEvents';
 import { sessionWarningsResponseSchema } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
-import { encodeWorkDirKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
+import { encodeLegacyWorkDirKey, encodeWorkDirKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
+import { createKlient as createMemoryKlient } from '@kiki/klient/memory';
 
 interface Envelope<T> {
   code: number;
@@ -96,6 +104,11 @@ interface SessionWire {
 interface PageWire {
   items: SessionWire[];
   has_more: boolean;
+  next_cursor?: string;
+  busy_count?: number;
+  ephemeral?: SessionWire[];
+  ephemeral_has_more?: boolean;
+  ephemeral_next_cursor?: string;
 }
 
 function agentRpc(
@@ -817,6 +830,73 @@ describe('server-v2 /api/sessions', () => {
     expect(typeof body.data.has_more).toBe('boolean');
   });
 
+  it('bounds default list bytes, drains every ID, preserves an after range, and filters busy before paging', async () => {
+    const created = (await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } })).body.data;
+    const handle = getLiveSessionById(server!.core.accessor, created.id)!;
+    const activity = handle.accessor.get(ISessionActivityView);
+    vi.spyOn(activity, 'state').mockReturnValue({ ...activity.state(), busy: true });
+    const rows: SessionSummary[] = Array.from({ length: 75 }, (_, index) => ({ id: index === 60 ? created.id : `bounded-list-${index}`, workspaceId: created.workspace_id, cwd: home, title: 'title😀'.repeat(1000), lastPrompt: 'prompt正文😀'.repeat(1000), custom: { body: 'metadata😀'.repeat(1000) }, createdAt: 1, updatedAt: 1000 - index, archived: false }));
+    const index = server!.core.accessor.get(ISessionIndex);
+    vi.spyOn(index, 'get').mockImplementation(async (id) => rows.find((row) => row.id === id));
+    const list = vi.spyOn(index, 'listRecent').mockImplementation(async (query) => {
+      const before = query.before === undefined ? -1 : rows.findIndex((row) => row.id === query.before);
+      const after = query.after === undefined ? rows.length : rows.findIndex((row) => row.id === query.after);
+      const candidates = rows.slice(before + 1, after);
+      const items = candidates.slice(0, query.limit);
+      return { items, nextCursor: items.length < candidates.length ? items.at(-1)?.id : undefined };
+    });
+    const drain = async (initial: string): Promise<string[]> => {
+      const ids: string[] = [];
+      let path = initial;
+      while (true) {
+        const { body } = await getJson<PageWire>(path);
+        expect(body.code).toBe(0);
+        expect(Buffer.byteLength(JSON.stringify(body))).toBeLessThan(64 * 1024);
+        expect(body.data.items.length).toBeLessThanOrEqual(50);
+        ids.push(...body.data.items.map((row) => row.id));
+        if (!body.data.has_more) break;
+        expect(body.data.next_cursor).toBeDefined();
+        path = `/api/sessions?before_id=${encodeURIComponent(body.data.next_cursor!)}&page_size=50`;
+      }
+      return ids;
+    };
+    expect(await drain('/api/sessions')).toEqual(rows.map((row) => row.id));
+    expect(list.mock.calls[0]![0].limit).toBe(51);
+    expect(await drain(`/api/sessions?after_id=${rows[65]!.id}`)).toEqual(rows.slice(0, 65).map((row) => row.id));
+    const busy = (await getJson<PageWire>('/api/sessions?busy=true&page_size=1')).body;
+    expect(busy.data.items.map((row) => row.id)).toEqual([created.id]);
+    expect(busy.data.has_more).toBe(false);
+    expect(busy.data.busy_count).toBe(1);
+  });
+
+  it('bounds ephemeral directories and keeps included temporary-session pages reachable', async () => {
+    const created = (await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home }, ephemeral: true })).body.data;
+    const manager = server!.core.accessor.get(ISessionManager);
+    const original = manager.listEphemeral()[0]!;
+    const metadata = original.accessor.get(ISessionMetadata);
+    const meta = await metadata.read();
+    const handles = Array.from({ length: 65 }, (_, index) => ({ ...original, id: `temporary-${String(index).padStart(3, '0')}`, accessor: { get: (service: ServiceIdentifier<unknown>) => service === ISessionMetadata ? { read: async () => ({ ...meta, id: `temporary-${String(index).padStart(3, '0')}`, title: '临时😀'.repeat(1000) }) } : original.accessor.get(service) } })) as unknown as ReturnType<typeof manager.listEphemeral>;
+    vi.spyOn(manager, 'listEphemeral').mockReturnValue(handles);
+    const grouped = (await getJson<PageWire>('/api/sessions?include_ephemeral=true')).body;
+    expect(grouped.code).toBe(0);
+    expect(Buffer.byteLength(JSON.stringify(grouped))).toBeLessThan(64 * 1024);
+    expect(grouped.data.ephemeral_has_more).toBe(true);
+    expect(grouped.data.ephemeral_next_cursor).toBeDefined();
+    const ids = grouped.data.ephemeral!.map((row) => row.id);
+    let cursor = grouped.data.ephemeral_next_cursor;
+    while (cursor !== undefined) {
+      const page = (await getJson<PageWire>(`/api/sessions/ephemeral?before_id=${encodeURIComponent(cursor)}`)).body;
+      expect(page.code).toBe(0);
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(64 * 1024);
+      expect(page.data.items.length).toBeLessThanOrEqual(50);
+      ids.push(...page.data.items.map((row) => row.id));
+      cursor = page.data.next_cursor;
+      expect(page.data.has_more).toBe(cursor !== undefined);
+    }
+    expect(ids).toEqual(handles.map((handle) => handle.id));
+    expect(created.ephemeral).toBe(true);
+  });
+
   it('maps session index building to the retryable list business code', async () => {
     const index = (server as RunningServer).core.accessor.get(ISessionIndex);
     const listRecent = index.listRecent.bind(index);
@@ -956,7 +1036,7 @@ describe('server-v2 /api/sessions', () => {
     expect(generated.body.code).toBe(40923);
   });
 
-  it('generates and persists a title through the public REST path', async () => {
+  it('makes no managed title request without an explicit model even with an OAuth login and prompts', async () => {
     await server?.close();
     server = undefined;
     await writeFile(
@@ -1009,6 +1089,8 @@ describe('server-v2 /api/sessions', () => {
       getCachedAccessToken: async () => 'test-token',
       getRegion: () => 'mainland-cn',
       listMethods: async () => [],
+      probeOriginal: async () => { throw new Error('unused'); },
+      connectOriginal: async () => { throw new Error('unused'); },
     };
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -1050,46 +1132,16 @@ describe('server-v2 /api/sessions', () => {
       expect(submitted.body.code).toBe(0);
     }
 
-    const generated = await postJson<{ title: string }>(
-      `/api/sessions/${id}/title/generate`,
-    );
-    expect(generated.body).toMatchObject({ code: 0, data: { title: 'generated from REST' } });
-    expect(toolsRequest).toEqual({
-      method: 'chat_title',
-      params: {
-        chat_content:
-          'user: first REST prompt\nuser: second REST prompt\nuser: third REST prompt',
-      },
-    });
-
-    const got = await getJson<SessionWire>(`/api/sessions/${id}`);
-    expect(got.body).toMatchObject({ code: 0, data: { title: 'generated from REST' } });
-
-    const again = await postJson<null>(`/api/sessions/${id}/title/generate`);
-    expect(again.body.code).toBe(40923);
-
-    const forced = await postJson<{ title: string }>(`/api/sessions/${id}/title/generate`, {
-      force: true,
-    });
-    expect(forced.body).toMatchObject({ code: 0, data: { title: 'generated from REST' } });
-
+    for (const body of [{}, { force: true }, { force: true, source: 'digest' }]) {
+      const generated = await postJson<null>(`/api/sessions/${id}/title/generate`, body);
+      expect(generated.body.code).toBe(40923);
+      expect(generated.body.msg).toContain('session_title.model');
+    }
+    expect(toolsRequest).toBeUndefined();
     await postJson<SessionWire>(`/api/sessions/${id}/profile`, { title: 'custom title' });
-    const forcedCustom = await postJson<{ title: string }>(
-      `/api/sessions/${id}/title/generate`,
-      { force: true },
-    );
-    expect(forcedCustom.body).toMatchObject({ code: 0, data: { title: 'generated from REST' } });
-    const afterCustom = await getJson<SessionWire>(`/api/sessions/${id}`);
-    expect(afterCustom.body.data.title).toBe('generated from REST');
-
-    const digested = await postJson<{ title: string }>(`/api/sessions/${id}/title/generate`, {
-      force: true,
-      source: 'digest',
-    });
-    expect(digested.body).toMatchObject({ code: 0, data: { title: 'generated from REST' } });
-    expect(toolsRequest?.params.chat_content).toBe(
-      'user: first REST prompt\nuser: third REST prompt',
-    );
+    const forcedCustom = await postJson<null>(`/api/sessions/${id}/title/generate`, { force: true });
+    expect(forcedCustom.body.code).toBe(40923);
+    expect((await getJson<SessionWire>(`/api/sessions/${id}`)).body.data.title).toBe('custom title');
   });
 
   it('returns session-not-found when generating a title for a missing session', async () => {
@@ -2002,8 +2054,9 @@ describe('server-v2 /api/sessions', () => {
     server = undefined;
     const typedRoot = 'C:\\Users\\Foo\\Proj';
     const lowerRoot = 'c:\\users\\foo\\proj';
-    const typedId = encodeWorkDirKey(typedRoot);
+    const typedId = encodeLegacyWorkDirKey(typedRoot);
     const lowerId = encodeWorkDirKey(lowerRoot);
+    expect(typedId).not.toBe(lowerId);
     await writeFile(
       join(home as string, 'workspaces.json'),
       JSON.stringify({
@@ -2050,11 +2103,12 @@ describe('server-v2 /api/sessions', () => {
     const rep = workspaces.body.data.items[0]?.id as string;
     expect([typedId, lowerId]).toContain(rep);
 
-    const listed = await getJson<PageWire>(
-      `/api/sessions?workspace_id=${encodeURIComponent(rep)}`,
-    );
-    expect(listed.body.code).toBe(0);
-    expect(listed.body.data.items.map((s) => s.id)).toEqual(['s-lower', 's-typed']);
+    for (const id of [typedId, lowerId]) {
+      const listed = await getJson<PageWire>(`/api/sessions?workspace_id=${encodeURIComponent(id)}`);
+      expect(listed.body.code).toBe(0);
+      expect(listed.body.data.items.map((s) => s.id)).toEqual(['s-lower', 's-typed']);
+    }
+    expect((await getJson<PageWire>('/api/sessions?workspace_id=wd_unknown_000000000000')).body.code).toBe(40410);
 
     const page1 = await getJson<PageWire>(
       `/api/sessions?workspace_id=${encodeURIComponent(rep)}&page_size=1`,
@@ -3054,6 +3108,193 @@ describe('server-v2 /api/sessions (minidb read model)', () => {
     expect(fetched.body.code).toBe(40401);
     const listed = await getJson<PageWire>('/api/sessions?include_archive=true');
     expect(listed.body.data.items.map((item) => item.id)).toEqual([source.body.data.id]);
+  });
+
+  it.each([false, true])('preserves saved history after rejected duplicate create (live=%s)', async (live) => {
+    const core = server!.core.accessor;
+    await core.get(ISessionIndex).prepare();
+    const manager = core.get(ISessionManager);
+    const old = await manager.create({ sessionId: 'duplicate-create', workDir: home! });
+    await old.accessor.get(ISessionMetadata).setTitle('Existing conversation');
+    const dir = old.accessor.get(ISessionContext).sessionDir;
+    const agent = await old.accessor.get(IAgentLifecycleService).create({ agentId: MAIN_AGENT_ID });
+    agent.accessor.get(IAgentContextMemoryService).append({
+      role: 'user', id: 'saved-history', toolCalls: [],
+      content: [{ type: 'text', text: 'Saved history must survive rejected creation' }],
+    });
+    await agent.accessor.get(IWireService).flush();
+    expect(await readFile(join(dir, 'agents/main/wire.jsonl'), 'utf8')).toContain('Saved history');
+    if (!live) await manager.close(old.id);
+    const beforeMeta = await readFile(join(dir, 'state.json'), 'utf8');
+    const beforeWire = await readFile(join(dir, 'agents/main/wire.jsonl'), 'utf8');
+    const remove = vi.spyOn(core.get(ISessionIndex), 'remove');
+    await expect(manager.create({
+      sessionId: old.id, workDir: home!, mainAgentBinding: { profile: 'missing-profile' },
+    })).rejects.toMatchObject({ code: ErrorCodes.SESSION_ALREADY_EXISTS });
+    expect(remove).not.toHaveBeenCalled();
+    expect(await readFile(join(dir, 'state.json'), 'utf8')).toBe(beforeMeta);
+    expect(await readFile(join(dir, 'agents/main/wire.jsonl'), 'utf8')).toBe(beforeWire);
+    expect(await core.get(ISessionIndex).get(old.id)).toMatchObject({ id: old.id, title: 'Existing conversation' });
+    if (live) {
+      expect(manager.get(old.id)).toBe(old);
+      await manager.close(old.id);
+    }
+    const restored = await manager.resume(old.id);
+    expect(restored?.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID)?.accessor.get(IAgentContextMemoryService).get()).toEqual([
+      expect.objectContaining({ id: 'saved-history', content: [{ type: 'text', text: 'Saved history must survive rejected creation' }] }),
+    ]);
+    await manager.close(old.id);
+    expect(manager.get(old.id)).toBeUndefined();
+  });
+
+  it.each([false, true])('preserves both lifecycle identities after rejected duplicate fork (same=%s)', async (same) => {
+    const core = server!.core.accessor;
+    await core.get(ISessionIndex).prepare();
+    const manager = core.get(ISessionManager);
+    const source = await manager.create({ sessionId: 'fork-source', workDir: home! });
+    const target = same ? source : await manager.create({ sessionId: 'fork-target', workDir: home! });
+    const owners = (manager as unknown as {
+      owners: Map<string, { get(id: string): ISessionScopeHandle | undefined; sessionLocks: Map<string, unknown> }>;
+    }).owners;
+    const controller = owners.get(target.id)!;
+    const lock = controller.sessionLocks.get(target.id);
+    expect(lock).toBeDefined();
+    const remove = vi.spyOn(core.get(ISessionIndex), 'remove');
+    await expect(manager.fork({ sourceSessionId: source.id, newSessionId: target.id })).rejects.toMatchObject({
+      code: ErrorCodes.SESSION_ALREADY_EXISTS,
+    });
+    expect(remove).not.toHaveBeenCalled();
+    for (const handle of new Set([source, target])) {
+      expect(manager.get(handle.id)).toBe(handle);
+      expect(owners.get(handle.id)?.get(handle.id)).toBe(handle);
+      expect(await core.get(ISessionIndex).get(handle.id)).toMatchObject({ id: handle.id });
+    }
+    expect(controller.sessionLocks.get(target.id)).toBe(lock);
+    await manager.close(target.id);
+    expect(manager.get(target.id)).toBeUndefined();
+    expect(controller.get(target.id)).toBeUndefined();
+    expect(controller.sessionLocks.has(target.id)).toBe(false);
+    if (!same) await manager.close(source.id);
+    expect(manager.residencyReport?.().liveSessions).toBe(0);
+  });
+
+  it.each([true, false])('terminates archive and resume in lifecycle order (archive first=%s)', async (archiveFirst) => {
+    const core = server!.core.accessor;
+    await core.get(ISessionIndex).prepare();
+    const manager = core.get(ISessionManager);
+    const old = await manager.create({ sessionId: 'archive-resume-order', workDir: home! });
+    const dir = old.accessor.get(ISessionContext).sessionDir;
+    await manager.close(old.id);
+    const first = archiveFirst ? setSessionArchivedBatch(core, [old.id], true) : manager.resume(old.id);
+    const second = archiveFirst ? manager.resume(old.id) : setSessionArchivedBatch(core, [old.id], true);
+    const results = await Promise.all([first, second]);
+    expect(results[archiveFirst ? 0 : 1]).toEqual([{ id: old.id, ok: true }]);
+    expect(results[archiveFirst ? 1 : 0]).toMatchObject({ id: old.id });
+    expect(JSON.parse(await readFile(join(dir, 'state.json'), 'utf8')).archived).toBe(true);
+    expect(manager.get(old.id) !== undefined).toBe(archiveFirst);
+    expect(manager.residencyReport?.()).toMatchObject({ pendingRestores: 0, lifecycleOperations: 0 });
+    const restored = await manager.restore(old.id);
+    expect((await restored?.accessor.get(ISessionMetadata).read())?.archived).toBe(false);
+    await manager.close(old.id);
+    expect(manager.residencyReport?.()).toMatchObject({ liveSessions: 0, pendingRestores: 0, lifecycleOperations: 0 });
+  });
+
+  it.each(['manager', 'shared facade'])('persists cold archive without materializing through %s', async (entry) => {
+    const core = server!.core.accessor;
+    await core.get(ISessionIndex).prepare();
+    const manager = core.get(ISessionManager);
+    const old = await manager.create({ sessionId: 'cold-public-archive', workDir: home! });
+    const dir = old.accessor.get(ISessionContext).sessionDir;
+    await manager.close(old.id);
+    const materialized: string[] = [];
+    const subscription = manager.onWillCreateSession?.((event) => materialized.push(event.sessionId));
+    const client = createMemoryKlient({ scope: server!.core });
+    const acquireWorkspace = vi.spyOn(core.get(IWorkspaceInstanceManager), 'acquire').mockRejectedValue(new Error('cold archive must not acquire a workspace'));
+    try {
+      if (entry === 'manager') await manager.archive(old.id);
+      else await client.session(old.id).archive();
+      expect(JSON.parse(await readFile(join(dir, 'state.json'), 'utf8')).archived).toBe(true);
+      expect(await core.get(ISessionIndex).get(old.id)).toMatchObject({ id: old.id, archived: true });
+      expect(materialized).toEqual([]);
+      expect(manager.get(old.id)).toBeUndefined();
+      await expect(manager.archive('missing-archive')).resolves.toBeUndefined();
+      expect(acquireWorkspace).not.toHaveBeenCalled();
+      acquireWorkspace.mockRestore();
+      const temporary = await manager.create({ sessionId: 'temporary-archive', workDir: home!, ephemeral: true });
+      await expect(manager.archive(temporary.id)).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      expect(manager.get(temporary.id)).toBe(temporary);
+      await manager.close(temporary.id);
+      const restored = await manager.restore(old.id);
+      expect((await restored?.accessor.get(ISessionMetadata).read())?.archived).toBe(false);
+    } finally {
+      acquireWorkspace.mockRestore();
+      subscription?.dispose();
+      await client.close();
+    }
+  });
+
+  it('cold archives after a failed predecessor resume and drains the lifecycle chain', async () => {
+    const core = server!.core.accessor;
+    await core.get(ISessionIndex).prepare();
+    const manager = core.get(ISessionManager);
+    const old = await manager.create({ sessionId: 'archive-after-failed-resume', workDir: home! });
+    await manager.close(old.id);
+    const subscription = manager.onWillCreateSession?.((event) => {
+      event.contributeSeed(ISessionToolPolicy, {
+        _serviceBrand: undefined,
+        get ready(): Promise<void> { return Promise.reject(new Error('injected predecessor resume failure')); },
+        onDidChange: Event.None as Event<IWaitUntil>,
+        disabledTools: () => [],
+        setDisabledTools: async () => {},
+      });
+    });
+    const resuming = manager.resume(old.id);
+    const rejected = expect(resuming).rejects.toThrow('injected predecessor resume failure');
+    const archiving = setSessionArchivedBatch(core, [old.id], true);
+    await rejected;
+    subscription?.dispose();
+    expect(await archiving).toEqual([{ id: old.id, ok: true }]);
+    expect(await core.get(ISessionIndex).get(old.id)).toMatchObject({ archived: true });
+    expect(manager.residencyReport?.()).toMatchObject({ liveSessions: 0, pendingRestores: 0, lifecycleOperations: 0 });
+  });
+
+  it.each(['create', 'fork'])('preserves a target found under the existing lock before %s writes', async (operation) => {
+    const core = server!.core.accessor;
+    await core.get(ISessionIndex).prepare();
+    const manager = core.get(ISessionManager);
+    const source = await manager.create({ sessionId: 'lock-check-source', workDir: home! });
+    const targetId = 'lock-check-target';
+    const targetDir = join(dirname(source.accessor.get(ISessionContext).sessionDir), targetId);
+    const storage = core.get(IFileSystemStorageService);
+    const acquireLock = storage.acquireLock.bind(storage);
+    const released = vi.fn();
+    const locking = vi.spyOn(storage, 'acquireLock').mockImplementation(async (scope, key, options) => {
+      const lock = await acquireLock(scope, key, options);
+      if (options?.owner?.['sessionId'] === targetId) {
+        const release = lock.release.bind(lock);
+        vi.spyOn(lock, 'release').mockImplementation(async () => {
+          await release();
+          released();
+        });
+        await mkdir(targetDir, { recursive: true });
+        await writeFile(join(targetDir, 'saved-history.txt'), 'Existing target history');
+      }
+      return lock;
+    });
+    const remove = vi.spyOn(core.get(ISessionIndex), 'remove');
+    try {
+      const attempt = operation === 'create'
+        ? manager.create({ sessionId: targetId, workDir: home! })
+        : manager.fork({ sourceSessionId: source.id, newSessionId: targetId });
+      await expect(attempt).rejects.toMatchObject({ code: ErrorCodes.SESSION_ALREADY_EXISTS });
+      expect(await readFile(join(targetDir, 'saved-history.txt'), 'utf8')).toBe('Existing target history');
+      expect(remove).not.toHaveBeenCalled();
+      expect(released).toHaveBeenCalledOnce();
+      expect(manager.get(targetId)).toBeUndefined();
+      expect(manager.get(source.id)).toBe(source);
+    } finally {
+      locking.mockRestore();
+    }
   });
 
   it('keeps point reads authoritative when the read model cannot open', async () => {

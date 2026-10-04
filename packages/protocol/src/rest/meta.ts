@@ -10,6 +10,7 @@
 import { z } from 'zod';
 
 import { fsOpenInAppIdSchema } from '../rest/fs';
+import { spaceIdSchema } from './space';
 import { isoDateTimeSchema } from '../time';
 
 export const metaCapabilitiesSchema = z.object({
@@ -52,6 +53,7 @@ export const metaResponseSchema = z.object({
   capabilities: metaCapabilitiesSchema,
   server_id: z.string().min(1),
   server_home_id: z.string().uuid().optional(),
+  current_space_id: z.union([z.literal('main'), spaceIdSchema]).optional(),
   started_at: isoDateTimeSchema,
   open_in_apps: z.array(fsOpenInAppIdSchema),
   /**

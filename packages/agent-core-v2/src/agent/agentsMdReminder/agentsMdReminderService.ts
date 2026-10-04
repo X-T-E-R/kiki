@@ -1,68 +1,49 @@
 import { basename, dirname, isAbsolute, join, normalize } from 'pathe';
-
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { IBashParserService } from '#/app/bashParser/bashParser';
 import { IEventBus } from '#/app/event/eventBus';
-import type { AgentsMdReminderShownEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
-import {
-  ContextApplyCompaction,
-  ContextClear,
-} from '#/agent/contextMemory/contextEvents';
+import type { AgentsMdReminderShownEvent } from '#/app/telemetry/events';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
-import { ContextUndone } from '#/agent/undo/undoService';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { normalizeUserPath } from '#/tool/path-access';
-import { extractAgentsMdPathsFromSystemPrompt } from '#/agent/profile/context';
+import { translateShellDrivePath } from '#/_base/execEnv/shellPathBridge';
 import { profileKey } from '#/agent/profile/profileOps';
+import { dynamicPromptKey } from '#/agent/profile/dynamicPrompt';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
-import type { ToolDidExecuteContext } from '#/agent/toolExecutor/toolHooks';
+import type { BeforeToolExecuteEvent, ToolDidExecuteContext } from '#/agent/toolExecutor/toolHooks';
 import { IEventDispatcher } from '#/state/eventDispatcher';
-
+import type { RuntimeLease } from '#/runtime/runtime';
 import { IAgentAgentsMdReminderService } from './agentsMdReminder';
 import { IAgentsMdDiscoveryService } from './agentsMdDiscoveryService';
 import { extractBashTargetDirs } from './bashTargets';
+import { coveredInstructions, instructionKey, instructionVersion, type InstructionFile } from './instructionCoverage';
 
-const BASH_PARSE_OPTIONS = { timeoutMs: 500, maxNodes: 10_000 } as const;
-const BASH_SHORT_RETRY_OPTIONS = {
-  timeoutMs: Number.POSITIVE_INFINITY,
-  maxNodes: BASH_PARSE_OPTIONS.maxNodes,
-} as const;
-const BASH_SHORT_RETRY_MAX_CHARS = 512;
+export const agentsMdReminderKnownKey = defineState<Set<string>>('agentsMdReminder.known', () => new Set());
+export const agentsMdReminderCwdKey = defineState<string | undefined>('agentsMdReminder.cwd', () => undefined);
+export const agentsMdReminderSeededKey = defineState<boolean>('agentsMdReminder.seeded', () => false);
 
-export const agentsMdReminderKnownKey = defineState<Set<string>>(
-  'agentsMdReminder.known',
-  () => new Set(),
-);
-export const agentsMdReminderCwdKey = defineState<string | undefined>(
-  'agentsMdReminder.cwd',
-  () => undefined as string | undefined,
-);
-export const agentsMdReminderSeededKey = defineState<boolean>(
-  'agentsMdReminder.seeded',
-  () => false,
-);
+interface PendingInstruction {
+  readonly file: InstructionFile;
+  readonly sourcePath: string;
+  readonly content: string;
+  readonly pathClass: 'posix' | 'win32';
+}
 
-export class AgentAgentsMdReminderService
-  extends Disposable
-  implements IAgentAgentsMdReminderService
-{
+export class AgentAgentsMdReminderService extends Disposable implements IAgentAgentsMdReminderService {
   declare readonly _serviceBrand: undefined;
-
-  private readonly remindQueue = new Set<string>();
-  private readonly reminded = new Set<string>();
-  private readonly readRecently = new Set<string>();
-  private readonly claimed = new Set<string>();
+  private readonly pending = new Map<string, PendingInstruction>();
   private readonly telemetryFired = new Set<string>();
+  private readonly loaded = new Map<string, { item: PendingInstruction; mtimeMs: number; size: number }>();
 
   constructor(
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
-    @IEventBus eventBus: IEventBus,
+    @IEventBus _eventBus: IEventBus,
     @IAgentSystemReminderService private readonly reminders: IAgentSystemReminderService,
     @IAgentStateService private readonly states: IAgentStateService,
     @ISessionContext private readonly sessionContext: ISessionContext,
@@ -70,253 +51,156 @@ export class AgentAgentsMdReminderService
     @IAgentsMdDiscoveryService private readonly discovery: IAgentsMdDiscoveryService,
     @IBashParserService private readonly bashParser: IBashParserService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
-    @IEventDispatcher private readonly dispatcher: IEventDispatcher,
-    @IAgentStateService private readonly agentState: IAgentStateService,
+    @IEventDispatcher dispatcher: IEventDispatcher,
+    @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
   ) {
     super();
     this.states.contributeState(agentsMdReminderKnownKey);
     this.states.contributeState(agentsMdReminderCwdKey);
     this.states.contributeState(agentsMdReminderSeededKey);
-    this._register(
-      this.dispatcher.hooks.onDidRestore.register('agentsMdReminder', async (_ctx, next) => {
-        const profile = this.agentState.get(profileKey);
-        const paths = extractAgentsMdPathsFromSystemPrompt(profile.systemPrompt);
-        this.seedInjected(paths, this.sessionContext.cwd);
-        await next();
-      }),
-    );
-    this._register(eventBus.subscribe(ContextApplyCompaction, () => this.reminded.clear()));
-    this._register(eventBus.subscribe(ContextClear, () => this.reminded.clear()));
-    this._register(eventBus.subscribe(ContextUndone, () => this.reminded.clear()));
-    const handler = async (ctx: ToolDidExecuteContext, next: () => Promise<void>): Promise<void> => {
-      await this.probeAndRemind(ctx);
+    this._register(dispatcher.hooks.onDidRestore.register('agentsMdReminder', async (_ctx, next) => {
+      this.pending.clear();
       await next();
-    };
-    this._register(toolExecutor.hooks.onDidExecuteTool.register('agentsMdReminder', handler));
+    }));
+    this._register(toolExecutor.onWillExecuteTool((event) => {
+      if (!event.execution.accesses?.some((access) => access.kind === 'file' && (access.operation === 'write' || access.operation === 'readwrite'))) return;
+      event.waitUntil((async () => {
+        const missing = await this.discoverFor(event.execution.accesses ?? [], event.args);
+        if (missing.length === 0) return;
+        this.queue(missing);
+        event.veto({ isError: true, output: 'No files were changed. Applicable directory instructions have not yet been disclosed in this context. The host will disclose them before the next step; review them and retry this operation.' });
+      })());
+    }));
+    this._register(toolExecutor.hooks.onDidExecuteTool.register('agentsMdReminder', async (ctx, next) => {
+      try { await this.afterTool(ctx); } catch {}
+      await next();
+    }));
   }
 
   seedInjected(paths: readonly string[], cwd: string): void {
-    const known = this.states.get(agentsMdReminderKnownKey);
-    for (const path of paths) known.add(normalize(path));
-    this.states.set(agentsMdReminderKnownKey, new Set(known));
+    this.states.set(agentsMdReminderKnownKey, new Set(paths.map(normalize)));
     this.states.set(agentsMdReminderCwdKey, cwd);
     this.states.set(agentsMdReminderSeededKey, true);
   }
 
-  private get known(): Set<string> {
-    return this.states.get(agentsMdReminderKnownKey);
-  }
-
   async flushStepHead(): Promise<void> {
-    const readRecently = new Set(this.readRecently);
-    this.readRecently.clear();
-    const queued = [...this.remindQueue].filter(
-      (path) => !this.known.has(path) && !this.reminded.has(path) && !readRecently.has(path),
-    );
-    this.remindQueue.clear();
-    if (queued.length === 0) return;
-    const lease = this.runtime.acquire(['fs']);
-    const paths: string[] = [];
-    try {
-      for (const path of queued) {
-        try {
-          const stat = await lease.runtime.fs!.stat(path);
-          if (stat.isFile && stat.size > 0) paths.push(path);
-        } catch {}
-      }
-    } finally {
-      lease.dispose();
+    const missing: PendingInstruction[] = [];
+    for (const item of this.pending.values()) {
+      const lease = this.acquire(item.file.runtimeId.startsWith('ssh:') ? item.file.runtimeId.slice(4) : item.file.runtimeId === 'local' ? 'local' : undefined);
+      try {
+        const current = await this.load(lease, item.sourcePath);
+        if (current !== undefined && !this.covered(current)) missing.push(current);
+      } finally { lease.dispose(); }
     }
-    if (paths.length === 0) return;
-    this.reminders.appendSystemReminder(reminderText(paths), {
-      kind: 'injection',
-      variant: 'agents_md',
+    if (missing.length === 0) { this.pending.clear(); return; }
+    this.reminders.appendSystemReminder(`Applicable directory instructions (complete current versions; apply within each stated directory scope):\n\n${missing.map((item) => `<!-- From: ${item.sourcePath} -->\nHost: ${item.file.runtimeId}; scope: ${item.file.scope}\n${item.content}`).join('\n\n')}`, {
+      kind: 'injection', variant: 'agents_md', disclosure: { mode: 'add', files: missing.map((item) => item.file) },
     });
-    for (const path of paths) this.reminded.add(path);
+    this.pending.clear();
   }
 
-  private get agentCwd(): string {
-    return this.states.get(agentsMdReminderCwdKey) ?? this.sessionContext.cwd;
+  private acquire(host?: string): RuntimeLease {
+    return this.runtime.acquireFor === undefined || host === undefined ? this.runtime.acquire(['fs']) : this.runtime.acquireFor(host, ['fs']);
   }
 
-  private async ensureSeeded(): Promise<void> {
-    if (this.states.get(agentsMdReminderSeededKey)) return;
-    this.seedInjected([], this.agentCwd);
+  private covered(item: PendingInstruction): boolean {
+    const key = instructionKey(item.file, item.pathClass);
+    if (coveredInstructions(this.context.get(), item.pathClass).has(`${key}:${item.file.version}`)) return true;
+    const profile = this.states.get(profileKey);
+    const files = this.states.get(dynamicPromptKey)?.context.agentsMdFiles ?? [];
+    const trusted = files.some((file) => instructionKey(file, item.pathClass) === key && file.version === item.file.version) ||
+      (item.file.runtimeId === this.runtime.inspect().identity.runtimeId &&
+        (profile.agentsMdPaths ?? []).some((path) => instructionKey({ path, runtimeId: item.file.runtimeId, scope: item.file.scope }, item.pathClass) === key));
+    return trusted && profile.systemPrompt.includes(`<!-- From: ${item.sourcePath} -->\n${item.content}`);
   }
 
-  private async probeAndRemind(ctx: ToolDidExecuteContext): Promise<void> {
+  private queue(items: readonly PendingInstruction[]): void {
+    for (const item of items) this.pending.set(instructionKey(item.file, item.pathClass), item);
+  }
+
+  private async load(lease: RuntimeLease, path: string): Promise<PendingInstruction | undefined> {
+    try {
+      const fs = lease.runtime.fs!;
+      const stat = await fs.stat(path);
+      if (!stat.isFile) return undefined;
+      const key = `${lease.runtime.identity.runtimeId}:${lease.runtime.identity.generation}:${normalize(path)}`;
+      const cached = this.loaded.get(key);
+      if (stat.mtimeMs !== undefined && cached?.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.item;
+      const content = (await fs.readText(path, { errors: 'strict' })).trim();
+      if (!content) return undefined;
+      const canonical = await fs.realpath(path);
+      const item: PendingInstruction = { content, sourcePath: path, pathClass: lease.runtime.environment.pathClass, file: { path: normalize(canonical),
+        version: instructionVersion(content), scope: basename(dirname(path)).toLowerCase() === '.kiki' ? dirname(dirname(path)) : dirname(path),
+        runtimeId: lease.runtime.identity.runtimeId } };
+      if (stat.mtimeMs !== undefined) {
+        if (this.loaded.size >= 64) this.loaded.delete(this.loaded.keys().next().value!);
+        this.loaded.set(key, { item, mtimeMs: stat.mtimeMs, size: stat.size });
+      }
+      return item;
+    } catch { return undefined; }
+  }
+
+  private async discoverDir(lease: RuntimeLease, directory: string): Promise<readonly string[]> {
+    let target = normalize(directory);
+    try { target = normalize(await lease.runtime.fs!.realpath(target)); } catch {}
+    const pathClass = lease.runtime.environment.pathClass;
+    const base = normalize(lease.runtime.workspace.mapRoots({ workDir: this.sessionContext.cwd, additionalDirs: [] }).workDir);
+    const normalized = pathClass === 'win32' ? target.toLowerCase() : target;
+    const root = pathClass === 'win32' ? base.toLowerCase() : base;
+    return this.discovery.discover(lease, target, normalized === root || normalized.startsWith(`${root}/`) ? base : undefined);
+  }
+
+  private async discoverFor(accesses: readonly import('#/tool/toolContract').ToolResourceAccess[], args: unknown): Promise<PendingInstruction[]> {
+    const host = stringArg(args, 'host');
+    const lease = this.acquire(host);
+    try {
+      const dirs = [...new Set(accesses.flatMap((access) => access.kind === 'file' ? [access.operation === 'search' || access.recursive ? access.path : dirname(access.path)] : []))];
+      const paths = [...new Set((await Promise.all(dirs.map((dir) => this.discoverDir(lease, dir)))).flat())];
+      const loaded = await Promise.all(paths.map((path) => this.load(lease, path)));
+      return loaded.filter((item): item is PendingInstruction => item !== undefined && !this.covered(item));
+    } finally { lease.dispose(); }
+  }
+
+  private async afterTool(ctx: ToolDidExecuteContext): Promise<void> {
     if (ctx.outcome !== 'executed') return;
-    const discovered: string[] = [];
+    const accesses = ctx.accesses ?? [];
+    const lease = this.acquire(stringArg(ctx.args, 'host'));
     try {
-      this.invalidateWrittenInstruction(ctx);
-      await this.ensureSeeded();
-      const { dirs, selfKnown } = this.targetDirs(ctx);
-      const selfKnownSet = new Set(selfKnown);
-      for (const dir of dirs) {
-        for (const path of await this.probeDir(dir)) {
-          if (
-            this.known.has(path) ||
-            this.reminded.has(path) ||
-            this.remindQueue.has(path) ||
-            this.claimed.has(path) ||
-            selfKnownSet.has(path)
-          ) {
-            continue;
-          }
-          this.claimed.add(path);
-          discovered.push(path);
+      for (const access of accesses) {
+        if (access.kind !== 'file' || basename(access.path).toLowerCase() !== 'agents.md') continue;
+        if (access.operation === 'write' || access.operation === 'readwrite') {
+          const directory = dirname(access.path);
+          this.discovery.invalidate(lease.runtime, basename(directory).toLowerCase() === '.kiki' ? dirname(directory) : directory);
+          this.loaded.clear();
         }
       }
-      for (const path of selfKnown) {
-        this.remindQueue.delete(path);
-        this.readRecently.add(path);
-      }
-      if (discovered.length === 0) return;
-      const untracked = discovered.filter((path) => !this.telemetryFired.has(path));
-      if (untracked.length > 0) {
-        const properties: AgentsMdReminderShownEvent = {
-          turn_id: ctx.turnId,
-          tool_name: ctx.toolCall.name,
-          reminded_count: untracked.length,
-          trace_id: ctx.trace?.traceId,
-        };
-        this.telemetry.track2('agents_md_reminder_shown', properties);
-        for (const path of untracked) this.telemetryFired.add(path);
-      }
-      for (const path of discovered) this.remindQueue.add(path);
-    } catch {} finally {
-      for (const path of discovered) this.claimed.delete(path);
+    } finally { lease.dispose(); }
+    let missing = await this.discoverFor(accesses, ctx.args);
+    if (ctx.toolCall.name === 'Bash') {
+      const lease = this.acquire(stringArg(ctx.args, 'host'));
+      try {
+        const env = lease.runtime.environment;
+        const shellPath = (path: string) => env.pathClass === 'win32' ? translateShellDrivePath(path) : path;
+        const rawCwd = shellPath(stringArg(ctx.args, 'cwd') ?? this.sessionContext.cwd);
+        const cwd = isAbsolute(rawCwd) ? rawCwd : join(this.sessionContext.cwd, rawCwd);
+        const command = stringArg(ctx.args, 'command') ?? '';
+        let parsed = this.bashParser.parse(command, { timeoutMs: 500, maxNodes: 10_000 });
+        if (!parsed.ok && command.length <= 512) parsed = this.bashParser.parse(command, { timeoutMs: Number.POSITIVE_INFINITY, maxNodes: 10_000 });
+        const dirs = parsed.ok && !parsed.hasError ? extractBashTargetDirs(parsed.root, cwd, env.homeDir) : [];
+        if (stringArg(ctx.args, 'cwd') !== undefined && !dirs.includes(cwd)) dirs.unshift(cwd);
+        const paths = [...new Set((await Promise.all(dirs.map((dir) => this.discoverDir(lease, shellPath(dir))))).flat())];
+        const loaded = await Promise.all(paths.map((path) => this.load(lease, path)));
+        missing = [...missing, ...loaded.filter((item): item is PendingInstruction => item !== undefined && !this.covered(item))];
+      } finally { lease.dispose(); }
+    }
+    this.queue(missing);
+    const untracked = missing.filter((item) => !this.telemetryFired.has(instructionKey(item.file, item.pathClass)));
+    if (untracked.length > 0) {
+      const properties: AgentsMdReminderShownEvent = { turn_id: ctx.turnId, tool_name: ctx.toolCall.name, reminded_count: untracked.length, trace_id: ctx.trace?.traceId };
+      this.telemetry.track2('agents_md_reminder_shown', properties);
+      for (const item of untracked) this.telemetryFired.add(instructionKey(item.file, item.pathClass));
     }
   }
-
-  private targetDirs(ctx: ToolDidExecuteContext): { dirs: string[]; selfKnown: string[] } {
-    const selfKnown: string[] = [];
-    const lease = this.runtime.acquire();
-    const env = lease.runtime.environment;
-    lease.dispose();
-    switch (ctx.toolCall.name) {
-      case 'Read':
-      case 'Edit':
-      case 'Write':
-      case 'Glob':
-      case 'Grep':
-        return this.targetDirsFromAccesses(ctx);
-      case 'Bash': {
-        const args = ctx.args;
-        const command = stringArg(args, 'command');
-        if (command === undefined) return { dirs: [], selfKnown };
-        const cwdArg = stringArg(args, 'cwd');
-        const base = hostPath(this.sessionContext.cwd, env.pathClass);
-        const normalizedCwdArg =
-          cwdArg === undefined ? undefined : normalizeUserPath(cwdArg, env.pathClass);
-        const effectiveCwd =
-          normalizedCwdArg === undefined
-            ? base
-            : normalize(
-                isAbsolute(normalizedCwdArg)
-                  ? normalizedCwdArg
-                  : join(base, normalizedCwdArg),
-              );
-        let parsed = this.bashParser.parse(command, BASH_PARSE_OPTIONS);
-        if (!parsed.ok && command.length <= BASH_SHORT_RETRY_MAX_CHARS) {
-          parsed = this.bashParser.parse(command, BASH_SHORT_RETRY_OPTIONS);
-        }
-        if (!parsed.ok || parsed.hasError) {
-          return normalizedCwdArg === undefined
-            ? { dirs: [], selfKnown }
-            : { dirs: [effectiveCwd], selfKnown };
-        }
-        const targets = extractBashTargetDirs(
-          parsed.root,
-          effectiveCwd,
-          env.homeDir,
-        ).map((target) => hostPath(target, env.pathClass));
-        if (normalizedCwdArg !== undefined && !targets.includes(effectiveCwd)) {
-          targets.unshift(effectiveCwd);
-        }
-        return { dirs: targets, selfKnown };
-      }
-      default:
-        return { dirs: [], selfKnown };
-    }
-  }
-
-  private targetDirsFromAccesses(ctx: ToolDidExecuteContext): {
-    dirs: string[];
-    selfKnown: string[];
-  } {
-    const dirs: string[] = [];
-    const selfKnown: string[] = [];
-    const targetsFiles =
-      ctx.toolCall.name === 'Read' ||
-      ctx.toolCall.name === 'Edit' ||
-      ctx.toolCall.name === 'Write';
-    for (const access of ctx.accesses ?? []) {
-      if (access.kind !== 'file') continue;
-      if (
-        targetsFiles &&
-        ctx.result.isError !== true &&
-        basename(access.path).toLowerCase() === 'agents.md'
-      ) {
-        selfKnown.push(access.path);
-      }
-      dirs.push(targetsFiles ? dirname(access.path) : access.path);
-    }
-    return { dirs: [...new Set(dirs)], selfKnown: [...new Set(selfKnown)] };
-  }
-
-  private invalidateWrittenInstruction(ctx: ToolDidExecuteContext): void {
-    if (
-      ctx.result.isError === true ||
-      (ctx.toolCall.name !== 'Edit' && ctx.toolCall.name !== 'Write')
-    ) {
-      return;
-    }
-    const lease = this.runtime.acquire();
-    try {
-      const pathClass = lease.runtime.environment.pathClass;
-      for (const access of ctx.accesses ?? []) {
-        if (
-          access.kind !== 'file' ||
-          (access.operation !== 'write' && access.operation !== 'readwrite')
-        ) {
-          continue;
-        }
-        const directory = instructionProbeDirectory(access.path, pathClass);
-        if (directory !== undefined) this.discovery.invalidate(lease.runtime, directory);
-      }
-    } finally {
-      lease.dispose();
-    }
-  }
-
-  private async probeDir(_dir: string): Promise<string[]> {
-    const lease = this.runtime.acquire(['fs']);
-    try {
-      return [...(await this.discovery.discover(lease, this.sessionContext.cwd))];
-    } finally {
-      lease.dispose();
-    }
-  }
-}
-
-function hostPath(path: string, pathClass: 'posix' | 'win32'): string {
-  return normalize(normalizeUserPath(path, pathClass));
-}
-
-function instructionProbeDirectory(
-  path: string,
-  pathClass: 'posix' | 'win32',
-): string | undefined {
-  const normalized = normalize(path);
-  if (basename(normalized).toLowerCase() !== 'agents.md') return undefined;
-  const parent = dirname(normalized);
-  const parentName = basename(parent);
-  const isDotKiki =
-    pathClass === 'win32'
-      ? parentName.toLowerCase() === '.kiki'
-      : parentName === '.kiki';
-  return isDotKiki ? dirname(parent) : parent;
 }
 
 function stringArg(args: unknown, key: string): string | undefined {
@@ -325,18 +209,4 @@ function stringArg(args: unknown, key: string): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-function reminderText(paths: readonly string[]): string {
-  return (
-    'The following AGENTS.md file(s) apply to paths accessed by your recent tool call, but were not included in your system prompt:\n' +
-    paths.map((path) => `- ${path}`).join('\n') +
-    '\nRead them before making changes in those directories.'
-  );
-}
-
-registerScopedService(
-  LifecycleScope.Agent,
-  IAgentAgentsMdReminderService,
-  AgentAgentsMdReminderService,
-  ScopeActivation.OnScopeCreated,
-  'agentsMdReminder',
-);
+registerScopedService(LifecycleScope.Agent, IAgentAgentsMdReminderService, AgentAgentsMdReminderService, ScopeActivation.OnScopeCreated, 'agentsMdReminder');

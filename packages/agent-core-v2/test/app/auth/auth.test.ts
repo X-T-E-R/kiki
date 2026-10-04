@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,6 +8,9 @@ import {
   resolveKimiCodeRuntimeAuth,
   GITHUB_COPILOT_METHOD,
   OAuthAccessDeniedError,
+  OAuthDeviceMethods,
+  LocalOriginalOAuthService,
+  type TokenInfo,
 } from '@kiki/oauth';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -932,6 +935,7 @@ describe('OAuthService', () => {
       logout: ReturnType<typeof vi.fn>;
       getCachedAccessToken: ReturnType<typeof vi.fn>;
       getAccountDetails: ReturnType<typeof vi.fn>;
+      connectionState: ReturnType<typeof vi.fn>;
       tokenProvider: ReturnType<typeof vi.fn>;
     };
 
@@ -956,6 +960,7 @@ describe('OAuthService', () => {
         logout: vi.fn(async () => { cached = undefined; }),
         getCachedAccessToken: vi.fn(async () => cached),
         getAccountDetails: vi.fn(async () => ({})),
+        connectionState: vi.fn(async () => cached === undefined ? 'signed_out' : 'ready'),
         tokenProvider: vi.fn(() => ({ getAccessToken: async () => copilotToken })),
       };
       (toolkit as unknown as { deviceMethods: unknown }).deviceMethods = deviceMethods;
@@ -964,7 +969,7 @@ describe('OAuthService', () => {
     it('lists Kimi Code alongside the other sign-in methods', async () => {
       const svc = createService();
       const methods = await svc.listMethods();
-      expect(methods.map((method) => method.id)).toEqual(['kimi-code', 'github-copilot', 'openai-codex']);
+      expect(methods.map((method) => method.id)).toEqual(['kimi-code', 'github-copilot', 'openai-codex', 'grok-build']);
       expect(methods.find((method) => method.id === 'github-copilot')).toMatchObject({
         provider: 'managed:github-copilot',
         protocol: 'openai',
@@ -1052,6 +1057,142 @@ describe('OAuthService', () => {
       expect(defaultModel).toBeUndefined();
       expect(toolkit.logout).not.toHaveBeenCalled();
     });
+
+    it('keeps an expired refreshable connection distinct from revoked credentials', async () => {
+      providers['managed:openai-codex'] = { type: 'openai_responses', oauth: { storage: 'file', key: 'oauth/openai-codex' } };
+      cached = 'expired-example';
+      deviceMethods.connectionState.mockResolvedValue('refresh_required');
+      const svc = createService();
+      expect((await svc.listMethods()).find((method) => method.id === 'openai-codex')).toMatchObject({ signed_in: true, connection_state: 'refresh_required' });
+      deviceMethods.connectionState.mockResolvedValue('reconnect_required');
+      expect((await svc.listMethods()).find((method) => method.id === 'openai-codex')).toMatchObject({ signed_in: false, connection_state: 'reconnect_required' });
+    });
+
+    it('connects Grok through the real device manager, refreshes, reports revocation, and disconnects', async () => {
+      delete providers[OAUTH_PROVIDER];
+      const tokens = new Map<string, TokenInfo>();
+      const makeToken = (generation: number) => `h.${Buffer.from(JSON.stringify({ sub: 'user-example', generation })).toString('base64url')}.s`;
+      let grant = 0;
+      let rejectRefresh = false;
+      const fetchImpl: typeof fetch = vi.fn(async (input, init) => {
+        const request = new Request(input, init);
+        if (request.url.endsWith('/device/code')) return new Response(JSON.stringify({ device_code: 'device-example', user_code: 'CODE-1234', verification_uri: 'https://auth.x.ai/device', expires_in: 300, interval: 1 }));
+        if (request.url.endsWith('/oauth2/token')) {
+          const form = new URLSearchParams(await request.text());
+          if (form.get('grant_type') === 'refresh_token' && rejectRefresh) return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 });
+          grant += 1;
+          return new Response(JSON.stringify({ access_token: makeToken(grant), refresh_token: `refresh-${grant}`, expires_in: 3600 }));
+        }
+        expect(request.url).toBe('https://cli-chat-proxy.grok.com/v1/models');
+        return new Response(JSON.stringify({ data: [{ model: 'grok-example', context_window: 256000, api_backend: 'responses' }] }));
+      });
+      const realMethods = new OAuthDeviceMethods({ homeDir: '/unused', storage: {
+        load: async (name) => tokens.get(name), save: async (name, token) => { tokens.set(name, token); },
+        remove: async (name) => { tokens.delete(name); }, list: async () => [...tokens.keys()],
+      }, fetchImpl, sleep: async () => {}, disableCrossProcessLock: true });
+      (toolkit as unknown as { deviceMethods: OAuthDeviceMethods }).deviceMethods = realMethods;
+      const svc = createService();
+      expect(await svc.startLogin('grok-build')).toMatchObject({ provider: 'managed:grok-build', status: 'pending', user_code: 'CODE-1234' });
+      await vi.waitFor(() => expect(svc.getFlow('grok-build')?.status).toBe('authenticated'));
+      expect(providers['managed:grok-build']).toMatchObject({ type: 'openai', baseUrl: 'https://cli-chat-proxy.grok.com/v1', oauth: { key: 'oauth/grok-build' } });
+      expect(models['grok-build/grok-example']).toMatchObject({ provider: 'managed:grok-build', protocol: 'openai_responses' });
+      expect((await svc.listMethods()).find((method) => method.id === 'grok-build')).toMatchObject({ signed_in: true, connection_state: 'ready', account: { state: 'known', id: 'user-example' }, quota: { state: 'unknown' } });
+      await svc.resolveTokenProvider('managed:grok-build')?.getAccessToken({ force: true });
+      expect(tokens.get('grok-build')?.refreshToken).toBe('refresh-2');
+      expect((await svc.refreshOAuthProviderModels()).failed).toEqual([]);
+      rejectRefresh = true;
+      await expect(svc.resolveTokenProvider('managed:grok-build')?.getAccessToken({ force: true })).rejects.toMatchObject({ name: 'OAuthUnauthorizedError' });
+      expect((await svc.listMethods()).find((method) => method.id === 'grok-build')).toMatchObject({ signed_in: false, connection_state: 'reconnect_required' });
+      await svc.logout('grok-build');
+      expect(providers['managed:grok-build']).toBeUndefined();
+      expect(models['grok-build/grok-example']).toBeUndefined();
+      expect((await svc.listMethods()).find((method) => method.id === 'grok-build')).toMatchObject({ signed_in: false, connection_state: 'signed_out' });
+      expect(providers[NON_OAUTH_PROVIDER]).toMatchObject({ apiKey: 'sk-test' });
+    });
+
+    it('original source connects, refreshes models without changing identity selection, and disconnects without original logout', async () => {
+      const root = join(process.cwd(), '.tmp/original-auth-service');
+      await mkdir(root, { recursive: true });
+      const dir = await mkdtemp(join(root, 'home-'));
+      const scope = 'https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828';
+      const expiresAt = Math.floor(Date.now() / 1000) + 60;
+      const token = (exp: number) => `h.${Buffer.from(JSON.stringify({ sub: 'source-user', exp })).toString('base64url')}.s`;
+      await writeFile(join(dir, 'auth.json'), JSON.stringify({ [scope]: { key: token(expiresAt), refresh_token: 'source-refresh',
+        auth_mode: 'oidc', user_id: 'source-user', expires_at: new Date(expiresAt * 1000).toISOString(), create_time: new Date().toISOString() } }));
+      let grants = 0;
+      const fetchImpl: typeof fetch = vi.fn(async (input, init) => {
+        const request = new Request(input, init);
+        if (request.url.endsWith('/oauth2/token')) { grants++; return Response.json({ access_token: token(expiresAt + 3600), refresh_token: 'rotated-source', expires_in: 3600 }); }
+        expect(request.url).toBe('https://cli-chat-proxy.grok.com/v1/models');
+        expect(request.headers.get('authorization')).toBe(`Bearer ${token(expiresAt + 3600)}`);
+        return Response.json({ data: [{ model: 'grok-source', context_window: 128000 }] });
+      });
+      const original = new LocalOriginalOAuthService({ keyring: { load: async () => undefined, save: async () => { throw new Error('unexpected'); } },
+        native: { canonicalizeOriginalHome: async (path) => path, ageEncrypt: async (value) => value, ageDecrypt: async (value) => value,
+          acquireGrokAuthLock: async () => ({ release: () => {}, isCurrent: () => true }) }, parseConfig: JSON.parse, fetchImpl, env: {} });
+      (toolkit as unknown as { originalSources: LocalOriginalOAuthService }).originalSources = original;
+      (toolkit as unknown as { deviceMethods: OAuthDeviceMethods }).deviceMethods = new OAuthDeviceMethods({ homeDir: '/unused', fetchImpl });
+      providers = { [NON_OAUTH_PROVIDER]: providers[NON_OAUTH_PROVIDER]! };
+      try {
+        const svc = createService();
+        expect(await svc.probeOriginal({ provider: 'grok-build', home_dir: dir })).toMatchObject({ state: 'refresh_required', can_connect: true });
+        expect(grants).toBe(0);
+        expect(await svc.connectOriginal({ provider: 'grok-build', home_dir: dir, expected_account_id: 'source-user' })).toMatchObject({ state: 'ready' });
+        const ref = providers['managed:grok-build']!.oauth!;
+        expect(ref.source).toMatchObject({ kind: 'local_original', accountId: 'source-user', homeDir: dir });
+        providers['managed:grok-build']!.requestIdentity = { profile: 'none' };
+        expect((await svc.refreshOAuthProviderModels()).failed).toEqual([]);
+        expect(providers['managed:grok-build']!.oauth?.source).toEqual(ref.source);
+        expect(providers['managed:grok-build']!.requestIdentity).toEqual({ profile: 'none' });
+        expect((await svc.listMethods()).find((value) => value.id === 'grok-build')).toMatchObject({ signed_in: true, auth_source: { kind: 'local_original', source_state: 'ready' }, account: { state: 'known', id: 'source-user' } });
+        const before = await readFile(join(dir, 'auth.json'), 'utf8');
+        await svc.logout('grok-build');
+        expect(await readFile(join(dir, 'auth.json'), 'utf8')).toBe(before);
+        expect(providers['managed:grok-build']).toBeUndefined();
+        await expect(original.getAccessToken(ref.source!)).rejects.toMatchObject({ state: 'signed_out' });
+        expect(grants).toBe(1);
+      } finally { await rm(dir, { recursive: true, force: true }); }
+    });
+
+    it('uses failed rather than denied for Grok provisioning errors', async () => {
+      deviceMethods.method.mockReturnValue({ ...GITHUB_COPILOT_METHOD, listModels: async () => { throw new Error('Model catalog unavailable.'); } });
+      const svc = createService();
+      await svc.startLogin('grok-build');
+      await vi.waitFor(() => expect(svc.getFlow('grok-build')?.status).toBe('failed'));
+      expect(svc.getFlow('grok-build')?.error_message).toBe('Model catalog unavailable.');
+      expect(providers['managed:grok-build']).toBeUndefined();
+      expect((await svc.listMethods()).find((method) => method.id === 'grok-build')).toMatchObject({ signed_in: false, connection_state: 'reconnect_required' });
+    });
+
+    it('logout wins over delayed catalog provisioning without resurrecting a provider', async () => {
+      let resolveModels!: (value: unknown) => void;
+      const pendingModels = new Promise((resolve) => { resolveModels = resolve; });
+      deviceMethods.method.mockReturnValue({ ...GITHUB_COPILOT_METHOD, listModels: () => pendingModels });
+      const svc = createService();
+      await svc.startLogin('github-copilot');
+      await flush();
+      const logout = svc.logout('github-copilot');
+      resolveModels([{ id: 'gpt-4.1', contextLength: 128000, capabilities: ['tool_use'] }]);
+      await logout;
+      expect(svc.getFlow('github-copilot')?.status).toBe('cancelled');
+      expect(providers['managed:github-copilot']).toBeUndefined();
+      expect(models['github-copilot/gpt-4.1']).toBeUndefined();
+      expect(cached).toBeUndefined();
+    });
+
+    it('cancel during granted-token catalog lookup cleans the newly connected token', async () => {
+      let resolveModels!: (value: unknown) => void;
+      const pendingModels = new Promise((resolve) => { resolveModels = resolve; });
+      deviceMethods.method.mockReturnValue({ ...GITHUB_COPILOT_METHOD, listModels: () => pendingModels });
+      const svc = createService();
+      await svc.startLogin('github-copilot');
+      await flush();
+      const cancelled = svc.cancelLogin('github-copilot');
+      resolveModels([{ id: 'gpt-4.1', contextLength: 128000, capabilities: ['tool_use'] }]);
+      expect(await cancelled).toEqual({ cancelled: true, status: 'cancelled' });
+      expect(providers['managed:github-copilot']).toBeUndefined();
+      expect(cached).toBeUndefined();
+    });
   });
 });
 
@@ -1097,6 +1238,7 @@ describe('AuthSummaryService', () => {
         reg.definePartialInstance(IProviderService, {
           get: ((name: string) => providers[name]) as IProviderService['get'],
           list: (() => providers) as IProviderService['list'],
+          getDefaultProvider: () => undefined,
         });
         reg.definePartialInstance(IModelService, {
           resolveId: ((id: string) => {
@@ -1221,6 +1363,18 @@ describe('AuthSummaryService', () => {
     expect(getCachedAccessToken).not.toHaveBeenCalled();
   });
 
+  it('ensureReady shares default-provider precedence with explicit and flat model routing', async () => {
+    ix.stub(IProviderService, 'getDefaultProvider', () => NON_OAUTH_PROVIDER);
+    models['implicit'] = { model: 'remote', protocol: 'openai', maxContextSize: 8192 };
+    await expect(createSummary().ensureReady('implicit')).resolves.toBeUndefined();
+    await expect(createSummary().ensureReady('kimi')).rejects.toMatchObject({ code: 'auth.token_missing', details: { provider_id: OAUTH_PROVIDER } });
+    delete providers[NON_OAUTH_PROVIDER]!.apiKey;
+    await expect(createSummary().ensureReady('implicit')).rejects.toMatchObject({ code: 'auth.token_missing', details: { provider_id: NON_OAUTH_PROVIDER } });
+    ix.stub(IProviderService, 'getDefaultProvider', () => undefined);
+    models['flat'] = { model: 'remote', protocol: 'openai', baseUrl: 'https://flat.example.test/v1', apiKey: 'flat-key' };
+    await expect(createSummary().ensureReady('flat')).resolves.toBeUndefined();
+  });
+
   it('ensureReady accepts cached oauth tokens', async () => {
     getCachedAccessToken.mockResolvedValue('access-token');
     await expect(createSummary().ensureReady('kimi')).resolves.toBeUndefined();
@@ -1259,6 +1413,7 @@ describe('AuthLegacyService', () => {
       additionalServices: (reg) => {
         reg.definePartialInstance(IProviderService, {
           list: (() => providers) as IProviderService['list'],
+          getDefaultProvider: () => undefined,
         });
         reg.definePartialInstance(IModelService, {
           ready: Promise.resolve(),

@@ -1,3 +1,5 @@
+import type { LocalOriginalOAuthSourceRef } from '@kiki/oauth';
+
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event, IWaitUntil } from '#/_base/event';
 import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
@@ -12,6 +14,7 @@ export interface OAuthRef {
   storage: 'file' | 'keyring';
   key: string;
   oauthHost?: string;
+  source?: LocalOriginalOAuthSourceRef;
 }
 
 export type ModelSource = 'static' | 'discover' | 'oauth-catalog';

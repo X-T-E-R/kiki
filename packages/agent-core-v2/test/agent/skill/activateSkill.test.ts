@@ -34,6 +34,20 @@ describe('activateSkill', () => {
     expect(llmInput).toContain('skill-loaded');
     expect(llmInput).toContain('# Commit body');
     expect(llmInput).toContain('ARGUMENTS: -m fix');
+    expect(ctx.context.get().find(message => message.origin?.kind === 'skill_activation')?.origin).toMatchObject({ userInput: '/commit -m fix' });
+  });
+
+  it('persists the exact slash submission separately without launching a second turn', async () => {
+    ctx = agentWithCommitSkill();
+    ctx.mockNextResponse({ type: 'text', text: 'committed' });
+    const userInput = ' /skill:commit -m fix\nKeep the second line. ';
+    await ctx.rpc.activateSkill({ name: 'commit', args: '-m fix\nKeep the second line.', userInput });
+    await ctx.untilTurnEnd();
+    const prompts = ctx.context.get().filter(message => message.origin?.kind === 'skill_activation');
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]?.origin).toMatchObject({ trigger: 'user-slash', userInput });
+    expect(prompts[0]?.content).toEqual([expect.objectContaining({ type: 'text', text: expect.stringContaining('# Commit body') })]);
+    expect(ctx.llmCalls).toHaveLength(1);
   });
 
   it('rejects for an unknown skill instead of failing silently', async () => {

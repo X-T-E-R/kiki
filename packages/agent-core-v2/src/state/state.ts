@@ -152,6 +152,10 @@ export interface UndoableProtocol {
     readonly clear: Event2Class<any, any>;
     readonly undo: Event2Class<any, any>;
   };
+  readonly checkpointBoundaries?: readonly {
+    readonly event: Event2Class<any, any>;
+    readonly shouldClear: (event: Event2<any>) => boolean;
+  }[];
   readonly isUndoAnchor: (message: unknown) => boolean;
   readonly isValidUndoCount: (count: number) => boolean;
 }
@@ -166,6 +170,7 @@ export function registerUndoableProtocol(protocol: UndoableProtocol): void {
   for (const cls of Object.values(protocol.events)) {
     registerEvent2Class(cls);
   }
+  for (const boundary of protocol.checkpointBoundaries ?? []) registerEvent2Class(boundary.event);
 }
 
 export function keepsUndoCheckpoints(
@@ -207,6 +212,13 @@ export function expandedStateFolds(
     const domain = folds.get(cls);
     folds.set(cls, (state, event, ctx) => {
       ctx.clearCheckpoints();
+      return domain?.(state, event, ctx);
+    });
+  }
+  for (const boundary of protocol.checkpointBoundaries ?? []) {
+    const domain = folds.get(boundary.event);
+    folds.set(boundary.event, (state, event, ctx) => {
+      if (boundary.shouldClear(event)) ctx.clearCheckpoints();
       return domain?.(state, event, ctx);
     });
   }

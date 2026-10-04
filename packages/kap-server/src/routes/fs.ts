@@ -5,6 +5,9 @@ import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
 import {
   ErrorCodes,
   IRuntimeResolver,
+  IHostEnvironment,
+  IHostProcessService,
+  IHostFileSystem,
   ISessionContext,
   ISessionWorkspaceContext,
   ITelemetryService,
@@ -33,7 +36,7 @@ import {
 import { GitService } from '@kiki/agent-core-v2/app/git/gitService';
 import { IBootstrapService } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
 import type { IWorktreeService } from '@kiki/agent-core-v2/app/git/worktreeModel';
-import type { IHostFileSystem } from '@kiki/agent-core-v2/os/interface/hostFileSystem';
+import { LocalRuntime } from '@kiki/agent-core-v2/runtime/localRuntime';
 import type { RuntimeCapability, RuntimeLease } from '@kiki/agent-core-v2/runtime/runtime';
 import { WorkspaceFsService } from '@kiki/agent-core-v2/workspace/workspaceFs/fsService';
 import { WorkspaceGitService } from '@kiki/agent-core-v2/workspace/workspaceGit/workspaceGitService';
@@ -141,8 +144,9 @@ function createRuntimeFs(
   roots: { readonly workDir: string; readonly additionalDirs?: readonly string[] },
   runtimeId: string,
   required: readonly RuntimeCapability[],
+  draftLease?: RuntimeLease,
 ): RuntimeFsScope {
-  const lease = core.accessor.get(IRuntimeResolver).acquire(
+  const lease = draftLease ?? core.accessor.get(IRuntimeResolver).acquire(
     { workspaceId, runtimeId },
     required,
   );
@@ -237,14 +241,21 @@ async function resolveWorkspaceFs(
   required: readonly RuntimeCapability[],
 ): Promise<RuntimeFsScope | undefined> {
   const workspaces = core.accessor.get(IWorkspaceService);
-  let ws = await workspaces.get(ref);
+  const ws = await workspaces.get(ref);
   if (ws === undefined) {
-    if (!isAbsolute(ref)) return undefined;
+    if (!isAbsolute(ref) || runtimeId !== 'local') return undefined;
+    const fs = core.accessor.get(IHostFileSystem);
     try {
-      ws = await workspaces.createOrTouch(ref);
+      if (!(await fs.stat(ref)).isDirectory) return undefined;
     } catch {
       return undefined;
     }
+    const environment = core.accessor.get(IHostEnvironment);
+    await environment.ready;
+    const runtime = new LocalRuntime(ref, environment, fs,
+      core.accessor.get(IHostProcessService), undefined, undefined);
+    const lease: RuntimeLease = { runtime, track: (resource) => resource, dispose: () => runtime.dispose() };
+    return createRuntimeFs(core, ref, { workDir: ref }, runtimeId, required, lease);
   }
   await core.accessor
     .get(IWorkspaceInstanceManager)
@@ -392,7 +403,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         [ErrorCode.FS_TOO_MANY_RESULTS]: {},
       },
       description:
-        'Search files in a workspace without a session. `workspace` accepts a registered workspace id or an absolute root (registered on the spot).',
+        'Search files without a session. `workspace` accepts a registered workspace id or an absolute root without registering it.',
       tags: ['fs'],
       operationId: 'workspaceFsSearch',
     },
@@ -437,7 +448,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         [ErrorCode.WORKSPACE_NOT_FOUND]: {},
       },
       description:
-        'Suggest file and directory completion candidates in a workspace without a session. `workspace` accepts a registered workspace id or an absolute root (registered on the spot).',
+        'Suggest file and directory candidates without a session. `workspace` accepts a registered workspace id or an absolute root without registering it.',
       tags: ['fs'],
       operationId: 'workspaceFsSuggest',
     },

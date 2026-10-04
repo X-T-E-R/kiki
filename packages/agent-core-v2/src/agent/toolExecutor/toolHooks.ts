@@ -44,6 +44,7 @@ export interface WillExecuteToolEvent extends IWaitUntil {
   readonly toolCall: ToolCall;
   readonly execution: RunnableToolExecution;
   readonly args: unknown;
+  veto(result: ExecutableToolResult): void;
 }
 
 export type ToolExecutionOutcome =

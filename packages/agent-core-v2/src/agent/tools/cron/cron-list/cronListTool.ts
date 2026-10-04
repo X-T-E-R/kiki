@@ -1,6 +1,4 @@
-import { LifecycleScope } from '#/app/scopes';
-
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import type { ToolExecution } from '#/tool/toolContract';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
@@ -90,10 +88,4 @@ export class CronListTool implements ICronListTool {
   }
 }
 
-registerScopedService(
-  LifecycleScope.Agent,
-  ICronListTool,
-  CronListTool,
-  ScopeActivation.OnScopeCreated,
-  'cron',
-);
+registerAgentToolService(ICronListTool, CronListTool, { name: 'CronList', domain: 'cron' });

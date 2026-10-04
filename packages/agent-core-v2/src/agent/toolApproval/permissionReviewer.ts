@@ -57,6 +57,7 @@ export interface ReviewerDependencies {
   readonly catalog: IModelCatalog;
   readonly memory: IAgentContextMemoryService;
   readonly workspace: ISessionWorkspaceContext;
+  readonly owner: { readonly sessionId: string; readonly agentId: string; readonly parentAgentId?: string };
   readonly fetch?: typeof fetch;
   readonly apiKey?: string;
   readonly log?: Pick<ILogger, 'debug'>;
@@ -153,7 +154,7 @@ export async function reviewPermission(
     if (controller.signal.aborted) return undefined;
     const operation = config.backend === 'jev'
       ? reviewWithJev(config, input, dependencies.apiKey ?? config.apiKey ?? process.env['TYPESAFE_API_KEY'], controller.signal, dependencies.fetch ?? fetch)
-      : reviewWithModel(config, input, dependencies.catalog, controller.signal, diagnostic);
+      : reviewWithModel(config, input, dependencies.catalog, controller.signal, diagnostic, dependencies.owner);
     if (config.backend === 'jev') diagnostic.stage = 'jev';
     const verdict = await Promise.race([
       operation,
@@ -178,6 +179,7 @@ async function requestModelStage(
   stage: 1 | 2,
   signal: AbortSignal,
   diagnostic: { -readonly [K in keyof ReviewerDiagnostic]: ReviewerDiagnostic[K] },
+  owner: ReviewerDependencies['owner'],
 ): Promise<unknown> {
   const model = requester.model;
   const efforts = model?.supportEfforts;
@@ -191,7 +193,9 @@ async function requestModelStage(
     systemPrompt: REVIEW_POLICY,
     tools: [],
     messages: [{ role: 'user', content: [{ type: 'text', text: payload }], toolCalls: [] }],
-  }, signal, { maxCompletionTokens: stage === 1 ? 96 : 192, thinkingEffort: effort })) {
+  }, signal, { maxCompletionTokens: stage === 1 ? 96 : 192, thinkingEffort: effort,
+    attribution: { ...owner, logicalRequestId: crypto.randomUUID(), purpose: 'permission_review', waitBudget: { waitedMs: 0 } },
+  })) {
     if (event.type === 'usage') {
       const usage: TokenUsage = event.usage;
       diagnostic.cacheReadTokens = (diagnostic.cacheReadTokens ?? 0) + usage.inputCacheRead;
@@ -212,17 +216,18 @@ async function reviewWithModel(
   catalog: IModelCatalog,
   signal: AbortSignal,
   diagnostic: { -readonly [K in keyof ReviewerDiagnostic]: ReviewerDiagnostic[K] },
+  owner: ReviewerDependencies['owner'],
 ): Promise<ReviewerVerdict | undefined> {
   if (config.model === undefined) return undefined;
   const requester = catalog.getRequester(config.model);
-  const fast = fastVerdictSchema.safeParse(await requestModelStage(requester, input, 1, signal, diagnostic));
+  const fast = fastVerdictSchema.safeParse(await requestModelStage(requester, input, 1, signal, diagnostic, owner));
   if (!fast.success) return undefined;
   const threshold = fast.data.outcome === 'allow' ? config.allowThreshold : config.denyThreshold;
   if (fast.data.outcome !== 'unsure' && fast.data.confidence >= threshold) {
     return { outcome: fast.data.outcome, confidence: fast.data.confidence,
       reason: 'Reviewer classified the action', backend: 'model' };
   }
-  const explained = explainedVerdictSchema.safeParse(await requestModelStage(requester, input, 2, signal, diagnostic));
+  const explained = explainedVerdictSchema.safeParse(await requestModelStage(requester, input, 2, signal, diagnostic, owner));
   if (!explained.success) return undefined;
   const { outcome, confidence, rationale } = explained.data;
   const accepted = outcome === 'allow' && confidence >= config.allowThreshold

@@ -20,7 +20,8 @@ describe('shipped agent profiles', () => {
     expect(isToolActive({ ...agent, disallowedTools: ['ThreadCreate'] }, 'ThreadCreate')).toBe(false);
     expect(isToolActive({ ...agent, disallowedTools: ['ThreadCreate'] }, 'ThreadList')).toBe(true);
     expect(agent.main).toBe(true);
-    expect(agent.subagents).toBeUndefined();
+    expect(agent.canSpawnSubagents).toBe(true);
+    expect(agent.allowedSubagents).toBeUndefined();
   });
 
   it.each(['BoardRead', 'BoardWrite'])('enables %s for the default profile unless explicitly disabled', (tool) => {
@@ -36,7 +37,7 @@ describe('shipped agent profiles', () => {
     );
     expect(general.tools).not.toContain('AgentRun');
     expect(general.tools).not.toContain('TaskWait');
-    expect(general.subagents).toEqual([]);
+    expect(general.canSpawnSubagents).toBe(false);
     expect(general.main).toBeUndefined();
   });
 

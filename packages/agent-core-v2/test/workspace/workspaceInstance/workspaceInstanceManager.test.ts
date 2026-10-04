@@ -15,6 +15,18 @@ import type {
   RuntimeUnitHostFactory,
 } from '#/runtime/runtimeUnitHost';
 import { WorkspaceInstanceManager } from '#/workspace/workspaceInstance/workspaceInstanceManagerService';
+import { IWorkspaceInstanceManager } from '#/workspace/workspaceInstance/workspaceInstanceManager';
+import { _util, IInstantiationService } from '#/_base/di/instantiation';
+import { DisposableStore } from '#/_base/di/lifecycle';
+import { createServices } from '#/_base/di/test';
+import { IWorkspaceService as WorkspaceToken } from '#/app/workspace/workspace';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IHostEnvironment } from '#/os/interface/hostEnvironment';
+import { IFlagService } from '#/app/flag/flag';
+import { IConfigService } from '#/app/config/config';
+import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
+import { ISshHostService } from '#/app/ssh/sshService';
+import type { SshHostRecord } from '#/app/ssh/sshHosts';
 
 const imports = { root: [], imports: [], local: [] } as const;
 
@@ -393,5 +405,116 @@ describe('WorkspaceInstanceManager', () => {
       expect(value.findContaining('/repo/sub')?.id).toBe('repo');
       await value.dispose();
     });
+  });
+});
+
+function sshManagerFixture() {
+  const disposables = new DisposableStore();
+  let enabled = false;
+  let failInventory = false;
+  let blocked: Promise<void> | undefined;
+  const listeners = new Set<(workspaceId?: string) => void | Promise<void>>();
+  const listRuntimeHosts = vi.fn(async (): Promise<readonly SshHostRecord[]> => {
+    await blocked;
+    if (failInventory) throw new Error('fixture inventory unavailable');
+    return [{ id: 'dev', name: 'Dev', source: 'kiki' }];
+  });
+  const refreshRuntimeHosts = vi.fn(async (workspaceId: string) => {
+    await Promise.all([...listeners].map((listener) => listener(workspaceId)));
+  });
+  const connect = vi.fn(async () => { throw new Error('unexpected network connection'); });
+  const ix = createServices(disposables, {
+    strict: true,
+    additionalServices: (reg) => {
+      for (const dependency of _util.getServiceDependencies(WorkspaceInstanceManager as unknown as _util.DI_TARGET_OBJ)) {
+        if (dependency.kind !== 'instance' || dependency.id === IInstantiationService) continue;
+        reg.definePartialInstance(dependency.id, {});
+      }
+      reg.definePartialInstance(IBootstrapService, { scope: () => 'sessions' });
+      reg.definePartialInstance(WorkspaceToken, {
+        get: async (id) => ['one', 'two'].includes(id) ? workspace(id) : undefined,
+      });
+      reg.definePartialInstance(IHostEnvironment, { ready: Promise.resolve() });
+      reg.definePartialInstance(IFlagService, { enabled: () => enabled });
+      reg.definePartialInstance(IConfigService, { get: <T>() => ({}) as T });
+      reg.definePartialInstance(IAgentProfileRegistry, { entries: () => [] });
+      reg.definePartialInstance(ISshHostService, {
+        listRuntimeHosts, refreshRuntimeHosts, connect,
+        onHostsChanged: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+        onStatus: () => () => {}, status: (hostId) => ({ hostId, state: 'idle', generation: 0 }),
+      });
+      reg.define(IWorkspaceInstanceManager, WorkspaceInstanceManager);
+    },
+  });
+  const value = ix.get(IWorkspaceInstanceManager);
+  if (!(value instanceof WorkspaceInstanceManager)) throw new Error('Unexpected workspace manager implementation');
+  Object.assign(value, { providers: new Map([['local', provider('local', 'local', [])]]) });
+  return {
+    value, listeners, connect, listRuntimeHosts, refreshRuntimeHosts,
+    enable: () => { enabled = true; }, disable: () => { enabled = false; },
+    fail: (next: boolean) => { failInventory = next; }, block: (next?: Promise<void>) => { blocked = next; },
+    dispose: async () => { await value.dispose(); disposables.dispose(); },
+  };
+}
+
+describe('workspace SSH preparation after late enablement', () => {
+  it('single-flights the existing workspace attachment without changing other workspaces or connecting', async () => {
+    const f = sshManagerFixture();
+    try {
+      const one = await f.value.getOrCreate({ workspaceId: 'one' });
+      const two = await f.value.getOrCreate({ workspaceId: 'two' });
+      expect(one.runtimes.current('ssh:dev')).toBeUndefined();
+      await expect(f.value.prepareSshRuntime('one')).rejects.toThrow('Native SSH is disabled');
+      f.enable();
+      await Promise.all([f.value.prepareSshRuntime('one'), f.value.prepareSshRuntime('one')]);
+      expect(one.runtimes.current('ssh:dev')).toBeDefined();
+      expect(two.runtimes.current('ssh:dev')).toBeUndefined();
+      expect(f.listeners.size).toBe(1);
+      expect(f.refreshRuntimeHosts).toHaveBeenCalledTimes(1);
+      await f.value.prepareSshRuntime('one');
+      expect(f.listeners.size).toBe(1);
+      await f.value.prepareSshRuntime('two');
+      expect(f.listeners.size).toBe(2);
+      f.disable();
+      await expect(f.value.prepareSshRuntime('one')).rejects.toThrow('Native SSH is disabled');
+      expect(f.connect).not.toHaveBeenCalled();
+      await expect(f.value.prepareSshRuntime('absent')).rejects.toThrow('Native SSH is disabled');
+      f.enable();
+      await expect(f.value.prepareSshRuntime('absent')).rejects.toThrow('not materialized');
+    } finally { await f.dispose(); }
+  });
+
+  it('cleans a failed attachment and retries without leaking subscriptions or registrations', async () => {
+    const f = sshManagerFixture();
+    try {
+      const one = await f.value.getOrCreate({ workspaceId: 'one' });
+      f.enable(); f.fail(true);
+      await expect(f.value.prepareSshRuntime('one')).rejects.toThrow('fixture inventory unavailable');
+      expect(f.listeners.size).toBe(0);
+      expect(one.runtimes.current('ssh:dev')).toBeUndefined();
+      expect(f.value.referenceCount('one')).toBe(0);
+      f.fail(false);
+      await f.value.prepareSshRuntime('one');
+      expect(f.listeners.size).toBe(1);
+      expect(one.runtimes.current('ssh:dev')).toBeDefined();
+      expect(f.connect).not.toHaveBeenCalled();
+    } finally { await f.dispose(); }
+  });
+
+  it('waits for preparation before workspace close so no late attachment survives disposal', async () => {
+    const f = sshManagerFixture();
+    try {
+      const one = await f.value.getOrCreate({ workspaceId: 'one' });
+      const gate = deferred();
+      f.enable(); f.block(gate.promise);
+      const preparing = f.value.prepareSshRuntime('one');
+      const closing = f.value.close('one');
+      gate.resolve();
+      await Promise.all([preparing, closing]);
+      expect(f.value.get('one')).toBeUndefined();
+      expect(one.runtimes.current('ssh:dev')).toBeUndefined();
+      expect(f.listeners.size).toBe(0);
+      expect(f.connect).not.toHaveBeenCalled();
+    } finally { await f.dispose(); }
   });
 });

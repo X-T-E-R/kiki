@@ -55,6 +55,7 @@ export interface ISessionAgentProfileCatalog {
   listRoutes(): readonly AgentProfileRouteCatalogEntry[];
   routeDiagnostics(): readonly AgentProfileRouteDiagnostic[];
   diagnostics?(): readonly AgentProfileDiagnostic[];
+  sourceRejection?(profile: AgentProfile): AgentProfileDiagnostic | undefined;
   snapshot?(): AgentProfileCatalogSnapshot;
   getScopedBinding?(parentDefinitionId: string | undefined, alias: string): ScopedAgentProfileBinding | undefined;
   resolveSelection(input: { readonly profile?: string; readonly route?: string }): AgentProfileSelection;

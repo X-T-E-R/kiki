@@ -2,7 +2,7 @@ import { getMaxListeners } from 'node:events';
 
 import { type ToolCall } from '#/kosong/contract/message';
 import { emptyUsage } from '#/kosong/contract/usage';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { IAgentProfileService } from '#/index';
@@ -21,6 +21,7 @@ import {
 } from '#/agent/loop/turnEvents';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { RetryStepRequest } from '#/agent/prompt/promptStepRequests';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
 import type { ExecutableTool } from '#/tool/toolContract';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentUsageService } from '#/agent/usage/usage';
@@ -116,7 +117,7 @@ describe('Agent loop', () => {
       [emit] context.append_loop_event   { "time": "<time>", "event": { "type": "step.begin", "uuid": "<uuid-2>", "turnId": "0", "step": 1 } }
       [wire] context.append_loop_event   { "event": { "type": "step.begin", "uuid": "<uuid-2>", "turnId": "0", "step": 1 }, "time": "<time>" }
       [wire] llm.tools_snapshot          { "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "tools": [], "time": "<time>" }
-      [wire] llm.request                 { "kind": "loop", "provider": "openai", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 1, "turnStep": "0.1", "time": "<time>" }
+      [wire] llm.request                 { "kind": "loop", "provider": "openai", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 1, "turnStep": "0.1", "anchorApplied": false, "cognitionRevision": 1, "time": "<time>" }
       [emit] thinking.delta              { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-2>", "partId": "<uuid-3>", "delta": "<think-1>" }
       [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "thinking", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [emit] assistant.delta             { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-2>", "partId": "<uuid-4>", "delta": "<text-1>" }
@@ -200,10 +201,19 @@ describe('Agent loop', () => {
 
     ctx.mockNextResponse({ type: 'think', think: '<think-1>' }, { type: 'text', text: '<text-1>' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
-    await ctx.untilTurnEnd();
+    let ended = false;
+    const untilEnd = ctx.untilTurnEnd().then(() => { ended = true; });
+    await vi.waitFor(() => expect(loop.status().finalizing).toBe(true));
+    expect(ended).toBe(false);
     expect(flushObserved).toBe(false);
+    expect(loop.tryAcquireQuiescence()).toBeUndefined();
+    let settled = false;
+    const settling = loop.settled().then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
     releaseFlush();
-    await ctx.wire.flush();
+    await untilEnd;
+    await settling;
     expect(flushObserved).toBe(true);
 
     const persisted = await ctx.persistedWireRecords();
@@ -219,6 +229,82 @@ describe('Agent loop', () => {
     expect(
       contentParts.some((entry) => JSON.stringify(entry).includes('"type":"text"')),
     ).toBe(true);
+  });
+
+  it('holds notification admissions and reports persistence failure separately from completed execution', async () => {
+    profile.update({ activeToolNames: [] });
+    const originalFlush = ctx.wire.flush.bind(ctx.wire);
+    ctx.wire.flush = async () => { throw new Error('disk unavailable'); };
+    ctx.mockNextResponse({ type: 'text', text: 'computed result' });
+    const events: TurnEnded[] = [];
+    const subscription = ctx.get(IEventBus).subscribe(TurnEnded, (event) => events.push(event));
+    const first = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'compute' }], toolCalls: [] }, { admission: 'newTurn' }));
+    const { turn } = await first.assigned;
+    await expect(turn.result).rejects.toMatchObject({ details: { executionOutcome: 'completed', persistenceOutcome: 'failed' } });
+    expect(loop.status()).toMatchObject({ state: 'running', finalizing: true, persistenceFailure: { executionOutcome: 'completed' } });
+    expect(loop.tryAcquireQuiescence()).toBeUndefined();
+    expect(events).toEqual([]);
+    ctx.mockNextResponse({ type: 'text', text: 'notification handled' });
+    const notification = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'notification' }], toolCalls: [] }, { admission: 'activeOrNewTurn' }));
+    let assigned = false;
+    void notification.assigned.then(() => { assigned = true; });
+    await Promise.resolve();
+    expect(assigned).toBe(false);
+    ctx.wire.flush = originalFlush;
+    expect(await loop.recoverPersistence()).toBe(true);
+    const next = (await notification.assigned).turn;
+    expect(next.id).not.toBe(turn.id);
+    expect((await next.result).type).toBe('completed');
+    expect(events.map((event) => event.turnId)).toEqual([turn.id, next.id]);
+    subscription.dispose();
+  });
+
+  it('automatically recovers a transient final flush without replaying execution', async () => {
+    profile.update({ activeToolNames: [] });
+    const originalFlush = ctx.wire.flush.bind(ctx.wire);
+    let failures = 0;
+    ctx.wire.flush = async () => {
+      if (failures++ === 0) throw new Error('transient flush');
+      await originalFlush();
+    };
+    ctx.mockNextResponse({ type: 'text', text: 'done once' });
+    const receipt = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'compute' }], toolCalls: [] }, { admission: 'newTurn' }));
+    expect((await (await receipt.assigned).turn.result).type).toBe('completed');
+    expect(failures).toBeGreaterThanOrEqual(2);
+    expect(loop.status().state).toBe('idle');
+    ctx.wire.flush = originalFlush;
+  });
+
+  it('keeps a real prompt active until concurrent persistence recovery commits its original result once', async () => {
+    profile.update({ activeToolNames: [] });
+    const prompts = ctx.get(IAgentPromptService);
+    const originalFlush = ctx.wire.flush.bind(ctx.wire);
+    let failFinalFlush = true;
+    ctx.wire.flush = async () => {
+      if (failFinalFlush && loop.status().finalizing) throw new Error('final cut unavailable');
+      await originalFlush();
+    };
+    const ended: TurnEnded[] = [];
+    const subscription = ctx.get(IEventBus).subscribe(TurnEnded, (event) => ended.push(event));
+    ctx.mockNextResponse({ type: 'text', text: 'computed once' });
+    const handle = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'compute' }], toolCalls: [], origin: { kind: 'user' } } });
+    const turn = await handle.launched;
+    await expect(turn!.result).rejects.toMatchObject({ details: { executionOutcome: 'completed', persistenceOutcome: 'failed' } });
+    let completed = false;
+    void handle.completion.then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    expect(prompts.list().active?.id).toBe(handle.id);
+    expect(ctx.allEvents.filter((event) => event.event === 'prompt.completed' || event.event === 'prompt.aborted')).toEqual([]);
+    expect(ended).toEqual([]);
+    failFinalFlush = false;
+    expect(await Promise.all([loop.recoverPersistence(), loop.recoverPersistence()])).toEqual([true, true]);
+    expect(await handle.completion).toMatchObject({ promptId: handle.id, state: 'completed', result: { type: 'completed', steps: 1 } });
+    expect(prompts.list().active).toBeUndefined();
+    expect(ended).toHaveLength(1);
+    expect((await ctx.persistedWireRecords()).filter((entry) => entry.type === 'llm.request')).toHaveLength(1);
+    subscription.dispose();
+    ctx.wire.flush = originalFlush;
   });
 
   it('fails the turn after a filtered step completes', async () => {
@@ -249,7 +335,7 @@ describe('Agent loop', () => {
       [emit] context.append_loop_event   { "time": "<time>", "event": { "type": "step.begin", "uuid": "<uuid-2>", "turnId": "0", "step": 1 } }
       [wire] context.append_loop_event   { "event": { "type": "step.begin", "uuid": "<uuid-2>", "turnId": "0", "step": 1 }, "time": "<time>" }
       [wire] llm.tools_snapshot          { "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "tools": [], "time": "<time>" }
-      [wire] llm.request                 { "kind": "loop", "provider": "openai", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 1, "turnStep": "0.1", "time": "<time>" }
+      [wire] llm.request                 { "kind": "loop", "provider": "openai", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 1, "turnStep": "0.1", "anchorApplied": false, "cognitionRevision": 1, "time": "<time>" }
       [emit] assistant.delta             { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-2>", "partId": "<uuid-3>", "delta": "blocked" }
       [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "assistant", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 3, "output": 5, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "usageKnown": true, "time": "<time>" }
@@ -262,6 +348,7 @@ describe('Agent loop', () => {
       [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [wire] context.append_loop_event   { "event": { "type": "content.part", "uuid": "<uuid-3>", "turnId": "0", "step": 1, "stepUuid": "<uuid-2>", "part": { "type": "text", "text": "blocked" } }, "time": "<time>" }
       [wire] context.append_loop_event   { "event": { "type": "step.end", "uuid": "<uuid-2>", "turnId": "0", "step": 1, "finishReason": "filtered", "usage": { "inputOther": 3, "output": 5, "inputCacheRead": 0, "inputCacheCreation": 0 }, "messageId": "mock-1", "providerFinishReason": "filtered", "rawFinishReason": "filtered" }, "time": "<time>" }
+      [emit] error                       { "time": "<time>", "code": "provider.filtered", "message": "Provider safety policy blocked the response.", "name": "ProviderFilteredError", "details": { "finishReason": "filtered" }, "retryable": false }
       [wire] turn.ended                  { "turnId": 0, "reason": "failed", "error": { "code": "provider.filtered", "message": "Provider safety policy blocked the response.", "name": "ProviderFilteredError", "details": { "finishReason": "filtered" }, "retryable": false }, "time": "<time>" }
       [emit] turn.ended                  { "time": "<time>", "turnId": 0, "reason": "failed", "error": { "code": "provider.filtered", "message": "Provider safety policy blocked the response.", "name": "ProviderFilteredError", "details": { "finishReason": "filtered" }, "retryable": false }, "interruptReason": "filtered" }
     `);
@@ -512,7 +599,7 @@ describe('Agent loop', () => {
       [emit] context.append_loop_event       { "time": "<time>", "event": { "type": "step.begin", "uuid": "<uuid-2>", "turnId": "0", "step": 1 } }
       [wire] context.append_loop_event       { "event": { "type": "step.begin", "uuid": "<uuid-2>", "turnId": "0", "step": 1 }, "time": "<time>" }
       [wire] llm.tools_snapshot              { "hash": "3bfeb22e61431247933e79f6ab94e7ca14a127f899bc87e7bbd22594ba9cdb66", "tools": [ { "name": "Lookup", "description": "Look up a short test value.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": [ "query" ], "additionalProperties": false } } ], "time": "<time>" }
-      [wire] llm.request                     { "kind": "loop", "provider": "openai", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "3bfeb22e61431247933e79f6ab94e7ca14a127f899bc87e7bbd22594ba9cdb66", "messageCount": 1, "turnStep": "0.1", "time": "<time>" }
+      [wire] llm.request                     { "kind": "loop", "provider": "openai", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "3bfeb22e61431247933e79f6ab94e7ca14a127f899bc87e7bbd22594ba9cdb66", "messageCount": 1, "turnStep": "0.1", "anchorApplied": false, "cognitionRevision": 1, "time": "<time>" }
       [emit] assistant.delta                 { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-2>", "partId": "<uuid-3>", "delta": "I will look it up." }
       [emit] agent.activity.updated          { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "assistant", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [emit] tool.call.delta                 { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-2>", "toolCallId": "call_lookup", "name": "Lookup", "argumentsPart": "{\\"query\\":\\"moon\\"}" }
@@ -553,7 +640,7 @@ describe('Agent loop', () => {
       [emit] agent.activity.updated              { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 2, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [emit] context.append_loop_event           { "time": "<time>", "event": { "type": "step.begin", "uuid": "<uuid-5>", "turnId": "0", "step": 2 } }
       [wire] context.append_loop_event           { "event": { "type": "step.begin", "uuid": "<uuid-5>", "turnId": "0", "step": 2 }, "time": "<time>" }
-      [wire] llm.request                         { "kind": "loop", "provider": "openai", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "3bfeb22e61431247933e79f6ab94e7ca14a127f899bc87e7bbd22594ba9cdb66", "messageCount": 3, "turnStep": "0.2", "time": "<time>" }
+      [wire] llm.request                         { "kind": "loop", "provider": "openai", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "3bfeb22e61431247933e79f6ab94e7ca14a127f899bc87e7bbd22594ba9cdb66", "messageCount": 3, "turnStep": "0.2", "anchorApplied": false, "cognitionRevision": 1, "time": "<time>" }
       [emit] assistant.delta                     { "time": "<time>", "turnId": 0, "step": 2, "stepId": "<uuid-5>", "partId": "<uuid-6>", "delta": "The lookup result is lookup-result." }
       [emit] agent.activity.updated              { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "assistant", "step": 2, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [wire] usage.record                        { "model": "mock-model", "usage": { "inputOther": 25, "output": 12, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "usageKnown": true, "time": "<time>" }
@@ -1572,6 +1659,7 @@ describe('interruption reminder', () => {
     await ctx.untilTurnEnd();
     subscription.dispose();
     expect(interruptionReminders()).toHaveLength(1);
+    await loop.settled();
 
     await ctx.undoHistory(1);
 

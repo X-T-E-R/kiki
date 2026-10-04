@@ -3,6 +3,9 @@ import { once } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HTTP_TRANSPORT_TIMEOUT_REASON, HttpChannel } from '../src/transports/http/channel.js';
+import { createConnectionKlient } from '../src/transports/http/index.js';
+import { createConnectionTransport } from '../src/transports/http/connections.js';
+import { RPCError } from '../src/core/errors.js';
 import { threadCommunicationMessageSchema } from '../src/contract/global/threads.js';
 
 function envelope(data: unknown, code = 0): Response {
@@ -13,6 +16,57 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('omits missing bearer credentials from Cookie broker call, download and upload requests', async () => {
+    const captured: RequestInit[] = [];
+    const transport = createConnectionTransport({ endpoint: 'http://example.test', connectionId: '11111111-1111-4111-8111-111111111111', fetch: (async (_input, init) => { captured.push(init!); return envelope({}); }) as typeof fetch });
+    await transport.fetch('http://remote.test/api/sessions');
+    await transport.fetch('http://remote.test/api/files/example');
+    await transport.fetch('http://remote.test/api/files', { method: 'POST', body: new FormData() });
+    expect(captured).toHaveLength(3);
+    for (const init of captured) expect(new Headers(init.headers).has('authorization')).toBe(false);
+    const bearer = createConnectionTransport({ endpoint: 'http://example.test', token: 'legacy-secret', connectionId: '11111111-1111-4111-8111-111111111111', fetch: (async (_input, init) => { expect(new Headers(init!.headers).get('authorization')).toBe('Bearer legacy-secret'); return envelope({}); }) as typeof fetch });
+    await bearer.fetch('http://remote.test/api/sessions');
+  });
+  it('reads nb-search key usage only through an explicit authenticated POST, with instance identity in the body', async () => {
+    const view = { provider_instance_id: 'account-two', provider_id: 'exa', balance_supported: false, keys: [{ key_index: 1, state: 'unknown' }] };
+    const calls: unknown[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      expect(new URL(String(input)).pathname).toBe('/api/nb-search/keys/usage');
+      expect(new URL(String(input)).search).toBe('');
+      expect(init?.method).toBe('POST');
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body.');
+      calls.push(JSON.parse(init.body));
+      return envelope(view);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      expect(fetchMock).not.toHaveBeenCalled();
+      await expect(channel.rest.nbSearch.keyUsage('account-two')).resolves.toEqual(view);
+      await expect(channel.rest.nbSearch.keyUsage('account-two', true)).resolves.toEqual(view);
+      expect(calls).toEqual([{ instance_id: 'account-two', refresh: false }, { instance_id: 'account-two', refresh: true }]);
+    } finally { await channel.close(); }
+  });
+  it('reads and explicitly applies persona settings through typed authenticated session routes', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    const projected = { personaId: 'example', boundRevision: 'old', latestRevision: 'new', hasUpdate: true, overrides: { model: 'chosen' } };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      return envelope(projected);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.sessions.getPersonaSettings('session/example')).resolves.toEqual(projected);
+      await channel.rest.sessions.applyPersonaSettings('session/example');
+      await channel.rest.sessions.applyPersonaSettings('session/example', { restoreDefaults: true });
+      expect(calls).toEqual([
+        { path: '/api/sessions/session%2Fexample/persona-settings', method: 'GET', body: undefined },
+        { path: '/api/sessions/session%2Fexample/persona-settings', method: 'POST', body: {} },
+        { path: '/api/sessions/session%2Fexample/persona-settings', method: 'POST', body: { restoreDefaults: true } },
+      ]);
+    } finally { await channel.close(); }
+  });
   it('previews unsaved model menus through the typed authenticated agent REST facade', async () => {
     const request = { workspace_id: 'workspace', draft: { pinned_model_alias: 'fast', model_profiles: [{ alias: 'premium' }], restrict_models_to_menu: true } };
     const projected = { restrict_models_to_menu: true,
@@ -828,5 +882,128 @@ describe('communication history REST', () => {
       expect(await channel.rest.threads.messages({ workspace_id: 'ws-a', session_id: 'a',
         peer_session_id: 'b', cursor: 'page-2', limit: 1 })).toEqual({ items: [], next_cursor: 'page-3', incomplete: 'scan_budget' });
     } finally { await channel.close(); }
+  });
+});
+
+
+describe('typed browser settings transport', () => {
+  it('keeps tab and capability reads separate from lifecycle actions and only requests schemas explicitly', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    const status = { browser: 'work', state: 'ready', executionHost: 'local', generation: 1 };
+    const tabs = { browser: 'work', status, tabs: [{ tabId: 'target-1', targetId: 'target-1', title: 'Example' }] };
+    const catalog = { browser: 'work', status, backendToolCount: 156, contextIsolation: 'opaque-context-through-window',
+      capabilities: [{ name: 'agent_browser_snapshot', description: 'Read the page', group: 'page', surface: 'operation' }] };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (init?.body !== undefined && typeof init.body !== 'string') throw new Error('Expected a JSON request body');
+      calls.push({ path: url.pathname + url.search, method: init?.method ?? 'GET',
+        body: init?.body === undefined ? undefined : JSON.parse(init.body) });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      if (url.pathname.endsWith(':tabs')) return envelope(tabs);
+      if (url.pathname.endsWith(':catalog')) return envelope(catalog);
+      return envelope(status);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.browser.tabs('work')).resolves.toEqual(tabs);
+      await expect(channel.rest.browser.catalog('work')).resolves.toEqual(catalog);
+      await channel.rest.browser.catalog('work', { includeSchema: true });
+      await channel.rest.browser.check('work');
+      await channel.rest.browser.connect('work');
+      await channel.rest.browser.disconnect('work');
+      expect(calls).toEqual([
+        { path: '/api/browser/connections/work:tabs', method: 'GET', body: undefined },
+        { path: '/api/browser/connections/work:catalog', method: 'GET', body: undefined },
+        { path: '/api/browser/connections/work:catalog?includeSchema=true', method: 'GET', body: undefined },
+        { path: '/api/browser/connections/work:check', method: 'POST', body: {} },
+        { path: '/api/browser/connections/work:connect', method: 'POST', body: {} },
+        { path: '/api/browser/connections/work:disconnect', method: 'POST', body: {} },
+      ]);
+    } finally { await channel.close(); }
+  });
+
+  it('preserves structured disabled reasons and disconnected failures rather than inventing empty tabs', async () => {
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const disconnected = new URL(String(input)).pathname.endsWith(':tabs');
+      return new Response(JSON.stringify({ code: 40001, msg: 'Read failed', data: null,
+        details: disconnected ? { code: 'browser.disconnected' } : { code: 'browser.disabled', reason: 'feature_disabled' } }),
+      { headers: { 'content-type': 'application/json' } });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.browser.tabs('work')).rejects.toMatchObject({ code: 40001, details: { code: 'browser.disconnected' } });
+      await expect(channel.rest.browser.connect('work')).rejects.toMatchObject({ code: 40001, details: { code: 'browser.disabled', reason: 'feature_disabled' } });
+    } finally { await channel.close(); }
+  });
+});
+
+
+describe('S5 typed SSH settings transport', () => {
+  it('reads and saves the actual sync settings and reads saved host keys with workspace identity', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    let enabled = false;
+    const keys = { hostId: 'dev', workspaceId: 'workspace/example', hostname: 'example.test', port: 2200,
+      label: '[example.test]:2200', state: 'unrecorded', records: [], files: [{ path: '/fixture/known_hosts', state: 'missing', reason: 'ENOENT' }] };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (init?.body !== undefined && typeof init.body !== 'string') throw new Error('Expected a JSON request body');
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body);
+      calls.push({ path: url.pathname + url.search, method: init?.method ?? 'GET', body });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      if (init?.method === 'PUT') enabled = body.enabled;
+      return envelope(url.pathname.endsWith(':host-keys') ? keys : { enabled, source: 'home' });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.ssh.configSync()).resolves.toEqual({ enabled: false, source: 'home' });
+      await expect(channel.rest.ssh.setConfigSync(true)).resolves.toEqual({ enabled: true, source: 'home' });
+      await expect(channel.rest.ssh.configSync()).resolves.toEqual({ enabled: true, source: 'home' });
+      await expect(channel.rest.ssh.hostKeys('dev', 'workspace/example')).resolves.toEqual(keys);
+      expect(calls).toEqual([
+        { path: '/api/ssh/config-sync', method: 'GET', body: undefined },
+        { path: '/api/ssh/config-sync', method: 'PUT', body: { enabled: true } },
+        { path: '/api/ssh/config-sync', method: 'GET', body: undefined },
+        { path: '/api/ssh/hosts/dev:host-keys?workspace_id=workspace%2Fexample', method: 'GET', body: undefined },
+      ]);
+    } finally { await channel.close(); }
+  });
+
+  it('propagates read failures rather than inventing enabled settings or trust state', async () => {
+    const fetchMock = vi.fn(async () => envelope(null, 50001));
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.ssh.configSync()).rejects.toMatchObject({ code: 50001 });
+      await expect(channel.rest.ssh.hostKeys('dev')).rejects.toMatchObject({ code: 50001 });
+    } finally { await channel.close(); }
+  });
+});
+
+
+describe('fixed connection transport error normalization', () => {
+  const connectionId = '00000000-0000-4000-8000-000000000001';
+  it('preserves the production adapter typed denial and message before any source request', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    const client = createConnectionKlient({ endpoint: 'http://example.test', token: 'local-capability', connectionId, fetch: fetchMock });
+    try {
+      const caught: unknown = await client.rest!.browser.list().catch((error: unknown) => error);
+      expect(caught).toBeInstanceOf(RPCError);
+      expect(caught).toMatchObject({ code: 40301, message: 'Operation is not available to a remote space' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally { await client.close(); }
+  });
+  it.each([
+    new TypeError('network offline'),
+    Object.assign(new Error('untyped adapter failure'), { name: 'RPCError', code: 40301 }),
+  ])('keeps non-RPCError failures as network code -1: %s', async (failure) => {
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(`http://example.test/api/remote-connections/${connectionId}/call`);
+      expect(init?.redirect).toBe('error');
+      throw failure;
+    });
+    const client = createConnectionKlient({ endpoint: 'http://example.test', token: 'local-capability', connectionId, fetch: fetchMock });
+    try {
+      await expect(client.rest!.meta()).rejects.toMatchObject({ code: -1, message: failure.message });
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { await client.close(); }
   });
 });

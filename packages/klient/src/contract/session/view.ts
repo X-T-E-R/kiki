@@ -1,10 +1,14 @@
 import {
   sessionCursorSchema,
   sessionSnapshotResponseSchema,
+  resyncRequiredReasonSchema,
+  type ResyncRequiredReason,
   type SessionCursor,
 } from '@kiki/protocol';
 import {
   isPlainAgentId,
+  contentRefSchema,
+  contentSegmentSchema,
   transcriptCursorSchema,
   transcriptDetailResponseSchema,
   transcriptEventSchema,
@@ -23,11 +27,13 @@ export const sessionViewTranscriptPageInputSchema = z
   .object({
     agentId: z.string().min(1),
     beforeTurn: z.string().min(1).optional(),
+    beforeItem: z.string().min(1).max(512).optional(),
     afterTurn: z.string().min(1).optional(),
+    afterItem: z.string().min(1).optional(),
     pageSize: z.number().int().min(1).max(100).optional(),
   })
-  .refine((value) => value.beforeTurn === undefined || value.afterTurn === undefined, {
-    message: 'beforeTurn and afterTurn are mutually exclusive',
+  .refine((value) => [value.beforeTurn, value.beforeItem, value.afterTurn, value.afterItem].filter((entry) => entry !== undefined).length <= 1, {
+    message: 'beforeTurn, beforeItem, afterTurn and afterItem are mutually exclusive',
   })
   .refine((value) => isPlainAgentId(value.agentId), {
     message: 'agentId must be a plain agent id',
@@ -56,6 +62,20 @@ export const sessionViewTranscriptDetailInputSchema = z
     path: ['agentId'],
   });
 
+export interface SessionViewTranscriptEntitiesInput {
+  readonly agentId: string;
+  readonly kind: import('@kiki/transcript').TranscriptDetailListResponse['kind'];
+  readonly cursor?: string;
+  readonly limit?: number;
+}
+
+export const sessionViewTranscriptContentInputSchema = z.object({
+  agentId: z.string().min(1),
+  ref: contentRefSchema,
+}).refine((value) => isPlainAgentId(value.agentId), { message: 'agentId must be a plain agent id', path: ['agentId'] });
+export const sessionViewTranscriptContentOutputSchema = contentSegmentSchema;
+export type SessionViewTranscriptContentInput = z.infer<typeof sessionViewTranscriptContentInputSchema>;
+
 export const sessionViewSubscribeInputSchema = z.object({
   sessionCursor: sessionCursorSchema,
   transcriptGrades: transcriptGradeSpecSchema,
@@ -83,6 +103,7 @@ export const sessionViewCursorAdvancedSignalSchema = z.object({
   cursor: sessionCursorSchema,
   generation: sessionViewGenerationSchema,
   rosterAgentId: z.string().min(1).optional(),
+  title: z.string().optional(),
 });
 
 export const sessionViewHistoryRewrittenSignalSchema = z.object({
@@ -101,7 +122,7 @@ export const sessionViewTranscriptSignalSchema = z.object({
 
 export const sessionViewResyncRequiredSignalSchema = z.object({
   type: z.literal('resyncRequired'),
-  reason: z.enum(['buffer_overflow', 'session_recreated', 'epoch_changed', 'history_rewritten']),
+  reason: resyncRequiredReasonSchema,
   currentSessionCursor: sessionCursorSchema,
   generation: sessionViewGenerationSchema,
 });
@@ -158,6 +179,7 @@ export type SessionViewSignal =
       readonly type: 'sessionCursorAdvanced';
       readonly cursor: SessionCursor;
       readonly rosterAgentId?: string;
+      readonly title?: string;
     })
   | (SessionViewSignalBase & {
       readonly type: 'historyRewritten';
@@ -171,7 +193,7 @@ export type SessionViewSignal =
     })
   | (SessionViewSignalBase & {
       readonly type: 'resyncRequired';
-      readonly reason: 'buffer_overflow' | 'session_recreated' | 'epoch_changed' | 'history_rewritten';
+      readonly reason: ResyncRequiredReason;
       readonly currentSessionCursor: SessionCursor;
     });
 

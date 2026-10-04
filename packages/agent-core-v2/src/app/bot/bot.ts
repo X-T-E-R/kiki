@@ -40,6 +40,10 @@ export interface IBotService {
   enable(personaId: string): Promise<BotSummary>;
   update(personaId: string, input: BotUpdateInput): Promise<BotState>;
   ensureHomeSession(personaId: string): Promise<BotSummary>;
+  claimHomeSession(personaId: string, sessionId: string): Promise<import('#/app/persona/personaStore').PersonaState>;
+  setHomeSession(personaId: string, sessionId: string): Promise<import('#/app/persona/personaStore').PersonaState>;
+  sessionPersonaId(session: import('#/app/sessionIndex/sessionIndex').SessionSummary): Promise<string | undefined>;
+  sessionBelongsToPersona(session: import('#/app/sessionIndex/sessionIndex').SessionSummary, personaId: string): Promise<boolean>;
   sendHandoff(input: BotHandoffInput): Promise<SendMessageReceipt>;
 }
 

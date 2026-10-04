@@ -113,6 +113,7 @@ function pluginStub(
 ): IPluginService {
   return {
     _serviceBrand: undefined,
+    onWillChange: () => ({ dispose: () => {} }),
     onDidReload: reloadEmitter !== undefined ? reloadEmitter.event : () => ({ dispose: () => {} }),
     onDidMutate: () => ({ dispose: () => {} }),
     listPlugins: async () => [],

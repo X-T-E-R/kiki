@@ -119,6 +119,7 @@ export function buildSessionSummary(fields: {
 }): SessionSummary {
   return {
     id: fields.id,
+    personaId: fields.agents?.['main']?.personaId,
     workspaceId: fields.workspaceId,
     cwd: fields.cwd,
     worktree: fields.worktree,

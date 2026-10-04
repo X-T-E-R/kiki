@@ -204,7 +204,7 @@ export interface ReloadSummary {
   readonly errors: ReadonlyArray<{ readonly id: string; readonly message: string }>;
 }
 
-export type PluginReloadEvent = ReloadSummary & IWaitUntil;
+export type PluginReloadEvent = ReloadSummary & IWaitUntil & { readonly affected?: readonly string[] };
 
 export interface PluginMutation {
   readonly kind: 'install' | 'rollback' | 'enable' | 'disable' | 'remove' | 'mcp-server';

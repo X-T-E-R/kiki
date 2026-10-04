@@ -9,8 +9,6 @@ import type {
 } from './types';
 import { isInlineSkillType, normalizeSkillName } from './types';
 
-const LISTING_DESC_MAX = 250;
-
 export class SkillNotFoundError extends Error {
   readonly skillName: string;
 
@@ -121,7 +119,7 @@ export class InMemorySkillCatalog implements SkillCatalog {
   }
 
   getModelSkillListing(): string {
-    const lines = ['DISREGARD any earlier skill listings. Current available skills:'];
+    const lines = ['Current available skills replace earlier listings. Invoke Skill by the listed name; its result supplies the resolved source path and full instructions.'];
     const listing = renderGroupedSkills(
       this.listInvocableSkills().filter((skill) => skill.metadata.isSubSkill !== true),
       formatModelSkill,
@@ -220,26 +218,11 @@ function formatFullSkill(skill: SkillDefinition): readonly string[] {
 }
 
 function formatModelSkill(skill: SkillDefinition): readonly string[] {
-  const lines = [`- ${skill.name}: ${truncate(skill.description, LISTING_DESC_MAX)}`];
-  if (typeof skill.metadata.whenToUse === 'string' && skill.metadata.whenToUse.length > 0) {
+  const lines = [`- ${skill.name}: ${skill.description}`];
+  if (typeof skill.metadata.whenToUse === 'string' && skill.metadata.whenToUse.length > 0 && skill.metadata.whenToUse !== skill.description) {
     lines.push(`  When to use: ${skill.metadata.whenToUse}`);
   }
-  lines.push(`  Path: ${skill.path}`);
   return lines;
-}
-
-const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-
-function truncate(value: string, max: number): string {
-  if (value.length <= max) return value;
-  let length = 0;
-  let result = '';
-  for (const { segment } of graphemeSegmenter.segment(value)) {
-    if (length + segment.length > max - 3) break;
-    result += segment;
-    length += segment.length;
-  }
-  return `${result}...`;
 }
 
 function tokenizeArgs(raw: string): string[] {

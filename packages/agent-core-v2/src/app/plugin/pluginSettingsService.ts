@@ -6,7 +6,8 @@ import { LifecycleScope } from '#/app/scopes';
 
 import { IPluginService } from './plugin';
 import { PLUGIN_SETTINGS_SECTION, PluginSettingsSectionSchema } from './settingsConfigSection';
-import type { PluginSettings } from './contributions';
+import type { PluginSettings, PluginExtension } from './contributions';
+import { builtinHistory } from '#/app/pluginImport/builtinHistory';
 
 export interface SettingsView {
   readonly schema?: PluginSettings;
@@ -37,9 +38,12 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
     @IPluginService private readonly plugins: IPluginService,
   ) { super(); }
 
+  private async extension(pluginId: string): Promise<PluginExtension | undefined> {
+    return pluginId === builtinHistory.id ? { settings: builtinHistory.settings } : (await this.plugins.getPluginInfo({ id: pluginId })).manifest?.kiki;
+  }
+
   async inspect(pluginId: string): Promise<SettingsView> {
-    const info = await this.plugins.getPluginInfo({ id: pluginId });
-    const schema = info.manifest?.kiki?.settings;
+    const schema = (await this.extension(pluginId))?.settings;
     const stored = await this.stored(pluginId);
     const values: Record<string, string | boolean | number> = {};
     const secretsConfigured: string[] = [];
@@ -54,15 +58,15 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
 
   async update(input: PluginSettingsUpdate): Promise<SettingsView> {
     const { pluginId, values } = input;
-    const info = await this.plugins.getPluginInfo({ id: pluginId });
-    const schema = info.manifest?.kiki?.settings;
+    const extension = await this.extension(pluginId);
+    const schema = extension?.settings;
     if (schema === undefined) throw new Error(`Plugin ${pluginId} declares no settings`);
     const current = await this.all();
     const updated = { ...current[pluginId] };
     for (const [key, value] of Object.entries(values)) {
       const property = schema.schema.properties[key];
       if (property === undefined) throw new Error(`Unknown setting ${key} for plugin ${pluginId}`);
-      if (property.secret && (info.manifest?.kiki?.permissions?.secrets !== true || property.type !== 'string')) {
+      if (property.secret && (extension?.permissions?.secrets !== true || property.type !== 'string')) {
         throw new Error(`Plugin ${pluginId} is not allowed to receive setting ${key}`);
       }
       const storageKey = property.secret ? secretKey(key) : key;
@@ -75,12 +79,12 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
   }
 
   async forExecution(pluginId: string): Promise<Record<string, string | number | boolean>> {
-    const info = await this.plugins.getPluginInfo({ id: pluginId });
-    const schema = info.manifest?.kiki?.settings?.schema;
+    const extension = await this.extension(pluginId);
+    const schema = extension?.settings?.schema;
     const stored = await this.stored(pluginId);
     const own: Record<string, string | number | boolean> = {};
     for (const [key, property] of Object.entries(schema?.properties ?? {})) {
-      if (property.secret && info.manifest?.kiki?.permissions?.secrets !== true) continue;
+      if (property.secret && extension?.permissions?.secrets !== true) continue;
       const value = stored[property.secret ? secretKey(key) : key];
       if (value !== undefined && typeof value === property.type) own[key] = value;
     }

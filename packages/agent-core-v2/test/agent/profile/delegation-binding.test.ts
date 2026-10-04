@@ -9,6 +9,14 @@ import { Event } from '#/_base/event';
 import { renderPromptTemplateResult, renderSystemPromptResult } from '@kiki/agent-profiles/profileShared';
 import { DEFAULT_INDEPENDENT_DELEGATION_NOTICE } from '#/agent/profile/delegationContext';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { resolveAutoCompact } from '#/agent/fullCompaction/autoCompact';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { ModelRequesterImpl } from '#/kosong/model/modelRequesterImpl';
+import type { GenerateOptions } from '#/kosong/contract/provider';
+import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
   normalizeAgentProfile,
@@ -19,6 +27,7 @@ import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalo
 
 import {
   createTestAgent,
+  agentService,
   homeDirServices,
   sessionService,
   type TestAgentContext,
@@ -95,7 +104,11 @@ describe('delegation context at bind', () => {
     ctx.mockNextResponse({ type: 'text', text: 'ok' });
     await requester.request({});
     assertOutbound('REPLACEMENT BODY');
-    await (await profile.prepareResumeBinding({ modelAlias: 'replacement-model', allowModelChange: true }))();
+    await ctx.get(ISessionMetadata).registerAgent('main', { type: position === 'independent' ? 'independent' : 'sub', model: MOCK_MODEL });
+    const binding = await profile.prepareResumeBinding({ modelAlias: 'replacement-model', allowModelChange: true });
+    const switched = await ctx.get(IAgentModelSwitchService).execute({ operationId: `delegation-resume-${position}`,
+      model: binding.model, thinking: binding.thinking, mode: 'direct' }, { binding });
+    expect(switched.state).toBe('completed');
     ctx.mockNextResponse({ type: 'text', text: 'ok' });
     await requester.request({});
     assertOutbound('REPLACEMENT BODY');
@@ -533,5 +546,87 @@ describe('delegation context at bind', () => {
       (profile as unknown as { activeProfile?: { disallowedTools?: readonly string[] } })
         .activeProfile?.disallowedTools,
     ).toContain('Bash');
+  });
+});
+
+
+describe('model usage policy binding', () => {
+  const configuredModel = {
+    provider: 'test-provider', model: 'remote-usage', maxContextSize: 300000, maxOutputSize: 20000,
+    capabilities: ['thinking', 'tool_use'], supportEfforts: ['low', 'medium', 'high'],
+    parameters: { thinkingEffort: 'medium', serviceTier: 'flex' as const, maxCompletionTokens: 16000 },
+    autoCompact: 200000, contextBudget: 250000,
+    requestParams: { service_tier: 'priority' },
+    usage: { main: { thinkingEffort: 'high', serviceTier: { kind: 'api_default' as const }, autoCompact: 160000, contextBudget: 200000, maxCompletionTokens: 8000 }, independent: { thinkingEffort: 'low' } },
+  };
+
+  it.each(['main', 'sub', 'independent'] as const)('uses actual %s identity across binding, request and compaction rather than the profile name', async (position) => {
+    const custom = normalizeAgentProfile({ name: position === 'main' ? 'arbitrary-role' : 'main', tools: [], systemPrompt: () => 'fixture prompt' });
+    const agentId = position === 'main' ? 'main' : 'child';
+    const ctx = createTestAgent(agentService(IAgentScopeContext, makeAgentScopeContext({ agentId, agentScope: `agents/${agentId}` })), sessionService(ISessionAgentProfileCatalog, catalogWith(custom)), { initialConfig: { models: { usage: configuredModel } } });
+    try {
+      await ctx.get(ISessionMetadata).registerAgent(agentId, { type: position, model: 'usage', delegator: position === 'independent' ? { kind: 'external', delegationId: 'fixture' } : undefined });
+      const profile = ctx.get(IAgentProfileService);
+      await profile.bind({ profile: custom.name, model: 'usage' });
+      const main = position === 'main';
+      expect(profile.getEffectiveThinkingLevel()).toBe(main ? 'high' : position === 'sub' ? 'medium' : 'low');
+      expect(profile.getModelCapabilities().max_context_tokens).toBe(main ? 200000 : 250000);
+      const context = profile.resolveModelContext();
+      expect(context.modelAutoCompact).toBe(main ? 160000 : 200000);
+      expect(resolveAutoCompact(context)).toMatchObject({ tokens: main ? 150000 : 200000, source: 'model' });
+      const common = ctx.get(IModelCatalog).get('usage');
+      expect(common).toMatchObject({ id: 'usage', providerName: 'test-provider', name: 'remote-usage', maxContextSize: 300000 });
+      let captured: GenerateOptions | undefined;
+      const registry = { createChatProvider: () => ({ name: 'fake', modelName: 'remote-usage', thinkingEffort: null, generate: async (_s: unknown, _t: unknown, _h: unknown, options: GenerateOptions) => {
+        captured = options;
+        return { id: 'response', usage: null, finishReason: 'completed', rawFinishReason: 'stop', traceId: null, async *[Symbol.asyncIterator]() { yield { type: 'text', text: 'ok' }; } };
+      } }) } as unknown as IProtocolAdapterRegistry;
+      const requester = new ModelRequesterImpl(common, registry);
+      for await (const _event of requester.request({ systemPrompt: 'fixture', tools: [], messages: [] }, undefined, { ...profile.resolveRequestParams(), attribution: { logicalRequestId: 'fixture', sessionId: 'fixture', agentId, purpose: 'test', waitBudget: { waitedMs: 0 } } })) { }
+      expect(captured).toMatchObject({ thinking: { effort: profile.getEffectiveThinkingLevel() }, maxCompletionTokens: main ? 8000 : 16000, maxContextTokens: main ? 200000 : 250000 });
+      expect(captured?.serviceTier).toBe(main ? undefined : 'flex');
+      if (main) expect(captured?.requestParams?.['service_tier']).toBeUndefined();
+    } finally { await ctx.dispose(); }
+  });
+
+  it('keeps explicit/profile effort and budget ceilings, and switches to target identity defaults', async () => {
+    const custom = normalizeAgentProfile({ name: 'fixture-role', tools: [], systemPrompt: () => 'fixture prompt', modelProfiles: [{ alias: 'usage', thinkingEffort: 'low', serviceTier: 'priority', contextBudget: 180000, maxCompletionTokens: 4000 }] });
+    const ctx = createTestAgent(sessionService(ISessionAgentProfileCatalog, catalogWith(custom)), { initialConfig: { models: { usage: configuredModel, target: { ...configuredModel, model: 'remote-target', usage: { main: { thinkingEffort: 'high', contextBudget: 190000, maxCompletionTokens: 6000 } } } } } });
+    try {
+      const profile = ctx.get(IAgentProfileService);
+      await ctx.get(ISessionMetadata).registerAgent('main', { type: 'main', model: 'usage' });
+      await profile.bind({ profile: custom.name, model: 'usage' });
+      expect(profile.getEffectiveThinkingLevel()).toBe('low');
+      expect(profile.resolveRequestParams()).toMatchObject({ serviceTier: 'priority', maxCompletionTokens: 4000, maxContextTokens: 180000 });
+      profile.setThinking('medium');
+      expect(profile.getEffectiveThinkingLevel()).toBe('medium');
+      const binding = await profile.prepareModelSwitchBinding('target');
+      expect(binding).toMatchObject({ model: 'target', thinking: 'high', maxContextTokens: 190000, reservedTokens: 6000 });
+      const switched = await ctx.get(IAgentModelSwitchService).execute({ operationId: 'usage-policy-switch', model: binding.model, thinking: binding.thinking, mode: 'direct' }, { binding });
+      expect(switched.state).toBe('completed');
+      expect(profile.getEffectiveThinkingLevel()).toBe('high');
+      expect(profile.resolveRequestParams()).toMatchObject({ maxCompletionTokens: 6000, maxContextTokens: 190000 });
+      const explicit = await profile.prepareModelSwitchBinding('usage', 'off');
+      expect(explicit.thinking).toBe('off');
+    } finally { await ctx.dispose(); }
+  });
+
+  it('does not reset a saved effort to newly edited defaults during cold restore', async () => {
+    const custom = normalizeAgentProfile({ name: 'fixture-role', tools: [], systemPrompt: () => 'fixture prompt' });
+    const ctx = createTestAgent(sessionService(ISessionAgentProfileCatalog, catalogWith(custom)), { initialConfig: { models: { usage: configuredModel } } });
+    let snapshot: ReturnType<IAgentProfileService['data']>;
+    try {
+      const profile = ctx.get(IAgentProfileService);
+      await profile.bind({ profile: custom.name, model: 'usage', thinking: 'medium' });
+      snapshot = JSON.parse(JSON.stringify(profile.data()));
+    } finally { await ctx.dispose(); }
+    const restored = createTestAgent(sessionService(ISessionAgentProfileCatalog, catalogWith(custom)), { initialConfig: { models: { usage: { ...configuredModel, usage: { main: { thinkingEffort: 'low' } } } } } });
+    try {
+      const profile = restored.get(IAgentProfileService);
+      profile.applyBindingSnapshot(snapshot!);
+      const prepared = await profile.prepareResumeBinding({});
+      expect(prepared.thinking).toBe('medium');
+      expect(profile.resolveRequestParams().thinkingEffort).toBe('medium');
+    } finally { await restored.dispose(); }
   });
 });

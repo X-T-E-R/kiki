@@ -122,15 +122,31 @@ describe('hooks v2 loading contract', () => {
     expect(loaded.diagnostics).toHaveLength(5);
     expect(loaded.rules.every((entry) => !entry.active)).toBe(true);
   });
-  it('rejects realpath escape, repeated includes and source namespace cross-disabling', async () => {
+  it('accepts canonical symlink text outside the declaration while rejecting repeated includes and cross-disabling', async () => {
+    const shared = await source(undefined);
+    const external = nodePath.join(shared.root, 'external.md');
+    await writeFile(external, 'Shared evidence guidance');
     const entry = await source(v2([rule({ action: { type: 'inject', textFile: 'link.md' } })], { files: ['nested.toml', 'nested.toml'], disabled: ['user/global'] }), 'workspace');
     await writeFile(nodePath.join(entry.root, 'nested.toml'), '[hooks]\nschema_version = 2\n');
     const realpath = fs.realpath.bind(fs);
-    vi.spyOn(fs, 'realpath').mockImplementation((file) => nodePath.basename(file) === 'link.md' ? Promise.resolve(nodePath.join(tmpdir(), 'external.md')) : realpath(file));
+    vi.spyOn(fs, 'realpath').mockImplementation((file) => nodePath.basename(file) === 'link.md' ? Promise.resolve(external) : realpath(file));
     const loaded = await loadHookRules([entry], fs, path, () => undefined);
-    expect(loaded.diagnostics.map((entry) => entry.message).join('\n')).toMatch(/escapes declaration scope/);
+    expect(loaded.rules[0]?.text).toBe('Shared evidence guidance');
     expect(loaded.diagnostics.map((entry) => entry.message).join('\n')).toMatch(/duplicate or cyclic/);
     expect(loaded.diagnostics.map((entry) => entry.message).join('\n')).toMatch(/cannot disable hook/);
+  });
+  it.each(['absolute', 'relative'] as const)('loads %s shared text and includes without laundering workspace trust', async (kind) => {
+    const shared = await source(undefined);
+    const textFile = nodePath.join(shared.root, 'shared.md');
+    await writeFile(textFile, 'Shared guidance');
+    await writeFile(nodePath.join(shared.root, 'nested.toml'), '[hooks]\nschema_version = 2\n[[hooks.rules]]\nid = "shared"\nevent = "step.before"\n[hooks.rules.action]\ntype = "inject"\ntext = "Included guidance"\n');
+    const entry = await source(undefined, 'workspace', false);
+    const ref = (file: string) => kind === 'absolute' ? file : nodePath.relative(entry.root, file);
+    const loaded = await loadHookRules([{ ...entry, config: v2([rule({ action: { type: 'inject', textFile: ref(textFile) } })], { files: [ref(nodePath.join(shared.root, 'nested.toml'))] }) }], fs, path, () => undefined);
+    expect(loaded.diagnostics).toEqual([]);
+    expect(loaded.rules).toHaveLength(2);
+    expect(loaded.rules.every((rule) => rule.reason === 'workspace_untrusted' && !rule.active)).toBe(true);
+    expect(loaded.rules.find((rule) => rule.id === 'workspace/focus')?.text).toBe('Shared guidance');
   });
   it('exports user disables from included files for the session project-source fold', async () => {
     const user = await source(v2([], { files: ['nested.toml'] }));
@@ -189,9 +205,26 @@ describe('hooks v2 session workspace loading', () => {
       expect(session.snapshot().rules[0]).toMatchObject({ active: true });
       trusted = false;
       expect(session.snapshot().rules[0]).toMatchObject({ active: false, reason: 'workspace_untrusted' });
+      trusted = true;
+      const configured = '[hooks]\nschema_version = 2\n[[hooks.rules]]\nid = "project"\nevent = "step.before"\n[hooks.rules.cadence]\nevery_completed_steps = 5\n[hooks.rules.action]\ntype = "inject"\ntext = "Project guidance"\n';
+      await writeFile(file, configured);
+      await session.reload();
+      const ctx = agentWithRules(() => session.snapshot());
+      await turn(ctx); await turn(ctx);
+      const before = ctx.get(IAgentStateService).get(hookStateKey).rules['workspace/project']!;
+      expect(Object.values(before.buckets)[0]?.completed).toBe(2);
       await writeFile(file, '[hooks invalid syntax');
       await session.reload();
       expect(session.snapshot().diagnostics).toHaveLength(1);
+      expect(session.snapshot().sources).toContainEqual({ namespace: 'workspace', path: file, status: 'invalid' });
+      expect(session.snapshot().rules[0]).toMatchObject({ active: false, reason: 'source_invalid' });
+      await turn(ctx);
+      await writeFile(file, configured);
+      await session.reload();
+      await turn(ctx);
+      const restored = ctx.get(IAgentStateService).get(hookStateKey).rules['workspace/project']!;
+      expect(restored.revision).toBe(before.revision);
+      expect(Object.values(restored.buckets)[0]?.completed).toBe(3);
       expect(watched).toContain(file);
     } finally { disposables.dispose(); }
   });
@@ -259,7 +292,7 @@ describe('hooks v2 completed-step engine contract', () => {
     expect(injections(ctx)).toHaveLength(1);
     expect(Object.values(ctx.get(IAgentStateService).get(hookStateKey).rules['user/focus']!.buckets)[0]?.completed).toBe(1);
     ctx.get(IAgentProfileService).applyBindingSnapshot({ ...ctx.get(IAgentProfileService).data(), executorId: 'external', thinkingLevel: 'off', systemPrompt: 'Example' });
-    expect(await ctx.get(IAgentHookRules).inspect()).toMatchObject({ rules: [{ unsupported: true }] });
+    expect(await ctx.get(IAgentHookRules).inspect()).toMatchObject({ rules: [{ active: false, reason: 'unsupported_executor' }] });
   });
 
   it('does not deliver due reminders during idle reconciliation or replay them after same-step compaction', async () => {

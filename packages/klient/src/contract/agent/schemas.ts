@@ -39,6 +39,7 @@ export const promptPartSchema = z.discriminatedUnion('type', [
 export const emptyPayloadSchema = z.object({});
 
 export const promptExecutionBindingSchema = z.object({
+  afterModelSwitch: z.string().min(1).optional(),
   personaGreetingReply: z.boolean().optional(),
   profile: z.string().optional(),
   model: z.string().optional(),
@@ -308,6 +309,7 @@ export const agentTaskInfoSchema = z.discriminatedUnion('kind', [
     toolCallId: z.string().optional(),
     ...taskInfoBaseFields,
   }),
+  z.object({ kind: z.literal('media'), jobId: z.string(), ...taskInfoBaseFields }),
 ]);
 
 export type AgentTaskInfo = z.infer<typeof agentTaskInfoSchema>;

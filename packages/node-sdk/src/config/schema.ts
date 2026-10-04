@@ -2,7 +2,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { parsePattern } from '@kiki/agent-core-v2';
+import { OAuthRefSchema } from '@kiki/agent-core-v2/kosong/provider/oauthRef';
 import { CognitionConfigSchema } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
+import { interactionConfigSchema, interactionConfigCamelPatchSchema, modelBehaviorConfigSchema } from '@kiki/protocol';
 import { HOOK_EVENT_TYPES } from '@kiki/agent-core-v2/features/externalHooks/internal/types';
 import {
   builtInProviderRegistrations,
@@ -26,11 +28,7 @@ export const ProviderTypeSchema = z.enum([
 
 export type ProviderType = z.infer<typeof ProviderTypeSchema>;
 
-export const OAuthRefSchema = z.object({
-  storage: z.enum(['file', 'keyring']),
-  key: z.string().min(1),
-  oauthHost: z.string().min(1).optional(),
-});
+export { OAuthRefSchema };
 
 export type OAuthRef = z.infer<typeof OAuthRefSchema>;
 
@@ -106,6 +104,7 @@ export const ModelAliasSchema = ModelAliasBaseSchema.extend({
   // runtime and are preserved by provider-model refreshes.
   overrides: ModelAliasOverrideSchema.optional(),
   cognition: CognitionConfigSchema.optional(),
+  behavior: modelBehaviorConfigSchema.optional(),
 });
 
 export type ModelAlias = z.infer<typeof ModelAliasSchema>;
@@ -194,8 +193,6 @@ export const SubagentConfigSchema = z.object({
   maxDirectChildren: z.number().int().nonnegative().optional(),
   maxTotalSubagents: z.number().int().nonnegative().optional(),
   defaultProfile: z.string().optional(),
-  mainDispatchPolicy: z.enum(['advisory', 'strict']).optional(),
-  subagentDispatchPolicy: z.enum(['advisory', 'strict']).optional(),
   allowedTools: z.array(z.string()).optional(),
 });
 
@@ -384,6 +381,7 @@ export const KimiConfigSchema = z.object({
   defaultModel: z.string().optional(),
   models: z.record(z.string(), ModelAliasSchema).optional(),
   thinking: ThinkingConfigSchema.optional(),
+  interaction: interactionConfigSchema.optional(),
   planMode: z.boolean().optional(),
   yolo: z.boolean().optional(),
   defaultPermissionMode: PermissionModeSchema.optional(),
@@ -426,6 +424,7 @@ export const KimiConfigPatchSchema = z
     defaultModel: z.string().optional(),
     models: z.record(z.string(), ModelAliasPatchSchema).optional(),
     thinking: ThinkingConfigPatchSchema.optional(),
+    interaction: interactionConfigCamelPatchSchema.optional(),
     planMode: z.boolean().optional(),
     yolo: z.boolean().optional(),
     defaultPermissionMode: PermissionModeSchema.optional(),

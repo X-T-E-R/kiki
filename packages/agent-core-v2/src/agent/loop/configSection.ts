@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { type EnvBindings, envBindings, stripEnvBoundFields } from '#/app/config/config';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
-import { plainObjectToToml } from '#/app/config/toml';
+import { cloneRecord, isPlainObject, plainObjectToToml, transformPlainObject } from '#/app/config/toml';
 
 export const LOOP_CONTROL_SECTION = 'loopControl';
 
@@ -24,6 +24,7 @@ export const LoopControlSchema = z.object({
     ageHumanTurns: z.number().int().min(1).optional(),
     cooldownHumanTurns: z.number().int().min(1).optional(),
     longTaskSteps: z.number().int().min(1).optional(),
+    memoryMaintenance: z.boolean().optional(),
   }).optional(),
   directiveCues: z.object({
     instructions: z.array(z.string().min(1).max(100)).max(100).optional(),
@@ -60,13 +61,30 @@ export const loopControlEnvBindings: EnvBindings<LoopControl> = envBindings(Loop
 
 export const stripLoopControlEnv = stripEnvBoundFields(loopControlEnvBindings);
 
+export const loopControlFromToml = (rawSnake: unknown): unknown => {
+  if (!isPlainObject(rawSnake)) return rawSnake;
+  const value = transformPlainObject(rawSnake);
+  for (const key of ['continuityCadence', 'directiveCues']) {
+    const nested = value[key];
+    if (isPlainObject(nested)) value[key] = transformPlainObject(nested);
+  }
+  return value;
+};
+
 export const loopControlToToml = (value: unknown, rawSnake: unknown): unknown => {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
-  return plainObjectToToml(value as Record<string, unknown>, rawSnake);
+  if (!isPlainObject(value)) return value;
+  const out = plainObjectToToml(value, rawSnake);
+  const raw = cloneRecord(rawSnake);
+  for (const [key, snakeKey] of [['continuityCadence', 'continuity_cadence'], ['directiveCues', 'directive_cues']] as const) {
+    const nested = value[key];
+    if (isPlainObject(nested)) out[snakeKey] = plainObjectToToml(nested, raw[snakeKey]);
+  }
+  return out;
 };
 
 registerConfigSection(LOOP_CONTROL_SECTION, LoopControlSchema, {
   defaultValue: { compactionSoftContextSize: DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE },
+  fromToml: loopControlFromToml,
   toToml: loopControlToToml,
   env: loopControlEnvBindings,
   stripEnv: stripLoopControlEnv,

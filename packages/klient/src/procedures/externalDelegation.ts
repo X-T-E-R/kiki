@@ -177,6 +177,12 @@ const questionResponseSchema = z
     method: z.enum(['enter', 'space', 'number_key']).optional(),
   })
   .strict();
+const questionCancellationSchema = z
+  .object({
+    cancelled: z.literal(true),
+    reason: z.enum(['turn_ended', 'agent_closed', 'no_consumer', 'aborted']),
+  })
+  .strict();
 const respondInputSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -189,7 +195,7 @@ const respondInputSchema = z.discriminatedUnion('kind', [
     .object({
       interactionId: z.string().min(1),
       kind: z.literal('question'),
-      response: z.union([questionResponseSchema, questionAnswersSchema, z.null()]),
+      response: z.union([questionResponseSchema, questionAnswersSchema, questionCancellationSchema, z.null()]),
     })
     .strict(),
 ]);
@@ -522,6 +528,9 @@ export const publicPromptOriginSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('cron_missed'), count: z.number() }).strict(),
   z.object({ kind: z.literal('hook_result'), event: z.string(), blocked: z.boolean().optional() }).strict(),
   z.object({ kind: z.literal('retry'), trigger: z.string().optional() }).strict(),
+  z.object({ kind: z.literal('bridged_peer'), source: threadRefSchema, sourceHomeId: z.string(), targetHomeId: z.string(),
+    bridgeId: z.string(), revision: z.number(), location: z.enum(['local', 'network']), messageId: z.string(), acceptedAt: z.number(),
+    createdAt: z.number(), expiresAt: z.number(), sourceSeq: z.number(), causeId: z.string(), hop: z.number() }).strict(),
   z.object({
     kind: z.literal('peer_thread'),
     source: threadRefSchema,

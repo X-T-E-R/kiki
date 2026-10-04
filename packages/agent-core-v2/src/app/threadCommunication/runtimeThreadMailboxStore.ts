@@ -88,6 +88,7 @@ interface TargetMetaDoc {
   readonly nextMessageSeq: number;
   readonly nextDeliverableSeq: number;
   readonly pendingCount: number;
+  readonly rates?: Readonly<Record<string, readonly number[]>>;
   readonly activityEpoch: string;
   readonly nextActivitySeq: number;
   readonly minActivitySeq: number;
@@ -194,6 +195,7 @@ interface AcceptPayload {
   readonly content: string;
   readonly idempotencyKey: string;
   readonly pendingLimit?: number;
+  readonly rateLimit?: { readonly key: string; readonly count: number; readonly windowMs: number };
 }
 
 interface ClaimPayload {
@@ -368,7 +370,12 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       }),
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.cancelProducer, (payload, ctx) =>
         this.cancelProducerOwner(assertCancelProducerPayload(payload), ctx)),
-      this.register(THREAD_MAILBOX_RUNTIME_METHODS.pendingTargets, (_payload, ctx) => this.pendingTargetsOwner(ctx)),
+      this.register(THREAD_MAILBOX_RUNTIME_METHODS.pendingTargets, (payload, ctx) => {
+        if (payload === null) return this.pendingTargetsOwner(ctx);
+        if (!Array.isArray(payload) || payload.length > 1000) throw new TypeError('Invalid pending target selection.');
+        const targets = payload.map((ref) => { const target = asThreadRef(ref); if (target === undefined) throw new TypeError('Invalid pending target.'); return target; });
+        return this.pendingTargetsOwner(ctx, targets);
+      }),
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.appendActivity, (payload, ctx) => this.appendActivityOwner(assertActivityPayload(payload), ctx)),
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.readActivity, async (payload, ctx): Promise<ReadActivityRpcResult> => {
         try {
@@ -500,10 +507,10 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     ) as Promise<number>;
   }
 
-  listPendingTargets(options?: ThreadMailboxMutationOptions): Promise<readonly ThreadRef[]> {
+  listPendingTargets(options?: ThreadMailboxMutationOptions & { readonly targets?: readonly ThreadRef[] }): Promise<readonly ThreadRef[]> {
     return this.call(
       THREAD_MAILBOX_RUNTIME_METHODS.pendingTargets,
-      null,
+      options?.targets ?? null,
       options,
       this.startupCallTimeoutMs,
     ) as Promise<readonly ThreadRef[]>;
@@ -1114,8 +1121,17 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     return selected ?? { seq: nextMessageSeq };
   }
 
-  private async pendingTargetsOwner(ctx: RuntimeMethodContext): Promise<readonly ThreadRef[]> {
+  private async pendingTargetsOwner(ctx: RuntimeMethodContext, selected?: readonly ThreadRef[]): Promise<readonly ThreadRef[]> {
     const db = await this.readyOwner(ctx);
+    if (selected !== undefined) {
+      const pending: ThreadRef[] = [];
+      for (const target of selected) {
+        const partition = targetPartition(target);
+        const meta = asTargetMeta(await db.partitionGet(partition, targetMetaKey(partition)));
+        if (meta !== undefined && meta.pendingCount > 0) { assertThreadIdentity(meta.target, target, partition); pending.push(target); }
+      }
+      return pending;
+    }
     const entries = await db.prefix('t/');
     const targets = new Map<string, ThreadRef>();
     for (const entry of entries) {
@@ -1453,20 +1469,27 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
             message: missingDeliveryMessage(input, prior.messageKey),
             deduplicated: true,
             delivery: 'undeliverable',
-            payloadConflict: prior.payloadHash !== payloadHash(input.content),
+            payloadConflict: prior.payloadHash !== payloadHash(input.content, input.producer),
           }
         : {
             message: delivery.message,
             deduplicated: true,
             delivery: publicDeliveryState(delivery.state),
-            payloadConflict: prior.payloadHash !== payloadHash(input.content),
+            payloadConflict: prior.payloadHash !== payloadHash(input.content, input.producer),
           };
       return { result, ops: [this.receiptOp(receiptKey, method, ctx, input, result)] };
     }
     const metaKey = targetMetaKey(partition);
     const meta = asTargetMeta(await read(metaKey)) ?? newTargetMeta(input.target);
     assertThreadIdentity(meta.target, input.target, metaKey);
-    if (meta.pendingCount >= PENDING_HARD_LIMIT) throw new ThreadMailboxBacklogError(PENDING_HARD_LIMIT);
+    const pendingLimit = Math.min(PENDING_HARD_LIMIT, input.pendingLimit ?? PENDING_HARD_LIMIT);
+    if (meta.pendingCount >= pendingLimit) throw new ThreadMailboxBacklogError(pendingLimit);
+    const rates = { ...meta.rates };
+    if (input.rateLimit !== undefined) {
+      const recent = (rates[input.rateLimit.key] ?? []).filter((at) => at > Date.now() - input.rateLimit!.windowMs);
+      if (recent.length >= input.rateLimit.count) throw new ThreadMailboxBacklogError(input.rateLimit.count);
+      rates[input.rateLimit.key] = [...recent, Date.now()];
+    }
     const message: AcceptedThreadMessage = {
       messageId: randomUUID(),
       producer: input.producer,
@@ -1477,7 +1500,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       targetSeq: meta.nextMessageSeq,
     };
     const messageKey = targetMessageKey(partition, message.targetSeq);
-    const hash = payloadHash(input.content);
+    const hash = payloadHash(input.content, input.producer);
     const result: ThreadMessageAcceptance = {
       message,
       deduplicated: false,
@@ -1488,7 +1511,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       {
         op: 'set',
         key: metaKey,
-        value: { ...meta, nextMessageSeq: meta.nextMessageSeq + 1, pendingCount: meta.pendingCount + 1 },
+        value: { ...meta, rates, nextMessageSeq: meta.nextMessageSeq + 1, pendingCount: meta.pendingCount + 1 },
       },
       {
         op: 'set',
@@ -1897,7 +1920,9 @@ function idempotencyKey(partition: string, input: {
   readonly target: ThreadRef;
   readonly idempotencyKey: string;
 }): string {
-  return `${partition}/idempotency/${hashJson({ producer: input.producer, target: input.target, key: input.idempotencyKey })}`;
+  const producer = input.producer.kind === 'bridged_peer' ? { kind: input.producer.kind,
+    bridgeId: input.producer.bridgeId, sourceHomeId: input.producer.sourceHomeId, source: input.producer.source } : input.producer;
+  return `${partition}/idempotency/${hashJson({ producer, target: input.target, key: input.idempotencyKey })}`;
 }
 
 function requestReceiptKey(partition: string, method: RuntimeMethodName, ctx: RuntimeMethodContext): string {
@@ -1920,8 +1945,8 @@ function hashJson(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('base64url');
 }
 
-function payloadHash(content: string): string {
-  return hashJson({ content });
+function payloadHash(content: string, producer?: ThreadMessageProducer): string {
+  return producer?.kind === 'bridged_peer' ? hashJson({ content, producer }) : hashJson({ content });
 }
 
 function newTargetMeta(target: ThreadRef): TargetMetaDoc {
@@ -1954,6 +1979,7 @@ function sameThread(left: ThreadRef, right: ThreadRef): boolean {
 function sameProducer(left: ThreadMessageProducer, right: ThreadMessageProducer): boolean {
   if (left.kind !== right.kind) return false;
   if (left.kind === 'external_client' && right.kind === 'external_client') return true;
+  if (left.kind === 'bridged_peer' && right.kind === 'bridged_peer') return JSON.stringify(left) === JSON.stringify(right);
   if (left.kind === 'peer_thread' && right.kind === 'peer_thread') return sameThread(left.source, right.source);
   return left.kind === 'room' && right.kind === 'room' && left.roomId === right.roomId && left.generation === right.generation;
 }
@@ -2041,7 +2067,14 @@ function assertAcceptPayload(value: unknown): AcceptPayload {
   }
   const pendingLimit = input['pendingLimit'];
   if (pendingLimit !== undefined && finitePositiveInteger(pendingLimit) === undefined) throw new TypeError('Invalid pendingLimit.');
-  return { producer, target, content: input['content'], idempotencyKey: input['idempotencyKey'], pendingLimit: pendingLimit as number | undefined };
+  let rateLimit: AcceptPayload['rateLimit'];
+  if (input['rateLimit'] !== undefined) {
+    const raw = assertRecord(input['rateLimit']);
+    const count = finitePositiveInteger(raw['count']); const windowMs = finitePositiveInteger(raw['windowMs']);
+    if (typeof raw['key'] !== 'string' || raw['key'].length > 256 || count === undefined || count > 600 || windowMs === undefined || windowMs > 60000) throw new TypeError('Invalid rate limit.');
+    rateLimit = { key: raw['key'], count, windowMs };
+  }
+  return { producer, target, content: input['content'], idempotencyKey: input['idempotencyKey'], pendingLimit: pendingLimit as number | undefined, rateLimit };
 }
 
 function assertClaimPayload(value: unknown, maxDeliveryLeaseMs: number): ClaimPayload {
@@ -2140,6 +2173,17 @@ function asProducer(value: unknown): ThreadMessageProducer | undefined {
   if (value === null || typeof value !== 'object') return undefined;
   const producer = value as Record<string, unknown>;
   if (producer['kind'] === 'external_client') return { kind: 'external_client' };
+  if (producer['kind'] === 'bridged_peer') {
+    const source = asThreadRef(producer['source']);
+    if (source === undefined || !['sourceHomeId', 'targetHomeId', 'bridgeId', 'causeId'].every((key) => typeof producer[key] === 'string') ||
+      !['revision', 'createdAt', 'expiresAt', 'sourceSeq', 'hop'].every((key) => finiteNonNegativeInteger(producer[key]) !== undefined) ||
+      !['local', 'network'].includes(String(producer['location']))) return undefined;
+    return { kind: 'bridged_peer', source, sourceHomeId: producer['sourceHomeId'] as string,
+      targetHomeId: producer['targetHomeId'] as string, bridgeId: producer['bridgeId'] as string,
+      revision: producer['revision'] as number, location: producer['location'] as 'local' | 'network',
+      createdAt: producer['createdAt'] as number, expiresAt: producer['expiresAt'] as number,
+      sourceSeq: producer['sourceSeq'] as number, causeId: producer['causeId'] as string, hop: producer['hop'] as number };
+  }
   if (producer['kind'] === 'peer_thread') {
     const source = asThreadRef(producer['source']);
     if (source !== undefined) return {

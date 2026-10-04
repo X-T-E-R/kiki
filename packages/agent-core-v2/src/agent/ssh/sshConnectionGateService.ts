@@ -16,6 +16,7 @@ import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import type { BeforeResolveToolContext } from '#/agent/toolExecutor/toolHooks';
 import { ISessionApprovalService } from '#/session/approval/approval';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionStateService } from '#/session/state/sessionState';
 import { defineState } from '#/state/state';
 
@@ -28,6 +29,8 @@ export const ISshConnectionGateService = createDecorator<SshConnectionGateServic
 
 export class SshConnectionGateService extends Disposable {
   private readonly pending = new Map<string, Promise<string | undefined>>();
+  private membershipQueue: Promise<void> = Promise.resolve();
+  readonly ready: Promise<void>;
 
   constructor(
     @IAgentToolExecutorService executor: IAgentToolExecutorService,
@@ -39,12 +42,16 @@ export class SshConnectionGateService extends Disposable {
     @ISessionApprovalService private readonly approvals: ISessionApprovalService,
     @ISshHostService private readonly hosts: ISshHostService,
     @IAgentContextInjectorService injector: IAgentContextInjectorService,
+    @ISessionMetadata private readonly metadata: ISessionMetadata,
   ) {
     super();
     if (!state.has(sessionSshHostsKey)) state.contributeState(sessionSshHostsKey);
+    this.ready = this.restoreMembership();
+    void this.ready.catch(() => {});
     this._register(executor.registerBeforeResolveTool((context) => this.beforeResolve(context)));
     this._register(injector.register<Readonly<Record<string, string>>>('ssh_hosts', async ({ isNewTurn, lastDisclosure }) => {
       if (!isNewTurn || this.runtime.nativeSshEnabled?.() !== true) return undefined;
+      await this.ready;
       const workspaceId = this.runtime.inspect().identity.workspaceId;
       const joined = state.get(sessionSshHostsKey);
       const current: Record<string, string> = {};
@@ -55,25 +62,75 @@ export class SshConnectionGateService extends Disposable {
           const target = await this.hosts.resolveTarget(record.id, workspaceId);
           if (joined[record.id] !== sshHostFingerprint(record, target)) continue;
           current[record.id] = sshHostFingerprint(record, target);
-          lines[record.id] = `${record.name} — ${target.user}@${target.hostname}:${target.port}${record.roots ? `, roots: ${record.roots.join(', ')}` : ''}${record.description ? ` · ${record.description}` : ''}`;
+          lines[record.id] = `host: ${JSON.stringify(record.id)} — ${record.name} — ${target.user}@${target.hostname}:${target.port}${record.roots ? `, roots: ${record.roots.join(', ')}` : ''}${record.description ? ` · ${record.description}` : ''}`;
         } catch {
           continue;
         }
       }
+      const stale = Object.keys(joined).filter((id) => current[id] !== joined[id]);
+      if (stale.length > 0 && this.scope.agentId === 'main') {
+        await this.setSessionHosts((latest) => Object.fromEntries(Object.entries(latest)
+          .filter(([id, fingerprint]) => !stale.includes(id) || fingerprint !== joined[id])));
+      }
+      const disclosure = Object.fromEntries(Object.entries(current).map(([id, fingerprint]) => [id, `${lines[id]}\n${fingerprint}`]));
       const previous = lastDisclosure ?? {};
-      const removed = Object.keys(previous).filter((id) => current[id] !== previous[id]);
-      const added = Object.keys(current).filter((id) => current[id] !== previous[id]);
+      const removed = Object.keys(previous).filter((id) => disclosure[id] !== previous[id]);
+      const added = Object.keys(disclosure).filter((id) => disclosure[id] !== previous[id]);
       if (removed.length === 0 && added.length === 0) return undefined;
       const content = [
         removed.length > 0 ? `<ssh_hosts_removed>\n${removed.join('\n')}\n</ssh_hosts_removed>` : '',
         added.length > 0 ? `<ssh_hosts_added>\n${added.map((id) => lines[id]).join('\n')}\n</ssh_hosts_added>` : '',
       ].filter(Boolean).join('\n');
-      return { content, disclosure: current };
+      return { content, disclosure };
     }));
+  }
+
+  setSessionHosts(update: (current: Readonly<Record<string, string>>) => Readonly<Record<string, string>>): Promise<void> {
+    const run = this.membershipQueue.then(async () => {
+      await this.ready;
+      const current = this.state.get(sessionSshHostsKey);
+      const next = update(current);
+      if (Object.keys(next).length === Object.keys(current).length &&
+          Object.keys(next).every((id) => next[id] === current[id])) return;
+      await this.metadata.update({ sshHosts: next }, { touchUpdatedAt: false });
+      this.state.set(sessionSshHostsKey, next);
+    });
+    this.membershipQueue = run.catch(() => {});
+    return run;
+  }
+
+  private async restoreMembership(): Promise<void> {
+    if (this.scope.agentId !== 'main') return;
+    const stored = (await this.metadata.read()).sshHosts;
+    if (stored === undefined) return;
+    const workspaceId = this.runtime.inspect().identity.workspaceId;
+    const current: Record<string, string> = {};
+    const configured = await this.hosts.list(workspaceId, this.session.sessionId);
+    for (const [id, fingerprint] of Object.entries(stored)) {
+      let transient = false;
+      try {
+        let record = configured.find((entry) => entry.id === id);
+        if (record === undefined && id.includes('@')) {
+          await this.hosts.addTransient(id, workspaceId, this.session.sessionId);
+          transient = true;
+          record = (await this.hosts.list(workspaceId, this.session.sessionId)).find((entry) => entry.id === id);
+        }
+        if (record !== undefined && sshHostFingerprint(record, await this.hosts.resolveTarget(id, workspaceId)) === fingerprint) {
+          current[id] = fingerprint;
+        } else if (transient) await this.hosts.removeTransient(id, workspaceId, this.session.sessionId);
+      } catch {
+        if (transient) await this.hosts.removeTransient(id, workspaceId, this.session.sessionId);
+      }
+    }
+    if (Object.keys(current).length !== Object.keys(stored).length) {
+      await this.metadata.update({ sshHosts: current }, { touchUpdatedAt: false });
+    }
+    this.state.set(sessionSshHostsKey, current);
   }
 
   private async beforeResolve(context: BeforeResolveToolContext): Promise<string | undefined> {
     if (!SSH_TOOLS.has(context.tool.name) || this.runtime.nativeSshEnabled?.() !== true) return undefined;
+    await this.ready;
     const args = context.args as { host?: string; path?: string };
     let target;
     try {
@@ -201,7 +258,8 @@ export class SshConnectionGateService extends Disposable {
       return answer.approved ? answer.credential?.answers ?? [] : [];
     };
     context.signal.throwIfAborted();
-    this.state.set(sessionSshHostsKey, { ...this.state.get(sessionSshHostsKey), [host]: snapshot.fingerprint });
+    await this.setSessionHosts((joined) => ({ ...joined, [host]: snapshot.fingerprint }));
+    context.signal.throwIfAborted();
     this.runtime.approveSshTarget?.(host, snapshot.fingerprint, trustUnknown, credential, keyboardInteractive);
     return undefined;
   }

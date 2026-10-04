@@ -95,7 +95,7 @@ describe('production auth wiring', () => {
   });
 
   it('gates HTTP: 200 with the token, 401 without', async () => {
-    const token = (await readFile(join(home as string, 'server.token'), 'utf8')).trim();
+    const token = (await readFile(join(home as string, 'server.local-owner'), 'utf8')).trim();
 
     const ok = await fetch(`${base}/openapi.json`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -109,7 +109,7 @@ describe('production auth wiring', () => {
   });
 
   it('gates /asyncapi.json: 200 with the token, 401 without', async () => {
-    const token = (await readFile(join(home as string, 'server.token'), 'utf8')).trim();
+    const token = (await readFile(join(home as string, 'server.local-owner'), 'utf8')).trim();
 
     const ok = await fetch(`${base}/asyncapi.json`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -123,7 +123,7 @@ describe('production auth wiring', () => {
   });
 
   it('gates WS: server_hello with the token, rejected without', async () => {
-    const token = (await readFile(join(home as string, 'server.token'), 'utf8')).trim();
+    const token = (await readFile(join(home as string, 'server.local-owner'), 'utf8')).trim();
     const wsUrl = `ws://127.0.0.1:${(server as RunningServer).port}/api/ws`;
 
     const { ws, firstFrame } = await openConn(wsUrl, [`kimi-code.bearer.${token}`]);

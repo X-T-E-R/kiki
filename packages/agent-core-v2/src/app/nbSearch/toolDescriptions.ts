@@ -24,7 +24,8 @@ export function describeCapabilities(capabilities: NbSearchCapabilities): { expi
     'Fetch pipelines:',
     ...capabilities.fetch.pipelines.map((pipeline) => `- ${pipeline.id}: ${pipeline.availability}; inputs ${pipeline.input_kinds.join(', ')}; representations ${pipeline.representations.join(', ')}; execution ${pipeline.execution_modes.join(', ')}; egress ${pipeline.egress}.`),
     `Fetch limits: ${JSON.stringify(capabilities.fetch.limits)}.`,
-    'Explicit pipeline and representation override configured selection. Local/inline content stays subject to donor egress restrictions; file scopes do not bypass Kiki path admission.',
+    'URL selection: explicit pipeline > first matching user rule > enabled built-in rule > configured fetch chain. Only the selected ordered list is tried; a direct-only rule never adds a paid fallback. Inline/file inputs do not use URL routing. Local/inline content stays subject to donor egress restrictions; file scopes do not bypass Kiki path admission.',
+    ...(capabilities.fetch.routing === undefined ? [] : [`URL routing: ${capabilities.fetch.routing.enabled ? 'enabled' : 'disabled'}; built-in package ${capabilities.fetch.routing.package.id}@${capabilities.fetch.routing.package.version} (${capabilities.fetch.routing.builtin_enabled ? 'enabled' : 'disabled'}); user rules ${capabilities.fetch.routing.rules.length}. Route and actual attempts are returned in fetch receipts.`]),
   ].filter(Boolean).join('\n');
   return { expiresAt: now + 60_000, search, fetch };
 }

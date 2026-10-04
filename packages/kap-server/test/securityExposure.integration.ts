@@ -100,7 +100,7 @@ describe('server-v2 exposure hardening hooks', () => {
       logLevel: 'silent',
       insecureNoTls: true,
     });
-    const token = server.authTokenService.getToken();
+    const token = server.localOwnerToken;
     const shutdown = await server.app.inject({
       method: 'POST',
       url: '/api/shutdown',

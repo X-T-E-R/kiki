@@ -120,6 +120,21 @@ afterEach(() => {
 });
 
 describe('Model assembly (pure data)', () => {
+  it('projects Kiki question behavior in catalog but never into provider creation or generation requests', async () => {
+    const record: ModelRecord = { provider: 'edge', model: 'remote', maxContextSize: 8192, behavior: { askUserQuestionGuard: { enabled: true, maxPerWindow: 4 } }, parameters: { temperature: 0 } };
+    const { host, catalog } = createHost({ providers: { edge: { type: 'openai', baseUrl: 'https://example.test/v1', apiKey: 'test-token' } }, models: { fast: record } });
+    const generate = vi.fn(async (..._args: unknown[]) => { throw new Error('test sink'); });
+    const factory = vi.spyOn(host.app.accessor.get(IProtocolAdapterRegistry), 'createChatProvider').mockReturnValue({ name: 'test', modelName: 'remote', thinkingEffort: null, generate } as unknown as ChatProvider);
+    try {
+      expect(toProtocolModelFallback('fast', record).behavior).toEqual({ ask_user_question_guard: { enabled: true, max_per_window: 4 } });
+      await expect(async () => {
+        for await (const event of catalog.getRequester('fast').request({ systemPrompt: '', tools: [], messages: [] }, undefined, { attribution: { logicalRequestId: 'test', purpose: 'connectivity_probe', waitBudget: { waitedMs: 0 } } })) void event;
+      }).rejects.toThrow('test sink');
+      expect(generate).toHaveBeenCalledOnce();
+      expect(JSON.stringify(factory.mock.calls)).not.toMatch(/ask.?user.?question|behavior|maxPerWindow|window_ms/i);
+      expect(JSON.stringify(generate.mock.calls)).not.toMatch(/ask.?user.?question|behavior|maxPerWindow|window_ms/i);
+    } finally { factory.mockRestore(); host.dispose(); }
+  });
   it('uses an inline configured static key through the normal model request sink', async () => {
     const sections = {
       providers: { gateway: { type: 'openai', baseUrl: 'https://gateway.example.test/v1', apiKey: 'sk-stored' } },
@@ -133,7 +148,7 @@ describe('Model assembly (pure data)', () => {
     try {
       const requester = catalog.getRequester('m1');
       await expect(async () => {
-        for await (const _event of requester.request({ systemPrompt: '', tools: [], messages: [] })) { void _event; }
+        for await (const _event of requester.request({ systemPrompt: '', tools: [], messages: [] }, undefined, { attribution: { logicalRequestId: 'probe', purpose: 'connectivity_probe', waitBudget: { waitedMs: 0 } } })) { void _event; }
       }).rejects.toThrow('fake network sink');
       expect(generate).toHaveBeenCalledOnce();
       expect(generate.mock.calls[0]?.[3]).toMatchObject({ auth: { apiKey: 'sk-stored' } });
@@ -152,7 +167,7 @@ describe('Model assembly (pure data)', () => {
     try {
       const requester = catalog.getRequester('m1');
       await expect(async () => {
-        for await (const _event of requester.request({ systemPrompt: '', tools: [], messages: [] })) { void _event; }
+        for await (const _event of requester.request({ systemPrompt: '', tools: [], messages: [] }, undefined, { attribution: { logicalRequestId: 'probe', purpose: 'connectivity_probe', waitBudget: { waitedMs: 0 } } })) { void _event; }
       }).rejects.toThrow(/apiKey is required/);
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {
@@ -770,10 +785,12 @@ describe('Model assembly (pure data)', () => {
     try {
       const auth = catalog.get('codex').authProvider;
       await expect(auth.getAuth()).resolves.toEqual({
-        apiKey: jwt('account-one'), headers: { 'chatgpt-account-id': 'account-one' },
+        apiKey: jwt('account-one'), headers: { 'chatgpt-account-id': 'account-one',
+          Authorization: `Bearer ${jwt('account-one')}`, originator: 'kiki', 'OpenAI-Beta': 'responses=experimental' },
       });
       await expect(auth.getAuth({ force: true })).resolves.toEqual({
-        apiKey: jwt('account-two'), headers: { 'chatgpt-account-id': 'account-two' },
+        apiKey: jwt('account-two'), headers: { 'chatgpt-account-id': 'account-two',
+          Authorization: `Bearer ${jwt('account-two')}`, originator: 'kiki', 'OpenAI-Beta': 'responses=experimental' },
       });
       expect(tokens.calls).toEqual([{}, { force: true }]);
     } finally {
@@ -810,6 +827,31 @@ describe('ModelCatalog caching and config-event invalidation', () => {
     } finally {
       host.dispose();
     }
+  });
+
+  it('refreshes default-provider routing and credentials without drifting explicit bindings', async () => {
+    const { host, catalog, providers } = createHost({
+      providers: {
+        old: { type: 'openai', apiKey: 'old-key', baseUrl: 'https://old.example.test/v1' },
+        next: { type: 'openai', apiKey: 'next-key', baseUrl: 'https://next.example.test/v1' },
+      },
+      defaultProvider: 'old',
+      models: {
+        implicit: { model: 'remote', maxContextSize: 8192 },
+        explicit: { providerId: 'old', model: 'remote', maxContextSize: 8192 },
+      },
+    });
+    try {
+      const before = catalog.getRequester('implicit');
+      catalog.get('explicit');
+      await providers.setDefaultProvider('next');
+      const after = catalog.getRequester('implicit');
+      expect(after).not.toBe(before);
+      expect(after.model).toMatchObject({ providerName: 'next', baseUrl: 'https://next.example.test/v1' });
+      expect(await after.model.authProvider.getAuth()).toMatchObject({ apiKey: 'next-key' });
+      expect(catalog.get('explicit')).toMatchObject({ providerName: 'old', baseUrl: 'https://old.example.test/v1' });
+      expect(await catalog.get('explicit').authProvider.getAuth()).toMatchObject({ apiKey: 'old-key' });
+    } finally { host.dispose(); }
   });
 
   it('keeps serving the stale Model on a silent registry write until notifyConfigChanged()', async () => {
@@ -901,15 +943,28 @@ describe('ModelCatalog inspect', () => {
         contextBudget: _contextBudget,
         maxCompletionTokens: _maxCompletionTokens,
         requestParams: _requestParams,
+        usageParameters: _usageParameters,
         ...rest
       } = model;
+      expect(model.usageParameters).toHaveProperty('main.values');
+      expect(view.resolved).not.toHaveProperty('usageParameters');
       expect(view.resolved).toMatchObject({ ...rest, wireName: name });
+      expect(view.sources['resolved.maxContextSize']).toEqual(view.sources['model.effective.maxContextSize']);
+      expect(view.sources['resolved.maxContextSize']).toMatchObject({ kind: 'config' });
 
       silentModelWrite(models, {
         k1: { provider: 'kimi', model: 'kimi-k2', maxContextSize: 262144, displayName: 'silent' },
       });
+      expect(catalog.inspect('k1')).toEqual(view);
       expect(catalog.inspect('k1').resolved.displayName).toBeUndefined();
+      expect(catalog.get('k1')).toBe(model);
       expect(catalog.get('k1').displayName).toBeUndefined();
+      catalog.notifyConfigChanged();
+      const refreshed = catalog.inspect('k1');
+      expect(catalog.get('k1')).not.toBe(model);
+      expect(refreshed.resolved.displayName).toBe('silent');
+      expect(refreshed.sources['resolved.displayName']).toEqual(refreshed.sources['model.effective.displayName']);
+      expect(refreshed.sources['resolved.displayName']).toMatchObject({ kind: 'config' });
     } finally {
       host.dispose();
     }

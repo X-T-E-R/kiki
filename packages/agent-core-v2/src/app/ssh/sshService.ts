@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { join } from 'pathe';
 import type { SSHKaos } from '@kiki/kaos/ssh';
-import { SshConnectionManager, type SshConnectionHost, type SshConnectionStatus, type TrustUnknownKey } from '@kiki/kaos/ssh-connection';
+import { SshConnectionManager, SshKnownHosts, type SshKnownHostsInspection, type SshConnectionHost, type SshConnectionStatus, type TrustUnknownKey } from '@kiki/kaos/ssh-connection';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
@@ -15,7 +15,7 @@ import { ISshCredentialStore } from '#/persistence/interface/sshCredentialStore'
 import { ISshHostDocumentStore } from '#/persistence/interface/sshHostDocumentStore';
 
 import { NATIVE_SSH_FLAG_ID } from './flag';
-import { SshHostStore, normalizeHost, type SshHostInput, type SshHostRecord } from './sshHosts';
+import { SshHostStore, normalizeHost, type SshConfigSyncSettings, type SshHostInput, type SshHostRecord } from './sshHosts';
 import { parseTransientSshTarget, resolveSshConfig, type ResolvedSshConfig } from './sshConfig';
 import type { SshCredentialSubmission } from '#/session/approval/approval';
 
@@ -23,15 +23,23 @@ export interface SshHostStatus extends SshConnectionStatus {
   readonly workspaceId?: string;
 }
 
+export interface SshHostKeys extends SshKnownHostsInspection {
+  readonly hostId: string;
+  readonly workspaceId?: string;
+}
+
 export interface ISshHostService {
   readonly _serviceBrand: undefined;
   list(workspaceId?: string, sessionId?: string): Promise<readonly SshHostRecord[]>;
   listRuntimeHosts(workspaceId: string): Promise<readonly SshHostRecord[]>;
+  refreshRuntimeHosts(workspaceId: string): Promise<void>;
   addTransient(id: string, workspaceId: string, sessionId: string): Promise<void>;
   removeTransient(id: string, workspaceId: string, sessionId: string): Promise<void>;
   removeSessionTransients(sessionId: string): Promise<void>;
   resolveTarget(id: string, workspaceId?: string): Promise<ResolvedSshConfig>;
   discover(): Promise<readonly SshHostRecord[]>;
+  configSync(): Promise<SshConfigSyncSettings>;
+  hostKeys(id: string, workspaceId?: string): Promise<SshHostKeys>;
   setSyncSshConfig(enabled: boolean): Promise<void>;
   connectionApprovalEnabled(): Promise<boolean>;
   setConnectionApproval(enabled: boolean): Promise<void>;
@@ -90,6 +98,10 @@ export class SshHostService extends Disposable implements ISshHostService {
       .map(([, entry]) => entry.record)];
   }
 
+  async refreshRuntimeHosts(workspaceId: string): Promise<void> {
+    await this.notifyHostsChanged(workspaceId);
+  }
+
   async addTransient(id: string, workspaceId: string, sessionId: string): Promise<void> {
     const parsed = parseTransientSshTarget(id);
     if (parsed === undefined) throw new Error('Invalid temporary SSH target; expected user@host[:port]');
@@ -131,6 +143,28 @@ export class SshHostService extends Disposable implements ISshHostService {
 
   discover(): Promise<readonly SshHostRecord[]> {
     return this.hosts.discover();
+  }
+
+  configSync(): Promise<SshConfigSyncSettings> {
+    return this.hosts.configSync();
+  }
+
+  private knownHostsFiles(resolved: ResolvedSshConfig): readonly string[] {
+    const files = resolved.userKnownHostsFiles
+      .filter((file) => file !== 'none' && file !== '/dev/null')
+      .map((file) => file.startsWith('~/') ? join(this.bootstrap.osHomeDir, file.slice(2)) : file);
+    return files.length > 0 ? files : [join(this.bootstrap.osHomeDir, '.ssh', 'known_hosts')];
+  }
+
+  async hostKeys(id: string, workspaceId?: string): Promise<SshHostKeys> {
+    const resolved = await this.hosts.resolve(id, workspaceId);
+    const files = this.knownHostsFiles(resolved);
+    if (resolved.userKnownHostsFiles.some((file) => /\s/.test(file))) {
+      return { hostId: id, workspaceId, hostname: resolved.hostname, port: resolved.port,
+        label: resolved.port === 22 ? resolved.hostname : `[${resolved.hostname}]:${resolved.port}`,
+        state: 'unavailable', records: [], files: files.map((path) => ({ path, state: 'unavailable', reason: 'ambiguous-known-hosts-paths' })) };
+    }
+    return { hostId: id, workspaceId, ...await new SshKnownHosts(files).inspect(resolved.hostname, resolved.port) };
   }
 
   async setSyncSshConfig(enabled: boolean): Promise<void> {
@@ -296,9 +330,7 @@ export class SshHostService extends Disposable implements ISshHostService {
       await this.credentials.read(this.key(id), 'passphrase');
     const savedIdentityFile = await this.credentials.read(key, 'identityFile') ??
       await this.credentials.read(this.key(id), 'identityFile');
-    const knownHostsFiles = resolved.userKnownHostsFiles
-      .filter((file) => file !== 'none' && file !== '/dev/null')
-      .map((file) => file.startsWith('~/') ? join(this.bootstrap.osHomeDir, file.slice(2)) : file);
+    const knownHostsFiles = this.knownHostsFiles(resolved);
     return {
       hostname: resolved.hostname,
       port: resolved.port,
@@ -314,7 +346,7 @@ export class SshHostService extends Disposable implements ISshHostService {
       keyboardInteractive: policy?.keyboardInteractive,
       agent: resolved.identityAgent?.startsWith('~/')
         ? join(this.bootstrap.osHomeDir, resolved.identityAgent.slice(2)) : resolved.identityAgent,
-      knownHostsFiles: knownHostsFiles.length > 0 ? knownHostsFiles : [join(this.bootstrap.osHomeDir, '.ssh', 'known_hosts')],
+      knownHostsFiles,
       proxyJump: resolved.proxyJump,
       proxyCommand: resolved.proxyCommand,
       configFile: join(this.bootstrap.osHomeDir, '.ssh', 'config'),

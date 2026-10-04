@@ -34,7 +34,7 @@ function dependencies(reviewer: Record<string, unknown>, options: {
     yield { type: 'finish', message: { content: [{ type: 'text', text: payload.stage === 2 ? options.explainedOutput ?? '' : options.output ?? '' }] } };
   });
   const catalog = { getRequester: () => ({ request }) } as unknown as IModelCatalog;
-  return { config, catalog, memory, workspace, fetch: options.fetcher, apiKey: options.apiKey, request };
+  return { config, catalog, memory, workspace, owner: { sessionId: 'session-a', agentId: 'child', parentAgentId: 'main' }, fetch: options.fetcher, apiKey: options.apiKey, request };
 }
 
 describe('permission reviewer', () => {
@@ -102,6 +102,7 @@ describe('permission reviewer', () => {
     const allow = dependencies(config, { output: JSON.stringify({ outcome: 'allow', confidence: 0.96 }) });
     expect(await reviewPermission(allow, context, 'dangerous-bash', {})).toMatchObject({ outcome: 'allow', reason: 'Reviewer classified the action' });
     expect(allow.request).toHaveBeenCalledOnce();
+    expect(allow.request).toHaveBeenCalledWith(expect.anything(), expect.any(AbortSignal), expect.objectContaining({ attribution: expect.objectContaining({ sessionId: 'session-a', agentId: 'child', parentAgentId: 'main', purpose: 'permission_review' }) }));
     const low = dependencies(config, {
       output: JSON.stringify({ outcome: 'unsure', confidence: 0.6 }),
       explainedOutput: JSON.stringify({ outcome: 'deny', confidence: 0.95, rationale: 'Unapproved action' }),

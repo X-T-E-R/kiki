@@ -9,6 +9,15 @@ import { DEFAULT_AGENT_PROFILE_NAME, normalizeAgentProfile } from '#/app/agentPr
 import type { CognitionConfig, ModelRecord } from '#/kosong/model/model';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ProfileErrors } from '#/agent/profile/errors';
+import { CognitionConfigSchema, modelsFromToml, modelsToToml } from '#/app/kosongConfig/configSection';
+import { IAgentCognitionAnchorService } from '#/agent/cognition/cognitionAnchor';
+import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentModelSteeringService } from '#/features/modelSteering/modelSteering';
+import '#/features/modelSteering/modelSteeringFeature';
+import { runWillBeginStepHooks } from '../loop/stubs';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 
 import {
@@ -55,6 +64,79 @@ describe('per-model cognition overlay', () => {
     };
     return ctx;
   }
+
+  it.each(['main', 'sub', 'independent'] as const)('keeps common overlays for two models but delivers main-only cues only to %s', async (position) => {
+    await writeFile(join(homeDir, 'cognition/second-steering.md'), 'SECOND MAIN CUE');
+    const first: CognitionConfig = { overlay: 'cognition/overlay.md', main: { overlay: 'cognition/overlay.md', steering: 'cognition/steering.md' } };
+    const agent = createBoundAgent(first, { [OTHER_MODEL]: { provider: 'test-provider', model: OTHER_MODEL, maxContextSize: 1_000_000, cognition: { overlay: 'cognition/overlay.md', main: { overlay: 'cognition/overlay.md', steering: 'cognition/second-steering.md' } } } });
+    const profile = agent.get(IAgentProfileService);
+    agent.get(IAgentModelSteeringService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL, delegationPosition: position });
+    expect(profile.getSystemPrompt()).toContain('FLASH OVERLAY');
+    await runWillBeginStepHooks(agent.get(IAgentLoopService), true);
+    const cues = () => agent.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'model_steering');
+    expect(cues()).toHaveLength(position === 'main' ? 1 : 0);
+    await profile.setModel(OTHER_MODEL);
+    expect(profile.getSystemPrompt()).toContain('FLASH OVERLAY');
+    await runWillBeginStepHooks(agent.get(IAgentLoopService), true);
+    expect(cues()).toHaveLength(position === 'main' ? 2 : 0);
+    if (position === 'main') expect(cues().at(-1)?.content[0]).toMatchObject({ text: 'SECOND MAIN CUE' });
+    await agent.get(ISessionMetadata).registerAgent('main', { type: 'main' });
+    const binding = await profile.prepareResumeBinding({ modelAlias: MOCK_MODEL, allowModelChange: true });
+    await agent.get(IAgentModelSwitchService).execute({ operationId: `cognition-resume-${position}`, model: binding.model, thinking: binding.thinking, mode: 'direct' }, { binding });
+    expect((await profile.getCognitionBinding()).config?.steering).toBe(position === 'main' ? 'cognition/steering.md' : undefined);
+    const diagnostic = await profile.getPromptDiagnostics();
+    expect(diagnostic.identity.delegation_position).toBe(position);
+    expect(diagnostic.disk_changed).toBe(false);
+  });
+
+  it('uses a whole independent main object without flat steering, anchor or replace defaults', async () => {
+    const agent = createBoundAgent({ overlay: 'cognition/overlay.md', overlayMode: 'replace', steering: 'cognition/missing.md', anchor: 'cognition/missing.md', anchorScope: 'turn', anchorSteps: 3, main: { overlay: 'cognition/overlay.md' } });
+    const profile = agent.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    expect(profile.getSystemPrompt()).not.toBe('FLASH OVERLAY');
+    expect((await profile.getCognitionBinding()).config).toMatchObject({ overlay: 'cognition/overlay.md' });
+    expect((await profile.getCognitionBinding()).config?.steering).toBeUndefined();
+    expect(await agent.get(IAgentCognitionAnchorService).project({ sourceType: 'turn', turnId: 0, step: 1, hasExplicitSystemPrompt: false })).toBeUndefined();
+    const diagnostic = await profile.getPromptDiagnostics();
+    expect(diagnostic.channels.find((channel) => channel.id === 'cognition.anchor')?.state).toBe('inactive');
+    expect(diagnostic.channels.find((channel) => channel.id === 'cognition.overlay')?.selection).toBe('main');
+    expect(diagnostic.file_checks).toBeUndefined();
+    const bindingBefore = structuredClone(await profile.getCognitionBinding());
+    const checked = await profile.getPromptDiagnostics({ checkAllPromptFiles: true });
+    expect(checked.file_checks).toMatchObject([
+      { channel: 'cognition_overlay', branch: 'common', status: 'ok' },
+      { channel: 'cognition_steering', branch: 'common', path: 'cognition/missing.md', status: 'error' },
+      { channel: 'cognition_anchor', branch: 'common', path: 'cognition/missing.md', status: 'error' },
+      { channel: 'cognition_overlay', branch: 'main', status: 'ok' },
+    ]);
+    expect(await profile.getCognitionBinding()).toEqual(bindingBefore);
+    expect(checked.binding_revision).toBe(diagnostic.binding_revision);
+  });
+
+  it('keeps the previous cognition and binding when model resume fails after loading its candidate cognition', async () => {
+    const agent = createBoundAgent({ overlay: 'cognition/overlay.md', main: { overlay: 'cognition/overlay.md', steering: 'cognition/steering.md' } }, {
+      [OTHER_MODEL]: { provider: 'test-provider', model: OTHER_MODEL, maxContextSize: 1_000_000, cognition: { overlay: 'cognition/overlay.md' }, promptOverrides: { main: { files: ['missing-candidate-fields.toml'] } } },
+    });
+    const profile = agent.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    const before = structuredClone(await profile.getCognitionBinding());
+    const promptBefore = profile.getSystemPrompt();
+    await expect(profile.prepareResumeBinding({ modelAlias: OTHER_MODEL, allowModelChange: true })).rejects.toThrow(/could not be resolved/);
+    expect(profile.data().modelAlias).toBe(MOCK_MODEL);
+    expect(profile.getSystemPrompt()).toBe(promptBefore);
+    expect(await profile.getCognitionBinding()).toEqual(before);
+    expect((await profile.getPromptDiagnostics()).binding_revision).toBe(before.bindingRevision);
+  });
+
+  it('validates every branch structure and path without requiring unselected files', () => {
+    for (const value of [{ main: {} }, { main: 'same' }, { independent: true }, { main: { main: 'off' } }, { main: { overlay: '../escape.md' } }, { independent: { anchor: 'C:/escape.md' } }, { sub: 'off' }]) expect(CognitionConfigSchema.safeParse(value).success).toBe(false);
+    expect(CognitionConfigSchema.safeParse({ anchorSteps: 2 }).success).toBe(true);
+    const raw = { example: { model: 'example', cognition: { overlay: 'common.md', main: { overlay_mode: 'prepend', anchor_steps: 2, anchor_scope: 'turn' }, independent: 'off' } } };
+    const parsed = modelsFromToml(raw);
+    expect(parsed).toMatchObject({ example: { cognition: { main: { overlayMode: 'prepend', anchorSteps: 2, anchorScope: 'turn' } } } });
+    expect(modelsToToml(parsed, {})).toEqual(raw);
+  });
 
   it('appends overlay when the bound model declares it', async () => {
     const agent = createBoundAgent({ overlay: 'cognition/overlay.md' });

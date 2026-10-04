@@ -21,6 +21,7 @@ import {
   ISessionMetadata,
   ISubagentTool,
   IWorkspaceInstanceManager,
+  IWorkspaceService,
   normalizeAgentProfile,
   type AgentProfileCatalogSnapshot,
   type AgentProfileRegistration,
@@ -38,6 +39,14 @@ import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { panelSkills } from '../src/routes/agentPanelCapabilities';
 import { acquireWorkspaceProfileCatalog } from '../src/routes/agentProfileCapabilities';
+import {
+  saveSubagentProfileToolSettings,
+  searchSubagentToolCatalog,
+  subagentProfileToolDraft,
+  subagentProfileToolFields,
+  subagentSessionToolStates,
+} from '../../session-core/src/settings/subagentToolSettings';
+import { isToolActiveComposed } from '@kiki/agent-core-v2/agent/toolPolicy/evaluate';
 
 interface Envelope<T> {
   code: number;
@@ -81,6 +90,75 @@ describe('GET /api/agents', () => {
   afterEach(async () => {
     if (server !== undefined) await server.close();
     if (home !== undefined) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it('saves and re-reads subagent tool settings without overriding global or parent restrictions', async () => {
+    const configText = '[tools]\ndisabled = ["Bash"]\n';
+    await writeFile(join(home!, 'config.toml'), configText);
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    const path = join(home!, 'agents', 'example-tool-reader.md');
+    await writeFile(path, [
+      '---', 'name: example-tool-reader', 'description: Fixture tool reader',
+      'tools: [Bash, Read, AskUserQuestion]', 'disallowedTools: [Write]',
+      'spawn_constraints:', '  disallowed_tools: [Edit]', '---', 'Keep this fixture prompt.', '',
+    ].join('\n'));
+    await writeFile(join(home!, 'agents', 'example-external.md'), [
+      '---', 'name: example-external', 'description: Fixture external executor', 'executor: claude-acp',
+      'tools: [Bash]', 'disallowedTools: [Read]', '---', 'External fixture prompt.', '',
+    ].join('\n'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const klient = createKlient({ endpoint: base, token: server.localOwnerToken });
+    try {
+      const rest = klient.rest;
+      if (rest === undefined) throw new Error('HTTP client has no REST capability');
+      const initialCatalog = await rest.agents.list({ cwd: home, effective: true });
+      const initial = initialCatalog.items.find((item) => item.name === 'example-tool-reader')!;
+      expect(initial).toMatchObject({ source: 'user', source_file: path.replaceAll('\\', '/'), tools: ['Bash', 'Read', 'AskUserQuestion'] });
+      const external = initialCatalog.items.find((item) => item.name === 'example-external')!;
+      expect(subagentProfileToolFields(external)).toMatchObject([
+        { field: 'tools', executor: 'claude-acp', applicability: 'ignored', reason: 'Tools are controlled by the external executor' },
+        { field: 'disallowed_tools', applicability: 'ignored', reason: 'Tools are controlled by the external executor' },
+      ]);
+      const client = {
+        updateNamedAgentProfile: rest.agents.update,
+        listNamedAgentProfiles: rest.agents.list,
+      };
+      const denied = await saveSubagentProfileToolSettings(client, initial, {
+        tools: initial.tools!, disallowedTools: ['Write', 'Bash'],
+      });
+      expect(denied.disallowed_tools).toEqual(['Write', 'Bash']);
+      expect(denied.tools).toEqual(initial.tools);
+      const allowed = await saveSubagentProfileToolSettings(client, denied, {
+        tools: ['Read', 'Bash'], disallowedTools: ['Write'],
+      });
+      expect(allowed.tools).toEqual(['Read', 'Bash']);
+      expect(allowed.disallowed_tools).toEqual(['Write']);
+      const catalog = await rest.agents.list({ workspace_id: initial.workspace_id });
+      expect(catalog.items.find((item) => item.source_file === initial.source_file)).toMatchObject({ tools: ['Read', 'Bash'], disallowed_tools: ['Write'] });
+      const fileText = await readFile(path, 'utf8');
+      expect(fileText).toContain('Keep this fixture prompt.');
+      expect(fileText).toContain('spawn_constraints:');
+      expect(fileText).toContain('Edit');
+      expect(await readFile(join(home!, 'config.toml'), 'utf8')).toBe(configText);
+      const panel = await klient.global.agentPanel.read({ workspace_id: initial.workspace_id!, profile: initial.name });
+      expect(panel.context).toBe('draft');
+      expect(panel.tools?.find((tool) => tool.name === 'Bash')).toMatchObject({ state: 'disabled', unavailable_reason_code: 'draft_policy_disabled' });
+      expect(subagentSessionToolStates(panel, undefined)).toBeUndefined();
+      expect(subagentSessionToolStates(panel, 'main')).toBeUndefined();
+      const layers = { profile: { tools: allowed.tools, disallowedTools: allowed.disallowed_tools }, global: { disabled: ['Bash'] },
+        subagent: { explicitProfileTools: allowed.tools, allowedTools: ['AskUserQuestion', 'BoardRead'] } };
+      expect(isToolActiveComposed(layers, 'Bash')).toBe(false);
+      expect(isToolActiveComposed({ ...layers, profile: { tools: ['AskUserQuestion'] } }, 'AskUserQuestion')).toBe(false);
+      expect(isToolActiveComposed({ ...layers, global: undefined, sessionDisabledTools: ['Bash'] }, 'Bash')).toBe(false);
+      const empty = await saveSubagentProfileToolSettings(client, allowed, { tools: [], disallowedTools: [] });
+      expect(subagentProfileToolDraft(empty)).toEqual({ tools: [], disallowedTools: [] });
+      const inherited = await saveSubagentProfileToolSettings(client, empty, { tools: null, disallowedTools: null });
+      expect(subagentProfileToolDraft(inherited)).toEqual({ tools: null, disallowedTools: null });
+      expect(searchSubagentToolCatalog((await rest.runtime.listTools()).tools, 'Bash')).toEqual([]);
+    } finally {
+      await klient.close();
+    }
   });
 
   it('previews unsaved canonical menu changes and keeps live and cold model domains frozen', async () => {
@@ -160,7 +238,7 @@ describe('GET /api/agents', () => {
       const body = await response.json() as Envelope<unknown>;
       expect(body.code).toBe(0);
       const data = agentCapabilitiesResponseSchema.parse(body.data);
-      const klient = createKlient({ endpoint: base, token: server!.authTokenService.getToken() });
+      const klient = createKlient({ endpoint: base, token: server!.localOwnerToken });
       try {
         const typed = await klient.global.agentPanel.read({ session_id: created.data.id, agent_id: 'main' });
         expect(typed.profile).toEqual(data.profile);
@@ -180,6 +258,52 @@ describe('GET /api/agents', () => {
     expect(cold.live).toBe(false);
     expect(cold.profile).toMatchObject({ declared_model_menu: initial.declared_model_menu, effective_model_aliases: initial.effective_model_aliases });
     expect(manager.get(created.data.id)).toBeUndefined();
+  });
+
+  it('round-trips identity prompts through REST and exposes bound diagnostics through the typed panel facade', async () => {
+    await writeFile(join(home!, 'config.toml'), 'default_model = "stub"\n[providers.stub]\ntype = "openai"\nbase_url = "http://127.0.0.1:9999"\napi_key = "YOUR_API_KEY"\n[models.stub]\nprovider = "stub"\nmodel = "stub"\nmax_context_size = 1000\n');
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    await writeFile(join(home!, 'agents', 'prompt-main.md'), '---\nname: prompt-main\ndescription: Prompt main\nmain: true\nmodel_alias: stub\n---\nRole body.\n');
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const created = await (await authedFetch(server, base, '/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'prompt-main' } }) })).json() as Envelope<{ id: string }>;
+    expect(created.code).toBe(0);
+    const klient = createKlient({ endpoint: base, token: server.localOwnerToken });
+    try {
+      const list = async () => listNamedAgentProfilesResponseSchema.parse((await (await authedFetch(server!, base, `/api/agents?cwd=${encodeURIComponent(home!)}`)).json() as Envelope<unknown>).data).items.find((item) => item.name === 'prompt-main')!;
+      const initial = await list();
+      const patch = async (changes: Record<string, unknown>) => (await (await authedFetch(server!, base, '/api/agents/prompt-main', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspace_id: initial.workspace_id, scope: 'user', ...changes }) })).json() as Envelope<unknown>);
+      const model = { alias: 'stub', prompt_mode: 'append', prompt: 'COMMON BODY', main: { prompt_mode: 'append', prompt: 'MAIN BODY' }, independent: 'off', prompt_overrides: { fields: { 'system.shared': 'MODEL FIELD' }, main: 'off' } };
+      expect(await patch({ prompt_overrides: { files: ['missing-common.toml'], fields: { 'system.shared': 'ROLE FIELD' }, main: { fields: { 'system.shared': 'MAIN FIELD' } } }, model_profiles: [model], allowed_subagents: [{ name: 'explore', model_prompts: 'replace', model_profiles: [{ alias: 'stub', prompt_overrides: { fields: { 'system.shared': 'LEASE FIELD' } } }] }] })).toMatchObject({ code: 0 });
+      expect(await list()).toMatchObject({ prompt_overrides: { main: { fields: { 'system.shared': 'MAIN FIELD' } } }, model_profiles: [model], allowed_subagents: [{ name: 'explore', model_prompts: 'replace', model_profiles: [{ prompt_overrides: { fields: { 'system.shared': 'LEASE FIELD' } } }] }] });
+      expect(await patch({ model_profiles: [{ alias: 'stub', when: 'Updated menu only' }] })).toMatchObject({ code: 0 });
+      expect((await list()).model_profiles?.[0]).toMatchObject(model);
+      const unchecked = await klient.global.agentPanel.read({ session_id: created.data.id, agent_id: 'main' });
+      expect(unchecked.prompt?.file_checks).toBeUndefined();
+      const checked = await klient.global.agentPanel.read({ session_id: created.data.id, agent_id: 'main', check_all_prompt_files: true });
+      expect(checked.prompt?.file_checks).toMatchObject([{ surface: 'profile', branch: 'common', path: 'missing-common.toml', status: 'error' }]);
+      expect(checked.prompt?.binding_revision).toBe(unchecked.prompt?.binding_revision);
+      const rawCheck = await (await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main&check_all_prompt_files=true`)).json() as Envelope<unknown>;
+      expect(rawCheck.code).toBe(0);
+      expect(agentCapabilitiesResponseSchema.parse(rawCheck.data).prompt?.file_checks).toEqual(checked.prompt?.file_checks);
+      expect(await patch({ model_profiles: [{ alias: 'stub', prompt: null }] })).not.toMatchObject({ code: 0 });
+      expect(await patch({ model_profiles: [{ alias: 'stub', main: null, independent: null, prompt_mode: null, prompt: null, prompt_overrides: null }], prompt_overrides: null, allowed_subagents: [{ name: 'explore', model_prompts: 'preserve' }] })).toMatchObject({ code: 0 });
+      const cleared = await list();
+      expect(cleared.prompt_overrides).toBeUndefined();
+      expect(cleared.model_profiles?.[0]).toMatchObject({ alias: 'stub', when: 'Updated menu only' });
+      for (const field of ['main', 'independent', 'prompt', 'prompt_mode', 'prompt_overrides']) expect(cleared.model_profiles?.[0]).not.toHaveProperty(field);
+      expect(cleared.allowed_subagents?.[0]).toMatchObject({ name: 'explore', model_prompts: 'preserve' });
+      const live = await klient.global.agentPanel.read({ session_id: created.data.id, agent_id: 'main' });
+      expect(live.prompt).toMatchObject({ identity: { delegation_position: 'main', model_alias: 'stub', executor: 'native' }, apply_on: 'next-binding-or-context-rebuild' });
+      expect(live.prompt?.binding_revision).toBeTruthy();
+      expect(live.prompt?.request).toBeUndefined();
+      await server.core.accessor.get(ISessionManager).close(created.data.id);
+      const cold = await klient.global.agentPanel.read({ session_id: created.data.id, agent_id: 'main', check_all_prompt_files: true });
+      expect(cold.live).toBe(false);
+      expect(cold.prompt?.binding_revision).toBe(live.prompt?.binding_revision);
+      expect(cold.prompt?.request).toBeUndefined();
+      expect(cold.prompt?.file_checks).toEqual([]);
+    } finally { await klient.close(); }
   });
 
   it('persists explicit context groups and removes the opt-in through REST', async () => {
@@ -279,6 +403,60 @@ describe('GET /api/agents', () => {
     expect((await readPreview()).items.some((item) => item.name === 'project-only')).toBe(false);
   });
 
+  it('probes draft directories without registration or Programs and registers once on submit', async () => {
+    await writeFile(join(home!, 'config.toml'), [
+      'default_model = "stub"', '[providers.stub]', 'type = "openai"',
+      'base_url = "http://127.0.0.1:9999"', 'api_key = "YOUR_API_KEY"',
+      '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
+    ].join('\n'));
+    const cwd = join(home!, 'draft-project');
+    await mkdir(join(cwd, '.kiki', 'agents'), { recursive: true });
+    await mkdir(join(cwd, '.kiki', 'skills', 'draft-skill'), { recursive: true });
+    await writeFile(join(cwd, '.kiki', 'agents', 'draft-lead.md'), '---\nname: draft-lead\ndescription: Draft lead\nmain: true\n---\nLead the task.\n');
+    await writeFile(join(cwd, '.kiki', 'skills', 'draft-skill', 'SKILL.md'), '---\nname: draft-skill\ndescription: Draft skill\n---\nUse this skill.\n');
+    await writeFile(join(cwd, 'example.txt'), 'example');
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0,
+      homeDir: home, instancesDir: join(home!, 'instances'), logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const registry = server.core.accessor.get(IWorkspaceService);
+    const touched = vi.spyOn(registry, 'createOrTouch');
+    const manager = server.core.accessor.get(IWorkspaceInstanceManager);
+    const before = await registry.list();
+    const read = async (path: string) => (await (await authedFetch(server!, base, path)).json()) as Envelope<unknown>;
+    const post = async (path: string, body: unknown) => (await (await authedFetch(server!, base, path, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })).json()) as Envelope<unknown>;
+    for (const root of [home!, cwd]) {
+      const catalog = await read(`/api/agents?cwd=${encodeURIComponent(root)}&effective=true`);
+      expect(catalog.code).toBe(0);
+      const panel = await read(`/api/agents/capabilities?cwd=${encodeURIComponent(root)}&profile=${root === cwd ? 'draft-lead' : 'agent'}`);
+      expect(panel.code).toBe(0);
+      if (root === cwd) expect(agentCapabilitiesResponseSchema.parse(panel.data).skills?.some((skill) => skill.name === 'draft-skill')).toBe(true);
+      const files = await post('/api/workspace/fs:search', { workspace: root, query: 'example' });
+      expect(files.code).toBe(0);
+      expect((await post('/api/workspace/fs:suggest', { workspace: root, query: 'example' })).code).toBe(0);
+      expect((await post(`/api/sessions/${encodeURIComponent(root)}/fs:search`, { query: 'example' })).code).toBe(0);
+    }
+    expect(touched).not.toHaveBeenCalled();
+    expect(await registry.list()).toEqual(before);
+    expect(manager.list()).toHaveLength(0);
+    const missing = await read(`/api/agents?cwd=${encodeURIComponent(join(cwd, 'missing'))}&effective=true`);
+    expect(missing.code).toBe(ErrorCode.WORKSPACE_NOT_FOUND);
+    expect((await read(`/api/agents?cwd=${encodeURIComponent(join(cwd, 'example.txt'))}&effective=true`)).code).toBe(ErrorCode.WORKSPACE_NOT_FOUND);
+    expect((await post('/api/workspace/fs:suggest', { workspace: join(cwd, 'missing'), query: 'example' })).code).toBe(ErrorCode.WORKSPACE_NOT_FOUND);
+    expect(touched).not.toHaveBeenCalled();
+    const created = await post('/api/sessions', { metadata: { cwd }, agent_config: { profile: 'draft-lead' } });
+    expect(created.code).toBe(0);
+    expect(touched).toHaveBeenCalledTimes(1);
+    const registered = (await registry.list()).find((workspace) => workspace.root === cwd)!;
+    expect(registered).toBeDefined();
+    expect(manager.list()).toHaveLength(1);
+    const equivalentCwd = process.platform === 'win32' ? `${cwd.toUpperCase().replaceAll('\\', '/')}/` : `${cwd}/`;
+    expect((await post('/api/sessions', { workspace_id: registered.id, metadata: { cwd: equivalentCwd } })).code).toBe(0);
+    expect((await post('/api/sessions', { workspace_id: registered.id, metadata: { cwd: join(cwd, 'other') } })).code).toBe(ErrorCode.VALIDATION_FAILED);
+    expect(touched).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps unscoped previews effective across SYSTEM.md, global extras, disable state and private profiles', async () => {
     const extra = join(home!, 'global-agents');
     await writeFile(join(home!, 'config.toml'), [
@@ -361,12 +539,12 @@ describe('GET /api/agents', () => {
       'Use the configured subagent policy.', '',
     ].join('\n'));
     await writeFile(join(home!, 'agents', 'strict-policy.md'), [
-      '---', 'name: strict-policy', 'description: Strict dispatch', 'subagent_policy: strict',
-      'subagents: [explore]', '---', 'Dispatch only the listed profile.', '',
+      '---', 'name: strict-policy', 'description: Preset boundary',
+      'allowed_subagents: [explore]', '---', 'Dispatch only the listed profile.', '',
     ].join('\n'));
     await writeFile(join(home!, 'agents', 'advisory-policy.md'), [
-      '---', 'name: advisory-policy', 'description: Advisory dispatch', 'subagent_policy: advisory',
-      'subagents: [explore]', '---', 'Recommend the listed profile.', '',
+      '---', 'name: advisory-policy', 'description: Recommended presets',
+      'preferred_subagents: [explore]', '---', 'Recommend the listed profile.', '',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
@@ -381,8 +559,9 @@ describe('GET /api/agents', () => {
     const advisory = find('advisory-policy');
     expect(inherited).toBeDefined();
     expect(inherited).not.toHaveProperty('subagent_policy');
-    expect(strict).toMatchObject({ subagent_policy: 'strict' });
-    expect(advisory).toMatchObject({ subagent_policy: 'advisory' });
+    expect(strict).toMatchObject({ allowed_subagents: ['explore'] });
+    expect(advisory).toMatchObject({ preferred_subagents: ['explore'] });
+    expect(advisory).not.toHaveProperty('allowed_subagents');
   });
 
   it('previews actual ordered external prompt text and resolved delivery without launching an engine', async () => {
@@ -452,7 +631,7 @@ describe('GET /api/agents', () => {
     reopened?.dispose();
   });
 
-  it.each(['---\ndescription: Custom default\nsubagents: [explore]\n---\nCustom upgraded prompt.'])('keeps SYSTEM main profiles available when subagent discovery is disabled: %s', async (text) => {
+  it.each(['---\ndescription: Custom default\npreferred_subagents: [explore]\n---\nCustom upgraded prompt.'])('keeps SYSTEM main profiles available when subagent discovery is disabled: %s', async (text) => {
     await writeFile(join(home!, 'SYSTEM.md'), text);
     await writeFile(join(home!, 'config.toml'), [
       'disabled_named_profiles = ["agent"]', 'skip_builtin_profile_installation = ["agent"]',
@@ -473,7 +652,7 @@ describe('GET /api/agents', () => {
     const data = agentCapabilitiesResponseSchema.parse(capabilityBody.data);
     expect(data.available).toBe(true);
     expect(data.targets.find((target) => target.profile === 'explore')).toMatchObject({
-      recommendation_status: 'preferred', dispatch_policy: 'advisory',
+      recommendation_status: 'preferred', dispatch_policy: 'fixed',
     });
     expect(data.targets.find((target) => target.profile === 'general')).toMatchObject({
       recommendation_status: 'allowed_nonpreferred',
@@ -483,15 +662,13 @@ describe('GET /api/agents', () => {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ subagent: { main_dispatch_policy: 'strict', subagent_dispatch_policy: 'advisory' } }),
     });
-    const configBody = await configured.json() as Envelope<{ subagent: { mainDispatchPolicy?: string; subagentDispatchPolicy?: string } }>;
-    expect(configBody.code).toBe(0);
-    expect(configBody.data.subagent).toMatchObject({ mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory' });
-    const strictResponse = await authedFetch(server, base, `/api/agents/capabilities?${query}&profile=agent`);
-    const strict = agentCapabilitiesResponseSchema.parse((await strictResponse.json() as Envelope<unknown>).data);
-    expect(strict.profile?.subagent_policy).toBe('strict');
-    expect(strict.targets.find((target) => target.profile === 'general')).toMatchObject({
-      recommendation_status: 'blocked', dispatch_policy: 'strict', launch_allowed: false,
-      launch_unavailable_reason_code: 'strict_subagent_policy_blocked',
+    const configBody = await configured.json() as Envelope<unknown>;
+    expect(configBody.code).not.toBe(0);
+    const refreshedResponse = await authedFetch(server, base, `/api/agents/capabilities?${query}&profile=agent`);
+    const refreshed = agentCapabilitiesResponseSchema.parse((await refreshedResponse.json() as Envelope<unknown>).data);
+    expect(refreshed.profile?.preferred_subagents).toEqual(['explore']);
+    expect(refreshed.targets.find((target) => target.profile === 'general')).toMatchObject({
+      recommendation_status: 'allowed_nonpreferred', dispatch_policy: 'fixed',
     });
     const createdResponse = await authedFetch(server, base, '/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -555,7 +732,7 @@ describe('GET /api/agents', () => {
       owner: { agent_id: 'main', profile: 'agent' },
       profile: {
         name: 'agent', source: 'user', model: 'stub', model_source: 'profile',
-        thinking_effort: 'low', effort_source: 'model', subagent_policy: 'advisory',
+        thinking_effort: 'low', effort_source: 'model', can_spawn_subagents: true,
       },
     });
     expect(data.profile?.source_file?.replaceAll('\\', '/')).toMatch(/agents\/builtin\/agent\.md$/);
@@ -601,7 +778,7 @@ describe('GET /api/agents', () => {
     };
     const live = await readCapabilities();
     expect(live).toMatchObject({ context: 'live', live: true, profile: {
-      name: 'explore', source: 'user', model: 'stub-alt', thinking_effort: 'high', subagent_policy: 'advisory',
+      name: 'explore', source: 'user', model: 'stub-alt', thinking_effort: 'high', can_spawn_subagents: false,
     } });
     await lifecycle.remove('agent-snapshot');
     expect(lifecycle.get('agent-snapshot')).toBeUndefined();
@@ -612,7 +789,7 @@ describe('GET /api/agents', () => {
       owner: { agent_id: 'agent-snapshot', profile: 'explore' },
       profile: {
         name: 'explore', source: 'user', model: 'stub-alt', model_source: 'profile',
-        thinking_effort: 'high', effort_source: 'model', subagent_policy: 'advisory',
+        thinking_effort: 'high', effort_source: 'model', can_spawn_subagents: false,
       },
     });
     expect(snapshot.profile?.source_file).toBe(live.profile?.source_file);
@@ -757,7 +934,7 @@ describe('GET /api/agents', () => {
 
   it.each(['---\ntools: [Read\n---\nBroken.', '---\ntools: [Read]\nBroken.', '---\n- Read\n---\nBroken.'])('R1 rejects malformed SYSTEM management writes without changing restrictions: %s', async (rawText) => {
     const path = join(home!, 'SYSTEM.md');
-    const original = '---\r\ndescription: Restricted default\r\ntools: [Read]\r\nsubagents: []\r\n---\r\nRestricted prompt.\r\n';
+    const original = '---\r\ndescription: Restricted default\r\ntools: [Read]\r\nallowed_subagents: []\r\n---\r\nRestricted prompt.\r\n';
     await writeFile(path, original);
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
@@ -766,7 +943,7 @@ describe('GET /api/agents', () => {
       return listNamedAgentProfilesResponseSchema.parse((await response.json() as Envelope<unknown>).data).items.find((item) => item.name === 'agent')!;
     };
     const before = await read();
-    expect(before).toMatchObject({ source: 'user', tools: ['Read'], subagents: [] });
+    expect(before).toMatchObject({ source: 'user', tools: ['Read'], allowed_subagents: [] });
     const response = await authedFetch(server, base, '/api/agents/agent', {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ workspace_id: before.workspace_id, scope: 'user', source_file: before.source_file, raw_text: rawText }),
@@ -802,7 +979,7 @@ describe('GET /api/agents', () => {
   it.each([undefined, false, true])('preserves effective main on an external executor write: main=%s', async (main) => {
     const path = join(home!, 'agents', 'agent.md');
     await mkdir(join(home!, 'agents'), { recursive: true });
-    const original = '---\nname: agent\ndescription: Restricted override\noverride: true\ntools: [Read]\nsubagents: []\n---\nRestricted prompt.';
+    const original = '---\nname: agent\ndescription: Restricted override\noverride: true\ntools: [Read]\nallowed_subagents: []\n---\nRestricted prompt.';
     await writeFile(path, original);
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
@@ -812,7 +989,7 @@ describe('GET /api/agents', () => {
       return listNamedAgentProfilesResponseSchema.parse((await response.json() as Envelope<unknown>).data).items.find((item) => item.name === 'agent')!;
     };
     const before = await read();
-    expect(before).toMatchObject({ main: true, source: 'user', tools: ['Read'], subagents: [] });
+    expect(before).toMatchObject({ main: true, source: 'user', tools: ['Read'], allowed_subagents: [] });
     const rawText = original.replace('override: true', `override: true\nexecutor: grok-acp${main === undefined ? '' : `\nmain: ${main}`}`);
     const response = await authedFetch(server, base, '/api/agents/agent', {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
@@ -821,7 +998,7 @@ describe('GET /api/agents', () => {
     const result = await response.json() as Envelope<unknown>;
     expect(result.code).toBe(0);
     expect(await readFile(path, 'utf8')).toBe(rawText);
-    expect(await read()).toMatchObject({ main: main !== false, source: 'user', executor: 'grok-acp', tools: ['Read'], subagents: [] });
+    expect(await read()).toMatchObject({ main: main !== false, source: 'user', executor: 'grok-acp', tools: ['Read'], allowed_subagents: [] });
   });
 
   it('projects caller leases and frozen live targets without launching children or exposing private configuration', async () => {
@@ -840,7 +1017,7 @@ describe('GET /api/agents', () => {
     const scoped = helper('private-helper');
     const lead = normalizeAgentProfile({
       name: 'lead', definitionId: 'definition:lead', main: true, tools: ['AgentRun'],
-      subagents: ['leased-helper', 'unbound-helper', 'disabled-helper', 'blocked-helper', 'private-helper', 'missing-helper'],
+      allowedSubagents: ['leased-helper', 'unbound-helper', 'disabled-helper', 'blocked-helper', 'private-helper', 'missing-helper'],
       subagentLeases: {
         'leased-helper': { name: 'leased-helper', modelAlias: 'stub', thinkingEffort: 'off', allowedModels: ['stub'] },
         'blocked-helper': { name: 'blocked-helper', allowedModels: [] },
@@ -916,7 +1093,7 @@ describe('GET /api/agents', () => {
     base = `http://127.0.0.1:${server.port}`;
     const registration = server.core.accessor.get(IAgentProfileRegistry).register({ sourceId: 'admission-example', priority: 50, contribution: {
       profiles: [
-        normalizeAgentProfile({ name: 'lead', main: true, tools: ['AgentRun'], subagents: ['native-helper', 'external-helper'], systemPrompt: () => '' }),
+        normalizeAgentProfile({ name: 'lead', main: true, tools: ['AgentRun'], allowedSubagents: ['native-helper', 'external-helper'], systemPrompt: () => '' }),
         ...['native', 'external'].map((executor) => normalizeAgentProfile({
           name: `${executor}-helper`, executor, modelAlias: 'stub', systemPrompt: () => '',
         })),
@@ -1060,7 +1237,7 @@ describe('GET /api/agents', () => {
         '  deny_models: [provider/blocked]',
         '  allowed_efforts: [high]',
         '  disallowed_tools: [Write]',
-        'subagents:',
+        'allowed_subagents:',
         '  - explore',
         '  - name: reviewer-helper',
         '    description: Assists reviews',
@@ -1068,7 +1245,7 @@ describe('GET /api/agents', () => {
         '    thinking_effort: low',
         '    allowed_models: [provider/fast]',
         '    tools: ["*"]',
-        '    subagents: ["*"]',
+        '    allowed_subagents: ["*"]',
         '    delegation_notice: off',
         '    service_tier: flex',
         '    request_params:',
@@ -1182,7 +1359,7 @@ describe('GET /api/agents', () => {
         allowed_efforts: ['high'],
         disallowed_tools: ['Write'],
       },
-      subagents: [
+      allowed_subagents: [
         'explore',
         {
           name: 'reviewer-helper',
@@ -1191,7 +1368,7 @@ describe('GET /api/agents', () => {
           thinking_effort: 'low',
           allowed_models: ['provider/fast'],
           tools: null,
-          subagents: null,
+          allowed_subagents: null,
           delegation_notice: 'off',
           service_tier: 'flex',
           request_params: { temperature: 0.2 },
@@ -1585,7 +1762,7 @@ describe('GET /api/agents', () => {
         '---',
         'name: research-lead',
         'description: Coordinates research',
-        'subagents:',
+        'allowed_subagents:',
         '  - name: research-writer',
         '    source: ./_private/research/writer.md',
         '    description: Writes research summaries',
@@ -1635,7 +1812,7 @@ describe('GET /api/agents', () => {
     const parent = data.items.find((profile) =>
       profile.name === 'research-lead' && profile.source === 'user'
     );
-    expect(parent?.subagents).toEqual([
+    expect(parent?.allowed_subagents).toEqual([
       {
         name: 'research-writer',
         source: './_private/research/writer.md',
@@ -1653,7 +1830,7 @@ describe('GET /api/agents', () => {
       },
     ]);
     expect(data.items.some((profile) => profile.name === 'private-research-writer')).toBe(false);
-    const projectedLeases = JSON.stringify(parent?.subagents);
+    const projectedLeases = JSON.stringify(parent?.allowed_subagents);
     expect(projectedLeases).not.toContain(childPath.replaceAll('\\', '/'));
     expect(projectedLeases).not.toContain((home as string).replaceAll('\\', '/'));
     expect(projectedLeases).not.toContain('sourceDefinitionId');
@@ -1696,7 +1873,7 @@ describe('GET /api/agents', () => {
     const profile = normalizeAgentProfile({
       name: 'offline-lead',
       definitionId: parentDefinitionId,
-      subagents: [readyLease.name, unavailableLease.name],
+      allowedSubagents: [readyLease.name, unavailableLease.name],
       subagentLeases: {
         [readyLease.name]: readyLease,
         [unavailableLease.name]: unavailableLease,
@@ -1746,7 +1923,7 @@ describe('GET /api/agents', () => {
     const parent = data.items.find((item) =>
       item.name === 'offline-lead' && item.source === 'workspace'
     );
-    expect(parent?.subagents).toEqual([
+    expect(parent?.allowed_subagents).toEqual([
       {
         name: 'offline-writer',
         source: './_private/writer.md',
@@ -1762,7 +1939,7 @@ describe('GET /api/agents', () => {
         diagnostic_code: AgentProfileSourceDiagnosticCodes.UNAVAILABLE,
       },
     ]);
-    const projectedLeases = JSON.stringify(parent?.subagents);
+    const projectedLeases = JSON.stringify(parent?.allowed_subagents);
     expect(projectedLeases).not.toContain('C:/Users/private');
     expect(projectedLeases).not.toContain('sourceDefinitionId');
   });
@@ -1789,7 +1966,7 @@ describe('GET /api/agents', () => {
     });
     const lead = normalizeAgentProfile({
       name: 'agent', definitionId: 'definition:private-main', main: true, private: true, override: true,
-      tools: ['AgentRun'], subagents: ['helper'],
+      tools: ['AgentRun'], allowedSubagents: ['helper'],
       subagentLeases: { helper: { name: 'helper', source: './_private/helper.md', modelAlias: 'stub' } },
       systemPrompt: () => 'PRIVATE_MAIN_PROMPT',
     });
@@ -1826,7 +2003,7 @@ describe('GET /api/agents', () => {
         ((await (await authedFetch(server, base, `/api/agents?${query}&effective=true`)).json()) as Envelope<unknown>).data,
       );
       const effectiveLead = effective.items.find((profile) => profile.name === 'agent' && profile.source === 'example');
-      expect(effectiveLead?.subagents).toEqual([
+      expect(effectiveLead?.allowed_subagents).toEqual([
         expect.objectContaining({ name: 'helper', source: './_private/helper.md', scope: 'private', status: 'ready' }),
       ]);
 
@@ -2085,18 +2262,18 @@ describe('GET /api/agents', () => {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         workspace_id: workspaceId, scope: 'user', main: true, restrict_models_to_menu: true,
-        allowed_models: ['fixture/a'], allowed_efforts: ['max'], subagent_policy: 'strict',
-        subagents: ['explore', { name: 'reviewer', model_alias: 'fixture/b', thinking_effort: 'high' }],
+        allowed_models: ['fixture/a'], allowed_efforts: ['max'], can_spawn_subagents: true, preferred_subagents: ['explore'], deny_subagents: ['blocked'],
+        allowed_subagents: ['explore', { name: 'reviewer', model_alias: 'fixture/b', thinking_effort: 'high' }],
         model_profiles: [{ alias: 'fixture/a', when: 'long tasks', thinking_effort: 'max' }],
       }),
     });
     const patched = (await patch.json()) as Envelope<unknown>;
     expect(patched.code).toBe(0);
     expect(patched.data).toMatchObject({
-      main: true, restrict_models_to_menu: true, allowed_models: ['fixture/a'], allowed_efforts: ['max'], subagent_policy: 'strict',
+      main: true, restrict_models_to_menu: true, allowed_models: ['fixture/a'], allowed_efforts: ['max'], can_spawn_subagents: true, preferred_subagents: ['explore'], deny_subagents: ['blocked'],
       model_profiles: [{ alias: 'fixture/a', when: 'long tasks', thinking_effort: 'max' }],
     });
-    const subagents = (patched.data as { subagents?: unknown[] }).subagents;
+    const subagents = (patched.data as { allowed_subagents?: unknown[] }).allowed_subagents;
     expect(subagents?.[0]).toBe('explore');
     expect(subagents?.[1]).toMatchObject({ name: 'reviewer', model_alias: 'fixture/b', thinking_effort: 'high' });
     const text = await readFile(join(home!, 'agents', 'team-lead.md'), 'utf8');
@@ -2167,7 +2344,7 @@ describe('GET /agents named resolution', () => {
     });
     const lead = normalizeAgentProfile({
       name: 'hidden-lead', definitionId: 'definition:hidden-lead',
-      subagents: ['hidden-helper'],
+      allowedSubagents: ['hidden-helper'],
       subagentLeases: { 'hidden-helper': { name: 'hidden-helper', source: './_private/helper.md' } },
       systemPrompt: () => '',
     });
@@ -2227,10 +2404,10 @@ describe('GET /agents named resolution', () => {
       { send: (payload) => { sent = payload; } },
     );
 
-    const body = sent as { code: number; data: { items: Array<{ name: string; subagents?: unknown }> } };
+    const body = sent as { code: number; data: { items: Array<{ name: string; allowed_subagents?: unknown }> } };
     expect(body.code).toBe(0);
     expect(body.data.items.map((item) => item.name).toSorted()).toEqual(['exposed', 'hidden-lead']);
-    expect(body.data.items.find((item) => item.name === 'hidden-lead')?.subagents).toEqual([
+    expect(body.data.items.find((item) => item.name === 'hidden-lead')?.allowed_subagents).toEqual([
       expect.objectContaining({ name: 'hidden-helper', scope: 'private', status: 'ready' }),
     ]);
   });

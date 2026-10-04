@@ -1,13 +1,15 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, basename } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PluginManager } from '#/app/plugin/manager';
+import { PluginHost } from '#/app/plugin/host';
+import { smallPdf } from '../../../../../plugins/official/kiki-documents/test/fixtures.mjs';
 
 describe('PluginManager', () => {
   let home: string;
@@ -76,6 +78,59 @@ describe('PluginManager', () => {
       expect.objectContaining({ pluginId: 'demo', name: 'deploy', description: 'Deploy' }),
     ]);
   });
+
+  it('installs self-contained Documents and reads artifacts through the real plugin host', async () => {
+    const packaged = join(root, 'documents-package');
+    const workspace = join(root, 'documents-workspace');
+    const source = resolve(import.meta.dirname, '../../../../../plugins/official/kiki-documents');
+    await cp(source, packaged, { recursive: true, filter: (file) => basename(file) !== 'node_modules' });
+    await mkdir(workspace);
+    await writeFile(join(workspace, 'report.txt'), '# Installed document\nProof value 42.\n');
+    const manager = new PluginManager({ kimiHomeDir: home });
+    const installed = await manager.install(packaged, { consent: true });
+    await manager.setEnabled(installed.id, true);
+    const info = manager.get(installed.id)!;
+    expect(info.state).toBe('ok');
+    expect(info.diagnostics).toEqual([]);
+    expect(info.manifest?.skills).toHaveLength(1);
+    expect(await stat(join(installed.root, 'runtime/node_modules')).catch(() => undefined)).toBeUndefined();
+    const host = new PluginHost(info.id, info.manifest!.kiki!.entry!, info.manifest!.kiki!.tools!);
+    const signal = new AbortController().signal;
+    const scope = { workspaceRoot: workspace };
+    try {
+      await rm(packaged, { recursive: true, force: true });
+      const text = await host.execute('documents_extract', { file: 'report.txt', outputDir: 'text', previewChars: 5 }, signal, undefined, {}, scope);
+      expect(text.isError).not.toBe(true);
+      const data = JSON.parse(text.output as string);
+      expect(data).toMatchObject({ status: 'succeeded', engine: 'direct', previewTruncated: true, artifactTruncated: false });
+      expect(await readFile(data.markdownPath, 'utf8')).toContain('Proof value 42');
+      if (process.env['NB_EXTRACT_TEST_PYTHON'] !== undefined) {
+        const pdf = smallPdf();
+        await writeFile(join(workspace, 'report.pdf'), pdf);
+        await writeFile(join(workspace, 'scan.pdf'), smallPdf(null));
+        const settings = { pythonPath: process.env['NB_EXTRACT_TEST_PYTHON'] };
+        const converted = await host.execute('documents_extract', { file: 'report.pdf', outputDir: 'pdf' }, signal, undefined, settings, scope);
+        expect(converted.isError).not.toBe(true);
+        const result = JSON.parse(converted.output as string);
+        expect(result).toMatchObject({ status: 'succeeded', engine: 'markitdown', assets: [] });
+        expect(result.warnings.join(' ')).toContain('no assets');
+        expect(result.warnings.join(' ')).toContain('does not perform OCR');
+        expect(await readFile(result.markdownPath, 'utf8')).toContain('Readable PDF extraction proof');
+        expect(JSON.parse(await readFile(result.metadataPath, 'utf8')).source.value).toBe(join(workspace, 'report.pdf'));
+        expect(await readFile(join(workspace, 'report.pdf'))).toEqual(pdf);
+        const empty = await host.execute('documents_extract', { file: 'scan.pdf', outputDir: 'scan' }, signal, undefined, settings, scope);
+        expect(empty.isError).toBe(true);
+        expect(JSON.parse(empty.output as string).code).toBe('EMPTY_CONTENT');
+        expect(await stat(join(workspace, 'scan')).catch(() => undefined)).toBeUndefined();
+        const proof = process.env['KIKI_DOCUMENTS_PROOF_DIR'];
+        if (proof !== undefined) {
+          await mkdir(proof, { recursive: true });
+          await cp(join(workspace, 'pdf'), join(proof, 'pdf'), { recursive: true });
+          await writeFile(join(proof, 'receipt.json'), JSON.stringify({ installedRoot: installed.root, result, empty: JSON.parse(empty.output as string) }, null, 2));
+        }
+      }
+    } finally { await host.stopAndWait(); }
+  }, 60_000);
 
   it('installs a local-path plugin disabled and preserves explicit enablement on reinstall', async () => {
     const sourceRoot = await mkdtemp(join(tmpdir(), 'plugin-install-source-'));

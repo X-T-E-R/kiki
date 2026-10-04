@@ -53,7 +53,9 @@ export interface UsageAggregationLimits {
   readonly drilldownTurnLimit: number;
 }
 
-interface NormalizedUsageRecord {
+export interface NormalizedUsageRecord {
+  readonly invalid?: boolean;
+  readonly upstreamModelId?: string;
   readonly sourceAgentId?: string;
   readonly time: number;
   readonly model: string;
@@ -65,6 +67,13 @@ interface NormalizedUsageRecord {
   readonly provider?: string;
   readonly modelAlias?: string;
   readonly profileName?: string;
+}
+
+export interface UsageExportSource {
+  readonly key: string;
+  readonly workspaceId: string;
+  readonly kind: 'session' | 'ephemeral';
+  readonly records: readonly NormalizedUsageRecord[];
 }
 
 interface SessionRecords {
@@ -193,6 +202,12 @@ export class UsageAggregationService {
   };
   private fullScanKeys: ReadonlySet<string> | undefined;
   private inventoryReady: Promise<void> | undefined;
+  private exportRetainedIterator: AsyncGenerator<import('@kiki/agent-core-v2').RetainedUsageExportEvent> | undefined;
+  private readonly exportEphemeralRecords = new Map<string, NormalizedUsageRecord[]>();
+  private exportRetainedIncomplete = false;
+  private exportCursor: string | undefined;
+  private exportAtRetained = false;
+  private readonly exportActiveKeys = new Set<string>();
 
   rescanStatus(): UsageRescanStatus {
     return { ...this.rescan };
@@ -271,6 +286,87 @@ export class UsageAggregationService {
 
   cacheStatus(): { readonly entries: number; readonly records: number } {
     return { entries: this.cache.size, records: this.cachedRecordCount };
+  }
+
+  async resetExportRead(): Promise<void> {
+    await this.exportRetainedIterator?.return(undefined); this.exportRetainedIterator = undefined; this.exportEphemeralRecords.clear(); this.exportRetainedIncomplete = false;
+    this.exportCursor = undefined; this.exportAtRetained = false; this.exportActiveKeys.clear();
+  }
+
+  async invalidateExportCheckpoints(): Promise<void> {
+    await this.resetExportRead();
+    this.cache.clear(); this.cachedRecordCount = 0; this.cachedBytes = 0;
+    const storage = this.core.accessor.get(IFileSystemStorageService);
+    for (const key of await storage.list(PERSISTENCE_SCOPE)) await storage.delete(PERSISTENCE_SCOPE, key);
+    this.fullScanKeys = undefined;
+  }
+
+  async readExportSources(
+    consume: (source: UsageExportSource) => Promise<void>,
+    includeEphemeral = false,
+  ): Promise<{ complete: boolean; reason: string | null; sources: number }> {
+    const budget: ScanBudget = { remainingRecords: this.limits.wireRecordBudget, deadlineAt: this.now() + this.limits.deadlineMs, sourcesComplete: true, incompleteReason: null };
+    const index = this.core.accessor.get(ISessionIndex);
+    const active = this.exportActiveKeys; let sources = 0;
+    while (!this.exportAtRetained) {
+      const page = await index.listRecent({ includeArchived: true, limit: INDEX_PAGE_SIZE, before: this.exportCursor });
+      for (const summary of page.items) {
+        if (this.now() >= budget.deadlineAt) return { complete: false, reason: 'deadline', sources };
+        const key = sessionKey(summary); active.add(key);
+        const session = await this.readSession(summary, budget, true);
+        if (session === undefined || !session.complete) {
+          if (budget.incompleteReason === 'record_budget' || budget.incompleteReason === 'deadline') return { complete: false, reason: budget.incompleteReason, sources };
+          this.exportRetainedIncomplete = true;
+        } else { await consume({ key, workspaceId: summary.workspaceId, kind: 'session', records: session.records }); sources++; }
+        this.exportCursor = summary.id;
+        await yieldToEventLoop();
+      }
+      if (page.nextCursor === undefined) this.exportAtRetained = true;
+    }
+    const retained = this.core.accessor.get(IRetainedUsageService);
+    if (retained.readExportUsage !== undefined) {
+      this.exportRetainedIterator ??= retained.readExportUsage(includeEphemeral);
+      while (budget.remainingRecords > 0 && this.now() < budget.deadlineAt) {
+        const event = await this.exportRetainedIterator.next();
+        if (event.done) {
+          for (const [workspaceId, records] of this.exportEphemeralRecords) { await consume({ key: `ephemeral\0${workspaceId}`, workspaceId, kind: 'ephemeral', records }); sources++; }
+          this.exportEphemeralRecords.clear(); this.exportRetainedIterator = undefined;
+          const complete = !this.exportRetainedIncomplete; this.exportRetainedIncomplete = false;
+          this.exportCursor = undefined; this.exportAtRetained = false; this.exportActiveKeys.clear();
+          return { complete, reason: complete ? null : 'retained-incomplete', sources };
+        }
+        if (event.value.kind === 'progress') { budget.remainingRecords--; if (budget.remainingRecords % 1024 === 0) await yieldToEventLoop(); }
+        else if (event.value.kind === 'session') {
+          const snapshot = event.value.snapshot; const key = sessionKey(snapshot); if (active.has(key)) continue;
+          if (!snapshot.complete) { this.exportRetainedIncomplete = true; continue; }
+          await consume({ key, workspaceId: snapshot.workspaceId, kind: 'session', records: snapshot.records.map(normalizeRetainedRecord) }); sources++;
+        } else if (event.value.kind === 'ephemeral') {
+          const record = event.value.record; const records = this.exportEphemeralRecords.get(record.workspaceId) ?? []; records.push(normalizeRetainedRecord(record)); this.exportEphemeralRecords.set(record.workspaceId, records);
+        } else this.exportRetainedIncomplete = true;
+      }
+      return { complete: false, reason: budget.remainingRecords <= 0 ? 'record_budget' : 'deadline', sources };
+    }
+    const deleted = await retained.listDeletedSessions({ deadlineAt: budget.deadlineAt, recordLimit: budget.remainingRecords });
+    for (const snapshot of deleted.items) {
+      const key = sessionKey(snapshot); if (active.has(key)) continue;
+      if (!snapshot.complete) return { complete: false, reason: 'retained-incomplete', sources };
+      await consume({ key, workspaceId: snapshot.workspaceId, kind: 'session', records: snapshot.records.map(normalizeRetainedRecord) }); sources++;
+      await yieldToEventLoop();
+    }
+    budget.remainingRecords -= deleted.scannedRecords;
+    if (!deleted.complete) return { complete: false, reason: deleted.incompleteReason ?? 'retained-incomplete', sources };
+    if (includeEphemeral && retained.listEphemeralUsage !== undefined) {
+      const ephemeral = await retained.listEphemeralUsage({ deadlineAt: budget.deadlineAt, recordLimit: budget.remainingRecords });
+      const workspaces = new Map<string, NormalizedUsageRecord[]>();
+      for (const record of ephemeral.items) {
+        const records = workspaces.get(record.workspaceId) ?? []; records.push(normalizeRetainedRecord(record)); workspaces.set(record.workspaceId, records);
+      }
+      for (const [workspaceId, records] of workspaces) { await consume({ key: `ephemeral\0${workspaceId}`, workspaceId, kind: 'ephemeral', records }); sources++; }
+      if (!ephemeral.complete) return { complete: false, reason: ephemeral.incompleteReason ?? 'ephemeral-incomplete', sources };
+    }
+    const complete = !this.exportRetainedIncomplete; this.exportRetainedIncomplete = false;
+    this.exportCursor = undefined; this.exportAtRetained = false; this.exportActiveKeys.clear();
+    return { complete, reason: complete ? null : 'retained-incomplete', sources };
   }
 
   async query(raw: UsageQuery): Promise<UsageResponse> {
@@ -363,6 +459,7 @@ export class UsageAggregationService {
   private async readSession(
     summary: SessionSummary,
     budget: ScanBudget,
+    preserveMissingSources = false,
   ): Promise<SessionRecords | undefined> {
     const cacheKey = sessionKey(summary);
     const cached = this.cache.get(cacheKey);
@@ -381,7 +478,7 @@ export class UsageAggregationService {
     }
     let flight = this.sessionFlights.get(cacheKey);
     if (flight === undefined) {
-      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt);
+      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources);
       this.sessionFlights.set(cacheKey, flight);
       const clearFlight = (): void => {
         if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
@@ -422,6 +519,7 @@ export class UsageAggregationService {
     recordLimit: number,
     deadlineAt: number,
     onScannedRecord?: () => void,
+    preserveMissingSources = false,
   ): Promise<SessionLoadResult> {
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const cacheKey = sessionKey(summary);
@@ -430,6 +528,7 @@ export class UsageAggregationService {
     const sessionScope = sessionScopeOf(workspaceScope, summary.id);
     const agentIds = await storage.list(`${sessionScope}/agents`);
     const agentSet = new Set(agentIds);
+    if (preserveMissingSources && Object.keys(persisted.agents).some((agent) => !agentSet.has(agent))) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount: 0, incompleteReason: null };
     let records = [...persisted.records].filter(
       (record) => record.sourceAgentId === undefined || agentSet.has(record.sourceAgentId),
     );
@@ -457,6 +556,7 @@ export class UsageAggregationService {
       const size = sizeValue ?? 0;
       const mtimeMs = mtimeValue ?? 0;
       let checkpoint = persisted.agents[agentId];
+      if (preserveMissingSources && sizeValue === undefined && (checkpoint?.size ?? 0) > 0) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount: 0, incompleteReason: null };
       if (checkpoint !== undefined && checkpoint.offset === size &&
         checkpoint.size === size && checkpoint.mtimeMs === mtimeMs) {
         agents[agentId] = checkpoint;
@@ -487,9 +587,10 @@ export class UsageAggregationService {
         deadlineAt,
         this.now,
         onScannedRecord,
+        agentId,
       );
       scannedRecordCount += tail.scannedRecordCount;
-      for (const record of tail.records) records.push({ ...record, sourceAgentId: agentId });
+      for (const record of tail.records) records.push(record);
       const nextOffset = tail.offset;
       agents[agentId] = {
         offset: nextOffset,
@@ -683,6 +784,7 @@ export class UsageAggregationService {
     sessionLoop: for (let sessionIndex = 0; sessionIndex < sessions.length; sessionIndex += 1) {
       const session = sessions[sessionIndex] as SessionRecords;
       for (const record of session.records) {
+        if (record.invalid) { incompleteSessionIds.add(session.summary.id); continue; }
         if (!scanIncomplete && processedRecords > 0 && this.now() >= budget.deadlineAt) {
           budget.incompleteReason = 'deadline';
           for (let index = sessionIndex; index < sessions.length; index += 1) {
@@ -938,6 +1040,7 @@ async function readWireTail(
   deadlineAt: number,
   now: () => number,
   onScannedRecord?: () => void,
+  sourceAgentId?: string,
 ): Promise<WireTailResult> {
   if (startOffset >= size) {
     return {
@@ -989,7 +1092,7 @@ async function readWireTail(
           continue;
         }
         if (raw.type !== 'usage.record') continue;
-        const record = normalizeRecord(raw);
+        const record = normalizeRecord(raw, sourceAgentId);
         if (record === undefined) valid = false;
         else records.push(record);
       }
@@ -1145,7 +1248,7 @@ function startOfWeek(time: number, offsetMinutes: number): number {
   return day - daysSinceMonday * DAY_MS;
 }
 
-function normalizeRecord(raw: WireRecord): NormalizedUsageRecord | undefined {
+function normalizeRecord(raw: WireRecord, sourceAgentId?: string): NormalizedUsageRecord | undefined {
   const usage = raw['usage'];
   const model = raw['model'];
   if (typeof raw.time !== 'number' || !Number.isFinite(raw.time) || raw.time < 0) return undefined;
@@ -1156,18 +1259,16 @@ function normalizeRecord(raw: WireRecord): NormalizedUsageRecord | undefined {
   const output = nonnegativeFinite(value['output']);
   const inputCacheRead = nonnegativeFinite(value['inputCacheRead']);
   const inputCacheCreation = nonnegativeFinite(value['inputCacheCreation']);
-  if (
-    inputOther === undefined ||
-    output === undefined ||
-    inputCacheRead === undefined ||
-    inputCacheCreation === undefined
-  ) return undefined;
+  const invalid = inputOther === undefined || output === undefined || inputCacheRead === undefined || inputCacheCreation === undefined;
   const usageKnown = raw['usageKnown'];
   if (usageKnown !== undefined && typeof usageKnown !== 'boolean') return undefined;
   return {
     time: raw.time,
     model,
-    usage: { inputOther, output, inputCacheRead, inputCacheCreation },
+    upstreamModelId: optionalString(raw['upstreamModelId']),
+    sourceAgentId,
+    invalid: invalid || undefined,
+    usage: invalid ? emptyUsage() : { inputOther: inputOther ?? 0, output: output ?? 0, inputCacheRead: inputCacheRead ?? 0, inputCacheCreation: inputCacheCreation ?? 0 },
     usageKnown,
     turnId: nonnegativeInteger(raw['turnId']),
     agentId: optionalString(raw['agentId']),

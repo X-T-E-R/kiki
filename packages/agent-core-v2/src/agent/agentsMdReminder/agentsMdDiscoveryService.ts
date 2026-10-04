@@ -4,7 +4,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
-import { AGENTS_MD_PLAIN_NAMES, dotKikiAgentsMdPath, findProjectRoot } from '#/agent/profile/context';
+import { AGENTS_MD_PLAIN_NAMES, dotKikiAgentsMdPath, findProjectRoot, instructionDirectories } from '#/agent/profile/context';
 import type { HostDirEntry, IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { Runtime, RuntimeLease } from '#/runtime/runtime';
 
@@ -40,7 +40,7 @@ interface RuntimeCache {
 export interface IAgentsMdDiscoveryService {
   readonly _serviceBrand: undefined;
 
-  discover(lease: RuntimeLease, targetDir: string): Promise<readonly string[]>;
+  discover(lease: RuntimeLease, targetDir: string, boundary?: string): Promise<readonly string[]>;
   invalidate(runtime: Runtime, directory: string): void;
 }
 
@@ -58,18 +58,20 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     private readonly maxWatchers = MAX_DIRECTORY_WATCHERS,
   ) {}
 
-  async discover(lease: RuntimeLease, workspaceDir: string): Promise<readonly string[]> {
+  async discover(lease: RuntimeLease, workspaceDir: string, boundary?: string): Promise<readonly string[]> {
     const runtime = lease.runtime;
     const fs = runtime.fs;
     if (fs === undefined) return [];
     const cache = this.cacheFor(runtime);
-    const projectRoot = await this.projectRoot(
+    const projectRoot = boundary ?? await this.projectRoot(
       cache,
       fs,
       normalize(workspaceDir),
       runtime.environment.pathClass,
     );
-    return this.discoverDirectory(lease, cache, projectRoot);
+    const directories = instructionDirectories(projectRoot, workspaceDir, runtime.environment.pathClass);
+    const paths = await Promise.all(directories.map((directory) => this.discoverDirectory(lease, cache, directory)));
+    return [...new Set(paths.flat())];
   }
 
   invalidate(runtime: Runtime, directory: string): void {

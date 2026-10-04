@@ -41,6 +41,18 @@ export interface LoadMcpServersInput {
   readonly homeDir?: string;
   readonly baseHomeDir?: string;
   readonly includeProject?: boolean;
+  readonly baseSelection?: SpaceMcpBaseSelection;
+}
+export interface SpaceMcpBaseSelection {
+  readonly follow: boolean;
+  readonly selections?: Record<string, { mode: 'follow' | 'fixed'; excluded?: boolean }>;
+}
+export function selectSpaceMcpBase(servers: Record<string, McpServerConfig>, selection?: SpaceMcpBaseSelection): Record<string, McpServerConfig> {
+  if (selection === undefined) return servers;
+  return Object.fromEntries(Object.entries(servers).filter(([name]) => {
+    const item = selection.selections?.[`resource:mcp:${name}`];
+    return item?.excluded !== true && (item?.mode === undefined ? selection.follow : item.mode === 'follow');
+  }));
 }
 
 export interface LoadMcpServersDetailedResult {
@@ -74,7 +86,7 @@ export async function loadMcpServersDetailed(
 ): Promise<LoadMcpServersDetailedResult> {
   const paths = await resolveMcpJsonPaths(input);
   const baseLayers: readonly [path: string, servers: Record<string, McpServerConfig>][] =
-    paths.base === undefined ? [] : [[paths.base, await readMcpJson(input.fs, paths.base)]];
+    paths.base === undefined ? [] : [[paths.base, selectSpaceMcpBase(await readMcpJson(input.fs, paths.base), input.baseSelection)]];
   const layers: readonly [path: string, servers: Record<string, McpServerConfig>][] =
     input.includeProject === false
       ? [[paths.user, await readMcpJson(input.fs, paths.user)]]

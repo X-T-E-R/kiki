@@ -1,5 +1,5 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
-import type { Event } from '#/_base/event';
+import type { Event, IWaitUntil } from '#/_base/event';
 import type { HookDef } from '#/features/externalHooks/internal/types';
 import type { SkillRoot } from '#/app/skillCatalog/types';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
@@ -46,6 +46,11 @@ export interface GetPluginInfoInput {
   readonly id: string;
 }
 
+export interface PluginChangeEvent extends IWaitUntil {
+  readonly affected?: readonly string[];
+  readonly finished: Promise<void>;
+}
+
 export interface IPluginService {
   readonly _serviceBrand: undefined;
 
@@ -69,6 +74,7 @@ export interface IPluginService {
   enabledHooks(): Promise<readonly HookDef[]>;
   enabledHookRules(): Promise<readonly import('#/features/externalHooks/internal/loadRules').HookRuleSource[]>;
   hasLoadedSnapshot(): boolean;
+  readonly onWillChange: Event<PluginChangeEvent>;
   readonly onDidReload: Event<PluginReloadEvent>;
   readonly onDidMutate: Event<PluginMutationSummary>;
 }

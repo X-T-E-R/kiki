@@ -21,7 +21,6 @@ import { repairWireJournal } from './repair';
 import {
   WIRE_PROTOCOL_VERSION,
   isNewerWireVersion,
-  migrateV1_4ToV1_5,
   migrateWireRecord,
   resolveWireMigrations,
   type WireMigration,
@@ -236,7 +235,7 @@ export class WireService extends Service implements IWireService {
         hasRecords = true;
         if (sourceRecord.type !== 'metadata') {
           rewrittenRecords = [createWireMetadataRecord()];
-          migrations = [migrateV1_4ToV1_5];
+          migrations = resolveWireMigrations('1.4');
         } else if (!isWireMetadataRecord(sourceRecord)) {
           throw new StorageError(
             StorageErrors.codes.STORAGE_CORRUPTED,

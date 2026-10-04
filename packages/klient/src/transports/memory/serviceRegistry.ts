@@ -22,6 +22,9 @@ import {
 } from '@kiki/agent-core-v2/app/auth/auth';
 import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
 import { IPluginService } from '@kiki/agent-core-v2/app/plugin/plugin';
+import { IPluginImportService } from '@kiki/agent-core-v2/app/pluginImport/pluginImport';
+import { IPluginMediaService } from '@kiki/agent-core-v2/app/pluginMedia/pluginMedia';
+import { IAgentPluginMediaService } from '@kiki/agent-core-v2/agent/pluginMedia/pluginMedia';
 import { ICapabilityService } from '@kiki/agent-core-v2/app/capability/capability';
 import { IBootstrapService } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
 import { IEventService } from '@kiki/agent-core-v2/app/event/event';
@@ -92,6 +95,9 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   authSummaryService: IAuthSummaryService,
   flagService: IFlagService,
   pluginService: IPluginService,
+  pluginImportService: IPluginImportService,
+  pluginMediaService: IPluginMediaService,
+  agentPluginMediaService: IAgentPluginMediaService,
   capabilityService: ICapabilityService,
   hostFolderBrowser: IHostFolderBrowser,
   bootstrapService: IBootstrapService,

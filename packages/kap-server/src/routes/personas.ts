@@ -1,5 +1,7 @@
 import { IPersonaStore, type PersonaCardFormat, type PersonaImportPreview } from '@kiki/agent-core-v2/app/persona/personaStore';
-import type { Scope } from '@kiki/agent-core-v2';
+import { IBotService } from '@kiki/agent-core-v2/app/bot/bot';
+import { personaHomeInputSchema, personaHomeResponseSchema, personaStateUpdateSchema } from '@kiki/protocol';
+import { IWorkspaceService, type Scope } from '@kiki/agent-core-v2';
 import {
   ErrorCode as ProtocolErrorCode,
   PERSONA_AVATAR_MAX_BYTES,
@@ -44,6 +46,11 @@ interface PersonasRouteHost {
     path: string,
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
     handler: (req: { id: string; params: unknown; body: unknown; file?: () => Promise<MultipartFileLike | undefined> }, reply: PersonaReply) => Promise<void> | void,
+  ): unknown;
+  patch(
+    path: string,
+    options: { preHandler: unknown[]; schema?: Record<string, unknown> },
+    handler: (req: { id: string; params: unknown; body: unknown }, reply: PersonaReply) => Promise<void> | void,
   ): unknown;
   delete(
     path: string,
@@ -92,6 +99,41 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope): voi
     }
   });
   app.get(listRoute.path, listRoute.options, listRoute.handler as unknown as Parameters<PersonasRouteHost['get']>[2]);
+
+  const homeRoute = defineRoute({
+    method: 'POST', path: '/personas/{id}/home', params: personaIdParamsSchema,
+    success: { data: personaHomeResponseSchema }, errors: { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.PERSONA_NOT_FOUND]: {} },
+    description: 'Ensure a persona daily chat without enabling automatic capabilities', tags: ['personas'], operationId: 'ensurePersonaHome',
+  }, async (req, reply) => {
+    try {
+      const home = await core.accessor.get(IBotService).ensureHomeSession(req.params.id);
+      reply.send(okEnvelope({ homeSessionId: home.homeSessionId }, req.id));
+    } catch (error) { sendPersonaError(reply as unknown as PersonaReply, req.id, error); }
+  });
+  app.post(homeRoute.path, homeRoute.options, homeRoute.handler as unknown as Parameters<PersonasRouteHost['post']>[2]);
+
+  const setHomeRoute = defineRoute({
+    method: 'PUT', path: '/personas/{id}/home', params: personaIdParamsSchema, body: personaHomeInputSchema,
+    success: { data: personaStateSchema }, errors: { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.PERSONA_NOT_FOUND]: {} },
+    description: 'Change a persona daily chat pointer, preserving the former conversation', tags: ['personas'], operationId: 'setPersonaHome',
+  }, async (req, reply) => {
+    try {
+      reply.send(okEnvelope(await core.accessor.get(IBotService).setHomeSession(req.params.id, req.body.sessionId), req.id));
+    } catch (error) { sendPersonaError(reply as unknown as PersonaReply, req.id, error); }
+  });
+  app.put(setHomeRoute.path, setHomeRoute.options, setHomeRoute.handler as unknown as Parameters<PersonasRouteHost['put']>[2]);
+
+  const stateRoute = defineRoute({
+    method: 'PATCH', path: '/personas/{id}/state', params: personaIdParamsSchema, body: personaStateUpdateSchema,
+    success: { data: personaStateSchema }, errors: { [ErrorCode.PERSONA_NOT_FOUND]: {} },
+    description: 'Update persona visibility', tags: ['personas'], operationId: 'updatePersonaState',
+  }, async (req, reply) => {
+    try {
+      await core.accessor.get(IBotService).update(req.params.id, req.body);
+      reply.send(okEnvelope(await core.accessor.get(IPersonaStore).getState(req.params.id), req.id));
+    } catch (error) { sendPersonaError(reply as unknown as PersonaReply, req.id, error); }
+  });
+  app.patch(stateRoute.path, stateRoute.options, stateRoute.handler as unknown as Parameters<PersonasRouteHost['patch']>[2]);
 
   const previewImportRoute = defineRoute({
     method: 'POST',
@@ -243,8 +285,11 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope): voi
       return;
     }
     try {
+      const configured = req.body.definition.homeWorkspace;
+      const homeWorkspace = configured === undefined ? undefined : (await core.accessor.get(IWorkspaceService).get(configured))?.root ?? configured;
       const snapshot = await core.accessor.get(IPersonaStore).put({
         ...req.body.definition,
+        homeWorkspace,
         examples: req.body.examples,
         expectedRevision: req.body.revision,
       });
@@ -479,6 +524,7 @@ function personaErrorCode(error: unknown): number | undefined {
     case 'persona.revision_conflict':
     case ProtocolErrorCode.PERSONA_REVISION_CONFLICT:
       return ErrorCode.PERSONA_REVISION_CONFLICT;
+    case 'request.invalid':
     case 'persona.validation_failed':
     case 'persona.import_invalid':
       return ErrorCode.VALIDATION_FAILED;

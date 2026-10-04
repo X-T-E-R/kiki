@@ -16,7 +16,7 @@ tools:
   - mcp__github__*
 disallowedTools:
   - Bash
-subagents:
+allowed_subagents:
   - explore
   - plan
 ---
@@ -39,13 +39,13 @@ describe('parseAgentFileText', () => {
     for (const value of ['"true"', 'null', '1', '[]']) {
       expect(() => parse(`---\nname: helper\ndescription: d\nrestrict_models_to_menu: ${value}\n---\nbody`)).toThrow(/must be a boolean/);
     }
-    for (const nested of ['spawn_constraints:\n  restrict_models_to_menu: true', 'subagents:\n  - name: child\n    restrict_models_to_menu: true', 'model_profiles:\n  - alias: fast\n    restrict_models_to_menu: true']) {
+    for (const nested of ['spawn_constraints:\n  restrict_models_to_menu: true', 'allowed_subagents:\n  - name: child\n    restrict_models_to_menu: true', 'model_profiles:\n  - alias: fast\n    restrict_models_to_menu: true']) {
       expect(() => parse(`---\nname: helper\ndescription: d\n${nested}\n---\nbody`)).toThrow(/restrict_models_to_menu/);
     }
   });
   it('parses literal hard rules and named soft recommendations in every model scope', () => {
     const rules = 'allowed_models: [fast, premium]\ndeny_models: [blocked]\nallowed_efforts: []\npreferred_models: [fast]\ndiscouraged_models: [premium]\npreferred_efforts: [max]';
-    const text = `---\nname: helper\ndescription: d\n${rules}\nspawn_constraints:\n${rules.split('\n').map((line) => `  ${line}`).join('\n')}\nsubagents:\n  - name: explore\n${rules.split('\n').map((line) => `    ${line}`).join('\n')}\nmodel_profiles:\n  - alias: fast\n${rules.split('\n').map((line) => `    ${line}`).join('\n')}\n---\nbody`;
+    const text = `---\nname: helper\ndescription: d\n${rules}\nspawn_constraints:\n${rules.split('\n').map((line) => `  ${line}`).join('\n')}\nallowed_subagents:\n  - name: explore\n${rules.split('\n').map((line) => `    ${line}`).join('\n')}\nmodel_profiles:\n  - alias: fast\n${rules.split('\n').map((line) => `    ${line}`).join('\n')}\n---\nbody`;
     const definition = parse(text);
     for (const scope of [definition, definition.spawnConstraints, definition.subagentLeases?.['explore'], definition.modelProfiles?.[0]]) {
       expect(scope).toMatchObject({ allowedModels: ['fast', 'premium'], denyModels: ['blocked'], allowedEfforts: [], preferredModels: ['fast'], discouragedModels: ['premium'], preferredEfforts: ['max'] });
@@ -103,7 +103,7 @@ describe('parseAgentFileText', () => {
     expect(def.override).toBe(true);
     expect(def.tools).toEqual(['Read', 'Grep', 'mcp__github__*']);
     expect(def.disallowedTools).toEqual(['Bash']);
-    expect(def.subagents).toEqual(['explore', 'plan']);
+    expect(def.allowedSubagents).toEqual(['explore', 'plan']);
     expect(def.prompt).toBe('你是严格的代码审查者。');
     expect(def.source).toBe('project');
   });
@@ -143,7 +143,7 @@ describe('parseAgentFileText', () => {
     expect(def.allowedEfforts).toBeUndefined();
     expect(def.tools).toBeUndefined();
     expect(def.disallowedTools).toBeUndefined();
-    expect(def.subagents).toBeUndefined();
+    expect(def.allowedSubagents).toBeUndefined();
     expect(def.whenToUse).toBeUndefined();
     expect(def.prompt).toBe('body');
     expect(def.main).toBeUndefined();
@@ -568,48 +568,43 @@ body
   });
 
   it('accepts a comma-separated subagents string', () => {
-    const def = parse('---\nname: solo\ndescription: d\nsubagents: explore, plan\n---\n\nbody\n');
+    const def = parse('---\nname: solo\ndescription: d\nallowed_subagents: explore, plan\n---\n\nbody\n');
 
-    expect(def.subagents).toEqual(['explore', 'plan']);
+    expect(def.allowedSubagents).toEqual(['explore', 'plan']);
   });
 
   it('treats a lone "*" subagents field as all subagent types', () => {
-    const def = parse('---\nname: solo\ndescription: d\nsubagents: "*"\n---\n\nbody\n');
+    const def = parse('---\nname: solo\ndescription: d\nallowed_subagents: "*"\n---\n\nbody\n');
 
-    expect(def.subagents).toBeUndefined();
+    expect(def.allowedSubagents).toBeUndefined();
   });
 
   it('rejects a non-string, non-list subagents field', () => {
-    expect(() => parse('---\nname: solo\ndescription: d\nsubagents: 42\n---\n\nbody\n')).toThrow(
-      /"subagents"/,
+    expect(() => parse('---\nname: solo\ndescription: d\nallowed_subagents: 42\n---\n\nbody\n')).toThrow(
+      /"allowed_subagents"/,
     );
   });
 
-  it('normalizes explicit subagent policies while keeping policy omission implicit', () => {
-    const unmarked = parse('---\nname: solo\ndescription: d\nsubagents: [explore]\n---\n\nbody\n');
-    expect(unmarked.subagentPolicy).toBeUndefined();
-    expect(unmarked.subagentDeclaration).toBeUndefined();
-    expect(unmarked.subagents).toEqual(['explore']);
-
-    const advisory = parse('---\nname: solo\ndescription: d\nsubagent_policy: advisory\nsubagents: [explore]\n---\n\nbody\n');
-    expect(advisory.subagentPolicy).toBe('advisory');
-    expect(advisory.subagentDeclaration).toEqual({ kind: 'set', names: ['explore'] });
-
-    const inherited = parse('---\nname: solo\ndescription: d\nsubagent_policy: strict\n---\n\nbody\n');
-    expect(inherited.subagentDeclaration).toEqual({ kind: 'inherit' });
-
-    const all = parse('---\nname: solo\ndescription: d\nsubagent_policy: advisory\nsubagents: ["*"]\n---\n\nbody\n');
-    expect(all.subagentDeclaration).toEqual({ kind: 'all' });
-    expect(all.subagents).toBeUndefined();
+  it('keeps preset permission, preference and the spawn switch independent', () => {
+    const definition = parse('---\nname: solo\ndescription: d\nallowed_subagents: [explore, worker]\npreferred_subagents: [worker]\ndeny_subagents: [reviewer]\ncan_spawn_subagents: false\n---\nbody');
+    expect(definition).toMatchObject({ allowedSubagents: ['explore', 'worker'], preferredSubagents: ['worker'], denySubagents: ['reviewer'], canSpawnSubagents: false });
+    for (const fields of ['', 'allowed_subagents: null', 'allowed_subagents: ["*"]']) {
+      const parsed = parse(`---\nname: solo\ndescription: d\n${fields}\n---\nbody`);
+      expect(parsed.allowedSubagents).toBeUndefined();
+      expect(parsed.canSpawnSubagents).toBeUndefined();
+    }
+    const empty = parse('---\nname: solo\ndescription: d\nallowed_subagents: []\npreferred_subagents: []\n---\nbody');
+    expect(empty.allowedSubagents).toEqual([]);
+    expect(empty.preferredSubagents).toEqual([]);
+    expect(empty.canSpawnSubagents).toBeUndefined();
   });
 
-  it.each([
-    'subagent_policy: advisory\nsubagents: null',
-    'subagent_policy: strict\nsubagents: ""',
-    'subagent_policy: advisory\nsubagents: ["*", explore]',
-    'subagent_policy: permissive\nsubagents: [explore]',
-  ])('rejects invalid explicit subagent policy declarations: %s', (fields) => {
-    expect(() => parse(`---\nname: solo\ndescription: d\n${fields}\n---\n\nbody\n`)).toThrow();
+  it.each(['subagents: []', 'subagent_policy: advisory'])('rejects removed author fields with migration guidance: %s', (fields) => {
+    expect(() => parse(`---\nname: solo\ndescription: d\n${fields}\n---\nbody`)).toThrow(/has been removed; use allowed_subagents/);
+  });
+
+  it.each(['allowed_subagents: 42', 'preferred_subagents: ["*"]', 'deny_subagents: [false]', 'can_spawn_subagents: "false"'])('rejects malformed declarations: %s', (fields) => {
+    expect(() => parse(`---\nname: solo\ndescription: d\n${fields}\n---\nbody`)).toThrow();
   });
 
   it('rejects a non-string, non-list tools field', () => {
@@ -730,7 +725,7 @@ description: d
 spawn_constraints:
   allowed_models: [grok-4.6, grok-4.6-fast]
   allowed_efforts: [low, medium, high]
-subagents:
+allowed_subagents:
   - explore
   - name: worker-lite
     model_alias: grok-4.6-fast
@@ -746,7 +741,7 @@ subagents:
 
 body
 `);
-    expect(def.subagents).toEqual(['explore', 'worker-lite', 'reviewer']);
+    expect(def.allowedSubagents).toEqual(['explore', 'worker-lite', 'reviewer']);
     expect(def.spawnConstraints).toEqual({
       allowedModels: ['grok-4.6', 'grok-4.6-fast'],
       allowedEfforts: ['low', 'medium', 'high'],
@@ -770,25 +765,26 @@ body
 
   it('keeps a string-only subagents list without a lease table', () => {
     const def = parse(FULL_FILE);
-    expect(def.subagents).toEqual(['explore', 'plan']);
+    expect(def.allowedSubagents).toEqual(['explore', 'plan']);
     expect(def.subagentLeases).toBeUndefined();
     expect(def.spawnConstraints).toBeUndefined();
   });
 
-  it('rejects duplicate subagent names', () => {
-    expect(() =>
-      parse(`---
+  it('normalizes redundant names while retaining their lease mapping', () => {
+    const definition = parse(`---
 name: solo
 description: d
-subagents:
+allowed_subagents:
+  - explore
   - explore
   - name: explore
     model_alias: grok-4.6
 ---
 
 body
-`),
-    ).toThrow(/more than once/);
+`);
+    expect(definition.allowedSubagents).toEqual(['explore']);
+    expect(definition.subagentLeases?.['explore']?.modelAlias).toBe('grok-4.6');
   });
 
   it('rejects a dotted lease name', () => {
@@ -796,7 +792,7 @@ body
       parse(`---
 name: solo
 description: d
-subagents:
+allowed_subagents:
   - name: explore.flash
     model_alias: grok-4.6
 ---
@@ -811,7 +807,7 @@ body
       parse(`---
 name: solo
 description: d
-subagents:
+allowed_subagents:
   - name: worker-lite
     prompt_mode: replace
     prompt: no
@@ -827,9 +823,9 @@ body
       parse(`---
 name: solo
 description: d
-subagents:
+allowed_subagents:
   - name: worker-lite
-    subagents:
+    allowed_subagents:
       - name: explore
         model_alias: grok-4.6
 ---
@@ -844,7 +840,7 @@ body
       parse(`---
 name: solo
 description: d
-subagents:
+allowed_subagents:
   - name: worker-lite
     spawn_constraints:
       allowed_models: [grok-4.6]
@@ -860,7 +856,7 @@ body
       parse(`---
 name: solo
 description: d
-subagents:
+allowed_subagents:
   - name: worker-lite
     rank: 1
 ---
@@ -876,7 +872,7 @@ body
     ['["*"]', undefined],
     ['[example]', ['example']],
   ])('preserves allowed_models %s semantics for profiles, leases, and spawn constraints', (value, expected) => {
-    const def = parse(`---\nname: solo\ndescription: d\nallowed_models: ${value}\nspawn_constraints:\n  allowed_models: ${value}\nsubagents:\n  - name: worker\n    allowed_models: ${value}\n---\n\nbody\n`);
+    const def = parse(`---\nname: solo\ndescription: d\nallowed_models: ${value}\nspawn_constraints:\n  allowed_models: ${value}\nallowed_subagents:\n  - name: worker\n    allowed_models: ${value}\n---\n\nbody\n`);
     expect(def.allowedModels).toEqual(expected);
     expect(def.spawnConstraints?.allowedModels).toEqual(expected);
     expect(def.subagentLeases?.['worker']?.allowedModels).toEqual(expected);
@@ -1012,7 +1008,7 @@ describe('agentProfileFromFile', () => {
     expect(contribution.profiles).toEqual([]);
     expect(contribution.sourceDefinitions?.size).toBe(0);
     expect(contribution.skipped).toEqual([
-      expect.objectContaining({ reason: 'provider missing' }),
+      expect.objectContaining({ reason: 'provider missing', code: 'agent_executor.invalid_profile' }),
     ]);
     expect(contribution.diagnostics).toEqual([
       expect.objectContaining({ message: 'provider missing' }),
@@ -1023,8 +1019,17 @@ describe('agentProfileFromFile', () => {
     });
     expect(legacy.profiles).toEqual([]);
     expect(legacy.skipped).toEqual([
-      expect.objectContaining({ reason: 'legacy provider missing' }),
+      expect.objectContaining({ reason: 'legacy provider missing', code: 'agent_executor.invalid_profile' }),
     ]);
+    const denied = profilesFromDiscovery(discovery, basePrompt, undefined, {
+      allowExternal: false,
+      reason: 'source permission denied',
+      validateExecutor: () => { throw new Error('denied source must not validate an executor'); },
+    });
+    expect(denied.profiles).toEqual([]);
+    expect(denied.sourceDefinitions?.size).toBe(0);
+    expect(denied.skipped).toEqual([expect.objectContaining({ reason: 'source permission denied', code: 'agent_executor.source_not_allowed' })]);
+    expect(denied.diagnostics).toEqual([expect.objectContaining({ message: 'source permission denied', code: 'agent_executor.source_not_allowed' })]);
   });
 
   it('returns a plain body verbatim and injects no unreferenced context', () => {
@@ -1147,9 +1152,9 @@ describe('agentProfileFromFile', () => {
   });
 
   it('passes subagents through', () => {
-    const profile = agentProfileFromFile({ ...base, subagents: ['explore'] }, basePrompt);
+    const profile = agentProfileFromFile({ ...base, allowedSubagents: ['explore'] }, basePrompt);
 
-    expect(profile.subagents).toEqual(['explore']);
+    expect(profile.allowedSubagents).toEqual(['explore']);
   });
 
   it('passes exact model, effort, service tier, and request params through', () => {
@@ -1208,7 +1213,7 @@ describe('agentProfileFromFile', () => {
     const profile = agentProfileFromFile(
       {
         ...base,
-        subagents: ['explore', 'worker-lite'],
+        allowedSubagents: ['explore', 'worker-lite'],
         subagentLeases: {
           'worker-lite': { name: 'worker-lite', modelAlias: 'grok-4.6-fast' },
         },
@@ -1217,7 +1222,7 @@ describe('agentProfileFromFile', () => {
       basePrompt,
     );
 
-    expect(profile.subagents).toEqual(['explore', 'worker-lite']);
+    expect(profile.allowedSubagents).toEqual(['explore', 'worker-lite']);
     expect(profile.subagentLeases?.['worker-lite']?.modelAlias).toBe('grok-4.6-fast');
     expect(profile.spawnConstraints).toEqual({ allowedModels: ['grok-4.6'] });
   });
@@ -1247,5 +1252,26 @@ describe('agentProfileFromFile', () => {
     const profile = agentProfileFromFile({ ...base, source: 'explicit' }, basePrompt);
 
     expect(profile.override).toBe(true);
+  });
+});
+
+describe('identity-scoped profile prompts and child leases', () => {
+  it('parses main-only body and field declarations without changing top-level main semantics', () => {
+    const profile = parse('---\nname: lead\ndescription: d\nmain: true\nmodel_profiles:\n  - alias: fast\n    main: { prompt_mode: append, prompt: MAIN }\n    independent: off\n    prompt_overrides:\n      fields: { system.language: COMMON }\n      main: off\nprompt_overrides:\n  main:\n    fields: { system.shared: MAIN FIELD }\n---\nbody');
+    expect(profile.main).toBe(true);
+    expect(profile.modelProfiles?.[0]).toMatchObject({ main: { promptMode: 'append', prompt: 'MAIN' }, independent: 'off', promptOverrides: { main: 'off' } });
+    expect(profile.promptOverrides?.main).toEqual({ fields: { 'system.shared': 'MAIN FIELD' } });
+  });
+
+  it('rejects empty, nested, unpaired and same-without-common model body branches', () => {
+    for (const branch of ['{}', 'true', 'same', '{ prompt: ONLY }', '{ prompt_mode: append }', '{ main: off }']) expect(() => parse(`---\nname: lead\ndescription: d\nmodel_profiles:\n  - alias: fast\n    main: ${branch}\n---\nbody`)).toThrow();
+  });
+
+  it('accepts child field overrides and preserve/replace only with a menu and rejects child identity branches', () => {
+    const text = '---\nname: lead\ndescription: d\nallowed_subagents:\n  - name: explore\n    model_prompts: replace\n    model_profiles:\n      - alias: fast\n        prompt_overrides:\n          fields: { system.shared: CHILD }\n---\nbody';
+    expect(parse(text).subagentLeases?.['explore']).toMatchObject({ modelPrompts: 'replace', modelProfiles: [{ promptOverrides: { fields: { 'system.shared': 'CHILD' } } }] });
+    expect(() => parse(text.replace('    model_profiles:\n      - alias: fast\n        prompt_overrides:\n          fields: { system.shared: CHILD }\n', ''))).toThrow(/requires model_profiles/);
+    expect(() => parse(text.replace('          fields: { system.shared: CHILD }', '          main: off'))).toThrow(/only applies to children/);
+    expect(() => parse(text.replace('      - alias: fast', '      - alias: fast\n        main: off'))).toThrow(/main/);
   });
 });

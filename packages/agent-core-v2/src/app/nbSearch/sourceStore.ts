@@ -2,11 +2,11 @@ import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 
 import type { NbSearchConfigSourceStatus } from '@kiki/protocol';
-import { parseConfigPatch, type CanonicalConfigPatch } from '@nb-corp/nb-search';
+import { bindCapturedConfiguration, parseConfigPatch, type CanonicalConfigPatch, type ResolvedConfiguration } from '@nb-corp/nb-search';
 
 import { NbSearchCredentialFileStore, NbSearchLocalFileError } from './credentialFileStore';
 import { Error2, ErrorCodes } from '#/errors';
-import { nbSearchConfigIssues, nbSearchConfigRevision, nbSearchPaths, pinnedNbSearchConfig, resolveNbSearchConfig } from './donorConfig';
+import { nbSearchConfigIssues, nbSearchConfigRevision, nbSearchPaths, pinnedNbSearchConfig, resolveNbSearchCapturedConfig, resolveNbSearchConfig } from './donorConfig';
 import { applyLocalCredentials, LocalCredentialError, localSecretSchema } from './localCredentials';
 import { copyNbSearchEnvironment, nbSearchEnvironmentName } from './environment';
 import { NbSearchManagedCredentials, ManagedCredentialError, managedBinding, managedBindingVersion, managedEntryMatches } from './managedCredentials';
@@ -17,13 +17,11 @@ import { LifecycleScope } from '#/app/scopes';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
-const isolatedConfigBytes = new TextEncoder().encode('{}');
-let isolatedConfigSequence = 0;
-
 export interface NbSearchSource {
   readonly env: NodeJS.ProcessEnv;
   readonly status: NbSearchConfigSourceStatus;
   readonly config?: CanonicalConfigPatch;
+  readonly resolved?: ResolvedConfiguration;
   readonly expectedRevision?: string;
   readonly managedSlots?: readonly string[];
 }
@@ -52,10 +50,9 @@ export const INbSearchSourceStore: ServiceIdentifier<INbSearchSourceStore> =
   createDecorator<INbSearchSourceStore>('nbSearchSourceStore');
 
 /**
- * Adapts nb-search 0.2's public environment-based file loader without changing
- * the daemon environment or the local nb-search file. Isolation uses a real
- * empty canonical document in Kiki storage, with Kiki-owned default job paths;
- * explicit Kiki canonical path settings still take precedence over defaults.
+ * Captures admitted configuration once through nb-search's public resolver,
+ * without changing the daemon environment or writing a substitute config file.
+ * Kiki-owned job paths apply when local CLI configuration is ignored.
  *
  * Credential precedence is a single ordered chain: a Kiki-managed value the
  * user saved wins, then the process environment, then the local nb-search CLI
@@ -75,8 +72,6 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
 
   readonly #credentialFiles: NbSearchCredentialFileStore;
   readonly #managed: NbSearchManagedCredentials;
-  readonly #isolatedConfigKey = `isolated-config.${process.pid}.${isolatedConfigSequence += 1}.json`;
-  #isolatedConfigPathPromise?: Promise<string | undefined>;
 
   constructor(
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
@@ -149,7 +144,7 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
 
   #target(source: NbSearchSource, instanceId: string) {
     if (source.status.availability !== 'ready') throw new ManagedCredentialError('unavailable');
-    const config = resolveNbSearchConfig(source.env, source.config, undefined);
+    const config = source.resolved?.config ?? resolveNbSearchConfig(source.env, source.config, undefined);
     const instance = config.provider_instances[instanceId];
     const slotId = instance?.credential_slot_id;
     if (instance === undefined || slotId === undefined || ['__proto__', 'constructor', 'prototype'].includes(slotId)
@@ -171,19 +166,18 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
       issues: [],
     };
     if (!reuseLocalConfig) {
-      const path = await this.#isolatedConfigPath();
+      const path = this.storage.pathFor('cache/nb-search', 'config.json');
       if (path === undefined) return this.unavailable(env, status, 'ISOLATED_STORAGE_UNAVAILABLE');
       env['NB_SEARCH_CONFIG'] = path;
       env['NB_SEARCH_HOME'] = dirname(path);
       env['NB_SEARCH_JOBS_ROOT'] = resolve(dirname(path), 'jobs');
       let effective;
       try {
-        effective = resolveNbSearchConfig(env, undefined, config);
+        effective = resolveNbSearchCapturedConfig(env, undefined, config);
       } catch (error) {
         return this.unavailable(env, status, nbSearchConfigIssues(error, config));
       }
-      const managed = await this.#withManaged(env, status, effective);
-      return { ...managed, config: pinnedNbSearchConfig(effective), expectedRevision: nbSearchConfigRevision(effective) };
+      return this.#readyWithCapturedConfig(env, status, effective);
     }
     const home = resolve(nonempty(env['NB_SEARCH_HOME']) ?? resolve(homedir(), '.nb-search'));
     const explicitPath = nonempty(env['NB_SEARCH_CONFIG']);
@@ -217,7 +211,7 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
       }
       let effective;
       try {
-        effective = resolveNbSearchConfig(env, canonical, config);
+        effective = resolveNbSearchCapturedConfig(env, canonical, config);
       } catch (error) {
         if (canonical !== undefined) return await this.#withoutInvalidLocalConfig(env, status, config, error);
         return this.unavailable(env, status, nbSearchConfigIssues(error, config));
@@ -250,7 +244,7 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
       }
       await this.#credentialFiles.assertUnlocked(paths.home);
       status.credential_source = prepared.usedLocalCredentials ? 'environment+local' : 'environment';
-      return await this.#readyWithCapturedConfig(prepared.env, status, prepared.config);
+      return await this.#readyWithCapturedConfig(prepared.env, status, bindCapturedConfiguration(effective, prepared.env));
     } catch (error) {
       if (error instanceof LocalCredentialError) {
         status.local_credentials = 'rejected';
@@ -264,7 +258,7 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
     }
   }
 
-  async #withoutLocalCredentials(env: NodeJS.ProcessEnv, status: NbSearchConfigSourceStatus, config: ReturnType<typeof resolveNbSearchConfig>, kind: 'invalid' | 'unreadable', issue: string): Promise<NbSearchSource> {
+  async #withoutLocalCredentials(env: NodeJS.ProcessEnv, status: NbSearchConfigSourceStatus, config: ResolvedConfiguration, kind: 'invalid' | 'unreadable', issue: string): Promise<NbSearchSource> {
     status.local_credentials = kind;
     status.issues = [...new Set([...status.issues, issue])];
     return this.#readyWithCapturedConfig(env, status, config, true);
@@ -273,7 +267,7 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
   async #withoutInvalidLocalConfig(env: NodeJS.ProcessEnv, status: NbSearchConfigSourceStatus, config: CanonicalConfigPatch | undefined, localError: unknown): Promise<NbSearchSource> {
     let effective;
     try {
-      effective = resolveNbSearchConfig(env, undefined, config);
+      effective = resolveNbSearchCapturedConfig(env, undefined, config);
     } catch (error) {
       return this.unavailable(env, status, nbSearchConfigIssues(error, config));
     }
@@ -287,12 +281,9 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
     return this.#readyWithCapturedConfig(env, status, effective);
   }
 
-  async #readyWithCapturedConfig(env: NodeJS.ProcessEnv, status: NbSearchConfigSourceStatus, config: ReturnType<typeof resolveNbSearchConfig>, suppressManaged = false): Promise<NbSearchSource> {
-    const isolated = await this.#isolatedConfigPath();
-    if (isolated === undefined) return this.unavailable(env, status, 'ISOLATED_STORAGE_UNAVAILABLE');
-    env['NB_SEARCH_CONFIG'] = isolated;
-    const managed: NbSearchSource = suppressManaged ? { env, status, managedSlots: [] } : await this.#withManaged(env, status, config);
-    return { ...managed, config: pinnedNbSearchConfig(config), expectedRevision: nbSearchConfigRevision(config) };
+  async #readyWithCapturedConfig(env: NodeJS.ProcessEnv, status: NbSearchConfigSourceStatus, captured: ResolvedConfiguration, suppressManaged = false): Promise<NbSearchSource> {
+    const managed: NbSearchSource = suppressManaged ? { env, status, managedSlots: [] } : await this.#withManaged(env, status, captured.config);
+    return { ...managed, config: captured.config, resolved: bindCapturedConfiguration(captured, managed.env), expectedRevision: captured.config_revision };
   }
 
   async #withManaged(env: NodeJS.ProcessEnv, status: NbSearchConfigSourceStatus, config: ReturnType<typeof resolveNbSearchConfig>): Promise<NbSearchSource> {
@@ -331,25 +322,6 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
         : 'environment+managed';
     }
     return { env: copy, status, managedSlots };
-  }
-
-  async #isolatedConfigPath(): Promise<string | undefined> {
-    const pending = this.#isolatedConfigPathPromise ??= this.#writeIsolatedConfig();
-    const path = await pending;
-    if (path === undefined && this.#isolatedConfigPathPromise === pending) this.#isolatedConfigPathPromise = undefined;
-    return path;
-  }
-
-  async #writeIsolatedConfig(): Promise<string | undefined> {
-    const scope = 'cache/nb-search';
-    const path = this.storage.pathFor(scope, this.#isolatedConfigKey);
-    if (path === undefined) return undefined;
-    try {
-      await this.storage.write(scope, this.#isolatedConfigKey, isolatedConfigBytes, { atomic: true });
-      return path;
-    } catch {
-      return undefined;
-    }
   }
 
   private unavailable(env: NodeJS.ProcessEnv, status: NbSearchConfigSourceStatus, issue: string | readonly string[]): NbSearchSource {

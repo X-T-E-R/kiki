@@ -46,6 +46,7 @@ export function contributionNames(manifest: PluginManifest): readonly string[] {
     ...(manifest.kiki?.themes ?? []).map((theme) => `theme:${theme.id}`),
     ...(manifest.kiki?.providerPresets ?? []).map((preset) => `provider:${preset.id}`),
     ...(manifest.kiki?.tools ?? []).map((tool) => `tool:${tool.name}`),
+    ...(manifest.kiki?.sessionSources ?? []).map((source) => `session-source:${source.id}`),
     ...(manifest.kiki?.panels ?? []).map((panel) => `panel:${panel.id}`),
     ...(manifest.kiki?.commands ?? []).map((command) => `command:${command.name}`),
     ...(manifest.kiki?.settings === undefined ? [] : ['settings']),
@@ -88,7 +89,7 @@ export function buildInstallPlan(
     changes,
     consentRequired: previous === undefined
       ? contributions.some((item) => !item.startsWith('theme:')) || Object.keys(manifest.kiki?.permissions ?? {}).length > 0
-      : changes.length > 0,
+      : previous.kiki?.entry === undefined && manifest.kiki?.entry !== undefined,
     permissions: manifest.kiki?.permissions,
     contributions,
     contextTokens: Math.ceil((

@@ -13,6 +13,7 @@ export function createServerLogger(opts: CreateLoggerOptions): ServerLogger {
     level: opts.level,
     base: { name: 'kimi-server-v2' },
     timestamp: pino.stdTimeFunctions.isoTime,
+    redact: { paths: ['req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]', 'req.body.code', 'body.code', 'cookie', 'authorization', 'accessCode', 'sessionSecret'], censor: '[redacted]' },
   };
   return pino(base, process.stderr);
 }

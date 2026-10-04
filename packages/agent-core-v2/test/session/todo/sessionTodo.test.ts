@@ -13,7 +13,8 @@ import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInj
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
-import { ContextAppendMessage, ContextUndo } from '#/agent/contextMemory/contextEvents';
+import { ContextAppendLoopEvent, ContextAppendMessage, ContextUndo } from '#/agent/contextMemory/contextEvents';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -83,7 +84,15 @@ function makeFakeAgent(
     _serviceBrand: undefined,
     register: (variant: string, provider: () => TodoReminderResult | undefined) => {
       registeredVariants.push(variant);
-      reminders.set(variant, () => provider()?.content);
+      reminders.set(variant, () => {
+        const result = provider();
+        if (result === undefined) return undefined;
+        const message: ContextMessage = { role: 'user', toolCalls: [], content: [{ type: 'text', text: result.content }],
+          origin: { kind: 'injection', variant, disclosure: result.disclosure } };
+        history.push(message);
+        void dispatcher.dispatch(new ContextAppendMessage({ message }));
+        return result.content;
+      });
       return toDisposable(() => { reminders.delete(variant); });
     },
   };
@@ -217,6 +226,38 @@ function makeTodoService(lifecycle: IAgentLifecycleService): ISessionTodoService
 }
 
 describe('SessionTodoService', () => {
+  it.each(['available', 'unregistered', 'policy-disabled', 'ephemeral', 'memory-disabled', 'approval-off', 'child'] as const)('uses actual MemoryWrite availability, without TodoList: %s', async (condition) => {
+    const { TurnPrompt } = await import('#/agent/loop/turnOps');
+    const reminders = new Map<string, () => string | undefined>();
+    const main = makeFakeAgent(condition === 'child' ? 'child' : 'main', reminders, []);
+    const original = main.handle.accessor;
+    const handle = { ...main.handle, accessor: { get: <T>(id: ServiceIdentifier<T>): T => {
+      if (id === IAgentToolRegistryService) return { resolve: () => condition === 'unregistered' ? undefined : { name: 'MemoryWrite' } } as unknown as T;
+      if (id === IAgentToolPolicyService) return { isToolActive: (name: string) => name === 'MemoryWrite' && condition !== 'policy-disabled' } as unknown as T;
+      if (id === IAgentLoopService) return { status: () => ({ state: 'running' }) } as unknown as T;
+      if (id === ISessionContext) return { workspaceId: 'test-workspace', ephemeral: condition === 'ephemeral' } as unknown as T;
+      if (id === IConfigService) return { get: (section: string) => section === 'memory' ? { enabled: condition !== 'memory-disabled', approval: condition === 'approval-off' ? 'off' : 'review', workspaces: {} } : {} } as unknown as T;
+      return original.get(id);
+    } } };
+    makeTodoService(makeLifecycleStub([handle]).service);
+    await main.dispatcher.dispatch(new TurnPrompt({ turnId: 1, promptId: 'p1', origin: { kind: 'user' }, input: [{ type: 'text', text: '以后回答都用中文' }] }));
+    const provider = reminders.get(TODO_LIST_REMINDER_VARIANT)!;
+    if (condition !== 'available') { expect(provider()).toBeUndefined(); return; }
+    expect(provider()).toContain('MemoryWrite');
+    expect(provider()).toBeUndefined();
+    for (let step = 0; step < 64; step++) {
+      for (const event of [
+        { type: 'step.begin' as const, uuid: `s${step}` },
+        { type: 'tool.call' as const, stepUuid: `s${step}`, toolCallId: `c${step}`, name: 'Read' },
+        { type: 'tool.result' as const, toolCallId: `c${step}`, result: { output: 'a'.repeat(2_000) } },
+        { type: 'step.end' as const, uuid: `s${step}`, turnId: '1', step },
+      ]) await main.dispatcher.dispatch(new ContextAppendLoopEvent({ event }));
+    }
+    expect(provider()).toContain('durable-memory check');
+    expect(provider()).toBeUndefined();
+    const persisted = main.journal.findLast((record) => record.type === ContextAppendMessage.type);
+    expect(persisted).toMatchObject({ message: { origin: { disclosure: { memory: { reason: 'M3' } } } } });
+  });
   it('writes durable continuity decisions only for emitted reminders', async () => {
     const { TurnPrompt } = await import('#/agent/loop/turnOps');
     const reminders = new Map<string, () => string | undefined>();
@@ -240,9 +281,7 @@ describe('SessionTodoService', () => {
     const provider = reminders.get(TODO_LIST_REMINDER_VARIANT)!;
     expect(provider()).toContain('The context window will be renewed soon');
     expect(provider()).toBeUndefined();
-    expect(main.journal.some((record) => record.type === 'tools.update_store' &&
-      (record as { key?: string; value?: number }).key === 'todo_reminder' &&
-      (record as { value?: number }).value === 0)).toBe(true);
+    expect(main.journal.some((record) => record.type === ContextAppendMessage.type)).toBe(true);
   });
 
   it('does not promote a keyword-free steer into a persistent directive', async () => {
@@ -259,18 +298,24 @@ describe('SessionTodoService', () => {
     expect(provider()).toBeUndefined();
   });
 
-  it('saves summarized directives as an undoable notes update and covers the new summary watermark', async () => {
-    const main = makeFakeAgent('main');
+  it('keeps content writes separate from explicit review and binds review to a real tool call', () => {
+    const history: ContextMessage[] = [{ role: 'user', id: 'human-1', toolCalls: [], content: [{ type: 'text', text: 'Keep the permission condition.' }] },
+      { role: 'assistant', id: 'review-1', content: [], toolCalls: [{ id: 'review-call', type: 'function', name: 'TodoList', arguments: '{}' }] }];
+    const main = makeFakeAgent('main', new Map(), history);
     const service = makeTodoService(makeLifecycleStub([main.handle]).service);
-    await main.dispatcher.dispatch(new ContextAppendMessage({ message: { role: 'user', content: [{ type: 'text', text: 'summarize' }], toolCalls: [] } }));
-    service.setCompactionDirectives('Directly pin Grok if the profile is unavailable.', 424);
-    expect(service.getNotes().notes?.directives).toBe('Directly pin Grok if the profile is unavailable.');
-    expect(service.getNotes().meta?.coveredMessageId).toBe('compaction_summary');
-    expect(main.journal.some((record) => record.type === 'tools.update_store' &&
-      (record as { key?: string; value?: { writer?: string } }).key === 'todo_notes' &&
-      (record as { value?: { writer?: string } }).value?.writer === 'compaction')).toBe(true);
-    await main.dispatcher.dispatch(new ContextUndo({ count: 1 }));
-    expect(service.getNotes().notes?.directives).toBeUndefined();
+    service.setNotes({ directives: 'Keep the permission condition.' }, { turnId: 1, step: 1, toolCallId: 'first' });
+    expect(service.getNotes().meta?.reviewedMessageId).toBeUndefined();
+    service.setNotes({}, { turnId: 1, step: 2, toolCallId: 'review-call', reviewHandoff: true });
+    const reviewed = service.getNotes();
+    expect(reviewed.meta?.reviewedMessageId).toBe('review-1');
+    expect(reviewed.meta?.writtenStep).toBe('t1.1');
+    expect(reviewed.meta?.rev).toBe(1);
+    history.push({ role: 'user', id: 'human-2', toolCalls: [], content: [{ type: 'text', text: 'New permission condition.' }] });
+    service.setNotes({ next: 'run tests' }, { turnId: 2, step: 3, toolCallId: 'next' });
+    expect(service.getNotes().meta).toMatchObject({ rev: 2, writtenStep: 't2.3', reviewedMessageId: 'review-1', coveredMessageId: '' });
+    const before = service.getNotes();
+    expect(() => service.setNotes({ next: 'must not write' }, { turnId: 999, step: 0, toolCallId: 'future', reviewHandoff: true })).toThrow('current conversation');
+    expect(service.getNotes()).toEqual(before);
   });
 
   it('injects only the receiving agent list and removes providers on disposal', () => {
@@ -412,6 +457,27 @@ describe('SessionTodoService', () => {
     expect(seen).toEqual([[{ title: 'kept', status: 'pending' }]]);
   });
 
+  it('publishes undo corrections when only the review boundary changed', async () => {
+    const history: ContextMessage[] = [{ role: 'assistant', id: 'review-boundary', content: [], toolCalls: [{ id: 'review', type: 'function', name: 'TodoList', arguments: '{}' }] }];
+    const main = makeFakeAgent('main', new Map(), history);
+    const service = makeTodoService(makeLifecycleStub([main.handle]).service);
+    service.setNotes({ goal: 'keep' }, { turnId: 1, step: 1, toolCallId: 'content' });
+    const original = service.getNotes();
+    await main.dispatcher.dispatch(new ContextAppendMessage({ message: { role: 'user', content: [{ type: 'text', text: 'review now' }], toolCalls: [] } }));
+    service.setNotes({}, { turnId: 2, step: 1, toolCallId: 'review', reviewHandoff: true });
+    expect(service.getNotes().meta?.rev).toBe(original.meta?.rev);
+    expect(service.getNotes().meta?.reviewedMessageId).toBe('review-boundary');
+    await main.dispatcher.dispatch(new ContextUndo({ count: 1 }));
+    const before = main.journal.length;
+    await main.dispatcher.dispatch(new ContextUndone({ turns: 1 }));
+    expect(service.getNotes()).toEqual(original);
+    expect(main.journal.slice(before)).toContainEqual(expect.objectContaining({ type: 'tools.update_store', key: 'todo_notes', value: { notes: original.notes, notesMeta: original.meta } }));
+    const reader = makeFakeAgent('main');
+    const restored = makeTodoService(makeLifecycleStub([reader.handle]).service);
+    await reader.restore(main.journal);
+    expect(restored.getNotes()).toEqual(original);
+  });
+
   it('persists notes separately from todo updates and rolls notes back with undo', async () => {
     const main = makeFakeAgent('main');
     const service = makeTodoService(makeLifecycleStub([main.handle]).service);
@@ -422,7 +488,7 @@ describe('SessionTodoService', () => {
     expect(service.getNotes().notes).toEqual({ goal: 'preserved' });
     service.setNotes({ goal: 'preserved' }, { turnId: 2, step: 1, toolCallId: 'same' });
     expect(service.getNotes().meta?.rev).toBe(before.rev);
-    expect(service.getNotes().meta?.writtenStep).toBe('t2.1');
+    expect(service.getNotes().meta?.writtenStep).toBe(before.writtenStep);
     expect(service.getNotes().meta?.coveredMessageId).toBe(before.coveredMessageId);
     await main.dispatcher.dispatch(new ContextAppendMessage({ message: { role: 'user', content: [{ type: 'text', text: 'next' }], toolCalls: [] } }));
     service.setNotes({ next: 'new work' }, { turnId: 2, step: 5, toolCallId: 'changed' });

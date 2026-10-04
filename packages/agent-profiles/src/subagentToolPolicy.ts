@@ -1,23 +1,12 @@
-import type { ToolSource } from './toolPolicy';
+import { isToolExplicitlyNamed, type ToolSource } from './toolPolicy';
 
-export const SUBAGENT_OPT_IN_TOOL_NAMES = ['BoardRead', 'BoardWrite'] as const;
+export const SUBAGENT_OPT_IN_TOOL_NAMES = [
+  'BoardRead', 'BoardWrite', 'AskUserQuestion', 'Cron', 'CronCreate', 'CronDelete', 'CronList',
+  'EnterPlanMode', 'ExitPlanMode', 'ThreadCreate', 'ThreadList', 'ThreadRead', 'ThreadWait',
+] as const;
 
 export const SUBAGENT_MAIN_ONLY_TOOL_NAMES = [
-  'AskUserQuestion',
-  'CreateGoal',
-  'CronCreate',
-  'CronDelete',
-  'CronList',
-  'EnterPlanMode',
-  'ExitPlanMode',
-  'GetGoal',
-  'SetGoalBudget',
-  'ThreadCreate',
-  'ThreadList',
-  'ThreadRead',
-  'ThreadSend',
-  'ThreadWait',
-  'UpdateGoal',
+  'MemoryWrite', 'ThreadSend', 'SendMessage', 'Goal', 'CreateGoal', 'GetGoal', 'SetGoalBudget', 'UpdateGoal',
 ] as const;
 
 export const SUBAGENT_DEFAULT_ALLOWED_TOOL_NAMES = [
@@ -30,6 +19,8 @@ export const SUBAGENT_DEFAULT_ALLOWED_TOOL_NAMES = [
   'FetchURL',
   'Glob',
   'Grep',
+  'MemorySearch',
+  'MemoryRead',
   'Read',
   'ReadMediaFile',
   'SelectTools',
@@ -65,5 +56,5 @@ export function isSubagentToolAllowed(
   const access = subagentToolDefault(name, source);
   if (access === 'main-only') return false;
   if (access === 'allowed') return true;
-  return policy.allowedTools?.includes(name) === true || policy.explicitProfileTools?.includes(name) === true;
+  return isToolExplicitlyNamed(policy.allowedTools, name) || isToolExplicitlyNamed(policy.explicitProfileTools, name);
 }

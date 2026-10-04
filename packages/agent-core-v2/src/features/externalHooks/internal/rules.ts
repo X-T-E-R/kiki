@@ -112,12 +112,27 @@ export interface HookDiagnostic {
   readonly message: string;
 }
 
+export interface HookRuleSourceStatus {
+  readonly namespace: string;
+  readonly path: string;
+  readonly status: 'loaded' | 'absent' | 'invalid' | 'unavailable';
+}
+
 export interface HookRulesSnapshot {
+  readonly sources?: readonly HookRuleSourceStatus[];
   readonly revision: string;
   readonly rules: readonly EffectiveHookRule[];
   readonly diagnostics: readonly HookDiagnostic[];
   readonly watchPaths?: readonly string[];
   readonly disabled?: readonly string[];
+}
+
+export function retainFailedHookSources(previous: HookRulesSnapshot, next: HookRulesSnapshot): HookRulesSnapshot {
+  const failed = new Map((next.sources ?? []).filter((source) => source.status === 'invalid' || source.status === 'unavailable').map((source) => [source.namespace, source.status]));
+  const rules = [...next.rules.filter((rule) => !failed.has(rule.namespace)), ...previous.rules.filter((rule) => failed.has(rule.namespace)).map((rule) => ({ ...rule, active: false, reason: `source_${failed.get(rule.namespace)}` }))].toSorted(hookOrder);
+  return { ...next, rules, revision: hookHash([next.revision, rules.map((rule) => [rule.id, rule.contentHash, rule.reason])]),
+    watchPaths: [...new Set([...(previous.watchPaths ?? []), ...(next.watchPaths ?? [])])],
+  };
 }
 
 export function hookHash(value: unknown): string {

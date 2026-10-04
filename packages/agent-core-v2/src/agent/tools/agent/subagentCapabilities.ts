@@ -38,7 +38,7 @@ export interface SubagentCapabilityTarget {
   readonly modelSource?: 'caller-lease' | 'route' | 'profile';
   readonly thinkingEffort?: string;
   readonly effortSource?: 'caller-lease' | 'route' | 'profile' | 'model-profile' | 'model' | 'config' | 'executor';
-  readonly dispatchPolicy: 'advisory' | 'strict';
+  readonly dispatchPolicy: 'fixed';
   readonly recommendationStatus: SubagentRecommendationStatus;
   readonly advisoryDeviation: boolean;
   readonly dispatchAllowed: boolean;
@@ -103,7 +103,7 @@ export function projectSubagentCapabilities(
       dispatchAllowed: decision.allowed,
     };
     try {
-      const bindingCaller = decision.allowed ? input.caller : { ...input.caller, defaultPolicy: 'advisory' as const, subagentPolicy: 'advisory' as const };
+      const bindingCaller = decision.allowed ? input.caller : { ...input.caller, canSpawnSubagents: undefined, allowedSubagents: undefined, denySubagents: undefined };
       const target = resolveSubagentTarget(input.catalog, bindingCaller, {
         profileName,
         routeId,

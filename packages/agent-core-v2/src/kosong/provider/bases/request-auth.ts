@@ -47,7 +47,9 @@ export function mergeProviderRequestAuth(
   auth: ProviderRequestAuth | undefined,
   runtimeHeaders: Readonly<Record<string, string>> | undefined,
 ): ProviderRequestAuth | undefined {
-  const headers = mergeRequestHeaders(undefined, auth?.headers, runtimeHeaders);
+  const headers = mergeRequestHeaders(undefined, auth?.headers, {
+    ...runtimeHeaders, ...requiredOAuthHeaders(boundOAuthHeaders(auth)),
+  });
   if (auth === undefined && headers === undefined) return undefined;
   return { ...auth, headers };
 }
@@ -69,16 +71,56 @@ export function resolveAuthBackedClient<TClient>(
   return build(auth);
 }
 
-export const requestIdentityFetch: typeof fetch = async (input, init) => {
-  const request = new Request(input, { ...init, redirect: 'error' });
-  const suppressIdentity = request.headers.has(SUPPRESS_REQUEST_IDENTITY_HEADER);
-  if (!suppressIdentity && !request.headers.has(SUPPRESS_USER_AGENT_HEADER)) {
-    return globalThis.fetch(request);
+const OAUTH_AUTH_HEADERS = [
+  'authorization', 'chatgpt-account-id', 'x-xai-token-auth', 'x-authenticateresponse', 'x-userid',
+] as const;
+
+function boundOAuthHeaders(auth: ProviderRequestAuth | undefined): Headers | undefined {
+  if (!auth?.apiKey || auth.headers === undefined) return undefined;
+  const headers = new Headers(auth.headers);
+  if (headers.get('authorization') !== `Bearer ${auth.apiKey}`) return undefined;
+  return headers.has('chatgpt-account-id') || headers.get('x-xai-token-auth') === 'xai-grok-cli'
+    ? headers : undefined;
+}
+
+function requiredOAuthHeaders(headers: Headers | undefined): Record<string, string> | undefined {
+  if (headers === undefined) return undefined;
+  const required: Record<string, string> = {};
+  for (const name of OAUTH_AUTH_HEADERS) {
+    const value = headers.get(name);
+    if (value !== null) required[name] = value;
   }
-  const headers = new Headers(request.headers);
+  return required;
+}
+
+export const requestIdentityFetch: typeof fetch = (input, init) => fetchWithRequestIdentity(input, init);
+
+export function requestIdentityFetchForAuth(auth: ProviderRequestAuth | undefined): typeof fetch {
+  const oauthHeaders = boundOAuthHeaders(auth);
+  return (input, init) => fetchWithRequestIdentity(input, init, oauthHeaders);
+}
+
+async function fetchWithRequestIdentity(
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+  oauthHeaders?: Headers,
+): Promise<Response> {
+  const request = new Request(input, { ...init, redirect: 'error' });
+  if (!request.headers.has(SUPPRESS_REQUEST_IDENTITY_HEADER) && !request.headers.has(SUPPRESS_USER_AGENT_HEADER) && oauthHeaders === undefined) return globalThis.fetch(request);
+  return globalThis.fetch(new Request(request, { headers: finalizeHeaders(request.headers, oauthHeaders), redirect: 'error' }));
+}
+
+export function finalizeProviderRequestHeaders(input: ConstructorParameters<typeof Headers>[0], auth?: ProviderRequestAuth): Headers {
+  return finalizeHeaders(input, boundOAuthHeaders(auth));
+}
+
+function finalizeHeaders(input: ConstructorParameters<typeof Headers>[0], oauthHeaders?: Headers): Headers {
+  const headers = new Headers(input);
+  const suppressIdentity = headers.has(SUPPRESS_REQUEST_IDENTITY_HEADER);
+  const suppressUserAgent = suppressIdentity || headers.has(SUPPRESS_USER_AGENT_HEADER);
   headers.delete(SUPPRESS_USER_AGENT_HEADER);
   headers.delete(SUPPRESS_REQUEST_IDENTITY_HEADER);
-  headers.delete('user-agent');
+  if (suppressUserAgent) headers.delete('user-agent');
   if (suppressIdentity) {
     for (const name of REQUEST_IDENTITY_RESERVED_HEADERS) headers.delete(name);
     const names: string[] = [];
@@ -87,5 +129,13 @@ export const requestIdentityFetch: typeof fetch = async (input, init) => {
       if (name.startsWith('x-msh-')) headers.delete(name);
     }
   }
-  return globalThis.fetch(new Request(request, { headers, redirect: 'error' }));
-};
+  for (const [name, value] of Object.entries(requiredOAuthHeaders(oauthHeaders) ?? {})) headers.set(name, value);
+  if (oauthHeaders?.get('x-xai-token-auth') === 'xai-grok-cli') {
+    headers.delete('x-api-key');
+    if (!headers.get('x-grok-client-version')) {
+      const version = oauthHeaders.get('x-grok-client-version');
+      if (version !== null) headers.set('x-grok-client-version', version);
+    }
+  }
+  return headers;
+}

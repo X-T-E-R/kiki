@@ -61,6 +61,8 @@ import { projectPromptContentParts } from '../../../services/messages/messagePro
 import { readLegacyStatus, toLegacyPhase } from '../../../services/legacyStatus/legacyStatus';
 import type { TranscriptService } from '../../../services/transcript/transcriptService';
 import { recordSessionViewTiming } from '../../klient/sessionViewTiming';
+import { boundedTranscriptOps, boundedTranscriptSnapshot, TRANSCRIPT_WINDOW_BYTES } from '../../klient/boundedTranscript';
+import { jsonBytes } from '@kiki/transcript';
 import { InFlightTurnTracker } from './inFlightTurnTracker';
 import { SubagentRosterTracker } from './subagentRosterTracker';
 import { TurnUsageTracker } from './turnUsageTracker';
@@ -177,12 +179,6 @@ interface SessionState {
 export const DEFAULT_MAX_BUFFER_SIZE = 1000;
 const GLOBAL_SESSION_ID = '__global__';
 const TRANSCRIPT_RESET_TAIL_TURNS = 20;
-const TRANSCRIPT_RESET_TASK_LIMIT = 64;
-const TRANSCRIPT_RESET_ATTACHMENT_LIMIT = 64;
-const TRANSCRIPT_RESET_PROMPT_LIMIT = 64;
-const TRANSCRIPT_RESET_TASK_OUTPUT_TAIL_CHARS = 1_024;
-const TRANSCRIPT_RESET_ATTACHMENT_SOURCE_BYTES = 2_048;
-const TRANSCRIPT_RESET_PROMPT_CONTENT_BYTES = 4_096;
 let nextInteractionConsumerId = 0;
 
 async function disposeSessionState(state: SessionState): Promise<void> {
@@ -544,14 +540,16 @@ export class SessionEventBroadcaster {
       ) {
         return;
       }
-      const ensureHistory = async (agentId: string): Promise<void> => {
-        if (!admitted.has(agentId)) return;
+      const ensureHistory = async (agentId: string): Promise<AgentTranscript | undefined> => {
+        if (!admitted.has(agentId)) return seed.store.getAgent(agentId);
         const backfillAt = performance.now();
-        await service.ensureAgentHistory(state.sessionId, agentId);
+        const transcript = await service.ensureAgentHistory(state.sessionId, agentId);
         recordSessionViewTiming('agent_backfill', backfillAt, { ...fields, agentId });
         admitted.delete(agentId);
+        return transcript;
       };
-      await Promise.all([...priority].map(ensureHistory));
+      const priorityProjections = new Map(await Promise.all([...priority].map(async (agentId) =>
+        [agentId, await ensureHistory(agentId)] as const)));
       if (
         !this.isTranscriptGeneration(state, target, seed.generation) ||
         service.forSessionLive(state.sessionId) !== seed.store
@@ -571,10 +569,10 @@ export class SessionEventBroadcaster {
           const agentId = descriptor.agentId;
           const grade = gradeFor(currentSpec, agentId);
           if (grade === 'off') continue;
-          await ensureHistory(agentId);
+          const transcript = priorityProjections.get(agentId) ?? await ensureHistory(agentId);
+          priorityProjections.delete(agentId);
           if (!this.isTranscriptGeneration(state, target, seed.generation) ||
               service.forSessionLive(state.sessionId) !== seed.store) return;
-          const transcript = seed.store.getAgent(agentId);
           if (transcript === undefined) continue;
           const cursor = service.getTranscriptCursor(state.sessionId, agentId);
           const sent = delivered.get(agentId);
@@ -651,20 +649,19 @@ export class SessionEventBroadcaster {
     throughSeq: number,
     generation?: number,
   ): boolean {
-    const filtered = filterOpsForGrade(grade, ops);
+    const transcript = this.opts.transcriptService?.forSessionLive(state.sessionId)?.getAgent(agentId);
+    if (transcript === undefined) return false;
+    const filtered = boundedTranscriptOps(filterOpsForGrade(grade, ops), transcript);
     if (filtered.length === 0) return true;
-    return this.sendTranscriptEnvelope(
-      state,
-      target,
-      this.buildTranscriptEnvelope(state, 'transcript.ops', {
-        session_id: state.sessionId,
-        agent_id: agentId,
-        ops: filtered,
-        cursor,
-        through_seq: throughSeq,
-      }),
-      generation,
-    );
+    const envelope = this.buildTranscriptEnvelope(state, 'transcript.ops', {
+      session_id: state.sessionId, agent_id: agentId, ops: filtered, cursor, through_seq: throughSeq,
+    });
+    if (jsonBytes(envelope) > TRANSCRIPT_WINDOW_BYTES) {
+      if (grade === 'off') return true;
+      const current = this.opts.transcriptService!.getTranscriptCursor(state.sessionId, agentId);
+      return this.sendTranscriptReset(state, target, transcript, grade, current, generation);
+    }
+    return this.sendTranscriptEnvelope(state, target, envelope, generation);
   }
 
   private sendTranscriptEnvelope(
@@ -788,20 +785,7 @@ export class SessionEventBroadcaster {
     cursor: TranscriptCursor,
     generation?: number,
   ): boolean {
-    const redacted = redactSnapshotForGrade(
-      grade,
-      transcript.snapshot({
-        tailTurns: TRANSCRIPT_RESET_TAIL_TURNS,
-        globalWindow: {
-          taskLimit: TRANSCRIPT_RESET_TASK_LIMIT,
-          attachmentLimit: TRANSCRIPT_RESET_ATTACHMENT_LIMIT,
-          promptLimit: TRANSCRIPT_RESET_PROMPT_LIMIT,
-          taskOutputTailChars: TRANSCRIPT_RESET_TASK_OUTPUT_TAIL_CHARS,
-          attachmentSourceBytes: TRANSCRIPT_RESET_ATTACHMENT_SOURCE_BYTES,
-          promptContentBytes: TRANSCRIPT_RESET_PROMPT_CONTENT_BYTES,
-        },
-      }),
-    );
+    const redacted = boundedTranscriptSnapshot(redactSnapshotForGrade(grade, transcript.snapshot({ tailTurns: TRANSCRIPT_RESET_TAIL_TURNS })), transcript.agentId);
     const liveVerified = this.opts.transcriptService?.isTranscriptLiveCoverageVerified(state.sessionId, transcript.agentId) === true;
     const snapshot = liveVerified ? redacted
       : { ...redacted, toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: true };

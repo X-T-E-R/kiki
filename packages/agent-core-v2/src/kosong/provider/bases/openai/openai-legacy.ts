@@ -51,7 +51,7 @@ import {
 import { ReasoningKeyDialect } from './reasoning-key';
 import {
   mergeProviderRequestAuth,
-  requestIdentityFetch,
+  requestIdentityFetchForAuth,
   mergeRequestHeaders,
   requireProviderApiKey,
   resolveAuthBackedClient,
@@ -667,6 +667,10 @@ export class OpenAILegacyChatProvider implements ChatProvider {
       kwargs = { ...kwargs, ...(hooked ?? { prompt_cache_key: options.cacheKey }) };
     }
 
+    if (options?.serviceTier !== undefined) {
+      kwargs = { ...kwargs, service_tier: options.serviceTier };
+    }
+
     if (options?.sampling?.temperature !== undefined) {
       kwargs = { ...kwargs, temperature: options.sampling.temperature };
     }
@@ -755,7 +759,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
       apiKey,
       baseURL: this._baseUrl,
       maxRetries: 0,
-      fetch: requestIdentityFetch,
+      fetch: requestIdentityFetchForAuth(auth),
     };
     const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers);
     if (defaultHeaders !== undefined) {

@@ -7,6 +7,7 @@
 
 import { createServer, type Server, type Socket } from 'node:net';
 import { unlink } from 'node:fs/promises';
+import { StringDecoder } from 'node:string_decoder';
 
 import { ErrorCode } from '@kiki/protocol';
 
@@ -41,6 +42,16 @@ export interface KlientIpcHost {
   close(): Promise<void>;
 }
 
+/**
+ * One in-flight stream. Cancelling stops frame pushing and returns the
+ * underlying iterator, so the engine-side requester actually stops.
+ */
+interface ActiveStream {
+  readonly controller: AbortController;
+  iterator: AsyncIterator<unknown> | undefined;
+  cancel(): void;
+}
+
 export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<KlientIpcHost> {
   const dispatcher = createMemoryDispatcher(options.scope);
   const listenPath = normalizeIpcSocketPath(options.socketPath);
@@ -60,8 +71,9 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
   const server: Server = createServer((socket) => {
     connections.add(socket);
     const decoder = new NdjsonDecoder();
+    const textDecoder = new StringDecoder('utf8');
     const listens = new Map<string, IDisposable>();
-    const activeStreams = new Map<string, AbortController>();
+    const activeStreams = new Map<string, ActiveStream>();
     const activeCalls = new Map<string, AbortController>();
     let helloDone = false;
 
@@ -188,37 +200,51 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
           }
           const args = Array.isArray(frame.arg) ? frame.arg : frame.arg === undefined ? [] : [frame.arg];
           const ac = new AbortController();
-          activeStreams.set(id, ac);
+          const active: ActiveStream = { controller: ac, iterator: undefined, cancel: () => {
+            if (ac.signal.aborted) return;
+            ac.abort();
+            // The requester behind this stream (e.g. `modelResolver.generate`)
+            // only stops when its iterator is returned, so cancelling has to
+            // reach the engine and not just stop pushing frames.
+            const returned = active.iterator?.return?.();
+            if (returned !== undefined) void Promise.resolve(returned).catch(() => {});
+          } };
+          activeStreams.set(id, active);
           const iterable = dispatcher.stream(
             scopeRefFromTarget(frame),
             String(frame.service),
             String(frame.method),
             args,
           );
+          const iterator = iterable[Symbol.asyncIterator]();
+          active.iterator = iterator;
           void (async () => {
             try {
-              for await (const chunk of iterable) {
+              for (;;) {
                 if (ac.signal.aborted || socket.destroyed) break;
-                send({ type: 'stream_data', id, data: chunk });
-              }
-              if (!ac.signal.aborted && !socket.destroyed) {
-                send({ type: 'stream_end', id });
+                const result = await iterator.next();
+                if (ac.signal.aborted || socket.destroyed) break;
+                if (result.done === true) {
+                  send({ type: 'stream_end', id });
+                  return;
+                }
+                send({ type: 'stream_data', id, data: result.value });
               }
             } catch (error) {
               if (!ac.signal.aborted && !socket.destroyed) {
                 sendStreamError(id, error);
               }
             } finally {
-              activeStreams.delete(id);
+              if (activeStreams.get(id) === active) activeStreams.delete(id);
             }
           })();
           return;
         }
         case 'stream_cancel': {
-          const ac = activeStreams.get(id);
-          if (ac !== undefined) {
-            ac.abort();
+          const active = activeStreams.get(id);
+          if (active !== undefined) {
             activeStreams.delete(id);
+            active.cancel();
           }
           return;
         }
@@ -228,14 +254,14 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
     };
 
     socket.on('data', (chunk) => {
-      for (const frame of decoder.push(chunk.toString('utf8'))) {
+      for (const frame of decoder.push(textDecoder.write(chunk))) {
         handleFrame(frame);
       }
     });
     const teardown = (): void => {
       for (const sub of listens.values()) sub.dispose();
       listens.clear();
-      for (const ac of activeStreams.values()) ac.abort();
+      for (const active of activeStreams.values()) active.cancel();
       activeStreams.clear();
       for (const controller of activeCalls.values()) controller.abort();
       activeCalls.clear();

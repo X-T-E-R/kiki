@@ -1,11 +1,7 @@
 import { z } from 'zod';
+import { resyncRequiredMessageSchema, subscribeV2MessageSchema, subscribeV2AckMessageSchema, unsubscribeV2MessageSchema, unsubscribeV2AckMessageSchema } from '@kiki/protocol';
 
 import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
-import {
-  TRANSCRIPT_COVERAGE_VERSION,
-  transcriptSubscribeV2PayloadSchema,
-  type TranscriptSubscribeV2Payload,
-} from '@kiki/transcript';
 
 import { eventSchema } from './events-zod';
 
@@ -147,34 +143,11 @@ export const subscribeMessageSchema = z.object({
 
 export type SubscribeMessage = z.infer<typeof subscribeMessageSchema>;
 
-export const subscribeV2PayloadSchema = transcriptSubscribeV2PayloadSchema;
-export type SubscribeV2Payload = TranscriptSubscribeV2Payload;
-
-export const subscribeV2MessageSchema = z.object({
-  type: z.literal('subscribe_v2'),
-  id: z.string(),
-  payload: subscribeV2PayloadSchema,
-});
-
-export type SubscribeV2Message = z.infer<typeof subscribeV2MessageSchema>;
-
-/**
- * `unsubscribe_v2` — the agent-grained counterpart of `subscribe_v2`:
- * detaches the listed agents' transcript streams (`agent_ids` absent = the
- * whole session's stream) without touching the legacy event subscription.
- */
-export const unsubscribeV2PayloadSchema = z.object({
-  session_id: z.string().min(1),
-  agent_ids: z.array(z.string().min(1)).min(1).optional(),
-});
-
-export const unsubscribeV2MessageSchema = z.object({
-  type: z.literal('unsubscribe_v2'),
-  id: z.string(),
-  payload: unsubscribeV2PayloadSchema,
-});
-
-export type UnsubscribeV2Message = z.infer<typeof unsubscribeV2MessageSchema>;
+export {
+  subscribeV2PayloadSchema, subscribeV2MessageSchema, subscribeV2AckMessageSchema,
+  unsubscribeV2PayloadSchema, unsubscribeV2MessageSchema, unsubscribeV2AckMessageSchema,
+  type SubscribeV2Payload, type SubscribeV2Message, type UnsubscribeV2Message,
+} from '@kiki/protocol';
 
 export const subscribeAckPayloadSchema = z.object({
   accepted: z.array(z.string()),
@@ -184,12 +157,6 @@ export const subscribeAckPayloadSchema = z.object({
 });
 
 export const subscribeAckMessageSchema = wsAckEnvelopeSchema(subscribeAckPayloadSchema);
-
-export const subscribeV2AckMessageSchema = wsAckEnvelopeSchema(subscribeAckPayloadSchema.extend({
-  transcript_coverage_version: z.literal(TRANSCRIPT_COVERAGE_VERSION).optional(),
-}));
-
-export const unsubscribeV2AckMessageSchema = wsAckEnvelopeSchema(subscribeAckPayloadSchema);
 
 export const unsubscribePayloadSchema = z.object({
   session_ids: z.array(z.string()),
@@ -426,20 +393,7 @@ export const pongMessageSchema = z.object({
 
 export type PongMessage = z.infer<typeof pongMessageSchema>;
 
-export const resyncRequiredPayloadSchema = z.object({
-  session_id: z.string(),
-  reason: z.enum(['buffer_overflow', 'session_recreated', 'epoch_changed', 'history_rewritten']),
-  current_seq: z.number().int().nonnegative(),
-  epoch: z.string().min(1).optional(),
-});
-
-export const resyncRequiredMessageSchema = z.object({
-  type: z.literal('resync_required'),
-  timestamp: isoDateTimeSchema,
-  payload: resyncRequiredPayloadSchema,
-});
-
-export type ResyncRequiredMessage = z.infer<typeof resyncRequiredMessageSchema>;
+export { resyncRequiredPayloadSchema, resyncRequiredMessageSchema, type ResyncRequiredMessage } from '@kiki/protocol';
 
 export const wsErrorPayloadSchema = z.object({
   code: z.number().int(),

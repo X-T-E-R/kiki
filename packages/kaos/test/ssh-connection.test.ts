@@ -1,4 +1,4 @@
-import { createHmac, generateKeyPairSync } from 'node:crypto';
+import { createHash, createHmac, generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
@@ -254,5 +254,76 @@ describe('SSH connection manager with an actual ssh2 server', () => {
     ]);
     expect(results.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected']);
     expect((await readFile(path, 'utf8')).trim().split('\n')).toHaveLength(1);
+  });
+});
+
+
+describe('S5 read-only known_hosts inspection', () => {
+  function publicKey(): Buffer {
+    const parsed = utils.parseKey(key());
+    if (parsed instanceof Error || Array.isArray(parsed)) throw new Error('Invalid generated test key');
+    return parsed.getPublicSSH();
+  }
+
+  it('projects exact host and port, aliases, wildcard exclusions and hashed v1 without writes', async () => {
+    const { path, home } = await fixture();
+    const raw = publicKey();
+    const other = publicKey();
+    const salt = Buffer.alloc(20, 17);
+    const label = '[hashed.example.test]:2200';
+    const hash = createHmac('sha1', salt).update(label).digest('base64');
+    const text = `example.test,alias.example.test ssh-rsa ${raw.toString('base64')}\n` +
+      `[example.test]:2200 ssh-rsa ${other.toString('base64')}\n` +
+      `*.example.test,!excluded.example.test ssh-rsa ${raw.toString('base64')}\n` +
+      `|1|${salt.toString('base64')}|${hash} ssh-rsa ${raw.toString('base64')}\n`;
+    await writeFile(path, text);
+    const known = new SshKnownHosts([path, join(home, 'missing')]);
+    expect(await known.inspect('alias.example.test', 22)).toMatchObject({ state: 'recorded',
+      records: [expect.objectContaining({ line: 1, status: 'recorded', fingerprint: `SHA256:${createHash('sha256').update(raw).digest('base64').replace(/=+$/, '')}` }), expect.objectContaining({ line: 3 })] });
+    expect((await known.inspect('example.test', 2200)).records).toMatchObject([{ line: 2, algorithm: 'ssh-rsa' }]);
+    expect((await known.inspect('example.test', 2201)).state).toBe('unrecorded');
+    expect((await known.inspect('excluded.example.test', 22)).state).toBe('unrecorded');
+    expect((await known.inspect('hashed.example.test', 2200)).records).toMatchObject([{ line: 4, status: 'recorded' }]);
+    expect((await known.inspect('hashed.example.test', 2201)).state).toBe('unrecorded');
+    expect((await known.inspect('unknown.test', 22)).files).toMatchObject([{ state: 'read' }, { state: 'missing', reason: 'ENOENT' }]);
+    expect(await readFile(path, 'utf8')).toBe(text);
+    await expect(readFile(join(home, 'missing'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('reports unsupported markers, invalid public keys, unknown hashes and read errors explicitly', async () => {
+    const { path, home } = await fixture();
+    const raw = publicKey();
+    await writeFile(path, `@cert-authority ca.example.test ssh-rsa ${raw.toString('base64')}\n` +
+      `@revoked revoked.example.test ssh-rsa ${raw.toString('base64')}\n` +
+      'invalid.example.test ssh-rsa bad-key\n');
+    const known = new SshKnownHosts([path]);
+    expect(await known.inspect('ca.example.test', 22)).toMatchObject({ state: 'unavailable', records: [{ status: 'unsupported', reason: 'unsupported-marker:@cert-authority' }] });
+    expect(await known.inspect('revoked.example.test', 22)).toMatchObject({ state: 'recorded', records: [{ status: 'revoked' }] });
+    expect(await known.inspect('invalid.example.test', 22)).toMatchObject({ state: 'unavailable', records: [{ status: 'invalid', reason: 'invalid-public-key', fingerprint: undefined }] });
+    await writeFile(path, '|2|salt|hash ssh-rsa bad-key\n');
+    expect(await known.inspect('unknown.test', 22)).toMatchObject({ state: 'unavailable', files: [{ reason: 'unsupported-host-hash:line:1' }] });
+    expect(await new SshKnownHosts([home]).inspect('unknown.test', 22)).toMatchObject({ state: 'unavailable', files: [{ state: 'unavailable' }] });
+  });
+
+  it('keeps matching, changed, revoked and unknown verification across two files without network or writes', async () => {
+    const { path, home } = await fixture();
+    const second = join(home, 'known_hosts2');
+    const raw = publicKey();
+    const replacement = publicKey();
+    const firstText = `other.test ssh-rsa ${raw.toString('base64')}\n`;
+    const secondText = `example.test ssh-rsa ${raw.toString('base64')}\n`;
+    await writeFile(path, firstText);
+    await writeFile(second, secondText);
+    const known = new SshKnownHosts([path, second]);
+    const trust = async (): Promise<boolean> => { throw new Error('Unexpected trust write'); };
+    expect(await known.verify('example.test', 22, raw, trust)).toBe(true);
+    await expect(known.verify('example.test', 22, replacement, trust)).rejects.toThrow(/changed/);
+    expect(await known.verify('unknown.test', 22, raw, async () => false)).toBe(false);
+    expect(await known.inspect('example.test', 22)).toMatchObject({ state: 'recorded', records: [{ file: second }] });
+    expect(await readFile(path, 'utf8')).toBe(firstText);
+    expect(await readFile(second, 'utf8')).toBe(secondText);
+    await writeFile(path, `@revoked example.test ssh-rsa ${replacement.toString('base64')}\n`);
+    await expect(known.verify('example.test', 22, raw, trust)).rejects.toThrow(/changed/);
+    expect((await known.inspect('example.test', 22)).records.map((entry) => entry.status)).toEqual(['revoked', 'recorded']);
   });
 });

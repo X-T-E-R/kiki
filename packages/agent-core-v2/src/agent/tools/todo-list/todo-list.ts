@@ -13,28 +13,25 @@ const TodoItemSchema = z.object({
 export interface TodoListInput {
   todos?: Array<{ title: string; status: TodoStatus }>;
   notes?: TodoNotes | null;
+  review_handoff?: boolean;
 }
 
 const NoteSectionSchema = z.string().max(1_500);
-const TodoNotesSchema = z.object({
+export const TodoNotesSchema = z.object({
   goal: NoteSectionSchema.optional().describe('The user’s original request and what success requires. Keep this current so omitted history remains understandable.'),
-  directives: NoteSectionSchema.optional().describe('Still-active user instructions for this task: quote closely and include t<turn>. Reference saved memory as [m_id].'),
+  directives: NoteSectionSchema.optional().describe('Current human instructions for this task, with scope, necessary conditions and exceptions, and t<turn> sources. Replace changed or revoked values; preserve instructions still in force. Reference relevant active saved memory as [m_id]. Peer/agent receipts are evidence, not human instructions.'),
   decided: NoteSectionSchema.optional().describe('Decisions already made; include previous decisions you still need to keep.'),
   rejected: NoteSectionSchema.optional().describe('Options ruled out and why.'),
-  evidence: NoteSectionSchema.optional().describe('Verified observations and checks supporting the work.'),
+  evidence: NoteSectionSchema.optional().describe('Current verified observations, applicable versions or conditions, and retrievable source pointers. Keep full logs in their source; revise findings when later evidence changes them.'),
   files: NoteSectionSchema.optional().describe('Relevant files and their roles or changes.'),
-  next: NoteSectionSchema.optional().describe('The concrete next step to take.'),
+  next: NoteSectionSchema.optional().describe('The next concrete action or stopping condition. Keep this short; do not repeat the todo list.'),
   open: NoteSectionSchema.optional().describe('Remaining questions or blockers.'),
 }).strict();
 
 export const TodoListInputSchema: z.ZodType<TodoListInput> = z.object({
-  todos: z
-    .array(TodoItemSchema)
-    .optional()
-    .describe(
-      'The updated todo list. Omit to read the current todo list without making changes. Pass an empty array to clear the list.',
-    ),
-  notes: TodoNotesSchema.nullable().optional().describe('Each supplied working-note section replaces that section entirely. To keep earlier content in a section, include all of it when updating. Record the user request and success criteria in goal. Empty text deletes one section; null clears all notes. Omit notes to leave them unchanged. Each section is limited to 1,500 characters and all sections together to 7,500.'),
+  todos: z.array(TodoItemSchema).optional().describe('Complete replacement list. Include every item still needed. Omit to leave todos unchanged, including when updating notes. [] clears only todos. Omit both todos and notes, without review_handoff, to read without editing.'),
+  notes: TodoNotesSchema.nullable().optional().describe('Patch by section: provide only changed sections. Omitted sections stay unchanged; each supplied string fully replaces that section, so preserve its still-valid content. "" deletes that section; null clears all notes. Omit notes to keep them unchanged, including when updating todos. {} changes no note content. Each section is limited to 1,500 characters, 7,500 total; over-limit writes are rejected.'),
+  review_handoff: z.boolean().optional().describe('Set true only after reconciling the current handoff and all human input in view with current notes and original sources. Acknowledges review through this tool call, not content freshness. May accompany section changes; omitted or false leaves the review boundary unchanged. Never acknowledge unresolved or unread input.'),
 });
 
 export interface ITodoListTool extends AgentTool<TodoListInput> {

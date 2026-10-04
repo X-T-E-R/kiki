@@ -10,6 +10,7 @@ import { HttpSessionViews } from './session-view.js';
 import { degradeUnconfirmedTranscriptCatchUp, degradeUnconfirmedTranscriptPage } from './transcript-coverage.js';
 import { HttpTerminals } from './terminal.js';
 import { HTTP_REQUEST_BODY_LIMIT_BYTES } from './limits.js';
+import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from './bounded-body.js';
 import type { TerminalFacade } from '../../core/facade/terminal.js';
 import type { HttpRestFacade } from '../../core/facade/http-rest.js';
 import { createHttpRestFacade, type HttpRestJsonOptions } from './rest.js';
@@ -42,6 +43,7 @@ interface Envelope<T> {
 
 export interface HttpChannelOptions {
   readonly endpoint: string;
+  readonly eventsUrl?: string;
   readonly token?: string;
   readonly fetch?: typeof fetch;
   readonly WebSocket?: typeof WebSocket;
@@ -124,7 +126,7 @@ export class HttpChannel implements KlientChannel {
   readonly sessionView: SessionViewChannel = {
     snapshot: (sessionId, options) => this.viewRequest(`/api/klient/session-view/${encodeURIComponent(sessionId)}/snapshot`, {}, { signal: options?.signal, timeoutMs: options?.timeoutMs }),
     transcriptPage: (sessionId, input) => this.transcriptRequest('page', `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript`, {
-      agent_id: input.agentId, before_turn: input.beforeTurn, after_turn: input.afterTurn, page_size: input.pageSize,
+      agent_id: input.agentId, before_turn: input.beforeTurn, before_item: input.beforeItem, after_turn: input.afterTurn, after_item: input.afterItem, page_size: input.pageSize,
     }),
     transcriptCatchUp: (sessionId, input) => this.transcriptRequest('catchUp', `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript/catch-up`, {
       agent_id: input.agentId, epoch: input.since.epoch, since_seq: input.since.seq, grade: input.grade ?? 'delta',
@@ -133,6 +135,15 @@ export class HttpChannel implements KlientChannel {
       `/api/sessions/${encodeURIComponent(sessionId)}/transcript/detail`,
       { agent_id: input.agentId, kind: input.kind, id: input.id },
       { signal: options?.signal, timeoutMs: options?.timeoutMs },
+    ),
+    transcriptEntities: (sessionId, input, options) => this.viewRequest(
+      `/api/sessions/${encodeURIComponent(sessionId)}/transcript/details`,
+      { agent_id: input.agentId, kind: input.kind, cursor: input.cursor, limit: input.limit },
+      { signal: options?.signal, timeoutMs: options?.timeoutMs },
+    ),
+    transcriptContent: (sessionId, input, options) => this.viewRequest(
+      `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript/content`, {},
+      { method: 'POST', body: input, signal: options?.signal, timeoutMs: options?.timeoutMs },
     ),
     subscribe: (sessionId, input, handler) => {
       if (this.closed) throw new Error('http closed');
@@ -188,7 +199,8 @@ export class HttpChannel implements KlientChannel {
         await response.body?.cancel();
         return undefined as T;
       }
-      const envelope = await this.readEnvelope(response, options.signal);
+      const boundedSession = /\/klient\/session-view\//.test(path) || /\/transcript(?:\/(?:detail|details|ops))?$/.test(path);
+      const envelope = await this.readEnvelope(response, options.signal, boundedSession ? SESSION_READ_BODY_BYTES : 4 * 1024 * 1024);
       const okCodes = options.okCodes ?? [0];
       if (response.ok === false || !okCodes.includes(envelope.code)) {
         throw new RPCError(
@@ -288,10 +300,12 @@ export class HttpChannel implements KlientChannel {
           body: body as never,
           headers,
           signal: controller.signal,
+          redirect: 'error',
         });
       } catch (error) {
         if (timedOut) throw this.transportTimeoutError(timeoutMs);
         if (this.closed && controller.signal.aborted) throw new Error('http closed', { cause: error });
+        if (error instanceof RPCError) throw error;
         throw new RPCError(-1, error instanceof Error ? error.message : 'Connection failed');
       }
       if (timedOut) throw this.transportTimeoutError(timeoutMs);
@@ -323,10 +337,10 @@ export class HttpChannel implements KlientChannel {
     );
   }
 
-  private async readEnvelope(response: Response, signal?: AbortSignal): Promise<Envelope<unknown>> {
+  private async readEnvelope(response: Response, signal?: AbortSignal, maxBytes = 4 * 1024 * 1024): Promise<Envelope<unknown>> {
     let envelope: Envelope<unknown> | null;
     try {
-      envelope = (await response.json()) as Envelope<unknown> | null;
+      envelope = await readBoundedJsonBody(response, maxBytes) as Envelope<unknown> | null;
     } catch (error) {
       if (isAbortError(error) || signal?.aborted === true || !(error instanceof SyntaxError)) throw error;
       throw new RPCError(response.status, `HTTP ${response.status} — non-JSON response`);
@@ -349,6 +363,7 @@ export class HttpChannel implements KlientChannel {
     this.defaultTimeoutMs = options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
     this.socket = new HttpEventSocket({
       endpoint,
+      eventsUrl: options.eventsUrl,
       token: options.token,
       WebSocket: options.WebSocket,
       onDiagnostic: options.onSocketDiagnostic,
@@ -472,11 +487,12 @@ class HttpEventSocket {
 
   constructor(options: {
     endpoint: string;
+    eventsUrl?: string;
     token?: string;
     WebSocket?: typeof WebSocket;
     onDiagnostic?: (event: HttpSocketDiagnostic) => void;
   }) {
-    this.wsUrl = toWebSocketUrl(options.endpoint);
+    this.wsUrl = options.eventsUrl ?? toWebSocketUrl(options.endpoint);
     this.token = options.token;
     this.WebSocketCtor = options.WebSocket ?? globalThis.WebSocket;
     this.onDiagnostic = options.onDiagnostic;
@@ -722,6 +738,7 @@ class HttpEventSocket {
       if (this.ws !== ws) return;
       this.ws = undefined;
       if (!this.closed) this.reportClose('server', event as { code?: number; reason?: string; wasClean?: boolean });
+      if ([4001, 1008].includes(event.code)) this.fatalRetriesLeft = 0;
       this.onClose();
     });
     ws.addEventListener('error', () => {

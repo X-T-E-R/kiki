@@ -239,6 +239,94 @@ describe('PersonaStore', () => {
     expect(await store.get('lin-lan')).toEqual(created);
   });
 
+  it('rejects oversized serialized writes before changing assets or memory', async () => {
+    const original = await store.put({ ...definition, examples: 'original', extensions: { kept: true } });
+    const write = vi.spyOn(storage, 'write');
+    const remove = vi.spyOn(storage, 'delete');
+    for (const patch of [
+      { description: '界'.repeat(350_000) },
+      { examples: '界'.repeat(90_000) },
+      { extensions: { text: '界'.repeat(90_000) } },
+    ]) {
+      await expect(store.put({ ...definition, ...patch, expectedRevision: original.revision })).rejects.toThrow('size limit');
+      expect(write).not.toHaveBeenCalled();
+      expect(remove).not.toHaveBeenCalled();
+      expect(await store.get(definition.id)).toEqual(original);
+      expect(await store.list()).toEqual([expect.objectContaining({ id: definition.id, revision: original.revision })]);
+      expect((await store.exportCard(definition.id, 'json')).data.byteLength).toBeGreaterThan(0);
+    }
+    expect(importedLorebook).toEqual([]);
+    expect(deletedPersonas).toEqual([]);
+  });
+
+  it('accepts the exact UTF-8 file boundary and keeps successful writes readable and exportable', async () => {
+    const first = await store.put({ ...definition, description: 'x' });
+    const overhead = (await storage.size('personas/lin-lan', 'persona.md'))! - 1;
+    const snapshot = await store.put({ ...definition, description: 'x'.repeat(1024 * 1024 - overhead), examples: 'x'.repeat(256 * 1024) });
+    expect(await storage.size('personas/lin-lan', 'persona.md')).toBe(1024 * 1024);
+    expect(await store.get(definition.id)).toEqual(snapshot);
+    expect((await store.list())[0]?.revision).toBe(snapshot.revision);
+    expect((await store.exportCard(definition.id, 'json')).data.byteLength).toBeGreaterThan(0);
+    await expect(store.put({ ...definition, description: `${snapshot.definition.description}x`, expectedRevision: snapshot.revision })).rejects.toThrow('size limit');
+    expect((await store.get(definition.id))?.revision).not.toBe(first.revision);
+  });
+
+  it('rejects oversized imported persona, examples and extensions before asset or memory writes', async () => {
+    const write = vi.spyOn(storage, 'write');
+    const remove = vi.spyOn(storage, 'delete');
+    for (const patch of [
+      { description: 'x'.repeat(1024 * 1024) },
+      { mes_example: 'x'.repeat(256 * 1024 + 1) },
+      { extensions: { text: 'x'.repeat(256 * 1024) } },
+    ]) {
+      const card = JSON.stringify({ spec: 'chara_card_v3', spec_version: '3.0', data: {
+        name: 'Guide', description: 'guide', ...patch,
+        character_book: { entries: [{ comment: 'fact', content: 'value', constant: true }] },
+      } });
+      await expect(store.importCard({ data: card, format: 'json' }, { id: 'guide' })).rejects.toThrow('size limit');
+      expect(write).not.toHaveBeenCalled();
+      expect(remove).not.toHaveBeenCalled();
+      expect(await store.get('guide')).toBeUndefined();
+    }
+    expect(importedLorebook).toEqual([]);
+    expect(deletedPersonas).toEqual([]);
+  });
+
+  it('repairs invalid or oversized definitions without parsing the old asset', async () => {
+    await store.put(definition);
+    await store.updateState(definition.id, { homeSessionId: 'owned-session' });
+    for (const raw of ['invalid frontmatter', 'x'.repeat(1024 * 1024 + 1)]) {
+      await storage.write('personas/lin-lan', 'persona.md', new TextEncoder().encode(raw));
+      await expect(store.get(definition.id)).rejects.toThrow();
+      const restored = await store.put({ ...definition, description: 'Recovered' });
+      expect(await store.get(definition.id)).toEqual(restored);
+      expect((await store.getState(definition.id)).homeSessionId).toBe('owned-session');
+    }
+    expect(deletedPersonas).toEqual([]);
+  });
+
+  it('deletes broken assets only after persona lifecycle and memory cleanup succeed', async () => {
+    await store.put(definition);
+    const order: string[] = [];
+    store.setLifecycleHooks({ beforeArchive: async () => ({}), beforeDelete: async (id) => { order.push(`lifecycle:${id}`); } });
+    store.setMemoryHooks({ importLorebook: async () => {}, deletePersonaNamespaces: async (id) => {
+      order.push(`memory:${id}`);
+      if (memoryFailure) throw new Error('memory unavailable');
+      expect(await storage.size('personas/lin-lan', 'persona.md')).toBe(1024 * 1024 + 1);
+      deletedPersonas.push(id);
+    } });
+    await storage.write('personas/lin-lan', 'persona.md', new TextEncoder().encode('x'.repeat(1024 * 1024 + 1)));
+    memoryFailure = true;
+    expect((await store.delete(definition.id)).memory.status).toBe('failed');
+    expect(await storage.size('personas/lin-lan', 'persona.md')).toBe(1024 * 1024 + 1);
+    memoryFailure = false;
+    expect((await store.delete(definition.id)).memory.status).toBe('committed');
+    expect(order).toEqual(['lifecycle:lin-lan', 'memory:lin-lan', 'lifecycle:lin-lan', 'memory:lin-lan']);
+    expect(deletedPersonas).toEqual(['lin-lan']);
+    expect(await storage.list('personas/lin-lan')).toEqual([]);
+    expect(await store.list()).toEqual([]);
+  });
+
   it('emits a catalog change after an external persona file edit', async () => {
     await store.put(definition);
     let changes = 0;
@@ -254,7 +342,8 @@ describe('PersonaStore', () => {
   it('updates state without changing the frozen revision and preserves unknown fields', async () => {
     const created = await store.put(definition);
     const initialState = await store.getState('lin-lan');
-    expect(initialState).toEqual({ version: 1, archived: false });
+    expect(initialState).toEqual({ version: 1, archived: false, pinned: false, hidden: false });
+    expect(await storage.size('personas/lin-lan', 'state.json')).toBeUndefined();
     const updated = await store.updateState('lin-lan', {
       homeSessionId: 'session-1',
       pinned: true,
@@ -333,7 +422,8 @@ describe('PersonaStore', () => {
     expect(duplicate.definition.name).toBe('林岚 副本');
     expect(duplicate.examples).toBe('example');
     expect(await store.getAvatar('lin-lan-copy')).toMatchObject({ mimeType: 'image/png', shape: 'circle' });
-    expect(await store.getState('lin-lan-copy')).toEqual({ version: 1, archived: false });
+    expect(await store.getState('lin-lan-copy')).toEqual({ version: 1, archived: false, pinned: false, hidden: false });
+    expect(await storage.size('personas/lin-lan-copy', 'state.json')).toBeUndefined();
     expect(await store.list({ includeArchived: true })).toHaveLength(2);
     expect(importedLorebook).toEqual([]);
   });

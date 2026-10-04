@@ -24,6 +24,11 @@ export interface SshHostInput extends Omit<SshHostRecord, 'source'> {
   readonly source?: 'kiki';
 }
 
+export interface SshConfigSyncSettings {
+  readonly enabled: boolean;
+  readonly source: 'home' | 'base' | 'default';
+}
+
 interface HostDocument {
   sync_ssh_config?: boolean;
   connection_approval?: boolean;
@@ -39,7 +44,16 @@ function parseDocument(text: string | undefined): HostDocument {
   if (value.hosts !== undefined && (typeof value.hosts !== 'object' || Array.isArray(value.hosts))) {
     throw new Error('Invalid SSH hosts document');
   }
+  if (value.sync_ssh_config !== undefined && typeof value.sync_ssh_config !== 'boolean') {
+    throw new Error('Invalid SSH config sync setting');
+  }
   return value;
+}
+
+function configSyncSettings(home: HostDocument, base: HostDocument): SshConfigSyncSettings {
+  if (home.sync_ssh_config !== undefined) return { enabled: home.sync_ssh_config, source: 'home' };
+  if (base.sync_ssh_config !== undefined) return { enabled: base.sync_ssh_config, source: 'base' };
+  return { enabled: true, source: 'default' };
 }
 
 export function normalizeHost(host: SshHostInput): SshHostRecord {
@@ -98,6 +112,10 @@ export class SshHostStore {
     throw new Error('SSH hosts document changed concurrently');
   }
 
+  async configSync(): Promise<SshConfigSyncSettings> {
+    return configSyncSettings((await this.read(GLOBAL_KEY)).document, await this.baseGlobal());
+  }
+
   async setSyncSshConfig(enabled: boolean): Promise<void> {
     await this.change(GLOBAL_KEY, (document) => ({ ...document, sync_ssh_config: enabled }));
   }
@@ -116,7 +134,7 @@ export class SshHostStore {
     const global = (await this.read(GLOBAL_KEY)).document;
     const workspace = workspaceId === undefined ? {} : (await this.read(workspaceSshKey(workspaceId))).document;
     const hosts = new Map<string, SshHostRecord>();
-    if ((global.sync_ssh_config ?? base.sync_ssh_config) !== false) {
+    if (configSyncSettings(global, base).enabled) {
       for (const alias of await discoverSshAliases(this.sshConfigFile)) {
         hosts.set(alias, { id: alias, name: alias, source: 'ssh-config' });
       }

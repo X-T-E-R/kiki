@@ -16,6 +16,8 @@ import { drainLogCloses } from '#/_base/log/logService';
 import { DEFAULT_PLAN_MODE_SECTION } from '#/features/plan/configSection';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { CRON_SESSION_TAG, type CronTask } from '#/app/cron/cronTask';
@@ -307,11 +309,27 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return promise;
   }
 
+  private async assertNewSession(sessionId: string): Promise<void> {
+    if (this.sessions.has(sessionId) || (await this.index.get(sessionId)) !== undefined) {
+      throw new Error2(ErrorCodes.SESSION_ALREADY_EXISTS, `Session "${sessionId}" already exists`);
+    }
+    for (const scope of new Set([this.sessionScope(sessionId), sessionScopeOf(this.handlerScope, sessionId)])) {
+      try {
+        await this.hostFs.stat(join(this.bootstrap.homeDir, scope));
+      } catch (error) {
+        if (isMissingFileError(error)) continue;
+        throw error;
+      }
+      throw new Error2(ErrorCodes.SESSION_ALREADY_EXISTS, `Session "${sessionId}" already exists`);
+    }
+  }
+
   async create(opts: CreateSessionOptions): Promise<ISessionScopeHandle> {
     const sessionId = opts.sessionId ?? createSessionId();
     if (opts.localSession !== undefined && (sessionId.startsWith('external:') || sessionId === opts.localSession.externalId)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'External source IDs cannot be used as Kiki session IDs');
     }
+    await this.assertNewSession(sessionId);
     if (opts.ephemeral === true) this.ephemeralSessions.add(sessionId);
     await this.workspaceSkillCatalog
       .reloadSources(SESSION_CREATE_RELOAD_SKILL_SOURCES)
@@ -388,6 +406,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     let handle: ISessionScopeHandle;
     try {
       await this.acquireSessionLock(opts.sessionId, opts.waitForSessionMs);
+      if (opts.rollbackOnMaterializationFailure === true) await this.assertNewSession(opts.sessionId);
       workspaceReference = this.acquireWorkspaceReference();
       handle = createScopedChildHandle(
         this.instantiation,
@@ -668,6 +687,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const activity = handle.accessor.get(ISessionActivityView).state();
     if (activity.busy || activity.pendingInteraction !== 'none') return false;
     const agents = handle.accessor.get(IAgentLifecycleService);
+    if (this.hasUnloadBlockers(handle)) return false;
     if (agents.countPendingBackgroundTasks() > 0) return false;
     if (handle.accessor.get(ISessionTerminalService).countLiveTerminals() > 0) return false;
     const externalRoot = await this.docs.get(
@@ -687,13 +707,24 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (finalActivity.busy || finalActivity.pendingInteraction !== 'none') return false;
     if (agents.countPendingBackgroundTasks() > 0) return false;
     if (handle.accessor.get(ISessionTerminalService).countLiveTerminals() > 0) return false;
-    await this.drainAgents(handle);
+    if (this.hasUnloadBlockers(handle)) return false;
     this.sessions.delete(sessionId);
     handle.dispose();
     await drainLogCloses();
     await this.releaseSessionLock(sessionId);
     this._onDidCloseSession.fire({ sessionId, reason: 'evict' });
     return true;
+  }
+
+  private hasUnloadBlockers(handle: ISessionScopeHandle): boolean {
+    for (const agent of handle.accessor.get(IAgentLifecycleService).list()) {
+      const prompts = agent.accessor.get(IAgentPromptService).list();
+      if (prompts.active !== undefined || prompts.launching !== undefined || prompts.pending.length > 0 || prompts.hold !== undefined) return true;
+      const loop = agent.accessor.get(IAgentLoopService).status();
+      if (loop.state !== 'idle' || loop.pendingTurnIds.length > 0 || loop.hasPendingRequests) return true;
+      if (agent.accessor.get(IAgentExecutionService).status().state !== 'idle') return true;
+    }
+    return false;
   }
 
   async archive(sessionId: string): Promise<void> {
@@ -746,7 +777,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (meta === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `temporary session ${sessionId} metadata is missing`);
     await this.storage.moveDirectory(this.sessionScope(sessionId), sessionScopeOf(this.handlerScope, sessionId));
     this.ephemeralSessions.delete(sessionId);
-    await this.appendSessionIndexEntry(sessionId, context.cwd, meta.worktree?.sourceRoot);
     this.indexMirror.record({
       id: sessionId,
       workspaceId: this.workspaceId,
@@ -762,6 +792,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       usage: meta.usage,
       worktree: meta.worktree,
     });
+    await this.appendSessionIndexEntry(sessionId, context.cwd, meta.worktree?.sourceRoot);
   }
 
   async delete(sessionId: string, onRemoved?: () => void): Promise<void> {
@@ -927,12 +958,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       }
 
       targetId = opts.newSessionId ?? createSessionId();
-      if (this.sessions.has(targetId) || (await this.index.get(targetId)) !== undefined) {
-        throw new Error2(
-          ErrorCodes.SESSION_ALREADY_EXISTS,
-          `Session "${targetId}" already exists`,
-        );
-      }
+      await this.assertNewSession(targetId);
 
       const turnSlice =
         opts.turnIndex === undefined
@@ -944,6 +970,13 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
               opts.throughUserMessage,
             );
 
+      await this.acquireSessionLock(targetId);
+      try {
+        await this.assertNewSession(targetId);
+      } catch (error) {
+        await this.releaseSessionLock(targetId);
+        throw error;
+      }
       targetSessionDir = sessionDirOf(this.bootstrap.homeDir, this.handlerScope, targetId);
       await this.copySessionFiles(
         sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sourceId),
@@ -1029,7 +1062,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await this.announceCreated({ sessionId: targetId, handle: target, source: 'fork' });
       return target;
     } catch (error) {
-      if (targetId === undefined) throw error;
+      if (targetId === undefined || targetSessionDir === undefined) throw error;
       return this.rollbackSession(targetId, target, targetSessionDir, error);
     }
   }

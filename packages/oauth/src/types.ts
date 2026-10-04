@@ -14,6 +14,7 @@ export type OAuthStorageBackend = 'file';
 export interface TokenInfo {
   readonly accessToken: string;
   readonly refreshToken: string;
+  readonly idToken?: string;
   /** Unix seconds when access_token expires. */
   readonly expiresAt: number;
   readonly scope: string;

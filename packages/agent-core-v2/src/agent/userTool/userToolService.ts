@@ -6,6 +6,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { abortable } from '#/_base/utils/abort';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import type {
   ExecutableTool,
   ExecutableToolContext,
@@ -41,6 +42,7 @@ export class AgentUserToolService extends Service implements IAgentUserToolServi
     @ISessionInteractionService private readonly interaction: ISessionInteractionService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @IAgentStateService private readonly agentState: IAgentStateService,
+    @IAgentScopeContext private readonly agentContext: IAgentScopeContext,
   ) {
     super();
     this.agentState.contributeState(userToolKey);
@@ -127,6 +129,7 @@ export class AgentUserToolService extends Service implements IAgentUserToolServi
         args,
       },
       origin: {
+        agentId: this.agentContext.agentId,
         turnId: context.turnId,
       },
     });

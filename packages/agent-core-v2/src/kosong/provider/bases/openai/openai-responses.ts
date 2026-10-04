@@ -46,7 +46,7 @@ import {
 } from './openai-common';
 import {
   mergeProviderRequestAuth,
-  requestIdentityFetch,
+  requestIdentityFetchForAuth,
   mergeRequestHeaders,
   requireProviderApiKey,
   resolveAuthBackedClient,
@@ -1233,7 +1233,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
       apiKey,
       baseURL: this._baseUrl,
       maxRetries: 0,
-      fetch: requestIdentityFetch,
+      fetch: requestIdentityFetchForAuth(auth),
     };
     const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers);
     if (defaultHeaders !== undefined) {

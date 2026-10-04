@@ -1,4 +1,7 @@
+import { generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { SSHKaos } from '@kiki/kaos/ssh';
+import { utils } from 'ssh2';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -249,6 +252,102 @@ describe('SSH host store', () => {
       expect(await store.read(account, 'password')).toBeUndefined();
       expect(values.size).toBe(0);
     } finally {
+      disposables.dispose();
+    }
+  });
+});
+
+
+describe('S5 authoritative SSH settings reads', () => {
+  const documents = new DisposableStore();
+  afterEach(() => { documents.clear(); });
+  function persistedDocuments(home: string) {
+    const ix = createServices(documents, { additionalServices: (registry) => {
+      registry.defineInstance(IFileSystemStorageService, new FileStorageService(home, 0o700, 0o600));
+      registry.define(ISshHostDocumentStore, TomlAtomicDocumentStore);
+    } });
+    return ix.get(ISshHostDocumentStore);
+  }
+
+  it('reads default, persisted off and on after refresh with empty or fully shadowed config', async () => {
+    const { home, config, hosts } = await fixture();
+    await writeFile(config, '');
+    expect(await hosts.configSync()).toEqual({ enabled: true, source: 'default' });
+    expect(await hosts.list()).toEqual([]);
+    const refresh = () => new SshHostStore(persistedDocuments(home), config);
+    for (const enabled of [false, true, false]) {
+      await hosts.setSyncSshConfig(enabled);
+      expect(await refresh().configSync()).toEqual({ enabled, source: 'home' });
+      expect(await refresh().list()).toEqual([]);
+    }
+    await writeFile(config, 'Host dev\n  HostName example.test\n');
+    await hosts.upsert({ id: 'dev', name: 'Saved', hostname: 'saved.example.test' });
+    await hosts.setSyncSshConfig(true);
+    expect(await refresh().list()).toMatchObject([{ id: 'dev', source: 'kiki' }]);
+    expect(await refresh().configSync()).toEqual({ enabled: true, source: 'home' });
+    await hosts.setSyncSshConfig(false);
+    expect(await refresh().list()).toMatchObject([{ id: 'dev', source: 'kiki' }]);
+    expect(await refresh().configSync()).toEqual({ enabled: false, source: 'home' });
+  });
+
+  it('reports base and home precedence and propagates invalid or failed settings reads', async () => {
+    const { home, config } = await fixture();
+    const base = await mkdtemp(join(tmpdir(), 'kiki-ssh-base-'));
+    directories.push(base);
+    const baseDocs = persistedDocuments(base);
+    const homeDocs = persistedDocuments(home);
+    await baseDocs.setText('', 'ssh/hosts.toml', 'sync_ssh_config = false\n');
+    const store = new SshHostStore(homeDocs, config, baseDocs);
+    expect(await store.configSync()).toEqual({ enabled: false, source: 'base' });
+    await store.setSyncSshConfig(true);
+    expect(await store.configSync()).toEqual({ enabled: true, source: 'home' });
+    expect(await baseDocs.getText('', 'ssh/hosts.toml')).toBe('sync_ssh_config = false\n');
+    await homeDocs.setText('', 'ssh/hosts.toml', 'sync_ssh_config = "false"\n');
+    await expect(store.configSync()).rejects.toThrow('Invalid SSH config sync setting');
+    const failed = vi.spyOn(homeDocs, 'getText').mockRejectedValue(new Error('fixture read failed'));
+    await expect(store.configSync()).rejects.toThrow('fixture read failed');
+    failed.mockRestore();
+  });
+
+  it('inspects saved identity overrides without connecting, credentials or trust writes', async () => {
+    const { home, config } = await fixture();
+    const path = join(home, '.ssh', 'known_hosts');
+    const privateKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
+    const parsed = utils.parseKey(privateKey);
+    if (parsed instanceof Error || Array.isArray(parsed)) throw new Error('Invalid test host key');
+    const text = `[saved.example.test]:2200 ssh-rsa ${parsed.getPublicSSH().toString('base64')}\n`;
+    await writeFile(path, text);
+    await writeFile(config, `Host dev\n  HostName alias.example.test\n  User tester\n  Port 2222\n  UserKnownHostsFile ${path}\n`);
+    const disposables = new DisposableStore();
+    const create = vi.spyOn(SSHKaos, 'create');
+    const credentials = vi.fn(async () => { throw new Error('Unexpected credentials read'); });
+    try {
+      const ix = createServices(disposables, { additionalServices: (registry) => {
+        registry.defineInstance(IFileSystemStorageService, new FileStorageService(home, 0o700, 0o600));
+        registry.define(ISshHostDocumentStore, TomlAtomicDocumentStore);
+        registry.definePartialInstance(IBootstrapService, { homeDir: home, osHomeDir: home });
+        registry.definePartialInstance(IFlagService, { enabled: () => true });
+        registry.definePartialInstance(ISshCredentialStore, { read: credentials, forget: async () => undefined });
+        registry.define(ISshHostService, SshHostService);
+      } });
+      const service = ix.get(ISshHostService);
+      await service.upsert({ id: 'dev', name: 'Saved', hostname: 'saved.example.test', user: 'tester', port: 2200 }, 'workspace');
+      expect(await service.hostKeys('dev', 'workspace')).toMatchObject({ hostId: 'dev', workspaceId: 'workspace',
+        hostname: 'saved.example.test', port: 2200, state: 'recorded', records: [{ algorithm: 'ssh-rsa', status: 'recorded' }] });
+      expect(await service.hostKeys('dev')).toMatchObject({ hostname: 'alias.example.test', port: 2222, state: 'unrecorded' });
+      await expect(service.hostKeys('absent')).rejects.toThrow('Unknown SSH host');
+      await writeFile(config, `Host dev\n  HostName alias.example.test\n  User tester\n  UserKnownHostsFile "${path} second"\n`);
+      const one = await service.resolveTarget('dev');
+      expect(await service.hostKeys('dev')).toMatchObject({ state: 'unavailable', files: [{ reason: 'ambiguous-known-hosts-paths' }] });
+      await writeFile(config, `Host dev\n  HostName alias.example.test\n  User tester\n  UserKnownHostsFile ${path} second\n`);
+      expect((await service.resolveTarget('dev')).userKnownHostsFiles).toEqual(one.userKnownHostsFiles);
+      expect(await service.hostKeys('dev')).toMatchObject({ state: 'unavailable', files: [{ reason: 'ambiguous-known-hosts-paths' }] });
+      expect(create).not.toHaveBeenCalled();
+      expect(credentials).not.toHaveBeenCalled();
+      expect(service.status('dev', 'workspace').state).toBe('idle');
+      expect(await readFile(path, 'utf8')).toBe(text);
+    } finally {
+      create.mockRestore();
       disposables.dispose();
     }
   });

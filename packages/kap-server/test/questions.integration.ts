@@ -171,6 +171,33 @@ describe('server-v2 /api/sessions/{sid}/questions', () => {
     expect(item).not.toHaveProperty('expires_at');
   });
 
+  it('keeps detached questions across a consumer disconnect fixture and delivers one REST answer to the waiting caller', async () => {
+    const sid = await createSession();
+    const otherSid = await createSession();
+    const interaction = getLiveSessionById(server!.core.accessor, sid)!.accessor.get(ISessionInteractionService);
+    const questions = questionService(sid);
+    const result = questions.request({ ...makeRequest('q-background'), turnId: 7 }, { detached: true, agentId: 'main' });
+    const second = questions.request({ ...makeRequest('q-independent'), turnId: 7 }, { detached: true, agentId: 'main' });
+    interaction.releaseConsumer('question-route-test-client');
+    interaction.cancelPendingForTurn(7);
+    const listed = await getJson<ListWire>(`/api/sessions/${sid}/questions?status=pending`);
+    expect(listed.body.data.items.map((item) => item.question_id)).toEqual(['q-background', 'q-independent']);
+    expect(listed.body.data.items[0]!.session_id).toBe(sid);
+    const wrongSession = await postJson(`/api/sessions/${otherSid}/questions/q-background`, { answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } } });
+    expect(wrongSession.body.code).toBe(40405);
+    interaction.acquireConsumer('question-route-test-reconnected');
+    const invalid = await postJson(`/api/sessions/${sid}/questions/q-background`, { answers: { q_0: { kind: 'single' } } });
+    expect(invalid.body.code).toBe(40001);
+    expect(questions.listPending()).toHaveLength(2);
+    const answer = { answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } }, method: 'click' };
+    expect((await postJson(`/api/sessions/${sid}/questions/q-background`, answer)).body.code).toBe(0);
+    await expect(result).resolves.toEqual({ answers: { 'Pick one': 'Yes' } });
+    expect((await postJson(`/api/sessions/${sid}/questions/q-background`, answer)).body.code).toBe(40902);
+    expect(questions.listPending().map((request) => request.id)).toEqual(['q-independent']);
+    expect((await postJson(`/api/sessions/${sid}/questions/q-independent:dismiss`)).body.code).toBe(40909);
+    await expect(second).resolves.toBeNull();
+  });
+
   it('resolves a pending question', async () => {
     const sid = await createSession();
     questionService(sid).enqueue(makeRequest('q-2'));

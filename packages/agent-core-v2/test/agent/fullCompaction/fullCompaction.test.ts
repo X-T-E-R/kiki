@@ -321,7 +321,7 @@ describe('FullCompaction', () => {
         compacted_count: 6,
         retry_count: 0,
         thinking_effort: 'off',
-        input_tokens: 1326, // The standing-directives instruction adds 145 estimated input tokens.
+        input_tokens: 1358,
         output_tokens: 8,
         input_cache_read: 0,
         input_cache_creation: 0,
@@ -443,6 +443,7 @@ describe('FullCompaction', () => {
     ctx.mockNextResponse({ type: 'text', text: 'Turn done.' });
     approval.respond({ decision: 'rejected', selectedLabel: 'reject' });
     await ctx.untilTurnEnd();
+    await ctx.get(IAgentLoopService).settled();
     expect(ctx.get(IAgentLoopService).status().activeTurnId).toBeUndefined();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -1288,7 +1289,6 @@ describe('FullCompaction', () => {
     const events = await ctx.untilTurnEnd();
 
     expect(attempts).toBe(1);
-    expect(events).not.toContainEqual(expect.objectContaining({ event: 'error' }));
     expect(events).toContainEqual(
       expect.objectContaining({
         event: 'turn.ended',
@@ -1303,9 +1303,12 @@ describe('FullCompaction', () => {
         }),
       }),
     );
-    const errorEvents = (ctx.newEvents() as readonly { event?: string }[]).filter(
-      (entry) => entry.event === 'error',
-    );
+    await ctx.get(IAgentLoopService).settled();
+    const settledEvents = [...events, ...ctx.newEvents()];
+    expect(settledEvents.filter((entry) => typeof entry === 'object' && entry !== null
+      && 'type' in entry && entry.type === '[rpc]' && 'event' in entry && entry.event === 'turn.ended')).toHaveLength(1);
+    const errorEvents = settledEvents.filter((entry) => typeof entry === 'object' && entry !== null
+      && 'event' in entry && entry.event === 'error');
     expect(errorEvents).toHaveLength(1);
     expect(errorEvents[0]).toMatchObject({
       event: 'error',
@@ -2255,8 +2258,9 @@ describe('FullCompaction', () => {
         getTodos: () => [],
         getNotes: () => ({ notes: { goal: 'finish request', next: 'continue' }, meta: {
           rev: 1, hash: 'fixture', writtenTurn: 2, writtenStep: 't2.1', coveredMessageId: 'toolcall:notes-call', windowEpoch: 0,
+          reviewedMessageId: 'toolcall:notes-call', reviewedWindowEpoch: 0,
         } }),
-        setNotes: () => {}, setCompactionDirectives: () => {}, setTodos: () => {}, clear: () => {},
+        setNotes: () => {}, setTodos: () => {}, clear: () => {},
         onDidChange: () => ({ dispose: () => {} }), onDidChangeAgent: () => ({ dispose: () => {} }),
       });
     }));
@@ -3514,8 +3518,7 @@ describe('FullCompaction', () => {
       sessionServices((reg) => {
         reg.definePartialInstance(ISessionTodoService, {
           getTodos: () => [], getNotes: () => ({ notes: { goal: 'finish task', directives: 'Follow [m_original]', decided: 'Check [m_revoked]' },
-            meta: { rev: 1, hash: 'fixture', writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: 'toolcall:notes-call', windowEpoch: 0 } }),
-          setCompactionDirectives: () => {},
+            meta: { rev: 1, hash: 'fixture', writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: 'toolcall:notes-call', windowEpoch: 0, reviewedMessageId: 'toolcall:notes-call', reviewedWindowEpoch: 0 } }),
         });
       }),
       agentService(IAgentMemorySnapshot, { _serviceBrand: undefined, get: async () => 'frozen memory', refreshIfDirty: async () => undefined, getSessionEntries: async () => [],
@@ -3588,21 +3591,28 @@ describe('FullCompaction', () => {
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it('hands summarized directives to the notes service after the window switch', async () => {
-    const recorded: string[] = [];
+  it('keeps summarized directives as complete pending candidates without writing current notes', async () => {
+    const setNotes = vi.fn();
+    const notes = { directives: ' KEEP_OLD_RULE ' };
+    const meta = { rev: 4, hash: 'original', writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: '', windowEpoch: 0 };
     const ctx = testAgent(sessionServices((reg) => {
-      reg.definePartialInstance(ISessionTodoService, { getTodos: () => [], getNotes: () => ({}),
-        setCompactionDirectives: (text) => { recorded.push(text); } });
+      reg.definePartialInstance(ISessionTodoService, { getTodos: () => [], getNotes: () => ({ notes, meta }), setNotes });
     }));
     ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
-    ctx.appendExchange(2, 'directly pin grok', 'acknowledged', 80);
-    ctx.mockNextResponse({ type: 'text', text: 'Continue task.\n\n## Standing directives\nDirectly pin Grok if the profile is unavailable.' });
+    ctx.appendExchange(2, 'retain the permission condition', 'acknowledged', 80);
+    const candidate = `${'N'.repeat(1500)}\n KEEP_OLD_RULE `;
+    ctx.mockNextResponse({ type: 'text', text: `Continue task.\n\n## Standing directives\n${candidate}` });
     await ctx.rpc.beginCompaction({});
-    await ctx.get(IAgentFullCompactionService).compacting!.promise;
-    expect(ctx.compactHistory().at(-1)?.text).toContain('Directly pin Grok if the profile is unavailable.');
-    expect(recorded).toEqual(['Directly pin Grok if the profile is unavailable.']);
-    expect(ctx.compactHistory().at(-1)?.text).toContain('## User input since notes');
+    const result = await ctx.get(IAgentFullCompactionService).compacting!.promise;
+    const text = ctx.compactHistory().at(-1)?.text;
+    expect(text).toContain('## Pending directive review');
+    expect(text).toContain(candidate.trim());
+    expect(text).toContain('Automatic promotion skipped: budget');
+    expect(text).toContain('notes revision 4 is unchanged');
+    expect(setNotes).not.toHaveBeenCalled();
+    expect(notes.directives).toBe(' KEEP_OLD_RULE ');
+    expect(result.reasonCodes).toContain('notes_directives_budget');
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -4120,8 +4130,7 @@ function boardCompactionFixture(strategy: 'summarize' | 'relay', options: { enab
     sessionServices((reg) => {
       reg.definePartialInstance(ISessionTodoService, {
         getTodos: () => [], getNotes: () => ({ notes: { goal: 'finish task', directives: 'Keep requirements separate from steps.' },
-          meta: { rev: 1, hash: 'fixture', writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: 'toolcall:notes-call', windowEpoch: 0 } }),
-        setCompactionDirectives: () => {},
+          meta: { rev: 1, hash: 'fixture', writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: 'toolcall:notes-call', windowEpoch: 0, reviewedMessageId: 'toolcall:notes-call', reviewedWindowEpoch: 0 } }),
       });
     }),
   );

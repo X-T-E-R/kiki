@@ -32,6 +32,7 @@ export interface PromptSubmitContext {
 export type DeferredAppendTiming = 'agent_idle' | 'subagents_done' | 'tasks_done';
 
 export interface PromptExecutionBinding {
+  readonly afterModelSwitch?: string;
   readonly personaGreetingReply?: boolean;
   readonly profile?: string;
   readonly model?: string;
@@ -80,6 +81,8 @@ export interface PromptSnapshot {
   readonly createdAt: string;
   readonly state: PromptState;
   readonly message: ContextMessage;
+  readonly execution?: PromptExecutionBinding;
+  readonly queueIndex?: number;
   readonly appendTiming?: DeferredAppendTiming;
   readonly revision?: number;
   readonly error?: import('#/_base/errors/serialize').ErrorPayload;
@@ -99,6 +102,7 @@ export interface PromptQueueHold {
 }
 
 export interface PromptQueueSnapshot {
+  readonly modelSwitches?: readonly (import('./modelSwitchQueueOps').QueuedModelSwitch & { readonly queueIndex: number })[];
   readonly active: PromptSnapshot | undefined;
   readonly pending: readonly PromptSnapshot[];
   /** A prompt past admission that has not been assigned a turn yet. */
@@ -177,6 +181,13 @@ export function promptRetryFor(service: IAgentPromptService): PromptRetryHook {
 
 export interface IAgentPromptService {
   readonly _serviceBrand: undefined;
+  switchModel(input: import('#/agent/modelSwitch/modelSwitch').ModelSwitchInput): Promise<import('#/agent/modelSwitch/modelSwitch').ModelSwitchReceipt>;
+  getModelSwitch(operationId: string): import('#/agent/modelSwitch/modelSwitch').ModelSwitchReceipt | undefined;
+  listModelSwitches(): readonly (import('./modelSwitchQueueOps').QueuedModelSwitch & { readonly queueIndex: number })[];
+  updateModelSwitch(input: import('#/agent/modelSwitch/modelSwitch').ModelSwitchInput, expectedRevision?: number): Promise<import('#/agent/modelSwitch/modelSwitch').ModelSwitchReceipt>;
+  cancelModelSwitch(operationId: string): Promise<import('#/agent/modelSwitch/modelSwitch').ModelSwitchReceipt>;
+  recoverModelSwitch(operationId: string, action: 'retry' | 'keep_original', mode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode): Promise<import('#/agent/modelSwitch/modelSwitch').ModelSwitchReceipt>;
+  lookup(promptId: string, input?: PromptInput): import('./promptReplay').PromptLookup | undefined;
   enqueue(input: PromptInput): Promise<PromptHandle>;
   submit(payload: PromptPayload): Promise<PromptLaunchResult | undefined>;
   /** Abort cancels only the wait; use abort(promptId) to cancel the submitted prompt. */

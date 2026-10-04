@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kiki Plugin"
+  short_description: "Write, fix, and verify a local Kiki plugin"
+  default_prompt: "Use $kiki-plugin to create or repair a local Kiki plugin and verify its manifest and tool output."

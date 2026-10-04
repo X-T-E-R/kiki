@@ -97,6 +97,10 @@ describe('RequestIdentityCatalog profiles', () => {
   it.each([
     ['an unknown template variable', { user_agent: 'x/{secret}' }, 'unknown template variable {secret}'],
     ['a credential header', { headers: [{ name: 'Authorization', value: 'Bearer x' }] }, 'managed by the provider connection'],
+    ['an OAuth account header', { headers: [{ name: 'ChatGPT-Account-Id', value: 'override-example' }] }, 'managed by the provider connection'],
+    ['an OAuth token mode', { headers: [{ name: 'X-XAI-Token-Auth', value: 'override-example' }] }, 'managed by the provider connection'],
+    ['an OAuth authentication response', { headers: [{ name: 'x-authenticateresponse', value: 'override-example' }] }, 'managed by the provider connection'],
+    ['an OAuth user header', { headers: [{ name: 'x-userid', value: 'override-example' }] }, 'managed by the provider connection'],
     ['a duplicated header', { headers: [{ name: 'a', value: '1' }, { name: 'A', value: '2' }] }, 'listed twice'],
     ['a User-Agent header row', { headers: [{ name: 'user-agent', value: 'x' }] }, 'User-Agent field'],
     ['a body field the request owns', { params: [{ name: 'model', value: 'x' }] }, 'owned by the model request'],
@@ -125,6 +129,29 @@ describe('RequestIdentityCatalog profiles', () => {
     const usage = await catalog.usage();
     expect(usage).toContainEqual(expect.objectContaining({ scope: 'global', effective_profile: 'codex' }));
     expect(usage).toContainEqual(expect.objectContaining({ scope: 'provider', provider_id: 'anthropic', effective_profile: copy.id }));
+  });
+
+  it('projects implicit OAuth defaults in usages without authoring provider selections', async () => {
+    const sections: Sections = { providers: {
+      codex: { oauth: { storage: 'file', key: 'oauth/openai-codex' } },
+      grok: { oauth: { storage: 'file', key: 'oauth/grok-build' } },
+      api: { apiKey: 'YOUR_API_KEY' },
+    }, defaultProvider: 'grok', models: { c: { provider: 'codex' }, g: { providerId: 'grok' }, inherited: {} } };
+    const { catalog } = createCatalog({ sections });
+    expect(await catalog.usage()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scope: 'provider', provider_id: 'codex', effective_profile: 'codex' }),
+      expect.objectContaining({ scope: 'model', model_id: 'g', effective_profile: 'grok_build' }),
+      expect.objectContaining({ scope: 'model', model_id: 'inherited', provider_id: 'grok', effective_profile: 'grok_build' }),
+      expect.objectContaining({ scope: 'provider', provider_id: 'api', effective_profile: 'kimi_code' }),
+    ]));
+    const copy = await catalog.duplicateProfile('opencode');
+    sections['requestIdentity'] = { profile: copy.id };
+    expect((await catalog.usage()).filter((row) => row.scope !== 'global').every((row) => row.effective_profile === copy.id)).toBe(true);
+    sections['requestIdentity'] = { profile: 'none' };
+    expect((await catalog.usage()).every((row) => row.effective_profile === 'none')).toBe(true);
+    expect(sections['providers']).toEqual({ codex: { oauth: { storage: 'file', key: 'oauth/openai-codex' } },
+      grok: { oauth: { storage: 'file', key: 'oauth/grok-build' } }, api: { apiKey: 'YOUR_API_KEY' } });
+    catalog.dispose();
   });
 
   it('lets config validation outside DI resolve custom profiles once the catalog is loaded', async () => {
@@ -176,6 +203,10 @@ describe('RequestIdentityCatalog preview', () => {
         Authorization: 'Bearer sk-live',
         'x-api-key': 'sk-live',
         Cookie: 'session=1',
+        'ChatGPT-Account-Id': 'account-example',
+        'x-userid': 'user-example',
+        'X-XAI-Token-Auth': 'xai-grok-cli',
+        'x-authenticateresponse': 'authenticate-response',
         'x-kiki-internal-suppress-user-agent': '1',
       },
       params: { service_tier: 'priority' },

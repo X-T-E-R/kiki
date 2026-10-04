@@ -181,7 +181,7 @@ describe('server-v2 /api plugins', () => {
     const commands = await call<{ commands: { name: string }[] }>('GET', '/api/plugins/commands');
     expect(commands.body.data.commands).toContainEqual(expect.objectContaining({ name: 'continue-draft' }));
     const rejected = await call('POST', '/api/plugins/kiki-writing/panels/manuscript/bridge', {
-      method: 'plugin.call', session_id: 'missing', action: 'unknown', args: {},
+      method: 'session.summary', session_id: 'missing',
     });
     expect(rejected.body.code).toBe(40401);
     const session = await call<{ id: string }>('POST', '/api/sessions', { metadata: { cwd: home! } });
@@ -288,12 +288,13 @@ describe('server-v2 /api plugins', () => {
     await expect(hosts.execute('fixture-tool', 'fixture_echo', { value: 'server' }, new AbortController().signal))
       .resolves.toEqual({ output: 'server' });
     expect(hosts.running('fixture-tool')).toBe(true);
-    const session = await call<{ id: string }>('POST', '/api/sessions', { metadata: { cwd: home! } });
-    expect(session.body.code).toBe(0);
     const panel = await call<{ result: { args: { value: string } } }>('POST',
       '/api/plugins/fixture-tool/panels/fixture/bridge', {
-        method: 'plugin.call', session_id: session.body.data.id, action: 'echo', args: { value: 'panel' },
+        method: 'plugin.call', action: 'echo', args: { value: 'panel' },
       });
+    expect(panel.body.code).toBe(0);
+    const rejected = await call('POST', '/api/plugins/fixture-tool/panels/fixture/bridge', { method: 'session.summary' });
+    expect(rejected.body.code).not.toBe(0);
     expect(panel.body.data.result.args).toEqual({ value: 'panel' });
     await call('POST', '/api/plugins/fixture-tool:remove');
     expect(hosts.running('fixture-tool')).toBe(false);

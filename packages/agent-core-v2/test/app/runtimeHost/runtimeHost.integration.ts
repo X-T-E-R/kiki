@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { lstat, mkdtemp, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,6 +25,10 @@ import {
   bootstrapHomeIdentity,
   endpointPathFor,
   isEndpointLive,
+  isEndpointPathRecognized,
+  runtimeDirFor,
+  runtimeTokenPath,
+  tryRemoveStaleEndpoint,
   readPersistedOwner,
   type CommittedOwnerRecord,
 } from '#/app/runtimeHost/paths';
@@ -130,7 +135,7 @@ const runtimeWorkerFixture = fileURLToPath(new URL('./fixtures/runtime-host-work
 function spawnRuntimeWorker(homeDir: string): RuntimeWorker {
   const child = spawn(
     process.execPath,
-    ['--import', 'tsx', runtimeWorkerFixture, homeDir],
+    ['--import', 'tsx', '--import', new URL('../../../../../build/register-raw-text-loader.mjs', import.meta.url).href, runtimeWorkerFixture, homeDir],
     { cwd: join(import.meta.dirname, '../../..'), stdio: 'pipe' },
   );
   const events: WorkerEvent[] = [];
@@ -187,6 +192,48 @@ async function closeRuntimeWorker(worker: RuntimeWorker): Promise<void> {
   ]);
 }
 
+describe('runtime endpoint paths (platform-injected structure)', () => {
+  it.each(['darwin', 'linux'] as const)('uses a short home-local socket on %s', (platform) => {
+    for (const home of ['/tmp/kiki', '/Users/alice/.kiki', '/home/alice/.kiki']) {
+      const endpoint = endpointPathFor(platform, home);
+      expect(endpoint).toBe(join(runtimeDirFor(home), 'runtime.sock'));
+      expect(Buffer.byteLength(endpoint)).toBe(Buffer.byteLength(home) + 32);
+      expect(endpointPathFor(platform, home)).toBe(endpoint);
+      expect(endpointPathFor(platform, `${home}-other`)).not.toBe(endpoint);
+    }
+  });
+
+  it.each([['darwin', 103], ['linux', 107]] as const)('checks the UTF-8 byte budget on %s', (platform, limit) => {
+    const asciiHome = `/${'a'.repeat(limit - 33)}`;
+    expect(Buffer.byteLength(endpointPathFor(platform, asciiHome))).toBe(limit);
+    expect(() => endpointPathFor(platform, `${asciiHome}a`)).toThrow(expect.objectContaining({ code: 'runtime.invalid_config' }));
+    const unicodeHome = `/${'中'.repeat(23)}a`;
+    expect(Buffer.byteLength(endpointPathFor(platform, unicodeHome))).toBe(103);
+    expect(() => endpointPathFor(platform, `${unicodeHome}😀a`)).toThrow(expect.objectContaining({ code: 'runtime.invalid_config' }));
+  });
+
+  it('retains the Windows pipe home hash independently of the executing platform', () => {
+    const home = 'c:\\example\\.kiki';
+    const digest = createHash('sha256').update(home).digest('hex').slice(0, 40);
+    expect(endpointPathFor('win32', home)).toBe(`\\\\.\\pipe\\kimi-home-runtime-${digest}`);
+    expect(endpointPathFor('win32', `${home}-other`)).not.toBe(endpointPathFor('win32', home));
+  });
+
+  it('recognizes only the exact local socket and legacy hash socket', () => {
+    const home = '/tmp/kiki';
+    const directory = runtimeDirFor(home);
+    const digest = createHash('sha256').update(home).digest('hex');
+    expect(isEndpointPathRecognized(home, join(directory, 'runtime.sock'))).toBe(true);
+    expect(isEndpointPathRecognized(home, join(directory, `kimi-home-runtime-${digest}.sock`))).toBe(true);
+    for (const path of [
+      join(directory, 'kimi-home-runtime-unrelated.sock'),
+      join(directory, 'nested', 'runtime.sock'),
+      join(runtimeDirFor(`${home}-other`), 'runtime.sock'),
+      join(directory, 'token'),
+    ]) expect(isEndpointPathRecognized(home, path)).toBe(false);
+  });
+});
+
 describe('home runtime broker', () => {
   let homeDir: string;
   const runtimes: IHomeRuntimeService[] = [];
@@ -194,7 +241,9 @@ describe('home runtime broker', () => {
   const workers: RuntimeWorker[] = [];
 
   beforeEach(async () => {
-    homeDir = await mkdtemp(join(tmpdir(), 'runtime-host-'));
+    const scratch = fileURLToPath(new URL('../../../../../.tmp/', import.meta.url));
+    await mkdir(scratch, { recursive: true });
+    homeDir = await mkdtemp(join(scratch, 'rh-'));
   });
 
   afterEach(async () => {
@@ -203,6 +252,65 @@ describe('home runtime broker', () => {
     for (const ix of instantiations.splice(0)) ix.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
+
+  it('keeps different homes independently owned and routes only within each home', async () => {
+    const first = service(join(homeDir, 'a'));
+    const second = service(join(homeDir, 'b'));
+    instantiations.push(first.ix, second.ix);
+    runtimes.push(first.runtime, second.runtime);
+    first.runtime.registerMethod('home', () => 'a');
+    second.runtime.registerMethod('home', () => 'b');
+    await Promise.all([first.runtime.ready(), second.runtime.ready()]);
+    expect(first.runtime.status().role).toBe('owner');
+    expect(second.runtime.status().role).toBe('owner');
+    await expect(first.runtime.call('home', null)).resolves.toBe('a');
+    await expect(second.runtime.call('home', null)).resolves.toBe('b');
+  });
+
+  it.skipIf(process.platform === 'win32')('shares canonical home identity through an alias and keeps private permissions', async () => {
+    const canonical = join(homeDir, 'home');
+    const alias = join(homeDir, 'alias');
+    await mkdir(canonical);
+    await symlink(canonical, alias, 'dir');
+    const first = await bootstrapHomeIdentity(process.platform, canonical);
+    const second = await bootstrapHomeIdentity(process.platform, alias);
+    expect(second.canonicalHomeDir).toBe(first.canonicalHomeDir);
+    expect(second.token).toBe(first.token);
+    expect((await lstat(first.runtimeDir)).mode & 0o777).toBe(0o700);
+    expect((await lstat(runtimeTokenPath(first.canonicalHomeDir))).mode & 0o777).toBe(0o600);
+    const owner = service(canonical);
+    const client = service(alias);
+    instantiations.push(owner.ix, client.ix);
+    runtimes.push(owner.runtime, client.runtime);
+    owner.runtime.registerMethod('echo', (payload) => payload);
+    await owner.runtime.ready();
+    await client.runtime.ready();
+    expect(client.runtime.status().role).toBe('client');
+    await expect(client.runtime.call('echo', 'alias')).resolves.toBe('alias');
+  });
+
+  it.skipIf(process.platform === 'win32')('removes only stale recognized socket files', async () => {
+    const identity = await bootstrapHomeIdentity(process.platform, homeDir);
+    const endpoint = endpointPathFor(process.platform, identity.canonicalHomeDir);
+    const foreign = join(identity.runtimeDir, 'kimi-home-runtime-unrelated.sock');
+    await writeFile(endpoint, 'stale');
+    await writeFile(foreign, 'keep');
+    expect(await tryRemoveStaleEndpoint(process.platform, identity.canonicalHomeDir, foreign)).toBe('foreign');
+    expect(await tryRemoveStaleEndpoint(process.platform, identity.canonicalHomeDir, endpoint)).toBe('removed');
+    expect((await lstat(foreign)).isFile()).toBe(true);
+    const runtime = service(homeDir);
+    instantiations.push(runtime.ix);
+    runtimes.push(runtime.runtime);
+    await runtime.runtime.ready();
+    expect(await tryRemoveStaleEndpoint(process.platform, identity.canonicalHomeDir, endpoint)).toBe('live');
+  });
+
+  it.skipIf(process.platform === 'win32')('fails an over-budget home immediately instead of retrying election', async () => {
+    const runtime = service(join(homeDir, 'x'.repeat(108)));
+    instantiations.push(runtime.ix);
+    runtimes.push(runtime.runtime);
+    await expect(runtime.runtime.ready()).rejects.toMatchObject({ code: 'runtime.invalid_config' });
+  }, 2_000);
 
   it('elects one owner, routes RPC, and re-elects with a higher epoch', async () => {
     const first = service(homeDir);

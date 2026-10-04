@@ -9,8 +9,7 @@ export interface ISessionTodoService {
 
   getTodos(agentId?: string): readonly TodoItem[];
   getNotes(agentId?: string): { notes?: TodoNotes; meta?: NotesMeta };
-  setNotes(patch: TodoNotes | null, source: { turnId: number; step: number; toolCallId: string }, agentId?: string): void;
-  setCompactionDirectives(directives: string, turnId: number, agentId?: string): void;
+  setNotes(patch: TodoNotes | null, source: { turnId: number; step: number; toolCallId: string; reviewHandoff?: boolean }, agentId?: string): void;
   setTodos(todos: readonly TodoItem[], agentId?: string): void;
   clear(agentId?: string): void;
   readonly onDidChange: Event<readonly TodoItem[]>;

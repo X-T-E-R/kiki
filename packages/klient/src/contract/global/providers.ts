@@ -7,18 +7,13 @@
  */
 
 import { RequestIdentityPolicySchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+import { OAuthRefSchema as oAuthRefSchema } from '@kiki/agent-core-v2/kosong/provider/oauthRef';
 import { z } from 'zod';
 
 import { maybe, noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
 
 const providerTypeSchema = z.string();
-
-const oAuthRefSchema = z.object({
-  storage: z.enum(['file', 'keyring']),
-  key: z.string().min(1),
-  oauthHost: z.string().min(1).optional(),
-});
 
 const stringRecordSchema = z.record(z.string(), z.string());
 

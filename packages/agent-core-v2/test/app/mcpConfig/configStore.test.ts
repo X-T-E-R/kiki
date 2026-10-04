@@ -85,6 +85,32 @@ describe('McpConfigStore', () => {
       expect(remaining.map((server) => server.name)).toEqual(['beta']);
     });
 
+    it('disables the captured configuration while preserving raw extra fields and secrets', async () => {
+      await seedJson({ future: 1, mcpServers: { alpha: {
+        transport: 'stdio', command: 'cua-driver', args: ['mcp'],
+        env: { TOKEN: 'unchanged-secret' }, toolTimeoutMs: 1234,
+      } } });
+      const expected = await store.get('alpha');
+      await store.disableIfUnchanged(expected);
+      expect(JSON.parse((await readRaw())!)).toEqual({ future: 1, mcpServers: { alpha: {
+        transport: 'stdio', command: 'cua-driver', args: ['mcp'],
+        env: { TOKEN: 'unchanged-secret' }, toolTimeoutMs: 1234, enabled: false,
+      } } });
+      await store.disableIfUnchanged(expected);
+      expect((await store.get('alpha')).enabled).toBe(false);
+    });
+
+    it('does not overwrite a concurrent configuration replacement when disabling', async () => {
+      await store.add(stdioServer('alpha', 'cua-driver'));
+      const expected = await store.get('alpha');
+      const replacement = { ...stdioServer('alpha', 'other-command'), env: { TOKEN: 'new-secret' } };
+      await store.update(replacement);
+      const before = await readRaw();
+      await expect(store.disableIfUnchanged(expected)).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      expect(await readRaw()).toBe(before);
+      await expect(store.get('alpha')).resolves.toEqual(replacement);
+    });
+
     it('treats a missing file as an empty catalog', async () => {
       await expect(store.list()).resolves.toEqual([]);
     });

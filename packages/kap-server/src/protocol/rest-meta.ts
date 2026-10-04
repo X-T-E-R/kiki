@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { spaceIdSchema } from '@kiki/protocol';
 
 import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
 
@@ -59,6 +60,7 @@ export const metaResponseSchema = z.object({
   capabilities: metaCapabilitiesSchema,
   server_id: z.string().min(1),
   server_home_id: z.string().uuid().optional(),
+  current_space_id: z.union([z.literal('main'), spaceIdSchema]).optional(),
   started_at: isoDateTimeSchema,
   open_in_apps: z.array(fsOpenInAppIdSchema),
   dangerous_bypass_auth: z.boolean(),

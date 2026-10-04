@@ -5,6 +5,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   resolve: {
     alias: {
+      '@kiki/oauth/local-original-types': fileURLToPath(new URL('../oauth/src/local-original-types.ts', import.meta.url)),
       '@kiki/oauth': fileURLToPath(
         new URL('../oauth/src/index.ts', import.meta.url),
       ),

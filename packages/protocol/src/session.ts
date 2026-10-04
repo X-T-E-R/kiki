@@ -188,6 +188,7 @@ export const sessionCreateSchema = z.object({
   title: z.string().min(1).optional(),
   delivery: sessionDeliverySchema.optional(),
   persona: z.string().min(1).optional(),
+  persona_home: z.boolean().optional(),
   metadata: sessionMetadataSchema.optional(),
   agent_config: sessionAgentConfigCreateSchema.optional(),
   workspace_id: workspaceIdSchema.optional(),

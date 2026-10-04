@@ -98,6 +98,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
         skillPath: skill.path,
         skillSource: skill.source,
         skillArgs: input.args,
+        userInput: input.userInput ?? `/${input.name}${skillArgs === '' ? '' : ` ${skillArgs}`}`,
       },
       content,
     );

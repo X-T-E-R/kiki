@@ -241,6 +241,7 @@ function buildHost(key: string): {
   host.stub(ISessionContext, createSessionContextStub());
   host.stub(ISessionMetadata, {
     read: async () => ({ id: 'session-test', createdAt: 0, updatedAt: 0, archived: false }),
+    updateAgent: async () => {},
   });
   host.stub(ISessionWorkspaceContext, stubUnused());
   host.stub(ISessionAgentProfileCatalog, {
@@ -455,57 +456,29 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     replay.ix.dispose();
   });
 
-  it('preserves a legacy dispatch decision during replay without generating new legacy decisions', async () => {
-    svc.applyBindingSnapshot({
-      profileName: 'legacy-parent',
-      thinkingLevel: 'off',
-      systemPrompt: 'legacy',
-      subagents: ['explore'],
-      dispatchDecision: {
-        version: 1,
-        policyMode: 'legacy',
-        policySource: 'legacy',
-        declaration: { kind: 'set', names: ['explore'] },
-        selectionKind: 'profile',
-        selectionOrigin: 'explicit',
-        requestedProfile: 'reviewer',
-        recommendationStatus: 'blocked',
-        advisoryDeviation: false,
-        allowed: false,
-      },
-    });
-    const records = await readRecords();
-    expect(records).toContainEqual(expect.objectContaining({
-      type: 'profile.bind',
-      subagents: ['explore'],
-      dispatchDecision: expect.objectContaining({ policyMode: 'legacy' }),
-    }));
+  it('upgrades legacy bind permissions on replay without reselecting identity, model or v1 file provenance', async () => {
+    const decision = { version: 1, policyMode: 'advisory', policySource: 'profile',
+      declaration: { kind: 'set', names: ['explore'] }, selectionKind: 'profile_file',
+      selectionOrigin: 'explicit', requestedProfile: 'reviewer', recommendationStatus: 'allowed_nonpreferred',
+      advisoryDeviation: true, allowed: true };
     const replayKey = 'profile-replay-legacy-subagent-policy';
     const replay = buildHost(replayKey);
-    await restoreTestEventDispatcher(
-      replay.dispatcher,
-      replay.log,
-      testWireScope(SCOPE, replayKey),
-      records,
-    );
+    await restoreTestEventDispatcher(replay.dispatcher, replay.log, testWireScope(SCOPE, replayKey), [{
+      type: 'profile.bind', time: 1, profileName: 'reviewer', profileDefinitionId: 'file-frozen',
+      modelAlias: 'removed-historical-model', thinkingEffort: 'high', systemPrompt: 'historical rendered prompt',
+      disallowedTools: ['Bash'], subagentPolicy: 'advisory', subagents: ['explore'],
+      appliedLease: { name: 'reviewer', modelAlias: 'removed-historical-model', subagents: [] },
+      dispatchDecision: decision,
+    }]);
     const data = replay.svc.data();
-    expect(data.subagentPolicy).toBeUndefined();
-    expect(data.subagentDeclaration).toBeUndefined();
-    expect(data.subagents).toEqual(['explore']);
-    expect(data.dispatchDecision).toMatchObject({
-      policyMode: 'legacy',
-      policySource: 'legacy',
-      allowed: false,
-    });
-    expect(evaluateSubagentDispatchDecision(
-      { getDefault: () => data as never },
-      data,
-      'reviewer',
-    )).toMatchObject({
-      policyMode: 'advisory',
-      policySource: 'default',
-      recommendationStatus: 'allowed_nonpreferred',
-      allowed: true,
+    expect(data).toMatchObject({ profileName: 'reviewer', profileDefinitionId: 'file-frozen',
+      modelAlias: 'removed-historical-model', systemPrompt: 'historical rendered prompt',
+      preferredSubagents: ['explore'], appliedLease: { modelAlias: 'removed-historical-model', canSpawnSubagents: false, allowedSubagents: [] } });
+    expect(data.allowedSubagents).toBeUndefined();
+    expect(data.subagents).toBeUndefined();
+    expect(data.dispatchDecision).toEqual(decision);
+    expect(evaluateSubagentDispatchDecision({ getDefault: () => data as never }, data, 'reviewer')).toMatchObject({
+      version: 2, policyMode: 'fixed', recommendationStatus: 'allowed_nonpreferred', allowed: true,
     });
     replay.ix.dispose();
   });
@@ -611,7 +584,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       activeToolNames: ['Read', 'Bash'],
       toolAllowPolicies: [['Read', 'Bash'], ['Read']],
       disallowedTools: ['Write', 'Bash'],
-      subagents: ['explore'],
+      allowedSubagents: ['explore'],
     });
     const records = await readRecords();
 
@@ -637,7 +610,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       activeToolNames: ['Read', 'Bash'],
       toolAllowPolicies: [['Read', 'Bash'], ['Read']],
       disallowedTools: ['Write', 'Bash'],
-      subagents: ['explore'],
+      allowedSubagents: ['explore'],
     });
     await expect(replay.svc.setModel('other-model')).resolves.toMatchObject({
       model: 'other-model',

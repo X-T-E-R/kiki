@@ -1,5 +1,7 @@
 import { createDecorator } from '#/_base/di/instantiation';
 import type { ITaskHandle } from '#/app/task/task';
+import type { IDisposable } from '#/_base/di/lifecycle';
+import type { MediaTaskInfo } from './types';
 import type {
   AgentTask,
   AgentTaskInfo,
@@ -94,6 +96,7 @@ export interface IAgentTaskService {
   track(handle: ITaskHandle, options: AgentTaskTrackOptions): IAgentTaskEntry;
   allocateTaskId?(idPrefix: string): string;
   registerTask(task: AgentTask, options?: RegisterAgentTaskOptions): string;
+  registerMediaRecovery?(handler: (info: MediaTaskInfo) => Promise<AgentTask | undefined>): IDisposable;
   commitTaskRegistration?(taskId: string): void;
   rollbackTaskRegistration?(taskId: string, reason?: unknown): Promise<void>;
   getTask(taskId: string): AgentTaskInfo | undefined;

@@ -10,7 +10,7 @@ interface FetchOptions {
 }
 
 export function bearerToken(server: RunningServer): string {
-  return server.authTokenService.getToken();
+  return server.localOwnerToken;
 }
 
 export function authHeaders(server: RunningServer, extra: HeaderMap = {}): HeaderMap {

@@ -1,4 +1,5 @@
 import type { PromptOverrides } from '@kiki/agent-profiles/promptOverrides';
+import type { ModelBehaviorConfig } from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event, IWaitUntil } from '#/_base/event';
@@ -8,7 +9,22 @@ import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIden
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 
 import type { OAuthRef } from '../provider/provider';
-import type { GenerationParameters } from './parameters';
+import type { GenerationParameters, OptionalParameter } from './parameters';
+
+export type ModelUsagePosition = 'main' | 'sub' | 'independent';
+
+export interface ModelUsageParameters {
+  thinkingEffort?: string;
+  serviceTier?: OptionalParameter<ServiceTier>;
+  autoCompact?: number;
+  contextBudget?: number;
+  maxCompletionTokens?: number;
+}
+
+export interface ModelUsagePolicy {
+  main?: ModelUsageParameters;
+  independent?: ModelUsageParameters;
+}
 
 export interface ModelParameterDefaults {
   autoCompact?: number;
@@ -33,13 +49,18 @@ export interface ModelOverride extends ModelParameterDefaults {
 
 export type CognitionPathRef = string | string[];
 
-export interface CognitionConfig {
+export interface CognitionContent {
   overlay?: CognitionPathRef;
   steering?: CognitionPathRef;
   anchor?: CognitionPathRef;
   overlayMode?: 'append' | 'prepend' | 'wrap' | 'persona' | 'replace';
   anchorSteps?: number;
   anchorScope?: 'session' | 'turn';
+}
+
+export interface CognitionConfig extends CognitionContent {
+  main?: 'same' | 'off' | CognitionContent;
+  independent?: 'same' | 'off' | CognitionContent;
 }
 
 export interface ModelRecord extends ModelParameterDefaults {
@@ -71,6 +92,8 @@ export interface ModelRecord extends ModelParameterDefaults {
 
   overrides?: ModelOverride;
   parameters?: GenerationParameters;
+  usage?: ModelUsagePolicy;
+  behavior?: ModelBehaviorConfig;
   cognition?: CognitionConfig;
   promptOverrides?: PromptOverrides;
   requestIdentity?: RequestIdentityPolicy;

@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 
 import {
+  modelBehaviorFromWire,
+  modelBehaviorToWire,
+  patchModelBehavior,
   createModelRequestSchema,
   createProviderRequestSchema,
   patchModelRequestSchema,
@@ -30,7 +33,7 @@ import { ModelCatalogErrors } from '#/kosong/model/errors';
 import { deriveProviderId, nonEmpty } from '#/kosong/model/modelAuth';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 import type { ModelRecord, ModelsSection } from '#/kosong/model/model';
-import { parametersFromWire, parametersToWire, patchGenerationParameters, resolveGenerationParameters } from '#/kosong/model/parameters';
+import { parametersFromWire, parametersToWire, patchGenerationParameters, resolveGenerationParameters, patchModelUsagePolicy, resolveModelUsage, usagePolicyFromWire, usagePolicyToWire, usageParametersToWire } from '#/kosong/model/parameters';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 import type { ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
 import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
@@ -47,6 +50,8 @@ import {
   DEFAULT_PROVIDER_SECTION,
   MODELS_SECTION,
   PROVIDERS_SECTION,
+  cognitionFromToml,
+  cognitionToToml,
 } from './configSection';
 import {
   IModelCatalogMutationService,
@@ -109,8 +114,16 @@ function modelsOf(config: IConfigService): ModelsSection {
   return config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
 }
 
+function effectiveProvidersOf(config: IConfigService): ProvidersSection {
+  return config.get<ProvidersSection>(PROVIDERS_SECTION) ?? {};
+}
+
+function effectiveModelsOf(config: IConfigService): ModelsSection {
+  return config.get<ModelsSection>(MODELS_SECTION) ?? {};
+}
+
 function defaultProviderOf(config: IConfigService): string | undefined {
-  return nonEmpty(config.inspect<string>(DEFAULT_PROVIDER_SECTION).userValue);
+  return nonEmpty(config.get<string>(DEFAULT_PROVIDER_SECTION));
 }
 
 function defaultModelOf(config: IConfigService): string | undefined {
@@ -215,6 +228,14 @@ function modelEntity(
 ): ModelEntity {
   const ref = resolveProviderRef(record, defaultProvider);
   const generation = resolveGenerationParameters(providers[ref.providerId], record);
+  const usage = {
+    main: resolveModelUsage(generation, record, 'main'),
+    sub: resolveModelUsage(generation, record, 'sub'),
+    independent: resolveModelUsage(generation, record, 'independent'),
+  };
+  const usageSources = (position: keyof typeof usage) => Object.fromEntries(Object.entries(usage[position].sources).filter(([, source]) => source !== undefined).map(([key, source]) => [
+    key.replaceAll(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`), source?.detail ?? source?.kind ?? 'unknown',
+  ]));
   return {
     id,
     provider_id: ref.providerId,
@@ -232,6 +253,10 @@ function modelEntity(
     adaptive_thinking: record.adaptiveThinking,
     service_tier: record.serviceTier,
     parameters: parametersToWire(record.parameters),
+    usage: usagePolicyToWire(record.usage),
+    behavior: modelBehaviorToWire(record.behavior),
+    usage_effective: { main: usageParametersToWire(usage.main.values), sub: usageParametersToWire(usage.sub.values), independent: usageParametersToWire(usage.independent.values) },
+    usage_sources: { main: usageSources('main'), sub: usageSources('sub'), independent: usageSources('independent') },
     effective_parameters: parametersToWire(generation.values) ?? {},
     parameter_sources: Object.fromEntries(Object.entries(generation.sources).map(([key, source]) => [
       key.replaceAll(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`),
@@ -244,7 +269,7 @@ function modelEntity(
     off_effort: record.offEffort,
     context_budget: record.contextBudget,
     request_params: record.requestParams,
-    cognition: shallowSnake(record.cognition) as ModelEntity['cognition'],
+    cognition: record.cognition === undefined ? undefined : cognitionToToml(record.cognition as Record<string, unknown>) as ModelEntity['cognition'],
     prompt_overrides: record.promptOverrides as ModelEntity['prompt_overrides'],
     overrides: shallowSnake(record.overrides),
     protocol: record.protocol,
@@ -362,10 +387,14 @@ function applyModelPatch(record: ModelRecord, patch: PatchModelRequest): ModelRe
   setOrClear('contextBudget', patch.context_budget);
   setOrClear('requestParams', patch.request_params);
   setOrClear('promptOverrides', patch.prompt_overrides);
-  setOrClear('cognition', patch.cognition === null || patch.cognition === undefined ? patch.cognition : transformPlainObject(patch.cognition));
+  setOrClear('cognition', patch.cognition === null || patch.cognition === undefined ? patch.cognition : cognitionFromToml(patch.cognition));
   setOrClear('overrides', patch.overrides === null || patch.overrides === undefined ? patch.overrides : transformPlainObject(patch.overrides));
   if (patch.parameters !== undefined) {
     next['parameters'] = patchGenerationParameters(record.parameters, patch.parameters);
+  }
+  if (patch.behavior !== undefined) next['behavior'] = patchModelBehavior(record.behavior, patch.behavior);
+  if (patch.usage !== undefined) {
+    next['usage'] = patchModelUsagePolicy(record.usage, patch.usage);
   }
   if (patch.request_identity !== undefined) {
     if (patch.request_identity === null) {
@@ -542,11 +571,11 @@ export class ModelCatalogMutationService
   }
 
   private currentModelEntity(id: string): ModelEntity {
-    const record = modelsOf(this.config)[id];
+    const record = effectiveModelsOf(this.config)[id];
     if (record === undefined) {
       throw new Error2(ModelCatalogErrors.codes.MODEL_NOT_FOUND, `model ${id} does not exist`);
     }
-    return modelEntity(id, record, providersOf(this.config), defaultProviderOf(this.config));
+    return modelEntity(id, record, effectiveProvidersOf(this.config), defaultProviderOf(this.config));
   }
 
   async createModel(input: CreateModelRequest): Promise<ModelEntity> {
@@ -554,7 +583,7 @@ export class ModelCatalogMutationService
     return this.enqueue(async () => {
       const request = parseOrThrow(createModelRequestSchema, input);
       const models = modelsOf(this.config);
-      const providers = providersOf(this.config);
+      const providers = effectiveProvidersOf(this.config);
       const providerId = request.provider_id;
       if (providers[providerId] === undefined) {
         throw new Error2(
@@ -563,7 +592,7 @@ export class ModelCatalogMutationService
         );
       }
       const id = nonEmpty(request.id) ?? `${providerId}/${request.remote_id}`;
-      if (models[id] !== undefined) {
+      if (effectiveModelsOf(this.config)[id] !== undefined) {
         throw new Error2(ModelCatalogErrors.codes.MODEL_ALREADY_EXISTS, `model ${id} already exists`);
       }
       if (request.max_context_size !== undefined) {
@@ -585,6 +614,8 @@ export class ModelCatalogMutationService
       }
       if (request.service_tier !== undefined) record.serviceTier = request.service_tier;
       if (request.parameters !== undefined) record.parameters = parametersFromWire(request.parameters);
+      if (request.usage !== undefined) record.usage = usagePolicyFromWire(request.usage);
+      if (request.behavior !== undefined) record.behavior = modelBehaviorFromWire(request.behavior);
       if (request.images !== undefined) record.images = imagePolicyFromWire(request.images);
       if (request.request_identity !== undefined) {
         const policy = requestIdentityFromWire(request.request_identity);
@@ -602,14 +633,16 @@ export class ModelCatalogMutationService
     await this.config.ready;
     return this.enqueue(async () => {
       const request = parseOrThrow(patchModelRequestSchema, patch);
-      const models = modelsOf(this.config);
-      const record = models[id];
+      const localModels = this.config.inspect<ModelsSection>(MODELS_SECTION).userValue;
+      const models = localModels ?? {};
+      const record = effectiveModelsOf(this.config)[id];
       if (record === undefined) {
         throw new Error2(ModelCatalogErrors.codes.MODEL_NOT_FOUND, `model ${id} does not exist`);
       }
       const currentRevision = revisionOf(record);
-      const next = applyModelPatch(record, request);
-      if (deepEqual(next, record)) return this.currentModelEntity(id);
+      const local = models[id] ?? {};
+      const next = applyModelPatch(local, request);
+      if (deepEqual(next, local)) return this.currentModelEntity(id);
       if (request.base_revision !== undefined && request.base_revision !== currentRevision) {
         throw conflictError('model', id, request.base_revision, currentRevision, {
           ...this.currentModelEntity(id),
@@ -617,13 +650,13 @@ export class ModelCatalogMutationService
       }
       await this.writeSections(
         { [MODELS_SECTION]: { ...models, [id]: next } },
-        { [MODELS_SECTION]: models },
+        { [MODELS_SECTION]: localModels },
         () =>
-          conflictError('model', id, request.base_revision, revisionOf(modelsOf(this.config)[id] ?? next), {
+          conflictError('model', id, request.base_revision, this.currentModelEntity(id).revision, {
             ...this.currentModelEntity(id),
           }),
       );
-      return modelEntity(id, next, providersOf(this.config), defaultProviderOf(this.config));
+      return this.currentModelEntity(id);
     });
   }
 
@@ -699,6 +732,7 @@ export class ModelCatalogMutationService
           record.adaptiveThinking = entry.adaptive_thinking;
         }
         if (entry.images !== undefined) record.images = imagePolicyFromWire(entry.images);
+        if (entry.behavior !== undefined) record.behavior = modelBehaviorFromWire(entry.behavior);
         if (entry.request_identity !== undefined) {
           const policy = requestIdentityFromWire(entry.request_identity);
           resolveProviderRequestIdentity({ requestIdentity: policy });
@@ -810,7 +844,7 @@ export class ModelCatalogMutationService
         ConfigTarget.User,
         expected === undefined
           ? undefined
-          : (withoutUndefined(structuredClone(expected)) as Record<string, unknown>),
+          : Object.fromEntries(Object.entries(structuredClone(expected)).map(([domain, value]) => [domain, withoutUndefined(value)])),
       );
     } catch (error) {
       if (onStale !== undefined && error instanceof Error2 && error.code === CONFIG_INVALID_ERROR_CODE) {

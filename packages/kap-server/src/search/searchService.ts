@@ -180,8 +180,8 @@ export interface LiveTranscriptSource {
   forSessionLive(sessionId: string): TranscriptStore | undefined;
   /** Resolves when the session's initial history backfill has landed. */
   whenReady(sessionId: string): Promise<void>;
-  /** Replay one agent's persisted history into the live store (idempotent per agent). */
-  ensureAgentHistory(sessionId: string, agentId: string): Promise<void>;
+  /** Return the request's live or dormant history projection. */
+  ensureAgentHistory(sessionId: string, agentId: string, options?: { readonly fullHistory?: boolean }): Promise<import('@kiki/transcript').AgentTranscript | undefined>;
 }
 
 function normalizeQuery(input: GlobalSearchQuery, maxQueryTerms: number): NormalizedQuery {
@@ -738,10 +738,7 @@ export class GlobalSearchService implements IGlobalSearchService {
       q.container?.agentId !== undefined
         ? [q.container.agentId]
         : store.agents().map((agent) => agent.agentId);
-    for (const agentId of agentIds) {
-      await source.ensureAgentHistory(sessionId, agentId);
-    }
-    const docs = await this.collectLiveDocs(sessionId, store, agentIds);
+    const docs = await this.collectLiveDocs(sessionId, source, agentIds);
     const budget = {
       deadlineAt: Date.now() + this.queryDeadlineMs,
       textCharsLeft: this.queryTextBudgetChars,
@@ -787,7 +784,7 @@ export class GlobalSearchService implements IGlobalSearchService {
    */
   private async collectLiveDocs(
     sessionId: string,
-    store: TranscriptStore,
+    source: LiveTranscriptSource,
     agentIds: readonly string[],
   ): Promise<{ key: string; value: MessageDoc | TitleDoc }[]> {
     const summary = await this.sessionIndex.get(sessionId);
@@ -801,7 +798,7 @@ export class GlobalSearchService implements IGlobalSearchService {
     };
     const docs: { key: string; value: MessageDoc | TitleDoc }[] = [];
     for (const agentId of agentIds) {
-      const transcript = store.getAgent(agentId);
+      const transcript = await source.ensureAgentHistory(sessionId, agentId, { fullHistory: true });
       if (transcript === undefined) continue;
       for (const item of transcript.snapshot().items) {
         if (item.kind !== 'turn') continue;

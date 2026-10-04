@@ -1,4 +1,8 @@
 import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
+import { randomUUID } from 'node:crypto';
+
+import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
+import { assertResumeFingerprint, readResumeRecord, resumeFingerprint, writeResumeRecord } from './resume';
 
 import { Emitter } from '#/_base/event';
 import { DispatchCapacity } from './capacity';
@@ -13,6 +17,8 @@ import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
+import { assertNativeToolOverride } from '#/agent/profile/toolBinding';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { IAgentTaskService } from '#/agent/task/task';
 import { SubagentTask, type SubagentHandle } from '#/agent/tools/agent/subagent-task';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
@@ -47,7 +53,6 @@ import {
   resolveInheritedModelAlias,
   resolveSubagentBinding,
   resolveSubagentTimeoutMs,
-  withDispatchPolicyDefaults,
 } from '#/session/subagent/configSection';
 import { mirrorAgentRun, SubagentStarted } from '#/session/subagent/mirrorAgentRun';
 import { resolveRoleThinkingDefault, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
@@ -71,6 +76,7 @@ export class SessionDispatchService implements ISessionDispatchService {
   private readonly delegatedRun = new Emitter<{ requesterAgentId: string; agentId: string }>();
   readonly onDidDelegateRun = this.delegatedRun.event;
   private readonly planStateReaders = new Map<string, () => boolean>();
+  private readonly resumeRuns = new Map<string, { readonly fingerprint: string; readonly promise: Promise<DispatchRun> }>();
 
   registerPlanStateReader(requesterAgentId: string, read: () => boolean): { dispose(): void } {
     this.planStateReaders.set(requesterAgentId, read);
@@ -147,8 +153,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     checkLaunchPolicy();
     const requesterData =
       input.requesterProfileData ?? requester.accessor.get(IAgentProfileService).data();
-    const caller = withDispatchPolicyDefaults(this.config, requesterData,
-      input.requesterAgentId === 'main' ? 'main' : 'sub');
+    const caller = requesterData;
     const target = resolveSubagentTarget(
       this.profiles,
       caller,
@@ -165,6 +170,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     );
     const selection = target.selection;
     const profile = target.effectiveProfile;
+    assertNativeToolOverride(profile.executor, input.toolOverride);
     checkLaunchPolicy(profile.executor);
     if (input.executorPolicy === 'native' && (profile.executor ?? 'native') !== 'native') {
       throw new Error2(
@@ -218,6 +224,8 @@ export class SessionDispatchService implements ISessionDispatchService {
       child = await this.lifecycle.create({
         deferCreateEvent: true,
         binding: {
+          toolOverride: input.toolOverride,
+          memoryReadContext: requester.accessor.get(IAgentMemorySnapshot).getPersona(),
           executionRestriction: researchReadonly ? 'research-readonly' : undefined,
           allowParentNotify: input.allowParentNotify ?? profile.allowParentNotify,
           profile: selection.baseProfile.name,
@@ -384,6 +392,27 @@ export class SessionDispatchService implements ISessionDispatchService {
     options: DispatchRunOptions,
   ): Promise<DispatchRun> {
     options.signal.throwIfAborted();
+    const operationId = options.operationId ?? randomUUID();
+    const request: AgentRunRequest = typeof requestInput === 'string' ? { kind: 'prompt', prompt: requestInput } : requestInput;
+    const fingerprint = resumeFingerprint(request, options);
+    const key = JSON.stringify([child.agentId, operationId]);
+    const existing = this.resumeRuns.get(key);
+    if (existing !== undefined) {
+      assertResumeFingerprint(existing.fingerprint, fingerprint);
+      return existing.promise;
+    }
+    const promise = this.runExistingOnce(child, request, { ...options, operationId });
+    this.resumeRuns.set(key, { fingerprint, promise });
+    void promise.catch(() => { this.resumeRuns.delete(key); });
+    return promise;
+  }
+
+  private async runExistingOnce(
+    child: DispatchChild,
+    requestInput: AgentRunRequest,
+    options: DispatchRunOptions,
+  ): Promise<DispatchRun> {
+    options.signal.throwIfAborted();
     this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
     const meta = child.meta ?? (await this.metadata.read()).agents?.[child.agentId];
     const delegator = meta === undefined ? undefined : delegatorRef(meta);
@@ -440,7 +469,9 @@ export class SessionDispatchService implements ISessionDispatchService {
       const caller = options.requesterAgentId === undefined ? undefined
         : this.requireHandle(options.requesterAgentId, 'Requester agent').accessor.get(IAgentProfileService).data();
       const childProfileName = childProfile.data().profileName ?? child.profileName;
-      const lease = caller?.subagentLeases?.[childProfileName];
+      const decision = childProfile.data().dispatchDecision;
+      const lease = decision?.version === 2 && decision.selectionKind === 'profile_file'
+        ? undefined : caller?.subagentLeases?.[childProfileName];
       return [
         ...(caller?.spawnPolicy === undefined ? [] : [{
           constraints: caller.spawnPolicy,
@@ -475,11 +506,21 @@ export class SessionDispatchService implements ISessionDispatchService {
     const inheritedThinking = wantsInheritance
       ? options.bindingOverride?.thinkingEffort ?? pinnedThinking ?? callerData?.effectiveThinkingLevel ?? callerData?.thinkingLevel
       : options.bindingOverride?.thinkingEffort;
-    const applyBinding = await childProfile.prepareResumeBinding({
+    const operationId = options.operationId!;
+    const originalRequest: AgentRunRequest = typeof requestInput === 'string' ? { kind: 'prompt', prompt: requestInput } : requestInput;
+    const fingerprint = resumeFingerprint(originalRequest, options);
+    const saved = readResumeRecord((await this.metadata.read()).agents?.[child.agentId], operationId);
+    if (saved !== undefined) assertResumeFingerprint(saved.fingerprint, fingerprint);
+    const modelSwitch = child.agent.accessor.get(IAgentModelSwitchService);
+    const switchState = modelSwitch.get(operationId)?.state;
+    const recoveringCommit = saved !== undefined && (switchState === 'preparing' || switchState === 'completed');
+    assertNativeToolOverride(childData.executorId, options.toolOverride);
+    const binding = recoveringCommit ? undefined : await childProfile.prepareResumeBinding({
       ...options.bindingOverride,
       modelAlias: inheritedModel ?? options.bindingOverride?.modelAlias,
       thinkingEffort: inheritedThinking,
       allowParentNotify: options.allowParentNotify,
+      toolOverride: options.toolOverride,
       callerConstraints,
     });
     checkResume();
@@ -492,23 +533,61 @@ export class SessionDispatchService implements ISessionDispatchService {
       callerProfile?.getEffectiveThinkingLevel() !== (callerData?.effectiveThinkingLevel ?? callerData?.thinkingLevel))) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Caller model or thinking effort changed during resume admission. Retry against its current binding.');
     }
-    await applyBinding();
-    const request: AgentRunRequest =
-      typeof requestInput === 'string'
-        ? { kind: 'prompt', prompt: requestInput }
-        : requestInput;
+    const record = saved ?? {
+      operationId, fingerprint, request: originalRequest, state: 'accepted' as const,
+      toolOverride: binding!.config.toolOverride,
+      switchInput: { operationId, model: binding!.model, thinking: binding!.thinking,
+        mode: options.bindingOverride?.newWindow === true ? 'fresh' as const : 'direct' as const },
+    };
+    if (saved === undefined) await writeResumeRecord(this.metadata, child.agentId, record);
+    const receipt = await modelSwitch.execute(record.switchInput, { binding, signal: options.signal });
+    if (receipt.state !== 'completed') {
+      throw new Error2(receipt.state === 'preparing' ? ErrorCodes.STORAGE_IO_FAILED : ErrorCodes.REQUEST_INVALID,
+        receipt.error?.message ?? 'The model switch has not completed. Retry this resume operation before starting its task.',
+        { details: { operationId, modelSwitchState: receipt.state } });
+    }
+    if (recoveringCommit) {
+      if (childProfile.getModel() !== record.switchInput.model || childProfile.getEffectiveThinkingLevel() !== record.switchInput.thinking
+        || JSON.stringify(childProfile.data().toolOverride) !== JSON.stringify(record.toolOverride)) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'The agent binding changed after this resume was committed. Inspect the original operation before starting another run.');
+      }
+      const admission = await childProfile.prepareResumeBinding({ modelAlias: record.switchInput.model,
+        thinkingEffort: record.switchInput.thinking, allowModelChange: true, allowParentNotify: options.allowParentNotify,
+        callerConstraints: readCallerConstraints() });
+      admission.assertCurrent();
+      checkResume();
+      if (callerConstraintKey !== JSON.stringify(readCallerConstraints())) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Caller constraints changed during resume recovery. Retry against the current caller policy.');
+      }
+    }
+    await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'ready' });
+    options.signal.throwIfAborted();
+    const request: AgentRunRequest = originalRequest.kind === 'prompt'
+      ? { ...originalRequest, promptId: originalRequest.promptId ?? `resume-prompt:${operationId}` }
+      : originalRequest;
     if (options.requesterAgentId !== undefined) {
       this.recordDelegatedRun(options.requesterAgentId, child.agentId);
     }
+    const started = this.runs.run(child.agentId, request, {
+      signal: options.signal,
+      onReady: options.onReady,
+      capacityReservation: reservation,
+    }).then(async (handle) => {
+      try {
+        await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'started', turnId: handle.turn.id });
+      } catch (error) {
+        this.log.warn('resume started but metadata confirmation failed', { operationId, agentId: child.agentId, turnId: handle.turn.id, error });
+      }
+      return handle;
+    }, (error: unknown) => {
+      this.resumeRuns.delete(JSON.stringify([child.agentId, operationId]));
+      throw error;
+    });
     return {
       child: this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta),
       request,
       lineage: options.lineage,
-      started: this.runs.run(child.agentId, request, {
-        signal: options.signal,
-        onReady: options.onReady,
-        capacityReservation: reservation,
-      }),
+      started,
     };
   }
 
@@ -573,15 +652,13 @@ export class SessionDispatchService implements ISessionDispatchService {
   }
 
   async recordRun(agentId: string, runId: string): Promise<void> {
-    const meta = (await this.metadata.read()).agents?.[agentId];
-    if (meta === undefined) return;
-    await this.metadata.registerAgent(agentId, {
+    await this.metadata.updateAgent(agentId, (meta) => ({
       ...meta,
       labels: {
         ...meta.labels,
         [COLLABORATION_LATEST_TASK_LABEL]: runId,
       },
-    });
+    }));
   }
 
   recordDelegatedRun(requesterAgentId: string, agentId: string): void {

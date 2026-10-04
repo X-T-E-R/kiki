@@ -1,12 +1,14 @@
 import { IdentityConfigSchema } from '@kiki/agent-core-v2/app/agentIdentity/configSection';
 import { TaskBoardConfigSchema } from '@kiki/agent-core-v2/app/taskBoard/configSection';
 import { SubagentConfigSchema } from '@kiki/agent-core-v2/session/subagent/configSection';
+import { SessionTitleConfigSchema } from '@kiki/agent-core-v2/session/sessionTitle/configSection';
 import { McpSectionSchema } from '@kiki/agent-core-v2/app/mcpConfig/configSection';
 import { PluginsSectionSchema } from '@kiki/agent-core-v2/app/plugin/configSection';
 import { ThreadCommunicationConfigSchema } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
 import { ImageConfigSchema } from '@kiki/agent-core-v2/agent/media/configSection';
 import { AgentTaskConfigSchema } from '@kiki/agent-core-v2/agent/task/configSection';
 import { PlanConfigSchema } from '@kiki/agent-core-v2/features/plan/configSection';
+import { HooksConfigSchema } from '@kiki/agent-core-v2/features/externalHooks/configSection';
 import { DangerousBashGuardSchema, PermissionRuleSchema } from '@kiki/agent-core-v2/agent/permissionRules/configSection';
 import {
   TokenCountingConfigSchema,
@@ -25,6 +27,8 @@ import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, requestGovernanc
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
+import { interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
+export { interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
 const planConfigRequestSchema = z
@@ -184,14 +188,6 @@ export const permissionConfigPatchSchema = z.object({
   }).optional(),
 }).passthrough();
 
-export const interactionConfigResponseSchema = z.object({
-  askUserQuestion: z.enum(['background', 'blocking']),
-});
-
-export const interactionConfigPatchSchema = z.object({
-  ask_user_question: z.enum(['background', 'blocking']).optional(),
-}).strict();
-
 export const configResponseSchema = z.object({
   space_ui: spaceUiConfigSchema.optional(),
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
@@ -207,7 +203,7 @@ export const configResponseSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: permissionConfigResponseSchema.optional(),
   interaction: interactionConfigResponseSchema.optional(),
-  hooks: z.array(z.unknown()).optional(),
+  hooks: HooksConfigSchema.optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
   nb_search_source: nbSearchSourceConfigSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
@@ -217,7 +213,7 @@ export const configResponseSchema = z.object({
   subagent: subagentConfigResponseSchema.optional(),
   agents: agentsConfigResponseSchema.optional(),
   builtin_product_skills: z.boolean().optional(),
-  session_title: z.object({ model: z.string().optional() }).optional(),
+  session_title: SessionTitleConfigSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   cron: cronConfigResponseSchema.optional(),
   thread_communication: ThreadCommunicationConfigSchema.optional(),
@@ -256,7 +252,7 @@ export const patchConfigRequestSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: permissionConfigPatchSchema.optional(),
   interaction: interactionConfigPatchSchema.optional(),
-  hooks: z.array(z.unknown()).optional(),
+  hooks: HooksConfigSchema.optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
   nb_search_source: nbSearchSourceConfigSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
@@ -272,8 +268,6 @@ export const patchConfigRequestSchema = z.object({
     max_direct_children: SubagentConfigSchema.shape.maxDirectChildren,
     max_total_subagents: SubagentConfigSchema.shape.maxTotalSubagents,
     default_profile: SubagentConfigSchema.shape.defaultProfile,
-    main_dispatch_policy: SubagentConfigSchema.shape.mainDispatchPolicy,
-    subagent_dispatch_policy: SubagentConfigSchema.shape.subagentDispatchPolicy,
     allowed_tools: SubagentConfigSchema.shape.allowedTools,
   }).strict().optional(),
   agents: z.object({
@@ -282,7 +276,7 @@ export const patchConfigRequestSchema = z.object({
     delegation: agentsDelegationConfigSchema.optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
-  session_title: z.object({ model: z.string().optional() }).optional(),
+  session_title: SessionTitleConfigSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   thread_communication: ThreadCommunicationConfigSchema.optional(),
   token_counting: tokenCountingConfigSchema.optional(),

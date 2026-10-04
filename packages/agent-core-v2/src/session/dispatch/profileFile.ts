@@ -18,27 +18,11 @@ import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 
 export interface FrozenProfileFileSources {
   readonly root: AgentFileDefinition;
-  readonly callerCeiling?: Pick<ProfileData, 'activeToolNames' | 'toolAllowPolicies' | 'disallowedTools' | 'subagentPolicy' | 'subagentDeclaration' | 'subagents'>;
+  readonly callerCeiling?: Pick<ProfileData, 'activeToolNames' | 'toolAllowPolicies' | 'disallowedTools'>;
   readonly scopedBindings: Readonly<Record<string, Readonly<Record<string, AgentFileScopedBinding>>>>;
   readonly sourceDefinitions: Readonly<Record<string, AgentFileDefinition>>;
   readonly dependencyIndex: Readonly<Record<string, readonly string[]>>;
   readonly diagnostics: readonly AgentProfileDiagnostic[];
-}
-
-export function applyProfileFileSubagentCeiling(
-  profile: AgentProfile,
-  ceiling: FrozenProfileFileSources['callerCeiling'],
-): AgentProfile {
-  if (ceiling === undefined || ceiling.subagentPolicy !== 'strict' || ceiling.subagents === undefined) return profile;
-  const subagents = profile.subagents === undefined
-    ? ceiling.subagents
-    : profile.subagents.filter((name) => ceiling.subagents!.includes(name));
-  return {
-    ...profile,
-    subagentPolicy: 'strict',
-    subagentDeclaration: { kind: 'set', names: subagents },
-    subagents,
-  };
 }
 
 export function restoreProfileFileSources(
@@ -120,8 +104,7 @@ export async function loadDispatchProfileFile(
     root: definition,
     callerCeiling: structuredClone({
       activeToolNames: caller.activeToolNames, toolAllowPolicies: caller.toolAllowPolicies,
-      disallowedTools: caller.disallowedTools, subagentPolicy: caller.subagentPolicy,
-      subagentDeclaration: caller.subagentDeclaration, subagents: caller.subagents,
+      disallowedTools: caller.disallowedTools,
     }),
     scopedBindings: Object.fromEntries([...graph.scopedBindings].map(([id, entries]) => [id, Object.fromEntries(entries)])),
     sourceDefinitions: Object.fromEntries(graph.sourceDefinitions), dependencyIndex: Object.fromEntries(graph.dependencyIndex), diagnostics: graph.diagnostics,
@@ -131,11 +114,11 @@ export async function loadDispatchProfileFile(
     sources,
     (context) => defaults.renderSystemPrompt(context),
   );
-  const profile = applyProfileFileSubagentCeiling({
+  const profile = {
     ...parsed,
     toolAllowPolicies: [...(parsed.toolAllowPolicies ?? []), ...(caller.toolAllowPolicies ?? []), ...(caller.activeToolNames === undefined ? [] : [caller.activeToolNames])],
     disallowedTools: [...new Set([...(parsed.disallowedTools ?? []), ...(caller.disallowedTools ?? [])])],
-  }, sources.callerCeiling);
+  };
   const base = snapshot ?? catalog.snapshot?.();
   const publicProfiles = new Map<string, AgentProfile>([
     ...(base?.publicProfiles ?? catalog.list().map((entry) => [entry.name, entry] as const)),

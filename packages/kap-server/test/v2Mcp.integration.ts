@@ -117,6 +117,11 @@ function makeMcpStub(): McpStub {
       }
       return { success: true, output: 'probe ok' };
     },
+    stopServer: async (target) => {
+      calls.push(`stopServer:${target.name}:${target.cwd ?? ''}`);
+      if (target.name === 'invalid') throw new Error2(ErrorCodes.REQUEST_INVALID, 'Not a cua entry');
+      return { state: 'unconfirmed', output: 'fixture: proxy exit does not confirm desktop action termination' };
+    },
     listAuthStatuses: async (query) => {
       calls.push('listAuthStatuses');
       state.verifySeen = query?.verify;
@@ -311,6 +316,19 @@ describe('server /api/mcp', () => {
       expect(badBegin.body.code).toBe(40001);
 
       expect(stub.calls).toEqual([]);
+    });
+
+    it('exposes scoped computer stop terminal states without inventing success', async () => {
+      const stub = makeMcpStub();
+      await boot(stub);
+      const result = await call('POST', '/api/mcp/servers:stop', { name: 'cua', cwd: '/fixture/workspace' });
+      expect(result.body.code).toBe(0);
+      expect(result.body.data).toEqual({ state: 'unconfirmed', output: 'fixture: proxy exit does not confirm desktop action termination' });
+      expect(stub.calls).toContain('stopServer:cua:/fixture/workspace');
+      const rejected = await call('POST', '/api/mcp/servers:stop', { name: 'invalid' });
+      expect(rejected.body.code).toBe(40001);
+      const malformed = await call('POST', '/api/mcp/servers:stop', {});
+      expect(malformed.body.code).toBe(40001);
     });
 
     it('maps the engine request.invalid rejection to 40001', async () => {

@@ -1,3 +1,5 @@
+export { computerArtifact, COMPUTER_COMMIT, COMPUTER_VERSION } from './entries/computerArtifacts';
+
 export interface VerifiedArtifact {
   readonly version: string;
   readonly url: string;

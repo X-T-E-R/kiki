@@ -78,6 +78,7 @@ export interface OAuthManagerOptions {
 export interface LoginOptions {
   readonly onDeviceCode?: ((auth: DeviceAuthorization) => Promise<void> | void) | undefined;
   readonly signal?: AbortSignal | undefined;
+  readonly restartOnExpiry?: boolean;
 }
 
 export class OAuthManager {
@@ -396,26 +397,32 @@ export class OAuthManager {
     const deadlineAt = startedAt + Math.ceil(this.deviceCodeTimeoutMs / 1000);
 
     while (true) {
+      this.throwIfAborted(options.signal);
       const auth = await this.requestImpl(this.config);
+      this.throwIfAborted(options.signal);
       await options.onDeviceCode?.(auth);
+      const deviceDeadline = options.restartOnExpiry === false && auth.expiresIn !== null
+        ? Math.min(deadlineAt, this.now() + auth.expiresIn) : deadlineAt;
 
-      // RFC 8628 §3.5: clients must add at least 5s on `slow_down` and
-      // continue polling at the increased interval thereafter.
+      // RFC 8628 §3.5: clients must add at least 5s on slow_down.
       let currentInterval = Math.max(auth.interval, 1);
-      // Poll until success, denial, local timeout, or expired_token (retry outer).
       let deviceExpired = false;
       while (true) {
         this.throwIfAborted(options.signal);
-        if (this.now() >= deadlineAt) {
-          throw new DeviceCodeTimeoutError(
-            `Device authorization timed out after ${Math.ceil(this.deviceCodeTimeoutMs / 1000)}s`,
-          );
+        if (options.restartOnExpiry === false) {
+          await this.sleep(Math.min(currentInterval, Math.max(0, deviceDeadline - this.now())) * 1000);
+          this.throwIfAborted(options.signal);
+        }
+        if (this.now() >= deviceDeadline) {
+          throw new DeviceCodeTimeoutError('Device authorization timed out');
         }
 
         const result = await this.pollImpl(this.config, auth.deviceCode);
+        this.throwIfAborted(options.signal);
         if (result.kind === 'success') {
           const release = await this.acquireProviderLock();
           try {
+            this.throwIfAborted(options.signal);
             await this.storage.save(this.config.name, result.token);
           } finally {
             await release();
@@ -428,14 +435,12 @@ export class OAuthManager {
           );
         }
         if (result.kind === 'expired') {
+          if (options.restartOnExpiry === false) throw new DeviceCodeTimeoutError('Device authorization expired');
           deviceExpired = true;
           break;
         }
-        // pending: bump interval permanently when server requests slow_down.
-        if (result.errorCode === 'slow_down') {
-          currentInterval += 5;
-        }
-        await this.sleep(currentInterval * 1000);
+        if (result.errorCode === 'slow_down') currentInterval += 5;
+        if (options.restartOnExpiry !== false) await this.sleep(currentInterval * 1000);
       }
       if (!deviceExpired) break;
       // Otherwise loop outer to request a new device code.

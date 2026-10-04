@@ -1,4 +1,4 @@
-import type { FetchDocument, FetchRunSyncEnvelope, PublicError } from '@nb-corp/nb-search';
+import { canonicalFetchUrl, type FetchDocument, type FetchRunSyncEnvelope, type PublicError } from '@nb-corp/nb-search';
 import { parseNativeFetchInput, nativeFetchParameters } from '#/app/nbSearch/nativeInput';
 import { renderNativeEnvelope } from '#/app/nbSearch/nativeOutput';
 import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
@@ -37,7 +37,9 @@ export class FetchURLTool implements IFetchURLTool {
 
   async resolveExecution(args: FetchURLInput): Promise<ToolExecution> {
     try {
-      const input = this.normalizeTrailingRootDot(parseNativeFetchInput(args));
+      const parsed = parseNativeFetchInput(args);
+      const input = parsed.action === 'run' && parsed.source.kind === 'url'
+        ? { ...parsed, source: { ...parsed.source, url: canonicalFetchUrl(parsed.source.url).href } } : parsed;
       const file = input.action === 'run' && input.source.kind === 'file' ? await this.nbSearch.resolveFetchFile(input) : undefined;
       const inspected = file === undefined ? undefined : inspectAgentRuntime(this.runtime);
       const guard = (path: string): string => {
@@ -71,38 +73,6 @@ export class FetchURLTool implements IFetchURLTool {
     }
   }
 
-  /**
-   * Donor `parsePublicUrl` only lowercases the hostname, so a trailing root
-   * dot (`metadata.google.internal.`) escapes both the exact metadata list and
-   * the `.local` / `.localhost` suffix rules, and the URL then falls through
-   * to the Jina lane. The URL spec treats `example.com.` as `example.com`, so
-   * strip the root dot before admission (and before the approval subject) —
-   * the fetch itself keeps the canonical, stripped spelling.
-   */
-  private normalizeTrailingRootDot<T>(input: T): T {
-    if (
-      typeof input !== 'object' || input === null ||
-      !('source' in input) || typeof (input as { source: unknown }).source !== 'object'
-    ) return input;
-    const source = (input as { source: { kind?: unknown; url?: unknown } }).source;
-    if (source.kind !== 'url' || typeof source.url !== 'string') return input;
-    const url = source.url;
-    const schemeMatch = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/?#]*)([^]*)$/s.exec(url);
-    if (schemeMatch === null) return input;
-    const scheme = schemeMatch[1] ?? '';
-    const authority = schemeMatch[2] ?? '';
-    const rest = schemeMatch[3] ?? '';
-    const authorityMatch = /^([^@]*@)?(\[[^\]]*\]|[^/:]*)(.*)$/.exec(authority);
-    if (authorityMatch === null) return input;
-    const userinfo = authorityMatch[1] ?? '';
-    const host = authorityMatch[2] ?? '';
-    const hostRest = authorityMatch[3] ?? '';
-    if (host.endsWith('.') && !host.endsWith('].') && host !== '.') {
-      return { ...input, source: { ...source, url: `${scheme}${userinfo}${host.slice(0, -1)}${hostRest}${rest}` } };
-    }
-    return input;
-  }
-
   private async execution(
     args: FetchURLInput,
     { toolCallId, signal }: ExecutableToolContext,
@@ -132,11 +102,14 @@ function renderFetchResult(envelope: FetchRunSyncEnvelope): ExecutableToolResult
   const hints = [...new Set([...envelope.documents.flatMap((document) => document.warnings), ...envelope.hints]
     .map((hint) => `${hint.code}: ${hint.message}${hint.data === undefined ? '' : ` ${JSON.stringify(hint.data)}`}`))];
   const guidance = hints.length === 0 ? '' : `Fetch warnings and hints:\n${hints.join('\n')}`;
-  const output = [content, guidance].filter(Boolean).join('\n\n');
+  const route = envelope.routing;
+  const routing = route === undefined ? '' : `Fetch route: ${route.origin}${route.rule_id === undefined ? '' : ` (${route.rule_id})`}${route.package_id === undefined ? '' : ` [${route.package_id}@${route.package_version}]`}; ${route.pipelines.join(' -> ')}.`;
+  const attempts = envelope.lane_outcomes.length === 0 ? '' : `Actual attempts: ${envelope.lane_outcomes.map((outcome) => `${outcome.lane}: ${outcome.state}${outcome.error === undefined ? '' : ` (${outcome.error.code})`}${outcome.attempts === undefined ? '' : `, ${outcome.attempts.length} provider attempt(s)`}`).join('; ')}.`;
+  const output = [routing, attempts, content, guidance].filter(Boolean).join('\n\n');
   if (envelope.status === 'succeeded' && content.length > 0) {
     return { isError: false, output };
   }
-  const detail = classifyFetchFailure(envelope.error, envelope.status);
+  const detail = classifyFetchFailure(envelope.error ?? envelope.lane_outcomes.findLast((outcome) => outcome.error !== undefined)?.error, envelope.status);
   if (output.length === 0) {
     return { isError: true, output: detail };
   }
@@ -151,9 +124,11 @@ function renderDocument(document: FetchDocument): string {
     ? 'The returned content is truncated and incomplete.'
     : document.warnings.length > 0
       ? 'The returned content has fetch warnings; completeness is not guaranteed.'
-      : isExtracted(document)
-        ? 'The returned content is the main text extracted from the page.'
-        : 'The returned content is the full response body, returned verbatim.';
+      : document.content_type === 'application/json' || document.content_type.endsWith('+json')
+        ? 'The returned content is a readable projection of the JSON response.'
+        : isExtracted(document)
+          ? 'The returned content is the main text extracted from the page.'
+          : 'The returned content is the full response body, returned verbatim.';
   const citeReminder =
     'If you use it in your answer, cite this page as a markdown link, e.g. [title](url).';
   return `${note} ${citeReminder}\n\n${document.content}`;

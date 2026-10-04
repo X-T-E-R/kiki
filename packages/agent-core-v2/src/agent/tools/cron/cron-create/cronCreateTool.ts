@@ -1,6 +1,5 @@
-import { LifecycleScope } from '#/app/scopes';
-
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { ToolExecution } from '#/tool/toolContract';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { literalRulePattern } from '#/tool/rule-match';
@@ -129,7 +128,7 @@ export class CronCreateTool implements ICronCreateTool {
           };
         }
 
-        const task = this.cron.addTask({
+        const task = await this.cron.addTask({
           cron: normalizedCron,
           prompt: args.prompt,
           recurring,
@@ -173,10 +172,6 @@ function formatOutput(o: CronCreateOutput): string {
   return lines.join('\n');
 }
 
-registerScopedService(
-  LifecycleScope.Agent,
-  ICronCreateTool,
-  CronCreateTool,
-  ScopeActivation.OnScopeCreated,
-  'cron',
-);
+registerAgentToolService(ICronCreateTool, CronCreateTool, {
+  name: 'CronCreate', domain: 'cron', when: (accessor) => !accessor.get(ISessionContext).ephemeral,
+});

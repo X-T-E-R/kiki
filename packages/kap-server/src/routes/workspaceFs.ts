@@ -34,6 +34,8 @@ import { validateQuery } from '../middleware/validate';
 import { openApiDocumentJsonSchema } from '../middleware/schema';
 import { envelopeSchema } from '../protocol/envelope';
 import { ErrorCode } from '../protocol/error-codes';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
+import { createMediaPreview, MediaPreviewUnavailableError } from '../services/mediaPreview';
 
 interface FsContentReply {
   type(mime: string): FsContentReply;
@@ -189,11 +191,12 @@ export function registerWorkspaceFsRoutes(app: WorkspaceFsRouteHost, core: Scope
 
 const fsContentQuerySchema = z.object({
   path: z.string().min(1),
+  preview: z.literal('media').optional(),
 });
 
 interface FsContentRequest {
   id: string;
-  query: { path: string };
+  query: { path: string; preview?: 'media' };
   headers: Record<string, unknown>;
 }
 
@@ -252,7 +255,7 @@ async function handleFsContent(
     return;
   }
 
-  const etag = buildEtag(st);
+  const etag = req.query.preview === 'media' ? `"preview-v1-${buildEtag(st).replaceAll('"', '')}"` : buildEtag(st);
   const ifNoneMatch = pickHeader(req.headers, 'if-none-match');
   if (ifNoneMatch !== undefined && ifNoneMatch === etag) {
     reply.code(304).header('etag', etag).send('');
@@ -262,6 +265,24 @@ async function handleFsContent(
   reply.header('etag', etag);
   reply.header('last-modified', new Date(st.mtimeMs ?? 0).toUTCString());
   reply.type(guessMime(abs, isBinary));
+  if (req.query.preview === 'media') {
+    try {
+      const result = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => createMediaPreview({
+        name: abs, size: st.size, mediaType: guessMime(abs, isBinary),
+        stream: (range) => createReadStream(abs, range),
+      }, undefined, signal));
+      const range = parseRangeHeader(pickHeader(req.headers, 'range'), result.bytes.byteLength);
+      const bytes = range === null ? result.bytes : result.bytes.subarray(range.start, range.end + 1);
+      reply.type(result.mime).header('accept-ranges', 'bytes');
+      if (range !== null) reply.code(206).header('content-range', `bytes ${range.start}-${range.end}/${result.bytes.byteLength}`);
+      else reply.code(200);
+      reply.header('content-length', bytes.byteLength).send(Buffer.from(bytes));
+    } catch (error) {
+      if (!(error instanceof MediaPreviewUnavailableError)) throw error;
+      reply.code(415).send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, requestId));
+    }
+    return;
+  }
 
   const log = requestLog(req);
   const onStreamError = (stream: ReadStream) => (error: unknown) => {

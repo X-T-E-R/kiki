@@ -58,7 +58,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       },
       name,
       source,
-      this.scope.parentAgentId === undefined ? undefined : this.subagentPolicy(profile.boundProfile?.tools),
+      this.scope.parentAgentId === undefined ? undefined : this.subagentPolicy(profile.toolOverride?.tools ?? profile.boundProfile?.tools ?? profile.activeToolNames),
     );
   }
 
@@ -73,7 +73,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       },
       name,
       source,
-      this.scope.parentAgentId === undefined ? undefined : this.subagentPolicy(profile.boundProfile?.tools),
+      this.scope.parentAgentId === undefined ? undefined : this.subagentPolicy(profile.toolOverride?.tools ?? profile.boundProfile?.tools ?? profile.activeToolNames),
     );
   }
 

@@ -133,13 +133,17 @@ export class AgentRuntimeService implements IAgentRuntimeService {
 
   async prepareFor(host?: string): Promise<Runtime> {
     const binding = this.bindingFor(host);
-    const runtime = this.resolver.inspect(binding);
-    if (runtime instanceof SshRuntime) {
-      const approval = this.approvedSshTargets.get(runtime.identity.runtimeId.slice(4));
+    if (binding.runtimeId.startsWith('ssh:')) {
+      if (!this.nativeSshEnabled()) throw new Error('Native SSH is disabled');
+      const hostId = binding.runtimeId.slice(4);
+      const approval = this.approvedSshTargets.get(hostId);
       if (approval === undefined) throw new Error('SSH target has not passed the connection gate');
+      await this.workspaces.prepareSshRuntime(binding.workspaceId);
+      const runtime = this.resolver.inspect(binding);
+      if (!(runtime instanceof SshRuntime)) throw new Error('SSH target does not provide an SSH runtime');
       await runtime.connect(this.permissionMode.current!.mode === 'yolo', approval.fingerprint,
         approval.trustUnknown, approval.credential, approval.keyboardInteractive);
-      this.approvedSshTargets.set(runtime.identity.runtimeId.slice(4), { fingerprint: approval.fingerprint,
+      this.approvedSshTargets.set(hostId, { fingerprint: approval.fingerprint,
         trustUnknown: approval.trustUnknown, keyboardInteractive: approval.keyboardInteractive });
     }
     return this.resolver.inspect(binding);

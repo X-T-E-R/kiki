@@ -1,0 +1,12 @@
+agent-browser 0.38.2
+Copyright 2025 Vercel Inc.
+Source: https://github.com/vercel-labs/agent-browser
+Pinned commit: 39a74c70d7759d5a6de7a22c04570bb626bbd081
+License: Apache-2.0; the original LICENSE is retained beside this notice.
+
+Kiki managed derivative: kiki-no-replay-r1 and kiki-stdio-r1 (2026-10-03).
+Modified files: cli/src/connection.rs, cli/src/mcp.rs, cli/src/output.rs and cli/Cargo.toml, as recorded in kiki-no-replay-r1.patch.
+The send_command retry loop was removed. Errors after sending may have begun are marked outcome_unknown and do not trigger daemon respawn/replay. Pre-send connection recovery remains upstream behavior. A Windows isolated lost-response regression counts actual received commands.
+Windows MCP output capture drains stdout/stderr while the CLI runs, then consumes buffered bytes after the real CLI exit without waiting for a background process's inherited writer to close. It preserves the real exit code and ordinary output; capture above 64 MiB is an explicit unknown failure. The existing windows-sys pipe API feature is enabled; dependency versions and Cargo.lock are unchanged. An inherited-writer regression verifies capture finishes while the writer remains open. The version display carries both derivative markers.
+This is not an unmodified official agent-browser release. No browser engine, MCP tool catalog, or action schema is forked by this patch. This does not promise exactly-once execution across process crashes.
+The pinned upstream source archive contains no NOTICE file; this notice records the derivative and does not change the Apache license.

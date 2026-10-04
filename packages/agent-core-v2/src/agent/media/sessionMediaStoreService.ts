@@ -26,17 +26,14 @@ interface SessionMediaMetadata {
   readonly mediaType: string;
 }
 
-export class SessionMediaStoreService implements ISessionMediaStore {
+export class ScopedMediaStore implements ISessionMediaStore {
   declare readonly _serviceBrand: undefined;
-  private readonly scope: string;
 
   constructor(
-    @ISessionContext sessionContext: ISessionContext,
-    @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
-    @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
-  ) {
-    this.scope = sessionContext.scope('media');
-  }
+    private readonly scope: string,
+    private readonly storage: IFileSystemStorageService,
+    private readonly documents: IAtomicDocumentStore,
+  ) {}
 
   pathFor(fileId: string, ext: string): string | undefined {
     if (!isFileId(fileId)) return undefined;
@@ -142,6 +139,14 @@ export class SessionMediaStoreService implements ISessionMediaStore {
         key === fileId || (key.startsWith(`${fileId}.`) && !key.includes('.tmp.')),
     );
   }
+}
+
+export class SessionMediaStoreService extends ScopedMediaStore {
+  constructor(
+    @ISessionContext sessionContext: ISessionContext,
+    @IFileSystemStorageService storage: IFileSystemStorageService,
+    @IAtomicDocumentStore documents: IAtomicDocumentStore,
+  ) { super(sessionContext.scope('media'), storage, documents); }
 }
 
 registerScopedService(

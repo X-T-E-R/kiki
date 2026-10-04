@@ -182,4 +182,29 @@ describe('native FetchURL donor boundaries', () => {
     expect(passed).toContain('http://metadata.google.internal/');
     fetch.mockRestore();
   });
+
+  it('matches the standard captured runtime for inline content and a direct-only builtin failure without network fallback', async () => {
+    const donor = await import('@nb-corp/nb-search');
+    const env = { NB_SEARCH_HOME: fixture, NB_SEARCH_CONFIG: path.join(fixture, 'not-read.json') };
+    const captured = donor.resolveCapturedConfiguration({ home: fixture, canonicalPath: env.NB_SEARCH_CONFIG, canonical: {} }, { env, config: { provider_instances: { 'direct-disabled': { provider_id: 'direct-http', enabled: false, options: {} } }, lanes: { 'direct.fetch': { provider_instance_id: 'direct-disabled', operation_id: 'fetch', latency: 'fast', cost: 'free' } } } });
+    ix.get(INbSearchSourceStore).withSource = async (_reuse, _config, use) => use({ env, config: captured.config, resolved: captured, expectedRevision: captured.config_revision, status: { reuse_local_config: false, layers: ['defaults', 'kiki'], local_config: 'ignored', availability: 'ready', issues: [] } });
+    const standard = donor.createCapturedNbSearchRuntime(captured, { env });
+    const inline = { action: 'run' as const, source: { kind: 'inline_text' as const, content: 'A fact.\n    source  whitespace', media_type: 'text/plain' as const }, pipeline: 'direct.local' };
+    const expected = await standard.fetch(inline);
+    const native = await ix.get(INbSearchService).fetch(inline);
+    expect(native).toMatchObject({ status: 'succeeded', documents: expected.action === 'run' && expected.execution === 'sync' ? expected.documents : [] });
+    expect('routing' in native && native.routing).toBeUndefined();
+    const input = { url: 'https://raw.githubusercontent.com/example/repo/main/README.md' };
+    const failed = await standard.fetch(input);
+    const result = await ix.get(INbSearchService).fetch(input);
+    expect(result).toMatchObject({ status: 'failed', routing: { origin: 'builtin', rule_id: 'github-raw-text', pipelines: ['direct.fetch'] }, lane_outcomes: [{ lane: 'direct.fetch', state: 'skipped' }], documents: [] });
+    if (result.action !== 'run' || result.execution !== 'sync' || failed.action !== 'run' || failed.execution !== 'sync') throw new Error('missing sync result');
+    expect(result.routing).toEqual(failed.routing);
+    expect(result.lane_outcomes).toEqual(failed.lane_outcomes);
+    const compact = await execute(input);
+    expect(compact.isError).toBe(true);
+    expect(compact.output).toContain('Fetch route: builtin (github-raw-text) [kiki-common-direct@1]');
+    expect(compact.output).toContain('direct.fetch: skipped');
+    expect(compact.output).not.toContain('jina.reader:');
+  });
 });

@@ -18,6 +18,7 @@ import {
   updateSpaceRequestSchema, updateSpaceResponseSchema, sshCopyCandidatesResponseSchema,
 } from '../protocol/rest-space';
 import { parseActionSuffix } from './action-suffix';
+import { registerSpacePreferenceRoutes } from './spacePreferences';
 
 type SpaceRecord = z.infer<typeof spaceRecordSchema>;
 interface HomesRouteHost {
@@ -178,6 +179,7 @@ export function registerHomesRoutes(app: HomesRouteHost, scope: Scope, credentia
     return task;
   }
   const main = scope.accessor.get(IBootstrapService).baseHomeDir ?? scope.accessor.get(IBootstrapService).homeDir;
+  const preferences = registerSpacePreferenceRoutes(app as unknown as Parameters<typeof registerSpacePreferenceRoutes>[0], scope);
   const list = defineRoute({
     method: 'GET', path: '/homes', success: { data: spacesResponseSchema },
     errors: { [ErrorCode.VALIDATION_FAILED]: {} },
@@ -230,6 +232,7 @@ export function registerHomesRoutes(app: HomesRouteHost, scope: Scope, credentia
         ];
         await writeFile(join(path, 'home.toml'), lines.join('\n'), { flag: 'wx', mode: 0o600 });
         const created = childRecord(path, base);
+        await preferences.initializeCreated(path, base);
         await writeHomes(base, [...records, created]);
         return created;
       });

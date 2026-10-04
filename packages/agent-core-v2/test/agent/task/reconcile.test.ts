@@ -2,7 +2,10 @@ import { mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IPluginMediaService } from '#/app/pluginMedia/pluginMedia';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 
 import {
   IAgentTaskService,
@@ -102,6 +105,24 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
         await ctx.dispose();
       }
     });
+
+    it('reattaches a persisted media task to its job and commits one normal terminal receipt', async () => {
+      const jobId = 'media-0123456789abcdef0123456789abcdef';
+      await persistence.writeTask({ taskId: 'media-restore0', kind: 'media', jobId, description: 'media restore', status: 'running', startedAt: 1, endedAt: null, detached: true });
+      const media = ctx.get(IPluginMediaService);
+      const run = vi.spyOn(media, 'run').mockResolvedValue({ job_id: jobId, state: 'succeeded', artifacts: [{ file_id: 'f_existing_original' }] } as Awaited<ReturnType<IPluginMediaService['run']>>);
+      const stored = vi.spyOn(media, 'stored').mockResolvedValue({ owner: { sessionId: ctx.get(ISessionContext).sessionId, agentId: ctx.get(IAgentScopeContext).agentId } } as Awaited<ReturnType<IPluginMediaService['stored']>>);
+      try {
+        await background.loadFromDisk();
+        expect(await background.reconcile()).toEqual([]);
+        await vi.waitFor(() => expect(background.getTask('media-restore0')).toMatchObject({ kind: 'media', jobId, status: 'completed', receiptVerification: 'verified' }));
+        expect(await persistence.readTask('media-restore0')).toMatchObject({ status: 'completed', receiptVerification: 'verified' });
+        expect((await background.getOutputSnapshot('media-restore0', 4096)).preview).toContain('f_existing_original');
+        await background.reconcile();
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(emittedEvents.filter((event) => (event as { type?: string }).type === 'task.terminated')).toHaveLength(1);
+      } finally { run.mockRestore(); stored.mockRestore(); }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('reconciles a previously-running task as lost', async () => {
       await persistence.writeTask(persistedProcess());

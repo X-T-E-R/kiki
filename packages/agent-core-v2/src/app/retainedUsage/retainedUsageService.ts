@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { z } from 'zod';
 
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -17,10 +19,12 @@ import {
   type RetainedUsageListQuery,
   type RetainedUsageListResult,
   type RetainedUsageRecord,
+  type RetainedUsageExportEvent,
 } from './retainedUsage';
 
 const RETAINED_USAGE_KEY = 'deleted-sessions-v2.jsonl';
 const EPHEMERAL_USAGE_KEY = 'ephemeral-totals-v1.jsonl';
+const RETAINED_READ_CHUNK_BYTES = 64 * 1024;
 
 const tokenUsageSchema = z.object({
   inputOther: z.number().finite().nonnegative(),
@@ -57,6 +61,28 @@ const ephemeralUsageSchema = z.object({
   usage: tokenUsageSchema,
   usageKnown: z.boolean().optional(),
 });
+
+const ephemeralUsageStartSchema = z.object({
+  kind: z.literal('source'),
+  sourceId: z.string(),
+  recordCount: z.number().int().nonnegative(),
+});
+
+const ephemeralUsageRecordSchema = z.object({
+  kind: z.literal('record'),
+  record: ephemeralUsageSchema,
+});
+
+const ephemeralUsageCommitSchema = z.object({
+  kind: z.literal('commit'),
+  sourceId: z.string(),
+});
+
+type EphemeralUsageEvent =
+  | { kind: 'progress' }
+  | { kind: 'record'; record: EphemeralUsageTotal }
+  | { kind: 'commit'; sourceId: string }
+  | { kind: 'incomplete'; reason?: RetainedUsageIncompleteReason };
 
 const retainedDeletedSessionUsageHeaderSchema = z.object({
   version: z.literal(RETAINED_USAGE_VERSION),
@@ -115,12 +141,22 @@ export class RetainedUsageService implements IRetainedUsageService {
   ) {}
 
   async retainEphemeralUsage(sessionScope: string, workspaceId: string): Promise<void> {
+    const sourceId = createHash('sha256').update(sessionScope).digest('hex');
+    for await (const event of this.readEphemeralUsage()) {
+      if (event.kind === 'commit' && event.sourceId === sourceId) return;
+    }
     const { records } = await this.readSessionRecords(sessionScope);
+    this.appendLog.append(this.storeScope, EPHEMERAL_USAGE_KEY, {
+      kind: 'source', sourceId, recordCount: records.length,
+    });
     for (const { time, model, usage, usageKnown } of records) {
       this.appendLog.append(this.storeScope, EPHEMERAL_USAGE_KEY, {
-        workspaceId, time, model, usage, usageKnown,
-      } satisfies EphemeralUsageTotal);
+        kind: 'record', record: { workspaceId, time, model, usage, usageKnown },
+      });
     }
+    this.appendLog.append(this.storeScope, EPHEMERAL_USAGE_KEY, {
+      kind: 'commit', sourceId,
+    });
     await this.appendLog.flush();
   }
 
@@ -133,18 +169,16 @@ export class RetainedUsageService implements IRetainedUsageService {
     const items: EphemeralUsageTotal[] = [];
     let complete = true;
     const workspaceIds = query.workspaceIds === undefined ? undefined : new Set(query.workspaceIds);
-    for await (const raw of this.appendLog.read<unknown>(this.storeScope, EPHEMERAL_USAGE_KEY, {
-      onTruncate: () => { complete = false; }, signal: query.signal,
-    })) {
-      if (Date.now() >= query.deadlineAt) return { items, complete: false, scannedRecords: items.length, incompleteReason: 'deadline' };
-      const parsed = ephemeralUsageSchema.safeParse(raw);
-      if (!parsed.success) {
+    for await (const event of this.readEphemeralUsage(query.signal, query.recordLimit, workspaceIds)) {
+      if (Date.now() >= query.deadlineAt || query.signal?.aborted) return { items, complete: false, scannedRecords: items.length, incompleteReason: 'deadline' };
+      if (event.kind === 'incomplete') {
         complete = false;
-        continue;
+        if (event.reason !== undefined) return { items, complete, scannedRecords: items.length, incompleteReason: event.reason };
       }
-      if (workspaceIds !== undefined && !workspaceIds.has(parsed.data.workspaceId)) continue;
+      if (event.kind !== 'record') continue;
+      if (workspaceIds !== undefined && !workspaceIds.has(event.record.workspaceId)) continue;
       if (items.length >= query.recordLimit) return { items, complete: false, scannedRecords: items.length, incompleteReason: 'record_budget' };
-      items.push(parsed.data);
+      items.push(event.record);
     }
     return { items, complete, scannedRecords: items.length };
   }
@@ -181,6 +215,41 @@ export class RetainedUsageService implements IRetainedUsageService {
     this.appendLog.append(this.storeScope, RETAINED_USAGE_KEY, { kind: 'commit' });
     await this.appendLog.flush();
     return snapshot;
+  }
+
+  async *readExportUsage(includeEphemeral: boolean, signal?: AbortSignal): AsyncGenerator<RetainedUsageExportEvent> {
+    let damaged = false;
+    let current: { start: RetainedUsageLedgerStart; meta?: RetainedUsageLedgerMeta; records: RetainedUsageRecord[]; observed: number; valid: boolean } | undefined;
+    for await (const raw of this.appendLog.read<unknown>(this.storeScope, RETAINED_USAGE_KEY, { signal, chunkBytes: RETAINED_READ_CHUNK_BYTES, onTruncate: () => { damaged = true; } })) {
+      yield { kind: 'progress' };
+      const kind = retainedUsageLedgerKindSchema.safeParse(raw);
+      if (!kind.success) { damaged = true; if (current !== undefined) current.valid = false; continue; }
+      if (kind.data.kind === 'session') {
+        if (current !== undefined) damaged = true;
+        const start = retainedUsageLedgerStartSchema.safeParse(raw);
+        current = start.success ? { start: start.data, records: [], observed: 0, valid: true } : undefined;
+        if (!start.success) damaged = true;
+      } else if (current !== undefined && kind.data.kind === 'meta') {
+        const meta = retainedUsageLedgerMetaSchema.safeParse(raw); if (meta.success) current.meta = meta.data; else current.valid = false;
+      } else if (current !== undefined && kind.data.kind === 'record') {
+        current.observed++; const record = retainedUsageLedgerRecordSchema.safeParse(raw);
+        if (record.success) current.records.push(record.data.record); else current.valid = false;
+      } else if (current !== undefined && kind.data.kind === 'commit') {
+        const complete = retainedUsageLedgerCommitSchema.safeParse(raw).success && current.valid && current.meta !== undefined && current.observed === current.start.recordCount;
+        if (complete) {
+          const header = retainedDeletedSessionUsageHeaderSchema.parse(current.start); const meta = retainedDeletedSessionUsageMetaSchema.parse(current.meta);
+          yield { kind: 'session', snapshot: { ...header, ...meta, records: current.records } };
+        } else damaged = true;
+        current = undefined;
+      } else if (current !== undefined) current.valid = false;
+    }
+    if (current !== undefined) damaged = true;
+    if (includeEphemeral) for await (const event of this.readEphemeralUsage(signal)) {
+      if (event.kind === 'progress') yield event;
+      else if (event.kind === 'record') yield { kind: 'ephemeral', record: event.record };
+      else if (event.kind === 'incomplete') damaged = true;
+    }
+    if (damaged) yield { kind: 'incomplete' };
   }
 
   async listDeletedSessions(query: RetainedUsageListQuery): Promise<RetainedUsageListResult> {
@@ -230,6 +299,7 @@ export class RetainedUsageService implements IRetainedUsageService {
         {
           onTruncate: () => { ledgerTruncated = true; },
           signal: readController.signal,
+          chunkBytes: RETAINED_READ_CHUNK_BYTES,
         },
       )) {
         if (expired()) {
@@ -326,6 +396,69 @@ export class RetainedUsageService implements IRetainedUsageService {
       if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
       query.signal?.removeEventListener('abort', abortRead);
     }
+  }
+
+  private async *readEphemeralUsage(
+    signal?: AbortSignal,
+    recordLimit = Number.MAX_SAFE_INTEGER,
+    workspaceIds?: ReadonlySet<string>,
+  ): AsyncGenerator<EphemeralUsageEvent> {
+    const committed = new Set<string>();
+    const unfinished = new Set<string>();
+    let damaged = false;
+    let current: {
+      start: z.infer<typeof ephemeralUsageStartSchema>;
+      records: EphemeralUsageTotal[];
+      observed: number;
+      valid: boolean;
+    } | undefined;
+    for await (const raw of this.appendLog.read<unknown>(this.storeScope, EPHEMERAL_USAGE_KEY, {
+      signal, chunkBytes: RETAINED_READ_CHUNK_BYTES, onTruncate: () => { damaged = true; },
+    })) {
+      yield { kind: 'progress' };
+      const start = ephemeralUsageStartSchema.safeParse(raw);
+      if (start.success) {
+        if (current !== undefined && !committed.has(current.start.sourceId)) unfinished.add(current.start.sourceId);
+        current = { start: start.data, records: [], observed: 0, valid: true };
+        continue;
+      }
+      if (current !== undefined) {
+        const record = ephemeralUsageRecordSchema.safeParse(raw);
+        if (record.success) {
+          current.observed++;
+          if (!committed.has(current.start.sourceId) &&
+            (workspaceIds === undefined || workspaceIds.has(record.data.record.workspaceId))) {
+            if (current.records.length >= recordLimit) {
+              yield { kind: 'incomplete', reason: 'record_budget' };
+              return;
+            }
+            current.records.push(record.data.record);
+          }
+          continue;
+        }
+        const commit = ephemeralUsageCommitSchema.safeParse(raw);
+        if (commit.success) {
+          const sourceId = current.start.sourceId;
+          if (commit.data.sourceId === sourceId && current.valid && current.observed === current.start.recordCount) {
+            unfinished.delete(sourceId);
+            if (!committed.has(sourceId)) {
+              committed.add(sourceId);
+              for (const record of current.records) yield { kind: 'record', record };
+              yield { kind: 'commit', sourceId };
+            }
+          } else if (!committed.has(sourceId)) unfinished.add(sourceId);
+          current = undefined;
+          continue;
+        }
+        current.valid = false;
+        continue;
+      }
+      const legacy = ephemeralUsageSchema.safeParse(raw);
+      if (legacy.success) yield { kind: 'record', record: legacy.data };
+      else damaged = true;
+    }
+    if (current !== undefined && !committed.has(current.start.sourceId)) unfinished.add(current.start.sourceId);
+    if (damaged || unfinished.size > 0) yield { kind: 'incomplete' };
   }
 
   private get storeScope(): string {

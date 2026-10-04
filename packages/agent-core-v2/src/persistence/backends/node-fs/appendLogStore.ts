@@ -79,6 +79,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     let lineNumber = 0;
     for await (const chunk of this.storage.readStream(scope, key, undefined, {
       signal: options?.signal,
+      chunkBytes: options?.chunkBytes,
     })) {
       pending += textDecoder.decode(chunk, { stream: true });
       let newlineIndex = pending.indexOf('\n');

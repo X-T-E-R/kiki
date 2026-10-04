@@ -5,6 +5,8 @@ import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { IAgentCognitionAnchorService } from '#/agent/cognition/cognitionAnchor';
+import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { CognitionConfigSchema } from '#/app/kosongConfig/configSection';
@@ -103,10 +105,31 @@ describe('cognition first-turn anchor', () => {
     expect(fullPrompt).toContain(OVERLAY_TEXT);
     expect(fullPrompt).not.toBe(ANCHOR_TEXT);
 
+    expect((await profile.getPromptDiagnostics()).request).toBeUndefined();
     expect(await requestTurn(requester, agent, FIRST_TURN, 1)).toBe(ANCHOR_TEXT);
+    const anchoredRequest = (await profile.getPromptDiagnostics()).request;
+    expect(anchoredRequest).toMatchObject({ anchor_applied: true, anchor_steps: 1, anchor_scope: 'session', cognition_revision: profile.getCognitionSnapshot()?.revision, binding_revision: (await profile.getPromptDiagnostics()).binding_revision });
     expect(await requestTurn(requester, agent, FIRST_TURN, 2)).toBe(fullPrompt);
+    const fullRequest = (await profile.getPromptDiagnostics()).request;
+    expect(fullRequest?.anchor_applied).toBe(false);
+    expect(fullRequest?.system_prompt_hash).not.toBe(anchoredRequest?.system_prompt_hash);
     expect(profile.getSystemPrompt()).toBe(fullPrompt);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('freezes anchor text per turn and reloads model bindings without a stale first-model cache', async () => {
+    await writeFile(join(homeDir, 'cognition/second-anchor.md'), 'SECOND ANCHOR');
+    const { agent, requester, profile } = await createBoundAgent({ anchor: 'cognition/anchor.md', anchorScope: 'turn', anchorSteps: 2 }, {
+      second: { provider: 'test-provider', model: 'second', maxContextSize: 1_000_000, cognition: { anchor: 'cognition/second-anchor.md', anchorScope: 'turn', anchorSteps: 2 } },
+    });
+    expect(await requestTurn(requester, agent, 0, 1)).toBe(ANCHOR_TEXT);
+    await profile.setModel('second');
+    expect(await requestTurn(requester, agent, 0, 2)).toBe(ANCHOR_TEXT);
+    expect(await requestTurn(requester, agent, 1, 1)).toBe('SECOND ANCHOR');
+    await agent.get(ISessionMetadata).registerAgent('main', { type: 'main' });
+    const binding = await profile.prepareResumeBinding({ modelAlias: MOCK_MODEL, allowModelChange: true });
+    await agent.get(IAgentModelSwitchService).execute({ operationId: 'cognition-anchor-resume', model: binding.model, thinking: binding.thinking, mode: 'direct' }, { binding });
+    expect(await requestTurn(requester, agent, 2, 1)).toBe(ANCHOR_TEXT);
+  });
 
   it('does not carry ${delegation_context} injection into the anchor window', async () => {
     await writeFile(

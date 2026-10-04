@@ -97,6 +97,14 @@ export type LoopRunResult =
 
 export type TurnResult = LoopRunResult;
 
+export class TurnPersistenceError extends Error2 {
+  constructor(readonly turnId: number, readonly executionResult: TurnResult, cause: unknown) {
+    super('internal', 'Turn execution ended, but saving failed. Recover persistence before continuing.', {
+      cause, details: { turnId, executionOutcome: executionResult.type, persistenceOutcome: 'failed' },
+    });
+  }
+}
+
 export type StepState = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export type StepResult =
@@ -136,6 +144,8 @@ export interface AgentLoopStatus {
   readonly state: 'idle' | 'running';
   readonly activeTurnId?: number;
   readonly lastTurnResult?: TurnResult['type'];
+  readonly finalizing?: boolean;
+  readonly persistenceFailure?: { readonly executionOutcome: TurnResult['type']; readonly message: string };
   readonly pendingTurnIds: readonly number[];
   readonly hasPendingRequests: boolean;
   readonly pendingRequestKinds?: readonly string[];
@@ -155,6 +165,8 @@ export interface IAgentLoopService {
   run(options: LoopRunOptions): Promise<LoopRunResult>;
 
   status(): AgentLoopStatus;
+
+  recoverPersistence(): Promise<boolean>;
 
   cancel(turnId?: number, reason?: unknown): boolean;
 

@@ -31,6 +31,7 @@ export const goalInitialStatusSchema = z.enum(['active', 'paused']);
 export type GoalInitialStatus = z.infer<typeof goalInitialStatusSchema>;
 
 export const promptSubmissionSchema = z.object({
+  after_model_switch: z.string().min(1).optional(),
   content: z.array(messageContentSchema).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
   agent_id: z.string().min(1).optional(),
@@ -75,6 +76,10 @@ export const promptItemSchema = z.object({
   created_at: isoDateTimeSchema,
   append_timing: deferredAppendTimingSchema.optional(),
   revision: z.number().int().nonnegative().optional(),
+  model: z.string().optional(),
+  thinking: z.string().optional(),
+  after_model_switch: z.string().optional(),
+  queue_index: z.number().int().optional(),
 });
 export type PromptItem = z.infer<typeof promptItemSchema>;
 

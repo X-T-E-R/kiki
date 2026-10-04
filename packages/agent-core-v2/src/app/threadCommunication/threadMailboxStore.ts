@@ -10,7 +10,22 @@ export interface ThreadMessageSender {
   readonly sessionId: string;
 }
 
+export interface BridgedThreadMetadata {
+  readonly source: ThreadRef;
+  readonly sourceHomeId: string;
+  readonly targetHomeId: string;
+  readonly bridgeId: string;
+  readonly revision: number;
+  readonly location: 'local' | 'network';
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  readonly sourceSeq: number;
+  readonly causeId: string;
+  readonly hop: number;
+}
+
 export type ThreadMessageProducer =
+  | ({ readonly kind: 'bridged_peer' } & BridgedThreadMetadata)
   | { readonly kind: 'peer_thread'; readonly source: ThreadRef; readonly sender?: ThreadMessageSender; readonly allowWhenDisabled?: boolean }
   | { readonly kind: 'room'; readonly roomId: string; readonly targeted?: boolean; readonly generation?: number; readonly sender?: ThreadMessageSender; readonly queueWhenBusy?: boolean; readonly requireCommunication?: boolean }
   | { readonly kind: 'external_client' };
@@ -89,6 +104,7 @@ export interface IThreadMailboxStore {
     readonly content: string;
     readonly idempotencyKey: string;
     readonly pendingLimit?: number;
+    readonly rateLimit?: { readonly key: string; readonly count: number; readonly windowMs: number };
   }, options?: ThreadMailboxMutationOptions): Promise<ThreadMessageAcceptance>;
 
   claimNext(input: {
@@ -113,7 +129,7 @@ export interface IThreadMailboxStore {
     options?: ThreadMailboxMutationOptions,
   ): Promise<number>;
 
-  listPendingTargets(options?: ThreadMailboxMutationOptions): Promise<readonly ThreadRef[]>;
+  listPendingTargets(options?: ThreadMailboxMutationOptions & { readonly targets?: readonly ThreadRef[] }): Promise<readonly ThreadRef[]>;
 
   appendActivity(input: {
     readonly target: ThreadRef;

@@ -454,6 +454,21 @@ describe('FileStorageService — writeStream', () => {
     await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
+  it('opts into smaller read chunks without changing the default or range bytes', async () => {
+    const svc = new FileStorageService(dir);
+    const bytes = Buffer.alloc(2 * 1024 * 1024, 7);
+    await svc.write('scope', 'k.bin', bytes);
+    const defaultRead = svc.readStream('scope', 'k.bin')[Symbol.asyncIterator]();
+    expect((await defaultRead.next()).value?.byteLength).toBe(1024 * 1024);
+    await defaultRead.return?.();
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of svc.readStream('scope', 'k.bin', { start: 13, end: bytes.length - 17 }, { chunkBytes: 64 * 1024 })) {
+      expect(chunk.byteLength).toBeLessThanOrEqual(64 * 1024);
+      chunks.push(chunk);
+    }
+    expect(Buffer.concat(chunks)).toEqual(bytes.subarray(13, bytes.length - 16));
+  });
+
   it('writes a chunked source and replaces the whole value', async () => {
     const svc = new FileStorageService(dir);
     await svc.write('scope', 'k.bin', encoder.encode('old'));

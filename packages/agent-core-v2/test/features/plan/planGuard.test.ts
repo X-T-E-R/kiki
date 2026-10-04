@@ -269,20 +269,22 @@ describe('AgentPlanService plan-guard listener', () => {
 
   describe('guard', () => {
     it.each(['EnterPlanMode', 'ExitPlanMode'] as const)(
-      'rejects %s for a subagent before approval or execution',
+      'reviews %s for the child instead of imposing a main identity veto',
       async (toolName) => {
+        agentId = 'child-agent';
         if (toolName === 'ExitPlanMode') await enterPlan();
         else plan();
-        agentId = 'child-agent';
-
-        const decision = await run(hookContext(toolName));
-
-        expect(decision?.veto).toEqual({
-          isError: true,
-          output: 'plan mode is only available to the main agent',
-        });
-        expect(requests).toEqual([]);
-        expect(permissionRan).toBe(false);
+        const path = `${SESSION_DIR}/agents/child-agent/plans/${PLAN_ID}.md`;
+        if (toolName === 'ExitPlanMode') expect((await plan().status())?.path).toBe(path);
+        const display = toolName === 'EnterPlanMode' ? planEnterDisplay() : planReviewDisplay({ path });
+        const decision = await run(hookContext(toolName, { display }));
+        expect(decision?.veto?.isError).not.toBe(true);
+        expect(requests).toHaveLength(1);
+        expect(requests[0]?.origin).toBe(toolName === 'EnterPlanMode' ? 'enter-plan-mode-review-ask' : 'exit-plan-mode-review-ask');
+        expect(planReaders.has('child-agent')).toBe(true);
+        expect(permissionRan).toBe(true);
+        if (toolName === 'ExitPlanMode') expect(await plan().status()).toBeNull();
+        else expect(decision?.executionMetadata).toMatchObject({ planEnterApproved: true });
       },
     );
 

@@ -1,0 +1,117 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:http';
+import { expect, it } from 'vitest';
+import { WebSocket } from 'ws';
+import { createKlient, type HttpChannelOptions } from '@kiki/klient/http';
+import type { SessionViewSubscription } from '@kiki/klient';
+import { IAgentLoopService, IAgentContextMemoryService, IWireService, ensureMainAgent, getLiveSessionById } from '@kiki/agent-core-v2';
+import { AgentTranscript, applyContentSegment, jsonBytes, type ContentRef, type TranscriptTurn } from '@kiki/transcript';
+import { startServer, type RunningServer } from '../src/start';
+import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
+
+it('reads a Web-off daemon reply through live transcript delivery and bounded page content continuation', async () => {
+  const reply = 'Shared daemon reply.';
+  const home = await mkdtemp(join(tmpdir(), 'kiki-web-projection-'));
+  let release!: () => void;
+  let received!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const called = new Promise<void>((resolve) => { received = resolve; });
+  const provider = createServer((request, response) => { request.resume(); received(); void gate.then(() => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.write(`data: ${JSON.stringify({ id: 'web-fake', choices: [{ index: 0, delta: { role: 'assistant', content: reply }, finish_reason: null }] })}\n\n`);
+    response.end(`data: ${JSON.stringify({ id: 'web-fake', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+  }); });
+  let server: RunningServer | undefined;
+  let client: ReturnType<typeof createKlient> | undefined;
+  let subscription: SessionViewSubscription | undefined;
+  let receiptTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address() as { port: number };
+    await writeFile(join(home, 'config.toml'), `default_model = "stub"\n[providers.stub]\ntype = "openai"\nbase_url = "http://127.0.0.1:${address.port}/v1"\napi_key = "stub"\n[models.stub]\nprovider = "stub"\nmodel = "stub"\nmax_context_size = 100000\n[search]\nenabled = false\n`);
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, homeDir: home, port: 0, logLevel: 'silent' });
+    const base = `http://127.0.0.1:${server.port}`;
+    const ownerToken = server.localOwnerToken;
+    const owner = async (path: string, method = 'GET', body?: unknown) => {
+      const headers: Record<string, string> = { authorization: `Bearer ${ownerToken}` };
+      if (body !== undefined) headers['content-type'] = 'application/json';
+      const response = await fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      const result = await response.json() as { code: number; data: any; msg: string };
+      expect(response.status, result.msg).toBe(200);
+      expect(result.code, result.msg).toBe(0);
+      return result.data;
+    };
+    await owner('/api/web-access', 'PUT', { mode: 'temporary', port: 0 });
+    const link = await owner('/api/web-access/links', 'POST', {});
+    const url = new URL(link.url);
+    const exchange = await fetch(url.origin + '/api/web-access/exchange', { method: 'POST', headers: { origin: url.origin, 'content-type': 'application/json' }, body: JSON.stringify({ code: url.hash.slice('#access='.length) }) });
+    expect(exchange.status).toBe(200);
+    const cookie = exchange.headers.get('set-cookie')!.split(';')[0]!;
+    const session = await owner('/api/sessions', 'POST', { metadata: { cwd: home } });
+    client = createKlient({ endpoint: base, token: ownerToken, WebSocket: WebSocket as unknown as HttpChannelOptions['WebSocket'] });
+    let ready!: () => void;
+    let replyReceived!: (visible: boolean) => void;
+    const attached = new Promise<void>((resolve) => { ready = resolve; });
+    const liveReply = new Promise<boolean>((resolve) => { replyReceived = resolve; });
+    const liveTranscript = new AgentTranscript('main');
+    const assistantText = (turn: TranscriptTurn) => turn.steps.flatMap((step) => step.frames).flatMap((frame) => frame.kind === 'text' && frame.role === 'assistant' ? [frame.text] : []);
+    const replySignals: string[] = [];
+    subscription = client.session(session.id).view.subscribe({ sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } }, (signal) => {
+      if (signal.type === 'ready') ready();
+      if (signal.type !== 'transcript') return;
+      const event = signal.event;
+      const applied = liveTranscript.apply(event.type === 'transcript.reset' ? [{ op: 'reset', agentId: event.agent_id, snapshot: event.snapshot }] : event.ops);
+      expect(applied.gap).toBeUndefined();
+      if (JSON.stringify(event).includes(reply)) replySignals.push(event.type);
+      if (liveTranscript.getItems().some((item) => item.kind === 'turn' && assistantText(item).includes(reply))) replyReceived(true);
+    });
+    await attached;
+    const response = await fetch(url.origin + `/api/sessions/${session.id}/prompts`, { method: 'POST', headers: { cookie, origin: url.origin, 'content-type': 'application/json' }, body: JSON.stringify({ content: [{ type: 'text', text: 'Respond from the shared session.' }], model: 'stub' }) });
+    expect((await response.json() as { code: number }).code).toBe(0);
+    await called;
+    const handle = getLiveSessionById(server.core.accessor, session.id)!;
+    const main = await ensureMainAgent(handle);
+    await owner('/api/web-access', 'DELETE');
+    expect(getLiveSessionById(server.core.accessor, session.id)).toBe(handle);
+    release();
+    await main.accessor.get(IAgentLoopService).settled();
+    const memory = JSON.stringify(main.accessor.get(IAgentContextMemoryService).get());
+    const wire = main.accessor.get(IWireService);
+    await wire.flush();
+    const records = [];
+    for await (const record of wire.readJournal()) records.push(record);
+    expect(memory).toContain(reply);
+    expect(JSON.stringify(records)).toContain(reply);
+    const page = await client.session(session.id).view.transcript.page({ agentId: 'main' });
+    const preview = page.items.find((item) => item.kind === 'turn');
+    if (preview === undefined) throw new Error('Expected the daemon reply turn in the page');
+    const structuralRefs = preview.contentRefs?.filter((ref) => ref.kind === 'array' && ref.path.includes('frames')) ?? [];
+    const segments: { ref: ContentRef; hasReply: boolean }[] = [];
+    let turn = preview;
+    for (let reads = 0; turn.contentRefs?.length && reads < 20; reads += 1) {
+      const ref = turn.contentRefs[0]!;
+      const segment = await client.session(session.id).view.transcript.content!({ agentId: 'main', ref });
+      expect(jsonBytes(segment)).toBeLessThan(64 * 1024);
+      segments.push({ ref, hasReply: JSON.stringify(segment.value).includes(reply) });
+      turn = applyContentSegment(turn, segment);
+    }
+    expect(turn.contentRefs ?? []).toHaveLength(0);
+    expect(assistantText(turn)).toEqual([reply]);
+    receiptTimer = setTimeout(() => replyReceived(false), 5000);
+    expect(await liveReply, 'No visible live transcript reply within 5 seconds').toBe(true);
+    clearTimeout(receiptTimer);
+    const liveAssistantText = liveTranscript.getItems().flatMap((item) => item.kind === 'turn' ? assistantText(item) : []);
+    expect(liveAssistantText).toEqual([reply]);
+    process.stdout.write(JSON.stringify({ webProjection: { memoryHasReply: memory.includes(reply), wireHasReply: JSON.stringify(records).includes(reply), rawPageHasReply: JSON.stringify(page).includes(reply), structuralRefs, contentSegments: segments, liveReplySignals: replySignals, liveAssistantText, continuedAssistantReply: reply } }) + '\n');
+  } finally {
+    clearTimeout(receiptTimer);
+    subscription?.close();
+    await client?.close();
+    release();
+    await server?.close();
+    await new Promise<void>((resolve) => provider.close(() => resolve()));
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});

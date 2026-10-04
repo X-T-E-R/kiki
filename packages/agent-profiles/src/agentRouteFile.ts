@@ -6,6 +6,7 @@ import type {
 } from './agentProfile';
 import { AgentFileParseError } from './agentFile';
 import { FrontmatterError, parseFrontmatter } from './frontmatter';
+import { parseSubagentPermissions } from './subagentLease';
 
 const ROUTE_ID_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)+$/;
 const PROFILE_NAME_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
@@ -22,7 +23,10 @@ const ALLOWED_KEYS = new Set([
   'request_params',
   'tools',
   'disallowedTools',
-  'subagents',
+  'can_spawn_subagents',
+  'allowed_subagents',
+  'preferred_subagents',
+  'deny_subagents',
 ]);
 
 export interface ParseAgentRouteFileOptions {
@@ -92,9 +96,7 @@ export function parseAgentRouteFileText(
     'disallowedTools',
     options.path,
   );
-  const rawSubagents = parseStringList(parsed.data['subagents'], 'subagents', options.path);
-  const subagents =
-    rawSubagents?.length === 1 && rawSubagents[0] === '*' ? undefined : rawSubagents;
+  const permissions = parseSubagentPermissions(parsed.data, options.path);
   rejectModelPreference(parsed.data['model_preference'], options.path);
   const modelAlias = optionalString(parsed.data['model_alias'], 'model_alias', options.path);
   const thinkingEffort = optionalString(
@@ -127,7 +129,7 @@ export function parseAgentRouteFileText(
     prompt,
     tools,
     disallowedTools,
-    subagents,
+    ...permissions,
     modelAlias,
     thinkingEffort,
     serviceTier,
@@ -139,7 +141,10 @@ export function parseAgentRouteFileText(
       'request_params',
       'tools',
       'disallowedTools',
-      'subagents',
+      'can_spawn_subagents',
+      'allowed_subagents',
+      'preferred_subagents',
+      'deny_subagents',
       'prompt_mode',
     ].filter((key) => Object.hasOwn(parsed.data!, key)),
     path: options.path,

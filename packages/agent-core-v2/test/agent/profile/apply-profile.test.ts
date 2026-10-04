@@ -139,6 +139,11 @@ describe('AgentProfileService.applyProfile', () => {
     await injector.reconcileAllAtSafeBoundary();
     const first = svc.data().systemPrompt;
     const original = [...host.get(IAgentContextMemoryService).get()];
+    const baseline = original.find((message) => message.origin?.kind === 'injection' && message.origin.variant === 'runtime_snapshot');
+    const disclosure = baseline?.origin?.kind === 'injection' ? baseline.origin.disclosure as { sectionBytes: Record<string, number>; instructions: { mode: string; files: unknown[] } } : undefined;
+    const { dynamicPromptSections } = await import('#/agent/profile/dynamicPrompt');
+    expect(disclosure?.sectionBytes).toEqual(Object.fromEntries(Object.entries(dynamicPromptSections(states.get(dynamicPromptKey)!.context)).map(([name, text]) => [name, Buffer.byteLength(text, 'utf8')])));
+    expect(disclosure?.instructions.mode).toBe('replace');
     vi.spyOn(host.get(IHostClock), 'now').mockReturnValue(new Date('2030-01-01T00:00:00.000Z'));
     await writeFile(join(workDir, 'changed.txt'), 'new work');
     await svc.refreshSystemPrompt();

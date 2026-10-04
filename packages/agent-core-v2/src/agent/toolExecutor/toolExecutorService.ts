@@ -441,15 +441,18 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
 
     const executionMetadata = decision?.executionMetadata;
 
+    let executionVeto: ExecutableToolResult | undefined;
     await this.willExecuteEmitter.fireAsync(
       {
         turnId: options.turnId,
         toolCall: call.toolCall,
         execution,
         args: call.args,
+        veto: (result) => { executionVeto ??= result; },
       },
       options.signal,
     );
+    if (executionVeto !== undefined) return settleSynthetic(call.args, executionVeto, 'vetoed', displayFields);
 
     this.dispatchToolCall(call, call.args, options, displayFields);
 
@@ -468,7 +471,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     call: PreflightedToolCall,
     options: ToolExecutorExecuteOptions,
   ): { task: ToolExecutionTask } {
-    const output = 'Tool skipped because a previous tool call stopped the turn.';
+    const output = 'Tool skipped because a previous tool call stopped this batch.';
     this.dispatchToolCall(call, call.args, options);
     return {
       task: makeResolvedTask(makeErrorToolResult(call, call.args, output), 'skipped'),
@@ -692,11 +695,19 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       stopBatchAfterThis: result.stopBatchAfterThis,
       delivery: coercedResult.delivery,
     };
-    return this.resultTruncation.truncateForModel({
+    const truncatedResult = await this.resultTruncation.truncateForModel({
       toolName: call.toolName,
       toolCallId: call.toolCall.id,
       result: finalResult,
     });
+    if (truncatedResult.truncated !== true) return truncatedResult;
+    return {
+      ...truncatedResult,
+      readRange: truncatedResult.readRange === undefined
+        ? undefined : { ...truncatedResult.readRange, truncated: true },
+      fileRead: truncatedResult.fileRead === undefined
+        ? undefined : { ...truncatedResult.fileRead, truncated: true },
+    };
   }
 }
 
@@ -927,11 +938,17 @@ function normalizeToolResult(result: ExecutableToolResult): ToolResult {
     note?: string;
     spill?: ToolResultSpill;
     spillExempt?: true;
+    readRange?: ToolResult['readRange'];
+    fileRead?: ToolResult['fileRead'];
+    memoryReceipt?: ToolResult['memoryReceipt'];
   } = {
     output,
     stopTurn: result.stopTurn,
     spill: result.spill,
     spillExempt: result.spillExempt,
+    readRange: result.readRange,
+    fileRead: result.fileRead,
+    memoryReceipt: result.memoryReceipt,
   };
   if (result.truncated === true) base.truncated = true;
   if (typeof result.note === 'string' && result.note.length > 0) base.note = result.note;

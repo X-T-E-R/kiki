@@ -29,7 +29,7 @@ function service(home: string, enabled?: boolean, backend = 'sqlite', events?: I
   const search = new GlobalSearchService(index, bootstrap, log, flags, config, events);
   search.syncDebounceMs = 0;
   search.setLiveTranscriptSource({ forSessionLive: () => undefined, whenReady: async () => {},
-    ensureAgentHistory: async () => {} });
+    ensureAgentHistory: async () => undefined });
   return search;
 }
 

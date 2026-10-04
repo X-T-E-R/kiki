@@ -22,6 +22,7 @@ export interface SessionUsageSummary {
 
 export interface SessionSummary {
   readonly id: string;
+  readonly personaId?: string;
   readonly workspaceId: string;
   readonly cwd?: string;
   readonly worktree?: SessionWorktree;

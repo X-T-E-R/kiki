@@ -8,12 +8,13 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (47 sections · 1 overlay(s))
+# Index (48 sections · 1 overlay(s))
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
 #   background                      src/agent/task/configSection.ts
 #   bot                             src/app/bot/configSection.ts
+#   browserControl                  src/app/browser/browserConfig.ts
 #   builtinProductSkills            src/app/skillCatalog/configSection.ts
 #   cron                            src/app/cron/configSection.ts
 #   defaultPermissionMode           src/agent/permissionMode/configSection.ts
@@ -37,8 +38,8 @@
 #   notifications                   src/app/notifications/configSection.ts
 #   permission                      src/agent/permissionRules/configSection.ts
 #   plan                            src/features/plan/configSection.ts
-#   plugin_settings                 src/app/plugin/settingsConfigSection.ts
 #   plugins                         src/app/plugin/configSection.ts
+#   pluginSettings                  src/app/plugin/settingsConfigSection.ts
 #   prompt                          src/app/prompt/configSection.ts
 #   providers                       src/app/kosongConfig/configSection.ts
 #   requestGovernance               src/app/requestGovernance/configSection.ts
@@ -180,6 +181,16 @@ max_handoffs_per_hour = 30
 room_budget = 12
 
 # ##########################################################################
+# browserControl (config.toml: browser_control)
+#   owner: src/app/browser/browserConfig.ts
+#   scope: core
+# ##########################################################################
+
+[browser_control]
+connections = {  }
+# default_browser: string
+
+# ##########################################################################
 # builtinProductSkills (config.toml: builtin_product_skills)
 #   owner: src/app/skillCatalog/configSection.ts
 #   scope: core
@@ -313,16 +324,23 @@ advertise_as_kimi_code = false
 # interaction
 #   owner: src/agent/tools/ask-user-question/configSection.ts
 #   scope: core
+#   hooks: custom fromToml · custom toToml
 # ##########################################################################
 
 [interaction]
 # ask_user_question: "background" | "blocking" (default: "background")
 
+# [interaction.ask_user_question_guard]
+  # enabled: boolean
+  # max_per_user_round: integer
+  # max_per_window: integer
+  # window_ms: integer
+
 # ##########################################################################
 # loopControl (config.toml: loop_control)
 #   owner: src/agent/loop/configSection.ts
 #   scope: core
-#   hooks: custom toToml · stripEnv
+#   hooks: custom fromToml · custom toToml · stripEnv
 #   env:
 #     max_steps_per_turn <- KIKI_LOOP_MAX_STEPS_PER_TURN (custom parse)
 #     max_attempts_per_step <- KIKI_LOOP_MAX_ATTEMPTS_PER_STEP (custom parse)
@@ -342,6 +360,7 @@ advertise_as_kimi_code = false
   # age_human_turns: integer
   # cooldown_human_turns: integer
   # long_task_steps: integer
+  # memory_maintenance: boolean
 
 # [loop_control.directive_cues]
   # instructions: string[]
@@ -403,6 +422,15 @@ merge_all_available_skills = true
     # storage: "file" | "keyring"
     # key: string
     # oauth_host: string
+    # source: object
+      # kind: "local_original"
+      # provider: "openai-codex" | "grok-build"
+      # home_dir: string
+      # storage_backend: "file" | "keyring" | "encrypted"
+      # auth_file: string
+      # account_id: string
+      # user_id: string
+      # scope: string
   # protocol: "anthropic" | "openai" | "openai_responses" | "google-genai"
   # name: string
   # aliases: string[]
@@ -450,6 +478,25 @@ merge_all_available_skills = true
     # max_completion_tokens: integer
     # service_tier: "auto" | "default" | "flex" | "priority"
     # request_params: record<string, string | number | boolean>
+  # usage: object
+    # main: object
+      # thinking_effort: string
+      # service_tier: "auto" | "default" | "flex" | "priority" | object
+      # max_completion_tokens: integer
+      # auto_compact: integer
+      # context_budget: integer
+    # independent: object
+      # thinking_effort: string
+      # service_tier: "auto" | "default" | "flex" | "priority" | object
+      # max_completion_tokens: integer
+      # auto_compact: integer
+      # context_budget: integer
+  # behavior: object
+    # ask_user_question_guard: object
+      # enabled: boolean
+      # max_per_user_round: integer
+      # max_per_window: integer
+      # window_ms: integer
   # cognition: object
     # overlay: string | string[]
     # steering: string | string[]
@@ -457,9 +504,13 @@ merge_all_available_skills = true
     # overlay_mode: "append" | "prepend" | "wrap" | "persona" | "replace"
     # anchor_steps: integer
     # anchor_scope: "session" | "turn"
+    # main: "same" | "off" | object
+    # independent: "same" | "off" | object
   # prompt_overrides: object
     # files: string[]
     # fields: record<string, string>
+    # main: "same" | "off" | object
+    # independent: "same" | "off" | object
   # request_identity: object
     # preset: "codex_compatible" | "claude_code_compatible" | "grok_build_compatible" | "opencode_compatible" | "kimi_code" | "none"
     # profile: string
@@ -553,15 +604,6 @@ gate = "free"
 enter_approval_timeout_ms = 60000
 
 # ##########################################################################
-# plugin_settings
-#   owner: src/app/plugin/settingsConfigSection.ts
-#   scope: core
-# ##########################################################################
-
-[plugin_settings]
-# <name>: record<string, string | number | boolean>
-
-# ##########################################################################
 # plugins
 #   owner: src/app/plugin/configSection.ts
 #   scope: core
@@ -572,6 +614,20 @@ enter_approval_timeout_ms = 60000
 
 [plugins]
 # marketplace_url: string
+# marketplace_sources: object[] — one entry per item:
+  # id: string
+  # url: string
+  # enabled: boolean
+
+# ##########################################################################
+# pluginSettings (config.toml: plugin_settings)
+#   owner: src/app/plugin/settingsConfigSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[plugin_settings]
+# <name>: record<string, string | number | boolean>
 
 # ##########################################################################
 # prompt
@@ -586,6 +642,8 @@ enter_approval_timeout_ms = 60000
 # [prompt.overrides]
   # files: string[]
   # fields: record<string, string>
+  # main: "same" | "off" | object
+  # independent: "same" | "off" | object
 
 # ##########################################################################
 # providers
@@ -644,6 +702,15 @@ enter_approval_timeout_ms = 60000
     # storage: "file" | "keyring"
     # key: string
     # oauth_host: string
+    # source: object
+      # kind: "local_original"
+      # provider: "openai-codex" | "grok-build"
+      # home_dir: string
+      # storage_backend: "file" | "keyring" | "encrypted"
+      # auth_file: string
+      # account_id: string
+      # user_id: string
+      # scope: string
   # env: record<string, string>
   # source: record<string, any>
 
@@ -729,6 +796,7 @@ max_queued_restores = 8
 
 [session_title]
 # model: string
+# triggers: "first_user_message" | "first_turn_completed" | "context_compacted"[]
 
 # ##########################################################################
 # skipBuiltinProfileInstallation (config.toml: skip_builtin_profile_installation)
@@ -765,8 +833,6 @@ timeout_ms = 7200000
 max_direct_children = 16
 max_total_subagents = 0
 default_profile = "general"
-# main_dispatch_policy: "advisory" | "strict"
-# subagent_dispatch_policy: "advisory" | "strict"
 allowed_tools = []
 
 # ##########################################################################

@@ -75,10 +75,16 @@ export interface QuestionTaskInfo extends AgentTaskInfoBase {
   readonly toolCallId?: string;
 }
 
+export interface MediaTaskInfo extends AgentTaskInfoBase {
+  readonly kind: 'media';
+  readonly jobId: string;
+}
+
 export type AgentTaskInfoByKind = {
   readonly process: ProcessTaskInfo;
   readonly agent: SubagentTaskInfo;
   readonly question: QuestionTaskInfo;
+  readonly media: MediaTaskInfo;
 };
 
 export type AgentTaskKind = keyof AgentTaskInfoByKind;

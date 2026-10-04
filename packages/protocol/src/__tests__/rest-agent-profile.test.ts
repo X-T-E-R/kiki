@@ -50,10 +50,10 @@ describe('named agent profile REST protocol', () => {
     const rules = { allowed_models: ['fast', 'premium'], deny_models: ['blocked'], allowed_efforts: [],
       preferred_models: ['fast'], discouraged_models: ['premium'], preferred_efforts: ['max'] };
     const parsed = namedAgentProfileSchema.parse({ name: 'helper', source: 'user', main: false, disabled: false, routes: [],
-      ...rules, spawn_constraints: rules, subagents: [{ name: 'explore', ...rules }], model_profiles: [{ alias: 'fast', ...rules }] });
+      ...rules, spawn_constraints: rules, allowed_subagents: [{ name: 'explore', ...rules }], model_profiles: [{ alias: 'fast', ...rules }] });
     expect(parsed).toMatchObject(rules);
     expect(parsed.spawn_constraints).toEqual(rules);
-    expect(parsed.subagents?.[0]).toMatchObject(rules);
+    expect(parsed.allowed_subagents?.[0]).toMatchObject(rules);
     expect(parsed.model_profiles?.[0]).toMatchObject(rules);
     expect(updateNamedAgentProfileRequestSchema.parse({ scope: 'user', workspace_id: 'workspace', preferred_models: ['fast'], preferred_efforts: ['max'], discouraged_models: null })).toMatchObject({ preferred_models: ['fast'], preferred_efforts: ['max'], discouraged_models: null });
     expect(updateNamedAgentProfileRequestSchema.safeParse({ scope: 'user', workspace_id: 'workspace', preferred_models: ['fast'], raw_text: 'profile' }).success).toBe(false);
@@ -109,7 +109,7 @@ describe('named agent profile REST protocol', () => {
       workspace_id: 'wd_a',
       workspace_ids: ['wd_a', 'wd_b'],
       main: true,
-      subagent_policy: 'advisory',
+      preferred_subagents: ['explore'],
       model_profiles: [{
         alias: 'fast',
         when: 'Use for small tasks',
@@ -119,7 +119,7 @@ describe('named agent profile REST protocol', () => {
         allowed_models: ['fast'],
         allowed_efforts: ['low'],
       },
-      subagents: [
+      allowed_subagents: [
         'explore',
         {
           name: 'reviewer',
@@ -135,17 +135,17 @@ describe('named agent profile REST protocol', () => {
     })).toMatchObject({
       workspace_ids: ['wd_a', 'wd_b'],
       main: true,
-      subagent_policy: 'advisory',
+      preferred_subagents: ['explore'],
       model_profiles: [{ alias: 'fast', when: 'Use for small tasks' }],
       spawn_constraints: { allowed_models: ['fast'] },
-      subagents: ['explore', { name: 'reviewer', model_alias: 'fast' }],
+      allowed_subagents: ['explore', { name: 'reviewer', model_alias: 'fast' }],
       disabled: true,
     });
     expect(agentProfileSourceDiagnosticCodeSchema.options).toHaveLength(8);
     expect(namedAgentProfileSchema.safeParse({
       name: 'reviewer',
       source: 'user',
-      subagent_policy: 'legacy',
+      can_spawn_subagents: 'legacy',
       disabled: false,
       routes: [],
     }).success).toBe(false);
@@ -207,7 +207,7 @@ describe('named agent profile REST protocol', () => {
 
   it('separates live launch admission from defaults without inventing draft policy', () => {
     const target = { profile: 'helper', executor: 'native', defaults_available: false,
-      dispatch_policy: 'advisory', recommendation_status: 'allowed_nonpreferred', advisory_deviation: true,
+      dispatch_policy: 'fixed', recommendation_status: 'allowed_nonpreferred', advisory_deviation: true,
       launch_allowed: true, execution_restriction: 'research-readonly' };
     expect(agentCapabilitiesResponseSchema.parse({ context: 'live', owner: { profile: 'lead' }, available: true,
       targets: [target] }).targets[0]).toEqual(target);

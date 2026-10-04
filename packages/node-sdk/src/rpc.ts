@@ -966,9 +966,13 @@ export abstract class SDKRpcClientBase {
     return rpc.listPlugins({});
   }
 
-  async installPlugin(source: string): Promise<PluginSummary> {
+  async previewPlugin(_input: import('@kiki/protocol').PluginPreviewRequest): Promise<import('@kiki/protocol').PluginInstallPlan> {
+    throw new Error('Plugin preview requires the current Klient-backed SDK host');
+  }
+
+  async installPlugin(source: string, options?: Omit<import('@kiki/protocol').PluginInstallRequest, 'source'>): Promise<PluginSummary> {
     const rpc = await this.getRpc();
-    return rpc.installPlugin({ source });
+    return rpc.installPlugin({ source, sha256: options?.sha256, fingerprint: options?.fingerprint, consent: options?.consent });
   }
 
   async setPluginEnabled(id: string, enabled: boolean): Promise<void> {

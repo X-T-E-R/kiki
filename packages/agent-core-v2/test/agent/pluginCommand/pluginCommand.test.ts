@@ -24,6 +24,7 @@ const DEPLOY_COMMAND: PluginCommandDef = {
 function pluginServiceStub(commands: readonly PluginCommandDef[]): IPluginService {
   return {
     _serviceBrand: undefined,
+    onWillChange: () => ({ dispose: () => {} }),
     onDidReload: () => ({ dispose: () => {} }),
     onDidMutate: () => ({ dispose: () => {} }),
     listPlugins: async () => [],

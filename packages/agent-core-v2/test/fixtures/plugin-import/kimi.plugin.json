@@ -1,0 +1,10 @@
+{
+  "name": "example-session-source",
+  "version": "0.1.0",
+  "description": "Isolated test session source",
+  "x-kiki": {
+    "engines": { "kiki": "^0.4.0" },
+    "entry": "./entry.mjs",
+    "sessionSources": [{ "schemaVersion": 1, "id": "example-export", "label": "Example export", "formatVersion": "example-v1" }]
+  }
+}

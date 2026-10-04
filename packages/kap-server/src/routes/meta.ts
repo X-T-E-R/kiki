@@ -24,6 +24,7 @@ export interface MetaRouteOptions {
   readonly buildChannel?: string;
   readonly serverId: string;
   readonly serverHomeId?: string;
+  readonly currentSpaceId: string;
   readonly startedAt: string;
   /** Whether terminal REST and WebSocket controls are exposed on this bind. */
   readonly enableTerminals: boolean;
@@ -72,6 +73,7 @@ export function registerMetaRoute(app: RouteHost, opts: MetaRouteOptions): void 
     capabilities: Object.freeze(capabilities),
     server_id: opts.serverId,
     server_home_id: opts.serverHomeId,
+    current_space_id: opts.currentSpaceId,
     started_at: opts.startedAt,
     open_in_apps: [],
     dangerous_bypass_auth: opts.dangerousBypassAuth,

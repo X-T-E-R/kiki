@@ -1,9 +1,10 @@
-import type { GenerationParametersPatch, GenerationParametersWire } from '@kiki/protocol';
+import type { GenerationParametersPatch, GenerationParametersWire, ModelUsageParametersWire, ModelUsagePolicyWire, ModelUsagePolicyPatch } from '@kiki/protocol';
 
 import type { InspectionSource } from '#/kosong/contract/inspection';
 import { GENERATION_PARAMETER_KEYS, type ApiDefaultParameter, type GenerationParameterKey, type GenerationParameters } from '#/kosong/contract/generationParameters';
 
-import type { ModelRecord } from './model';
+import type { ModelRecord, ModelUsageParameters, ModelUsagePolicy, ModelUsagePosition } from './model';
+import type { Model } from './catalog';
 import type { ProviderConfig } from '../provider/provider';
 
 export { GENERATION_PARAMETER_KEYS } from '#/kosong/contract/generationParameters';
@@ -131,4 +132,94 @@ export function previewGenerationParameterMigration(
     }
   }
   return findings;
+}
+
+const USAGE_PARAMETER_KEYS = ['thinkingEffort', 'serviceTier', 'autoCompact', 'contextBudget', 'maxCompletionTokens'] as const;
+const USAGE_WIRE_KEYS = ['thinking_effort', 'service_tier', 'auto_compact', 'context_budget', 'max_completion_tokens'] as const;
+
+export interface ResolvedModelUsage {
+  readonly values: ModelUsageParameters;
+  readonly sources: Readonly<Partial<Record<keyof ModelUsageParameters, InspectionSource>>>;
+}
+
+export function usageParametersFromWire(wire: ModelUsageParametersWire): ModelUsageParameters {
+  return { thinkingEffort: wire.thinking_effort, serviceTier: wire.service_tier, autoCompact: wire.auto_compact, contextBudget: wire.context_budget, maxCompletionTokens: wire.max_completion_tokens };
+}
+
+export function usageParametersToWire(values: ModelUsageParameters): ModelUsageParametersWire {
+  return { thinking_effort: values.thinkingEffort, service_tier: values.serviceTier, auto_compact: values.autoCompact, context_budget: values.contextBudget, max_completion_tokens: values.maxCompletionTokens };
+}
+
+export function usagePolicyFromWire(wire: ModelUsagePolicyWire): ModelUsagePolicy {
+  return { main: wire.main === undefined ? undefined : usageParametersFromWire(wire.main), independent: wire.independent === undefined ? undefined : usageParametersFromWire(wire.independent) };
+}
+
+export function usagePolicyToWire(policy: ModelUsagePolicy | undefined): ModelUsagePolicyWire | undefined {
+  if (policy === undefined) return undefined;
+  return { main: policy.main === undefined ? undefined : usageParametersToWire(policy.main), independent: policy.independent === undefined ? undefined : usageParametersToWire(policy.independent) };
+}
+
+export function patchModelUsagePolicy(current: ModelUsagePolicy | undefined, patch: ModelUsagePolicyPatch | null): ModelUsagePolicy | undefined {
+  if (patch === null) return undefined;
+  const next: ModelUsagePolicy = { ...current };
+  for (const position of ['main', 'independent'] as const) {
+    const branch = patch[position];
+    if (branch === undefined) continue;
+    if (branch === null) {
+      delete next[position];
+      continue;
+    }
+    const values: ModelUsageParameters = { ...next[position] };
+    for (const [index, key] of USAGE_PARAMETER_KEYS.entries()) {
+      const value = branch[USAGE_WIRE_KEYS[index]!];
+      if (value === undefined) continue;
+      if (value === null) delete values[key];
+      else Object.assign(values, { [key]: value });
+    }
+    next[position] = values;
+  }
+  return next;
+}
+
+export function resolveModelUsage(
+  generation: ResolvedGenerationParameters,
+  model: Pick<ModelRecord, 'autoCompact' | 'contextBudget' | 'overrides' | 'usage'>,
+  position: ModelUsagePosition,
+): ResolvedModelUsage {
+  const values: ModelUsageParameters = {
+    thinkingEffort: generation.values.thinkingEffort,
+    serviceTier: generation.values.serviceTier,
+    maxCompletionTokens: generation.values.maxCompletionTokens,
+    autoCompact: model.overrides?.autoCompact ?? model.autoCompact,
+    contextBudget: model.overrides?.contextBudget ?? model.contextBudget,
+  };
+  const sources: Partial<Record<keyof ModelUsageParameters, InspectionSource>> = {};
+  for (const key of ['thinkingEffort', 'serviceTier', 'maxCompletionTokens'] as const) sources[key] = generation.sources[key];
+  for (const key of ['autoCompact', 'contextBudget'] as const) {
+    if (values[key] !== undefined) sources[key] = { kind: 'config', detail: model.overrides?.[key] === undefined ? `[models.*.${key}]` : `[models.*.overrides.${key}]` };
+  }
+  const branch = position === 'sub' ? undefined : model.usage?.[position];
+  for (const key of USAGE_PARAMETER_KEYS) {
+    const value = branch?.[key];
+    if (value === undefined) continue;
+    if ((key === 'contextBudget' || key === 'maxCompletionTokens') && typeof value === 'number' && values[key] !== undefined && values[key] < value) continue;
+    Object.assign(values, { [key]: value });
+    sources[key] = { kind: 'config', detail: `[models.*.usage.${position}.${key}]` };
+  }
+  return { values, sources };
+}
+
+export function modelWithUsage(model: Model, position: ModelUsagePosition): Model {
+  const resolved = model.usageParameters?.[position];
+  if (resolved === undefined) return model;
+  const values = resolved.values;
+  return {
+    ...model,
+    contextBudget: values.contextBudget,
+    autoCompact: values.autoCompact,
+    maxCompletionTokens: values.maxCompletionTokens,
+    serviceTier: isApiDefault(values.serviceTier) ? undefined : values.serviceTier,
+    preferredThinkingEffort: resolved.sources.thinkingEffort?.detail?.includes('.usage.') === true ? values.thinkingEffort : model.preferredThinkingEffort,
+    generationParameters: { ...model.generationParameters, thinkingEffort: values.thinkingEffort, serviceTier: values.serviceTier, maxCompletionTokens: values.maxCompletionTokens },
+  };
 }

@@ -114,15 +114,6 @@ export class AgentPlanService extends Service implements IAgentPlanService {
 
   private async guardToolExecution(event: BeforeToolExecuteEvent): Promise<void> {
     const toolName = event.toolCall.name;
-    if (
-      this.agentCtx.agentId !== 'main' &&
-      (toolName === 'EnterPlanMode' || toolName === 'ExitPlanMode')
-    ) {
-      event.veto(
-        denyToolExecution('plan mode is only available to the main agent'),
-      );
-      return;
-    }
     const plan = await this.status();
 
     if (toolName === 'EnterPlanMode') {

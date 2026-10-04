@@ -14,7 +14,6 @@ import {
   SubagentConfigSchema,
   resolveDefaultSubagentProfileName,
   resolveDefaultSubagentTarget,
-  withDispatchPolicyDefaults,
   type SubagentConfig,
 } from '#/session/subagent/configSection';
 import { GENERIC_SUBAGENT_PROFILE } from '#/session/subagent/genericProfile';
@@ -102,29 +101,11 @@ describe('resolveDefaultSubagentTarget', () => {
   });
 });
 
-describe('dispatch policy defaults', () => {
-  const main = { profileName: 'agent', subagents: ['explore'] };
-  const child = { profileName: 'worker', subagents: ['explore'] };
-
-  it('uses independent host defaults even when a subagent declares no role list', () => {
-    const config = configWithSubagent();
-    expect(withDispatchPolicyDefaults(config, main, 'main').defaultPolicy).toBe('advisory');
-    expect(withDispatchPolicyDefaults(config, child, 'sub').defaultPolicy).toBe('strict');
-    expect(withDispatchPolicyDefaults(config, { profileName: 'worker' }, 'sub').defaultPolicy).toBe('strict');
-    expect(withDispatchPolicyDefaults(config, { profileName: 'worker', subagents: [] }, 'sub').defaultPolicy).toBe('strict');
-  });
-
-  it('validates both independently configurable policy values', () => {
-    expect(SubagentConfigSchema.parse({ mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory' }))
-      .toMatchObject({ mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory' });
-    expect(SubagentConfigSchema.safeParse({ subagentDispatchPolicy: 'none' }).success).toBe(false);
-  });
-
-  it('applies separately configured defaults only to their respective callers', () => {
-    const config = configWithSubagent({ mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory' });
-    expect(withDispatchPolicyDefaults(config, main, 'main').defaultPolicy).toBe('strict');
-    expect(withDispatchPolicyDefaults(config, child, 'sub').defaultPolicy).toBe('advisory');
-    expect(withDispatchPolicyDefaults(config, { profileName: 'worker' }, 'sub').defaultPolicy).toBe('advisory');
+describe('removed host dispatch policy', () => {
+  it('does not accept a host policy axis that could harden profile preferences', () => {
+    expect(SubagentConfigSchema.parse({ mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory' })).toEqual({});
+    expect(SubagentConfigSchema.shape).not.toHaveProperty('mainDispatchPolicy');
+    expect(SubagentConfigSchema.shape).not.toHaveProperty('subagentDispatchPolicy');
   });
 });
 
@@ -203,21 +184,19 @@ describe('materialized default target resolves through the file catalog', () => 
 
     const agent = projection.resolvableProfiles.get('agent');
     expect(agent?.main).toBe(true);
-    expect(agent?.subagentPolicy).toBeUndefined();
-    expect(withDispatchPolicyDefaults(configWithSubagent(), agent!, 'main').defaultPolicy).toBe('advisory');
-    expect(agent?.subagents).toBeUndefined();
+    expect(agent?.canSpawnSubagents).toBe(true);
+    expect(agent?.allowedSubagents).toBeUndefined();
     expect(agent?.tools).toContain('AgentRun');
 
     const general = projection.resolvableProfiles.get('general');
     expect(general).toBeDefined();
-    expect(general?.subagentPolicy).toBe('strict');
-    expect(general?.subagents).toEqual([]);
+    expect(general?.canSpawnSubagents).toBe(false);
     expect(general?.tools).toEqual(
       expect.arrayContaining(['Read', 'Edit', 'Write', 'Bash', 'Skill']),
     );
     expect(general?.tools).not.toContain('AgentRun');
 
-    expect(projection.resolvableProfiles.get('explore')?.subagentPolicy).toBe('advisory');
+    expect(projection.resolvableProfiles.get('explore')?.canSpawnSubagents).toBe(false);
     expect(projection.resolvableProfiles.has('coder')).toBe(false);
     expect(projection.resolvableProfiles.has('plan')).toBe(false);
     expect(projection.snapshot.defaultProfile?.name).toBe('agent');

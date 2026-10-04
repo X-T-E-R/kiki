@@ -5,14 +5,18 @@ import type {
   SearchRunSyncEnvelope,
 } from '@nb-corp/nb-search';
 
-import type { NbSearchConfigSourceStatus } from '@kiki/protocol';
+import type { NbSearchConfigSourceStatus, NbSearchConfigurationView, NbSearchKeyUsageView } from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 
 import type { NbSearchConfig } from './configSection';
 import type { ManagedCredentialView } from './sourceStore';
 
-export type NbSearchCapabilities = CapabilityEnvelope & { config_source?: NbSearchConfigSourceStatus };
+export type NbSearchCapabilities = CapabilityEnvelope & {
+  config_source?: NbSearchConfigSourceStatus;
+  configuration?: NbSearchConfigurationView;
+  inherited_configuration?: NbSearchConfigurationView;
+};
 
 export interface NbSearchReadiness {
   readonly configured: boolean;
@@ -42,6 +46,7 @@ export interface INbSearchService {
   toolDescription(tool: 'WebSearch' | 'FetchURL'): string;
   capabilities(context?: OperationContext): Promise<NbSearchCapabilities>;
   test(context?: OperationContext): Promise<NbSearchTestStatus>;
+  keyUsage(instanceId: string, refresh: boolean): Promise<NbSearchKeyUsageView>;
   validateConfiguration(config: NbSearchConfig, reuseLocalConfig: boolean): Promise<void>;
   readManagedCredential(instanceId: string, reveal: boolean): Promise<ManagedCredentialView>;
   writeManagedCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string): Promise<ManagedCredentialView>;

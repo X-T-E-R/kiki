@@ -1,4 +1,5 @@
 import {
+  captureFetchFileIdentity,
   stableFingerprint,
   type CapabilityEnvelope,
   type FetchRunSyncEnvelope,
@@ -7,8 +8,8 @@ import {
   type SearchRunSyncEnvelope,
 } from '@nb-corp/nb-search';
 
-import { createHostedNbSearchRuntime as createNbSearchRuntime } from './runtimeLauncher';
-import type { NbSearchConfigSourceStatus } from '@kiki/protocol';
+import { createHostedCapturedNbSearchRuntime as createNbSearchRuntime } from './runtimeLauncher';
+import { nbSearchConfigurationViewSchema, nbSearchKeyUsageViewSchema, type NbSearchConfigSourceStatus, type NbSearchConfigurationView, type NbSearchKeyUsageView } from '@kiki/protocol';
 
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IConfigService } from '#/app/config/config';
@@ -16,7 +17,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { Error2, ErrorCodes } from '#/errors';
 
 import { NB_SEARCH_SECTION, NB_SEARCH_SOURCE_SECTION, type NbSearchConfig, type NbSearchSourceConfig } from './configSection';
-import { nbSearchConfigIssues, nbSearchConfigRevision, resolveNbSearchConfig, pinnedNbSearchConfig } from './donorConfig';
+import { nbSearchConfigIssues, nbSearchConfigRevision, resolveNbSearchCapturedConfig } from './donorConfig';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { INbSearchService, type NbSearchCapabilities, type NbSearchReadiness, type NbSearchTestStatus } from './nbSearch';
 import { INbSearchSourceStore, type NbSearchSource } from './sourceStore';
@@ -84,10 +85,7 @@ export class NbSearchService implements INbSearchService {
   }
 
   async captureFetchFileIdentity(path: string): Promise<import('./nbSearch').FetchFileIdentity> {
-    const donor = await import('@nb-corp/nb-search');
-    const capture = Reflect.get(donor, 'captureFetchFileIdentity') as ((path: string) => Promise<import('./nbSearch').FetchFileIdentity>) | undefined;
-    if (typeof capture !== 'function') throw new Error2(ErrorCodes.REQUEST_INVALID, 'FETCH_FILE_BLOCKED: this donor build cannot capture approved file identity.');
-    return capture(path);
+    return captureFetchFileIdentity(path);
   }
 
   fetch(url: string, context?: OperationContext): Promise<FetchRunSyncEnvelope>;
@@ -105,15 +103,19 @@ export class NbSearchService implements INbSearchService {
     const config = this.config.get<NbSearchConfig | undefined>(NB_SEARCH_SECTION);
     return this.sources.withSource(this.config.get<NbSearchSourceConfig | undefined>(NB_SEARCH_SOURCE_SECTION)?.reuse_local_config ?? true, config, (resolved) => {
       if (resolved.status.availability === 'unavailable') throw configurationError(resolved.status);
-      return fetchFilePath(resolveNbSearchConfig(resolved.env, resolved.config, config), source);
+      return fetchFilePath(capturedSource(resolved, config).config, source);
     });
   }
 
   async capabilities(context?: OperationContext): Promise<NbSearchCapabilities> {
-    const { runtime, status } = await this.#currentRuntime();
+    const { runtime, status, configuration } = await this.#currentRuntime();
     if (runtime === undefined) return unavailableCapabilities(status);
     const capabilities = await runtime.capabilities({}, context);
-    return { ...capabilities, config_source: status };
+    const inherited = await this.sources.withSource(status.reuse_local_config, undefined, (source) => {
+      if (source.status.availability === 'unavailable') return undefined;
+      return configurationView(capturedSource(source, undefined).config);
+    }).catch(() => undefined);
+    return { ...capabilities, config_source: status, configuration, inherited_configuration: inherited };
   }
 
   async test(context?: OperationContext): Promise<NbSearchTestStatus> {
@@ -132,6 +134,36 @@ export class NbSearchService implements INbSearchService {
   async validateConfiguration(config: NbSearchConfig, reuseLocalConfig: boolean): Promise<void> {
     const { runtime, status } = await this.#createRuntime(config, reuseLocalConfig);
     if (runtime === undefined) throw configurationError(status);
+  }
+
+  async keyUsage(instanceId: string, refresh: boolean): Promise<NbSearchKeyUsageView> {
+    await this.config.ready;
+    const config = this.config.get<NbSearchConfig | undefined>(NB_SEARCH_SECTION);
+    const reuse = this.config.get<NbSearchSourceConfig | undefined>(NB_SEARCH_SOURCE_SECTION)?.reuse_local_config ?? true;
+    return this.sources.withSource(reuse, config, async (source) => {
+      if (source.status.availability === 'unavailable') throw configurationError(source.status);
+      const effective = capturedSource(source, config).config;
+      const instance = effective.provider_instances[instanceId];
+      if (instance === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Unknown nb-search provider instance.');
+      const runtime = await this.#sharedRuntime(source, config, this.#generation);
+      if (runtime === undefined) throw configurationError(source.status);
+      const local = runtime as import('@nb-corp/nb-search').LocalNbSearchRuntime;
+      const entries = await local.keyUsage({ provider_instance_id: instanceId, refresh });
+      const slot = instance.credential_slot_id === undefined ? undefined : effective.credential_slots[instance.credential_slot_id];
+      const count = slot === undefined ? 0 : (source.env[slot.env] ?? '').split(',').filter((key) => key.trim() !== '').length;
+      const keys = entries.map((entry) => ({
+        key_index: entry.key_index, state: entry.state, cooldown_until: entry.cooldown_until,
+        usage: entry.usage === undefined ? undefined : {
+          scope: entry.usage.scope, unit: entry.usage.unit, used: entry.usage.used,
+          limit: entry.usage.limit, remaining: entry.usage.remaining, checked_at: entry.usage.checked_at,
+        }, usage_error: entry.usage_error,
+      }));
+      return nbSearchKeyUsageViewSchema.parse({
+        provider_instance_id: instanceId, provider_id: instance.provider_id,
+        balance_supported: instance.provider_id === 'tavily' || instance.provider_id === 'firecrawl',
+        keys: entries.length === 0 ? Array.from({ length: count }, (_, index) => ({ key_index: index + 1, state: 'unknown' })) : keys,
+      });
+    });
   }
 
   async readManagedCredential(instanceId: string, reveal: boolean) {
@@ -175,6 +207,7 @@ export class NbSearchService implements INbSearchService {
   async #createRuntime(config: NbSearchConfig | undefined, reuseLocalConfig: boolean, admission?: FetchFileAdmission): Promise<{
     runtime?: NbSearchRuntime;
     status: NbSearchConfigSourceStatus;
+    configuration?: NbSearchConfigurationView;
   }> {
     const generation = this.#generation;
     return this.sources.withSource(reuseLocalConfig, config, async (source) => {
@@ -185,13 +218,14 @@ export class NbSearchService implements INbSearchService {
       }
       try {
         const mismatch = () => ({ status: { ...status, availability: 'unavailable' as const, local_credentials: 'rejected' as const, issues: ['LOCAL_CONFIG_RESOLVER_MISMATCH'] } });
+        const captured = capturedSource(source, config);
+        const effective = captured.config;
         if (admission === undefined) {
           const runtime = await this.#sharedRuntime(source, config, generation);
-          return runtime === undefined ? mismatch() : { runtime, status };
+          return runtime === undefined ? mismatch() : { runtime, status, configuration: configurationView(effective) };
         }
-        const effective = resolveNbSearchConfig(env, source.config, config);
         if (fetchFilePath(effective, admission.source) !== admission.path) throw new Error2(ErrorCodes.REQUEST_INVALID, 'FETCH_FILE_BLOCKED: configured scope changed after file admission.');
-        const baseline = createNbSearchRuntime({ env, config: pinnedNbSearchConfig(effective) });
+        const baseline = createNbSearchRuntime(captured, env);
         if (source.expectedRevision !== undefined && (await baseline.capabilities({})).revision !== source.expectedRevision) return mismatch();
         const scoped = { ...effective, fetch: { ...effective.fetch, file_scopes: effective.fetch.file_scopes.map((scope) => {
           if (scope.id !== admission.source.scope) return scope;
@@ -200,7 +234,7 @@ export class NbSearchService implements INbSearchService {
           if ('approved_identity' in scope && scope.approved_identity !== undefined && JSON.stringify(scope.approved_identity) !== JSON.stringify(admission.identity)) throw new Error2(ErrorCodes.REQUEST_INVALID, 'FETCH_FILE_BLOCKED: configured file identity does not match admission.');
           return { ...scope, canonical_target: admission.path, approved_identity: admission.identity };
         }) } };
-        const runtime = createNbSearchRuntime({ env, config: pinnedNbSearchConfig(scoped) });
+        const runtime = createNbSearchRuntime({ ...captured, config: scoped, config_revision: nbSearchConfigRevision(scoped), config_fingerprint: stableFingerprint(scoped) }, env);
         if ((await runtime.capabilities({})).revision !== nbSearchConfigRevision(scoped)) return mismatch();
         return { runtime, status };
       } catch (error) {
@@ -218,21 +252,21 @@ export class NbSearchService implements INbSearchService {
   }
 
   async #sharedRuntime(source: NbSearchSource, config: NbSearchConfig | undefined, generation: number): Promise<NbSearchRuntime | undefined> {
-    const resolved = resolveNbSearchConfig(source.env, source.config ?? config, undefined);
+    const resolved = capturedSource(source, config);
     const names = new Set([
       ...Object.keys(source.env).filter((name) => name.toUpperCase().startsWith('NB_SEARCH_')),
-      ...Object.values(resolved.credential_slots).map((slot) => slot.env),
+      ...Object.values(resolved.config.credential_slots).map((slot) => slot.env),
     ]);
     const signature = stableFingerprint({
       reuse_local_config: source.status.reuse_local_config,
-      config: source.config ?? config,
+      fingerprint: resolved.config_fingerprint,
       revision: source.expectedRevision,
       environment: Object.fromEntries([...names].sort().map((name) => [name, source.env[name] ?? null])),
     });
     const previous = generation === this.#generation ? this.#runtimeCache : undefined;
     if (previous?.signature === signature) return previous.runtime;
     const runtime = (async () => {
-      const created = createNbSearchRuntime({ env: source.env, config: source.config ?? config });
+      const created = createNbSearchRuntime(resolved, source.env);
       if (source.expectedRevision !== undefined && (await created.capabilities({})).revision !== source.expectedRevision) return undefined;
       return created;
     })();
@@ -253,6 +287,21 @@ interface FetchFileAdmission {
   readonly source: Extract<import('@nb-corp/nb-search').FetchRunInput['source'], { kind: 'file' }>;
   readonly path: string;
   readonly identity?: import('./nbSearch').FetchFileIdentity;
+}
+
+function capturedSource(source: NbSearchSource, config: NbSearchConfig | undefined) {
+  return source.resolved ?? resolveNbSearchCapturedConfig(source.env, source.config, config);
+}
+
+function configurationView(config: import('@nb-corp/nb-search').CanonicalConfig): NbSearchConfigurationView {
+  return nbSearchConfigurationViewSchema.parse({
+    lanes: config.lanes, presets: config.presets,
+    provider_instance_ids: Object.keys(config.provider_instances),
+    default_search_lane: config.defaults.search_lane,
+    fetch_chains: config.defaults.fetch_chain ?? [],
+    routing: config.fetch.routing,
+    file_scopes: config.fetch.file_scopes.map((scope) => ({ id: scope.id, root: scope.root, media_types: scope.media_types })),
+  });
 }
 
 function fetchFilePath(config: import('@nb-corp/nb-search').CanonicalConfig, source: FetchFileAdmission['source']): string {

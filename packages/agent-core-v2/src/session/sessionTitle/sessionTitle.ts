@@ -8,7 +8,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
  *   an assistant reply.
  * - `digest`: first user prompt + latest user prompt + the latest turn's
  *   final assistant text, using whatever the (possibly compacted) window
- *   still holds; meant for explicit regeneration on multi-turn sessions.
+ *   still holds; used for regeneration and automatic titles after compaction.
  */
 export type SessionTitleSource = 'user_prompts' | 'first_turn' | 'digest';
 

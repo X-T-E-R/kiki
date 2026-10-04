@@ -374,7 +374,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
         }
         await agent.accessor
           .get(IAgentSkillService)
-          .activate({ name: parsed.id, args: req.body.args, content: attachmentParts });
+          .activate({ name: parsed.id, args: req.body.args, userInput: req.body.user_input, content: attachmentParts });
         await preparedMedia?.discard();
         preparedMedia = undefined;
         requestLog(req)?.info({ session_id, skill_name: parsed.id }, 'skill activated');

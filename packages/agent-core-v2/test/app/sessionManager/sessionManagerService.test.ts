@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { Emitter, Event } from '#/_base/event';
+import { DisposableStore } from '#/_base/di/lifecycle';
+import { createServices } from '#/_base/di/test';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
 import type { ISessionScopeHandle } from '#/_base/di/scope';
-import type { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { SessionManager } from '#/app/sessionManager/sessionManagerService';
 import { Error2, ErrorCodes } from '#/errors';
 import { Program } from '#/program/program';
@@ -17,7 +22,7 @@ import type {
 } from '#/workspace/sessionLifecycle/sessionLifecycle';
 import type { SessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLifecycleService';
 import type { WorkspaceInstance } from '#/workspace/workspaceInstance/workspaceInstance';
-import type { IWorkspaceInstanceManager } from '#/workspace/workspaceInstance/workspaceInstanceManager';
+import { IWorkspaceInstanceManager } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 
 function controller(sessionId = 'session-1'): {
   readonly service: SessionLifecycleService;
@@ -427,24 +432,37 @@ describe('SessionManager', () => {
     const index = {
       get: async () => ({ workspaceId: 'workspace-1', cwd: '/workspace' }),
     } as unknown as ISessionIndex;
-    const manager = new SessionManager(workspaces, index);
-
-    let releaseSection!: () => void;
-    const sectionGate = new Promise<void>((resolve) => {
-      releaseSection = resolve;
+    const disposables = new DisposableStore();
+    const services = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.defineInstance(IWorkspaceInstanceManager, workspaces);
+        reg.defineInstance(ISessionIndex, index);
+        reg.definePartialInstance(IConfigService, { ready: Promise.resolve() });
+        reg.definePartialInstance(IFlagService, { enabled: () => false });
+        reg.define(ISessionManager, SessionManager);
+      },
     });
-    const section = manager.withLifecycleSerialization('session-1', async () => {
-      order.push('section:start');
-      await sectionGate;
-      order.push('section:end');
-    });
-    const archivePromise = manager.archive('session-1');
-    await drainMicrotasks();
-    expect(order).toEqual(['section:start']);
-    releaseSection();
-    await Promise.all([section, archivePromise]);
-    expect(order).toEqual(['section:start', 'section:end', 'archive']);
-    manager.dispose();
+    const manager = services.get(ISessionManager);
+    try {
+      await manager.create({ sessionId: 'session-1', workDir: '/workspace' });
+      let releaseSection!: () => void;
+      const sectionGate = new Promise<void>((resolve) => {
+        releaseSection = resolve;
+      });
+      const section = manager.withLifecycleSerialization('session-1', async () => {
+        order.push('section:start');
+        await sectionGate;
+        order.push('section:end');
+      });
+      const archivePromise = manager.archive('session-1');
+      await drainMicrotasks();
+      expect(order).toEqual(['section:start']);
+      releaseSection();
+      await Promise.all([section, archivePromise]);
+      expect(order).toEqual(['section:start', 'section:end', 'archive']);
+    } finally {
+      disposables.dispose();
+    }
   });
 
   it('propagates a failed resume to the next settle until a fresh attempt supersedes', async () => {

@@ -48,11 +48,63 @@ export class WorkspaceAgentProfileLoaderService
   ) {
     super(log, registry);
     this.watchReady = this.watchProjectAgentRoots();
+    this._register(this.trust.onDidChange(() => {
+      this.refreshLastGoodContribution();
+      void this.reload().catch((error) => {
+        this.log.warn(`agent profile loader "workspace" trust reload failed: ${String(error)}`);
+      });
+    }));
     this.start();
   }
 
   protected override get workspaceKey(): string {
     return this.workspace.workspaceId;
+  }
+
+  protected override prepareContribution(contribution: AgentProfileContribution): AgentProfileContribution {
+    const diagnostics = (contribution.diagnostics ?? []).filter((diagnostic) =>
+      diagnostic.code !== 'agent_executor.source_not_allowed' || diagnostic.source !== 'project' || diagnostic.path !== undefined);
+    if (this.trust.isTrusted()) return { ...contribution, diagnostics };
+    const deniedProfiles = contribution.profiles.filter((profile) => profile.executor !== 'native');
+    const deniedNames = new Set(deniedProfiles.map((profile) => profile.name));
+    const deniedIds = new Set(deniedProfiles.map((profile) => profile.definitionId));
+    for (const [id, profile] of contribution.sourceDefinitions ?? []) {
+      if (profile.executor !== 'native') deniedIds.add(id);
+    }
+    return {
+      ...contribution,
+      diagnostics: [...diagnostics, {
+        code: 'agent_executor.source_not_allowed',
+        severity: 'error',
+        message: 'External executors require a trusted workspace profile source',
+        source: 'project',
+      }],
+      profiles: contribution.profiles.filter((profile) => profile.executor === 'native'),
+      routes: contribution.routes?.filter((route) => !deniedNames.has(route.profile)),
+      sourceDefinitions: new Map([...contribution.sourceDefinitions ?? []].filter(([id]) => !deniedIds.has(id))),
+      dependencyIndex: new Map([...contribution.dependencyIndex ?? []]
+        .filter(([id]) => !deniedIds.has(id))
+        .map(([id, owners]) => [id, owners.filter((owner) => !deniedIds.has(owner))])),
+      scopedBindings: new Map([...contribution.scopedBindings ?? []]
+        .filter(([id]) => !deniedIds.has(id))
+        .map(([id, bindings]) => [id, new Map([...bindings].map(([alias, binding]) => {
+          if (binding.profile === undefined || binding.profile.executor === 'native') return [alias, binding];
+          return [alias, {
+            ...binding,
+            status: 'unavailable' as const,
+            profile: undefined,
+            diagnostic: {
+              code: 'agent_executor.source_not_allowed',
+              severity: 'error' as const,
+              message: 'External executors require a trusted workspace profile source',
+              path: binding.source,
+              parentDefinitionId: id,
+              alias,
+              source: binding.source,
+            },
+          }];
+        }))])),
+    };
   }
 
   protected async load(): Promise<AgentProfileContribution> {

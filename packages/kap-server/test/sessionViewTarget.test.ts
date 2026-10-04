@@ -59,8 +59,7 @@ describe('SessionViewTarget', () => {
     target.replay({ ...durable(9), payload: { type: 'event.session.history_rewritten', reason: 'regenerate', target_message_id: 'message-1' } });
     target.sendControl({ type: 'resync_required', payload: { reason: 'epoch_changed', current_seq: 0, epoch: 'new-epoch' } });
     target.finish({ seq: 0, epoch: 'new-epoch' }, false);
-    expect(signals[0]).toMatchObject({ type: 'historyRewritten', reason: 'regenerate', targetMessageId: 'message-1', generation: 2 });
-    expect(signals[1]).toMatchObject({ type: 'resyncRequired', reason: 'epoch_changed', currentSessionCursor: { seq: 0, epoch: 'new-epoch' } });
+    expect(signals).toEqual([{ type: 'resyncRequired', reason: 'epoch_changed', currentSessionCursor: { seq: 0, epoch: 'new-epoch' }, generation: 2 }]);
   });
 
   it('ignores other sessions global fanout while retaining its suppressed durable cursor', () => {
@@ -102,6 +101,7 @@ describe('SessionViewTarget', () => {
     let resolveRead: ((snapshot: unknown) => void) | undefined;
     let readSignal: AbortSignal | undefined;
     const service = {
+      reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot,
       readColdRoster: vi.fn(async () => Array.from({ length: 456 }, (_, i) => ({ agentId: `agent-${i}`, type: 'sub' }))),
       readColdSnapshot: vi.fn((_sessionId, _agentId, _query, signal: AbortSignal) => {
         readSignal = signal;
@@ -148,6 +148,7 @@ describe('SessionViewTarget', () => {
       whenResumeSettled: vi.fn(() => new Promise<void>((resolve, reject) => { settle = resolve; fail = reject; })),
     };
     const service = {
+      reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot,
       readColdRoster: vi.fn(async () => [{ agentId: 'main', type: 'main' }]),
       readColdSnapshot: vi.fn(async () => ({ ...new AgentTranscript('main').snapshot(), toolCallCountKnown: true })),
     };
@@ -196,6 +197,7 @@ describe('SessionViewTarget', () => {
     let finishFirst!: (snapshot: unknown) => void;
     const readSignals: AbortSignal[] = [];
     const service = {
+      reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot,
       readColdRoster: vi.fn(async () => []),
       readColdSnapshot: vi.fn((_session, agent, _query, signal: AbortSignal) => {
         readSignals.push(signal);
@@ -227,6 +229,7 @@ describe('SessionViewTarget', () => {
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => { release = resolve; });
     const service = {
+      reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot,
       readColdRoster: vi.fn(async () => []),
       readColdSnapshot: vi.fn(async (_sessionId, agentId) => {
         if (agentId === 'sibling') await blocked;
@@ -262,6 +265,7 @@ describe('SessionViewTarget', () => {
     const collect = (message: unknown): void => { records.push(message as Record<string, unknown>); };
     timing.subscribe(collect);
     const service = {
+      reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot,
       readColdRoster: vi.fn(async () => []),
       readColdSnapshot: vi.fn(async () => ({ ...new AgentTranscript('child').snapshot(), toolCallCountKnown: true })),
     };
@@ -289,8 +293,24 @@ describe('SessionViewTarget', () => {
   });
 
   it('keeps an unverified empty cold baseline unknown instead of certifying a blank session', async () => {
-    const service = { readColdSnapshot: vi.fn(async () => ({ ...new AgentTranscript('main').snapshot(), toolCallCountKnown: false })) };
+    const service = { reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot, readColdSnapshot: vi.fn(async () => ({ ...new AgentTranscript('main').snapshot(), toolCallCountKnown: false })) };
     const event = await readColdSessionViewBaseline(service as never, 's1', 'main', 'delta', new AbortController().signal);
     expect(event).toMatchObject({ cursor: { seq: 0, epoch: 'cold:s1:main' }, coverage: { kind: 'unknown', hasMoreOlder: true } });
   });
+});
+
+it.each(['journal_gap', 'future_reason'])('blocks coverage acknowledgement after %s and recovers on a new generation', (reason) => {
+  const signals: SessionViewSignal[] = [];
+  const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+  target.begin(1);
+  target.sendDurableCursor({ seq: 90, epoch: 'session-epoch' });
+  target.sendControl({ type: 'resync_required', payload: { reason, current_seq: 100, epoch: 'session-epoch' } });
+  target.finish({ seq: 100, epoch: 'session-epoch' }, true);
+  target.send(durable(101));
+  target.sendDurableCursor({ seq: 102, epoch: 'session-epoch' });
+  expect(signals).toHaveLength(1);
+  expect(signals[0]).toMatchObject(reason === 'journal_gap' ? { type: 'resyncRequired', reason } : { type: 'protocolError', recoverable: true });
+  target.begin(2);
+  target.finish({ seq: 100, epoch: 'session-epoch' }, true);
+  expect(signals[1]).toMatchObject({ type: 'ready', generation: 2, currentSessionCursor: { seq: 100 } });
 });

@@ -669,12 +669,9 @@ function summarizeTsUnion(
       charBudget * 2,
     );
   }
-  return truncate(
-    members
-      .map((m) => stringifySketch(summarizeTsTypeExpr(m, file, budget, charBudget, depth + 1)))
-      .join(' | '),
-    charBudget * 2,
-  );
+  return members
+    .map((m) => stringifySketch(summarizeTsTypeExpr(m, file, budget, charBudget, depth + 1)))
+    .join(' | ');
 }
 
 function summarizeTsTypeExpr(
@@ -805,11 +802,7 @@ function friendlyZodExpr(expr: string, ownerFile: string, depth = 0): Sketch {
     if (typeof summary !== 'string' && !Array.isArray(summary)) {
       return { [TYPE_KEY]: typeName, ...summary };
     }
-    const importSource = findImportSource(ownerFile, typeName);
-    const typeFile = importSource === undefined ? ownerFile : resolveModuleFile(ownerFile, importSource);
-    const definition = typeFile === undefined ? undefined : findTsTypeDef(typeName, typeFile);
-    const limit = definition !== undefined && /^[$\w]+\[[$\w]+\]$/.test(definition) ? 16384 : 1024;
-    return truncate(`${typeName} = ${stringifySketch(summary)}`, limit);
+    return `${typeName} = ${stringifySketch(summary)}`;
   }
   if (/^z\.string\(\)(?:\.\w+\([^)]*\))*$/.test(text)) return 'string';
   if (/^z\.number\(\)(?:\.\w+\([^)]*\))*$/.test(text)) {

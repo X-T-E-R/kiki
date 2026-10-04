@@ -34,6 +34,7 @@ export interface DispatchLaunchInput {
   readonly permissionMode?: PermissionMode;
   readonly permissionModeCeiling?: PermissionMode;
   readonly allowParentNotify?: boolean;
+  readonly toolOverride?: import('#/agent/profile/profile').ToolBindingOverride;
   readonly resolvedBinding?: DispatchResolvedBinding;
   readonly strictThinking?: boolean;
   readonly strictThinkingFromProfile?: boolean;
@@ -57,6 +58,7 @@ export interface DispatchLaunchInput {
 export type DispatchIdlePolicy = 'execution' | 'quiescent';
 
 export interface DispatchRunOptions {
+  readonly operationId?: string;
   readonly capturedLaunchPolicy?: import('./launchPolicy').DispatchLaunchPolicy;
   readonly signal: AbortSignal;
   readonly requesterAgentId?: string;
@@ -64,10 +66,12 @@ export interface DispatchRunOptions {
   readonly lineage?: string;
   readonly idlePolicy?: DispatchIdlePolicy;
   readonly allowParentNotify?: boolean;
+  readonly toolOverride?: import('#/agent/profile/profile').ToolBindingOverride;
   readonly bindingOverride?: {
     readonly modelAlias?: string;
     readonly thinkingEffort?: string;
     readonly allowModelChange?: boolean;
+    readonly newWindow?: boolean;
   };
   readonly onBeforeRun?: (child: DispatchChild) => Promise<void>;
 }

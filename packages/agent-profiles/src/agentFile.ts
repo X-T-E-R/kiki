@@ -1,12 +1,12 @@
 import { dirname } from 'pathe';
 import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 
-import { AgentSubagentPolicySchema, AgentSystemPromptModeSchema, KikiContextSchema } from './agentProfile';
+import { AgentSystemPromptModeSchema, KikiContextSchema } from './agentProfile';
 import { executorPromptSchema } from './executorPrompt';
 import type { AgentFileDefinition, AgentFileSource } from './agentFileTypes';
 import { FrontmatterError, parseFrontmatter } from './frontmatter';
 import { parsePromptOverrides, type PromptOverrides } from './promptOverrides';
-import { normalizeModelAllowlist, openIfEmpty, parseSpawnConstraints, parseSubagentList, SubagentLeaseParseError } from './subagentLease';
+import { normalizeModelAllowlist, openIfEmpty, parseSpawnConstraints, parseSubagentList, parseSubagentPermissions, SubagentLeaseParseError } from './subagentLease';
 import { isToolGroupId } from './toolGroups';
 import { MODEL_CONSTRAINT_KEYS, ModelConstraintParseError, parseModelConstraintFields } from './modelConstraintFields';
 
@@ -50,6 +50,10 @@ const AGENT_FILE_KEYS = new Set([
   'disabled-tool-groups',
   'subagent_policy',
   'subagents',
+  'can_spawn_subagents',
+  'allowed_subagents',
+  'preferred_subagents',
+  'deny_subagents',
   'spawn_constraints',
   'executor',
   'executor_options',
@@ -191,11 +195,12 @@ function parseAgentFileTextUnchecked(options: ParseAgentFileOptions): AgentFileD
     options.path,
   );
   const disabledToolGroups = parseDisabledToolGroups(frontmatter['disabled-tool-groups'], options.path);
-  const subagentPolicy = parseSubagentPolicy(frontmatter['subagent_policy'], options.path);
   let parsedSubagents;
+  let subagentPermissions;
   let spawnConstraints;
   try {
-    parsedSubagents = parseSubagentList(frontmatter['subagents'], options.path, subagentPolicy);
+    parsedSubagents = parseSubagentList(frontmatter['allowed_subagents'], options.path);
+    subagentPermissions = parseSubagentPermissions({ ...frontmatter, allowed_subagents: parsedSubagents.allowedSubagents }, options.path);
     spawnConstraints = parseSpawnConstraints(frontmatter['spawn_constraints'], options.path);
   } catch (error) {
     if (error instanceof SubagentLeaseParseError) {
@@ -203,8 +208,6 @@ function parseAgentFileTextUnchecked(options: ParseAgentFileOptions): AgentFileD
     }
     throw error;
   }
-  const subagentDeclaration = parsedSubagents.declaration;
-  const subagents = parsedSubagents.subagents;
   const subagentLeases = parsedSubagents.subagentLeases;
   const executor = optionalNonEmptyStringField(
     frontmatter['executor'],
@@ -289,7 +292,7 @@ function parseAgentFileTextUnchecked(options: ParseAgentFileOptions): AgentFileD
         `Prompt body in ${options.path} must be empty when system_prompt_mode is "inherit"`,
       );
     }
-    if (promptOverrides === undefined || ((promptOverrides.files?.length ?? 0) === 0 && Object.keys(promptOverrides.fields ?? {}).length === 0)) {
+    if (promptOverrides === undefined || [promptOverrides, promptOverrides.main, promptOverrides.independent].every((content) => typeof content !== 'object' || ((content.files?.length ?? 0) === 0 && Object.keys(content.fields ?? {}).length === 0))) {
       throw new AgentFileParseError(
         `Frontmatter field "prompt_overrides" in ${options.path} is required when system_prompt_mode is "inherit"`,
       );
@@ -322,9 +325,7 @@ function parseAgentFileTextUnchecked(options: ParseAgentFileOptions): AgentFileD
     tools,
     disallowedTools,
     disabledToolGroups,
-    ...(subagentPolicy === undefined ? {} : { subagentPolicy }),
-    ...(subagentDeclaration === undefined ? {} : { subagentDeclaration }),
-    subagents,
+    ...subagentPermissions,
     subagentLeases,
     spawnConstraints,
     executor,
@@ -367,6 +368,8 @@ const MODEL_PROFILE_ENTRY_KEYS = new Set([
   'context_strategy',
   'max_completion_tokens',
   'prompt_overrides',
+  'main',
+  'independent',
 ]);
 
 function resolveModelProfiles(
@@ -431,6 +434,8 @@ function parseModelProfiles(
       thinkingEffort,
       promptMode,
       prompt,
+      main: parseModelPromptBranch(item['main'], prompt, `${prefix}.main`, filePath),
+      independent: parseModelPromptBranch(item['independent'], prompt, `${prefix}.independent`, filePath),
       ...parseModelConstraintFields(item, filePath, `${prefix}.`),
       serviceTier: parseServiceTier(item['service_tier'], filePath),
       requestParams: parseRequestParams(item['request_params'], filePath),
@@ -444,6 +449,28 @@ function parseModelProfiles(
     });
   }
   return out;
+}
+
+function parseModelPromptBranch(
+  value: unknown,
+  commonPrompt: string | undefined,
+  field: string,
+  filePath: string,
+): import('./agentProfile').AgentModelProfile['main'] {
+  if (value === undefined) return undefined;
+  if (value === 'off') return value;
+  if (value === 'same') {
+    if (commonPrompt === undefined) throw new AgentFileParseError(`Frontmatter field "${field}" in ${filePath}: same requires a common prompt`);
+    return value;
+  }
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'prompt' && key !== 'prompt_mode')) {
+    throw new AgentFileParseError(`Frontmatter field "${field}" in ${filePath} must be same, off, or a prompt_mode/prompt mapping`);
+  }
+  const promptMode = parseModelProfilePromptMode(value['prompt_mode'], `${field}.prompt_mode`, filePath);
+  const prompt = optionalNonEmptyStringField(value['prompt'], `${field}.prompt`, filePath);
+  if (promptMode === undefined || prompt === undefined) throw new AgentFileParseError(`Frontmatter field "${field}" in ${filePath} requires both prompt_mode and prompt`);
+  validateModelProfilePrompt(promptMode, prompt, field, filePath);
+  return { promptMode, prompt };
 }
 
 function parsePromptOverridesField(value: unknown, field: string, filePath: string): PromptOverrides {
@@ -667,18 +694,6 @@ function parseDelegationNotice(
   if (value === 'auto' || value === 'off') return value;
   throw new AgentFileParseError(
     `Frontmatter field "delegation_notice" in ${filePath} must be "auto" or "off"`,
-  );
-}
-
-function parseSubagentPolicy(
-  value: unknown,
-  filePath: string,
-): AgentFileDefinition['subagentPolicy'] {
-  if (value === undefined) return undefined;
-  const parsed = AgentSubagentPolicySchema.safeParse(value);
-  if (parsed.success) return parsed.data;
-  throw new AgentFileParseError(
-    `Frontmatter field "subagent_policy" in ${filePath} must be "advisory" or "strict"`,
   );
 }
 

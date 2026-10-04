@@ -1,4 +1,6 @@
 import { PromptOverridesSchema } from '@kiki/agent-profiles/promptOverrides';
+import { modelBehaviorConfigSchema } from '@kiki/protocol';
+import { OAuthRefSchema } from '#/kosong/provider/oauthRef';
 import { z } from 'zod';
 
 import {
@@ -22,6 +24,8 @@ import type {
   ModelOverride,
   ModelRecord,
   ModelsSection,
+  ModelUsageParameters,
+  ModelUsagePolicy,
 } from '#/kosong/model/model';
 import type { GenerationParameters } from '#/kosong/model/parameters';
 import type { ThinkingConfig } from '#/kosong/model/thinking';
@@ -38,11 +42,7 @@ export const DEFAULT_PROVIDER_SECTION = 'defaultProvider';
 
 export const ProviderTypeSchema = z.string();
 
-export const OAuthRefSchema = z.object({
-  storage: z.enum(['file', 'keyring']),
-  key: z.string().min(1),
-  oauthHost: z.string().min(1).optional(),
-});
+export { OAuthRefSchema };
 
 export const ModelSourceSchema = z.enum(['static', 'discover', 'oauth-catalog']);
 
@@ -82,6 +82,17 @@ export const GenerationParametersSchema = z.object({
   serviceTier: z.union([z.enum(['auto', 'default', 'flex', 'priority']), ApiDefaultSchema]).optional(),
 });
 type _AssertGenerationParameters = AssertExact<Equal<z.infer<typeof GenerationParametersSchema>, GenerationParameters>>;
+
+export const ModelUsageParametersSchema = GenerationParametersSchema.pick({ thinkingEffort: true, serviceTier: true, maxCompletionTokens: true }).extend({
+  autoCompact: z.number().int().positive().safe().optional(),
+  contextBudget: z.number().int().positive().safe().optional(),
+}).strict();
+export const ModelUsagePolicySchema = z.object({
+  main: ModelUsageParametersSchema.optional(),
+  independent: ModelUsageParametersSchema.optional(),
+}).strict();
+type _AssertModelUsageParameters = AssertExact<Equal<z.infer<typeof ModelUsageParametersSchema>, ModelUsageParameters>>;
+type _AssertModelUsagePolicy = AssertExact<Equal<z.infer<typeof ModelUsagePolicySchema>, ModelUsagePolicy>>;
 
 const ProviderConfigObjectSchema = z.object({
   modelSource: ModelSourceSchema.optional(),
@@ -158,7 +169,7 @@ function providerEntryFromToml(data: Record<string, unknown>): Record<string, un
   for (const [key, value] of Object.entries(data)) {
     const targetKey = snakeToCamel(key);
     if (targetKey === 'oauth') {
-      out[targetKey] = isPlainObject(value) ? transformPlainObject(value) : value;
+      out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
     } else if (targetKey === 'requestIdentity' || targetKey === 'images' || targetKey === 'defaults') {
       out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
     } else if (targetKey === 'env' || targetKey === 'customHeaders') {
@@ -189,7 +200,7 @@ function providerEntryToToml(
   delete out['request_originator'];
   for (const [key, value] of Object.entries(provider)) {
     if (key === 'oauth' && isPlainObject(value)) {
-      out[camelToSnake(key)] = plainObjectToToml(value, undefined);
+      out[camelToSnake(key)] = deepCamelToSnake(value);
     } else if ((key === 'requestIdentity' || key === 'images' || key === 'defaults') && isPlainObject(value)) {
       out[camelToSnake(key)] = deepCamelToSnake(value);
     } else if ((key === 'env' || key === 'customHeaders') && value !== undefined) {
@@ -294,24 +305,54 @@ export const ModelOverrideSchema = ModelBaseSchema.omit({
   parameters: true,
 }).partial();
 
+const CognitionPathSchema = z.string().min(1).refine((ref) => {
+  const path = ref.trim().replaceAll('\\', '/');
+  if (path.length === 0 || path.startsWith('/') || /^[a-z]:/i.test(path)) return false;
+  let depth = 0;
+  for (const part of path.split('/')) {
+    if (part === '..') depth--;
+    else if (part !== '' && part !== '.') depth++;
+    if (depth < 0) return false;
+  }
+  return true;
+}, { message: 'Cognition paths must be non-empty paths relative to and inside the Kiki home directory' });
 const CognitionPathRefSchema = z.union([
-  z.string().min(1),
-  z.array(z.string().min(1)).min(1),
+  CognitionPathSchema,
+  z.array(CognitionPathSchema).min(1),
 ]);
 
-export const CognitionConfigSchema = z.object({
+const CognitionContentSchema = z.object({
   overlay: CognitionPathRefSchema.optional(),
   steering: CognitionPathRefSchema.optional(),
   anchor: CognitionPathRefSchema.optional(),
   overlayMode: z.enum(['append', 'prepend', 'wrap', 'persona', 'replace']).optional(),
   anchorSteps: z.number().int().min(1).optional(),
   anchorScope: z.enum(['session', 'turn']).optional(),
+}).strict();
+const CognitionBranchSchema = z.union([
+  z.enum(['same', 'off']),
+  CognitionContentSchema.refine((value) => Object.values(value).some((field) => field !== undefined), {
+    message: 'An independent cognition configuration must set at least one field; use off to disable it',
+  }),
+]);
+export const CognitionConfigSchema = CognitionContentSchema.extend({
+  main: CognitionBranchSchema.optional(),
+  independent: CognitionBranchSchema.optional(),
+}).superRefine((value, ctx) => {
+  const hasCommon = Object.entries(value).some(([key, field]) => key !== 'main' && key !== 'independent' && field !== undefined);
+  for (const position of ['main', 'independent'] as const) {
+    if (value[position] === 'same' && !hasCommon) {
+      ctx.addIssue({ code: 'custom', path: [position], message: 'same requires common cognition fields; omit the branch when there is no common content' });
+    }
+  }
 });
 
 export const ModelRecordSchema = ModelBaseSchema.extend({
   pricingModel: z.string().trim().min(1).optional(),
   serviceTier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
   overrides: ModelOverrideSchema.optional(),
+  usage: ModelUsagePolicySchema.optional(),
+  behavior: modelBehaviorConfigSchema.optional(),
   cognition: CognitionConfigSchema.optional(),
   promptOverrides: PromptOverridesSchema.optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),
@@ -391,7 +432,7 @@ export const modelsFromToml = (rawSnake: unknown): unknown => {
       converted['overrides'] = transformPlainObject(converted['overrides']);
     }
     if (isPlainObject(converted['cognition'])) {
-      converted['cognition'] = transformPlainObject(converted['cognition']);
+      converted['cognition'] = cognitionFromToml(converted['cognition']);
     }
     if (isPlainObject(converted['requestIdentity'])) {
       converted['requestIdentity'] = deepSnakeToCamel(converted['requestIdentity']);
@@ -402,6 +443,11 @@ export const modelsFromToml = (rawSnake: unknown): unknown => {
     if (isPlainObject(converted['parameters'])) {
       converted['parameters'] = deepSnakeToCamel(converted['parameters']);
     }
+    if (isPlainObject(converted['oauth'])) converted['oauth'] = deepSnakeToCamel(converted['oauth']);
+    if (isPlainObject(converted['usage'])) {
+      converted['usage'] = deepSnakeToCamel(converted['usage']);
+    }
+    if (isPlainObject(converted['behavior'])) converted['behavior'] = deepSnakeToCamel(converted['behavior']);
     out[id] = converted;
   }
   return out;
@@ -428,8 +474,8 @@ export const modelsToToml = (value: unknown, rawSnake: unknown): unknown => {
         merged['request_identity'] = deepCamelToSnake(field);
       } else if (key === 'images' && isPlainObject(field)) {
         merged['images'] = deepCamelToSnake(field);
-      } else if (key === 'parameters' && isPlainObject(field)) {
-        merged['parameters'] = deepCamelToSnake(field);
+      } else if ((key === 'parameters' || key === 'usage' || key === 'oauth' || key === 'behavior') && isPlainObject(field)) {
+        merged[key] = deepCamelToSnake(field);
       } else {
         setDefined(merged, camelToSnake(key), field);
       }
@@ -454,14 +500,24 @@ function modelOverridesToToml(
   return out;
 }
 
-function cognitionToToml(
+export function cognitionFromToml(value: Record<string, unknown>): Record<string, unknown> {
+  const out = transformPlainObject(value);
+  for (const position of ['main', 'independent']) {
+    if (isPlainObject(out[position])) out[position] = transformPlainObject(out[position]);
+  }
+  return out;
+}
+
+export function cognitionToToml(
   cognition: Record<string, unknown>,
-  rawSnake: unknown,
+  rawSnake?: unknown,
 ): Record<string, unknown> {
   const out = cloneRecord(rawSnake);
   for (const [key, value] of Object.entries(cognition)) {
     if ((key === 'overlay' || key === 'steering' || key === 'anchor') && Array.isArray(value)) {
       out[camelToSnake(key)] = [...value];
+    } else if ((key === 'main' || key === 'independent') && isPlainObject(value)) {
+      out[key] = cognitionToToml(value, out[key]);
     } else {
       setDefined(out, camelToSnake(key), value);
     }

@@ -15,6 +15,7 @@ import { overrideScopedService, ScopeActivation, type IAgentScopeHandle, type IS
 import { TestInstantiationService } from '#/_base/di/test';
 import { Event } from '#/_base/event';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { RESEARCH_READONLY_TOOLS } from '#/agent/profile/executionRestriction';
 import '#/agent/profile/profileService';
@@ -229,6 +230,11 @@ describe('AgentLifecycleService', () => {
   let beforeExecuteListeners: number;
   let didExecuteHookIds: string[];
 
+  async function updateAgent(agentId: string, updater: Parameters<ISessionMetadata['updateAgent']>[1]): Promise<void> {
+    const current = (await ix.get(ISessionMetadata).read()).agents?.[agentId];
+    if (current !== undefined) await registerAgent(agentId, updater(structuredClone(current)));
+  }
+
   function createTestHost(): void {
     _clearAgentToolContributionsForTests();
     disposables = new DisposableStore();
@@ -276,6 +282,7 @@ describe('AgentLifecycleService', () => {
       setTitle: () => Promise.resolve(),
       setArchived: () => Promise.resolve(),
       registerAgent,
+      updateAgent,
     });
     ix.stub(IBootstrapService, {
       _serviceBrand: undefined,
@@ -982,6 +989,7 @@ describe('AgentLifecycleService', () => {
 
   it('preserves persisted terminal metadata while cold-materializing the current binding', async () => {
     const { metadata, prior } = installStoredTerminalChild('completed');
+    const update = vi.spyOn(metadata, 'updateAgent');
     const register = vi.spyOn(metadata, 'registerAgent');
     const child = await ix.get(IAgentLifecycleService).create({
       agentId: 'child',
@@ -1005,7 +1013,8 @@ describe('AgentLifecycleService', () => {
       thinkingEffort: 'high',
       labels: { parentAgentId: 'main', profileName: 'explore', workItem: 'example' },
     };
-    expect(register).toHaveBeenCalledWith('child', expect.objectContaining(expected));
+    expect(update).toHaveBeenCalledWith('child', expect.any(Function));
+    expect(register).not.toHaveBeenCalled();
     expect((await metadata.read()).agents?.['child']).toMatchObject(expected);
     expect(atomicDocs.get('test/state.json')).toMatchObject({ agents: { child: expected } });
   });
@@ -1031,6 +1040,8 @@ describe('AgentLifecycleService', () => {
     });
     ix.set(IAgentCollaborationRegistry, new SyncDescriptor(AgentCollaborationRegistry));
     const run = vi.fn();
+    const executeSwitch = vi.fn();
+    ix.stub(IAgentModelSwitchService, { get: () => undefined, execute: executeSwitch });
     ix.stub(ISessionSubagentService, { run });
     ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     const lifecycle = ix.get(IAgentLifecycleService);
@@ -1048,6 +1059,7 @@ describe('AgentLifecycleService', () => {
       details: { requiredParameter: 'allow_model_change' },
     });
     expect(run).not.toHaveBeenCalled();
+    expect(executeSwitch).not.toHaveBeenCalled();
     const expected = {
       status: prior.status,
       completedAt: prior.completedAt,
@@ -1166,6 +1178,7 @@ describe('AgentLifecycleService', () => {
       setTitle: async () => {},
       setArchived: async () => {},
       registerAgent,
+      updateAgent,
     } as unknown as ISessionMetadata);
     const resolveExecutable = vi.fn(async () => ({
       descriptor: { id: 'native', protocol: 'native' as const, args: [], revision: 'native' },
@@ -1237,6 +1250,7 @@ describe('AgentLifecycleService', () => {
       setTitle: async () => {},
       setArchived: async () => {},
       registerAgent,
+      updateAgent,
     } as unknown as ISessionMetadata);
     ix.stub(IModelCatalog, {
       _serviceBrand: undefined,
@@ -1312,6 +1326,7 @@ describe('AgentLifecycleService', () => {
       setTitle: async () => {},
       setArchived: async () => {},
       registerAgent,
+      updateAgent,
     } as unknown as ISessionMetadata);
     const svc = ix.get(IAgentLifecycleService);
 
@@ -1358,6 +1373,7 @@ describe('AgentLifecycleService', () => {
       setTitle: async () => {},
       setArchived: async () => {},
       registerAgent,
+      updateAgent,
     } as unknown as ISessionMetadata);
     ix.stub(IAgentExecutorRegistry, {
       _serviceBrand: undefined,
@@ -1399,6 +1415,7 @@ describe('AgentLifecycleService', () => {
       setTitle: async () => {},
       setArchived: async () => {},
       registerAgent,
+      updateAgent,
     } as unknown as ISessionMetadata);
     const defaultProfile = normalizeAgentProfile({
       name: DEFAULT_AGENT_PROFILE_NAME,
@@ -1498,6 +1515,10 @@ describe('AgentLifecycleService', () => {
         time: 2,
       },
     ]).store);
+    const agents: Record<string, import('#/session/sessionMetadata/sessionMetadata').AgentMeta> = {
+      child: { type: 'sub', displayName: 'trusted-name' },
+    };
+    let queue = Promise.resolve();
     ix.stub(ISessionMetadata, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
@@ -1507,12 +1528,24 @@ describe('AgentLifecycleService', () => {
         createdAt: 0,
         updatedAt: 0,
         archived: false,
-        agents: { child: { type: 'sub', displayName: 'trusted-name' } },
+        agents,
       }),
       update: () => Promise.resolve(),
       setTitle: () => Promise.resolve(),
       setArchived: () => Promise.resolve(),
       registerAgent,
+      updateAgent: (agentId: string, updater: Parameters<ISessionMetadata['updateAgent']>[1]) => {
+        const work = async () => {
+          const current = agents[agentId];
+          if (current === undefined) return;
+          const next = updater(structuredClone(current));
+          await registerAgent(agentId, next);
+          agents[agentId] = next;
+        };
+        const result = queue.then(work, work);
+        queue = result.catch(() => {});
+        return result;
+      },
     });
 
     await ix.get(IAgentLifecycleService).create({ agentId: 'child' });
@@ -2127,6 +2160,65 @@ describe('AgentLifecycleService', () => {
     expect(second).toBe(first);
     expect(registerAgent).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps a cold committed switch unready while metadata is absent and finishes after lifecycle identity restoration', async () => {
+    const { getScopedServiceDescriptors, _clearScopedRegistryForTests, registerScopedService } = await import('#/_base/di/scope');
+    const scopes = ['app', 'workspace', 'session', 'agent'];
+    const lifecycleRegistrations = scopes.flatMap(getScopedServiceDescriptors);
+    const { testAgent, sessionService } = await import('../../harness');
+    const { IAgentModelSwitchService } = await import('#/agent/modelSwitch/modelSwitch');
+    const { IAgentContextMemoryService } = await import('#/agent/contextMemory/contextMemory');
+    const { contextWindowEpochKey } = await import('#/agent/fullCompaction/windowEpoch');
+    overrideScopedService(LifecycleScope.Agent, IAgentPromptService, AgentPromptService);
+    const harnessRegistrations = scopes.flatMap(getScopedServiceDescriptors);
+    const installRegistrations = (entries: typeof lifecycleRegistrations): void => {
+      _clearScopedRegistryForTests();
+      for (const entry of entries) registerScopedService(entry.scope, entry.id, entry.descriptor.ctor,
+        entry.activation, entry.domain, entry.descriptor.staticArguments);
+    };
+    const withLifecycleRegistrations = async <T>(action: () => Promise<T>): Promise<T> => {
+      installRegistrations(lifecycleRegistrations);
+      try { return await action(); } finally { installRegistrations(harnessRegistrations); }
+    };
+    ix.stub(ISessionIndexMirror, { record: () => {} });
+    ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
+    const metadata = ix.get(ISessionMetadata);
+    const lifecycle = ix.get(IAgentLifecycleService);
+    const originalIdentity = await withLifecycleRegistrations(() => lifecycle.create({ agentId: 'main' }));
+    const original = testAgent(sessionService(ISessionMetadata, metadata));
+    let cold: typeof original | undefined;
+    try {
+      await original.ready;
+      original.get(IAgentContextMemoryService).append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Keep the saved task' }], origin: { kind: 'user' } });
+      const model = original.get(IAgentProfileService).getModel();
+      const input = { operationId: 'lifecycle-cold-switch', model, mode: 'fresh' as const };
+      const completed = await original.get(IAgentModelSwitchService).execute(input);
+      expect(completed).toMatchObject({ state: 'completed', windowEpoch: 1, summaryGenerated: false });
+      const records: WireRecord[] = [];
+      for await (const record of original.get(IWireService).readJournal()) records.push(record);
+      await lifecycle.remove('main');
+      await metadata.unregisterAgent!('main');
+      cold = testAgent(sessionService(ISessionMetadata, metadata));
+      await cold.ready;
+      await cold.restore(records);
+      const switcher = cold.get(IAgentModelSwitchService);
+      expect(await switcher.execute(input)).toMatchObject({ state: 'preparing', error: { code: 'agent_metadata_missing' } });
+      expect((await metadata.read()).agents?.['main']).toBeUndefined();
+      expect(switcher.get(input.operationId)?.state).toBe('preparing');
+      const restoredIdentity = await withLifecycleRegistrations(() => lifecycle.create({ agentId: 'main' }));
+      expect(restoredIdentity).not.toBe(originalIdentity);
+      expect(lifecycle.get('main')).toBe(restoredIdentity);
+      expect((await metadata.read()).agents?.['main']).toBeDefined();
+      expect(await switcher.execute(input)).toEqual(completed);
+      expect(cold.get(IAgentStateService).get(contextWindowEpochKey)).toBe(1);
+      expect(cold.llmCalls).toHaveLength(0);
+      await lifecycle.remove('main');
+    } finally {
+      await cold?.dispose();
+      await original.dispose();
+      installRegistrations(harnessRegistrations);
+    }
+  }, 30_000);
 });
 
 

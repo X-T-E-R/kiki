@@ -38,7 +38,7 @@ import { Error2, ErrorCodes } from '#/errors';
 import { createHooks } from '#/hooks';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { ISessionApprovalService } from '#/session/approval/approval';
-import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { ISessionInteractionService, isInteractionCancellation } from '#/session/interaction/interaction';
 import {
   ISessionQuestionService,
   type QuestionAnswers,
@@ -416,6 +416,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     const pump = (async () => {
       for await (const event of handle.events) await recorder.record(event);
     })();
+    void pump.catch(() => undefined);
     try {
       const completed = await handle.completion;
       await pump;
@@ -890,7 +891,7 @@ function parseUserInputRequest(
 }
 
 function questionAnswerValues(response: QuestionResult): QuestionAnswers {
-  if (response === null) return {};
+  if (response === null || isInteractionCancellation(response)) return {};
   const nested = response['answers'];
   return typeof nested === 'object' && nested !== null ? nested : response as QuestionAnswers;
 }

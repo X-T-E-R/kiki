@@ -12,6 +12,7 @@ const THREAD_TOOLS = new Set(['ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadW
 interface SessionSnapshot {
   readonly workspaceId: string;
   memory: boolean;
+  memoryWrite: boolean;
   thread: boolean;
 }
 
@@ -24,6 +25,7 @@ export class CapabilitySnapshotService implements ICapabilitySnapshotService {
     this.ready = config.ready.then(() => {
       for (const snapshot of this.bySession.values()) {
         snapshot.memory = this.readMemory(snapshot.workspaceId);
+        snapshot.memoryWrite = this.readMemoryWrite(snapshot.workspaceId);
         snapshot.thread = this.readThread();
       }
     });
@@ -46,6 +48,7 @@ export class CapabilitySnapshotService implements ICapabilitySnapshotService {
   }
 
   toolAvailable(name: string, workspaceId: string, sessionId: string): boolean {
+    if (name === 'MemoryWrite') return this.snapshot(workspaceId, sessionId).memoryWrite;
     if (MEMORY_TOOLS.has(name)) return this.memoryAvailable(workspaceId, sessionId);
     if (THREAD_TOOLS.has(name)) return this.threadEnabled(workspaceId, sessionId);
     return true;
@@ -54,9 +57,11 @@ export class CapabilitySnapshotService implements ICapabilitySnapshotService {
   refresh(workspaceId: string, sessionId: string): CapabilitySnapshotChange {
     const snapshot = this.snapshot(workspaceId, sessionId);
     const memory = this.readMemory(workspaceId);
+    const memoryWrite = this.readMemoryWrite(workspaceId);
     const thread = this.readThread();
-    const changed = { memory: memory !== snapshot.memory, thread: thread !== snapshot.thread };
+    const changed = { memory: memory !== snapshot.memory || memoryWrite !== snapshot.memoryWrite, thread: thread !== snapshot.thread };
     snapshot.memory = memory;
+    snapshot.memoryWrite = memoryWrite;
     snapshot.thread = thread;
     return changed;
   }
@@ -64,7 +69,7 @@ export class CapabilitySnapshotService implements ICapabilitySnapshotService {
   private snapshot(workspaceId: string, sessionId: string): SessionSnapshot {
     let snapshot = this.bySession.get(sessionId);
     if (snapshot === undefined) {
-      snapshot = { workspaceId, memory: this.readMemory(workspaceId), thread: this.readThread() };
+      snapshot = { workspaceId, memory: this.readMemory(workspaceId), memoryWrite: this.readMemoryWrite(workspaceId), thread: this.readThread() };
       this.bySession.set(sessionId, snapshot);
     } else if (snapshot.workspaceId !== workspaceId) {
       throw new Error(`Session "${sessionId}" belongs to another workspace.`);
@@ -77,8 +82,11 @@ export class CapabilitySnapshotService implements ICapabilitySnapshotService {
   }
 
   private readMemory(workspaceId: string): boolean {
-    const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
-    return memoryEnabled(settings, workspaceId) && settings?.approval !== 'off';
+    return memoryEnabled(this.config.get<MemoryConfig>(MEMORY_SECTION), workspaceId);
+  }
+
+  private readMemoryWrite(workspaceId: string): boolean {
+    return this.readMemory(workspaceId) && this.config.get<MemoryConfig>(MEMORY_SECTION)?.approval !== 'off';
   }
 }
 

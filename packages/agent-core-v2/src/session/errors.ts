@@ -13,6 +13,7 @@ export const SessionErrors = {
     MESSAGE_ACTION_UNAVAILABLE: 'message.action_unavailable',
     SESSION_INIT_FAILED: 'session.init_failed',
     SESSION_PLAN_MODE_INVALID: 'session.plan_mode_invalid',
+    SESSION_TITLE_GENERATION_FAILED: 'session.title_generation_failed',
   },
   retryable: ['session.fork_active_turn'],
 } as const satisfies ErrorDomain;

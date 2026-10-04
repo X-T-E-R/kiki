@@ -78,6 +78,7 @@ export class KimiHarness {
   private readonly resumeInflight = new Map<string, Promise<Session>>();
   private readonly ensureConfigFileImpl: () => Promise<void>;
   private readonly closeImpl: () => void | Promise<void>;
+  private closePromise: Promise<void> | undefined;
   private readonly sessionStartedProperties: TelemetryProperties;
 
   /**
@@ -351,8 +352,12 @@ export class KimiHarness {
     return this.rpc.listWorkspaceMcpServers(workDir);
   }
 
-  async installPlugin(source: string): Promise<PluginSummary> {
-    return this.rpc.installPlugin(source);
+  previewPlugin(input: import('@kiki/protocol').PluginPreviewRequest): Promise<import('@kiki/protocol').PluginInstallPlan> {
+    return this.rpc.previewPlugin(input);
+  }
+
+  async installPlugin(source: string, options?: Omit<import('@kiki/protocol').PluginInstallRequest, 'source'>): Promise<PluginSummary> {
+    return this.rpc.installPlugin(source, options);
   }
 
   async setPluginEnabled(id: string, enabled: boolean): Promise<void> {
@@ -604,9 +609,24 @@ export class KimiHarness {
     return this.rpc.testGlobalMcpServerConfig(server, options);
   }
 
-  async close(): Promise<void> {
-    await Promise.all(Array.from(this.activeSessions.values(), (session) => session.close()));
-    await this.closeImpl();
+  close(): Promise<void> {
+    return this.closePromise ??= (async () => {
+      const errors: unknown[] = [];
+      try {
+        const results = await Promise.allSettled(Array.from(this.activeSessions.values(), (session) => session.close()));
+        for (const result of results) {
+          if (result.status === 'rejected') errors.push(result.reason);
+        }
+      } finally {
+        try {
+          await this.closeImpl();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, 'Failed to close sessions and harness host.');
+    })();
   }
 
   private trackSessionEvent(eventSessionId: string, event: string): void {

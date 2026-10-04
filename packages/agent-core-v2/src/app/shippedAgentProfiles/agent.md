@@ -41,7 +41,7 @@ tools:
   - ExitPlanMode
   - Goal
   - mcp__*
-subagents: "*"
+can_spawn_subagents: true
 ---
 
 ${base_prompt}

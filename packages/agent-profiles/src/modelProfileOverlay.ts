@@ -1,4 +1,5 @@
-import type { AgentModelParameters, AgentModelProfile } from './agentProfile';
+import type { AgentModelParameters, AgentModelProfile, AgentModelPromptContent, AgentModelPromptLayer, AgentProfile } from './agentProfile';
+import { selectPromptIdentityContent, type PromptDelegationPosition } from './promptOverrides';
 import { renderPrompt } from './renderPrompt';
 
 export function mergeModelParameters(
@@ -53,21 +54,31 @@ export function resolveProfileThinkingDefault(
   return canonical === defaultModel ? profile.thinkingEffort : undefined;
 }
 
+export function modelPromptLayers(profile: Pick<AgentProfile, 'modelPromptLayers' | 'modelProfiles' | 'sourcePath'>): readonly AgentModelPromptLayer[] {
+  return profile.modelPromptLayers ?? [{ source: 'profile', sourcePath: profile.sourcePath, entries: profile.modelProfiles ?? [] }];
+}
+
+export function selectModelProfilePrompt(entry: AgentModelProfile | undefined, position: PromptDelegationPosition): AgentModelPromptContent | undefined {
+  if (entry === undefined) return undefined;
+  return selectPromptIdentityContent(
+    { promptMode: entry.promptMode, prompt: entry.prompt },
+    position === 'sub' ? undefined : entry[position],
+  );
+}
+
 export function applyMatchedModelProfilePrompt(
   base: string,
   entries: readonly AgentModelProfile[] | undefined,
   alias: string,
   resolveId: (id: string) => string | undefined,
+  position: PromptDelegationPosition = 'main',
 ): string {
-  return applyModelProfilePromptDelta(
-    base,
-    resolveModelProfileEntry(entries, alias, resolveId),
-  );
+  return applyModelProfilePromptDelta(base, selectModelProfilePrompt(resolveModelProfileEntry(entries, alias, resolveId), position));
 }
 
 export function applyModelProfilePromptDelta(
   base: string,
-  entry: AgentModelProfile | undefined,
+  entry: AgentModelPromptContent | undefined,
 ): string {
   if (entry?.promptMode === undefined || entry.prompt === undefined || entry.prompt.length === 0) {
     return base;
@@ -84,9 +95,10 @@ export function declaresModelProfilePrompt(
   entries: readonly AgentModelProfile[] | undefined,
   alias: string | undefined,
   resolveId: (id: string) => string | undefined,
+  position: PromptDelegationPosition = 'main',
 ): boolean {
   if (alias === undefined || alias.length === 0) return false;
-  const entry = resolveModelProfileEntry(entries, alias, resolveId);
+  const entry = selectModelProfilePrompt(resolveModelProfileEntry(entries, alias, resolveId), position);
   return entry?.promptMode !== undefined && entry.prompt !== undefined && entry.prompt.length > 0;
 }
 

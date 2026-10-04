@@ -149,7 +149,7 @@ describe('server-v2 /api/search', () => {
   }
 
   it('delivers index snapshots on the shared authenticated WebSocket without a session subscription', async () => {
-    const client = createKlient({ endpoint: base, token: server!.authTokenService.getToken() });
+    const client = createKlient({ endpoint: base, token: server!.localOwnerToken });
     const received: unknown[] = [];
     const subscription = client.events.on('search.indexStateChanged', (state) => received.push(state));
     try {

@@ -531,6 +531,10 @@ describe('ws-control — §3.6 resync_required', () => {
     expect(result.success).toBe(true);
   });
 
+  it('parses journal_gap as a recoverable shared wire reason', () => {
+    expect(resyncRequiredMessageSchema.safeParse({ type: 'resync_required', timestamp: TS, payload: { session_id: 'sess_1', reason: 'journal_gap', current_seq: 12, epoch: 'ep_01DEF' } }).success).toBe(true);
+  });
+
   it('parses an epoch_changed resync with the new epoch', () => {
     const result = resyncRequiredMessageSchema.safeParse({
       type: 'resync_required',
@@ -618,6 +622,8 @@ describe('ws-control — operation registry', () => {
       'client_hello',
       'subscribe',
       'unsubscribe',
+      'subscribe_v2',
+      'unsubscribe_v2',
       'watch_fs_add',
       'watch_fs_remove',
       'abort',
@@ -636,6 +642,16 @@ describe('ws-control — operation registry', () => {
         expect(op.ackSchema).toBeDefined();
       }
     }
+  });
+
+  it('registers v2 transcript controls in the shared schemas and AsyncAPI', () => {
+    const subscribe = { type: 'subscribe_v2', id: 'v2', payload: { session_id: 'sess_1', transcript: { main: 'delta' }, transcript_since: { main: 4 } } };
+    expect(clientControlMessageSchema.parse(subscribe)).toMatchObject({ payload: { transcript_since: { main: { seq: 4 } } } });
+    expect(clientControlMessageSchema.safeParse({ type: 'unsubscribe_v2', id: 'v2-off', payload: { session_id: 'sess_1', agent_ids: ['main'] } }).success).toBe(true);
+    expect(clientControlMessageSchema.safeParse({ ...subscribe, payload: { ...subscribe.payload, transcript: { main: 'unknown' } } }).success).toBe(false);
+    const components = createAsyncApiDocument()['components'] as { messages: Record<string, unknown> };
+    expect(components.messages['subscribe_v2']).toBeDefined();
+    expect(components.messages['unsubscribe_v2']).toBeDefined();
   });
 
   it('looks up client control operations by frame type', () => {

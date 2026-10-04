@@ -319,7 +319,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     [ISessionWorkspaceContext, workspace],
     [IAgentPermissionModeService, permissionMode],
     [IAgentExecutorRegistry, { recordNegotiated: vi.fn() }],
-    [ISessionMetadata, { read: async () => ({ agents: {} }), registerAgent: vi.fn() }],
+    [ISessionMetadata, { read: async () => ({ agents: {} }), registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) }],
   ]);
   let permissionHandler: AcpPermissionHandler | undefined;
   let elicitationHandler: AcpElicitationHandler | undefined;
@@ -539,7 +539,7 @@ function createExecutionHarness(options: FakeHarnessOptions = {}) {
       provider: { create: harness.createSession },
     }),
   } as unknown as IAgentExecutorRegistry);
-  ix.stub(ISessionMetadata, { read: async () => ({ id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} }), registerAgent: vi.fn() });
+  ix.stub(ISessionMetadata, { read: async () => ({ id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} }), registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) });
   ix.set(IAgentPermissionModeService, harness.permissionMode);
   ix.set(IAgentProfileService, {
     _serviceBrand: undefined,

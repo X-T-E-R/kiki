@@ -13,6 +13,13 @@ const AUTH_ERROR_CODE = 40101;
 const AUTH_ERROR_MSG = 'Unauthorized';
 const REDACTED = '[redacted]';
 const BEARER_PREFIX = 'Bearer ';
+const authenticatedHeaders = new WeakMap<object, string>();
+export function authenticatedAuthorization(request: object): string | undefined { return authenticatedHeaders.get(request); }
+const cookieHeaders = new WeakMap<object, Record<string, string>>();
+export function authenticatedForwardHeaders(request: object): Record<string, string> {
+  const authorization = authenticatedAuthorization(request);
+  return authorization === undefined ? cookieHeaders.get(request) ?? {} : { authorization };
+}
 
 export interface AuthHookOptions {
   readonly isBypassed?: (req: FastifyRequest) => boolean;
@@ -24,6 +31,8 @@ export interface AuthHookOptions {
    * the optional `rpcToken` so the same credential gates every surface.
    */
   readonly validateCredential?: CredentialValidator;
+  readonly authorizeRequest?: (token: string, req: FastifyRequest, reply: FastifyReply) => Promise<boolean>;
+  readonly authorizeCookie?: (req: FastifyRequest, reply: FastifyReply) => Promise<boolean>;
 }
 
 function decodeRequestPath(rawUrl: string): string | null {
@@ -89,14 +98,30 @@ export function createAuthHook(
       req.headers.authorization = REDACTED;
     }
 
+    if (header === undefined && opts?.authorizeCookie !== undefined) {
+      if (await opts.authorizeCookie(req, reply)) {
+        const headers: Record<string, string> = {};
+        for (const name of ['cookie', 'origin', 'host']) { const value = req.headers[name]; if (typeof value === 'string') headers[name] = value; }
+        cookieHeaders.set(req, headers);
+      } else opts.limiter?.recordFailure(req.ip);
+      return;
+    }
+
     if (token === null) {
       opts?.limiter?.recordFailure(req.ip);
       return reply.code(401).send(errEnvelope(AUTH_ERROR_CODE, AUTH_ERROR_MSG, req.id));
+    }
+
+    if (opts?.authorizeRequest !== undefined) {
+      if (await opts.authorizeRequest(token, req, reply)) authenticatedHeaders.set(req, BEARER_PREFIX + token);
+      else opts.limiter?.recordFailure(req.ip);
+      return;
     }
 
     if (!(await validateCredential(token))) {
       opts?.limiter?.recordFailure(req.ip);
       return reply.code(401).send(errEnvelope(AUTH_ERROR_CODE, AUTH_ERROR_MSG, req.id));
     }
+    authenticatedHeaders.set(req, BEARER_PREFIX + token);
   };
 }

@@ -14,6 +14,7 @@ import type { TokenUsage } from '#/kosong/contract/usage';
 
 import type { Model } from './catalog';
 import type { RequestAttribution } from './requestAdmission';
+import type { OptionalParameter } from './parameters';
 
 export interface ModelRequestInput {
   readonly systemPrompt: string;
@@ -46,7 +47,7 @@ export type ModelRequestEvent =
 
 export interface ModelRequestParams {
   readonly cacheKey?: string;
-  readonly serviceTier?: ServiceTier;
+  readonly serviceTier?: OptionalParameter<ServiceTier>;
   readonly headers?: Readonly<Record<string, string>>;
   readonly requestParams?: RequestParams;
   readonly sampling?: SamplingOptions;
@@ -74,8 +75,8 @@ export interface ModelRequester {
 
   request(
     input: ModelRequestInput,
-    signal?: AbortSignal,
-    params?: ModelRequestParams,
+    signal: AbortSignal | undefined,
+    params: ModelRequestParams & { readonly attribution: RequestAttribution },
   ): AsyncIterable<ModelRequestEvent>;
 
   uploadVideo?(

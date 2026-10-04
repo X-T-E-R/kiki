@@ -52,10 +52,17 @@ export interface EphemeralUsageTotal {
   readonly usageKnown?: boolean;
 }
 
+export type RetainedUsageExportEvent =
+  | { readonly kind: 'progress' }
+  | { readonly kind: 'session'; readonly snapshot: RetainedDeletedSessionUsage }
+  | { readonly kind: 'ephemeral'; readonly record: EphemeralUsageTotal }
+  | { readonly kind: 'incomplete' };
+
 export interface IRetainedUsageService {
   readonly _serviceBrand: undefined;
   retainDeletedSession(summary: SessionSummary): Promise<RetainedDeletedSessionUsage>;
   listDeletedSessions(query: RetainedUsageListQuery): Promise<RetainedUsageListResult>;
+  readExportUsage?(includeEphemeral: boolean, signal?: AbortSignal): AsyncGenerator<RetainedUsageExportEvent>;
   retainEphemeralUsage?(sessionScope: string, workspaceId: string): Promise<void>;
   listEphemeralUsage?(query: RetainedUsageListQuery): Promise<{
     readonly items: readonly EphemeralUsageTotal[];

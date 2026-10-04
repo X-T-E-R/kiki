@@ -21,9 +21,17 @@ import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { ProtocolErrors } from '#/kosong/protocol/errors';
 import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import type { Model } from '#/kosong/model/catalog';
-import type { ModelRequestEvent } from '#/kosong/model/modelRequester';
+import type { ModelRequestEvent, ModelRequestInput, ModelRequestParams } from '#/kosong/model/modelRequester';
 import { effectiveMaxCompletionTokens } from '#/kosong/model/modelRequester';
-import { buildStreamTiming, ModelRequesterImpl } from '#/kosong/model/modelRequesterImpl';
+import { buildStreamTiming, ModelRequesterImpl as ProductionModelRequester } from '#/kosong/model/modelRequesterImpl';
+
+class ModelRequesterImpl extends ProductionModelRequester {
+  override request(input: ModelRequestInput, signal?: AbortSignal, params?: ModelRequestParams): AsyncIterable<ModelRequestEvent> {
+    return super.request(input, signal, { ...params, attribution: params?.attribution ?? {
+      logicalRequestId: 'fixture-request', sessionId: 'fixture-session', agentId: 'main', purpose: 'test', waitBudget: { waitedMs: 0 },
+    } });
+  }
+}
 
 class FakeChatProvider implements ChatProvider {
   readonly name = 'fake-base';
@@ -621,4 +629,37 @@ it('limits actual native provider streams from two sessions to two, and never se
     expect(liveStreams).toBe(0);
     expect(governor.snapshot()).toMatchObject({ active: 0, queued: 0 });
   } finally { ix.dispose(); }
+});
+
+it('requires an explicit requester owner at runtime instead of inferring system ownership', () => {
+  const requester = new ProductionModelRequester(modelWith(staticAuth()), registryReturning(new FakeChatProvider()));
+  const missing = requester.request as unknown as (input: typeof INPUT) => unknown;
+  expect(() => missing.call(requester, INPUT)).toThrow(/explicit session or system attribution/);
+});
+
+it('queues a session-owned auxiliary model request behind that session main slot', async () => {
+  const ix = new TestInstantiationService();
+  ix.set(IConfigService, new StubConfigService({ requestGovernance: { rules: [{ id: 'session-cap', scope: 'each_session', maxConcurrent: 1 }] } }));
+  ix.set(IRequestGovernance, new SyncDescriptor(RequestGovernanceService));
+  const governor = ix.get(IRequestGovernance);
+  const provider = new FakeChatProvider();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  provider.handler = async (index) => {
+    if (index === 0) await gate;
+    return streamOf([{ type: 'text', text: 'done' }]);
+  };
+  const requester = new ProductionModelRequester(modelWith(staticAuth()), registryReturning(provider), governor);
+  const owner = { logicalRequestId: 'main', sessionId: 's1', agentId: 'main', purpose: 'turn', waitBudget: { waitedMs: 0 } };
+  try {
+    const main = collect(requester.request(INPUT, undefined, { attribution: owner }));
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    const auxiliary = collect(requester.request(INPUT, undefined, { attribution: { ...owner, logicalRequestId: 'title', purpose: 'session_title' } }));
+    await vi.waitFor(() => expect(governor.snapshot().queued).toBe(1));
+    expect(provider.calls).toHaveLength(1);
+    release();
+    await Promise.all([main, auxiliary]);
+    expect(provider.calls).toHaveLength(2);
+    expect(governor.snapshot()).toMatchObject({ active: 0, queued: 0 });
+  } finally { release(); ix.dispose(); }
 });

@@ -60,13 +60,7 @@ export interface PromptFieldDefinitionInfo {
   readonly deprecated?: PromptFieldDefinition['deprecated'];
 }
 
-interface PromptOverrideSourceLike {
-  readonly surface: 'global' | 'model' | 'profile' | 'profile-model' | 'system';
-  readonly kind: 'file' | 'inline';
-  readonly path?: string;
-  readonly fileIndex?: number;
-  readonly line?: number;
-}
+type PromptOverrideSourceLike = ResolvedPromptFieldOverride['sources'][number];
 
 export interface PromptFieldSourceInfo {
   readonly surface: 'default' | PromptOverrideSourceLike['surface'];

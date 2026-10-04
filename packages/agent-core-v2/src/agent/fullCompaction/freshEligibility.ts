@@ -8,6 +8,7 @@ export { coveredMessageIndex } from '#/session/todo/todoNotes';
 export type ContextStrategy = 'summarize' | 'auto' | 'fresh';
 export type ReasonCode =
   | 'history_unavailable' | 'notes_missing' | 'notes_previous_window' | 'projected_too_large'
+  | 'handoff_unreviewed' | 'notes_directives_budget'
   | 'manual_instruction' | 'user_input_elided' | 'new_content_large' | 'tool_error'
   | 'non_replayable_result' | 'debug_chain' | 'elided_goal_directives_missing' | 'multiple_sources'
   | 'non_text_result' | 'relay_render_failed' | 'summarize_failed_relay_rescue'
@@ -38,7 +39,8 @@ export function evaluateFreshEligibility(input: FreshEligibilityInput): { eligib
   const after = watermark >= compactCount ? [] : section.slice(watermark + 1);
   if (!input.historyAvailable) reasons.push('history_unavailable');
   if (input.notes === undefined || meta === undefined) reasons.push('notes_missing');
-  if (meta !== undefined && meta.windowEpoch < input.windowEpoch) reasons.push('notes_previous_window');
+  if (meta !== undefined && (meta.reviewedWindowEpoch ?? -1) < input.windowEpoch) reasons.push('notes_previous_window');
+  if (watermark < 0 || after.some((message) => message.origin?.kind === 'compaction_summary')) reasons.push('handoff_unreviewed');
   if (input.projectedTokens > input.threshold * 0.6) reasons.push('projected_too_large');
   if (input.instruction?.trim()) reasons.push('manual_instruction');
   const users = collectCompactableUserMessages(section);
@@ -62,7 +64,7 @@ export function evaluateFreshEligibility(input: FreshEligibilityInput): { eligib
   if (nonReplayable.length >= 5 && new Set(nonReplayable.map((message) => toolNames.get(message.toolCallId ?? ''))).size >= 3) reasons.push('multiple_sources');
   if (after.some((message) => message.role === 'tool' &&
     message.content.some((part) => part.type === 'image_url' || part.type === 'audio_url' || part.type === 'video_url'))) reasons.push('non_text_result');
-  const safety = new Set<ReasonCode>(['history_unavailable', 'notes_missing', 'notes_previous_window', 'projected_too_large', 'manual_instruction', 'user_input_elided']);
+  const safety = new Set<ReasonCode>(['history_unavailable', 'notes_missing', 'notes_previous_window', 'handoff_unreviewed', 'projected_too_large', 'manual_instruction', 'user_input_elided']);
   const safe = !reasons.some((reason) => safety.has(reason));
   return { safe, eligible: safe && (input.strategy === 'fresh' || reasons.every((reason) => reason.startsWith('user_input_since_notes:'))), reasons };
 }

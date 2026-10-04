@@ -1,4 +1,4 @@
-export type CapabilityId = 'kimi-cu' | 'kimi-webbridge';
+export type CapabilityId = 'kimi-cu' | 'kimi-webbridge' | 'kiki-computer';
 
 export type CapabilityReadiness = 'not_installed' | 'partial' | 'ready' | 'unsupported';
 

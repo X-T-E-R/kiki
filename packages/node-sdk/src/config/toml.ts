@@ -4,6 +4,8 @@ import { readConfigDocumentSnapshot, writeConfigDocument } from '@kiki/agent-cor
 import { CREDENTIALS_KEY, migrateCredentialsDirectory } from '@kiki/agent-core-v2/app/config/migrations';
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
 import { TomlAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
+import { cognitionFromToml, cognitionToToml } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
+import { questionSettingsFromToml, interactionConfigToWire, modelBehaviorToWire, type ModelBehaviorConfig } from '@kiki/protocol';
 
 import { ErrorCodes, KimiError } from '../errors';
 import { credentialsPathFor, mergeConfigCredentials, splitConfigCredentials } from './credentials';
@@ -393,6 +395,8 @@ export function transformTomlData(data: Record<string, unknown>): Record<string,
       result[targetKey] = transformRecord(value, transformProviderData);
     } else if (targetKey === 'models' && isPlainObject(value)) {
       result[targetKey] = transformRecord(value, transformModelData);
+    } else if (targetKey === 'interaction' && isPlainObject(value)) {
+      result[targetKey] = questionSettingsFromToml(value);
     } else if (targetKey === 'thinking' && isPlainObject(value)) {
       result[targetKey] = transformPlainObject(value);
     } else if (targetKey === 'permission' && isPlainObject(value)) {
@@ -445,7 +449,8 @@ function transformProviderData(data: Record<string, unknown>): Record<string, un
   for (const [key, value] of Object.entries(data)) {
     const targetKey = snakeToCamel(key);
     if (targetKey === 'oauth') {
-      out[targetKey] = isPlainObject(value) ? transformPlainObject(value) : value;
+      out[targetKey] = isPlainObject(value) ? { ...transformPlainObject(value),
+        ...(isPlainObject(value['source']) ? { source: transformPlainObject(value['source']) } : {}) } : value;
     } else if (targetKey === 'env' || targetKey === 'customHeaders') {
       out[targetKey] = cloneObjectValue(value);
     } else {
@@ -461,7 +466,12 @@ function transformModelData(data: Record<string, unknown>): Record<string, unkno
     out['overrides'] = transformPlainObject(out['overrides']);
   }
   if (isPlainObject(out['cognition'])) {
-    out['cognition'] = transformPlainObject(out['cognition']);
+    out['cognition'] = cognitionFromToml(out['cognition']);
+  }
+  if (isPlainObject(out['behavior'])) out['behavior'] = questionSettingsFromToml(out['behavior']);
+  if (isPlainObject(out['oauth'])) {
+    const oauth = out['oauth'];
+    out['oauth'] = { ...transformPlainObject(oauth), ...(isPlainObject(oauth['source']) ? { source: transformPlainObject(oauth['source']) } : {}) };
   }
   return out;
 }
@@ -624,6 +634,7 @@ export function configToTomlData(config: KimiConfig): Record<string, unknown> {
   setRecordSection(out, 'providers', config.providers, providerToToml);
   setRecordSection(out, 'models', config.models, modelToToml);
   setSection(out, 'thinking', config.thinking, thinkingToToml);
+  setSection(out, 'interaction', config.interaction, interactionConfigToWire);
   setSection(out, 'nb_search', config.nbSearch, nbSearchToToml);
   setSection(out, 'nb_search_source', config.nbSearchSource, (source) => ({ ...source }));
   setSection(out, 'loop_control', config.loopControl, loopControlToToml);
@@ -705,7 +716,11 @@ function modelToToml(model: ModelAlias, rawModel: unknown): Record<string, unkno
       const rawOverrides = isPlainObject(rawModel) ? rawModel['overrides'] : undefined;
       out['overrides'] = modelOverridesToToml(value, rawOverrides);
     } else if (key === 'cognition' && isPlainObject(value)) {
-      out['cognition'] = Object.fromEntries(Object.entries(value).map(([field, item]) => [camelToSnake(field), item]));
+      out['cognition'] = cognitionToToml(value);
+    } else if (key === 'behavior' && isPlainObject(value)) {
+      out['behavior'] = modelBehaviorToWire(value as ModelBehaviorConfig);
+    } else if (key === 'oauth' && value !== undefined) {
+      out['oauth'] = oauthToToml(value as OAuthRef);
     } else {
       setDefined(out, camelToSnake(key), value);
     }
@@ -856,7 +871,11 @@ function hookToToml(hook: HookDefConfig): Record<string, unknown> {
 function oauthToToml(oauth: OAuthRef): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(oauth)) {
-    setDefined(out, camelToSnake(key), value);
+    if (key === 'source' && isPlainObject(value)) {
+      const source: Record<string, unknown> = {};
+      for (const [field, fieldValue] of Object.entries(value)) setDefined(source, camelToSnake(field), fieldValue);
+      out['source'] = source;
+    } else setDefined(out, camelToSnake(key), value);
   }
   return out;
 }

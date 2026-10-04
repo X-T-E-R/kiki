@@ -1,4 +1,4 @@
-import { encodeWorkDirKey } from '#/_base/utils/workdir-slug';
+import { encodeWorkDirKey, workDirKeyAliases, workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { canonicalWorkspaceRoot } from '#/_base/utils/paths';
 import type { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 
@@ -14,20 +14,28 @@ export async function readWorkspaceTrust(
   root: string,
 ): Promise<boolean> {
   try {
-    const canonicalKey = trustKey(root);
-    if ((await docs.get<TrustRecord>(TRUST_SCOPE, canonicalKey)) !== undefined) return true;
-
-    const legacyKey = encodeWorkDirKey(root);
-    if (legacyKey === canonicalKey) return false;
-    const legacy = await docs.get<TrustRecord>(TRUST_SCOPE, legacyKey);
-    if (legacy === undefined) return false;
-    try {
-      await docs.set(TRUST_SCOPE, canonicalKey, legacy);
-      await docs.delete(TRUST_SCOPE, legacyKey);
-    } catch {}
-    return true;
+    for (const key of trustKeys(root)) {
+      if ((await docs.get<TrustRecord>(TRUST_SCOPE, key)) !== undefined) return true;
+    }
+    return false;
   } catch {
     return false;
+  }
+}
+
+export async function migrateWorkspaceTrust(
+  docs: IAtomicDocumentStore,
+  root: string,
+): Promise<void> {
+  const canonicalKey = trustKey(root);
+  for (const key of trustKeys(root)) {
+    const record = await docs.get<TrustRecord>(TRUST_SCOPE, key);
+    if (record === undefined) continue;
+    if (key !== canonicalKey) await docs.set(TRUST_SCOPE, canonicalKey, record);
+    for (const alias of trustKeys(root, record)) {
+      if (alias !== canonicalKey) await docs.delete(TRUST_SCOPE, alias);
+    }
+    return;
   }
 }
 
@@ -39,16 +47,24 @@ export function writeWorkspaceTrust(
   return docs.set(TRUST_SCOPE, trustKey(root), { root, trustedAt });
 }
 
-export function deleteWorkspaceTrust(
+export async function deleteWorkspaceTrust(
   docs: IAtomicDocumentStore,
   root: string,
 ): Promise<void> {
-  const canonicalKey = trustKey(root);
-  const legacyKey = encodeWorkDirKey(root);
-  return (async () => {
-    await docs.delete(TRUST_SCOPE, canonicalKey);
-    if (legacyKey !== canonicalKey) await docs.delete(TRUST_SCOPE, legacyKey);
-  })();
+  const keys = new Set(trustKeys(root));
+  for (const key of keys) {
+    const record = await docs.get<TrustRecord>(TRUST_SCOPE, key);
+    for (const alias of trustKeys(root, record)) keys.add(alias);
+  }
+  for (const key of keys) await docs.delete(TRUST_SCOPE, key);
+}
+
+function trustKeys(root: string, record?: TrustRecord): readonly string[] {
+  const keys = new Set([trustKey(root), ...workDirKeyAliases(root)]);
+  if (record !== undefined && workspaceRootKey(record.root) === workspaceRootKey(root)) {
+    for (const key of workDirKeyAliases(record.root)) keys.add(key);
+  }
+  return [...keys];
 }
 
 function trustKey(root: string): string {

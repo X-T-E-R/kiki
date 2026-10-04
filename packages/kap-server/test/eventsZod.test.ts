@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   agentEventSchema,
+  skillActivationOriginSchema,
   assistantDeltaEventSchema,
   kimiErrorPayloadSchema,
   thinkingDeltaEventSchema,
@@ -29,6 +30,13 @@ const ENGINE_PROMPT_EVENTS = [
   PromptCompleted,
   PromptAborted,
 ];
+
+describe('events-zod skill author input', () => {
+  it('preserves userInput on the existing activation origin', () => {
+    const origin = { kind: 'skill_activation', activationId: 'example-skill', skillName: 'review', trigger: 'user-slash', userInput: '/review --fix\nKeep the second line.' };
+    expect(skillActivationOriginSchema.parse(origin)).toEqual(origin);
+  });
+});
 
 describe('events-zod dispatch capacity errors', () => {
   it('preserves the code and structured rejection details', () => {

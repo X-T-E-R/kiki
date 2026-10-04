@@ -4,6 +4,17 @@ import path from 'node:path';
 
 const [entry] = process.argv.slice(2);
 const tools = new Map();
+const sources = new Map();
+const providers = new Map();
+const mediaCalls = new Map();
+let nextMediaCall = 0;
+function callMedia(id, action, input) {
+  const callId = ++nextMediaCall;
+  return new Promise((resolve, reject) => {
+    mediaCalls.set(callId, { resolve, reject });
+    send({ method: 'media-call', params: { id, callId, action, input } });
+  });
+}
 const pending = new Map();
 const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
 console.log = (...args) => console.error(...args);
@@ -34,6 +45,20 @@ for await (const line of createInterface({ input: process.stdin })) {
           tools.set(definition.name, execute);
           send({ method: 'register', params: { version: 1, tool: definition } });
         },
+        registerSessionSource(definition, adapter) {
+          if (typeof definition?.id !== 'string' || sources.has(definition.id) ||
+              ['discover', 'probe', 'parse'].some((name) => typeof adapter?.[name] !== 'function')) {
+            throw new Error('Invalid or duplicate session source');
+          }
+          sources.set(definition.id, adapter);
+          send({ method: 'register-source', params: { version: 1, definition } });
+        },
+        registerMediaProvider(definition, adapter) {
+          if (typeof definition?.id !== 'string' || providers.has(definition.id) ||
+            typeof adapter?.describe !== 'function' || typeof adapter?.submit !== 'function') throw new Error('Invalid or duplicate media provider');
+          providers.set(definition.id, adapter);
+          send({ method: 'register-media-provider', params: { version: 1, definition } });
+        },
       });
     } catch (error) {
       send({ method: 'register-error', params: { message: String(error) } });
@@ -45,6 +70,32 @@ for await (const line of createInterface({ input: process.stdin })) {
   }
   if (message.method === 'cancel') {
     pending.get(message.params?.id)?.abort();
+    continue;
+  }
+  if (message.method === 'media-result') {
+    const call = mediaCalls.get(message.params?.callId);
+    mediaCalls.delete(message.params?.callId);
+    if (message.params?.error !== undefined) call?.reject(new Error(message.params.error));
+    else call?.resolve(message.params?.result);
+    continue;
+  }
+  if (message.method === 'media-provider-request') {
+    const controller = new AbortController();
+    pending.set(message.id, controller);
+    Promise.resolve().then(() => {
+      const adapter = providers.get(message.params?.providerId);
+      const action = message.params?.action;
+      if (adapter === undefined || !['describe', 'submit', 'poll', 'cancel', 'voices'].includes(action) || typeof adapter[action] !== 'function') throw new Error('Unsupported media provider action');
+      return adapter[action](message.params.input, {
+        signal: controller.signal, settings: message.params.settings ?? {},
+        jobId: message.params.jobId, stagingDir: message.params.stagingDir,
+        connection() { return callMedia(message.id, 'connection'); },
+        progress(update) { send({ method: 'progress', params: { id: message.id, update } }); },
+      });
+    }).then(
+      (result) => send({ id: message.id, result }),
+      (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }),
+    ).finally(() => pending.delete(message.id));
     continue;
   }
   if (message.method === 'install-prerequisite') {
@@ -70,6 +121,20 @@ for await (const line of createInterface({ input: process.stdin })) {
     );
     continue;
   }
+  if (message.method === 'source-request') {
+    const controller = new AbortController();
+    pending.set(message.id, controller);
+    Promise.resolve().then(() => {
+      const adapter = sources.get(message.params?.sourceId);
+      const action = message.params?.action;
+      if (adapter === undefined || !['discover', 'probe', 'parse'].includes(action)) throw new Error('Unregistered source action');
+      return adapter[action](message.params.args, { signal: controller.signal, settings: message.params.settings ?? {} });
+    }).then(
+      (result) => send({ id: message.id, result }),
+      (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }),
+    ).finally(() => pending.delete(message.id));
+    continue;
+  }
   if (message.method === 'execute') {
     const controller = new AbortController();
     pending.set(message.id, controller);
@@ -83,6 +148,10 @@ for await (const line of createInterface({ input: process.stdin })) {
         workspaceRoot: message.params.workspaceRoot,
         approvedPaths: message.params.approvedPaths ?? [],
         imageIn: message.params.imageIn === true,
+        media: {
+          generate(input) { return callMedia(message.id, 'generate', input); },
+          media(input) { return callMedia(message.id, 'media', input); },
+        },
       });
     }).then(
       (result) => send({ id: message.id, result }),

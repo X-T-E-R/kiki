@@ -122,7 +122,7 @@ describe('server-v2 /api/debug RPC', () => {
       headers['content-type'] = 'application/json';
       init.body = JSON.stringify(arg);
     }
-    const credential = token ?? (server as RunningServer).authTokenService.getToken();
+    const credential = token ?? (server as RunningServer).localOwnerToken;
     headers['authorization'] = `Bearer ${credential}`;
     const res = await fetch(url, init);
     return { status: res.status, body: (await res.json()) as Envelope<T> };
@@ -776,7 +776,7 @@ describe('server-v2 /api/debug RPC', () => {
 
   it('rejects oversized body', async () => {
     const huge = 'x'.repeat(2 * 1024 * 1024);
-    const token = (server as RunningServer).authTokenService.getToken();
+    const token = (server as RunningServer).localOwnerToken;
     let rejected = false;
     let code: number | undefined;
     try {
@@ -1126,25 +1126,34 @@ describe('server-v2 /api/debug RPC auth', () => {
     expect(body.code).toBe(40101);
   });
 
-  it('accepts calls with the correct rpcToken', async () => {
+  it('rejects bare rpcToken as a local-owner credential', async () => {
     const res = await fetch(`${base}${rpc('core', ISessionIndex, 'listRecent')}`, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify({}),
     });
-    const body = (await res.json()) as Envelope<{ items: unknown[] }>;
-    expect(body.code).toBe(0);
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as Envelope<null>;
+    expect(body.code).toBe(40101);
   });
 
-  it('accepts the persistent token on /api/debug', async () => {
+  it('rejects the bare persistent token on /api/debug', async () => {
     const persistent = (server as RunningServer).authTokenService.getToken();
     const res = await fetch(`${base}${rpc('core', ISessionIndex, 'listRecent')}`, {
       method: 'POST',
       headers: { authorization: `Bearer ${persistent}`, 'content-type': 'application/json' },
       body: JSON.stringify({}),
     });
-    const body = (await res.json()) as Envelope<{ items: unknown[] }>;
-    expect(body.code).toBe(0);
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as Envelope<null>;
+    expect(body.code).toBe(40101);
+  });
+
+  it('accepts the separately provisioned local-owner capability', async () => {
+    const res = await fetch(`${base}${rpc('core', ISessionIndex, 'listRecent')}`, {
+      method: 'POST', headers: { authorization: `Bearer ${(server as RunningServer).localOwnerToken}`, 'content-type': 'application/json' }, body: '{}',
+    });
+    expect(res.status).toBe(200); expect(((await res.json()) as Envelope<{ items: unknown[] }>).code).toBe(0);
   });
 
   it('rejects a wrong token (40101)', async () => {
@@ -1193,7 +1202,7 @@ describe('server-v2 /api/debug RPC (dev-only, whitelist-free)', () => {
     arg?: unknown,
   ): Promise<{ status: number; body: Envelope<T> }> {
     const headers: Record<string, string> = {
-      authorization: `Bearer ${(server as RunningServer).authTokenService.getToken()}`,
+      authorization: `Bearer ${(server as RunningServer).localOwnerToken}`,
     };
     const init: { method: string; headers: Record<string, string>; body?: string } = {
       method,

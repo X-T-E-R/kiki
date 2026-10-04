@@ -40,6 +40,8 @@ export type ActivateSkillAttachment = z.infer<typeof activateSkillAttachmentSche
 export const activateSkillRequestSchema = z.object({
   /** Raw argument string appended after the slash command, e.g. `/review --fix` → `--fix`. */
   args: z.string().optional(),
+  /** Author's slash submission, kept separately from the expanded skill instructions. */
+  user_input: z.string().optional(),
   /**
    * Attachments carried into the skill turn's user message, in the same wire
    * shape as prompt content. They are resolved by the shared prompt media

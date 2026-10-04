@@ -1,0 +1,251 @@
+diff --git a/cli/src/connection.rs b/cli/src/connection.rs
+--- a/cli/src/connection.rs
++++ b/cli/src/connection.rs
+@@ -1,3 +1,4 @@
++// Modified by Kiki on 2026-10-03: kiki-no-replay-r1; see the accompanying NOTICE and patch.
+ use crate::validation::sanitize_session_component;
+ use serde::{Deserialize, Serialize};
+ use serde_json::{json, Value};
+@@ -1011,34 +1012,7 @@ fn connect(session: &str) -> Result<Connection, String> {
+ }
+ 
+ pub fn send_command(cmd: Value, session: &str) -> Result<Response, String> {
+-    // Retry logic for transient errors (EAGAIN/EWOULDBLOCK/connection issues)
+-    const MAX_RETRIES: u32 = 5;
+-    const RETRY_DELAY_MS: u64 = 200;
+-
+-    let mut last_error = String::new();
+-
+-    for attempt in 0..MAX_RETRIES {
+-        if attempt > 0 {
+-            thread::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64)));
+-        }
+-
+-        match send_command_once(&cmd, session) {
+-            Ok(response) => return Ok(response),
+-            Err(e) => {
+-                if is_transient_error(&e) {
+-                    last_error = e;
+-                    continue;
+-                }
+-                // Non-transient error, fail immediately
+-                return Err(e);
+-            }
+-        }
+-    }
+-
+-    Err(format!(
+-        "{} (after {} retries - daemon may be busy or unresponsive)",
+-        last_error, MAX_RETRIES
+-    ))
++    send_command_once(&cmd, session)
+ }
+ 
+ /// Check if an error is transient and worth retrying against the SAME daemon.
+@@ -1068,6 +1041,7 @@ fn is_transient_error(error: &str) -> bool {
+ /// (exited or never started), as opposed to a live-but-busy daemon. The
+ /// remedy is a respawn through ensure_daemon, not a retry.
+ pub fn daemon_unreachable(error: &str) -> bool {
++    if error.starts_with("outcome_unknown:") { return false; }
+     error.contains("Failed to connect")
+         || has_os_error(error, 2) // No such file or directory (socket gone)
+         || has_os_error(error, 61) // Connection refused (macOS)
+@@ -1114,15 +1088,15 @@ fn send_command_once(cmd: &Value, session: &str) -> Result<Response, String> {
+ 
+     stream
+         .write_all(json_str.as_bytes())
+-        .map_err(|e| format!("Failed to send: {}", e))?;
++        .map_err(|e| format!("outcome_unknown: Failed to send: {}", e))?;
+ 
+     let mut reader = BufReader::new(stream);
+     let mut response_line = String::new();
+     reader
+         .read_line(&mut response_line)
+-        .map_err(|e| format!("Failed to read: {}", e))?;
++        .map_err(|e| format!("outcome_unknown: Failed to read: {}", e))?;
+ 
+-    serde_json::from_str(&response_line).map_err(|e| format!("Invalid response: {}", e))
++    serde_json::from_str(&response_line).map_err(|e| format!("outcome_unknown: Invalid response: {}", e))
+ }
+ 
+ #[cfg(test)]
+@@ -1130,6 +1104,38 @@ mod tests {
+     use super::*;
+     use crate::test_utils::EnvGuard;
+ 
++    #[cfg(windows)]
++    #[test]
++    fn kiki_response_lost_after_execution_is_not_replayed() {
++        use std::net::TcpListener;
++        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
++        let _guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "AGENT_BROWSER_NAMESPACE"]);
++        let dir = tempfile::tempdir().unwrap();
++        _guard.set("AGENT_BROWSER_SOCKET_DIR", dir.path().to_str().unwrap());
++        _guard.remove("AGENT_BROWSER_NAMESPACE");
++        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++        listener.set_nonblocking(true).unwrap();
++        fs::write(get_port_path("no-replay-test"), listener.local_addr().unwrap().port().to_string()).unwrap();
++        let count = Arc::new(AtomicUsize::new(0));
++        let observed = count.clone();
++        let server = thread::spawn(move || {
++            let deadline = std::time::Instant::now() + Duration::from_millis(1800);
++            while std::time::Instant::now() < deadline {
++                if let Ok((stream, _)) = listener.accept() {
++                    let mut line = String::new();
++                    BufReader::new(stream).read_line(&mut line).unwrap();
++                    if !line.is_empty() { observed.fetch_add(1, Ordering::SeqCst); }
++                }
++                thread::sleep(Duration::from_millis(10));
++            }
++        });
++        let error = send_command(json!({"action":"click", "selector":"#fixture"}), "no-replay-test").err().expect("response must be lost");
++        assert!(error.starts_with("outcome_unknown:"));
++        assert!(!daemon_unreachable(&error));
++        server.join().unwrap();
++        assert_eq!(count.load(Ordering::SeqCst), 1);
++    }
++
+     #[test]
+     fn long_mouse_movement_gets_its_requested_time_budget() {
+         assert_eq!(
+diff --git a/cli/src/output.rs b/cli/src/output.rs
+--- a/cli/src/output.rs
++++ b/cli/src/output.rs
+@@ -1,3 +1,4 @@
++// Modified by Kiki on 2026-10-03: kiki-no-replay-r1 derivative version marker; see the accompanying NOTICE.
+ use std::sync::OnceLock;
+ 
+ use crate::color;
+@@ -4305,7 +4306,7 @@ fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
+ }
+ 
+ pub fn print_version() {
+-    println!("agent-browser {}", env!("CARGO_PKG_VERSION"));
++    println!("agent-browser {} kiki-no-replay-r1 kiki-stdio-r1", env!("CARGO_PKG_VERSION"));
+ }
+ 
+ #[cfg(test)]
+diff --git a/cli/Cargo.toml b/cli/Cargo.toml
+--- a/cli/Cargo.toml
++++ b/cli/Cargo.toml
+@@ -1,3 +1,4 @@
++# Modified by Kiki on 2026-10-03: enable the existing windows-sys PeekNamedPipe API for kiki-stdio-r1; dependency versions/lock stay unchanged.
+ [package]
+ name = "agent-browser"
+ version = "0.38.2"
+@@ -42,7 +43,7 @@ rust-embed = "8"
+ libc = "0.2"
+ 
+ [target.'cfg(windows)'.dependencies]
+-windows-sys = { version = "0.52", features = ["Win32_System_Threading", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_JobObjects", "Win32_System_StationsAndDesktops", "Win32_Graphics_Gdi"] }
++windows-sys = { version = "0.52", features = ["Win32_System_Threading", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_JobObjects", "Win32_System_StationsAndDesktops", "Win32_Graphics_Gdi", "Win32_System_Pipes"] }
+ 
+ [dev-dependencies]
+ tempfile = "3"
+diff --git a/cli/src/mcp.rs b/cli/src/mcp.rs
+--- a/cli/src/mcp.rs
++++ b/cli/src/mcp.rs
+@@ -1,3 +1,4 @@
++// Modified by Kiki on 2026-10-03: kiki-stdio-r1 Windows CLI-owned output capture and regression; see the accompanying NOTICE.
+ //! Stdio MCP server for exposing agent-browser to MCP clients.
+ //!
+ //! The server keeps stdout exclusively for newline-delimited JSON-RPC
+@@ -3916,13 +3917,23 @@ fn run_cli(args: &[String], stdin_body: Option<String>, timeout_ms: u64) -> Resu
+         .take()
+         .ok_or_else(|| "failed to open child stderr".to_string())?;
+ 
++    #[cfg(windows)]
++    let exited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
++    #[cfg(windows)]
++    let stdout_exited = exited.clone();
++    #[cfg(windows)]
++    let stderr_exited = exited.clone();
+     let stdout_thread = thread::spawn(move || {
+-        let mut buf = Vec::new();
+-        child_stdout.read_to_end(&mut buf).map(|_| buf)
++        #[cfg(windows)]
++        { read_cli_output(child_stdout, stdout_exited) }
++        #[cfg(not(windows))]
++        { let mut buf = Vec::new(); child_stdout.read_to_end(&mut buf).map(|_| buf) }
+     });
+     let stderr_thread = thread::spawn(move || {
+-        let mut buf = Vec::new();
+-        child_stderr.read_to_end(&mut buf).map(|_| buf)
++        #[cfg(windows)]
++        { read_cli_output(child_stderr, stderr_exited) }
++        #[cfg(not(windows))]
++        { let mut buf = Vec::new(); child_stderr.read_to_end(&mut buf).map(|_| buf) }
+     });
+ 
+     let started = Instant::now();
+@@ -3934,6 +3945,8 @@ fn run_cli(args: &[String], stdin_body: Option<String>, timeout_ms: u64) -> Resu
+                 if started.elapsed() >= timeout {
+                     let _ = child.kill();
+                     let _ = child.wait();
++                    #[cfg(windows)]
++                    exited.store(true, std::sync::atomic::Ordering::Release);
+                     let stdout = join_output(stdout_thread)?;
+                     let stderr = join_output(stderr_thread)?;
+                     return Ok(CliRun {
+@@ -3948,6 +3961,8 @@ fn run_cli(args: &[String], stdin_body: Option<String>, timeout_ms: u64) -> Resu
+         }
+     };
+ 
++    #[cfg(windows)]
++    exited.store(true, std::sync::atomic::Ordering::Release);
+     let stdout = join_output(stdout_thread)?;
+     let stderr = join_output(stderr_thread)?;
+ 
+@@ -4155,8 +4170,52 @@ fn write_json_line(stdout: &mut io::Stdout, value: &Value) -> io::Result<()> {
+     stdout.flush()
+ }
+ 
++#[cfg(windows)]
++fn read_cli_output(mut reader: impl Read + std::os::windows::io::AsRawHandle, exited: std::sync::Arc<std::sync::atomic::AtomicBool>) -> io::Result<Vec<u8>> {
++    use std::sync::atomic::Ordering;
++    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
++    let mut bytes = Vec::new();
++    let mut buffer = [0u8; 8192];
++    loop {
++        let mut available = 0u32;
++        let ok = unsafe { PeekNamedPipe(reader.as_raw_handle() as isize, std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut available, std::ptr::null_mut()) };
++        if ok == 0 {
++            let error = io::Error::last_os_error();
++            if matches!(error.raw_os_error(), Some(109) | Some(232)) { break; }
++            return Err(error);
++        }
++        if available > 0 {
++            let count = reader.read(&mut buffer[..(available as usize).min(8192)])?;
++            if count == 0 { break; }
++            if bytes.len() + count > 64 * 1024 * 1024 { return Err(io::Error::other("CLI output exceeds the 64 MiB capture limit; outcome is unknown")); }
++            bytes.extend_from_slice(&buffer[..count]);
++        } else if exited.load(Ordering::Acquire) {
++            break;
++        } else {
++            thread::sleep(Duration::from_millis(10));
++        }
++    }
++    Ok(bytes)
++}
++
+ #[cfg(test)]
+ mod tests {
++    #[cfg(windows)]
++    #[test]
++    fn kiki_cli_capture_finishes_when_owned_child_exits_with_inherited_writer() {
++        use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc};
++        let (reader, mut inherited_writer) = io::pipe().unwrap();
++        inherited_writer.write_all(b"complete CLI stdout and useful stderr").unwrap();
++        let exited = Arc::new(AtomicBool::new(false));
++        let flag = exited.clone();
++        let (tx, rx) = mpsc::channel();
++        let capture = thread::spawn(move || { tx.send(read_cli_output(reader, flag)).unwrap(); });
++        exited.store(true, Ordering::Release);
++        let result = rx.recv_timeout(Duration::from_millis(500));
++        drop(inherited_writer);
++        capture.join().unwrap();
++        assert_eq!(result.expect("CLI output capture waited for a background writer instead of owned child exit").unwrap(), b"complete CLI stdout and useful stderr");
++    }
+     #[test]
+     fn recording_timeline_options_use_cli_parser() {
+         for operation in ["start", "restart"] {

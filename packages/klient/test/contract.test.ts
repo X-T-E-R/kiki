@@ -9,10 +9,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { pluginManifestSchema } from '../src/contract/global/plugins.js';
+import { oAuthFlowSnapshotSchema, oAuthMethodStatusSchema } from '../src/contract/global/auth.js';
 import { mcpServerAuthFlowHandleSchema } from '../src/contract/global/mcpManagement.js';
 import { createSessionOptionsSchema } from '../src/contract/session/lifecycle.js';
 import { promptPayloadSchema } from '../src/contract/agent/schemas.js';
 import { agentEvents } from '../src/contract/agent/events.js';
+import { agentPromptContract } from '../src/contract/agent/services.js';
 import { sessionCommandContract } from '../src/contract/session/commands.js';
 import {
   providerConfigSchema,
@@ -121,6 +123,14 @@ describe('prompt contract validation', () => {
   it('accepts a non-empty caller-chosen promptId', () => {
     expect(promptPayloadSchema.safeParse({ input: [], promptId: 'submission-1' }).success).toBe(true);
   });
+
+  it('allows recover mode only for retry and keeps keep_original mode-less', () => {
+    const recover = agentPromptContract.recoverModelSwitch;
+    expect(recover.input.parse(['switch-1', 'retry', 'fresh'])).toEqual(['switch-1', 'retry', 'fresh']);
+    expect(recover.input.parse(['switch-1', 'retry'])).toEqual(['switch-1', 'retry']);
+    expect(recover.input.parse(['switch-1', 'keep_original'])).toEqual(['switch-1', 'keep_original']);
+    expect(recover.input.safeParse(['switch-1', 'keep_original', 'fresh']).success).toBe(false);
+  });
 });
 
 describe('prompt lifecycle events', () => {
@@ -205,6 +215,18 @@ describe('session prompt command contract', () => {
     ).toMatchObject({ append_timing: 'tasks_done', revision: 2 });
     expect(timing.input.safeParse({ target: 'p1', body: {} }).success).toBe(false);
   });
+
+  it('passes after_model_switch through the session submit command contract', () => {
+    const submit = sessionCommandContract.submit;
+    expect(submit.input.parse({
+      body: { content: [{ type: 'text', text: 'continue' }], after_model_switch: 'switch-1' },
+    })).toEqual({
+      body: { content: [{ type: 'text', text: 'continue' }], after_model_switch: 'switch-1' },
+    });
+    expect(submit.input.safeParse({
+      body: { content: [{ type: 'text', text: 'continue' }], after_model_switch: '' },
+    }).success).toBe(false);
+  });
 });
 
 describe('request identity contract validation', () => {
@@ -277,5 +299,23 @@ describe('request identity contract validation', () => {
         request_identity: wire,
       }),
     ).toMatchObject({ request_identity: wire });
+  });
+});
+
+
+describe('managed account sign-in contract', () => {
+  const method = { id: 'grok-build', label: 'Grok Build', provider: 'managed:grok-build', protocol: 'openai', signed_in: true, account: { state: 'unknown' }, quota: { state: 'unknown' } };
+
+  it('accepts legacy account snapshots and explicit refresh/reconnect state without credentials', () => {
+    expect(oAuthMethodStatusSchema.parse(method).connection_state).toBeUndefined();
+    expect(oAuthMethodStatusSchema.parse({ ...method, connection_state: 'refresh_required', access_token: 'private-example' })).toMatchObject({ connection_state: 'refresh_required' });
+    expect(JSON.stringify(oAuthMethodStatusSchema.parse({ ...method, connection_state: 'ready', refresh_token: 'private-example' }))).not.toContain('private-example');
+    expect(oAuthMethodStatusSchema.safeParse({ ...method, connection_state: 'refreshing-forever' }).success).toBe(false);
+  });
+
+  it('accepts ordinary login failure independently from denial and rejects unrecognized status', () => {
+    const snapshot = { flow_id: 'flow-example', provider: 'managed:grok-build', status: 'failed', verification_uri: 'https://auth.example.test/device', verification_uri_complete: 'https://auth.example.test/device', user_code: 'CODE-1234', expires_in: 300, expires_at: '2026-10-04T00:05:00.000Z', interval: 5, error_message: 'Model catalog unavailable.' };
+    expect(oAuthFlowSnapshotSchema.parse(snapshot).status).toBe('failed');
+    expect(oAuthFlowSnapshotSchema.safeParse({ ...snapshot, status: 'unrecognized' }).success).toBe(false);
   });
 });

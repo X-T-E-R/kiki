@@ -14,6 +14,7 @@ export interface IEventDispatcher {
   readonly hooks: Hooks<EventDispatcherHooks>;
 
   dispatch(event: Event2<any>): Promise<void>;
+  dispatchDurably(event: Event2<any>): Promise<void>;
   history<S>(key: ReplayableStateKey<S>): readonly PatchEntry[];
   checkpointDepth(key: ReplayableStateKey<any>): number;
   undo<S>(key: ReplayableStateKey<S>, patchId: number): void;

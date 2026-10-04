@@ -1,11 +1,11 @@
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
-import { applyProfileFileSubagentCeiling } from '#/session/dispatch/profileFile';
 
 export interface BoundPromptBase {
   readonly text: string;
   readonly environment: import('#/app/agentProfileCatalog/agentProfileCatalog').EnvironmentDisclosureSnapshot;
   readonly delegationSnippet?: string;
   readonly promptVariablesRevision?: string;
+  readonly promptDiagnostics?: import('@kiki/protocol').AgentPromptDiagnostics;
 }
 
 export type BoundProfile = Omit<AgentProfile, 'systemPrompt' | 'renderSystemPrompt' | 'promptPrefix'> & {
@@ -16,11 +16,11 @@ export type BoundProfile = Omit<AgentProfile, 'systemPrompt' | 'renderSystemProm
 export function applyFileCallerCeiling(profile: AgentProfile): AgentProfile {
   const ceiling = (profile as AgentProfile & Pick<BoundProfile, 'fileSources'>).fileSources?.callerCeiling;
   if (ceiling === undefined) return profile;
-  return applyProfileFileSubagentCeiling({
+  return {
     ...profile,
     toolAllowPolicies: [...(profile.toolAllowPolicies ?? []), ...(ceiling.toolAllowPolicies ?? []), ...(ceiling.activeToolNames === undefined ? [] : [ceiling.activeToolNames])],
     disallowedTools: [...new Set([...(profile.disallowedTools ?? []), ...(ceiling.disallowedTools ?? [])])],
-  }, ceiling);
+  };
 }
 
 export function freezeBoundProfile(profile: AgentProfile, promptBase?: BoundPromptBase): BoundProfile {

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { Event2 } from '#/app/event/event2';
 import { defineState } from '#/state/state';
+import { AgentModelSwitch } from '#/agent/modelSwitch/modelSwitchEvent';
 
 export interface TokenAnchor {
   readonly length: number;
@@ -79,6 +80,11 @@ export const tokenCountingKey = defineState(
       s.tokens = tokens;
     }
     ctx.emit(new AgentStatusUpdated({ contextTokens: s.tokens }));
+  })
+  .on(AgentModelSwitch, (s, e) => {
+    if (e.context === undefined || e.contextTokens === undefined) return;
+    s.anchors = [{ length: e.context.length, tokens: e.contextTokens, measured: false }];
+    s.tokens = e.contextTokens;
   });
 
 function normalizeAnchorLength(length: number): number {

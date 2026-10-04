@@ -9,6 +9,7 @@
  */
 
 import { RequestIdentityPolicySchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+import { OAuthRefSchema as oAuthRefSchema } from '@kiki/agent-core-v2/kosong/provider/oauthRef';
 import { z } from 'zod';
 
 import { maybe, noResult } from '../helpers.js';
@@ -20,12 +21,6 @@ const protocolSchema = z.enum([
   'openai_responses',
   'google-genai',
 ]);
-
-const oAuthRefSchema = z.object({
-  storage: z.enum(['file', 'keyring']),
-  key: z.string().min(1),
-  oauthHost: z.string().min(1).optional(),
-});
 
 const modelBaseSchema = z.object({
   providerId: z.string().optional(),

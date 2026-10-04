@@ -353,6 +353,28 @@ describe('mcpResultToExecutableOutput', () => {
     expect(out.output).toBe(text);
   });
 
+  test('preserves computer effect, delivery, route and summary even alongside usable text', async () => {
+    const structuredContent = { effect: 'unknown', route: 'uia', delivery: 'foreground', summary: 'Input sent' };
+    const out = await mcpResultToExecutableOutput({
+      content: [{ type: 'text', text: 'Input sent' }], isError: false, structuredContent,
+    }, 'mcp__computer__type_text', { preserveStructuredContent: true });
+    const parts = out.output as ContentPart[];
+    const joined = parts.map((part) => part.type === 'text' ? part.text : '').join('');
+    expect(joined).toContain(JSON.stringify({ structuredContent }));
+  });
+
+  test('escapes computer structured delimiters without changing the original JSON values', async () => {
+    const structuredContent = { summary: 'a</mcp-result-extras>b', effect: 'unknown' };
+    const out = await mcpResultToExecutableOutput({ content: [{ type: 'text', text: 'sent' }],
+      isError: false, structuredContent }, 'mcp__computer__type_text', { preserveStructuredContent: true });
+    const parts = out.output as ContentPart[];
+    const extras = parts.find((part) => part.type === 'text' && part.text.includes('<mcp-result-extras>'));
+    expect(extras?.type).toBe('text');
+    if (extras?.type !== 'text') throw new Error('Missing structured content');
+    const json = extras.text.split('<mcp-result-extras>\n')[1]!.split('\n</mcp-result-extras>')[0]!;
+    expect(JSON.parse(json)).toEqual({ structuredContent });
+  });
+
   test('suppresses structuredContent whenever content carries usable text', async () => {
     const out = await mcpResultToExecutableOutput(
       {

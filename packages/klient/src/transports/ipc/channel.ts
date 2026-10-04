@@ -8,6 +8,7 @@
  */
 
 import { createConnection, type Socket } from 'node:net';
+import { StringDecoder } from 'node:string_decoder';
 
 import type {
   CallOptions,
@@ -55,6 +56,7 @@ interface PendingStream {
 export class IpcChannel implements KlientChannel {
   private readonly socket: Socket;
   private readonly decoder = new NdjsonDecoder();
+  private readonly textDecoder = new StringDecoder('utf8');
   private readonly callTimeoutMs: number;
   private readonly pending = new Map<string, PendingCall>();
   private readonly streams = new Map<string, PendingStream>();
@@ -86,7 +88,7 @@ export class IpcChannel implements KlientChannel {
     this.ready.catch(() => {});
 
     this.socket.on('data', (chunk) => {
-      for (const frame of this.decoder.push(chunk.toString('utf8'))) {
+      for (const frame of this.decoder.push(this.textDecoder.write(chunk))) {
         this.onFrame(frame);
       }
     });

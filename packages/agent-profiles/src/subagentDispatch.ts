@@ -17,8 +17,9 @@ import {
 } from './ports';
 import type { AgentProfileCatalogSnapshot } from './scopedAgentProfile';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
+import type { SubagentPermissions } from './subagentPermissions';
 
-export interface SubagentDispatchCaller {
+export interface SubagentDispatchCaller extends SubagentPermissions {
   readonly profileDefinitionId?: string;
   readonly profileName?: string;
   readonly subagentPolicy?: AgentSubagentPolicy;
@@ -33,9 +34,9 @@ export type SubagentSelectionOrigin = 'explicit' | 'recommended-default' | 'conf
 export type SubagentRecommendationStatus = 'preferred' | 'allowed_nonpreferred' | 'blocked' | 'unconfigured';
 export type SubagentRecommendationFallback = 'no-recommendations' | 'recommended-unavailable';
 
-export interface SubagentDispatchDecision {
-  readonly version: 1;
-  readonly policyMode: PersistedAgentSubagentPolicy;
+export interface SubagentDispatchDecision extends SubagentPermissions {
+  readonly version: 1 | 2;
+  readonly policyMode: PersistedAgentSubagentPolicy | 'fixed';
   readonly policySource: 'profile' | 'default' | 'legacy';
   readonly declaration: SubagentDeclaration;
   readonly selectionKind: SubagentSelectionKind;
@@ -48,7 +49,7 @@ export interface SubagentDispatchDecision {
 }
 
 export interface CurrentSubagentDispatchDecision extends Omit<SubagentDispatchDecision, 'policyMode' | 'policySource'> {
-  readonly policyMode: AgentSubagentPolicy;
+  readonly policyMode: 'fixed';
   readonly policySource: 'profile' | 'default';
 }
 
@@ -107,35 +108,32 @@ export function evaluateSubagentDispatchDecision(
   } = {},
 ): CurrentSubagentDispatchDecision {
   const configured = caller.profileName === undefined ? catalog.getDefault() : caller;
-  const declaration = configured.subagentDeclaration ?? (
-    configured.subagents === undefined
-      ? { kind: 'all' as const }
-      : { kind: 'set' as const, names: configured.subagents }
-  );
-  const hostStrict = caller.defaultPolicy === 'strict';
-  const policyMode: AgentSubagentPolicy = hostStrict ? 'strict' : configured.subagentPolicy
-    ?? caller.defaultPolicy
-    ?? 'advisory';
-  const recommended = declaration.kind === 'set' && declaration.names.includes(profileName);
-  const constrained = declaration.kind === 'set';
-  const allowed = policyMode === 'advisory' || !constrained || recommended;
-  const recommendationStatus: SubagentRecommendationStatus = !constrained
-    ? 'unconfigured'
-    : recommended
-      ? 'preferred'
-      : allowed
-        ? 'allowed_nonpreferred'
-        : 'blocked';
+  const declaration = configured.allowedSubagents === undefined
+    ? { kind: 'all' as const }
+    : { kind: 'set' as const, names: configured.allowedSubagents };
+  const fileSelection = options.selectionKind === 'profile_file';
+  const allowed = configured.canSpawnSubagents !== false && (fileSelection || (
+    !configured.denySubagents?.some((name) => name === '*' || name === profileName)
+    && (declaration.kind === 'all' || declaration.names.includes(profileName))));
+  const preferred = fileSelection ? undefined : configured.preferredSubagents;
+  const recommended = preferred?.includes(profileName) === true;
+  const recommendationStatus: SubagentRecommendationStatus = !allowed ? 'blocked'
+    : recommended ? 'preferred'
+      : preferred === undefined || preferred.length === 0 ? 'unconfigured' : 'allowed_nonpreferred';
   return {
-    version: 1,
-    policyMode,
-    policySource: hostStrict || configured.subagentPolicy === undefined ? 'default' : 'profile',
+    version: 2,
+    policyMode: 'fixed',
+    policySource: caller.profileName === undefined ? 'default' : 'profile',
+    canSpawnSubagents: configured.canSpawnSubagents,
+    allowedSubagents: configured.allowedSubagents,
+    preferredSubagents: preferred,
+    denySubagents: configured.denySubagents,
     declaration,
     selectionKind: options.selectionKind ?? 'profile',
     selectionOrigin: options.selectionOrigin ?? 'explicit',
     requestedProfile: profileName,
     recommendationStatus,
-    advisoryDeviation: policyMode === 'advisory' && recommendationStatus === 'allowed_nonpreferred',
+    advisoryDeviation: recommendationStatus === 'allowed_nonpreferred',
     allowed,
     fallback: options.fallback,
   };

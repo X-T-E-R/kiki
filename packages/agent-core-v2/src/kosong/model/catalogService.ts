@@ -1,4 +1,4 @@
-import { assertProviderCredential, assertProviderHeaders, openaiCodexAccountId, parseKimiCodeCustomHeaders, sanitizeProviderError } from '@kiki/oauth';
+import { assertProviderCredential, assertProviderHeaders, parseKimiCodeCustomHeaders, sanitizeProviderError } from '@kiki/oauth';
 
 import { IRequestAdmission, type RequestAdmissionPort } from './requestAdmission';
 import { Disposable } from '#/_base/di/lifecycle';
@@ -63,12 +63,13 @@ import {
   nonEmpty,
   resolveConfiguredModelBaseUrl,
   resolveModelAuthMaterial,
+  resolveModelProviderId,
 } from './modelAuth';
-import { IModelOAuthTokens } from './modelOAuth';
+import { IModelOAuthTokens, oauthRequestAuth } from './modelOAuth';
 import type { ResolvedModelAuthMaterial } from './model.types';
 import type { ModelRequester } from './modelRequester';
 import { ModelRequesterImpl } from './modelRequesterImpl';
-import { isApiDefault, resolveGenerationParameters } from './parameters';
+import { isApiDefault, resolveGenerationParameters, resolveModelUsage } from './parameters';
 import { drivesThinkingThroughTraits } from './thinking';
 
 type MutableProtocolProviderOptions = {
@@ -104,6 +105,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     super();
     this._register(this.models.onDidChangeModels(() => this.notifyConfigChanged()));
     this._register(this.providers.onDidChangeProviders(() => this.notifyConfigChanged()));
+    this._register(this.providers.onDidChangeDefaultProvider(() => { this.notifyConfigChanged(); }));
   }
 
   notifyConfigChanged(): void {
@@ -181,7 +183,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }], toolCalls: [] }],
         },
         undefined,
-        { maxCompletionTokens: 32 },
+        { maxCompletionTokens: 32, attribution: { logicalRequestId: crypto.randomUUID(), purpose: 'connectivity_probe', waitBudget: { waitedMs: 0 } } },
       )) {
         if (event.type === 'part' && event.part.type === 'text') {
           text += event.part.text;
@@ -455,6 +457,11 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         requestParams: model.requestParams,
         serviceTier: isApiDefault(generation.values.serviceTier) ? undefined : generation.values.serviceTier,
         generationParameters: generation.values,
+        usageParameters: {
+          main: resolveModelUsage(generation, configuredModel, 'main'),
+          sub: resolveModelUsage(generation, configuredModel, 'sub'),
+          independent: resolveModelUsage(generation, configuredModel, 'independent'),
+        },
         preferredThinkingEffort: generation.sources.thinkingEffort?.detail === '[models.*] legacy generation fields'
           ? undefined : generation.values.thinkingEffort,
         alwaysThinking: declared.has('always_thinking'),
@@ -477,8 +484,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     readonly providerName: string;
     readonly resolvedBaseUrl: string | undefined;
   } {
-    const providerId =
-      model.providerId ?? model.provider ?? this.providers.getDefaultProvider();
+    const providerId = resolveModelProviderId(model, this.providers.getDefaultProvider());
     if (providerId !== undefined) {
       trace.record('provider', {
         kind: 'config',
@@ -596,8 +602,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           const apiKey = await tokens.getAccessToken(providerKey, oauthRef, {
             force: options?.force === true,
           });
-          const accountId = providerKey === 'managed:openai-codex' ? openaiCodexAccountId(apiKey) : undefined;
-          return { apiKey, headers: accountId === undefined ? undefined : { 'chatgpt-account-id': accountId } };
+          return oauthRequestAuth(providerKey, oauthRef, apiKey);
         },
       };
     }

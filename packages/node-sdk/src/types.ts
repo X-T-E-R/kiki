@@ -75,6 +75,7 @@ export type {
   McpStartupMetrics,
   ProcessBackgroundTaskInfo,
   QuestionBackgroundTaskInfo,
+  MediaBackgroundTaskInfo,
   ResumedAgentState,
   ShellEnvironment,
   SkillSummary,

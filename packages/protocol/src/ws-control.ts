@@ -4,6 +4,7 @@
  *   Ack:     { type: 'ack', id, code, msg, payload }
  */
 import { z } from 'zod';
+import { TRANSCRIPT_COVERAGE_VERSION, transcriptSubscribeV2PayloadSchema } from '@kiki/transcript';
 
 import { eventSchema } from './events';
 import { isoDateTimeSchema } from './time';
@@ -172,6 +173,17 @@ export const subscribeAckPayloadSchema = z.object({
 });
 
 export const subscribeAckMessageSchema = wsAckEnvelopeSchema(subscribeAckPayloadSchema);
+
+export const subscribeV2PayloadSchema = transcriptSubscribeV2PayloadSchema;
+export type SubscribeV2Payload = z.infer<typeof subscribeV2PayloadSchema>;
+export const subscribeV2MessageSchema = z.object({ type: z.literal('subscribe_v2'), id: z.string(), payload: subscribeV2PayloadSchema });
+export type SubscribeV2Message = z.infer<typeof subscribeV2MessageSchema>;
+export const subscribeV2AckMessageSchema = wsAckEnvelopeSchema(subscribeAckPayloadSchema.extend({ transcript_coverage_version: z.literal(TRANSCRIPT_COVERAGE_VERSION).optional() }));
+
+export const unsubscribeV2PayloadSchema = z.object({ session_id: z.string().min(1), agent_ids: z.array(z.string().min(1)).min(1).optional() });
+export const unsubscribeV2MessageSchema = z.object({ type: z.literal('unsubscribe_v2'), id: z.string(), payload: unsubscribeV2PayloadSchema });
+export type UnsubscribeV2Message = z.infer<typeof unsubscribeV2MessageSchema>;
+export const unsubscribeV2AckMessageSchema = wsAckEnvelopeSchema(subscribeAckPayloadSchema);
 
 export const unsubscribePayloadSchema = z.object({
   session_ids: z.array(z.string()),
@@ -380,9 +392,12 @@ export const pongMessageSchema = z.object({
 
 export type PongMessage = z.infer<typeof pongMessageSchema>;
 
+export const resyncRequiredReasonSchema = z.enum(['buffer_overflow', 'session_recreated', 'epoch_changed', 'history_rewritten', 'journal_gap']);
+export type ResyncRequiredReason = z.infer<typeof resyncRequiredReasonSchema>;
+
 export const resyncRequiredPayloadSchema = z.object({
   session_id: z.string(),
-  reason: z.enum(['buffer_overflow', 'session_recreated', 'epoch_changed', 'history_rewritten', 'journal_gap']),
+  reason: resyncRequiredReasonSchema,
   current_seq: z.number().int().nonnegative(),
   /** Current journal epoch — the client should adopt it after resyncing. */
   epoch: z.string().min(1).optional(),
@@ -446,7 +461,9 @@ export type TerminalExitMessage = z.infer<typeof terminalExitMessageSchema>;
 export const clientControlMessageSchema = z.discriminatedUnion('type', [
   clientHelloMessageSchema,
   subscribeMessageSchema,
+  subscribeV2MessageSchema,
   unsubscribeMessageSchema,
+  unsubscribeV2MessageSchema,
   watchFsAddMessageSchema,
   watchFsRemoveMessageSchema,
   abortMessageSchema,
@@ -506,6 +523,16 @@ export const clientControlOperations = [
     messageSchema: unsubscribeMessageSchema,
     ackSchema: unsubscribeAckMessageSchema,
     description: 'Remove one or more session event stream subscriptions.',
+  },
+  {
+    type: 'subscribe_v2', direction: 'client_to_server', kind: 'control',
+    messageSchema: subscribeV2MessageSchema, ackSchema: subscribeV2AckMessageSchema,
+    description: 'Subscribe agent transcript streams with independent transcript cursors.',
+  },
+  {
+    type: 'unsubscribe_v2', direction: 'client_to_server', kind: 'control',
+    messageSchema: unsubscribeV2MessageSchema, ackSchema: unsubscribeV2AckMessageSchema,
+    description: 'Detach selected agent transcript streams without changing session event subscriptions.',
   },
   {
     type: 'watch_fs_add',

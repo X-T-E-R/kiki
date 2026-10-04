@@ -49,7 +49,7 @@ export const pluginPanelDocumentSchema = z.object({ html: z.string(), sandbox: z
 export const pluginPanelBridgeRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('session.summary'), session_id: z.string().min(1) }),
   z.object({ method: z.literal('session.sendMessage'), session_id: z.string().min(1), text: z.string().min(1).max(16_384) }),
-  z.object({ method: z.literal('plugin.call'), session_id: z.string().min(1), action: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/), args: z.unknown() }),
+  z.object({ method: z.literal('plugin.call'), session_id: z.string().min(1).optional(), action: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/), args: z.unknown() }),
 ]);
 export const pluginPanelBridgeResponseSchema = z.object({ result: z.unknown() });
 

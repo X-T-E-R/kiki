@@ -29,6 +29,32 @@ export interface ToolDelivery {
   readonly message: ToolDeliveryMessage;
 }
 
+export interface InstructionFile {
+  readonly path: string;
+  readonly version: string;
+  readonly scope: string;
+  readonly runtimeId: string;
+}
+
+export interface FileReadDisclosure extends ToolReadRange {
+  readonly file: InstructionFile;
+}
+
+export interface ToolReadRange {
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly totalLines?: number;
+  readonly truncated: boolean;
+}
+
+export interface MemoryWriteReceipt {
+  readonly action: 'create' | 'update' | 'supersede' | 'archive';
+  readonly id: string;
+  readonly revision: string;
+  readonly status: string;
+  readonly operationId: string;
+}
+
 export interface ExecutableToolSuccessResult {
   readonly output: ExecutableToolOutput;
   readonly isError?: false | undefined;
@@ -38,6 +64,9 @@ export interface ExecutableToolSuccessResult {
   readonly delivery?: ToolDelivery | undefined;
   readonly spill?: ToolResultSpill;
   readonly spillExempt?: true;
+  readonly readRange?: ToolReadRange;
+  readonly fileRead?: FileReadDisclosure;
+  readonly memoryReceipt?: MemoryWriteReceipt;
 }
 
 export interface ExecutableToolErrorResult {
@@ -49,6 +78,9 @@ export interface ExecutableToolErrorResult {
   readonly delivery?: ToolDelivery | undefined;
   readonly spill?: ToolResultSpill;
   readonly spillExempt?: true;
+  readonly readRange?: ToolReadRange;
+  readonly fileRead?: FileReadDisclosure;
+  readonly memoryReceipt?: MemoryWriteReceipt;
 }
 
 export type ExecutableToolResult = ExecutableToolSuccessResult | ExecutableToolErrorResult;

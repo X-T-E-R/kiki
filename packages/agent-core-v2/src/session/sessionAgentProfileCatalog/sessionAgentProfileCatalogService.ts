@@ -159,6 +159,22 @@ export class SessionAgentProfileCatalogService
     return this.snapshot().diagnostics;
   }
 
+  sourceRejection(profile: AgentProfile): AgentProfileDiagnostic | undefined {
+    for (const { contribution } of this.relevantEntries()) {
+      const diagnostic = contribution.diagnostics?.find((item) =>
+        item.code === 'agent_executor.source_not_allowed' &&
+        ((item.path !== undefined && item.path === profile.sourcePath) ||
+          (item.path === undefined && item.source === 'project' && profile.fileDefinition?.source === 'project')));
+      if (diagnostic !== undefined) return diagnostic;
+      const skipped = contribution.skipped?.find((item) =>
+        item.code === 'agent_executor.source_not_allowed' && item.path === profile.sourcePath);
+      if (skipped !== undefined) return {
+        code: skipped.code!, severity: 'error', message: skipped.reason, path: skipped.path,
+      };
+    }
+    return undefined;
+  }
+
   snapshot(): AgentProfileCatalogSnapshot {
     const snapshot = this.snapshotValue;
     if (snapshot === undefined) throw new BugIndicatingError('Agent profile catalog snapshot is unavailable');

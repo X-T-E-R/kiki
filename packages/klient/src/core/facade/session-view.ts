@@ -1,5 +1,7 @@
 import type { SessionSnapshotResponse } from '@kiki/protocol';
 import type { z } from 'zod';
+import { transcriptDetailListQuerySchema, transcriptDetailListResponseSchema, type TranscriptDetailListResponse } from '@kiki/transcript';
+import type { SessionViewTranscriptEntitiesInput } from '../../contract/session/view.js';
 import type {
   TranscriptCursor,
   TranscriptGradeSpec,
@@ -13,6 +15,9 @@ import {
   sessionViewSubscribeInputSchema,
   sessionViewTranscriptCatchUpInputSchema,
   sessionViewTranscriptCatchUpOutputSchema,
+  sessionViewTranscriptContentInputSchema,
+  sessionViewTranscriptContentOutputSchema,
+  type SessionViewTranscriptContentInput,
   sessionViewTranscriptDetailInputSchema,
   sessionViewTranscriptDetailOutputSchema,
   sessionViewTranscriptPageInputSchema,
@@ -45,6 +50,8 @@ export interface SessionViewTranscriptFacade {
    * not serve the detail route.
    */
   detail?(input: SessionViewTranscriptDetailInput, options?: CallOptions): Promise<SessionViewTranscriptDetail>;
+  content?(input: SessionViewTranscriptContentInput, options?: CallOptions): Promise<import('@kiki/transcript').ContentSegment>;
+  entities?(input: SessionViewTranscriptEntitiesInput, options?: CallOptions): Promise<TranscriptDetailListResponse>;
 }
 
 export interface SessionViewFacade {
@@ -105,6 +112,20 @@ export function createSessionViewFacade(
           ? parse('output', 'session.view.transcript.catchUp', sessionViewTranscriptCatchUpOutputSchema, output)
           : (output as TranscriptOpsCatchupResponse);
       },
+      ...(channel?.transcriptEntities === undefined ? {} : {
+        async entities(input: SessionViewTranscriptEntitiesInput, options?: CallOptions) {
+          const query = parse('input', 'session.view.transcript.entities', transcriptDetailListQuerySchema, { agent_id: input.agentId, kind: input.kind, cursor: input.cursor, limit: input.limit });
+          const output = await requireChannel().transcriptEntities!(sessionId, { agentId: query.agent_id, kind: query.kind, cursor: query.cursor, limit: query.limit }, options);
+          return parse('output', 'session.view.transcript.entities', transcriptDetailListResponseSchema, output);
+        },
+      }),
+      ...(channel?.transcriptContent === undefined ? {} : {
+        async content(input: SessionViewTranscriptContentInput, options?: CallOptions) {
+          const wireInput = parse('input', 'session.view.transcript.content', sessionViewTranscriptContentInputSchema, input);
+          const output = await requireChannel().transcriptContent!(sessionId, wireInput, options);
+          return parse('output', 'session.view.transcript.content', sessionViewTranscriptContentOutputSchema, output);
+        },
+      }),
       ...(channel?.transcriptDetail === undefined ? {} : {
         async detail(input: SessionViewTranscriptDetailInput, options?: CallOptions) {
           const wireInput = validate
@@ -147,5 +168,6 @@ export type {
   SessionViewTranscriptCatchUpInput,
   SessionViewTranscriptDetail,
   SessionViewTranscriptDetailInput,
+  SessionViewTranscriptEntitiesInput,
   SessionViewTranscriptPageInput,
 };

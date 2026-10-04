@@ -520,6 +520,9 @@ export interface GlobalMcpServerTestResult {
 
 export interface InstallPluginPayload {
   readonly source: string;
+  readonly sha256?: string;
+  readonly fingerprint?: string;
+  readonly consent?: boolean;
 }
 
 export interface SetPluginEnabledPayload {

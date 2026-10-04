@@ -18,6 +18,7 @@ import {
   workspacePersistenceScope,
 } from '@kiki/agent-core-v2';
 import { ConfigUpdate } from '@kiki/agent-core-v2/agent/profile/profileOps';
+import { LlmRequest } from '@kiki/agent-core-v2/agent/llmRequester/llmRequestOps';
 import { agentCapabilitiesResponseSchema, type AgentCapabilitiesResponse } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type RunningServer, startServer } from '../src/start';
@@ -320,6 +321,30 @@ describe('disposed agent capability snapshots', () => {
     const refreshed = await readCapabilities(sessionId, child.id);
     expect(refreshed.profile).toMatchObject({ model: 'stub', thinking_effort: 'low' });
     expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays actual request evidence for a disposed agent and keeps legacy anchor evidence unknown', async () => {
+    await writeStubConfig(home);
+    await start();
+    const sessionId = await createSession();
+    const session = server!.core.accessor.get(ISessionManager).get(sessionId)!;
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const child = await lifecycle.create({ agentId: 'agent-request-evidence', delegator: { kind: 'agent', agentId: 'main' }, binding: { profile: 'explore', model: 'stub' } });
+    const scope = agentScopeOf(sessionScopeOf(workspacePersistenceScope('sessions', session.accessor.get(ISessionContext).workspaceId), sessionId), child.id);
+    await lifecycle.remove(child.id);
+    const log = server!.core.accessor.get(IAppendLogStore);
+    const request = { kind: 'loop' as const, provider: 'stub', model: 'stub', modelAlias: 'stub', toolSelect: false, systemPromptHash: 'actual-anchor-hash', toolsHash: 'actual-tools-hash', messageCount: 1, turnStep: '0:1' };
+    log.append(scope, AGENT_WIRE_RECORD_KEY, new LlmRequest({ ...request, systemPrompt: 'PRIVATE SYSTEM BODY', anchorApplied: true, anchorSteps: 2, anchorScope: 'turn', cognitionRevision: 7, bindingRevision: 'request-binding' }).serialize());
+    await log.flush(scope, AGENT_WIRE_RECORD_KEY);
+    const actual = await readCapabilities(sessionId, child.id);
+    expect(actual.prompt?.request).toMatchObject({ system_prompt_hash: 'actual-anchor-hash', tools_hash: 'actual-tools-hash', anchor_applied: true, anchor_steps: 2, anchor_scope: 'turn', cognition_revision: 7, binding_revision: 'request-binding' });
+    expect(JSON.stringify(actual.prompt)).not.toContain('PRIVATE SYSTEM BODY');
+    log.append(scope, AGENT_WIRE_RECORD_KEY, new LlmRequest({ ...request, systemPromptHash: 'legacy-hash' }).serialize());
+    await log.flush(scope, AGENT_WIRE_RECORD_KEY);
+    const legacy = await readCapabilities(sessionId, child.id);
+    expect(legacy.prompt?.request?.system_prompt_hash).toBe('legacy-hash');
+    expect(legacy.prompt?.request?.anchor_applied).toBeUndefined();
+    expect(legacy.prompt?.request?.anchor_scope).toBeUndefined();
   });
 
   async function start(): Promise<void> {

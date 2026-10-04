@@ -1,4 +1,5 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import type { InteractionCancellation } from '#/session/interaction/interaction';
 
 export interface QuestionOption {
   readonly label: string;
@@ -24,7 +25,7 @@ export interface QuestionResponse {
   readonly method?: QuestionAnswerMethod;
 }
 
-export type QuestionResult = null | QuestionAnswers | QuestionResponse;
+export type QuestionResult = null | QuestionAnswers | QuestionResponse | InteractionCancellation;
 
 export interface QuestionRequest {
   readonly id?: string;
@@ -38,7 +39,7 @@ export interface ISessionQuestionService {
 
   request(
     req: QuestionRequest,
-    options?: { signal?: AbortSignal; agentId?: string; detached?: boolean },
+    options?: { signal?: AbortSignal; agentId?: string; detached?: boolean; onAccepted?: () => void },
   ): Promise<QuestionResult>;
   enqueue(req: QuestionRequest): QuestionRequest & { readonly id: string };
   answer(id: string, result: QuestionResult): void;
