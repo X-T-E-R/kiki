@@ -1,5 +1,11 @@
 # @moonshot-ai/kimi-code
 
+## 0.3.1
+
+### Patch Changes
+
+- [`c666d67`](https://github.com/X-T-E-R/kiki/commit/c666d67d5da4a16fb8727de09c394360149f3057) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Build the Linux terminal dependency before packaging release downloads.
+
 ## 0.3.0
 
 ### Minor Changes
