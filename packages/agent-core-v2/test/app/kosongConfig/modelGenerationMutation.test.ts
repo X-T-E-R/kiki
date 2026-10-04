@@ -84,6 +84,19 @@ describe('generation parameter entity mutations', () => {
       expect(text).not.toContain('remote-fast');
       await config.reload();
       expect((await catalog.readModel('fast')).usage_effective?.main).toEqual(edited.usage_effective?.main);
+      await catalog.createProvider({ id: 'new-edge', type: 'openai', models: [
+        { remote_id: 'first', auto_compact: 120000 },
+        { remote_id: 'second', auto_compact: 90000 },
+        { remote_id: 'inherited' },
+      ] });
+      await config.reload();
+      expect((await catalog.readModel('new-edge/first')).auto_compact).toBe(120000);
+      expect((await catalog.readModel('new-edge/second')).auto_compact).toBe(90000);
+      expect((await catalog.readModel('new-edge/inherited')).auto_compact).toBeUndefined();
+      expect((await catalog.readModel('fast')).usage_effective?.main).toEqual(edited.usage_effective?.main);
+      expect((await catalog.readModel('fast')).usage_effective?.sub.auto_compact).toBe(200000);
+      expect(config.inspect<Record<string, unknown>>('models').userValue?.['fast']).toEqual({ usage: { main: { thinkingEffort: 'low', serviceTier: { kind: 'api_default' } } } });
+      expect(await baseStore.getText('', 'config.toml')).toBe(baseText);
       const cleared = await catalog.updateModel('fast', { usage: { main: { thinking_effort: null } } });
       expect(cleared.usage_effective?.main?.thinking_effort).toBe('high');
       expect(cleared.usage_effective?.main?.service_tier).toEqual({ kind: 'api_default' });

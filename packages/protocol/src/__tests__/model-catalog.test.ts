@@ -224,6 +224,19 @@ describe('model catalog schemas', () => {
     expect(configResponseSchema.safeParse({ request_identity: null }).success).toBe(false);
   });
 
+  it('uses the standalone model token-only auto_compact contract for initial provider models', () => {
+    const body = {
+      id: 'example', type: 'openai',
+      models: [{ remote_id: 'first', auto_compact: 120000 }, { remote_id: 'second', auto_compact: 90000 }, { remote_id: 'inherited' }],
+    };
+    expect(createProviderRequestSchema.parse(body)).toEqual(body);
+    for (const auto_compact of [0, -1, 0.85, 1.5, '85%', '120000', null, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN]) {
+      expect(createProviderRequestSchema.safeParse({ ...body, models: [{ remote_id: 'invalid', auto_compact }] }).success).toBe(false);
+      expect(createModelRequestSchema.safeParse({ provider_id: 'example', remote_id: 'invalid', auto_compact }).success).toBe(false);
+    }
+    expect(patchModelRequestSchema.parse({ auto_compact: null })).toEqual({ auto_compact: null });
+  });
+
   it('round-trips list responses and set-default response', () => {
     expect(listModelsResponseSchema.parse({ items: [model] })).toEqual({
       items: [model],

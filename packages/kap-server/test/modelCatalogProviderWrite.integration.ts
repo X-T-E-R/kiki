@@ -326,6 +326,84 @@ describe('server-v2 /api provider write endpoints', () => {
     ]);
   });
 
+  it('persists per-model auto_compact targets through provider creation and cold reload without rewriting existing usage', async () => {
+    await boot(DEFAULTED_TOML.replace('max_context_size = 131072', 'max_context_size = 131072\nauto_compact = 100000') + '\n[loop_control]\nauto_compact = "85%"\n[models.k2.usage.main]\nauto_compact = 90000\n');
+    await getJson('/api/models');
+    const before = (await readConfigToml())['models'] as Record<string, unknown>;
+    const created = await postJson('/api/providers', {
+      ...CREATE_BODY,
+      models: [
+        { ...CREATE_BODY.models[0], auto_compact: 120000 },
+        { ...CREATE_BODY.models[1], auto_compact: 90000 },
+        { remote_id: 'inherited', max_context_size: 200000 },
+      ],
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.code).toBe(0);
+    const persisted = (await readConfigToml())['models'] as Record<string, Record<string, unknown>>;
+    expect(persisted['my-openai/gpt-4.1']?.['auto_compact']).toBe(120000);
+    expect(persisted['my-openai/gpt-4o-mini']?.['auto_compact']).toBe(90000);
+    expect(persisted['my-openai/inherited']).not.toHaveProperty('auto_compact');
+    expect(persisted['k2']).toEqual(before['k2']);
+    expect(persisted['gpt4o']).toEqual(before['gpt4o']);
+
+    await server!.close();
+    server = undefined;
+    await boot();
+    const models = (await getJson<{ items: Array<Record<string, unknown>> }>('/api/models')).body.data.items;
+    expect(models.find((model) => model['id'] === 'my-openai/gpt-4.1')?.['auto_compact']).toBe(120000);
+    expect(models.find((model) => model['id'] === 'my-openai/gpt-4o-mini')?.['auto_compact']).toBe(90000);
+    expect(models.find((model) => model['id'] === 'my-openai/inherited')).not.toHaveProperty('auto_compact');
+    const entity = (await getJson<Record<string, unknown>>('/api/models/my-openai%2Fgpt-4.1')).body.data;
+    expect(entity['auto_compact']).toBe(120000);
+    expect(entity['usage_effective']).toMatchObject({ main: { auto_compact: 120000 }, sub: { auto_compact: 120000 } });
+    const existing = (await getJson<Record<string, unknown>>('/api/models/k2')).body.data;
+    expect(existing['usage_effective']).toMatchObject({ main: { auto_compact: 90000 }, sub: { auto_compact: 100000 } });
+    expect((await readConfigToml())['loop_control']).toMatchObject({ auto_compact: '85%' });
+  });
+
+  it('rejects invalid initial model auto_compact before saving any provider or model', async () => {
+    await boot(DEFAULTED_TOML);
+    await getJson('/api/models');
+    const before = await readConfigToml();
+    for (const auto_compact of [0, -1, 0.85, 1.5, '85%', '120000', null, Number.MAX_SAFE_INTEGER + 1]) {
+      const result = await postJson('/api/providers', {
+        ...CREATE_BODY,
+        models: [{ ...CREATE_BODY.models[0], auto_compact: 120000 }, { ...CREATE_BODY.models[1], auto_compact }],
+      });
+      expect(result.body.code).toBe(40001);
+      expect(await readConfigToml()).toEqual(before);
+    }
+  });
+
+  it('keeps standalone model create and sparse auto_compact patches independent of the main usage override', async () => {
+    await boot();
+    expect((await postJson('/api/providers', { id: 'example', type: 'openai' })).body.code).toBe(0);
+    const created = await postJson<Record<string, unknown>>('/api/models', {
+      id: 'standalone', provider_id: 'example', remote_id: 'chat', max_context_size: 200000,
+      auto_compact: 120000, usage: { main: { auto_compact: 100000 } },
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.data['auto_compact']).toBe(120000);
+    const renamed = await patchJson<Record<string, unknown>>('/api/models/standalone', { display_name: 'Renamed' });
+    expect(renamed.body.data['auto_compact']).toBe(120000);
+    const patched = await patchJson<Record<string, unknown>>('/api/models/standalone', { auto_compact: 110000 });
+    expect(patched.body.data['usage_effective']).toMatchObject({ main: { auto_compact: 100000 }, sub: { auto_compact: 110000 } });
+    const cleared = await patchJson<Record<string, unknown>>('/api/models/standalone', { auto_compact: null });
+    expect(cleared.body.data).not.toHaveProperty('auto_compact');
+    expect(cleared.body.data['usage']).toEqual({ main: { auto_compact: 100000 } });
+    const persisted = (await readConfigToml())['models'] as Record<string, Record<string, unknown>>;
+    expect(persisted['standalone']).not.toHaveProperty('auto_compact');
+    expect(persisted['standalone']?.['usage']).toEqual({ main: { auto_compact: 100000 } });
+    await server!.close();
+    server = undefined;
+    await boot();
+    const reloaded = (await getJson<Record<string, unknown>>('/api/models/standalone')).body.data;
+    expect(reloaded).not.toHaveProperty('auto_compact');
+    expect(reloaded['usage_effective']).toMatchObject({ main: { auto_compact: 100000 } });
+    expect((reloaded['usage_effective'] as Record<string, unknown>)['sub']).not.toHaveProperty('auto_compact');
+  });
+
   it('creates model request identities and preserves them across sparse patches', async () => {
     await boot();
     const firstIdentity = { overrides: { request: { logical_id: 'none' } } } as const;

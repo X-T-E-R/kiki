@@ -845,6 +845,43 @@ describe('settings persistence and validation', () => {
     expect(modelPatchBody({ ...baseline, remoteId: '' }, baseline)).toBeNull();
   });
 
+  it('serializes each model autoCompact independently and keeps omission as inheritance', () => {
+    const initial = providerDraft();
+    const row = initial.models[0]!;
+    const draft = providerDraft({ models: [
+      { ...row, remoteId: 'chat', autoCompact: 120000 },
+      { ...row, remoteId: 'other', autoCompact: 90000 },
+      { ...row, remoteId: 'inherited' },
+    ] });
+    const body = JSON.parse(JSON.stringify(providerCreateBody(draft)));
+    expect(body.models).toEqual([
+      expect.objectContaining({ remote_id: 'chat', auto_compact: 120000 }),
+      expect.objectContaining({ remote_id: 'other', auto_compact: 90000 }),
+      expect.not.objectContaining({ auto_compact: expect.anything() }),
+    ]);
+    expect(initial.models[0]!.autoCompact).toBeUndefined();
+    expect(modelCreateBody('example', draft.models[0]!).auto_compact).toBe(120000);
+    expect(modelCreateBody('example', row).auto_compact).toBeUndefined();
+    expect(isProviderDraftDirty(providerDraft({ models: [{ ...row, autoCompact: 120000 }] }), initial)).toBe(true);
+  });
+
+  it('reads authored auto_compact back and patches only changed targets without flattening usage', () => {
+    const draft = providerDraftFromCatalog({
+      id: 'example', type: 'openai', has_api_key: false, status: 'unconfigured', models: ['example/chat', 'example/other'],
+    }, [
+      { id: 'example/chat', provider_id: 'example', remote_id: 'chat', max_context_size: 200000, auto_compact: 120000 },
+      { id: 'example/other', provider_id: 'example', remote_id: 'other', max_context_size: 200000 },
+    ])!;
+    const row = draft.models[0]!;
+    expect(row.autoCompact).toBe(120000);
+    expect(draft.models[1]!.autoCompact).toBeUndefined();
+    expect(modelPatchBody(row, row)).toBeNull();
+    expect(modelPatchBody({ ...row, displayName: 'Renamed' }, row)).toEqual({ display_name: 'Renamed' });
+    expect(modelPatchBody({ ...row, autoCompact: 110000 }, row)).toEqual({ auto_compact: 110000 });
+    expect(modelPatchBody({ ...row, autoCompact: undefined }, row)).toEqual({ auto_compact: null });
+    expect(providerPatchBody({ ...draft, models: [{ ...row, autoCompact: 110000 }, draft.models[1]!] }, draft)).toBeNull();
+  });
+
   it('omits inherited provider and model layers when creating', () => {
     const body = providerCreateBody(providerDraft());
     expect(body.request_identity).toBeUndefined();

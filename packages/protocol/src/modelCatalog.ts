@@ -514,6 +514,7 @@ const modelDraftSchema = z.object({
 });
 
 export const createProviderModelSchema = modelDraftSchema.extend({
+  auto_compact: createModelRequestSchema.shape.auto_compact,
   behavior: modelBehaviorWireSchema.optional(),
   request_identity: requestIdentityPolicySchema.optional(),
 });

@@ -303,6 +303,8 @@ export interface ProviderModelDraft extends RequestIdentityLayerDraft, ImagePoli
   remoteId: string;
   /** `0` means the stored model declares no context size yet. */
   maxContextSize: number;
+  /** Absolute positive integer tokens; omitted means inherit the existing compaction policy. */
+  autoCompact?: number;
   displayName: string;
   capabilities: string[];
   supportEfforts: string[];
@@ -1363,6 +1365,7 @@ export function providerModelDraftFromCatalog(
     id: model.id,
     remoteId: model.remote_id ?? '',
     maxContextSize: model.max_context_size ?? 0,
+    autoCompact: model.auto_compact,
     displayName: model.display_name ?? '',
     capabilities: [...(model.capabilities ?? [])],
     supportEfforts: [...(model.support_efforts ?? [])],
@@ -1564,6 +1567,7 @@ export function providerModelDraftsEqual(
   return model.id === other.id
     && model.remoteId === other.remoteId
     && model.maxContextSize === other.maxContextSize
+    && model.autoCompact === other.autoCompact
     && model.displayName === other.displayName
     && JSON.stringify(model.behavior) === JSON.stringify(other.behavior)
     && model.requestIdentityChoice === other.requestIdentityChoice
@@ -1620,6 +1624,7 @@ export function providerCreateBody(draft: ProviderDraft): CreateProviderRequest 
       return {
         remote_id: model.remoteId,
         max_context_size: model.maxContextSize > 0 ? model.maxContextSize : undefined,
+        auto_compact: model.autoCompact,
         display_name: model.displayName || undefined,
         capabilities: model.capabilities.length > 0 ? [...model.capabilities] : undefined,
         support_efforts: model.supportEfforts.length > 0 ? [...model.supportEfforts] : undefined,
@@ -1678,6 +1683,9 @@ export function modelPatchBody(
   if (draft.maxContextSize !== baseline.maxContextSize) {
     patch.max_context_size = draft.maxContextSize > 0 ? draft.maxContextSize : null;
   }
+  if (draft.autoCompact !== baseline.autoCompact) {
+    patch.auto_compact = draft.autoCompact ?? null;
+  }
   if (!stringArraysEqual(draft.capabilities, baseline.capabilities)) {
     patch.capabilities = [...draft.capabilities];
   }
@@ -1710,6 +1718,7 @@ export function modelCreateBody(
     remote_id: row.remoteId.trim(),
     display_name: row.displayName.trim() || undefined,
     max_context_size: row.maxContextSize > 0 ? row.maxContextSize : undefined,
+    auto_compact: row.autoCompact,
     capabilities: row.capabilities.length > 0 ? [...row.capabilities] : undefined,
     support_efforts: row.supportEfforts.length > 0 ? [...row.supportEfforts] : undefined,
     behavior: row.behavior,

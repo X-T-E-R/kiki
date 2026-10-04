@@ -722,6 +722,7 @@ export class ModelCatalogMutationService
         const record: ModelRecord = { provider: id, model: entry.remote_id };
         if (entry.display_name !== undefined) record.displayName = entry.display_name;
         if (entry.max_context_size !== undefined) record.maxContextSize = entry.max_context_size;
+        if (entry.auto_compact !== undefined) record.autoCompact = entry.auto_compact;
         if (entry.capabilities !== undefined) record.capabilities = [...entry.capabilities];
         if (entry.max_output_size !== undefined) record.maxOutputSize = entry.max_output_size;
         if (entry.support_efforts !== undefined) {
