@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { readdirSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * SettingsPage scope header: a workspace-scoped section (Skills' catalog,
@@ -846,7 +847,7 @@ describe('SettingsPage search ownership', () => {
     expect(permissions.querySelector('#st-card-permission-defaults')).not.toBeNull();
     expect(sessions.querySelector('#st-card-defaults')).not.toBeNull();
     expect(labs.querySelector('#st-card-labs')).not.toBeNull();
-    const dir = resolve(process.cwd(), 'src/components');
+    const dir = dirname(fileURLToPath(import.meta.url));
     const rendered = new Set(
       readdirSync(dir, { recursive: true })
         .map((name) => String(name).replaceAll('\\', '/'))

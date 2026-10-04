@@ -559,7 +559,10 @@ describe('managed browser SEA resource packaging and extraction', () => {
       const collected = await collectBrowserDriverAssets({ appRoot, target: 'win32-x64', artifactDirectory: dirname(process.env['KIKI_BROWSER_TEST_DRIVER']!) });
       expect(collected.runtimeFiles).toHaveLength(5);
       const manifest: NativeAssetManifest = { version: NATIVE_ASSET_MANIFEST_VERSION, target: 'win32-x64', packages: [], runtimeFiles: collected.runtimeFiles };
-      const bytes = new Map(Object.entries(collected.assets).map(([key, source]) => [key, readFileSync(source)]));
+      const bytes = new Map<string, Buffer>(Object.entries(collected.assets).map(([key, source]) => {
+        if (typeof source !== 'string') throw new TypeError(`Expected a browser asset path for ${key}`);
+        return [key, readFileSync(source)] as const;
+      }));
       const source: NativeAssetSource = { getAssetKeys: () => [...bytes.keys()], getRawAsset: (key) => bytes.get(key)! };
       const options = { source, manifest, cacheBase: root, version: 'fixture', platform: 'win32' as const };
       const binary = getBrowserDriverFile(options)!;
