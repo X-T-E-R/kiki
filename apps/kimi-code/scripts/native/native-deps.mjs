@@ -57,7 +57,7 @@ export function isSupportedTarget(target) {
  * @property {string} id                — stable internal id used for parent refs
  * @property {(target: string) => string} name
  *           — npm package name (may depend on target)
- * @property {'js-only'|'native-files'|'js-and-native-file'|'native-file-only'|'virtual'} collect
+ * @property {'js-only'|'native-files'|'js-and-native-file'|'native-file-only'|'node-pty'|'auth-native'|'virtual'} collect
  * @property {string|null} parent
  *           — id of another registered dep this nests under (for pnpm),
  *           or null for top-level (resolvable from app root)
@@ -99,6 +99,18 @@ export const nativeDeps = Object.freeze([
     name: (target) => keyringSubpackageByTarget[target],
     collect: 'native-files',
     parent: 'keyring-host',
+  },
+  {
+    id: 'auth-native',
+    name: () => '@kiki/auth-native',
+    collect: 'auth-native',
+    parent: null,
+  },
+  {
+    id: 'node-pty',
+    name: () => 'node-pty',
+    collect: 'node-pty',
+    parent: 'agent-core',
   },
   {
     id: 'pi-tui',

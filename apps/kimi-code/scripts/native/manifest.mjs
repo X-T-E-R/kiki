@@ -1,3 +1,7 @@
+export const BROWSER_DRIVER_ASSET = Object.freeze({
+  key: 'browser-driver', relativePath: 'runtime/browser-driver/agent-browser.exe', mode: 0o755,
+});
+
 export const NATIVE_ASSET_MANIFEST_VERSION = 2;
 export const WEB_ASSET_MANIFEST_VERSION = 1;
 

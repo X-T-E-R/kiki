@@ -1,4 +1,7 @@
 import { cp, mkdir, rm, stat } from 'node:fs/promises';
+import { collectAuthNativePackage } from './native/assets.mjs';
+import { copyHistoryImportAssets } from './native/history-assets.mjs';
+import { mergeAuthNativeLanes } from '../../../packages/auth-native/scripts/lane-assets.mjs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -35,9 +38,29 @@ for (const platform of PLATFORMS) {
   await cp(srcPrebuilds, dstPrebuilds, { recursive: true });
 }
 
+if (process.env.KIKI_AUTH_NATIVE_ARTIFACT_ROOT) {
+  await mergeAuthNativeLanes({
+    artifactRoot: resolve(process.env.KIKI_AUTH_NATIVE_ARTIFACT_ROOT),
+    destination: resolve(target, 'auth-native'),
+  });
+} else {
+  const authAssets = await collectAuthNativePackage({
+    packageRoot: resolve(repoRoot, 'packages/auth-native'),
+    target: process.env.KIKI_BUILD_TARGET ?? `${process.platform}-${process.arch}`,
+  });
+  for (const file of authAssets.packageManifest.files) {
+    const relativePath = file.relativePath.slice('node_modules/@kiki/auth-native/'.length);
+    const destination = resolve(target, 'auth-native', relativePath);
+    await mkdir(dirname(destination), { recursive: true });
+    await cp(authAssets.assets[file.assetKey], destination);
+  }
+}
+
 await cp(
   resolve(repoRoot, 'packages/agent-core-v2/src/app/plugin/hostRunner.mjs'),
   resolve(appRoot, 'dist/hostRunner.mjs'),
 );
 
-console.log(`Copied pi-tui native prebuilds to ${target} and plugin host runner to dist`);
+await copyHistoryImportAssets({ appRoot, outDir: resolve(appRoot, 'dist') });
+
+console.log(`Copied pi-tui native prebuilds to ${target}, plugin host runner and history rules to dist`);

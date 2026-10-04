@@ -66,6 +66,7 @@
         ./packages/acp-server
         ./packages/agent-core-v2
         ./packages/agent-profiles
+        ./packages/auth-native
         ./packages/codex-client
         ./packages/kap-server
         ./packages/kaos
@@ -91,6 +92,7 @@
         "@kiki/acp-server"
         "@kiki/agent-core-v2"
         "@kiki/agent-profiles"
+        "@kiki/auth-native"
         "@kiki/codex-client"
         "@kiki/kap-server"
         "@kiki/kaos"
@@ -162,10 +164,18 @@
               hash = "sha256-NDcCQ5vxsGaSdJ3U0bvq2RkXKwrYTI7/8zZn/x1fvJ8=";
             };
 
+            cargoRoot = "packages/auth-native";
+            cargoDeps = pkgs.rustPlatform.importCargoLock {
+              lockFile = ./packages/auth-native/Cargo.lock;
+            };
+
             nativeBuildInputs = [
               nodejs
               pnpm
               (pkgs.pnpmConfigHook.override { inherit pnpm; })
+              pkgs.cargo
+              pkgs.rustc
+              pkgs.rustPlatform.cargoSetupHook
               pkgs.makeWrapper
             ]
             # The SEA inject step (postject) invalidates the macOS code
@@ -186,6 +196,10 @@
             buildPhase = ''
               runHook preBuild
               export KIKI_BUILD_TARGET=${nativeTarget}
+              export CARGO_HOME="$TMPDIR/kiki-auth-cargo-home"
+              export CARGO_TARGET_DIR="$TMPDIR/kiki-auth-cargo-target"
+              export CARGO_NET_OFFLINE=true
+              mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
               ${lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
                 # pkgs.darwin.sigtool's codesign supports `--sign -` (ad-hoc)
                 # but not the inspection mode (`-dv`) that 05-verify.mjs runs

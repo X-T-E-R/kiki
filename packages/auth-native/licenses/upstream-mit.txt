@@ -1,0 +1,43 @@
+The packages below declare MIT licensing but omit the standalone license from
+their crates.io archive. Their upstream license notices are reproduced here.
+
+age / age-core: https://raw.githubusercontent.com/str4d/rage/main/LICENSE-MIT
+Copyright (c) 2019 Jack Grigg
+
+bech32: https://raw.githubusercontent.com/rust-bitcoin/rust-bech32/master/LICENSE-MIT
+Copyright (c) 2017 Clark Moody
+
+cookie-factory: https://raw.githubusercontent.com/rust-bakery/cookie-factory/master/LICENSES/MIT.txt
+Copyright (c) 2017-2023 Geoffroy Couprie
+
+napi / napi-build / napi-derive / napi-derive-backend / napi-sys:
+https://raw.githubusercontent.com/napi-rs/napi-rs/main/LICENSE
+Copyright (c) 2020-present LongYinan
+Copyright (c) 2018 GitHub
+
+fluent-langneg:
+https://raw.githubusercontent.com/projectfluent/fluent-langneg-rs/main/LICENSE-MIT
+Copyright Mozilla Foundation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+intl_pluralrules (Apache-2.0/MIT) and io_tee (MIT OR Apache-2.0) are used under
+Apache-2.0; its full text is in Apache-2.0.txt. Their published archives do not
+include a copyright notice/license file; crate name, version, repository and
+license declaration are preserved in rust-dependencies.json.

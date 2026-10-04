@@ -73,6 +73,9 @@ jobs:
           node-version-file: .nvmrc
           cache: 'pnpm'
 
+      - name: Setup host Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -125,4 +128,5 @@ jobs:
           path: |
             apps/kimi-code/dist-native/artifacts/kiki-${{ matrix.target }}${{ matrix.extension }}
             apps/kimi-code/dist-native/artifacts/kiki-${{ matrix.target }}${{ matrix.extension }}.sha256
+            apps/kimi-code/dist-native/artifacts/auth-native/${{ matrix.target }}/
           if-no-files-found: error

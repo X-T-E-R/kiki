@@ -1,0 +1,4 @@
+interface:
+  display_name: "Notion Workspace"
+  short_description: "Read Notion sources and save requested briefs"
+  default_prompt: "Use $notion-workspace to read the specified Notion material, save a cited local brief, and write back only if requested."

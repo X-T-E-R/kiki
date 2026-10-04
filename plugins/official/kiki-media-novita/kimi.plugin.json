@@ -1,0 +1,12 @@
+{
+  "name": "kiki-media-novita", "version": "0.1.0", "description": "Optional Novita /video/create compatibility endpoint adapter from Canvas. Configure your endpoint and actual model; does not claim every Novita generation API.", "license": "MIT",
+  "interface": { "displayName": "Novita Compatible Video", "shortDescription": "Optional create/task-result video profile" },
+  "x-kiki": {
+    "engines": { "kiki": "^0.4.0" }, "entry": "./entry.mjs", "permissions": { "fs": "outside", "net": ["*"], "secrets": true },
+    "settings": { "schemaVersion": 1, "schema": { "type": "object", "required": ["baseUrl"], "properties": {
+      "connectionId": { "type": "string", "title": "Kiki compatible endpoint connection (optional)", "description": "Selected endpoint and authentication replace this plugin's own configuration; endpoint must implement this video profile." },
+      "apiKey": { "type": "string", "title": "Endpoint API key", "secret": true }, "baseUrl": { "type": "string", "title": "Compatible API base URL" }, "videoModel": { "type": "string", "title": "Actual endpoint model" }
+    } } },
+    "mediaProviders": [{ "schemaVersion": 1, "id": "video", "label": "Novita Compatible Video", "kinds": ["video"], "resumeVersion": 1, "connectionSetting": "connectionId" }]
+  }
+}

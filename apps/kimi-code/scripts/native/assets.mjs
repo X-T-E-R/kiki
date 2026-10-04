@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -17,6 +17,9 @@ import {
   kikiDocsAsset,
 } from './manifest.mjs';
 import { nativeDeps, resolveTargetDeps, SUPPORTED_TARGETS } from './native-deps.mjs';
+import { collectBrowserDriverAssets } from './browser-assets.mjs';
+import { collectHistoryImportAssets } from './history-assets.mjs';
+import { copyKikiDocs } from '../local-docs.mjs';
 
 export { NATIVE_ASSET_MANIFEST_VERSION };
 
@@ -72,20 +75,20 @@ async function listFiles(root) {
   return files;
 }
 
-async function listKikiDocs(appRoot) {
-  const docsRoot = resolve(appRoot, '..', '..', 'docs');
-  const files = [];
-  for (const locale of ['en', 'zh']) {
-    const localeRoot = resolve(docsRoot, locale);
-    for (const path of await listFiles(localeRoot)) {
-      if (extname(path) !== '.md') continue;
-      files.push({
-        path,
-        relativePath: `${locale}/${toPosixPath(relative(localeRoot, path))}`,
-      });
-    }
+export async function collectKikiDocAssets({ appRoot, target }) {
+  const targetDir = resolve(appRoot, 'dist-native', 'intermediates', 'native-assets', target, 'kiki-docs');
+  await rm(targetDir, { recursive: true, force: true });
+  const docs = await copyKikiDocs({ sourceDir: resolve(appRoot, '..', '..', 'docs'), targetDir });
+  const runtimeFiles = [];
+  /** @type {Record<string, string>} */
+  const assets = {};
+  for (const doc of docs) {
+    const asset = kikiDocsAsset(doc.relativePath);
+    const assetKey = buildRuntimeAssetKey(target, asset.key);
+    runtimeFiles.push({ ...asset, assetKey, sha256: sha256(doc.bytes) });
+    assets[assetKey] = doc.path;
   }
-  return files.toSorted((a, b) => a.relativePath.localeCompare(b.relativePath));
+  return { runtimeFiles, assets };
 }
 
 function resolvePackageRootGeneric(requireFromApp, packageName, parentPackageName, parentRoot, appRoot, target) {
@@ -221,7 +224,64 @@ async function collectPackageFiles({
   return sorted;
 }
 
-async function packageManifestEntries({ packageName, packageRoot, files, target }) {
+export async function collectAuthNativePackage({ packageRoot, target }) {
+  if (!SUPPORTED_TARGETS.includes(target)) fail(`Unsupported auth-native target: ${target}`);
+  const files = await collectPackageFiles({
+    packageName: '@kiki/auth-native', packageRoot, includeNativeFiles: false,
+    nativeFileRelatives: [`prebuilds/${target}/auth-native.node`, 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'licenses/Apache-2.0.txt', 'licenses/upstream-mit.txt', 'licenses/rust-dependencies.json'],
+  });
+  files.push(...await listFiles(join(packageRoot, 'licenses/rust')));
+  if (target === `${process.platform}-${process.arch}`) {
+    const binding = createRequire(join(packageRoot, 'package.json'))(packageRoot);
+    for (const name of ['ageEncrypt', 'ageDecrypt', 'tryAcquireGrokAuthLock', 'acquireGrokAuthLock', 'canonicalizeOriginalHome']) {
+      if (typeof binding[name] !== 'function') fail(`auth-native binding is missing ${name}`);
+    }
+  }
+  return packageManifestEntries({ packageName: '@kiki/auth-native', packageRoot, files: [...new Set(files)].sort(), target });
+}
+
+export async function collectNodePtyPackage({ packageRoot, target }) {
+  if (!SUPPORTED_TARGETS.includes(target)) fail(`Unsupported node-pty target: ${target}`);
+  const nativeDir = target === `${process.platform}-${process.arch}` &&
+    existsSync(join(packageRoot, 'build/Release/pty.node'))
+    ? 'build/Release'
+    : `prebuilds/${target}`;
+  const nativeNames = target.startsWith('win32-')
+    ? ['pty.node', 'conpty.node', 'conpty_console_list.node', 'winpty.dll', 'winpty-agent.exe',
+      'conpty/conpty.dll', 'conpty/OpenConsole.exe']
+    : ['pty.node', 'spawn-helper'];
+  const files = await collectPackageFiles({
+    packageName: 'node-pty', packageRoot, includeNativeFiles: false,
+    nativeFileRelatives: nativeNames.map((name) => `${nativeDir}/${name}`),
+  });
+  // Workers and the console-list agent are addressed dynamically by upstream.
+  // Preserve the complete runtime JS unit, not just literal require() edges.
+  for (const file of await listFiles(join(packageRoot, 'lib'))) {
+    if (file.endsWith('.js') && !file.endsWith('.test.js')) files.push(file);
+  }
+  for (const licensePath of target.startsWith('win32-') ? ['LICENSE', 'deps/winpty/LICENSE'] : ['LICENSE']) {
+    const license = join(packageRoot, licensePath);
+    if (!existsSync(license)) fail(`node-pty license is missing at ${license}`);
+    files.push(license);
+  }
+  if (target === `${process.platform}-${process.arch}`) {
+    const requireFromPackage = createRequire(join(packageRoot, 'package.json'));
+    for (const name of nativeNames.filter((name) => name.endsWith('.node'))) {
+      try {
+        requireFromPackage(join(packageRoot, nativeDir, name));
+      } catch (error) {
+        fail(`node-pty ${target} binding ${name} cannot load in Node ${process.versions.node} (ABI ${process.versions.modules}): ${error}`);
+      }
+    }
+  }
+  return packageManifestEntries({
+    packageName: 'node-pty', packageRoot,
+    files: [...new Set(files)].sort((a, b) => a.localeCompare(b)), target,
+    executableFiles: new Set(target.startsWith('win32-') ? [] : [join(packageRoot, nativeDir, 'spawn-helper')]),
+  });
+}
+
+async function packageManifestEntries({ packageName, packageRoot, files, target, executableFiles = new Set() }) {
   const root = `node_modules/${packageName}`;
   const entries = [];
   const assets = {};
@@ -235,6 +295,7 @@ async function packageManifestEntries({ packageName, packageRoot, files, target 
       assetKey,
       relativePath,
       sha256: sha256(sourceBytes),
+      mode: executableFiles.has(file) ? 0o755 : undefined,
     });
     assets[assetKey] = file;
   }
@@ -283,19 +344,20 @@ export async function collectNativeAssets({ appRoot, target }) {
 
   for (const dep of targetDeps) {
     const packageRoot = resolveDepRoot(dep);
-    const files = await collectPackageFiles({
-      packageName: dep.resolvedName,
-      packageRoot,
-      includeNativeFiles: dep.collect === 'native-files',
-      includeEntryJs: dep.collect !== 'native-file-only',
-      nativeFileRelatives: dep.nativeFileRelatives,
-    });
-    const result = await packageManifestEntries({
-      packageName: dep.resolvedName,
-      packageRoot,
-      files,
-      target,
-    });
+    const result = dep.collect === 'node-pty'
+      ? await collectNodePtyPackage({ packageRoot, target })
+      : dep.collect === 'auth-native'
+        ? await collectAuthNativePackage({ packageRoot, target })
+        : await packageManifestEntries({
+        packageName: dep.resolvedName, packageRoot, target,
+        files: await collectPackageFiles({
+          packageName: dep.resolvedName,
+          packageRoot,
+          includeNativeFiles: dep.collect === 'native-files',
+          includeEntryJs: dep.collect !== 'native-file-only',
+          nativeFileRelatives: dep.nativeFileRelatives,
+        }),
+      });
     manifestPackages.push(result.packageManifest);
     Object.assign(assets, result.assets);
   }
@@ -344,19 +406,17 @@ export async function collectNativeAssets({ appRoot, target }) {
     assets[runtimeAssetKey] = runtimeSource;
   }
 
-  for (const doc of await listKikiDocs(appRoot)) {
-    const asset = kikiDocsAsset(doc.relativePath);
-    const runtimeBytes = await readFile(doc.path);
-    const runtimeAssetKey = buildRuntimeAssetKey(target, asset.key);
-    runtimeFiles.push({
-      key: asset.key,
-      assetKey: runtimeAssetKey,
-      relativePath: asset.relativePath,
-      sha256: sha256(runtimeBytes),
-      mode: asset.mode,
-    });
-    assets[runtimeAssetKey] = doc.path;
-  }
+  const docs = await collectKikiDocAssets({ appRoot, target });
+  runtimeFiles.push(...docs.runtimeFiles);
+  Object.assign(assets, docs.assets);
+
+  const browser = await collectBrowserDriverAssets({ appRoot, target });
+  runtimeFiles.push(...browser.runtimeFiles);
+  Object.assign(assets, browser.assets);
+
+  const history = await collectHistoryImportAssets({ appRoot, target });
+  runtimeFiles.push(...history.runtimeFiles);
+  Object.assign(assets, history.assets);
 
   const manifest = {
     version: NATIVE_ASSET_MANIFEST_VERSION,

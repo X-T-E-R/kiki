@@ -1,0 +1,12 @@
+{
+  "name": "kiki-media-agnes", "version": "0.1.0", "description": "Optional Agnes video endpoint adapter. Explicit frame/reference roles and native V2.0 frames; no account runtime or hidden uploads.", "license": "MIT",
+  "interface": { "displayName": "Agnes Video", "shortDescription": "Optional Agnes 2.5/Flash/V2.0 video" },
+  "x-kiki": {
+    "engines": { "kiki": "^0.4.0" }, "entry": "./entry.mjs", "permissions": { "fs": "outside", "net": ["*"], "secrets": true },
+    "settings": { "schemaVersion": 1, "schema": { "type": "object", "required": ["baseUrl"], "properties": {
+      "connectionId": { "type": "string", "title": "Kiki Agnes endpoint connection (optional)", "description": "Selected endpoint and authentication replace this plugin's own configuration; endpoint must implement Agnes video." },
+      "apiKey": { "type": "string", "title": "Endpoint API key", "secret": true }, "baseUrl": { "type": "string", "title": "Compatible API base URL" }, "videoModel": { "type": "string", "title": "Default video model", "default": "agnes-video-2.5" }
+    } } },
+    "mediaProviders": [{ "schemaVersion": 1, "id": "video", "label": "Agnes Video", "kinds": ["video"], "resumeVersion": 1, "connectionSetting": "connectionId" }]
+  }
+}

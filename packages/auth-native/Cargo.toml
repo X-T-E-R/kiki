@@ -1,0 +1,27 @@
+[package]
+name = "kiki-auth-native"
+version = "0.1.0"
+edition = "2021"
+license = "MIT AND Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+age = "=0.11.1"
+fs2 = "=0.4.3"
+napi = { version = "2", default-features = false, features = ["napi8", "async"] }
+napi-derive = "2"
+same-file = "1.0.6"
+zeroize = "1"
+
+[dev-dependencies]
+sha2 = "=0.10.9"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+strip = "symbols"

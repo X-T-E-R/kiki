@@ -457,6 +457,7 @@ jobs:
           pnpm --filter @kiki/gui run desktop:version:check
           export KIKI_BUILT_IN_CATALOG_FILE="$RUNNER_TEMP/kiki-npm-built-in-catalog.json"
           node apps/kimi-code/scripts/update-catalog.mjs --out "$KIKI_BUILT_IN_CATALOG_FILE"
+          export KIKI_AUTH_NATIVE_ARTIFACT_ROOT="$PWD/cli-native/auth-native"
           pnpm --filter @kiki/cli run build
           node apps/kimi-code/scripts/npm/stage.mjs
 

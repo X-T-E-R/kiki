@@ -1,0 +1,15 @@
+{
+  "name": "@nb-corp/nb-extract",
+  "version": "0.1.1",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NB-Corp/nb-extract.git"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs"
+    }
+  }
+}

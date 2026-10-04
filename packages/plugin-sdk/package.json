@@ -3,13 +3,32 @@
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
+  "files": ["dist"],
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./media-download": {
+      "types": "./dist/media-download.d.ts",
+      "default": "./dist/media-download.js"
+    },
+    "./media": {
+      "types": "./dist/media.d.ts",
+      "default": "./dist/media.js"
+    },
+    "./session-import": {
+      "types": "./dist/session-import.d.ts",
+      "default": "./dist/session-import.js"
     }
   },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm build",
+    "prepare": "pnpm build",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {

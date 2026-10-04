@@ -1,3 +1,18 @@
+import type { SessionSourceDefinition, ImportProbe, ImportParsePage, ImportDiscoveryPage } from './session-import.js';
+export * from './session-import.js';
+export * from './media.js';
+import type { MediaProviderDefinition, MediaProviderAdapter, PluginMediaApi } from './media.js';
+
+export interface SessionSourceContext {
+  readonly signal: AbortSignal;
+  readonly settings: Readonly<Record<string, unknown>>;
+}
+export interface SessionSourceAdapter {
+  discover(input: { home: string; cursor?: string }, context: SessionSourceContext): Promise<ImportDiscoveryPage>;
+  probe(input: { home: string; externalId: string; mode?: 'native-session' }, context: SessionSourceContext): Promise<ImportProbe>;
+  parse(input: { home: string; externalId: string; revision: string; cursor?: string; mode?: 'native-session' }, context: SessionSourceContext): Promise<ImportParsePage>;
+}
+
 export const RPC_PROTOCOL_VERSION = 1 as const;
 
 export interface ToolAccess {
@@ -16,6 +31,7 @@ export interface PluginToolDefinition {
   readonly display?: Record<string, unknown>;
   readonly approvalRule?: string;
   readonly disclosure?: 'inline' | 'deferred';
+  readonly mediaInputs?: boolean;
 }
 
 export type PluginContentPart =
@@ -28,6 +44,7 @@ export interface PluginExecutionContext {
   readonly workspaceRoot?: string;
   readonly approvedPaths: readonly string[];
   readonly imageIn: boolean;
+  readonly media: PluginMediaApi;
   progress(update: { kind: 'progress' | 'status' | 'stdout' | 'stderr'; text?: string; percent?: number }): void;
 }
 
@@ -38,6 +55,8 @@ export interface PluginTool {
 
 export interface PluginRegistrationApi {
   registerTool(definition: PluginToolDefinition, execute: PluginTool['execute']): void;
+  registerSessionSource(definition: SessionSourceDefinition, adapter: SessionSourceAdapter): void;
+  registerMediaProvider(definition: MediaProviderDefinition, adapter: MediaProviderAdapter): void;
 }
 
 export function definePlugin(tools: readonly PluginTool[]) {

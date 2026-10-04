@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -74,4 +74,24 @@ void test("rejects stale flake workspace entries", () => {
   assert.equal(result.ok, false);
   assert.deepEqual(result.extraNames, ["@example/stale"]);
   assert.deepEqual(result.extraPaths, ["./apps/stale"]);
+});
+
+void test("auth-native Nix source uses the locked Cargo vendor hook and explicit offline build environment", () => {
+  const flake = readFileSync(new URL("../flake.nix", import.meta.url), "utf8");
+  assert.match(flake, /cargoRoot\s*=\s*"packages\/auth-native"/);
+  assert.match(flake, /cargoDeps\s*=\s*pkgs\.rustPlatform\.importCargoLock\s*\{\s*lockFile\s*=\s*\.\/packages\/auth-native\/Cargo\.lock;/);
+  for (const input of ["pkgs.cargo", "pkgs.rustc", "pkgs.rustPlatform.cargoSetupHook"]) {
+    assert.ok(flake.includes(input));
+  }
+  assert.ok(flake.includes('export CARGO_HOME="$TMPDIR/kiki-auth-cargo-home"'));
+  assert.ok(flake.includes('export CARGO_TARGET_DIR="$TMPDIR/kiki-auth-cargo-target"'));
+  assert.ok(flake.includes("export CARGO_NET_OFFLINE=true"));
+  const lock = readFileSync(new URL("../packages/auth-native/Cargo.lock", import.meta.url), "utf8");
+  const registryPackages = lock.split("[[package]]").filter((entry) => entry.includes("source ="));
+  assert.ok(registryPackages.length > 0);
+  for (const entry of registryPackages) {
+    assert.match(entry, /source = "registry\+https:\/\/github\.com\/rust-lang\/crates\.io-index"/);
+    assert.match(entry, /checksum = "[0-9a-f]{64}"/);
+  }
+  assert.doesNotMatch(flake, /cargoHash|allowBuiltinFetchGit|outputHashes/);
 });

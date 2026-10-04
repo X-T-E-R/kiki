@@ -1,0 +1,13 @@
+{
+  "name": "kiki-media-xai", "version": "0.1.0", "description": "xAI image generation/editing and asynchronous video generation. Reference-audio/image capability depends on the selected model and account.", "license": "MIT",
+  "interface": { "displayName": "xAI Media", "shortDescription": "Grok images and video" },
+  "x-kiki": {
+    "engines": { "kiki": "^0.4.0" }, "entry": "./entry.mjs", "permissions": { "fs": "outside", "net": ["*"], "secrets": true },
+    "settings": { "schemaVersion": 1, "schema": { "type": "object", "required": ["apiKey"], "properties": {
+      "connectionId": { "type": "string", "title": "Kiki xAI API connection (optional)", "description": "Use an xAI media API connection; Grok web/OAuth subscriptions are not assumed to support this API." },
+      "apiKey": { "type": "string", "title": "API key", "secret": true }, "baseUrl": { "type": "string", "title": "API base URL", "default": "https://api.x.ai/v1" },
+      "imageModel": { "type": "string", "title": "Default image model", "default": "grok-imagine-image" }, "videoModel": { "type": "string", "title": "Default video model", "default": "grok-imagine-video" }
+    } } },
+    "mediaProviders": [{ "schemaVersion": 1, "id": "image", "label": "xAI Images", "kinds": ["image"], "resumeVersion": 1, "connectionSetting": "connectionId" }, { "schemaVersion": 1, "id": "video", "label": "xAI Video", "kinds": ["video"], "resumeVersion": 1, "connectionSetting": "connectionId" }]
+  }
+}

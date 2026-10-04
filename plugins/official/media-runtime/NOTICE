@@ -1,0 +1,64 @@
+Open AI Canvas
+Copyright (C) 2026 ddcat
+
+This program is licensed under the MIT License.
+The complete license text is provided in LICENSE.
+
+This project is a derivative work based on:
+
+  Infinite Canvas
+  https://github.com/basketikun/infinite-canvas
+  Base version: v0.5.0
+  Base commit: 568f0f1838df8de31fe885a4e130e2f346dd14ab
+
+The upstream project is maintained under the basketikun account. The base
+commit is authored by HouYunFei. Upstream authors and contributors retain
+their copyright and attribution for their respective contributions. The
+upstream project was relicensed to MIT in commit
+890ba95858bbb13496d23978003716656109abb2; its copyright and permission notice
+are preserved in LICENSE.
+
+Material changes in this repository are maintained by ddcat. They include a
+multi-user Go backend, task processing and analytics, private resource
+storage, canvas sharing, film-production workflows, canvas UI refactoring,
+and Canvas Agent integrations.
+
+Third-party packages remain subject to the licenses declared by their
+respective authors. Product names and logos under web/public/icons are the
+property of their respective owners and do not imply endorsement.
+
+Kiki adaptations (2026-10-04)
+Source: https://github.com/ddcat-ai/open-ai-canvas
+Revision: 2f6832f99c5e40ddd561a3a7893aebc226e13b7b
+Selected units: web/src/services/api/image.ts and image-response.ts;
+video-provider-{gemini,seedance,openai,minimax,novita,agnes,newapi}.ts;
+canvas-agent/native/comfy-bridge/main.go and media.go.
+Disposition: adapt protocol submit/poll/body/response units to Node fetch,
+explicit InputRef roles and file artifacts. Browser storage, Axios, Zustand,
+relay, implicit multi-POST count, silent slicing, and URL-only completion
+are not included. Selected request-body oracles from image-api-contracts,
+video-api-contracts and agnes-video tests are adapted to injected HTTP tests.
+
+OpenAI speech template additionally adapted from
+https://github.com/basketikun/infinite-canvas
+Revision: ed013e8e5ce8ccab47cf2fc779f8e94555eb4c23
+Unit: web/src/services/api/model-plugin.ts, audio template (lines 293-302).
+Copyright (c) 2026 basketikun; MIT permission notice is retained in LICENSE.
+
+MiniMax CLI revision 2576f4656211e6d296bb1fe885da141080b70f23 was read
+for comparison only. Its README states MIT, but full license text was absent
+and https://api.github.com/repos/MiniMax-AI/cli/license returned 404 on
+2026-10-04. No CLI image/speech code or tests are copied. Those HTTP units
+are narrow implementations of the published API specifications. MiniMax
+video adaptation instead uses the independently MIT-licensed Canvas unit.
+
+StepFun speech protocol adaptation (kiki-media-stepfun only)
+Source: https://github.com/stepfun-ai/stepfunApi-audio-sdk
+Revision: b2b9ec335e9aa01aba327d6963986db76185f4c4
+Units observed: StepfunAudioTtsSdk/src/main/java/com/stepfun/
+stepfunaudiottssdk/tts/TtsClient.kt and configs/TtsSpeechParams.kt.
+Apache-2.0; complete license retained as LICENSE.Apache-2.0 in that package.
+Modified files: adapters.mjs (Node HTTP binary/SSE and current snake_case
+API fields). Android/OkHttp/coroutines, retry of paid POSTs and broad EOF
+completion are not copied. Current SSE event names are implemented from
+https://platform.stepfun.ai/docs/en/api-reference/audio/create-audio.

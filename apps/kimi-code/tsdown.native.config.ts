@@ -16,7 +16,7 @@ const builtins = new Set([
   ...builtinModules,
   ...builtinModules.map((name) => `node:${name}`),
 ]);
-const optionalNativeDependencies = new Set(['cpu-features', '@napi-rs/keyring']);
+const optionalNativeDependencies = new Set(['cpu-features', '@napi-rs/keyring', 'node-pty', '@kiki/auth-native']);
 
 function shouldAlwaysBundle(id: string): boolean {
   if (builtins.has(id) || id.startsWith('node:')) return false;
@@ -40,7 +40,9 @@ export default defineConfig({
   hash: false,
   platform: 'node',
   target: 'node24',
-  banner: { js: '#!/usr/bin/env node' },
+  // SEA's injected require only accepts builtins. Use the regular Node require
+  // so external native requests reach the existing asset module hook.
+  banner: { js: '#!/usr/bin/env node\nvar require = require("node:module").createRequire(process.execPath);' },
   plugins: [rawTextPlugin()],
   alias: {
     '@': resolve(appRoot, 'src'),
@@ -59,6 +61,8 @@ export default defineConfig({
     onlyBundle: false,
   },
   outputOptions: {
+    // External native packages must pass through the existing CJS asset hook.
+    dynamicImportInCjs: false,
     codeSplitting: false,
     entryFileNames: 'main.cjs',
   },

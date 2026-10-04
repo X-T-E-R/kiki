@@ -1,0 +1,25 @@
+{
+  "name": "@kiki/auth-native",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native age passphrase encryption and Grok-compatible advisory auth locks",
+  "license": "MIT AND Apache-2.0",
+  "main": "index.cjs",
+  "types": "index.d.ts",
+  "exports": {
+    ".": { "types": "./index.d.ts", "default": "./index.cjs" },
+    "./package.json": "./package.json"
+  },
+  "files": ["index.cjs", "index.d.ts", "prebuilds", "LICENSE", "THIRD_PARTY_NOTICES.md", "licenses"],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/auth-native.test.cjs tests/packaging.test.mjs",
+    "test:packaging": "node --test tests/packaging.test.mjs",
+    "test:nix-env": "node --test tests/nix-build.test.mjs",
+    "test:distribution": "node scripts/verify-distribution.mjs",
+    "test:cli-distribution": "node scripts/verify-cli-distribution.mjs",
+    "typecheck": "node --check index.cjs",
+    "clean": "node scripts/clean.mjs"
+  },
+  "engines": { "node": ">=24.15.0" }
+}

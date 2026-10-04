@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+import { execFile } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 
 import yazl from 'yazl';
 
@@ -32,7 +34,6 @@ if (isMain) {
 
 export async function buildPluginMarketplaceCdn({ pluginsRoot, outDir }) {
   assertSafeOutputDir(pluginsRoot, outDir);
-  await prepareOutputDir(outDir);
 
   const marketplacePath = resolveInsideRoot(pluginsRoot, 'marketplace.json');
   const raw = await readFile(marketplacePath, 'utf8');
@@ -40,6 +41,15 @@ export async function buildPluginMarketplaceCdn({ pluginsRoot, outDir }) {
   if (!isRecord(parsed) || !Array.isArray(parsed.plugins)) {
     throw new Error('plugins/marketplace.json must contain a "plugins" array.');
   }
+  if (parsed.plugins.some((entry) =>
+    isRecord(entry) && typeof entry.source === 'string' &&
+    /^\.\/official\/kiki-media(?:-(?:openai|google|ark|xai|minimax|stepfun|novita|agnes|newapi|comfyui))?$/.test(entry.source))) {
+    await promisify(execFile)(process.execPath, [
+      resolveInsideRoot(pluginsRoot, 'official/media-runtime/distribute.mjs'),
+      '--check',
+    ]);
+  }
+  await prepareOutputDir(outDir);
 
   const archives = [];
   const plugins = [];

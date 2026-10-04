@@ -1,0 +1,13 @@
+{
+  "name": "kiki-media-openai", "version": "0.1.0", "description": "OpenAI image generation/editing and file speech synthesis. Trusted Node HTTP adapters; cloud generation can incur charges.", "license": "MIT",
+  "interface": { "displayName": "OpenAI Media", "shortDescription": "Generate/edit images and synthesize speech" },
+  "x-kiki": {
+    "engines": { "kiki": "^0.4.0" }, "entry": "./entry.mjs", "permissions": { "fs": "outside", "net": ["*"], "secrets": true },
+    "settings": { "schemaVersion": 1, "schema": { "type": "object", "required": ["apiKey"], "properties": {
+      "connectionId": { "type": "string", "title": "Kiki connection (optional)", "description": "Use a media-capable API connection. Selected endpoint and authentication replace this plugin's key; OAuth login alone does not imply image or speech entitlement." },
+      "apiKey": { "type": "string", "title": "API key", "secret": true }, "baseUrl": { "type": "string", "title": "API base URL", "default": "https://api.openai.com/v1" },
+      "imageModel": { "type": "string", "title": "Default image model", "default": "gpt-image-1.5" }, "speechModel": { "type": "string", "title": "Default speech model", "default": "gpt-4o-mini-tts" }
+    } } },
+    "mediaProviders": [{ "schemaVersion": 1, "id": "image", "label": "OpenAI Images", "kinds": ["image"], "resumeVersion": 1, "connectionSetting": "connectionId" }, { "schemaVersion": 1, "id": "speech", "label": "OpenAI Speech", "kinds": ["tts"], "resumeVersion": 1, "connectionSetting": "connectionId" }]
+  }
+}

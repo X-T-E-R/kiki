@@ -11,6 +11,8 @@ const builtins = new Set([
 
 const optionalRuntimeRequires = new Set([
   '@napi-rs/keyring',
+  '@kiki/auth-native',
+  'node-pty',
   'ajv-formats/dist/formats',
   'ajv/dist/runtime/validation_error',
   'bufferutil',

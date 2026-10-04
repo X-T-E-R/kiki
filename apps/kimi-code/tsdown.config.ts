@@ -31,7 +31,8 @@ export default defineConfig({
     [BUILT_IN_CATALOG_DEFINE]: builtInCatalogDefine(),
   },
   deps: {
-    alwaysBundle: [/^@kiki\//, /^@nb-im\/core$/],
+    alwaysBundle: [/^@kiki\/(?!auth-native$)/, /^@nb-im\/core$/],
+    neverBundle: ['@kiki/auth-native'],
     onlyBundle: false,
   },
   outputOptions: {

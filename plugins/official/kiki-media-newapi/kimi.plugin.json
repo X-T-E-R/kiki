@@ -1,0 +1,12 @@
+{
+  "name": "kiki-media-newapi", "version": "0.1.0", "description": "Optional NewAPI /video/generations compatible gateway adapter. Model availability and audio generation depend on your endpoint.", "license": "MIT",
+  "interface": { "displayName": "NewAPI Compatible Video", "shortDescription": "Optional public-reference gateway video" },
+  "x-kiki": {
+    "engines": { "kiki": "^0.4.0" }, "entry": "./entry.mjs", "permissions": { "fs": "outside", "net": ["*"], "secrets": true },
+    "settings": { "schemaVersion": 1, "schema": { "type": "object", "required": ["baseUrl"], "properties": {
+      "connectionId": { "type": "string", "title": "Kiki gateway connection (optional)", "description": "Selected gateway endpoint and authentication replace this plugin's own configuration; model availability remains endpoint-specific." },
+      "apiKey": { "type": "string", "title": "Gateway API key", "secret": true }, "baseUrl": { "type": "string", "title": "Compatible API base URL" }, "videoModel": { "type": "string", "title": "Actual gateway model" }
+    } } },
+    "mediaProviders": [{ "schemaVersion": 1, "id": "video", "label": "NewAPI Compatible Video", "kinds": ["video"], "resumeVersion": 1, "connectionSetting": "connectionId" }]
+  }
+}

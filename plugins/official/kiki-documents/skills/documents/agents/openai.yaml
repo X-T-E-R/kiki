@@ -1,0 +1,4 @@
+interface:
+  display_name: "Documents"
+  short_description: "Extract local documents into readable Markdown"
+  default_prompt: "Use $documents to extract this local document, inspect the saved Markdown and retain its source and warnings."
