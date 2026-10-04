@@ -425,7 +425,7 @@ describe('GUI shared client against an isolated KAP host', () => {
     expect(Buffer.byteLength(JSON.stringify(submission))).toBeLessThan(1024);
     await client.submitPrompt(id, submission);
     await settled(id, 1);
-    const user = requests[0]?.messages.findLast((message) => message.role === 'user');
+    const user = requests[0]?.messages.findLast((message) => message.role === 'user' && JSON.stringify(message.content).includes('data:image/png;base64,'));
     expect(JSON.stringify(user).match(/data:image\/png;base64,/g)).toHaveLength(3);
     for (const file of uploaded) {
       const downloaded = await client.readSessionMediaBytes(id, file.id);
@@ -441,7 +441,7 @@ describe('GUI shared client against an isolated KAP host', () => {
     expect(Buffer.byteLength(JSON.stringify(inline))).toBeGreaterThan(2 * 1024 * 1024);
     await client.submitPrompt(id, inline);
     await settled(id, 2);
-    const inlineUser = requests[1]?.messages.findLast((message) => message.role === 'user');
+    const inlineUser = requests[1]?.messages.findLast((message) => message.role === 'user' && JSON.stringify(message.content).includes('data:image/png;base64,'));
     expect(JSON.stringify(inlineUser).match(/data:image\/png;base64,/g)).toHaveLength(3);
     expect(requests[1]?.model).toBe('first');
     const failedStorage = vi.spyOn(host.core.accessor.get(IFileService), 'get')

@@ -250,6 +250,13 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
           throw toRPCError(error);
         }
       }
+      if (service === 'sessionMetadata' && method === 'read' && scope.sessionId !== undefined && scope.workspaceId === undefined && scope.agentId === undefined && getLiveSessionById(root.accessor, scope.sessionId) === undefined) {
+        const summary = await root.accessor.get(ISessionIndex).get(scope.sessionId);
+        const metadata = summary === undefined ? undefined : await root.accessor.get(IAtomicDocumentStore).get<SessionMeta>(`sessions/${summary.workspaceId}/${scope.sessionId}`, 'state.json');
+        options?.signal?.throwIfAborted();
+        if (metadata === undefined) throw new RPCError(NOT_FOUND, `session not found: ${scope.sessionId}`);
+        return wireClone(metadata);
+      }
       if (service === 'agentPlanService' && method === 'status' && scope.sessionId !== undefined && scope.agentId !== undefined && scope.workspaceId === undefined) {
         const live = getLiveSessionById(root.accessor, scope.sessionId);
         if (live === undefined) {

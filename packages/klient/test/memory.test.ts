@@ -36,6 +36,36 @@ defineKlientConformance('memory', async () => {
 });
 
 describe('memory dispatcher specifics', () => {
+  it('reads cold session metadata and its agent registry without resuming', async () => {
+    const { homeDir, app } = await makeEngine();
+    const klient = createKlient({ scope: app });
+    const dispatcher = createMemoryDispatcher(app);
+    try {
+      const created = await klient.global.sessions.create({ workDir: homeDir });
+      const session = klient.session(created.id);
+      await session.agent('main').setPermission('manual');
+      const agents = await session.agents();
+      expect(agents['main']).toBeDefined();
+      const metadata = await session.get();
+      expect(metadata.id).toBe(created.id);
+      await session.close();
+      const manager = app.accessor.get(ISessionManager);
+      const resume = vi.spyOn(manager, 'resume');
+      expect(await session.get()).toEqual(metadata);
+      expect(await session.agents()).toEqual(agents);
+      await expect(klient.session('missing-session').get()).rejects.toMatchObject({ code: 40404 });
+      const controller = new AbortController();
+      controller.abort(new Error('cancelled metadata read'));
+      await expect(dispatcher.call({ sessionId: created.id }, 'sessionMetadata', 'read', [], { signal: controller.signal })).rejects.toThrow('cancelled metadata read');
+      expect(manager.get(created.id)).toBeUndefined();
+      expect(resume).not.toHaveBeenCalled();
+    } finally {
+      await klient.close();
+      app.dispose();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+    }
+  });
+
   it('reads a persisted cold plan without resuming and rejects missing agents and cancelled reads', async () => {
     const { homeDir, app } = await makeEngine();
     const klient = createKlient({ scope: app });
