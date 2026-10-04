@@ -1,6 +1,6 @@
 {
   "name": "@kiki/kap-server",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "Kiki server backed by the DI × Scope agent engine (agent-core-v2)",
   "homepage": "https://github.com/X-T-E-R/kiki/releases",

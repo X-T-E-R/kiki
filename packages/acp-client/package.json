@@ -1,6 +1,6 @@
 {
   "name": "@kiki/acp-client",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "Outbound Agent Client Protocol process and session engine",
   "homepage": "https://github.com/X-T-E-R/kiki/releases",

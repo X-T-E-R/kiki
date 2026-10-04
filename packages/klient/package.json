@@ -1,6 +1,6 @@
 {
   "name": "@kiki/klient",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Kiki client SDK — contract-driven facade over agent-core-v2, routable over http, ipc, or in-memory transports.",
   "homepage": "https://github.com/X-T-E-R/kiki/releases",

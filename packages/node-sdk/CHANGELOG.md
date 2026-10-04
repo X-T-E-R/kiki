@@ -1,5 +1,19 @@
 # @moonshot-ai/kimi-code-sdk
 
+## 0.19.1
+
+### Patch Changes
+
+- [`5b06589`](https://github.com/X-T-E-R/kiki/commit/5b065892ee55fbfef048983a46bebc549135de2b) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve the owner-only mode across config rewrites, close the Windows unlink window in atomic writes, and recover orphaned temp documents at startup.
+
+  - `atomicWrite` (node-sdk and agent-core-v2) re-applies the requested mode after replacing an existing target, so a rewrite of `config.toml` / `credentials.toml` created with a drifted (looser) mode no longer widens it.
+  - Windows atomic writes rename over the target first and fall back to unlink+rename only on `EPERM`, so a crash between unlink and rename no longer opens on every write.
+  - `FileStorageService.read` promotes a surviving `*.tmp.<pid>.<hex>` sibling when the target is missing, so a config or session document killed mid-replace is recovered on next load instead of being lost.
+
+- Updated dependencies [[`dd5cd6b`](https://github.com/X-T-E-R/kiki/commit/dd5cd6b510febafbf4e90d2e5561eb96546b0cca), [`05e33fe`](https://github.com/X-T-E-R/kiki/commit/05e33fe90c5b330ae2925236d7355fb4b613bd8a), [`dc9cdbf`](https://github.com/X-T-E-R/kiki/commit/dc9cdbf9779d88ef74a8537fea23becae871b5f5), [`b80dd87`](https://github.com/X-T-E-R/kiki/commit/b80dd8779092b5bc7131a0747a0d9aa7ff908616), [`e341a61`](https://github.com/X-T-E-R/kiki/commit/e341a61db26f03a789dc76c98973b5e162b307e1), [`5b06589`](https://github.com/X-T-E-R/kiki/commit/5b065892ee55fbfef048983a46bebc549135de2b), [`5c8a299`](https://github.com/X-T-E-R/kiki/commit/5c8a299cedb12d87fc0a5cec6235c944bf6d7c15), [`cfcc6bb`](https://github.com/X-T-E-R/kiki/commit/cfcc6bb995157fe722af341cc4562f11ff806df3)]:
+  - @kiki/agent-core-v2@0.4.1
+  - @kiki/transcript-live@0.0.1
+
 ## 0.19.0
 
 ### Minor Changes

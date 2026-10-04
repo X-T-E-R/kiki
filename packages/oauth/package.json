@@ -1,6 +1,6 @@
 {
   "name": "@kiki/oauth",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "description": "OAuth toolkit for Kiki's managed Kimi Code authentication",
   "license": "MIT",
