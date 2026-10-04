@@ -41,7 +41,9 @@ describe('findInactiveToolPatterns', () => {
   });
 
   it('accepts the universal allow pattern while preserving narrower policies and explicit denials', () => {
-    expect(findInactiveToolPatterns(['*'], isKnown)).toEqual([]);
+    expect(findInactiveToolPatterns(['*'], isKnown)).toEqual([
+      { pattern: '*', kind: 'wildcard-not-mcp' },
+    ]);
     expect(isToolActive({ tools: ['*'] }, 'Read')).toBe(true);
     expect(isToolActive({ tools: ['*'] }, 'mcp__github__create_pr', 'mcp')).toBe(true);
     expect(isToolActive({ tools: ['*'], toolAllowPolicies: [['Bash']] }, 'Read')).toBe(false);

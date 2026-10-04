@@ -1,5 +1,6 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer, type Server as NetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Server, utils } from 'ssh2';
@@ -25,7 +26,7 @@ import type { IAgentToolResultTruncationService } from '#/agent/toolResultTrunca
 import type { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { ToolExecution, ExecutableToolContext } from '#/tool/toolContract';
 
-const openServers: Server[] = [];
+const openServers: NetServer[] = [];
 const openManagers: SshConnectionManager[] = [];
 const tempHomes: string[] = [];
 
@@ -128,9 +129,10 @@ async function fixture() {
       });
     }));
   });
-  openServers.push(server);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
+  const listener = createServer({ noDelay: true }, (socket) => server.injectSocket(socket));
+  openServers.push(listener);
+  await new Promise<void>((resolve) => listener.listen(0, '127.0.0.1', resolve));
+  const address = listener.address();
   if (address === null || typeof address === 'string') throw new Error('test server did not bind');
   const manager = new SshConnectionManager(async () => ({
     hostname: '127.0.0.1', port: address.port, username: 'tester', password: 'temporary-password',

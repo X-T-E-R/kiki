@@ -3448,20 +3448,19 @@ describe('AgentProfileService tool-pattern warnings', () => {
     expect(toolPatternWarnings()).toEqual([]);
   });
 
-  it('warns about global [tools] config entries that can never activate anything', async () => {
+  it('warns about inert global entries but accepts the universal enabled pattern', async () => {
     ctx = createTestAgent(
-      { initialConfig: { tools: { enabled: ['*'] } } },
+      { initialConfig: { tools: { enabled: ['*', 'Bashh', 'mcp__github'], disabled: ['*'] } } },
       hostEnvironmentServices(homeDir, hostPathClass),
     );
     await ctx.get(IAgentProfileService).bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
 
     const messages = toolPatternWarnings().map((warning) => warning.message ?? '');
-    expect(
-      messages.some(
-        (m) =>
-          m.includes('"*"') && m.includes('the global [tools] config') && m.includes('enabled'),
-      ),
-    ).toBe(true);
+    expect(messages).toEqual([
+      expect.stringMatching(/"Bashh".*enabled.*does not match any registered or built-in tool/),
+      expect.stringMatching(/"mcp__github".*enabled.*mcp__github__\*/),
+      expect.stringMatching(/"\*".*disabled/),
+    ]);
   });
 
   it('stays silent for the default profile and an empty [tools] config', async () => {

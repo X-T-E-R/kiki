@@ -123,6 +123,7 @@ async function fixture(options: {
   const state = ix.get(ISessionStateService);
   const context = ix.get(IAgentContextMemoryService);
   const metadata = ix.get(ISessionMetadata);
+  await metadata.ready;
   const documents = ix.get(IAtomicDocumentStore);
   const call = (host: string, signal = new AbortController().signal) => {
     if (gate === undefined) throw new Error('gate not installed');
@@ -265,6 +266,36 @@ describe('SSH connection gate before tool resolution', () => {
     });
     expect(await f.call('dev')).toContain('changed during connection approval');
     expect(f.state.get(sessionSshHostsKey)).toEqual({});
+    f.dispose();
+  });
+
+  it('waits for subagent metadata initialization before exposing the fixture for teardown', async () => {
+    let markWriting!: () => void;
+    let releaseWrite!: () => void;
+    const writing = new Promise<void>((resolve) => { markWriting = resolve; });
+    const release = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const write = FileStorageService.prototype.write;
+    const spy = vi.spyOn(FileStorageService.prototype, 'write').mockImplementationOnce(async function (this: FileStorageService, ...args) {
+      markWriting();
+      await release;
+      return write.apply(this, args);
+    });
+    let settled = false;
+    const pending = fixture({ agentId: 'subagent' }).then((value) => {
+      settled = true;
+      return value;
+    });
+    try {
+      await writing;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+    } finally {
+      releaseWrite();
+      await (await pending).metadata.ready;
+      spy.mockRestore();
+    }
+    const f = await pending;
+    expect((await f.documents.get<{ id: string }>('sessions/session', 'state.json'))?.id).toBe('session');
     f.dispose();
   });
 

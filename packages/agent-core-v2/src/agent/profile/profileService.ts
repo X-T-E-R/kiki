@@ -2801,7 +2801,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       field: string;
       patterns: readonly string[] | undefined;
     }[] = [
-      { context: 'the global [tools] config', field: 'enabled', patterns: global?.enabled },
+      { context: 'the global [tools] config', field: 'enabled', patterns: global?.enabled?.filter((name) => name !== '*') },
       { context: 'the global [tools] config', field: 'disabled', patterns: global?.disabled },
     ];
     for (const { context, field, patterns } of checks) {

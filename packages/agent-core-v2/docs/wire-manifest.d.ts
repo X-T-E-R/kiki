@@ -32,9 +32,9 @@
 //   context_strategy.override_changed  contextStrategyOverride                                                                                                                                                              src/agent/fullCompaction/contextStrategyOps.ts
 //   context.append_loop_event          contextMemory, contextMemory.revision, todo.continuityClock, turn                                                                                                                    src/agent/contextMemory/contextEvents.ts
 //   context.append_message             agentCollaboration.materializedMessages, contextMemory, contextMemory.revision, goalForkNotice, modelSwitch.continuity, plan, task.notificationDelivery, todo, todo.continuityClock  src/agent/contextMemory/contextEvents.ts
-//   context.apply_compaction           contextMemory, contextMemory.revision, contextWindowEpoch, plan, task.notificationDelivery, todo, turn                                                                               src/agent/contextMemory/contextEvents.ts
-//   context.clear                      contextMemory, contextMemory.revision, plan, task.notificationDelivery, todo, turn                                                                                                   src/agent/contextMemory/contextEvents.ts
-//   context.undo                       contextMemory, contextMemory.revision, plan, task.notificationDelivery, todo, turn                                                                                                   src/agent/contextMemory/contextEvents.ts
+//   context.apply_compaction           contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn                                                       src/agent/contextMemory/contextEvents.ts
+//   context.clear                      contextMemory, contextMemory.revision, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn                                                                           src/agent/contextMemory/contextEvents.ts
+//   context.undo                       contextMemory, contextMemory.revision, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn                                                                           src/agent/contextMemory/contextEvents.ts
 //   executor.plan.remove               externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.plan.update               externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.prompt.delivery           externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
@@ -264,14 +264,14 @@ interface ContextAppendMessagePayload {
 }
 
 /**
- * states: contextMemory, contextMemory.revision, contextWindowEpoch, plan, task.notificationDelivery, todo, turn · blobs: contextMemory
+ * states: contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn · blobs: contextMemory
  * owner: src/agent/contextMemory/contextEvents.ts
  * shared base: ...contextCompactionBaseShape
  */
 type ContextApplyCompactionPayload = { _name: 'context.apply_compaction'; } & ({ summary: string, compactedCount: number, contextSummary?: string } | { contextSummary: string, compactedCount: number, summary?: string } | { summary: ContextMessage, count: number, compactedCount?: number });
 
 /**
- * states: contextMemory, contextMemory.revision, plan, task.notificationDelivery, todo, turn · blobs: contextMemory
+ * states: contextMemory, contextMemory.revision, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn · blobs: contextMemory
  * owner: src/agent/contextMemory/contextEvents.ts
  */
 interface ContextClearPayload {
@@ -279,7 +279,7 @@ interface ContextClearPayload {
 }
 
 /**
- * states: contextMemory, contextMemory.revision, plan, task.notificationDelivery, todo, turn · blobs: contextMemory
+ * states: contextMemory, contextMemory.revision, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn · blobs: contextMemory
  * owner: src/agent/contextMemory/contextEvents.ts
  */
 interface ContextUndoPayload {
