@@ -7,7 +7,7 @@
 
 import { Fragment, type ReactNode } from 'react';
 
-import { findQuoteRange, type TimelineAnnotation } from '@kiki/session-core/composer';
+import { anchoredSelectionRange, canonicalSelectionText, findQuoteRange, type TimelineAnnotation } from '@kiki/session-core/composer';
 
 /** Shared mark styling: a quiet neutral wash plus a restrained underline. */
 export const ANNOTATION_MARK_CLASS =
@@ -37,8 +37,13 @@ export function resolveMarkRanges(
 ): MarkRange[] {
   const found: MarkRange[] = [];
   for (const target of targets) {
-    const range = findQuoteRange(text, target.quote);
-    if (range !== null) found.push({ ...range, annotationId: target.id });
+    if (target.source !== undefined && target.source !== null && canonicalSelectionText(target.quote) !== target.source.text) continue;
+    const range = target.source === null ? null : target.source === undefined
+      ? findQuoteRange(text, target.quote) : anchoredSelectionRange(text, target.source);
+    if (range !== null) {
+      if (target.source === undefined && findQuoteRange(text.slice(range.end), target.quote) !== null) continue;
+      found.push({ ...range, annotationId: target.id });
+    }
   }
   found.sort((a, b) => a.start - b.start || b.end - a.end);
   const accepted: MarkRange[] = [];
@@ -126,7 +131,7 @@ interface HastRootLike {
 
 type HastNodeLike = HastTextLike | HastElementLike | HastRootLike;
 
-const SKIP_TAGS = new Set(['pre', 'code', 'script', 'style', 'mark']);
+const SKIP_TAGS = new Set(['script', 'style']);
 
 interface CollectedText {
   readonly node: HastTextLike;
@@ -182,44 +187,35 @@ function markElement(
  * annotated passage).
  */
 export function rehypeAnnotationMarks(targets: readonly TimelineAnnotation[]) {
-  return function annotationMarksAttacher() {
+  const attacher = function annotationMarksAttacher() {
     return function transform(tree: HastRootLike) {
-      for (const target of targets) {
-        const texts = collectTextNodes(tree);
-        if (texts.length === 0) return;
-        const concatenated = texts.map((entry) => entry.node.value).join('');
-        const range = findQuoteRange(concatenated, target.quote);
-        if (range === null) continue;
-        const intersected = texts.filter(
-          (entry) =>
-            entry.offset < range.end && entry.offset + entry.node.value.length > range.start,
-        );
-        const first = intersected[0];
-        const last = intersected[intersected.length - 1];
-        for (const entry of intersected.toReversed()) {
-          const localStart = Math.max(0, range.start - entry.offset);
-          const localEnd = Math.min(entry.node.value.length, range.end - entry.offset);
-          const before = entry.node.value.slice(0, localStart);
-          const middle = entry.node.value.slice(localStart, localEnd);
-          const after = entry.node.value.slice(localEnd);
-          if (middle === '') continue;
-          const replacement: HastNodeLike[] = [];
-          if (before !== '') replacement.push({ type: 'text', value: before });
-          replacement.push(markElement(target.id, middle, entry === first));
-          // The bubble follows the LAST marked fragment, before any unmarked
-          // trailing text in that node. The keyboard entry stays on the first.
-          if (entry === last) {
-            replacement.push({
-              type: 'element',
-              tagName: 'span',
-              properties: bubbleProperties(target.id),
-              children: [],
-            });
+      const texts = collectTextNodes(tree);
+      const ranges = resolveMarkRanges(texts.map((entry) => entry.node.value).join(''), targets);
+      const started = new Set<string>();
+      for (const entry of texts.toReversed()) {
+        if (entry.node.value.trim() === '') continue;
+        const hits = ranges.filter((range) => entry.offset < range.end && entry.offset + entry.node.value.length > range.start);
+        if (hits.length === 0) continue;
+        const replacement: HastNodeLike[] = [];
+        let cursor = 0;
+        for (const range of hits) {
+          const start = Math.max(0, range.start - entry.offset);
+          const end = Math.min(entry.node.value.length, range.end - entry.offset);
+          if (start > cursor) replacement.push({ type: 'text', value: entry.node.value.slice(cursor, start) });
+          const first = !texts.some((other) => other.offset < entry.offset && other.offset + other.node.value.length > range.start);
+          replacement.push(markElement(range.annotationId, entry.node.value.slice(start, end), first));
+          if (!started.has(range.annotationId)) {
+            started.add(range.annotationId);
+            replacement.push({ type: 'element', tagName: 'span', properties: bubbleProperties(range.annotationId), children: [] });
           }
-          if (after !== '') replacement.push({ type: 'text', value: after });
-          entry.parent.children?.splice(entry.childIndex, 1, ...replacement);
+          cursor = end;
         }
+        if (cursor < entry.node.value.length) replacement.push({ type: 'text', value: entry.node.value.slice(cursor) });
+        entry.parent.children?.splice(entry.childIndex, 1, ...replacement);
       }
     };
   };
+  // Streamdown's processor cache keys plugins by function name, not identity.
+  Object.defineProperty(attacher, 'name', { value: `annotationMarks:${JSON.stringify(targets)}` });
+  return attacher;
 }

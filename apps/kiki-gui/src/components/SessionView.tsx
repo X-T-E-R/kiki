@@ -67,7 +67,6 @@ import {
   buildPromptContent,
   buildQuotePrefix,
   buildSkillActivation,
-  findQuoteRange,
   flushDrafts,
   parseSelectionCarryovers,
   readComposerState,
@@ -79,6 +78,8 @@ import {
   writeDraft,
   type ComposerAttachment,
   type SelectionAnnotation,
+  type SelectionSourceAnchor,
+  collectDraftAnnotationTargets,
 } from '@kiki/session-core/composer';
 import {
   assertSessionWritable,
@@ -1484,6 +1485,7 @@ export function SessionView({
     readonly promptId: string;
     readonly savedDraft: string;
     readonly savedQuote: string | null;
+    readonly savedQuoteSource?: SelectionSourceAnchor | null;
     readonly savedAnnotations: readonly SelectionAnnotation[];
   } | null>(null);
   const queueEditRef = useRef(queueEdit);
@@ -1516,6 +1518,7 @@ export function SessionView({
   // Unsent quotes share the session's in-memory chrome with annotations;
   // send (and the chip's ×) clear them explicitly.
   const [quote, setQuote] = useState<string | null>(restoredComposer.quote ?? null);
+  const [quoteSource, setQuoteSource] = useState<SelectionSourceAnchor | null | undefined>(restoredComposer.quoteSource);
   // Selection annotations (quote + one-line comment) accumulate independently
   // of the quote chip — any number ride the same prompt, and unsent ones return
   // with the session's in-memory composer chrome after navigation.
@@ -1527,12 +1530,13 @@ export function SessionView({
     // Return focus to the composer so the user can type the follow-up at once.
     document.querySelector<HTMLTextAreaElement>('[data-composer]')?.focus();
   }, []);
-  const handleQuoteSelection = useCallback((text: string) => {
+  const handleQuoteSelection = useCallback((text: string, source?: SelectionSourceAnchor | null) => {
     setQuote(text);
+    setQuoteSource(source);
     focusComposer();
   }, [focusComposer]);
-  const handleAnnotateSelection = useCallback((text: string, comment: string) => {
-    setAnnotations((current) => addAnnotation(current, text, comment));
+  const handleAnnotateSelection = useCallback((text: string, comment: string, source?: SelectionSourceAnchor | null) => {
+    setAnnotations((current) => addAnnotation(current, text, comment, source));
     focusComposer();
   }, [focusComposer]);
   const handleRemoveQuote = useCallback(() => { setQuote(null); }, []);
@@ -1671,6 +1675,7 @@ export function SessionView({
           attachments: attachmentsRef.current,
           annotations: edit.savedAnnotations,
           quote: edit.savedQuote,
+          quoteSource: edit.savedQuoteSource,
           permissionMode: chrome.permissionMode,
           planMode: chrome.planMode,
           planGate: chrome.planGate,
@@ -1730,6 +1735,7 @@ export function SessionView({
       attachments,
       annotations,
       quote,
+      quoteSource,
       permissionMode: permissionOverride,
       planMode: planOverride,
       planGate: planGateOverride,
@@ -1742,6 +1748,7 @@ export function SessionView({
     attachments,
     annotations,
     quote,
+    quoteSource,
     permissionOverride,
     planOverride,
     planGateOverride,
@@ -2257,7 +2264,7 @@ export function SessionView({
         // annotations first (blockquote + comment per segment), then the plain
         // quote as a Markdown blockquote — exactly what the transcript renders
         // back. The wire protocol stays untouched.
-        const prefix = `${buildAnnotationsPrefix(annotations)}${quote !== null ? buildQuotePrefix(quote) : ''}`;
+        const prefix = `${buildAnnotationsPrefix(annotations)}${quote !== null ? buildQuotePrefix(quote, quoteSource) : ''}`;
         const quotedText = prefix === '' ? text : `${prefix}${text}`;
         const content = buildPromptContent(quotedText, composerAttachments);
         if (content === null || pendingSendRef.current) return;
@@ -2602,6 +2609,7 @@ export function SessionView({
     modelSwitches.switches,
     modelSwitches.refresh,
     quote,
+    quoteSource,
     annotations,
     sessionId,
     t,
@@ -3077,6 +3085,7 @@ export function SessionView({
         promptId,
         savedDraft: draftRef.current,
         savedQuote: quote,
+        savedQuoteSource: quoteSource,
         savedAnnotations: annotations,
       });
       // The composer re-attaches the thread context on confirm. The parked
@@ -3086,14 +3095,15 @@ export function SessionView({
       const carryovers = parseSelectionCarryovers(stripThreadRefContext(item.text));
       updateDraft(carryovers.body);
       setQuote(carryovers.quote);
+      setQuoteSource(carryovers.quoteSource);
       setAnnotations(
         carryovers.annotations.reduce<readonly SelectionAnnotation[]>(
-          (current, note) => addAnnotation(current, note.quote, note.comment),
+          (current, note) => addAnnotation(current, note.quote, note.comment, note.source),
           [],
         ),
       );
     },
-    [queueEdit, queuedItems, quote, annotations, updateDraft],
+    [queueEdit, queuedItems, quote, quoteSource, annotations, updateDraft],
   );
   const handleQueueEditConfirm = useCallback(
     (text: string): Promise<void> => {
@@ -3103,12 +3113,13 @@ export function SessionView({
         setQueueEdit(null);
         updateDraft(edit.savedDraft);
         setQuote(edit.savedQuote);
+        setQuoteSource(edit.savedQuoteSource);
         setAnnotations(edit.savedAnnotations);
       };
       const item = queuedItems.find((entry) => entry.promptId === edit.promptId);
       // The edited chips ride back into the queued text as the same plain-text
       // prefix the send path builds.
-      const prefix = `${buildAnnotationsPrefix(annotations)}${quote !== null ? buildQuotePrefix(quote) : ''}`;
+      const prefix = `${buildAnnotationsPrefix(annotations)}${quote !== null ? buildQuotePrefix(quote, quoteSource) : ''}`;
       const finalText = prefix === '' ? text : `${prefix}${text}`;
       // Row vanished (sent/cleared elsewhere) or text unchanged: nothing to
       // replace — just restore the draft.
@@ -3123,12 +3134,13 @@ export function SessionView({
         // text can be retried or cancelled.
         .catch(() => undefined);
     },
-    [queueEdit, queuedItems, quote, annotations, actions, updateDraft],
+    [queueEdit, queuedItems, quote, quoteSource, annotations, actions, updateDraft],
   );
   const handleQueueEditCancel = useCallback(() => {
     if (queueEdit === null) return;
     updateDraft(queueEdit.savedDraft);
     setQuote(queueEdit.savedQuote);
+    setQuoteSource(queueEdit.savedQuoteSource);
     setAnnotations(queueEdit.savedAnnotations);
     setQueueEdit(null);
   }, [queueEdit, updateDraft]);
@@ -3138,6 +3150,7 @@ export function SessionView({
     setQueueEdit(null);
     updateDraft(edit.savedDraft);
     setQuote(edit.savedQuote);
+    setQuoteSource(edit.savedQuoteSource);
     setAnnotations(edit.savedAnnotations);
     void handleCancelQueued(edit.promptId);
   }, [queueEdit, updateDraft, handleCancelQueued]);
@@ -3497,16 +3510,9 @@ export function SessionView({
       ),
     }
   ), [trayItems, trayAgentNames, reviewRequest?.seq, handleResolveApproval, handleAnswerQuestion, handleDismissQuestion, handleBatchResolve]);
-  // An unsent note's passage: the newest visible message that quotes it.
   const handleLocateAnnotation = useCallback((annotation: SelectionAnnotation) => {
-    for (let index = mainTranscriptBlocks.length - 1; index >= 0; index -= 1) {
-      const block = mainTranscriptBlocks[index]!;
-      if ((block.kind === 'assistant' || block.kind === 'user') && findQuoteRange(block.text, annotation.quote) !== null) {
-        navigateTimeline({ kind: 'block', blockId: block.id }, { sessionId });
-        return;
-      }
-    }
-    navigateTimeline({ kind: 'latest' }, { sessionId });
+    const blockId = collectDraftAnnotationTargets(mainTranscriptBlocks, [annotation]).keys().next().value;
+    if (blockId !== undefined) navigateTimeline({ kind: 'annotation', blockId, annotationId: annotation.id }, { sessionId });
   }, [mainTranscriptBlocks, navigateTimeline, sessionId]);
   // The one connection fact the line under the card carries.
   const composerStatusNotice = useMemo(() => {
@@ -3685,6 +3691,7 @@ export function SessionView({
     attachments,
     updateAttachments,
     quote,
+    quoteSource,
     annotations,
     handleRemoveQuote,
     handleRemoveAnnotation,
@@ -3840,9 +3847,9 @@ export function SessionView({
             forest,
             onOpenAgent: openAgent,
             rowActions: transcriptRowActions,
-            draftAnnotations: annotations,
+            draftAnnotations: quote === null ? annotations : [...annotations, { id: 'draft-quote', quote, comment: null, source: quoteSource }],
             onSaveDraftAnnotation: handleUpdateAnnotation,
-            onRemoveDraftAnnotation: handleRemoveAnnotation,
+            onRemoveDraftAnnotation: (id) => { if (id === 'draft-quote') handleRemoveQuote(); else handleRemoveAnnotation(id); },
           },
           timelineRef: transcriptQuoteRef,
           timelineOverlay: <SelectionQuoteButton

@@ -15,7 +15,7 @@ import {
   writeAnnotationOverride,
   type TimelineAnnotation,
 } from './timelineAnnotations';
-import { buildAnnotationsPrefix, buildQuotePrefix } from './selectionQuote';
+import { buildAnnotationsPrefix, buildQuotePrefix, sourceTextVersion } from './selectionQuote';
 
 const block = (id: string, kind: string, text: string) => ({ id, kind, text });
 
@@ -97,18 +97,14 @@ describe('findQuoteRange', () => {
 describe('collectTimelineAnnotations', () => {
   const ASSISTANT = 'The queue batches transcript blocks into floors and drains parked prompts in order.';
 
-  it('anchors an annotation to the nearest preceding block containing the quote', () => {
+  it('does not guess a legacy source when different messages contain identical quotes', () => {
     const quote = 'batches transcript blocks into floors';
-    const text = `> ${quote}\n\nComment: floors matter\n\n`;
     const targets = collectTimelineAnnotations([
       block('a1', 'assistant', `prefix ${quote} suffix`),
       block('a2', 'assistant', `nearer ${quote} here`),
-      block('u1', 'user', text),
+      block('u1', 'user', `> ${quote}\n\nComment: floors matter\n\n`),
     ]);
-    expect(targets.has('a1')).toBe(false);
-    const list = targets.get('a2');
-    expect(list).toHaveLength(1);
-    expect(list?.[0]).toMatchObject({ quote, comment: 'floors matter' });
+    expect(targets.size).toBe(0);
   });
 
   it('derives quote-kind segments with a null comment', () => {
@@ -154,12 +150,14 @@ describe('collectTimelineAnnotations', () => {
 
   it('keeps identical annotations from separate messages independently addressable', () => {
     const quote = 'batches transcript blocks into floors';
-    const text = `> ${quote}\n\nComment: same\n\n`;
+    const carrier = (blockId: string) => buildAnnotationsPrefix([{ quote, comment: 'same', source: {
+      blockId, version: sourceTextVersion(ASSISTANT), start: 8, end: 8 + quote.replaceAll(' ', '').length, text: quote.replaceAll(' ', ''),
+    } }]);
     const targets = collectTimelineAnnotations([
       block('a1', 'assistant', ASSISTANT),
-      block('u1', 'user', text),
+      block('u1', 'user', carrier('a1')),
       block('a2', 'assistant', ASSISTANT),
-      block('u2', 'user', text),
+      block('u2', 'user', carrier('a2')),
     ]);
     const first = targets.get('a1')?.[0]?.id;
     const second = targets.get('a2')?.[0]?.id;
@@ -172,17 +170,12 @@ describe('collectTimelineAnnotations', () => {
 describe('collectDraftAnnotationTargets', () => {
   const ASSISTANT = 'The queue batches transcript blocks into floors and drains parked prompts in order.';
 
-  it('marks the last matching block with the draft note id, and nothing without a draft', () => {
-    const quote = 'batches transcript blocks into floors';
-    expect(
-      collectDraftAnnotationTargets([block('a1', 'assistant', ASSISTANT)], []).size,
-    ).toBe(0);
-    const targets = collectDraftAnnotationTargets(
-      [block('a1', 'assistant', `prefix ${quote} suffix`), block('a2', 'assistant', `nearer ${quote} here`)],
-      [{ id: 'draft-1', quote, comment: 'floors matter' }],
-    );
-    expect(targets.has('a1')).toBe(false);
-    expect(targets.get('a2')).toEqual([{ id: 'draft-1', quote, comment: 'floors matter' }]);
+  it('keeps a unique legacy draft source, but never guesses among duplicate messages', () => {
+    const draft = { id: 'draft-1', quote: 'batches transcript blocks into floors', comment: 'floors matter' };
+    const blocks = [block('a1', 'assistant', ASSISTANT)];
+    expect(collectDraftAnnotationTargets(blocks, []).size).toBe(0);
+    expect(collectDraftAnnotationTargets(blocks, [draft]).get('a1')).toEqual([draft]);
+    expect(collectDraftAnnotationTargets([...blocks, block('a2', 'assistant', ASSISTANT)], [draft]).size).toBe(0);
   });
 
   it('marks user messages too and drops drafts whose quote matches nothing', () => {

@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-route
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { clearComposerState, clearStoredDrafts, readComposerState, resetComposerMemoryForTests, resetDraftMemoryForTests, readDraft, writeDraft, type ComposerAttachment, type SelectionAnnotation } from '@kiki/session-core/composer';
+import { clearComposerState, clearStoredDrafts, readComposerState, resetComposerMemoryForTests, resetDraftMemoryForTests, readDraft, writeDraft, parseSelectionCarryovers, type ComposerAttachment, type SelectionAnnotation, type SelectionSourceAnchor } from '@kiki/session-core/composer';
 import { SendNowError } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { SessionRouteView } from './SessionView';
@@ -163,10 +163,10 @@ vi.mock('./Transcript', async (importOriginal) => {
   return { ...actual, Transcript: () => <div data-transcript /> };
 });
 vi.mock('./SelectionQuoteButton', () => ({
-  SelectionQuoteButton: ({ onAnnotate, onQuote }: { onAnnotate: (quote: string, comment: string) => void; onQuote: (text: string) => void }) => (
+  SelectionQuoteButton: ({ onAnnotate, onQuote }: { onAnnotate: (quote: string, comment: string, source?: SelectionSourceAnchor) => void; onQuote: (text: string, source?: SelectionSourceAnchor) => void }) => (
     <>
-      <button type="button" data-annotate onClick={() => { onAnnotate('selected source', 'keep this'); }}>Annotate</button>
-      <button type="button" data-quote onClick={() => { onQuote('personal quote'); }}>Quote</button>
+      <button type="button" data-annotate onClick={() => { onAnnotate('selected source', 'keep this', { blockId: 'actual-source', version: 'source-version', start: 0, end: 14, text: 'selectedsource' }); }}>Annotate</button>
+      <button type="button" data-quote onClick={() => { onQuote('personal quote', { blockId: 'actual-quote', version: 'quote-version', start: 0, end: 13, text: 'personalquote' }); }}>Quote</button>
     </>
   ),
 }));
@@ -441,6 +441,22 @@ describe('session selection annotations', () => {
       expect(back).toHaveLength(2);
       expect(back[1]).toBe(added[0]);
       expect(back[0]!.id).not.toBe(added[0]!.id);
+    });
+  });
+
+  it('sends captured source anchors and restores them with an unaccepted composition', async () => {
+    await withSession(async (container) => {
+      const source = currentAnnotations()[0]!.source;
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-quote]')!.click(); });
+      let sent: Promise<unknown> | undefined;
+      await act(async () => { sent = composerProps().onSend('follow up', []); });
+      const carry = parseSelectionCarryovers(submit.calls[0]!.text);
+      expect(carry.annotations[0]?.source).toEqual(source);
+      expect(carry.quoteSource?.blockId).toBe('actual-quote');
+      expect(carry.body).toBe('follow up');
+      await act(async () => { submit.calls[0]!.reject(new Error('offline')); await sent; });
+      expect(currentAnnotations()[0]?.source).toEqual(source);
+      expect(readComposerState('session-a').quoteSource?.blockId).toBe('actual-quote');
     });
   });
 

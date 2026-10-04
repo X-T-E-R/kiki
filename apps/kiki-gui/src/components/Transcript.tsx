@@ -36,9 +36,14 @@ import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import {
   collectDraftAnnotationTargets,
+  collectTimelineAnnotations,
+  applyAnnotationOverrides,
+  getAnnotationOverridesSnapshot,
+  subscribeAnnotationOverrides,
+  writeAnnotationOverride,
+  sourceTextVersion,
   parseSelectionCarryovers,
   parseSshHostContext,
-  type SelectionAnnotation,
   type TimelineAnnotation,
   appendToDraft,
   appendThreadRefContext,
@@ -480,6 +485,8 @@ const UserMessage = memo(function UserMessage({
           <div
             ref={contentRef}
             id={contentId}
+            data-source-block-id={block.id}
+            data-source-version={sourceTextVersion(block.text)}
             data-collapsible-content
             className={
               clipped
@@ -634,7 +641,7 @@ const AssistantMessage = memo(function AssistantMessage({
             {/* Marks ride the settled render only: a streaming block's text
                 still moves under the quote, and a quote split across the
                 memoized prefix chunks would silently lose its mark anyway. */}
-            {block.text !== '' ? <Markdown text={block.text} annotationTargets={annotations} /> : null}
+            {block.text !== '' ? <Markdown text={block.text} sourceBlockId={block.id} annotationTargets={annotations} /> : null}
             {block.streaming ? <span className="stream-caret font-mono">▍</span> : null}
           </>
         )}
@@ -2318,7 +2325,8 @@ function annotationListsEqual(
         candidate !== undefined &&
         annotation.id === candidate.id &&
         annotation.quote === candidate.quote &&
-        annotation.comment === candidate.comment
+        annotation.comment === candidate.comment &&
+        JSON.stringify(annotation.source) === JSON.stringify(candidate.source)
       );
     })
   );
@@ -3047,9 +3055,9 @@ export function Transcript({
   /**
    * Composer draft annotations: while the draft quotes part of a message, the
    * quoted range is marked in the timeline and the popover edits the draft
-   * annotation itself. Sent notes live on the message bubble instead.
+   * annotation itself. Sent notes also remain marked on their source.
    */
-  draftAnnotations?: readonly SelectionAnnotation[];
+  draftAnnotations?: readonly TimelineAnnotation[];
   onSaveDraftAnnotation?: (id: string, comment: string) => void;
   onRemoveDraftAnnotation?: (id: string) => void;
 }) {
@@ -3083,13 +3091,16 @@ export function Transcript({
     () => blocks.filter((block) => block.kind !== 'user' || block.promptStatus !== 'queued'),
     [blocks],
   );
-  // Timeline marks follow the composer draft only: no draft annotation, no
-  // mark. Sent annotations are rendered by the user message bubble itself.
+  const annotationOverrides = useSyncExternalStore(subscribeAnnotationOverrides, getAnnotationOverridesSnapshot, getAnnotationOverridesSnapshot);
   const annotationTargets = useStableAnnotationTargets(
-    useMemo(
-      () => collectDraftAnnotationTargets(timelineBlocks, draftAnnotations ?? []),
-      [timelineBlocks, draftAnnotations],
-    ),
+    useMemo(() => {
+      const sent = applyAnnotationOverrides(collectTimelineAnnotations(blocks), annotationOverrides);
+      const merged = new Map(sent);
+      for (const [blockId, drafts] of collectDraftAnnotationTargets(timelineBlocks, draftAnnotations ?? [])) {
+        merged.set(blockId, [...drafts, ...(merged.get(blockId) ?? [])]);
+      }
+      return merged;
+    }, [blocks, timelineBlocks, draftAnnotations, annotationOverrides]),
   );
   const annotationsById = useMemo(() => {
     const map = new Map<string, TimelineAnnotation>();
@@ -4385,14 +4396,17 @@ export function Transcript({
           })}
         </div>
       </div>
-      {annotationPopover !== null && openAnnotation !== undefined &&
-      onSaveDraftAnnotation !== undefined && onRemoveDraftAnnotation !== undefined ? (
+      {annotationPopover !== null && openAnnotation !== undefined ? (
         <AnnotationPopover
           state={annotationPopover}
           annotation={openAnnotation}
-          onSave={onSaveDraftAnnotation}
+          onSave={(id, comment) => {
+            if (draftAnnotations?.some((note) => note.id === id)) onSaveDraftAnnotation?.(id, comment);
+            else writeAnnotationOverride(id, { ...annotationOverrides[id], comment });
+          }}
           onRemove={(id) => {
-            onRemoveDraftAnnotation(id);
+            if (draftAnnotations?.some((note) => note.id === id)) onRemoveDraftAnnotation?.(id);
+            else writeAnnotationOverride(id, { ...annotationOverrides[id], deleted: true });
             closeAnnotationPopover();
           }}
           onClose={closeAnnotationPopover}

@@ -37,6 +37,8 @@ import {
   getAnnotationOverridesSnapshot,
   readDraft,
   resetAnnotationOverridesForTests,
+  buildAnnotationsPrefix,
+  sourceTextVersion,
 } from '@kiki/session-core/composer';
 import {
   SessionController,
@@ -828,7 +830,7 @@ describe('timeline annotations', () => {
     expect(getAnnotationOverridesSnapshot()).toEqual({});
   });
 
-  it('keeps a sent note off the timeline and folds it into the message bubble', async () => {
+  it('keeps a sent note visible on its source as well as in the message bubble', async () => {
     resetAnnotationOverridesForTests();
     const quote = 'batches transcript blocks into floors';
     const originalComment = 'Floor batching keeps long sessions cheap';
@@ -843,8 +845,7 @@ describe('timeline annotations', () => {
       }),
     ]);
 
-    // No draft note, no mark.
-    expect(container.querySelector('[data-annotation-ref]')).toBeNull();
+    expect(container.querySelector('mark[data-annotation-ref]')?.textContent).toContain(quote);
     const bubble = container.querySelector<HTMLElement>('[data-annotation-bubble="user-annotation-carrier"]')!;
     expect(bubble).not.toBeNull();
 
@@ -873,8 +874,29 @@ describe('timeline annotations', () => {
     });
     expect(getAnnotationOverridesSnapshot()[noteId]?.deleted).toBe(true);
     expect(container.querySelector('[data-annotation-bubble]')).toBeNull();
+    expect(container.querySelector('mark[data-annotation-ref]')).toBeNull();
     expect(document.body.querySelector('[data-annotation-bubble-panel]')).toBeNull();
     resetAnnotationOverridesForTests();
+  });
+
+  it.each([undefined, 'queued'] as const)('marks the captured older message without guessing another source (%s carrier)', async (promptStatus) => {
+    const text = 'same same tail';
+    const source = { blockId: 'older-source', version: sourceTextVersion(text), start: 4, end: 8, text: 'same' };
+    const carrier = buildAnnotationsPrefix([
+      { quote: 'same', comment: 'second occurrence', source },
+      { quote: 'same', comment: 'invalid version', source: { ...source, version: 'stale' } },
+      { quote: 'same', comment: 'missing message', source: { ...source, blockId: 'missing' } },
+    ]) + 'follow up';
+    const container = await renderTranscript([
+      assistantBlock('older-source', text), assistantBlock('newer-source', text),
+      userBlock({ id: 'carrier', text: carrier, promptStatus }),
+    ]);
+    const mark = container.querySelector<HTMLElement>('mark')!;
+    expect(container.querySelectorAll('mark')).toHaveLength(1);
+    expect(mark.closest('[data-source-block-id]')?.getAttribute('data-source-block-id')).toBe('older-source');
+    expect(mark.previousSibling?.textContent).toBe('same ');
+    await act(async () => { click(mark); });
+    expect(document.body.querySelector<HTMLInputElement>('[data-annotation-panel-input]')?.value).toBe('second occurrence');
   });
 });
 

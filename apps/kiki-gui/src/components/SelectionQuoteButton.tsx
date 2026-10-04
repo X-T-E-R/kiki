@@ -30,6 +30,8 @@ import {
   isCoarsePointer,
   selectionAnchorRect,
   selectionTextWithin,
+  selectionSourceAnchor,
+  type SelectionSourceAnchor,
 } from '@kiki/session-core/composer';
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
@@ -40,9 +42,13 @@ const VIEWPORT_MARGIN = 8;
 const PILL_WIDTH = 200;
 const INPUT_WIDTH = 320;
 
-type Target = { text: string; top: number; left: number };
+type Target = { text: string; source: SelectionSourceAnchor | null; top: number; left: number };
 type Mode = 'actions' | 'annotate';
-type AnnotationDraft = { text: string; comment: string };
+type AnnotationDraft = { text: string; source: SelectionSourceAnchor | null; comment: string };
+
+function sameSource(left: Pick<Target, 'text' | 'source'>, right: Pick<Target, 'text' | 'source'>): boolean {
+  return left.text === right.text && JSON.stringify(left.source) === JSON.stringify(right.source);
+}
 
 export function SelectionQuoteButton({
   containerRef,
@@ -51,8 +57,8 @@ export function SelectionQuoteButton({
 }: {
   /** The transcript container; a selection must live fully inside it. */
   containerRef: RefObject<HTMLElement | null>;
-  onQuote: (text: string) => void;
-  onAnnotate: (text: string, comment: string) => void;
+  onQuote: (text: string, source?: SelectionSourceAnchor | null) => void;
+  onAnnotate: (text: string, comment: string, source?: SelectionSourceAnchor | null) => void;
 }) {
   const { t } = useI18n();
   // SSR (tests render to static markup) has no window — stay hidden there.
@@ -113,13 +119,15 @@ export function SelectionQuoteButton({
       }
       liveSelectionRef.current = true;
       const pendingTarget = targetRef.current;
-      if (resumingAnnotation && (pendingTarget === null || pendingTarget.text !== text)) {
+      const source = selectionSourceAnchor(selection);
+      if (resumingAnnotation && (pendingTarget === null || !sameSource(pendingTarget, { text, source }))) {
         // A different selection gets the ordinary actions pill. The one
         // retained draft stays keyed to its source and is not copied into it.
         setMode('actions');
         setComment('');
         setTarget({
           text,
+          source,
           top: Math.max(rect.top - PILL_HEIGHT - 6, VIEWPORT_MARGIN),
           left: Math.min(Math.max(rect.left, VIEWPORT_MARGIN), window.innerWidth - PILL_WIDTH),
         });
@@ -130,10 +138,11 @@ export function SelectionQuoteButton({
       const width = annotation ? INPUT_WIDTH : PILL_WIDTH;
       if (resumingAnnotation) {
         const draft = draftRef.current;
-        if (draft !== null && draft.text === text) setComment(draft.comment);
+        if (draft !== null && sameSource(draft, { text, source })) setComment(draft.comment);
       }
       setTarget({
         text,
+        source,
         top: Math.max(rect.top - PILL_HEIGHT - 6 - (annotation ? 58 : 0), VIEWPORT_MARGIN),
         left: Math.min(Math.max(rect.left, VIEWPORT_MARGIN), window.innerWidth - width),
       });
@@ -251,7 +260,7 @@ export function SelectionQuoteButton({
           onChange={(event) => {
             const nextComment = event.target.value;
             setComment(nextComment);
-            draftRef.current = { text: target.text, comment: nextComment };
+            draftRef.current = { text: target.text, source: target.source, comment: nextComment };
           }}
           onCompositionStart={() => { composingRef.current = true; }}
           onCompositionEnd={() => { composingRef.current = false; }}
@@ -267,7 +276,7 @@ export function SelectionQuoteButton({
               if (trimmed !== '') {
                 submittingRef.current = true;
                 draftRef.current = null;
-                onAnnotate(target.text, trimmed);
+                onAnnotate(target.text, trimmed, target.source);
                 window.getSelection()?.removeAllRanges();
                 close();
               }
@@ -300,7 +309,7 @@ export function SelectionQuoteButton({
         type="button"
         className="flex items-center gap-1 px-3 py-1 transition-colors hover:text-ink"
         onClick={() => {
-          onQuote(target.text);
+          onQuote(target.text, target.source);
           window.getSelection()?.removeAllRanges();
           close(draftRef.current === null);
         }}
@@ -315,10 +324,10 @@ export function SelectionQuoteButton({
         className="flex items-center gap-1 px-3 py-1 transition-colors hover:text-amber-ink"
         onClick={() => {
           const draft = draftRef.current;
-          const nextComment = draft?.text === target.text ? draft.comment : '';
+          const nextComment = draft !== null && sameSource(draft, target) ? draft.comment : '';
           // Starting Annotate on another selection intentionally replaces the
           // single retained draft; it never reuses its comment for new text.
-          draftRef.current = { text: target.text, comment: nextComment };
+          draftRef.current = { text: target.text, source: target.source, comment: nextComment };
           submittingRef.current = false;
           composingRef.current = false;
           setComment(nextComment);

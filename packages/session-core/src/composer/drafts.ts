@@ -132,6 +132,7 @@ export interface ComposerSessionState {
   attachments: readonly ComposerAttachment[];
   annotations: readonly SelectionAnnotation[];
   quote?: string | null;
+  quoteSource?: SelectionAnnotation['source'];
   /** Pill overrides; `undefined` means "no local override" (store/default). */
   permissionMode: PermissionMode | undefined;
   planMode: boolean | undefined;

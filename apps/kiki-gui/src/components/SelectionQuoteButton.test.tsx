@@ -136,7 +136,7 @@ describe('SelectionQuoteButton', () => {
     const { container } = await mount(onQuote);
     await selectSource(container);
     await act(async () => { quoteButton(container).click(); });
-    expect(onQuote).toHaveBeenCalledWith('the selectable transcript text');
+    expect(onQuote).toHaveBeenCalledWith('the selectable transcript text', null);
     expect(pill(container)).toBeNull();
     expect(window.getSelection()!.rangeCount).toBe(0);
   });
@@ -151,7 +151,7 @@ describe('SelectionQuoteButton', () => {
     expect(input!.placeholder).toContain('Enter');
     await typeComment(input!, '  worth revisiting  ');
     await pressKey(input!, 'Enter');
-    expect(onAnnotate).toHaveBeenCalledWith('the selectable transcript text', 'worth revisiting');
+    expect(onAnnotate).toHaveBeenCalledWith('the selectable transcript text', 'worth revisiting', null);
     expect(pill(container)).toBeNull();
     expect(window.getSelection()!.rangeCount).toBe(0);
   });
@@ -258,7 +258,7 @@ describe('SelectionQuoteButton', () => {
     expect(retainedInput!.value).toBe(longComment);
     await pressKey(retainedInput!, 'Enter');
     expect(onAnnotate).toHaveBeenCalledTimes(1);
-    expect(onAnnotate).toHaveBeenCalledWith('the selectable transcript text', longComment.trim());
+    expect(onAnnotate).toHaveBeenCalledWith('the selectable transcript text', longComment.trim(), null);
   });
 
   it('temporarily hides on an outside click and reopens the draft on the same selection', async () => {
@@ -295,7 +295,7 @@ describe('SelectionQuoteButton', () => {
     await selectSource(container, '[data-source-secondary]');
     expect(quoteButton(container).textContent).toContain('Quote');
     await act(async () => { quoteButton(container).click(); });
-    expect(onQuote).toHaveBeenCalledWith('another selectable transcript text');
+    expect(onQuote).toHaveBeenCalledWith('another selectable transcript text', null);
 
     await selectSource(container);
     await act(async () => { annotateButton(container).click(); });
@@ -318,7 +318,7 @@ describe('SelectionQuoteButton', () => {
     await typeComment(annotateInput(container)!, 'new source note');
     await pressKey(annotateInput(container)!, 'Enter');
     expect(onAnnotate).toHaveBeenCalledTimes(1);
-    expect(onAnnotate).toHaveBeenCalledWith('another selectable transcript text', 'new source note');
+    expect(onAnnotate).toHaveBeenCalledWith('another selectable transcript text', 'new source note', null);
   });
 
   it('allows a second annotation after a successful submit', async () => {
@@ -336,7 +336,7 @@ describe('SelectionQuoteButton', () => {
     await typeComment(annotateInput(container)!, 'second note');
     await pressKey(annotateInput(container)!, 'Enter');
     expect(onAnnotate).toHaveBeenCalledTimes(2);
-    expect(onAnnotate).toHaveBeenLastCalledWith('another selectable transcript text', 'second note');
+    expect(onAnnotate).toHaveBeenLastCalledWith('another selectable transcript text', 'second note', null);
   });
 
   it('does not commit Enter while an IME composition is active and commits once after it ends', async () => {
@@ -375,4 +375,41 @@ describe('SelectionQuoteButton', () => {
     await act(async () => { annotateButton(container).click(); });
     expect(annotateInput(container)?.value).toBe('');
   });
+});
+
+
+it('hands the captured message anchor through focus collapse for both annotate and quote', async () => {
+  const { container, onQuote, onAnnotate } = await mount();
+  const source = container.querySelector<HTMLElement>('[data-source]')!;
+  source.dataset['sourceBlockId'] = 'actual-source';
+  source.dataset['sourceVersion'] = 'source-version';
+  const expected = { blockId: 'actual-source', version: 'source-version', start: 0, end: 27, text: 'theselectabletranscripttext' };
+  expected.end = expected.text.length;
+  await selectSource(container);
+  await act(async () => { quoteButton(container).click(); });
+  expect(onQuote).toHaveBeenCalledWith('the selectable transcript text', expected);
+  await selectSource(container);
+  await act(async () => { annotateButton(container).click(); window.getSelection()!.removeAllRanges(); });
+  await typeComment(annotateInput(container)!, 'captured note');
+  await pressKey(annotateInput(container)!, 'Enter');
+  expect(onAnnotate).toHaveBeenCalledWith('the selectable transcript text', 'captured note', expected);
+});
+
+
+it('does not resume a retained note on identical text from a different source message', async () => {
+  const { container } = await mount();
+  const first = container.querySelector<HTMLElement>('[data-source]')!;
+  const second = container.querySelector<HTMLElement>('[data-source-secondary]')!;
+  first.dataset['sourceBlockId'] = 'first';
+  second.dataset['sourceBlockId'] = 'second';
+  first.dataset['sourceVersion'] = second.dataset['sourceVersion'] = 'same-version';
+  second.textContent = first.textContent;
+  await selectSource(container);
+  await act(async () => { annotateButton(container).click(); });
+  await typeComment(annotateInput(container)!, 'belongs to first');
+  await act(async () => { document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); });
+  await selectSource(container, '[data-source-secondary]');
+  expect(annotateInput(container)).toBeNull();
+  await act(async () => { annotateButton(container).click(); });
+  expect(annotateInput(container)?.value).toBe('');
 });

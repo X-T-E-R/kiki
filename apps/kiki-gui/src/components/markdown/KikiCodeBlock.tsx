@@ -24,20 +24,23 @@ const PREVIEW_LINES = 12;
 const LINE_HEIGHT_PX = 19.4;
 const BODY_PADDING_PX = 20;
 
+function codeText(node: ReactNode): string {
+  if (Array.isArray(node)) return node.map(codeText).join('');
+  if (node !== null && typeof node === 'object' && 'props' in node) return codeText((node as ReactElement<{ children?: ReactNode }>).props.children);
+  return typeof node === 'string' || typeof node === 'number' ? String(node) : '';
+}
+
+function hasAnnotation(node: ReactNode): boolean {
+  if (Array.isArray(node)) return node.some(hasAnnotation);
+  if (node === null || typeof node !== 'object' || !('props' in node)) return false;
+  const props = (node as ReactElement<{ children?: ReactNode; 'data-annotation-ref'?: string }>).props;
+  return props['data-annotation-ref'] !== undefined || hasAnnotation(props.children);
+}
+
 function extractCode(children: ReactNode): { code: string; language: string } {
-  // `pre` wraps a single <code className="language-x"> element.
-  if (children !== null && typeof children === 'object' && 'props' in (children as object)) {
-    const element = children as ReactElement<{ className?: string; children?: ReactNode }>;
-    const className = element.props.className ?? '';
-    const match = /language-(\w+)/.exec(className);
-    const raw = element.props.children;
-    const text = Array.isArray(raw) ? raw.join('') : typeof raw === 'string' ? raw : '';
-    return { code: text.replace(/\n$/, ''), language: match?.[1] ?? 'text' };
-  }
-  // Fallback for non-element children (elements are unwrapped above); typed to
-  // the primitives that can reach here so String() can't hit Object.toString.
-  const primitive = children as string | number | null | undefined;
-  return { code: String(primitive ?? ''), language: 'text' };
+  const element = children as ReactElement<{ className?: string }> | null;
+  const match = /language-([\w-]+)/.exec(element?.props?.className ?? '');
+  return { code: codeText(children).replace(/\n$/, ''), language: match?.[1] ?? 'text' };
 }
 
 type PreProps = ComponentProps<'pre'> & { isIncomplete?: boolean; node?: unknown };
@@ -102,7 +105,7 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
       {/* Corner tools: language + copy, revealed on hover/focus (index.css). */}
       <div
         data-copied={copied || undefined}
-        className="kiki-cb-tools absolute top-1.5 right-1.5 z-[1] flex items-center gap-0.5 rounded-md bg-panel/90 pl-2"
+        className="kiki-cb-tools select-none absolute top-1.5 right-1.5 z-[1] flex items-center gap-0.5 rounded-md bg-panel/90 pl-2"
       >
         {language !== 'text' ? (
           <span className="pr-1 font-sans text-[12px] text-ink-faint">{language}</span>
@@ -131,7 +134,9 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
           overflowY: canCollapse && !expanded ? 'hidden' : undefined,
         }}
       >
-        <CodeBlock code={code} language={language as never} isIncomplete={isIncomplete ?? false} />
+        {hasAnnotation(children)
+          ? <div data-streamdown="code-block-body"><pre className="font-mono whitespace-pre">{children}</pre></div>
+          : <CodeBlock code={code} language={language as never} isIncomplete={isIncomplete ?? false} />}
       </div>
 
       {canCollapse ? (

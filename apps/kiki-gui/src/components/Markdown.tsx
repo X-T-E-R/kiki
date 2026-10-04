@@ -16,7 +16,7 @@ import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { runToastAction } from '../lib/toasts';
 import { useOptionalConnection } from '../state/connection';
-import type { TimelineAnnotation } from '@kiki/session-core/composer';
+import { sourceTextVersion, type TimelineAnnotation } from '@kiki/session-core/composer';
 import {
   resolveFileReference,
   unwrapFileLinkTarget,
@@ -220,10 +220,12 @@ export const Markdown = memo(function Markdown({
   documentDirectory,
   preserveEdgeMargins = false,
   annotationTargets,
+  sourceBlockId,
 }: {
   text: string;
   mode?: 'streaming' | 'static';
   documentDirectory?: string;
+  sourceBlockId?: string;
   /** Streaming-prefix chunks keep their natural first/last block margins so
    * adjacent chunks' margins collapse like a single parse; standalone usage
    * zeroes them (see `.kiki-md--edges` in index.css). */
@@ -253,15 +255,19 @@ export const Markdown = memo(function Markdown({
   // plugin. Keying by the target ids remounts exactly when this block's
   // annotation set changes; the transcript keeps the array identity stable
   // otherwise (useStableAnnotationTargets), so unrelated renders never thrash.
-  const annotationKey = annotationTargets?.map((target) => target.id).join('\n') ?? '';
-  const renderers = useMemo<Components>(() => documentDirectory === undefined ? components : {
-    ...components,
-    a: (props) => <MarkdownAnchor {...props} documentDirectory={documentDirectory} />,
-    img: (props) => <MarkdownFileImage {...props} documentDirectory={documentDirectory} />,
-  }, [documentDirectory]);
+  const annotationKey = JSON.stringify(annotationTargets ?? []);
+  const renderers = useMemo<Components>(() => {
+    const next: Components = { ...components };
+    if (documentDirectory !== undefined) {
+      next.a = (props) => <MarkdownAnchor {...props} documentDirectory={documentDirectory} />;
+      next.img = (props) => <MarkdownFileImage {...props} documentDirectory={documentDirectory} />;
+    }
+    if (annotationTargets?.length) next.code = ({ children, className }) => <code className={className}>{children}</code>;
+    return next;
+  }, [documentDirectory, annotationTargets]);
   if (plain) {
     return (
-      <div className={className}>
+      <div className={className} data-source-block-id={sourceBlockId} data-source-version={sourceBlockId === undefined ? undefined : sourceTextVersion(text)}>
         <p>
           {annotationTargets === undefined || annotationTargets.length === 0
             ? text
@@ -271,11 +277,11 @@ export const Markdown = memo(function Markdown({
     );
   }
   return (
-    <div className={className}>
+    <div className={className} data-source-block-id={sourceBlockId} data-source-version={sourceBlockId === undefined ? undefined : sourceTextVersion(text)}>
       <Streamdown
         key={annotationKey}
-        mode={mode}
-        parseIncompleteMarkdown={mode === 'streaming'}
+        mode={annotationTargets?.length ? 'static' : mode}
+        parseIncompleteMarkdown={mode === 'streaming' && !annotationTargets?.length}
         plugins={plugins}
         // The bare remarkPlugins prop REPLACES Streamdown's defaults, so
         // spread them back in — dropping remark-gfm kills GFM tables,

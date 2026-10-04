@@ -10,7 +10,11 @@ import {
   removeAnnotation,
   selectionAnchorRect,
   selectionTextWithin,
+  selectionSourceAnchor,
+  sourceTextVersion,
+  anchoredSelectionRange,
 } from './selectionQuote';
+import { collectDraftAnnotationTargets, collectTimelineAnnotations, parseSelectionCarryovers } from './timelineAnnotations';
 
 describe('buildQuotePrefix', () => {
   it('prefixes a single line and ends with a blank separator', () => {
@@ -152,5 +156,51 @@ describe('selectionAnchorRect', () => {
     // jsdom reports all-zero rects; the guard treats them as "no anchor".
     expect(selectionAnchorRect(selection)).toBeNull();
     node.remove();
+  });
+});
+
+
+describe('source selection anchors', () => {
+  it('captures the second occurrence across inline nodes, sends it and reconstructs it from cold text', () => {
+    const raw = 'same **same**\n\nnext';
+    const container = document.createElement('div');
+    container.dataset['sourceBlockId'] = 'source-older';
+    container.dataset['sourceVersion'] = sourceTextVersion(raw);
+    container.innerHTML = '<p>same <b>same</b></p><p>next</p><button>Copy</button>';
+    document.body.append(container);
+    try {
+      const selection = selectText(container.querySelector('b')!);
+      const source = selectionSourceAnchor(selection)!;
+      expect(source).toEqual({ blockId: 'source-older', version: sourceTextVersion(raw), start: 4, end: 8, text: 'same' });
+      expect(anchoredSelectionRange('same same\nnext', source)).toEqual({ start: 5, end: 9 });
+      const note = addAnnotation([], 'same', 'second only', source)[0]!;
+      const carried = buildAnnotationsPrefix([note]) + buildQuotePrefix('same', source) + 'follow up';
+      const coldText = JSON.parse(JSON.stringify(carried)) as string;
+      const parsed = parseSelectionCarryovers(coldText);
+      expect(parsed).toMatchObject({ annotations: [{ quote: 'same', comment: 'second only', source }], quote: 'same', quoteSource: source, body: 'follow up' });
+      const blocks = [{ id: 'source-older', kind: 'assistant', text: raw }, { id: 'source-newer', kind: 'assistant', text: raw }];
+      expect([...collectDraftAnnotationTargets(blocks, [note]).keys()]).toEqual(['source-older']);
+      const sent = collectTimelineAnnotations([...blocks, { id: 'carrier', kind: 'user', text: coldText }]);
+      expect([...sent.keys()]).toEqual(['source-older']);
+      expect(sent.get('source-older')).toHaveLength(2);
+      expect(collectTimelineAnnotations([{ ...blocks[0]!, text: raw + ' changed' }, blocks[1]!, { id: 'carrier', kind: 'user', text: coldText }]).size).toBe(0);
+      expect(collectTimelineAnnotations([blocks[1]!, { id: 'carrier', kind: 'user', text: coldText }]).size).toBe(0);
+      expect(anchoredSelectionRange('same different', source)).toBeNull();
+    } finally { container.remove(); }
+  });
+
+  it('rejects cross-message selection and malformed explicit anchors without quote fallback', () => {
+    const container = document.createElement('div');
+    container.innerHTML = '<p data-source-block-id="a" data-source-version="v">same</p><p data-source-block-id="b" data-source-version="v">same</p>';
+    document.body.append(container);
+    try {
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.setBaseAndExtent(container.firstChild!.firstChild!, 0, container.lastChild!.firstChild!, 4);
+      expect(selectionSourceAnchor(selection)).toBeNull();
+      const text = '> same\n\n<!-- kiki-source:invalid -->\n\nComment: note\n\nbody';
+      expect(parseSelectionCarryovers(text)).toMatchObject({ annotations: [{ source: null }], body: 'body' });
+      expect(collectTimelineAnnotations([{ id: 'a', kind: 'assistant', text: 'same' }, { id: 'u', kind: 'user', text }]).size).toBe(0);
+    } finally { container.remove(); }
   });
 });

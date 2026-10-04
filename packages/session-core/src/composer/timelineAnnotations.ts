@@ -2,9 +2,10 @@
  * Timeline annotation derivation — the second half of the selection-carry-over
  * flow. `selectionQuote.ts` writes annotations into the outgoing prompt as
  * plain-text segments (`> quote` + `Comment: …`); this module is the inverse:
- * it parses those segments back out of settled user blocks and anchors each
- * quote to the nearest PRECEDING block whose text contains it, so the
- * transcript can mark the annotated passage in place and reopen the comment.
+ * it parses those segments and their optional source-anchor comments from user
+ * blocks. Explicit anchors bind a particular source version and occurrence;
+ * legacy quotes mark only an unambiguous preceding message. Source marks and
+ * sent-note bubbles share the same editable presentation overlay.
  *
  * The derivation is purely transcript-driven — no wire change, no extra
  * persistence: the local echo and the reloaded history carry the same text,
@@ -18,6 +19,7 @@
 
 import { readSettings } from '../settings/settings';
 import { spaceStorage } from '../storage/spaceStorage';
+import { parseSourceAnchor, sourceTextVersion, type SelectionSourceAnchor } from './selectionQuote';
 
 /** One derived timeline marker; `comment: null` is a plain quote (no comment). */
 export interface TimelineAnnotation {
@@ -26,6 +28,7 @@ export interface TimelineAnnotation {
   /** The selected source text (newlines normalized, line ends trimmed). */
   readonly quote: string;
   readonly comment: string | null;
+  readonly source?: SelectionSourceAnchor | null;
 }
 
 /** The minimal block shape the derivation needs — structural on purpose. */
@@ -63,8 +66,9 @@ export function annotationOverrideId(
 
 /** Reconstructed selection carry-overs from one user message's text. */
 export interface SelectionCarryovers {
-  readonly annotations: readonly { quote: string; comment: string }[];
+  readonly annotations: readonly { quote: string; comment: string; source?: SelectionSourceAnchor | null }[];
   readonly quote: string | null;
+  readonly quoteSource?: SelectionSourceAnchor | null;
   /** The typed remainder after the carry-over prefix. */
   readonly body: string;
 }
@@ -79,8 +83,9 @@ export interface SelectionCarryovers {
  */
 export function parseSelectionCarryovers(text: string): SelectionCarryovers {
   const lines = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n');
-  const annotations: { quote: string; comment: string }[] = [];
+  const annotations: { quote: string; comment: string; source?: SelectionSourceAnchor | null }[] = [];
   let quote: string | null = null;
+  let quoteSource: SelectionSourceAnchor | null | undefined;
   let index = 0;
   const readQuoteLines = (): string[] => {
     const collected: string[] = [];
@@ -106,19 +111,26 @@ export function parseSelectionCarryovers(text: string): SelectionCarryovers {
     const quoteLines = readQuoteLines();
     const quoteText = quoteLines.join('\n');
     skipBlankLines();
+    let source: SelectionSourceAnchor | null | undefined;
+    if (lines[index]?.startsWith('<!-- kiki-source:')) {
+      source = parseSourceAnchor(lines[index]!);
+      index += 1;
+      skipBlankLines();
+    }
     const next = lines[index];
     if (next !== undefined && next.startsWith('Comment: ')) {
-      annotations.push({ quote: quoteText, comment: next.slice('Comment: '.length) });
+      const note = { quote: quoteText, comment: next.slice('Comment: '.length) };
+      annotations.push(source === undefined ? note : { ...note, source });
       index += 1;
       skipBlankLines();
       continue;
     }
-    // A blockquote run with no Comment line is the plain quote chip; whatever
-    // follows is the typed body.
     quote = quoteText;
+    quoteSource = source;
     break;
   }
-  return { annotations, quote, body: lines.slice(index).join('\n') };
+  const result = { annotations, quote, body: lines.slice(index).join('\n') };
+  return quoteSource === undefined ? result : { ...result, quoteSource };
 }
 
 /**
@@ -178,12 +190,22 @@ export function findQuoteRange(
 /** Block kinds eligible as annotation anchors: message text only. */
 const ANCHORABLE_KINDS = new Set(['user', 'assistant']);
 
-/**
- * Derive every timeline marker from the visible blocks. Each settled user
- * block's carry-over segments anchor to the NEAREST preceding block that
- * contains the quote (the passage the user just read), never to the carrying
- * block itself. Segments that match nothing simply get no marker.
- */
+/** Resolve an explicit source, or a unique legacy quote; ambiguity draws nothing. */
+function annotationSource(
+  blocks: readonly TimelineBlockLike[],
+  quote: string,
+  source?: SelectionSourceAnchor | null,
+): TimelineBlockLike | undefined {
+  if (quote.trim() === '' || source === null) return undefined;
+  const candidates = blocks.filter((block) => ANCHORABLE_KINDS.has(block.kind) && block.text !== undefined);
+  if (source !== undefined) {
+    return candidates.find((block) => block.id === source.blockId && sourceTextVersion(block.text!) === source.version);
+  }
+  const matches = candidates.filter((block) => findQuoteRange(block.text!, quote) !== null);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** Sent markers derive from the same carrying text in local echoes and cold history. */
 export function collectTimelineAnnotations(
   blocks: readonly TimelineBlockLike[],
 ): ReadonlyMap<string, readonly TimelineAnnotation[]> {
@@ -192,71 +214,31 @@ export function collectTimelineAnnotations(
     const block = blocks[index];
     if (block === undefined || block.kind !== 'user' || block.text === undefined) continue;
     const carry = parseSelectionCarryovers(block.text);
-    const segments: readonly { quote: string; comment: string | null }[] = [
+    const segments: readonly { quote: string; comment: string | null; source?: SelectionSourceAnchor | null }[] = [
       ...carry.annotations,
-      ...(carry.quote !== null ? [{ quote: carry.quote, comment: null }] : []),
+      ...(carry.quote !== null ? [{ quote: carry.quote, comment: null, source: carry.quoteSource }] : []),
     ];
     for (const [ordinal, segment] of segments.entries()) {
-      if (segment.quote.trim() === '') continue;
-      for (let back = index - 1; back >= 0; back -= 1) {
-        const candidate = blocks[back];
-        if (
-          candidate === undefined ||
-          !ANCHORABLE_KINDS.has(candidate.kind) ||
-          candidate.text === undefined
-        ) {
-          continue;
-        }
-        if (findQuoteRange(candidate.text, segment.quote) === null) continue;
-        const annotation: TimelineAnnotation = {
-          id: annotationOverrideId(segment.quote, segment.comment ?? '', block.id, ordinal),
-          quote: segment.quote,
-          comment: segment.comment,
-        };
-        const list = targets.get(candidate.id);
-        if (list === undefined) targets.set(candidate.id, [annotation]);
-        else list.push(annotation);
-        break;
-      }
+      const candidate = annotationSource(blocks.slice(0, index), segment.quote, segment.source);
+      if (candidate === undefined) continue;
+      const base = { id: annotationOverrideId(segment.quote, segment.comment ?? '', block.id, ordinal), quote: segment.quote, comment: segment.comment };
+      const annotation = segment.source === undefined ? base : { ...base, source: segment.source };
+      targets.set(candidate.id, [...(targets.get(candidate.id) ?? []), annotation]);
     }
   }
   return targets;
 }
 
-/**
- * Draft-driven targets: the composer's unsent notes mark their passages in the
- * timeline while they ride the draft. Each note anchors to the NEWEST block
- * containing its quote (the passage the user just read), scanning from the
- * end; a quote no longer on the timeline simply gets no marker. The note id is
- * the draft annotation's own, so a mark click edits the draft, not an overlay.
- */
+/** Draft markers keep their own ids so edits return to the composer. */
 export function collectDraftAnnotationTargets(
   blocks: readonly TimelineBlockLike[],
-  drafts: readonly { readonly id: string; readonly quote: string; readonly comment: string }[],
+  drafts: readonly TimelineAnnotation[],
 ): ReadonlyMap<string, readonly TimelineAnnotation[]> {
   const targets = new Map<string, TimelineAnnotation[]>();
   for (const draft of drafts) {
-    if (draft.quote.trim() === '') continue;
-    for (let index = blocks.length - 1; index >= 0; index -= 1) {
-      const candidate = blocks[index];
-      if (
-        candidate === undefined ||
-        !ANCHORABLE_KINDS.has(candidate.kind) ||
-        candidate.text === undefined
-      ) {
-        continue;
-      }
-      if (findQuoteRange(candidate.text, draft.quote) === null) continue;
-      const annotation: TimelineAnnotation = {
-        id: draft.id,
-        quote: draft.quote,
-        comment: draft.comment,
-      };
-      const list = targets.get(candidate.id);
-      if (list === undefined) targets.set(candidate.id, [annotation]);
-      else list.push(annotation);
-      break;
-    }
+    const candidate = annotationSource(blocks, draft.quote, draft.source);
+    if (candidate === undefined) continue;
+    targets.set(candidate.id, [...(targets.get(candidate.id) ?? []), draft]);
   }
   return targets;
 }
