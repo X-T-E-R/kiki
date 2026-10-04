@@ -7,6 +7,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import type { CapabilityStep, CapabilityStatus, CapabilityStepReason } from '@kiki/agent-core-v2/app/capability/types';
+import { capabilityStepSchema, capabilityStatusSchema } from '../src/contract/global/capabilities.js';
 
 import { pluginManifestSchema } from '../src/contract/global/plugins.js';
 import { oAuthFlowSnapshotSchema, oAuthMethodStatusSchema } from '../src/contract/global/auth.js';
@@ -32,6 +34,34 @@ import {
 import { modelConfigSchema } from '../src/contract/global/models.js';
 
 import { sessionViewSubscribeInputSchema, sessionViewTranscriptPageInputSchema, sessionViewSignalSchema } from '../src/contract/session/view.js';
+
+describe('capability reason contract', () => {
+  const status: CapabilityStatus = {
+    id: 'kimi-webbridge', displayName: 'Browser connection', description: 'Browser readiness',
+    supported: true, state: 'partial', steps: [], install: { running: false },
+  };
+
+  it('round-trips known, unknown, and absent reasons through step and status validation', () => {
+    const reasons: CapabilityStepReason[] = ['daemon_identity_unverified', 'future_browser_reason'];
+    const steps: CapabilityStep[] = [
+      { id: 'daemon', state: 'missing' },
+      ...reasons.map((reason): CapabilityStep => ({ id: 'daemon', state: 'missing', reason })),
+    ];
+    for (const step of steps) expect(capabilityStepSchema.parse(step)).toEqual(step);
+    const value: CapabilityStatus = { ...status, steps };
+    expect(capabilityStatusSchema.parse(value)).toEqual(value);
+  });
+
+  it('rejects non-string reasons and invalid step states without loosening adjacent fields', () => {
+    for (const reason of [null, 42, true, {}]) {
+      const step = { id: 'daemon', state: 'missing', reason };
+      expect(capabilityStepSchema.safeParse(step).success).toBe(false);
+      expect(capabilityStatusSchema.safeParse({ ...status, steps: [step] }).success).toBe(false);
+    }
+    expect(capabilityStepSchema.safeParse({ id: 'daemon', state: 'future_state', reason: 'future_browser_reason' }).success).toBe(false);
+    expect(capabilityStatusSchema.safeParse({ ...status, state: 'future_readiness' }).success).toBe(false);
+  });
+});
 
 describe('session view contract', () => {
   it('keeps durable and transcript checkpoints independent', () => {
