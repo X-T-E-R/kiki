@@ -1271,8 +1271,10 @@ describe('SSHKaos mock success paths', () => {
     // describe block. This test just pins that execWithEnv() with a valid
     // non-empty args array routes through the internal helper.
     const commands: string[] = [];
+    const activity = { count: 0 };
     const fakeClient = {
       exec(cmd: string, _a: unknown, _b?: unknown): void {
+        expect(activity.count).toBe(1);
         commands.push(cmd);
         // Mimic a channel that never emits — we just want to observe the
         // command string, not wait for real I/O.
@@ -1285,13 +1287,16 @@ describe('SSHKaos mock success paths', () => {
       _cwd: string;
       _home: string;
       _envLayers: readonly Record<string, string>[];
+      _activity: { count: number };
     };
+    internal._activity = activity;
     internal._client = fakeClient;
     internal._cwd = '/home/tester';
     internal._home = '/home/tester';
     internal._envLayers = [];
 
     await expect(instance.execWithEnv(['echo', 'hi'], { FOO: 'bar' })).rejects.toThrow('stop');
+    expect(instance.activeProcesses).toBe(0);
 
     expect(commands).toHaveLength(1);
     expect(commands[0]).toBe('cd /home/tester && FOO=bar echo hi');
@@ -1449,7 +1454,9 @@ describe('SSHKaos.close lifecycle', () => {
       _home: string;
       _sftp: { end(): void };
       _envLayers: readonly Record<string, string>[];
+      _activity: { count: number };
     };
+    internals._activity = { count: 0 };
     internals._client = new FakeClient();
     internals._cwd = '/tmp';
     internals._home = '/tmp';
@@ -1468,5 +1475,6 @@ describe('SSHKaos.close lifecycle', () => {
     await kaos.close();
 
     await expect(kaos.exec('pwd')).rejects.toThrow(/channel closed/);
+    expect(kaos.activeProcesses).toBe(0);
   });
 });
