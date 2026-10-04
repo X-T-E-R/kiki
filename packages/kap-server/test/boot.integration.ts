@@ -315,8 +315,8 @@ describe('server-v2 boot', () => {
     });
 
     try {
-      await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
       server = await withTimeout(starting, 10_000);
+      expect(prepare).toHaveBeenCalledOnce();
       const base = `http://127.0.0.1:${server.port}`;
       expect((await authedFetch(server, base, '/api/meta')).status).toBe(200);
       expect(setLiveTranscriptSource).toHaveBeenCalledOnce();

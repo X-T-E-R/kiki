@@ -173,6 +173,8 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
     phase('boot-source'); const a = await boot();
     phase('boot-target'); const b = await boot();
     phase('connect'); const { record } = await connect(a, b);
+    await a.remoteConnections.pollSummaries();
+    expect(a.remoteConnections.list()[0]?.activeLeases).toBe(1);
     const bytes = Buffer.from('附件😀'.repeat(250000));
     const form = new FormData(); form.set('file', new Blob([bytes], { type: 'application/octet-stream' }), 'large.bin');
     phase('upload');
@@ -185,9 +187,16 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
     phase('download-headers'); expect(downloaded.status).toBe(200);
     const reader = downloaded.body!.getReader(); const chunks: Buffer[] = [];
     for (;;) { const next = await reader.read(); if (next.done) break; chunks.push(Buffer.from(next.value)); }
-    reader.releaseLock(); expect(Buffer.concat(chunks)).toEqual(bytes); expect(chunks.length).toBeGreaterThan(1);
+    reader.releaseLock(); phase('download-read-complete');
+    const downloadedBytes = Buffer.concat(chunks);
+    expect(downloadedBytes.byteLength).toBe(bytes.byteLength);
+    expect(downloadedBytes.equals(bytes), 'broker response must match every uploaded byte').toBe(true);
+    expect(chunks.length).toBeGreaterThan(1);
     phase(`download-complete bytes=${bytes.length} chunks=${chunks.length}`);
-    const direct = await call(b, `/api/files/${envelope.data.id}`); expect(Buffer.from(await direct.arrayBuffer())).toEqual(bytes);
+    const direct = await call(b, `/api/files/${envelope.data.id}`);
+    const directBytes = Buffer.from(await direct.arrayBuffer()); phase('direct-read-complete');
+    expect(directBytes.byteLength).toBe(bytes.byteLength);
+    expect(directBytes.equals(bytes), 'direct response must match every uploaded byte').toBe(true);
     phase('direct-complete');
     expect((await call(a, `/api/remote-connections/${record.id}/call`, { operation: 'file', params: { fileId: envelope.data.id } })).status).toBe(400);
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
