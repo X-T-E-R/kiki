@@ -94,6 +94,27 @@ describe('WebBridge pinned supply chain and readiness', () => {
     expect(calls).toEqual([]);
   });
 
+  it('tags every unexplained step with a reason code so the client can localize it', async () => {
+    const { entry, plugins } = fixture(root, { status: { running: true, version: 'v2.0.22', extension_connected: true }, plugin: true });
+    const ready = await entry.detect();
+    for (const step of ready.steps) {
+      if (step.detail !== undefined) expect(step.reason, `${step.id} has prose but no reason code`).toBeDefined();
+    }
+    expect(ready.steps.find((step) => step.id === 'daemon')?.reason).toBe('daemon_loopback_unauthenticated');
+    expect(ready.steps.find((step) => step.id === 'extension')?.reason).toBe('extension_reported_unauthenticated');
+    expect(ready.steps.find((step) => step.id === 'daemon-identity')?.reason).toBe('daemon_identity_unverified');
+    expect(ready.steps.find((step) => step.id === 'plugin-integrity')?.reason).toBe('plugin_integrity_unverified');
+    expect(ready.steps.find((step) => step.id === 'skill')).toMatchObject({ state: 'ok', reason: undefined });
+
+    plugins.listPlugins = vi.fn(async () => []) as never;
+    expect((await entry.detect()).steps.find((step) => step.id === 'skill'))
+      .toMatchObject({ state: 'missing', reason: 'plugin_not_installed' });
+    plugins.listPlugins = vi.fn(async () => [{ id: 'kimi-webbridge', enabled: false, state: 'ok',
+      enabledMcpServerCount: 0, mcpServerCount: 0 }]) as never;
+    expect((await entry.detect()).steps.find((step) => step.id === 'skill'))
+      .toMatchObject({ state: 'missing', reason: 'plugin_disabled' });
+  });
+
   it('reports pinned binary integrity without treating a matching file as authenticated daemon identity', async () => {
     const destination = path.join(root, 'user', '.kimi-webbridge', 'bin', 'kimi-webbridge');
     await mkdir(path.dirname(destination), { recursive: true });

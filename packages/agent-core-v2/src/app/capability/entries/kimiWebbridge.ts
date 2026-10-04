@@ -73,21 +73,32 @@ export function createKimiWebbridgeEntry(ctx: CapabilityEntryContext): Capabilit
     const knownSource = isRecognizedWebbridgePluginSource(PLUGIN_ID, plugin?.originalSource);
     const steps: CapabilityStep[] = [
       { id: 'daemon-binary', state: binaryVerified ? 'ok' : 'missing', optional: running,
+        reason: binaryPresent && !binaryUsable ? 'binary_not_executable'
+          : binaryUsable && !binaryVerified ? 'binary_unverified' : undefined,
         detail: binaryPresent && !binaryUsable ? 'not executable' :
           binaryUsable && !binaryVerified ? 'Unverified: installed daemon binary does not match the pinned release SHA-256' : undefined },
       { id: 'daemon', state: running ? 'ok' : 'missing',
+        reason: running ? 'daemon_loopback_unauthenticated' : undefined,
         detail: running ? `Loopback status reports running (${daemon.version}); responding process identity is not authenticated` : undefined },
       { id: 'skill', state: pluginEnabled ? 'ok' : 'missing',
+        reason: plugin === undefined ? 'plugin_not_installed'
+          : !plugin.enabled ? 'plugin_disabled'
+          : plugin.state !== 'ok' || plugin.hasErrors === true ? 'plugin_error'
+          : plugin.enabledMcpServerCount !== plugin.mcpServerCount ? 'plugin_mcp_partial' : undefined,
         detail: plugin === undefined ? 'Install the plugin package separately; it will remain disabled until explicitly enabled' :
           !plugin.enabled ? 'Plugin is disabled' :
           plugin.state !== 'ok' || plugin.hasErrors === true ? 'Plugin reports an error' :
           plugin.enabledMcpServerCount !== plugin.mcpServerCount ? 'Plugin MCP servers are not all enabled' : undefined },
       { id: 'extension', state: running && daemon.extension_connected === true ? 'ok' : 'missing',
+        reason: running && daemon.extension_connected === false ? 'extension_not_connected'
+          : running && daemon.extension_connected === true ? 'extension_reported_unauthenticated' : undefined,
         detail: running && daemon.extension_connected === false ? 'Browser extension is not connected (installation cannot be inferred)' :
           running && daemon.extension_connected === true ? 'Connection is reported by the loopback service, not independently authenticated' : undefined },
       { id: 'daemon-identity', state: 'missing', optional: true,
+        reason: 'daemon_identity_unverified',
         detail: 'Unverified: the loopback status cannot authenticate the responding process or browser extension' },
       { id: 'plugin-integrity', state: 'missing', optional: true,
+        reason: knownSource ? 'plugin_integrity_unverified' : 'plugin_source_unknown',
         detail: knownSource ? 'Unverified: publisher URL and plugin version do not prove ZIP integrity or daemon compatibility' :
           'Unverified: local or unknown plugin source and daemon compatibility have not been attested' },
     ];

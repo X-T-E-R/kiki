@@ -10,6 +10,9 @@ import type { ServiceContract } from '../types.js';
 export const capabilityStepSchema = z.object({
   id: z.string(),
   state: z.enum(['ok', 'missing', 'failed']),
+  // Additive: a server that predates `reason` still parses, and a reason this
+  // client does not know degrades to the step's state instead of raw prose.
+  reason: z.string().optional(),
   detail: z.string().optional(),
   optional: z.boolean().optional(),
 });

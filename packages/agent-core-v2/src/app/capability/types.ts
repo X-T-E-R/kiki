@@ -4,9 +4,37 @@ export type CapabilityReadiness = 'not_installed' | 'partial' | 'ready' | 'unsup
 
 export type CapabilityStepState = 'ok' | 'missing' | 'failed';
 
+/**
+ * Why a step is not `ok`, as a code the client can localize.
+ *
+ * `detail` is a free-form sentence the detector writes in its own words, so it
+ * reaches the user in the server's language and cannot be translated. A step
+ * that wants to explain itself on the first screen sets `reason` instead; the
+ * client maps it to one localized line and keeps `detail` for the folded
+ * diagnostics. These are capability-level facts ("the loopback status cannot
+ * authenticate the responder"), not template strings, and they are additive:
+ * an unknown code falls back to the step's state rather than to raw prose.
+ */
+export type CapabilityStepReason =
+  | 'binary_unverified'
+  | 'binary_not_executable'
+  | 'daemon_loopback_unauthenticated'
+  | 'daemon_identity_unverified'
+  | 'plugin_not_installed'
+  | 'plugin_disabled'
+  | 'plugin_error'
+  | 'plugin_mcp_partial'
+  | 'extension_not_connected'
+  | 'extension_reported_unauthenticated'
+  | 'plugin_integrity_unverified'
+  | 'plugin_source_unknown';
+
 export interface CapabilityStep {
   readonly id: string;
   readonly state: CapabilityStepState;
+  /** Machine-readable explanation; prefer this over `detail` for user-facing copy. */
+  readonly reason?: CapabilityStepReason;
+  /** Free-form detector prose. Diagnostics only — never the first screen. */
   readonly detail?: string;
   readonly optional?: boolean;
 }

@@ -613,6 +613,12 @@ export interface CapabilityStatus {
   readonly steps: readonly {
     readonly id: string;
     readonly state: 'ok' | 'missing' | 'failed';
+    /**
+     * Machine-readable reason the client localizes. `detail` is the detector's
+     * own sentence and belongs in folded diagnostics, not the first screen —
+     * see the WebBridge readiness card in `PluginsSection`.
+     */
+    readonly reason?: string;
     readonly detail?: string;
     readonly optional?: boolean;
   }[];
