@@ -83,6 +83,10 @@ jobs:
       - run: pnpm --filter @kiki/auth-native run build
       - name: Test auth-native with its native runner
         run: pnpm --filter @kiki/auth-native test
+      - name: Fetch locked sources for the offline Cargo vendor test
+        env:
+          CARGO_HOME: ${{ github.workspace }}/.tmp/auth-native-build/cargo-home
+        run: cargo fetch --locked --manifest-path packages/auth-native/Cargo.toml
       - name: Test offline Cargo vendor environment
         run: pnpm --filter @kiki/auth-native run test:nix-env
       - name: Build plugin SDK published entrypoints
