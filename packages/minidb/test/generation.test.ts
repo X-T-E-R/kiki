@@ -15,6 +15,8 @@ import path from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { MiniDb } from '../src/index.js';
 import { TextIndex } from '../src/text-index/index.js';
+import * as tokenize from '../src/text-index/tokenize.js';
+import { REBUILD_YIELD_DOCS } from '../src/generation-builder.js';
 import { SkipList, cmpNumber, cmpString } from '../src/skiplist.js';
 import {
   GenerationCorruptError,
@@ -1084,6 +1086,81 @@ describe('generation fault matrix', () => {
     expect(writer.getIndexGeneration()).not.toBeNull();
     assertSeededDb(reader, 1000);
     await closeAll(reader, writer);
+  });
+
+  test.each([
+    { label: 'changed fields', final: { n: 6400, c: 'new' } },
+    { label: 'non-indexable value', final: 'scalar' },
+  ])('generation walk replaces a future key already fed by the mutation queue: $label', async ({ final }) => {
+    const dir = await openTmp('queue-before-walk');
+    const db = await MiniDb.open({ dir, valueCodec: 'json', fsyncPolicy: 'no' });
+    await db.createIndex('n', { field: 'n', type: 'range' });
+    await db.createIndex('c', { field: 'c' });
+    cleanups.push(() => db.close());
+    await db.batch(
+      Array.from({ length: REBUILD_YIELD_DOCS * 2 }, (_, i) => ({
+        op: 'set' as const,
+        key: `pre:${String(i).padStart(4, '0')}`,
+        value: { n: -i - 1, c: 'pre' },
+      })),
+    );
+    await db.rebuildGeneration();
+
+    const entered = [deferred(), deferred()];
+    const proceed = [deferred(), deferred()];
+    const originalYield = tokenize.yieldToLoop;
+    let slice = 0;
+    const yields = vi.spyOn(tokenize, 'yieldToLoop').mockImplementation(async () => {
+      const i = slice++;
+      if (i < entered.length) {
+        entered[i].resolve();
+        await proceed[i].promise;
+      } else {
+        await originalYield();
+      }
+    });
+    const build = db.rebuildGeneration();
+    try {
+      await entered[0].promise;
+      await db.set('storm:3316', { n: 640, c: 'old' });
+      proceed[0].resolve();
+      // The second slice drains this SET before the sorted walk reaches storm.
+      await entered[1].promise;
+      await db.set('storm:3316', final);
+      proceed[1].resolve();
+      await build;
+    } finally {
+      for (const gate of proceed) gate.resolve();
+      try {
+        await build;
+      } finally {
+        yields.mockRestore();
+        await db.close();
+      }
+    }
+
+    const id = db.getIndexGeneration()!.id;
+    const image = await MiniDb.open({ dir, valueCodec: 'json', readOnly: true });
+    const replay = await MiniDb.open({ dir, valueCodec: 'json', readOnly: true, indexGenerations: false });
+    try {
+      expect(image.getIndexGeneration()?.id).toBe(id);
+      expect(image.stats.generationLoads).toBe(1);
+      expect(image.stats.generationIndexRebuilds).toBe(0);
+      for (const reader of [image, replay]) {
+        expect(reader.get('storm:3316')).toEqual(final);
+        expect(reader.findRange('n', { min: 100, max: 900 })).toEqual([]);
+        expect(reader.findEq('c', 'old')).toEqual([]);
+        expect(reader.findRange('n', { min: 6400, max: 6400 })).toEqual(
+          typeof final === 'object' ? [{ key: 'storm:3316', field: 6400, value: final }] : [],
+        );
+        expect(reader.findEq('c', 'new')).toEqual(
+          typeof final === 'object' ? [{ key: 'storm:3316', value: final }] : [],
+        );
+      }
+      expect(image.scan()).toEqual(replay.scan());
+    } finally {
+      await closeAll(image, replay);
+    }
   });
 
   test('seal flush: a WAL write failing after being imaged aborts the build instead of publishing a resurrectable write', async () => {

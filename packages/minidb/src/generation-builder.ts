@@ -434,6 +434,9 @@ export class GenerationBuilder<V> {
         if (needValues) {
           const buf = rec.ref.kind === 'memory' ? rec.ref.value : this.deps.getValueReader()!.read(rec.ref.loc);
           const doc = this.deps.decode(buf);
+          // A prior drain may have indexed this not-yet-walked key. Replace
+          // that state before adding the current value, preserving byPk removal.
+          secB.remove(kstr, undefined);
           if (this.deps.indexable(doc)) {
             secB.add(kstr, doc);
             for (const { b } of textBuilds.values()) tokensSinceYield += b.add(kstr, doc);
