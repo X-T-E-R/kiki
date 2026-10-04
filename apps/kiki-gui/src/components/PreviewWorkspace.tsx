@@ -50,7 +50,7 @@ import {
   previewTabKey,
   type PreviewTab as PreviewTabModel,
 } from '../state/previewWorkspace';
-import { AgentWorkspace, type AgentWorkspaceNavigation } from './agent-workspace';
+import { AgentWorkspace, type AgentWorkspaceNavigation } from './agent-workspace/AgentWorkspace';
 import { CodeEditor } from './CodeEditor';
 import { ConfirmDialog } from './ConfirmDialog';
 import type { ConversationShellSlots } from './ConversationShell';

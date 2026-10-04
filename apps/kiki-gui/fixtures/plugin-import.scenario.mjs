@@ -34,7 +34,6 @@ const HISTORY_PLUGIN = 'kiki-history';
 const CLAUDE_HOME = 'C:/Users/fixture/.claude';
 const CODEX_HOME = 'C:/Users/fixture/.codex';
 
-const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const at = (minutes) => Date.now() - minutes * 60_000;
 
 const rec = (id, part, role, text, extra = {}) => ({ id, part, role, text, ...extra });
@@ -330,7 +329,7 @@ export default {
     { frame: { type: 'prompt.completed', payload: { promptId: '$PROMPT', finishedAt: new Date().toISOString(), reason: 'completed' } } },
     workChanged(false),
   ],
-  experimentalFlags: { ...(plugins.experimentalFlags ?? {}), plugin_import: true },
+  experimentalFlags: { ...plugins.experimentalFlags, plugin_import: true },
   // `kiki-history` is deliberately absent from the installed list: the host
   // serves its six formats from its own descriptor, so there is no plugin to
   // install, trust, enable or remove. Listing it here would be the one thing

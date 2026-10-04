@@ -9,8 +9,8 @@ import {
 import { useI18n } from '../../i18n';
 import { loadAgentProfileCatalog, type AgentProfileCatalogMode } from '../../lib/agentProfileCatalog';
 import { useOptionalConnection } from '../../state/connection';
-import { FilePathLink } from '../mediaPreview';
-import { DispatchPolicyBadges } from './AgentIdentitySection';
+import { FilePathLink } from '../mediaParts';
+import { DispatchPolicyBadges } from './DispatchPolicyBadges';
 import { DiskDefinitionSummary } from './DiskDefinitionSummary';
 import { RawFileCollapse } from './RawFileCollapse';
 import { SourceBadge, sourceBadgeLabel } from './SourceBadge';

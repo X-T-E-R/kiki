@@ -96,7 +96,6 @@ import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { pushToast } from '../lib/toasts';
 import {
-  isTimelineTargetCurrent,
   locateInTimeline,
   normalizeTurnId,
   registerTimelineLocator,
@@ -161,7 +160,7 @@ import {
 } from './timeline/PromptOutcome';
 import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
-import { MediaPartList } from './mediaPreview';
+import { MediaPartList } from './mediaParts';
 import { RelativeTime } from './RelativeTime';
 import { NestedFoldContext, NestedFoldStore, useNestedFold } from './timeline/nestedFold';
 import { InvocationContext, useInvocationDetails } from './timeline/SubagentInvocationView';

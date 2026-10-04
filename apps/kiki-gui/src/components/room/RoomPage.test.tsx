@@ -81,10 +81,11 @@ const roots: Root[] = [];
 beforeAll(() => {
   localStorage.setItem('kiki.locale', 'zh');
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  vi.stubGlobal('crypto', { ...globalThis.crypto, randomUUID: () => 'idem-1' });
+  vi.spyOn(globalThis.crypto, 'randomUUID').mockReturnValue('11111111-1111-4111-8111-111111111111');
 });
 
 afterAll(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   localStorage.clear();
 });
@@ -287,7 +288,7 @@ describe('RoomPage', () => {
     await act(async () => { type(input, '先停一下，改成周五发'); });
     await act(async () => { key(input, 'Enter'); });
     await flush();
-    expect(rooms.postUserMessage).toHaveBeenCalledWith('release-031', { text: '先停一下，改成周五发', idempotencyKey: 'idem-1' });
+    expect(rooms.postUserMessage).toHaveBeenCalledWith('release-031', { text: '先停一下，改成周五发', idempotencyKey: '11111111-1111-4111-8111-111111111111' });
     expect(input.value).toBe('');
   });
 

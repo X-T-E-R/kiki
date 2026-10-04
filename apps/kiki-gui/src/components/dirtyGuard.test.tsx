@@ -39,7 +39,7 @@ describe('connection/window dirty action guard', () => {
     await act(async () => guard.confirm());
     expect(activate).not.toHaveBeenCalled();
     await act(async () => guard.value.runAction!(activate, '/settings/spaces'));
-    await act(async () => { guard.confirm(); guard.confirm(); });
+    await act(async () => { await guard.confirm(); await guard.confirm(); });
     expect(activate).toHaveBeenCalledTimes(1);
     expect(rawNavigate).toHaveBeenCalledExactlyOnceWith('/settings/spaces');
     expect(activate.mock.invocationCallOrder[0]).toBeLessThan(rawNavigate.mock.invocationCallOrder[0]!);
@@ -60,7 +60,7 @@ describe('connection/window dirty action guard', () => {
     await mount();
     const failed = vi.fn(() => { throw new Error('switch failed'); });
     await act(async () => guard.value.runAction!(failed, '/settings/spaces'));
-    await act(async () => { expect(() => guard.confirm()).toThrow('switch failed'); guard.confirm(); });
+    await act(async () => { expect(() => guard.confirm()).toThrow('switch failed'); await guard.confirm(); });
     expect(failed).toHaveBeenCalledTimes(1);
     expect(rawNavigate).not.toHaveBeenCalled();
     expect(guard.pending).toBe(false);
@@ -78,7 +78,7 @@ describe('connection/window dirty action guard', () => {
     const failed = new Promise<void>((_resolve, no) => { reject = no; });
     await act(async () => guard.value.runAction!(() => failed, '/settings/spaces'));
     let result: void | Promise<void>;
-    await act(async () => { result = guard.confirm(); guard.confirm(); });
+    await act(async () => { result = guard.confirm(); await guard.confirm(); });
     expect(rawNavigate).not.toHaveBeenCalled();
     await act(async () => {
       reject(new Error('connection failed'));
@@ -89,7 +89,7 @@ describe('connection/window dirty action guard', () => {
     let resolve!: () => void;
     const late = new Promise<void>((yes) => { resolve = yes; });
     expect(guard.value.dirty).toBe(true);
-    await act(async () => { guard.value.runAction!(() => late, '/settings/spaces'); result = guard.confirm(); });
+    await act(async () => { await guard.value.runAction!(() => late, '/settings/spaces'); result = guard.confirm(); });
     await act(async () => guard.navigate('/new'));
     await act(async () => { resolve(); await result; });
     expect(rawNavigate).not.toHaveBeenCalled();

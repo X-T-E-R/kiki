@@ -46,7 +46,7 @@ import { GlobalCompactionCard, ModelContextFields, CompactPointTrack, useModelCo
 import { CompactPointField } from './CompactPointField';
 import { vendorLabelFor } from '../providerPresets';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
-import { REQUEST_IDENTITY_QUERY_KEY, useCustomIdentityChoices } from './IdentitySection';
+import { REQUEST_IDENTITY_QUERY_KEY, useCustomIdentityChoices } from './identityCatalog';
 import { SearchableSelect } from '../SearchableSelect';
 import { buildCatalogModelOptions } from '../modelSelectOptions';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
@@ -88,7 +88,6 @@ import { QuestionGuardFields, rangeTextFor } from './QuestionGuardFields';
 import {
   EMPTY_GUARD_DRAFT,
   clearGuardNumber,
-  guardDraftFromGlobalEffective,
   guardDraftFromModelBehavior,
   guardDraftProblem,
   guardDraftsEqual,
@@ -1492,7 +1491,7 @@ function ModelCatalogRowEditor({
       if (fieldPatch === null && !compactDirty && Object.keys(enginePatch).length === 0
         && Object.keys(usagePatch).length === 0 && generationPatch === null && behaviorPatch === undefined) return;
       const patch = {
-        ...(fieldPatch ?? {}),
+        ...fieldPatch,
         ...(compactDirty ? { auto_compact: autoCompact ?? null } : {}),
         ...enginePatch,
         ...usagePatch,

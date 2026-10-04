@@ -246,7 +246,6 @@ function SettingField({
   provider,
   property,
   value,
-  baseline,
   secretStored,
   issue,
   connection,

@@ -251,7 +251,7 @@ export function LocalSessionsDialog({
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
       pushToast({ tone: 'success', text: t(result.created ? 'localSessions.attached' : 'localSessions.alreadyAttached') });
       onClose();
-      void navigate(`/s/${encodeURIComponent(result.session_id)}`);
+      navigate(`/s/${encodeURIComponent(result.session_id)}`);
     } catch (cause) {
       const code = errorCode(cause);
       const key = code !== undefined ? RESUME_ERROR_KEYS[code] : undefined;

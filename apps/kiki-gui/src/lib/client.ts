@@ -1654,17 +1654,17 @@ export class KikiClient {
     const api = this.rest.notifications;
     const wrap = <A extends unknown[], R>(call: (...args: A) => Promise<R>) => (...args: A): Promise<R> => this.run(() => call(...args));
     return {
-      getSettings: wrap(api.getSettings),
-      updateSettings: wrap(api.updateSettings),
-      listProviders: wrap(api.listProviders),
-      upsertInstance: wrap(api.upsertInstance),
-      deleteInstance: wrap(api.deleteInstance),
-      upsertChannel: wrap(api.upsertChannel),
-      deleteChannel: wrap(api.deleteChannel),
-      setCredential: wrap(api.setCredential),
-      checkCredential: wrap(api.checkCredential),
-      sendTest: wrap(api.sendTest),
-      listDeliveries: wrap(api.listDeliveries),
+      getSettings: wrap(api.getSettings.bind(api)),
+      updateSettings: wrap(api.updateSettings.bind(api)),
+      listProviders: wrap(api.listProviders.bind(api)),
+      upsertInstance: wrap(api.upsertInstance.bind(api)),
+      deleteInstance: wrap(api.deleteInstance.bind(api)),
+      upsertChannel: wrap(api.upsertChannel.bind(api)),
+      deleteChannel: wrap(api.deleteChannel.bind(api)),
+      setCredential: wrap(api.setCredential.bind(api)),
+      checkCredential: wrap(api.checkCredential.bind(api)),
+      sendTest: wrap(api.sendTest.bind(api)),
+      listDeliveries: wrap(api.listDeliveries.bind(api)),
     };
   }
 

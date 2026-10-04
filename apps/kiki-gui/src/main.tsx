@@ -61,7 +61,7 @@ async function start(): Promise<void> {
   // anything else runs, and redeemed before the app graph loads. Nothing else
   // in boot can observe the code: it is cleared first, held in module memory
   // for the one exchange below, and never written anywhere.
-  void await redeemWebAccessLink();
+  await redeemWebAccessLink();
   // Dev-only palette comparison (`?tokens=a|b|c|p923`). Read before the
   // connection module loads, since it scrubs the deep-link query; a
   // production build drops this branch and the stylesheet with it.

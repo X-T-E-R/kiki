@@ -81,7 +81,7 @@ beforeEach(() => {
       const next: NonNullable<typeof stored.session_title> = {};
       if (sessionTitle.model !== undefined) next.model = sessionTitle.model;
       if (sessionTitle.triggers !== undefined) next.triggers = sessionTitle.triggers;
-      stored = { ...stored, session_title: { ...(stored.session_title ?? {}), ...next } };
+      stored = { ...stored, session_title: { ...stored.session_title, ...next } };
     }
     const experimental = patch['experimental'] as Record<string, boolean> | undefined;
     if (experimental !== undefined) stored = { ...stored, experimental };

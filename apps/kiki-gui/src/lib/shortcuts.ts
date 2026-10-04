@@ -109,7 +109,7 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 
 /** A single printable key with no Ctrl/⌘/Alt: typing, when focus is in a field. */
 export function isBareCharacterChord(chord: ShortcutChord): boolean {
-  return chord.modifier === 'none' && !chord.alt && [...chord.key].length === 1;
+  return chord.modifier === 'none' && !chord.alt && Array.from(chord.key).length === 1;
 }
 
 /**
@@ -146,9 +146,9 @@ export function chordKeys(chord: ShortcutChord, platform: ShortcutPlatform): str
   else if (chord.modifier === 'ctrl-meta') keys.push('Ctrl', mac ? '⌘' : platform === 'windows' ? 'Win' : 'Super');
   if (chord.alt) keys.push(mac ? '⌥' : 'Alt');
   // `?` already implies Shift; spelling it out would read as Shift+Shift+/.
-  const impliedShift = chord.shift && [...chord.key].length === 1 && chord.key.toLowerCase() === chord.key.toUpperCase() && !/[0-9]/.test(chord.key);
+  const impliedShift = chord.shift && Array.from(chord.key).length === 1 && chord.key.toLowerCase() === chord.key.toUpperCase() && !/[0-9]/.test(chord.key);
   if (chord.shift && !impliedShift) keys.push(mac ? '⇧' : 'Shift');
-  keys.push(KEY_LABELS[chord.key] ?? ([...chord.key].length === 1 ? chord.key.toUpperCase() : chord.key));
+  keys.push(KEY_LABELS[chord.key] ?? (Array.from(chord.key).length === 1 ? chord.key.toUpperCase() : chord.key));
   return keys;
 }
 
@@ -180,7 +180,7 @@ export function chordFromEvent(
   platform: ShortcutPlatform,
 ): RecordedChord {
   if (MODIFIER_KEYS.has(event.key)) return { kind: 'pending' };
-  const supported = [...event.key].length === 1 && !/[\u0000-\u001F\u007F]/u.test(event.key)
+  const supported = Array.from(event.key).length === 1 && !/[\u0000-\u001F\u007F]/u.test(event.key)
     || /^(?:Enter|Escape|Tab|Backspace|Delete|Home|End|PageUp|PageDown|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|F(?:[1-9]|1[0-9]|2[0-4]))$/u.test(event.key);
   if (!supported) return { kind: 'unsupported', key: event.key };
   const primary = platform === 'macos' ? event.metaKey : event.ctrlKey;
@@ -190,7 +190,7 @@ export function chordFromEvent(
       : secondary ? (platform === 'macos' ? 'ctrl' : 'meta')
         : 'none';
   // Shift+K arrives as "K": store the base letter with the Shift flag.
-  const key = [...event.key].length === 1 && event.shiftKey ? event.key.toLowerCase() : event.key;
+  const key = Array.from(event.key).length === 1 && event.shiftKey ? event.key.toLowerCase() : event.key;
   return { kind: 'chord', chord: { key, modifier, shift: event.shiftKey, alt: event.altKey } };
 }
 

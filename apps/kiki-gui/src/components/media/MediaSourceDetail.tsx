@@ -29,7 +29,6 @@ import {
   MEDIA_DEFAULTS_PLUGIN_ID,
   currentDefault,
   defaultSettingKey,
-  mediaApi,
   mediaSourceStatus,
   statusKey,
   schemaOf,

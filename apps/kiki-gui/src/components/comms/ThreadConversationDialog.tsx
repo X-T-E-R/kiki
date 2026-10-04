@@ -89,7 +89,7 @@ export function ThreadConversationDialog({
   const peerHref = endpointHref(peer);
   const go = (href: string) => {
     onClose();
-    void navigate(href);
+    navigate(href);
   };
 
   return (

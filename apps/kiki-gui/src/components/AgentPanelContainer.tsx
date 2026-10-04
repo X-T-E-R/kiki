@@ -421,7 +421,7 @@ function figuresFrom(usage: AgentTokenUsage, t: Translate): OverviewFigures {
 /** Session-record usage (main only): the fallback when the panel read has no row. */
 function figuresFromSession(state: SessionViewState): OverviewFigures | undefined {
   const usage = state.session?.usage as typeof state.session extends undefined ? never : NonNullable<typeof state.session>['usage'] | undefined;
-  if (usage == null) return undefined;
+  if (usage === null || usage === undefined) return undefined;
   const input = usage.input_tokens + usage.cache_read_tokens + usage.cache_creation_tokens;
   const total = input + usage.output_tokens;
   if (total === 0 && usage.total_cost_usd === 0) return undefined;

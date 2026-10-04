@@ -77,7 +77,7 @@ function normalizeCapabilities(answer: unknown): CapabilityAnswer {
     skillRefs: Array.isArray(record.skill_refs)
       ? (record.skill_refs as readonly { name?: unknown }[]).flatMap((ref) => (typeof ref.name === 'string' ? [{ name: ref.name }] : []))
       : [],
-    hasMore: record.cursor != null,
+    hasMore: record.cursor !== null && record.cursor !== undefined,
   };
 }
 
@@ -247,7 +247,7 @@ export function MediaVoicePicker({ provider }: { readonly provider: string }) {
               ))}
             </ul>
           )}
-          {query.data.cursor != null ? <p className="mt-2 text-[11px] text-ink-faint">{t('cap.media.detail.moreVoices')}</p> : null}
+          {query.data.cursor !== null && query.data.cursor !== undefined ? <p className="mt-2 text-[11px] text-ink-faint">{t('cap.media.detail.moreVoices')}</p> : null}
         </div>
       ) : null}
     </section>

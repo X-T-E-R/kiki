@@ -8,7 +8,7 @@ import { scenarios } from '../scripts/visual-proof.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-test('the proof registry owns every GUI fixture scenario', () => {
+void test('the proof registry owns every GUI fixture scenario', () => {
   // The count itself is not the claim: it goes stale the moment a scenario is
   // added, and a wrong number here says nothing about whether the registry is
   // sound. What has to hold is that the registry is populated and that every
@@ -27,7 +27,7 @@ test('the proof registry owns every GUI fixture scenario', () => {
   }
 });
 
-test('registry names follow the fixture-module convention', () => {
+void test('registry names follow the fixture-module convention', () => {
   for (const entry of scenarios) {
     assert.match(entry.name, /^[a-z0-9]+(-[a-z0-9]+)*$/, `odd scenario name: ${entry.name}`);
   }

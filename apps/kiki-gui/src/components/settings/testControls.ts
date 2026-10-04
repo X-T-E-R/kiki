@@ -59,8 +59,7 @@ export async function pickValue(target: Element, _attr: string, value: string): 
 /** Types into a `CommitInput` and commits with Enter. */
 export async function commitText(input: HTMLInputElement, value: string): Promise<void> {
   await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    setter.call(input, value);
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
   await act(async () => {

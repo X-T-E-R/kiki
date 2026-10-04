@@ -117,7 +117,7 @@ export async function storeBackgroundFile(file: Blob, check: MediaCheck, name: s
 
 /** Drop every stored file no ref still points at. */
 export async function pruneMedia(keep: ReadonlySet<string>): Promise<void> {
-  for (const id of [...memory.keys()]) if (!keep.has(id)) memory.delete(id);
+  for (const id of Array.from(memory.keys())) if (!keep.has(id)) memory.delete(id);
   const keys = await run<IDBValidKey[]>('readonly', (store) => store.getAllKeys()).catch(() => undefined);
   for (const key of keys ?? []) {
     if (typeof key === 'string' && !keep.has(key)) await deleteMedia(key);

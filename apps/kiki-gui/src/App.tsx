@@ -195,7 +195,7 @@ export function App() {
       action: navType === 'POP' ? 'POP' : navType === 'REPLACE' ? 'REPLACE' : 'PUSH',
     });
     const browserState = window.history.state;
-    if (browserState?.key === location.key || (location.key === 'default' && browserState?.key == null)) {
+    if (browserState?.key === location.key || (location.key === 'default' && (browserState?.key === null || browserState?.key === undefined))) {
       const userState = browserState?.usr ?? {};
       window.history.replaceState({ ...browserState, usr: { ...userState,
         kikiNav: { ...userState.kikiNav, visitId: entry.visitId, scope: entry.scope } } }, '');

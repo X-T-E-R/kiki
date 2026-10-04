@@ -26,7 +26,7 @@ function setup(records: RemoteConnection[] = [record()], homeId = targetHome) {
   const commit = vi.fn(); const reload = vi.fn(); const nativePrepare = vi.fn();
   const created: KikiClient[] = [];
   const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
-    const url = String(input);
+    const url = (input instanceof Request ? input.url : input.toString());
     if (url === 'http://source.example.test/api/remote-connections') return reply(records);
     expect(url).toBe(`http://source.example.test/api/remote-connections/${id}/call`);
     expect(JSON.parse(init?.body as string)).toMatchObject({ operation: 'meta' });
@@ -73,7 +73,7 @@ describe('remote scope identity gate', () => {
       connectionId: id, serverHomeId: targetHome }, test.created[0], identity(targetHome));
     expect(test.reload).toHaveBeenCalledOnce();
     expect(test.commit.mock.invocationCallOrder[0]).toBeLessThan(test.reload.mock.invocationCallOrder[0]!);
-    expect(test.fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+    expect(test.fetchMock.mock.calls.map(([input]) => (input instanceof Request ? input.url : input.toString()))).toEqual([
       'http://source.example.test/api/remote-connections', `http://source.example.test/api/remote-connections/${id}/call`,
     ]);
   });

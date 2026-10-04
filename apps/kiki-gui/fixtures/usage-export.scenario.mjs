@@ -31,7 +31,7 @@ const bucket = (hours, model, tokens, extra = {}) => ({
   tokens: { input_other: 120, input_cache_read: 900, input_cache_creation: 20, output: 50, ...tokens },
   quality: {
     known_records: 3, missing_records: 0, legacy_zero_records: 0, invalid_records: 0,
-    estimated_records: 0, mapping_unknown: false, price_unknown: false, complete: true, ...(extra.quality ?? {}),
+    estimated_records: 0, mapping_unknown: false, price_unknown: false, complete: true, ...extra.quality,
   },
   cost: (extra.quality?.price_unknown ?? false)
     ? { usd_estimated: null, currency: 'USD', source: 'kiki-local-estimate', pricing_version: 'a'.repeat(64) }

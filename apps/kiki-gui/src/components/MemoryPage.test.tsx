@@ -144,7 +144,7 @@ async function mountGuardedPage(path = '/memory', workspaces: readonly Workspace
         <MemoryPage workspaceOptions={workspaces} onNavigate={() => {}} onToggleSidebar={() => {}} />
         <output data-guard-dirty>{String(guard.value.dirty)}</output>
         <output data-guard-pending>{String(guard.pending)}</output>
-        <button type="button" data-guard-confirm onClick={() => { guard.confirm(); }}>confirm</button>
+        <button type="button" data-guard-confirm onClick={() => { void guard.confirm(); }}>confirm</button>
         <button type="button" data-guard-cancel onClick={() => { guard.cancel(); }}>cancel</button>
       </DirtyGuardContext.Provider>
     );

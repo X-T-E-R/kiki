@@ -79,7 +79,7 @@ const daily = (id, personaId, persona, patch = {}) => personaSession(id, persona
 });
 
 const LIN_FACE = face('lin-lan', '林岚', true);
-const CHE_FACE = face('a-che', '阿澈');
+const _CHE_FACE = face('a-che', '阿澈');
 const LAN_FACE = face('xiao-lan', '小蓝 · 事实核查与出处核对');
 
 export default {

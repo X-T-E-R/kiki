@@ -64,7 +64,9 @@ import { Composer } from '../Composer';
 import type { ContextMeterUsage } from '../ContextMeter';
 import { useContextMeterAutoCompact } from '../useContextMeterAutoCompact';
 import { Icon } from '../icons';
-import { MediaPreviewProvider, PreviewToggleButton } from '../mediaPreview';
+import type { ComponentType } from 'react';
+import type { MediaPreviewProvider as OwnedMediaPreviewProvider } from '../mediaPreview';
+import { PreviewToggleButton } from '../PreviewToggleButton';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { RightRail } from '../RightRail';
 import { Transcript } from '../Transcript';
@@ -456,7 +458,11 @@ function AgentWorkspaceHeader({
   );
 }
 
-export function AgentWorkspace(props: AgentWorkspaceProps) {
+interface WorkspaceCompositionProps extends AgentWorkspaceProps {
+  readonly mediaPreviewProvider?: ComponentType<ComponentProps<typeof OwnedMediaPreviewProvider>>;
+}
+
+export function AgentWorkspace(props: WorkspaceCompositionProps) {
   const ambientSlots = useOptionalConversationShell()?.slots;
   const { scopeId } = useConnection();
   if (props.target.agentId === MAIN_AGENT_ID) {
@@ -504,7 +510,8 @@ function ChildAgentWorkspace({
   historyBack = false,
   locateSpawnInMenu = false,
   transcriptVisible = true,
-}: AgentWorkspaceProps) {
+  mediaPreviewProvider: MediaPreviewProvider,
+}: WorkspaceCompositionProps) {
   const { t } = useI18n();
   const { client, scopeId } = useConnection();
   const queryClient = useQueryClient();
@@ -1196,6 +1203,7 @@ function ChildAgentWorkspace({
   // owns media overlays and the one preview workspace; mounting another
   // provider here would fork that seat.
   if (inheritMediaPreview) return chrome;
+  if (MediaPreviewProvider === undefined) throw new Error('Owned workspace requires a media preview provider');
 
   return (
     <MediaPreviewProvider

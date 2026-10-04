@@ -392,7 +392,7 @@ export function buildA19(locale) {
   };
   return {
     ...world,
-    personas: personas.map((definition, index) => ({ definition })),
+    personas: personas.map((definition) => ({ definition })),
     bots: personas.map((persona, index) => ({
       personaId: persona.id,
       homeSessionId: `session_campaign_daily_${persona.id}`,

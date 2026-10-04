@@ -65,7 +65,7 @@ import { errorText } from '@kiki/session-core/i18n';
 import { pushToast } from '../lib/toasts';
 import { useWorktreeAvailability, workspaceGitState } from '../lib/worktrees';
 import { useConnection } from '../state/connection';
-import { sshApi, sshKeys } from '../lib/ssh';
+import { sshApi } from '../lib/ssh';
 
 const DRAFT_KEY = 'new';
 const remoteDraftStorageKey = (scopeId: string) => `kiki.draft.new.${scopeId}`;

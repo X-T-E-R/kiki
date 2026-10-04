@@ -64,7 +64,7 @@ import { FeedbackLine, Hint, type Feedback } from './controls';
 import { useDirtyReporter } from './dirtyGuard';
 import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
 import { LIST_ROW_HEIGHT, type ListDensity } from './settings/list';
-import { useCustomIdentityChoices } from './settings/IdentitySection';
+import { useCustomIdentityChoices } from './settings/identityCatalog';
 import { ConnectionMethodPicker } from './ConnectionMethodPicker';
 import {
   API_PROTOCOLS,

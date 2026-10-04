@@ -103,7 +103,7 @@ export function ChannelFields({ channelId, channel, instanceId, instance, provid
               <SettingField key={field.key} label={field.required ? label : `${label} · ${t('st.notify.optional')}`} htmlFor={inputId}>
                 {status(field.key)}
                 <CommitInput id={inputId} className={field.kind === 'number' ? 'w-28 text-right' : 'w-64 font-mono'}
-                  value={value === undefined ? '' : String(value)} disabled={save.saving}
+                  value={typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : ''} disabled={save.saving}
                   inputMode={field.kind === 'number' ? 'numeric' : undefined}
                   validate={(text) => field.required && text === '' ? t('st.notify.fieldRequired', { field: label }) : null}
                   onCommit={(text) => {
@@ -142,7 +142,7 @@ export function ChannelFields({ channelId, channel, instanceId, instance, provid
               <SettingField key={field.key} label={field.required ? label : `${label} · ${t('st.notify.optional')}`} htmlFor={inputId}>
                 {status(`target.${field.key}`)}
                 <CommitInput id={inputId} className={field.kind === 'number' ? 'w-28 text-right' : 'w-48 font-mono'}
-                  value={value === undefined ? '' : String(value)} disabled={save.saving}
+                  value={typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : ''} disabled={save.saving}
                   inputMode={field.kind === 'number' ? 'numeric' : undefined}
                   validate={(text) => field.required && text === '' ? t('st.notify.fieldRequired', { field: label })
                     : field.kind === 'number' && text !== '' && !/^-?\d+$/u.test(text) ? t('st.notify.fieldRequired', { field: label }) : null}

@@ -84,7 +84,7 @@ export function MediaJobView({
   readonly busy?: 'resume' | 'stop' | null;
   readonly feedback?: { readonly tone: 'info' | 'success' | 'error'; readonly text: string } | null;
 }) {
-  const { t, time } = useI18n();
+  const { t } = useI18n();
   const [showRaw, setShowRaw] = useState(false);
   const tone = jobTone(job);
   const modality = jobModality(job);

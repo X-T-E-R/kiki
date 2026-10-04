@@ -1,6 +1,6 @@
 import type { AgentCapabilitiesQuery, AgentPromptDiagnostics } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
-import { FilePathLink } from '../mediaPreview';
+import { FilePathLink } from '../mediaParts';
 import { PromptFileCheck } from './PromptFileCheck';
 
 type PromptEffectiveData = AgentPromptDiagnostics;

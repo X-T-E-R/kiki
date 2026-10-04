@@ -374,7 +374,7 @@ function Header({
                     role="menuitem"
                     data-persona-menu={key}
                     className="flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper"
-                    onClick={() => { close(); navigate(href); }}
+                    onClick={() => { close(); void navigate(href); }}
                   >
                     {t(key)}
                   </button>
@@ -1803,7 +1803,7 @@ export function SessionView({
     persona: state.session?.agent_config.persona,
     sessionId,
     internalProse: state.session?.delivery === 'message',
-    onOpenSession: (target) => { navigate(`/s/${target}`); },
+    onOpenSession: (target) => { void navigate(`/s/${target}`); },
   }), [state.session?.agent_config.persona, state.session?.delivery, sessionId, navigate]);
 
   // Read state: while a session is on screen, keep its seen-mark at the newest

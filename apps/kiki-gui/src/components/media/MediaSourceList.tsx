@@ -37,7 +37,7 @@ import {
   type MediaSourceFilter,
   type MediaSourceStatus,
 } from '../../lib/mediaSources';
-import { CapabilitySection, EmptyNote, QUIET_BUTTON, SearchField, StatusDot, Tag } from '../capabilities/primitives';
+import { EmptyNote, QUIET_BUTTON, SearchField, StatusDot, Tag } from '../capabilities/primitives';
 import { MediaKindGlyph } from './MediaKindGlyph';
 
 /** The band's own wording; a modality filter and a state filter read differently. */
@@ -51,15 +51,6 @@ const STATUS_DOT: Record<MediaSourceStatus, 'ok' | 'busy' | 'error' | 'off' | 'w
   ready: 'ok',
   // Not a fault and not an assurance. A hollow dot, so it never reads as either.
   unchecked: 'off',
-};
-
-const STATUS_TAG_TONE: Record<MediaSourceStatus, 'faint' | 'accent' | 'warn' | 'success' | 'danger'> = {
-  broken: 'danger',
-  'needs-config': 'warn',
-  blocked: 'warn',
-  default: 'accent',
-  ready: 'faint',
-  unchecked: 'faint',
 };
 
 export function MediaSourceList({
@@ -144,7 +135,7 @@ function FilterRail({
   readonly value: MediaSourceFilter;
   readonly onChange: (next: MediaSourceFilter) => void;
 }) {
-  const { t, tp } = useI18n();
+  const { t } = useI18n();
   return (
     <div
       role="tablist"
@@ -197,7 +188,6 @@ function MediaSourceRow({
   const { t } = useI18n();
   const status = mediaSourceStatus(entry, blocked);
   const kinds = entry.definition.kinds;
-  const defaults = entry.defaultFor ?? [];
   return (
     <li data-media-source={entry.provider} data-media-source-status={status}>
       <button

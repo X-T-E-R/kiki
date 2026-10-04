@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { AgentPromptDiagnostics } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
 import { useOptionalConnection } from '../../state/connection';
-import { FilePathLink } from '../mediaPreview';
+import { FilePathLink } from '../mediaParts';
 import { agentCapabilitiesErrorText } from './mapCapabilities';
 
 type FileChecks = AgentPromptDiagnostics['file_checks'];

@@ -21,7 +21,6 @@ import {
   DEFAULT_FIND_OPTIONS,
   FIND_QUERY_MAX,
   requestQuickSwitcherSearch,
-  turnOrdinal,
   type FindItem,
   type FindMatch,
   type FindOptions,

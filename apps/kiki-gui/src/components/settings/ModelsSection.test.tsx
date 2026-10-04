@@ -13,7 +13,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, assert, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { patchModelRequestSchema, type GetModelResponse, type ModelCatalogItem, type ProviderCatalogItem } from '@kiki/protocol';
 import type { ServerConnection } from '@kiki/session-core/settings';
@@ -713,7 +713,7 @@ describe('ModelCatalogCard list and detail hierarchy', () => {
 describe('model prompt identity settings', () => {
   afterEach(() => {
     for (const [, patch] of updateModel.mock.calls) {
-      expect(() => patchModelRequestSchema.parse(patch)).not.toThrow();
+      assert.doesNotThrow(() => patchModelRequestSchema.parse(patch));
     }
   });
 

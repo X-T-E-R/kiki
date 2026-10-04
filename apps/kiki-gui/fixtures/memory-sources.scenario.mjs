@@ -18,7 +18,7 @@ const DOCS = 'wd_docs_site_000000000000';
 const entry = (fields) => ({ status: 'active', pinned: false, created: ts(4000), updated: ts(90), source: { writer: 'agent', session: BOT }, reason: '', ...fields });
 const previous = entry({ id: 'm_release_old', type: 'project', title: '发布前手动核对安装包', body: '发版前手动打开安装包，确认版本号和快捷方式。\n\n完成后在发布记录中写下验证时间。', reason: '最初的发布约定', revision: 'revision_before_archive' });
 const retired = { ...previous, status: 'archived', updated: ts(20), reason: '安装包验证已纳入自动化流水线，手工清单不再使用。' };
-const raw = ({ body, revision, ...meta }) => `---\n${JSON.stringify(meta, null, 2)}\n---\n${body}\n`;
+const raw = ({ body, revision: _revision, ...meta }) => `---\n${JSON.stringify(meta, null, 2)}\n---\n${body}\n`;
 /** The server derives a live revision from exactly these fields (`memoryRevision`), so a
  *  journal record can name a revision the page will actually read back. */
 const liveRevision = (item) => createHash('sha256').update(JSON.stringify({ title: item.title, body: item.body, type: item.type, status: item.status, pinned: item.pinned })).digest('hex');

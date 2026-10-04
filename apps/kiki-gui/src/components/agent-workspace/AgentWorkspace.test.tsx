@@ -19,7 +19,7 @@ import { I18nProvider } from '../../i18n';
 import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptConflictError, NativeChildPromptSendError, type AgentModelSwitchEvent, type QueuedModelSwitch } from '../../lib/client';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { AgentTreeView } from '../AgentTreeView';
-import { AgentWorkspace } from './AgentWorkspace';
+import { AgentWorkspace } from './OwnedAgentWorkspace';
 
 const harness = vi.hoisted(() => ({
   header: null as HTMLElement | null,
@@ -106,8 +106,8 @@ vi.mock('../mediaPreview', () => ({
     harness.mediaProviderProps.push(props);
     return props.children;
   },
-  PreviewToggleButton: () => <div data-preview-toggle-probe />,
 }));
+vi.mock('../PreviewToggleButton', () => ({ PreviewToggleButton: () => <div data-preview-toggle-probe /> }));
 vi.mock('../RightRail', () => ({ RightRail: () => null }));
 vi.mock('../../host', () => ({ useHost: () => harness.host }));
 vi.mock('../../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: { preparePrompt: vi.fn() } }));

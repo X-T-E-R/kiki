@@ -445,7 +445,7 @@ function scannedSources(): readonly ScannedSource[] {
 
 /** True when the module reads or writes `localStorage`, code rather than prose. */
 function usesRawLocalStorage(file: ScannedSource): boolean {
-  const withoutAvailabilityChecks = file.code.replace(/\btypeof\s+localStorage\b(?!\s*(?:[.\[]|\?\.|!(?!=)))/g, '');
+  const withoutAvailabilityChecks = file.code.replace(/\btypeof\s+localStorage\b(?!\s*(?:[.[]|\?\.|!(?!=)))/g, '');
   return /\blocalStorage\b/.test(withoutAvailabilityChecks);
 }
 

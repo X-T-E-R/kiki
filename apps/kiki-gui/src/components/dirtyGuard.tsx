@@ -112,7 +112,7 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
       return dirty ? [...current, id] : current.filter((entry) => entry !== id);
     });
   }, []);
-  const request = useCallback((guarded: boolean, id: string | null, action: () => void | Promise<void>) => {
+  const request = useCallback(<R extends void | Promise<void>,>(guarded: boolean, id: string | null, action: () => R): R | undefined => {
     cancel();
     if (guarded) { pendingRef.current = { id, action }; setPending(true); }
     else return action();

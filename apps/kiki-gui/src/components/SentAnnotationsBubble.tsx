@@ -62,9 +62,6 @@ export function SentAnnotationsBubble({
     getAnnotationOverridesSnapshot,
     getAnnotationOverridesSnapshot,
   );
-  const [open, setOpen] = useState(false);
-  const anchorRef = useRef<HTMLButtonElement>(null);
-
   // Same id scheme as collectTimelineAnnotations: the annotation segments lead
   // the carry-over prefix, so the ordinal is the index inside `annotations`.
   const notes: readonly SentNote[] = (() => {

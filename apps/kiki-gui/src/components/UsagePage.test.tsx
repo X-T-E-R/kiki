@@ -157,7 +157,7 @@ function usageResponse(overrides: {
       next_page_token: overrides.nextPageToken ?? null,
     },
     reliability: {
-      complete: overrides.incompleteReason == null && (overrides.incompleteSessions ?? 0) === 0,
+      complete: (overrides.incompleteReason === null || overrides.incompleteReason === undefined) && (overrides.incompleteSessions ?? 0) === 0,
       usage_coverage: overrides.usageCoverage,
       coverage: { earliest_at: day, latest_at: day + 2 * 24 * 3600_000 },
       scanned_sessions: items.length,

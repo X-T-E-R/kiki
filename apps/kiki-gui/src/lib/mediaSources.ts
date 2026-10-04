@@ -44,7 +44,6 @@ import type {
   MediaProviderDefinition,
   MediaSource,
   MediaVoicePage,
-  MediaVoiceQuery,
 } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 

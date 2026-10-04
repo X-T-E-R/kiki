@@ -77,7 +77,7 @@ function withOverride(
   chords: readonly ShortcutChord[],
 ): ShortcutPreferences {
   const next = shortcutPreferencesSchema.parse(structuredClone(preferences));
-  next.overrides[platform] = { ...(next.overrides[platform] ?? {}), [action]: [...chords] };
+  next.overrides[platform] = { ...next.overrides[platform], [action]: [...chords] };
   return next;
 }
 

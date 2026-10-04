@@ -21,7 +21,7 @@ import { ContentContinuation, DISPLAY_ROOTS, EDIT_ROOTS, frameContentSource, INP
 import { DiffCard } from './DiffCard';
 import { isMemoryToolName, MemoryToolRow } from './MemoryToolRow';
 import { MediaJobView, readMediaJobFromToolResult } from './media/MediaJobView';
-import { FilePathLink, MediaPartList } from './mediaPreview';
+import { FilePathLink, MediaPartList } from './mediaParts';
 import { Icon, OutcomeMark, type IconName } from './icons';
 import { ActivityRow, ActivityStats, type ActivityTone } from './timeline/ActivityRow';
 import { useFindReveal } from './timeline/findReveal';

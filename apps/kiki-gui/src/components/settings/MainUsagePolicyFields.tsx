@@ -82,7 +82,7 @@ export interface UsagePolicyView {
 export type SharedUsageEdit = Readonly<Partial<Record<UsagePolicyField, string>>>;
 
 export function MainUsagePolicyFields({
-  modelId, scope, showIndependent, onScopeChange, view, onSharedChange, onChange, compaction, compactionControl, disabled = false,
+  modelId, scope, showIndependent, onScopeChange, view, onSharedChange, onChange, compaction, compactionControl,
 }: {
   modelId: string;
   scope: UsageScope;

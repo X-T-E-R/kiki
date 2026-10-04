@@ -28,18 +28,16 @@ const DEFAULT_DRAFT: ReviewerDraft = {
   backend: 'model', model: '', timeoutMs: '8000',
   allowThreshold: '0.9', denyThreshold: '0.9', categories: [...CATEGORIES], apiKey: KEEP_SECRET,
 };
-function reviewerFromConfig(permission: unknown): ReviewerDraft {
-  const root = permission !== null && typeof permission === 'object' ? permission as Record<string, unknown> : {};
-  const reviewer = root['reviewer'] !== null && typeof root['reviewer'] === 'object'
-    ? root['reviewer'] as Record<string, unknown> : {};
+function reviewerFromConfig(permission: Awaited<ReturnType<import('../../lib/client').KikiClient['getConfig']>>['permission']): ReviewerDraft {
+  const reviewer = permission?.reviewer;
   return {
-    backend: reviewer['backend'] === 'jev' ? 'jev' : 'model',
-    model: typeof reviewer['model'] === 'string' ? reviewer['model'] : '',
-    timeoutMs: String(reviewer['timeoutMs'] ?? DEFAULT_DRAFT.timeoutMs),
-    allowThreshold: String(reviewer['allowThreshold'] ?? DEFAULT_DRAFT.allowThreshold),
-    denyThreshold: String(reviewer['denyThreshold'] ?? DEFAULT_DRAFT.denyThreshold),
-    categories: Array.isArray(reviewer['categories'])
-      ? CATEGORIES.filter((category) => (reviewer['categories'] as unknown[]).includes(category))
+    backend: reviewer?.backend === 'jev' ? 'jev' : 'model',
+    model: reviewer?.model ?? '',
+    timeoutMs: String(reviewer?.timeoutMs ?? DEFAULT_DRAFT.timeoutMs),
+    allowThreshold: String(reviewer?.allowThreshold ?? DEFAULT_DRAFT.allowThreshold),
+    denyThreshold: String(reviewer?.denyThreshold ?? DEFAULT_DRAFT.denyThreshold),
+    categories: reviewer?.categories !== undefined
+      ? CATEGORIES.filter((category) => reviewer.categories.includes(category))
       : [...CATEGORIES],
     apiKey: KEEP_SECRET,
   };

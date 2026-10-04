@@ -14,7 +14,6 @@ import { usageV2 } from './usage-dashboard.scenario.mjs';
 
 const SID = 'session_fixture_settings_lists';
 const WSID = 'wd_fixture_000000000000';
-const HOUR = 3_600_000;
 
 // ---- workspaces (the page is the pattern's reference; kept small here) ----
 const workspaces = [

@@ -2,7 +2,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
 import { updateNamedAgentProfileRequestSchema, type NamedAgentProfile } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { UnifiedAgentManager } from './UnifiedAgentManager';
@@ -608,7 +608,7 @@ it('keeps failed previews unsavable and shows an empty effective set after retry
 describe('profile prompt editing', () => {
   afterEach(() => {
     for (const [, patch] of client.updateNamedAgentProfile.mock.calls) {
-      expect(() => updateNamedAgentProfileRequestSchema.parse(patch)).not.toThrow();
+      assert.doesNotThrow(() => updateNamedAgentProfileRequestSchema.parse(patch));
     }
   });
 

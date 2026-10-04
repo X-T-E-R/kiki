@@ -37,7 +37,8 @@ import {
 import { useInstantSave } from './useInstantSave';
 import { useSavedTick } from './useSavedTick';
 
-export const REQUEST_IDENTITY_QUERY_KEY = ['request-identity'] as const;
+import { REQUEST_IDENTITY_QUERY_KEY } from './identityCatalog';
+export { REQUEST_IDENTITY_QUERY_KEY, useCustomIdentityChoices } from './identityCatalog';
 
 const PROTOCOL_LABELS = ['openai_responses', 'anthropic', 'openai'] as const;
 type PreviewProtocol = (typeof PROTOCOL_LABELS)[number];
@@ -55,20 +56,6 @@ const MONO_VALUE = 'min-w-0 break-all font-mono text-[12px] leading-5 text-ink';
 function useIdentityCatalog() {
   const { client } = useConnection();
   return useQuery({ queryKey: REQUEST_IDENTITY_QUERY_KEY, queryFn: () => client.requestIdentity.get(), staleTime: 10_000 });
-}
-
-/** Custom identities for the layer pickers on the provider and model editors; empty until the catalog loads. */
-export function useCustomIdentityChoices(): readonly { id: string; label: string }[] {
-  const { client } = useConnection();
-  const query = useQuery({
-    queryKey: REQUEST_IDENTITY_QUERY_KEY,
-    queryFn: () => client.requestIdentity.get(),
-    staleTime: 30_000,
-  });
-  return useMemo(
-    () => (query.data?.profiles ?? []).filter((profile) => !profile.builtin).map(({ id, label }) => ({ id, label })),
-    [query.data],
-  );
 }
 
 function draftOf(profile: RequestIdentityProfile): RequestIdentityProfileDraft {

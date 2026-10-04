@@ -44,7 +44,6 @@ export function AccountQuotaPanel({ method }: { method: OAuthMethodStatus }) {
 }
 
 function AccountHeading({ method }: { method: OAuthMethodStatus }) {
-  const { t } = useI18n();
   return (
     <p className="flex min-w-0 items-baseline gap-2">
       <span className="text-[12.5px] font-medium text-ink">{method.label}</span>

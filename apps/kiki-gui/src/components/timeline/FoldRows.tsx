@@ -11,7 +11,7 @@ import type { AgentForest, MediaRun, SubagentBlock, SubagentEnding, SubagentGrou
 import { firstSentence } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
 import { Icon, OutcomeMark } from '../icons';
-import { MediaPart } from '../mediaPreview';
+import { MediaPart } from '../mediaParts';
 import { ActivityRow } from './ActivityRow';
 import { useFindReveal } from './findReveal';
 

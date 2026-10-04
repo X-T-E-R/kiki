@@ -75,7 +75,7 @@ export function cognitionDraft(value: unknown): CognitionDraft {
   return {
     overlay: paths(source['overlay']), overlayMode: text(source['overlay_mode']) as CognitionDraft['overlayMode'],
     steering: paths(source['steering']), anchor: paths(source['anchor']),
-    anchorSteps: source['anchor_steps'] === undefined ? '' : String(source['anchor_steps']),
+    anchorSteps: typeof source['anchor_steps'] === 'number' ? String(source['anchor_steps']) : text(source['anchor_steps']),
     anchorScope: text(source['anchor_scope']) as CognitionDraft['anchorScope'],
   };
 }

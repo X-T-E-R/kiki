@@ -31,7 +31,6 @@ import { useI18n } from '../../i18n';
 import { useInstalledPlugins } from '../capabilities/usePlugins';
 import {
   composeMediaSources,
-  defaultSettingKey,
   mediaApi,
   outcomeIsFor,
   useMediaJobAction,
@@ -39,8 +38,6 @@ import {
   useMediaJobs,
   useMediaProviders,
   useMediaSubscriptions,
-  withSubscription,
-  type MediaKind,
   type MediaJob,
   type MediaSourceEntry,
 } from '../../lib/mediaSources';
@@ -53,8 +50,6 @@ import { MediaJobView } from './MediaJobView';
 import { MediaSourceDetail } from './MediaSourceDetail';
 import { MediaSourceList } from './MediaSourceList';
 import { MediaSubscriptions } from './MediaSubscriptions';
-
-const KINDS: readonly MediaKind[] = ['image', 'video', 'tts'];
 
 /** How many recent jobs the list shows; enough to see the last one you made. */
 const JOBS_LIMIT = 20;

@@ -14,7 +14,7 @@ describe('remote space transport', () => {
     const nativeFetch = vi.fn(() => { throw new Error('raw fetch must not run'); });
     vi.stubGlobal('fetch', nativeFetch);
     const injectedFetch = vi.fn<typeof fetch>(async (input) => {
-      const path = new URL(String(input)).pathname;
+      const path = new URL((input instanceof Request ? input.url : input.toString())).pathname;
       if (path.endsWith('/meta')) return reply(meta);
       if (path.endsWith('/snapshot')) return Response.json({ code: 40001, msg: 'example snapshot error', data: null });
       return reply({ enabled: true });
@@ -25,7 +25,7 @@ describe('remote space transport', () => {
       await expect(client.meta()).resolves.toMatchObject(meta);
       await expect(client.sessionView('same-session').snapshot()).rejects.toMatchObject({ code: 40001 });
       await expect(client.getMemorySettings()).resolves.toEqual({ enabled: true });
-      expect(injectedFetch.mock.calls.map(([input]) => new URL(String(input)).pathname)).toEqual([
+      expect(injectedFetch.mock.calls.map(([input]) => new URL((input instanceof Request ? input.url : input.toString())).pathname)).toEqual([
         '/api/meta', '/api/klient/session-view/same-session/snapshot', '/api/memory/settings',
       ]);
       expect(injectedFetch.mock.calls[2]?.[1]?.headers).toMatchObject({ authorization: 'Bearer source-token' });
@@ -37,8 +37,8 @@ describe('remote space transport', () => {
   it('sends remote reads only to the source broker, including the snapshot path', async () => {
     const calls: Array<{ url: string; body: unknown }> = [];
     vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
-      calls.push({ url: String(input), body: JSON.parse(init?.body as string) });
-      expect(String(input)).toBe(`http://source.example.test/api/remote-connections/${connectionId}/call`);
+      calls.push({ url: (input instanceof Request ? input.url : input.toString()), body: JSON.parse(init?.body as string) });
+      expect((input instanceof Request ? input.url : input.toString())).toBe(`http://source.example.test/api/remote-connections/${connectionId}/call`);
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer source-token');
       const operation = (calls.at(-1)!.body as { operation: string }).operation;
       return operation === 'meta' ? reply(meta) : Response.json({ code: 40001, msg: 'example read error', data: null });

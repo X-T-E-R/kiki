@@ -122,7 +122,7 @@ const agentWorkspaceHarness = vi.hoisted(() => ({
   }>,
 }));
 
-vi.mock('./agent-workspace', () => ({
+vi.mock('./agent-workspace/AgentWorkspace', () => ({
   AgentWorkspace: (props: {
     target: { sessionId: string; agentId: string };
     inheritMediaPreview?: unknown;

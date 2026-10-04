@@ -34,7 +34,7 @@ export function PersonaDailyRoute({ onToggleSidebar }: { readonly onToggleSideba
   });
 
   useEffect(() => {
-    if (resolution.kind === 'home') navigate(resolution.href, { replace: true });
+    if (resolution.kind === 'home') void navigate(resolution.href, { replace: true });
   }, [resolution, navigate]);
 
   if (resolution.kind === 'draft') {
@@ -68,7 +68,7 @@ export function PersonaDailyRoute({ onToggleSidebar }: { readonly onToggleSideba
           <p className="text-[13px] text-ink-soft">{t('persona.dailyMissing')}</p>
           <button
             type="button"
-            onClick={() => { navigate('/personas'); }}
+            onClick={() => { void navigate('/personas'); }}
             className={`${SECONDARY_BUTTON} mt-3`}
           >
             {t('persona.back')}

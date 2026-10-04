@@ -133,7 +133,7 @@ export function toolPayloadIncomplete(output: unknown): boolean {
   const record = rec(outputJson(output));
   return record?.['truncated'] === true || record?.['status'] === 'partial'
     || arr(record?.['documents']).some((doc) => rec(doc)?.['truncated'] === true)
-    || /^The returned content is truncated and incomplete\./.test(outputText(output) ?? '');
+    || (outputText(output) ?? '').startsWith('The returned content is truncated and incomplete.');
 }
 
 /**
@@ -974,7 +974,12 @@ function webPreview(body: string | undefined, notice?: string): Pick<ToolSemanti
 function unknownWebPreview(block: ToolBlock, ctx: SemanticContext): Pick<ToolSemantics, 'preview' | 'previewFull' | 'previewNotice'> {
   let text = outputText(block.output);
   if (text === undefined && block.output !== undefined) {
-    try { text = JSON.stringify(block.output, null, 2); } catch { text = String(block.output); }
+    try { text = JSON.stringify(block.output, null, 2); } catch {
+      const value = block.output;
+      text = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint' || typeof value === 'symbol'
+        ? String(value)
+        : Object.prototype.toString.call(value);
+    }
   }
   return webPreview(text, toolRecordCopy(block.output === undefined ? 'notLoaded' : 'unavailable', ctx.locale));
 }
@@ -1075,7 +1080,7 @@ function describeWebSearch(block: ToolBlock, ctx: SemanticContext): ToolSemantic
     return { title: field('Title'), url: field('URL'), snippet: field('Snippet') ?? field('Site') };
   });
   const items = envelope === undefined ? webResultItems(legacy) : [];
-  if (items.length > 0 || /^No search results found\./.test(text)) {
+  if (items.length > 0 || text.startsWith('No search results found.')) {
     return { ...base, items, count: block.status === 'done' ? tp('tc.sem.results', items.length) : undefined,
       previewNotice: items.length === 0 ? toolRecordCopy('empty', ctx.locale) : undefined };
   }

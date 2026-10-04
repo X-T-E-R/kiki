@@ -207,7 +207,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
     } else updated.set('view', next);
     setParams(updated, { replace: true });
   };
-  const open = (href: string) => { void navigate(href); };
+  const open = (href: string) => { navigate(href); };
   // Only the finished drain can be cleared: a blocked session stays until it
   // is answered, so "read" would be a lie there.
   const markAllRead = () => {

@@ -20,11 +20,10 @@
  * and warns that attachments are not carried over by a full-replacement edit.
  */
 
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { clampOverlayPosition } from '../lib/overlayPosition';
 import { registerOverlay } from '../lib/uiBusy';
 import { Icon } from './icons';
 

@@ -1650,7 +1650,8 @@ describe('memory client surface', () => {
     let sent: unknown;
     vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
       method = init?.method;
-      sent = JSON.parse(String(init?.body));
+      expect(typeof init?.body).toBe('string');
+      sent = JSON.parse(init?.body as string);
       return envelope(null, MEMORY_REVISION_CONFLICT, 'memory.revision_conflict');
     }));
     await expect(client().putMemory({ scope: 'global' }, 'm_1', {

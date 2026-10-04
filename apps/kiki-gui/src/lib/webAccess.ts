@@ -21,7 +21,7 @@
  * that could retarget the Web UI at another host is not an entry link.
  */
 
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import type { WebAccessEnableInput, WebAccessLink, WebAccessSession, WebAccessStatus } from '@kiki/protocol';

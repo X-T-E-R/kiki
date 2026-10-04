@@ -22,7 +22,7 @@
  * its queue and says so; and every count comes from the wire.
  */
 
-import { useMemo, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
@@ -61,7 +61,6 @@ import {
   type UsageExportEntry,
 } from '../../../lib/usageExport';
 
-const NOTICE_SOFT = 'rounded-lg border border-hairline bg-panel px-3 py-2 text-[12.5px] leading-relaxed text-ink-soft';
 const NOTICE_AMBER = 'rounded-lg border border-amber-rule/40 bg-amber-card px-3 py-2 text-[12.5px] leading-relaxed text-amber-ink';
 const DETAIL_ROW = 'flex min-w-0 flex-wrap items-baseline gap-x-2 text-[12px] leading-5';
 const DETAIL_TERM = 'text-ink-faint';
@@ -255,7 +254,7 @@ export function UsageExportPanel() {
             <p data-usage-export-scan className="text-ink-faint">
               {statusQuery.data?.scan_complete === true
                 ? t('usage.export.detail.scanComplete')
-                : statusQuery.data?.scan_error != null
+                : statusQuery.data?.scan_error !== null && statusQuery.data?.scan_error !== undefined
                   ? t('usage.export.detail.scanFailed', { reason: t(categoryTextKey(statusQuery.data.scan_error)) })
                   : t('usage.export.detail.scanRunning')}
             </p>

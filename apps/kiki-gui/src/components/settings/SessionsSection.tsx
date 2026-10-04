@@ -249,7 +249,7 @@ function SessionTitlesCard() {
   };
 
   const setEnabled = (next: boolean) => write((latest) => ({
-    experimental: { ...(latest.experimental ?? {}), auto_session_title: next },
+    experimental: { ...latest.experimental, auto_session_title: next },
     replace_domains: ['experimental'],
   }), { enabled: next });
 

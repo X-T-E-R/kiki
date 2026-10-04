@@ -29,6 +29,7 @@ import base from './media-sources.scenario.mjs';
  * work, and so a reader scanning for "Atlas" finds a family rather than one
  * row.
  */
+/** @type {Array<[string, string, Array<'image' | 'video' | 'tts'>]>} */
 const VENDORS = [
   ['atlas-labs', 'Atlas', ['image', 'video', 'tts']],
   ['borealis', 'Borealis', ['image']],

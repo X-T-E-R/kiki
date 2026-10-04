@@ -707,7 +707,7 @@ export function Sidebar({
         queryClient.removeQueries({ queryKey: roomQueryKey(item.id) });
         refreshRooms();
         refreshSessions();
-        if (location.pathname === item.href) void navigate('/');
+        if (location.pathname === item.href) navigate('/');
       })
       .catch((error: unknown) => {
         setActionError(error instanceof Error ? error.message : String(error));
@@ -1017,7 +1017,7 @@ export function Sidebar({
           aria-label={activityLabel}
           aria-current={location.pathname === '/activity' ? 'page' : undefined}
           title={activityLabel}
-          onClick={() => { void navigate('/activity'); }}
+          onClick={() => { navigate('/activity'); }}
           className={`relative ${HEADER_ICON}`}
         >
           <Icon name="bell" size={16} />
@@ -1361,7 +1361,7 @@ export function Sidebar({
                     showLocation={groupBy !== 'workspace'}
                     showPin={groupBy === 'none'}
                     location={roomLocation}
-                    onOpen={() => { void navigate(item.href); }}
+                    onOpen={() => { navigate(item.href); }}
                     onMenu={(x, y, toggle) => {
                       setMenu((current) =>
                         toggle && current?.item.key === item.key ? null : { item, x, y });
@@ -2206,7 +2206,7 @@ function RoomListMenu({
 
   const openPanel = (focus: 'members' | 'budget') => {
     onClose();
-    void navigate(focus === 'budget' ? `${item.href}?panel=members&focus=budget` : `${item.href}?panel=members`);
+    navigate(focus === 'budget' ? `${item.href}?panel=members&focus=budget` : `${item.href}?panel=members`);
   };
 
   const itemClass =

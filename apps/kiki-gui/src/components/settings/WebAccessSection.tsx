@@ -25,13 +25,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { errorText, type I18nKey } from '@kiki/session-core/i18n';
+import { errorText } from '@kiki/session-core/i18n';
 import { durationUntil, relativeTime } from '@kiki/session-core/util/time';
 import type { WebAccessLink, WebAccessStatus } from '@kiki/protocol';
 
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import { copyTextToClipboard } from '../../lib/clipboard';
 import type { KikiClient } from '../../lib/client';
 import {
   addressDraftFromStatus,
@@ -230,7 +229,7 @@ export function WebAccessSection() {
                 onApply={applyAddress} applying={busy !== null} />} />
           ) : (
             <ClosedEntry mode={state.mode} busy={busy === 'temporary' || busy === 'persistent'}
-              onEnable={enable} onToggleDetails={() => { setDetails((open) => !open); }} details={details} state={state}
+              onEnable={(mode) => { void enable(mode); }} onToggleDetails={() => { setDetails((open) => !open); }} details={details} state={state}
               address={<AddressDisclosure open={details} onToggle={() => { setDetails((open) => !open); }}
                 state={state} draft={draft}
                 onDraft={(next) => { setDraft(next); setDraftTouched(true); }}
@@ -298,7 +297,7 @@ export function WebAccessSection() {
  * next to each other, and turning it off is last — it is the one action here
  * that ends other people's access.
  */
-function OpenEntry({ state, busy, details, onToggleDetails, onNewLink, onTurnOff, onRevoke, onRevokeAll, address }: {
+function OpenEntry({ state, busy, onNewLink, onTurnOff, onRevoke, onRevokeAll, address }: {
   state: WebAccessStatus;
   busy: null | Mode | 'off' | 'revoke' | 'link';
   details: boolean;
@@ -357,7 +356,7 @@ function OpenEntry({ state, busy, details, onToggleDetails, onNewLink, onTurnOff
 }
 
 /** The entry is closed. Two ways to open it, and the address options behind a fold. */
-function ClosedEntry({ state, busy, details, onToggleDetails, onEnable, address }: {
+function ClosedEntry({ state, busy, onEnable, address }: {
   state: WebAccessStatus;
   mode: WebAccessStatus['mode'];
   busy: boolean;

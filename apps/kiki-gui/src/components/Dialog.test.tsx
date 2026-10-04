@@ -59,7 +59,7 @@ function GlobalDirtySheet({ nested = false }: { nested?: boolean }) {
   return <I18nProvider>
     {sheet ? nested ? <Dialog stacked ariaLabel="Parent" overlayId="global-dirty-parent" onClose={close}>{editor}</Dialog> : editor : null}
     <ConfirmDialog stacked open={dirtyGuard.pending} title="Discard draft?" confirmLabel="Discard" cancelLabel="Keep editing"
-      onCancel={dirtyGuard.cancel} onConfirm={dirtyGuard.confirm} />
+      onCancel={dirtyGuard.cancel} onConfirm={() => { void dirtyGuard.confirm(); }} />
   </I18nProvider>;
 }
 async function openGlobalDirtySheet(nested = false) {

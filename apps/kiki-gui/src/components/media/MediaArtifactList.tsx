@@ -37,7 +37,7 @@ import { formatBytes } from '@kiki/session-core/composer/media';
 import { useI18n } from '../../i18n';
 import type { MediaArtifact } from '../../lib/mediaSources';
 import { useOptionalConnection } from '../../state/connection';
-import { MediaPart } from '../mediaPreview';
+import { MediaPart } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
 import { QUIET_BUTTON } from '../capabilities/primitives';
 import { MediaKindGlyph } from './MediaKindGlyph';

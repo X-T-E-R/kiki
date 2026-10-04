@@ -66,7 +66,7 @@ function ExperimentalRow({ id, override, effective }: { id: string; override: bo
     setError(null);
     try {
       const latest = await client.getConfig();
-      const experimental = { ...(latest.experimental ?? {}) };
+      const experimental = { ...latest.experimental };
       if (next === 'default') delete experimental[id];
       else experimental[id] = next === 'on';
       const echoed = await client.patchConfig({ experimental, replace_domains: ['experimental'] });

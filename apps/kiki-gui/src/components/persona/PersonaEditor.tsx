@@ -196,7 +196,7 @@ function PersonaForm({
   const [saved, pingSaved] = useSavedTick();
   const dirty = !draftsEqual(draft, baseline);
   const issues = validatePersonaDraft(draft, { creating, takenIds });
-  const shownIssues = attempted ? issues : { ...(issues.id === 'idTaken' ? { id: issues.id } : {}) };
+  const shownIssues = attempted ? issues : (issues.id === 'idTaken' ? { id: issues.id } : {});
 
   const set = <K extends keyof PersonaDraft>(key: K, value: PersonaDraft[K]) => {
     touched.current = true;

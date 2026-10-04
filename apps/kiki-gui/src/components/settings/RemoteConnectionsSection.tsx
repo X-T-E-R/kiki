@@ -92,7 +92,7 @@ export function RemoteConnectionsSection() {
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
           <p className="min-w-0 text-[12.5px] text-ink-soft" data-remote-source>{sourceLine}</p>
           <button type="button" data-remote-diagnostics className="shrink-0 text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink"
-            onClick={() => { navigate('/settings/connection'); }}>
+            onClick={() => { void navigate('/settings/connection'); }}>
             {t('st.remote.diagnostics')}
           </button>
         </div>

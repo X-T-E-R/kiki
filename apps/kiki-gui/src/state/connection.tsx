@@ -303,14 +303,14 @@ export class LiveControllerRegistry implements ControllerRegistry {
 
   /** Close every parked view that belongs to a connection that is going away. */
   evictScope(connectionScope: object): void {
-    for (const [entry, scope] of [...this.parked]) {
+    for (const [entry, scope] of Array.from(this.parked)) {
       if (scope === connectionScope) this.dispose(entry);
     }
   }
 
   /** Close every parked view. */
   clearParked(): void {
-    for (const entry of [...this.parked.keys()]) this.dispose(entry);
+    for (const entry of Array.from(this.parked.keys())) this.dispose(entry);
   }
 
   private park(entry: RetainedController, connectionScope: object): boolean {
@@ -362,16 +362,16 @@ export class LiveControllerRegistry implements ControllerRegistry {
   private enforceLimits(): void {
     const now = this.now();
     // Bound live subscriptions: suspend the oldest protected views past the ceiling.
-    const live = [...this.parked.keys()].filter((entry) => this.isLiveProtected(entry));
+    const live = Array.from(this.parked.keys()).filter((entry) => this.isLiveProtected(entry));
     for (const entry of live.slice(0, Math.max(0, live.length - this.limits.maxLiveParked))) {
       entry.controller.suspend();
     }
     // Evict expired, then least-recently-used suspended views until within budget.
-    for (const entry of [...this.parked.keys()]) {
+    for (const entry of Array.from(this.parked.keys())) {
       if (!this.isLiveProtected(entry) && now - (entry.parked?.at ?? now) >= this.limits.ttlMs) this.dispose(entry);
     }
     const evictable = (): RetainedController[] =>
-      [...this.parked.keys()].filter((entry) => !this.isLiveProtected(entry));
+      Array.from(this.parked.keys()).filter((entry) => !this.isLiveProtected(entry));
     let candidates = evictable();
     let bytes = candidates.reduce((sum, entry) => sum + (entry.parked?.bytes ?? 0), 0);
     while (candidates.length > 0 &&

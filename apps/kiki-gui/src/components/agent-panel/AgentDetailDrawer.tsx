@@ -5,7 +5,7 @@ import { useI18n } from '../../i18n';
 import { Icon } from '../icons';
 import { useOptionalConnection } from '../../state/connection';
 import { Dialog } from '../Dialog';
-import { FilePathLink } from '../mediaPreview';
+import { FilePathLink } from '../mediaParts';
 import { SkillPreviewButton } from '../capabilities/SkillPreviewButton';
 import { CapabilityStateBadge } from './CapabilityStateBadge';
 import { ProfileDetailSections, type ProfileDetailSectionsProps } from './ProfileDetailSections';
