@@ -8,7 +8,9 @@ import {
   IAgentLoopService, IAgentPromptService, ISendMessageToThreadTool, IListThreadsTool, IReadThreadTool, IWaitThreadsTool,
   type AgentTool, type ThreadRef, type ReadThreadResult, type SendThreadMessageResult, type WaitThreadsResult,
 } from '@kiki/agent-core-v2';
-import type { BridgeLink, BridgePolicy } from '@kiki/protocol';
+import type { BridgeLink, BridgePolicy, BridgeReceipt } from '@kiki/protocol';
+import { SpaceThreadBridge } from '../src/services/threadBridge/bridge';
+import * as privateFiles from '../src/services/auth/privateFiles';
 import { agentTranscriptToBlocks } from '../../session-core/src/session/transcript';
 import { startServer, type RunningServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -142,6 +144,50 @@ describe.each(['local', 'network'] as const)('directed space thread bridge (%s, 
     expect(restarted.core.accessor.get(IThreadCommunicationService).hostId).toBe(f.target.hostId);
     expect(f.modelRequests()).toBe(0);
   }, 60000);
+  it('finishes revocation on the latest grant revision while an older recheck is in flight', async () => {
+    const f = await fixture(); const link = await linkFor(f, location, false, 1);
+    const receipt = await execute<SendThreadMessageResult>(f.main.accessor.get(ISendMessageToThreadTool), {
+      thread: toolRef(f.target, link), content: 'Stay cold across revocation.', idempotency_key: 'revoke-in-flight',
+    });
+    expect(receipt.delivery).toBe('pending');
+    let validationEntered!: () => void; let releaseValidation!: () => void; let revocationPersisted!: () => void;
+    const entered = new Promise<void>((resolve) => { validationEntered = resolve; });
+    const validationGate = new Promise<void>((resolve) => { releaseValidation = resolve; });
+    const persisted = new Promise<void>((resolve) => { revocationPersisted = resolve; });
+    let targetStatus: SpaceThreadBridge['status'] | undefined; let hold = true;
+    const beforeDelivery = SpaceThreadBridge.prototype.beforeDelivery;
+    const validation = vi.spyOn(SpaceThreadBridge.prototype, 'beforeDelivery').mockImplementation(async function (this: SpaceThreadBridge, message) {
+      const result = await beforeDelivery.call(this, message);
+      if (hold && message.producer.kind === 'bridged_peer' && message.producer.bridgeId === link.grant.id) {
+        hold = false; targetStatus = this.status.bind(this);
+        expect(result).toBe('pending'); validationEntered(); await validationGate;
+      }
+      return result;
+    });
+    const writePrivateFile = privateFiles.writePrivateFile;
+    const writing = vi.spyOn(privateFiles, 'writePrivateFile').mockImplementation(async (path, data) => {
+      await writePrivateFile(path, data);
+      if (path === join(f.bHome, 'server', 'thread-bridges.json') && targetStatus?.().inbound.some((grant) => grant.id === link.grant.id && grant.revoked)) revocationPersisted();
+    });
+    const client = owner(f.b); let revoking: Promise<void> | undefined;
+    try {
+      await entered;
+      let completed = false;
+      revoking = client.rest!.threadBridges.revoke('inbound', link.grant.id).then(() => { completed = true; });
+      await persisted;
+      expect(targetStatus!().inbound.find((grant) => grant.id === link.grant.id)).toMatchObject({ revoked: true, enabled: false, revision: link.grant.revision + 1 });
+      expect(completed).toBe(false);
+      releaseValidation(); await revoking;
+      const page = await f.b.core.accessor.get(IThreadMailboxStore).readMessages({ group: `session:${f.target.sessionId}`, limit: 10 });
+      expect(page.items[0]).toMatchObject({ delivery: 'undeliverable', message: { messageId: receipt.messageId } });
+      expect(f.b.core.accessor.get(ISessionManager).get(f.target.sessionId)).toBeUndefined();
+      expect(f.modelRequests()).toBe(0);
+    } finally {
+      releaseValidation();
+      try { await revoking; }
+      finally { validation.mockRestore(); writing.mockRestore(); await client.close(); }
+    }
+  }, 60000);
   it('recovers source outbox and an enqueued target prompt after a lost mailbox ACK without a second model turn', async () => {
     const f = await fixture(); const link = await linkFor(f, location, true, 1);
     const mailbox = f.b.core.accessor.get(IThreadMailboxStore);
@@ -170,7 +216,15 @@ describe.each(['local', 'network'] as const)('directed space thread bridge (%s, 
       expect(restored.accessor.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'bridged_peer')).toHaveLength(1);
       expect(f.modelRequests()).toBe(1);
       const next = await execute<SendThreadMessageResult>(main.accessor.get(ISendMessageToThreadTool), { ...input, content: 'Next independent message.', idempotency_key: 'next-key' });
-      expect(next.delivery).toBe('delivered');
+      expect(['pending', 'delivered']).toContain(next.delivery);
+      let nextReceipt: BridgeReceipt | undefined;
+      await vi.waitFor(async () => {
+        const page = await client.rest!.threadBridges.receipts();
+        nextReceipt = page.items.find((entry) => entry.id === next.messageId || entry.messageId === next.messageId);
+        expect(nextReceipt).toMatchObject({ delivery: 'delivered' });
+      }, { timeout: 15000, interval: 100 });
+      expect(nextReceipt!.messageId).not.toBe(accepted.message.messageId);
+      expect(nextReceipt!.targetSeq).toBeGreaterThan(accepted.message.targetSeq);
       await restored.accessor.get(IAgentLoopService).settled(); expect(f.modelRequests()).toBe(2);
       expect((await client.rest!.threadBridges.receipts()).items).toHaveLength(2);
     } finally { await client.close(); }

@@ -20,12 +20,14 @@ it('keeps real ThreadCreate bindings on GUI entry, running continuation and cold
   const home = await mkdtemp(join(tmpdir(), 'created-thread-binding-'));
   const requests: Record<string, unknown>[] = [];
   let pending: ServerResponse | undefined;
+  let requestObserved!: () => void;
+  const requestReceived = new Promise<void>((resolve) => { requestObserved = resolve; });
   const provider = createServer((request, response) => {
     void (async () => {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       requests.push(JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>);
-      pending = response;
+      pending = response; requestObserved();
     })();
   });
   await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
@@ -68,7 +70,8 @@ it('keeps real ThreadCreate bindings on GUI entry, running continuation and cold
     const cold = await open(explicit.id, 'high');
     expect(manager.get(explicit.id)).toBeUndefined();
     const sending = cold.sendPrompt({ text: 'Synthetic continuation', model: cold.getState().model, thinking: cold.getState().thinkingEffort });
-    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    await Promise.all([sending, requestReceived]);
+    expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ model: 'fixture', reasoning_effort: 'high' });
     await open(explicit.id, 'high');
     pending!.writeHead(200, { 'content-type': 'text/event-stream' });

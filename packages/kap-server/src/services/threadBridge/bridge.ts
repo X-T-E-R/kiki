@@ -119,6 +119,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
       } else { const entry = this.link(id); entry.enabled = false; entry.grant.revoked = true; this.cancelOutgoing(id);
         await this.connections.secrets.remove({ connectionId: id, purpose: 'bridge' }); }
     });
+    await this.retryFlight;
     await this.retry();
   }
   onAdmissionChange(): void { if (!this.admission.status().enabled) for (const id of this.incoming.keys()) this.cancelIncoming(id); void this.retry().catch(() => {}); }
