@@ -337,7 +337,8 @@ export interface GlobalFlagsFacade {
 export interface GlobalCapabilitiesFacade {
   list(): Promise<readonly CapabilityStatus[]>;
   get(id: string): Promise<CapabilityStatus>;
-  install(id: string, expectedSha256?: string): Promise<CapabilityStatus>;
+  install(id: string, expectedSha256?: string, browserMode?: 'driver-only' | 'managed-browser'): Promise<CapabilityStatus>;
+  cancel(id: string): Promise<CapabilityStatus>;
 }
 
 export interface GlobalPluginsFacade {
@@ -774,8 +775,9 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
     capabilities: {
       list: () => call('capabilityService', 'listCapabilities', []) as Promise<readonly CapabilityStatus[]>,
       get: (id) => call('capabilityService', 'getCapability', [id]) as Promise<CapabilityStatus>,
-      install: (id, expectedSha256) =>
-        call('capabilityService', 'installCapability', expectedSha256 === undefined ? [id] : [id, expectedSha256]) as Promise<CapabilityStatus>,
+      install: (id, expectedSha256, browserMode) =>
+        call('capabilityService', 'installCapability', browserMode !== undefined ? [id, expectedSha256, browserMode] : expectedSha256 === undefined ? [id] : [id, expectedSha256]) as Promise<CapabilityStatus>,
+      cancel: (id) => call('capabilityService', 'cancelCapability', [id]) as Promise<CapabilityStatus>,
     },
 
     hostFs: {

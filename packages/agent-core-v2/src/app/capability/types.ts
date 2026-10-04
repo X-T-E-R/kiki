@@ -1,4 +1,4 @@
-export type CapabilityId = 'kimi-cu' | 'kimi-webbridge' | 'kiki-computer';
+export type CapabilityId = 'kimi-cu' | 'kimi-webbridge' | 'kiki-computer' | 'kiki-browser';
 
 export type CapabilityReadiness = 'not_installed' | 'partial' | 'ready' | 'unsupported';
 
@@ -90,5 +90,5 @@ export interface CapabilityEntry {
   readonly supported: boolean;
   readonly plan?: CapabilityInstallPlan;
   detect(): Promise<CapabilityDetectResult>;
-  install(report: CapabilityInstallReporter): Promise<string | undefined>;
+  install(report: CapabilityInstallReporter, signal?: AbortSignal, browserMode?: 'driver-only' | 'managed-browser'): Promise<string | undefined>;
 }

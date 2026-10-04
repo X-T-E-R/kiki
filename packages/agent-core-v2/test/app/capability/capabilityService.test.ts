@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { isError2 } from '#/_base/errors/errors';
-import type { ILogService, LogPayload } from '#/_base/log/log';
+import { ILogService, type LogPayload } from '#/_base/log/log';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IHostProcessService } from '#/os/interface/hostProcess';
+import { IProviderService } from '#/kosong/provider/provider';
+import { IMcpManagementService } from '#/app/mcpManagement/mcpManagement';
 import { CapabilityErrors } from '#/app/capability/errors';
 import { CapabilityService } from '#/app/capability/capabilityService';
 import type {
@@ -11,9 +16,24 @@ import type {
 } from '#/app/capability/types';
 
 import { stubLog } from '../../_base/log/stubs';
+import { TestInstantiationService } from '#/_base/di/test';
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { ICapabilityService } from '#/app/capability/capability';
+
+class CapabilityFixture extends CapabilityService {
+  constructor(entries: readonly CapabilityEntry[], log: ILogService,
+    @IBootstrapService bootstrap: IBootstrapService,
+    @IPluginService plugins: IPluginService,
+    @IHostProcessService process: IHostProcessService,
+    @IProviderService providers: IProviderService,
+    @IMcpManagementService mcp: IMcpManagementService,
+  ) {
+    super(bootstrap, plugins, process, log, providers, mcp, entries);
+  }
+}
 
 function fakeEntry(overrides: {
-  id: 'kimi-cu' | 'kimi-webbridge';
+  id: 'kimi-cu' | 'kimi-webbridge' | 'kiki-browser';
   pluginId?: string;
   supported?: boolean;
   detect?: CapabilityDetectResult;
@@ -36,16 +56,15 @@ function fakeEntry(overrides: {
 function fakeService(
   entries: readonly CapabilityEntry[],
   log: ILogService = stubLog(),
-): CapabilityService {
-  return new CapabilityService(
-    undefined as never,
-    undefined as never,
-    undefined as never,
-    log,
-    undefined as never,
-    undefined as never,
-    entries,
-  );
+): ICapabilityService {
+  const ix = new TestInstantiationService();
+  ix.stub(IBootstrapService, {});
+  ix.stub(IPluginService, {});
+  ix.stub(IHostProcessService, {});
+  ix.stub(IProviderService, {});
+  ix.stub(IMcpManagementService, {});
+  ix.set(ICapabilityService, new SyncDescriptor(CapabilityFixture, [entries, log]));
+  return ix.get(ICapabilityService);
 }
 
 function expectErrorCode(error: unknown, code: string): void {
@@ -54,6 +73,27 @@ function expectErrorCode(error: unknown, code: string): void {
 }
 
 describe('CapabilityService', () => {
+  it('cancels browser installation, waits for cleanup, then admits a fresh attempt', async () => {
+    let attempts = 0;
+    const entry: CapabilityEntry = { id: 'kiki-browser', displayName: 'Browser', description: 'fixture', supported: true,
+      detect: async () => ({ steps: [{ id: 'driver', state: 'missing' }] }),
+      install: async (report, signal, mode) => {
+        attempts++;
+        expect(mode).toBe('driver-only');
+        if (attempts === 2) return undefined;
+        report('driver-download', 37);
+        await new Promise<void>((_done, reject) => { signal!.addEventListener('abort', () => reject(signal!.reason), { once: true }); });
+        return undefined;
+      },
+    };
+    const service = fakeService([entry]);
+    expect((await service.installCapability('kiki-browser', undefined, 'driver-only')).install.running).toBe(true);
+    await expect(service.installCapability('kiki-browser')).rejects.toMatchObject({ code: 'capability.install_in_progress' });
+    expect((await service.cancelCapability('kiki-browser')).install).toEqual({ running: false, note: 'cancelled' });
+    await service.installCapability('kiki-browser', undefined, 'driver-only');
+    expect((await service.getCapability('kiki-browser')).install.error).toBeUndefined();
+    expect(attempts).toBe(2);
+  });
   it('lists entries with readiness computed from required steps', async () => {
     const service = fakeService([
       fakeEntry({

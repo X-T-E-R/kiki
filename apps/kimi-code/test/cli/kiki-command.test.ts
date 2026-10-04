@@ -26,6 +26,8 @@ import { mcpPrincipal } from '../../src/kiki/mcp';
 import { registerKikiCommands } from '../../src/kiki/register';
 import { parseDuration, startServeServer, registerServeCommand, findReachableServer, ensureServer } from '../../src/kiki/serve';
 
+import * as nativeAssets from '../../src/native/native-assets';
+
 const roots: string[] = [];
 
 afterEach(async () => {
@@ -76,6 +78,8 @@ describe('kiki command helpers', () => {
 
   it('injects the packaged web assets into the kap server owner', async () => {
     const webAssetsDir = String.raw`C:\Program Files\Kiki\cache\dist\web`;
+    const browserDriverPath = String.raw`C:\Program Files\Kiki\cache\runtime\browser-driver\agent-browser.exe`;
+    const driver = vi.spyOn(nativeAssets, 'getBrowserDriverFile').mockReturnValue(browserDriverPath);
     let received: ServerStartOptions | undefined;
     const startServer = async (options: ServerStartOptions): Promise<RunningServer> => {
       received = options;
@@ -96,7 +100,10 @@ describe('kiki command helpers', () => {
       debugEndpoints: true,
       logLevel: 'warn',
       webAssetsDir,
+      browserDriverPath,
     });
+    expect(driver).toHaveBeenCalledOnce();
+    driver.mockRestore();
   });
 
   it('attaches a live backend and refuses ensure when its identity handshake cannot be verified', async () => {

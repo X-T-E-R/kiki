@@ -1,15 +1,3 @@
-/**
- * Settings → 浏览器控制. Two flat blocks in the order a person decides:
- *
- *   A  which connection new sessions start with — 每次指定, or one connection
- *      by its stable id. Saved on its own, because it is not part of any
- *      connection's configuration;
- *   B  the connections themselves (BrowserConnectionCard): list, then one form.
- *
- * Nothing here starts a driver, opens a browser or creates a cloud session.
- * The page reads configuration and whatever state the server already knows.
- */
-
 import { useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -22,15 +10,17 @@ import { SettingField } from './fields';
 import { SettingsSelect } from './SettingsPrimitives';
 import { useInstantSave } from './useInstantSave';
 import { BrowserConnectionCard } from './browserControl/BrowserConnectionCard';
+import { BrowserSetupCard } from './browserControl/BrowserSetupCard';
 
 export function BrowserControlSection() {
   const { t } = useI18n();
   return (
     <div className="space-y-6" data-settings-browser-control>
-      <DefaultBrowserCard />
+      <BrowserSetupCard />
       <SectionCard id="st-card-browser-connections" title={t('st.browser.connectionsTitle')}>
         <BrowserConnectionCard />
       </SectionCard>
+      <DefaultBrowserCard />
     </div>
   );
 }

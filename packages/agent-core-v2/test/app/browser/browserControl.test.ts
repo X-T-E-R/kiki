@@ -60,6 +60,25 @@ function fixture() {
 const caller = { sessionId: 'fixture-session', agentId: 'main' };
 
 describe('browser connection execution ownership', () => {
+  it('clears an old missing-driver failure after installation and a successful check without claiming connected', async () => {
+    const f = fixture();
+    try {
+      f.factory.open.mockRejectedValueOnce(new Error('Browser components are not prepared'));
+      expect((await f.control.check('a')).state).toBe('failed');
+      expect(await f.control.check('a')).toMatchObject({ state: 'idle', driverVersion: '0.38.2', error: undefined, failure: undefined });
+      expect(f.calls.map((call) => call.name)).toEqual(['agent_browser_session_info']);
+    } finally { f.ix.dispose(); }
+  });
+  it('retains failure when the prepared driver rejects its session probe', async () => {
+    const f = fixture();
+    try {
+      f.factory.open.mockRejectedValueOnce(new Error('Browser components are not prepared'));
+      expect((await f.control.check('a')).state).toBe('failed');
+      f.handlers.set('a:agent_browser_session_info', async () => ({ isError: true, content: [], structuredContent: { exitCode: 1, response: { success: false, error: 'session probe refused' } } }));
+      expect(await f.control.check('a')).toMatchObject({ state: 'failed', error: expect.stringContaining('session probe refused') });
+      expect(f.calls.map((call) => call.name)).toEqual(['agent_browser_session_info']);
+    } finally { f.ix.dispose(); }
+  });
   it('keeps saved management readable but prevents experimental execution while disabled', async () => {
     const f = fixture(); f.flags.enabled = () => false;
     try {

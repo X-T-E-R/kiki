@@ -38,12 +38,16 @@ const disconnect = vi.fn<(id: string) => Promise<BrowserStatus>>();
 const tabs = vi.fn<(id: string) => Promise<BrowserTabsResponse>>();
 const catalog = vi.fn<(id: string, options?: { includeSchema?: boolean }) => Promise<BrowserCatalogResponse>>();
 const revealSecret = vi.fn(async () => ({ value: 'http://127.0.0.1:9222' }));
+const getCapability = vi.fn();
+const installCapability = vi.fn();
+const cancelCapability = vi.fn();
+const nativeBrowserEnabled = vi.fn();
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     client: {
-      revealSecret,
-      klient: { rest: { browser: { list, upsert, remove, setDefault, status, check, connect, disconnect, tabs, catalog } } },
+      revealSecret, getCapability, installCapability, cancelCapability,
+      klient: { global: { flags: { enabled: nativeBrowserEnabled } }, rest: { browser: { list, upsert, remove, setDefault, status, check, connect, disconnect, tabs, catalog } } },
     },
     scopeId: connection.scopeId,
     sshLabel: connection.sshLabel,
@@ -166,6 +170,8 @@ beforeEach(() => {
   localStorage.setItem('kiki.locale', 'en');
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
   list.mockResolvedValue({ connections: [] });
+  nativeBrowserEnabled.mockResolvedValue(true);
+  getCapability.mockResolvedValue({ id: 'kiki-browser', supported: true, state: 'partial', steps: [{ id: 'driver', state: 'ok' }, { id: 'chrome', state: 'missing' }], install: { running: false }, plan: { artifact: { sha256: 'a'.repeat(64) }, destination: 'C:\\fixture\\home\\browser\\resources' } });
   revealSecret.mockResolvedValue({ value: 'http://127.0.0.1:9222' });
   queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   container = document.createElement('div');
@@ -179,6 +185,54 @@ afterEach(async () => {
 });
 
 describe('BrowserControlSection', () => {
+  it('shows the disabled experimental flag before execution without installing or connecting automatically', async () => {
+    nativeBrowserEnabled.mockResolvedValue(false);
+    await render();
+    expect(nativeBrowserEnabled).toHaveBeenCalledWith('native_browser');
+    expect(query('[data-browser-setup-flag]')).not.toBeNull();
+    expect(query<HTMLAnchorElement>('[data-browser-setup-flag] a')?.getAttribute('href')).toMatch(/^\/settings\/developer#/);
+    expect(installCapability).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
+  });
+  it('starts component installation, shows progress, cancels honestly and permits retry', async () => {
+    const initial = await getCapability();
+    installCapability.mockResolvedValue({ ...initial, install: { running: true, step: 'chrome-download', percent: 37 } });
+    cancelCapability.mockResolvedValue({ ...initial, install: { running: false, note: 'cancelled' } });
+    await render();
+    await click('[data-browser-install]');
+    expect(installCapability).toHaveBeenCalledWith('kiki-browser', 'a'.repeat(64), 'managed-browser');
+    expect(query('[data-browser-install-progress]')?.textContent).toContain('37%');
+    expect(query('[data-browser-install]')).toBeNull();
+    await click('[data-browser-install-cancel]');
+    expect(cancelCapability).toHaveBeenCalledWith('kiki-browser');
+    expect(query('[data-browser-setup]')?.textContent).toContain('Installation cancelled');
+    expect(query('[data-browser-install]')).not.toBeNull();
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('prepares only the driver for CDP and does not require Chrome to proceed', async () => {
+    const initial = await getCapability();
+    getCapability.mockResolvedValue({ ...initial, steps: [{ id: 'driver', state: 'missing' }, { id: 'chrome', state: 'missing' }] });
+    installCapability.mockResolvedValue(initial);
+    await render();
+    await click('#browser-setup-mode');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[role="option"][data-option-value="driver-only"]')!.click(); });
+    await settle();
+    await click('[data-browser-install]');
+    expect(installCapability).toHaveBeenCalledWith('kiki-browser', 'a'.repeat(64), 'driver-only');
+    expect(query('[data-browser-install]')).toBeNull();
+    expect(query('[data-browser-setup]')?.textContent).toContain('Add a connection below');
+  });
+
+  it('keeps install failure visible with an executable retry action, not a success message', async () => {
+    const initial = await getCapability();
+    installCapability.mockResolvedValue({ ...initial, install: { running: false, error: 'Download failed: HTTP 503' } });
+    await render();
+    await click('[data-browser-install]');
+    expect(query('[data-browser-setup]')?.textContent).toContain('HTTP 503');
+    expect(query('[data-browser-install]')?.textContent).toBe('Retry install');
+    expect(query('[data-browser-setup]')?.textContent).not.toContain('installed successfully');
+  });
   it('lists every connection with the state and location the server reported', async () => {
     list.mockResolvedValue({ connections: [profileRow(), cdpRow(), profileRow({ id: 'qa', name: 'Regression', enabled: false })], defaultBrowser: 'research' });
 

@@ -12,6 +12,7 @@
 
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 
@@ -94,7 +95,7 @@ export function OtherBrowserEcosystems() {
           <div key={row.id} data-browser-other-row={row.id}>
             <dt className="flex flex-wrap items-baseline gap-1.5">
               <span className="font-medium text-ink">{t(row.name)}</span>
-              <Tag>{t('st.browser.other.state')}</Tag>
+              {row.id === 'webbridge' ? <Link to="/settings/plugins" className="text-ink-soft underline underline-offset-2" data-browser-webbridge-link>{t('st.browser.other.webbridge.action')}</Link> : <Tag>{t('st.browser.other.state')}</Tag>}
             </dt>
             <dd className="max-w-[62ch]">{t(row.condition)}</dd>
           </div>

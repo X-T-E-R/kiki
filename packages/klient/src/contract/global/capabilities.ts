@@ -26,7 +26,7 @@ export const capabilityInstallProgressSchema = z.object({
 });
 
 export const capabilityStatusSchema = z.object({
-  id: z.enum(['kimi-cu', 'kimi-webbridge', 'kiki-computer']),
+  id: z.enum(['kimi-cu', 'kimi-webbridge', 'kiki-computer', 'kiki-browser']),
   pluginId: z.string().optional(),
   displayName: z.string(),
   description: z.string(),
@@ -44,5 +44,6 @@ export const capabilityStatusSchema = z.object({
 export const capabilitiesContract = {
   listCapabilities: { input: z.tuple([]), output: z.array(capabilityStatusSchema) },
   getCapability: { input: z.tuple([z.string()]), output: capabilityStatusSchema },
-  installCapability: { input: z.tuple([z.string(), z.string().optional()]), output: capabilityStatusSchema },
+  installCapability: { input: z.tuple([z.string(), z.string().optional(), z.enum(['driver-only', 'managed-browser']).optional()]), output: capabilityStatusSchema },
+  cancelCapability: { input: z.tuple([z.string()]), output: capabilityStatusSchema },
 } satisfies ServiceContract;

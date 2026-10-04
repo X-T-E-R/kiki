@@ -5,6 +5,7 @@ import { createDecorator } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
+import { installedBrowserDriver, installedBrowserChrome } from '#/app/capability/entries/browserResourceStore';
 import { StdioMcpClient } from '#/mcpCore/client-stdio';
 import type { MCPClient } from '#/mcpCore/types';
 import type { Runtime } from '#/runtime/runtime';
@@ -62,8 +63,8 @@ export class BrowserBackendFactory implements IBrowserBackendFactory {
     try {
       const runtime = workspace.instance.runtimes.current('local');
       if (runtime === undefined || runtime.process === undefined) throw new BrowserError('browser.execution_failed', 'The Kiki service host has no local process runtime');
-      const command = connection.driverPath ?? this.bootstrap.args.browserDriverPath;
-      if (command === undefined) throw new BrowserError('browser.version', 'The managed browser driver is not bundled in this host. Use a Kiki build containing the verified browser resource, or explicitly configure a managed driver.');
+      const command = connection.driverPath ?? this.bootstrap.args.browserDriverPath ?? await installedBrowserDriver(this.bootstrap.homeDir);
+      if (command === undefined) throw new BrowserError('browser.version', 'Browser components are not prepared on this Kiki service host. Open Settings > Browser control and choose Install components, then check this connection again.');
       const check = await runtime.process.spawn(command, ['--version'], { shell: false, windowsHide: true, timeout: 10_000 });
       let output = '';
       check.stdout.on('data', (chunk: Buffer) => { if (output.length < 4096) output += chunk.toString(); });
@@ -85,7 +86,10 @@ export class BrowserBackendFactory implements IBrowserBackendFactory {
         AGENT_BROWSER_SESSION: session, AGENT_BROWSER_PIN_TAB: '1', AGENT_BROWSER_SOCKET_DIR: join(this.bootstrap.homeDir, 'browser', 'run') };
       if (profilePath !== undefined) env['AGENT_BROWSER_PROFILE'] = profilePath;
       if (connection.type === 'agent-browser-cdp') env['AGENT_BROWSER_CDP'] = connection.endpointSecret;
-      if (connection.type === 'agent-browser-profile' && connection.executablePath !== undefined) env['AGENT_BROWSER_EXECUTABLE_PATH'] = connection.executablePath;
+      if (connection.type === 'agent-browser-profile') {
+        const executable = connection.executablePath ?? (await installedBrowserChrome(this.bootstrap.homeDir))?.executable;
+        if (executable !== undefined) env['AGENT_BROWSER_EXECUTABLE_PATH'] = executable;
+      }
       if (connection.type === 'agent-browser-profile' && connection.headed === true) env['AGENT_BROWSER_HEADED'] = '1';
       client = new StdioMcpClient({ transport: 'stdio', command, args: ['mcp', '--tools', 'all'], executor: 'local', env },
       { runtimeResolver: browserRuntimeResolver(this.runtimes, env), workspaceId: runtime.identity.workspaceId, runtimeId: 'local',

@@ -68,7 +68,7 @@ describe('server-v2 /api capabilities', () => {
     expect(body.code).toBe(0);
     const parsed = listCapabilitiesResponseSchema.parse(body.data);
     const ids = parsed.capabilities.map((c) => c.id).toSorted();
-    expect(ids).toEqual(['kiki-computer', 'kimi-cu', 'kimi-webbridge']);
+    expect(ids).toEqual(['kiki-browser', 'kiki-computer', 'kimi-cu', 'kimi-webbridge']);
     const computer = parsed.capabilities.find((capability) => capability.id === 'kiki-computer');
     expect(computer?.plan?.artifact.version).toBe('0.32.0');
     expect(computer?.plan?.artifact.url).toContain('cua-driver-rs-v0.32.0');

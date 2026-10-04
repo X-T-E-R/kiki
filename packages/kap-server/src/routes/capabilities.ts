@@ -91,7 +91,7 @@ export function registerCapabilitiesRoutes(app: CapabilitiesRouteHost, core: Sco
       method: 'POST',
       path: '/capabilities/{tail}',
       params: capabilityTailParamsSchema,
-      body: z.object({ expectedSha256: z.string().regex(/^[0-9a-f]{64}$/).optional() }),
+      body: z.object({ expectedSha256: z.string().regex(/^[0-9a-f]{64}$/).optional(), browserMode: z.enum(['driver-only', 'managed-browser']).optional() }),
       success: { data: capabilityStatusSchema },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
@@ -106,7 +106,7 @@ export function registerCapabilitiesRoutes(app: CapabilitiesRouteHost, core: Sco
     async (req, reply) => {
       const parsed = parseActionSuffix({
         tail: req.params.tail,
-        allowedActions: ['install'],
+        allowedActions: ['install', 'cancel'],
         resourceLabel: 'capability',
       });
       if (parsed.kind !== 'action') {
@@ -115,9 +115,8 @@ export function registerCapabilitiesRoutes(app: CapabilitiesRouteHost, core: Sco
         return;
       }
       try {
-        const capability = await core.accessor
-          .get(ICapabilityService)
-          .installCapability(parsed.id, req.body.expectedSha256);
+        const service = core.accessor.get(ICapabilityService);
+        const capability = parsed.action === 'cancel' ? await service.cancelCapability(parsed.id) : await service.installCapability(parsed.id, req.body.expectedSha256, req.body.browserMode);
         reply.send(okEnvelope(capability, req.id));
       } catch (error) {
         reply.send(mapCapabilityError(error, req.id));

@@ -14,6 +14,7 @@ import { IProviderService } from '#/kosong/provider/provider';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { IMcpManagementService } from '#/app/mcpManagement/mcpManagement';
 import { createKikiComputerEntry } from './entries/kikiComputer';
+import { createKikiBrowserEntry } from './entries/kikiBrowser';
 
 import { ICapabilityService } from './capability';
 import { CapabilityErrors } from './errors';
@@ -43,6 +44,7 @@ export class CapabilityService extends Disposable implements ICapabilityService 
   private readonly entries: ReadonlyMap<CapabilityId, CapabilityEntry>;
   private readonly installProgress = new Map<CapabilityId, CapabilityInstallProgress>();
   private readonly runningInstalls = new Set<CapabilityId>();
+  private readonly browserInstalls = new Map<CapabilityId, { controller: AbortController; done: Promise<void> }>();
 
   private setInstallProgress(id: CapabilityId, progress: CapabilityInstallProgress): void {
     this.installProgress.set(id, progress);
@@ -86,6 +88,7 @@ export class CapabilityService extends Disposable implements ICapabilityService 
         ['kimi-cu', createKimiCuEntry(ctx)],
         ['kimi-webbridge', createKimiWebbridgeEntry(ctx)],
         ['kiki-computer', createKikiComputerEntry(ctx)],
+        ['kiki-browser', createKikiBrowserEntry(ctx, bootstrap.args.browserDriverPath)],
       ]);
     }
   }
@@ -108,8 +111,9 @@ export class CapabilityService extends Disposable implements ICapabilityService 
     return this.statusOf(this.requireEntry(id));
   }
 
-  async installCapability(id: string, expectedSha256?: string): Promise<CapabilityStatus> {
+  async installCapability(id: string, expectedSha256?: string, browserMode?: 'driver-only' | 'managed-browser'): Promise<CapabilityStatus> {
     const entry = this.requireEntry(id);
+    if (browserMode !== undefined && entry.id !== 'kiki-browser') throw new Error2(CapabilityErrors.codes.CAPABILITY_UNSUPPORTED, 'Browser installation mode applies to browser components only');
     if (expectedSha256 !== undefined && entry.plan?.artifact.sha256 !== expectedSha256) {
       throw new Error2(
         CapabilityErrors.codes.CAPABILITY_UNSUPPORTED,
@@ -131,34 +135,47 @@ export class CapabilityService extends Disposable implements ICapabilityService 
         { details: { id: entry.id } });
     }
 
+    const controller = entry.id === 'kiki-browser' ? new AbortController() : undefined;
     this.runningInstalls.add(entry.id);
     this.setInstallProgress(entry.id, { running: true });
-    void (async () => {
+    const done = (async () => {
       try {
         const note = await entry.install((step, percent) => {
           this.setInstallProgress(
             entry.id,
             percent === undefined ? { running: true, step } : { running: true, step, percent },
           );
-        });
+        }, controller?.signal, browserMode);
         this.setInstallProgress(entry.id, { running: false, note });
       } catch (error) {
         const step = this.installProgress.get(entry.id)?.step;
-        this.log.warn('capability install failed', {
-          capabilityId: entry.id,
-          step,
-          error,
-        });
-        this.setInstallProgress(entry.id, {
-          running: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        if (controller?.signal.aborted === true) {
+          this.setInstallProgress(entry.id, { running: false, note: 'cancelled' });
+        } else {
+          this.log.warn('capability install failed', { capabilityId: entry.id, step, error });
+          this.setInstallProgress(entry.id, { running: false, error: error instanceof Error ? error.message : String(error) });
+        }
       } finally {
         this.runningInstalls.delete(entry.id);
+        this.browserInstalls.delete(entry.id);
       }
     })();
-
+    if (controller !== undefined) this.browserInstalls.set(entry.id, { controller, done });
     return this.statusOf(entry);
+  }
+
+  async cancelCapability(id: string): Promise<CapabilityStatus> {
+    const entry = this.requireEntry(id);
+    if (entry.id !== 'kiki-browser') throw new Error2(CapabilityErrors.codes.CAPABILITY_UNSUPPORTED, 'Cancellation is supported for browser component installation only');
+    const active = this.browserInstalls.get(entry.id);
+    active?.controller.abort();
+    await active?.done;
+    return this.statusOf(entry);
+  }
+
+  override dispose(): void {
+    for (const active of this.browserInstalls.values()) active.controller.abort();
+    super.dispose();
   }
 
   private requireEntry(id: string): CapabilityEntry {

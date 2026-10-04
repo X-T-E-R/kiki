@@ -101,14 +101,17 @@ export class BrowserControlService implements IBrowserControlService {
       try {
         const backend = await this.backend(live);
         signal?.throwIfAborted();
-        const info = browserResponse(await this.call(live, 'agent_browser_session_info', {}));
+        const result = await this.call(live, 'agent_browser_session_info', {});
+        this.assertSuccess(result);
+        const info = browserResponse(result);
         live.oldPid = typeof info.data?.['pid'] === 'number' ? info.data['pid'] : undefined;
         if (info.data?.['active'] === false && live.status.state === 'ready') {
           live.admitting = false;
           live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1 };
         }
         if (live.status.state === 'ready') await this.readTabs(live);
-        live.status = { ...live.status, checkedAt: new Date().toISOString(), driverVersion: backend.version };
+        live.status = { ...live.status, state: live.status.state === 'failed' ? 'idle' : live.status.state,
+          checkedAt: new Date().toISOString(), driverVersion: backend.version, error: undefined, failure: undefined };
       } catch (error) {
         if (signal?.aborted && error === signal.reason) throw error;
         this.fail(live, error, false);

@@ -84,7 +84,7 @@ describe.skipIf(process.env['KIKI_BROWSER_TEST_DRIVER'] === undefined || process
     if (pageAddress === null || typeof pageAddress === 'string') throw new Error('No local fixture address');
     const url = `http://127.0.0.1:${pageAddress.port}`;
     const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home,
-      browserDriverPath: process.env['KIKI_BROWSER_TEST_DRIVER'], env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'true', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+      env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'true', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
     const control = server.core.accessor.get(IBrowserControlService);
     const caller = { sessionId: 'isolated-proof', agentId: 'main' };
     let borrowed: ReturnType<typeof spawn> | undefined;
@@ -114,6 +114,16 @@ describe.skipIf(process.env['KIKI_BROWSER_TEST_DRIVER'] === undefined || process
     try {
       await control.upsert('managed', { type: 'agent-browser-profile', name: 'Managed', enabled: true, executablePath: process.env['KIKI_BROWSER_TEST_CHROME'], profilePath: join(root, 'managed-profile') });
       expect((await control.list()).connections[0]?.status.state).toBe('idle');
+      expect((await control.check('managed')).failure?.code).toBe('browser.version');
+      const { installBrowserDriver, BROWSER_DRIVER_FILES } = await import('@kiki/agent-core-v2/app/capability/entries/browserResourceStore');
+      const source: typeof fetch = async (input) => {
+        const name = Object.entries(BROWSER_DRIVER_FILES).find(([, artifact]) => artifact.url === String(input))?.[0];
+        if (name === undefined) throw new Error('Unexpected fixture resource');
+        const bytes = await readFile(name === 'agent-browser.exe' ? process.env['KIKI_BROWSER_TEST_DRIVER']! : fileURLToPath(new URL(`../../agent-core-v2/src/app/browser/donor/${name}`, import.meta.url)));
+        return new Response(new Uint8Array(bytes), { headers: { 'content-length': String(bytes.length) } });
+      };
+      await installBrowserDriver(home, () => {}, source);
+      expect(await control.check('managed')).toMatchObject({ state: 'idle', driverVersion: '0.38.2', error: undefined });
       const catalog = browserCatalogResponseSchema.parse((await api('/browser/connections/managed:catalog')).data);
       expect(catalog.status.state).toBe('idle');
       expect(catalog.backendToolCount).toBe(156);

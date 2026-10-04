@@ -20,6 +20,7 @@ import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { parseLogLevel } from '../cli/log-level';
 import { createKimiCodeHostIdentity, getVersion } from '../cli/version';
 import { requireServerWebAssetsDir } from '../native/web-assets';
+import { getBrowserDriverFile } from '../native/native-assets';
 import { resolveKikiHome } from './home';
 
 export interface ServerConnection {
@@ -217,6 +218,7 @@ export function startServeServer(
     serverVersion: version,
     hostIdentity: createKimiCodeHostIdentity(version, { homeDir: options.homeDir }),
     webAssetsDir,
+    browserDriverPath: getBrowserDriverFile() ?? undefined,
   });
 }
 

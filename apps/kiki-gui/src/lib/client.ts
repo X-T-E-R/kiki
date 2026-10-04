@@ -602,7 +602,7 @@ export const MEMORY_NOT_FOUND = 40423;
 export const MEMORY_REVISION_CONFLICT = 40944;
 
 export interface CapabilityStatus {
-  readonly id: 'kimi-cu' | 'kimi-webbridge' | 'kiki-computer';
+  readonly id: 'kimi-cu' | 'kimi-webbridge' | 'kiki-computer' | 'kiki-browser';
   readonly pluginId?: string;
   readonly displayName: string;
   readonly description: string;
@@ -2184,8 +2184,12 @@ export class KikiClient {
     return this.run(this.klient.global.capabilities.get(id) as Promise<CapabilityStatus>);
   }
 
-  installCapability(id: string, expectedSha256: string): Promise<CapabilityStatus> {
-    return this.run(this.klient.global.capabilities.install(id, expectedSha256) as Promise<CapabilityStatus>);
+  installCapability(id: string, expectedSha256: string, browserMode?: 'driver-only' | 'managed-browser'): Promise<CapabilityStatus> {
+    return this.run(this.klient.global.capabilities.install(id, expectedSha256, browserMode) as Promise<CapabilityStatus>);
+  }
+
+  cancelCapability(id: string): Promise<CapabilityStatus> {
+    return this.run(this.klient.global.capabilities.cancel(id) as Promise<CapabilityStatus>);
   }
 
   setPluginEnabled(pluginId: string, enabled: boolean): Promise<{ readonly ok: true }> {
