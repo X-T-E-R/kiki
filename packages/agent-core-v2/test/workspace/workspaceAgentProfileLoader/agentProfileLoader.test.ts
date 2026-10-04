@@ -1072,11 +1072,9 @@ describe('agent profile loaders + session catalog', () => {
           .rejects.toMatchObject({ code: 'validation.failed' });
         await expect(stack.writer.update({ name: 'lead', scope: 'user', modelProfiles: [{ alias: 'has space' }] }))
           .rejects.toMatchObject({ code: 'validation.failed' });
-        await expect(stack.writer.update({ name: 'lead', scope: 'user', executor: 'grok-acp', main: true }))
-          .rejects.toMatchObject({ code: 'validation.failed' });
         expect(await readFile(profilePath, 'utf8')).toBe(before);
-        const updated = await stack.writer.update({ name: 'lead', scope: 'user', main: true });
-        expect(updated.profile.main).toBe(true);
+        const updated = await stack.writer.update({ name: 'lead', scope: 'user', executor: 'grok-acp', main: true });
+        expect(updated.profile).toMatchObject({ main: true, executor: 'grok-acp' });
         expect(await readFile(profilePath, 'utf8')).toContain('main: true');
       });
     });

@@ -5,8 +5,6 @@ import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
 import {
   ErrorCodes,
   IRuntimeResolver,
-  IHostEnvironment,
-  IHostProcessService,
   IHostFileSystem,
   ISessionContext,
   ISessionWorkspaceContext,
@@ -36,7 +34,7 @@ import {
 import { GitService } from '@kiki/agent-core-v2/app/git/gitService';
 import { IBootstrapService } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
 import type { IWorktreeService } from '@kiki/agent-core-v2/app/git/worktreeModel';
-import { LocalRuntime } from '@kiki/agent-core-v2/runtime/localRuntime';
+import { ITemporaryLocalRuntimeResolver, type TemporaryRuntimeLease } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
 import type { RuntimeCapability, RuntimeLease } from '@kiki/agent-core-v2/runtime/runtime';
 import { WorkspaceFsService } from '@kiki/agent-core-v2/workspace/workspaceFs/fsService';
 import { WorkspaceGitService } from '@kiki/agent-core-v2/workspace/workspaceGit/workspaceGitService';
@@ -135,7 +133,7 @@ const FS_TAIL_PREFIX = 'fs:';
 interface RuntimeFsScope {
   readonly fs: IWorkspaceFsService;
   readonly hostFs: IHostFileSystem;
-  readonly lease: RuntimeLease;
+  readonly lease: RuntimeLease | TemporaryRuntimeLease;
 }
 
 function createRuntimeFs(
@@ -144,7 +142,7 @@ function createRuntimeFs(
   roots: { readonly workDir: string; readonly additionalDirs?: readonly string[] },
   runtimeId: string,
   required: readonly RuntimeCapability[],
-  draftLease?: RuntimeLease,
+  draftLease?: TemporaryRuntimeLease,
 ): RuntimeFsScope {
   const lease = draftLease ?? core.accessor.get(IRuntimeResolver).acquire(
     { workspaceId, runtimeId },
@@ -218,7 +216,7 @@ function createRuntimeFs(
       lease,
     };
   } catch (error) {
-    lease.dispose();
+    if (draftLease === undefined) lease.dispose();
     throw error;
   }
 }
@@ -244,18 +242,23 @@ async function resolveWorkspaceFs(
   const ws = await workspaces.get(ref);
   if (ws === undefined) {
     if (!isAbsolute(ref) || runtimeId !== 'local') return undefined;
-    const fs = core.accessor.get(IHostFileSystem);
+    const lease = await core.accessor.get(ITemporaryLocalRuntimeResolver).acquire(ref, required);
     try {
-      if (!(await fs.stat(ref)).isDirectory) return undefined;
-    } catch {
-      return undefined;
+      let directory = false;
+      try {
+        directory = (await lease.runtime.fs!.stat(ref)).isDirectory;
+      } catch {
+        directory = false;
+      }
+      if (!directory) {
+        await lease.dispose();
+        return undefined;
+      }
+      return createRuntimeFs(core, ref, { workDir: ref }, runtimeId, required, lease);
+    } catch (error) {
+      await lease.dispose();
+      throw error;
     }
-    const environment = core.accessor.get(IHostEnvironment);
-    await environment.ready;
-    const runtime = new LocalRuntime(ref, environment, fs,
-      core.accessor.get(IHostProcessService), undefined, undefined);
-    const lease: RuntimeLease = { runtime, track: (resource) => resource, dispose: () => runtime.dispose() };
-    return createRuntimeFs(core, ref, { workDir: ref }, runtimeId, required, lease);
   }
   await core.accessor
     .get(IWorkspaceInstanceManager)
@@ -380,7 +383,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       } catch (err) {
         sendMappedError(reply, req, err);
       } finally {
-        runtimeFs?.lease.dispose();
+        await runtimeFs?.lease.dispose();
         operation?.dispose();
       }
     },
@@ -427,7 +430,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       } catch (err) {
         sendMappedError(reply, req, err);
       } finally {
-        runtimeFs?.lease.dispose();
+        await runtimeFs?.lease.dispose();
       }
     },
   );
@@ -472,7 +475,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       } catch (err) {
         sendMappedError(reply, req, err);
       } finally {
-        runtimeFs?.lease.dispose();
+        await runtimeFs?.lease.dispose();
       }
     },
   );
@@ -564,7 +567,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         sendMappedError(reply, req, err);
       } finally {
         if (stream === undefined) {
-          runtimeFs?.lease.dispose();
+          await runtimeFs?.lease.dispose();
           operation?.dispose();
         }
       }
@@ -601,7 +604,9 @@ function createRuntimeReadStream(
     if (released) return;
     released = true;
     tracked.dispose();
-    runtimeFs.lease.dispose();
+    void Promise.resolve(runtimeFs.lease.dispose()).catch((error: unknown) => {
+      stream.destroy(error instanceof Error ? error : new Error(String(error)));
+    });
   };
   stream.once('end', release);
   stream.once('close', release);

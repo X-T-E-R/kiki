@@ -123,6 +123,16 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'executor.runtime.update',
   'context_strategy.override_changed',
   'auto_compact.override_changed',
+  'agent.model_switch',
+  'prompt.model_switch_queued',
+  'prompt.model_switch_status',
+  'prompt.outcome_committed',
+  'hook.rules.configured',
+  'hook.step.prepared',
+  'hook.observed',
+  'profile.dynamic_snapshot',
+  'agent_message.delivered',
+  'todo.continuity_decision',
 ]);
 
 describe('v1 wire vocabulary', () => {
@@ -155,14 +165,9 @@ describe('v1 wire vocabulary', () => {
   }
 
   it('every durable event type is a known (v1 or v2) record type', () => {
-    for (const type of EVENT2_REGISTRY.keys()) {
-      expect(
-        V1_RECORD_TYPES.has(type) ||
-          V2_ONLY_RECORD_TYPES.has(type) ||
-          V2_RECORD_TYPES.has(type),
-        `event "${type}" persists an unregistered record type`,
-      ).toBe(true);
-    }
+    const unknownTypes = [...EVENT2_REGISTRY.keys()].filter((type) =>
+      !V1_RECORD_TYPES.has(type) && !V2_ONLY_RECORD_TYPES.has(type) && !V2_RECORD_TYPES.has(type));
+    expect(unknownTypes, 'durable events persist unregistered record types').toEqual([]);
   });
 
   it('keeps retired Tower mode records decodable', () => {
@@ -337,6 +342,10 @@ describe('conversation-time checkpoint registration', () => {
     'contextWindowEpoch',
     'goalForkNotice',
     'turn',
+    'contextMemory.revision',
+    'agentCollaboration.materializedMessages',
+    'todo.continuityClock',
+    'externalHooks.clock',
   ]);
   const CONTEXT_OWNER_STATE = 'contextMemory';
   const CONTEXT_EVENTS: readonly Event2Class[] = [

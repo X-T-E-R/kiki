@@ -1156,7 +1156,7 @@ describe('AgentLLMRequesterService request attribution headers', () => {
   it('fails closed for true none when an adapter has no final-fetch suppression seam', async () => {
     const calls = { value: 0 };
     const identitySnapshotCalls = { value: 0 };
-    const requester = createRequester(calls, null, [], undefined, { protocol: 'openai' });
+    const requester = createRequester(calls, null, [], undefined, { protocol: 'google-genai' });
     const { service } = createService(requester, undefined, {
       providers: { p: { requestIdentity: { preset: 'none' } } },
       identitySnapshotCalls,

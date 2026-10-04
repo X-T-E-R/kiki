@@ -146,8 +146,8 @@ async function fixture() {
   const localFs = new HostFileSystem();
   const local = {
     identity: { workspaceId: 'workspace', runtimeId: 'local', generation: 'local-1' },
-    environment: { osKind: 'Windows', osArch: 'x64', osVersion: 'test', shellName: 'bash', shellPath: 'bash', pathClass: 'win32', homeDir: home },
-    path: await import('node:path/win32'),
+    environment: { osKind: process.platform === 'win32' ? 'Windows' : 'Linux', osArch: process.arch, osVersion: 'test', shellName: 'bash', shellPath: 'bash', pathClass: process.platform === 'win32' ? 'win32' : 'posix', homeDir: home },
+    path: await import('node:path'),
     workspace: { mapRoots: (roots: { workDir: string; additionalDirs?: readonly string[] }) => roots, supportsExternalPaths: true },
     status: 'ready', capabilities: new Set(['fs']), fs: localFs,
     onDidChangeStatus: () => ({ dispose: () => {} }), dispose: () => {},

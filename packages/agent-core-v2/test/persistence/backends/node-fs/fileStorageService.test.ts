@@ -473,7 +473,7 @@ describe('FileStorageService — writeStream', () => {
       expect(chunk.byteLength).toBeLessThanOrEqual(64 * 1024);
       chunks.push(chunk);
     }
-    expect(Buffer.concat(chunks)).toEqual(bytes.subarray(13, bytes.length - 16));
+    expect(Buffer.compare(Buffer.concat(chunks), bytes.subarray(13, bytes.length - 16))).toBe(0);
   });
 
   it('writes a chunked source and replaces the whole value', async () => {

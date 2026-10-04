@@ -204,7 +204,6 @@ export function expandedStateFolds(
   folds.set(protocol.events.appendMessage, (state, event, ctx) => {
     if (!custom && protocol.isUndoAnchor(event.message)) {
       ctx.checkpoint();
-      return;
     }
     return domainAppend?.(state, event, ctx);
   });

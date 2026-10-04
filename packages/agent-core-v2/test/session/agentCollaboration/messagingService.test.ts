@@ -2130,7 +2130,7 @@ function agentHandle(
       thinkingLevel: 'off',
       executorId: options.executorId,
     }),
-    prepareResumeBinding: async () => ({ model: 'test-model', thinking: 'off', assertCurrent: () => {}, commit: async () => {} }),
+    prepareResumeBinding: async () => ({ model: 'test-model', thinking: 'off', config: {}, assertCurrent: () => {}, syncMetadata: async () => {} }),
   };
   const wire = {
     _serviceBrand: undefined,

@@ -2625,7 +2625,7 @@ describe('AgentRun and dispatch parity golden', () => {
       'task_id: task_1',
       'agent_id: agent_child_1',
       'actual_profile: coder',
-      'dispatch_policy: advisory',
+      'dispatch_policy: fixed',
       'selection_kind: profile',
       'selection_origin: explicit',
       'recommendation_status: preferred',

@@ -224,7 +224,7 @@ function routedCatalog(
     description: 'Reviewer',
     tools: ['Read', 'Bash'],
     disallowedTools: ['Write'],
-    subagents: ['explore', 'coder'],
+    allowedSubagents: ['explore', 'coder'],
     executor,
     systemPrompt: () => 'base reviewer',
   });
@@ -240,7 +240,7 @@ function routedCatalog(
     thinkingEffort,
     toolAllowPolicies: [base.tools!, ['Read']],
     disallowedTools: ['Write', 'Bash'],
-    subagents: ['explore'],
+    allowedSubagents: ['explore'],
     systemPrompt: () => 'routed reviewer',
   });
   const route: ResolvedAgentProfileRoute = {
@@ -370,7 +370,7 @@ describe('AgentProfileService.bind', () => {
   beforeAll(() => {
     registerAgentProfile({
       name: 'delegates-explore',
-      subagents: ['explore'],
+      allowedSubagents: ['explore'],
       serviceTier: 'priority',
       requestParams: { seed: 42, enabled: true },
       systemPrompt: () => 'delegate test',
@@ -1212,7 +1212,7 @@ describe('AgentProfileService.bind', () => {
       activeToolNames: ['Read', 'Bash'],
       toolAllowPolicies: [['Read', 'Bash'], ['Read']],
       disallowedTools: ['Write', 'Bash'],
-      subagents: ['explore'],
+      allowedSubagents: ['explore'],
     });
     expect(toolPolicy.isToolActive('Read')).toBe(true);
     expect(toolPolicy.isToolActive('Bash')).toBe(false);
@@ -1742,7 +1742,8 @@ describe('AgentProfileService.bind', () => {
     await profile.bind({ profile: configured.name, model: 'new-model', delegationPosition });
     expect(profile.data().thinkingLevel).toBe('max');
     expect(profile.resolveModelContext()).toMatchObject({ maxOutputSize: 500, modelCapabilities: { max_context_tokens: 1200, max_input_tokens: 1200 } });
-    expect(profile.resolveRequestParams()).toMatchObject({ sampling: { temperature: 0.4, topP: 0.8 }, requestParams: { seed: 42 }, serviceTier: 'flex' });
+    expect(profile.resolveRequestParams()).toMatchObject({ sampling: { temperature: 0.4, topP: 0.8 }, requestParams: { temperature: 0.4, top_p: 0.8 }, serviceTier: 'flex' });
+    expect(ctx.get(IModelCatalog).get(RESUME_NEW_MODEL).requestParams).toMatchObject({ seed: 42, temperature: 0.2 });
     const effortOnly = await profile.prepareResumeBinding({ thinkingEffort: 'low' });
     await commitResumeBinding(effortOnly);
     expect(profile.data().thinkingLevel).toBe('low');
@@ -1774,7 +1775,7 @@ describe('AgentProfileService.bind', () => {
     const bindingRecord = persistence.records.find((record) => record.type === 'profile.bind');
     expect(bindingRecord).toMatchObject({
       profileName: 'delegates-explore',
-      subagents: ['explore'],
+      allowedSubagents: ['explore'],
       serviceTier: 'priority',
       requestParams: { seed: 42, enabled: true },
     });
@@ -1804,7 +1805,7 @@ describe('AgentProfileService.bind', () => {
     const restored = ctx.get(IAgentProfileService);
     expect(restored.data()).toMatchObject({
       profileName: 'delegates-explore',
-      subagents: ['explore'],
+      allowedSubagents: ['explore'],
       serviceTier: 'priority',
       requestParams: { seed: 42, enabled: true },
     });
@@ -1902,7 +1903,7 @@ describe('AgentProfileService.bind', () => {
       activeToolNames: ['Read'],
       toolAllowPolicies: [['Read']],
       disallowedTools: ['Write'],
-      subagents: ['explore'],
+      allowedSubagents: ['explore'],
       subagentLeases: { explore: { name: 'explore', modelAlias: MOCK_MODEL } },
       appliedLease: { name: 'explore', modelAlias: MOCK_MODEL },
       spawnPolicy: { allowedModels: [MOCK_MODEL] },
@@ -1935,7 +1936,7 @@ describe('AgentProfileService.bind', () => {
       systemPrompt: 'route prompt snapshot',
       activeToolNames: ['Read'],
       disallowedTools: ['Write'],
-      subagents: ['explore'],
+      allowedSubagents: ['explore'],
       subagentLeases: { explore: { name: 'explore', modelAlias: MOCK_MODEL } },
       appliedLease: { name: 'explore', modelAlias: MOCK_MODEL },
       spawnPolicy: { allowedModels: [MOCK_MODEL] },

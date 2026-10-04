@@ -5,6 +5,7 @@ import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInj
 import { capabilitySourceMessage } from '#/agent/contextInjector/capabilityDelta';
 import { IAgentProfileAnnouncementsService } from '#/agent/tools/agent/agentProfileAnnouncementsService';
 import { IAgentConversationUndoService } from '#/agent/undo/undo';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { ExecutableTool, ToolExecution } from '#/tool/toolContract';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
@@ -542,6 +543,7 @@ describe('progressive tool disclosure end-to-end', () => {
       resolveExecution: () => ({ approvalRule: 'test_gate', execute: async () => { started(); await gate; return { output: 'done' }; } }),
     });
     try {
+      b.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES });
       b.get(IAgentCapabilityRebuildService);
       await b.rpc.setPermission({ mode: 'yolo' });
       ctx.mockNextResponse({ type: 'function', id: 'call_gate_a', name: 'test_gate', arguments: '{}' });
@@ -556,6 +558,11 @@ describe('progressive tool disclosure end-to-end', () => {
       b.mockNextResponse({ type: 'text', text: 'B done' });
       await b.rpc.prompt({ input: [{ type: 'text', text: 'B advances' }] });
       await b.untilTurnEnd();
+      expect(b.get(IConfigService)).toBe(config);
+      expect(b.get(ICapabilitySnapshotService)).toBe(capabilities);
+      expect(capabilities.memoryAvailable(bSession.workspaceId, bSession.sessionId)).toBe(true);
+      expect(b.get(IAgentToolRegistryService).list().map((tool) => tool.name)).toContain('MemorySearch');
+      expect(b.toolsData().find((tool) => tool.name === 'MemorySearch')).toMatchObject({ active: true });
       expect(toolNames(b.llmCalls[0]!.tools)).toContain('MemorySearch');
       expect(toolNames(b.llmCalls[0]!.tools)).toContain('ThreadList');
       expect(capabilities.threadEnabled(aSession.workspaceId, aSession.sessionId)).toBe(false);
@@ -614,6 +621,7 @@ describe('progressive tool disclosure end-to-end', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'load alpha' }] });
     await ctx.untilTurnEnd();
 
+    await ctx.get(IAgentLoopService).settled();
     await ctx.get(IAgentConversationUndoService).undo(1);
     const afterUndo = ctx.get(IAgentContextMemoryService).get();
     expect(afterUndo.some((message) => message.tools?.some((tool) => tool.name === MCP_ALPHA))).toBe(

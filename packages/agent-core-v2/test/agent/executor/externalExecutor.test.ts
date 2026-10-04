@@ -60,6 +60,7 @@ import { TurnPrompt, turnKey } from '#/agent/loop/turnOps';
 import { AssistantDelta, ThinkingDelta } from '#/agent/loop/turnEvents';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { agentMessageMaterializationsKey } from '#/session/agentCollaboration/messageReceiptState';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import {
   agentExecutorBindingFingerprint,
@@ -186,6 +187,7 @@ function stateHarness(prior: {
   const values = new Map<unknown, unknown>([
     [turnKey, { nextTurnId: 4, cancelledTurnIds: [] }],
     [externalExecutorKey, prior],
+    [agentMessageMaterializationsKey, agentMessageMaterializationsKey.initial()],
   ]);
   const state = {
     _serviceBrand: undefined,
@@ -1286,11 +1288,14 @@ describe('ACP external executor', () => {
     try {
       const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
       await run.completion;
-      expect(harness.executorContext.agent.accessor.get(ISessionMetadata).registerAgent).toHaveBeenCalledWith(
-        harness.executorContext.agent.id,
-        expect.objectContaining({ executor: 'example-acp', negotiated: expect.objectContaining({ image: false, audio: false,
-          fork: false, nativeSteering: false, questionForm: false, planApproval: false }) }),
-      );
+      const metadata = harness.executorContext.agent.accessor.get(ISessionMetadata);
+      expect(metadata.updateAgent).toHaveBeenCalledWith(harness.executorContext.agent.id, expect.any(Function));
+      const update = vi.mocked(metadata.updateAgent).mock.calls[0]![1];
+      expect(update({ type: 'sub', labels: { owner: 'main' } })).toMatchObject({
+        type: 'sub', labels: { owner: 'main' }, executor: 'example-acp',
+        negotiated: { image: false, audio: false, fork: false, nativeSteering: false, questionForm: false, planApproval: false },
+      });
+      expect(metadata.registerAgent).not.toHaveBeenCalled();
     } finally { await harness.session.shutdown(); }
   });
 

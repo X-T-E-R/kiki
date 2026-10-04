@@ -165,7 +165,7 @@ export class PluginHostService extends Service implements IPluginHostService {
       await this.identityCatalog.ready;
       const policy = this.identityCatalog.resolveLayers(defaultOAuthRequestIdentity(connection), this.configService?.get<RequestIdentityPolicy | undefined>(REQUEST_IDENTITY_SECTION), connection.requestIdentity);
       const projected = projectRequestIdentity({ policy, protocol: protocol.data, model: context.model ?? '', rawSessionId: context.owner.sessionId, rawAgentId: context.owner.agentId, parentAgentId: context.owner.parentAgentId,
-        isKimiProvider: connection.type === 'kimi', snapshot: { ...context.owner.identity, setTurnState() {} }, runtimeVersion: this.bootstrap.clientIdentity.version, platform: this.bootstrap.platform, arch: this.bootstrap.arch,
+        isKimiProvider: connection.type !== undefined && getProviderDefinition(connection.type)?.requestIdentityDeviceHeaders === true, snapshot: { ...context.owner.identity, setTurnState() {} }, runtimeVersion: this.bootstrap.clientIdentity.version, platform: this.bootstrap.platform, arch: this.bootstrap.arch,
         hostRequestHeaders: this.bootstrap.args.requestHeaders, profile: this.identityCatalog.render(policy, context.model ?? '') });
       Object.assign(headers, projected.headers);
     }

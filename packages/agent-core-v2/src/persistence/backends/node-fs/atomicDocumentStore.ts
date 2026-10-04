@@ -145,7 +145,7 @@ export class TomlAtomicDocumentStore
   }
 
   protected override async withWriteLock<T>(scope: string, key: string, operation: () => Promise<T>): Promise<T> {
-    const lock = await this.storage.acquireLock(scope, `${key}.cas.lock`);
+    const lock = await this.storage.acquireLock(scope, `${key}.cas.lock`, { waitForMs: 5_000 });
     try {
       return await operation();
     } finally {

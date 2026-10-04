@@ -40,6 +40,7 @@ import {
 import { TurnPrompt, turnKey } from '#/agent/loop/turnOps';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { agentMessageMaterializationsKey } from '#/session/agentCollaboration/messageReceiptState';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import {
   agentExecutorBindingFingerprint,
@@ -107,6 +108,7 @@ function createHarness(options: HarnessOptions = {}) {
   const serverResults: unknown[] = [];
   const stateValues = new Map<unknown, unknown>([
     [turnKey, { nextTurnId: 2, cancelledTurnIds: [] }],
+    [agentMessageMaterializationsKey, agentMessageMaterializationsKey.initial()],
     [externalExecutorKey, options.priorThreadId === undefined ? {} : {
       executorId: 'codex-app-server',
       descriptorRevision: 'r1',

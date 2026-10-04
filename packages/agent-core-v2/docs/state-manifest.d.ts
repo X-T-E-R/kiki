@@ -2115,7 +2115,7 @@ export interface AgentStateSnapshot {
       };
     };
   }>;
-  // replayable · durable — folds: ContextAppendMessage
+  // replayable · durable · undoable — folds: ContextAppendMessage
   'modelSwitch.continuity': /* ModelSwitchContinuityState — packages/agent-core-v2/src/agent/modelSwitch/modelSwitchOps.ts */ {
     readonly latestHumanInput?: /* ModelSwitchInputReference — packages/agent-core-v2/src/agent/modelSwitch/modelSwitchOps.ts */ {
       readonly text: string;

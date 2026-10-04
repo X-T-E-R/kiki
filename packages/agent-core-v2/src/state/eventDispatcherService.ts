@@ -43,7 +43,7 @@ const MAX_DRAIN = 100;
 const HISTORY_TAIL = 500;
 const REPLAY_CHECKPOINT_SCOPE = 'replay-checkpoints';
 const REPLAY_CHECKPOINT_KEY = 'engine-v1';
-export const REPLAY_ABI_VERSION = 1;
+export const REPLAY_ABI_VERSION = 2;
 
 interface ReplayCheckpointEnvelope {
   readonly format: 1;
@@ -356,7 +356,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       meta.history = [];
       meta.checkpoints = [];
     }
-    let markerId = meta.history.at(-1)?.id ?? 0;
+    const markerId = meta.history.at(-1)?.id ?? 0;
     if (patches.length > 0 || inversePatches.length > 0) {
       const entry: PatchEntry = {
         id: meta.nextPatchId++,
@@ -365,7 +365,6 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         inversePatches,
       };
       meta.history.push(entry);
-      markerId = entry.id;
     }
     if (ctx.pendingCheckpoint) {
       meta.checkpoints.push(markerId);

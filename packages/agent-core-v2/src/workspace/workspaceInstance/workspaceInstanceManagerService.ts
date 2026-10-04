@@ -32,7 +32,9 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { Error2, ErrorCodes } from '#/errors';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
-import { LocalRuntimeProviderFactory } from '#/runtime/localRuntime';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IHostProcessService } from '#/os/interface/hostProcess';
+import { LocalRuntime, LocalRuntimeProviderFactory } from '#/runtime/localRuntime';
 import { SshRuntimeProviderFactory } from '#/runtime/sshRuntime';
 import { NATIVE_SSH_FLAG_ID } from '#/app/ssh/flag';
 import { ISshHostService } from '#/app/ssh/sshService';
@@ -51,7 +53,9 @@ import {
 import { WorkspaceInstance } from './workspaceInstance';
 import {
   IRuntimeResolver,
+  ITemporaryLocalRuntimeResolver,
   IWorkspaceInstanceManager,
+  type TemporaryRuntimeLease,
   type WorkspaceInstanceLease,
   type WorkspaceInstanceRef,
 } from './workspaceInstanceManager';
@@ -450,6 +454,39 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
   }
 }
 
+export class TemporaryLocalRuntimeResolver implements ITemporaryLocalRuntimeResolver {
+  declare readonly _serviceBrand: undefined;
+  constructor(
+    @IHostEnvironment private readonly environment: IHostEnvironment,
+    @IHostFileSystem private readonly fs: IHostFileSystem,
+    @IHostProcessService private readonly processService: IHostProcessService,
+  ) {}
+
+  async acquire(root: string, required: readonly RuntimeCapability[] = []): Promise<TemporaryRuntimeLease> {
+    await this.environment.ready;
+    const registry = new RuntimeRegistry(root);
+    registry.register(new LocalRuntime(root, this.environment, this.fs, this.processService, undefined, undefined));
+    try {
+      const lease = registry.acquire({ workspaceId: root, runtimeId: 'local' }, required);
+      let disposal: Promise<void> | undefined;
+      return {
+        runtime: lease.runtime,
+        track: (resource) => lease.track(resource),
+        dispose: (): Promise<void> => {
+          if (disposal === undefined) {
+            lease.dispose();
+            disposal = registry.dispose();
+          }
+          return disposal;
+        },
+      };
+    } catch (error) {
+      await registry.dispose();
+      throw error;
+    }
+  }
+}
+
 export class RuntimeResolver implements IRuntimeResolver {
   declare readonly _serviceBrand: undefined;
   constructor(@IWorkspaceInstanceManager private readonly workspaces: IWorkspaceInstanceManager) {}
@@ -471,3 +508,4 @@ export class RuntimeResolver implements IRuntimeResolver {
 
 registerScopedService(LifecycleScope.App, IWorkspaceInstanceManager, WorkspaceInstanceManager, ScopeActivation.OnScopeCreated, 'workspaceInstanceManager');
 registerScopedService(LifecycleScope.App, IRuntimeResolver, RuntimeResolver, ScopeActivation.OnScopeCreated, 'runtimeResolver');
+registerScopedService(LifecycleScope.App, ITemporaryLocalRuntimeResolver, TemporaryLocalRuntimeResolver, ScopeActivation.OnScopeCreated, 'temporaryLocalRuntimeResolver');

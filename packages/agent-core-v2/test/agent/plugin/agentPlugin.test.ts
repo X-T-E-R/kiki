@@ -5,6 +5,7 @@ import { AsyncEmitter, Emitter } from '#/_base/event';
 import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { AgentPluginService } from '#/agent/plugin/agentPluginService';
+import { capabilitySourceMessage } from '#/agent/contextInjector/capabilityDelta';
 import { USER_PROMPT_ORIGIN } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IEventBus } from '#/app/event/eventBus';
@@ -37,10 +38,10 @@ function pluginSkill(): SkillDefinition {
 }
 
 function findPluginSessionStartEventMessages(ctx: TestAgentContext) {
-  return ctx.contextData().history.filter(
-    (message) =>
-      message.origin?.kind === 'injection' && message.origin.variant === 'plugin_session_start',
-  );
+  return ctx.contextData().history.flatMap((message) => {
+    const source = capabilitySourceMessage(message, 'plugin_session_start');
+    return source === undefined ? [] : [source];
+  });
 }
 
 function messageText(message: { readonly content: readonly { readonly type: string; readonly text?: string }[] }): string {
@@ -309,6 +310,7 @@ describe('AgentPluginService plugin session-start wiring', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'second prompt' }] });
     await ctx.untilTurnEnd();
 
+    await ctx.get(IAgentLoopService).settled();
     await ctx.undoHistory(1);
     ctx.mockNextResponse({ type: 'text', text: 'third answer' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'third prompt' }] });

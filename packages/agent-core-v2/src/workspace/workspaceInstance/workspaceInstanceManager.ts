@@ -39,6 +39,10 @@ export interface IWorkspaceInstanceManager {
 
 export const IWorkspaceInstanceManager: ServiceIdentifier<IWorkspaceInstanceManager> = createDecorator<IWorkspaceInstanceManager>('workspaceInstanceManager');
 
+export interface TemporaryRuntimeLease extends Omit<RuntimeLease, 'dispose'> {
+  dispose(): Promise<void>;
+}
+
 export interface IRuntimeResolver {
   readonly _serviceBrand: undefined;
   inspect(binding: RuntimeBinding): Runtime;
@@ -46,3 +50,10 @@ export interface IRuntimeResolver {
 }
 
 export const IRuntimeResolver: ServiceIdentifier<IRuntimeResolver> = createDecorator<IRuntimeResolver>('runtimeResolver');
+
+export interface ITemporaryLocalRuntimeResolver {
+  readonly _serviceBrand: undefined;
+  acquire(root: string, required?: readonly RuntimeCapability[]): Promise<TemporaryRuntimeLease>;
+}
+
+export const ITemporaryLocalRuntimeResolver: ServiceIdentifier<ITemporaryLocalRuntimeResolver> = createDecorator<ITemporaryLocalRuntimeResolver>('temporaryLocalRuntimeResolver');

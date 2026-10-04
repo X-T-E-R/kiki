@@ -693,6 +693,9 @@ describe('bindSessionTranscript', () => {
         main.bus.emit(event);
       });
       onTestFinished(() => forwarder.dispose());
+      for (const record of await ctx.persistedWireRecords()) {
+        main.bus.emit(record as unknown as Event2<unknown>);
+      }
 
       const memory = ctx.context;
       memory.appendObservable({

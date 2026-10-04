@@ -15,6 +15,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { AgentActivityUpdated, IAgentActivityView, type AgentActivityState } from '#/agent/activityView/activityView';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -375,6 +376,7 @@ describe('SessionExternalDelegationService', () => {
         state: (): AgentActivityState => ({ lifecycle: 'ready', background: [] }),
       });
       agent.stub(IAgentContextMemoryService, { get: () => [] });
+      agent.stub(IAgentMemorySnapshot, { getPersona: () => undefined });
       agent.stub(IAgentLoopService, { status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }) });
       agent.stub(IAgentExecutionService, { status: () => ({ state: 'idle' }) });
       return {

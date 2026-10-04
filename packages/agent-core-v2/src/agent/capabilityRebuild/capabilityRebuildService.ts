@@ -4,6 +4,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentCapabilityRebuildService } from './capabilityRebuild';
 
@@ -14,6 +15,7 @@ export class AgentCapabilityRebuildService extends Service implements IAgentCapa
     @ISessionContext session: ISessionContext,
     @IAgentProfileService profile: IAgentProfileService,
     @IAgentContextInjectorService injector: IAgentContextInjectorService,
+    @IAgentToolActivationService toolActivation: IAgentToolActivationService,
   ) {
     super();
     capabilities.memoryAvailable(session.workspaceId, session.sessionId);
@@ -21,6 +23,7 @@ export class AgentCapabilityRebuildService extends Service implements IAgentCapa
       await capabilities.ready;
       const changed = capabilities.refresh(session.workspaceId, session.sessionId);
       if (!changed.memory && !changed.thread) return undefined;
+      await toolActivation.activate();
       if (changed.memory) await profile.refreshMemorySnapshot();
       else await profile.refreshSystemPrompt();
       const features = [changed.memory ? 'memory' : undefined, changed.thread ? 'thread communication' : undefined].filter(Boolean);

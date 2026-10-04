@@ -13,6 +13,7 @@ import type {
 } from '#/tool/toolContract';
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
 import { AgentToolActivationService } from '#/agent/toolActivation/toolActivationService';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import {
   _clearAgentToolContributionsForTests,
@@ -365,6 +366,7 @@ describe('GrepTool', () => {
           reg.define(IGrepTool, ProductionGrepTool);
           reg.define(IAgentToolRegistryService, AgentToolRegistryService);
           reg.define(IAgentToolActivationService, AgentToolActivationService);
+          reg.definePartialInstance(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
           reg.defineInstance(ISessionToolPolicyGate, {
             _serviceBrand: undefined,
             disabledTools: [],

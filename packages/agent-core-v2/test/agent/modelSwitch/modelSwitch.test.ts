@@ -18,7 +18,8 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { testAgent, agentServices, type TestAgentContext } from '../../harness';
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
 import { AgentModelSwitchService } from '#/agent/modelSwitch/modelSwitchService';
-import { AgentModelSwitch } from '#/agent/modelSwitch/modelSwitchOps';
+import { AgentModelSwitch, modelSwitchContinuityKey } from '#/agent/modelSwitch/modelSwitchOps';
+import { IAgentConversationUndoService } from '#/agent/undo/undo';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { contextMemoryKey, contextRevisionKey } from '#/agent/contextMemory/contextOps';
@@ -343,6 +344,21 @@ describe('model switch engine', () => {
     expect(ctx.get(IAgentTaskService).list()).toBe(liveTasks);
     const text = body(ctx.get(IAgentContextMemoryService).get());
     for (const value of ['New state written during preparation', 'goal-1', 'child-a', 'child-b', 'process-1']) expect(text).toContain(value);
+  });
+
+  it('does not revive withdrawn human input in a fresh continuity package', async () => {
+    const ctx = await createHost();
+    ctx.get(IAgentModelSwitchService);
+    ctx.appendTurnExchange('Keep the original objective.', 'First result.');
+    ctx.appendTurnExchange('WITHDRAWN_INPUT', 'Second result.');
+    const states = ctx.get(IAgentStateService);
+    expect(states.get(modelSwitchContinuityKey).latestHumanInput?.text).toBe('WITHDRAWN_INPUT');
+    await ctx.get(IAgentConversationUndoService).undo(1);
+    expect(states.get(modelSwitchContinuityKey).latestHumanInput?.text).toBe('Keep the original objective.');
+    expect(await ctx.get(IAgentModelSwitchService).execute({ operationId: 'undo-input-fresh', model: NEW, mode: 'fresh' })).toMatchObject({ state: 'completed' });
+    const text = body(ctx.get(IAgentContextMemoryService).get());
+    expect(text).toContain('Keep the original objective.');
+    expect(text).not.toContain('WITHDRAWN_INPUT');
   });
 
   it('keeps direct undo checkpoints but establishes a new checkpoint boundary for fresh without changing todo values', async () => {

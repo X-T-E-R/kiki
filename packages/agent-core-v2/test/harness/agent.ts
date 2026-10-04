@@ -277,6 +277,7 @@ interface ModelConfigForConfig {
 
 interface ProviderConfigForConfig {
   readonly type: ProviderConfig['type'];
+  readonly requestIdentity?: ProviderConfig['requestIdentity'];
   readonly apiKey?: string;
   readonly baseUrl?: string;
   readonly oauth?: {

@@ -128,7 +128,7 @@ describe('kikiShimFiles', () => {
       await mkdir(install);
       const node = join(install, process.platform === 'win32' ? 'node.exe' : 'node');
       await link(process.execPath, node).catch(() => copyFile(process.execPath, node));
-      const entry = join(install, 'main.mjs');
+      const entry = join(_kind === 'posix' ? root : install, 'main.mjs');
       await writeFile(entry, 'process.stdout.write(JSON.stringify(process.argv.slice(2)));');
       const shellPath = process.platform === 'win32' ? toShellExecutablePath : (path: string) => path;
       const args = ['中文 with space', '$literal', '`literal`', '"double"', "single'quote", '\\', ''];

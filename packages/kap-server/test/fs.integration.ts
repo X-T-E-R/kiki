@@ -349,6 +349,9 @@ describe('server-v2 /api fs routes', () => {
   });
 
   it('fs:search resolves an unregistered workspace root path', async () => {
+    const instances = server!.core.accessor.get(IWorkspaceInstanceManager);
+    const before = instances.list();
+    expect(instances.findByRoot(work!)).toBeUndefined();
     await writeFile(join(work!, 'delta.ts'), '');
     const body = await postFs<{ items: { path: string }[]; truncated: boolean }>(
       encodeURIComponent(work!),
@@ -357,6 +360,8 @@ describe('server-v2 /api fs routes', () => {
     );
     expect(body.code).toBe(0);
     expect(body.data.items.map((i) => i.path)).toContain('delta.ts');
+    expect(instances.findByRoot(work!)).toBeUndefined();
+    expect(instances.list()).toEqual(before);
   });
 
   it('fs:search still maps an unknown ref to SESSION_NOT_FOUND', async () => {

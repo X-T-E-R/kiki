@@ -37,6 +37,7 @@ export interface ModelSwitchContinuityState {
 
 export const modelSwitchContinuityKey = defineState('modelSwitch.continuity', (): ModelSwitchContinuityState => ({}))
   .replayable({ schema: z.custom<ModelSwitchContinuityState>() })
+  .undoable()
   .on(ContextAppendMessage, (s, e) => {
     const message = e.message;
     const legacyHumanText = message.role === 'user' && message.origin === undefined

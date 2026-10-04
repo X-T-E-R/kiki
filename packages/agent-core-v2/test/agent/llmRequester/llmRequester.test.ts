@@ -628,10 +628,27 @@ describe('LLMRequester service migration coverage', () => {
       }
     });
 
-    it('forwards the session id as the per-turn cache-key intent', async () => {
+    it('does not send a session cache-key intent without an identity policy', async () => {
       await llmRequester.request();
+      expect(capturedCacheKey).toBeUndefined();
+    });
 
-      expect(capturedCacheKey).toBe('test-session');
+    it('forwards a stable opaque session cache identity for an explicitly selected Responses policy', async () => {
+      ctx.configure({ provider: { type: 'openai_responses', model: 'mock-model', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' } });
+      ctx.kimiConfig = {
+        ...ctx.kimiConfig,
+        providers: {
+          ...ctx.kimiConfig.providers,
+          'test-provider': { ...ctx.kimiConfig.providers['test-provider']!, requestIdentity: { preset: 'codex_compatible' } },
+        },
+      };
+      ctx.notifyModelConfigChanged();
+      await llmRequester.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+      expect(capturedCacheKey).toMatch(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
+      expect(capturedCacheKey).not.toBe('test-session');
+      const first = capturedCacheKey;
+      await llmRequester.request({ source: { type: 'turn', turnId: 2, step: 1 } });
+      expect(capturedCacheKey).toBe(first);
     });
   });
 

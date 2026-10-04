@@ -617,7 +617,8 @@ describe('runtime thread mailbox', () => {
       Array.from({ length: 3 }, async (_, writer) => {
         const result = await execFileAsync(
           process.execPath,
-          ['--import', 'tsx', workerFixture, homeDir, String(writer), '5'],
+          ['--import', new URL('../../../../../build/register-raw-text-loader.mjs', import.meta.url).href,
+            '--import', 'tsx', workerFixture, homeDir, String(writer), '5'],
           { cwd: join(import.meta.dirname, '../../..') },
         );
         return JSON.parse(result.stdout) as { readonly seqs: number[]; readonly lockErrors: number };
@@ -702,14 +703,20 @@ describe('runtime thread mailbox', () => {
     }
   });
 
-  it('enqueues beyond the legacy pending limit and rejects only at the hard guard', async () => {
+  it('honors an explicit pending limit without restoring the legacy default cap', async () => {
+    const item = harness(homeDir);
+    open.push(item);
+    const input = (index: number) => ({ ...acceptInput(`explicit-capacity-${index}`), pendingLimit: 3 });
+    for (let index = 0; index < 3; index += 1) await item.store.acceptMessage(input(index));
+    await expect(item.store.acceptMessage(input(3))).rejects.toMatchObject({ limit: 3 });
+    expect(await item.store.acceptMessage(input(0))).toMatchObject({ deduplicated: true });
+  });
+
+  it('enqueues beyond the legacy default pending limit and rejects at the hard guard', async () => {
     const item = harness(homeDir);
     open.push(item);
     const results = await Promise.all(
-      Array.from({ length: 513 }, (_, index) => item.store.acceptMessage({
-        ...acceptInput(`capacity-${index}`),
-        pendingLimit: 3,
-      })),
+      Array.from({ length: 513 }, (_, index) => item.store.acceptMessage(acceptInput(`capacity-${index}`))),
     );
     expect(results.at(-1)?.message.targetSeq).toBe(513);
     await closeHarness(item, open);

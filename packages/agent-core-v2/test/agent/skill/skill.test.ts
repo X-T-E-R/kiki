@@ -622,6 +622,7 @@ describe('AgentSkillService busy delivery (harness)', () => {
     gate.resolve();
     await promptPromise;
     await ctx.untilTurnEnd();
+    await ctx.get(IAgentLoopService).settled();
 
     const idleResult = await ctx.get(IAgentSkillService).activate({ name: 'workflow', args: 'mission-2' });
     expect(idleResult.turn_id).toBe(1);

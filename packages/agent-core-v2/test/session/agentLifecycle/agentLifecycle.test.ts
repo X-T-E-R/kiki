@@ -1228,7 +1228,7 @@ describe('AgentLifecycleService', () => {
         activeToolNames: ['Read'],
         toolAllowPolicies: [['Read']],
         disallowedTools: ['Write'],
-        subagents: ['explore'],
+        allowedSubagents: ['explore'],
         subagentLeases: { explore: { name: 'explore', modelAlias: 'provider/child-model' } },
         appliedLease: { name: 'explore', modelAlias: 'provider/child-model' },
         spawnPolicy: { allowedModels: ['provider/child-model'] },
@@ -1302,7 +1302,7 @@ describe('AgentLifecycleService', () => {
       systemPrompt: 'route prompt snapshot',
       activeToolNames: ['Read'],
       disallowedTools: ['Write'],
-      subagents: ['explore'],
+      allowedSubagents: ['explore'],
       subagentLeases: { explore: { name: 'explore', modelAlias: 'provider/child-model' } },
       appliedLease: { name: 'explore', modelAlias: 'provider/child-model' },
       spawnPolicy: { allowedModels: ['provider/child-model'] },
@@ -1936,7 +1936,7 @@ describe('AgentLifecycleService', () => {
       systemPrompt: 'original prompt',
       activeToolNames: ['Read'],
       disallowedTools: ['Bash'],
-      subagents: ['explore'],
+      allowedSubagents: ['explore'],
     });
 
     const child = await svc.fork('main', { agentId: 'forked' });
@@ -1947,7 +1947,7 @@ describe('AgentLifecycleService', () => {
       systemPrompt: 'original prompt',
       activeToolNames: ['Read'],
       disallowedTools: ['Bash'],
-      subagents: ['explore'],
+      allowedSubagents: ['explore'],
     });
   });
 

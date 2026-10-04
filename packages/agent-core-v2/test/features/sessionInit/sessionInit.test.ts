@@ -129,6 +129,7 @@ describe('SessionInitService', () => {
     ix.stub(ISessionSubagentService, lifecycle as unknown as ISessionSubagentService);
     ix.stub(IHostFileSystem, {
       _serviceBrand: undefined,
+      realpath: vi.fn(async (path: string) => path),
       stat: vi.fn(async (path: string): Promise<HostFileStat> => {
         if (path === GIT_DIR_PATH) return { isFile: false, isDirectory: true, size: 0 };
         if (path === AGENTS_MD_PATH)

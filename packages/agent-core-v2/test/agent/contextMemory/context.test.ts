@@ -14,6 +14,7 @@ import {
 } from '#/agent/contextMemory/compactionHandoff';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IWireService } from '#/wire/wire';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import {
   IAgentContextMemoryService,
   IAgentTokenCountingService,
@@ -769,6 +770,7 @@ describe('Agent context', () => {
       { role: 'assistant' },
     ]);
 
+    await ctx.get(IAgentLoopService).settled();
     await ctx.undoHistory(1);
 
     expect(context.get()).toEqual([]);

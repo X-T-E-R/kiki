@@ -101,6 +101,7 @@ export function findInactiveToolPatterns(
 ): InactiveToolPattern[] {
   const issues: InactiveToolPattern[] = [];
   for (const pattern of patterns) {
+    if (pattern === '*') continue;
     if (isMcpToolName(pattern)) {
       if (!GLOB_MAGIC.test(pattern) && !pattern.slice('mcp__'.length).includes('__')) {
         issues.push({ pattern, kind: 'incomplete-mcp-name' });

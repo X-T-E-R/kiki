@@ -147,16 +147,15 @@ describe('subagent capability final bindings', () => {
       ...base,
       caller: {
         profileName: 'lead',
-        subagentPolicy: 'advisory',
-        subagentDeclaration: { kind: 'set', names: ['preferred'] },
-        subagents: ['preferred'],
+        allowedSubagents: undefined,
+        preferredSubagents: ['preferred'],
       },
     }, services);
     expect(advisory.find((target) => target.profile === 'preferred')).toMatchObject({
-      dispatchPolicy: 'advisory', recommendationStatus: 'preferred', dispatchAllowed: true,
+      dispatchPolicy: 'fixed', recommendationStatus: 'preferred', dispatchAllowed: true,
     });
     expect(advisory.find((target) => target.profile === 'alternate')).toMatchObject({
-      dispatchPolicy: 'advisory', recommendationStatus: 'allowed_nonpreferred',
+      dispatchPolicy: 'fixed', recommendationStatus: 'allowed_nonpreferred',
       advisoryDeviation: true, dispatchAllowed: true,
     });
 
@@ -164,17 +163,16 @@ describe('subagent capability final bindings', () => {
       ...base,
       caller: {
         profileName: 'lead',
-        subagentPolicy: 'strict',
-        subagentDeclaration: { kind: 'set', names: ['preferred'] },
-        subagents: ['preferred'],
+        allowedSubagents: ['preferred'],
+        preferredSubagents: ['preferred'],
       },
     }, services);
     expect(strict.find((target) => target.profile === 'preferred')).toMatchObject({
-      dispatchPolicy: 'strict', recommendationStatus: 'preferred', dispatchAllowed: true,
+      dispatchPolicy: 'fixed', recommendationStatus: 'preferred', dispatchAllowed: true,
       defaultsAvailable: true,
     });
     expect(strict.find((target) => target.profile === 'alternate')).toMatchObject({
-      dispatchPolicy: 'strict', recommendationStatus: 'blocked', dispatchAllowed: false,
+      dispatchPolicy: 'fixed', recommendationStatus: 'blocked', dispatchAllowed: false,
       defaultsAvailable: true,
     });
   });

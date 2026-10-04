@@ -89,12 +89,13 @@ describe('kiki-computer fixed MCP adoption', () => {
     const { ctx, artifact } = fixture(root, await zipBytes());
     const source = path.join(root, 'tar-source', 'fixture');
     await mkdir(source, { recursive: true });
-    for (const [name, content] of Object.entries(files)) await writeFile(path.join(source, name), content);
+    for (const [name, content] of Object.entries(files)) await writeFile(path.join(source, name === 'cua-driver.exe' ? 'cua-driver' : name), content);
     const stream = createTar({ gzip: true, cwd: path.dirname(source) }, ['fixture']);
     const chunks: Buffer[] = [];
     for await (const chunk of stream) chunks.push(chunk);
     const bytes = Buffer.concat(chunks);
-    const entry = createKikiComputerEntry({ ...ctx, platform: 'linux', computerArtifact: { ...artifact, sha256: hash(bytes) },
+    const entry = createKikiComputerEntry({ ...ctx, platform: 'linux', computerArtifact: { ...artifact, sha256: hash(bytes),
+      executable: 'cua-driver', files: { 'cua-driver': artifact.files['cua-driver.exe']!, LICENSE: artifact.files['LICENSE']!, 'THIRD_PARTY_NOTICES.md': artifact.files['THIRD_PARTY_NOTICES.md']! } },
       fetchImpl: vi.fn(async () => new Response(new Uint8Array(bytes))) as unknown as typeof fetch });
     await entry.install(() => {});
     expect((await entry.detect()).steps[0]?.state).toBe('ok');
