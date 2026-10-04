@@ -6,7 +6,7 @@ import { handleWebCommand, webSessionUrl } from '#/tui/commands/web';
 
 const mocks = vi.hoisted(() => ({
   startServerForeground: vi.fn(),
-  tryResolveServerToken: vi.fn(),
+  tryResolveLocalOwnerToken: vi.fn(),
   getDataDir: vi.fn(() => '/tmp/kimi-home'),
   openUrl: vi.fn(),
 }));
@@ -20,7 +20,7 @@ vi.mock('#/cli/sub/web/shared', async (importOriginal) => {
   const actual = await importOriginal<typeof import('#/cli/sub/web/shared')>();
   return {
     ...actual,
-    tryResolveServerToken: mocks.tryResolveServerToken,
+    tryResolveLocalOwnerToken: mocks.tryResolveLocalOwnerToken,
   };
 });
 
@@ -96,7 +96,7 @@ describe('handleWebCommand', () => {
   });
 
   it('starts the new server on takeover, printing the banner and opening the deep link', async () => {
-    mocks.tryResolveServerToken.mockReturnValue('tok-1');
+    mocks.tryResolveLocalOwnerToken.mockReturnValue('tok-1');
     const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     mocks.startServerForeground.mockImplementation(
       async (_options: unknown, hooks: { onReady?: (origin: string) => void }) => {

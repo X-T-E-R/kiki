@@ -477,6 +477,10 @@ struct BackendManager {
     idle_exit: bool,
 }
 
+fn desktop_backend_args(log_level: &str, idle_exit: bool) -> Vec<&str> {
+    vec!["serve", "--port", "0", "--log-level", log_level, "--idle-exit", if idle_exit { "30m" } else { "0ms" }]
+}
+
 impl BackendManager {
     fn for_home(home: PathBuf, idle_exit: bool) -> Self {
         Self { inner: Arc::new(Mutex::new(BackendState::default())), home: Some(home), idle_exit }
@@ -595,8 +599,7 @@ impl BackendManager {
                     let launched_at_ms = unix_epoch_millis()?;
                     let home = runtime.kiki_home.clone();
                     let level = read_desktop_prefs_for(&home).log_level;
-                    let mut args = vec!["web", "--no-open", "--port", "0", "--log-level", level.as_str()];
-                    if self.idle_exit { args.extend(["--idle-exit", "30m"]); }
+                    let args = desktop_backend_args(level.as_str(), self.idle_exit);
                     let command = app
                         .shell()
                         .sidecar("kiki-server")
@@ -3399,6 +3402,12 @@ mod tests {
 
         let corrupt = serde_json::from_str::<DesktopPrefs>("{not-json").unwrap_or_default();
         assert!(corrupt.close_to_tray);
+    }
+
+    #[test]
+    fn desktop_backend_uses_owned_foreground_serve_with_explicit_idle_policy() {
+        assert_eq!(desktop_backend_args("warn", false), vec!["serve", "--port", "0", "--log-level", "warn", "--idle-exit", "0ms"]);
+        assert_eq!(desktop_backend_args("trace", true), vec!["serve", "--port", "0", "--log-level", "trace", "--idle-exit", "30m"]);
     }
 
     #[test]

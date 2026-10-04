@@ -11,11 +11,13 @@ import {
   startServer,
   type RunningServer,
   type ServerInstanceInfo,
+  type ServerLogLevel,
 } from '@kiki/kap-server';
 import type { Command } from 'commander';
 import { connectionIdentitySchema, type ConnectionIdentity } from '@kiki/protocol';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 
+import { parseLogLevel } from '../cli/log-level';
 import { createKimiCodeHostIdentity, getVersion } from '../cli/version';
 import { requireServerWebAssetsDir } from '../native/web-assets';
 import { resolveKikiHome } from './home';
@@ -40,6 +42,7 @@ interface ServeOptions {
   readonly json?: boolean;
   readonly stop?: boolean;
   readonly debugEndpoints?: boolean;
+  readonly logLevel?: ServerLogLevel;
 }
 
 const ENSURE_TIMEOUT_MS = 60_000;
@@ -58,6 +61,7 @@ export function registerServeCommand(program: Command): void {
     .option('--json', 'Print the connection as JSON.')
     .option('--stop', 'Stop the daemon for this home.')
     .option('--debug-endpoints', 'Mount local-owner debug routes on a new foreground daemon only.')
+    .option('--log-level <level>', 'Log level for a new foreground daemon.', parseLogLevel)
     .action(async (options: ServeOptions) => {
       const homeDir = resolveKikiHome(options.home);
       const idleExitMs = parseDuration(options.idleExit);
@@ -65,6 +69,7 @@ export function registerServeCommand(program: Command): void {
         throw new Error('--ensure, --stop and --query cannot be used together.');
       }
       if (options.debugEndpoints === true && (options.ensure || options.stop || options.query)) throw new Error('--debug-endpoints applies only to a new foreground daemon.');
+      if (options.logLevel !== undefined && (options.ensure || options.stop || options.query)) throw new Error('--log-level applies only to a new foreground daemon.');
       if (options.query === true) {
         const connection = await findReachableServer(homeDir, options.workspace);
         process.stdout.write(options.json === true
@@ -86,7 +91,7 @@ export function registerServeCommand(program: Command): void {
         writeConnection(connection, options.json === true);
         return;
       }
-      await runServeForeground({ homeDir, port: options.port, idleExitMs, json: options.json, debugEndpoints: options.debugEndpoints });
+      await runServeForeground({ homeDir, port: options.port, idleExitMs, json: options.json, debugEndpoints: options.debugEndpoints, logLevel: options.logLevel });
     });
 }
 
@@ -193,6 +198,7 @@ interface ServeStartOptions {
   readonly port?: number;
   readonly idleExitMs: number;
   readonly debugEndpoints?: boolean;
+  readonly logLevel?: ServerLogLevel;
 }
 
 export function startServeServer(
@@ -207,6 +213,7 @@ export function startServeServer(
     homeDir: options.homeDir,
     idleExitMs: options.idleExitMs === 0 ? undefined : options.idleExitMs,
     debugEndpoints: options.debugEndpoints,
+    logLevel: options.logLevel,
     serverVersion: version,
     hostIdentity: createKimiCodeHostIdentity(version, { homeDir: options.homeDir }),
     webAssetsDir,

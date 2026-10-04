@@ -9,6 +9,9 @@ import { join } from 'node:path';
 
 import type { ServerLogLevel } from '@kiki/kap-server';
 import { parseDuration } from '#/kiki/serve';
+import { parseLogLevel } from '#/cli/log-level';
+
+export { DEFAULT_LOG_LEVEL, VALID_LOG_LEVELS, parseLogLevel } from '#/cli/log-level';
 
 export const LOCAL_SERVER_HOST = '127.0.0.1';
 export const DEFAULT_LAN_HOST = '0.0.0.0';
@@ -19,18 +22,7 @@ export const DEFAULT_SERVER_ORIGIN = serverOrigin(DEFAULT_SERVER_HOST, DEFAULT_S
 /** Filename (under KIKI_HOME) of the persistent server bearer token. */
 export const SERVER_TOKEN_FILE = 'server.token';
 
-export const DEFAULT_LOG_LEVEL: ServerLogLevel = 'info';
 export const DEFAULT_FOREGROUND_LOG_LEVEL: ServerLogLevel = 'silent';
-
-export const VALID_LOG_LEVELS: readonly ServerLogLevel[] = [
-  'fatal',
-  'error',
-  'warn',
-  'info',
-  'debug',
-  'trace',
-  'silent',
-];
 
 export interface ParsedServerOptions {
   host: string;
@@ -104,16 +96,6 @@ export function parsePort(raw: string | undefined, label: string, fallback: numb
     throw new Error(`error: invalid ${label} value: ${raw}`);
   }
   return n;
-}
-
-export function parseLogLevel(raw: string | undefined): ServerLogLevel {
-  if (raw === undefined) return DEFAULT_LOG_LEVEL;
-  if ((VALID_LOG_LEVELS as readonly string[]).includes(raw)) {
-    return raw as ServerLogLevel;
-  }
-  throw new Error(
-    `error: invalid --log-level value: ${raw} (allowed: ${VALID_LOG_LEVELS.join(', ')})`,
-  );
 }
 
 export function serverOrigin(host: string, port: number): string {

@@ -83,7 +83,7 @@ describe('kiki command helpers', () => {
     };
 
     await startServeServer(
-      { homeDir: String.raw`C:\Users\Example\.kiki`, port: 0, idleExitMs: 60_000, debugEndpoints: true },
+      { homeDir: String.raw`C:\Users\Example\.kiki`, port: 0, idleExitMs: 60_000, debugEndpoints: true, logLevel: 'warn' },
       webAssetsDir,
       startServer,
     );
@@ -94,6 +94,7 @@ describe('kiki command helpers', () => {
       homeDir: String.raw`C:\Users\Example\.kiki`,
       idleExitMs: 60_000,
       debugEndpoints: true,
+      logLevel: 'warn',
       webAssetsDir,
     });
   });
@@ -137,6 +138,15 @@ describe('kiki command helpers', () => {
     await startServeServer({ homeDir: root, idleExitMs: parseDuration('30m') }, root, start);
     expect(started[0]!.idleExitMs).toBeUndefined();
     expect(started[1]!.idleExitMs).toBe(1800000);
+  });
+
+  it('accepts foreground log levels and rejects invalid or non-foreground log options before starting', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-log-flags-')); roots.push(root);
+    const program = new Command(); registerServeCommand(program);
+    await expect(program.parseAsync(['node', 'kiki', 'serve', '--home', root, '--query', '--log-level', 'warn'])).rejects.toThrow('--log-level applies only to a new foreground daemon.');
+    expect(program.commands[0]!.opts()['logLevel']).toBe('warn');
+    await expect(program.parseAsync(['node', 'kiki', 'serve', '--home', root, '--log-level', 'shout'])).rejects.toThrow('invalid --log-level');
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('resolves Kiki home consistently and reports the KIKI_HOME token path', async () => {

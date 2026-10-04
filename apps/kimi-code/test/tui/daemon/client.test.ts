@@ -83,9 +83,9 @@ describe('DaemonClient', () => {
   });
 
   it('aborts an exact turn through the authenticated session command transport', async () => {
-    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
-      json: async () => ({ code: 0, msg: 'ok', data: { aborted: true } }),
-    }) as Response);
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => Response.json({
+      code: 0, msg: 'ok', data: { aborted: true },
+    }));
     const klient = createKlient({ endpoint: 'http://127.0.0.1:57580', token: 'secret', fetch: fetch as typeof globalThis.fetch });
     const client = new DaemonClient({ url: 'http://127.0.0.1:57580', token: 'secret', klient });
     try {
@@ -305,9 +305,9 @@ describe('DaemonClient', () => {
   });
 
   it('loads transcript snapshots through the authenticated Klient view', async () => {
-    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
-      json: async () => ({ code: 0, msg: 'ok', data: { as_of_seq: 4, epoch: 'e1' } }),
-    }) as Response);
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => Response.json({
+      code: 0, msg: 'ok', data: { as_of_seq: 4, epoch: 'e1' },
+    }));
     const klient = createKlient({ endpoint: 'http://127.0.0.1:57580', token: 'secret', fetch: fetch as typeof globalThis.fetch, validate: false });
     const client = new DaemonClient({ url: 'http://127.0.0.1:57580', token: 'secret', klient });
     try {

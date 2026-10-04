@@ -240,6 +240,8 @@
 
 ### Patch Changes
 
+- Fix packaged desktop startup with the shared daemon.
+
 - [`7e9d62e`](https://github.com/X-T-E-R/kiki/commit/7e9d62ed0f8c8ffe167f0a2ed3dc02d86e96af94) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep agent capability panels usable when servers introduce new reason codes.
 
 - [`06633f4`](https://github.com/X-T-E-R/kiki/commit/06633f4e1a0dbcc849d96777f7830405636a2e7f) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Take the plugin catalog address out of the add-from-source dialog; it is now edited only from the Plugins page and Settings.
