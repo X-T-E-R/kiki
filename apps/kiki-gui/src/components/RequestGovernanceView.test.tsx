@@ -67,15 +67,73 @@ describe('live request governance', () => {
     await settle(render);
     const live = container.querySelector<HTMLDetailsElement>('[data-governance-live]')!;
     const rules = container.querySelector('[data-governance-rules]')!;
-    expect(live.open).toBe(false);
+    // The detail is what this tab is for, so it starts open.
+    expect(live.open).toBe(true);
     expect(live.compareDocumentPosition(rules) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     expect(rules.textContent).toContain('Concurrency limits');
+    // Still collapsible, and the headline totals stay while it is.
+    await act(async () => { live.querySelector('summary')!.click(); });
+    expect(live.open).toBe(false);
+    expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     await act(async () => { live.querySelector('summary')!.click(); });
     expect(live.open).toBe(true);
     expect(live.querySelector('[data-governance-dimensions]')?.textContent).toContain('provider-example');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-rule="provider-cap"] button')!.click(); });
     expect(container.querySelector('[data-governance-editor]')).not.toBeNull();
+  });
+
+  it('shows one dimension at a time instead of stacking the cuts into one table', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    connection.wsStatus = 'open';
+    connection.client.getRequestGovernance.mockResolvedValue({
+      ...snapshot,
+      dimensions: [
+        { dimension: 'model', id: 'kimi-k3', active: 2, queued: 1 },
+        { dimension: 'provider', id: 'provider-example', active: 3, queued: 2 },
+        { dimension: 'role', id: 'subagent', active: 2, queued: 0 },
+      ],
+    });
+    const { container, render } = mount('realtime');
+    await settle(render);
+    const panel = () => container.querySelector<HTMLElement>('[data-governance-dimensions]')!;
+    expect(container.querySelector('[data-axis="governance-dimension"]')).not.toBeNull();
+    // Only the model cut is on screen; provider and role do not ride along.
+    expect(panel().getAttribute('data-governance-dimension')).toBe('model');
+    expect(panel().textContent).toContain('kimi-k3');
+    expect(panel().textContent).not.toContain('provider-example');
+    expect(panel().textContent).not.toContain('Subagents');
+    // Switching replaces the list rather than adding to it.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-axis-value="provider"]')!.click(); });
+    expect(panel().getAttribute('data-governance-dimension')).toBe('provider');
+    expect(panel().textContent).toContain('provider-example');
+    expect(panel().textContent).not.toContain('kimi-k3');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-axis-value="role"]')!.click(); });
+    expect(panel().getAttribute('data-governance-dimension')).toBe('role');
+    expect(panel().textContent).toContain('Subagents');
+    expect(panel().textContent).not.toContain('kimi-k3');
+    // The headline totals are the server's and do not change with the switch.
+    expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
+    expect(container.querySelector('[data-governance-queued]')?.textContent).toBe('2');
+  });
+
+  it('offers only the dimensions the snapshot actually carries', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    connection.wsStatus = 'open';
+    connection.client.getRequestGovernance.mockResolvedValue({
+      ...snapshot,
+      dimensions: [{ dimension: 'role', id: 'subagent', active: 2, queued: 0 }],
+    });
+    const { container, render } = mount('realtime');
+    await settle(render);
+    // One dimension means no switcher to offer, and the idle copy is not shown
+    // when that dimension does have rows.
+    expect(container.querySelector('[data-axis="governance-dimension"]')).toBeNull();
+    const panel = container.querySelector<HTMLElement>('[data-governance-dimensions]')!;
+    expect(panel.textContent).toContain('Subagents');
+    expect(container.querySelector('[data-governance-dimensions-empty]')).toBeNull();
   });
 
   it.each(['zh', 'en'] as const)('keeps authoritative counts and one amber stale line on disconnection (%s)', async (locale) => {

@@ -1,7 +1,8 @@
 /**
  * The Live tab pairs a compact request summary with the concurrency rules.
- * Request details expand in place; legacy Limits links focus the rules.
- * Rule edits still use the config save path and preserve paused rules.
+ * Request details are open by default and carry one dimension at a time;
+ * legacy Limits links focus the rules. Rule edits still use the config save
+ * path and preserve paused rules.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -91,7 +92,21 @@ export function RequestGovernanceView({ view }: { view: 'realtime' | 'limits' })
 
 function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
   const { t, time } = useI18n();
+  // Session rows stay hidden: they are per-request bookkeeping, and listing them
+  // beside the others restates the same running count a third time.
   const dimensions = snapshot.dimensions.filter((row) => row.dimension !== 'session');
+  // One dimension at a time. The rows are alternative cuts of the same totals,
+  // so showing two at once made each count look like a separate total. Nothing
+  // is summed across them: the summary above stays the only grand total.
+  const [chosen, setChosen] = useState<'model' | 'provider' | 'role' | null>(null);
+  const present = (['model', 'provider', 'role'] as const).filter((option) =>
+    dimensions.some((row) => row.dimension === option));
+  // Fall back to the first dimension the snapshot actually carries rather than a
+  // fixed guess, so a snapshot without that dimension shows its own rows instead
+  // of an empty list.
+  const dimension = chosen !== null && present.includes(chosen) ? chosen : present[0];
+  const options = dimension === undefined ? [] : present;
+  const shown = dimension === undefined ? [] : dimensions.filter((row) => row.dimension === dimension);
   const dimensionLabel = (row: (typeof dimensions)[number]): string => {
     if (row.dimension === 'role') {
       return row.id === 'subagent' ? t('usage.governance.roleSubagent') : t('usage.governance.roleRoot');
@@ -99,7 +114,7 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
     return row.id;
   };
   return (
-    <details data-governance-live className="group/live">
+    <details open data-governance-live className="group/live">
       <summary data-governance-details-toggle className="flex min-h-9 cursor-pointer list-none flex-wrap items-center gap-x-6 gap-y-2 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-selected-ink [&::-webkit-details-marker]:hidden">
         <span className="inline-flex items-baseline gap-2">
           <span className="text-[11.5px] text-ink-faint">{t('usage.governance.running')}</span>
@@ -116,21 +131,33 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
       </summary>
       <div className="grid gap-x-8 gap-y-5 pt-3 lg:grid-cols-2">
         <section className="min-w-0">
-          <h2 className="mb-3 text-[11.5px] font-medium text-ink-faint">{t('usage.governance.byDimension')}</h2>
-          {dimensions.length === 0 ? (
-            <p className="text-[12.5px] text-ink-faint">{t('usage.governance.idleNow')}</p>
+          <div className="mb-3 flex flex-wrap items-center gap-3">
+            {/* The switcher names its own dimension, so the section keeps no
+                second "by dimension" heading above it. */}
+            {options.length > 1 && dimension !== undefined ? (
+              <AxisGroup
+                label={t('usage.governance.byDimension')}
+                dataAxis="governance-dimension"
+                options={options}
+                value={dimension}
+                onChange={(next) => { setChosen(next); }}
+                labelFor={(option) => t(`usage.governance.${option}` as I18nKey)}
+              />
+            ) : <h2 className="text-[11.5px] font-medium text-ink-faint">{t('usage.governance.byDimension')}</h2>}
+          </div>
+          {shown.length === 0 ? (
+            <p data-governance-dimensions-empty className="text-[12.5px] text-ink-faint">{t('usage.governance.idleNow')}</p>
           ) : (
-            <div data-governance-dimensions>
+            <div data-governance-dimensions data-governance-dimension={dimension}>
               <div aria-hidden className="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] pb-2 text-[11px] text-ink-faint">
                 <span>{t('usage.governance.target')}</span>
                 <span className="text-right">{t('usage.governance.running')}</span>
                 <span className="text-right">{t('usage.governance.queued')}</span>
               </div>
               <ol className="divide-y divide-hairline border-t border-hairline">
-                {dimensions.map((row) => (
-                  <li key={`${row.dimension}:${row.id}`} className="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] items-baseline py-2">
+                {shown.map((row) => (
+                  <li key={`${row.dimension}:${row.id}`} data-governance-row={row.id} className="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] items-baseline py-2">
                     <span className="flex min-w-0 items-baseline gap-1.5">
-                      <span className="shrink-0 text-[11.5px] text-ink-faint">{t(`usage.governance.${row.dimension}` as I18nKey)}</span>
                       <span className="min-w-0 truncate font-mono text-[12.5px] text-ink" title={row.id}>{dimensionLabel(row)}</span>
                     </span>
                     <span className="text-right font-mono text-[12.5px] text-ink tabular-nums">{row.active}</span>
