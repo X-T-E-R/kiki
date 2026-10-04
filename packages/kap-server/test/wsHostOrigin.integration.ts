@@ -9,7 +9,7 @@ import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { fixedTokenAuth } from './helpers/fixedAuth';
 
-const TOKEN = 'test-token';
+let TOKEN: string;
 
 interface ConnectOptions {
   readonly headers?: Record<string, string>;
@@ -60,8 +60,9 @@ describe('WS upgrade Host/Origin checks', () => {
       port: 0,
       homeDir: home,
       logLevel: 'silent',
-      authTokenService: fixedTokenAuth(TOKEN),
+      authTokenService: fixedTokenAuth('test-token'),
     });
+    TOKEN = server.localOwnerToken;
     v1Url = `ws://127.0.0.1:${server.port}/api/ws`;
   });
 
@@ -108,9 +109,10 @@ describe('WS upgrade Host/Origin checks', () => {
       port: 0,
       homeDir: home,
       logLevel: 'silent',
-      authTokenService: fixedTokenAuth(TOKEN),
+      authTokenService: fixedTokenAuth('test-token'),
       corsOrigins: ['https://app.example.test'],
     });
+    TOKEN = server.localOwnerToken;
     const url = `ws://127.0.0.1:${server.port}/api/ws`;
     const ws = await openConn(url, { headers: { origin: 'https://app.example.test' } });
     sockets.push(ws);

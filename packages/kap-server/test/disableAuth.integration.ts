@@ -99,7 +99,7 @@ describe('server-v2 disableAuth (--dangerous-bypass-auth)', () => {
     expect(unauthed.status).toBe(401);
 
     const meta = await fetch(`${base}/api/meta`, {
-      headers: { authorization: `Bearer ${TOKEN}` },
+      headers: { authorization: `Bearer ${server!.localOwnerToken}` },
     });
     expect(meta.status).toBe(200);
     const metaBody = (await meta.json()) as {

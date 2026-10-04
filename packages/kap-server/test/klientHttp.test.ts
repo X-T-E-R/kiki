@@ -24,7 +24,7 @@ import { TerminalHttpConnection } from '../src/transport/klient/terminalHttp';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { fixedTokenAuth } from './helpers/fixedAuth';
 
-const TOKEN = 'test-token';
+let TOKEN: string;
 
 function rawToString(data: RawData): string {
   if (typeof data === 'string') return data;
@@ -59,8 +59,9 @@ describe('klient HTTP host', () => {
       port: 0,
       homeDir,
       logLevel: 'silent',
-      authTokenService: fixedTokenAuth(TOKEN),
+      authTokenService: fixedTokenAuth('test-token'),
     });
+    TOKEN = server.localOwnerToken;
     endpoint = `http://127.0.0.1:${server.port}`;
   }, 30_000);
 

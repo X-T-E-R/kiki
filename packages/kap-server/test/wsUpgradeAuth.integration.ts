@@ -14,7 +14,7 @@ import { WS_V1_MAX_PAYLOAD_BYTES } from '../src/transport/ws/v1/registerWsV1';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { fixedTokenAuth } from './helpers/fixedAuth';
 
-const TOKEN = 'test-token';
+let TOKEN: string;
 
 function rawToString(data: RawData): string {
   if (typeof data === 'string') return data;
@@ -90,8 +90,9 @@ describe('WS upgrade auth', () => {
       port: 0,
       homeDir: home,
       logLevel: 'silent',
-      authTokenService: fixedTokenAuth(TOKEN),
+      authTokenService: fixedTokenAuth('test-token'),
     });
+    TOKEN = server.localOwnerToken;
     klientUrl = `ws://127.0.0.1:${server.port}${KLIENT_EVENTS_PATH}`;
     v1Url = `ws://127.0.0.1:${server.port}/api/ws`;
   });
