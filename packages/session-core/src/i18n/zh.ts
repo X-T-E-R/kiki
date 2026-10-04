@@ -1931,8 +1931,8 @@ export const zh = {
   'new.browse': '浏览文件夹…',
   'new.firstRunHint': '可以选择项目文件夹，也可以直接发送，让 kiki 在 Kiki 主目录中自动创建工作区。',
   'new.setupTitle': '先连接一个模型',
-  'new.setupBody': '还没有配置任何 provider，kiki 没有可用来回答的模型。可以登录 Kimi，也可以填自己的 API key。',
-  'new.setupSignIn': '登录 Kimi',
+  'new.setupBody': '还没有配置任何 provider，kiki 没有可用来回答的模型。可以通过 OAuth 登录，也可以填自己的 API key。',
+  'new.setupSignIn': 'OAuth 登录',
   'new.setupApiKey': '配置 API key',
 
   // ---- hero (/new conversation shell) ----

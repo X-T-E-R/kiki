@@ -151,7 +151,7 @@ function ProviderSetupCard() {
       <div className="mt-2 flex flex-wrap gap-2">
         <button
           type="button"
-          onClick={() => { void navigate('/settings/ai?tab=providers#st-card-auth'); }}
+          onClick={() => { void navigate('/settings/ai?tab=providers#st-card-providers-add'); }}
           className="motion-press h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
         >
           {t('new.setupSignIn')}

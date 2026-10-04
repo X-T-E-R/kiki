@@ -9,12 +9,13 @@
  */
 
 import { act } from 'react';
-import { createRoot } from 'react-dom/client';
-import { MemoryRouter } from 'react-router-dom';
+import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AuthSummary } from '@kiki/protocol';
+import { resolveSettingsRoute, SETTINGS_SEARCH_SPEC } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../i18n';
 import {
@@ -25,8 +26,17 @@ import {
 } from './NewSessionDraft';
 import { NewSessionPage } from './NewSessionPage';
 
+const firstRun = vi.hoisted(() => ({
+  needsProviderSetup: false,
+  client: {
+    startOAuthLogin: vi.fn(),
+    cancelOAuthLogin: vi.fn(),
+    createProvider: vi.fn(),
+  },
+}));
+
 vi.mock('../state/connection', () => ({
-  useConnection: () => ({ client: {} }),
+  useConnection: () => ({ client: firstRun.client }),
 }));
 
 vi.mock('./Composer', () => ({ Composer: () => null }));
@@ -70,7 +80,7 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       autoWorkspace: true,
       agentProfileCatalogMode: { mode: 'unscoped' },
       agentProfileCatalogPending: false,
-      needsProviderSetup: false,
+      needsProviderSetup: firstRun.needsProviderSetup,
       canBrowseForWorkspace: false,
       browseForWorkspace: async () => {},
       serverDefaultModel: undefined,
@@ -95,17 +105,26 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
 });
 
 const containers: HTMLDivElement[] = [];
+const roots: Root[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
 };
 
 beforeAll(() => {
-  localStorage.setItem('kiki.locale', 'en');
   vi.stubGlobal('navigator', { language: 'en-US' });
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 
-afterEach(() => {
+beforeEach(() => {
+  firstRun.needsProviderSetup = false;
+  localStorage.setItem('kiki.locale', 'en');
+  vi.clearAllMocks();
+});
+
+afterEach(async () => {
+  await act(async () => {
+    for (const root of roots.splice(0)) root.unmount();
+  });
   for (const container of containers.splice(0)) container.remove();
 });
 
@@ -135,6 +154,7 @@ async function mount(state: NewSessionDraftState): Promise<HTMLDivElement> {
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
+  roots.push(root);
   await act(async () => {
     root.render(
       <I18nProvider>
@@ -249,18 +269,28 @@ describe('needsProviderSetup', () => {
   });
 });
 
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-location>{`${location.pathname}${location.search}${location.hash}`}</span>;
+}
+
 async function mountNewSessionPage(): Promise<HTMLDivElement> {
   document.querySelector('#first-run-hero-footer')!.replaceChildren();
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
+  roots.push(root);
   await act(async () => {
     root.render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
         <I18nProvider>
           <MemoryRouter initialEntries={['/new']}>
-            <NewSessionPage onToggleSidebar={() => {}} />
+            <LocationProbe />
+            <Routes>
+              <Route path="/new" element={<NewSessionPage onToggleSidebar={() => {}} />} />
+              <Route path="/settings/:section" element={<span data-settings-destination />} />
+            </Routes>
           </MemoryRouter>
         </I18nProvider>
       </QueryClientProvider>,
@@ -296,6 +326,39 @@ describe('the /new page', () => {
     expect(footer.querySelectorAll('[data-hero-starter]').length).toBeGreaterThan(0);
     for (const scope of [container, footer]) {
       expect(scope.querySelector('[data-hero-recents], [data-hero-team], [data-hero-pulse], [data-agent-capabilities]')).toBeNull();
+    }
+  });
+
+  it.each([
+    ['en', 0, 'OAuth sign-in'],
+    ['en', 1, 'Add an API key'],
+    ['zh', 0, 'OAuth 登录'],
+    ['zh', 1, '配置 API key'],
+  ] as const)('routes the %s setup choice %i to connection settings without authentication side effects', async (locale, choice, label) => {
+    firstRun.needsProviderSetup = true;
+    localStorage.setItem('kiki.locale', locale);
+    const openWindow = vi.spyOn(window, 'open').mockReturnValue(null);
+    try {
+      const container = await mountNewSessionPage();
+      const card = document.querySelector('#first-run-hero-footer [data-provider-setup]')!;
+      const buttons = card.querySelectorAll('button');
+      expect(buttons).toHaveLength(2);
+      expect(buttons[choice]?.textContent).toBe(label);
+      expect(card.textContent).not.toContain('Kimi');
+      await act(async () => { buttons[choice]!.click(); });
+      expect(container.querySelector('[data-location]')?.textContent)
+        .toBe('/settings/ai?tab=providers#st-card-providers-add');
+      expect(container.querySelector('[data-settings-destination]')).not.toBeNull();
+      expect(SETTINGS_SEARCH_SPEC.find((entry) => entry.cardId === 'st-card-providers-add'))
+        .toMatchObject({ section: 'ai', tab: 'providers' });
+      expect(resolveSettingsRoute('ai', '#st-card-providers-add'))
+        .toMatchObject({ status: 'ok', section: 'ai', tab: 'providers', cardId: 'st-card-providers-add' });
+      expect(firstRun.client.startOAuthLogin).not.toHaveBeenCalled();
+      expect(firstRun.client.cancelOAuthLogin).not.toHaveBeenCalled();
+      expect(firstRun.client.createProvider).not.toHaveBeenCalled();
+      expect(openWindow).not.toHaveBeenCalled();
+    } finally {
+      openWindow.mockRestore();
     }
   });
 });

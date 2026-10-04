@@ -1954,8 +1954,8 @@ export const en = {
   'new.browse': 'Browse folder…',
   'new.firstRunHint': 'Choose a project folder, or send now and kiki will create a workspace in Kiki Home.',
   'new.setupTitle': 'Connect a model first',
-  'new.setupBody': 'No provider is configured yet, so kiki has no model to answer with. Sign in with Kimi, or add your own API key.',
-  'new.setupSignIn': 'Sign in with Kimi',
+  'new.setupBody': 'No provider is configured yet, so kiki has no model to answer with. Sign in with OAuth, or add your own API key.',
+  'new.setupSignIn': 'OAuth sign-in',
   'new.setupApiKey': 'Add an API key',
 
   // ---- hero (/new conversation shell) ----
