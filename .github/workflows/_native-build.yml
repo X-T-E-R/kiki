@@ -77,7 +77,24 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
+        if: matrix.target != 'win32-x64'
         run: pnpm install --frozen-lockfile
+
+      - name: Install dependencies (Windows x64 diagnostics)
+        if: matrix.target == 'win32-x64'
+        shell: pwsh
+        run: |
+          node --version
+          pnpm --version
+          pnpm install --frozen-lockfile --reporter=ndjson --loglevel=debug
+          exit $LASTEXITCODE
+
+      - name: Rebuild Linux PTY dependency
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
+          pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
 
       - name: Setup macOS keychain (release only)
         if: runner.os == 'macOS' && inputs.sign-macos
