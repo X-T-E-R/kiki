@@ -45,6 +45,8 @@ reports/
 
 # Agent scratch / throwaway files - do not commit
 .tmp/
+/.tmp-search-s3-*/
+/packages/kap-server/.tmp-search-s3-*/
 HANDOVER*.md
 HANDOFF*.md
 handoff.md
