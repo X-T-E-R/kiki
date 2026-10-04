@@ -249,7 +249,7 @@ export async function collectNodePtyPackage({ packageRoot, target }) {
   const nativeNames = target.startsWith('win32-')
     ? ['pty.node', 'conpty.node', 'conpty_console_list.node', 'winpty.dll', 'winpty-agent.exe',
       'conpty/conpty.dll', 'conpty/OpenConsole.exe']
-    : ['pty.node', 'spawn-helper'];
+    : target.startsWith('darwin-') ? ['pty.node', 'spawn-helper'] : ['pty.node'];
   const files = await collectPackageFiles({
     packageName: 'node-pty', packageRoot, includeNativeFiles: false,
     nativeFileRelatives: nativeNames.map((name) => `${nativeDir}/${name}`),
@@ -277,7 +277,7 @@ export async function collectNodePtyPackage({ packageRoot, target }) {
   return packageManifestEntries({
     packageName: 'node-pty', packageRoot,
     files: [...new Set(files)].sort((a, b) => a.localeCompare(b)), target,
-    executableFiles: new Set(target.startsWith('win32-') ? [] : [join(packageRoot, nativeDir, 'spawn-helper')]),
+    executableFiles: new Set(target.startsWith('darwin-') ? [join(packageRoot, nativeDir, 'spawn-helper')] : []),
   });
 }
 

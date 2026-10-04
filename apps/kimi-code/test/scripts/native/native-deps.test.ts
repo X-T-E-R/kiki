@@ -182,6 +182,7 @@ describe('node-pty loading unit', () => {
     expect(paths).toContain('node_modules/node-pty/lib/worker/conoutSocketWorker.js');
     expect(paths).toContain('node_modules/node-pty/lib/conpty_console_list_agent.js');
     expect(paths.some((path: string) => path.endsWith('/pty.node'))).toBe(true);
+    expect(paths.some((path: string) => path.endsWith('/spawn-helper'))).toBe(process.platform === 'darwin');
     expect(paths.some((path: string) => /\.test\.js|\.pdb|\.map/.test(path))).toBe(false);
   });
 
@@ -202,18 +203,23 @@ describe('node-pty loading unit', () => {
       for (const target of SUPPORTED_TARGETS.filter((target) => target !== `${process.platform}-${process.arch}`)) {
         const binaries = target.startsWith('win32-')
           ? ['pty.node', 'conpty.node', 'conpty_console_list.node', 'winpty.dll', 'winpty-agent.exe', 'conpty/conpty.dll', 'conpty/OpenConsole.exe']
-          : ['pty.node', 'spawn-helper'];
+          : target.startsWith('darwin-') ? ['pty.node', 'spawn-helper'] : ['pty.node'];
         for (const name of binaries) put(`prebuilds/${target}/${name}`);
         const result = await collectNodePtyPackage({ packageRoot, target });
         const files = result.packageManifest.files as Array<{ relativePath: string; mode?: number }>;
         expect(files.filter((file) => file.relativePath.includes('/prebuilds/')).map((file) => file.relativePath)).toEqual(
           binaries.map((name) => `node_modules/node-pty/prebuilds/${target}/${name}`).toSorted((a, b) => a.localeCompare(b)),
         );
-        if (!target.startsWith('win32-')) {
+        expect(files.filter((file) => file.relativePath.endsWith('.node')).every((file) => file.mode === undefined)).toBe(true);
+        if (target.startsWith('darwin-')) {
           expect(files.find((file) => file.relativePath.endsWith('/spawn-helper'))?.mode).toBe(0o755);
           rmSync(join(packageRoot, `prebuilds/${target}/spawn-helper`));
           await expect(collectNodePtyPackage({ packageRoot, target })).rejects.toThrow(`prebuilds/${target}/spawn-helper`);
+        } else {
+          expect(files.some((file) => file.relativePath.endsWith('/spawn-helper'))).toBe(false);
         }
+        rmSync(join(packageRoot, `prebuilds/${target}/pty.node`));
+        await expect(collectNodePtyPackage({ packageRoot, target })).rejects.toThrow(`prebuilds/${target}/pty.node`);
       }
     } finally {
       rmSync(packageRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
