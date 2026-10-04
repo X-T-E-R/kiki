@@ -15,7 +15,7 @@ let binary;
 let core;
 before(async () => {
   directory = await mkdtemp(path.join(root, '.tmp-office-'));
-  binary = await findBinary();
+  binary = process.env.OFFICECLI_TEST_BINARY;
   core = createOfficeCore({ scope: { workspaceRoot: directory, binaryPath: binary } });
 });
 after(async () => { if (directory) await rm(directory, { recursive: true, force: true }); });
@@ -32,7 +32,7 @@ const no = async (name, args, code) => {
   assert.ok(result.error.suggestion);
 };
 
-test('manifest and SDK tool contract stay synchronized and descriptions fit budget', async () => {
+void test('manifest and SDK tool contract stay synchronized and descriptions fit budget', async () => {
   const manifest = JSON.parse(await readFile(path.join(root, 'kimi.plugin.json'), 'utf8'));
   assert.deepEqual(manifest['x-kiki'].tools, definitions);
   assert.equal(definitions.length, 9);
@@ -43,7 +43,7 @@ test('manifest and SDK tool contract stay synchronized and descriptions fit budg
   }
 });
 
-test('the actual plugin host runner registers all tools but rejects calls without workspace context', async () => {
+void test('the actual plugin host runner registers all tools but rejects calls without workspace context', async () => {
   const runner = path.resolve(root, '../../../packages/agent-core-v2/src/app/plugin/hostRunner.mjs');
   const child = spawn(process.execPath, [runner, path.join(root, 'entry.mjs')], { stdio: ['pipe', 'pipe', 'pipe'] });
   const messages = [];
@@ -70,17 +70,16 @@ test('the actual plugin host runner registers all tools but rejects calls withou
   }
 });
 
-test('pinned release checksums and explicit consent', async () => {
+void test('pinned release checksums and explicit consent', async () => {
   assert.match(OFFICECLI_VERSION, /^\d+\.\d+\.\d+$/);
   assert.equal(CHECKSUMS_SHA256.length, 64);
   assert.equal(parseChecksum(`a`.repeat(64) + '  officecli-win-x64.exe', 'officecli-win-x64.exe'), 'a'.repeat(64));
   await assert.rejects(installPinnedBinary({ consent: false, destination: path.join(directory, 'no.exe') }), { code: 'CONSENT_REQUIRED' });
   await assert.rejects(installPinnedBinary({ consent: true, destination: path.join(directory, 'no.exe'), fetchRelease: async () => Buffer.from('tampered') }), { code: 'CHECKSUM_INVALID' });
-  assert.equal((await runProcess(binary, ['--version'])).stdout.trim(), OFFICECLI_VERSION);
   await assert.rejects(findBinary({ binaryPath: process.execPath }), { code: 'VERSION_MISMATCH' });
 });
 
-test('rejects missing engine, incompatible engine and path escapes', async () => {
+void test('rejects missing engine, incompatible engine and path escapes', async () => {
   const missing = createOfficeCore({ scope: { workspaceRoot: directory }, locateBinary: async () => { throw Object.assign(new Error('Missing'), { code: 'ENGINE_MISSING', suggestion: 'Install pinned binary.' }); } });
   assert.equal((await missing.run('office_create', { file: 'missing.docx' })).error.code, 'ENGINE_MISSING');
   const mismatch = createOfficeCore({ scope: { workspaceRoot: directory }, locateBinary: async () => { throw Object.assign(new Error('Mismatch'), { code: 'VERSION_MISMATCH', suggestion: 'Install pinned binary.' }); } });
@@ -93,7 +92,9 @@ test('rejects missing engine, incompatible engine and path escapes', async () =>
   await no('office_create', { file: path.join(directory, 'unknown.csv') }, 'FORMAT_UNSUPPORTED');
 });
 
-test('Word chain, precise reads, style preservation and safe edits', async () => {
+void test('Word chain, precise reads, style preservation and safe edits', async () => {
+  binary = await findBinary({ binaryPath: binary });
+  assert.equal((await runProcess(binary, ['--version'])).stdout.trim(), OFFICECLI_VERSION);
   const file = 'report.docx';
   await yes('office_create', { file });
   await no('office_create', { file }, 'FILE_EXISTS');
@@ -117,7 +118,7 @@ test('Word chain, precise reads, style preservation and safe edits', async () =>
   await no('office_remove', { file, path: '/body/p[99]' }, 'not_found');
 });
 
-test('Excel chain, bounded reads and atomic batch', async () => {
+void test('Excel chain, bounded reads and atomic batch', async () => {
   const file = 'table.xlsx';
   await yes('office_create', { file });
   await yes('office_set', { file, path: '/Sheet1/A1', props: { value: 'Item', bold: true } });
@@ -139,7 +140,7 @@ test('Excel chain, bounded reads and atomic batch', async () => {
   await no('office_set', { file, path: '/Sheet1/A2' }, 'ARGUMENT_INVALID');
 });
 
-test('PowerPoint chain and preview fallback', async () => {
+void test('PowerPoint chain and preview fallback', async () => {
   const file = 'slides.pptx';
   await yes('office_create', { file });
   await yes('office_add', { file, parent: '/', type: 'slide', props: { title: 'Quarterly review' } });
@@ -155,7 +156,7 @@ test('PowerPoint chain and preview fallback', async () => {
   await no('office_preview', { file, mode: 'raw' }, 'ARGUMENT_INVALID');
 });
 
-test('malformed, oversized and unknown OOXML parts fail before mutation', async () => {
+void test('malformed, oversized and unknown OOXML parts fail before mutation', async () => {
   const file = path.join(directory, 'fake.docx');
   await writeFile(file, 'not a ZIP');
   await assert.rejects(guardPackage(file), { code: 'PACKAGE_INVALID' });

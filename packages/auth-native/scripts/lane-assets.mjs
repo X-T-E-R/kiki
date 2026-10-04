@@ -12,7 +12,7 @@ async function walk(root, directory = root) {
     else if (entry.isFile()) files.push(relative(root, path).replaceAll('\\', '/'));
     else throw new Error(`Unsupported auth-native lane entry: ${path}`);
   }
-  return files.sort();
+  return files.sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
 }
 
 export async function stageAuthNativeLane({ packageRoot, artifactRoot, target }) {
@@ -21,7 +21,7 @@ export async function stageAuthNativeLane({ packageRoot, artifactRoot, target })
   const files = ['package.json', 'index.cjs', 'index.d.ts', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
     `prebuilds/${target}/auth-native.node`, ...(await walk(join(packageRoot, 'licenses'))).map((path) => `licenses/${path}`)];
   const entries = [];
-  for (const name of files.sort()) {
+  for (const name of files.sort((a, b) => a < b ? -1 : a > b ? 1 : 0)) {
     const bytes = await readFile(join(packageRoot, name));
     const path = join(destination, name);
     await mkdir(dirname(path), { recursive: true });
@@ -61,7 +61,7 @@ export async function mergeAuthNativeLanes({ artifactRoot, destination, expected
     for (const name of required) if (!names.has(name)) throw new Error(`Auth-native lane ${target} is missing ${name}`);
     const packageJson = JSON.parse(await readFile(join(laneRoot, 'package.json'), 'utf8'));
     if (packageJson.name !== '@kiki/auth-native' || packageJson.version !== lane.packageVersion) throw new Error(`Auth-native lane package mismatch: ${target}`);
-    const signature = shared.sort().join('\n');
+    const signature = shared.sort((a, b) => a < b ? -1 : a > b ? 1 : 0).join('\n');
     if (sharedHash !== undefined && sharedHash !== signature) throw new Error(`Auth-native shared runtime differs across lanes: ${target}`);
     sharedHash = signature;
     for (const file of verified) {

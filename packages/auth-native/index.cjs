@@ -1,8 +1,8 @@
 'use strict';
 
-const { join } = require('node:path');
+const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
-const native = require(join(__dirname, 'prebuilds', `${process.platform}-${process.arch}`, 'auth-native.node'));
+const native = require(path.join(__dirname, 'prebuilds', `${process.platform}-${process.arch}`, 'auth-native.node'));
 
 exports.ageEncrypt = (bytes, passphrase) => native.ageEncrypt(Buffer.from(bytes), passphrase);
 exports.ageDecrypt = (bytes, passphrase) => native.ageDecrypt(Buffer.from(bytes), passphrase);

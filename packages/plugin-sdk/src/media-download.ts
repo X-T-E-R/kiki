@@ -5,7 +5,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 /** Stream one response to a staging file; failed transfers never replace an existing original. */
-export async function downloadMedia(url: string, destination: string, options: { signal: AbortSignal; headers?: HeadersInit }): Promise<{ bytes: number }> {
+export async function downloadMedia(url: string, destination: string, options: { signal: AbortSignal; headers?: RequestInit['headers'] }): Promise<{ bytes: number }> {
   const response = await fetch(url, { signal: options.signal, headers: options.headers });
   if (!response.ok || response.body === null) throw new Error(`Media download failed (${response.status})`);
   await mkdir(dirname(destination), { recursive: true });

@@ -139,18 +139,6 @@ export async function handleWebCommand(
   } finally { await klient.close(); }
 }
 
-function formatReadyLine(
-  origin: string,
-  token: string | undefined,
-  dangerousBypassAuth = false,
-  homeId?: string,
-): string {
-  const notice = dangerousBypassAuth
-    ? `${formatDangerNoticeLines().join('\n')}\n`
-    : '';
-  return `${notice}Kiki server: ${buildOpenableUrl(origin, token)}\n${homeId === undefined ? '' : `SSH home ID: ${homeId}\n`}`;
-}
-
 /**
  * Red, impossible-to-miss notice emitted when `--dangerous-bypass-auth`
  * disables the bearer-token gate. Shared by the full ready banner and the

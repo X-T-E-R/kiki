@@ -21,7 +21,7 @@ export async function readClaudeNotifications(
     if (error.code === 'ENOENT') return [];
     throw error;
   });
-  for (const name of entries.sort()) {
+  for (const name of entries.sort((a, b) => a < b ? -1 : a > b ? 1 : 0)) {
     if (!name.endsWith('.cursor')) continue;
     const dispatchId = name.slice(0, -'.cursor'.length);
     if (!DISPATCH_ID.test(dispatchId)) continue;

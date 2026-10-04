@@ -3,26 +3,26 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawn, execFileSync } = require('node:child_process');
 const { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, renameSync } = require('node:fs');
-const { once } = require('node:events');
-const { resolve, join } = require('node:path');
+const events = require('node:events');
+const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const auth = require('../index.cjs');
-const root = resolve(__dirname, '../../..');
-const scratch = resolve(root, '.tmp/auth-native-build');
-const env = { ...process.env, CARGO_HOME: join(scratch, 'cargo-home'), CARGO_TARGET_DIR: join(scratch, 'target') };
-const fixture = join(scratch, 'target/release/examples', process.platform === 'win32' ? 'compat.exe' : 'compat');
+const root = path.resolve(__dirname, '../../..');
+const scratch = path.resolve(root, '.tmp/auth-native-build');
+const env = { ...process.env, CARGO_HOME: path.join(scratch, 'cargo-home'), CARGO_TARGET_DIR: path.join(scratch, 'target') };
+const fixture = path.join(scratch, 'target/release/examples', process.platform === 'win32' ? 'compat.exe' : 'compat');
 let temp;
 const passphrase = 'synthetic-auth-fixture-passphrase';
 const plaintext = Buffer.from('{"version":1,"secrets":{"example":"SYNTHETIC_ONLY"}}');
 before(() => {
   mkdirSync(scratch, { recursive: true });
-  temp = mkdtempSync(join(scratch, 'fixtures-'));
-  execFileSync('cargo', ['build', '--release', '--locked', '--example', 'compat'], { cwd: resolve(__dirname, '..'), env, stdio: 'pipe' });
+  temp = mkdtempSync(path.join(scratch, 'fixtures-'));
+  execFileSync('cargo', ['build', '--release', '--locked', '--example', 'compat'], { cwd: path.resolve(__dirname, '..'), env, stdio: 'pipe' });
 });
 after(() => rmSync(temp, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
 
-test('independent Rust age 0.11.1 scrypt vector decrypts in Node, and Node decrypts in Rust', async () => {
-  const file = join(temp, 'synthetic.age');
+void test('independent Rust age 0.11.1 scrypt vector decrypts in Node, and Node decrypts in Rust', async () => {
+  const file = path.join(temp, 'synthetic.age');
   execFileSync(fixture, ['encrypt', file]);
   const ciphertext = readFileSync(file);
   assert.equal(ciphertext.subarray(0, 22).toString(), 'age-encryption.org/v1\n');
@@ -35,24 +35,24 @@ test('independent Rust age 0.11.1 scrypt vector decrypts in Node, and Node decry
   assert.throws(() => auth.ageEncrypt(plaintext, ''), /passphrase must not be empty/);
 });
 
-test('Rust canonical home string and original SHA256 input are identical in Node', async () => {
+void test('Rust canonical home string and original SHA256 input are identical in Node', async () => {
   const { createHash } = require('node:crypto');
   const [expected, hash] = execFileSync(fixture, ['canonicalize', temp], { encoding: 'utf8' }).trim().split(/\r?\n/);
   const canonical = await auth.canonicalizeOriginalHome(temp);
   assert.equal(canonical, expected);
   assert.equal(createHash('sha256').update(canonical).digest('hex'), hash);
   if (process.platform === 'win32') assert.ok(canonical.startsWith('\\\\?\\'));
-  await assert.rejects(auth.canonicalizeOriginalHome(join(temp, 'absent-home')), /canonicalization failed/);
-  assert.equal(existsSync(join(temp, 'absent-home')), false);
+  await assert.rejects(auth.canonicalizeOriginalHome(path.join(temp, 'absent-home')), /canonicalization failed/);
+  assert.equal(existsSync(path.join(temp, 'absent-home')), false);
 });
 
-test('same OS lock domain as donor-style independent fs2 process; timeout/cancel never unlink', async () => {
-  const authPath = join(temp, 'auth.json');
-  const lockPath = join(temp, 'auth.json.lock');
+void test('same OS lock domain as donor-style independent fs2 process; timeout/cancel never unlink', async () => {
+  const authPath = path.join(temp, 'auth.json');
+  const lockPath = path.join(temp, 'auth.json.lock');
   const child = spawn(fixture, ['hold', lockPath], { stdio: ['pipe', 'pipe', 'pipe'] });
-  const exited = once(child, 'exit');
+  const exited = events.once(child, 'exit');
   try {
-    await once(child.stdout, 'data', { signal: AbortSignal.timeout(10_000) });
+    await events.once(child.stdout, 'data', { signal: AbortSignal.timeout(10_000) });
     assert.equal(auth.tryAcquireGrokAuthLock(authPath), null);
     await assert.rejects(auth.acquireGrokAuthLock(authPath, { timeoutMs: 80 }), { code: 'AUTH_LOCK_TIMEOUT' });
     const controller = new AbortController();
@@ -74,16 +74,16 @@ test('same OS lock domain as donor-style independent fs2 process; timeout/cancel
   }
 });
 
-test('Kiki process exit releases lock, heartbeat advances while held, same-process contenders serialize', async () => {
-  const dir = join(temp, 'exit'); mkdirSync(dir);
-  const authPath = join(dir, 'auth.json');
-  const lockPath = join(dir, 'auth.json.lock');
-  const modulePath = resolve(__dirname, '../index.cjs');
+void test('Kiki process exit releases lock, heartbeat advances while held, same-process contenders serialize', async () => {
+  const dir = path.join(temp, 'exit'); mkdirSync(dir);
+  const authPath = path.join(dir, 'auth.json');
+  const lockPath = path.join(dir, 'auth.json.lock');
+  const modulePath = path.resolve(__dirname, '../index.cjs');
   const script = `const a=require(process.argv[1]); global.guard=a.tryAcquireGrokAuthLock(process.argv[2]); console.log('READY'); setInterval(()=>{},1000);`;
   const child = spawn(process.execPath, ['-e', script, modulePath, authPath], { stdio: ['ignore', 'pipe', 'pipe'] });
-  const exited = once(child, 'exit');
+  const exited = events.once(child, 'exit');
   try {
-    await once(child.stdout, 'data', { signal: AbortSignal.timeout(10_000) });
+    await events.once(child.stdout, 'data', { signal: AbortSignal.timeout(10_000) });
     const startedAt = Math.floor(Date.now() / 1000);
     await delay(5300);
     assert.equal(auth.tryAcquireGrokAuthLock(authPath), null);
@@ -103,14 +103,14 @@ test('Kiki process exit releases lock, heartbeat advances while held, same-proce
   }
 });
 
-test('guard isCurrent rejects a replaced held inode and reports held/released states', async () => {
-  const dir = join(temp, 'identity'); mkdirSync(dir);
-  const authPath = join(dir, 'auth.json');
-  const lockPath = join(dir, 'auth.json.lock');
+void test('guard isCurrent rejects a replaced held inode and reports held/released states', async () => {
+  const dir = path.join(temp, 'identity'); mkdirSync(dir);
+  const authPath = path.join(dir, 'auth.json');
+  const lockPath = path.join(dir, 'auth.json.lock');
   const guard = await auth.acquireGrokAuthLock(authPath);
   try {
     assert.equal(guard.isCurrent(), true);
-    renameSync(lockPath, join(dir, 'old.lock'));
+    renameSync(lockPath, path.join(dir, 'old.lock'));
     assert.equal(guard.isCurrent(), false);
     writeFileSync(lockPath, 'replacement');
     assert.equal(guard.isCurrent(), false);
@@ -123,9 +123,9 @@ test('guard isCurrent rejects a replaced held inode and reports held/released st
   assert.equal(guard.isCurrent(), false);
 });
 
-test('invalid IO and invalid wait budget surface rather than reporting contention', async () => {
-  assert.throws(() => auth.tryAcquireGrokAuthLock(join(temp, 'missing', 'auth.json')), /Auth advisory lock failed/);
-  await assert.rejects(auth.acquireGrokAuthLock(join(temp, 'auth.json'), { timeoutMs: -1 }), RangeError);
+void test('invalid IO and invalid wait budget surface rather than reporting contention', async () => {
+  assert.throws(() => auth.tryAcquireGrokAuthLock(path.join(temp, 'missing', 'auth.json')), /Auth advisory lock failed/);
+  await assert.rejects(auth.acquireGrokAuthLock(path.join(temp, 'auth.json'), { timeoutMs: -1 }), RangeError);
   const controller = new AbortController(); controller.abort();
-  await assert.rejects(auth.acquireGrokAuthLock(join(temp, 'cancel.json'), { signal: controller.signal }), { name: 'AbortError' });
+  await assert.rejects(auth.acquireGrokAuthLock(path.join(temp, 'cancel.json'), { signal: controller.signal }), { name: 'AbortError' });
 });

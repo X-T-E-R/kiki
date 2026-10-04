@@ -15,7 +15,7 @@ afterEach(async () => {
   mock.restoreAll();
   await rm(root, { recursive: true, force: true });
 });
-test('streams a complete original through the published Node helper with signal and headers', async () => {
+await test('streams a complete original through the published Node helper with signal and headers', async () => {
   const destination = path.join(root, 'original.mp4');
   const signal = new AbortController().signal;
   const fetch = mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('video')); controller.enqueue(new TextEncoder().encode('-bytes')); controller.close(); } }), { headers: { 'content-length': '11' } }));
@@ -25,7 +25,7 @@ test('streams a complete original through the published Node helper with signal 
   assert.deepEqual(await readdir(root), ['original.mp4']);
 });
 for (const failure of ['truncated', 'empty', 'stream-error']) {
-  test(`preserves an existing original and removes partial files after ${failure} delivery`, async () => {
+  await test(`preserves an existing original and removes partial files after ${failure} delivery`, async () => {
     const destination = path.join(root, 'original.mp4');
     await writeFile(destination, 'keep-original');
     mock.method(globalThis, 'fetch', async () => failure === 'stream-error'

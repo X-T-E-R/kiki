@@ -86,6 +86,9 @@ await test('OpenAI generation and multi-image multipart edit preserve mask/count
   assert.deepEqual(await readFile(path.join(h.ctx.stagingDir, 'image-1.png')), png);
   const invalid = await h.adapters.image.submit(image({ options: { response_format: 'url' } }), h.ctx);
   assert.equal(invalid.error.submission, 'not_sent');
+  const invalidScalar = await h.adapters.image.submit(image({ images: [input], options: { user: { id: 'fixture-user' } } }), h.ctx);
+  assert.equal(invalidScalar.error.code, 'invalid_request');
+  assert.equal(invalidScalar.error.submission, 'not_sent');
   assert.equal(h.calls.length, 2);
 });
 await test('OpenAI speech body, finite binary result and explicit unsupported language/sample rate', async () => {
@@ -929,7 +932,15 @@ await test('Native fetch redirect boundary preserves originals without forwardin
     if (request.url === '/back') { response.writeHead(302, { location: `${sourceUrl}/original` }); response.end(); }
     else { response.writeHead(200, { 'content-type': 'image/png' }); response.end(png); }
   });
-  const listen = server => new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)); });
+  /** @type {(server: import('node:http').Server) => Promise<string>} */
+  const listen = server => new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (address === null || typeof address === 'string') { reject(new Error('Expected a TCP listening address')); return; }
+      resolve(`http://127.0.0.1:${address.port}`);
+    });
+  });
   const close = server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
   try {
     sourceUrl = await listen(source);

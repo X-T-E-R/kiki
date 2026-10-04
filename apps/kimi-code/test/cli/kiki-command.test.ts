@@ -108,7 +108,7 @@ describe('kiki command helpers', () => {
       expect(connection).toMatchObject({ serverId: server.serverId, identity: server.admission.identity, token: server.localOwnerToken });
       expect((await ensureServer({ homeDir: root })).serverId).toBe(server.serverId);
       const fetchImpl = globalThis.fetch;
-      vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => String(input).endsWith('/api/remote-connections/handshake')
+      vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => (typeof input === 'string' ? input : input instanceof URL ? input.href : input.url).endsWith('/api/remote-connections/handshake')
         ? new Response('{}', { status: 404 }) : fetchImpl(input, init));
       await expect(findReachableServer(root)).rejects.toThrow('identity handshake could not be verified');
       await expect(ensureServer({ homeDir: root })).rejects.toThrow('identity handshake could not be verified');

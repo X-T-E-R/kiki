@@ -8,7 +8,7 @@ const packageRoot = resolve(import.meta.dirname, '..');
 const repoRoot = resolve(packageRoot, '../..');
 const scratch = resolve(repoRoot, '.tmp/auth-native-build');
 
-test('Nix-style ancestor vendor config survives explicit empty Cargo home/target; build and notices stay offline', () => {
+await test('Nix-style ancestor vendor config survives explicit empty Cargo home/target; build and notices stay offline', () => {
   mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, 'nix-env-proof-'));
   const vendor = join(root, 'cargo-vendor-dir');
@@ -21,8 +21,8 @@ test('Nix-style ancestor vendor config survives explicit empty Cargo home/target
   execFileSync('cargo', ['vendor', '--offline', '--locked', vendor], {
     cwd: packageRoot, env: preparedEnv, stdio: 'pipe', timeout: 120_000,
   });
-  const lockChecksums = [...readFileSync(join(packageRoot, 'Cargo.lock'), 'utf8').matchAll(/checksum = "([a-f0-9]{64})"/g)].map((match) => match[1]).sort();
-  const vendorChecksums = readdirSync(vendor).map((name) => JSON.parse(readFileSync(join(vendor, name, '.cargo-checksum.json'), 'utf8')).package).sort();
+  const lockChecksums = [...readFileSync(join(packageRoot, 'Cargo.lock'), 'utf8').matchAll(/checksum = "([a-f0-9]{64})"/g)].map((match) => match[1]).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+  const vendorChecksums = readdirSync(vendor).map((name) => JSON.parse(readFileSync(join(vendor, name, '.cargo-checksum.json'), 'utf8')).package).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   assert.deepEqual(vendorChecksums, lockChecksums, 'vendor must contain precisely the checksum-pinned lockfile dependency set');
   const copiedRepo = join(root, 'source');
   const copiedPackage = join(copiedRepo, 'packages/auth-native');

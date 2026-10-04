@@ -85,6 +85,13 @@
   },
   "overrides": [
     {
+      // Bare Node ESM requires explicit extensions for this manifest synchronization script.
+      "files": ["plugins/official/kiki-media/scripts/sync-manifest.mjs"],
+      "rules": {
+        "import/extensions": ["error", "ignorePackages", { "js": "always", "ts": "never", "tsx": "never" }]
+      }
+    },
+    {
       "files": ["**/examples/**/*.ts", "**/examples/**/*.tsx"],
       "rules": {
         "eslint/no-console": "off"

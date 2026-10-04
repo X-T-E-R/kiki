@@ -69,7 +69,7 @@ describe('original OAuth credentials', () => {
     expect(await r.make().getAccessToken(ref)).toBe(provider === 'openai-codex' ? codexToken(now + 3600, 'account-a', 'new') : jwt({ sub: 'user-a', exp: now + 3600 }));
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const init = fetchImpl.mock.calls[0]![1]!;
-    expect(String(init.body)).toContain('refresh-a');
+    expect(typeof init.body === 'string' ? init.body : init.body instanceof URLSearchParams ? init.body.toString() : undefined).toContain('refresh-a');
     const saved = JSON.parse(await readFile(join(dir, 'auth.json'), 'utf8'));
     if (provider === 'openai-codex') {
       expect(saved.tokens.refresh_token).toBe('rotated-refresh');
@@ -194,7 +194,10 @@ describe('original OAuth credentials', () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => refreshed('grok-build', { access_token: jwt({ sub: 'user-a', exp: now + 3600, principalType: 'Team', principalId: 'team-a' }) }));
     const r = runtime(fetchImpl);
     await r.service.connect('grok-build', dir, 'team-a');
-    const form = new URLSearchParams(String(fetchImpl.mock.calls[0]![1]!.body));
+    const body = fetchImpl.mock.calls[0]![1]!.body;
+    expect(typeof body).toBe('string');
+    if (typeof body !== 'string') throw new Error('Expected a URL-encoded Grok grant');
+    const form = new URLSearchParams(body);
     expect(form.get('principal_type')).toBe('Team'); expect(form.get('principal_id')).toBe('team-a');
     expect(JSON.parse(await readFile(join(dir, 'auth.json'), 'utf8'))[SCOPE].user_id).toBe('team-a');
   });

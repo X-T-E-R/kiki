@@ -19,7 +19,7 @@ before(async () => {
 });
 after(async () => { if (workspace) await rm(workspace, { recursive: true, force: true }); });
 
-test('manifest agrees with tool and loads the bundled standard public API', async () => {
+void test('manifest agrees with tool and loads the bundled standard public API', async () => {
   const root = path.resolve(import.meta.dirname, '..');
   const manifest = JSON.parse(await readFile(path.join(root, 'kimi.plugin.json'), 'utf8'));
   assert.deepEqual(manifest['x-kiki'].tools, [definition]);
@@ -31,7 +31,7 @@ test('manifest agrees with tool and loads the bundled standard public API', asyn
   assert.doesNotMatch(html.markdown, /BAD_SCRIPT/);
 });
 
-test('saves real text, provenance and full artifact while preview is explicitly truncated', async () => {
+void test('saves real text, provenance and full artifact while preview is explicitly truncated', async () => {
   const data = await result({ file: 'source.txt', outputDir: 'nested/text', previewChars: 5 });
   assert.equal(data.status, 'succeeded');
   assert.equal(data.preview, '# Doc');
@@ -45,7 +45,7 @@ test('saves real text, provenance and full artifact while preview is explicitly 
   assert.match(await readFile(path.join(workspace, 'source.txt'), 'utf8'), /42/);
 });
 
-test('rejects unauthorized upload, missing local dependency, empty content and unsupported format', async () => {
+void test('rejects unauthorized upload, missing local dependency, empty content and unsupported format', async () => {
   assert.equal((await result({ file: 'source.pdf', outputDir: 'cloud', engine: 'mineru' })).code, 'UPLOAD_NOT_AUTHORIZED');
   assert.equal((await result({ file: 'source.pdf', outputDir: 'missing-python' }, { ...context(), settings: { pythonPath: 'nonexistent-documents-python' } })).code, 'LOCAL_DEPENDENCY_MISSING');
   await writeFile(path.join(workspace, 'empty.txt'), '   \n');
@@ -57,14 +57,14 @@ test('rejects unauthorized upload, missing local dependency, empty content and u
   assert.equal((await result({ file: 'source.txt', outputDir: 'cancelled' }, pre)).code, 'CANCELLED');
 });
 
-test('only resolves an explicit package root; missing/mismatched packages fail closed', async () => {
+void test('only resolves an explicit package root; missing/mismatched packages fail closed', async () => {
   await assert.rejects(loadExtract(path.join(workspace, 'missing-package')), { code: 'DEPENDENCY_MISSING' });
   await mkdir(path.join(workspace, 'wrong-package'));
   await writeFile(path.join(workspace, 'wrong-package/package.json'), JSON.stringify({ name: '@nb-corp/nb-extract', version: '9.0.0' }));
   await assert.rejects(loadExtract(path.join(workspace, 'wrong-package')), { code: 'VERSION_MISMATCH' });
 });
 
-test('optional real PDF text and image-only negative', { skip: !process.env.NB_EXTRACT_TEST_PYTHON }, async () => {
+void test('optional real PDF text and image-only negative', { skip: !process.env.NB_EXTRACT_TEST_PYTHON }, async () => {
   const ctx = { ...context(), settings: { pythonPath: process.env.NB_EXTRACT_TEST_PYTHON } };
   const data = await result({ file: 'source.pdf', outputDir: 'pdf' }, ctx);
   assert.equal(data.status, 'succeeded');

@@ -7,7 +7,7 @@ import { AUTH_NATIVE_TARGETS, stageAuthNativeLane, mergeAuthNativeLanes } from '
 const packageRoot = resolve(import.meta.dirname, '..');
 const scratch = resolve(packageRoot, '../../.tmp/auth-native-build');
 
-test('six lane complete units merge by target with hashes; missing/corrupt/foreign assets fail closed', async () => {
+await test('six lane complete units merge by target with hashes; missing/corrupt/foreign assets fail closed', async () => {
   await mkdir(scratch, { recursive: true });
   const dir = await mkdtemp(join(scratch, 'lanes-'));
   try {

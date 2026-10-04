@@ -50,6 +50,12 @@ function jwt(payload: Record<string, unknown>): string {
   return `${encode({ alg: 'none' })}.${encode(payload)}.sig`;
 }
 
+function requestBodyText(body: RequestInit['body']): string {
+  if (typeof body === 'string') return body;
+  if (body instanceof URLSearchParams) return body.toString();
+  throw new Error('Expected a text or URL-encoded OAuth request body');
+}
+
 type Route = (url: string, init: RequestInit | undefined) => Response;
 
 function fakeFetch(routes: Record<string, Route>): typeof fetch & ReturnType<typeof vi.fn> {
@@ -194,13 +200,13 @@ describe('ChatGPT (Codex) method', () => {
       'https://auth.openai.com/api/accounts/deviceauth/usercode': () =>
         json({ device_auth_id: 'dev-auth', user_code: 'WXYZ-9876', interval: '3' }),
       'https://auth.openai.com/api/accounts/deviceauth/token': (_url, init) => {
-        expect(JSON.parse(String(init?.body))).toEqual({ device_auth_id: 'dev-auth', user_code: 'WXYZ-9876' });
+        expect(JSON.parse(requestBodyText(init?.body))).toEqual({ device_auth_id: 'dev-auth', user_code: 'WXYZ-9876' });
         return authorized
           ? json({ authorization_code: 'code-1', code_verifier: 'verifier-1' })
           : json({ error: { code: 'deviceauth_authorization_pending' } }, 400);
       },
       'https://auth.openai.com/oauth/token': (_url, init) => {
-        const body = new URLSearchParams(String(init?.body));
+        const body = new URLSearchParams(requestBodyText(init?.body));
         expect(body.get('grant_type')).toBe('authorization_code');
         expect(body.get('code_verifier')).toBe('verifier-1');
         return json({ access_token: access, refresh_token: 'rt-1', expires_in: 3600 });
@@ -232,7 +238,7 @@ describe('ChatGPT (Codex) method', () => {
   it('refreshes a rotating ChatGPT token using the refresh-token grant', async () => {
     const fetchImpl = fakeFetch({
       'https://auth.openai.com/oauth/token': (_url, init) => {
-        const body = new URLSearchParams(String(init?.body));
+        const body = new URLSearchParams(requestBodyText(init?.body));
         expect(body.get('grant_type')).toBe('refresh_token');
         expect(body.get('refresh_token')).toBe('rt-old');
         return json({ access_token: access, refresh_token: 'rt-new', expires_in: 3600 });
@@ -273,7 +279,7 @@ describe('ChatGPT (Codex) method', () => {
         'https://auth.openai.com/api/accounts/deviceauth/usercode': () => json({ device_auth_id: 'device-example', user_code: 'CODE-1234', interval: '1' }),
         'https://auth.openai.com/api/accounts/deviceauth/token': () => json({ authorization_code: 'auth-example', code_verifier: 'verifier-example' }),
         'https://auth.openai.com/oauth/token': (_url, init) => {
-          const form = new URLSearchParams(String(init?.body));
+          const form = new URLSearchParams(requestBodyText(init?.body));
           return form.get('grant_type') === 'refresh_token'
             ? json({ access_token: access, refresh_token: 'rotated-example', expires_in: 3600 })
             : json({ access_token: access, refresh_token: 'refresh-example', expires_in: 3600 });
@@ -457,14 +463,14 @@ describe('Grok Build managed device method', () => {
   it('ports the public device grant and provisions the original Build session protocol', async () => {
     const fetchImpl = fakeFetch({
       'https://auth.x.ai/oauth2/device/code': (_url, init) => {
-        const form = new URLSearchParams(String(init?.body));
+        const form = new URLSearchParams(requestBodyText(init?.body));
         expect(form.get('client_id')).toBe('b1a00492-073a-47ea-816f-4c329264a828');
         expect(form.get('scope')).toContain('grok-cli:access');
         expect(form.get('referrer')).toBe('kiki');
         return json({ device_code: 'device-example', user_code: 'ABCD-1234', verification_uri: 'https://auth.x.ai/device', expires_in: 300, interval: 5 });
       },
       'https://auth.x.ai/oauth2/token': (_url, init) => {
-        const form = new URLSearchParams(String(init?.body));
+        const form = new URLSearchParams(requestBodyText(init?.body));
         expect(form.get('grant_type')).toBe('urn:ietf:params:oauth:grant-type:device_code');
         expect(form.get('device_code')).toBe('device-example');
         return json(responseToken);
@@ -506,7 +512,7 @@ describe('Grok Build managed device method', () => {
     let rejected = false;
     const method = createGrokBuildMethod(fakeFetch({
       'https://auth.x.ai/oauth2/token': (_url, init) => {
-        expect(new URLSearchParams(String(init?.body)).get('refresh_token')).toBe('old-example');
+        expect(new URLSearchParams(requestBodyText(init?.body)).get('refresh_token')).toBe('old-example');
         return rejected ? json({ error: 'invalid_grant', error_description: 'old-example' }, 400) : json({ access_token: access, expires_in: 3600 });
       },
     }));
@@ -551,7 +557,7 @@ describe('Grok Build managed device method', () => {
       const fetchImpl = fakeFetch({
         'https://auth.x.ai/oauth2/device/code': () => json({ device_code: 'd', user_code: 'U-CODE', verification_uri: 'https://auth.x.ai/device', interval: 1, expires_in: 300 }),
         'https://auth.x.ai/oauth2/token': (_url, init) => {
-          const form = new URLSearchParams(String(init?.body));
+          const form = new URLSearchParams(requestBodyText(init?.body));
           if (form.get('grant_type') === 'refresh_token') {
             refreshCount += 1;
             expect(form.get('refresh_token')).toBe(refreshCount === 1 ? 'refresh-example' : 'rotated-example');

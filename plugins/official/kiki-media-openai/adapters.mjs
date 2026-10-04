@@ -69,7 +69,12 @@ export function createAdapters(fetchImpl) {
         let result;
         if (r.images?.length) {
           const form = new FormData();
-          for (const [key, value] of Object.entries(payload)) if (value !== undefined) form.set(key, String(value));
+          for (const [key, value] of Object.entries(payload)) {
+            if (value === undefined) continue;
+            if (typeof value !== 'string' && typeof value !== 'number')
+              throw Object.assign(new Error(`${key} must be a string or number`), { submission: 'not_sent', code: 'invalid_request' });
+            form.set(key, String(value));
+          }
           for (const ref of r.images) {
             const file = await rt.bytes(ref);
             form.append('image[]', new Blob([file.data], { type: file.mime }), file.name);
