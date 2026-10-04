@@ -266,8 +266,9 @@ describe('history navigation source rows', () => {
       expect(rejected).toMatchObject({ status: 'rejected' });
       expect(allowed).toMatchObject({ status: 'fulfilled', value: { hits: [{ turn: 4 }] } });
       expect(disk.readManifest(scope)?.generation).toBe(generation);
-      expect(disk.db.prepare('SELECT scope FROM manifest').all()).toEqual([{ scope }]);
-      expect(disk.db.prepare('SELECT DISTINCT scope FROM state').all()).toEqual([{ scope }]);
+      const scopeBytes = Buffer.from(scope).toString('hex').toUpperCase();
+      expect(disk.db.prepare('SELECT hex(scope) AS scope FROM manifest').all()).toEqual([{ scope: scopeBytes }]);
+      expect(disk.db.prepare('SELECT DISTINCT hex(scope) AS scope FROM state').all()).toEqual([{ scope: scopeBytes }]);
       const indexPlan = disk.db.prepare(`EXPLAIN QUERY PLAN SELECT value FROM rows
         WHERE workspace=? AND session=? AND agent=? AND active=1
         AND json_extract(value, '$.anchor.start')=? LIMIT 1024`)
@@ -369,8 +370,8 @@ describe('history navigation source rows', () => {
       expect(absentTail.pageToken).toBeUndefined();
       const alternate = await archive.search({ ...request, query: 'needle fff', pageToken: undefined });
       expect(alternate.items.map((hit) => hit.turn)).toEqual([8]);
-      const manifestScopes = (await db.ready()).db.prepare('SELECT scope FROM manifest').all() as Array<{ scope: string }>;
-      expect(manifestScopes).toEqual([{ scope: 'ws\0s\0main' }]);
+      const manifestScopes = (await db.ready()).db.prepare('SELECT hex(scope) AS scope FROM manifest').all() as Array<{ scope: string }>;
+      expect(manifestScopes).toEqual([{ scope: Buffer.from('ws\0s\0main').toString('hex').toUpperCase() }]);
       await appendFile(wirePath, line({ type: 'context.clear', time: 1011 }));
       await nav.scan('s', 'main');
       await expect(archive.search({ ...request, sort: 'newest', pageToken: first.pageToken })).rejects.toThrow('stale_scan_cursor');

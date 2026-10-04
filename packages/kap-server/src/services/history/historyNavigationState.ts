@@ -40,9 +40,9 @@ export class SqliteNavigationMap<V> extends Map<string, V> {
   }
 
   override *entries(): MapIterator<[string, V]> {
-    const rows = this.db.prepare('SELECT key,value FROM state WHERE scope=? AND bucket=? ORDER BY key')
-      .iterate(this.scope, this.bucket) as IterableIterator<{ key: string; value: string }>;
-    for (const row of rows) yield [row.key, JSON.parse(row.value) as V];
+    const rows = this.db.prepare('SELECT CAST(key AS BLOB) AS key,value FROM state WHERE scope=? AND bucket=? ORDER BY key')
+      .iterate(this.scope, this.bucket) as IterableIterator<{ key: Uint8Array; value: string }>;
+    for (const row of rows) yield [Buffer.from(row.key).toString('utf8'), JSON.parse(row.value) as V];
   }
 
   override *keys(): MapIterator<string> {

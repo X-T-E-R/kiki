@@ -242,10 +242,10 @@ export class HistoryNavigationDb implements NavigationStore {
       where.push(`(coalesce(r.time,0),r.key) ${comparator} (?,?)`);
       values.push(input.after.time, input.after.key);
     }
-    const rows = this.db.prepare(`SELECT r.key,coalesce(r.time,0) AS time,r.value FROM rows r
+    const rows = this.db.prepare(`SELECT CAST(r.key AS BLOB) AS key,coalesce(r.time,0) AS time,r.value FROM rows r
       WHERE ${where.join(' AND ')} ORDER BY coalesce(r.time,0) ${direction},r.key ${direction} LIMIT ?`)
-      .all(...values, input.limit) as Array<{ key: string; time: number; value: string }>;
-    return rows.map(({ key, time, value }) => ({ key, time, row: JSON.parse(value) as HistoryNavRow }));
+      .all(...values, input.limit) as Array<{ key: Uint8Array; time: number; value: string }>;
+    return rows.map(({ key, time, value }) => ({ key: Buffer.from(key).toString('utf8'), time, row: JSON.parse(value) as HistoryNavRow }));
   }
 
   async get<T>(collection: string, key: string): Promise<T | undefined> {
