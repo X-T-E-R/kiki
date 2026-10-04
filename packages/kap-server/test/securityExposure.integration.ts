@@ -81,11 +81,11 @@ describe('server-v2 exposure hardening hooks', () => {
     expect(res.headers['strict-transport-security']).toBeUndefined();
   });
 
-  it('does not set security headers on a loopback bind', async () => {
+  it('sets nosniff without public exposure headers on a loopback bind', async () => {
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     const res = await server.app.inject({ method: 'GET', url: '/api/healthz' });
     expect(res.statusCode).toBe(200);
-    expect(res.headers['x-content-type-options']).toBeUndefined();
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
     expect(res.headers['referrer-policy']).toBeUndefined();
     expect(res.headers['content-security-policy']).toBeUndefined();
     expect(res.headers['strict-transport-security']).toBeUndefined();

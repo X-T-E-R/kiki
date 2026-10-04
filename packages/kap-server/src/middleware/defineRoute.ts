@@ -1,3 +1,4 @@
+import type { FastifyReply } from 'fastify';
 import { z } from 'zod';
 
 import { jsonSchema, openApiDocumentJsonSchema } from './schema';
@@ -142,7 +143,7 @@ export interface RouteDefinition<
       params: InferZod<TParams>;
       headers: Record<string, unknown>;
     } & (TQuery extends z.ZodTypeAny ? { query: InferZod<TQuery> } : {}),
-    reply: { send(payload: unknown): unknown },
+    reply: { send(payload: unknown): unknown } & Pick<FastifyReply, 'then'>,
   ) => Promise<void> | void;
 }
 
@@ -234,6 +235,9 @@ export function defineRoute<
     method: options.method,
     path: toFastifyPath(options.path),
     options: { preHandler, schema },
-    handler,
+    handler: async (req, reply) => {
+      await handler(req, reply);
+      await reply;
+    },
   };
 }

@@ -1,15 +1,16 @@
 import { IConfigService, IMemoryStore, IWorkspaceService, MEMORY_SECTION, memoryEnabled, type MemoryConfig, type MemoryScope, type MemoryType, type Scope } from '@kiki/agent-core-v2';
 import { z } from 'zod';
+import type { FastifyReply } from 'fastify';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 
 interface MemoryRouteHost {
-  get(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: any, reply: { send(payload: unknown): unknown }) => unknown): unknown;
-  put(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: any, reply: { send(payload: unknown): unknown }) => unknown): unknown;
-  patch(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: any, reply: { send(payload: unknown): unknown }) => unknown): unknown;
-  post(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: any, reply: { send(payload: unknown): unknown }) => unknown): unknown;
-  delete(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: any, reply: { send(payload: unknown): unknown }) => unknown): unknown;
+  get(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: any, reply: { send(payload: unknown): unknown } & Pick<FastifyReply, 'then'>) => unknown): unknown;
+  put(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: any, reply: { send(payload: unknown): unknown } & Pick<FastifyReply, 'then'>) => unknown): unknown;
+  patch(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: any, reply: { send(payload: unknown): unknown } & Pick<FastifyReply, 'then'>) => unknown): unknown;
+  post(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: any, reply: { send(payload: unknown): unknown } & Pick<FastifyReply, 'then'>) => unknown): unknown;
+  delete(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: any, reply: { send(payload: unknown): unknown } & Pick<FastifyReply, 'then'>) => unknown): unknown;
 }
 const scopeParams = z.object({ scope: z.enum(['global', 'workspace', 'persona', 'persona_workspace']) });
 const entryParams = scopeParams.extend({ id: z.string().regex(/^m_[a-zA-Z0-9_]+$/) });
@@ -44,7 +45,7 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     }
     return { kind: 'workspace', workspaceId };
   };
-  const handle = async (requestId: string, reply: { send(payload: unknown): unknown }, operation: () => Promise<unknown>): Promise<void> => {
+  const handle = async (requestId: string, reply: { send(payload: unknown): unknown } & Pick<FastifyReply, 'then'>, operation: () => Promise<unknown>): Promise<void> => {
     try { reply.send(okEnvelope(await operation(), requestId)); }
     catch (error) {
       const msg = error instanceof Error ? error.message : String(error);

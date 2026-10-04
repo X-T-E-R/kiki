@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream';
+import type { FastifyReply } from 'fastify';
 
 import {
   ISessionMediaStore,
@@ -53,7 +54,7 @@ interface SessionMediaRequest {
   readonly headers: Record<string, unknown>;
 }
 
-interface SessionMediaReply {
+interface SessionMediaReply extends Pick<FastifyReply, 'then'> {
   readonly raw: { once(event: 'finish' | 'close', listener: () => void): unknown };
   type(mime: string): SessionMediaReply;
   header(name: string, value: string | number): SessionMediaReply;
