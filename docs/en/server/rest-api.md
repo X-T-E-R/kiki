@@ -22,7 +22,7 @@ All `/api/*` paths (including `/openapi.json` and `/asyncapi.json`) require the 
 - `GET /api/healthz` (liveness probe)
 - Static web assets (non-`/api/` paths)
 
-How to carry it: REST uses the `Authorization: Bearer <token>` header; the WebSocket upgrade accepts the same header or the subprotocol `kimi-code.bearer.<token>` (a historical protocol name kept from the upstream Kimi Code era for compatibility). Token generation and rotation are covered in [Local server and API: Authentication](./local-server.md#authentication).
+Trusted local clients use the private `server.local-owner` capability. REST carries it in `Authorization: Bearer <token>`; local WebSocket upgrades accept that header or `kimi-code.bearer.<token>`. Remote GUI peers instead need an enabled inbound gate, the current owner credential and a per-source grant (`X-Kiki-Connection-Grant` on HTTP). They use `/api/klient/events`, not the legacy `/api/ws` endpoint. Connection management and forwarding are local-owner-only; four thread-bridge data endpoints use independent bridge credentials. See [Authentication](./local-server.md#authentication) and [`kiki connections`](../reference/command.md#kiki-connections) for setup and rotation.
 
 Failed authentication returns HTTP 401 with envelope code `40101`. On non-loopback binds, a source that fails authentication 10 times within 60 seconds is banned for 60 seconds, during which every request gets HTTP 429 (code `42901`).
 
@@ -125,6 +125,10 @@ Desktop integrations can call the native `create_space_shortcut` command with `{
 | --- | --- |
 | `GET /api/config` | Read the global config (secret fields redacted) |
 | `POST /api/config` | Merge-patch the config; broadcasts `event.config.changed` |
+
+The `hooks` value accepts a legacy command-rule array or a declarative object with `schemaVersion: 2`. Both reads and saves retain the complete value, including `rules`, `legacy`, `enabled`, `disabled`, and `files`. Nested JSON keys use camelCase (`textFile`, `agentRoles`, `everyCompletedSteps`, `counterScope`, `partitionBy`); TOML uses snake_case. Send the complete hooks array or object when editing it; omit `hooks` to leave it unchanged, or send `[]` to clear it. `null` and unsupported rule shapes return validation code `40001` without changing the saved file. Reading or saving configuration does not execute hook commands. See [Hooks](../customization/hooks.md) for supported events and actions.
+
+`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` is the separate read-only inspection view for an active agent. Its rules, source statuses, diagnostics, and cadence counts describe effective runtime state; it is not a configuration-save endpoint.
 
 ### Models and providers
 
@@ -243,6 +247,46 @@ Task and cron lists accept `page_size` (1–100, default 100) and `offset` (defa
 | `POST /api/mcp/servers:inspect` | Inspect MCP locators and OAuth candidates |
 | `GET /api/mcp/auth-statuses` | Read MCP OAuth status for the registry |
 | `POST /api/mcp/auth:begin` / `:complete` / `:cancel` / `:reset` | Manage an MCP OAuth flow |
+
+Skill activation accepts an optional string `user_input` in the request body alongside `args` and `attachments`. For a user slash command, send the complete original message, including whitespace and line breaks. The server saves it as `userInput` in the activation origin, separately from the expanded skill instructions; the GUI timeline shows the original message and loaded skill document as separate blocks without submitting a second message.
+
+Older clients can omit `user_input`; the server then derives slash text from the skill name and `args`. Existing history without `userInput` keeps its previous skill-document display.
+
+### SSH hosts
+
+These endpoints manage SSH hosts available to sessions, not a directory of remote Kiki installations. Host reads accept an optional `workspace_id` to select workspace overrides.
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/ssh/config-sync` | Read the effective SSH-config sync preference and its source |
+| `PUT /api/ssh/config-sync` | Save `{ "enabled": true }` or `{ "enabled": false }` and read it back |
+| `GET /api/ssh/hosts/{id}:host-keys` | Read local public host-key records for the saved host's resolved hostname and port |
+
+Sync reads and saves return `{ enabled, source }`: `home` is this Kiki home's saved value, `base` is an inherited value, and `default` is the unconfigured default (`true`). This preference is independent of the host count. A failed read is an error, not an enabled default. Klient exposes `rest.ssh.configSync()` and `rest.ssh.setConfigSync(enabled)`.
+
+`rest.ssh.hostKeys(id, workspaceId?)` returns the resolved `hostname`, `port`, and matching `label`, plus `state`, `records`, and source `files`. `recorded` means a local identity record exists; it does not mean the remote key has just been verified. `unrecorded` means no matching record was found in readable or missing files. `unavailable` means the read is incomplete or a matching record cannot be interpreted. Records include the SHA256 `fingerprint` when readable, `algorithm`, file and line, host pattern, and status (`recorded`, `revoked`, `unsupported`, or `invalid`). Unsupported markers such as `@cert-authority`, invalid public keys, and file errors carry a `reason`.
+
+OpenSSH's `ssh -G` output loses path quoting. A multi-file `UserKnownHostsFile` value or a path containing whitespace therefore returns `unavailable` with `ambiguous-known-hosts-paths`, including the usual two-file OpenSSH default. The reader does not guess path boundaries. This API neither connects to the host nor changes trust records, and cannot report a remote key as unchanged or changed. First-key approval and changed-key rejection still occur through the existing connection flow.
+
+### Browser connections
+
+These endpoints manage saved browser connections, not the sessions that use them. Reading and saving never starts a browser or visits a site. See [Browser control](../guides/settings.md#browser-control) for the settings page.
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/browser/connections` | List saved connections and the new-session default; each row carries its current runtime status |
+| `PUT /api/browser/connections/{id}` | Create or replace one connection and read it back |
+| `DELETE /api/browser/connections/{id}` | Remove one connection |
+| `PUT /api/browser/default` | Save `{ "browser": "<id>" }`, or omit the field to clear the default |
+| `GET /api/browser/connections/{id}:status` | Read runtime status from memory and configuration only |
+| `GET /api/browser/connections/{id}:tabs` | List the connected browser's target tabs; it never attaches or launches |
+| `GET /api/browser/connections/{id}:catalog` | List the execution backend's tools (add `?includeSchema=true` for input schemas); it may start that backend's MCP process but never launches Chromium |
+| `POST /api/browser/connections/{id}:check` | Run the check that fits the connection style |
+| `POST /api/browser/connections/{id}:connect` \| `:disconnect` | Start or attach the connection, or release it |
+
+`PUT` takes the same discriminated body as the GUI. A body whose `type` is `agent-browser-profile` needs `name` and accepts `profilePath`, `executablePath`, `headed` and `driverPath`; one whose `type` is `agent-browser-cdp` needs `name` and `endpoint` — either `{ "action": "set", "value": "<CDP http/ws URL>" }` or `{ "action": "keep" }` to leave the stored address unchanged. Both accept `enabled`, which defaults to `true`. A new CDP connection without `set` is rejected. A stored CDP address reads back masked; revealing it is an explicit `POST /api/secrets:reveal` whose `ref` has `kind: "browser_endpoint"`.
+
+Execution actions fail closed: without the `native_browser` experimental flag `:connect` returns envelope code `40001` with `details.code: "browser.disabled"` and `details.reason: "feature_disabled"`, while a switched-off connection returns `details.reason: "connection_disabled"`. Klient exposes the same surface as `rest.browser.list()`, `upsert(id, input)`, `remove(id)`, `setDefault(browser?)`, `status(id)`, `tabs(id)`, `catalog(id, { includeSchema })`, `check(id)`, `connect(id)`, and `disconnect(id)`.
 
 ### Terminals
 

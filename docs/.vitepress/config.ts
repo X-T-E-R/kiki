@@ -60,6 +60,7 @@ const config = withMermaid(defineConfig({
       themeConfig: {
         nav: [
           { text: '快速上手', link: '/zh/getting-started/installation', activeMatch: '/zh/getting-started/' },
+          { text: '功能介绍', link: '/zh/features/index', activeMatch: '/zh/features/' },
           { text: '使用指南', link: '/zh/guides/interface', activeMatch: '/zh/guides/' },
           { text: '定制', link: '/zh/customization/agent-profiles', activeMatch: '/zh/customization/' },
           { text: '服务器与集成', link: '/zh/server/local-server', activeMatch: '/zh/server/' },
@@ -78,12 +79,30 @@ const config = withMermaid(defineConfig({
               ],
             },
           ],
+          '/zh/features/': [
+            {
+              text: '功能介绍',
+              items: [
+                { text: '总览', link: '/zh/features/index' },
+                { text: '一个工作台，好几条线', link: '/zh/features/workbench' },
+                { text: '长时间的活', link: '/zh/features/long-work' },
+                { text: '每天用的桌面', link: '/zh/features/daily' },
+                { text: '能一起干活的人', link: '/zh/features/people' },
+                { text: '数据与机器都在你手上', link: '/zh/features/spaces' },
+                { text: '每一层都归你', link: '/zh/features/freedom' },
+                { text: '带过来，也接得进外面', link: '/zh/features/ecosystem' },
+                { text: '外观', link: '/zh/features/look' },
+                { text: '扩展', link: '/zh/features/extend' },
+              ],
+            },
+          ],
           '/zh/guides/': [
             {
               text: '桌面应用',
               items: [
                 { text: '界面导览', link: '/zh/guides/interface' },
                 { text: '工作区与会话管理', link: '/zh/guides/sessions' },
+                { text: '记忆', link: '/zh/guides/memory' },
                 { text: '设置页导览', link: '/zh/guides/settings' },
               ],
             },
@@ -171,6 +190,7 @@ const config = withMermaid(defineConfig({
       themeConfig: {
         nav: [
           { text: 'Getting started', link: '/en/getting-started/installation', activeMatch: '/en/getting-started/' },
+          { text: 'Features', link: '/en/features/index', activeMatch: '/en/features/' },
           { text: 'Guides', link: '/en/guides/interface', activeMatch: '/en/guides/' },
           { text: 'Customization', link: '/en/customization/agent-profiles', activeMatch: '/en/customization/' },
           { text: 'Server & integration', link: '/en/server/local-server', activeMatch: '/en/server/' },
@@ -189,12 +209,30 @@ const config = withMermaid(defineConfig({
               ],
             },
           ],
+          '/en/features/': [
+            {
+              text: 'Features',
+              items: [
+                { text: 'Overview', link: '/en/features/index' },
+                { text: 'One workbench, many lines', link: '/en/features/workbench' },
+                { text: 'Work that runs long', link: '/en/features/long-work' },
+                { text: 'The daily driver', link: '/en/features/daily' },
+                { text: 'Roles you can talk to', link: '/en/features/people' },
+                { text: 'Your data, your machines', link: '/en/features/spaces' },
+                { text: 'Every layer is yours', link: '/en/features/freedom' },
+                { text: 'Bring your history, meet other tools', link: '/en/features/ecosystem' },
+                { text: 'Look and feel', link: '/en/features/look' },
+                { text: 'Make it yours to extend', link: '/en/features/extend' },
+              ],
+            },
+          ],
           '/en/guides/': [
             {
               text: 'Desktop app',
               items: [
                 { text: 'Interface overview', link: '/en/guides/interface' },
                 { text: 'Workspaces and sessions', link: '/en/guides/sessions' },
+                { text: 'Memory', link: '/en/guides/memory' },
                 { text: 'Settings pages', link: '/en/guides/settings' },
               ],
             },

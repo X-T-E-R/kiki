@@ -33,12 +33,43 @@ The full scope rules and directory list are in [Agent Locations](./agents.md#age
 
 Profile files under the user, project, and extra-directory roots — plus `$KIKI_HOME/SYSTEM.md` — are watched: additions, edits, and deletions reload automatically after roughly 200 ms, no restart needed, and newly dispatched subagents pick up the reloaded version immediately. An existing session's main agent stays bound to the profile snapshot from when the session was created; after editing a file, use **Rebuild context** in the session to pick up the new version while keeping the conversation. See [Rebuilding a session context](./agents.md#rebuilding-a-session-context).
 
+The agent detail's prompt preview separates the bound configuration from disk changes and the latest actual request. Before the first request, request evidence is empty. Checking all prompt files explicitly also checks common and other identity branches, without applying them or changing the binding; a missing file in an unselected branch can be reported there while the current agent continues to run.
+
 ## Main agents and subagents
 
 A session is driven by one **main agent**, which can dispatch **subagents** for focused sub-tasks. Both use the same profile file format; they differ in how they are used:
 
 - **Main agent**: selected at session start with `--agent <name>` or `--agent-file <path>`, or switched in the GUI's profile selector. Profiles with `main: true` in frontmatter appear as main-agent candidates.
 - **Subagent**: dispatched automatically by the main agent during the conversation, works in an isolated context, and brings back only its final conclusion. You can also name one directly, e.g. "use explore to map the files first".
+
+Prompt declarations can follow the agent's actual position without maintaining separate profiles. Both `prompt_overrides` and the body inside each `model_profiles` entry accept `main` and `independent` branches: omit a branch or set it to `same` to use the common declaration, set it to `off` to skip only that declaration, or supply an object to replace the whole declaration for that position. Subagents use the common declaration. These branches do not change model selection or permissions; top-level `main: true` still only marks a main-agent candidate. [Model cognition](../configuration/config-files.md#models) supports the same selection for overlay, steering, and anchor files.
+
+```yaml
+model_profiles:
+  - alias: review-model
+    prompt_mode: append
+    prompt: Check the evidence before drawing conclusions.
+    main:
+      prompt_mode: append
+      prompt: Coordinate the work and report the verified result.
+    independent: off
+prompt_overrides:
+  fields:
+    system.shared: State your findings clearly.
+  main:
+    fields:
+      system.shared: Give the user a concise result and next action.
+```
+
+The objects are independent: the `main` body replaces the common `prompt_mode` / `prompt` pair, and the `main` field object replaces that declaration's common files and fields. Include any common content you also want in the object. Identity is determined by the live binding, not the profile name or its `main: true` flag; an externally delegated agent uses `independent` rather than a main-agent branch.
+
+A profile used as a subagent has one extra layer on top of its `tools` and `disallowedTools` lists: a set of tools that are off for subagents until something names them, such as `ThreadRead`, `AskUserQuestion`, or `Cron`. Naming one tool in `tools` opens that tool for this profile as a subagent and nothing else. A profile that writes no allowlist keeps it that way with the wildcard beside the name, so one extra tool does not cost you the ordinary ones:
+
+```yaml
+tools: ["*", ThreadRead]
+```
+
+`*` on its own opens no opt-in and never crosses a deny. A finite list stays finite: `tools: [Read, Grep, ThreadRead]` selects exactly those three. The server-wide `subagent.allowed_tools` is an alternative to naming the tool here, but this list still filters the outcome: a tool that entry names is open for this profile only when the profile also selects it, which is why the `["*", ThreadRead]` form above exists. A profile writing no list (or `*`) is open to everything that entry allows, and this profile's own `disallowedTools` still denies it. A main conversation is not restricted by these opt-ins; the same profile's own lists still decide which tools a main conversation can pick. See [Subagent defaults](../configuration/config-files.md#subagent) for the full list and the `MemoryWrite`, `ThreadSend`, `SendMessage`, and goal tools that stay main-only.
 
 To permanently replace the default main agent's configuration, there is one special file: `$KIKI_HOME/SYSTEM.md` (default `~/.kiki/SYSTEM.md`). A body-only `SYSTEM.md` replaces just the default main agent's system prompt; an upgraded file starting with `---` frontmatter can also change profile fields such as `tools`, `subagents`, and the model binding. Precedence details are in [Overriding the main agent's system prompt with SYSTEM.md](./agents.md#overriding-the-main-agent-s-system-prompt-with-system-md).
 
@@ -60,6 +91,8 @@ model_profiles:
 This menu contains `fast-model` and `review-model`; the default needs no duplicate empty entry. Models are compared using the executor's canonical identities, not alias suffix matching. An unresolvable or unexecutable declaration does not gain execution capability. Changing the default also changes the menu: if the old default is not separately listed in `model_profiles`, replacing the default removes the old model and adds the new one.
 
 The switch adds one **hard allow domain**. It does not change model-selection priority or automatically select the first menu entry. After directory and scope resolution selects the profile, Kiki captures its original default and menu before route or lease rewrites and freezes them with the binding. Explicit dispatch parameters, route / lease pins (default model selections), a saved effective model, and lease replacements of `model_profiles` cannot expand that domain. Replacing entries with a subset or an empty list neither erases nor narrows the original menu; use `allowed_models` for an additional hard restriction. Hard rules from the original menu entries remain in force.
+
+When a caller lease supplies `model_profiles`, it replaces the child's menu and parameter defaults but preserves the original role-model prompts by default (`model_prompts: preserve`). Kiki matches the child's final alias in both sources, applies the original role prompt first and the lease prompt second, and merges field overrides in that order. Set `model_prompts: replace` alongside a lease menu to drop only the original prompt sources; the saved model menu and hard rules remain in force. A caller lease applies only to children, so its own model-body and field declarations cannot contain `main` or `independent` branches.
 
 For a session's **main agent**, the user's model choice takes priority over profile model constraints. Recommendations and default pins produce no warning; a model outside a hard profile domain produces only a non-blocking warning. The GUI keeps configured models selectable and does not block sending because of profile model rules, including when the constraint projection is still loading. Model availability and provider / executor capabilities are still checked. A `main: true` profile dispatched through `AgentRun` is a subagent, not a user-controlled main session.
 

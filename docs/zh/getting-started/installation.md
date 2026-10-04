@@ -19,6 +19,8 @@ Kiki 的终端形态在任何现代终端里都能正常运行，Windows Termina
 | macOS Apple Silicon | `Kiki_*_aarch64.dmg` | 否，需手动链接内置 CLI |
 | macOS Intel | `Kiki_*_x64.dmg` | 否，需手动链接内置 CLI |
 
+macOS 需要 **13.5 或更高版本**；这个下限来自内置运行时，因此无论用哪种方式安装都适用。Intel 与 Apple Silicon 是分开下载的，按你的 Mac 选对应的一个。Linux 桌面构建只有 x64（deb 或 AppImage）；Linux 的 CLI/TUI 另外提供 arm64。
+
 1. 打开 [Kiki Releases 页面](https://github.com/X-T-E-R/kiki/releases)，选择所需的 stable 或 beta 版 `kiki-v<version>` 标签。
 2. 下载对应桌面构建和同名的 `.sha256` 文件，比较发布哈希与下载文件的哈希。macOS 用 `shasum -a 256 <文件>`，Linux 用 `sha256sum <文件>`，Windows PowerShell 用 `Get-FileHash <文件> -Algorithm SHA256`。
 3. Windows 运行安装包；Linux deb 运行 `sudo apt install ./Kiki_*.deb`；Linux AppImage 先运行 `chmod +x Kiki_*.AppImage`，再运行 `./Kiki_*.AppImage`；macOS 挂载 dmg 并把 Kiki 拖入「应用程序」。

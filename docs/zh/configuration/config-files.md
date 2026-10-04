@@ -1,6 +1,6 @@
 # 配置文件
 
-Kiki 把所有长期偏好写进 `~/.kiki/` 下的 TOML（一种结构清晰的纯文本配置格式）文件——比如使用哪个模型、填哪个 API 密钥、Agent 每轮最多跑几步。改一次，每次启动都生效。Agent 与运行时设置放在 `config.toml`，供应商凭证放在独立的 `credentials.toml`，终端界面与客户端偏好（主题、编辑器、通知、自动更新）放在配套的 `tui.toml`。
+Kiki 把所有长期偏好写进 `~/.kiki/` 下的 TOML（一种结构清晰的纯文本配置格式）文件——比如使用哪个模型、填哪个 API 密钥、Agent 每轮最多跑几步。保存后会保留到下次启动；`config.toml` 与供应商凭证也会在 Kiki 运行中自动重载。Agent 与运行时设置放在 `config.toml`，供应商凭证放在独立的 `credentials.toml`，终端界面与客户端偏好（主题、编辑器、通知、自动更新）放在配套的 `tui.toml`。
 
 默认位置：`~/.kiki/config.toml`，首次运行时自动创建。供应商凭证放在 `~/.kiki/credentials/credentials.toml`，详见 [供应商凭证](#供应商凭证)。
 
@@ -19,6 +19,21 @@ export KIKI_HOME=/path/to/kiki-home
 ::: tip
 TOML 字段名一律用下划线（snake_case），如 `default_model`、`max_context_size`。字段名里若含 `.`，需用引号包住，例如 `[models."gpt-4.1"]`——否则 TOML 会把 `.` 解释为嵌套表分隔符。
 :::
+
+## 配置修改如何生效
+
+Kiki 会在运行它的主机上监听 `config.toml` 和 `credentials/credentials.toml`。保存合法修改、文件内容稳定后会自动重载；修改请求并发规则不需要重启或执行 `/reload`。定期检查会补上遗漏的文件通知，尚未写完的内容会稍后重试；解析失败时保留上一份有效配置，并给出诊断。请修复诊断中指明的文件，不要从设置页覆盖它。
+
+文件重载与设置生效的时机不同：
+
+| 设置 | 生效时机 |
+| --- | --- |
+| [`request_governance`](#request-governance) | 修改加载后立即重新判断排队请求；已在途的流正常结束 |
+| `default_model`、`default_permission_mode`、`default_plan_mode` 等会话默认值 | 新会话；已有会话保留自己的选择 |
+| [`identity`](#identity) | 下次启动进程 |
+| [`tui.toml`](#tui-toml) | 下次启动，或在 TUI 执行 `/reload-tui` |
+
+TUI 的 `/reload` 仍可手动重载 `config.toml` 和 `tui.toml`。按轮次或会话保存快照的设置遵循各节说明的时机；文件自动重载不会替换正在执行的请求。
 
 ## 完整示例
 
@@ -92,17 +107,9 @@ timeout = 5
 
 ## 连续性提醒词表
 
-`TodoList` 可用时，Kiki 会提醒 Agent 把持续有效的指示写入工作笔记，并在需要时核对早先的对话。提醒追加到对话历史尾部，不会自动保存记忆或修改系统提示词。笔记提醒也适用于默认的总结压缩策略。进度提醒连续未获回应时，间隔从 10 条 Assistant 消息退避到 20、40 条；写入待办或笔记都会重置退避。
+Kiki 会提醒 Agent 记录持续有效的指示、查找早先决定、更新未完成待办，并在上下文压缩前后保留工作笔记。提醒追加到对话历史，不会自动保存记忆或修改系统提示词。进度提醒需要 `TodoList`；`TodoList` 不可用但记忆访问已获批准时，记录指示和回看历史提醒仍可工作。
 
-内置词表覆盖中英文，可在 `config.toml` 中分别覆盖：
-
-```toml
-[loop_control.directive_cues]
-instructions = ["always", "never", "以后", "不要"]
-history = ["as I said", "earlier", "之前", "我说过"]
-```
-
-提供的列表会替换默认列表，而不是追加。空列表关闭该类关键词匹配。匹配是不区分大小写的子串匹配，并非语义分类；以 steer 方式插入运行中任务的纠正，即使不含关键词，也可触发记录指示提醒。记录指示和回看历史提醒各自每轮最多一次。记忆关闭时，提醒只建议写工作笔记，不建议调用 `MemoryWrite`。
+人类轮次节奏与中英文词表统一在 [`loop_control`](#连续性提醒设置) 下配置。Assistant 消息、工具轮询和转发的 Agent 消息不计为人类轮次。记忆不可用时，提醒不会建议调用 `MemoryWrite`。
 
 ## 供应商凭证
 
@@ -150,6 +157,7 @@ api_key = "YOUR_API_KEY"
 | `thinking` | `table` | — | Thinking 模式默认参数 → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent 循环控制参数 → [`loop_control`](#loop-control) |
 | `retry` | `table` | — | 按错误定制的单步重试策略 → [`retry`](#retry) |
+| `request_governance` | `table` | 无规则 | 原生模型请求并发与等待预算 → [`request_governance`](#request-governance) |
 | `token_counting` | `table` | — | 对外上报哪种上下文 token 计数 → [`token_counting`](#token-counting) |
 | `background` | `table` | — | 后台任务运行参数 → [`background`](#background) |
 | `subagent` | `table` | — | subagent 运行默认值与限额 → [`subagent`](#subagent) |
@@ -391,7 +399,9 @@ thinking effort 可以留空。使用 `model_alias: inherit` 时，它会跟随�
 
 重试仅针对瞬时故障——连接错误、超时、HTTP 429 限流，以及所有 HTTP 500–599 服务端错误。账户额度耗尽或余额不足导致的 429 不会重试，会立即失败：在充值之前重试不可能成功。
 
-连续性提醒（提示更新 TodoList 和工作笔记）按人类输入轮次计时，不再按 Assistant 消息数量计时。转发的 peer 消息、subagent 回执和定时触发不推进该时钟，也不构成新的人类规则。以下可选配置均接受正整数：
+### 连续性提醒设置
+
+TodoList 和工作笔记的进度提醒按人类轮次计时，不按 Assistant 消息数量计时。已接收的用户提示、用户调用的插件命令和用户通过斜杠激活的 Skill 会推进时钟。人类 steer 纠正可触发记录指示或回看历史提醒，但不增加轮次。转发的 peer 消息、subagent 回执、模型激活的 Skill 和定时触发不推进时钟，也不构成新的人类规则。以下三个节奏字段接受正整数，示例即默认值：
 
 ```toml
 [loop_control.continuity_cadence]
@@ -400,9 +410,32 @@ cooldown_human_turns = 8
 long_task_steps = 24
 ```
 
-默认要求距相关写入至少六个人类轮次，距上次进度提醒至少八个人类轮次。首次未响应后间隔加倍；每份内容未变的列表或笔记最多提醒两次。笔记提醒还需要有实质的未覆盖工作。长任务完成 24 个成功工作 step 且积累足够未覆盖 token 后，可以不等待下一次人类输入就保存检查点；仅轮询不算工作。只修改列表不会重置笔记的年龄或提醒次数。
+常规进度提醒需要有新的成功工作，距相关内容变更至少六个人类轮次，距该类上次提醒（或会话开始）至少八个人类轮次。该类首次提醒后间隔加倍到 16 个人类轮次；每类状态未变时最多发出两次进度提醒。待办提醒要求仍有未完成项。笔记提醒还要求未覆盖工作量达到 8,000 token 与压缩阈值的 10% 两者中的较大值。长任务笔记检查点可不等待新的人类轮次：距上次笔记变更和上次笔记提醒均须完成至少 24 个成功工作 step，未覆盖工作量还须达到 16,000 token 与压缩阈值的 10% 两者中的较大值。仅轮询不算成功工作。
 
-规则提醒使用本地结构门，不单独调用分类模型。仅关键词、引用示例和转发文本不能确立持久规则。配置决定默认记入任务笔记，除非用户明确要求更广的适用范围；跨会话记忆仍受原有审批策略约束。规则修改和撤销不受进度提醒冷却限制。
+待办与笔记分别保留年龄、工作水位、提醒时钟和两次提醒预算。内容实际变化只重置该类的年龄、工作水位及提醒预算，提醒间隔回到基础冷却值。修改列表不会重置笔记状态，修改笔记也不会重置列表的。重复写入相同内容不重置这些状态。
+
+若要关闭低频的长期记忆维护提醒，同时保留任务进度提醒，设置：
+
+```toml
+[loop_control.continuity_cadence]
+memory_maintenance = false
+```
+
+`memory_maintenance` 是布尔值，省略时默认为 `true`。合法配置重载后，从下一次提醒判断起生效，不会删除对话中已有的提醒。它只控制活跃工作期间的周期性维护提示（M3），每个上下文窗口最多一次。设为 `false` 后，新的人类持续指示提醒（M1）与压缩前对已识别、仍未处理指示的检查（M2）仍保留。它不会禁用记忆工具、改变审批策略或关闭 TodoList 工作笔记。
+
+记忆提醒仅对非临时会话中的主 Agent 可用，前提是已启用记忆、记忆审批不为 `off`，且 `MemoryWrite` 已注册并获工具策略允许。空闲或只做轮询时不发周期性提醒。提醒要求保留对未来任务有用的指示、稳定决定或有证据的知识；没有值得保留的变化就不写。任务进度留在工作笔记中，待审批的记忆提案不算生效指引，也不应重复创建。
+
+记录指示和回看历史提醒先匹配可配置的中英文词表，再经过本地结构门判断，不单独调用分类模型：
+
+```toml
+[loop_control.directive_cues]
+instructions = ["always", "never", "以后", "不要"]
+history = ["as I said", "earlier", "之前", "我说过"]
+```
+
+提供的列表替换默认列表；空列表关闭该类提醒。英文词按单词边界匹配且不区分大小写，中文词按子串匹配。命中关键词还不够：引用示例和产品讨论不能确立持久规则，steer 纠正也必须经过同一结构门。记录指示和回看历史提醒按已接收的输入或 steer 修订去重，不是整个 turn 最多一次。已覆盖的历史引用不重复提醒；对同一已识别主题的重复引用，在待办和笔记状态未变时有三个人类轮次的冷却。新的规则修改和撤销不受该历史冷却或进度冷却限制。
+
+配置决定默认记入任务笔记，除非用户明确要求更广的适用范围；跨会话记忆仍受原有审批策略约束。上下文窗口保留与交接重建提醒跟随压缩状态，不使用进度提醒节奏。
 
 新会话把变化的日期、目录列表、工作区指令和记忆放在带版本的运行时快照消息中，不再为这些变化重写系统提示词。已有会话保留原布局，直到自然上下文压缩边界才迁移；不会重排旧历史。Profile 绑定、配置的提示词和运行时权限仍会随底层策略变化而更新。
 
@@ -472,28 +505,28 @@ retry = false
 
 ## `subagent`
 
-`subagent` 控制派生 subagent（`AgentRun`）的运行方式。
+`subagent` 控制派生 subagent（`AgentRun`）的运行方式。角色选择使用 profile 的 [`can_spawn_subagents`、`allowed_subagents`、`preferred_subagents` 和 `deny_subagents`](../customization/agents.md#agent-文件格式)；原宿主派发策略设置已移除。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `default_profile` | `string` | 内建通用提示词 | `AgentRun` 省略 `profile`、`route` 和 `profile_file` 时采用的显式 profile 覆盖。该键不存在时（包括只配置了部分字段的 `[subagent]` 表），`AgentRun` 使用内建通用 subagent 提示词，不加载目录中的 profile。设为 `""` 要求显式指定目标（严格模式） |
 | `default_model` | `string` | — | 仅在派发参数与生效 profile、route、caller lease pin 都未选模型时使用的显式兜底；从不继承调用方 |
-| `main_dispatch_policy` | `"advisory" \| "strict"` | `"advisory"` | 主调用方的全局角色策略；strict 是 profile 不能降低的下限 |
-| `subagent_dispatch_policy` | `"advisory" \| "strict"` | `"strict"` | 子调用方独立的全局角色策略；省略角色列表不增加具名限制 |
 | `deny_models` | `string[]` | — | alias 解析后应用于所有子 Agent 绑定的硬禁止列表；pin、人工切换、恢复与 advisory 派遣都不能绕过。Profile / lease / 树策略 / model-profile 硬规则仍是额外边界 |
-| `allowed_tools` | `string[]` | `[]` | 允许越过原生 subagent 默认限制的精确工具名，目前适用于 `BoardRead` 和 `BoardWrite`；不会覆盖 profile 白名单、黑名单或其他策略限制 |
+| `allowed_tools` | `string[]` | `[]` | 允许越过原生 subagent 默认限制的精确工具名，适用于 subagent 默认拿不到的全部工具（`BoardRead`、`BoardWrite`、`AskUserQuestion`、`Cron`、`EnterPlanMode` / `ExitPlanMode`、`ThreadCreate` / `ThreadList` / `ThreadRead` / `ThreadWait`）；不会覆盖 profile 白名单、黑名单或其他策略限制 |
 | `max_direct_children` | `integer` | `16` | 每个派遣者同时在途的直属子 Agent 执行数上限，包括启动中和取消中；`0` 表示不限 |
 | `max_total_subagents` | `integer` | `0` | 单棵会话树同时在途的子 Agent 执行总数上限，包括孙代及更深后代，不含 main；`0` 表示不限 |
 | `timeout_ms` | `integer` | `7200000`（2 小时） | 单个 subagent（`AgentRun`）允许运行的最长时间（毫秒）。超时后 subagent 以 `timed_out` 收尾。`0` 表示无超时——subagent 一直运行到自行结束或被模型手动停止。该值是后台任务管理器对每个 subagent 任务的 per-task timeout，因此对前台与后台 subagent 同时生效。在 print 模式（`kiki -p`）下未显式设置时默认为 `0`。注意：超过 `2147483647`（约 24.8 天）的值会被运行时钳到约 24.8 天 |
 
-原生 subagent 默认不能使用 `BoardRead` 和 `BoardWrite`。要允许其中任一工具，可在 subagent profile 的 [`tools`](../customization/agents.md#agent-文件格式) 列表中精确点名，或在 `config.toml` 中设置服务端默认值：
+原生 subagent 默认可以使用普通工具，包括只读的 `MemorySearch` 和 `MemoryRead`。有一批工具默认关闭，需要显式开放：`BoardRead`、`BoardWrite`、`AskUserQuestion`、`Cron`、`EnterPlanMode` 与 `ExitPlanMode`，以及 `ThreadCreate`、`ThreadList`、`ThreadRead` 和 `ThreadWait`。可以按档案在 subagent profile 的 [`tools`](../customization/agents.md#agent-文件格式) 列表中点名，也可以设置服务端默认值：
 
 ```toml
 [subagent]
-allowed_tools = ["BoardRead"]
+allowed_tools = ["BoardRead", "ThreadRead"]
 ```
 
-省略 `tools` 或使用 `*` 不算显式允许。`allowed_tools = []` 会清除服务端额外允许，但不会移除 profile 的显式条目。profile 白名单、`disallowedTools`、禁用工具组、调用方限制、全局与会话策略、功能开关、Plan 模式和调用审批仍然生效。Cron、Thread、进入/退出 Plan 模式、提问和 Goal 工具仍仅供 main agent 使用，不能通过这两个入口开放。MCP 工具、继承的用户工具及其他扩展保持原有默认行为；外部执行器自行管理工具。
+省略 `tools` 或只写 `*` 不算显式开放：只有具体工具名才算，通配符本身不会顺带开启任何 opt-in。这两处开放彼此是「或」的关系，但 profile 自己的名单仍会过滤结果：子智能体能用这类工具，只要服务端名单点名了它，**或者**该 subagent profile 的 `tools` 名单点名了它，同时该 profile 还得选中这个工具。因此写了有限 `tools` 名单的 profile 会挡住它没列出的工具，即使服务端开放了这一项；而没写名单（或写了 `*`）的 profile，则对两处开放覆盖到的工具都是开放的。`allowed_tools = []` 会清除服务端额外允许，但不会移除 profile 的显式条目。profile 白名单、`disallowedTools`、禁用工具组、调用方限制、全局与会话策略、功能开关、Plan 模式和调用审批仍然生效；profile 自己的 `disallowedTools` 也能禁用这两处开放过的工具。`MemoryWrite`、`ThreadSend`、`SendMessage` 和 Goal 工具仍仅供 main agent 使用，不能通过这两个入口开放。`Cron` 安排的是当前会话的调度并唤醒 main agent，并不是子 Agent 私有的定时器。MCP 工具、继承的用户工具及其他扩展保持原有默认行为；外部执行器自行管理工具。
+
+这些 opt-in 决定的是 subagent 能用什么；主对话不受它们的限制。主对话能选哪些工具，仍由同一档案自己的 `tools` 与 `disallowedTools` 名单决定。
 
 profile 描述和设置页中的工具列表是配置预览，不保证运行时可用。功能开关、子 Agent 运行环境和审批仍可能阻止调用。
 
@@ -599,9 +632,14 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `model` | `string` | 未设置 | 用于生成会话标题的模型别名。未设置（或留空）时仍由托管 `chat_title` 工具生成，其用量包含在订阅内；设置别名后改用该模型，并沿用相同的标题提示词预算 |
+| `model` | `string` | 未设置 | 用于写会话标题的模型别名。未设置（或留空）时 Kiki 完全不发标题请求：既不回退到 `fast_model`，也不使用托管的 `chat_title` 工具，因此标题生成不消耗任何订阅用量 |
+| `triggers` | `array<string>` | `["first_turn_completed"]` | Kiki 主动写标题的时刻，取值为 `first_user_message`、`first_turn_completed`、`context_compacted` 中的一项或多项。空数组表示关闭自动生成；按需生成标题仍然可用，且仍需配置 `model` |
 
-自动生成标题默认开启。可在 GUI 中关闭，也可设置 `[experimental]` 下的 `auto_session_title = false`，或使用 `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE=0`。
+选定的模型按原有的标题提示词预算直接使用。自动生成不会覆盖你手写的标题，普通按需生成请求也不会。只有强制请求（force）才会替换你手写的标题。
+
+按需生成对应 `POST /api/sessions/{session_id}/title/generate`，SDK 暴露了这个调用。它同样需要 `model`，没有模型就无从发问；其中 `force` 选项才是替换手写标题的那一个，不传则保留你写的标题。
+
+自动生成标题默认开启。可在 GUI 中关闭，也可设置 `[experimental]` 下的 `auto_session_title = false`，或使用 `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE=0`。没有配置 `model` 时 Kiki 完全不发标题请求，既不会触发任何时刻，也不消耗订阅用量；你手写的标题、以及会话未命名时显示的首行都不受影响。
 
 ## `experimental`
 
@@ -610,8 +648,21 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `auto_session_title` | `boolean` | `true` | 是否自动生成会话标题；见 [`session_title`](#session-title) |
+| `native_browser` | `boolean` | `false` | 经由受管浏览器后端运行已保存的浏览器连接；未开启时连接会被拒绝，Agent 也拿不到[浏览器工具](../reference/tools.md#浏览器类) |
+| `usage_export` | `boolean` | `false` | 把不含内容的用量批次发送到「用量 → 外部同步」中配置的目的地；关闭时这些路由根本不注册 |
 
-其他已注册的 flag 也可以按 id 在这里覆盖，但目前 `auto_session_title` 是唯一的用户可见条目。
+任何已注册的 flag 都可以按 id 用布尔值在这里覆盖。带有自己控件的 flag 在对应功能页开关；没有的会出现在 **Settings → 开发者 → 实验性**，该页按 id 列出服务器上报的 flag。
+
+## `browser_control`
+
+`browser_control` 存放由[浏览器控制](../guides/settings.md#浏览器控制)管理的浏览器连接，以及新会话默认项。设置页是受支持的编辑入口：它按连接保存条目、保存后读回结果再显示，且保存从不启动浏览器。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `default_browser` | `string` | 之后创建的会话使用的连接 id；未设置时调用必须自己指定连接 |
+| `connections` | `table` | 每条连接一个条目，以连接的固定 id 为 key |
+
+每个条目通过 `type`（`agent-browser-profile` 或 `agent-browser-cdp`）、`name`、`enabled` 以及该接法所需字段描述一条连接；每种接法的字段见设置页。字段与接法不符的条目会被拒绝，已保存的文件保持不变。存入的 CDP 地址按凭据对待：页面显示掩码，只有显式请求时才读取明文。
 
 ## `nb_search`
 
@@ -881,7 +932,11 @@ prompt_overrides:
 
 ## `[request_governance]`
 
-原生模型请求默认开启观测；没有规则时不限制请求并发。GUI 的「用量 → 实时」显示本服务实例正在发送与排队的请求，「限制」只读展示有效规则。「历史」保留 Token 与估算费用统计，已有带筛选条件的用量链接仍打开历史页。连接失败时保留最后的实时数并标记状态过期。外部 ACP/Codex 执行器显示为「未纳管」，而不是零请求。
+`request_governance` 限制同时进行的原生模型请求，把超出的请求留在本地排队，再发给供应商。默认开启观测，没有规则时不限制并发。GUI 的「用量 → 实时」显示运行与排队请求，同页「并发限制」可新增、编辑、暂停或删除规则。默认打开的「历史」标签显示 Token 用量与估算费用。诊断流程见[用量](../guides/settings.md#usage)。
+
+`global` 规则让连接同一个 Kiki 服务实例的所有会话共享容量；`each_session` 规则按会话分别计数，每份容量由该会话的主 Agent 与所有后代共享。独立 CLI 进程与外部 ACP/Codex 执行器不共享这些限额；外部请求是未纳管，而不是零请求。上限计数的是供应商生成尝试，包括压缩与 OAuth 重放，不是正在运行的 Agent 或工具数。它不设置每分钟请求数、Token 或金额预算。限制子 Agent 执行数用 [`subagent`](#subagent)，限制搜索与抓取调用用 [`nb_search.execution`](#nb-search)。
+
+例如，让某个供应商下的所有模型跨会话合计最多同时发出两条请求。把 `example-provider` 换成 `[providers]` 中的精确表键：
 
 ```toml
 [request_governance]
@@ -896,26 +951,55 @@ scope = "global"
 providers = ["example-provider"]
 max_concurrent = 2
 overflow = "queue"
+enabled = true
 ```
 
-| 字段 | 默认值 | 含义 |
-| --- | --- | --- |
-| `schema_version` | `1` | 配置版本 |
-| `max_wait_ms` | `300000` | 单个逻辑请求累计的本地排队时间，含重试，单位毫秒 |
-| `max_queue_size` | `1024` | 本服务最多等待多少条请求 |
-| 规则 `id` | 必填 | 唯一规则标识 |
-| 规则 `resource` | `model_request` | 原生生成尝试，包含压缩与 OAuth 重放 |
-| 规则 `scope` | `global` | `global` 在本服务内共享容量；`each_session` 按根会话分别分桶，包含它的所有子代理 |
-| 规则 `models` | 全部 | 已配置的规范模型 ID；多个 ID 合计共享一份上限 |
-| 规则 `providers` | 全部 | 提供商配置 ID；覆盖选中提供商下的所有模型，合计共享一份上限 |
-| 规则 `subagents_only` | `false` | 只匹配子代理发出的请求 |
-| 规则 `max_concurrent` | 不限 | 正整数；省略表示不限，零不表示不限 |
-| 规则 `overflow` | `queue` | `queue` 等待容量；`reject` 在该规则容量已满时立即拒绝 |
-| 规则 `max_wait_ms` | 本节上限 | 可选，为匹配请求设置更短的排队时间预算 |
+若希望使用某个模型的子 Agent 在每个会话内最多同时发出一条请求，可改用下面的规则，也可与供应商规则并用。把 `example-model` 换成规范的 `[models]` 表键，不要填显示名、上游 `model` 值或 `aliases` 中的其他名称：
 
-所有匹配规则共同生效。同一规则的不同筛选字段取 AND，同字段的 ID 列表取 OR。若只限制一个模型，使用 `models = ["example-model"]` 并省略 `providers`。规则只治理当前 App 实例的请求，不覆盖其他独立 CLI 进程或提供商账号在其他客户端的使用。它不是 Token 或金额预算，也不改变已有每父节点默认最多 16 个直接子代理的限制。
+```toml
+[[request_governance.rules]]
+id = "session-model-children"
+scope = "each_session"
+models = ["example-model"]
+subagents_only = true
+max_concurrent = 1
+max_wait_ms = 60000
+overflow = "queue"
+```
 
-修改规则立即重新判断排队请求；已在途的流不会被杀掉。工具执行与本地排队都不占模型请求槽位。取消排队中的轮次会移除请求，不向提供商发送。队满、排队超时和本地拒绝是三种不同的不可自动重试失败。可使用已有 Stop 操作停止等待中的轮次，或编辑对应配置规则后重试。
+| 字段 | 类型 | 默认值 | 含义 |
+| --- | --- | --- | --- |
+| `schema_version` | `integer` | `1` | 配置版本，只接受 `1` |
+| `max_wait_ms` | `integer` | `300000` | 单个逻辑请求累计的本地排队预算，含重试，单位毫秒，须为正数 |
+| `max_queue_size` | `integer` | `1024` | 本服务所有等待请求的总数上限，须为正数 |
+| `rules` | `array<table>` | `[]` | 并发规则，用 `[[request_governance.rules]]` 编写 |
+| 规则 `id` | `string` | 必填 | 非空且唯一的规则标识 |
+| 规则 `resource` | `string` | `model_request` | 只接受 `model_request` |
+| 规则 `scope` | `string` | `global` | 全服务共享容量，或 `each_session` 按会话分别计数 |
+| 规则 `models` | `array<string>` | 全部 | 精确的规范模型 ID；多个 ID 合计共享一份上限 |
+| 规则 `providers` | `array<string>` | 全部 | 精确的供应商配置 ID；所选供应商下的所有模型合计共享一份上限 |
+| 规则 `subagents_only` | `boolean` | `false` | 只匹配子 Agent 发出的请求 |
+| 规则 `max_concurrent` | `integer` | 不限 | 正整数上限；省略表示不限，零是无效值 |
+| 规则 `overflow` | `string` | `queue` | `queue` 等待容量；`reject` 在本规则容量已满时立即拒绝 |
+| 规则 `max_wait_ms` | `integer` | 本节上限 | 可选正整数预算；本节与所有匹配且启用的规则取最短等待时间 |
+| 规则 `enabled` | `boolean` | `true` | `false` 暂停规则，保留内容，但不限制请求或等待预算 |
+
+所有匹配且启用的规则共同生效。同一规则的不同筛选字段取 AND，同字段的 ID 列表取 OR。省略 `models` 或 `providers` 表示匹配全部；空列表无效。若要给每个模型独立的上限，请每个模型写一条规则，不要合并到同一个列表。未知字段与重复规则 ID 会被拒绝。
+
+在 GUI 保存规则或[修改文件](#配置修改如何生效)后，排队请求会重新判断。调高上限或暂停规则可以释放等待请求；调低上限不会终止已在途的流，因此运行数可能暂时高于新上限。槽位一直持有到流清理完毕，在工具执行或重试退避前释放；本地排队不占槽位。Stop 可取消排队中的轮次，不向供应商发送其请求。
+
+### 排队错误与供应商 429
+
+用错误码区分本地等待与供应商限流：
+
+| 错误 | 含义与处理 |
+| --- | --- |
+| `request.limit_rejected` | 匹配的规则已满，且使用 `overflow = "reject"`。等待在途请求结束，或修改该规则 |
+| `request.queue_full` | 全服务队列达到 `max_queue_size`。等待队列减少后再试 |
+| `request.queue_timeout` | 逻辑请求耗尽累计本地等待预算。容量空出后重试，或调整并发上限、等待预算 |
+| `provider.rate_limit` / HTTP 429 | 已发出的请求被供应商限流。核对其消息与账户限额；并发上限可减少同时请求，但不能保证每分钟请求数或 Token 速率 |
+
+三种本地 `request.*` 错误不会自动重试。供应商瞬时 429 遵循 [`retry`](#retry)，包括 `Retry-After`；额度耗尽或余额不足则直接失败，不重试。修改上限前，在「用量 → 实时」展开「请求详情」，核对排队模型、阻塞规则 ID 与等待时间。过期的计数是最后收到的快照，不代表当前容量。
 
 ## `tui.toml`
 

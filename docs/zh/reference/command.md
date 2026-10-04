@@ -9,6 +9,8 @@ kiki <subcommand> [options]
 
 交互式会话始终使用共享后台服务（daemon）。确认工作目录可信后，CLI 会连接已有服务，或自动启动服务，无需单独安装或开启实验开关。连接或启动失败时会显示错误，不会回退到独立的本地会话。请根据错误提示排除问题后重新运行命令。非交互式 `--prompt` 执行不属于这条终端启动链路。
 
+交互模式要求 stdin 和 stdout 都是终端。任一端接入管道或重定向时，运行会在触及工作区信任和 daemon 之前结束，Kiki 不会自动切换到非交互模式。需要从管道传入提示词时，用 `kiki -p -`，由 Kiki 从 stdin 读取。
+
 ## 主命令选项
 
 所有 flag 都是可选的，直接运行 `kiki` 即可进入交互式会话：
@@ -143,7 +145,7 @@ kiki -p "List changed files" --output-format stream-json
 
 多个 `kiki -p` 进程可以共享一个 `KIKI_HOME`，前提是每个进程使用不同的会话。Kiki 会串行化共享的 runtime owner 记录和会话索引写入，但每个会话仍然只允许一个活动写入者。不要同时对同一个会话运行两个 prompt；如果上一个进程应当很快释放会话，可以使用 `--wait-for-session <seconds>`。
 
-Thread communication 默认关闭。不使用 thread 工具的 print 运行不会初始化 mailbox。启用 thread communication 时，可以设置 `KIKI_THREAD_MAILBOX_TIMEOUT_MS` 调整有界 mailbox 调用超时。print 模式不会启动 home 级 cron 调度器；需要定时任务时，请通过交互式 daemon 或 server 运行。若需要最大程度的隔离，或每个 worker 都需要独立缓存和配置，请为每个 worker 使用独立的 `KIKI_HOME`。
+Thread communication 默认关闭。不使用 thread 工具的 print 运行不会初始化 mailbox。启用 thread communication 时，可以设置 `KIKI_THREAD_MAILBOX_TIMEOUT_MS` 调整有界 mailbox 调用超时。print 模式会为本次运行中已经打开的会话自动触发定时任务，但不会扫描 home 中的其它会话，也不会唤醒未打开的会话；不属于本次运行的任务仍需通过交互式 daemon 或 server 运行。若需要最大程度的隔离，或每个 worker 都需要独立缓存和配置，请为每个 worker 使用独立的 `KIKI_HOME`。
 
 ## 子命令
 
@@ -151,7 +153,7 @@ Thread communication 默认关闭。不使用 thread 工具的 print 运行不�
 
 ### `kiki serve`
 
-显式控制共享 daemon。不带模式时，`serve` 在前台运行 daemon；`--ensure` 连接已有健康实例，或启动一个新实例并返回连接信息；`--stop` 停止所选 home 下当前可达的实例。
+显式控制共享 daemon。不带模式时，`serve` 在前台运行 daemon；`--query --json` 只报告当前实例，不启动服务；`--ensure` 连接已有健康实例，或启动一个新实例并返回连接信息；`--stop` 停止所选 home 下当前可达的实例。发现活跃实例却无法验证其身份时，Kiki 拒绝启动第二个实例：先停止或升级已有实例，再重试。
 
 ```sh
 kiki serve
@@ -159,7 +161,113 @@ kiki serve --ensure --workspace . --json
 kiki serve --stop
 ```
 
-Kiki 按以下优先级解析 home 目录：支持该选项的命令中显式指定的 `--home`、`KIKI_HOME`、`~/.kiki`。运行时启动只使用这里列出的 Kiki home 设置。Daemon 共用 `<home>/server.token` 中的一份 bearer token。`--idle-exit` 默认是 `30m`；存在活跃客户端 lease 或运行中的派遣时，daemon 不会因空闲退出。客户端通过 `POST /api/leases` 续期 lease。交互式 TUI 在工作区信任后也会自动执行同样的连接或启动逻辑。需要兼容的前台服务和浏览器 UI，而不是共享 daemon 控制时，请用 [`kiki web`](#kiki-web)。
+Kiki 按以下优先级解析 home 目录：支持该选项的命令中显式指定的 `--home`、`KIKI_HOME`、`~/.kiki`。可信本地客户端使用私有的 `<home>/server.local-owner` 凭据连接；远端连接使用独立凭据，见[鉴权](../server/local-server.md#鉴权)。`--idle-exit` 默认是 `30m`；活跃客户端 lease 和运行中的派遣会让 daemon 保持运行。设置 `--idle-exit 0ms` 后，新启动的 daemon 会持续运行到显式停止。客户端通过 `POST /api/leases` 续期 lease。交互式 TUI 在工作区信任后自动执行同样的连接或启动逻辑。需要兼容的前台服务和浏览器 UI 时，请用 [`kiki web`](#kiki-web)。
+
+### `kiki connections`
+
+管理 home 之间有方向的 GUI 连接。`--home` 选择本地源或提供方 home；管理操作使用其 local-owner 凭据。接收入站默认关闭，开启开关本身不会批准任何源。
+
+```sh
+kiki connections --home /path/to/source status
+kiki connections --home /path/to/target inbound enable
+kiki connections --home /path/to/target inbound invite --input source.json
+kiki connections --home /path/to/source add --input connection.json
+```
+
+把源 `status` 返回的 `identity` 填入 `source.json`：`{ "source": { "homeId": "...", "hostId": "...", "protocol": 1 }, "label": "Source home" }`。目标会返回短时、一次性的 `invitation`。`connection.json` 包含 `label`、`endpoint`、以目标 `identity` 填写的 `target`、目标当前的 `ownerToken` 以及该 `invitation`；可用 `backgroundSummary` 开启轻量状态轮询。`homeId` 是标识 home 的 UUID，不是 GUI space ID。含秘密的文件应保持私有，成功配置后删除，不要把 token 放进命令参数。`--input -` 从 stdin（命令的标准输入通道）读取 JSON。
+
+在目标运行 `inbound revoke <grantId>`，可停止一个源的读取和流，不影响其他已批准源。`inbound disable` 关闭所有 peer 访问并保留允许清单。在源使用 `disable <connectionId>`、`enable <connectionId>`、`retry <connectionId>` 和 `remove <connectionId>` 管理单个连接。移除只释放本地凭据和自有隧道，不停止目标 daemon，也不撤销已在目标开始的工作。离线状态保留最后测量值与时间戳，不编造零计数。
+
+SSH 要求两端已安装兼容的 Kiki，源已配置可用的 SSH 登录与 known-host 校验。Kiki 不会安装远端软件。保存不含秘密的 profile，例如：
+
+```json
+{
+  "id": "work-host", "label": "Work home",
+  "target": { "kind": "alias", "alias": "work-host" },
+  "releaseChannel": "stable", "remoteHome": "/home/example/.kiki",
+  "remoteExecutable": "kiki", "remoteShell": "posix"
+}
+```
+
+也可将 target 写成 `{ "kind": "host", "hostname": "example.com", "username": "example", "port": 22 }`；`identityFile` 可选。先生成计划，再核对返回的目标、身份和效果：
+
+```sh
+kiki connections --home /path/to/source ssh plan --input profile.json
+kiki connections --home /path/to/source ssh execute PLAN_ID
+kiki connections --home /path/to/source ssh execute PLAN_ID --ensure
+kiki connections --home /path/to/source ssh register --input registration.json
+kiki connections --home /path/to/source ssh status
+```
+
+计划只查询；不带 `--ensure` 的执行只连接已有服务。显式 `--ensure` 可启动远端 daemon，它会在后台持续运行到显式停止，不会顺带开放入站。GUI 登记的 `registration.json` 为 `{ "purpose": "gui", "planId": "PLAN_ID", "label": "Work home", "enableInbound": false, "backgroundSummary": true }`。`enableInbound: false` 时，目标入站关闭会如实报错；只有明确希望本次置备开启目标入站时才选择 `true`。仅供后端使用的 bootstrap 凭据会在置备后丢弃。`purpose: "bridge"` 只登记桥目标，另需 bridge policy 审批，不同时授予 GUI 访问。
+
+### `kiki bridges`
+
+管理显式单向 thread bridge，不授予 GUI 浏览权限。`--home` 选择执行端或提供端 home，管理始终使用其 local-owner 凭证。入站默认关闭：先启动目标 daemon，再用 `kiki connections --home <target-home> inbound enable` 明确开启入站；这不等于授权模型启动 turn。
+
+```sh
+kiki bridges --home /path/to/source status
+kiki bridges --home /path/to/source local --input ./local-bridge.json
+kiki bridges --home /path/to/source receipts --limit 50
+kiki bridges --home /path/to/source outbound disable <bridgeId>
+kiki bridges --home /path/to/provider inbound revoke <bridgeId>
+```
+
+`local` 读取 JSON，包含已登记本机空间的 `spaceId`、`sourceScope`、`targetScope`、`operations`、`expiresAt`（Unix 毫秒）、`label`，以及可选的 `pendingLimit`、`messagesPerMinute`。每个 scope 指定 `workspaceId`，通常还指定 `sessionId`；省略 Session 就明确允许该工作区的未来线程。分别选择 `read`、`send`、`wait`，只有允许目标接收模型 prompt 或恢复冷线程时才添加 `wake`。没有 wake 的消息保持 pending。本机目标使用稳定空间引用，daemon 换端口重启不会改变批准的 home。
+
+Network 目标先用 `target --input <file>` 登记 `{label,endpoint,target}`，其中 target 为 `{homeId,hostId,protocol:1}`。在提供端，`approve --input <file>` 读取含来源与目标身份、scope、operation、expiry、label 及 `location: "network"` 的 policy，一次性输出 `{grant,credential}`。在来源端，`install --input <file>` 读取该结果加登记后的 `connectionId`。使用 HTTPS 或可信隧道；反向 bridge 需要另一条批准。GUI token 和 SSH 登录不授予 bridge 权限。
+
+将 approve 输出和 install 输入作为凭证保护。所有 `--input` 都接受 `-`，从标准输入（程序读取输入的通道）读取 JSON；不要把 credential 放进终端参数或发给模型。`status` 和分页 `receipts` 不含凭证。Receipt 区分来源 pending、目标 accepted、prompt delivered 与拒绝；delivered 不代表模型已回复。Pending 保留原 key 和 sequence，最多重试 15 分钟。`retry` 检查持久队列，不新建消息。`inbound|outbound enable|disable|revoke <bridgeId>` 控制单条 link；入站 revision 改变后，需在来源端明确重新安装较新的 grant。撤销不删除会话。
+
+[线程工具](./tools.md#协作类)使用这些策略并保留已验证的跨空间来源，不自动转发普通 Assistant 正文。危险鉴权绕过模式仍关闭 bridge 入站，也不绕过 bridge 管理鉴权。
+
+### `kiki usage-export`
+
+将一个本地 Kiki home 的无正文用量导出到 vibe-usage/vibecafe、标准 Webhook 或已批准脚本。实验功能默认关闭：启动后端时设置 `KIKI_EXPERIMENTAL_USAGE_EXPORT=true`。只在后来运行的 CLI 进程中设置变量，不会启用已经运行的后端。管理操作要求该 home 的本地所有者凭证；远程连接 token 和危险鉴权绕过模式都不授予此权限。
+
+先保存草稿、查看准确范围和字段，再一次性批准这个目的端：
+
+```sh
+kiki usage-export --home /path/to/home save --input destination.json
+kiki usage-export --home /path/to/home preview <id>
+kiki usage-export --home /path/to/home test <id>
+kiki usage-export --home /path/to/home enable <id> --fingerprint <preview_fingerprint> --agree
+kiki usage-export --home /path/to/home sync <id>
+kiki usage-export --home /path/to/home status
+```
+
+普通启用不要求先执行 `test`：它是单独的鉴权和接收协议检查，不发送用量。`preview` 不联系目的端。使用 `save` 返回的 `id` 和最近一次 `preview` 返回的指纹；改变目的端身份或扩大范围需要重新同意。显示的账号指纹只在本地标识这份凭据，不是已验证的远端账号身份。无法证明属于同一账号的新 key 需要重新同意；已有队列或交付后，应创建新目的端，而不是换掉旧目的端的身份。
+
+Webhook 草稿示例：
+
+```json
+{
+  "draft": {
+    "label": "我的用量接收端",
+    "target": { "kind": "webhook", "endpoint": "https://example.com/usage", "gzip": true, "authentication": "none" },
+    "schedule_minutes": 30,
+    "scope": { "start_at": 1767225600000, "end_at": null, "include_ephemeral": false, "excluded_workspace_ids": [] }
+  }
+}
+```
+
+时间使用 Unix 毫秒，桶按绝对 UTC 半小时划分。周期可选 `0`（手动）、`5`、`15`、`30`、`60` 分钟，附带抖动；只在后端存活时运行，不保活、不调用模型。临时/私密会话的用量默认排除，须明确选择。官方 `kiki.usage.bucket.v1` 只发送已知模型标识、四项互斥 token 数、质量和本地 USD 估价；未知价格为 `null`，未知本地别名使用目的端专属的不透明标识。不包含提示词、回复、推理、工具参数、附件、标题、工作区路径、profile 或真实主机名。接收端仍能观察 IP 地址和使用时段。
+
+需要鉴权时，使用 `authentication: "bearer"` 或 `"hmac"`，并在 `draft` 旁添加 `secret`：`{ "value": "YOUR_SECRET", "storage": "keyring" }`。Keyring 失败会明确报错，不静默改存文件。要明确选择私有文件，设 `storage: "private-file"` 和 `acknowledge_file_storage: true`；文件系统权限保护它，但并未静态加密。所有 `--input` 都接受 `-` 从标准输入读入。保护凭证文件，不把 secret 放进终端参数或发给模型。Bearer 要求 HTTPS，不跟随重定向。本地开发 HTTP 须提供准确匹配 host、IP、port、protocol 的 `private_grant`，不是批准整个内网。
+
+Vibe 目的端使用 `{ "kind": "vibe", "endpoint": "https://example.com/api/usage/ingest" }` 和实际服务的 key。Vibe 不支持删除，也不能可靠降低已接收总量：冲突修订会在发送前标为 `remote-diverged`，其他不冲突的新桶仍可继续。脚本使用 `{ "kind": "script", "command": "YOUR_COMMAND", "timeout_ms": 60000, "output_limit_bytes": 65536 }`。标准输入接收同一套无正文协议，标准输出须返回严格 receipt；测试时使用独立的 `kiki.usage.test.v1` 握手。同意后，命令拥有普通 OS 用户全部权限，能自行读文件、联网；这不是沙箱，也不会逐批请求批准。
+
+恢复与移除具有不同含义：
+
+- `disable <id>` 停止新请求、保留队列。`sync <id>` 按已有同意立即扫描并发送。临时网络故障保留同一持久批次身份并退避重试；协议或鉴权错误分别显示。
+- `backfill <id> --input scope.json` 预览变更范围；扩大范围后用新指纹同意。`rebuild --force` 失效来源 checkpoint，包括同大小/mtime 改写；不修改 wire 事实、不清 ACK/版本历史。
+- `diagnostics`、`export <id>`、`capacity <bytes>`、`retry <id>` 用于查看或恢复交付。默认队列上限为 50 MiB，满时保留旧的完整投影，不静默丢弃最旧数据。
+- `clear-queue <id> --agree` 明确丢弃待发数据并停用该目的端。`remove <id>` 清除本地配置及其凭据；只有确实要丢弃现存队列时才添加 `--discard-pending`。两者都不删除远端历史，并保留必要的交付身份/版本依据。
+- `withdraw <id> --agree` 仅向支持删除的接收端发送带版本的删除墓碑，不删除本地用量；vibe 不支持此操作。
+
+已有 vibe collector 时，先在新原生草稿上执行 `handoff plan <id>`，再按返回的 namespace 和未来 UTC 截止 **T** 准备 collector 的 `kiki-handoff.json`，并执行原生 `preview`、`test`。`handoff arm <id> --collector-file <file> --fingerprint <preview_fingerprint> --agree` 用已保存的原生凭据核对证明，激活该 home 的旧 collector 截止，并启用从固定 T 起的原生交付。它不读取旧 collector 的 key、不停止 daemon；不同 key 不会被当成同账号证明。旧端负责 `<T`，原生负责 `>=T`，离线回补仍保留 T，不按 ACK 时间移动。`handoff refresh <id>` 读取旧端安全的最后回执；同时有旧回执和真实原生 ACK 才算完成。`handoff rollback <id> --cutoff <new_future_R> --agree` 保留原生负责 `[T,R)`，旧端从 `>=R` 恢复，而不是无界重扫旧历史。
+
+接收端开发者可在仓库中运行 `pnpm exec tsx packages/kap-server/examples/usage-export-receiver.ts`（Node 24）。示例只监听 `127.0.0.1:9080`，在 `usage-receiver.sqlite` 持久保存替换版本和删除墓碑，提供 `POST /usage`。测试时须批准准确的 loopback HTTP grant。生产接收端应提供 TLS、持久存储和鉴权；示例不是托管看板。
 
 ### `kiki seat`
 
@@ -291,17 +399,19 @@ kiki web --port 58628    # 指定绑定端口
 
 `kiki web` 默认只绑定本机 loopback 地址，并在启动横幅中打印 bearer token；Kiki GUI 通过 URL 的 `#token=` 片段自动完成鉴权。
 
+`kiki web` 同时承载 Web 访问控制——`--temporary`、`--persistent`、`--status`、`--off`、`--revoke [session-id]`——用于把这台 Kiki 开放给另一台设备的浏览器，并打印一次性进入链接。Web 访问是对这台 Kiki 的完整访问入口，不是只读分享；会话与撤销模型见[在浏览器里使用 Kiki](../server/local-server.md#在浏览器里使用-kiki)。同样的操作在交互式 TUI 中是 `/web temporary|persistent|status|off|link|revoke [id]`，在 GUI 中位于**设置 → 空间 → Web 访问**。
+
 ::: info 提示
 `kiki web` 是兼容性的前台命令：它在当前进程中启动独立服务，不会连接或管理共享 daemon。需要控制共享 daemon 的生命周期时使用 `kiki serve`；需要已有前台 REST/WebSocket/web UI 流程时使用 `kiki web`。旧的 `kiki server …` 命令已不再支持。
 :::
 
 ::: danger 警告
-`--dangerous-bypass-auth` 会彻底关闭鉴权。任何能访问该端口的人都能完全控制你的会话、文件系统和 shell。请仅在可信网络或自有鉴权反向代理之后使用，用完后按 `Ctrl+C` 停止服务。
+`--dangerous-bypass-auth` 会免鉴权暴露旧 API：任何能访问该端口的人都能控制会话、文件和 shell。连接管理与转发仍要求 local-owner；有效 peer 准入不可用，保存的 grant 也不能在此模式授权入站 peer。仅在可信网络或自有鉴权反向代理之后使用，用完后停止服务。
 :::
 
 #### `kiki web rotate-token`
 
-生成新的持久化 bearer token（写入 `~/.kiki/server.token`），旧 token 立即失效。token 是整个 home 目录共享的，所有运行中的实例会在下一次鉴权校验时自动换用新 token，无需重启。
+替换 `<home>/server.token` 中持久化的远端 owner token。旧 token 失效，受影响的 peer 流停止；运行中的实例无需重启即可发现变化。这不会轮换 `server.local-owner` 中的私有本地管理凭据。远端源须更新凭据后才能重新连接。
 
 ### `kiki export`
 

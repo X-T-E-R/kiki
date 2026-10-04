@@ -29,13 +29,13 @@ subagent 支持在后台运行：完成后结果自动回到 main agent，无需
 
 默认的 v2 引擎（Kiki 桌面端和 `kiki` CLI/TUI）会给主 `agent` profile 提供三个子 Agent 工具，不需要实验开关：`AgentRun`、`AgentList` 和 `AgentSend`。内置 subagent profile 没有它们。每个调用方只能列出和发消息给自己直接创建的子 Agent；孙级或别人创建的子 Agent 都不是有效目标。
 
-`AgentRun` 用来启动新的子 Agent，或继续已有的。每次调用都必须提供 `prompt` 和用于界面展示、长度为 3–5 个词的短 `description`。新派生还可以设置 `profile`（省略时，显式配置的 `[subagent].default_profile` 会选择对应 profile；该配置键不存在时使用内建通用 subagent 提示词；显式留空时必须指定目标）、`profile_file`（显式 subagent role Markdown 文件，绝对路径或工作区相对路径；它是 role 定义而非共享提示词模板，并且与 `profile`、`route`、`resume` 互斥）、`route`、`name`、`background`、`model_alias` 和 `effort`。`allow_model_change` 仅在 `resume` 同时显式传入 `model_alias` 时有意义；该 alias 解析到不同规范模型时必须传入它。预计之后还要再找同一个子 Agent 时传入 `name`；名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话内保持唯一。继续直属子 Agent 时，把 `resume` 设为它的名称或 agent id；它与 `name`、`profile`、`profile_file` 和 `route` 互斥。省略 `effort` 会保留已保存的 effort，也可以传入让下一次空闲运行使用。省略 `model_alias` 会保留已保存的模型；切换到不同规范模型必须传 `allow_model_change: true`，而解析到同一规范模型则不产生变化。字面标明的 `preferred_models`、`discouraged_models`、`preferred_efforts` 与 route / caller lease pin 属于软建议：满足硬规则且可执行的覆盖会继续并产生结构化 advisory。`allowed_models`、`deny_models`、`allowed_efforts` 在所有作用域都是硬规则，违规即拒绝。机器级 `[subagent].deny_models`、缺失或不受支持的模型能力、route 身份、换模确认，以及 executor / thread 限制仍是硬错误。外部 executor 不支持修改恢复的 thread 绑定时会报错，不会重建 thread 或 executor。新派生项按此顺序选模型：具体 `model_alias` 参数 → 生效 profile / route / caller lease pin → 显式配置的 `[subagent].default_model`。这些来源都不存在时以 `model.not_configured` 失败，不会创建子 Agent。effort 独立解析：工具 `effort` → profile `thinking_effort` → 所绑定模型自身的默认档位。显式传入未知 `model_alias` 时会报错。省略 `background` 时，调用方是 main 则默认后台，是 subagent 则默认前台等待。显式 `true` 始终选择后台，显式 `false` 始终选择同步等待；`resume` 与 goal mode 同样按调用方应用此规则。Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIKI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout 或任意供应商参数透传。
+`AgentRun` 用来启动新的子 Agent，或继续已有的。每次调用都必须提供 `prompt` 和用于界面展示、长度为 3–5 个词的短 `description`。新派生还可以设置 `profile`（省略时，显式配置的 `[subagent].default_profile` 会选择对应 profile；该配置键不存在时使用内建通用 subagent 提示词；显式留空时必须指定目标）、`profile_file`（显式 subagent role Markdown 文件，绝对路径或工作区相对路径；它是 role 定义而非共享提示词模板，并且与 `profile`、`route`、`resume` 互斥）、`route`、`name`、`background`、`model_alias` 和 `effort`。`allow_model_change` 仅在 `resume` 同时显式传入 `model_alias` 时有意义；该 alias 解析到不同规范模型时必须传入它。预计之后还要再找同一个子 Agent 时传入 `name`；名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话内保持唯一。继续直属子 Agent 时，把 `resume` 设为它的名称或 agent id；它与 `name`、`profile`、`profile_file` 和 `route` 互斥。省略 `effort` 会保留已保存的 effort，也可以传入让下一次空闲运行使用。省略 `model_alias` 会保留已保存的模型；切换到不同规范模型必须传 `allow_model_change: true`，而解析到同一规范模型则不产生变化。字面标明的 `preferred_models`、`discouraged_models`、`preferred_efforts` 与 route / caller lease pin 属于软建议：满足硬规则且可执行的覆盖会继续并产生结构化 advisory。`allowed_models`、`deny_models`、`allowed_efforts` 在所有作用域都是硬规则，违规即拒绝。机器级 `[subagent].deny_models`、缺失或不受支持的模型能力、route 身份、换模确认，以及 executor / thread 限制仍是硬错误。外部 executor 不支持修改恢复的 thread 绑定时会报错，不会重建 thread 或 executor。新派生项按此顺序选模型：具体 `model_alias` 参数 → 生效 profile / route / caller lease pin → 显式配置的 `[subagent].default_model`。这些来源都不存在时以 `model.not_configured` 失败，不会创建子 Agent。effort 独立解析：工具 `effort` → 匹配的 `model_profiles` 档位 → 所绑定模型与 profile pin 匹配（按规范身份比较）时的 profile `thinking_effort` → 所绑定模型自身的默认档位。显式传入未知 `model_alias` 时会报错。省略 `background` 时，调用方是 main 则默认后台，是 subagent 则默认前台等待。显式 `true` 始终选择后台，显式 `false` 始终选择同步等待；`resume` 与 goal mode 同样按调用方应用此规则。Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIKI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout 或任意供应商参数透传。
 
 后台派发要求 `TaskList`、`TaskOutput`、`TaskStop` 可用。关闭这些工具后，main 省略 `background` 会在启动前被拒绝，不会改为前台；请启用工具，或为真正的同轮依赖显式设置 `background:false`。Main 前台等待期间，steer / Send now 会把子 Agent 转入后台而不取消它，让下一安全步骤读取新输入；完成后仍自动通知父 Agent。普通排队消息不会释放等待。Main 轮次停止不会自动取消已脱离等待的子 Agent；请用 `TaskStop` 显式停止子任务。Subagent 必须解决自己的依赖后再交最终回执。详见 [`AgentRun` 工具参考](../reference/tools.md#协作类)。
 
 `AgentRun` 选模时，`restrict_models_to_menu` 关闭（默认）意味着 profile 菜单不是穷举；开启后，仅作者原始默认 `model_alias` 与 `model_profiles` 菜单条目可选，且仍须满足所有其他硬规则与执行能力。Route / caller lease pin 和显式 `model_alias` 参数不能增加候选。菜单外选择被拒绝，不回落；`resume` 和 `allow_model_change: true` 也不扩充冻结菜单。详见 [模型菜单与硬边界](./agent-profiles.md#模型菜单与硬边界)。
 
-`profile_file` 按绝对路径或工作区相对路径解析，解析链接后的真实路径仍须位于允许的目录内。
+`profile_file` 直接提供角色定义，无需注册成预设，也不按文件中的名字套用预设 allow / deny 名单。`allowed_subagents: []` 仍允许这条路径；`can_spawn_subagents: false` 禁止新建全部子 Agent。路径可为绝对路径或工作区相对路径，解析链接后的真实路径仍须位于允许的目录内。
 
 `AgentList` 返回这些直属子 Agent。默认 `include_finished=false` 列出运行中的，以及没有跟踪任务的；需要已经结束或失败的，再传 `true`。最多返回 50 条，运行中的排在前面。
 
@@ -45,7 +45,7 @@ subagent 支持在后台运行：完成后结果自动回到 main agent，无需
 
 ## Peer thread 通信
 
-Peer thread 通信让主 Agent 协调同一台本地主机上的现有 Kiki 会话，也可以跨工作区通信。它与上面的子 Agent 工具相互独立，并且默认关闭。选择启用后，`ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait` 这 4 个工具只提供给会话的主 Agent，不提供给子 Agent。主 Agent 若要创建独立会话，可直接调用 [`ThreadCreate`](../reference/tools.md#协作类)，无需启用 peer thread 通信。
+Peer thread 通信让主 Agent 协调同一台本地主机上的现有 Kiki 会话，也可以跨工作区通信。它与上面的子 Agent 工具相互独立，并且默认关闭。选择启用后，`ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait` 这 4 个工具提供给会话的主 Agent。子 Agent 默认拿不到这几个工具；在其 profile 的 `tools` 名单中点名 `ThreadList`、`ThreadRead`、`ThreadWait` 即可开放，而 `ThreadSend` 仍仅供主 Agent 使用，因为它以父会话的 peer 身份发送。主 Agent 若要创建独立会话，可直接调用 [`ThreadCreate`](../reference/tools.md#协作类)，无需启用 peer thread 通信。
 
 Thread 引用标识主机、工作区和会话。`ThreadList` 返回后续调用所需的引用；`ThreadRead` 读取已完成的主 Agent turn，不会恢复冷会话；`ThreadSend` 从当前主 Agent 会话派生来源，并持久接收发往另一条 thread、带 peer 归属的消息；`ThreadWait` 最多等待 8 条 thread 的活动，最长等待 60 秒。消息不能跨主机发送。
 
@@ -96,7 +96,7 @@ agent 文件会被监听并在变更时热刷新。热刷新不会打断进行�
 
 外部执行器可以担任 main agent。若要让它派遣 Kiki subagent，请在其 profile 中添加 `allow_kiki_subagents: true`，并把该 profile 绑定到 main agent。该字段默认是 `false`，不会开启外部子 Agent 的委派能力。
 
-Kiki 把 MCP 工具（harness 调用 Kiki 的桥）附加到**已有会话**，不会另建 seat 会话。harness 必须支持本机 stdio MCP，即通过进程输入输出调用工具；其进程也必须能找到 `kiki`。profile 的 `subagents`、派遣策略、模型约束和父级通知策略仍然生效。修改开关后需重新绑定 main profile；已有绑定保留冻结快照。在已绑定的 main profile 上关闭委派，或关闭执行器，都会撤销桥的权限。
+Kiki 把 MCP 工具（harness 调用 Kiki 的桥）附加到**已有会话**，不会另建 seat 会话。harness 必须支持本机 stdio MCP，即通过进程输入输出调用工具；其进程也必须能找到 `kiki`。profile 的派发开关、预设权限与推荐、模型约束和父级通知策略仍然生效。修改开关后需重新绑定 main profile；已有绑定保留冻结快照。在已绑定的 main profile 上关闭委派，或关闭执行器，都会撤销桥的权限。
 
 子 Agent 完成后，回执会非阻塞地排入同一 main agent 的收件队列。main agent 忙碌时，等待当前轮次结束再投递；空闲时，队列回执会唤醒它。父级通知也使用同一段对话，仍受 `allow_parent_notify` 和配置的通知策略约束。
 
@@ -173,7 +173,7 @@ extra_agent_dirs = ["~/team-agents", ".agents/team-agents"]
 **内置副本** 安装在 `$KIKI_HOME/agents/builtin/`，作为用户作用域的文件加载。它们在两个用户目录中的普通文件之后扫描，因此同名用户定义始终优先，无需 `override: true`，也不受文件名字母序或安装时间影响。同名冲突诊断会列出双方路径。通过 `--agent-file` 加载的文件优先于所有目录作用域，且仅对本次启动生效。另可通过 `$KIKI_HOME/SYSTEM.md` 永久覆盖默认 main agent 的系统提示词，优先级交互见下文。
 
 ::: warning 信任模型
-Agent 文件属于提示词配置，而项目级文件来自仓库本身 —— 包括你刚刚 clone、尚不可信的仓库。项目作用域的文件可以完全接管内置 Agent：名为 `agent.md` 的文件可以替换**默认 main agent 的整个系统提示词**，`general.md` 可以替换默认 subagent 类型，无需声明 `override: true`。与 `AGENTS.md` 内容（作为参考资料注入提示词）不同，override 文件**就是**系统提示词本身；不写 `tools` 表示不在适用的运行时策略之外增加 profile 白名单限制。在不熟悉的仓库中运行 Kiki 之前，请以对待脚本同样的谨慎检查其中的 `.kiki/agents/` 与 `.agents/agents/` 目录。
+Agent 文件属于提示词配置，而项目级文件来自仓库本身 —— 包括你刚刚 clone、尚不可信的仓库。项目作用域的文件可以完全接管内置 Agent：名为 `agent.md` 的文件可以替换**默认 main agent 的整个系统提示词**，`general.md` 可以替换默认 subagent 类型，无需声明 `override: true`。与 `AGENTS.md` 内容（从属于系统策略与当前用户请求的作用域指令）不同，override 文件**就是**系统提示词本身；不写 `tools` 表示不在适用的运行时策略之外增加 profile 白名单限制。在不熟悉的仓库中运行 Kiki 之前，请以对待脚本同样的谨慎检查其中的 `.kiki/agents/` 与 `.agents/agents/` 目录。
 :::
 
 ### Agent 文件格式
@@ -231,16 +231,21 @@ disallowedTools:
 | `context_budget` | 否 | 该 profile 的上下文窗口 token 上限。仅作为上限声明，不得超过所绑定模型的 `max_context_size`。生效值取所有声明层的最小值；只能缩小预算，不能放大到超过模型真实 capacity |
 | `auto_compact` | 否 | 自动压缩点，写正整数 token；匹配的 `model_profiles` 条目也可单独设置。优先于模型和全局默认值，但不会覆盖该 Agent 按模型保存的会话覆写。这是软目标，不是窗口上限 |
 | `max_completion_tokens` | 否 | 单次 LLM step 的输出 token 上限。仅作为上限声明，生效值取所有声明层的最小值；与输入上限、总上下文窗口互相独立，详见[配置文件](../configuration/config-files.md#models) |
-| `tools` | 否 | 工具名允许列表，如 `Read`、`Bash`；MCP 工具用 glob 匹配，如 `mcp__github__*`。支持 YAML 列表或逗号分隔字符串（`tools: Read, Grep`）两种写法。缺省或单独的 `*` 表示不增加 profile 白名单限制；空列表（`tools: []`）表示禁用全部工具。[subagent 默认限制](../configuration/config-files.md#subagent)及其他策略仍然生效；看板工具需要精确点名或服务端显式允许 |
+| `tools` | 否 | 工具名允许列表，如 `Read`、`Bash`；MCP 工具用 glob 匹配，如 `mcp__github__*`。支持 YAML 列表或逗号分隔字符串（`tools: Read, Grep`）两种写法。缺省、单独的 `*`、以及 `*` 与具体名字并列表，都不增加 profile 白名单限制；空列表（`tools: []`）表示禁用全部工具。[subagent 默认限制](../configuration/config-files.md#subagent)及其他策略仍然生效：点名某个工具，就是为该档案作为子智能体时显式开放它，因此 `tools: ["*", ThreadRead]` 保留普通工具并额外加入 `ThreadRead`，而只写 `*` 不会开放任何 opt-in；有限名单仍然有限。服务端 `subagent.allowed_tools` 点名的工具，只有在本名单也选中它时才对该档案开放，因此写了有限 `tools` 名单的档案会挡住自己没列出的工具；没写名单（或写了 `*`）的档案，则对该项开放到的工具都是开放的。`disallowedTools` 仍能禁用这两处开放中的任意一个 |
 | `disallowedTools` | 否 | 禁止列表，写法与匹配规则相同，在 `tools` 之后应用 |
 | `disabled-tool-groups` | 否 | 内置工具组的禁止列表，YAML 列表或逗号分隔字符串，如 `disabled-tool-groups: [shell, web]`。组内每个内置工具都会被收回，除非该工具在 `tools` 中被显式点名；未知的组名会在加载时报错。同一 profile 内的优先级，从最具体开始：`disallowedTools`（被点名的工具保持禁用）> `tools`（显式列出的工具不受组禁用影响）> `disabled-tool-groups`。只有内置工具属于工具组，MCP 工具与用户工具永远不匹配。各组归属：`agent`（`AgentRun`、`AgentList`、`AgentSend`、`AgentNotify`）、`board`（`BoardRead`、`BoardWrite`）、`cron`（`Cron`；旧名 `CronCreate`、`CronList`、`CronDelete`）、`fsRead`（`Read`、`ReadMediaFile`、`Glob`、`Grep`）、`fsWrite`（`Write`、`Edit`）、`goal`（`Goal`；旧名 `CreateGoal`、`GetGoal`、`UpdateGoal`、`SetGoalBudget`）、`plan`（`EnterPlanMode`、`ExitPlanMode`、`TodoList`）、`question`（`AskUserQuestion`）、`shell`（`Bash`）、`skill`（`Skill`）、`task`（`TaskList`、`TaskOutput`、`TaskStop`、`TaskWait`）、`thread`（`ThreadCreate`、`ThreadList`、`ThreadRead`、`ThreadSend`、`ThreadWait`）、`toolSelect`（`SelectTools`、`CallTool`）、`web`（`WebSearch`、`FetchURL`） |
-| `subagents` | 否 | 推荐的子 profile 名称，支持 YAML 列表、逗号字符串或 lease mapping。全局 strict 将已声明列表作为准入边界，此时 `[]` 禁止所有新子 Agent。全局 advisory 允许其他角色（包括显式 role Markdown 文件），并记录推荐偏离。省略或单独写 `*` 表示无具名限制 |
-| `subagent_policy` | 否 | 既有兼容字段：`strict` 可收紧全局 advisory，`advisory` 不能降低全局 strict。新配置优先使用「设置 → Agents」的全局控制。它从不改变模型列表的执行强度 |
+| `can_spawn_subagents` | 否 | `false` 禁止新建所有子 Agent，包括 `profile_file`；不禁止恢复已有子 Agent。省略或 `null` 表示本层不额外关闭；`true` 不能重新打开基础 profile 或 lease 中的 `false` |
+| `allowed_subagents` | 否 | **硬**预设 profile 名单，包含 route 的基础 profile 与作用域别名。支持 YAML 列表、逗号字符串或 name / lease / source mapping。`[]` 不允许预设角色，但仍可显式提供 Markdown 定义。省略、`null` 或包含 `"*"` 表示本层不增加预设限制 |
+| `preferred_subagents` | 否 | **软**预设推荐。其他可见且满足硬规则的预设仍可派发，并记录 advisory（提示性诊断）。不授予权限、不选择默认、不触发回退；`[]` 清空推荐 |
+| `deny_subagents` | 否 | **硬**预设禁止项，即使另一列表允许也会拒绝。`"*"` 禁止全部预设，不禁止显式 Markdown 定义。空列表或省略表示无禁止项 |
 | `spawn_constraints` | 否 | 后代继承的规则：`allowed_models`、`deny_models`、`allowed_efforts`、`disallowed_tools` 是硬规则；`preferred_models`、`discouraged_models`、`preferred_efforts` 是软建议。允许集合沿树求交，禁止项累积；pin 不得放宽硬规则 |
 | `private` | 否 | 在派遣与选择列表（`AgentRun`、设置页选择器）中隐藏该 profile。私有 profile 仍然注册在案：已在运行或恢复的 agent 继续按绑定快照工作，而**新的**派遣会以"profile is private"明确报错。用于下线某个角色而不打断进行中的会话 |
 
+只想推荐角色时，写 `preferred_subagents: [explore]`，不要写封闭名单。预设权限、推荐与模型 / 工具规则相互独立。基础 profile、route 与 caller lease 叠加时，允许集合求交、禁止项累积、`false` 保持关闭；最近一层显式推荐列表替换较早的推荐。`"*"` 可以与名字和 source / lease mapping 同列：本层保持开放，mapping 仍生效。重复的裸名字会忽略；同一别名的两份不同 mapping 会报错。
 
-全局派遣设置相互独立：`[subagent] main_dispatch_policy = "advisory"` 适用于主 Agent；`[subagent] subagent_dispatch_policy = "strict"` 适用于子 Agent。两者均可取 `advisory` 或 `strict`，可在「设置 → Agents」修改。全局 strict 是下限：profile 既有的 `subagent_policy: advisory` 不能将其降级。省略角色列表即使在 strict 下也不增加具名限制。能力面板将目标区分为「推荐」「允许但不推荐」「明确禁止」；`AgentRun` 仅列出允许目标，并突出推荐目标。模型列表执行独立于角色策略：硬列表违规始终拒绝，只有字面标明的建议与 pin 偏离才产生 advisory。
+`profile_file` 直接提供新的角色定义，无需注册进预设目录。文件里的 `name` 不会使它变成同名预设：预设 allow / deny 名单及同名 caller lease 不适用，调用方的可选预设名单也不会复制成该文件子 Agent 自己的下游规则。文件自己的规则、继承的模型 / 工具限制与工作区路径检查仍然生效。完全叶子角色请写 `can_spawn_subagents: false`，不要用 `allowed_subagents: []` 代替。
+
+**迁移：**作者字段 `subagents`、`subagent_policy`，以及宿主设置 `main_dispatch_policy`、`subagent_dispatch_policy` 已移除。仅用于建议的角色名移至 `preferred_subagents`；真正的预设边界移至 `allowed_subagents` / `deny_subagents`；原叶子角色使用 `can_spawn_subagents: false`。Source 与 lease mapping 保留在 `allowed_subagents` 下。已保存绑定会升级，不改选角色、模型、提示词或来源快照。结构化编辑保留未传字段；`null` 删除本地声明，`[]` 写入显式空列表。
 
 `model_profiles` 是一个 YAML mapping 列表。顶层写成字符串、标量或单个 mapping 都是非法的，因为每个条目都需要 `alias`；`when` 与其他字段全部可选。命中条目的 `auto_compact` 优先于 profile 顶层值；两处都只写整数 token，不接受百分比。示例：
 
@@ -265,7 +270,7 @@ model_profiles:
 
 给单个模型补充提示词，仍用模型 cognition 通道（`[models."<alias>".cognition]`）：`model_profiles.prompt_mode` 与 `prompt` 扩的是 role 自身正文，alias cognition 扩的是模型的系统提示词——两者是不同位置，不要把 `prompt_mode` 当作模型认知开关的替代。
 
-Subagent 绑定中，`allowed_models`、`deny_models`、`allowed_efforts` 在所有作用域都是硬约束：profile、`spawn_constraints`、caller lease 与匹配的 `model_profiles` 条目。允许集合求交，禁止项累积。违规返回 `profile.constraint_violation`，包含规则来源、允许 / 禁止值、有效值与绑定值来源。Advisory 角色派遣、显式 pin、人工切换模型 / 档位与恢复都不能放宽它们。机器级 `[subagent].deny_models` 增加另一道硬边界；route sidecar 不能声明 role 列表字段。外部 executor 完成规范化后，还会按其实际生效模型 ID 再检查。
+Subagent 绑定中，`allowed_models`、`deny_models`、`allowed_efforts` 在所有作用域都是硬约束：profile、`spawn_constraints`、caller lease 与匹配的 `model_profiles` 条目。允许集合求交，禁止项累积。违规返回 `profile.constraint_violation`，包含规则来源、允许 / 禁止值、有效值与绑定值来源。Advisory 角色派遣、显式 pin、人工切换模型 / 档位与恢复都不能放宽它们。机器级 `[subagent].deny_models` 增加另一道硬边界；route sidecar 不能声明模型硬列表字段。外部 executor 完成规范化后，还会按其实际生效模型 ID 再检查。
 
 ```yaml
 model_alias: fast-model
@@ -318,7 +323,7 @@ model_alias: k3-review
 thinking_effort: high
 tools: [Read, Grep, Glob]
 disallowedTools: [Bash]
-subagents: [explore]
+allowed_subagents: [explore]
 service_tier: priority
 request_params:
   temperature: 0.2
@@ -327,11 +332,11 @@ request_params:
 重点检查交互回归、无障碍与视觉一致性。
 ```
 
-必填字段为 `id`、`profile`、`description` 和 `prompt_mode`。可选字段为 `whenToUse`、`model_alias`、`thinking_effort`、`service_tier`、`request_params`、`tools`、`disallowedTools`、`subagents`。与普通 Agent 文件不同，route Frontmatter 使用严格解析。未知字段、非法类型、路径 / ID / profile 不匹配、同一来源内重复 ID、互斥的模型选择器只会让该 sidecar 被跳过并产生带 code 的诊断；基础 profile 和其他 route 仍会加载。`model_profiles`、`allowed_models`、`deny_models` 等仅属于 Agent 文件的字段在这里属于未知字段，会导致该 sidecar 被跳过。Route 可推荐默认 `model_alias`。偏离偏好会显示 advisory，但基础 profile 的硬模型与档位列表仍拒绝违规；请显式选择硬域内的覆盖值，或修正基础规则。
+必填字段为 `id`、`profile`、`description` 和 `prompt_mode`。可选字段为 `whenToUse`、`model_alias`、`thinking_effort`、`service_tier`、`request_params`、`tools`、`disallowedTools`、`can_spawn_subagents`、`allowed_subagents`、`preferred_subagents`、`deny_subagents`。与普通 Agent 文件不同，route Frontmatter 使用严格解析。未知字段、非法类型、路径 / ID / profile 不匹配、同一来源内重复 ID、互斥的模型选择器只会让该 sidecar 被跳过并产生带 code 的诊断；基础 profile 和其他 route 仍会加载。`model_profiles`、`allowed_models`、`deny_models` 等仅属于 Agent 文件的字段在这里属于未知字段，会导致该 sidecar 被跳过。Route 可推荐默认 `model_alias`。偏离偏好会显示 advisory，但基础 profile 的硬模型与档位列表仍拒绝违规；请显式选择硬域内的覆盖值，或修正基础规则。
 
 `prompt_mode` 始终保留基础提示词：`inherit` 要求正文为空；`prepend` 与 `append` 要求正文非空且不能包含 `${parent_prompt}` / `${base_prompt}`；`wrap` 要求正文必须且只能包含一次 `${parent_prompt}` 或 `${base_prompt}`。不提供无保护的 replace 模式。
 
-Route 若声明 `tools`、`disallowedTools` 或 `subagents`，该字段整体替换基础值；省略则继承基础。`subagents: []` 会让 route 成为叶子。调用方检查仍针对基础 role，因此 route 不能引入调用方原本不能派发的 role。需要另一个 role 身份时，应新建并 allowlist 一个基础 profile。
+Route 的 `tools` 与 `disallowedTools` 整体替换对应基础字段；`allowed_subagents` 与基础集合求交，`deny_subagents` 累积，`can_spawn_subagents: false` 不可重新打开，最近一层显式 `preferred_subagents` 替换较早的推荐。省略则继承。`allowed_subagents: []` 只关闭预设选择；完全叶子使用 `can_spawn_subagents: false`。调用方检查仍针对基础 role，因此 route 不能引入调用方原本不能派发的预设角色。
 
 请求字段省略时继承基础值。`service_tier: null` 清除基础 tier，其他值直接替换；`request_params: null` 清除基础 map，传入 map 时按标量 key 覆盖。Route 声明的 `model_alias` 或 `thinking_effort` 是 route 默认值。`AgentRun` 只能在全部硬模型与档位列表内显式覆盖任一值；被接受的子 Agent 仍保留该 route 身份，同时标记为 detached 并记录结构化 advisory。若没有覆盖，缺失的 route 模型，或所选 provider / executor 无法执行的 effort，仍属于硬能力错误。
 
@@ -350,7 +355,7 @@ Route 若声明 `tools`、`disallowedTools` 或 `subagents`，该字段整体替
 目录中发现的非法文件会被跳过并告警，不影响其他文件。通过 `--agent-file` 显式传入的文件必须合法 —— 否则 CLI 会报错并退出。
 
 ::: warning 注意
-`tools` 与 `disallowedTools` 不仅决定模型能"看到"哪些工具，还会在执行前再次强制检查。`subagents` 同样双重生效：`AgentRun` 工具的类型列表只包含允许委派的 subagent，并会在实际派发前再次强制校验；继续已有 subagent 不受此限制。权限规则仍是独立的控制层，用于决定哪些操作需要审批。
+`tools` 与 `disallowedTools` 不仅决定模型能"看到"哪些工具，还会在执行前再次强制检查。预设 allow / deny 规则也会过滤 `AgentRun` 的目录，并在实际派发前再次检查；派发开关还控制新建 Markdown 文件子 Agent。继续已有子 Agent 不受新建限制。权限规则仍是独立的控制层，用于决定哪些操作需要审批。
 :::
 
 自定义 Agent 作为被派发的 subagent 运行时，Kiki 会注入一段简短的委派说明：最后一条消息就是交给调用方的完整交付。独立宿主调用（MCP / SDK）用另一段说明：没有父 Agent。main agent 绑定不注入。在正文里写 `${delegation_context}` 可指定位置，否则前置。profile 上设 `delegation_notice: off`，或在 `config.toml` 写 `[agents.delegation] sub = false` / `independent = false`，即可关闭。如需替换文案，通过 [`PromptOverrides`](../configuration/config-files.md#prompt) 覆写 `delegation.sub.notice` 或 `delegation.independent.notice`。旧的 delegation `.md` 路径值不再接受；布尔 gate 与 `delegation_notice: off` 始终优先于文案覆写。
@@ -384,7 +389,7 @@ kiki -p --agent reviewer "审查这个分支上的改动"
 解析方式看文件第一行：
 
 - **遗留正文。** 文件并非以 `---` 加 YAML mapping 开头。只替换提示词；描述、工具集与允许委派的 subagent 列表仍沿用内置默认。不需要也不读取 Frontmatter。
-- **普通 profile。** 文件以 `---` 开头，且围栏解析为 YAML mapping。按名为 `agent` 的普通 Agent 文件加载，`override` 强制为 `true`。未声明的 `tools` / `disallowedTools` / `subagents` 仍沿用内置默认；声明了的字段生效。
+- **普通 profile。** 文件以 `---` 开头，且围栏解析为 YAML mapping。按名为 `agent` 的普通 Agent 文件加载，`override` 强制为 `true`。未声明的工具字段和子角色权限沿用内置默认；已声明的预设权限收窄这一层，显式推荐替换继承的推荐。
 
 优先级上，显式意图仍然胜出：项目作用域中声明了 `override: true` 的同名 Agent 文件、通过 `--agent-file` 传入的文件都排在 SYSTEM.md 之前，用 `--agent` 选择其他 Agent 时 SYSTEM.md 也不会生效；而在用户作用域内部，SYSTEM.md 优先于 `agents/` 目录中扫描到的同名文件。
 
@@ -422,7 +427,13 @@ ${plugin_sections}
 
 ## 指令文件
 
-Kiki 会同时注入 `$KIKI_HOME/AGENTS.md`（默认：`~/.kiki/AGENTS.md`）与工作区根目录的 `AGENTS.md`。如果工作区根目录存在 `.kiki/AGENTS.md`，该文件会替代用户级文件，工作区根目录的 `AGENTS.md` 仍然生效。文件名匹配不区分大小写。嵌套目录、工作区根目录上方、`~/.agents/AGENTS.md` 和旧的 `.kimi-code/AGENTS.md` 路径都不会被发现。
+`AGENTS.md` 提供在各文件声明的目录作用域内适用的指令；冲突时更具体的文件优先。它们从属于系统策略与当前用户请求，不能改变工具 schema、权限或宿主控制。运行时快照交付这些作用域规则；记忆仍是参考资料。
+
+Kiki 会同时加载 `$KIKI_HOME/AGENTS.md`（默认：`~/.kiki/AGENTS.md`）与工作区根目录的 `AGENTS.md`。根目录的 `.kiki/AGENTS.md` 会替代用户级文件，根目录的 `AGENTS.md` 仍然生效。会话启动时，也会加载从项目根目录到当前工作目录这条路径上适用的指令文件。文件名匹配不区分大小写。项目边界上方、`~/.agents/AGENTS.md` 和旧的 `.kimi-code/AGENTS.md` 路径都不会被发现。
+
+获准执行的文件工具访问另一目录时，Kiki 会沿该目录的祖先路径检查 `AGENTS.md` 与 `.kiki/AGENTS.md`，不会遍历无关子树。如果文件工具即将写入、但尚未看到适用规则，Kiki 会先提供完整的当前规则。第一次写入返回可重试结果，不修改文件；Agent 阅读规则后，可按现有权限策略重试。这不会增加一次用户审批。Bash 的发现依赖可识别的路径和显式工作目录，不会检查 Shell 命令动态计算出的所有路径。
+
+当前规则已完整存在于运行时快照，或已通过成功的 `Read` 完整读取时，不会因为另一个工具访问该目录就再次注入。部分读取或截断结果不算完整覆盖。文件发生变化、换到另一主机，或相关上下文被移除后，可能需要重新披露。初始目录列表只展示一层样本，Agent 会用 `Glob` 继续探索；规则正文不会随目录样本一起缩短。
 
 ## 会话目录中的存储位置
 

@@ -207,7 +207,7 @@ never write their own env-merge logic.
    // ...
    const value = this.config.get<MySection>(MY_SECTION);
    ```
-5. React to edits by subscribing `IConfigService.onDidChange` and filtering on `e.domain === MY_SECTION` (see `FlagService`).
+5. React to effective value changes by subscribing `IConfigService.onDidSectionChange` and filtering on `e.domain === MY_SECTION` (see `RequestGovernanceService`). `onDidChangeConfiguration` also reports commits whose effective value is unchanged; use it only when that broader signal is needed.
 6. Write it only through `IConfigService.set(domain, patch)` (merge) or `.replace(domain, value)` (wholesale). Never write `config.toml` directly.
 
 ## Reads vs writes
@@ -220,23 +220,25 @@ config.toml  ──load──▶  IConfigService.effective  ──get──▶  
    └────────  IConfigService.set/replace  ◀────  only on explicit writes
 ```
 
-- **Read path** (startup, every service): `config.toml` is loaded into `IConfigService` once; services read via `get()`. This path **never writes the file**.
-- **Write path** (rare): `config.toml` is rewritten only when something explicitly calls `IConfigService.set/replace`. The only production writers today are provider CRUD (`ProviderService.set/delete`, e.g. provisioning a provider after OAuth login).
+- **Read path:** after startup, `ConfigService` watches the configured TOML key and both credential locations, plus inherited base documents when present. It debounces for 200 ms, compares successive text snapshots before loading, retries incomplete or temporarily empty saves, and reconciles every 10 seconds if notifications were missed. `reload()` is also explicit. A parse failure retains the last valid values and blocks persisted writes until repaired; diagnostics report the failure. Ordinary reads and watcher reloads do not rewrite the file; startup migrations are separate.
+- **Write path:** production settings writers, including provider CRUD and request-governance rules, use `IConfigService.set/replace/replaceSections`. State transitions serialize writes and reloads. Persistence re-reads disk and uses compare-and-set so a concurrent external edit is not overwritten; a conflict adopts the latest disk values and reports `config.invalid` with `reason: 'write_conflict'`.
 
 **Runtime service state is not config.** Mutating a service at runtime does **not** rewrite `config.toml`:
 
 - `ProfileService.configure(...)` / `update(...)` / `setModel(...)` / `setThinking(...)` only change **in-memory** fields and append to the session **wireRecord** (for replay). They never call `IConfigService.set`.
 - Switching model or thinking level mid-session is session runtime state, not a config edit — the user's `config.toml` is left untouched.
 
-So `configure(...)` never overwrites the local file. Treat `config.toml` as the user's static config; runtime overrides live in memory and the session record.
+So `configure(...)` never overwrites the local file. `config.toml` stores persistent preferences and can reload during execution; session choices remain in memory and the session record. A consumer must read fresh values or subscribe to `onDidSectionChange` to react. File reload does not rebuild every consumer: request-governance re-evaluates waiters without killing active streams, while identity is startup-bound and prompt-field snapshots apply on the next turn.
+
+For this live-consumer pattern, read `src/app/requestGovernance/configSection.ts` and `requestGovernanceService.ts`: the `requestGovernance` section maps to `[request_governance]`, governs canonical model/provider generation attempts in one App instance, and updates its settings on section changes before draining the queue. Verify with `test/app/requestGovernance/requestGovernance.test.ts`; the real-request lifecycle is covered in `test/kosong/model/modelRequester.test.ts`. Stable reload, malformed-save recovery, and write-conflict checks live in `test/app/config/config.test.ts`.
 
 ## Late registration
 
 `ConfigService` loads in its constructor (first `get(IConfigService)`). Static sections are drained before that, but a runtime-contributed section (a `ConfigSectionContribution` record) can register at any later moment. To keep validation and defaults correct:
 
 - `IConfigRegistry` emits `onDidRegisterSection` whenever a section is registered (and `onDidUnregisterSection` when a runtime record is withdrawn).
-- `ConfigService` subscribes and, on registration, re-validates the already-loaded raw value for that domain, applies the default if the raw value is absent, re-runs the env overlay, and fires `onDidChange` if the effective value changed. On unregistration it devalidates the domain — `get(domain)` falls back to the raw value.
-- Before a section is registered, `get(domain)` returns the raw (transformed, unvalidated) value; consumers that need validated values should read after the section lands, or react to `onDidChange`.
+- `ConfigService` subscribes and, on registration, re-validates the already-loaded raw value for that domain, applies the default if the raw value is absent, re-runs the env overlay, and fires `onDidSectionChange` if the effective value changed. On unregistration it devalidates the domain — `get(domain)` falls back to the raw value.
+- Before a section is registered, `get(domain)` returns the raw (transformed, unvalidated) value; consumers that need validated values should read after the section lands, or react to `onDidSectionChange`.
 
 This means registration order is never a correctness concern — you do not need an eager bootstrap.
 

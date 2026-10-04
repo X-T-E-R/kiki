@@ -10,27 +10,27 @@ hero:
       link: ./getting-started/installation
     - theme: alt
       text: All features
-      link: https://github.com/X-T-E-R/kiki/blob/kiki/marketing/features.en.md
+      link: ./features/index
     - theme: alt
       text: Release Notes
       link: ./release-notes/changelog
 features:
-  - title: "Freedom: a model per role"
-    details: Bind each role to its own model and mix vendors in one session. A frontier model can plan while DeepSeek or GLM does the routine work and another vendor reviews.
-    link: ./customization/agents
-  - title: "Freedom: agents are your files"
-    details: An agent is a Markdown file with its tools, model, and dispatch rules in the frontmatter. Claude Code and OpenCode agent files load as they are, and edits reload in about 200 ms.
-    link: ./customization/agent-profiles
-  - title: "Freedom: rewrite any prompt field"
-    details: Override built-in prompt text down to a single tool's description, globally, per model, or per agent, then see what the model receives with kiki prompt-fields.
-    link: ./customization/prompt-fields
-  - title: "Power: many lines at once"
-    details: The lead agent dispatches subagents and background tasks, and hears back automatically when they finish.
-    link: ./reference/tools#background-tasks
-  - title: "Power: talk while it works"
-    details: Messages sent while the agent is busy wait in a queue, and each one can go out when the agent is idle, after its subagents finish, or after its tasks finish.
-    link: ./guides/interface#input-box
-  - title: "Power: work that outlasts a session"
-    details: A per-workspace requirement board the agent reads and writes, goals pursued across turns, and cron-scheduled prompts.
-    link: ./guides/sessions#requirements-board
+  - title: "One workbench, many lines"
+    details: The lead session dispatches subagents that each run a model you chose for that role, sends long commands to the background, and hears back when they finish.
+    link: ./features/workbench
+  - title: "Work that runs long"
+    details: Goals that carry across turns, a queue for what you type while it is busy, scheduled prompts, a per-workspace task board, and memory that outlives the session.
+    link: ./features/long-work
+  - title: "Roles you can talk to"
+    details: A persona is a persistent identity with its own memory, a fixed daily conversation, and a seat in a room where several of them discuss one topic.
+    link: ./features/people
+  - title: "Your data, your machines"
+    details: Spaces with their own credentials, directed remote connections, one-way thread bridges, Web access, and in-session SSH.
+    link: ./features/spaces
+  - title: "Every layer is yours"
+    details: Agents are Markdown files you own, prompts are overridable down to one tool description, connections and OAuth are one list, and hooks run your scripts.
+    link: ./features/freedom
+  - title: "Bring your history, meet other tools"
+    details: Import another tool's conversations and keep working in them, use Kiki inside your editor over ACP, or let Kiki run other agent harnesses as its engines.
+    link: ./features/ecosystem
 ---

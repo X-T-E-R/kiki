@@ -19,6 +19,8 @@ The desktop app bundles the Kiki server and CLI/TUI. On Windows and with the Lin
 | macOS Apple Silicon | `Kiki_*_aarch64.dmg` | No, link the bundled CLI manually |
 | macOS Intel | `Kiki_*_x64.dmg` | No, link the bundled CLI manually |
 
+macOS needs **13.5 or later**; that floor comes from the bundled runtime, so it applies however you install. Intel and Apple Silicon are separate downloads — pick the one matching your Mac. Linux desktop bundles are x64 only (deb or AppImage); the Linux CLI/TUI additionally builds for arm64.
+
 1. Open the [Kiki Releases page](https://github.com/X-T-E-R/kiki/releases) and select the required stable or beta `kiki-v<version>` tag.
 2. Download the desktop bundle for your system and its adjacent `.sha256` file. Compare the published hash with your downloaded file (`shasum -a 256 <file>` on macOS, `sha256sum <file>` on Linux, or `Get-FileHash <file> -Algorithm SHA256` in Windows PowerShell).
 3. Install it: run the Windows installer or `sudo apt install ./Kiki_*.deb`; on Linux AppImage, run `chmod +x Kiki_*.AppImage` then `./Kiki_*.AppImage`; on macOS, mount the dmg and drag Kiki to Applications.

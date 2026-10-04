@@ -105,7 +105,7 @@ The Kiki-specific user Skill directory moves with `KIKI_HOME`, so isolated data 
 extra_skill_dirs = ["~/team-skills", ".agents/team-skills"]
 ```
 
-**Built-in Skills** are distributed with the CLI and have the lowest priority. They provide out-of-the-box workflows for common tasks — for example, configuring MCP servers, customizing the TUI theme, and editing config files. See [Built-in skill commands](../reference/slash-commands.md#built-in-skill-commands) for the full list. Those describing Kiki Code itself can be turned off with the top-level [`builtin_product_skills`](../configuration/config-files.md#top-level-fields) field.
+**Built-in Skills** are distributed with the CLI and have the lowest priority. They provide out-of-the-box workflows for common tasks — for example, configuring MCP servers, customizing the TUI theme, and editing config files. See [Built-in skill commands](../reference/slash-commands.md#built-in-skill-commands) for the full list. Every Skill Kiki ships today describes Kiki itself, so the top-level [`builtin_product_skills`](../configuration/config-files.md#top-level-fields) field turns all of them off at once — including `/kiki-ops`, the guided path for configuring and troubleshooting Kiki. Set it back to `true` to restore them.
 
 ## Invoking a Skill
 

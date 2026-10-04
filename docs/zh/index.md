@@ -10,27 +10,27 @@ hero:
       link: ./getting-started/installation
     - theme: alt
       text: 全部功能
-      link: https://github.com/X-T-E-R/kiki/blob/kiki/marketing/features.zh-CN.md
+      link: ./features/index
     - theme: alt
       text: 发布说明
       link: ./release-notes/changelog
 features:
-  - title: 自由：每个角色各用各的模型
-    details: 每个角色单独绑模型，不同厂商混着用。海外前沿模型做规划，DeepSeek、GLM 跑日常的活，审查再换一家。
-    link: ./customization/agents
-  - title: 自由：智能体就是你的文件
-    details: 一份 Markdown，frontmatter 写工具、模型和能派发谁。Claude Code、OpenCode 的 agent 文件直接能用，改完约 200ms 生效。
-    link: ./customization/agent-profiles
-  - title: 自由：提示词随便改
-    details: 内置提示词可以改到单个工具的描述，全局、按模型、按智能体都行；用 kiki prompt-fields 看模型最终收到了什么。
-    link: ./customization/prompt-fields
-  - title: 强大：好几条线同时推进
-    details: 主智能体自己派子智能体、开后台任务，跑完会自动通知它。
-    link: ./reference/tools#后台任务
-  - title: 强大：它忙的时候你照样能说话
-    details: 消息先进队列，每条可以单独选什么时候发：空闲后、子智能体完成后，或任务完成后。
-    link: ./guides/interface#输入框
-  - title: 强大：活不随会话结束而丢
-    details: 智能体能读写的工作区需求看板、跨多轮推进的目标，以及按 cron 定时投递的任务。
-    link: ./guides/sessions#需求看板
+  - title: 一个工作台，好几条线
+    details: 主会话派子智能体，每个角色跑你为它选定的模型；耗时命令丢进后台，跑完自动回报。
+    link: ./features/workbench
+  - title: 长时间的活
+    details: 跨轮次推进的目标、它忙时你先排的队、定时提示词、每个工作区一块任务看板，以及比会话活得更久的记忆。
+    link: ./features/long-work
+  - title: 能一起干活的人
+    details: 角色是长期身份：有自己的记忆、固定的日常对话入口，还能进房间和别的角色一起讨论同一个话题。
+    link: ./features/people
+  - title: 数据与机器都在你手上
+    details: 各自带凭据的空间、有方向的远端连接、单向 thread bridge、Web 访问，以及会话内 SSH。
+    link: ./features/spaces
+  - title: 每一层都归你
+    details: 智能体就是你自己的 Markdown，提示词细到单个工具描述，连接和 OAuth 一张列表，hooks 跑你自己的脚本。
+    link: ./features/freedom
+  - title: 带过来，也接得进外面
+    details: 把别的工具的对话导进来接着做，在编辑器里通过 ACP 用 Kiki，或者让 Kiki 把别的智能体 harness 当引擎。
+    link: ./features/ecosystem
 ---

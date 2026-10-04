@@ -21,6 +21,7 @@ This repository uses VitePress for the documentation site. Most user-facing page
 
 - **Changelog page**: The English version (`docs/en/release-notes/changelog.md`) is the source of truth; the Chinese changelog should be translated from it. The changelog is currently generated manually by a skill that syncs from the CLI package's `CHANGELOG.md` after each release.
 - **All other pages**: `docs/en/` and `docs/zh/` are mirrored pairs with the same paths, headings, and section structure. Edit whichever locale you are working in, then update the other locale through the catch-up process before the applicable boundary below.
+- Online and bundled docs share these sources: `apps/kimi-code/scripts/local-docs.mjs` projects Markdown images and HTML `img`/`picture` to text for npm, SEA, and workspace installs, retaining alt text/captions and one online link per illustrated page; keep source media, and do not maintain a separate local body.
 
 Keep both locales in sync before release. Machine-assisted translation is fine; review the locale you changed and its mirror for accuracy, terminology, and broken links.
 

@@ -80,6 +80,8 @@ A goal can stop in three ways:
 
 Write stop conditions into the objective. `/goal` does not have a separate stop-limit flag.
 
+A blocked goal does not freeze work it already started. When a task launched for a blocked goal finishes, its result wakes the main agent to process that one completion; the goal itself stays blocked and does not resume on its own. Pausing or cancelling the goal, and an exhausted budget, still apply as before and hold the result for your next message.
+
 ## Manage goals in the web UI
 
 The web UI shows the current goal in a strip below the conversation. Select the strip to expand or collapse its details. When a token budget (a cap on how many tokens the agent may spend on this goal) is configured, the header shows its progress; goals without a token budget do not show a progress bar.

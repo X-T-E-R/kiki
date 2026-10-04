@@ -1,6 +1,6 @@
 # Workspaces and sessions
 
-Kiki persists every conversation as a "session" — storing message history and metadata so you can close the terminal or the browser and pick up right where you left off. The desktop app, browser GUI, and CLI/TUI all read and write the same session data. This page covers how to manage workspaces and sessions, use the requirements board, resume and fork sessions, and export or compress context.
+Kiki persists every conversation as a "session" — storing message history and metadata so you can close the terminal or the browser and pick up right where you left off. The desktop app, browser GUI, and CLI/TUI all read and write the same session data. This page covers how to manage workspaces and sessions, use the task board, resume and fork sessions, and export or compress context.
 
 ## Session storage
 
@@ -32,9 +32,9 @@ The desktop and browser GUI store new-session choices separately from this CLI d
 
 > The two GUI paragraphs above do not apply to CLI users — feel free to skip them.
 
-## Requirements board
+## Task board
 
-Open the requirements board from the fixed button at the bottom of the main agent's right panel. The board is fully built into Kiki — no additional installation is needed. Cards organize requirements and their links to sessions, not running agents. Todo lists remain separate and local to each agent.
+Open the task board from the fixed button at the bottom of the main agent's right panel. The board is fully built into Kiki — no additional installation is needed. Cards organize requirements and their links to sessions, not running agents. Todo lists remain separate and local to each agent.
 
 Cards appear a page at a time; counts and search results cover the cards loaded so far while syncing continues. Switching workspace scope or closing the board cancels further page loading. In a new-card form, card details, or a confirmation, `Tab` stays inside the topmost dialog and `Esc` closes only that dialog, returning focus to its opener. Dialogs cannot be dismissed while their save or delete request is pending.
 
@@ -91,7 +91,7 @@ In the sidebar, a thread created by another thread normally nests under its crea
 
 When session recovery fails, the GUI keeps the history that was already loaded and shows the error together with a request ID when one is available. A **Retry now** button in the same area calls the recovery action directly.
 
-Resolved questions, approvals, markers, and background-task completion notices stay in the timeline as compact entries. Completed work can be grouped under **Worked**; expand it to see the individual entries. Expand an answered question to read the full question and its saved answer. Dismissed and expired questions also expand to show the original question and choices. Completed task output remains available in task history. File references can be previewed, opened, or shown in their containing folder from the relevant session view.
+Resolved questions, approvals, markers, and background-task completion notices stay in the timeline as compact entries. Completed work can be grouped under **Worked**; expand it to see the individual entries. Expand an answered question to read the full question and its saved answer. Dismissed and expired questions also expand to show the original question and choices. Completed task output remains available in task history. File references can be previewed, opened, or shown in their containing folder from the relevant session view; a preview is generated on demand and is not the original file, which stays available to open or download.
 
 In the file preview, Markdown opens in the rendered view; switch to **Source** to inspect the text or edit it in the desktop app when a write channel is available. The rendered view supports tables, math, diagrams, and images linked relative to the Markdown file. For files larger than about 512 KB, the initial view shows only the beginning and is read-only. Select **Load full file** in either the rendered or Source view to display the rest; loading the full file does not enable editing.
 
@@ -114,6 +114,8 @@ You can pass a hint to tell the model what to prioritize when compressing:
 ```sh
 /compact Keep the discussion about database migrations
 ```
+
+The context meter below the composer shows the same numbers and lets you set the compaction point, and its detail card also carries the renewal strategy — summarize (the default), fresh (restart from the agent's working notes), or auto. `/autocompact` shows or changes the compaction point from the terminal. Facts you want to survive compression are better kept in [memory](./memory.md), which outlives the session entirely.
 
 ## Forking a session
 

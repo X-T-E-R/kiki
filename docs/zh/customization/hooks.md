@@ -56,7 +56,9 @@ text = "继续前核对目标、已有证据和下一步。"
 await klient.session(sessionId).agent("main").runCommand({ name: "hooks-inspect" });
 ```
 
-结果是 `hook.result` 诊断事件（`hookEvent = "hooks.inspect"`），不会附加到模型对话。这是各客户端共用的引擎检查入口，目前没有独立的 GUI hooks 设置页。
+结果是 `hook.result` 诊断事件（`hookEvent = "hooks.inspect"`），不会附加到模型对话。在 GUI 中，展开会话 Agent 面板的 **Hooks**，可查看有效规则、来源路径、未激活原因和计步状态。此视图使用 `GET /api/sessions/{session_id}/agents/{agent_id}/hooks`；配置保存成功不代表规则已在该会话激活。
+
+编辑用户配置时，打开**设置 → 能力 → 钩子**（`/settings/hooks`）。选中声明式规则或命令规则进行编辑，也可用 **高级：编辑 JSON** 编辑完整的 legacy 数组或 v2 对象。添加第一条声明式规则会显式切换到 v2，并把原命令保留在 `legacy` 中；打开或保存页面不会执行这些命令。**保存自动操作** 会校验完整的 hooks 值，并显示服务器保存后的值；保存失败时保留草稿。v2 总开关和停用 ID 仅影响声明式规则，不影响命令规则。
 
 TOML 不能在同一个 key 下同时声明 `[[hooks]]` 和 `[hooks]`。已有数组继续保持原义。需要在 v2 文档中保留 legacy 命令时，显式把旧条目移至 `[[hooks.legacy]]`，保持 `event`、`matcher`、`command` 和以秒计的 `timeout` 不变；它们仍使用 legacy runner 和输出协议，不会自动迁移或转换脚本协议。
 

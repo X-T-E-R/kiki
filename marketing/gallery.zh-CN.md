@@ -1,6 +1,6 @@
 # Kiki 截图巡览
 
-你的智能体，你说了算。Kiki 是跑在你自己机器上的开源 AI 智能体工作台。[返回 README](../README.zh-CN.md) · [功能一览](features.zh-CN.md)。
+你的智能体，你说了算。Kiki 是跑在你自己机器上的开源 AI 智能体工作台。[返回 README](../README.zh-CN.md) · [功能一览](features.zh-CN.md) · [在线功能一览 →](https://x-t-e-r.github.io/kiki/zh/features/)
 
 *以下场景均由真实 Kiki 界面在示例项目上渲染，展示的是界面，不代表模型性能实测。*
 

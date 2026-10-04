@@ -1,6 +1,6 @@
 # Keyboard Shortcuts
 
-Kiki's TUI interactive mode supports a set of keyboard shortcuts. The shortcuts are organized into five groups by usage context: general input, mode switching, during streaming, tool output control, the approval panel, and popup navigation. Type `/help` in the TUI at any time to open the built-in shortcut reference.
+Kiki's TUI shortcuts are grouped by context: general input, mode switching, editing, streaming, tool output, approval panels, and help navigation. Type `/help` to browse command usage, descriptions, support status, and input shortcuts.
 
 ## General Shortcuts
 
@@ -16,7 +16,7 @@ The following keys are always available in the input box:
 | `Ctrl-D` | Exit Kiki when the input box is empty |
 | `Ctrl-T` | Expand or collapse the todo list when it is truncated |
 
-Pressing `Ctrl-C` **during streaming** cancels immediately — no second confirmation needed.
+During streaming, `Ctrl-C` clears a nonempty draft first. With the input box empty, it interrupts the active turn without a second confirmation.
 
 **Exiting the program** (pressing `Ctrl-C` with an empty input box, or pressing `Ctrl-D`) uses a double-press confirmation mechanism: after the first press, a prompt appears in the status bar; a second press of the same key actually exits. Pressing any other key in between clears the confirmation state.
 
@@ -29,7 +29,7 @@ Pressing `Ctrl-C` **during streaming** cancels immediately — no second confirm
 
 Press `Shift-Tab` to enable or disable Plan mode. When enabled, the Agent prioritizes read-only tools for research and planning and can write to the current plan file; `Bash` is subject to the current permission mode and regular rules, without any additional separate approval triggered by Plan mode. Simply toggling does not create an empty plan file. Press `Shift-Tab` again to exit Plan mode.
 
-Type `!` in an empty input box to enter shell mode and run terminal commands directly; while a command is running, press `Ctrl+B` to move it to a background task. See [Interaction and input](../guides/interaction.md#shell-mode).
+Type `!` in an empty input box to enter shell mode and run terminal commands directly. The active-turn backgrounding shortcut `Ctrl-B` is disabled in the daemon TUI. See [Interaction and input](../guides/interaction.md#shell-mode).
 
 ## Input & Editing
 
@@ -38,8 +38,9 @@ Type `!` in an empty input box to enter shell mode and run terminal commands dir
 | `Ctrl-G` | Edit the current input in an external editor |
 | `Ctrl-V` | Paste an image or video from the clipboard (Unix / macOS) |
 | `Alt-V` | Paste an image or video from the clipboard (Windows) |
-| `Ctrl--` | Undo |
-| `Esc` `Esc` | Open the undo selector (double-press while idle) |
+| `Ctrl--` | Undo input edits, including a draft cleared with `Ctrl-C` |
+
+Use `/undo` to undo the last conversation turn; `Ctrl--` only edits the input box.
 
 Pressing `Ctrl-G` opens an external editor, selected according to the following priority:
 
@@ -57,19 +58,18 @@ While streaming output is active, the input box can still receive input and supp
 
 | Shortcut | Function |
 | --- | --- |
-| `Ctrl-S` | Steer: inject the current input directly into the running turn |
 | `Esc` | Interrupt the current streaming output |
-| `Ctrl-C` | Interrupt the current streaming output |
-
-Pressing `Ctrl-S` causes the model to see your message at the next interruptible point, without waiting for the current turn to finish.
+| `Ctrl-C` | Clear a nonempty draft first; interrupt the active turn when the input is empty |
+| `Ctrl-S` | Disabled: the prompt-steering shortcut does not inject input into the active turn |
+| `Ctrl-B` | Disabled: the active turn cannot be moved to the background with this shortcut |
 
 ## Tool Output
 
 | Shortcut | Function |
 | --- | --- |
-| `Ctrl-O` | Expand or collapse tool output and compaction summaries |
+| `Ctrl-O` | Expand or collapse tool output |
 
-When collapsed tool call results exist in the history, press `Ctrl-O` to toggle between collapsed and expanded views. After compaction, the same shortcut shows or hides the compaction summary in the compaction block.
+When collapsed tool call results exist in the history, press `Ctrl-O` to toggle between collapsed and expanded views.
 
 ## Approval Panel
 
@@ -88,7 +88,7 @@ Options that require feedback (such as "Reject" or "Revise") switch to a feedbac
 
 ## Popup Mode
 
-After opening the help panel with `/help`, use the following keys to navigate and close it:
+`/help` opens a scrollable reference in place of the input box. Command usage and descriptions wrap to fit the terminal width; closing it returns to the unchanged input draft. Use these keys inside the help panel:
 
 | Shortcut | Function |
 | --- | --- |

@@ -18,7 +18,7 @@ kiki serve --ensure --workspace . --json
 kiki serve --stop
 ```
 
-不带模式时，`serve` 在前台运行 daemon；`--ensure` 连接已有健康实例，或启动一个新实例并返回连接信息；`--stop` 停止所选 home 下当前可达的实例。`--idle-exit` 默认是 `30m`；活跃客户端 lease（租约：客户端持有的、需定期续期的「在线凭证」，只要还有效就说明有人在用服务）和运行中的派遣会让 daemon 保持运行。工作区信任后，TUI 会自动执行同样的连接或启动逻辑。
+不带模式时，`serve` 在前台运行 daemon；`--query --json` 只检查当前实例；`--ensure` 连接已有健康实例或启动新实例；`--stop` 停止所选 home 下当前可达的实例。活跃实例身份无法验证时，须先停止或升级它，Kiki 才会启动其他实例。`--idle-exit` 默认是 `30m`；活跃客户端 lease（租约：定期续期，表示客户端仍在使用 daemon）和运行中的派遣会让服务保持运行。显式 `--idle-exit 0ms` 让新启动的 daemon 持续到显式停止。工作区信任后，TUI 自动执行同样的连接或启动逻辑。
 
 ## 运行兼容性的前台服务
 
@@ -42,31 +42,61 @@ Stop:    Ctrl+C
 
 ## 鉴权
 
-所有 `/api/*` 接口都要求 bearer token（持有者令牌：任何携带该字符串的请求都被视为已授权）。token 在首次启动服务时生成，持久化在 `~/.kiki/server.token`（文件权限 0600），跨重启复用。
+本地管理与远端 peer 访问使用不同凭据。可信本地启动器读取 `<home>/server.local-owner`，这是跨重启保存的私有本地管理凭据（Unix 文件权限为 0600）。桌面 GUI、TUI 和本地 CLI 用它连接同一 home。请保持私有，不要复制给远端 home，也不要填进远端连接配置。公开健康检查不要求 API 鉴权。
 
-按客户端类型选择携带方式：
+远端 GUI 访问还要求目标开启入站开关、提供 `server.token` 中的当前 owner token，并持有针对源 home 审批的 grant（连接许可）。单独的 owner token、loopback 隧道或代理请求头都不能获得普通 REST/WebSocket 访问。源后端保存远端凭据，只为固定连接转发受支持的操作；renderer 不保留远端秘密。邀请与 SSH 配置见 [`kiki connections`](../reference/command.md#kiki-connections)。Thread bridge 使用独立凭据，不复用 GUI grant。
+
+可信本地客户端可按以下方式携带 local-owner 凭据：
 
 - **REST**：请求头 `Authorization: Bearer <token>`。
 - **Kiki GUI**：启动横幅里的地址自带 `#token=` 片段，浏览器打开后自动完成登录；该片段不会发送到服务端。
 - **WebSocket**：能自定义请求头的客户端用 `Authorization: Bearer`；浏览器等不能自定义头的客户端改用子协议（WebSocket 握手时声明的协议名）`kimi-code.bearer.<token>`（历史协议名，沿用自上游 Kimi Code 时代，为兼容保留）。
 
-token 泄露时运行 `kiki web rotate-token` 轮换：新 token 立即写入 `server.token`，旧 token 即刻失效，正在运行的实例无需重启。
+远端 owner token 泄露时运行 `kiki web rotate-token`：它替换 `server.token`，使旧远端凭据失效，并停止受影响的 peer 流，无需重启。这不会轮换 `server.local-owner`；该本地管理凭据泄露意味着本地访问已受损，不能靠远端 token 轮换补救。
 
-桌面 GUI 使用的就是这个 home token。启动时它会先在实例注册表里找活着的服务实例并直接连接，找不到时才启动自己的 sidecar。因此 GUI 启动的服务其他本机客户端也能用 home token 连上；别处启动的服务也会连同全部会话出现在 GUI 里。
+桌面 GUI 先查实例注册表，用 local-owner 凭据连接已有服务；找不到时才启动自己的 sidecar。因此同一 home 下受支持的本地客户端共享同一批会话，与具体哪个启动器启动服务无关。
 
 ::: warning 注意
 这条警告针对彼此独立预配、互不信任的运行时（例如分属不同 host 身份、各自拥有权限域的两个服务）：不要让这样的两个运行时共享同一个可写 home 目录，不要在它们的 home 之间复制会话目录，也不要复制 `device_id` 让两个 home 冒充同一台 host——会话索引、thread 归属与权限边界都依赖 home 身份的唯一性。同一 home 下的共享 daemon、TUI、桌面 GUI 与并存的服务实例是受支持的协作方式，不在此列。
 :::
 
-绑定非本机地址（`--host`，包括裸 `--host`，即 `0.0.0.0`）需要服务前面有终结 TLS 的反向代理，或加 `--insecure-no-tls`；两者都没有时服务拒绝启动。服务在非本机地址上运行之后，再设置 `KIKI_PASSWORD` 环境变量作为并列凭证；此时服务端会对鉴权失败自动限流。
+绑定非本机地址（`--host`，包括裸 `--host`，即 `0.0.0.0`）需要服务前面有终结 TLS 的反向代理，或加 `--insecure-no-tls`；两者都没有时服务拒绝启动。服务在非本机地址上运行之后，可设置 `KIKI_PASSWORD` 作为另一种 owner 凭据；它不能替代 local-owner 或逐源 grant。服务端会对鉴权失败自动限流。
 
 ::: danger 警告
-`--dangerous-bypass-auth` 会彻底关闭鉴权，任何能访问该端口的人都能控制你的会话、文件系统和 shell。仅在可信网络或自有鉴权代理之后使用，详见 [kiki 命令参考](../reference/command.md#kiki-web)。
+`--dangerous-bypass-auth` 仍会免鉴权暴露旧 API：任何能访问该端口的人都能控制会话、文件系统和 shell。连接管理与转发仍限 local-owner；此模式不能接收 peer、开启有效入站或签发新 grant。保存的允许清单会保留，但不生效。仅在可信网络或自有鉴权代理之后使用，详见 [kiki 命令参考](../reference/command.md#kiki-web)。
 :::
+
+## 在浏览器里使用 Kiki
+
+Web 访问是另一台设备的浏览器进入**这台** Kiki 的入口。拿到链接的人可以完整使用这台 Kiki，权限和你相同——它不是只读分享；「临时」只表示门开着多久，不表示能做什么。
+
+可以在 GUI 的**设置 → 空间 → Web 访问**里开启，也可以用命令行：
+
+```sh
+kiki web --temporary            # 临时开启八小时，之后自己关闭
+kiki web --persistent           # 一直开着，直到你手动关闭
+kiki web --status               # 当前是否开启，以及哪些浏览器已登录
+kiki web --off                  # 关闭 Web 访问，不停止 Kiki 和它的任务
+kiki web --revoke [session-id]  # 注销某个浏览器，或全部注销
+kiki web --host --port 58627    # 让同一网络里的其他设备也能连上
+kiki web --insecure-no-tls      # 允许明文 LAN HTTP（见下方警告）
+```
+
+TUI 里对应的是 `/web temporary|persistent|status|off|link|revoke [id]`，可搭配 `--host`、`--port`、`--public-url`、`--insecure-no-tls`、`--no-open`。
+
+每次开启会打印一个一次性链接，用于让浏览器登录。Kiki 用它换取一个由浏览器自己保管的 session cookie（HttpOnly、`SameSite=Strict`、host-only，HTTPS 下带 `Secure`）；JavaScript、`localStorage` 和 URL 查询参数里都不会留下 session 或根 token。链接只显示一次——服务端只保留摘要，丢失后需要重新生成，而不是找回同一个。已经授权的浏览器可以跨服务重启继续使用；新设备需要新链接。
+
+关闭 Web 访问会撤销全部链接和浏览器会话，并关闭已打开的连接流；它不会停止 daemon、桌面应用或 TUI，也不会取消已经开始的任务。`kiki serve` 和桌面应用都不受影响。
+
+::: warning 注意
+明文 LAN HTTP（`--insecure-no-tls`）没有加密，同一网络里的其他人可以读到传输的内容。超出你信任的网络时，请在前面放一个终结 TLS 的反向代理并传入 `--public-url <https://…>`，此时 Web 访问走该来源。
+:::
+
+Web 访问与远端 Kiki 连接是两种不同的对象。远端 Kiki 是另一台 Kiki，有自己的身份和需要你审批的按来源 grant；Web 链接是对**这台** Kiki 的访问，由本机 owner 掌控。Web 访问不改变 peer 授权，开启它也不会让任何 Kiki 进入。
 
 ## 用 API 驱动一个会话
 
-下面用 curl 走一遍最小流程：确认服务状态 → 创建会话 → 订阅事件 → 提交提示词 → 回读历史。示例假设服务跑在默认地址，token 已存入 shell 变量 `TOKEN`。
+下面用 curl 走一遍最小流程：确认服务状态 → 创建会话 → 订阅事件 → 提交提示词 → 回读历史。示例假设服务跑在默认地址，可信本地的 local-owner 凭据已存入 shell 变量 `TOKEN`。
 
 1. 确认服务状态：
 

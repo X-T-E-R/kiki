@@ -24,6 +24,10 @@ export KIKI_HOME="/path/to/custom/kiki"
 
 > 确保目录可写。多个 `kiki` 实例共用同一个 `KIKI_HOME` 会共享配置和凭证。
 
+在 macOS 和 Linux 上，共享运行时会在这个目录里保留本地端点，得到的路径长度有随平台变化的上限。家目录仍然过长时会报配置问题，并给出实际长度、该平台的上限和修法——换用更短的 `KIKI_HOME`。这是诊断，不是静默搬迁：Kiki 不会替你搬移数据，也不会自行改用别的目录；短 symlink 也无法缩短上限实际度量的真实路径。
+
+在 macOS 或 Linux 上升级后，请先退出所有仍在使用同一 `KIKI_HOME` 的进程，再用新版本启动。旧版本与新版本不会共用同一个运行中的运行时，Kiki 也不会替你迁移旧的那个。Windows 不受影响——那里的运行时使用命名管道，不需要这一步。
+
 数据目录的完整结构见[数据路径](./data-locations.md)。
 
 ### `KIKI_MODEL_*` 系列
@@ -136,6 +140,7 @@ kiki
 | `KIKI_BUILTIN_PRODUCT_SKILLS` | 是否向模型提供介绍 Kiki 自身的内置 Skills，优先级高于 `config.toml` 的 `builtin_product_skills`（默认开启） | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
 | `KIKI_TUI_FULL_SCREEN` | 启用实验性的 fullscreen alternate-screen 界面：可滚动的 transcript 视口、鼠标选择文本、可点击链接、Ctrl-Shift-F 搜索 | `1` 开启；其他值保持常规内联界面 |
 | `KIKI_EXPERIMENTAL_TASK_WAIT` | 是否向模型提供 `TaskWait` 工具——它可以在当前轮次内等待后台任务，而不必结束这一轮（默认启用） | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
+| `KIKI_EXPERIMENTAL_PLUGIN_IMPORT` | 启用历史导入，可迁入能续聊的 Kiki 会话或只读归档，支持内置格式和可选第三方来源；默认开启，但不在启动时扫描或自动导入，也可在 [`[experimental]`](./config-files.md#experimental) 下用 `plugin_import` 设置——见[会话历史导入](../customization/plugins.md#会话历史导入) | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
 | `KIKI_MCP_CONFIG_PATH` | 供外部编排器注入的 MCP 配置文件路径，由 `kiki web` 启动的服务端只读加载。必须与 `KIKI_MCP_AGENT_PROFILE_HOME`、`KIKI_MCP_CONFIG_READ_ONLY` 同时设置，否则启动直接报错 | 绝对路径 |
 | `KIKI_MCP_AGENT_PROFILE_HOME` | 供外部编排器注入的 agent profile 根目录，与 `KIKI_MCP_CONFIG_PATH` 一起使用；三个 `KIKI_MCP_*` 目录变量必须同时设置 | 绝对路径 |
 | `KIKI_MCP_CONFIG_READ_ONLY` | 注入目录的只读标记；必须为 `1`，服务端不会写回注入的配置或 profile | `1` |
@@ -153,7 +158,7 @@ kiki
 | `NB_SEARCH_EXA_API_KEY` | 内置 `exa.default` provider 实例使用的凭据 | 非空字符串 |
 | `NB_SEARCH_TAVILY_API_KEY` | 内置 `tavily.default` provider 实例使用的凭据 | 非空字符串 |
 | `NB_SEARCH_JINA_API_KEY` | 内置 `jina-reader.default` fetch provider 实例使用的可选凭据 | 非空字符串 |
-| `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE` | 是否在首轮结束后自动生成会话标题；优先于 `[experimental]` 条目和 `KIKI_EXPERIMENTAL_FLAG`（默认开启）——见 [`session_title`](./config-files.md#session-title) | 开启：`1`/`true`/`yes`/`on`；关闭：`0`/`false`/`no`/`off` |
+| `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE` | 是否由 Kiki 自动写会话标题；优先于 `[experimental]` 条目和 `KIKI_EXPERIMENTAL_FLAG`（默认开启）。具体在哪些时刻写由所选 `triggers` 决定；未选标题模型时 Kiki 完全不发标题请求——见 [`session_title`](./config-files.md#session-title) | 开启：`1`/`true`/`yes`/`on`；关闭：`0`/`false`/`no`/`off` |
 | `KIKI_EXPERIMENTAL_FLAG` | 在当前进程启用所有已注册的实验功能；单个功能的 `KIKI_EXPERIMENTAL_<NAME>` 变量或 `config.toml` 的 `[experimental]` 节中的显式配置优先于它 | `1`、`true`、`yes`、`on` |
 | `KIKI_SHELL_PATH` | Windows 上覆盖 Git Bash 路径（自动探测失败时使用） | 绝对路径 |
 | `KIKI_MODEL_MAX_COMPLETION_TOKENS` | 单步 LLM 请求的 `max_completion_tokens` 硬上限，仅对 `kimi` 供应商生效 | 正整数；`0` 或负数禁用 clamp |
@@ -161,7 +166,7 @@ kiki
 | `KIKI_MODEL_TOP_P` | 每次请求的核采样 `top_p`，仅对 `kimi` 供应商生效（全局生效） | 数字，如 `0.95` |
 | `KIKI_MODEL_THINKING_EFFORT` | 在线上强制使用指定的思考强度（`thinking.effort`），绕过模型声明的 `support_efforts`；仅对 `kimi` 供应商生效，且仅在 Thinking 开启时注入 | 思考强度值，如 `max` |
 | `KIKI_MODEL_THINKING_KEEP` | 保留思考透传；在 `kimi` 上以 `thinking.keep` 发送，在 `anthropic`（Claude 以及 Kimi 的 Anthropic 兼容模式）上以 `context_management` 的 `clear_thinking_20251015` 编辑发送（开启 keep 会让 Anthropic 请求走 beta Messages API）；覆盖 `[thinking] keep`（其默认值为 `"all"`）；仅在 Thinking 开启时注入 | API 接受的值，如 `all`；传入关值（`false`/`0`/`no`/`off`/`none`/`null`）可禁用 |
-| `KIKI_DISABLE_CRON` | 禁用定时任务工具（`CronCreate` 拒绝新计划，已有任务不触发） | `1` 表示禁用 |
+| `KIKI_DISABLE_CRON` | 禁用定时任务工具（`Cron` 的 `action: "create"` 调用会被拒绝，已有任务不触发） | `1` 表示禁用 |
 
 subagent 并发没有环境变量覆盖。请在 [`[subagent]`](./config-files.md#subagent) 中配置 `max_direct_children` 和 `max_total_subagents`，默认值分别为 `16` 和 `0`（不限）。
 

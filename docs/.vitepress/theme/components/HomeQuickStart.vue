@@ -125,13 +125,20 @@ function copyText(value: string, key: string) {
 
 @media (max-width: 768px) {
   .KikiQuick__grid {
-    grid-template-columns: 1fr;
+    /* `minmax(0, 1fr)`, not `1fr`: a bare `1fr` track is floored by its
+       content's min-content width, and the command row is `white-space:
+       nowrap`. On a phone that min-content width is the whole GitHub URL, so
+       the track grew past the viewport and pushed the page sideways. With a
+       zero minimum the row scrolls inside its own box, and the download and
+       copy buttons stay where a thumb can reach them. */
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
 .KikiQuick__block {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   padding: 24px;
   background: var(--vp-c-bg-alt);
   border: 1px solid var(--vp-c-divider);
@@ -146,7 +153,9 @@ function copyText(value: string, key: string) {
 .KikiQuick__header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
+  min-width: 0;
   margin-bottom: 12px;
 }
 
@@ -180,12 +189,17 @@ function copyText(value: string, key: string) {
   color: var(--vp-c-text-2);
   margin: 0 0 16px;
   min-height: 40px;
+  min-width: 0;
 }
 
 .KikiQuick__cmd {
   position: relative;
   display: flex;
   align-items: center;
+  /* The command is nowrap by design, so the box — not the page — owns the
+     horizontal scroll. `min-width: 0` lets this flex child actually shrink
+     inside the block, which is what keeps the button beside it reachable. */
+  min-width: 0;
   padding: 12px 16px;
   background: var(--kiki-color-shell);
   border: 1px solid var(--kiki-color-hairline);

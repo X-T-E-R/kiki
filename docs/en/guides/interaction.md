@@ -76,7 +76,6 @@ Shell mode lets you run terminal commands without leaving the conversation. The 
 
 - Enter: type `!` in an empty input box, or paste a command that starts with `!`.
 - Exit: press `Backspace` or `Esc` in an empty input box; submitting a command also returns you to normal mode automatically.
-- Run in background: while a command is running, press `Ctrl+B` to move it to a background task.
 - Recall previous commands: with the input box empty in shell mode, press `↑` to browse earlier shell commands; recalling one keeps you in shell mode so it runs as a command again.
 
 In shell mode the input box shows a `!` prompt on the left (in the desktop GUI the border also turns violet). For example, you can run `!git status` to check the repository state without opening a new terminal — the output goes straight into the conversation context.

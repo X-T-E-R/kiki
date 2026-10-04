@@ -33,7 +33,7 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/title [<text>]` | `/rename` | Without arguments, display the current session title; with an argument, set a new title (max 200 characters) | Yes |
 | `/compact [<instruction>]` | — | Compact the current conversation context to free up token usage; an optional custom instruction can hint to the model what to preserve | No |
 | `/autocompact [400k\|73%\|default] [--save model\|profile\|global]` | — | Show or change this session's automatic compaction point. `default` clears the session override; `--save` also changes the selected default (global is saved as a converted percentage). Changes take effect at the next step boundary, not immediately | Yes |
-| `/undo [<count>]` | — | Undo recent prompts from the active context. Without a count, opens a selector; with a count, undoes that many prompts. Prompts before the last compaction cannot be undone. Undoing also rolls back the todo list and plan mode state produced by those prompts (code changes are not reverted) | No |
+| `/undo` | — | Withdraw the last prompt and roll back its todo list and Plan mode state, without reverting code changes. Takes no arguments and does not open a selector. Prompts before the last compaction cannot be withdrawn. For input edits, use `Ctrl--` instead | No |
 | `/reload` | — | Reload the current session and apply the latest `config.toml` settings (providers, models, etc.) and `tui.toml` UI preferences, without restarting the CLI | No |
 | `/reload-tui` | — | Reload only the `tui.toml` UI preferences (theme, editor, notifications, etc.) without rebuilding the session | Yes |
 | `/init` | — | Analyze the current codebase and generate `AGENTS.md` | No |
@@ -99,12 +99,12 @@ Prompt mode exits with code `0` when the goal completes, `3` when it blocks, and
 
 | Command | Alias | Description | Always available |
 | --- | --- | --- | --- |
-| `/help` | `/h`, `/?` | Show keyboard shortcuts and all available commands | Yes |
+| `/help` | `/h`, `/?` | Open scrollable help with command usage, aliases, descriptions, supported/disabled status, input shortcuts, and the local docs path. Type `/` in the input box to browse current Skills and agent profiles. See [Help navigation](./keyboard.md#popup-mode) | Yes |
 | `/btw [question]` | — | Open a side conversation in a forked sub-Agent without affecting the current main Agent turn; without a question, opens the panel first to wait for input | Yes |
 | `/usage` | — | Show token usage, context consumption, and quota information | Yes |
 | `/status` | — | Show the current session runtime state: version, model, working directory, permission mode, etc. | Yes |
 | `/mcp` | — | List MCP servers and their connection status in the current session | Yes |
-| `/plugins` | — | Open the interactive plugin manager | Yes |
+| `/plugins` | — | Open the interactive plugin manager — see [Plugins](../customization/plugins.md) for installing from a source and the one-time consent a plugin running its own code needs | Yes |
 | `/version` | — | Display the Kiki version number | Yes |
 
 ## Exit

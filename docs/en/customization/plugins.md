@@ -1,6 +1,6 @@
 # Plugins
 
-Plugins package reusable Kiki capabilities into installable units — they can add [Agent Skills](./skills.md), custom [agents](./agents.md), automatically load a specified Skill at session start, contribute system-prompt instructions, and declare MCP servers to provide real tool capabilities. They are ideal for sharing workflows with a team, connecting to external services, or installing extensions from the [official plugins](#official-plugins).
+Plugins package reusable Kiki capabilities into installable units — they can add [Agent Skills](./skills.md), custom [agents](./agents.md), automatically load a specified Skill at session start, contribute system-prompt instructions, declare MCP servers to provide real tool capabilities, and bring another tool's conversation history in as a [Kiki session you can keep working in](#session-history-import), or as a read-only archive. They are ideal for sharing workflows with a team, connecting to external services, or installing extensions from the [official plugins](#official-plugins).
 
 ## Installation and Management
 
@@ -30,13 +30,13 @@ You can also use slash commands directly:
 | --- | --- |
 | `/plugins` | Open the interactive plugin manager |
 | `/plugins list` | List installed plugins |
-| `/plugins install <path-or-url>` | Install from a local directory, zip URL, or GitHub repository URL |
+| `/plugins install [--trust] <path-or-url>` | Install from a local directory, zip URL, or GitHub repository URL, or update an already-installed local source by repeating the same path. `--trust` gives the [one-time consent](#installing-a-plugin-that-runs-code) that a plugin running its own code needs, and is only asked on the first install of a source |
 | `/plugins marketplace [source]` | Browse the official marketplace, or pass a custom marketplace JSON path or URL |
 | `/plugins info <id>` | View plugin details and diagnostics |
 | `/plugins enable <id>` | Enable a plugin |
 | `/plugins disable <id>` | Disable a plugin |
 | `/plugins remove <id>` | Remove a plugin (requires confirmation) |
-| `/plugins reload` | Reload `installed.json` and all plugin manifests |
+| `/plugins reload` | Re-read `installed.json` and the managed copies of every plugin. It does not copy anything from your source directories — to pick up a source edit, use `/plugins install <path>` again |
 | `/plugins mcp enable <id> <server>` | Enable an MCP server declared by a plugin |
 | `/plugins mcp disable <id> <server>` | Disable an MCP server declared by a plugin |
 
@@ -51,10 +51,33 @@ Use `/plugins install <url>` to install directly from a GitHub repository. Four 
 
 Network requests only go through `github.com` redirects and `codeload.github.com` downloads; `api.github.com` is not called.
 
+### Installing a plugin that runs code
+
+Most of a plugin is declarative: Skills, agents, prompt text, themes, MCP server declarations. A plugin that needs more ships an entry file, and Kiki runs that file as Node.js code with your account's permissions — that is how a plugin reads a folder you point it at or imports a history file. It is not a sandbox: the code has the same access you do.
+
+Kiki therefore asks for consent once per source before installing such a plugin. `/plugins install <source>` reports that the plugin runs trusted code and stops; add `--trust` to give the consent:
+
+```sh
+/plugins install --trust ./my-plugin
+```
+
+In the GUI, the install sheet lists what the plugin would add and what it will be able to do, and its button reads **Allow and install** instead of **Install** while this consent is needed.
+
+The consent is remembered for the source, not for each file, page, or call:
+
+- Installing or updating from the same source again does not ask — even when the plugin's contributions, description, or declared permissions have changed since you approved it.
+- A different source that reuses the same plugin id is a new source and asks again.
+- For a GitHub URL, the source is the `owner/repo`, so switching branches, tags, or commits inside that repository does not ask again.
+- One change does ask again: a plugin that had no entry file starts shipping one.
+
+What you approve is the source rather than the exact bytes: Kiki fingerprints the plugin folder at the preview and refuses an install whose files changed after it. That fingerprint protects the preview, not each later action — once a source is trusted, reinstalling or updating it does not ask again, while the tool calls it produces still follow your current permission mode and tool rules.
+
 ### Notes
 
-- Plugin changes apply after `/reload` or in new sessions. After installing, enabling/disabling, or removing a plugin, run `/reload` or `/new`; the current session will not update.
-- Local installations are copied to `$KIKI_HOME/plugins/managed/<id>/`, and the CLI always runs from this managed copy. Editing the original source directory after installation has no effect; you must reinstall.
+- Local plugin updates take effect in the conversation you are already in. Install a local plugin once with `/plugins install --trust <path>` and enable it with `/plugins enable <id>`; a newly installed plugin starts disabled. After editing your source directory, run `/plugins install <path>` again with the same path — the updated code and manifest replace the managed copy, the plugin stays enabled, and the tool is available to the same conversation once that command returns. No `/plugins reload`, `/reload`, or `/new` is needed. The already-consented source does not ask for `--trust` again.
+- An update waits for that plugin's in-flight work before switching: calls already running finish on the old version, and calls that arrive during the switch wait and run on the new one. Other plugins are not restarted and keep running. A call already resolved against an older tool definition asks for a retry instead of running against changed rules.
+- `/plugins reload` is the separate explicit global action. It re-reads `installed.json` and the managed copies of every plugin and never copies from your source directories, so it is not the way to pick up a source edit. System-prompt sections and plugin Skills still rebuild through their own documented timing — see [System-prompt instructions](#system-prompt-instructions) and [Plugin agents](#plugin-agents).
+- Local installations are copied to `$KIKI_HOME/plugins/managed/<id>/`, and the CLI always runs from this managed copy. Edit the source directory and reinstall; editing the managed copy by hand does not give the same update path and a later reinstall overwrites it.
 - Removing a plugin only deletes the installation record; the managed copy and original source files remain on disk.
 - Plugins are currently installed per-user and apply to all projects; project-level installation scope is not yet supported.
 
@@ -74,6 +97,87 @@ Pass a marketplace JSON path or URL to `/plugins marketplace <source>`, set [`KI
   ]
 }
 ```
+
+## Local document extraction
+
+`kiki-documents` converts a local PDF, Office, HTML or text file into Markdown that `Read` and `Grep` can use. Install and enable the plugin through the existing plugin manager, then ask Kiki to extract a file into a new folder and read the result. The package bundles the official `@nb-corp/nb-extract` 0.1.1 JavaScript API and dependencies; it needs no runtime npm install or local skill checkout.
+
+HTML (`.html`/`.htm`), Markdown and plain text work immediately. Local PDF, DOCX, XLSX/XLS and PPTX need Python 3.10+ with MarkItDown's matching format dependencies on the machine running Kiki. Prepare a virtual environment once:
+
+```sh
+python -m venv .venv-documents
+```
+
+On Windows, install the formats you need with:
+
+```sh
+.venv-documents/Scripts/python.exe -m pip install "markitdown[pdf,docx,xlsx,xls,pptx]"
+```
+
+On macOS/Linux, use `.venv-documents/bin/python` instead. For PDF only, use `markitdown[pdf]`. Set the environment's absolute Python executable path in **Capabilities → Plugins → Kiki Documents → Settings → Python with MarkItDown** (`pythonPath`). The plugin does not install Python or pip dependencies automatically.
+
+Each extraction creates a new output directory containing `document.md`, `extraction.json` with source, engine and warnings, and any assets actually returned by the engine. The source is unchanged and existing outputs are not overwritten. The response preview may be shortened and marks `previewTruncated`; use `Read`/`Grep` on the saved Markdown for the full text. MarkItDown does not export images, and Defuddle does not download linked images.
+
+Auto processing stays local and never uploads or performs OCR. Empty or image-only scans fail rather than being reported as read; partly scanned documents can still omit image-only pages. For cloud OCR, explicitly authorize uploading the file to MinerU, configure its token in plugin settings and select `engine=mineru` with `allowUpload=true`. Service terms and charges apply; stopping local waiting does not cancel the remote task. Missing dependencies, unsupported formats and byte-limit failures return errors, not a complete extraction. Input is limited to 50 MiB with a 600-second deadline.
+
+## Media Sources
+
+A media plugin contributes one or more *sources* — a named provider for images, video, or speech. Once a media plugin is installed, its sources appear under **Capabilities → Plugins → Media sources**, one searchable list rather than a page per vendor.
+
+### Turning generation on
+
+Generating is experimental and is **off by default**. Everything else on this page — installing sources, filling in their settings, choosing defaults, and reading past generations — works whether or not it is on. Only starting a new generation needs it.
+
+Three ways to turn it on, in the order Kiki reads them:
+
+- Set `KIKI_EXPERIMENTAL_MEDIA_GENERATION=1` in the environment.
+- Put `media_generation = true` under `[experimental]` in `config.toml`.
+- Turn on **Media generation plugins** in **Settings → Experimental**.
+
+### The list
+
+Every source is a single row that answers three things at once: which provider it is, which package it came from, and whether it can be used right now. The status on the right of a row is one of:
+
+- **Ready** — installed, enabled, and the host confirms its configuration.
+- **Needs setup** — the host reports a required setting is missing. Open the row to fill it in.
+- **Not checked** — the source is installed and enabled, but its configuration has not been read. Kiki does not read every source's settings to draw a list, so a row in this state is neither an assurance nor a warning. Open the row to see its settings.
+- **Unavailable** — the package did not load, or you switched it off. Nothing configured in this row will generate until that is fixed.
+- **Blocked** — a job for this provider could not proceed because the package is not loaded. The job is kept, not discarded.
+
+Filter by modality (image, video, speech) or by status, or type to search. The counts beside each band are the whole list, not the filtered one, so a filter never hides how much is behind it.
+
+### Configuring a source
+
+Open a row to reach its settings form. The form is the package's own settings — the same fields, the same secret handling and the same save path as the plugin's own detail page, so a provider's key is a plugin's key.
+
+Secrets are write-only. Kiki shows whether a key is stored and never shows the value again; replacing or clearing one is an ordinary edit.
+
+A source can be configured in one of three ways, and the form says which applies rather than making you infer it:
+
+- **Its own settings.** You supply an API key and, if the provider needs one, a base URL. These fields are required only while no connection is selected.
+- **An existing Kiki connection.** If the package declares a connection setting, the form offers the connections you already have. Selecting one is enough — the package's own key and endpoint stop being required, and are not used at all. A connection you select must resolve; Kiki does not silently fall back to a previously stored key if it cannot.
+- **Self-managed.** A script may manage its own credentials from its own settings, environment variables, or an external file. That is a supported arrangement, and Kiki does not treat the absence of a key as a broken provider. Nothing Kiki stores is displayed back to you in logs, previews, or reports.
+
+A connection you already have does not promise that the account behind it can do media work. Kiki surfaces what the provider reports; it does not maintain an allowlist of which connections support which modality.
+
+### Per-modality defaults
+
+Three settings on the media entry package pick the default source for images, video and speech. They are ordinary plugin settings, stored with the rest of that package's configuration. When a source is the default, the list says so on its row.
+
+If a modality has no default and exactly one source could serve it, Kiki uses that one. If more than one could, Kiki asks you to choose rather than picking one and charging you for it.
+
+### Recent generations
+
+The same page lists the current session's recent media jobs, and keeps listing them when generation is off. Each one shows its state, and each file that landed is listed with a preview, a download, or an in-page player. Job states are reported as they are, including the two that are easy to get wrong:
+
+- **Outcome unknown** — Kiki cannot confirm whether the vendor accepted the submission, so it may still be generating and charging. Nothing is regenerated automatically, and no retry is offered, because a retry is a second charge.
+- **Stopped** — Kiki stopped waiting locally. Whether the vendor also stopped, and whether it is still charging, is what the vendor reports; the row says which.
+
+A job that partly finished keeps the files that landed. **Keep fetching** continues the same job through the session and agent that owns it — not through a global shortcut — and **Stop waiting** does the same. Both act only on the session that produced the job.
+
+### Discovery sources
+
+Where new providers can be discovered from is a different question from which providers are installed, so it gets its own folded section at the bottom of the page. Adding, pausing or removing a discovery source has no effect on already-installed packages, keys or past jobs.
 
 ## Official Plugins
 
@@ -420,6 +524,14 @@ Plugin MCP servers start after `/reload` or in new sessions. To enable or disabl
 /reload
 ```
 
+### Notion material and write-back
+
+`kiki-notion` is a Kiki-maintained configuration and workflow for [Notion's hosted MCP service](https://developers.notion.com/guides/mcp/get-started-with-mcp), not a Notion-endorsed integration. From the repository root, install `/plugins install --trust ./plugins/official/kiki-notion`, then run `/plugins enable kiki-notion`; for an extracted package, use its directory instead. In **Capabilities → MCP**, authorize `plugin-kiki-notion:notion` through the existing browser OAuth flow, without adding a token field. Use `/reload` or a new conversation if an already-open conversation has not discovered the new MCP connection.
+
+Ask `/skill:notion-workspace` to search a specified page/teamspace/workspace, read key originals, and save a brief with source links to a local path. Name the destination page URL/ID and intended addition or update when you want it saved back. Summaries alone do not change Notion; an explicit write request does not add a plugin-specific confirmation, while normal Kiki tool approvals still apply. Plan/tool restrictions, dropped filters, missing subtrees, and pending async writes are reported rather than presented as complete coverage or a successful write. Access also depends on your workspace permissions and administrator policy; installation does not authorize upgrades or paid actions.
+
+Notion content can reach your selected model provider, Kiki session history, and requested local files. The plugin creates no separate index or credential store. Disabling/removing it does not delete those artifacts or revoke OAuth; disconnect in MCP management and revoke service access in Notion **Settings → Connections** as needed. The package and scripted synthetic MCP chain are tested; real-account authorization/writes and autonomous model execution are not yet verified. The original package is MIT licensed; the remote service and workspace content follow the applicable [Notion agreements](https://www.notion.so/terms).
+
 ## Hooks in Plugins
 
 A plugin can declare hook rules in its manifest that run on lifecycle events while the plugin is enabled. Each entry uses the same fields as a [`[[hooks]]` rule in `config.toml`](./hooks.md#configuration) (`event`, `matcher`, `command`, `timeout`):
@@ -445,6 +557,197 @@ Plugin hooks reuse the same mechanism as global hooks — see [Hooks](./hooks.md
 
 Installing a plugin never runs its hooks by itself — they only fire when their matching event occurs while the plugin is enabled.
 
+## Session history import
+
+Kiki has built-in history import that turns another tool's text conversation into a **Kiki session you can keep working in**, or saves it as a read-only archive. Claude Code, Codex, Pi, Grok Build, OpenCode export files and custom JSON/scripts need no plugin installation, trust or activation. Import runs on the Kiki server without a model and leaves the source files unchanged; third-party plugins can still add formats through the same source contract.
+
+History import is on by default, but does not scan folders or import anything at startup. To turn it off, start Kiki with `KIKI_EXPERIMENTAL_PLUGIN_IMPORT=false`, or set `plugin_import = false` under [`[experimental]`](../configuration/config-files.md#experimental) in `config.toml`. The existing switch name is retained; see [Environment variables](../configuration/env-vars.md#runtime-switches).
+
+### Importing a conversation
+
+Importing needs no plugin: Kiki serves these formats itself. Open **New session** and choose **Import history** beside the starters, or go through **Capabilities** → **Plugins** → **Import history**. From there:
+
+1. Choose what the conversation becomes. **Kiki session** is the default: the conversation becomes a session in this Kiki, with its earlier turns as context, and you open it and carry on where the other tool left off. **Read-only archive** keeps it as a record you can read but not continue.
+2. For a session, choose the **working directory** it runs in. Your existing workspaces are one click away, and you can type or browse for a folder that is not a saved workspace — a session started in a folder you have not opened before works the same way. Browsing does not register anything: the folder is used only if an import actually lands there.
+3. Pick a format. Claude Code, Codex, Pi, Grok and OpenCode are built in, as is a custom script of your own; nothing is installed, trusted or enabled to reach this page. A third-party plugin's own source appears here too, once it is installed and enabled.
+4. Choose the **Source home** — the folder the other tool keeps its history in, on the machine running the server. Kiki reads only that folder.
+5. Pick a conversation from the list. A folder holding many histories is listed one page at a time.
+6. Read the preview. It says whether the source could read the conversation at all, what would be kept, what would not be carried over, and where the result lands. **Complete read** means the source read the whole conversation; **Sample** means it read part of it.
+7. Choose **Import as session** or **Start import**. That is the one confirmation this conversation gets: the import runs under the preview you just read.
+
+An archive is written into the home of the Kiki server this window is connected to — **Imports into** names it. A session is created in the working directory you chose, on that same server. Neither ever lands in the source folder. A preview belongs to the server that made it, so after connecting to a different Kiki, preview the conversation again.
+
+Progress reports bytes read from the source, and a source the server has not measured yet shows an indeterminate line instead of a percentage. **Stop import** ends a running import, and an import that was stopped, failed, or interrupted by a restart keeps its place and offers **Continue import**. A finished import offers **Open session** when it became a session, and **Open archive** when it became an archive — never both, because it only ever writes one.
+
+### What a session keeps, and what it does not
+
+A session import turns the conversation into context Kiki can continue from, which is what makes the migration painless, and it is not the same promise an archive makes. User and assistant text becomes the session's earlier turns. A tool call from the old conversation arrives as text saying it already happened — it is never re-run, and it grants no permission here. The other tool's system instructions, metadata, usage counts, approvals and running tasks are not installed as this Kiki's own state, and the preview lists that as a loss.
+
+Importing the same source conversation and revision into the same working directory reuses the existing session without replacing any continuation you have added in Kiki. The preview says so before you start. A changed revision imports as a new session, leaving the one you already had alone.
+
+Opening a migrated session needs a model like any other session: importing and reading do not, sending your next message does.
+
+### What an archive keeps, and what it does not
+
+An archive is history, not a live conversation: it cannot be continued, and opening it does not add its content to this session. It is also not a session of its own — it has no place in the session list and is read from the import page's own archive list, without a model. Records keep the roles they had in the other tool — user, assistant, system, tool call, metadata — but nothing is replayed. A tool call in the history stays a record, and text that was a system instruction to that tool is not executed here. Token counts the other tool recorded stay in the metadata and are not counted as usage on this machine.
+
+The preview's loss list is the part of the feature that tells you what you are not getting, so read it before importing:
+
+- **Attachments are not copied.** An image, document, or other embedded file leaves a placeholder in the text and a loss entry with a count; the conversation around it stays readable.
+- **Unknown or omitted content is reported.** Claude Code and Codex can preserve unknown rows as metadata; the other rules report unsupported records or parts as counted losses. No rule turns an omitted part into a claim of complete preservation.
+- **Malformed input is not hidden.** Claude Code and Codex report unparseable rows in their losses. Pi, Grok, OpenCode and the bundled custom JSON reader reject malformed JSON or invalid required relationships rather than silently skipping them. A preview distinguishes a sample from a complete read.
+
+Claude Code and Codex reject a source folder deeper than 20 levels and a single input line over 128 MiB. Pi, Grok, OpenCode and the bundled custom JSON reader limit each input file to 64 MiB; Grok's summary and update files each have that limit. A custom script controls its own input limits and must report them honestly.
+
+Kiki identifies a conversation by its source, source home, and the other tool's own id, and treats the revision seen in the preview as its content version. Importing the same revision again reuses the archive already there, and a changed conversation imports as a new revision of that archive. If the file changes between the preview and the import, the import fails and the existing archive is kept. Archives are found by title or source id — a lookup over what you have imported, not a full-text search.
+
+When the window is connected to a Kiki on another machine, that server's sources, imports, and archives are readable here, but starting, stopping, and continuing an import belong to the machine that owns the home.
+
+### Built-in formats and custom scripts
+
+Choose a folder containing the format below, not necessarily the other tool's entire home. For OpenCode, first export the session to a local JSON file.
+
+| Source | Supported input |
+| --- | --- |
+| Claude Code | JSONL history; selects the active UUID/parent conversation path and preserves compaction summaries as text |
+| Codex | Legacy and current rollout JSONL; selects conversation messages rather than duplicating their event mirrors |
+| Pi | v3 session JSONL, including the active parent-linked branch; inactive branches, thinking and attachments are reported as losses |
+| Grok Build | A session folder with `summary.json` and `updates.jsonl`, or a `session-migrate.grok.v1` bundle; ACP text chunks and completed tool results become readable history |
+| OpenCode export | Official `{info,messages:[{info,parts}]}` JSON export, or a locally saved flat share array; this does not read `opencode.db` or import SQLite state |
+| Custom JSON / script | By default, `.json` files containing a message array or `{title,messages}`; messages have a recognized `role` and string `text` or `content` |
+
+For another format, select **Custom JSON / script** and set **Custom import script** to an absolute path to a JavaScript ES module on the Kiki server. Its source settings use the same existing settings interface under the internal id `kiki-history`; that id is not an installed plugin. You can also set it in `config.toml`:
+
+```toml
+[plugin_settings.kiki-history]
+customScript = "C:/imports/my-format.mjs"
+```
+
+Leave the setting empty to use the bundled JSON reader. A script exports `discover(input, context)`, `probe(input, context)` and `parse(input, context)` using the [source method shapes below](#writing-an-import-source); it does not need a plugin manifest, `register(api)` or an SDK dependency. `context` supplies `signal` and `settings`. The standalone [custom JSON example](https://github.com/X-T-E-R/kiki/blob/main/packages/agent-core-v2/src/app/pluginImport/builtin/examples/custom-json.mjs) can be copied and adapted; it is also included with the built-in resources.
+
+Choose only code you trust: a custom script runs as Node.js with your account's permissions, not in a sandbox. Selecting the script is the explicit choice to run it; there is no additional installation or per-call approval. Changing its code or settings changes the preview revision, so preview again before importing. Kiki still checks the returned records and pages against the shared source contract.
+
+### Writing an import source
+
+An import source is one of the contributions a plugin can declare, so it lives in the same manifest: list `x-kiki.sessionSources`, point `x-kiki.entry` at an ES module, and export `register(api)` from that module. The manifest declares what the plugin offers; the entry does the reading.
+
+```json
+{
+  "name": "acme-history",
+  "version": "0.1.0",
+  "description": "Import Acme conversations into read-only archives",
+  "x-kiki": {
+    "engines": { "kiki": "^0.4.0" },
+    "permissions": { "fs": "outside" },
+    "entry": "./entry.mjs",
+    "sessionSources": [
+      {
+        "schemaVersion": 1,
+        "id": "acme-export",
+        "label": "Acme export",
+        "formatVersion": "acme-json-v1"
+      }
+    ]
+  }
+}
+```
+
+- `sessionSources` lists the sources this plugin registers. Each `id` matches `[a-z0-9][a-z0-9-]{0,63}` and must be unique within the plugin; `label` is what the source picker shows, and `formatVersion` names the format you read. A declared source the entry never registers fails when it is used instead of quietly doing nothing.
+- `entry` is required for a plugin with session sources and must resolve inside the plugin root. Kiki loads it as an ES module in its own Node.js process, so build your TypeScript down to the file you name here.
+- `permissions.fs: "outside"` is what an importer declares to read a folder outside the workspace, which is what a source home is. `engines.kiki` is required as soon as a plugin declares Kiki contributions.
+
+The adapter offers three methods, and the definition passed to `registerSessionSource` must be the one the manifest declares:
+
+- `discover` lists the conversations a folder holds for one source home, paging with the `cursor` it is given.
+- `probe` reports one conversation: its content `revision`, title, `status` (`preserved`, `partial`, or `unsupported`), losses, total size, and canonical `sourceHome`. The archive identity includes that home, so return one spelling of a folder rather than a path the user could write two ways.
+- `parse` returns records in pages, with the `cursor` that continues the read. `context.signal` is aborted when the reader stops the import, when the plugin is unloaded, or when a page runs past its timeout, and `context.settings` carries the plugin's own settings.
+
+An honest source is worth more than a complete-looking one: give every loss a `code`, a `count`, and a `detail` instead of importing only the part you can read, and never treat history text as instructions to run. Each record holds at most 49,152 UTF-16 code units, so a longer message becomes several records that share an `id` and carry `part`, `textOffset`, and `textTotal`.
+
+The example below is a working source for a folder holding one `history.json`; the record, page, and probe shapes come from the public `@kiki/plugin-sdk` package, whose `session-import` entry point exports them.
+
+```ts
+import { createHash } from 'node:crypto';
+import { readFile, realpath } from 'node:fs/promises';
+import path from 'node:path';
+
+import type { PluginRegistrationApi, SessionSourceAdapter } from '@kiki/plugin-sdk';
+import type {
+  ImportDiscoveryPage, ImportParsePage, ImportProbe, ImportRecord, SessionSourceDefinition,
+} from '@kiki/plugin-sdk/session-import';
+
+const definition: SessionSourceDefinition = {
+  schemaVersion: 1, id: 'acme-export', label: 'Acme export', formatVersion: 'acme-json-v1',
+};
+
+type Message = { role: ImportRecord['role']; text: string; timestamp?: string };
+type Conversation = { id: string; title: string; messages: Message[] };
+
+async function conversations(home: string): Promise<Conversation[]> {
+  if (!path.isAbsolute(home)) throw new Error('Choose an absolute source folder');
+  const file = await realpath(path.resolve(await realpath(home), 'history.json'));
+  return JSON.parse(await readFile(file, 'utf8')) as Conversation[];
+}
+
+function find(all: Conversation[], externalId: string): Conversation {
+  const found = all.find((conversation) => conversation.id === externalId);
+  if (found === undefined) throw new Error('That conversation is no longer in this folder; list it again');
+  return found;
+}
+
+const revisionOf = (conversation: Conversation): string =>
+  createHash('sha256').update(JSON.stringify(conversation)).digest('hex');
+
+/** One record per 49,152 UTF-16 code units of text, with the offsets a reader needs to reassemble it. */
+function records(conversation: Conversation): ImportRecord[] {
+  return conversation.messages.flatMap((message, index) => {
+    const split: ImportRecord[] = [];
+    for (let part = 0, offset = 0; part === 0 || offset < message.text.length; part++) {
+      let end = Math.min(message.text.length, offset + 48 * 1024);
+      if (end < message.text.length && /[\uD800-\uDBFF]/.test(message.text[end - 1])) end--;
+      split.push({
+        id: `${conversation.id}:${index}`, part, role: message.role, text: message.text.slice(offset, end),
+        timestamp: message.timestamp, textOffset: offset, textTotal: message.text.length,
+      });
+      offset = end;
+    }
+    return split;
+  });
+}
+
+const adapter: SessionSourceAdapter = {
+  async discover({ home }): Promise<ImportDiscoveryPage> {
+    const entries = (await conversations(home)).map((conversation) => ({ externalId: conversation.id, title: conversation.title }));
+    return { entries, cursor: null };
+  },
+
+  async probe({ home, externalId }): Promise<ImportProbe> {
+    const conversation = find(await conversations(home), externalId);
+    return {
+      revision: revisionOf(conversation), title: conversation.title, formatVersion: definition.formatVersion,
+      status: 'preserved', losses: [], totalBytes: Buffer.byteLength(JSON.stringify(conversation)), sourceHome: await realpath(home),
+    };
+  },
+
+  async parse({ home, externalId, revision, cursor }, context): Promise<ImportParsePage> {
+    const conversation = find(await conversations(home), externalId);
+    if (revisionOf(conversation) !== revision) throw new Error('The conversation changed; preview it again');
+    context.signal.throwIfAborted();
+    const all = records(conversation);
+    const start = Number(cursor ?? 0);
+    const page = all.slice(start, start + 32);
+    return {
+      records: page, losses: [], bytesRead: Buffer.byteLength(JSON.stringify(conversation)),
+      cursor: start + page.length < all.length ? String(start + page.length) : null,
+    };
+  },
+};
+
+export function register(api: PluginRegistrationApi): void {
+  api.registerSessionSource(definition, adapter);
+}
+```
+
 ## Security Model
 
 Plugins have a limited loading scope. The following operations do not occur during installation or session startup:
@@ -452,4 +755,5 @@ Plugins have a limited loading scope. The following operations do not occur duri
 - Unsupported runtime fields such as `tools`, `apps`, `inject`, and `configFile` are ignored rather than executed
 - All paths must remain within the plugin root directory after symbolic link resolution
 - MCP servers of enabled plugins start after `/reload` or in new sessions and can be disabled at any time from `/plugins`
+- Installing a plugin does not run its entry file: plugin code starts when you use the contribution, in a Node.js process holding your account's permissions ([not a sandbox](#installing-a-plugin-that-runs-code))
 - Broken manifests or unsafe paths appear in `/plugins info <id>` diagnostics and do not affect other sessions

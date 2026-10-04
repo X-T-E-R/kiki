@@ -7,26 +7,48 @@ const { lang } = useData()
 
 const isZh = computed(() => lang.value.startsWith('zh'))
 
+/**
+ * The same frame the README leads with, so a GitHub visitor and a docs visitor
+ * see one workbench rather than two. It is a copied asset, not a second source:
+ * marketing/shots stays the master, and `marketing-collect.mjs` is the only
+ * thing that copies it here.
+ */
+const heroShot = computed(() => withBase(isZh.value
+  ? '/shots/index/hero-workbench.zh.png'
+  : '/shots/index/hero-workbench.en.png'))
+
+/**
+ * The intrinsic size of the master frame, for the browser to reserve space
+ * before it loads. The CSS then scales it down, so these attributes are a
+ * layout hint rather than a rendered width — a phone must not inherit 2880px
+ * of reserved width, which is what a hard attribute would do before the
+ * stylesheet applies.
+ */
+const HERO_FRAME_WIDTH = 1440
+const HERO_FRAME_HEIGHT = 900
+
 const copy = computed(() => isZh.value
   ? {
       titleLead: 'Kiki',
       titleAccent: 'AI Agent',
-      tagline: '交互式通用 AI agent——桌面 GUI、CLI/TUI、共享 daemon 三端一体的独立产品。',
+      tagline: '跑在你自己机器上的开源 AI 智能体工作台：一个主会话带一队子智能体，长任务它自己推进，模型、提示词、角色、空间，每一层都归你。',
+      heroAlt: 'Kiki 工作台：主会话派出的子智能体、进行中的目标和一条排队消息同屏可见。',
       primaryText: '快速上手',
       primaryHref: '/zh/getting-started/installation',
-      secondaryText: '探索桌面应用',
-      secondaryHref: '/zh/guides/interface',
+      secondaryText: '看看它能做什么',
+      secondaryHref: '/zh/features/index',
       changelogText: '发布说明',
       changelogHref: '/zh/release-notes/changelog',
     }
   : {
       titleLead: 'Kiki',
       titleAccent: 'AI Agent',
-      tagline: 'An interactive general AI agent — Desktop GUI, CLI/TUI, and a shared daemon unified in one product.',
+      tagline: 'An open-source AI agent workbench on your machine: one lead session with a team of subagents, long work it pushes on by itself, and every layer — model, prompt, role, space — yours to set.',
+      heroAlt: 'The Kiki workbench: the subagents a lead session dispatched, an active goal, and a queued message, all on one screen.',
       primaryText: 'Get Started',
       primaryHref: '/en/getting-started/installation',
-      secondaryText: 'Explore Desktop App',
-      secondaryHref: '/en/guides/interface',
+      secondaryText: 'See what it does',
+      secondaryHref: '/en/features/index',
       changelogText: 'Release Notes',
       changelogHref: '/en/release-notes/changelog',
     })
@@ -62,6 +84,20 @@ const copy = computed(() => isZh.value
           {{ copy.changelogText }}
         </a>
       </div>
+      <figure class="KikiHero__shot">
+        <img
+          class="KikiHero__shotImg"
+          :src="heroShot"
+          :alt="copy.heroAlt"
+          :width="HERO_FRAME_WIDTH"
+          :height="HERO_FRAME_HEIGHT"
+          loading="eager"
+          decoding="async"
+        />
+        <figcaption class="KikiHero__shotCaption">
+          {{ isZh ? '真实界面渲染的示例场景，不代表模型性能实测。' : 'A rendered example scene of the real interface; it is not a model performance measurement.' }}
+        </figcaption>
+      </figure>
     </div>
   </section>
 </template>
@@ -77,7 +113,10 @@ const copy = computed(() => isZh.value
   position: absolute;
   top: -100px;
   left: 50%;
-  width: 960px;
+  /* Fixed 960px is wider than a phone. Clamping it to the section keeps the
+     decoration inside the hero instead of letting it extend the page's
+     scrollable width, without clipping anything the reader can see. */
+  width: min(960px, 100%);
   height: 540px;
   transform: translateX(-50%);
   background:
@@ -169,6 +208,52 @@ const copy = computed(() => isZh.value
   }
   .KikiHero__actions .KikiBtn {
     width: 100%;
+  }
+}
+
+/* The hero frame: one screen of the real workbench. It sits at the width of
+   the reading column so the chips stay legible instead of shrinking into a
+   thumbnail, and it reads as an inset surface rather than a floating banner. */
+.KikiHero__shot {
+  width: 100%;
+  max-width: 980px;
+  margin: clamp(40px, 5vw, 64px) auto 0;
+}
+
+.KikiHero__shotImg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid var(--vp-c-divider);
+  box-shadow: 0 24px 64px -32px rgba(30, 24, 16, 0.38), 0 2px 8px -4px rgba(30, 24, 16, 0.16);
+  background: var(--vp-c-bg-alt);
+}
+
+:global(.dark) .KikiHero__shotImg {
+  box-shadow: 0 28px 72px -32px rgba(0, 0, 0, 0.72), 0 2px 8px -4px rgba(0, 0, 0, 0.5);
+}
+
+.KikiHero__shotCaption {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--vp-c-text-3);
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .KikiHero__shotImg {
+    transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .KikiHero__shot:hover .KikiHero__shotImg {
+    transform: translateY(-4px) scale(1.006);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .KikiHero__shot:hover .KikiHero__shotImg {
+    transform: none;
   }
 }
 </style>

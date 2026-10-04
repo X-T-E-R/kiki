@@ -38,7 +38,7 @@ kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast -
 
 ## 桌面版设置入口
 
-在桌面 GUI 中，打开 **Settings → Agents → Prompt** 编辑此段——见[设置页导览](../guides/settings.md#agents)。卡片默认折叠。
+在桌面 GUI 中，打开**设置 → 智能体 → 提示词字段**编辑此段——见[设置页导览](../guides/settings.md#智能体)。卡片默认折叠。
 
 ## 下一步
 

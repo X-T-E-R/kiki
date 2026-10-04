@@ -22,7 +22,7 @@
 - `GET /api/healthz`（探活）
 - 静态 web 资源（非 `/api/` 路径）
 
-携带方式：REST 用 `Authorization: Bearer <token>` 请求头；WebSocket 升级请求可用同一请求头，或子协议 `kimi-code.bearer.<token>`（历史协议名，沿用自上游 Kimi Code 时代，为兼容保留）。token 的生成与轮换见[本地服务与 API：鉴权](./local-server.md#鉴权)。
+可信本地客户端使用私有的 `server.local-owner` 凭据。REST 通过 `Authorization: Bearer <token>` 携带；本地 WebSocket 升级接受该请求头或 `kimi-code.bearer.<token>`。远端 GUI peer 则需要有效入站开关、当前 owner 凭据及逐源 grant（HTTP 使用 `X-Kiki-Connection-Grant`）。它们连接 `/api/klient/events`，不使用旧 `/api/ws`。连接管理与转发限 local-owner；四个 thread-bridge 数据端点使用独立桥凭据。配置与轮换见[鉴权](./local-server.md#鉴权)和 [`kiki connections`](../reference/command.md#kiki-connections)。
 
 鉴权失败返回 HTTP 401，信封 `code` 为 `40101`。在非 loopback 绑定上，同一来源 60 秒内鉴权失败 10 次会被封禁 60 秒，期间一律返回 HTTP 429（`code` 为 `42901`）。
 
@@ -125,6 +125,10 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | --- | --- |
 | `GET /api/config` | 读取全局配置（密钥字段脱敏） |
 | `POST /api/config` | 合并式更新配置，并广播 `event.config.changed` |
+
+`hooks` 接受 legacy 命令规则数组，或 `schemaVersion: 2` 的声明式对象。读取和保存均保留完整值，包括 `rules`、`legacy`、`enabled`、`disabled` 和 `files`。嵌套 JSON 键使用 camelCase（`textFile`、`agentRoles`、`everyCompletedSteps`、`counterScope`、`partitionBy`），TOML 使用 snake_case。编辑时发送完整的 hooks 数组或对象；省略 `hooks` 不改动此配置，发送 `[]` 则清空。`null` 或不支持的规则形状返回校验错误码 `40001`，不改变已存文件。读取或保存配置不会执行 hook 命令。支持的事件和动作见 [Hooks](../customization/hooks.md)。
+
+`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` 是活跃 Agent 的独立只读检查视图。返回的规则、来源状态、诊断和计步值描述实际运行状态，不用于保存配置。
 
 ### 模型与供应商
 
@@ -243,6 +247,46 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `POST /api/mcp/servers:inspect` | 检查 MCP 定位器与 OAuth 候选项 |
 | `GET /api/mcp/auth-statuses` | 读取注册表中的 MCP OAuth 状态 |
 | `POST /api/mcp/auth:begin` / `:complete` / `:cancel` / `:reset` | 管理 MCP OAuth 流程 |
+
+技能激活请求体可在 `args` 和 `attachments` 之外携带可选字符串 `user_input`。用户通过斜杠命令调用技能时，传入包含空白和换行的完整原始消息。服务端将原文保存为激活来源中的 `userInput`，与展开的技能指令分开保留；GUI 时间线分别显示用户原文和加载的技能文档，不另提交一条消息。
+
+旧客户端可省略 `user_input`；服务端会从技能名和 `args` 生成斜杠文本。已有历史中不含 `userInput` 的记录仍按原方式显示技能文档。
+
+### SSH 主机
+
+这些接口管理会话可用的 SSH 主机，不是远端 Kiki 安装目录。主机读取接口可携带 `workspace_id`，选择对应工作区的覆盖值。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/ssh/config-sync` | 读取生效的 SSH 配置同步设置及来源 |
+| `PUT /api/ssh/config-sync` | 保存 `{ "enabled": true }` 或 `{ "enabled": false }`，并读回设置 |
+| `GET /api/ssh/hosts/{id}:host-keys` | 按已保存主机解析出的主机名和端口，读取本机公开主机密钥记录 |
+
+同步设置的读取和保存均返回 `{ enabled, source }`：`home` 是当前 Kiki home 的持久值，`base` 是继承的值，`default` 是未配置时的默认值（`true`）。设置与主机数量无关；读取失败返回错误，不会退回开启。Klient 方法为 `rest.ssh.configSync()` 和 `rest.ssh.setConfigSync(enabled)`。
+
+`rest.ssh.hostKeys(id, workspaceId?)` 返回解析出的 `hostname`、`port`、匹配用的 `label`，以及 `state`、`records` 和来源 `files`。`recorded` 仅表示本机存在身份记录，不代表刚刚校验过远端密钥。`unrecorded` 表示在可读或不存在的文件中没有找到匹配记录；`unavailable` 表示读取不完整，或匹配记录无法解释。记录包含可读取时的 SHA256 `fingerprint`、`algorithm`、文件与行号、主机匹配模式，以及状态（`recorded`、`revoked`、`unsupported` 或 `invalid`）。不支持的标记（如 `@cert-authority`）、无效公钥和文件错误均携带 `reason`。
+
+OpenSSH 的 `ssh -G` 输出会丢失路径引号。`UserKnownHostsFile` 包含多个文件或路径含空白时，读取返回 `unavailable`，原因为 `ambiguous-known-hosts-paths`；常见的 OpenSSH 双文件默认值也属于此情况，接口不会猜测路径边界。此 API 不连接主机、不修改信任记录，也无法判断远端密钥未变或已变化。首次密钥审批和变化后拒绝连接仍由既有连接流程处理。
+
+### 浏览器连接
+
+这些接口管理已保存的浏览器连接，不是使用它们的会话。读取与保存都不会启动浏览器，也不会访问网站。设置页见[浏览器控制](../guides/settings.md#浏览器控制)。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/browser/connections` | 列出已保存的连接与新会话默认项；每行带当前运行状态 |
+| `PUT /api/browser/connections/{id}` | 新建或替换一条连接，并读回结果 |
+| `DELETE /api/browser/connections/{id}` | 删除一条连接 |
+| `PUT /api/browser/default` | 保存 `{ "browser": "<id>" }`；省略该字段可清除默认项 |
+| `GET /api/browser/connections/{id}:status` | 只从内存与配置读取运行状态 |
+| `GET /api/browser/connections/{id}:tabs` | 列出已连接浏览器的目标标签；不会附着或启动浏览器 |
+| `GET /api/browser/connections/{id}:catalog` | 列出执行后端的工具（加 `?includeSchema=true` 时附带输入 schema）；可能启动该后端的 MCP 进程，但从不启动 Chromium |
+| `POST /api/browser/connections/{id}:check` | 执行与该接法对应的检查 |
+| `POST /api/browser/connections/{id}:connect` \| `:disconnect` | 启动或附着该连接，或释放它 |
+
+`PUT` 使用与 GUI 相同的判别联合请求体。`type` 为 `agent-browser-profile` 时必须给出 `name`，可带 `profilePath`、`executablePath`、`headed`、`driverPath`；`type` 为 `agent-browser-cdp` 时必须给出 `name` 与 `endpoint`，`endpoint` 取值为 `{ "action": "set", "value": "<CDP 的 http 或 ws 地址>" }`，或 `{ "action": "keep" }` 表示保留已存地址。两者都可带 `enabled`，默认 `true`。新建 CDP 连接时未提供 `set` 会被拒绝。已保存的 CDP 地址读回时是掩码；显式读取需用 `POST /api/secrets:reveal`，其 `ref` 的 `kind` 为 `"browser_endpoint"`。
+
+执行类动作失败即关闭：未开启 `native_browser` 实验开关时，`:connect` 返回信封码 `40001`，`details.code` 为 `"browser.disabled"`、`details.reason` 为 `"feature_disabled"`；连接自身被停用时返回的 `details.reason` 为 `"connection_disabled"`。Klient 对应方法为 `rest.browser.list()`、`upsert(id, input)`、`remove(id)`、`setDefault(browser?)`、`status(id)`、`tabs(id)`、`catalog(id, { includeSchema })`、`check(id)`、`connect(id)` 和 `disconnect(id)`。
 
 ### 终端
 

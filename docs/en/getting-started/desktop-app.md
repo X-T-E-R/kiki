@@ -10,6 +10,8 @@ Kiki Windows installers are not Authenticode-signed (Windows' official code sign
 
 The desktop build supports Windows x64 and installs for the current Windows account without administrator access in the normal case. Windows may download the Microsoft Edge WebView2 bootstrapper (the Microsoft web component the desktop UI depends on) during installation if the required runtime is missing.
 
+On macOS the desktop app needs **13.5 or later**, because that is the bundled runtime's own floor. Intel and Apple Silicon are separate downloads, not one universal app. On Linux the desktop app is x64 (deb or AppImage); the CLI/TUI also builds for arm64. Terminal chat and other headless use need no desktop or display of any kind.
+
 | Channel | Intended use | Public feed (the metadata URL for each update channel — not an RSS feed) |
 | --- | --- | --- |
 | Stable | Normal daily use | `https://x-t-e-r.github.io/kiki/updater/stable/latest.json` |
@@ -43,6 +45,8 @@ Installing an update exits the Kiki desktop process and its bundled sidecar (the
 
 If the in-app update fails, close Kiki, download the newer installer from its exact Release, verify its SHA256 file, and run it manually. Installing a newer version over the existing per-user installation keeps the normal application data location intact.
 
+The in-app update above is the Windows updater. On macOS and Linux, updating the desktop app means downloading the newer bundle yourself, so quit Kiki first, install the new bundle over the old one, and start it again. After replacing the app on macOS or Linux, quit any older Kiki process still using the same data home before starting the new build — see [`KIKI_HOME`](../configuration/env-vars.md#kiki-home).
+
 The public `latest.json` files provide signed updater metadata for stable and beta clients. Each manifest points to an installer under a specific `kiki-v<version>` tag rather than a mutable latest-download URL, and its `signature` field is the content of that installer's `.sig` asset.
 
 ## Backend logs
@@ -56,6 +60,12 @@ The backend defaults to `warn`. To change it before the settings control is conn
 SmartScreen reputation and updater signing answer two different questions: SmartScreen asks "who published this installer?", while the updater signature asks "was this file tampered with?". Because the installer has no Authenticode signature, Windows cannot display a verified publisher identity; the Tauri `.sig` allows the built-in updater to verify that the downloaded installer was signed with the Kiki updater key. The two facts are complementary, not contradictory.
 
 If SmartScreen appears, first confirm that the URL is under `github.com/X-T-E-R/kiki/releases/` and that the SHA256 value matches. Only then use **More info** and **Run anyway** if you accept the unknown-publisher warning. Do not install a copy received through chat, email, or a third-party mirror.
+
+## Windows, tray, and opening files
+
+Closing the window hides it to the tray on Windows and macOS; use **Quit** from the tray menu, or the usual exit command, to actually exit. If the tray icon cannot be created, Kiki still opens normally and closing the window asks you to confirm the exit instead. On Linux, when a tray is available the same close minimizes the window so your window manager can bring it back; where there is no tray, closing asks you to confirm the exit. Global shortcuts are a convenience — if one cannot be registered, the app still starts.
+
+Opening a file from the file menu hands it to the system application associated with that file type. The menu refuses a list of known launch targets rather than opening them: `.app` and `.command` on macOS, `.desktop` on Linux, and executables and scripts on Windows — including a link whose real target is one of those. Ordinary text files open normally, and *Reveal in file manager* and saving are unaffected. Treat the refusal list as covering those named types, not as a general promise about every file association.
 
 ## Roll back
 

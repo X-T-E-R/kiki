@@ -1,6 +1,8 @@
 # Personas, Bots, and rooms
 
-A **persona** keeps an identity and its memories across conversations. A [profile](./agent-profiles.md) still controls tools, permissions, and execution. A **Bot** gives a persona a persistent conversation, while a **room** lets several personas discuss a topic in separate member sessions.
+A **persona** keeps an identity and its memories across conversations, and gives it a stable address you can come back to. A [profile](./agent-profiles.md) still controls tools, permissions, model, and execution. A **Bot** is the persistent conversation behind a persona — the address a scheduled prompt, another persona, or a room reaches — while a **room** lets several personas discuss a topic in separate member sessions.
+
+A persona is a long-term identity; a profile is execution configuration. They answer different questions — who this is and what it remembers, versus which tools it may call, what model and effort it runs on, and the prompt it starts from. A persona card names the profile it rides on and you can rebind that profile without losing the identity, but the two are not two names for the same thing.
 
 ## Start with a persona
 
@@ -28,19 +30,25 @@ Choose the persona when creating a GUI session, or start it from the terminal:
 kiki --persona release-guide
 ```
 
-In the TUI, `/persona list` lists the catalog and `/persona switch release-guide` opens a **new** session. The previous conversation is preserved. Explicit model selection overrides the persona's model; otherwise Kiki uses the persona's model before the profile or default model. An explicitly selected profile overrides the persona's profile without discarding the identity.
+Every persona also has a fixed daily conversation: the same entry the sidebar row, the switcher, the session header, and the persona page all point at. Clicking a persona's name lands you in that one conversation, so "ask this persona" means the same thing every time. A persona can hold several conversations at once and you switch between them from its conversation list, so one identity can work across projects. The terminal equivalent is `/persona switch release-guide`, which opens a **new** session and leaves the previous conversation intact.
+
+In the TUI, `/persona list` lists the catalog. Explicit model selection overrides the persona's model; otherwise Kiki uses the persona's model before the profile or default model. An explicitly selected profile overrides the persona's profile without discarding the identity.
 
 Each session freezes its persona snapshot. Editing a card does not silently change an ongoing conversation's system prompt; start a new session or rebuild its context to apply the edit. The opening greeting is local presentation until you explicitly reply to it; merely opening a conversation does not add the greeting to model history.
 
 ## Memory and character cards
 
-Persona memory follows the persona across profiles and models. Persona-specific entries are isolated from other personas; by default the persona can also read shared global and workspace memory. Set `memory.shared: []` to exclude those shared memories. The memory page provides persona and persona-workspace scopes; deleting a persona also removes its persona namespaces. If memory cleanup fails, deletion reports the error and retains the card for retry.
+Persona memory follows the persona across profiles and models. Persona-specific entries are isolated from other personas; by default the persona can also read shared global and workspace memory. Set `memory.shared: []` to exclude those shared memories. The memory page provides persona and persona-workspace scopes, including the namespaces the home conversation uses; see [Memory](../guides/memory.md) for the full memory management model, the review inbox, and the undoable change history. Deleting a persona also removes its persona namespaces. If memory cleanup fails, deletion reports the error and retains the card for retry.
 
 The Personas page supports Character Card V3 JSON, PNG, and CHARX import/export. Preview an import before saving it: card lorebook entries can become persona memory, which influences later model requests. Unknown card extensions are preserved on export; keep the original card if it contains binary assets other than its avatar, because those assets are not fully retained. The avatar picker accepts PNG, JPEG, and WebP originals up to 20 MB, then uploads a 256-pixel crop. Choose a circle or square frame; the saved shape survives reloads. **Remove avatar** restores the initials without deleting the persona or its memories. Direct API uploads remain limited to 2 MiB. Duplicate creates a new identity without copying conversation state or private memory; archive hides a persona from ordinary selection without erasing it.
 
-## Enable a Bot
+Saved persona files are limited to 1 MiB for `persona.md` and 256 KiB each for examples and extensions, measured as UTF-8 bytes. Saving or importing oversized content fails before changing the card or its memory; shorten the content and try again. An older invalid or oversized card can still be replaced through `PUT /api/personas/{id}` or deleted through `DELETE /api/personas/{id}`; deletion still removes its persona memory first.
 
-Use **Set as Bot** to create or reopen the persona's persistent home conversation. This explicitly enables Bot support. You can also configure it in `config.toml`:
+## The persistent conversation
+
+A persona is reachable at a stable address whether or not you have typed to it. Its **daily conversation** is that address: the sidebar row, the switcher, the session header, and the persona page all open the same one, and the persona page lists the persona's other conversations so you can move the daily entry to another of them. Opening it for the first time creates it.
+
+The same conversation is what a scheduled prompt, a message from another persona, and a room seat address — there is no second copy of the persona to set up. The persona works in its own directory for it, `$KIKI_HOME/bots/<id>` by default, or the one named by `home_workspace`. Related limits are configured in `config.toml`:
 
 ```toml
 [bot]
@@ -49,29 +57,27 @@ max_handoffs_per_hour = 30
 room_budget = 12
 ```
 
-Bot support is off by default; ordinary personas do not require it. A Bot's default working directory is `$KIKI_HOME/bots/<id>`, unless the persona specifies `home_workspace`. Its home conversation is separate from every room membership.
-
 A session's `delivery` is either `reply` or `message`. In message mode, only successful `SendMessage` calls become delivered messages; ordinary model text remains in the process view. If a user-triggered turn ends with ordinary text but no successful send, Kiki asks the model to reconsider **once**, which can incur one extra model request. The shipped `agent` profile exposes `SendMessage` in message mode, while reply-mode turns omit it. A custom profile with an explicit `tools` allowlist must include `SendMessage`; delivery mode does not bypass profile permissions. The tool table is frozen for a turn, so changing delivery takes effect on the next turn.
 
-`SendMessage` can address the user or another enabled Bot with `to: "@Name"`. Use the persona ID when names collide. A handoff can wake a closed home conversation and counts toward the hourly limit; retrying the same delivery key does not consume another slot. Attachments are immutable copies from the session workspace, its additional directories, or the Bot home area—not arbitrary filesystem paths.
+`SendMessage` can address the user or another persona with `to: "@Name"`. Use the persona ID when names collide. A handoff can wake a closed persistent conversation and counts toward the hourly limit; retrying the same delivery key does not consume another slot. Attachments are immutable copies from the session workspace, its additional directories, or the persona's own area—not arbitrary filesystem paths.
 
 ## Discuss in a room
 
-Create a room with two to six members, a classification workspace, and a host. Persona members get dedicated message-mode sessions. The API also accepts existing threads (`kind: "thread"`); these reuse their own sessions, workspaces, and permissions, require `[threadCommunication] enabled = true`, and cannot be subagents. In the GUI, Ctrl/⌘-click threads in the sidebar and choose **Pull into a new room**, use **Add to room…** on a thread, add threads from the **Threads** tab under **Add member**, or choose **Open a room with these threads** on a thread link. Scheduling has three rules:
+Create a room with two to six members, a classification workspace, and a host. Persona members get dedicated message-mode sessions. The API also accepts existing threads (`kind: "thread"`); these reuse their own sessions, workspaces, and permissions, require `[thread_communication] enabled = true`, and cannot be subagents. In the GUI, Ctrl/⌘-click threads in the sidebar and choose **Pull into a new room**, use **Add to room…** on a thread, add threads from the **Threads** tab under **Add member**, or choose **Open a room with these threads** on a thread link. Scheduling has three rules:
 
 1. A user mention wakes the named members; `@everyone` selects all members.
 2. A user message without mentions goes to the host, whether the host is a persona or a thread.
-3. A Bot message wakes only the members it mentions. A message with no mentions does not continue the discussion.
+3. A persona message wakes only the members it mentions. A message with no mentions does not continue the discussion.
 
-Members run sequentially, so later speakers receive earlier speakers' results. Muted members are skipped by Bot mentions and host fallback, but an explicit user mention still wakes them. Each member sees the messages since its last wake, excluding its own already-recorded output.
+Members run sequentially, so later speakers receive earlier speakers' results. Muted members are skipped by persona mentions and host fallback, but an explicit user mention still wakes them. Each member sees the messages since its last wake, excluding its own already-recorded output.
 
 The budget limits member messages after each user message (12 by default). When exhausted, discussion pauses; **Continue** resets the budget and resumes retained work. **Pause** cancels queued wakes but allows the active turn to finish. **Stop all** also interrupts an active persona turn, never an original thread task; completed actions are not undone. Persona-only rooms retain user interruption steering, while mixed rooms retain queued work. At most one room question is shown at a time; later questions queue.
 
 Thread members default to `queueWhenBusy: true`: room input waits for their current turn to finish instead of steering it. Cold threads resume in their own workspaces. For every member other than the host, unmentioned messages are included in their next since catch-up without a separate model call. To speak, a thread must use `ThreadSend({room, content, mentions?})`; its ordinary assistant text never enters the room.
 
-Renaming, changing the host, muting, and workspace classification never rewrite member system prompts or permissions. Removing a thread leaves a system record in its session and preserves the room log; it does not archive the original thread. Creation requires two to six members, but leaving can reduce a room below two. Free discussion and room-scoped `HistorySearch` are not part of this release.
+Renaming, changing the host, muting, and workspace classification never rewrite member system prompts or permissions. Removing a thread leaves a system record in its session and preserves the room log; it does not archive the original thread. Creation requires two to six members, but leaving can reduce a room below two.
 
-If a member cannot wake, the room shows the failure and a recovery action instead of promising an automatic retry. For a model login failure, sign in under **Settings → Models**, or open the member's conversation and select an available model. Existing member sessions retain their bound model; editing the persona card does not change it. After fixing the problem, send another room message and mention the failed member if it is not the host. **Continue** resumes a paused room; it does not retry an unpaused failed wake.
+If a member cannot wake, the room shows the failure and a recovery action instead of promising an automatic retry. For a model login failure, sign in under **Settings → Models & providers → Connections**, or open the member's conversation and select an available model. Existing member sessions retain their bound model; editing the persona card does not change it. After fixing the problem, send another room message and mention the failed member if it is not the host. **Continue** resumes a paused room; it does not retry an unpaused failed wake.
 
 ## API entry points
 
@@ -80,3 +86,9 @@ The SDK exposes `global.personas`, `global.bots`, and `global.rooms`; HTTP clien
 REST resources are `/api/personas`, `/api/bots`, and `/api/rooms`. Room membership, mute state, host, and budget are updated with `PATCH /api/rooms/{id}`; pause, continue, and stop use their corresponding POST actions. `GET /api/rooms/{id}/log` accepts `afterId` and `limit`. Persona memory uses `/api/memory/persona?persona_id=<id>` or `/api/memory/persona_workspace?persona_id=<id>&workspace_id=<workspace>`.
 
 Authentication and connection setup are described in the [REST API guide](../server/rest-api.md).
+
+## Next steps
+
+- [Memory](../guides/memory.md) — the three memory scopes and how persona memory is stored
+- [Roles you can talk to](/en/features/people) — the feature tour of personas, daily conversations, and rooms
+- [Collaboration tools](../reference/tools.md#collaboration-tools) — the thread and room tools in full

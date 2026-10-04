@@ -33,12 +33,43 @@ Kiki 按作用域发现 profile 文件，作用域越具体，优先级越高：
 
 用户级、项目级和额外目录根下的 profile 文件，以及 `$KIKI_HOME/SYSTEM.md`，都被文件系统监听：新增、修改、删除后约 200 ms 自动重载，无需重启——之后新派发的 subagent 立即使用重载后的版本。已有会话的 main agent 在创建时绑定了当时的 profile 快照；改动文件后，在会话里执行「重建上下文」即可让当前会话换上新版本，对话消息保留。详见 [重建会话上下文](./agents.md#重建会话上下文)。
 
+Agent 详情的提示生效预览分别展示绑定配置、磁盘变化与最近一次真实请求。首次请求前，请求证据为空。主动检查全部提示文件时，还会检查共用声明和其他身份分支，但不会应用它们或改变绑定；未选分支中的缺失文件可以在这里报告，不影响当前 Agent 继续运行。
+
 ## Main agent 与 subagent
 
 一次会话由一个 **main agent** 驱动；它可以派发 **subagent** 处理聚焦的子任务。两者用同一套 profile 文件格式，区别在于使用方式：
 
 - **main agent**：启动会话时用 `--agent <名字>` 或 `--agent-file <路径>` 指定，或在 GUI 的 profile 选择器中切换。Frontmatter 里 `main: true` 的 profile 会出现在 main agent 候选里。
 - **subagent**：由 main agent 在对话中自动派发，拥有独立上下文，只把最终结论带回。你也可以直接要求"用 explore 先梳理一遍"来指定。
+
+提示词声明可以按 Agent 的实际身份生效，无须为此维护多份 profile。`prompt_overrides` 和各 `model_profiles` 条目里的正文都支持 `main`、`independent` 分支：省略或写 `same` 使用共用声明，写 `off` 只停用这条声明，写对象则为该身份整组替换。Subagent 使用共用声明。这些分支不改变选模或权限；顶层 `main: true` 仍只是标记 main agent 候选。[模型 cognition](../configuration/config-files.md#models) 的 overlay、steering 和 anchor 文件也按同一规则选择。
+
+```yaml
+model_profiles:
+  - alias: review-model
+    prompt_mode: append
+    prompt: 先检查证据，再形成结论。
+    main:
+      prompt_mode: append
+      prompt: 统筹工作，向用户交付已验证的结果。
+    independent: off
+prompt_overrides:
+  fields:
+    system.shared: 清楚说明发现。
+  main:
+    fields:
+      system.shared: 向用户简洁说明结果和下一步。
+```
+
+对象独立生效：`main` 正文替换共用的 `prompt_mode` / `prompt` 对；`main` 字段对象替换本条声明的共用文件和字段。如果该对象也需要共用内容，就在对象里明确写出。身份由实际绑定决定，不按 profile 名字或 `main: true` 判断；外部委派的 Agent 使用 `independent`，不会收到 main 专用分支。
+
+作为子智能体使用的档案，在自己的 `tools` 与 `disallowedTools` 名单之上还有一层：有部分工具对子智能体默认关闭，需要点名才开放，例如 `ThreadRead`、`AskUserQuestion` 和 `Cron`。在 `tools` 中点名一个工具，只为该档案作为子智能体时开放这一个工具。没有白名单的档案可以把通配符写在名字旁边，因此多开一个工具不必放弃普通工具：
+
+```yaml
+tools: ["*", ThreadRead]
+```
+
+只写 `*` 不会开放任何 opt-in，也不会穿过任何 deny。有限名单仍然有限：`tools: [Read, Grep, ThreadRead]` 就只选这三个。服务端 `subagent.allowed_tools` 与在这里点名是「或」的关系，但本名单仍会过滤结果：它点名的工具，只有本档案也选中时才对该档案开放，这也正是上面 `["*", ThreadRead]` 这种写法的由来。没写名单（或写了 `*`）的档案对该项开放到的工具都是开放的，而本档案自己的 `disallowedTools` 仍能禁用它。主对话不受这些 opt-in 限制；主对话能选哪些工具，仍由同一档案自己的名单决定。完整清单，以及始终仅供主智能体使用的 `MemoryWrite`、`ThreadSend`、`SendMessage` 与 Goal 工具，见 [subagent 默认限制](../configuration/config-files.md#subagent)。
 
 想让默认 main agent 永久换成自己的配置，还有一种特例文件：`$KIKI_HOME/SYSTEM.md`（默认 `~/.kiki/SYSTEM.md`）。纯正文的 `SYSTEM.md` 只替换默认 main agent 的系统提示词；以 `---` Frontmatter 开头的升级版还能同时改 `tools`、`subagents`、模型绑定等 profile 字段。优先级交互见 [用 SYSTEM.md 覆盖 main agent 的系统提示词](./agents.md#用-system-md-覆盖-main-agent-的系统提示词)。
 
@@ -60,6 +91,8 @@ model_profiles:
 这里的菜单包含 `fast-model` 和 `review-model`；默认模型不必重复写成一个空条目。模型按执行器使用的规范身份比较，不靠 alias 的字符串尾段匹配；无法解析或执行的声明不会因此获得运行能力。修改默认模型也会改变菜单：若旧默认没有单独列在 `model_profiles` 中，换默认就会移除旧模型并加入新模型。
 
 开关只增加一层**硬允许域**，不改变选模优先级，也不自动选菜单第一项。Kiki 在按目录与作用域选定 profile 后、route 与 lease 改写前捕获原始默认和菜单，并随绑定冻结。显式派发参数、route / lease pin（默认模型指定）、已保存的实际模型，或 lease 替换的 `model_profiles` 都不能扩充它；lease 把条目替换为子集或空列表也不会抹除或收窄原菜单，另加硬限制应使用 `allowed_models`。原菜单条目的硬规则仍保留。
+
+Caller lease 提供 `model_profiles` 时，替换 child 的菜单和参数默认值，但默认保留原角色的模型提示词（`model_prompts: preserve`）。Kiki 按 child 的最终 alias 分别匹配两层来源，先应用原角色正文，再应用 lease 正文，字段也按这个顺序合并。需要移除原提示来源时，在 lease 菜单旁设置 `model_prompts: replace`；保存的模型菜单与硬规则仍有效。Caller lease 只作用于 child，因此它自身的模型正文和字段声明不能包含 `main`、`independent` 分支。
 
 会话的 **main agent** 以用户选模为准，优先于 profile 的模型约束。偏离推荐或默认 pin 不警告；超出 profile 硬模型域时只显示非阻断警示。GUI 保留已配置模型的选择入口，不因 profile 模型规则拒发，约束投影尚未加载时也不会拦截。模型存在性与 provider / executor 能力仍会校验。通过 `AgentRun` 派遣的 `main: true` profile 仍是 subagent，不是用户控制的 main 会话。
 

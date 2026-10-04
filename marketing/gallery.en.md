@@ -1,6 +1,6 @@
 # Kiki screenshot tour
 
-Agents that answer to you. Kiki is an open-source AI agent workbench on your machine. [Back to the README](../README.md) · [All features](features.en.md).
+Agents that answer to you. Kiki is an open-source AI agent workbench on your machine. [Back to the README](../README.md) · [All features](features.en.md) · [Online features →](https://x-t-e-r.github.io/kiki/en/features/)
 
 *All scenes below are rendered by the real Kiki UI on an example project. They show the interface, not measured model performance.*
 

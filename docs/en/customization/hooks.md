@@ -56,7 +56,9 @@ The engine's contributed command `hooks-inspect` reports source, activation or f
 await klient.session(sessionId).agent("main").runCommand({ name: "hooks-inspect" });
 ```
 
-The result is a `hook.result` diagnostic event (`hookEvent = "hooks.inspect"`); it is not appended to the model's conversation. This engine inspection is shared by clients; there is no dedicated GUI hooks settings page yet.
+The result is a `hook.result` diagnostic event (`hookEvent = "hooks.inspect"`); it is not appended to the model's conversation. In the GUI, open **Hooks** in the session's agent panel to see effective rules, source paths, inactive reasons, and cadence counts. This view uses `GET /api/sessions/{session_id}/agents/{agent_id}/hooks`; saving a setting does not prove that its rules are active in that session.
+
+To edit the user configuration, open **Settings → Capabilities → Hooks** (`/settings/hooks`). Select a declarative or command rule to edit it, or use **Advanced: edit JSON** for the complete legacy array or v2 object. Adding the first declarative rule explicitly switches a legacy array to v2 and preserves commands in `legacy`; opening or saving the page never runs those commands. **Save actions** validates the whole hooks value and displays the server's saved values. A failed save keeps your draft. The v2 enable switch and disabled IDs affect declarative rules only, not command rules.
 
 TOML cannot declare both `[[hooks]]` and `[hooks]` under the same key. Existing arrays continue unchanged. To keep legacy commands in a v2 document, move those entries explicitly to `[[hooks.legacy]]`, preserving their `event`, `matcher`, `command`, and seconds-based `timeout`. They still use the legacy runner and output protocol; no automatic migration or script-protocol conversion occurs.
 

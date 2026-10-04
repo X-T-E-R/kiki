@@ -22,87 +22,90 @@ interface Feature {
 const capabilities = computed<Capability[]>(() => isZh.value
   ? [
       {
-        badge: '三端一体',
-        title: '三端协同，共享 daemon',
-        desc: '桌面 GUI、CLI/TUI 与本地 API 服务器共享同一个后台进程与会话状态，无缝切换交互界面。',
-        href: '/zh/getting-started/installation',
+        badge: '工作台',
+        title: '一个工作台，好几条线',
+        desc: '主会话派子智能体，每个角色跑你为它选定的模型；耗时命令丢进后台，跑完自动回报。',
+        href: '/zh/features/workbench',
       },
       {
-        badge: '多 Agent',
-        title: '多 Agent 协同与编排',
-        desc: '支持主从 agent 树状派发与并行执行，每个子 agent 拥有独立执行上下文与生命周期。',
-        href: '/zh/customization/agents',
+        badge: '长时间的活',
+        title: '它替你把长活干完',
+        desc: '跨轮次推进的目标、你忙时排的队、定时提示词、每工作区一块任务看板，以及比会话活得更久的记忆。',
+        href: '/zh/features/long-work',
       },
       {
-        badge: '定制能力',
-        title: '提示词字段精细可控',
-        desc: '灵活定制系统提示词各组成字段、模型词汇映射与会话行为，打造契合自身业务的专属 agent。',
-        href: '/zh/customization/prompt-fields',
+        badge: '角色',
+        title: '能一起干活的人',
+        desc: '角色是长期身份：有自己的记忆、固定的日常对话入口，还能进房间和别的角色一起讨论同一个话题。',
+        href: '/zh/features/people',
       },
       {
-        badge: '任务看板',
-        title: '透明的执行流与任务状态',
-        desc: '内置任务看板与状态追踪，清晰把控长期运行的工作流、子任务依赖与工具调用审查。',
-        href: '/zh/guides/sessions',
+        badge: '数据与机器',
+        title: '数据与机器都在你手上',
+        desc: '各自带凭据的空间、有方向的远端连接、单向 thread bridge、Web 访问，以及会话内 SSH。',
+        href: '/zh/features/spaces',
       },
       {
-        badge: '扩展生态',
-        title: 'MCP 协议与 Skills 生态',
-        desc: '深度支持 Model Context Protocol 与团队自定义 Skills，灵活连通外部工具与各类企业数据源。',
-        href: '/zh/server/mcp',
+        badge: '掌控',
+        title: '每一层都归你',
+        desc: '智能体就是你自己的 Markdown，提示词细到单个工具描述，连接和 OAuth 一张列表，hooks 跑你自己的脚本。',
+        href: '/zh/features/freedom',
       },
       {
-        badge: '极速响应',
-        title: '高性能原生运行时',
-        desc: '轻量资源占用、秒级冷启动与流式响应，为日常高频、长时间编码与深度会话精心打磨。',
-        href: '/zh/server/local-server',
+        badge: '带过来，也接得进外面',
+        title: '带过来，也接得进外面',
+        desc: '把别的工具的对话导进来接着做，在编辑器里通过 ACP 用 Kiki，或者让 Kiki 把外部 harness 当引擎。',
+        href: '/zh/features/ecosystem',
       },
     ]
   : [
       {
-        badge: 'Tri-Form',
-        title: 'Three Clients, One Daemon',
-        desc: 'Desktop GUI, CLI/TUI, and local API server share the same daemon process and unified session state.',
-        href: '/en/getting-started/installation',
+        badge: 'Workbench',
+        title: 'One workbench, many lines',
+        desc: 'A lead session dispatches subagents, each role runs the model you picked for it, and long commands go to the background and report back.',
+        href: '/en/features/workbench',
       },
       {
-        badge: 'Multi-Agent',
-        title: 'Multi-Agent Orchestration',
-        desc: 'Hierarchical subagent delegation and parallel tasks, each with its own isolated execution context.',
-        href: '/en/customization/agents',
+        badge: 'Long work',
+        title: 'Work that keeps going',
+        desc: 'Goals that carry across turns, the queue for what you type while it works, scheduled prompts, a board per workspace, and memory that outlives the session.',
+        href: '/en/features/long-work',
       },
       {
-        badge: 'Customization',
-        title: 'Customizable Prompt Fields',
-        desc: 'Tailor system prompt segments, model vocabulary mappings, and session behaviors to your workflow.',
-        href: '/en/customization/prompt-fields',
+        badge: 'People',
+        title: 'Roles you can talk to',
+        desc: 'A persona is a long-term identity with its own memory and a fixed daily entry, and it can join a room to discuss a topic with other personas.',
+        href: '/en/features/people',
       },
       {
-        badge: 'Task Board',
-        title: 'Transparent Task Tracking',
-        desc: 'Inspect multi-step execution flows, dependencies, and tool approval checkpoints in real time.',
-        href: '/en/guides/sessions',
+        badge: 'Data & machines',
+        title: 'Your data, your machines',
+        desc: 'Spaces that carry their own credentials, directed remote connections, one-way thread bridges, Web access, and in-session SSH.',
+        href: '/en/features/spaces',
+      },
+      {
+        badge: 'Freedom',
+        title: 'Every layer is yours',
+        desc: 'An agent is your own Markdown, prompts are editable down to one tool description, connections and OAuth are one list, and hooks run your scripts.',
+        href: '/en/features/freedom',
       },
       {
         badge: 'Ecosystem',
-        title: 'MCP Protocol & Agent Skills',
-        desc: 'Connect to external tools, databases, and enterprise data sources via Model Context Protocol and Skills.',
-        href: '/en/server/mcp',
-      },
-      {
-        badge: 'Performance',
-        title: 'High-Performance Runtime',
-        desc: 'Lightweight resource footprint, instant cold startup, and low-latency streaming for all-day focus.',
-        href: '/en/server/local-server',
+        title: 'Bring your history, meet other tools',
+        desc: 'Import another tool\'s history and keep working in it, drive Kiki from an editor over ACP, or let Kiki use an external harness as an engine.',
+        href: '/en/features/ecosystem',
       },
     ])
 
-const sectionTitle = computed(() => isZh.value ? '核心产品特性' : 'Product Capabilities')
+const sectionTitle = computed(() => isZh.value ? '功能介绍' : 'Features')
 const sectionLede = computed(() => isZh.value
-  ? '专为高复杂度工程与人机协作设计的交互式通用 AI agent。'
-  : 'An interactive general AI agent engineered for complex development and human-agent pairing.')
+  ? '按你真正会遇到的顺序读：这是什么、它怎么干活、能不能一直干下去、每天怎么用、有谁可以一起干活、数据在哪、哪一层归你，以及怎么接进外面。'
+  : 'Read in the order you will actually need it: what it is, how it works, how long work keeps going, what you do every day, who you can talk to, where your data lives, which layers you control, and how it plugs into other tools.')
 
-const ctaText = computed(() => isZh.value ? '查看文档' : 'Explore doc')
+const ctaText = computed(() => isZh.value ? '看看它能做什么' : 'See what it does')
+const allHref = computed(() => isZh.value ? '/zh/features/index' : '/en/features/index')
+const allText = computed(() => isZh.value ? '全部功能' : 'All features')
+
 </script>
 
 <template>
@@ -127,6 +130,14 @@ const ctaText = computed(() => isZh.value ? '查看文档' : 'Explore doc')
         </span>
       </a>
     </div>
+    <p class="KikiFeatures__all">
+      <a class="KikiFeatures__allLink" :href="withBase(allHref)">
+        {{ allText }}
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </a>
+    </p>
   </section>
 </template>
 

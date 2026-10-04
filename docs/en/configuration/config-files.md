@@ -1,6 +1,6 @@
 # Configuration files
 
-Kiki writes all long-term preferences — which model to use, which API key to fill in, how many steps an Agent can run per turn — into TOML (a plain-text configuration format with a clear structure) files. Change them once and they take effect on every startup. Ordinary agent and runtime settings live in `config.toml`; provider credentials live in a separate `credentials.toml`; terminal-UI and client preferences (theme, editor, notifications, auto-update) live in a companion `tui.toml`.
+Kiki writes all long-term preferences — which model to use, which API key to fill in, how many steps an Agent can run per turn — into TOML (a plain-text configuration format with a clear structure) files. Saved preferences persist across starts; `config.toml` and provider credentials also reload while Kiki is running. Ordinary agent and runtime settings live in `config.toml`; provider credentials live in a separate `credentials.toml`; terminal-UI and client preferences (theme, editor, notifications, auto-update) live in a companion `tui.toml`.
 
 Default location: `~/.kiki/config.toml`, created automatically on first run. Provider credentials live in `~/.kiki/credentials/credentials.toml`; see [Provider credentials](#provider-credentials).
 
@@ -19,6 +19,21 @@ Provider credentials live at `$KIKI_HOME/credentials/credentials.toml` when you 
 ::: tip
 TOML field names always use snake_case, for example `default_model` and `max_context_size`. If a key contains `.`, you must quote it — for example `[models."gpt-4.1"]` — otherwise TOML treats `.` as a nested table separator.
 :::
+
+## Applying configuration changes
+
+Kiki watches `config.toml` and `credentials/credentials.toml` on the host running Kiki. Save a valid edit and it reloads automatically after the file settles; you do not need to restart or run `/reload` for a request-concurrency rule. A periodic check recovers missed file notifications. An incomplete save is retried; a parse failure keeps the last valid configuration and reports a diagnostic. Fix the named file rather than overwriting it from Settings.
+
+Reloading a file and applying a setting have different timing:
+
+| Setting | When it takes effect |
+| --- | --- |
+| [`request_governance`](#request-governance) | Re-evaluates waiting requests as soon as the edit is loaded; active streams finish normally |
+| Session defaults such as `default_model`, `default_permission_mode`, and `default_plan_mode` | New sessions; an existing session keeps its own choices |
+| [`identity`](#identity) | Next process start |
+| [`tui.toml`](#tui-toml) | Next start, or `/reload-tui` in the TUI |
+
+`/reload` remains available in the TUI to explicitly reload `config.toml` and `tui.toml`. Settings with a turn or session snapshot use the timing documented in their own section; automatic file reload does not replace an in-progress request.
 
 ## Complete example
 
@@ -92,17 +107,9 @@ timeout = 5
 
 ## Continuity reminder cues
 
-With `TodoList` available, Kiki reminds the agent to preserve standing instructions in working notes and to check earlier conversation when needed. These reminders are appended to conversation history; they do not automatically save memories or change the system prompt. Notes reminders also apply to the default summarization strategy. Progress reminders back off from 10 to 20 to 40 assistant messages when unanswered; writing either todos or notes resets the backoff.
+Kiki can remind the agent to record standing instructions, find earlier decisions, update unfinished todos, and preserve working notes before or after context compaction. Reminders are appended to conversation history; they do not automatically save memories or change the system prompt. Progress reminders require `TodoList`; instruction and history reminders can also operate with approved memory access when `TodoList` is unavailable.
 
-The built-in cues cover Chinese and English. Override either list in `config.toml`:
-
-```toml
-[loop_control.directive_cues]
-instructions = ["always", "never", "以后", "不要"]
-history = ["as I said", "earlier", "之前", "我说过"]
-```
-
-Each supplied list replaces its defaults, rather than extending them. An empty list disables that category's keyword matching. Matching is case-insensitive substring matching, not semantic classification; running-task corrections delivered as steer input can still trigger an instruction reminder without matching a keyword. Instruction and history reminders are each limited to once per turn. When memory is disabled, reminders suggest working notes without suggesting `MemoryWrite`.
+Configure the human-turn cadence and Chinese/English cue lists under [`loop_control`](#continuity-reminder-settings). Assistant messages, tool polling, and forwarded agent messages do not count as human turns. When memory is unavailable, reminders do not suggest `MemoryWrite`.
 
 ## Provider credentials
 
@@ -150,6 +157,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `thinking` | `table` | — | Default parameters for Thinking mode → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent loop control parameters → [`loop_control`](#loop-control) |
 | `retry` | `table` | — | Error-specific step retry policies → [`retry`](#retry) |
+| `request_governance` | `table` | No rules | Native model-request concurrency and waiting budgets → [`request_governance`](#request-governance) |
 | `token_counting` | `table` | — | Which context token count is reported externally → [`token_counting`](#token-counting) |
 | `background` | `table` | — | Background task runtime parameters → [`background`](#background) |
 | `subagent` | `table` | — | Subagent run defaults and limits → [`subagent`](#subagent) |
@@ -403,7 +411,9 @@ A session's per-model token override takes priority over a matching `model_profi
 
 Retries only apply to transient failures — connection errors, timeouts, HTTP 429 rate limits, and all HTTP 500–599 server errors. A 429 caused by an exhausted quota or insufficient account balance is not retried and fails immediately, since it cannot succeed until the account is recharged.
 
-Continuity reminders (requests to update TodoList and working notes) use human turns rather than assistant-message counts. Forwarded peer messages, subagent receipts and scheduled triggers do not advance this clock or qualify as new human rules. The optional settings below accept positive integers:
+### Continuity reminder settings
+
+Progress reminders for TodoList and working notes use human turns rather than assistant-message counts. Accepted user prompts, user-invoked plugin commands, and user slash-skill activations advance this clock. A human steer correction can trigger an instruction or history reminder, but does not add a turn. Forwarded peer messages, subagent receipts, model-activated skills, and scheduled triggers do not advance the clock or qualify as new human rules. The three cadence fields below accept positive integers; the example shows their defaults:
 
 ```toml
 [loop_control.continuity_cadence]
@@ -412,9 +422,32 @@ cooldown_human_turns = 8
 long_task_steps = 24
 ```
 
-The defaults require at least six human turns since a relevant write and eight since the previous progress reminder. After the first unanswered reminder, spacing doubles; each unchanged list or notes state receives at most two reminders. Notes additionally need substantial uncovered work. A long task can checkpoint after 24 successful work steps and enough uncovered tokens, without waiting for another human turn; polling alone does not qualify. A changed list does not reset the notes age or reminder budget.
+Regular progress reminders require new successful work, at least six human turns since the relevant content changed, and eight since that domain's previous reminder (or session start). After its first reminder, spacing doubles to 16 human turns; each unchanged domain receives at most two progress reminders. Todo reminders need unfinished items. Notes reminders additionally require uncovered work of at least 8,000 tokens or 10% of the compaction threshold, whichever is larger. Long-task notes checkpoints can occur without another human turn: they require 24 successful work steps since both the last notes change and last notes reminder, plus at least 16,000 uncovered tokens or 10% of the threshold, whichever is larger. Polling alone does not count as successful work.
 
-Rule reminders use a local structural gate, not a separate model call. Keywords alone, quoted examples and forwarded text do not establish a persistent rule. Configuration decisions belong in task notes unless their broader scope is explicit; cross-session memory still requires its existing approval policy. Rule modifications and revocations are not delayed by the progress cooldown.
+Todos and notes keep separate ages, work watermarks, reminder clocks, and two-reminder budgets. An actual content change resets only that domain's age, work watermark, and reminder budget, returning its spacing to the base cooldown. Changing the list does not reset notes state, and changing notes does not reset the list's. Rewriting identical content resets neither.
+
+To turn off low-frequency long-term memory maintenance reminders while keeping task progress reminders, set:
+
+```toml
+[loop_control.continuity_cadence]
+memory_maintenance = false
+```
+
+`memory_maintenance` is a boolean, defaulting to `true` when omitted. A valid configuration reload takes effect at the next reminder evaluation; it does not remove reminders already in the conversation. It controls only periodic maintenance prompts during active work (M3), at most once per context window. Setting it to `false` keeps reminders for new human standing instructions (M1) and the pre-compaction check for an identified, still-unhandled instruction (M2). It does not disable memory tools, change approval policy, or turn off TodoList notes.
+
+Memory reminders are available to the main agent in non-ephemeral sessions when memory is enabled, memory approval is not `off`, and `MemoryWrite` is registered and permitted by tool policy. Periodic reminders stay silent while idle or only polling. They ask the agent to retain instructions, stable decisions, or evidenced knowledge useful to future tasks: if nothing worth keeping has changed, it should not write. Task progress stays in working notes; pending memory proposals are not active guidance and should not be duplicated.
+
+Instruction and history reminders use configurable Chinese/English cues followed by a local structural gate, not a separate model call:
+
+```toml
+[loop_control.directive_cues]
+instructions = ["always", "never", "以后", "不要"]
+history = ["as I said", "earlier", "之前", "我说过"]
+```
+
+Each supplied list replaces its defaults; an empty list disables that category. English cues match case-insensitively at word boundaries; Chinese cues use substring matching. Matching a cue alone is insufficient: quoted examples and product discussions do not establish standing rules, and a steer correction must pass the same gate. A delivered instruction/history reminder is deduplicated for that accepted input or steer revision, rather than limited to one per entire turn. Already covered references are skipped; repeated references to the same identified topic have a three-human-turn cooldown while todo and notes state is unchanged. New rule modifications and revocations bypass that history cooldown and the progress cooldown.
+
+Configuration decisions belong in task notes unless their broader scope is explicit; cross-session memory still requires its existing approval policy. Context-window preservation and handoff-rebuild reminders follow compaction state, not the progress cadence.
 
 New sessions keep changing date, directory listings, workspace instructions and memory in versioned runtime snapshot messages instead of rewriting the system prompt. Existing sessions retain their layout until a natural context compaction; old history is not rearranged. Profile binding, configured prompt text and runtime permissions can still change when their underlying policy changes.
 
@@ -484,28 +517,28 @@ In print mode (`kiki -p "<prompt>"`), Kiki stays alive after the main agent's tu
 
 ## `subagent`
 
-`subagent` controls how spawned subagents (`AgentRun`) run.
+`subagent` controls how spawned subagents (`AgentRun`) run. Role selection uses the profile's [`can_spawn_subagents`, `allowed_subagents`, `preferred_subagents`, and `deny_subagents`](../customization/agents.md#agent-file-format); the former host dispatch-policy settings are removed.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `default_profile` | `string` | built-in general-purpose prompt | Explicit profile override when `AgentRun` omits `profile`, `route`, and `profile_file`. If the key is absent, including from a partial `[subagent]` table, `AgentRun` uses the built-in general-purpose subagent prompt without loading a catalog profile. Set `""` to require an explicit target (strict mode) |
 | `default_model` | `string` | — | Explicit fallback only when neither a dispatch parameter nor an effective profile, route, or caller-lease pin selects a model; never inherits the caller |
-| `main_dispatch_policy` | `"advisory" \| "strict"` | `"advisory"` | Global role policy for the main caller; strict is a floor a profile cannot lower |
-| `subagent_dispatch_policy` | `"advisory" \| "strict"` | `"strict"` | Independent global role policy for subagent callers; omitted role lists add no named restriction |
 | `deny_models` | `string[]` | — | Hard denylist for every subagent binding after alias resolution; pins, manual changes, resume, and advisory dispatch cannot bypass it. Profile/lease/tree/model-profile hard rules remain additional boundaries |
-| `allowed_tools` | `string[]` | `[]` | Exact tool names to allow past the native subagent default restriction. Currently applies to `BoardRead` and `BoardWrite`; it does not override profile allowlists, denylists, or other policy limits |
+| `allowed_tools` | `string[]` | `[]` | Exact tool names to allow past the native subagent default restriction. It covers every tool a subagent does not get by default (`BoardRead`, `BoardWrite`, `AskUserQuestion`, `Cron`, `EnterPlanMode` / `ExitPlanMode`, `ThreadCreate` / `ThreadList` / `ThreadRead` / `ThreadWait`); it does not override profile allowlists, denylists, or other policy limits |
 | `max_direct_children` | `integer` | `16` | Maximum simultaneous dispatched child runs per caller, including startup and cancellation; `0` disables this limit |
 | `max_total_subagents` | `integer` | `0` | Maximum simultaneous dispatched subagent runs throughout one session tree, including grandchildren and deeper descendants but not main; `0` disables this limit |
 | `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`AgentRun`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kiki -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
 
-Native subagents are denied `BoardRead` and `BoardWrite` by default. To allow either tool, name it explicitly in the subagent profile's [`tools`](../customization/agents.md#agent-file-format) list, or set a server default in `config.toml`:
+Native subagents get the ordinary tools, including read-only `MemorySearch` and `MemoryRead`. A few tools are off until something opts in: `BoardRead`, `BoardWrite`, `AskUserQuestion`, `Cron`, `EnterPlanMode` and `ExitPlanMode`, and `ThreadCreate`, `ThreadList`, `ThreadRead`, and `ThreadWait`. Opt in per profile by naming the tool in the subagent profile's [`tools`](../customization/agents.md#agent-file-format) list, or set a server-wide default in `config.toml`:
 
 ```toml
 [subagent]
-allowed_tools = ["BoardRead"]
+allowed_tools = ["BoardRead", "ThreadRead"]
 ```
 
-Omitting `tools` or using `*` does not opt in. `allowed_tools = []` removes server opt-ins without removing explicit profile entries. Profile allowlists, `disallowedTools`, disabled tool groups, caller restrictions, global and session policy, feature flags, Plan mode, and invocation approval still apply. Cron, thread, Plan-entry/exit, question, and goal tools remain main-only; these opt-ins cannot open them. MCP tools, inherited user tools, and other extensions keep their existing defaults. External executors control their own tools.
+Omitting `tools` or using `*` does not opt in: only a concrete name does, and the wildcard never opens an opt-in on its own. The two opt-ins are alternatives to each other, but a profile's own list still filters the result: a subagent may use one of these tools when this server-wide list names it **or** when the subagent profile's `tools` list names it, and that profile must also select the tool. A profile writing a finite `tools` list therefore blocks any tool it leaves out, even one this list opens, while a profile that writes no list (or writes `*`) is open to everything either entry allows. `allowed_tools = []` removes server opt-ins without removing explicit profile entries. Profile allowlists, `disallowedTools`, disabled tool groups, caller restrictions, global and session policy, feature flags, Plan mode, and invocation approval still apply, and a profile's own `disallowedTools` denies an opt-in that either entry granted. `MemoryWrite`, `ThreadSend`, `SendMessage`, and the goal tools stay main-only and cannot be opened this way. `Cron` schedules the current session and wakes the main agent, so it is not a private timer for the child. MCP tools, inherited user tools, and other extensions keep their existing defaults. External executors control their own tools.
+
+These opt-ins decide what a subagent may use. A main conversation is not limited by them; the same profile's own `tools` and `disallowedTools` lists still decide which tools a main conversation can pick.
 
 Tool lists in profile descriptions and settings are configuration previews, not guarantees of runtime availability. Features, the child runtime, and approval can still prevent a call.
 
@@ -611,9 +644,14 @@ Which image formats reach the model depends on the provider the request resolves
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `model` | `string` | unset | Model alias used to write session titles. Unset (or empty) keeps title generation on the managed `chat_title` tool, whose usage is included in the subscription; setting an alias runs the same title-prompt budgets through that model instead |
+| `model` | `string` | unset | Model alias used to write session titles. While it is unset (or empty) Kiki sends no title request at all: it does not fall back to `fast_model`, and it does not use a managed `chat_title` tool, so no title generation is billed to a subscription |
+| `triggers` | `array<string>` | `["first_turn_completed"]` | The moments that write a title on their own. Any of `first_user_message`, `first_turn_completed`, `context_compacted`. An empty array turns automatic titling off; asking for a title on demand still works, and it still needs a `model` |
 
-Automatic title generation is on by default. Turn it off in the GUI, with `auto_session_title = false` under `[experimental]`, or with `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE=0`.
+A model you picked is used as-is, under the same title-prompt budgets. Automatic titling never overwrites a title you typed yourself, and neither does an ordinary on-demand request. Only a forced request replaces a title you set by hand.
+
+On-demand generation is `POST /api/sessions/{session_id}/title/generate`, which the SDK exposes. It needs a `model`, because without one there is nothing to ask. Its `force` option is what replaces a hand-written title; leave it unset to keep that title.
+
+Automatic title generation is on by default. Turn it off in the GUI, with `auto_session_title = false` under `[experimental]`, or with `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE=0`. With no `model` configured, Kiki sends no title request at all, so no moment fires and nothing is billed to a subscription. A title you write yourself, or the opening line of an unnamed session, is unaffected either way.
 
 ## `experimental`
 
@@ -622,8 +660,21 @@ Automatic title generation is on by default. Turn it off in the GUI, with `auto_
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `auto_session_title` | `boolean` | `true` | Whether an AI session title is generated automatically; see [`session_title`](#session-title) |
+| `native_browser` | `boolean` | `false` | Run saved browser connections through the managed browser backend; without it a connection cannot connect and agents get no [browser tools](../reference/tools.md#browser-tools) |
+| `usage_export` | `boolean` | `false` | Send content-free usage buckets to destinations configured under Usage → External sync; while it is off those routes are not mounted at all |
 
-Other registered flags can also be overridden here by id, but `auto_session_title` is currently the only user-facing entry.
+Any registered flag can be overridden here by id, with a boolean value. A flag that has its own control on a feature page is switched there; a flag that does not appears under **Settings → Developer → Experimental**, which lists server-reported flags by id.
+
+## `browser_control`
+
+`browser_control` holds the browser connections managed by [Browser control](../guides/settings.md#browser-control) and the default used for new sessions. The settings page is the supported editor: it saves one entry per connection, reads it back before showing the result, and saving never starts a browser.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `default_browser` | `string` | Connection id used for sessions created afterwards; unset means a call has to name a connection |
+| `connections` | `table` | One entry per connection, keyed by the connection's fixed id |
+
+Each entry describes one connection through its `type` (`agent-browser-profile` or `agent-browser-cdp`), `name`, `enabled`, and the fields that style needs; the settings page shows the fields for each style. An entry whose fields do not match its style is rejected and the saved file is left unchanged. A stored CDP address counts as a credential: the page masks it and reveals it only when asked.
 
 ## `nb_search`
 
@@ -893,7 +944,11 @@ In the desktop GUI, open **Settings → Agents → Prompt** to edit this section
 
 ## `[request_governance]`
 
-Native model requests are observed by default, with no concurrency limit until you add a rule. In the GUI, **Usage → Live** shows in-flight requests and waiting requests for this service instance, and **Limits** shows the effective rules read-only. **History** retains token and estimated-cost reporting; existing filtered usage links still open History. If the connection fails, the last live counts remain visible and are marked stale. External ACP/Codex executors are **unmanaged**, not zero requests.
+`request_governance` limits simultaneous native model requests and queues excess requests before they reach a provider. Observation is on by default; no rule means no concurrency cap. In the GUI, **Usage → Live** shows running and queued requests and includes **Concurrency limits** to add, edit, pause, or delete rules. **History**, the default tab, shows token usage and estimated cost. See [Usage](../guides/settings.md#usage) for the diagnostic workflow.
+
+A `global` rule shares capacity across all sessions connected to the same Kiki service instance. An `each_session` rule gives each session a separate bucket shared by its main agent and descendants. Independent CLI processes and external ACP/Codex executors do not share these limits; external requests are unmanaged, not zero. The cap counts provider generation attempts, including compaction and OAuth replay, not running agents or tools. It does not set requests-per-minute, token, or spending limits. For child-run counts, use [`subagent`](#subagent); for search and fetch calls, use [`nb_search.execution`](#nb-search).
+
+For example, cap all models using one provider at two simultaneous requests across sessions. Replace `example-provider` with the exact key from `[providers]`:
 
 ```toml
 [request_governance]
@@ -908,26 +963,55 @@ scope = "global"
 providers = ["example-provider"]
 max_concurrent = 2
 overflow = "queue"
+enabled = true
 ```
 
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `schema_version` | `1` | Configuration version |
-| `max_wait_ms` | `300000` | Cumulative local queue time per logical request, including retries, in milliseconds |
-| `max_queue_size` | `1024` | Maximum waiting requests in this service |
-| Rule `id` | Required | Unique rule identifier |
-| Rule `resource` | `model_request` | Native generation attempts, including compaction and OAuth replay |
-| Rule `scope` | `global` | `global` shares capacity across this service; `each_session` gives each root session and all its subagents a separate bucket |
-| Rule `models` | All | Configured canonical model IDs; multiple IDs share one combined cap |
-| Rule `providers` | All | Provider configuration IDs; each selection covers all models under those providers, sharing one combined cap |
-| Rule `subagents_only` | `false` | Match only requests made by subagents |
-| Rule `max_concurrent` | Unlimited | Positive integer; omit for no cap. Zero is not unlimited |
-| Rule `overflow` | `queue` | `queue` waits for capacity; `reject` fails immediately when that rule is full |
-| Rule `max_wait_ms` | Section limit | Optional stricter queue-time budget for matching requests |
+To give subagents using one model a separate cap of one per session, add this rule instead, or alongside the provider rule. Replace `example-model` with the canonical `[models]` table key, not its display name, upstream `model` value, or an alternate entry in `aliases`:
 
-All matching rules apply together. Different selectors in one rule are AND; IDs within one selector are OR. To limit a single model instead of a provider group, use `models = ["example-model"]` and omit `providers`. Rules only govern requests in this App instance, not other independent CLI processes or the provider account elsewhere. They do not impose a token or money budget, and do not change the existing default of 16 direct subagents per parent.
+```toml
+[[request_governance.rules]]
+id = "session-model-children"
+scope = "each_session"
+models = ["example-model"]
+subagents_only = true
+max_concurrent = 1
+max_wait_ms = 60000
+overflow = "queue"
+```
 
-Rule edits re-evaluate queued requests immediately; already active streams are not killed. Tools and local queue waits do not hold model-request slots. Cancelling a queued turn removes it without sending to the provider. Queue full, queue timeout, and local rejection are distinct non-retryable failures. Use the existing Stop action to cancel a waiting turn, or edit the matching configuration rule before retrying.
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `schema_version` | `integer` | `1` | Configuration version; only `1` is accepted |
+| `max_wait_ms` | `integer` | `300000` | Positive cumulative local queue-time budget per logical request, including retries, in milliseconds |
+| `max_queue_size` | `integer` | `1024` | Positive maximum number of waiting requests across this service |
+| `rules` | `array<table>` | `[]` | Concurrency rules, written as `[[request_governance.rules]]` |
+| Rule `id` | `string` | Required | Nonempty, unique rule identifier |
+| Rule `resource` | `string` | `model_request` | Only `model_request` is accepted |
+| Rule `scope` | `string` | `global` | Shared service capacity, or `each_session` capacity per session |
+| Rule `models` | `array<string>` | All | Exact canonical model IDs; multiple IDs share one combined cap |
+| Rule `providers` | `array<string>` | All | Exact provider configuration IDs; all selected providers' models share one combined cap |
+| Rule `subagents_only` | `boolean` | `false` | Match only requests made by subagents |
+| Rule `max_concurrent` | `integer` | Unlimited | Positive cap; omit for no cap. Zero is invalid |
+| Rule `overflow` | `string` | `queue` | `queue` waits for capacity; `reject` fails immediately when this rule is full |
+| Rule `max_wait_ms` | `integer` | Section limit | Optional positive queue-time budget; the shortest of the section and all matching enabled rules wins |
+| Rule `enabled` | `boolean` | `true` | `false` pauses the rule without deleting it or applying its waiting budget |
+
+All matching enabled rules apply together. Different selectors in one rule are AND; IDs within one selector are OR. Omit `models` or `providers` to match all; an empty list is invalid. To give each model its own independent cap, write one rule per model rather than putting them in one list. Unknown fields and duplicate rule IDs are rejected.
+
+Saving a rule in the GUI or [editing the file](#applying-configuration-changes) re-evaluates queued requests. Raising a cap or pausing a rule can release waiters; lowering a cap does not kill active streams, so running requests may temporarily exceed the new limit. A slot is held through stream cleanup and released before tool work or retry backoff. Local queue waits hold no slot. Stop cancels a queued turn without sending its request to the provider.
+
+### Queue errors and provider 429
+
+Use the error code to distinguish local waiting from provider throttling:
+
+| Error | Meaning and action |
+| --- | --- |
+| `request.limit_rejected` | A matching full rule uses `overflow = "reject"`. Wait for active requests or change that rule |
+| `request.queue_full` | The service-wide queue reached `max_queue_size`. Let it drain before retrying |
+| `request.queue_timeout` | The logical request exhausted its cumulative local wait budget. Retry after capacity frees up, or adjust the cap or waiting budget |
+| `provider.rate_limit` / HTTP 429 | The provider throttled a request that was sent. Check its message and account limits; a concurrency cap can reduce overlap but cannot guarantee a requests-per-minute or token rate |
+
+The three local `request.*` errors do not automatically retry. Provider transient 429 retries follow [`retry`](#retry), including `Retry-After`; exhausted quota or insufficient balance fails without retry. In **Usage → Live**, expand **Request details** to inspect the queued model, blocking rule IDs, and wait time before changing a limit. Stale counts show the last received snapshot, not current capacity.
 
 ## `tui.toml`
 

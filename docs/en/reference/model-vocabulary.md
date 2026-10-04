@@ -33,6 +33,22 @@ Agent files and profile route sidecars pin models with `model_alias`; a main-age
 
 A route-declared `model_alias` is a soft default. For subagents, an executable, hard-permitted override stays tied to the route, is marked detached, and carries an advisory. `allowed_models`, `deny_models`, and `allowed_efforts` are hard in profiles, leases, `spawn_constraints`, and matching `model_profiles`; a violation rejects subagent binding, manual changes, and resume. In a main session, user selections override profile model / effort rules: hard violations only warn, and recommendation or pin deviations do not warn or block sending. Only `preferred_models`, `discouraged_models`, and `preferred_efforts` are recommendations. Machine `[subagent].deny_models` adds another hard boundary. Native model lists compare canonical identities; external executors compare actual effective model IDs.
 
+## Settings by identity
+
+A model carries one set of shared settings: its default thinking effort, service tier, automatic compaction point, context budget and generated-token ceiling. An identity can override a few of those, and only those — every field it leaves unset keeps the shared value, so an override is a difference rather than a second copy of the settings.
+
+- **Shared**: the model's own values. Every use of the model starts from them, and subagents always use them.
+- **Main agent**: applies when the model is used as the main agent, whichever profile happens to hold it. An unset field inherits.
+- **Externally delegated agent**: applies to agents delegated in from an external host. An unset field inherits.
+
+Identity is who the model is serving, not which profile is selected, so switching profiles does not drop this layer. Overriding a prompt or cognition field is a different mechanism: those replace a whole group of values, while a setting above merges one field at a time. The two do not change each other.
+
+A cleared override goes straight back to the shared value. `usage_effective` and `usage_sources` report the value each identity resolves to and where it was read from; they describe the model's own resolution, and do not include a profile pin or a session override.
+
+The context budget and the generated-token ceiling are caps, not preferences: the effective value is the lower of the shared cap and any identity difference, so an identity can tighten them but never raise them past what the model allows.
+
+In Settings › Models, the model editor opens on the shared values; switch to Main agent to see and edit only that identity's differences, and the editor shows what each field inherits and what it resolves to. A model on a server without this layer simply has no difference to edit.
+
 ## Model ID resolution
 
 Kiki resolves a requested value to a canonical configured key in this order:

@@ -217,9 +217,9 @@ Kiki ships six identities. Built-in identities are read-only; **Duplicate and ed
 | Kimi Code | `kimi_code` / `kimi_code` | Kiki's native client: adds `X-Msh-*` device headers on a Kimi provider |
 | Codex CLI | `codex_compatible` / `codex` | `codex_cli_rs/{version}` User-Agent and `originator`, OpenAI Responses only |
 | Claude Code | `claude_code_compatible` / `claude_code` | `claude-cli/{version} (external, cli)` User-Agent, `x-app`, and `X-Stainless-*`, Anthropic Messages only |
-| Grok Build | `grok_build_compatible` / `grok_build` | `grok-shell/{version}` User-Agent and `x-grok-*` session and turn headers, on Responses or Messages |
+| Grok Build | `grok_build_compatible` / `grok_build` | `grok-shell/{version}` User-Agent and `x-grok-*` session and turn headers, on Chat Completions, Responses, or Messages |
 | OpenCode | `opencode_compatible` / `opencode` | `opencode/{version}` User-Agent, `x-opencode-client: cli`, and the dynamic `x-opencode-session` and `x-opencode-request` |
-| None | `none` / `none` | Sends no identity fields |
+| None | `none` / `none` | Sends no Kiki-chosen identity fields: the User-Agent, the reserved identity headers, and the `X-Msh-*` device headers are removed. Fields a provider's authentication protocol requires still go out — OAuth tokens, account headers, the Grok client-version marker — because those belong to the protocol rather than to identity |
 
 ### OpenCode
 
@@ -242,7 +242,7 @@ GUI **Settings → Request identity** is the central page: the left column lists
 | Provider | Settings → Models & providers → provider editor → Request identity | `[providers.<name>.request_identity]` |
 | Model | Settings → Models & providers → model editor → Request identity | `[models."<alias>".request_identity]` |
 
-Later layers override earlier ones (global → provider → model); with no layer set, the built-in Kimi Code identity stays in effect. Choosing a compatible preset resets the lower layers first and then applies that layer's optional sparse `overrides` (for example `lineage.format`, `client.user_agent`, `request.logical_id`). Sending one provider's traffic as OpenCode takes only:
+Later layers override earlier ones (global → provider → model). With no layer set, an ordinary API-key connection keeps the built-in Kimi Code identity, while a provider authenticated through the Codex or Grok Build OAuth flows keeps that provider's default identity. A layer you set explicitly — global, provider, or model — still overrides that default. Choosing a compatible preset resets the lower layers first and then applies that layer's optional sparse `overrides` (for example `lineage.format`, `client.user_agent`, `request.logical_id`). Sending one provider's traffic as OpenCode takes only:
 
 ```toml
 [providers.my-gateway.request_identity]

@@ -24,6 +24,10 @@ export KIKI_HOME="/path/to/custom/kiki"
 
 > Make sure the directory is writable. Multiple `kiki` instances sharing the same `KIKI_HOME` will share config and credential files.
 
+On macOS and Linux, the shared runtime keeps its local endpoint inside this directory, and the resulting path has a length limit that varies by platform. A home directory that is still too long is reported as a configuration problem that names the actual length, the platform's limit, and the fix — use a shorter `KIKI_HOME`. This is a diagnostic, not a silent move: Kiki does not relocate your data or pick a different directory for you, and a short symlink does not shorten the real path that the limit measures.
+
+After upgrading on macOS or Linux, quit every process still using the same `KIKI_HOME` and start the new build. Old and new builds do not share a running runtime, and Kiki does not migrate the previous one for you. Windows is unaffected — the runtime uses a named pipe there and needs no such step.
+
 For the complete data directory structure, see [Data locations](./data-locations.md).
 
 ### `KIKI_MODEL_*` family
@@ -136,6 +140,7 @@ Switches that control the behavior of subsystems such as background tasks, the b
 | `KIKI_BUILTIN_PRODUCT_SKILLS` | Whether the built-in skills documenting Kiki itself are offered to the model; takes higher priority than `builtin_product_skills` in `config.toml` (default enabled) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIKI_TUI_FULL_SCREEN` | Enable the experimental fullscreen alternate-screen UI: scrollable transcript viewport, mouse text selection, clickable links, and Ctrl-Shift-F transcript search | `1` enables it; anything else keeps the regular inline UI |
 | `KIKI_EXPERIMENTAL_TASK_WAIT` | Whether the model is given the `TaskWait` tool, which waits for background tasks inside the current turn instead of ending it (enabled by default) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
+| `KIKI_EXPERIMENTAL_PLUGIN_IMPORT` | Enable history import into continuable Kiki sessions or read-only archives, with built-in formats and optional third-party sources; on by default, without startup scanning or automatic import, and also settable as `plugin_import` under [`[experimental]`](./config-files.md#experimental) — see [Session history import](../customization/plugins.md#session-history-import) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIKI_MCP_CONFIG_PATH` | MCP config file injected by an external orchestrator and loaded read-only by the server started via `kiki web`. Must be set together with `KIKI_MCP_AGENT_PROFILE_HOME` and `KIKI_MCP_CONFIG_READ_ONLY`; an incomplete set fails startup | Absolute path |
 | `KIKI_MCP_AGENT_PROFILE_HOME` | Agent-profile root directory injected by an external orchestrator, used together with `KIKI_MCP_CONFIG_PATH`; the three `KIKI_MCP_*` catalog variables must always be set as a set | Absolute path |
 | `KIKI_MCP_CONFIG_READ_ONLY` | Read-only marker for the injected catalog; must be `1` — the server never writes back to the injected config or profiles | `1` |
@@ -153,7 +158,7 @@ Switches that control the behavior of subsystems such as background tasks, the b
 | `NB_SEARCH_EXA_API_KEY` | Credential used by the built-in `exa.default` provider instance | Non-blank string |
 | `NB_SEARCH_TAVILY_API_KEY` | Credential used by the built-in `tavily.default` provider instance | Non-blank string |
 | `NB_SEARCH_JINA_API_KEY` | Optional credential used by the built-in `jina-reader.default` fetch provider instance | Non-blank string |
-| `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE` | Whether an AI session title is generated automatically once the first turn completes; takes precedence over the `[experimental]` entry and `KIKI_EXPERIMENTAL_FLAG` (default on) — see [`session_title`](./config-files.md#session-title) | Enable: `1`/`true`/`yes`/`on`; disable: `0`/`false`/`no`/`off` |
+| `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE` | Whether Kiki writes session titles on its own; takes precedence over the `[experimental]` entry and `KIKI_EXPERIMENTAL_FLAG` (default on). The chosen `triggers` still decide when, and with no title model Kiki sends no title request at all — see [`session_title`](./config-files.md#session-title) | Enable: `1`/`true`/`yes`/`on`; disable: `0`/`false`/`no`/`off` |
 | `KIKI_EXPERIMENTAL_FLAG` | Enable all registered experimental features for this process; a per-feature `KIKI_EXPERIMENTAL_<NAME>` variable or an explicit entry in the `[experimental]` section of `config.toml` takes precedence over it | `1`, `true`, `yes`, `on` |
 | `KIKI_SHELL_PATH` | Override the Git Bash path on Windows (used when auto-detection fails) | Absolute path |
 | `KIKI_MODEL_MAX_COMPLETION_TOKENS` | Hard cap on `max_completion_tokens` per LLM step; applies to the `kimi` provider only | Positive integer; `0` or negative disables clamping |
@@ -161,7 +166,7 @@ Switches that control the behavior of subsystems such as background tasks, the b
 | `KIKI_MODEL_TOP_P` | Nucleus-sampling `top_p` for every request; applies to the `kimi` provider only (global) | Number, e.g. `0.95` |
 | `KIKI_MODEL_THINKING_EFFORT` | Force a specific thinking effort on the wire (`thinking.effort`), bypassing the model's declared `support_efforts`; applies to the `kimi` provider only, and only while Thinking is on | An effort value, e.g. `max` |
 | `KIKI_MODEL_THINKING_KEEP` | Preserved-thinking passthrough; on `kimi` sent as `thinking.keep`, on `anthropic` (Claude and Kimi's Anthropic-compatible mode) sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API); overrides `[thinking] keep` (which defaults to `"all"`); only injected while Thinking is on | A value the API accepts, e.g. `all`; an off-value (`false`/`0`/`no`/`off`/`none`/`null`) disables it |
-| `KIKI_DISABLE_CRON` | Disable the scheduled-task tool (`CronCreate` rejects new schedules; existing tasks do not fire) | `1` to disable |
+| `KIKI_DISABLE_CRON` | Disable the scheduled-task tool (a `Cron` call with `action: "create"` is refused; existing tasks do not fire) | `1` to disable |
 
 Subagent concurrency has no environment-variable override. Configure [`[subagent]`](./config-files.md#subagent) with `max_direct_children` and `max_total_subagents`; their defaults are `16` and `0` (unlimited), respectively.
 

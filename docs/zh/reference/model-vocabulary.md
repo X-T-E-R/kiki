@@ -33,6 +33,22 @@ Agent 文件与 profile route sidecar 使用 `model_alias` 固定模型；main a
 
 Route 声明的 `model_alias` 是软默认值。Subagent 的覆盖可执行且满足硬规则时，仍保留 route 身份，同时标记为 detached 并携带 advisory。`allowed_models`、`deny_models`、`allowed_efforts` 在 profile、lease、`spawn_constraints` 与匹配的 `model_profiles` 中都是硬规则；违规会拒绝 subagent 绑定、人工切换与恢复。Main 会话以用户选择为准：profile 模型 / 档位硬规则违规只警示，推荐或 pin 的偏离不警告、不拒发。只有 `preferred_models`、`discouraged_models`、`preferred_efforts` 是建议。机器级 `[subagent].deny_models` 增加另一道硬边界。原生模型列表比较规范身份，外部 executor 则比较实际生效模型 ID。
 
+## 按身份区分的设置
+
+一个模型带一套共用设置：默认思考档位、服务档位、自动压缩触发点、上下文使用预算与最大生成 token。某个身份可以覆盖其中少数几项，且只覆盖这几项——未填的字段继续使用共用值，所以覆盖是差异，而不是把设置复制第二份。
+
+- **共用**：模型自身的值。该模型的每次使用都从这里开始，sub 始终使用共用值。
+- **主智能体**：模型作为主智能体时生效，与当前由哪个 profile 持有无关。未填的字段继续继承。
+- **外部委派智能体**：外部宿主委派进来的智能体。未填的字段继续继承。
+
+身份说的是模型在为谁服务，而不是选了哪个 profile，所以切换 profile 不会丢掉这一层。覆盖提示词或认知字段是另一套机制：它们整组替换，而上面的设置逐字段合并，两者互不影响。
+
+清空某个覆盖即恢复共用值。`usage_effective` 与 `usage_sources` 报告各身份实际求解到的值及其来源；它们描述模型自身的求解结果，不包含 profile pin 或会话覆盖。
+
+上下文使用预算与最大生成 token 是上限而非偏好：生效值取共用上限与身份差异中的较小者，因此身份只能收紧，不能放宽到超出模型允许的范围。
+
+在设置 › 模型中，模型编辑器默认展示共用值；切到主智能体只看并编辑该身份的差异，编辑器会显示每个字段继承自哪里、最终生效值是多少。服务端没有这一层的模型，本来就没有可编辑的差异。
+
 ## 模型 ID 解析
 
 Kiki 按以下顺序把请求值解析为规范已配置 key：

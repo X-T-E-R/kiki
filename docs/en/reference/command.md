@@ -9,6 +9,8 @@ kiki <subcommand> [options]
 
 Interactive sessions always use the shared background daemon. After workspace trust is confirmed, the CLI attaches to an existing daemon or starts one automatically; no separate installation or experimental flag is required. If connection or startup fails, the error is shown instead of falling back to an independent local session. Correct the reported error and run the command again. Non-interactive `--prompt` execution is separate from this terminal startup path.
 
+Interactive mode needs a terminal on both stdin and stdout. A pipe or a redirect on either one ends the run before workspace trust and the daemon are involved — Kiki does not switch to non-interactive mode for you. To supply a prompt from a pipe, run `kiki -p -` and let Kiki read the prompt from stdin.
+
 ## Main Command Options
 
 All flags are optional — run `kiki` directly to enter an interactive session:
@@ -143,7 +145,7 @@ In `stream-json` mode, regular replies produce an Assistant message; when the mo
 
 Multiple `kiki -p` processes may share one `KIKI_HOME` when each process uses a different session. Kiki serializes the shared runtime-owner record and session index writes, while each session still has one active writer. Do not run two prompts against the same session at the same time; use `--wait-for-session <seconds>` when a previous process is expected to release that session shortly.
 
-Thread communication is disabled by default. A print run that does not use thread tools does not initialize the mailbox. When thread communication is enabled, set `KIKI_THREAD_MAILBOX_TIMEOUT_MS` to change its bounded mailbox call timeout. Print mode does not start the home-wide cron scheduler; run scheduled work through the interactive daemon or server. For maximum isolation or when a workload needs independent caches and configuration, use a separate `KIKI_HOME` per worker.
+Thread communication is disabled by default. A print run that does not use thread tools does not initialize the mailbox. When thread communication is enabled, set `KIKI_THREAD_MAILBOX_TIMEOUT_MS` to change its bounded mailbox call timeout. Print mode ticks scheduled tasks for the sessions it already has open. It does not scan the rest of the home or wake closed sessions, so tasks scheduled outside this run still need the interactive daemon or server. For maximum isolation or when a workload needs independent caches and configuration, use a separate `KIKI_HOME` per worker.
 
 ## Subcommands
 
@@ -151,7 +153,7 @@ Thread communication is disabled by default. A print run that does not use threa
 
 ### `kiki serve`
 
-Control the shared daemon explicitly. With no mode, `serve` runs the daemon in the foreground; `--ensure` attaches to an existing healthy instance or starts one and returns its connection; `--stop` shuts down the reachable instance for the selected home.
+Control the shared daemon explicitly. With no mode, `serve` runs the daemon in the foreground; `--query --json` reports the current instance without starting one; `--ensure` attaches to an existing healthy instance or starts one and returns its connection; `--stop` shuts down the reachable instance for the selected home. If a live instance is found but its identity cannot be verified, Kiki refuses to start a second instance: stop or upgrade the existing one before retrying.
 
 ```sh
 kiki serve
@@ -159,7 +161,113 @@ kiki serve --ensure --workspace . --json
 kiki serve --stop
 ```
 
-Kiki resolves its home directory in this order: an explicit `--home` where supported, `KIKI_HOME`, then `~/.kiki`. Runtime startup uses only the Kiki home settings described here. The daemon uses one bearer token from `<home>/server.token`. `--idle-exit` defaults to `30m`; active client leases and running dispatches keep the daemon alive. Client leases are renewed through `POST /api/leases`. The interactive TUI performs the same attach-or-start behavior after workspace trust. Use [`kiki web`](#kiki-web) when a compatible foreground server and browser UI are required instead of shared-daemon control.
+Kiki resolves its home directory in this order: an explicit `--home` where supported, `KIKI_HOME`, then `~/.kiki`. Trusted local clients attach with the private `<home>/server.local-owner` capability; remote connections use separate credentials described under [Authentication](../server/local-server.md#authentication). `--idle-exit` defaults to `30m`; active client leases and running dispatches keep the daemon alive. Set `--idle-exit 0ms` to keep a newly started daemon running until explicitly stopped. Client leases are renewed through `POST /api/leases`. The interactive TUI performs the same attach-or-start behavior after workspace trust. Use [`kiki web`](#kiki-web) for a compatible foreground server and browser UI.
+
+### `kiki connections`
+
+Manage directed GUI connections between homes. `--home` selects the local source or provider home; management uses its local-owner credential. Receiving is off by default, and enabling the gate does not approve any source by itself.
+
+```sh
+kiki connections --home /path/to/source status
+kiki connections --home /path/to/target inbound enable
+kiki connections --home /path/to/target inbound invite --input source.json
+kiki connections --home /path/to/source add --input connection.json
+```
+
+Use the source `identity` from `status` in `source.json`: `{ "source": { "homeId": "...", "hostId": "...", "protocol": 1 }, "label": "Source home" }`. The target returns a short-lived, one-use `invitation`. `connection.json` contains `label`, `endpoint`, the target `identity` as `target`, its current `ownerToken`, and that `invitation`; `backgroundSummary` optionally enables lightweight status polling. `homeId` is a UUID identifying the home, not a GUI space ID. Keep secret-bearing files private, delete them after successful setup, and never put tokens in command arguments. `--input -` reads JSON from stdin (the input channel of the command).
+
+Use `inbound revoke <grantId>` on the target to stop one source's reads and streams without affecting other approved sources. `inbound disable` closes all peer access while retaining the allow list. On the source, `disable <connectionId>`, `enable <connectionId>`, `retry <connectionId>`, and `remove <connectionId>` manage that connection. Removal releases local credentials and owned tunnels; it does not stop the target daemon or undo work already started there. Offline status retains last-known measurements and their timestamp, rather than reporting invented zero counts.
+
+For SSH, both hosts need a compatible Kiki installation, and the source needs working SSH authentication and known-host verification. Kiki does not install remote software. Save a non-secret profile such as:
+
+```json
+{
+  "id": "work-host", "label": "Work home",
+  "target": { "kind": "alias", "alias": "work-host" },
+  "releaseChannel": "stable", "remoteHome": "/home/example/.kiki",
+  "remoteExecutable": "kiki", "remoteShell": "posix"
+}
+```
+
+The target may instead be `{ "kind": "host", "hostname": "example.com", "username": "example", "port": 22 }`; `identityFile` is optional. Plan first, then review the returned target, identity and effects:
+
+```sh
+kiki connections --home /path/to/source ssh plan --input profile.json
+kiki connections --home /path/to/source ssh execute PLAN_ID
+kiki connections --home /path/to/source ssh execute PLAN_ID --ensure
+kiki connections --home /path/to/source ssh register --input registration.json
+kiki connections --home /path/to/source ssh status
+```
+
+Planning only queries; execution without `--ensure` only attaches. Explicit `--ensure` may start a remote daemon that continues in the background until explicitly stopped. It does not open inbound access. For GUI registration, `registration.json` is `{ "purpose": "gui", "planId": "PLAN_ID", "label": "Work home", "enableInbound": false, "backgroundSummary": true }`. With `enableInbound: false`, a closed target gate is reported as closed; choose `true` only when you explicitly want this setup to open it. Backend-only bootstrap credentials are discarded after provisioning. `purpose: "bridge"` registers a bridge-only target and requires separate bridge policy approval; it does not also grant GUI access.
+
+### `kiki bridges`
+
+Manage explicit one-way thread bridges without granting GUI browsing access. `--home` selects the executing source or provider home; management always uses its local-owner credential. Receiving is off by default. First start the target daemon and explicitly enable inbound access with `kiki connections --home <target-home> inbound enable`; this does not authorize a model turn.
+
+```sh
+kiki bridges --home /path/to/source status
+kiki bridges --home /path/to/source local --input ./local-bridge.json
+kiki bridges --home /path/to/source receipts --limit 50
+kiki bridges --home /path/to/source outbound disable <bridgeId>
+kiki bridges --home /path/to/provider inbound revoke <bridgeId>
+```
+
+`local` reads JSON with `spaceId` (an already registered local space), `sourceScope`, `targetScope`, `operations`, `expiresAt` (Unix milliseconds), `label`, and optional `pendingLimit` and `messagesPerMinute`. Each scope names a `workspaceId` and normally a `sessionId`; omitting the session explicitly approves future threads in that workspace. Choose `read`, `send`, and `wait` separately; add `wake` only when the target may receive a model prompt or resume a cold thread. Without wake, sends remain pending. Local targets use a stable space reference, so a daemon restart may change its port without changing the approved home.
+
+For a network target, use `target --input <file>` with `{label,endpoint,target}`, where target is `{homeId,hostId,protocol:1}`. On the provider, `approve --input <file>` takes a policy with those source and target identities, scopes, operations, expiry, label, and `location: "network"`; its one-time result contains `{grant,credential}`. On the source, `install --input <file>` takes that result plus the registered `connectionId`. Use HTTPS or a trusted tunnel. A reverse bridge needs another approval. GUI tokens and SSH login do not grant bridge access.
+
+Protect the approve output and install input as credentials. Every `--input` also accepts `-` to read JSON from stdin (the program's input stream); do not put a credential in command-line arguments or send it to the model. `status` and paged `receipts` omit credentials. Receipts distinguish source pending, target accepted, prompt delivered, and rejection; delivered does not mean the model has replied. Pending sends keep their original key and sequence while retrying for at most 15 minutes. `retry` checks the durable queue; it does not create a new message. `inbound|outbound enable|disable|revoke <bridgeId>` controls one link; inbound revision changes require explicitly reinstalling the newer grant at the source. Revocation does not delete sessions.
+
+The [thread tools](./tools.md#collaboration-tools) use these policies and preserve verified remote provenance. Ordinary assistant text is not forwarded. Dangerous authentication-bypass mode keeps bridge receiving disabled and does not bypass bridge management authentication.
+
+### `kiki usage-export`
+
+Export content-free usage from one local Kiki home to vibe-usage/vibecafe, a standard Webhook, or an approved script. This experimental feature is off by default: start the backend with `KIKI_EXPERIMENTAL_USAGE_EXPORT=true`. Setting it only in a later CLI process does not enable an already-running backend. Management requires this home's local-owner credential; remote connection tokens and dangerous authentication-bypass mode do not grant access.
+
+Save a draft, inspect its exact range and fields, then approve that destination once:
+
+```sh
+kiki usage-export --home /path/to/home save --input destination.json
+kiki usage-export --home /path/to/home preview <id>
+kiki usage-export --home /path/to/home test <id>
+kiki usage-export --home /path/to/home enable <id> --fingerprint <preview_fingerprint> --agree
+kiki usage-export --home /path/to/home sync <id>
+kiki usage-export --home /path/to/home status
+```
+
+`test` is optional for ordinary enable: it checks authentication and the receiver protocol without sending usage. `preview` does not contact the destination. Use the `id` returned by `save` and the fingerprint returned by the latest `preview`; changing the destination identity or expanding the range requires fresh consent. The displayed account fingerprint identifies a credential locally, not a verified remote account. A new key that cannot be proven to represent the same account needs fresh consent; after queued or delivered data exists, use a new destination instead of changing its identity.
+
+A Webhook draft looks like this:
+
+```json
+{
+  "draft": {
+    "label": "My usage receiver",
+    "target": { "kind": "webhook", "endpoint": "https://example.com/usage", "gzip": true, "authentication": "none" },
+    "schedule_minutes": 30,
+    "scope": { "start_at": 1767225600000, "end_at": null, "include_ephemeral": false, "excluded_workspace_ids": [] }
+  }
+}
+```
+
+Times are Unix milliseconds; buckets are absolute UTC half-hours. Schedules are `0` (manual), `5`, `15`, `30`, or `60` minutes, with jitter. They run only while the backend is alive and do not keep it alive or invoke a model. Ephemeral/private-session usage is excluded unless explicitly selected. Known model identifiers, four mutually exclusive token counts, quality, and a local USD estimate are sent through `kiki.usage.bucket.v1`; unknown prices remain `null` and unknown local aliases use destination-specific opaque identifiers. Prompts, replies, reasoning, tool arguments, attachments, titles, workspace paths, profiles, and real hostnames are not part of the official payload. The receiver can still observe your IP address and usage timing.
+
+Use `authentication: "bearer"` or `"hmac"` with a `secret` object beside `draft`: `{ "value": "YOUR_SECRET", "storage": "keyring" }`. Keyring failure is reported, not silently replaced with a file. To choose a private file explicitly, use `storage: "private-file"` and `acknowledge_file_storage: true`; filesystem permissions protect it, but it is not encrypted at rest. Every `--input` accepts `-` for stdin. Keep credential files private; never put secrets in command-line arguments or send them to a model. Bearer authentication requires HTTPS. Redirects are not followed. Local development HTTP requires an exact `private_grant` matching the host, IP, port, and protocol, not a blanket private-network approval.
+
+For vibe, use `{ "kind": "vibe", "endpoint": "https://example.com/api/usage/ingest" }` and the real service's key. Vibe cannot delete or reliably lower previously accepted totals: conflicting revisions are marked `remote-diverged` without sending them, while unrelated new buckets can continue. For a script, use `{ "kind": "script", "command": "YOUR_COMMAND", "timeout_ms": 60000, "output_limit_bytes": 65536 }`. Its stdin receives the same content-free protocol, and stdout must return its strict receipt (or the separate `kiki.usage.test.v1` handshake during a test). Approval grants the command full OS-user permissions, including independent file and network access; this is not a sandbox and there is no per-batch approval.
+
+Recovery and removal have different meanings:
+
+- `disable <id>` stops new requests and keeps the queue. `sync <id>` scans and sends now using the existing consent. Temporary network failures keep the same durable batch identity and retry with backoff; a protocol/authentication error is shown separately.
+- `backfill <id> --input scope.json` previews a changed scope; approve an expanded scope with its new fingerprint. `rebuild --force` invalidates source checkpoints, including same-size/mtime rewrites, without changing wire facts or clearing ACK/revision history.
+- `diagnostics`, `export <id>`, `capacity <bytes>`, and `retry <id>` inspect or recover delivery. The default queue limit is 50 MiB; reaching it preserves the old complete projection instead of silently discarding old data.
+- `clear-queue <id> --agree` explicitly discards pending data and disables that destination. `remove <id>` removes local configuration and its secret; add `--discard-pending` only when you want to discard an existing queue. Neither deletes remote history, and delivery identity/revision evidence is retained.
+- `withdraw <id> --agree` sends versioned deletion tombstones only where the receiver supports deletion. It does not delete local usage; vibe does not support this operation.
+
+For an existing vibe collector, use `handoff plan <id>` on a new native draft, prepare the collector's `kiki-handoff.json` for the returned namespace and future UTC cutoff **T**, then run native `preview` and `test`. `handoff arm <id> --collector-file <file> --fingerprint <preview_fingerprint> --agree` verifies the marker against the saved native credential, activates only that home's collector cutoff, and enables native delivery from the fixed T. It does not read the collector's key or stop its daemon. Different keys are not treated as proof of the same remote account. The collector remains responsible for `<T`, native for `>=T`; offline catch-up keeps T rather than using ACK time. `handoff refresh <id>` reads the collector's safe final receipt; completion requires both the old receipt and a real native ACK. `handoff rollback <id> --cutoff <new_future_R> --agree` keeps native responsible for `[T,R)` and resumes the collector at `>=R`, not an unbounded old scan.
+
+Receiver developers can run the repository's local example with `pnpm exec tsx packages/kap-server/examples/usage-export-receiver.ts` (Node 24). It binds only `127.0.0.1:9080`, persists replacements and deletion tombstones in `usage-receiver.sqlite`, and exposes `POST /usage`. Approve the exact loopback HTTP grant when testing it. A production receiver needs TLS, durable storage, and authentication; the example is not a hosted dashboard.
 
 ### `kiki seat`
 
@@ -291,17 +399,19 @@ Multiple instances can run concurrently under the same home: each registers itse
 
 `kiki web` binds to the local loopback address by default and prints the bearer token in the startup banner; Kiki GUI authenticates automatically via the `#token=` URL fragment.
 
+`kiki web` also carries the Web-access controls — `--temporary`, `--persistent`, `--status`, `--off`, `--revoke [session-id]` — which open this Kiki to a browser on another device and print a single-use entry link. Web access is a full-access entry into this Kiki rather than a read-only share; see [Use Kiki in a browser](../server/local-server.md#use-kiki-in-a-browser) for the session and revocation model. The same operations are available as `/web temporary|persistent|status|off|link|revoke [id]` in the interactive TUI, and under **Settings → Spaces → Web access** in the GUI.
+
 ::: info Note
 `kiki web` is a compatibility foreground command: it starts an independent server in the current process and does not connect to or manage the shared daemon. Use `kiki serve` to manage the shared daemon lifecycle; use `kiki web` when you need the existing foreground REST/WebSocket/web UI workflow. The legacy `kiki server …` command is no longer supported.
 :::
 
 ::: danger Warning
-`--dangerous-bypass-auth` completely disables authentication. Anyone with access to the port has full control over your sessions, filesystem, and shell. Use only in trusted networks or behind an authenticating reverse proxy, and stop the server with `Ctrl+C` when finished.
+`--dangerous-bypass-auth` exposes legacy APIs without authentication: anyone with access to the port can control sessions, files and shell. Connection management and forwarding still require local-owner access; effective peer admission is unavailable, and saved grants cannot authorize incoming peers in this mode. Use only in trusted networks or behind an authenticating reverse proxy, and stop the server when finished.
 :::
 
 #### `kiki web rotate-token`
 
-Generate a new persistent bearer token (written to `~/.kiki/server.token`), invalidating the previous one immediately. The token is shared across the entire home directory, and running instances switch to the new token on their next auth check without requiring a restart.
+Replace the persistent remote owner token in `<home>/server.token`. The old token becomes invalid and affected peer streams stop; running instances observe the change without restarting. This does not rotate the private local-owner capability in `server.local-owner`. Remote sources must update their credentials before reconnecting.
 
 ### `kiki export`
 

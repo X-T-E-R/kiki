@@ -217,9 +217,9 @@ Kiki 内置六种身份。内置身份只读，用「复制并编辑」得到的
 | Kimi Code | `kimi_code` / `kimi_code` | Kiki 原生客户端：在 Kimi 提供商上附带 `X-Msh-*` 设备头 |
 | Codex CLI | `codex_compatible` / `codex` | `codex_cli_rs/{version}` User-Agent 与 `originator`，仅 OpenAI Responses |
 | Claude Code | `claude_code_compatible` / `claude_code` | `claude-cli/{version} (external, cli)` User-Agent、`x-app` 及 `X-Stainless-*`，仅 Anthropic Messages |
-| Grok Build | `grok_build_compatible` / `grok_build` | `grok-shell/{version}` User-Agent 与 `x-grok-*` 会话、轮次请求头，可用于 Responses 或 Messages |
+| Grok Build | `grok_build_compatible` / `grok_build` | `grok-shell/{version}` User-Agent 与 `x-grok-*` 会话、轮次请求头，可用于 Chat Completions、Responses 或 Messages |
 | OpenCode | `opencode_compatible` / `opencode` | `opencode/{version}` User-Agent、`x-opencode-client: cli`，以及动态的 `x-opencode-session`、`x-opencode-request` |
-| 无 | `none` / `none` | 不发送任何身份字段 |
+| 无 | `none` / `none` | 不发送 Kiki 自选的身份字段：User-Agent、保留身份请求头与 `X-Msh-*` 设备头都会被移除。供应商认证协议要求的字段仍会发出——OAuth token、账号请求头、Grok 客户端版本标记——因为那些属于协议本身，不属于身份 |
 
 ### OpenCode
 
@@ -242,7 +242,7 @@ GUI 的 **设置 → 请求身份** 是集中页面：左列列出内置（只�
 | 供应商 | 设置 → 模型与提供商 → 供应商编辑器 → 「请求身份」 | `[providers.<name>.request_identity]` |
 | 模型 | 设置 → 模型与提供商 → 模型编辑器 → 「请求身份」 | `[models."<alias>".request_identity]` |
 
-后面的层覆盖前面的层（全局 → 供应商 → 模型）；一层都不设置时沿用内置的 Kimi Code 身份。选某个兼容 preset 会先重置更低层身份，再应用该层可选的 `overrides` 稀疏调整（如 `lineage.format`、`client.user_agent`、`request.logical_id`）。让一家供应商的流量以 OpenCode 身份发出只需：
+后面的层覆盖前面的层（全局 → 供应商 → 模型）。一层都不设置时，普通 API key 连接沿用内置的 Kimi Code 身份，走 Codex 或 Grok Build OAuth 登录的供应商则沿用该供应商的默认身份。你显式设置的层——全局、供应商或模型——仍然覆盖这个默认。选某个兼容 preset 会先重置更低层身份，再应用该层可选的 `overrides` 稀疏调整（如 `lineage.format`、`client.user_agent`、`request.logical_id`）。让一家供应商的流量以 OpenCode 身份发出只需：
 
 ```toml
 [providers.my-gateway.request_identity]
