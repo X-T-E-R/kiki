@@ -29,7 +29,6 @@ jobs:
     env:
       BASE_SHA: ${{ inputs.base_sha }}
       EXPECTED_VERSION: ${{ inputs.expected_version }}
-      VERSION_OUTPUT: ${{ runner.temp }}/kiki-version-output
     steps:
       - name: Checkout exact preparation commit
         uses: actions/checkout@v6
@@ -116,7 +115,7 @@ jobs:
               if result.returncode != 1 or not result.stdout:
                   raise RuntimeError(f'Could not capture new version file: {name}')
               patch += result.stdout
-          output = pathlib.Path(os.environ['VERSION_OUTPUT'])
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'kiki-version-output'
           output.mkdir(parents=True, exist_ok=True)
           patch_path = output / 'version.patch'
           patch_path.write_bytes(patch)
