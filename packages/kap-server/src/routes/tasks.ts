@@ -7,6 +7,8 @@ import {
   type AgentTaskInfo,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '@kiki/protocol';
+import { AgentTasksPageTokenError, readSessionAgentTasks } from '../services/sessionAgentTasks';
 import { ErrorCode } from '../protocol/error-codes';
 import {
   cancelTaskQuerySchema,
@@ -58,6 +60,25 @@ const sessionAndTaskIdParamSchema = z.object({
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 
 export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
+  const agentTasksRoute = defineRoute({
+    method: 'GET', path: '/sessions/{session_id}/agent-tasks',
+    params: sessionIdParamSchema, querystring: listAgentTasksQuerySchema,
+    success: { data: listAgentTasksResponseSchema },
+    errors: { [ErrorCode.VALIDATION_FAILED]: { detailsSchema }, [ErrorCode.SESSION_NOT_FOUND]: {} },
+    description: 'Read task metadata across live and persisted session owners without opening agents',
+    tags: ['tasks'],
+  }, async (req, reply) => {
+    const summary = await core.accessor.get(ISessionIndex).get(req.params.session_id);
+    if (summary === undefined) { reply.send(sessionNotFound(req.params.session_id, req.id)); return; }
+    try {
+      reply.send(okEnvelope(await readSessionAgentTasks(core, summary, req.query), req.id));
+    } catch (error) {
+      if (!(error instanceof AgentTasksPageTokenError)) throw error;
+      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
+    }
+  });
+  app.get(agentTasksRoute.path, agentTasksRoute.options, agentTasksRoute.handler as Parameters<TasksRouteHost['get']>[2]);
+
   const listRoute = defineRoute(
     {
       method: 'GET',

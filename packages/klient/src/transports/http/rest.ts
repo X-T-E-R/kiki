@@ -11,6 +11,7 @@ import { createConnectionsFacade } from './connections.js';
 import { createWebAccessFacade } from './web-access.js';
 import { createThreadBridgesFacade } from './thread-bridges.js';
 import { createUsageExportFacade } from './usage-export.js';
+import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '../../contract/session/agent-tasks.js';
 import type {
   ActivateSkillRequest,
   AuthSummary,
@@ -252,6 +253,13 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/sessions/${encodeURIComponent(sessionId)}/tasks`,
         { query: { status: query?.status, page_size: query?.page_size, offset: query?.offset } },
       ),
+      listAgentTasks: async (sessionId, query = {}, options = {}) => {
+        const input = listAgentTasksQuerySchema.parse(query);
+        return listAgentTasksResponseSchema.parse(await transport.json(
+          `/sessions/${encodeURIComponent(sessionId)}/agent-tasks`,
+          { ...options, query: { page_size: input.page_size, page_token: input.page_token } },
+        ));
+      },
       getTask: (sessionId: string, taskId: string, query = {}) => transport.json<Task>(
         `/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}`,
         {

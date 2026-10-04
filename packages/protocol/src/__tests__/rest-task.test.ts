@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { agentTaskSummarySchema, listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '../rest/agent-tasks';
+import { matchConnectionOperation } from '../rest/connection-operations';
 
 import {
   cancelTaskQuerySchema,
@@ -86,5 +88,36 @@ describe('taskAlreadyFinishedDataSchema (40904 envelope data)', () => {
     expect(taskAlreadyFinishedDataSchema.safeParse({ cancelled: true }).success).toBe(
       false,
     );
+  });
+});
+
+describe('whole-session agent task metadata', () => {
+  it('registers only a session-addressed read in the approved connection surface', () => {
+    expect(matchConnectionOperation('GET', '/api/sessions/example/agent-tasks')).toEqual({ operation: 'agentTaskList', params: { sessionId: 'example' } });
+    expect(matchConnectionOperation('POST', '/api/sessions/example/agent-tasks')).toBeUndefined();
+    expect(matchConnectionOperation('GET', '/api/sessions/%2Fother/agent-tasks')).toBeUndefined();
+  });
+  it('requires owner provenance and bounds query pages', () => {
+    expect(listAgentTasksQuerySchema.parse({ page_size: '2', page_token: 'opaque' })).toEqual({ page_size: 2, page_token: 'opaque' });
+    expect(listAgentTasksQuerySchema.safeParse({ page_size: 101 }).success).toBe(false);
+    const task = { id: 'example', session_id: 'session', kind: 'subagent', status: 'running', description: 'example',
+      created_at: '2026-06-04T10:00:00.000Z', agent_id: 'target', source: 'live' };
+    expect(agentTaskSummarySchema.safeParse(task).success).toBe(false);
+    expect(agentTaskSummarySchema.parse({ ...task, owner_agent_id: 'owner' })).toMatchObject({ owner_agent_id: 'owner', agent_id: 'target' });
+  });
+  it('distinguishes successful empty coverage, progress and failed coverage', () => {
+    const empty = { items: [], owners: [{ owner_agent_id: 'main', source: 'persisted', state: 'complete' }],
+      coverage: { total_owners: 1, completed_owners: 1, failed_owners: 0, pending_owners: 0, inventory_complete: true, complete: true, failures: [] },
+      has_more: false, partial: false, consistency: 'incremental', started_at: '2026-06-04T10:00:00.000Z', observed_at: '2026-06-04T10:00:00.000Z' };
+    expect(listAgentTasksResponseSchema.safeParse(empty).success).toBe(true);
+    expect(listAgentTasksResponseSchema.safeParse({ ...empty, has_more: true }).success).toBe(false);
+    expect(listAgentTasksResponseSchema.safeParse({ ...empty, coverage: { ...empty.coverage, total_owners: 2 } }).success).toBe(false);
+    const progressing = { ...empty, owners: [{ ...empty.owners[0], state: 'pending' }], has_more: true, next_page_token: 'next',
+      coverage: { ...empty.coverage, completed_owners: 0, pending_owners: 1, complete: false } };
+    expect(listAgentTasksResponseSchema.safeParse(progressing).success).toBe(true);
+    const failed = { ...empty, owners: [{ ...empty.owners[0], state: 'failed' }], partial: true,
+      coverage: { ...empty.coverage, completed_owners: 0, failed_owners: 1, complete: false,
+        failures: [{ stage: 'owner', owner_agent_id: 'main', message: 'Unable to read owner' }] } };
+    expect(listAgentTasksResponseSchema.safeParse(failed).success).toBe(true);
   });
 });

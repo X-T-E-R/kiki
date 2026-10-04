@@ -43,6 +43,7 @@ export * from './rest/question';
 export * from './rest/tool';
 export * from './rest/skill';
 export * from './rest/task';
+export * from './rest/agent-tasks';
 export * from './rest/fs';
 export * from './rest/file';
 export * from './rest/modelCatalog';

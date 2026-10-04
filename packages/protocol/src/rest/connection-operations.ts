@@ -25,6 +25,7 @@ export const CONNECTION_OPERATIONS = {
   approvals: ['GET', '/sessions/{sessionId}/approvals'], approval: ['POST', '/sessions/{sessionId}/approvals/{interactionId}'],
   questions: ['GET', '/sessions/{sessionId}/questions'], question: ['POST', '/sessions/{sessionId}/questions/{interactionId}'],
   taskList: ['GET', '/sessions/{sessionId}/tasks'], task: ['GET', '/sessions/{sessionId}/tasks/{taskId}'],
+  agentTaskList: ['GET', '/sessions/{sessionId}/agent-tasks'],
   userMessages: ['GET', '/sessions/{sessionId}/user-messages'],
   skills: ['GET', '/sessions/{sessionId}/skills'], skillActivate: ['POST', '/sessions/{sessionId}/skills/{skillName}:activate'],
   context: ['GET', '/sessions/{sessionId}/context'], metrics: ['GET', '/sessions/{sessionId}/metrics'],

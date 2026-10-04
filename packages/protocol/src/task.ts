@@ -46,6 +46,7 @@ export const taskSchema = z.object({
   /** Subagent tasks only: the child's effective thinking effort at spawn. */
   thinking_effort: z.string().optional(),
   agent_id: z.string().optional(),
+  parent_tool_call_id: z.string().optional(),
   profile: z.string().optional(),
   run_in_background: z.boolean().optional(),
   /** Shell tasks only: process exit code once the run settled (null = killed/unknown). */

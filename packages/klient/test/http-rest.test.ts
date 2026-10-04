@@ -22,6 +22,42 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('reads validated owner-aware metadata pages through authenticated REST without opening an agent', async () => {
+    const page = { items: [{ id: 'test-00000001', session_id: 'session/example', owner_agent_id: 'owner', agent_id: 'target',
+      source: 'live', kind: 'subagent', description: 'example dispatch', status: 'running', created_at: '2026-06-04T10:00:00.000Z' }],
+      owners: [{ owner_agent_id: 'owner', source: 'live', state: 'pending' }],
+      coverage: { total_owners: 1, completed_owners: 0, failed_owners: 0, pending_owners: 1, inventory_complete: true, complete: false, failures: [] },
+      has_more: true, next_page_token: 'next', partial: false, consistency: 'incremental', started_at: '2026-06-04T10:00:00.000Z', observed_at: '2026-06-04T10:00:00.000Z' };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe('/api/sessions/session%2Fexample/agent-tasks');
+      expect(url.searchParams.get('page_size')).toBe('1');
+      expect(url.searchParams.get('page_token')).toBe('opaque');
+      expect(init?.method ?? 'GET').toBe('GET');
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      return envelope(page);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      const result = await channel.rest.sessions.listAgentTasks('session/example', { page_size: 1, page_token: 'opaque' }, { timeoutMs: 1000 });
+      expect(result).toEqual(page);
+      expect(result.items[0]).toMatchObject({ owner_agent_id: 'owner', agent_id: 'target' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await expect(channel.rest.sessions.listAgentTasks('session/example', { page_size: 101 })).rejects.toThrow();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally { await channel.close(); }
+  });
+  it('rejects incomplete or contradictory agent-tasks response contracts rather than reporting empty coverage', async () => {
+    const responses = [{ items: [] }, { items: [], owners: [],
+      coverage: { total_owners: 3, completed_owners: 3, failed_owners: 0, pending_owners: 0, inventory_complete: true, complete: true, failures: [] },
+      has_more: false, partial: false, consistency: 'incremental', started_at: '2026-06-04T10:00:00.000Z', observed_at: '2026-06-04T10:00:00.000Z' }];
+    const fetchMock = vi.fn(async () => envelope(responses.shift()));
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.sessions.listAgentTasks('session')).rejects.toThrow();
+      await expect(channel.rest.sessions.listAgentTasks('session')).rejects.toThrow();
+    } finally { await channel.close(); }
+  });
   it('omits missing bearer credentials from Cookie broker call, download and upload requests', async () => {
     const captured: RequestInit[] = [];
     const transport = createConnectionTransport({ endpoint: 'http://example.test', connectionId: '11111111-1111-4111-8111-111111111111', fetch: (async (_input, init) => { captured.push(init!); return envelope({}); }) as typeof fetch });

@@ -1,6 +1,6 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   IAgentLifecycleService,
@@ -8,9 +8,16 @@ import {
   ISessionContext,
   getLiveSessionById,
   IModelCatalog,
+  IAtomicDocumentStore,
+  IFileSystemStorageService,
+  ISessionMetadata,
+  IAppendLogStore,
+  ISessionManager,
   type AgentTask,
 } from '@kiki/agent-core-v2';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { listAgentTasksResponseSchema, type ListAgentTasksResponse } from '@kiki/protocol';
+import { HttpChannel } from '@kiki/klient/http';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -57,7 +64,10 @@ describe('server-v2 /api/sessions/{sid}/tasks', () => {
   let base: string;
 
   beforeEach(async () => {
-    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-tasks-'));
+    const scratch = fileURLToPath(new URL('../../../.tmp/agent-task-tests/', import.meta.url));
+    await mkdir(scratch, { recursive: true });
+    home = await mkdtemp(join(scratch, 'task-metadata-'));
+    await writeFile(join(home, 'config.toml'), '[search]\nenabled = false\n');
     const modelCatalog: IModelCatalog = {
       _serviceBrand: undefined,
       get: () => {
@@ -427,6 +437,194 @@ describe('server-v2 /api/sessions/{sid}/tasks', () => {
 
     const { body } = await postJson<null>(`/api/sessions/${id}/tasks/${taskId}`);
     expect(body.code).toBe(40001);
+  });
+
+  it('reads unopened child and grandchild task metadata with owner provenance and no body reads', async () => {
+    const id = await createSession();
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    await mainAgentTasks(id);
+    const child = await lifecycle.create({ agentId: 'child', delegator: { kind: 'agent', agentId: 'main' } });
+    const grandchild = await lifecycle.create({ agentId: 'grandchild', delegator: { kind: 'agent', agentId: 'child' } });
+    const childTasks = child.accessor.get(IAgentTaskService);
+    const grandTasks = grandchild.accessor.get(IAgentTaskService);
+    await childTasks.suppressAllTerminalNotifications();
+    const running = grandTasks.registerTask(fakeTask('process'));
+    const dispatch = childTasks.registerTask({ ...fakeTask('agent'), toInfo: (base) => ({ ...base, kind: 'agent', agentId: 'grandchild' }) });
+    await flush();
+    const roster = lifecycle.list().map((agent) => agent.id);
+    const createSpy = vi.spyOn(lifecycle, 'create');
+    const wireSpy = vi.spyOn(server!.core.accessor.get(IAppendLogStore), 'read');
+    const storage = server!.core.accessor.get(IFileSystemStorageService);
+    const bytesSpy = vi.spyOn(storage, 'read');
+    const streamSpy = vi.spyOn(storage, 'readStream');
+    const snapshotSpy = vi.spyOn(childTasks, 'getTaskSnapshot');
+    const channel = new HttpChannel({ endpoint: base, token: server!.localOwnerToken });
+    try {
+      const result = await channel.rest.sessions.listAgentTasks(id);
+      expect(listAgentTasksResponseSchema.safeParse(result).success).toBe(true);
+      expect(result.coverage).toMatchObject({ total_owners: 3, completed_owners: 3, pending_owners: 0, failed_owners: 0, complete: true });
+      expect(result.items).toHaveLength(2);
+      expect(result.items.find((task) => task.id === running)).toMatchObject({ owner_agent_id: 'grandchild', source: 'live', status: 'running' });
+      expect(result.items.find((task) => task.id === dispatch)).toMatchObject({ owner_agent_id: 'child', agent_id: 'grandchild', kind: 'subagent' });
+      expect(result.items.filter((task) => task.kind !== 'subagent')).toHaveLength(1);
+      expect(lifecycle.list().map((agent) => agent.id)).toEqual(roster);
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(wireSpy).not.toHaveBeenCalled();
+      expect(bytesSpy.mock.calls.every(([, key]) => key === 'state.json' || /^test-[0-9a-z]{8}\.json$/.test(key))).toBe(true);
+      expect(streamSpy).not.toHaveBeenCalled();
+      expect(snapshotSpy).not.toHaveBeenCalled();
+      expect(result.items.every((task) => task.output_preview === undefined)).toBe(true);
+    } finally {
+      await channel.close(); createSpy.mockRestore(); wireSpy.mockRestore(); bytesSpy.mockRestore(); streamSpy.mockRestore(); snapshotSpy.mockRestore();
+    }
+    const completed = childTasks.registerTask({ ...fakeTask('process'), start: async (sink) => { sink.setFinalOutput?.('example result'); await sink.settle({ status: 'completed' }); } });
+    await childTasks.wait(completed);
+    const cancelled = childTasks.registerTask(fakeTask('process'));
+    await childTasks.stopByUser(cancelled);
+    const terminal = await getJson<ListAgentTasksResponse>(`/api/sessions/${id}/agent-tasks`);
+    expect(terminal.body.data.items.find((task) => task.id === completed)?.status).toBe('completed');
+    expect(terminal.body.data.items.find((task) => task.id === cancelled)?.status).toBe('cancelled');
+    expect(terminal.body.data.items).toHaveLength(4);
+  });
+
+  it('drains metadata pages through cold owners and legacy main fallback without duplicates or materialization', async () => {
+    const id = await createSession();
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const scope = session.accessor.get(ISessionContext).scope();
+    const docs = server!.core.accessor.get(IAtomicDocumentStore);
+    const persisted = (taskId: string, ownerAgentId?: string) => ({ taskId, ownerAgentId, kind: 'process', command: 'echo example', pid: 0, exitCode: 0,
+      description: 'persisted example', status: 'completed', startedAt: 1000, endedAt: 2000, detached: true });
+    const taskIds = ['test-00000001', 'test-00000002', 'test-00000003'];
+    for (const taskId of taskIds) await docs.set(`${scope}/agents/cold/tasks`, `${taskId}.json`, persisted(taskId, 'cold'));
+    await docs.set(`${scope}/agents/cold/tasks`, 'test-00000003.json', { ...persisted('test-00000003', 'cold'), status: 'running', endedAt: null });
+    await docs.set(`${scope}/agents/cold/tasks`, 'test-00000001.json', { ...persisted('test-00000001', 'cold'), receiptVerification: 'verified',
+      receipt: { schemaVersion: 1, path: 'tasks/test-00000001/output.log', mediaType: 'text/plain; charset=utf-8', bytes: 123,
+        sha256: '0'.repeat(64), contentState: 'final', committedAt: '2026-06-04T10:00:00.000Z' } });
+    await docs.set(`${scope}/session-meta`, 'state.json', { agents: { 'stale-legacy-owner': {} } });
+    await docs.set(`${scope}/agents/copied/tasks`, `${taskIds[0]}.json`, persisted(taskIds[0]!, 'cold'));
+    await docs.set(`${scope}/agents/main/tasks`, 'test-00000004.json', persisted('test-00000004', 'main'));
+    await docs.set(`${scope}/tasks`, 'test-00000004.json', persisted('test-00000004'));
+    await docs.set(`${scope}/tasks`, 'test-00000005.json', { task_id: 'test-00000005', description: 'legacy example', command: 'echo old', pid: 0,
+      status: 'killed', started_at: 1000, ended_at: 2000, exit_code: null });
+    await session.accessor.get(ISessionMetadata).registerAgent('empty', { type: 'sub', parentAgentId: 'main' });
+    await server!.core.accessor.get(ISessionManager).close(id);
+    expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+    const manager = server!.core.accessor.get(ISessionManager);
+    const resumeSpy = vi.spyOn(manager, 'resume');
+    const wireSpy = vi.spyOn(server!.core.accessor.get(IAppendLogStore), 'read');
+    const storage = server!.core.accessor.get(IFileSystemStorageService);
+    const bytesSpy = vi.spyOn(storage, 'read');
+    const streamSpy = vi.spyOn(storage, 'readStream');
+    const metadataSpy = vi.spyOn(docs, 'get');
+    try {
+      let token: string | undefined;
+      const rows: ListAgentTasksResponse['items'] = [];
+      let last: ListAgentTasksResponse | undefined;
+      let calls = 0;
+      do {
+        const beforeReads = metadataSpy.mock.calls.length;
+        const response = await getJson<ListAgentTasksResponse>(`/api/sessions/${id}/agent-tasks?page_size=1${token === undefined ? '' : `&page_token=${encodeURIComponent(token)}`}`);
+        expect(response.body.code).toBe(0);
+        last = response.body.data;
+        expect(last.items.length).toBeLessThanOrEqual(1);
+        expect(metadataSpy.mock.calls.slice(beforeReads).filter(([path]) => path.endsWith('/tasks')).length).toBeLessThanOrEqual(1);
+        rows.push(...last.items);
+        token = last.next_page_token;
+        calls++;
+        expect(calls).toBeLessThan(12);
+        if (token !== undefined) expect(last.coverage.complete).toBe(false);
+      } while (token !== undefined);
+      expect(rows.map((row) => row.id).toSorted()).toEqual([...taskIds, 'test-00000004', 'test-00000005']);
+      expect(rows.every((row) => row.source === 'persisted')).toBe(true);
+      expect(rows.find((row) => row.id === 'test-00000005')?.status).toBe('cancelled');
+      expect(rows.find((row) => row.id === 'test-00000003')).toMatchObject({ source: 'persisted', status: 'running' });
+      expect(rows.find((row) => row.id === 'test-00000001')?.receipt?.bytes).toBe(123);
+      expect(rows.find((row) => row.id === 'test-00000001')?.receipt_verification).toBeUndefined();
+      expect(calls).toBe(7);
+      expect(last?.owners.find((owner) => owner.owner_agent_id === 'empty')?.state).toBe('complete');
+      expect(last?.coverage).toMatchObject({ total_owners: 4, completed_owners: 4, failed_owners: 0, pending_owners: 0, complete: true });
+      expect(last?.has_more).toBe(false);
+      expect(resumeSpy).not.toHaveBeenCalled();
+      expect(wireSpy).not.toHaveBeenCalled();
+      expect(bytesSpy.mock.calls.every(([, key]) => key === 'state.json' || /^test-[0-9a-z]{8}\.json$/.test(key))).toBe(true);
+      expect(streamSpy).not.toHaveBeenCalled();
+      expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+    } finally { resumeSpy.mockRestore(); wireSpy.mockRestore(); bytesSpy.mockRestore(); streamSpy.mockRestore(); metadataSpy.mockRestore(); }
+  });
+
+  it('distinguishes failed metadata and failed inventory from empty owners, and progresses after failure', async () => {
+    const id = await createSession();
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const scope = session.accessor.get(ISessionContext).scope();
+    const docs = server!.core.accessor.get(IAtomicDocumentStore);
+    await docs.set(`${scope}/agents/broken/tasks`, 'test-00000001.json', { taskId: 'test-00000099' });
+    await docs.set(`${scope}/agents/broken/tasks`, 'test-00000002.json', { taskId: 'test-00000098' });
+    const original = docs.list.bind(docs);
+    const listSpy = vi.spyOn(docs, 'list').mockImplementation((path, prefix) => path === `${scope}/agents/failing/tasks` ? Promise.reject(new Error('synthetic read failure')) : original(path, prefix));
+    await session.accessor.get(ISessionMetadata).registerAgent('failing', { type: 'sub', parentAgentId: 'main' });
+    try {
+      const response = await getJson<ListAgentTasksResponse>(`/api/sessions/${id}/agent-tasks`);
+      expect(response.body.code).toBe(0);
+      expect(response.body.data).toMatchObject({ items: [], has_more: false, partial: true,
+        coverage: { completed_owners: 1, failed_owners: 2, pending_owners: 0, complete: false, inventory_complete: true } });
+      expect(response.body.data.coverage.failures).toEqual(expect.arrayContaining([
+        expect.objectContaining({ owner_agent_id: 'broken', stage: 'task_metadata', task_id: 'test-00000001' }),
+        expect.objectContaining({ owner_agent_id: 'failing', stage: 'owner' }),
+      ]));
+      let page = (await getJson<ListAgentTasksResponse>(`/api/sessions/${id}/agent-tasks?page_size=1`)).body.data;
+      expect(page).toMatchObject({ partial: true, has_more: true });
+      let pages = 1;
+      while (page.next_page_token !== undefined) {
+        page = (await getJson<ListAgentTasksResponse>(`/api/sessions/${id}/agent-tasks?page_size=1&page_token=${encodeURIComponent(page.next_page_token)}`)).body.data;
+        expect(++pages).toBeLessThan(5);
+      }
+      expect(page.coverage).toMatchObject({ completed_owners: 1, failed_owners: 2, pending_owners: 0, complete: false });
+      expect(page.coverage.failures).toHaveLength(2);
+    } finally { listSpy.mockRestore(); }
+    const storage = server!.core.accessor.get(IFileSystemStorageService);
+    const storageList = storage.list.bind(storage);
+    const inventorySpy = vi.spyOn(storage, 'list').mockImplementation((path) => path === `${scope}/agents` ? Promise.reject(new Error('synthetic inventory failure')) : storageList(path));
+    try {
+      const response = await getJson<ListAgentTasksResponse>(`/api/sessions/${id}/agent-tasks`);
+      expect(response.body.data.coverage).toMatchObject({ inventory_complete: false, complete: false });
+      expect(response.body.data.partial).toBe(true);
+      expect(response.body.data.coverage.failures).toContainEqual(expect.objectContaining({ stage: 'inventory' }));
+    } finally { inventorySpy.mockRestore(); }
+  });
+
+  it('keeps agent-tasks session/auth boundaries and rejects altered or source-invalidated continuation', async () => {
+    const id = await createSession();
+    const otherId = await createSession();
+    const tasks = await mainAgentTasks(id);
+    tasks.registerTask(fakeTask('process'));
+    tasks.registerTask(fakeTask('process'));
+    const first = await getJson<ListAgentTasksResponse>(`/api/sessions/${id}/agent-tasks?page_size=1`);
+    expect(first.body.data.has_more).toBe(true);
+    const token = first.body.data.next_page_token!;
+    const second = await getJson<ListAgentTasksResponse>(`/api/sessions/${id}/agent-tasks?page_size=1&page_token=${encodeURIComponent(token)}`);
+    expect(second.body.data.has_more).toBe(false);
+    expect(second.body.data.coverage.complete).toBe(true);
+    expect(second.body.data.items).toHaveLength(1);
+    expect(second.body.data.items[0]!.id).not.toBe(first.body.data.items[0]!.id);
+    if (tasks.rollbackTaskRegistration === undefined) throw new Error('Task registration rollback is unavailable');
+    await tasks.rollbackTaskRegistration(first.body.data.items[0]!.id);
+    expect((await getJson<null>(`/api/sessions/${id}/agent-tasks?page_token=${encodeURIComponent(token)}`)).body.code).toBe(40001);
+    const foreign = await getJson<null>(`/api/sessions/${otherId}/agent-tasks?page_token=${encodeURIComponent(token)}`);
+    expect(foreign.body.code).toBe(40001);
+    const altered = await getJson<null>(`/api/sessions/${id}/agent-tasks?page_token=${encodeURIComponent(token + 'x')}`);
+    expect(altered.body.code).toBe(40001);
+    const empty = await getJson<ListAgentTasksResponse>(`/api/sessions/${otherId}/agent-tasks`);
+    expect(empty.body.data.items).toEqual([]);
+    expect(empty.body.data.coverage.complete).toBe(true);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    await session.accessor.get(IAgentLifecycleService).create({ agentId: 'new-owner' });
+    const changed = await getJson<null>(`/api/sessions/${id}/agent-tasks?page_token=${encodeURIComponent(token)}`);
+    expect(changed.body.code).toBe(40001);
+    const unauthenticated = await fetch(`${base}/api/sessions/${id}/agent-tasks`);
+    expect(unauthenticated.status).toBe(401);
+    expect((await getJson<null>('/api/sessions/missing/agent-tasks')).body.code).toBe(40401);
+    expect((await getJson<null>(`/api/sessions/${id}/agent-tasks?page_size=101`)).body.code).toBe(40001);
   });
 
   it('returns 40401 for an unknown session on all three endpoints', async () => {
