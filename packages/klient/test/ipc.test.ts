@@ -85,7 +85,7 @@ describe('ipc transport specifics', () => {
     klient.events.onError((error) => errors.push(error));
     klient.events.observe({ events: ['config.changed'], read }, publish);
     await expect(klient.global.env()).rejects.toThrow();
-    await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+    await vi.waitFor(() => { expect(errors.length).toBeGreaterThan(0); });
     expect(read).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
     await klient.close();
@@ -270,9 +270,9 @@ describe('ipc transport specifics', () => {
     try {
       const iterator = channel.stream({}, 'modelResolver', 'generate', ['synthetic', {}, {}])[Symbol.asyncIterator]();
       const first = iterator.next();
-      await vi.waitFor(() => expect(requestSignal).toBeDefined(), { timeout: 5_000 });
+      await vi.waitFor(() => { expect(requestSignal).toBeDefined(); }, { timeout: 5_000 });
       await iterator.return?.();
-      await vi.waitFor(() => expect(returned).toHaveBeenCalled(), { timeout: 5_000 });
+      await vi.waitFor(() => { expect(returned).toHaveBeenCalled(); }, { timeout: 5_000 });
       expect(requestSignal!.aborted).toBe(true);
       await first;
     } finally {
@@ -309,9 +309,9 @@ describe('ipc transport specifics', () => {
       // `close()` fails the pending `next()`; attach the handler first so the
       // teardown rejection is observed rather than left unhandled.
       const first = iterator.next().catch(() => undefined);
-      await vi.waitFor(() => expect(requestSignal).toBeDefined(), { timeout: 5_000 });
+      await vi.waitFor(() => { expect(requestSignal).toBeDefined(); }, { timeout: 5_000 });
       await channel.close();
-      await vi.waitFor(() => expect(returned).toHaveBeenCalled(), { timeout: 5_000 });
+      await vi.waitFor(() => { expect(returned).toHaveBeenCalled(); }, { timeout: 5_000 });
       expect(requestSignal!.aborted).toBe(true);
       await first;
     } finally {

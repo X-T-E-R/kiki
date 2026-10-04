@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -21,11 +22,12 @@ interface Envelope<T> {
   data: T;
 }
 
-const config = [
+const config = (endpoint: string) => [
   'default_model = "test"',
   '[providers.openai]',
   'type = "openai"',
-  'api_key = "sk-test"',
+  `base_url = "${endpoint}/v1"`,
+  'api_key = "fixture-not-a-secret"',
   '[models.test]',
   'provider = "openai"',
   'model = "test"',
@@ -44,6 +46,8 @@ describe('relay-v1 REST and cold wire contract', () => {
   let home: string;
   let server: RunningServer | undefined;
   let base: string;
+  let provider: Server;
+  let modelCalls: number;
 
   const start = async () => {
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0,
@@ -53,7 +57,15 @@ describe('relay-v1 REST and cold wire contract', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kiki-context-relay-'));
-    await writeFile(join(home, 'config.toml'), config);
+    modelCalls = 0;
+    provider = createServer((_request, response) => {
+      modelCalls++;
+      response.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Unexpected model call in relay fixture' } }));
+    });
+    await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('Missing fixture provider address');
+    await writeFile(join(home, 'config.toml'), config(`http://127.0.0.1:${address.port}`));
     await mkdir(join(home, 'agents'), { recursive: true });
     await writeFile(join(home, 'agents', 'custom.md'), '---\nname: custom\ndescription: Custom agent\ncontext_strategy: auto\nmodel_profiles:\n  - alias: test\n    context_strategy: fresh\n---\n\nYou are helpful.\n');
     await writeFile(join(home, 'agents', 'child.md'), '---\nname: child\ndescription: Child agent\ncontext_strategy: summarize\n---\n\nYou are helpful.\n');
@@ -62,6 +74,13 @@ describe('relay-v1 REST and cold wire contract', () => {
 
   afterEach(async () => {
     await server?.close();
+    provider.closeAllConnections();
+    await new Promise<void>((resolve, reject) => {
+      provider.close((error) => {
+        if (error !== undefined) { reject(error); return; }
+        resolve();
+      });
+    });
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
@@ -124,23 +143,28 @@ describe('relay-v1 REST and cold wire contract', () => {
       text('user', 'New request'), text('assistant', 'Last conclusion'),
       text('user', 'Continue with the result'),
     );
+    memory.append({ ...text('assistant', 'Reviewed the current handoff'), toolCalls: [
+      { type: 'function', id: 'initial-notes', name: 'TodoList', arguments: '{}' },
+    ] });
     live.accessor.get(ISessionTodoService).setNotes({ goal: 'Complete the task', next: 'Continue' },
-      { turnId: 0, step: 1, toolCallId: 'initial-notes' });
+      { turnId: 0, step: 1, toolCallId: 'initial-notes', reviewHandoff: true });
+    memory.append({ role: 'tool', content: [{ type: 'text', text: 'Working notes updated' }], toolCalls: [], toolCallId: 'initial-notes' });
 
     const compaction = agent.accessor.get(IAgentFullCompactionService);
     let dispose = () => {};
-    const finished = new Promise<Awaited<NonNullable<typeof compaction.compacting>['promise']>>((resolve) => {
+    const finished = new Promise<Awaited<NonNullable<typeof compaction.compacting>['promise']>>((resolve, reject) => {
       const subscription = compaction.onDidFinishCompaction((task) => {
         subscription.dispose();
-        void task.promise.then(resolve);
+        void task.promise.then(resolve, reject);
       });
-      dispose = () => subscription.dispose();
+      dispose = () => { subscription.dispose(); };
     });
     try {
       const response = await request<unknown>(`/api/sessions/${id}:compact`, 'POST', { strategy: 'relay' });
       expect(response.code, response.msg).toBe(0);
       const result = await finished;
       expect(result.strategy).toBe('relay');
+      expect(modelCalls).toBe(0);
       const expected = structuredClone(memory.get());
       expect(expected.some((message) => message.origin?.kind === 'compaction_summary')).toBe(true);
       const wire = agent.accessor.get(IWireService);

@@ -60,7 +60,8 @@ describe('disposed agent capability snapshots', () => {
         modelAlias: 'stub',
         serviceTier: 'default',
         tools: ['Read'],
-        subagentPolicy: 'advisory',
+        allowedSubagents: ['explore'],
+        preferredSubagents: ['explore'],
         systemPrompt: () => 'Original prompt.',
       })] },
     });
@@ -85,7 +86,8 @@ describe('disposed agent capability snapshots', () => {
           modelAlias: 'stub',
           serviceTier: 'priority',
           tools: ['AgentRun'],
-          subagentPolicy: 'strict',
+          allowedSubagents: [],
+          preferredSubagents: [],
           systemPrompt: () => 'Replacement prompt.',
         })] },
       });
@@ -391,7 +393,8 @@ function expectBoundOriginal(data: AgentCapabilitiesResponse, live: boolean): vo
     source_file: '/fixture/original-helper.md',
     service_tier: 'default',
     tools: ['Read'],
-    subagent_policy: 'advisory',
+    allowed_subagents: ['explore'],
+    preferred_subagents: ['explore'],
   });
 }
 

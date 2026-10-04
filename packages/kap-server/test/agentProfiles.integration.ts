@@ -107,6 +107,7 @@ describe('GET /api/agents', () => {
       'tools: [Bash]', 'disallowedTools: [Read]', '---', 'External fixture prompt.', '',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const klient = createKlient({ endpoint: base, token: server.localOwnerToken });
     try {
@@ -149,7 +150,9 @@ describe('GET /api/agents', () => {
       const layers = { profile: { tools: allowed.tools, disallowedTools: allowed.disallowed_tools }, global: { disabled: ['Bash'] },
         subagent: { explicitProfileTools: allowed.tools, allowedTools: ['AskUserQuestion', 'BoardRead'] } };
       expect(isToolActiveComposed(layers, 'Bash')).toBe(false);
-      expect(isToolActiveComposed({ ...layers, profile: { tools: ['AskUserQuestion'] } }, 'AskUserQuestion')).toBe(false);
+      expect(isToolActiveComposed({ ...layers, profile: { tools: ['AskUserQuestion'] } }, 'AskUserQuestion')).toBe(true);
+      expect(isToolActiveComposed({ ...layers, profile: { tools: ['AskUserQuestion'] } }, 'MemoryWrite')).toBe(false);
+      expect(isToolActiveComposed({ ...layers, profile: { tools: ['AskUserQuestion'] }, global: { disabled: ['AskUserQuestion'] } }, 'AskUserQuestion')).toBe(false);
       expect(isToolActiveComposed({ ...layers, global: undefined, sessionDisabledTools: ['Bash'] }, 'Bash')).toBe(false);
       const empty = await saveSubagentProfileToolSettings(client, allowed, { tools: [], disallowedTools: [] });
       expect(subagentProfileToolDraft(empty)).toEqual({ tools: [], disallowedTools: [] });
@@ -177,6 +180,7 @@ describe('GET /api/agents', () => {
     ].join('\n');
     await writeFile(path, text);
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const list = async () => {
       const response = await authedFetch(server!, base, `/api/agents?cwd=${encodeURIComponent(home!)}&effective=true`);
@@ -265,6 +269,7 @@ describe('GET /api/agents', () => {
     await mkdir(join(home!, 'agents'), { recursive: true });
     await writeFile(join(home!, 'agents', 'prompt-main.md'), '---\nname: prompt-main\ndescription: Prompt main\nmain: true\nmodel_alias: stub\n---\nRole body.\n');
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const created = await (await authedFetch(server, base, '/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'prompt-main' } }) })).json() as Envelope<{ id: string }>;
     expect(created.code).toBe(0);
@@ -311,6 +316,7 @@ describe('GET /api/agents', () => {
     const path = join(home!, 'agents', 'context-main.md');
     await writeFile(path, '---\nname: context-main\ndescription: External main\nmain: true\nexecutor: claude-acp\n---\nPrompt.\n');
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const created = await authedFetch(server, base, '/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -339,6 +345,7 @@ describe('GET /api/agents', () => {
 
   it('lists managed adapter releases without installing and rejects unknown adapter IDs', async () => {
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const response = await authedFetch(server, base, '/api/executors/installations');
     expect(response.status).toBe(200);
@@ -476,6 +483,7 @@ describe('GET /api/agents', () => {
     await writeFile(join(extra, 'extra-lead.md'), file('extra-lead'));
     await writeFile(join(home!, 'relative-agents', 'relative-lead.md'), file('relative-lead'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const read = async () => listNamedAgentProfilesResponseSchema.parse(
       ((await (await authedFetch(server!, base, '/api/agents?unscoped=true')).json()) as Envelope<unknown>).data,
@@ -498,6 +506,7 @@ describe('GET /api/agents', () => {
     const profilePath = join(home!, 'agents', 'reviewer.md');
     await writeFile(profilePath, '---\nname: reviewer\ndescription: Reviews changes\nexecutor: codex-app-server\n---\nReview changes.\n');
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const executors = (await (await authedFetch(server, base, '/api/executors')).json()) as Envelope<{
       items: Array<{ id: string; label: string; protocol: string; status: string }>;
@@ -547,6 +556,7 @@ describe('GET /api/agents', () => {
       'preferred_subagents: [explore]', '---', 'Recommend the listed profile.', '',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
 
     const response = await authedFetch(server, base, `/api/agents?cwd=${encodeURIComponent(home!)}&effective=true`);
@@ -573,6 +583,7 @@ describe('GET /api/agents', () => {
       '  body: Codex-only instructions', '  append: Final instruction', '---', 'Profile fallback.', '',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const listed = await authedFetch(server, base, `/api/agents?cwd=${encodeURIComponent(home!)}&effective=true`);
     const reviewer = listNamedAgentProfilesResponseSchema.parse(((await listed.json()) as Envelope<unknown>).data)
@@ -639,6 +650,7 @@ describe('GET /api/agents', () => {
       'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const query = `cwd=${encodeURIComponent(home!)}`;
     const response = await authedFetch(server, base, `/api/agents?${query}&effective=true`);
@@ -687,6 +699,7 @@ describe('GET /api/agents', () => {
       'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const create = await authedFetch(server, base, '/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -717,6 +730,7 @@ describe('GET /api/agents', () => {
       'max_context_size = 1000', 'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const created = await (await authedFetch(server, base, '/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -749,6 +763,7 @@ describe('GET /api/agents', () => {
       'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const created = await (await authedFetch(server, base, '/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -812,6 +827,7 @@ describe('GET /api/agents', () => {
       'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const created = await (await authedFetch(server, base, '/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -860,6 +876,7 @@ describe('GET /api/agents', () => {
       'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const created = await (await authedFetch(server, base, '/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -899,6 +916,7 @@ describe('GET /api/agents', () => {
     await writeFile(agentPath, shadowText);
     await writeFile(systemPath, '---\ndescription: Legacy main\n---\nLegacy main prompt.');
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const query = `cwd=${encodeURIComponent(home!)}`;
     const listed = await authedFetch(server, base, `/api/agents?${query}&effective=true`);
@@ -937,6 +955,7 @@ describe('GET /api/agents', () => {
     const original = '---\r\ndescription: Restricted default\r\ntools: [Read]\r\nallowed_subagents: []\r\n---\r\nRestricted prompt.\r\n';
     await writeFile(path, original);
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const read = async () => {
       const response = await authedFetch(server!, base, `/api/agents?cwd=${encodeURIComponent(home!)}&effective=true`);
@@ -955,7 +974,15 @@ describe('GET /api/agents', () => {
 
   it('creates an external main session without a Kiki model pin', async () => {
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
+    const executors = server.core.accessor.get(IAgentExecutorRegistry);
+    const resolve = executors.resolveExecutable.bind(executors);
+    vi.spyOn(executors, 'resolveExecutable').mockImplementation(async (id, options) => id === 'grok-acp'
+      ? { descriptor: { ...executors.get(id)!, command: process.execPath, revision: 'fixture' }, options: executors.resolve(id, options ?? {}).options,
+        provider: { id: 'fixture-acp', protocol: 'acp-v1', validateOptions: (value) => value as Record<string, string | number | boolean>,
+          validateBinding: (binding) => ({ ok: true, binding }), create: () => { throw new Error('Fixture does not launch an external engine'); } } }
+      : resolve(id, options));
     server.core.accessor.get(IAgentProfileRegistry).register({
       sourceId: 'external-main-fixture', priority: 50,
       contribution: { profiles: [normalizeAgentProfile({
@@ -982,6 +1009,7 @@ describe('GET /api/agents', () => {
     const original = '---\nname: agent\ndescription: Restricted override\noverride: true\ntools: [Read]\nallowed_subagents: []\n---\nRestricted prompt.';
     await writeFile(path, original);
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     expect(server.core.accessor.get(IAgentExecutorRegistry).get('grok-acp')).toBeDefined();
     const read = async () => {
@@ -1009,6 +1037,7 @@ describe('GET /api/agents', () => {
       'max_context_size = 1000', '[experimental]', '"agent-profile-routes" = true',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const registry = server.core.accessor.get(IAgentProfileRegistry);
     const helper = (name: string, modelAlias?: string) => normalizeAgentProfile({
@@ -1069,7 +1098,8 @@ describe('GET /api/agents', () => {
         defaults_available: false, unavailable_reason: expect.stringContaining('No default model'),
         unavailable_reason_code: 'model_not_configured',
       });
-      for (const target of body.data.targets) expect(description).toContain(target.profile);
+      for (const name of ['leased-helper', 'unbound-helper', 'blocked-helper', 'private-helper']) expect(description).toContain(name);
+      for (const name of ['hidden-helper', 'explore', 'general']) expect(description).not.toContain(`- ${name}:`);
       expect(JSON.stringify(body.data)).not.toMatch(/PRIVATE_PROMPT|_private|sourceDefinitionId|YOUR_API_KEY/);
       expect(lifecycle.list()).toHaveLength(1);
       registration.dispose();
@@ -1117,7 +1147,9 @@ describe('GET /api/agents', () => {
         return agentCapabilitiesResponseSchema.parse(body.data);
       };
       const before = await read();
-      expect(before.targets.every((target) => target.launch_allowed === true)).toBe(true);
+      expect(before.targets.find((target) => target.executor === 'native')).toMatchObject({ launch_allowed: true });
+      expect(before.targets.find((target) => target.executor === 'external')).toMatchObject({ launch_allowed: true });
+      expect(before.targets.filter((target) => !['native-helper', 'external-helper'].includes(target.profile)).every((target) => target.launch_allowed === false)).toBe(true);
       const interactions = session.accessor.get(ISessionInteractionService);
       const pending = interactions.enqueue({ kind: 'approval', origin: { agentId: 'main' }, payload: { toolName: 'AgentRun' } });
       expect((await read()).tools?.find((tool) => tool.name === 'AgentRun')).toMatchObject({
@@ -1136,7 +1168,7 @@ describe('GET /api/agents', () => {
       const policy = dispatch.readLaunchPolicy(agent.id);
       expect(policy.planActive).toBe(true);
       const planned = await read();
-      for (const target of planned.targets) {
+      for (const target of planned.targets.filter((item) => ['native-helper', 'external-helper'].includes(item.profile))) {
         const expected = evaluateDispatchAdmission(policy, 'spawn', target.executor);
         expect(target.launch_allowed).toBe(expected.allowed);
         expect(target.launch_unavailable_reason).toBe(expected.reason);
@@ -1148,12 +1180,14 @@ describe('GET /api/agents', () => {
         launch_allowed: true, defaults_available: true, execution_restriction: 'research-readonly',
       });
       expect(planned.targets.find((target) => target.executor === 'external')).toMatchObject({ launch_allowed: false });
-      const draft = await read(`cwd=${encodeURIComponent(home!)}&profile=lead`);
+      const draft = await read(`workspace_id=${session.accessor.get(ISessionContext).workspaceId}&profile=lead`);
       expect(draft.context).toBe('draft');
       expect(draft.targets.map((target) => target.profile).toSorted()).toEqual(
         before.targets.map((target) => target.profile).toSorted(),
       );
-      expect(draft.targets.every((target) => target.launch_allowed === undefined && target.execution_restriction === undefined)).toBe(true);
+      expect(draft.targets.every((target) => target.execution_restriction === undefined)).toBe(true);
+      expect(draft.targets.filter((target) => ['native-helper', 'external-helper'].includes(target.profile)).every((target) => target.launch_allowed === undefined)).toBe(true);
+      expect(draft.targets.filter((target) => !['native-helper', 'external-helper'].includes(target.profile)).every((target) => target.launch_allowed === false)).toBe(true);
       const profile = agent.accessor.get(IAgentProfileService);
       const data = profile.data();
       vi.spyOn(profile, 'data').mockReturnValue({ ...data, executionRestriction: 'research-readonly' });
@@ -1368,7 +1402,6 @@ describe('GET /api/agents', () => {
           thinking_effort: 'low',
           allowed_models: ['provider/fast'],
           tools: null,
-          allowed_subagents: null,
           delegation_notice: 'off',
           service_tier: 'flex',
           request_params: { temperature: 0.2 },
@@ -1585,6 +1618,7 @@ describe('GET /api/agents', () => {
       `extra_skill_dirs = [${JSON.stringify(extraSkills.replaceAll('\\', '/'))}]`,
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const cwd = `cwd=${encodeURIComponent(workspaceA)}`;
     const listed = await (await authedFetch(server, base, `/api/agents?${cwd}&effective=true`)).json() as Envelope<unknown>;
@@ -1958,6 +1992,7 @@ describe('GET /api/agents', () => {
       'utf-8',
     );
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
     const registry = server.core.accessor.get(IAgentProfileRegistry);
     const helper = normalizeAgentProfile({
@@ -1981,8 +2016,10 @@ describe('GET /api/agents', () => {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'agent', model: 'stub' } }),
       });
-      expect(((await create.json()) as Envelope<{ id: string }>).code).toBe(0);
-      const query = `cwd=${encodeURIComponent(home as string)}`;
+      const created = (await create.json()) as Envelope<{ id: string }>;
+      expect(created.code).toBe(0);
+      const workspaceId = server.core.accessor.get(ISessionManager).get(created.data.id)!.accessor.get(ISessionContext).workspaceId;
+      const query = `workspace_id=${workspaceId}`;
 
       const plain = listNamedAgentProfilesResponseSchema.parse(
         ((await (await authedFetch(server, base, '/api/agents')).json()) as Envelope<unknown>).data,
@@ -2006,6 +2043,7 @@ describe('GET /api/agents', () => {
       expect(effectiveLead?.allowed_subagents).toEqual([
         expect.objectContaining({ name: 'helper', source: './_private/helper.md', scope: 'private', status: 'ready' }),
       ]);
+      expect(effective.items.some((profile) => profile.name === 'helper')).toBe(false);
 
       const capabilities = await authedFetch(server, base, `/api/agents/capabilities?${query}&profile=agent`);
       const caps = (await capabilities.json()) as Envelope<{ targets: Array<{ profile: string }> }>;
@@ -2429,6 +2467,7 @@ describe('shipped agent profiles', () => {
 
   async function boot(): Promise<void> {
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
     base = `http://127.0.0.1:${server.port}`;
   }
 

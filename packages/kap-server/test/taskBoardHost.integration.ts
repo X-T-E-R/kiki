@@ -31,13 +31,13 @@ it('uses the bundled Own Work package over real HTTP without requiring workspace
   await mkdir(workspaceRoot);
   const options = { homeDir: home, host: '127.0.0.1', port: 0, hostIdentity: TEST_HOST_IDENTITY, authTokenService: fixedTokenAuth('board-test'), logLevel: 'silent' as const };
   let server = await startServer(options);
-  let client = createKlient({ endpoint: `http://127.0.0.1:${server.port}`, token: 'board-test' });
+  let client = createKlient({ endpoint: `http://127.0.0.1:${server.port}`, token: server.localOwnerToken });
   try {
     const workspace = await client.global.workspaces.createOrTouch({ root: workspaceRoot });
     const workspaceId = workspace.id;
     const preview = async (configuration: { mode: 'auto' | 'global' | 'fixed'; path?: string }) => value(await client.global.board.read({ action: 'preview', workspaceId, configuration })) as BoardStoragePreview;
     const trustState = async () => {
-      const response = await fetch(`http://127.0.0.1:${server.port}/api/workspaces/${encodeURIComponent(workspaceId)}/trust`, { headers: { authorization: 'Bearer board-test' } });
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/workspaces/${encodeURIComponent(workspaceId)}/trust`, { headers: { authorization: `Bearer ${server.localOwnerToken}` } });
       expect(response.status).toBe(200);
       const body = await response.json() as { code: number; data: { trusted: boolean } };
       expect(body.code).toBe(0);
@@ -111,7 +111,7 @@ it('uses the bundled Own Work package over real HTTP without requiring workspace
     await client.close();
     await server.close();
     server = await startServer(options);
-    client = createKlient({ endpoint: `http://127.0.0.1:${server.port}`, token: 'board-test' });
+    client = createKlient({ endpoint: `http://127.0.0.1:${server.port}`, token: server.localOwnerToken });
     for (const card of [reopened, fixedCard, globalCard]) expect(value<BoardReadValue>(await show(card))).toMatchObject({ id: card.id, revision: card.revision });
     expect(value(await show(reopened))).toMatchObject({ status: 'active', completedAt: null });
     const restartedActiveList = pageValue(await client.global.board.read({ action: 'list', workspaceId, storage: reopened.storage, status: 'active' }));
@@ -147,7 +147,7 @@ it('returns one server-enumerated overview while isolating an incompatible works
     authTokenService: fixedTokenAuth('board-overview-test'),
     logLevel: 'silent',
   });
-  const client = createKlient({ endpoint: `http://127.0.0.1:${server.port}`, token: 'board-overview-test' });
+  const client = createKlient({ endpoint: `http://127.0.0.1:${server.port}`, token: server.localOwnerToken });
   try {
     const healthy = await client.global.workspaces.createOrTouch({ root: healthyRoot });
     const incompatible = await client.global.workspaces.createOrTouch({ root: incompatibleRoot });
