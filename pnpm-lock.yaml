@@ -430,7 +430,7 @@ importers:
         specifier: workspace:^
         version: link:../tree-sitter-bash
       '@modelcontextprotocol/sdk':
-        specifier: ^1.29.0
+        specifier: 1.29.0
         version: 1.29.0(zod@4.3.6)
       '@napi-rs/keyring':
         specifier: 2.1.0
@@ -702,6 +702,9 @@ importers:
       '@kiki/auth-native':
         specifier: workspace:*
         version: link:../auth-native
+      '@kiki/plugin-sdk':
+        specifier: workspace:*
+        version: link:../plugin-sdk
       '@kiki/transcript':
         specifier: workspace:^
         version: link:../transcript

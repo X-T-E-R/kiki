@@ -81,9 +81,9 @@
     "@kiki/agent-core-v2": "workspace:^",
     "@kiki/auth-native": "workspace:*",
     "@kiki/kap-server": "workspace:^",
-    "@kiki/oauth": "workspace:^",
-    "@kiki/node-sdk": "workspace:^",
     "@kiki/minidb": "workspace:^",
+    "@kiki/node-sdk": "workspace:^",
+    "@kiki/oauth": "workspace:^",
     "@kiki/pi-tui": "workspace:^",
     "@types/semver": "^7.7.0",
     "@types/ws": "^8.18.0",
@@ -104,9 +104,9 @@
     "node": ">=24.15.0"
   },
   "dependencies": {
-    "@kiki/session-core": "workspace:^",
     "@kiki/klient": "workspace:^",
     "@kiki/protocol": "workspace:^",
+    "@kiki/session-core": "workspace:^",
     "@kiki/transcript": "workspace:^",
     "ws": "^8.18.0"
   }
