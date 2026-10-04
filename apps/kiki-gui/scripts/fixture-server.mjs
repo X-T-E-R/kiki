@@ -83,20 +83,26 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { WebSocketServer } from 'ws';
-import { FixtureKlient } from './fixture-klient.mjs';
+import { boundScenarioEntities, FixtureKlient } from './fixture-klient.mjs';
+import { sessionMediaBytes } from './fixture-media.mjs';
 import { handleAppearance } from './fixture-appearance.mjs';
 import { handlePersonas, resetPersonas } from './fixture-personas.mjs';
 import { handleRequestIdentity, resetRequestIdentity } from './fixture-request-identity.mjs';
+import { handleUsageExport, resetUsageExport } from './fixture-usage-export.mjs';
+import { resetImportHistory, importedSessionMessages } from './fixture-plugin-import.mjs';
 import { handleBotRooms, resetBotRooms } from './fixture-bot-rooms.mjs';
 import { handleAutoCompact } from './fixture-auto-compact.mjs';
+import { handleAgentHooks } from './fixture-agent-hooks.mjs';
 import { handleContextStrategy, resetContextStrategy } from './fixture-context-strategy.mjs';
 import { handlePlugins, marketplaceWithState, pluginSkins } from './fixture-plugins.mjs';
 import { createWorktreeForSession, handleWorktrees, loadWorktrees } from './fixture-worktrees.mjs';
 import { handleSsh } from './fixture-ssh.mjs';
 import { antigravityCheck, antigravityLogin, handleAntigravity } from './fixture-antigravity.mjs';
 import { handleGuiEntries } from './fixture-gui-entries.mjs';
-import { handleSpaces, spaceConfig, spaceConfigWrite, spacesControl } from './fixture-spaces.mjs';
+import { handleSpaces, spaceConfig, spaceConfigWrite, spaceCurrentHome, spacesControl } from './fixture-spaces.mjs';
 import { handleNotifications, resetNotifications, revealNotificationCredential } from './fixture-notifications.mjs';
+import { browserEndpointSecret, handleBrowser } from './fixture-browser.mjs';
+import { handleWebAccess, webCookiePresent } from './fixture-web-access.mjs';
 
 import {
   TranscriptProjector,
@@ -118,10 +124,99 @@ function fixtureSearchCredentialBinding(config, instanceId) {
   const slot = config?.nb_search?.credential_slots?.[slotId];
   if (slotId === undefined || slot === undefined || slot.provider_id !== instance.provider_id) return null;
   const consumers = Object.entries(config.nb_search.provider_instances)
-    .filter(([, candidate]) => candidate.credential_slot_id === slotId)
+    .filter(([, candidate]) => candidate?.credential_slot_id === slotId)
     .map(([id, candidate]) => ({ id, provider_id: candidate.provider_id, base_url: candidate.base_url ?? null }))
     .sort((a, b) => a.id.localeCompare(b.id));
   return { slotId, binding: fixtureHash({ slotId, slot, consumers }) };
+}
+
+function fixtureSearchActiveKeys(server, instanceId) {
+  const target = fixtureSearchCredentialBinding(server.config, instanceId);
+  const saved = target === null ? undefined : server.nbSearchCredentials.get(target.slotId);
+  if (saved === undefined || saved.binding !== target.binding) return [];
+  return saved.value.split(',').map((key) => key.trim()).filter((key) => key !== '');
+}
+
+function fixtureSearchCapabilities(server, seed) {
+  const capabilities = structuredClone(seed);
+  const config = server.config.nb_search ?? {};
+  const descriptors = new Map(capabilities.providers.descriptors.map((descriptor) => [descriptor.provider_id, descriptor]));
+  const inherited = capabilities.inherited_configuration;
+  const instances = new Map(capabilities.providers.instances.map((instance) => [instance.id, instance]));
+  for (const [id, override] of Object.entries(config.provider_instances ?? {})) {
+    if (override === null) continue;
+    const existing = instances.get(id);
+    const providerId = override.provider_id ?? existing?.provider_id;
+    if (providerId === undefined) continue;
+    const descriptor = descriptors.get(providerId);
+    // An absent descriptor means unknown requirements, not a keyless provider.
+    const credentialRequirement = descriptor?.activation.credential ?? 'unknown';
+    const endpointRequirement = descriptor?.activation.endpoint ?? 'unknown';
+    const configured = fixtureSearchActiveKeys(server, id).length > 0;
+    instances.set(id, {
+      ...existing,
+      id, provider_id: providerId, enabled: override.enabled ?? existing?.enabled ?? true,
+      availability: credentialRequirement === 'none' || configured ? 'ready' : 'unavailable',
+      issues: [],
+      credential: { requirement: credentialRequirement, configured, slot_id: override.credential_slot_id ?? id },
+      endpoint: { requirement: endpointRequirement, configured: typeof override.base_url === 'string' && override.base_url !== '' },
+    });
+  }
+  capabilities.providers.instances = [...instances.values()];
+  if (inherited !== undefined) {
+    const lanes = { ...inherited.lanes };
+    const presets = { ...inherited.presets };
+    for (const [id, lane] of Object.entries(config.lanes ?? {})) {
+      if (lane === null) delete lanes[id]; else lanes[id] = structuredClone(lane);
+    }
+    for (const [id, preset] of Object.entries(config.presets ?? {})) {
+      if (preset === null) delete presets[id]; else presets[id] = structuredClone(preset);
+    }
+    const configuration = {
+      lanes, presets, provider_instance_ids: [...instances.keys()],
+      default_search_lane: config.defaults?.search_lane ?? inherited.default_search_lane,
+      // donor replaces this array as a whole; there is no per-group overlay.
+      fetch_chains: structuredClone(config.defaults?.fetch_chain ?? inherited.fetch_chains),
+      file_scopes: structuredClone(config.fetch?.file_scopes ?? inherited.file_scopes),
+    };
+    capabilities.configuration = configuration;
+    capabilities.search.default_lane = configuration.default_search_lane;
+    capabilities.fetch.chains = configuration.fetch_chains;
+    const searchLanes = new Map(capabilities.search.lanes.filter((lane) => lanes[lane.id] !== undefined).map((lane) => [lane.id, lane]));
+    const pipelines = new Map(capabilities.fetch.pipelines.filter((pipeline) => lanes[pipeline.id] !== undefined).map((pipeline) => [pipeline.id, pipeline]));
+    for (const [id, lane] of Object.entries(lanes)) {
+      const instance = instances.get(lane.provider_instance_id);
+      const descriptor = descriptors.get(instance?.provider_id);
+      const query = descriptor?.query_operations.find((operation) => operation.operation_id === lane.operation_id);
+      const fetch = descriptor?.fetch_operations.find((operation) => operation.operation_id === lane.operation_id);
+      if (query !== undefined) {
+        const previous = searchLanes.get(id);
+        const localInstance = config.provider_instances?.[lane.provider_instance_id] != null;
+        const availability = localInstance ? instance.availability : previous?.availability ?? instance?.availability ?? 'unavailable';
+        searchLanes.set(id, {
+          ...previous, id, output: query.output,
+          execution_modes: availability === 'ready' ? previous?.execution_modes ?? ['sync', 'async'] : [],
+          availability,
+          issues: localInstance ? [] : previous?.issues ?? [], latency: lane.latency, cost: lane.cost,
+        });
+        pipelines.delete(id);
+      } else if (fetch !== undefined) {
+        const previous = pipelines.get(id) ?? capabilities.fetch.pipelines.find((pipeline) =>
+          inherited.lanes[pipeline.id]?.operation_id === lane.operation_id
+          && inherited.lanes[pipeline.id]?.provider_instance_id === lane.provider_instance_id);
+        if (previous !== undefined) pipelines.set(id, { ...previous, id, latency: lane.latency, cost: lane.cost });
+        searchLanes.delete(id);
+      }
+    }
+    capabilities.search.lanes = [...searchLanes.values()];
+    capabilities.fetch.pipelines = [...pipelines.values()];
+    capabilities.search.presets = Object.entries(presets).map(([name, preset]) => {
+      const ready = preset.lanes.every((id) => searchLanes.get(id)?.availability === 'ready');
+      return { name, lanes: preset.lanes, execution_modes: ready ? ['sync', 'async'] : [], availability: ready ? 'ready' : 'unavailable', issues: [] };
+    });
+  }
+  capabilities.revision = `config-fixture-${fixtureHash({ config, instances: capabilities.providers.instances }).slice(0, 16)}`;
+  return capabilities;
 }
 
 /**
@@ -316,6 +411,12 @@ class FixtureSession {
     this.inFlightTurn = scenarioData.in_flight_turn ?? null;
     this.subagents = [...(scenarioData.subagents ?? [])];
     this.agentTranscripts = scenarioData.agent_transcripts ?? {};
+    // Bounded-content scenarios: which entities the fixture cuts with the
+    // production `boundedEntity` when it serves this session's transcript.
+    this.boundedContent = scenarioData.bounded_content ?? null;
+    // key (`frame:`/`turn:`/`task:` + id) → the unbounded canonical entity the
+    // segment route reads from, so a read continues what the preview showed.
+    this.boundedCanonical = new Map();
     this.transcript = new TranscriptProjector(record.id, this.agentTranscripts, this.epoch);
     if ((scenarioData.messages ?? []).length > 0 || (scenarioData.older ?? []).length > 0) {
       seedMessages(this.transcript, this.messages, {
@@ -601,6 +702,23 @@ class FixtureServer {
     resetNotifications(this);
     this.autoCompactAgents = structuredClone(data.autoCompact?.agents ?? {});
     this.usageV2 = data.usageV2 ?? null;
+    // `/usage-export`: the destinations panel projects this instead of holding
+    // its own copy, so the add → preview → consent → read-back loop runs
+    // against real route behaviour. A scenario without `usageExport` reports the
+    // feature as absent, exactly like a server with the flag off.
+    this.usageExport = null;
+    this.usageExportEnabled = false;
+    resetUsageExport(this, data);
+    // `/plugin-import`: scenario `pluginImport` seeds the sources, homes, jobs
+    // and archives. A scenario without it reports the feature as disabled,
+    // exactly like a server whose `plugin_import` flag is off.
+    resetImportHistory(this, data);
+    // A native import's result is a session in this server's own store, so a
+    // seeded one has to be a real session here too — otherwise `Open session`
+    // would navigate to an id nothing answers for.
+    for (const job of Object.values(this.importJobs ?? {})) {
+      if (job.destination?.kind === 'native-session' && job.sessionId) this.addImportedSession(job);
+    }
     // `/usage/realtime`: the request-governance snapshot. Rule edits through
     // `POST /config` rewrite `this.requestGovernance.rules`, so the Limits
     // panel's add / edit / toggle / delete all read back like the real server.
@@ -641,6 +759,44 @@ class FixtureServer {
     this.wsInbound = [];
     this.wsOutbound = [];
     console.log(`[fixture] scenario "${name}" loaded (${this.sessions.size} sessions)`);
+  }
+
+  /**
+   * Create the session a native import committed. It is a real `FixtureSession`
+   * carrying the turns the parser read, so the imported conversation is opened,
+   * read and continued the way any other session in this store is — which is
+   * exactly what the `native-session` destination promises a reader.
+   */
+  addImportedSession(job) {
+    const sessionId = job.sessionId;
+    if (this.sessions.has(sessionId)) return;
+    const messages = importedSessionMessages(this, job);
+    this.sessions.set(sessionId, new FixtureSession(
+      bind({
+        id: sessionId,
+        // The workspace is a fact of this server, not something the import may
+        // invent: the session's own working directory is its `cwd`, and a
+        // folder that is not a registered workspace still opens — exactly as
+        // a session started in an unopened folder does.
+        workspace_id: [...this.sessions.values()][0]?.record.workspace_id ?? 'wd_fixture_000000000000',
+        title: job.title,
+        created_at: new Date(job.createdAt).toISOString(),
+        updated_at: new Date(now()).toISOString(),
+        busy: false,
+        pending_interaction: 'none',
+        archived: false,
+        metadata: { cwd: job.destination.workDir },
+        agent_config: { model: '' },
+        usage: {
+          input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0,
+          total_cost_usd: 0, context_tokens: 0, context_limit: 262_144, turn_count: 0,
+        },
+        permission_rules: [],
+        message_count: messages.length,
+        last_seq: messages.length,
+      }, sessionId),
+      bind({ messages, has_more: false }, sessionId),
+    ));
   }
 
   /** Scope key for the memory stores: `global` or `workspace:<wd>`. */
@@ -1080,11 +1236,20 @@ class FixtureServer {
       if (grade === 'off') continue;
       this.sendFrame(connection, transcriptEnvelope(
         session.record.id,
-        { ...payload, grade, snapshot: redactSnapshotForGrade(grade, payload.snapshot) },
+        { ...this.boundedResetSnapshot(session, grade, payload), grade },
         session.seq,
         session.epoch,
       ));
     }
+  }
+
+  /**
+   * The reset snapshot a client may hold: the grade's redaction, then the
+   * scenario's bounded entities — the same two steps the server applies before
+   * answering, so the store and the REST page agree on refs and revisions.
+   */
+  boundedResetSnapshot(session, grade, payload) {
+    return { ...payload, snapshot: boundScenarioEntities(session, redactSnapshotForGrade(grade, payload.snapshot)) };
   }
 
   attachTranscript(connection, session, spec, since) {
@@ -1099,7 +1264,7 @@ class FixtureServer {
         const payload = session.transcript.resetEvent(agentId, grade);
         this.sendFrame(connection, transcriptEnvelope(
           session.record.id,
-          { ...payload, snapshot: redactSnapshotForGrade(grade, payload.snapshot) },
+          this.boundedResetSnapshot(session, grade, payload),
           session.seq,
           session.epoch,
         ));
@@ -1110,7 +1275,7 @@ class FixtureServer {
         const payload = session.transcript.resetEvent(agentId, grade);
         this.sendFrame(connection, transcriptEnvelope(
           session.record.id,
-          { ...payload, snapshot: redactSnapshotForGrade(grade, payload.snapshot) },
+          this.boundedResetSnapshot(session, grade, payload),
           session.seq,
           session.epoch,
         ));
@@ -1343,9 +1508,9 @@ class FixtureServer {
   }
 
   // ------------------------------------------------------------- HTTP
-  envelope(res, data, code = 0, msg = 'success') {
+  envelope(res, data, code = 0, msg = 'success', details) {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ code, msg, data, request_id: nextId('req') }));
+    res.end(JSON.stringify({ code, msg, data, request_id: nextId('req'), ...(details === undefined ? {} : { details }) }));
   }
 
   async readBody(req) {
@@ -1412,7 +1577,12 @@ class FixtureServer {
     }
 
     const auth = req.headers.authorization;
-    if (auth !== `Bearer ${FIXTURE_TOKEN}`) {
+    // The browser's own three routes are reached with a session cookie and no
+    // bearer credential — they are how a browser *acquires* one. The real
+    // service exempts exactly these; a blanket gate here would make the
+    // one-time exchange untestable and would misstate the contract.
+    const webSessionPath = new Set(['/api/web-access/session', '/api/web-access/exchange', '/api/web-access/logout']);
+    if (auth !== `Bearer ${FIXTURE_TOKEN}` && !webSessionPath.has(url.pathname) && !webCookiePresent(req)) {
       this.envelope(res, null, 40101, 'Unauthorized');
       return;
     }
@@ -1457,6 +1627,7 @@ class FixtureServer {
     try {
       // The unified path keeps the former advanced-session, usage, and MCP
       // management domains distinct from the flat session/runtime routes.
+      if (handleUsageExport(this, res, path, req.method, body)) return;
       const advanced = path === '/usage'
         || path === '/usage/pricing'
         || path === '/usage/realtime'
@@ -1465,7 +1636,7 @@ class FixtureServer {
         || path.startsWith('/mcp/servers/')
         || path.startsWith('/mcp/servers:');
       if (advanced) this.routeV2(res, path, url.searchParams, body, req.method);
-      else this.route(res, path, url.searchParams, body, req.method);
+      else this.route(res, path, url.searchParams, body, req.method, req);
     } catch (error) {
       console.error('[fixture] route error', path, error);
       this.envelope(res, null, 50001, String(error));
@@ -1699,9 +1870,13 @@ class FixtureServer {
     });
   }
 
-  route(res, path, query, body, method) {
+  route(res, path, query, body, method, req) {
     // Native SSH surface (scripts/fixture-ssh.mjs) — ahead of the session tail routes.
     if ((path.startsWith('/ssh/') || /^\/sessions\/[^/:]+\/ssh\//.test(path)) && handleSsh(this, res, path, query, method, body)) return;
+    // Browser connections (scripts/fixture-browser.mjs) — the browser REST domain.
+    if (path.startsWith('/browser/') && handleBrowser(this, res, path, query, method, body)) return;
+    // Web access (scripts/fixture-web-access.mjs) — the browser entry point surface.
+    if (handleWebAccess(this, res, path, method, body, req)) return;
     // Antigravity ACP binary cache + sign-in (scripts/fixture-antigravity.mjs).
     if (path.startsWith('/executors/antigravity-acp/') && handleAntigravity(this, res, path, method, body)) return;
     // Spaces (scripts/fixture-spaces.mjs): homes.json management and per-key config origins.
@@ -1723,6 +1898,9 @@ class FixtureServer {
         server_version: '0.31.1-fixture',
         capabilities: { websocket: true, file_upload: true, fs_query: true, mcp: true, tasks: true, terminal: true, transcript: true },
         server_id: 'fixture-server',
+        // The space whose backend this `/api` is, as the desktop project would
+        // report it: the main backend answers `main`, a space answers its own id.
+        current_space_id: spaceCurrentHome(this),
         started_at: now(),
         open_in_apps: [],
         dangerous_bypass_auth: false,
@@ -1732,6 +1910,12 @@ class FixtureServer {
           'tool-select': false,
           task_wait: true,
           search_worker: true,
+          // The export routes only exist when the flag is on, so a scenario that
+          // seeds `usageExport` turns it on and everything else reports the
+          // feature as unavailable rather than as an empty list.
+          usage_export: this.usageExportEnabled,
+          // The import routes only exist when the flag is on.
+          plugin_import: this.importEnabled === true,
           // Scenario-specific flags (e.g. native_ssh) layer on top.
           ...(this.scenario?.data.experimentalFlags ?? {}),
         },
@@ -1758,6 +1942,13 @@ class FixtureServer {
       // wholesale spread below.
       const subagentPatch = patch.subagent;
       delete patch.subagent;
+      // The interaction section arrives snake_cased and merges field-wise: its
+      // two decisions (whether a waiting question blocks, and the question
+      // frequency guard) are independent, and the guard's own keys are
+      // converted on the way in, the way the real server's response schema
+      // serves them.
+      const interactionPatch = patch.interaction;
+      delete patch.interaction;
       // replace_domains is an instruction, not config; a replaced domain is
       // already the whole value the spread below stores.
       delete patch.replace_domains;
@@ -1778,20 +1969,57 @@ class FixtureServer {
         }
         this.config.subagent = subagent;
       }
+      if (interactionPatch !== undefined) {
+        const interaction = { ...(this.config.interaction ?? {}) };
+        for (const [key, value] of Object.entries(interactionPatch)) {
+          const camel = key.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase());
+          // The guard is one level deeper, and its own keys are snake_cased
+          // on the wire too.
+          if (value === null || value === undefined) delete interaction[camel];
+          else if (camel === 'askUserQuestionGuard' && typeof value === 'object') {
+            const guard = { ...(interaction[camel] ?? {}) };
+            for (const [inner, innerValue] of Object.entries(value)) {
+              const innerCamel = inner.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase());
+              if (innerValue === null || innerValue === undefined) delete guard[innerCamel];
+              else guard[innerCamel] = innerValue;
+            }
+            interaction[camel] = guard;
+          } else interaction[camel] = value;
+        }
+        this.config.interaction = interaction;
+      }
       return this.envelope(res, this.config);
     }
     if (path === '/config') {
       return this.envelope(res, spaceConfig(this));
     }
     // Scheduled tasks (the GlobalCronPanel's aggregate surface). Scenario-seeded
-    // via `cronTasks`; the wire shape is kap-server's `GET /api/cron` row, and
-    // paused plans carry `next_fire_at: null` and sort last, like the real
-    // route. Row actions mutate the seeded list so Pause/Resume/Run/Delete are
-    // exercisable without a second mock surface.
+    // via `cronTasks`; the wire shape is kap-server's `GET /api/cron` row, the
+    // ordering is its `compareCronTasks` (soonest fire first, paused plans
+    // last), and `session_id` narrows before paging exactly as the real route
+    // does — a page is a page of that conversation's own tasks. Row actions
+    // mutate the seeded list so Pause/Resume/Run/Delete are exercisable without
+    // a second mock surface.
     if (path === '/cron' && method === 'GET') {
-      const rows = [...(this.scenario?.data.cronTasks ?? [])];
-      rows.sort((left, right) => Number(left.next_fire_at === null) - Number(right.next_fire_at === null));
-      return this.envelope(res, { items: rows.map((task) => structuredClone(task)) });
+      const sessionId = query.get('session_id');
+      const scoped = [...(this.scenario?.data.cronTasks ?? [])]
+        .filter((task) => sessionId === null || task.session_id === sessionId);
+      scoped.sort((left, right) => {
+        if (left.next_fire_at === null && right.next_fire_at !== null) return 1;
+        if (left.next_fire_at !== null && right.next_fire_at === null) return -1;
+        const byNext = left.next_fire_at === null || right.next_fire_at === null
+          ? 0
+          : left.next_fire_at.localeCompare(right.next_fire_at);
+        return byNext !== 0 ? byNext : right.created_at.localeCompare(left.created_at);
+      });
+      const offset = Math.max(0, Number(query.get('offset') ?? 0) || 0);
+      const pageSize = Math.max(1, Number(query.get('page_size') ?? 100) || 100);
+      const hasMore = scoped.length > offset + pageSize;
+      return this.envelope(res, {
+        items: scoped.slice(offset, offset + pageSize).map((task) => structuredClone(task)),
+        has_more: hasMore,
+        next_offset: hasMore ? offset + pageSize : undefined,
+      });
     }
     const cronTaskMatch = /^\/cron\/([^/:]+)(?::([a-z]+))?$/.exec(path);
     if (cronTaskMatch !== null) {
@@ -1821,9 +2049,38 @@ class FixtureServer {
     if (memoryHandled) return undefined;
     // nb-IM notifications (scripts/fixture-notifications.mjs).
     if (handleNotifications(this, res, path, query, method, body)) return undefined;
+    if (path === '/secrets:reveal' && method === 'POST' && body?.ref?.kind === 'browser_endpoint') {
+      const value = browserEndpointSecret(this, body.ref.browser_id);
+      return this.envelope(res, value === undefined ? { source: 'none' } : { source: 'kiki', value });
+    }
     if (path === '/secrets:reveal' && method === 'POST' && body?.ref?.kind === 'notification_credential') {
       const value = revealNotificationCredential(this, body.ref.slot_id);
       return this.envelope(res, value === undefined ? { source: 'none' } : { source: 'kiki', value });
+    }
+    if (path === '/nb-search/keys/usage' && method === 'POST') {
+      if (typeof body?.instance_id !== 'string' || body.instance_id.length === 0 || body.instance_id.length > 256
+        || (body.refresh !== undefined && typeof body.refresh !== 'boolean')
+        || Object.keys(body).some((key) => !['instance_id', 'refresh'].includes(key))) {
+        return this.envelope(res, null, 40001, 'Invalid nb-search key usage request.');
+      }
+      const usageSeeds = this.scenario?.data.nbSearchKeyUsage ?? {};
+      const seed = usageSeeds[body.instance_id];
+      const failure = usageSeeds.__error ?? seed?.__error;
+      if (failure !== undefined) return this.envelope(res, null, 50000, failure);
+      const capsSeed = this.scenario?.data.nbSearchCapabilities ?? NB_SEARCH_EMPTY_CAPABILITIES;
+      if (capsSeed.__error !== undefined) return this.envelope(res, null, 50000, capsSeed.__error);
+      const instance = fixtureSearchCapabilities(this, capsSeed).providers.instances.find((entry) => entry.id === body.instance_id);
+      if (instance === undefined) return this.envelope(res, null, 40441, 'Unknown nb-search provider instance.');
+      const keys = fixtureSearchActiveKeys(this, instance.id);
+      if (keys.length > 32) return this.envelope(res, null, 40001, 'Fixture credential exceeds 32 keys.');
+      return this.envelope(res, {
+        provider_instance_id: instance.id, provider_id: instance.provider_id,
+        balance_supported: seed?.balance_supported ?? false,
+        keys: keys.map((_, index) => {
+          const seeded = seed?.keys?.find((entry) => entry.key_index === index + 1);
+          return seeded === undefined ? { key_index: index + 1, state: 'unknown' } : structuredClone(seeded);
+        }),
+      });
     }
     if ((path === '/nb-search/credentials/read' || path === '/nb-search/credentials/write') && method === 'POST') {
       const target = fixtureSearchCredentialBinding(this.config, body?.instance_id);
@@ -1843,6 +2100,14 @@ class FixtureServer {
           binding: target.binding,
           version: fixtureHash({ value: body.value, binding: target.binding }),
         });
+        // One-shot: the control arms this so the status read that follows a
+        // landed write is the one that fails. Nothing else about the run
+        // changes, so the page renders a key that really is stored next to a
+        // status refresh that really did fail.
+        if (this.nbSearchCapsStallOnWrite === true) {
+          this.nbSearchCapsStallOnWrite = false;
+          this.nbSearchCapsStallOnce = true;
+        }
       }
       const saved = this.nbSearchCredentials.get(target.slotId);
       const active = saved !== undefined && saved.binding === target.binding;
@@ -1856,19 +2121,24 @@ class FixtureServer {
     // nb-search: secret-free capabilities + on-demand readiness, seeded per
     // scenario (`nbSearchCapabilities` / `nbSearchTest`). A seed shaped
     // `{ __error: 'message' }` makes the route fail so error states render.
-    // Everything is static — no real search or fetch ever leaves this server.
+    // Saved config is projected locally; no real search or fetch leaves this server.
     // A scenario that seeds `config_source` additionally follows the saved
     // `nb_search_source.reuse_local_config` toggle: off means the local file
     // and credentials read as ignored, layers lose the local tier, and
     // credentials come from the server environment alone. No files are read.
     if (path === '/nb-search/capabilities') {
+      if (this.nbSearchCapsStallOnce === true) {
+        this.nbSearchCapsStallOnce = false;
+        return this.envelope(res, null, 50000, 'fixture: nb-search capabilities are still catching up');
+      }
       const seed = this.scenario?.data.nbSearchCapabilities ?? NB_SEARCH_EMPTY_CAPABILITIES;
       if (seed.__error !== undefined) return this.envelope(res, null, 50000, seed.__error);
-      if (seed.config_source === undefined) return this.envelope(res, seed);
+      const capabilities = fixtureSearchCapabilities(this, seed);
+      if (seed.config_source === undefined) return this.envelope(res, capabilities);
       const reuse = this.config?.nb_search_source?.reuse_local_config ?? true;
-      if (reuse) return this.envelope(res, seed);
+      if (reuse) return this.envelope(res, capabilities);
       return this.envelope(res, {
-        ...seed,
+        ...capabilities,
         config_source: {
           ...seed.config_source,
           reuse_local_config: false,
@@ -1922,7 +2192,33 @@ class FixtureServer {
         : query.get('expand') === '1'
           ? this.agentProfilesWithDisabled()
           : this.mergedAgentProfiles();
-      return this.envelope(res, { items });
+      // `complete` is required by the wire schema and by callers that treat a
+      // partial catalog as "do not trust this list" (e.g. the subagent tool
+      // save re-reads the file it just wrote).
+      return this.envelope(res, { items, complete: true });
+    }
+    // One profile file: apply the structured patch to it so a save can be read
+    // back through the same GET /agents projection the GUI reloads.
+    const agentUpdateMatch = /^\/agents\/([^/]+)$/.exec(path);
+    if (agentUpdateMatch !== null && method === 'PATCH') {
+      const name = decodeURIComponent(agentUpdateMatch[1]);
+      const input = body ?? {};
+      const source = { user: 'user', project: 'workspace', extra: 'extra' }[input.scope];
+      const index = this.agentProfiles.findIndex((profile) => profile.name === name
+        && profile.source === source
+        && (input.scope === 'user' || input.source_file === undefined || profile.source_file === input.source_file));
+      if (source === undefined || index === -1) {
+        return this.envelope(res, null, 40404, `fixture: no writable agent profile ${name}`);
+      }
+      const current = { ...this.agentProfiles[index] };
+      const next = { ...current };
+      for (const [key, value] of Object.entries(input)) {
+        if (['scope', 'workspace_id', 'source_file'].includes(key)) continue;
+        if (value === null) delete next[key];
+        else next[key] = value;
+      }
+      this.agentProfiles[index] = next;
+      return this.envelope(res, next);
     }
     // Shipped (built-in) profile templates: a static per-scenario status list;
     // the restore action flips the entry back to clean so the badge and the
@@ -2466,6 +2762,26 @@ class FixtureServer {
       res.end(bytes);
       return;
     }
+    // Session media bytes: a generated artifact's original and its compressed
+    // preview, served raw like /fs:content above rather than envelope-wrapped,
+    // because the klient reads these as binary. Scenario-seeded via
+    // `mediaFiles`, keyed by the `file_id` an artifact carries. Answered in
+    // fixture-media.mjs so the media fixture stays in one file.
+    const sessionMedia = /^\/sessions\/([^/]+)\/media\/([^/]+)(\/preview)?$/.exec(path);
+    if (sessionMedia !== null && method === 'GET') {
+      const [, sessionId, fileId, preview] = sessionMedia;
+      try {
+        const file = sessionMediaBytes(this, decodeURIComponent(sessionId), decodeURIComponent(fileId), preview === undefined ? 'original' : 'preview');
+        res.writeHead(200, {
+          'content-type': file.mime,
+          'content-length': file.bytes.length,
+        });
+        res.end(file.bytes);
+      } catch (failure) {
+        return this.envelope(res, null, 40409, failure instanceof Error ? failure.message : 'media.not_found');
+      }
+      return;
+    }
     // Host-file write mock for the preview workspace editor. The REAL
     // kap-server deliberately has no unconfined write endpoint (fs:content is
     // read-only), so the GUI writes via tauri-plugin-fs on desktop; this
@@ -2549,6 +2865,22 @@ class FixtureServer {
       if (workspaceId !== null && workspaceId !== '') {
         items = items.filter((s) => s.workspace_id === workspaceId);
       }
+      // D5: the persona filter kap-server applies server-side. The GUI is not
+      // allowed to re-derive attribution from a partially projected row, so the
+      // fixture has to do the same job the real route does: the binding first,
+      // then the compatibility metadata.
+      const personaId = query.get('persona');
+      if (personaId !== null && personaId !== '') {
+        const personaOf = (record) => {
+          const bound = record.agent_config?.persona?.id;
+          if (typeof bound === 'string' && bound !== '') return bound;
+          const custom = record.metadata ?? {};
+          return typeof custom.bot_persona_id === 'string' ? custom.bot_persona_id
+            : typeof custom.room_persona_id === 'string' ? custom.room_persona_id
+              : undefined;
+        };
+        items = items.filter((s) => personaOf(s) === personaId);
+      }
       items.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
       // Keyset pagination like the real route: before_id pages older than the
       // cursor, after_id newer; page_size bounds the wire page (default 20).
@@ -2629,6 +2961,39 @@ class FixtureServer {
       session.record.updated_at = now();
       this.emit(session.record.id, { type: 'session.meta.updated', payload: { title: session.record.title } });
       return this.envelope(res, session.record);
+    }
+    // Persona settings for a conversation (D8): the copy this conversation was
+    // created with against the persona as it is now. Scenario state seeds the
+    // reading under `metadata.persona_settings` (`{boundRevision, latestRevision,
+    // overrides}`); without it there is a persona and nothing to compare. An
+    // apply moves the bound revision onto the latest one and, with
+    // `restoreDefaults`, drops the conversation's own overrides — the reading
+    // the real route returns after the same request.
+    if (tail === '/persona-settings') {
+      const personaId = session.record.agent_config?.persona?.id;
+      // The real route refuses while the conversation is busy (REQUEST_INVALID)
+      // and puts nothing back later: no queueing, no applying at the next idle
+      // boundary. The mock refuses the same way so the GUI cannot be built
+      // against a fiction.
+      if (body !== undefined && session.record.busy === true) {
+        return this.envelope(res, null, 40001, 'Wait for this conversation to become idle before applying persona settings.');
+      }
+      if (body !== undefined) {
+        const current = session.record.metadata?.persona_settings;
+        if (current !== undefined) {
+          const applied = { ...current, boundRevision: current.latestRevision };
+          if (body.restoreDefaults === true) delete applied.overrides;
+          session.record.metadata = { ...(session.record.metadata ?? {}), persona_settings: applied };
+        }
+      }
+      const bound = session.record.metadata?.persona_settings;
+      return this.envelope(res, {
+        ...(personaId === undefined ? {} : { personaId }),
+        ...(bound?.boundRevision === undefined ? {} : { boundRevision: bound.boundRevision }),
+        ...(bound?.latestRevision === undefined ? {} : { latestRevision: bound.latestRevision }),
+        hasUpdate: bound !== undefined && bound.boundRevision !== bound.latestRevision,
+        ...(bound?.overrides === undefined ? {} : { overrides: structuredClone(bound.overrides) }),
+      });
     }
     if (tail === ':archive') {
       session.record.archived = true;
@@ -2763,6 +3128,7 @@ class FixtureServer {
     }
     if (handleAutoCompact(this, res, session, tail, body, method)) return;
     if (handleContextStrategy(this, res, session, tail, body, method)) return;
+    if (handleAgentHooks(this, res, session, tail)) return;
     if (tail === ':compact') {
       if (session.record.busy || session.activePrompt !== null || session.scriptRunning) {
         return this.envelope(res, null, 40901, 'session.busy');
@@ -3177,7 +3543,7 @@ class FixtureServer {
       // phase of "send now" (the request is on the wire, not yet accepted).
       const replyDelay = this.scenario?.data.steerReplyDelayMs ?? 0;
       if (replyDelay > 0 && body?.__held !== true) {
-        setTimeout(() => { this.route(res, path, query, { ...(body ?? {}), __held: true }, method); }, replyDelay);
+        setTimeout(() => { this.route(res, path, query, { ...(body ?? {}), __held: true }, method, req); }, replyDelay);
         return undefined;
       }
       const promptId = steerMatch[1];
@@ -3449,7 +3815,31 @@ class FixtureServer {
         await this.loadScenario(body.name);
         this.ssh = undefined; // fixture-ssh.mjs reseeds from the scenario
         this.spaces = undefined; // fixture-spaces.mjs reseeds too
+        this.webAccess = undefined; // fixture-web-access.mjs reseeds too
         return this.envelope(res, { active: body.name });
+      case 'nb_search_caps_stall_after_write':
+        // Arms a one-shot capabilities failure for the read that a landed
+        // managed-credential write triggers, without resetting the scenario.
+        this.nbSearchCapsStallOnWrite = true;
+        return this.envelope(res, { armed: true });
+      case 'nb_search_write_credential': {
+        // Stands in for another client changing the same slot, so the version
+        // the page is holding really is stale.
+        const target = fixtureSearchCredentialBinding(this.config, body.instance_id);
+        if (target === null) return this.envelope(res, null, 40001, 'Unknown nb-search credential slot.');
+        this.nbSearchCredentials.set(target.slotId, {
+          value: body.value,
+          binding: target.binding,
+          version: fixtureHash({ value: body.value, binding: target.binding }),
+        });
+        return this.envelope(res, { slot_id: target.slotId });
+      }
+      case 'nb_search_credential_state': {
+        const target = fixtureSearchCredentialBinding(this.config, body.instance_id);
+        if (target === null) return this.envelope(res, null, 40001, 'Unknown nb-search credential slot.');
+        const saved = this.nbSearchCredentials.get(target.slotId);
+        return this.envelope(res, { stored: saved !== undefined, value: saved?.value });
+      }
       case 'space':
       case 'space_state':
         return this.envelope(res, spacesControl(this, body));

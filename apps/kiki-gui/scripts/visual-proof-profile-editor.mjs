@@ -88,6 +88,60 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     await shot(`profile-editor-subagents-${theme}`);
     await closeSheet();
 
+    // Child agents: the switch is one control and the three lists are named.
+    await openProfile('[data-team-open="lead"]');
+    await scrollTo('[data-profile-section="subagents"]');
+    if (await sheet().locator('[data-dispatch-allowed][data-declared="true"] [data-subagent-row]').count() !== 5) throw new Error('preset list not loaded');
+    if (await sheet().locator('[data-dispatch-can-spawn-mode="on"][aria-pressed="true"]').count() !== 1) throw new Error('a declared switch must read as allowed');
+    await shot(`profile-dispatch-${theme}`);
+    // Turning the switch off keeps the lists underneath it.
+    await sheet().locator('[data-dispatch-can-spawn-mode="off"]').click();
+    if (await sheet().locator('[data-dispatch-lists]').count() !== 0) throw new Error('the hard switch must retire the lists, not clear them');
+    await shot(`profile-dispatch-off-${theme}`);
+    await sheet().locator('[data-dispatch-can-spawn-mode="inherit"]').click();
+    if (await sheet().locator('[data-dispatch-allowed][data-declared="true"] [data-subagent-row]').count() !== 5) throw new Error('restoring the switch must keep the preset list');
+    // Back to the saved value, so closing the sheet does not trip the dirty guard.
+    await sheet().locator('[data-dispatch-can-spawn-mode="on"]').click();
+    await closeSheet();
+
+    // Open preset domain: the scoped lease beside the wildcard must still be
+    // visible and editable, not hidden by the fact that the domain is open.
+    await openProfile('[data-team-row="lead-open"] [data-team-open]');
+    await scrollTo('[data-profile-section="subagents"]');
+    if (await sheet().locator('[data-dispatch-allowed-unset]').count() !== 1) throw new Error('an open domain must say so');
+    if (await sheet().locator('[data-dispatch-allowed] [data-subagent-row="explore"]').count() !== 1) throw new Error('an open domain must still list its named leases');
+    if (await sheet().locator('[data-dispatch-allowed-narrow]').count() !== 1) throw new Error('an open domain needs a way back to a list');
+    await shot(`profile-dispatch-open-${theme}`);
+    await closeSheet();
+
+    // Recommendation only: the list is written, the preset list is not touched.
+    await openProfile('[data-team-open="writer"]');
+    await scrollTo('[data-profile-section="subagents"]');
+    if (await sheet().locator('[data-dispatch-allowed][data-declared="false"]').count() !== 1) throw new Error('an undeclared preset list must read as not limited');
+    if (await sheet().locator('[data-dispatch-names="preferred"] [data-dispatch-chip]').count() !== 1) throw new Error('preferred names not loaded');
+    await shot(`profile-dispatch-recommend-only-${theme}`);
+    await closeSheet();
+
+    // A hard leaf shows the switch off and no lists at all.
+    await openProfile('[data-team-row="migrator"] [data-team-open]');
+    await scrollTo('[data-profile-section="subagents"]');
+    if (await sheet().locator('[data-dispatch-can-spawn][data-declared="true"] [data-dispatch-can-spawn-mode="off"][aria-pressed="true"]').count() !== 1) throw new Error('a hard leaf must read as off');
+    if (await sheet().locator('[data-dispatch-lists]').count() !== 0) throw new Error('a hard leaf must show no lists');
+    await shot(`profile-dispatch-leaf-${theme}`);
+    await closeSheet();
+
+    // Save and reopen: an edited switch survives the round trip.
+    await openProfile('[data-team-row="implementer"] [data-team-open]');
+    await scrollTo('[data-profile-section="subagents"]');
+    await sheet().locator('[data-dispatch-can-spawn-mode="off"]').click();
+    await sheet().locator('[data-settings-draft] button').filter({ hasText: /Save|保存/ }).first().click();
+    await sheet().locator('[data-settings-draft][data-dirty="true"]').waitFor({ state: 'detached', timeout: 5000 });
+    await closeSheet();
+    await openProfile('[data-team-row="implementer"] [data-team-open]');
+    if (await sheet().locator('[data-dispatch-can-spawn-mode="off"][aria-pressed="true"]').count() !== 1) throw new Error('the saved switch did not come back');
+    await shot(`profile-dispatch-saved-${theme}`);
+    await closeSheet();
+
     await openProfile('[data-team-open="implementer"]');
     if (await sheet().locator('[data-profile-diagnostic="shadows"] [data-shadowed-file]').count() !== 2) throw new Error('shadowed files not listed');
     await shot(`profile-diag-shadows-${theme}`);
@@ -164,7 +218,13 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     await shot(`profile-editor-unsaved-390-${theme}`);
     await discardDraft();
     await scrollTo('[data-profile-section="subagents"]');
+    await assertNoOverflow('child agents at 390');
     await shot(`profile-editor-subagents-390-${theme}`);
+    await sheet().locator('[data-dispatch-can-spawn-mode="off"]').click();
+    await shot(`profile-dispatch-off-390-${theme}`);
+    await sheet().locator('[data-dispatch-can-spawn-mode="inherit"]').click();
+    await assertNoOverflow('child agent lists at 390');
+    await discardDraft();
     await sheet().locator('[data-profile-section="advanced"] > summary').click();
     await scrollTo('[data-profile-section="advanced"]');
     await assertNoOverflow('advanced at 390');

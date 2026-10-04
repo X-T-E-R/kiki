@@ -275,6 +275,12 @@ const fleetMain = {
       kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'running', startedAt: ts(42),
       frames: [{ kind: 'text', frameId: 'fleet-note', role: 'assistant', text: 'Eight leads are dispatched; two workers are waiting on your approval.' }],
     }],
+  }, {
+    kind: 'marker', markerId: 'fleet-compaction-25', marker: 'compaction', at: ts(25),
+    payload: { strategy: 'summarize', shapeVersion: 1, turnId: 1 },
+  }, {
+    kind: 'marker', markerId: 'fleet-compaction-10', marker: 'compaction', at: ts(10),
+    payload: { strategy: 'summarize', shapeVersion: 1, turnId: 2 },
   }],
   meta: {
     activity: 'turn',

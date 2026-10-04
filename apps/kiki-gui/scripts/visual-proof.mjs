@@ -32,11 +32,14 @@ import { assertTimelineIntegrity, drainTimeline } from './timeline-integrity.mjs
 import { runProof } from '../proof/runner.mjs';
 import { createContextCompactWalker } from './visual-proof-context-compact.mjs';
 import { createCapabilitiesWalker } from './visual-proof-capabilities.mjs';
+import { createToolGroupsWalker } from './visual-proof-tool-groups.mjs';
 import { createProfileEditorWalker } from './visual-proof-profile-editor.mjs';
 import { createModelsPageWalker } from './visual-proof-models-page.mjs';
 import { createSettingsIaWalker } from './visual-proof-settings-ia.mjs';
 import { createWorktreesWalker } from './visual-proof-worktrees.mjs';
 import { createNativeSshWalker } from './visual-proof-native-ssh.mjs';
+import { createUsageExportWalker } from './visual-proof-usage-export.mjs';
+import { createPluginImportWalker } from './visual-proof-plugin-import.mjs';
 import { createExternalMainWalker } from './visual-proof-external-main.mjs';
 import { createSteerWalker } from './visual-proof-steer.mjs';
 import { en as EN_DICTIONARY } from '../../../packages/session-core/src/i18n/en.ts';
@@ -63,6 +66,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  */
 const MATRIX = {
   capabilities: ['theme', 'width'],
+  cockpit: ['theme', 'width'],
   'composer-modes': ['theme', 'width'],
   'context-compact': ['theme', 'width'],
   'models-page': ['theme', 'width'],
@@ -77,6 +81,12 @@ const MATRIX = {
   'notes-rail': ['width'],
   'annotation-bubbles': ['width'],
   worktrees: ['theme', 'width'],
+  // Theme is not claimed as a dimension here: this build's palette is owned by
+  // the applied skin, so a brightness flag alone repaints nothing (the walker
+  // logs the palette of every job instead).
+  'tool-groups': ['width'],
+  'usage-export': ['theme', 'width'],
+  'plugin-import': ['width'],
 };
 
 /**
@@ -207,6 +217,17 @@ const SOURCES = {
   nbSearchReady: { key: 'st.nbSearch.stateReady' },
   nbSearchDegraded: { key: 'st.nbSearch.stateDegraded' },
   nbSearchUnconfigured: { key: 'st.nbSearch.stateUnconfigured' },
+  // The two lines this round added, read straight from the dictionaries so the
+  // walk asserts the copy the app actually renders.
+  nbSearchStatusStale: { key: 'st.nbSearch.statusRefreshStale' },
+  nbSearchKeysConflict: { key: 'st.nbSearch.keys.conflict' },
+  nbSearchRemoveConfirm: { key: 'st.nbSearch.service.removeConfirm' },
+  nbSearchNoBalance: { key: 'st.nbSearch.keyUsage.balanceUnsupported' },
+  nbSearchScopeTeam: { key: 'st.nbSearch.keyUsage.scopeTeam' },
+  nbSearchKeyUnknown: { key: 'st.nbSearch.keyUsage.stateUnknown' },
+  retry: { key: 'common.retry' },
+  nbSearchServicesEmptyTitle: { key: 'st.nbSearch.services.emptyTitle' },
+  nbStrategyPriority: { key: 'st.nbSearch.service.keyStrategyPriority' },
   // The source line under a stored secret on the shared secret field.
   secretSourceKiki: { key: 'st.secret.source.kiki' },
   secretSourceNone: { key: 'st.secret.source.none' },
@@ -1318,6 +1339,112 @@ async function scenarioRailScale() {
   await shot('rail-scale-idle');
 }
 
+/** Cockpit fleet axis and its resident preview hand-off. */
+async function scenarioCockpit() {
+  await selectSession('Fixture: agent fleet');
+  await openInspector();
+  const width = page.viewportSize()?.width ?? 0;
+  const cockpitMode = page.locator('[data-rail-mode="cockpit"]');
+  if (width < 1024) {
+    if (await cockpitMode.count() > 0) {
+      const modeBox = await cockpitMode.boundingBox();
+      if (modeBox !== null && modeBox.x < width && modeBox.x + modeBox.width > 0) {
+        throw new Error('narrow session view still exposes the cockpit mode control');
+      }
+    }
+    await shot('cockpit-narrow');
+    return;
+  }
+  // The scheduled-work section stays in the same mounted rail in both modes.
+  const cron = page.locator('[data-rail-cron]');
+  await cron.waitFor({ timeout: 15_000 });
+  await cron.scrollIntoViewIfNeeded();
+  await shot('cockpit-cron-standard');
+  await cockpitMode.click();
+  await cron.waitFor({ timeout: 15_000 });
+  await cron.scrollIntoViewIfNeeded();
+  await shot('cockpit-cron-expanded');
+  const lanes = page.locator('[data-cockpit-lanes]');
+  await lanes.waitFor({ timeout: 15_000 });
+  const overview = page.locator('[data-cockpit-overview]');
+  const panelScroll = page.locator('[data-agent-panel-scroll]');
+  await overview.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(300);
+  if (await overview.locator('[data-cockpit-gauge]').count() !== 3) {
+    throw new Error(`expected 3 cockpit gauges, got ${await overview.locator('[data-cockpit-gauge]').count()}`);
+  }
+  if (await overview.locator('[data-cockpit-fact]').count() !== 3) {
+    throw new Error(`expected 3 cockpit facts, got ${await overview.locator('[data-cockpit-fact]').count()}`);
+  }
+  const laneCount = await lanes.locator('[data-cockpit-lane]').count();
+  if (laneCount !== 65) throw new Error(`expected 65 cockpit lanes, got ${laneCount}`);
+  const needsUserCount = await lanes.locator('[data-cockpit-lane][data-lane-needs-user]').count();
+  if (needsUserCount !== 2) throw new Error(`expected 2 needs-user cockpit lanes, got ${needsUserCount}`);
+  const waitingSummary = lanes.locator('[data-lane-summary="waiting"]');
+  const waitingText = await waitingSummary.textContent();
+  if (!waitingText?.includes('2')) throw new Error(`waiting cockpit summary must contain 2, got ${waitingText}`);
+  const ticks = lanes.locator('[data-cockpit-tick]');
+  const tickCount = await ticks.count();
+  if (tickCount < 2 || tickCount > 6) throw new Error(`expected 2–6 cockpit ticks, got ${tickCount}`);
+  const tickTexts = (await ticks.allTextContents()).map((text) => text.trim());
+  const lastTick = tickTexts.at(-1);
+  if (lastTick !== 'now' && lastTick !== '现在') throw new Error(`last cockpit tick must be now/现在, got ${lastTick}`);
+  const tickPattern = job().view.locale === 'zh' ? /^-\d+ (?:分|时|天)$/ : /^-\d+(?:m|h|d)$/;
+  if (!tickTexts.slice(0, -1).every((text) => tickPattern.test(text))) {
+    throw new Error(`cockpit tick labels must be compact ages, got ${JSON.stringify(tickTexts)}`);
+  }
+  if (job().view.locale === 'en' && (!tickTexts.includes('-15m') || !tickTexts.includes('-30m'))) {
+    throw new Error(`cockpit time window should expose -15m/-30m/now, got ${JSON.stringify(tickTexts)}`);
+  }
+  if (job().view.locale === 'zh' && (!tickTexts.includes('-15 分') || !tickTexts.includes('-30 分'))) {
+    throw new Error(`cockpit time window should expose -15 分/-30 分/现在, got ${JSON.stringify(tickTexts)}`);
+  }
+  console.log(`[cockpit] ${job().view.locale} ticks=${JSON.stringify(tickTexts)}`);
+  const compactionCount = await lanes.locator('[data-cockpit-compaction]').count();
+  if (compactionCount !== 2) throw new Error(`expected 2 cockpit compaction markers, got ${compactionCount}`);
+  const overflow = await page.locator('[data-session-rail]').evaluate((node) => ({
+    scrollWidth: node.scrollWidth, clientWidth: node.clientWidth,
+  }));
+  if (overflow.scrollWidth > overflow.clientWidth + 1) {
+    throw new Error(`cockpit rail overflows horizontally: ${overflow.scrollWidth} > ${overflow.clientWidth} + 1`);
+  }
+  const laneScrollTop = await panelScroll.evaluate((node) => node.scrollTop);
+  await overview.evaluate((node) => { node.scrollIntoView({ block: 'start' }); });
+  await panelScroll.evaluate((node) => { node.scrollBy(0, -170); });
+  await page.waitForTimeout(300);
+  await shot('cockpit-top');
+  await panelScroll.evaluate((node, top) => { node.scrollTo(0, top); }, laneScrollTop);
+  await page.waitForTimeout(300);
+  await shot('cockpit');
+  await resizeViewport(1024);
+  await lanes.waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(300);
+  await shot('cockpit-1024');
+  const needsYouLane = page.locator('[data-cockpit-lane="agent-tests-w3"]');
+  if (await needsYouLane.getAttribute('data-lane-needs-user') === null) {
+    throw new Error('agent-tests-w3 cockpit lane is missing its needs-user accent');
+  }
+  await needsYouLane.evaluate((node) => { node.scrollIntoView({ block: 'center' }); });
+  await page.waitForTimeout(200);
+  await shot('cockpit-needs-you');
+  await page.locator('[data-cockpit-lane="agent-api-w2"]').click();
+  await lanes.waitFor({ state: 'detached', timeout: 15_000 });
+  const agentTab = page.locator('[data-preview-tab="panel:agent-api-w2"]');
+  await agentTab.waitFor({ timeout: 15_000 });
+  if (await agentTab.count() !== 1 || (await agentTab.getAttribute('aria-selected')) !== 'true') {
+    throw new Error('agent-api-w2 preview panel tab did not become active');
+  }
+  await page.locator('[data-preview-workspace]').waitFor({ state: 'visible', timeout: 10_000 });
+  await shot('cockpit-yields-preview');
+  await page.locator('[data-preview-open-cockpit]').click();
+  await lanes.waitFor({ timeout: 15_000 });
+  await page.locator('[data-rail-close]').click();
+  await lanes.waitFor({ state: 'detached', timeout: 10_000 });
+  await agentTab.waitFor({ timeout: 10_000 });
+  await page.locator('[data-preview-workspace]').waitFor({ state: 'visible', timeout: 10_000 });
+  await shot('cockpit-restored');
+}
+
 async function scenarioLongTranscript() {
   await selectSession('Fixture: long transcript');
   await page.waitForSelector('text=Turn 64', { timeout: 15_000 });
@@ -1355,7 +1482,7 @@ async function scenarioErrorAbort() {
   await waitForText('recovering slowly', 20_000);
   await page.waitForTimeout(500);
   // The stop control is a drawn icon; address it by its accessible name.
-  await page.locator('[data-composer-toolbar] button[aria-label="Abort the running prompt"], [data-composer-toolbar] button[aria-label="中止正在运行的消息"]').first().click();
+  await page.locator('[data-composer-toolbar] button[aria-label="Stop this turn"], [data-composer-toolbar] button[aria-label="停止此轮"]').first().click();
   await page.waitForSelector(`text=${S.promptAborted}`, { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('error-abort');
@@ -2425,6 +2552,48 @@ async function scenarioSettingsNbSearch() {
   const openTab = async (tab) => {
     await page.locator(`#nb-search-tab-${tab}`).click();
   };
+  const saveSearch = async () => {
+    await page.locator('button', { hasText: S.nbSearchSave }).click();
+    await waitForText(S.nbSearchSaved);
+  };
+  /**
+   * The save row must stay in the page flow, and the control being edited must
+   * never sit behind it. `block: 'end'` parks the target against the bottom of
+   * the viewport — exactly where a pinned bar used to land on top of it.
+   */
+  const assertActionBarClears = async (target, what) => {
+    const bar = page.locator('[data-search-action-bar]');
+    const position = await bar.evaluate((el) => getComputedStyle(el).position);
+    if (position === 'sticky' || position === 'fixed') {
+      throw new Error(`the search action bar must sit in the page flow, it is ${position}`);
+    }
+    await target.evaluate((el) => { el.scrollIntoView({ block: 'end' }); });
+    await page.waitForTimeout(60);
+    const box = await target.boundingBox();
+    const barBox = await bar.boundingBox();
+    if (box === null || barBox === null) {
+      throw new Error(`could not measure ${what} against the search action bar`);
+    }
+    if (box.y < barBox.y + barBox.height && barBox.y < box.y + box.height) {
+      throw new Error(`${what} sits behind the search action bar`);
+    }
+  };
+  /** Opens the one configured service's editor from the compact list. */
+  const openService = async () => {
+    await openTab('providers');
+    const addButton = page.locator('[data-nb-search-add-service], [data-nb-search-add-service-empty]').first();
+    if (await addButton.getAttribute('aria-expanded') === 'true') {
+      await addButton.click();
+      await page.locator('[data-nb-search-directory]').waitFor({ state: 'detached', timeout: 5000 });
+    }
+    const row = page.locator('[data-nb-search-service-row="exa.default"]');
+    await row.waitFor({ timeout: 10_000 });
+    await row.click();
+    const detail = page.locator('[data-nb-search-service="exa.default"]');
+    await detail.waitFor({ timeout: 10_000 });
+    return detail;
+  };
+
   await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#st-card-search-status', { timeout: 10_000 });
   await waitForText(S.nbSearchDegraded);
@@ -2434,101 +2603,289 @@ async function scenarioSettingsNbSearch() {
   }
   await shot('settings-nbsearch');
 
-  // Default lane is a radio over existing lanes only (no new lane creation).
-  await openTab('search');
-  const defaultsText = await page.locator('#st-card-search-defaults').textContent();
-  if (!defaultsText?.includes('results · nb-search.results@1') || !defaultsText.includes('typed · example.documents@1')) {
-    throw new Error(`lane outputs must show results and synthetic typed channel schemas, saw "${defaultsText}"`);
-  }
-  await page.locator('#st-card-search-defaults label', { hasText: 'github.repositories' })
-    .locator('input[type="radio"]').click();
-  // Switching subpages preserves the unsaved lane choice.
+  // SEA-01: eighteen instances ship, one is configured. The page opens on the
+  // service in use as a single compact row — not eighteen open forms.
   await openTab('providers');
-  const tavilyCard = page.locator('#st-card-search-providers details', { hasText: 'tavily.default' });
-  const tavilyEnv = tavilyCard.locator('input[placeholder="NB_SEARCH_TAVILY_API_KEY"]');
-  const loadedEnv = await tavilyEnv.inputValue();
-  if (loadedEnv !== 'TEAM_TAVILY_API_KEY') {
-    throw new Error(`credential env name did not load through the custom slot id, saw "${loadedEnv}"`);
+  await page.waitForSelector('#st-card-search-providers');
+  const serviceRows = await page.locator('[data-nb-search-service-row]').count();
+  if (serviceRows !== 1) {
+    throw new Error(`one configured service must render exactly one row, saw ${serviceRows}`);
   }
-  await tavilyEnv.fill('NB_SEARCH_TAVILY_API_KEY');
-  await tavilyCard.scrollIntoViewIfNeeded();
-  await shot('settings-nbsearch-provider-edit');
-  await page.locator('button', { hasText: S.nbSearchSave }).click();
-  await waitForText(S.nbSearchSaved);
-  await shot('settings-nbsearch-saved');
+  const onlyRow = page.locator('[data-nb-search-service-row="exa.default"]');
+  const rowText = await onlyRow.textContent();
+  if (!rowText.includes('Exa') || !rowText.includes('exa.default')) {
+    throw new Error(`a service row leads with the human name and keeps the id secondary, saw "${rowText}"`);
+  }
+  if (await page.locator('[data-nb-search-service]').count() !== 1) {
+    throw new Error('exactly one service editor may be open, not one per instance');
+  }
+  const configuredText = await page.locator('#st-card-search-providers').textContent();
+  if (configuredText.includes('Needs attention')) {
+    throw new Error('a configured, ready service must not carry an attention badge');
+  }
+  await shot('settings-nbsearch-services');
 
-  await page.reload({ waitUntil: 'domcontentloaded' });
-  await openTab('search');
-  await page.waitForSelector('#st-card-search-defaults', { timeout: 10_000 });
-  const checkedLane = await page.locator('#st-card-search-defaults input[type="radio"]:checked')
-    .evaluate((element) => element.closest('label')?.textContent ?? '');
-  if (!checkedLane.includes('github.repositories')) {
-    throw new Error(`nb_search lane choice did not survive reload, checked="${checkedLane}"`);
+  // SEA-01: the whole catalogue stays discoverable behind one entry.
+  await page.locator('[data-nb-search-add-service], [data-nb-search-add-service-empty]').first().click();
+  const directory = page.locator('[data-nb-search-directory]');
+  await directory.waitFor({ timeout: 10_000 });
+  const directoryRows = await page.locator('[data-nb-search-directory-row]').count();
+  if (directoryRows < 17) {
+    throw new Error(`the directory must list the engine's whole catalogue, saw ${directoryRows}`);
   }
-  await openTab('providers');
-  const savedEnv = await tavilyCard.locator('input[placeholder="NB_SEARCH_TAVILY_API_KEY"]').inputValue();
-  if (savedEnv !== 'NB_SEARCH_TAVILY_API_KEY') {
-    throw new Error(`credential env name did not survive reload, saw "${savedEnv}"`);
+  await directory.locator('input[type="search"]').fill('tavily');
+  if (await page.locator('[data-nb-search-directory-row="tavily.default"]').count() !== 1) {
+    throw new Error('directory search must find a service that is not configured yet');
+  }
+  if (await page.locator('[data-nb-search-directory-row="exa.default"]').count() !== 0) {
+    throw new Error('directory search must narrow the list, not decorate it');
+  }
+  await shot('settings-nbsearch-directory');
+  await directory.locator('input[type="search"]').fill('');
+
+  // Choosing an already-added service opens its editor; the directory closes.
+  let detail = await openService();
+
+  // SEA-05: the key list is masked until asked for, then managed row by row.
+  const keys = detail.locator('[data-nb-search-keys="exa.default"]');
+  await keys.getByText(S.secretSourceKiki, { exact: false }).waitFor({ timeout: 10_000 });
+
+  // SEA-03: pasting a key is the group's one step, so the variable name is
+  // reference material and lives behind its own disclosure, closed by default.
+  const envField = detail.locator('[data-nb-search-credential-env]');
+  const envSection = detail.locator('[data-nb-search-credential-env-section]');
+  await envField.waitFor({ state: 'hidden', timeout: 3000 });
+  await envSection.locator('summary').click();
+  await envField.waitFor({ state: 'visible', timeout: 3000 });
+  await envSection.locator('summary').click();
+  await envField.waitFor({ state: 'hidden', timeout: 3000 });
+  const keyGroupBox = await keys.boundingBox();
+  const envSectionBox = await envSection.boundingBox();
+  if (keyGroupBox === null || envSectionBox === null || envSectionBox.y < keyGroupBox.y) {
+    throw new Error('the key list must lead the key group, with the variable name below it');
+  }
+
+  if (await keys.locator('[data-key-row]').count() !== 0) {
+    throw new Error('a stored key list must rest masked until it is asked for');
+  }
+  await keys.locator('[data-key-show]').click();
+  await keys.locator('[data-key-row]').first().waitFor({ timeout: 10_000 });
+  const keyRows = await keys.locator('[data-key-row]').count();
+  if (keyRows !== 2) throw new Error(`the fixture saved two keys, saw ${keyRows}`);
+  const keyCount = await keys.locator('[data-keys-count]').textContent();
+  if (!keyCount.includes('2') || !keyCount.includes('32')) {
+    throw new Error(`the key list must count itself against the server limit, saw "${keyCount}"`);
+  }
+  const firstKey = keys.locator('[data-key-row="0"] [data-key-value]');
+  if (await firstKey.getAttribute('data-key-value') !== 'masked') {
+    throw new Error('a peeked key must stay masked until its own eye is used');
+  }
+  await keys.locator('[data-key-reveal="0"]').click();
+  if (await firstKey.getAttribute('data-key-value') !== 'visible') {
+    throw new Error('revealing a row must show that key');
+  }
+  if (!(await firstKey.textContent()).includes('fixture-managed-exa-key')) {
+    throw new Error('revealing a row must show the stored key, not a placeholder');
+  }
+  await detail.scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-keys');
+
+  // SEA-05/SEA-03: order, strategy and cache save as one connection.
+  await keys.locator('[data-key-replace]').click();
+  await keys.locator('[data-key-down="0"]').click();
+  // The select's data attribute sits on a `display: contents` wrapper, so the
+  // click target is its trigger button — the wrapper cannot be scrolled into view.
+  await detail.locator('[data-nb-search-key-strategy] button').click();
+  await page.locator('button', { hasText: S.nbStrategyPriority }).click();
+  await detail.locator('[data-nb-search-balance-ttl]').fill('600000');
+  // The save row is a footer in the flow: nothing being edited ends up behind
+  // it, at the key rows or at the advanced fields.
+  await assertActionBarClears(keys.locator('[data-key-row="0"]'), 'the first key row');
+  await assertActionBarClears(detail.locator('[data-nb-search-balance-ttl]'), 'the key status cache field');
+  await detail.locator('[data-nb-search-balance-ttl]').scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-service');
+  await saveSearch();
+
+  // Read-back: the order and the advanced settings come from the server again.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  detail = await openService();
+  const reloadedKeys = detail.locator('[data-nb-search-keys="exa.default"]');
+  await reloadedKeys.locator('[data-key-show]').click();
+  await reloadedKeys.locator('[data-key-row]').first().waitFor({ timeout: 10_000 });
+  await reloadedKeys.locator('[data-key-reveal="0"]').click();
+  const firstAfterReload = await reloadedKeys.locator('[data-key-row="0"] [data-key-value]').textContent();
+  if (!firstAfterReload.includes('fixture-managed-exa-key-2')) {
+    throw new Error(`the key order did not survive a reload, first key is "${firstAfterReload}"`);
+  }
+  const ttlAfterReload = await detail.locator('[data-nb-search-balance-ttl]').inputValue();
+  if (ttlAfterReload !== '600000') {
+    throw new Error(`the key status cache did not survive a reload, saw "${ttlAfterReload}"`);
+  }
+  const strategyAfterReload = await detail.locator('[data-nb-search-key-strategy]').getAttribute('data-nb-search-key-strategy');
+  if (strategyAfterReload !== 'priority') {
+    throw new Error(`the key order setting did not survive a reload, saw "${strategyAfterReload}"`);
   }
   await shot('settings-nbsearch-reloaded');
 
-  // The provider's credential is the shared secret field: the value the
-  // fixture saved in Kiki rests masked, the eye fetches it on demand, an
-  // override saves over it, and clearing falls back to the other sources.
-  const exaCard = page.locator('#st-card-search-providers details', { hasText: 'exa.default' });
-  if (!await exaCard.evaluate((node) => node.open)) await exaCard.locator('summary').click();
-  const credential = exaCard.locator('[data-nb-search-credential="exa.default"]');
-  const secretInput = credential.locator('[data-secret-field] input');
-  await credential.locator('[data-secret-field][data-secret-source="kiki"]').waitFor({ timeout: 10_000 });
-  await credential.getByText(S.secretSourceKiki, { exact: false }).waitFor({ timeout: 5000 });
-  const reveal = credential.locator('[data-secret-reveal]');
-  const masked = await secretInput.inputValue();
-  if (masked === 'fixture-managed-exa-key') throw new Error('a saved credential must rest masked');
-  if (await reveal.isDisabled()) throw new Error('fixture managed credential reveal is disabled after config reload');
-  await reveal.click();
-  await page.waitForFunction(
-    () => document.querySelector('[data-nb-search-credential="exa.default"] input')?.value === 'fixture-managed-exa-key',
-    undefined,
-    { timeout: 5000 },
-  );
-  await exaCard.scrollIntoViewIfNeeded();
-  await shot('settings-nbsearch-credential-revealed');
-  // The eye toggles back to the mask (from the same single fetch).
-  await reveal.click();
-  await page.waitForFunction(
-    ([selector, expected]) => document.querySelector(selector)?.value === expected,
-    ['[data-nb-search-credential="exa.default"] input', masked],
-    { timeout: 5000 },
-  );
-  // Editing saves a Kiki value that overrides the stored one.
-  await credential.locator('[data-secret-edit]').click();
-  await secretInput.fill('fixture-managed-exa-updated');
-  await credential.getByRole('button', { name: S.save, exact: true }).click();
-  await credential.locator('[data-saved-tick]').waitFor({ timeout: 5000 });
-  await page.waitForFunction(
-    () => document.querySelector('[data-nb-search-credential="exa.default"] input')?.value !== 'fixture-managed-exa-updated',
-    undefined,
-    { timeout: 5000 },
-  );
-  await shot('settings-nbsearch-credential-saved');
-  await reveal.click();
-  await page.waitForFunction(
-    () => document.querySelector('[data-nb-search-credential="exa.default"] input')?.value === 'fixture-managed-exa-updated',
-    undefined,
-    { timeout: 5000 },
-  );
-  await reveal.click();
-  await credential.locator('[data-secret-clear]').click();
-  await credential.getByRole('button', { name: S.save, exact: true }).click();
-  await credential.locator('[data-secret-field][data-secret-source="none"]').waitFor({ timeout: 5000 });
-  await credential.getByText(S.secretSourceNone, { exact: false }).waitFor({ timeout: 5000 });
-  if (await credential.locator('[data-secret-clear]').count() !== 0) {
-    throw new Error('a cleared credential must not offer clear again');
+  // SEA-07: clearing the address only clears the address.
+  await detail.locator('[data-nb-search-base-url]').fill('https://example.test/search');
+  await saveSearch();
+  detail = page.locator('[data-nb-search-service="exa.default"]');
+  await detail.locator('[data-nb-search-base-url]').fill('');
+  await saveSearch();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  detail = await openService();
+  const keptTtl = await detail.locator('[data-nb-search-balance-ttl]').inputValue();
+  if (keptTtl !== '600000') {
+    throw new Error(`clearing the Base URL dropped the saved key cache, saw "${keptTtl}"`);
   }
-  if (!await credential.locator('[data-secret-reveal]').isDisabled()) {
-    throw new Error('cleared managed credential must not remain revealable');
+  const keptStrategy = await detail.locator('[data-nb-search-key-strategy]').getAttribute('data-nb-search-key-strategy');
+  if (keptStrategy !== 'priority') {
+    throw new Error(`clearing the Base URL dropped the saved key order, saw "${keptStrategy}"`);
   }
-  await shot('settings-nbsearch-credential-cleared');
+  const clearedUrl = await detail.locator('[data-nb-search-base-url]').inputValue();
+  if (clearedUrl !== '') throw new Error(`the Base URL was not cleared, saw "${clearedUrl}"`);
+  await detail.scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-address-cleared');
+
+  // SEA-05 concurrency: a value observed before another client rewrote it must
+  // be rejected by the real version check, not written over it.
+  await page.locator('#st-card-search-providers').scrollIntoViewIfNeeded();
+  await detail.locator('[data-key-show]').click();
+  await detail.locator('[data-key-row]').first().waitFor({ timeout: 10_000 });
+  await detail.locator('[data-key-replace]').click();
+  await detail.locator('[data-key-input]').fill('fixture-managed-exa-key-3');
+  await detail.locator('[data-key-add]').click();
+  await control({ action: 'nb_search_write_credential', instance_id: 'exa.default', value: 'fixture-other-client-key' });
+  await page.locator('button', { hasText: S.nbSearchSave }).click();
+  const conflictLine = page.locator('[data-feedback-tone="error"]');
+  await conflictLine.waitFor({ timeout: 10_000 });
+  const conflictText = await conflictLine.textContent();
+  if (!conflictText.includes(S.nbSearchKeysConflict)) {
+    throw new Error(`a stale editing base must surface the conflict, saw "${conflictText}"`);
+  }
+  const afterConflict = await control({ action: 'nb_search_credential_state', instance_id: 'exa.default' });
+  if (afterConflict.data.value !== 'fixture-other-client-key') {
+    throw new Error(`a conflicted key write overwrote the other client, stored "${afterConflict.data.value}"`);
+  }
+  await shot('settings-nbsearch-key-conflict');
+
+  // The documented recovery: reread the server base, then save the user's list.
+  await detail.locator('[data-key-show]').click();
+  await page.locator('button', { hasText: S.nbSearchSave }).click();
+  await waitForText(S.nbSearchSaved);
+  const afterReread = await control({ action: 'nb_search_credential_state', instance_id: 'exa.default' });
+  if (!String(afterReread.data.value).includes('fixture-managed-exa-key-3')) {
+    throw new Error(`rereading the base must let the user's list land, stored "${afterReread.data.value}"`);
+  }
+
+  // SEA-02: a status refresh that fails *after* a key landed keeps the fact,
+  // says so on every tab, and offers the retry — never a stale badge reported
+  // as a fresh success.
+  await control({ action: 'nb_search_caps_stall_after_write' });
+  await detail.locator('[data-key-show]').click();
+  await detail.locator('[data-key-replace]').click();
+  await detail.locator('[data-key-input]').fill('fixture-managed-exa-key-4');
+  await detail.locator('[data-key-add]').click();
+  await page.locator('button', { hasText: S.nbSearchSave }).click();
+  const staleNotice = page.locator('[data-nb-search-status-stale]');
+  await staleNotice.waitFor({ timeout: 10_000 });
+  if (await page.locator('[data-feedback-tone="success"]').count() !== 0) {
+    throw new Error('a failed status refresh must not be reported as a plain success');
+  }
+  const staleFeedback = await page.locator('[data-feedback-tone="info"]').textContent();
+  if (!staleFeedback.includes(S.nbSearchStatusStale)) {
+    throw new Error(`the stale notice must name the pre-save state, saw "${staleFeedback}"`);
+  }
+  const afterStale = await control({ action: 'nb_search_credential_state', instance_id: 'exa.default' });
+  if (!String(afterStale.data.value).includes('fixture-managed-exa-key-4')) {
+    throw new Error(`a key that landed must be stored even when the status refresh failed, stored "${afterStale.data.value}"`);
+  }
+  await openTab('overview');
+  await staleNotice.waitFor({ timeout: 5000 });
+  await shot('settings-nbsearch-status-stale');
+  await staleNotice.getByRole('button', { name: S.retry }).click();
+  await staleNotice.waitFor({ state: 'detached', timeout: 10_000 });
+
+  // SEA-06: the default row names the lane that is actually in use.
+  await openTab('search');
+  const inheritRow = page.locator('[data-nb-search-lane-inherit]');
+  await inheritRow.waitFor({ timeout: 10_000 });
+  const inheritText = await inheritRow.textContent();
+  // The seed saves its own default, so this row names the effective one. The
+  // lower layer (github.repositories) is what the engine would use without it,
+  // and is not what this row is for.
+  if (!inheritText.includes('exa.search')) {
+    throw new Error(`the default row must name the effective default, saw "${inheritText}"`);
+  }
+  const effectiveStatus = await page.locator('#st-card-search-status').textContent();
+  if (!effectiveStatus.includes('exa.search')) {
+    throw new Error('the effective default must stay exa.search');
+  }
+  await page.locator('#st-card-search-defaults').scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-lanes');
+
+  // S2 mounted: the lane editor and the preset group are product surfaces now,
+  // and their edits ride the same page save as everything else. The seed saves
+  // a local override for exa.search, so the meaningful action here is restoring
+  // the engine version of that method.
+  await page.locator('[data-nb-search-lane-edit="exa.search"]').click();
+  const laneEditor = page.locator('[data-nb-search-lane-editor="exa.search"]');
+  await laneEditor.waitFor({ timeout: 10_000 });
+  const laneOrigin = await laneEditor.locator('[data-nb-search-lane-origin]').textContent();
+  if (laneOrigin.trim() === '') throw new Error('the lane editor must say where this method comes from');
+  await shot('settings-nbsearch-s2-lane-editor');
+  await laneEditor.locator('[data-nb-search-lane-restore]').click();
+  await page.locator('[data-nb-search-preset-add]').click();
+  await saveSearch();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openTab('search');
+  await page.waitForSelector('[data-nb-search-lane-row="exa.search"]', { timeout: 10_000 });
+  if (await page.locator('[data-nb-search-lane-overridden]').count() !== 0) {
+    throw new Error('restoring the engine version must clear the local override on reload');
+  }
+  if (await page.locator('[data-nb-search-preset-row]').count() < 1) {
+    throw new Error('the preset created on this page did not survive the save');
+  }
+  await page.locator('#st-card-search-defaults').scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-s2-lane-reloaded');
+
+  // S2 mounted: eight fetch groups, and only restoring every one of them goes
+  // back to the lower layer instead of a Kiki snapshot.
+  await openTab('fetch');
+  await page.waitForSelector('[data-nb-search-fetch-combo]', { timeout: 10_000 });
+  const pairs = await page.locator('[data-nb-search-fetch-input]').count();
+  if (pairs !== 1) throw new Error('the fetch chain must offer one input/output pair picker');
+  const seededChain = await page.locator('[data-nb-search-fetch-chain]').textContent();
+  if (!seededChain.includes('direct.fetch') || !seededChain.includes('jina.reader')) {
+    throw new Error(`the url → markdown chain must come from the server, saw "${seededChain}"`);
+  }
+  await shot('settings-nbsearch-s2-fetch');
+  await page.locator('[data-nb-search-fetch-restore-all]').click();
+  await saveSearch();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openTab('fetch');
+  await page.waitForSelector('[data-nb-search-fetch-mode]', { timeout: 10_000 });
+  const modeAfterRestore = await page.locator('[data-nb-search-fetch-mode]').getAttribute('data-nb-search-fetch-mode');
+  if (modeAfterRestore !== 'source') {
+    throw new Error(`restoring every group must read back as the source chain, saw "${modeAfterRestore}"`);
+  }
+
+  // S2 mounted: file scopes and the quality fallback come from the saved config.
+  await openTab('advanced');
+  await page.waitForSelector('[data-nb-search-quality-min]', { timeout: 10_000 });
+  const qualityMin = await page.locator('[data-nb-search-quality-min]').inputValue();
+  if (qualityMin !== '1200') throw new Error(`the saved quality threshold must read back, saw "${qualityMin}"`);
+  await page.locator('[data-nb-search-quality-min]').scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-s2-scope-quality');
+  const inputValues = (selector) => page.locator(selector)
+    .evaluateAll((nodes) => nodes.map((node) => node.value ?? node.textContent ?? ''));
+  const scopeIds = await inputValues('[data-nb-search-filescope-id]');
+  if (!scopeIds.includes('fixture-docs')) throw new Error('the saved file scope must be listed');
+  const scopeRoots = await inputValues('[data-nb-search-filescope-root]');
+  if (!scopeRoots.includes('C:/fixture/search-docs')) throw new Error('the saved scope root must read back');
+  const markersText = await page.locator('[data-nb-search-quality-markers]').textContent();
+  if (!markersText.includes('Access denied')) throw new Error('the saved blocked marker must be listed');
 
   // Diagnostics are explicit: nothing runs until the button is pressed.
   await openTab('advanced');
@@ -2538,17 +2895,227 @@ async function scenarioSettingsNbSearch() {
   await page.locator('#st-card-search-diagnostics').scrollIntoViewIfNeeded();
   await shot('settings-nbsearch-diagnostics');
 
-  // Mobile width: single-column cards, provider details still reachable.
+  // S2 mounted: a second instance of one service. The catalogue cannot express
+  // it, so it gets its own entry, its own id, slot and variable, and it is
+  // editable before the server has reported it.
+  await openTab('providers');
+  await page.locator('[data-nb-search-new-instance]').click();
+  await page.locator('[data-nb-search-provider-option="exa"]').click();
+  await page.locator('[data-nb-search-instance-id]').fill('exa.second');
+  // The variable rides along with the id: it is derived for this instance, so a
+  // second exa account cannot inherit the first one's key. It sits behind the
+  // on-demand disclosure, so open it before touching the field.
+  await page.locator('[data-nb-search-instance-editor] details summary').click();
+  const suggestedEnv = await page.locator('[data-nb-search-instance-env]').inputValue();
+  if (suggestedEnv !== 'NB_SEARCH_EXA_SECOND_API_KEY') {
+    throw new Error(`the new instance must suggest its own variable, saw "${suggestedEnv}"`);
+  }
+  await shot('settings-nbsearch-s2-new-instance');
+  await page.locator('[data-nb-search-instance-env]').fill('NB_SEARCH_EXA_SECOND_KEY');
+  await page.locator('[data-nb-search-instance-create]').click();
+  const secondEditor = page.locator('[data-nb-search-service="exa.second"]');
+  await secondEditor.waitFor({ timeout: 10_000 });
+  const secondState = await page.locator('[data-nb-search-service-row="exa.second"] [data-nb-search-row-state]')
+    .getAttribute('data-nb-search-row-state');
+  if (secondState !== 'unsaved') {
+    throw new Error(`an instance the server has not seen yet must not borrow a status, saw "${secondState}"`);
+  }
+  if (await secondEditor.locator('[data-nb-search-key-usage]').count() !== 0) {
+    throw new Error('a draft instance has no server-side slot to read key status from');
+  }
+  // Its key goes in through the same S1 editing surface, and the page still has
+  // exactly one save action at the bottom.
+  await secondEditor.locator('[data-key-input]').fill('fixture-second-instance-key');
+  await secondEditor.locator('[data-key-add]').click();
+  await saveSearch();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openTab('providers');
+
+  // Read back: both instances exist, told apart by id, each with its own
+  // variable, and the new one's key really landed.
+  const secondRowAfter = page.locator('[data-nb-search-service-row="exa.second"]');
+  await secondRowAfter.waitFor({ timeout: 10_000 });
+  if (await page.locator('[data-nb-search-service-row="exa.default"]').count() !== 1) {
+    throw new Error('saving the second instance must not drop the first one');
+  }
+  await secondRowAfter.click();
+  const secondEditorAfter = page.locator('[data-nb-search-service="exa.second"]');
+  await secondEditorAfter.waitFor({ timeout: 10_000 });
+  await secondEditorAfter.locator('[data-nb-search-credential-env-section] summary').click();
+  const secondEnv = await secondEditorAfter.locator('[data-nb-search-credential-env]').inputValue();
+  if (secondEnv !== 'NB_SEARCH_EXA_SECOND_KEY') {
+    throw new Error(`the new instance must keep the variable typed for it, saw "${secondEnv}"`);
+  }
+  await secondEditorAfter.locator('[data-nb-search-credential-env-section] summary').click();
+  await secondEditorAfter.locator('[data-key-show]').click();
+  await secondEditorAfter.locator('[data-key-row]').first().waitFor({ timeout: 10_000 });
+  await secondEditorAfter.locator('[data-key-reveal="0"]').click();
+  const secondKey = await secondEditorAfter.locator('[data-key-row="0"] [data-key-value]').textContent();
+  if (!secondKey.includes('fixture-second-instance-key')) {
+    throw new Error(`the key written for the new instance did not read back, saw "${secondKey}"`);
+  }
+  await page.locator('#st-card-search-providers').scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-s2-two-instances');
+
+  // Removing one instance leaves the other alone: count the sibling's keys
+  // first, then check they are all still there afterwards.
+  await page.locator('[data-nb-search-service-row="exa.default"]').click();
+  const survivor = page.locator('[data-nb-search-service="exa.default"]');
+  await survivor.waitFor({ timeout: 10_000 });
+  await survivor.locator('[data-key-show]').click();
+  await survivor.locator('[data-key-row]').first().waitFor({ timeout: 10_000 });
+  const keysBefore = await survivor.locator('[data-key-row]').count();
+  await secondRowAfter.click();
+  await secondEditorAfter.locator('[data-nb-search-service-remove]').click();
+  await page.locator('button', { hasText: S.nbSearchRemoveConfirm }).click();
+  await saveSearch();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openTab('providers');
+  if (await page.locator('[data-nb-search-service-row="exa.second"]').count() !== 0) {
+    throw new Error('the removed instance is still listed');
+  }
+  await page.locator('[data-nb-search-service-row="exa.default"]').click();
+  await survivor.waitFor({ timeout: 10_000 });
+  await survivor.locator('[data-key-show]').click();
+  await survivor.locator('[data-key-row]').first().waitFor({ timeout: 10_000 });
+  const survivorKeys = await survivor.locator('[data-key-row]').count();
+  if (survivorKeys !== keysBefore) {
+    throw new Error(`removing one instance touched the other one's keys: ${keysBefore} → ${survivorKeys}`);
+  }
+
+  // S2 mounted: key status is read only when the user asks for it, and an
+  // unsupported balance is not dressed up as a number.
+  const usage = survivor.locator('[data-nb-search-key-usage="exa.default"]');
+  await usage.waitFor({ timeout: 10_000 });
+  if (await usage.locator('[data-nb-search-key-usage-result]').count() !== 0) {
+    throw new Error('key status must not be read before the user asks');
+  }
+  await usage.locator('[data-nb-search-key-usage-load]').click();
+  await page.waitForSelector('[data-nb-search-key-usage-result]', { timeout: 10_000 });
+  const usageStates = await usage.locator('[data-nb-search-key-state]').allTextContents();
+  if (usageStates.length !== keysBefore || usageStates.some((state) => state.trim() !== S.nbSearchKeyUnknown)) {
+    throw new Error(`a service without balance support must report unknown keys, saw ${JSON.stringify(usageStates)}`);
+  }
+  const usageText = await usage.textContent();
+  if (!usageText.includes(S.nbSearchNoBalance)) {
+    throw new Error('the panel must say the service reports no balance');
+  }
+  await usage.scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-s2-key-usage');
+
+  // A team quota is shown per key and never summed into a total.
+  await control({ action: 'scenario', name: 'settings-nbsearch-usage' });
+  await page.goto(`${WEB_URL}/settings/search?tab=providers&server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-nb-search-service-row="firecrawl.default"]', { timeout: 10_000 });
+  await page.locator('[data-nb-search-service-row="firecrawl.default"]').click();
+  const firecrawl = page.locator('[data-nb-search-service="firecrawl.default"]');
+  const firecrawlUsage = firecrawl.locator('[data-nb-search-key-usage="firecrawl.default"]');
+  await firecrawlUsage.locator('[data-nb-search-key-usage-load]').click();
+  await page.waitForSelector('[data-nb-search-key-usage-result]', { timeout: 10_000 });
+  const teamText = await firecrawlUsage.textContent();
+  if (!teamText.includes('700')) throw new Error(`the team quota must be shown per key, saw "${teamText}"`);
+  if (teamText.includes('1400')) throw new Error('two keys of one team must not be summed into a total');
+  if (!teamText.includes(S.nbSearchScopeTeam)) throw new Error('the team scope must be named');
+  await firecrawlUsage.scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-s2-usage-team');
+
+  // The layout frames below are written against the shipped scenario with one
+  // configured service, so put it back after the second one has been borrowed.
+  await control({ action: 'scenario', name: 'settings-nbsearch' });
+
+  // Mobile width: one pane at a time, list → detail, no horizontal overflow.
+  // The tab is part of the URL, so the status card is not what this step waits for.
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('#st-card-search-status', { timeout: 10_000 });
-  await waitForText(S.nbSearchDegraded);
+  await page.goto(`${WEB_URL}/settings/search?tab=providers&server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#st-card-search-providers', { timeout: 10_000 });
+  await page.waitForSelector('[data-nb-search-service-row="exa.default"]', { timeout: 10_000 });
   const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   if (overflows) throw new Error('search settings overflow the mobile viewport');
   await shot('settings-nbsearch-mobile');
+  // At 390 the save row stacks: the hint wraps above the buttons instead of
+  // running under the save button, and it stays inside the viewport.
+  const bar = page.locator('[data-search-action-bar]');
+  const hintBox = await bar.locator('span').first().boundingBox();
+  const saveBox = await bar.locator('button').last().boundingBox();
+  if (hintBox === null || saveBox === null) throw new Error('could not measure the narrow save row');
+  if (
+    hintBox.x + hintBox.width > saveBox.x + 1
+    && saveBox.y < hintBox.y + hintBox.height
+    && hintBox.y < saveBox.y + saveBox.height
+  ) {
+    throw new Error('the save hint runs under the save button at 390');
+  }
+  if (hintBox.x + hintBox.width > 391) throw new Error('the save hint overflows the narrow viewport');
+  await page.locator('[data-nb-search-service-row="exa.default"]').click();
+  const narrowDetail = page.locator('[data-nb-search-service="exa.default"]');
+  await narrowDetail.waitFor({ timeout: 10_000 });
+  const narrowOverflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  if (narrowOverflows) throw new Error('the narrow service editor overflows the viewport');
+  await narrowDetail.locator('[data-nb-search-service-back]').waitFor({ timeout: 5000 });
+  await narrowDetail.scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-mobile-detail');
+
+  // At 390 the save row still clears the key buttons and their explanation.
+  const narrowKeys = narrowDetail.locator('[data-nb-search-keys="exa.default"]');
+  await narrowKeys.locator('[data-key-show]').click();
+  await narrowKeys.locator('[data-key-row]').first().waitFor({ timeout: 10_000 });
+  await assertActionBarClears(narrowKeys.locator('[data-key-replace]'), 'the key buttons');
+  await assertActionBarClears(narrowKeys.locator('[data-key-row="0"]'), 'the first key row');
+  // The narrow save row stacks its text above its buttons; neither may run under
+  // the other, and the row must stay inside the viewport.
+  const narrowBarText = await bar.locator('span').first().boundingBox();
+  const narrowBarButton = await bar.locator('button').first().boundingBox();
+  if (narrowBarText === null || narrowBarButton === null) throw new Error('could not measure the narrow save row');
+  if (
+    narrowBarText.x + narrowBarText.width > narrowBarButton.x + 1
+    && narrowBarButton.y < narrowBarText.y + narrowBarText.height
+    && narrowBarText.y < narrowBarButton.y + narrowBarButton.height
+  ) {
+    throw new Error('the save row text runs under its buttons at 390');
+  }
+  if (
+    narrowBarText.x + narrowBarText.width > 391
+    || narrowBarButton.x + narrowBarButton.width > 391
+  ) {
+    throw new Error('the narrow save row overflows the viewport');
+  }
+  await narrowKeys.evaluate((el) => { el.scrollIntoView({ block: 'start' }); });
+  await shot('settings-nbsearch-mobile-keys');
   await page.setViewportSize({ width: 1440, height: 900 });
 
-  // Empty nb_search: WebSearch fails closed, FetchURL stays ready.
+  // Dark palette: the runner's canonical view is light and only theme-opted-in
+  // scenarios get a dark job, so this scenario takes its own dark frames. Every
+  // colour here is an existing token; the point is to see it on ink.
+  await page.evaluate(() => {
+    let settings = {};
+    try {
+      settings = JSON.parse(localStorage.getItem('kiki.settings') ?? '{}');
+    } catch {
+      settings = {};
+    }
+    localStorage.setItem('kiki.settings', JSON.stringify({ ...settings, theme: 'dark' }));
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  detail = await openService();
+  await page.locator('#st-card-search-providers').scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-services-dark');
+  const darkKeys = detail.locator('[data-nb-search-keys="exa.default"]');
+  await darkKeys.locator('[data-key-show]').click();
+  await darkKeys.locator('[data-key-row]').first().waitFor({ timeout: 10_000 });
+  await darkKeys.locator('[data-key-reveal="0"]').click();
+  await darkKeys.scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-keys-dark');
+  await page.evaluate(() => {
+    let settings = {};
+    try {
+      settings = JSON.parse(localStorage.getItem('kiki.settings') ?? '{}');
+    } catch {
+      settings = {};
+    }
+    localStorage.setItem('kiki.settings', JSON.stringify({ ...settings, theme: 'light' }));
+  });
+
+  // Empty nb_search: nothing configured is a calm state, not a page of forms.
   await control({ action: 'scenario', name: 'settings-nbsearch-empty' });
   await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#st-card-search-status', { timeout: 10_000 });
@@ -2558,6 +3125,16 @@ async function scenarioSettingsNbSearch() {
     throw new Error(`empty config must show WebSearch unconfigured + FetchURL ready, saw "${emptyStatus}"`);
   }
   await shot('settings-nbsearch-empty');
+  await openTab('providers');
+  await waitForText(S.nbSearchServicesEmptyTitle);
+  const emptyProviders = await page.locator('#st-card-search-providers').textContent();
+  if (!emptyProviders.includes(S.nbSearchServicesEmptyTitle)) {
+    throw new Error('an unconfigured page must say so in one line');
+  }
+  if (await page.locator('[data-nb-search-service-row]').count() !== 0) {
+    throw new Error('an unconfigured page must not list services');
+  }
+  await shot('settings-nbsearch-empty-services');
 
   // Readiness check failure surfaces as an inline error, not a crash.
   await control({ action: 'scenario', name: 'settings-nbsearch-down' });
@@ -4792,6 +5369,23 @@ async function scenarioWorktrees() {
 async function scenarioModelsPageEmpty() { await modelsPageWalker().empty(); }
 
 /** Native SSH: settings, composer hosts, SSH approval cards (scripts/visual-proof-native-ssh.mjs). */
+/** `/usage?panel=export`: destinations, add to preview to consent, recovery, handoff. */
+async function scenarioPluginImport() {
+  const walk = createPluginImportWalker({
+    page, shot, resizeViewport, view: job().view,
+    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
+  });
+  await walk();
+}
+
+async function scenarioUsageExport() {
+  const walk = createUsageExportWalker({
+    page, shot, resizeViewport, control, view: job().view,
+    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
+  });
+  await walk();
+}
+
 async function scenarioNativeSsh() {
   const walk = createNativeSshWalker({
     page, shot, resizeViewport, setProofTheme, control, view: job().view,
@@ -5167,6 +5761,24 @@ async function scenarioCapabilities() {
   const walk = createCapabilitiesWalker({
     page, shot, setProofTheme, control, view: job().view,
     webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
+  });
+  await walk();
+}
+
+/** The capability block's tool groups, in the rail and at the narrow width (scripts/visual-proof-tool-groups.mjs). */
+async function scenarioToolGroups() {
+  const walk = createToolGroupsWalker({
+    page, shot, view: job().view,
+    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
+  });
+  await walk();
+}
+
+/** The same groups under the home's own dark preference (scripts/visual-proof-tool-groups.mjs). */
+async function scenarioToolGroupsDark() {
+  const walk = createToolGroupsWalker({
+    page, shot, view: job().view,
+    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN, dark: true,
   });
   await walk();
 }
@@ -5592,6 +6204,7 @@ function scenario(name, run, extra = {}) {
  */
 const ENTRY_EXTRA = {
   'first-run': { onboarding: false },
+  cockpit: { fixture: 'rail-scale' },
 };
 
 /** Walk order. `responsive` shrinks the viewport, so it stays last. */
@@ -5663,6 +6276,8 @@ const BODIES = [
   ['models-page-empty', scenarioModelsPageEmpty],
   ['worktrees', scenarioWorktrees],
   ['native-ssh', scenarioNativeSsh],
+  ['plugin-import', scenarioPluginImport],
+  ['usage-export', scenarioUsageExport],
   ['profile-editor', scenarioProfileEditor],
   ['usage-dashboard', scenarioUsageDashboard],
   ['workspace-tools', scenarioWorkspaceTools],
@@ -5673,6 +6288,9 @@ const BODIES = [
   ['i18n', scenarioI18n],
   ['rewrite-flow', scenarioRewriteFlow],
   ['rail-scale', scenarioRailScale],
+  ['tool-groups', scenarioToolGroups],
+  ['tool-groups-dark', scenarioToolGroupsDark],
+  ['cockpit', scenarioCockpit],
   // responsive stays last: it shrinks the viewport to 320px and nothing
   // afterward may assume a desktop layout.
   ['responsive', scenarioResponsive],

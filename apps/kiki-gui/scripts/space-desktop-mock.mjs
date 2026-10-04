@@ -1,11 +1,11 @@
 /**
  * Playwright init script that stands in for the Tauri desktop shell so the
  * spaces slice renders as it does on the desktop: `window.isTauri`, the IPC
- * bridge, and the desktop commands the GUI calls. Space switching mirrors the
- * native contract: `switch_space` / `open_space` (switch mode) tell the
- * fixture which space's backend is active, remember the space in
- * sessionStorage, and reload the page; `desktop_active_space` answers from
- * that memory on boot.
+ * bridge, and the desktop commands the GUI calls. `prepare_space` stages the
+ * backend and returns its identity without reloading. After Router commit,
+ * `switch_space` reloads; legacy `open_space` also enters in switch mode.
+ * The local-only fixture has no pending SSH reference or notification intent.
+ * `desktop_active_space` answers from the staged identity on boot.
  *
  * Usage: `await context.addInitScript(spaceDesktopMock, { fixtureUrl, token, spaces, windowMode })`.
  */
@@ -30,16 +30,33 @@ export function spaceDesktopMock({ fixtureUrl, token, spaces, windowMode }) {
       compatibility: { homeKind: 'kimi' }, window_mode: windowMode,
     };
   };
-  const enter = async (homeId) => {
-    const reply = await (await control({ action: 'space', id: homeId })).json();
-    // Spaces created during the walk are not in the seed; remember them.
+  const prepare = async (homeId) => {
+    const response = await control({ action: 'space', id: homeId });
+    const reply = await response.json();
+    if (!response.ok || reply.data?.error !== undefined || reply.data?.active !== homeId) {
+      throw new Error(reply.data?.error ?? `desktop mock: space ${homeId} was not prepared`);
+    }
+    // Remember newly created registry entries immediately and after reload.
     const known = reply.data?.space;
     if (known !== undefined && !spaces.some((space) => space.id === known.id)) {
+      spaces.push(known);
       const extra = JSON.parse(sessionStorage.getItem(`${KEY}.extra`) ?? '[]');
       sessionStorage.setItem(`${KEY}.extra`, JSON.stringify([...extra, known]));
     }
     sessionStorage.setItem(KEY, homeId);
-    setTimeout(() => { window.location.reload(); }, 50);
+    return active();
+  };
+  const recordNavigation = (command, homeId, status, result) => {
+    const history = window.history?.state;
+    const events = JSON.parse(sessionStorage.getItem(`${KEY}.navigation`) ?? '[]');
+    events.push({ command, homeId, status, result, desktop: active(), path: window.location.pathname,
+      history: { idx: history?.idx, key: history?.key, nav: history?.usr?.kikiNav } });
+    sessionStorage.setItem(`${KEY}.navigation`, JSON.stringify(events));
+  };
+  const enter = async (homeId) => {
+    const space = await prepare(homeId);
+    setTimeout(() => { recordNavigation('reload', homeId, 'started'); window.location.reload(); }, 50);
+    return space;
   };
   const callbacks = new Map();
   let nextCallback = 1;
@@ -56,8 +73,11 @@ export function spaceDesktopMock({ fixtureUrl, token, spaces, windowMode }) {
         busyCount: space.busy ?? 0,
       })).filter((status) => status.hot || status.active);
     },
+    prepare_space: ({ homeId }) => prepare(homeId),
     switch_space: ({ homeId }) => enter(homeId),
     open_space: ({ homeId }) => enter(homeId),
+    take_scope_connection: () => null,
+    take_navigation_intent: () => null,
     read_desktop_prefs: () => readPrefs(),
     write_desktop_prefs: ({ prefs }) => {
       const next = { ...readPrefs(), ...prefs };
@@ -96,12 +116,25 @@ export function spaceDesktopMock({ fixtureUrl, token, spaces, windowMode }) {
     unregisterCallback: (id) => { callbacks.delete(id); },
     convertFileSrc: (path) => path,
     invoke: async (cmd, args) => {
+      const calls = JSON.parse(sessionStorage.getItem(`${KEY}.commands`) ?? '[]');
+      calls.push({ command: cmd, homeId: args?.homeId });
+      sessionStorage.setItem(`${KEY}.commands`, JSON.stringify(calls));
       const handler = commands[cmd];
       if (handler === undefined) {
         if (cmd.startsWith('plugin:')) return undefined;
+        console.error(`desktop mock: no command ${cmd}`);
         throw new Error(`desktop mock: no command ${cmd}`);
       }
-      return handler(args ?? {});
+      const navigation = ['prepare_space', 'switch_space', 'open_space'].includes(cmd);
+      if (navigation) recordNavigation(cmd, args?.homeId, 'started');
+      try {
+        const result = await handler(args ?? {});
+        if (navigation) recordNavigation(cmd, args?.homeId, 'ok', result);
+        return result;
+      } catch (error) {
+        if (navigation) recordNavigation(cmd, args?.homeId, 'failed', error instanceof Error ? error.message : String(error));
+        throw error;
+      }
     },
   };
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => undefined };

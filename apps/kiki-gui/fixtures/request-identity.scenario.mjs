@@ -1,9 +1,11 @@
 /**
  * request-identity — Settings › Request identity. The five built-in
- * identities plus one custom copy of Codex that a model uses; the Codex track
- * was updated from npm once (so it can roll back), Claude Code has a staged
- * candidate waiting for Apply, and Grok is pinned after a failed CLI read.
- * Two recent requests show what was actually sent.
+ * identities plus two custom copies (a Codex TUI that a model uses, and a
+ * Claude Code variant with no layer of its own — two editable identities so
+ * switching between them can be exercised while each keeps its own unsaved
+ * draft); the Codex track was updated from npm once (so it can roll back),
+ * Claude Code has a staged candidate waiting for Apply, and Grok is pinned
+ * after a failed CLI read. Two recent requests show what was actually sent.
  */
 
 const WSID = 'wd_fixture_000000000000';
@@ -43,6 +45,18 @@ const profiles = [
     headers: [{ name: 'originator', value: 'codex-tui' }, { name: 'version', value: '{version}' }, { name: 'x-openai-internal-codex-residency', value: 'us' }],
     params: [{ name: 'service_tier', value: 'priority' }],
     duplicated_from: 'codex', created_at: ago(26 * HOUR), updated_at: ago(3 * HOUR),
+  },
+  {
+    id: 'custom:claude-1', builtin: false, label: 'Claude Code (terminal)', base_preset: 'claude_code_compatible',
+    track: 'claude_code', version: { mode: 'track' },
+    user_agent: 'claude-cli/{version} (external, cli) terminal',
+    headers: [
+      { name: 'x-app', value: 'cli' },
+      { name: 'X-Stainless-Lang', value: 'js' },
+      { name: 'X-Stainless-Package-Version', value: '0.94.0' },
+    ],
+    params: [],
+    duplicated_from: 'claude_code', created_at: ago(30 * HOUR), updated_at: ago(20 * HOUR),
   },
 ];
 

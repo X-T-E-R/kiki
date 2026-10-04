@@ -8,12 +8,17 @@
  *   ssh: {
  *     hosts:        SshHost[]            — Kiki hosts (source "kiki")
  *     config:       string[]             — aliases "discovered" in ~/.ssh/config
- *     syncConfig:   boolean              — default true
+ *     syncConfig:   boolean              — sync_ssh_config, default true
+ *     syncSource:   'home'|'base'|'default' — where that value is stored
  *     approval:     boolean              — connection approval, default true
  *     status:       { [id]: state }      — connection state per host
  *     session:      { [sessionId]: string[] }  — joined host ids
  *     temporary:    { [sessionId]: SshHost[] } — session-only user@host targets
  *     writeBackTaken: string[]           — aliases already in ~/.ssh/config
+ *     hostKeys:     { [id]: SshHostKeys } — the payload `GET
+ *                   /ssh/hosts/{id}:host-keys` returns for that host; a host
+ *                   without an entry is a fixture error, so every state a walk
+ *                   reaches is written down here instead of being invented.
  *   }
  *
  * The SSH approval POST records the body shape (never the secret values) in
@@ -28,10 +33,12 @@ function state(server) {
       hosts: seed.hosts ?? [],
       config: seed.config ?? [],
       sync: seed.syncConfig ?? true,
+      syncSource: seed.syncSource ?? 'home',
       approval: seed.approval ?? true,
       status: seed.status ?? {},
       session: seed.session ?? {},
       temporary: seed.temporary ?? {},
+      hostKeys: seed.hostKeys ?? {},
       written: new Set(seed.writeBackTaken ?? []),
     };
     server.sshSubmissions = [];
@@ -77,9 +84,12 @@ export function handleSsh(server, res, path, query, method, body) {
     server.envelope(res, { hosts: ssh.config.map((alias) => ({ id: alias, name: alias, source: 'ssh-config' })) });
     return true;
   }
-  if (path === '/ssh/config-sync' && method === 'PUT') {
-    ssh.sync = body?.enabled === true;
-    server.envelope(res, { enabled: ssh.sync });
+  if (path === '/ssh/config-sync') {
+    if (method === 'PUT') {
+      ssh.sync = body?.enabled === true;
+      ssh.syncSource = 'home';
+    }
+    server.envelope(res, { enabled: ssh.sync, source: ssh.syncSource });
     return true;
   }
   if (path === '/ssh/connection-approval') {
@@ -112,6 +122,14 @@ export function handleSsh(server, res, path, query, method, body) {
     }
     if (known === undefined) { server.envelope(res, null, 40424, 'Unknown SSH host'); return true; }
     if (action === 'status') { server.envelope(res, statusOf(ssh, id)); return true; }
+    if (action === 'host-keys') {
+      // Read-only over known_hosts; the seed carries finished payloads because
+      // the fixture opens no connection and reads no real file.
+      const seeded = ssh.hostKeys[id];
+      if (seeded === undefined) { server.envelope(res, null, 40001, `fixture: no host keys seeded for ${id}`); return true; }
+      server.envelope(res, { hostId: id, ...seeded });
+      return true;
+    }
     if (action === 'disconnect') {
       ssh.status[id] = 'disconnected';
       server.envelope(res, { disconnected: true });

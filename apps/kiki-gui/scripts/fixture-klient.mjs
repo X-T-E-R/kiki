@@ -1,6 +1,8 @@
 import { tsImport } from 'tsx/esm/api';
 import { filterOpsForGrade, gradeFor, redactSnapshotForGrade } from './fixture-transcript.mjs';
 import { browseFolder } from './fixture-worktrees.mjs';
+import { callImportService } from './fixture-plugin-import.mjs';
+import { callAgentMediaService, callMediaService } from './fixture-media.mjs';
 
 function now() { return new Date().toISOString(); }
 
@@ -9,8 +11,13 @@ const codec = await tsImport('../../../packages/klient/src/transports/codec.ts',
 const view = await tsImport('../../../packages/klient/src/contract/session/view.ts', import.meta.url);
 const { globalContract } = await tsImport('../../../packages/klient/src/contract/index.ts', import.meta.url);
 const { globalEvents } = await tsImport('../../../packages/klient/src/contract/global/events.ts', import.meta.url);
+const { agentEvents } = await tsImport('../../../packages/klient/src/contract/agent/events.ts', import.meta.url);
 const busEvents = new Map(Object.values(globalEvents).filter((event) => event.kind === 'bus').map((event) => [event.type, event.schema]));
+const agentStreamEvents = new Map(Object.values(agentEvents).filter((event) => event.kind === 'stream').map((event) => [event.type, event.schema]));
 const terminalWire = await tsImport('../../../packages/protocol/src/ws-control.ts', import.meta.url);
+// The production bounded-content functions: a fixture that cuts a body must cut
+// it exactly the way kap-server does, and read segments back the same way.
+const bounded = await tsImport('../../../packages/kap-server/src/transport/klient/boundedContent.ts', import.meta.url);
 const terminalControls = {
   terminal_attach: terminalWire.terminalAttachMessageSchema,
   terminal_detach: terminalWire.terminalDetachMessageSchema,
@@ -68,6 +75,21 @@ const GOAL_AGENT_PANEL = {
 };
 
 function invalid(message, code = 40001) { return Object.assign(new Error(message), { code }); }
+/**
+ * A machine with nothing signed in: the answer a scenario gets for free, so a
+ * scenario that wants to show a stored credential seeds only the fields it
+ * cares about. Never invents an account — an unknown account stays unknown.
+ */
+function originalProbeDefaults(request) {
+  return {
+    provider: request?.provider,
+    home_dir: request?.home_dir ?? '/home/fixture/.original',
+    storage_backend: null,
+    state: 'signed_out',
+    account: { state: 'unknown' },
+    can_connect: false,
+  };
+}
 function parse(schema, value) {
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw invalid(parsed.error.message);
@@ -86,6 +108,75 @@ function catchUp(session, agentId, since) {
   return { ...result, complete, batches: complete ? result.batches : [] };
 }
 
+
+/**
+ * Re-derives `usage_effective` / `usage_sources` from the stored branches using
+ * the engine's own rule: a branch value applies unless it would widen the
+ * shared cap, in which case the shared value stands. This is the projection the
+ * read path reports, not a second place where usage is decided.
+ */
+function resolveUsageProjection(model) {
+  const shared = {
+    thinking_effort: model.parameters?.thinking_effort,
+    service_tier: model.parameters?.service_tier ?? model.service_tier,
+    max_completion_tokens: model.parameters?.max_completion_tokens,
+    auto_compact: model.overrides?.autoCompact ?? model.auto_compact,
+    context_budget: model.overrides?.contextBudget ?? model.context_budget,
+  };
+  const positions = {
+    sub: {},
+    main: model.usage?.main,
+    independent: model.usage?.independent,
+  };
+  for (const position of ['main', 'sub', 'independent']) {
+    const values = {};
+    const sources = {};
+    for (const key of Object.keys(shared)) {
+      if (shared[key] !== undefined) {
+        values[key] = shared[key];
+        sources[key] = key === 'auto_compact' ? '[models.*.auto_compact]'
+          : key === 'context_budget' ? '[models.*.context_budget]'
+          : '[models.*.parameters]';
+      }
+    }
+    for (const key of Object.keys(shared)) {
+      const value = positions[position]?.[key];
+      if (value === undefined) continue;
+      if ((key === 'context_budget' || key === 'max_completion_tokens')
+        && typeof value === 'number' && typeof shared[key] === 'number' && shared[key] < value) continue;
+      values[key] = value;
+      sources[key] = `[models.*.usage.${position}.${key}]`;
+    }
+    model.usage_effective = { ...model.usage_effective, [position]: values };
+    model.usage_sources = { ...model.usage_sources, [position]: sources };
+  }
+}
+
+/**
+ * The usage policy patch merges field by field, the way the engine stores it:
+ * a `null` field clears that one difference, a `null` branch clears every
+ * difference for that position, and a `null` `usage` clears the whole layer.
+ * Nothing else about the model is touched, so one branch can be edited without
+ * disturbing the other.
+ */
+function mergeUsagePolicy(model, patch) {
+  if (patch === undefined || patch === null) {
+    if (patch === null) delete model.usage;
+    return;
+  }
+  const usage = { ...(model.usage ?? {}) };
+  for (const [position, branch] of Object.entries(patch)) {
+    if (branch === null) { delete usage[position]; continue; }
+    const next = { ...(usage[position] ?? {}) };
+    for (const [field, value] of Object.entries(branch)) {
+      if (value === null) delete next[field];
+      else next[field] = value;
+    }
+    usage[position] = next;
+  }
+  model.usage = usage;
+}
+
 function revisionOf(value) {
   const canonical = (entry) => {
     if (Array.isArray(entry)) return `[${entry.map(canonical).join(',')}]`;
@@ -101,8 +192,119 @@ function revisionOf(value) {
   return canonical(value);
 }
 
+const MODEL_SWITCH_METHODS = new Set([
+  'listModelSwitches', 'switchModel', 'getModelSwitch', 'updateModelSwitch',
+  'cancelModelSwitch', 'recoverModelSwitch',
+]);
+
+function modelSwitchSeed(server, sessionId, agentId) {
+  const seeded = server.scenario?.data.modelSwitches?.[sessionId]
+    ?? server.scenario?.data.model_switches?.[sessionId];
+  if (Array.isArray(seeded)) return seeded;
+  if (seeded !== null && typeof seeded === 'object') {
+    return seeded[agentId] ?? seeded.main ?? [];
+  }
+  return [];
+}
+
+function modelSwitchStore(server, session, agentId) {
+  session.modelSwitches ??= new Map();
+  let store = session.modelSwitches.get(agentId);
+  if (store !== undefined) return store;
+  store = new Map();
+  for (const entry of modelSwitchSeed(server, session.record.id, agentId)) {
+    if (entry?.input?.operationId !== undefined) store.set(entry.input.operationId, structuredClone(entry));
+  }
+  session.modelSwitches.set(agentId, store);
+  return store;
+}
+
+function modelSwitchBinding(input, server) {
+  const model = typeof input.selectedFromModel === 'string' && input.selectedFromModel !== ''
+    ? input.selectedFromModel
+    : typeof server.config.default_model === 'string' && server.config.default_model !== ''
+      ? server.config.default_model
+      : 'fixture/kiki-pro';
+  return { model, thinking: input.thinking ?? 'high' };
+}
+
+function nextModelSwitchQueueIndex(session, store) {
+  const operationIndexes = [...store.values()]
+    .map((entry) => entry.queueIndex)
+    .filter((index) => Number.isInteger(index) && index >= 0);
+  const promptIndexes = (session.queuedPrompts ?? [])
+    .map((entry) => entry.queue_position ?? entry.queuePosition)
+    .filter((index) => Number.isInteger(index) && index >= 0);
+  return Math.max(-1, ...operationIndexes, ...promptIndexes) + 1;
+}
+
+/** The canonical body of one scenario entity, reused by every read of it. */
+export function canonicalEntity(session, key, entity) {
+  const existing = session.boundedCanonical.get(key);
+  if (existing !== undefined) return existing;
+  session.boundedCanonical.set(key, entity);
+  return entity;
+}
+
+/**
+ * Cut the entities a scenario asked for with the production `boundedEntity`,
+ * keeping one canonical body per entity so every preview and every segment
+ * read agrees on the same revision. Entities outside the scenario's list pass
+ * through untouched.
+ */
+export function boundScenarioEntities(session, snapshot) {
+  const spec = session.boundedContent;
+  if (spec === null || spec === undefined) return snapshot;
+  const frames = new Set(spec.frames ?? []);
+  const turns = new Set(spec.turns ?? []);
+  const tasks = new Set(spec.tasks ?? []);
+  const items = snapshot.items.map((item) => {
+    if (item.kind !== 'turn') return item;
+    const steps = item.steps.map((step) => ({
+      ...step,
+      frames: step.frames.map((frame) => frames.has(frame.frameId)
+        ? bounded.boundedEntity(canonicalEntity(session, `frame:${frame.frameId}`, frame), { kind: 'frame', id: frame.frameId, turnId: item.turnId, stepId: step.stepId })
+        : frame),
+    }));
+    const rebuilt = { ...item, steps };
+    if (!turns.has(item.turnId)) return rebuilt;
+    return bounded.boundedEntity(canonicalEntity(session, `turn:${item.turnId}`, rebuilt), { kind: 'turn', id: item.turnId });
+  });
+  return {
+    ...snapshot,
+    items,
+    tasks: snapshot.tasks.map((task) => tasks.has(task.taskId)
+      ? bounded.boundedEntity(canonicalEntity(session, `task:${task.taskId}`, task), { kind: 'task', id: task.taskId })
+      : task),
+  };
+}
+
+/**
+ * The session snapshot is a bounded entity of its own: its root fields arrive
+ * as previews with their refs, and the rest of a cut field is read through the
+ * same content route. A scenario opts in with `bounded_content.root`.
+ */
+export function boundScenarioSnapshot(session, snapshot) {
+  if (session.boundedContent?.root !== true) return snapshot;
+  return bounded.boundedEntity(
+    canonicalEntity(session, 'snapshot:root', snapshot),
+    { kind: 'snapshot', id: '' },
+    24 * 1024,
+  );
+}
+
 export class FixtureKlient {
   constructor(server) { this.server = server; this.connections = new Map(); }
+
+  /** The canonical entity a ref addresses, by the same source the ref names. */
+  canonicalFor(session, ref) {
+    const source = ref.source;
+    if (source.kind === 'snapshot') return session.boundedCanonical.get('snapshot:root');
+    if (source.kind === 'frame' || source.kind === 'turn' || source.kind === 'task') {
+      return session.boundedCanonical.get(`${source.kind}:${source.id}`);
+    }
+    return undefined;
+  }
 
   route(res, url, body, method) {
     const server = this.server;
@@ -117,12 +319,21 @@ export class FixtureKlient {
           procedure.scope === 'agent' &&
           procedure.service === 'agentPlanService' &&
           procedure.method === 'status';
+        const agentModelSwitchCall =
+          procedure.scope === 'agent' &&
+          procedure.service === 'agentPromptService' &&
+          MODEL_SWITCH_METHODS.has(procedure.method);
         // `/btw`: the side-agent fork plus the metadata read its first send uses.
         const sessionSideQuestion =
           procedure.scope === 'session' &&
           ((procedure.service === 'sessionBtwService' && procedure.method === 'start') ||
             (procedure.service === 'sessionMetadata' && procedure.method === 'read'));
-        if (procedure.scope !== 'core' && !agentPanelRead && !agentPlanStatus && !sessionSideQuestion) {
+        // Media: the global surface is core-scoped like every other global
+        // service, but a job's stop and resume belong to the session and agent
+        // that own it, so the agent-scoped pair is admitted here.
+        const agentMediaCall =
+          procedure.scope === 'agent' && procedure.service === 'agentPluginMediaService';
+        if (procedure.scope !== 'core' && !agentPanelRead && !agentPlanStatus && !agentModelSwitchCall && !sessionSideQuestion && !agentMediaCall) {
           throw invalid(`Unsupported fixture procedure scope: ${procedure.scope}`, 40401);
         }
         const serviceContract = globalContract[procedure.service];
@@ -133,6 +344,16 @@ export class FixtureKlient {
         const input = parse(contract.input, params);
         const result = this.callGlobal(procedure, input);
         return server.envelope(res, parse(contract.output, result));
+      }
+      const contentMatch = /^\/api\/klient\/session-view\/([^/]+)\/transcript\/content$/.exec(url.pathname);
+      if (contentMatch !== null) {
+        if (method !== 'POST') throw invalid(`Unsupported fixture route: ${method} ${url.pathname}`, 40401);
+        const contentSession = server.sessions.get(decodeURIComponent(contentMatch[1]));
+        if (contentSession === undefined) throw invalid('session not found', 40401);
+        const input = parse(view.sessionViewTranscriptContentInputSchema, body);
+        const canonical = this.canonicalFor(contentSession, input.ref);
+        if (canonical === undefined) return server.envelope(res, null, 40401, 'content unavailable');
+        return server.envelope(res, parse(view.sessionViewTranscriptContentOutputSchema, bounded.readContentSegment(canonical, input.ref)));
       }
       const match = /^\/api\/klient\/session-view\/([^/]+)\/(snapshot|transcript|transcript\/catch-up)$/.exec(url.pathname);
       if (match === null || method !== 'GET') throw invalid(`Unsupported fixture route: ${method} ${url.pathname}`, 40401);
@@ -159,11 +380,11 @@ export class FixtureKlient {
         const envelope = JSON.parse(raw);
         if (envelope.code !== 0) return server.envelope(res, null, envelope.code, envelope.msg);
         let data = envelope.data;
-        if (suffix === 'snapshot') data = { ...data, messages: { items: [], has_more: false } };
+        if (suffix === 'snapshot') data = boundScenarioSnapshot(session, { ...data, messages: { items: [], has_more: false } });
         if (suffix === 'transcript') {
           const turns = data.items.filter((item) => item.kind === 'turn');
-          data = { ...data, session_id: sessionId, cursor: { seq: data.seq, epoch: session.transcript.epoch },
-            coverage: data.has_more ? { kind: 'tail', hasMoreOlder: true, fromTurnId: turns[0]?.turnId, throughTurnId: turns.at(-1)?.turnId } : { kind: 'full', hasMoreOlder: false } };
+          data = boundScenarioEntities(session, { ...data, session_id: sessionId, cursor: { seq: data.seq, epoch: session.transcript.epoch },
+            coverage: data.has_more ? { kind: 'tail', hasMoreOlder: true, fromTurnId: turns[0]?.turnId, throughTurnId: turns.at(-1)?.turnId } : { kind: 'full', hasMoreOlder: false } });
         }
         if (suffix === 'transcript/ops') {
           data = catchUp(session, query.get('agent_id'), { epoch: query.get('epoch') ?? undefined, seq: Number(query.get('since_seq')) });
@@ -200,6 +421,110 @@ export class FixtureKlient {
     }));
     const key = `${procedure.service}.${procedure.method}`;
     switch (key) {
+      case 'agentPromptService.listModelSwitches': {
+        const session = server.sessions.get(procedure.sessionId);
+        if (session === undefined) throw invalid('session not found', 40401);
+        const store = modelSwitchStore(server, session, procedure.agentId);
+        return [...store.values()].map((entry) => structuredClone(entry));
+      }
+      case 'agentPromptService.getModelSwitch': {
+        const session = server.sessions.get(procedure.sessionId);
+        if (session === undefined) throw invalid('session not found', 40401);
+        const store = modelSwitchStore(server, session, procedure.agentId);
+        return structuredClone(store.get(args[0])?.receipt ?? null);
+      }
+      case 'agentPromptService.switchModel': {
+        const session = server.sessions.get(procedure.sessionId);
+        if (session === undefined) throw invalid('session not found', 40401);
+        const store = modelSwitchStore(server, session, procedure.agentId);
+        const input = args[0];
+        const existing = store.get(input.operationId);
+        if (existing !== undefined) return structuredClone(existing.receipt);
+        const originalBinding = modelSwitchBinding(input, server);
+        const receipt = {
+          operationId: input.operationId,
+          agentId: procedure.agentId,
+          state: 'pending',
+          fromModel: originalBinding.model,
+          toModel: input.model,
+          mode: input.mode,
+        };
+        const entry = { input: structuredClone(input), receipt, revision: 0, originalBinding, queueIndex: nextModelSwitchQueueIndex(session, store) };
+        store.set(input.operationId, entry);
+        this.emitAgentModelSwitch(procedure.sessionId, procedure.agentId, 'prompt.model_switch_queued', {
+          entry: { input: structuredClone(entry.input), receipt: structuredClone(entry.receipt), revision: entry.revision, originalBinding: structuredClone(entry.originalBinding) },
+          queueIndex: entry.queueIndex,
+        });
+        this.emitAgentModelSwitch(procedure.sessionId, procedure.agentId, 'prompt.model_switch_status', {
+          operationId: input.operationId,
+          receipt: structuredClone(entry.receipt),
+        });
+        return structuredClone(receipt);
+      }
+      case 'agentPromptService.updateModelSwitch': {
+        const session = server.sessions.get(procedure.sessionId);
+        if (session === undefined) throw invalid('session not found', 40401);
+        const store = modelSwitchStore(server, session, procedure.agentId);
+        const input = args[0];
+        const entry = store.get(input.operationId);
+        if (entry === undefined) throw invalid('model_switch.not_found', 40402);
+        const expectedRevision = args[1];
+        if (expectedRevision !== undefined && expectedRevision !== entry.revision) throw invalid('model_switch.revision_conflict', 40941);
+        entry.input = structuredClone(input);
+        entry.revision += 1;
+        entry.receipt = {
+          ...entry.receipt,
+          state: 'pending',
+          toModel: input.model,
+          mode: input.mode,
+          error: undefined,
+        };
+        if (entry.queueIndex < 0) entry.queueIndex = nextModelSwitchQueueIndex(session, store);
+        this.emitAgentModelSwitch(procedure.sessionId, procedure.agentId, 'prompt.model_switch_status', {
+          operationId: input.operationId,
+          receipt: structuredClone(entry.receipt),
+        });
+        return structuredClone(entry.receipt);
+      }
+      case 'agentPromptService.cancelModelSwitch': {
+        const session = server.sessions.get(procedure.sessionId);
+        if (session === undefined) throw invalid('session not found', 40401);
+        const store = modelSwitchStore(server, session, procedure.agentId);
+        const operationId = args[0];
+        const entry = store.get(operationId);
+        if (entry === undefined) throw invalid('model_switch.not_found', 40402);
+        entry.receipt = { ...entry.receipt, state: 'cancelled', error: undefined };
+        entry.queueIndex = -1;
+        this.emitAgentModelSwitch(procedure.sessionId, procedure.agentId, 'prompt.model_switch_status', {
+          operationId,
+          receipt: structuredClone(entry.receipt),
+        });
+        return structuredClone(entry.receipt);
+      }
+      case 'agentPromptService.recoverModelSwitch': {
+        const session = server.sessions.get(procedure.sessionId);
+        if (session === undefined) throw invalid('session not found', 40401);
+        const store = modelSwitchStore(server, session, procedure.agentId);
+        const operationId = args[0];
+        const action = args[1];
+        const mode = args[2];
+        const entry = store.get(operationId);
+        if (entry === undefined) throw invalid('model_switch.not_found', 40402);
+        if (action === 'retry' && mode !== undefined) entry.input = { ...entry.input, mode };
+        entry.receipt = {
+          ...entry.receipt,
+          state: 'pending',
+          toModel: entry.input.model,
+          mode: entry.input.mode,
+          error: undefined,
+        };
+        if (entry.queueIndex < 0) entry.queueIndex = nextModelSwitchQueueIndex(session, store);
+        this.emitAgentModelSwitch(procedure.sessionId, procedure.agentId, 'prompt.model_switch_status', {
+          operationId,
+          receipt: structuredClone(entry.receipt),
+        });
+        return structuredClone(entry.receipt);
+      }
       case 'agentPlanService.status':
         return null;
       case 'sessionBtwService.start': {
@@ -309,6 +634,11 @@ export class FixtureKlient {
           if (patch.auto_compact === null) delete next.auto_compact;
           else next.auto_compact = patch.auto_compact;
         }
+        mergeUsagePolicy(next, patch.usage);
+        // The resolved projection is the server's own answer, so it has to move
+        // with the branch that was just saved. Leaving the seeded value in place
+        // makes a correct write look like it did not take.
+        resolveUsageProjection(next);
         items[index] = next;
         server.models = items;
         server.modelsDeclared = true;
@@ -435,7 +765,22 @@ export class FixtureKlient {
           { id: 'github-copilot', label: 'GitHub Copilot', provider: 'managed:github-copilot', protocol: 'openai', signed_in: false },
           { id: 'openai-codex', label: 'ChatGPT', provider: 'managed:openai-codex', protocol: 'openai_responses', signed_in: false },
         ];
-        return structuredClone(methods).map((method) => ({ account: unknown, quota: unknown, ...method }));
+        return structuredClone(methods).map((method) => {
+          // A connection attached to the machine's own sign-in reports where it
+          // came from, so the row reads the real source back rather than the one
+          // it optimistically wrote.
+          const attached = server.originalConnected?.provider === method.id ? server.originalConnected : undefined;
+          const base = {
+            account: unknown, quota: unknown, ...method,
+            ...(attached === undefined ? {} : {
+              signed_in: true,
+              connection_state: 'ready',
+              account: attached.account,
+              auth_source: { kind: 'local_original', home_dir: attached.home_dir, storage_backend: attached.storage_backend, source_state: attached.state },
+            }),
+          };
+          return base;
+        });
       }
       // Config service: only the domains the Defaults card writes directly
       // (`subagent.defaultModel`, `fastModel`), mirrored into the REST config
@@ -491,6 +836,32 @@ export class FixtureKlient {
       case 'oauthService.logout': {
         const [provider] = args;
         return { logged_out: true, provider: provider ?? 'fixture' };
+      }
+      // Reusing the original vendor's sign-in on this machine. The scenario
+      // seeds the answer so a scenario can show each of the states; a seed may
+      // be keyed by `provider` alone or by `provider@home_dir`, so a scenario
+      // can have the default directory hold one credential and another hold a
+      // different one. Connecting refuses an account the server no longer
+      // reports, which is the whole point of carrying expected_account_id.
+      case 'oauthService.probeOriginal': {
+        const [request] = args;
+        const seeds = server.scenario?.data.oauthOriginal ?? {};
+        const directed = request?.home_dir === undefined ? undefined : seeds[`${request.provider}@${request.home_dir}`];
+        const seeded = directed ?? seeds[request?.provider];
+        const probe = { ...originalProbeDefaults(request), ...(seeded ?? {}) };
+        return { ...structuredClone(probe), provider: request?.provider };
+      }
+      case 'oauthService.connectOriginal': {
+        const [request] = args;
+        const seeds = server.scenario?.data.oauthOriginal ?? {};
+        const directed = request?.home_dir === undefined ? undefined : seeds[`${request.provider}@${request.home_dir}`];
+        const seeded = directed ?? seeds[request?.provider];
+        const probe = { ...originalProbeDefaults(request), ...(seeded ?? {}) };
+        if (request?.expected_account_id !== undefined && probe.account?.id !== request.expected_account_id) {
+          throw invalid('fixture: the account on this machine changed since it was probed', 40012);
+        }
+        server.originalConnected = { ...structuredClone(probe), provider: request?.provider };
+        return structuredClone(server.originalConnected);
       }
       case 'pluginService.listPlugins':
         return structuredClone(server.plugins);
@@ -548,6 +919,82 @@ export class FixtureKlient {
         if (index < 0) throw invalid('plugin.not_found', 40419);
         server.plugins.splice(index, 1);
         return undefined;
+      }
+      // Bootstrap scalars: the frozen startup snapshot the GUI reads for host
+      // facts (the computer-control page's machine line). Unseeded stays
+      // unsupported, like every other unseeded domain in this fixture.
+      case 'bootstrapService.platform':
+      case 'bootstrapService.arch':
+      case 'bootstrapService.cwd':
+      case 'bootstrapService.osHomeDir':
+      case 'bootstrapService.homeDir':
+      case 'bootstrapService.configPath':
+      case 'bootstrapService.sessionsDir':
+      case 'bootstrapService.blobsDir':
+      case 'bootstrapService.storeDir':
+      case 'bootstrapService.cacheDir':
+      case 'bootstrapService.logsDir': {
+        const value = server.scenario?.data.bootstrap?.[procedure.method];
+        if (typeof value !== 'string') throw invalid(`no fixture bootstrap scalar for ${procedure.method}`, 40404);
+        return value;
+      }
+      case 'bootstrapService.clientIdentity':
+        return {
+          productName: 'kiki',
+          version: '0.31.1-fixture',
+          platform: server.scenario?.data.bootstrap?.platform ?? 'linux',
+        };
+      case 'capabilityService.listCapabilities': {
+        const capability = server.scenario?.data.computerCapability;
+        return capability === undefined ? [] : [structuredClone(capability)];
+      }
+      case 'capabilityService.getCapability': {
+        const [id] = args;
+        const capability = server.scenario?.data.computerCapability;
+        if (capability === undefined || id !== capability.id) throw invalid(`no fixture capability for ${String(id)}`, 40404);
+        return structuredClone(capability);
+      }
+      case 'capabilityService.installCapability': {
+        const capability = server.scenario?.data.computerCapability;
+        if (capability === undefined) throw invalid('no fixture capability to install', 40404);
+        const binary = capability.plan?.destination;
+        // The managed install has two effects the page has to notice: the files
+        // are verified, and the global connection now exists.
+        if (typeof binary === 'string' && !server.mcpManaged.some((entry) => entry.name === 'kiki-computer')) {
+          server.mcpManaged.push({
+            name: 'kiki-computer',
+            config: { transport: 'stdio', command: binary, args: ['mcp'], executor: 'local' },
+            source: 'global',
+            origin: 'C:/Users/fixture/.kimi/mcp.json',
+            mutable: true,
+          });
+        }
+        server.scenario.data.computerCapability = {
+          ...capability,
+          state: 'ready',
+          version: capability.plan?.artifact.version,
+          steps: [
+            { id: 'binary', state: 'ok', detail: binary },
+            { id: 'mcp', state: 'ok', detail: 'Global MCP entry kiki-computer' },
+            { id: 'desktop-access', state: 'missing', detail: 'Not checked during install', optional: true },
+          ],
+        };
+        return structuredClone(server.scenario.data.computerCapability);
+      }
+      case 'mcpManagementService.stopServer': {
+        const [target] = args;
+        const entry = server.mcpManaged.find((candidate) => candidate.name === target.name);
+        if (entry === undefined) throw invalid('mcp.server_not_found', 40408);
+        // The real service disables an editable global entry as part of stopping
+        // and says so in `output`; a read-only source is left alone.
+        const persistence = entry.mutable
+          ? 'The global MCP configuration is disabled; all other fields were preserved.'
+          : 'Read-only configuration was not changed; this stop applies only to this service process.';
+        if (entry.mutable) entry.config = { ...entry.config, enabled: false };
+        return {
+          state: server.scenario?.data.stopState ?? 'stopped',
+          output: `${server.scenario?.data.stopOutput ?? 'cua-driver exited'}\n${persistence}`,
+        };
       }
       case 'mcpManagementService.listServers':
         return server.managedMcpServers();
@@ -746,6 +1193,38 @@ export class FixtureKlient {
           })),
         };
       }
+      case 'pluginImportService.sources':
+      case 'pluginImportService.discover':
+      case 'pluginImportService.preview':
+      case 'pluginImportService.start':
+      case 'pluginImportService.jobs':
+      case 'pluginImportService.job':
+      case 'pluginImportService.cancel':
+      case 'pluginImportService.resume':
+      case 'pluginImportService.archives':
+      case 'pluginImportService.read': {
+        // The import surface is a whole page, so its ten methods are answered
+        // in one place rather than ten switch arms.
+        return callImportService(server, procedure.method, args).data;
+      }
+      // Media: the installed provider list, the discovery roster, and the
+      // on-demand capability/voice reads. The agent-scoped pair is answered
+      // through the job's own session and agent, so the fixture can prove the
+      // GUI reaches them the way the contract requires.
+      case 'pluginMediaService.sources':
+      case 'pluginMediaService.setSources':
+      case 'pluginMediaService.catalog':
+      case 'pluginMediaService.providers':
+      case 'pluginMediaService.capabilities':
+      case 'pluginMediaService.voices':
+      case 'pluginMediaService.jobs':
+      case 'pluginMediaService.job': {
+        return callMediaService(server, procedure.method, args);
+      }
+      case 'agentPluginMediaService.cancel':
+      case 'agentPluginMediaService.resume': {
+        return callAgentMediaService(server, procedure.method, args, procedure.sessionId, procedure.agentId);
+      }
       default:
         throw invalid(`Unsupported fixture procedure: ${procedure.service}.${procedure.method}`, 40401);
     }
@@ -780,7 +1259,10 @@ export class FixtureKlient {
         if (frame.type === 'view_detach') { state.views.delete(frame.id); return; }
         if (frame.type === 'unsubscribe') { state.subscriptions.delete(frame.id); return; }
         if (frame.type === 'subscribe') {
-          if (frame.scope !== 'core' || frame.service !== undefined || frame.event !== 'events') throw invalid(`Unsupported fixture subscription: ${frame.scope}.${frame.service ?? ''}.${frame.event}`, 40401);
+          const coreEvents = frame.scope === 'core' && frame.service === undefined && frame.event === 'events';
+          const agentEvents = frame.scope === 'agent' && frame.service === undefined && frame.event === 'events'
+            && typeof frame.sessionId === 'string' && typeof frame.agentId === 'string';
+          if (!coreEvents && !agentEvents) throw invalid(`Unsupported fixture subscription: ${frame.scope}.${frame.service ?? ''}.${frame.event}`, 40401);
           if (state.subscriptions.has(frame.id)) throw invalid('id already in use');
           state.subscriptions.set(frame.id, frame);
           send({ type: 'subscribed', id: frame.id });
@@ -817,7 +1299,9 @@ export class FixtureKlient {
             for (const batch of catchup.batches) this.signal(socket, active, { type: 'transcript', event: session.transcript.opsEvent(agentId, { seq: batch.seq, ops: filterOpsForGrade(grade, batch.ops) }) });
           } else {
             const event = session.transcript.resetEvent(agentId, grade);
-            this.signal(socket, active, { type: 'transcript', event: { ...event, snapshot: redactSnapshotForGrade(grade, event.snapshot) } });
+            // Same two steps as a REST answer: the grade's redaction, then the
+            // scenario's bounded entities.
+            this.signal(socket, active, { type: 'transcript', event: { ...event, snapshot: boundScenarioEntities(session, redactSnapshotForGrade(grade, event.snapshot)) } });
           }
         }
         this.signal(socket, active, { type: 'ready', currentSessionCursor, reconnected: frame.data?.reconnected === true });
@@ -889,7 +1373,9 @@ export class FixtureKlient {
     const data = schema === undefined ? undefined : { type: frame.type, payload: parse(schema, payload) };
     for (const [socket, state] of this.connections) {
       for (const active of state.views.values()) if (active.sessionId === sessionId) this.deliver(socket, active, frame);
-      if (data !== undefined) for (const id of state.subscriptions.keys()) this.server.sendFrame(socket, { type: 'event', id, data });
+      if (data !== undefined) for (const [id, subscription] of state.subscriptions) {
+        if (subscription.scope === 'core') this.server.sendFrame(socket, { type: 'event', id, data });
+      }
     }
   }
 
@@ -899,7 +1385,22 @@ export class FixtureKlient {
     if (schema === undefined) throw new Error(`Unknown global bus event: ${type}`);
     const data = { type, payload: parse(schema, payload) };
     for (const [socket, state] of this.connections) {
-      for (const id of state.subscriptions.keys()) this.server.sendFrame(socket, { type: 'event', id, data });
+      for (const [id, subscription] of state.subscriptions) {
+        if (subscription.scope === 'core') this.server.sendFrame(socket, { type: 'event', id, data });
+      }
+    }
+  }
+
+  emitAgentModelSwitch(sessionId, agentId, type, payload) {
+    const schema = agentStreamEvents.get(type);
+    if (schema === undefined) throw new Error(`Unknown agent event: ${type}`);
+    const data = parse(schema, { type, time: Date.now(), ...payload });
+    for (const [socket, state] of this.connections) {
+      for (const [id, subscription] of state.subscriptions) {
+        if (subscription.scope !== 'agent' || subscription.event !== 'events'
+          || subscription.sessionId !== sessionId || subscription.agentId !== agentId) continue;
+        this.server.sendFrame(socket, { type: 'event', id, data });
+      }
     }
   }
 
@@ -916,7 +1417,11 @@ export class FixtureKlient {
       if (grade === 'off') continue;
       const event = batch === undefined ? session.transcript.resetEvent(agentId, grade)
         : session.transcript.opsEvent(agentId, { seq: batch.seq, ops: filterOpsForGrade(grade, batch.ops) });
-      this.signal(socket, active, { type: 'transcript', event: batch === undefined ? { ...event, snapshot: redactSnapshotForGrade(grade, event.snapshot) } : event });
+      // A snapshot pushed to a view gets the same two steps as one served over
+      // REST: the grade's redaction, then the scenario's bounded entities.
+      this.signal(socket, active, { type: 'transcript', event: batch === undefined
+        ? { ...event, snapshot: boundScenarioEntities(session, redactSnapshotForGrade(grade, event.snapshot)) }
+        : event });
     }
   }
 }

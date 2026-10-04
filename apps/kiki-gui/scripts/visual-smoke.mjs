@@ -220,12 +220,176 @@ const SCENARIOS = [
     },
   },
   {
+    name: 'nb-search-routing',
+    fixture: 'settings',
+    tags: ['smoke', 'settings', 'nb-search'],
+    async run(page, link) {
+      await page.goto(link('/settings/search'), { waitUntil: 'domcontentloaded' });
+      await page.locator('[data-nb-search-tab="fetch"]').click();
+      const routing = page.locator('[data-nb-search-routing-builtin]');
+      await routing.waitFor({ timeout: 20_000 });
+      // The maintained package and its rules must be readable without expanding
+      // anything: a hidden rule list is how "which sites are covered" gets lost.
+      if (await page.locator('[data-nb-search-routing-builtin-rule]').count() !== 4) {
+        throw new Error('the built-in rule list is not shown on the fetch tab');
+      }
+      const shots = [await shot(page, 'nb-search-routing')];
+      await routing.scrollIntoViewIfNeeded();
+      await page.locator('[data-nb-search-routing-mode-choice="custom"]').click();
+      await page.locator('[data-nb-search-routing-rule="docs-reference"]').waitFor({ timeout: 10_000 });
+      if (await page.locator('[data-nb-search-routing-rule-id]').count() !== 3) {
+        throw new Error('the saved user rules did not load into the editor');
+      }
+      shots.push(await shot(page, 'nb-search-routing-rules'));
+      // The offline preview must predict the built-in package for a covered URL.
+      await page.locator('[data-nb-search-routing-preview-input]').fill('https://raw.githubusercontent.com/o/r/main/README.md');
+      const predicted = page.locator('[data-nb-search-routing-preview-result]');
+      await predicted.waitFor({ timeout: 10_000 });
+      if (await predicted.getAttribute('data-nb-search-routing-preview-result') !== 'builtin') {
+        throw new Error('the route preview did not report the built-in match');
+      }
+      await predicted.scrollIntoViewIfNeeded();
+      shots.push(await shot(page, 'nb-search-routing-preview'));
+      await page.setViewportSize({ width: 390, height: 900 });
+      await page.locator('[data-nb-search-routing-rule="docs-reference"]').scrollIntoViewIfNeeded();
+      shots.push(await shot(page, 'nb-search-routing-narrow'));
+      return shots;
+    },
+  },
+  {
     name: 'settings-appearance',
     tags: ['smoke', 'settings', 'appearance'],
     async run(page, link) {
       await page.goto(link('/settings/appearance'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-appearance-preview]', { timeout: 20_000 });
       return [await shot(page, 'settings-appearance')];
+    },
+  },
+  {
+    name: 'model-switch',
+    fixture: 'model-switch',
+    tags: ['smoke', 'transcript', 'queue', 'model-switch'],
+    async run(page, link) {
+      await openSession(page, link, 'session_fixture_model_switch');
+      const notices = page.locator('[data-model-switch-notice]');
+      await notices.first().waitFor({ timeout: 20_000 });
+      if (await notices.count() !== 3) throw new Error(`expected three model-switch notices, got ${await notices.count()}`);
+      for (const state of ['pending', 'completed', 'failed']) {
+        if (await page.locator(`[data-model-switch-notice="${state}"]`).count() !== 1) {
+          throw new Error(`missing ${state} model-switch notice`);
+        }
+      }
+      const shots = [await shot(page, 'model-switch-timeline')];
+
+      // Scroll to the newest turn first: that click lands outside the composer
+      // header, which closes the queue detail again.
+      const jumpToLatest = page.locator('[data-jump-to-latest]');
+      if (await jumpToLatest.count() > 0) await jumpToLatest.click();
+      await page.locator('[data-header-toggle="queue"]').click();
+      const controlRow = page.locator('li[data-queue-model-switch="switch-fixture-pending"]');
+      await controlRow.waitFor({ timeout: 15_000 });
+      if (await page.locator('li[data-queue-item="prompt-fixture-model-switch"]').count() !== 1) {
+        throw new Error('missing queued prompt row beside the model-switch control row');
+      }
+      if (await page.locator('[data-model-switch-pending="fresh"]').count() !== 1) {
+        throw new Error('missing pending model-switch composer chip');
+      }
+      shots.push(await shot(page, 'model-switch-queue'));
+
+      await page.locator('#composer-model-select').click();
+      await page.locator('[role="option"][data-option-value="fixture/kiki-lite"]').click();
+      const dialog = page.locator('[data-model-switch-mode="direct"]');
+      await dialog.waitFor({ timeout: 15_000 });
+      shots.push(await shot(page, 'model-switch-dialog-direct'));
+      await page.locator('[data-model-switch-mode="fresh"]').click();
+      await page.locator('[data-model-switch-fresh-extra]').waitFor({ timeout: 5_000 });
+      shots.push(await shot(page, 'model-switch-dialog-fresh'));
+
+      await page.setViewportSize({ width: 390, height: 900 });
+      await page.locator('[data-model-switch-mode="fresh"]').waitFor();
+      shots.push(await shot(page, 'model-switch-dialog-fresh-narrow'));
+
+      // A phone-width composer says the queued switch in words above the input
+      // instead of clipping the toolbar chip.
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[data-model-switch-pending-line="fresh"]', { timeout: 10_000 });
+      if (await page.locator('[data-model-switch-pending]').isVisible()) {
+        throw new Error('the narrow composer still shows the clipped switch chip');
+      }
+      shots.push(await shot(page, 'model-switch-narrow-composer'));
+
+      // The proof lane uses this existing persisted setting; no new theme
+      // switch is introduced for smoke. Reopen the same dialog in dark mode.
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.evaluate(() => {
+        const raw = localStorage.getItem('kiki.settings');
+        const settings = raw === null ? {} : JSON.parse(raw);
+        localStorage.setItem('kiki.settings', JSON.stringify({ ...settings, theme: 'dark' }));
+      });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.locator('[data-model-switch-notice]').first().waitFor({ timeout: 20_000 });
+      await page.locator('#composer-model-select').click();
+      await page.locator('[role="option"][data-option-value="fixture/kiki-lite"]').click();
+      await page.locator('[data-model-switch-mode="direct"]').waitFor({ timeout: 15_000 });
+      shots.push(await shot(page, 'model-switch-dialog-dark'));
+      return shots;
+    },
+  },
+  {
+    name: 'model-switch-settings',
+    fixture: 'model-switch',
+    tags: ['smoke', 'settings', 'model-switch'],
+    async run(page, link) {
+      await page.goto(link('/settings/ai?tab=defaults'), { waitUntil: 'domcontentloaded' });
+      await page.locator('#st-card-model-switch').waitFor({ timeout: 20_000 });
+      const shots = [await shot(page, 'model-switch-settings')];
+      await page.locator('[data-model-switch-rule-add]').click();
+      const editor = page.locator('[data-model-switch-rule-editor]');
+      await editor.waitFor({ timeout: 10_000 });
+      const inputs = editor.locator('input[type="text"]');
+      if (await inputs.count() !== 2) throw new Error(`expected two model-switch rule text inputs, got ${await inputs.count()}`);
+      await inputs.nth(0).fill('fixture/old-*');
+      await inputs.nth(1).fill('fixture/new');
+      await editor.locator('[data-model-switch-rule-preview]').waitFor();
+      shots.push(await shot(page, 'model-switch-settings-editor'));
+      await page.setViewportSize({ width: 390, height: 900 });
+      shots.push(await shot(page, 'model-switch-settings-narrow'));
+      return shots;
+    },
+  },
+  {
+    name: 'model-switch-child',
+    fixture: 'model-switch-child',
+    tags: ['smoke', 'agents', 'model-switch'],
+    async run(page, link) {
+      // The child workspace reaches its own switch entries: the header menu and
+      // the same three-mode panel, on a session whose conversation can be
+      // renewed without a switch having to fail first.
+      await page.goto(link('/s/session_fixture_switch_child/agent/agent-research'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('textarea:not([disabled])', { timeout: 25_000 });
+      const shots = [await shot(page, 'model-switch-child-workspace')];
+
+      const menu = page.locator('[data-agent-actions]');
+      await menu.waitFor({ timeout: 15_000 });
+      await menu.locator('button').first().click();
+      const item = page.locator('[data-agent-fresh-context]');
+      await item.waitFor({ timeout: 10_000 });
+      shots.push(await shot(page, 'model-switch-child-menu'));
+
+      await item.click();
+      await page.locator('[data-model-switch-mode="fresh"]').waitFor({ timeout: 10_000 });
+      if (await page.locator('[data-model-switch-mode="direct"]').count() !== 0) {
+        throw new Error('a same-model child switch still offers the direct row');
+      }
+      shots.push(await shot(page, 'model-switch-child-dialog'));
+
+      await page.setViewportSize({ width: 390, height: 900 });
+      await page.locator('[data-model-switch-mode="fresh"]').waitFor();
+      shots.push(await shot(page, 'model-switch-child-dialog-narrow'));
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[data-model-switch-pending-line="fresh"]', { timeout: 10_000 });
+      shots.push(await shot(page, 'model-switch-child-narrow-composer'));
+      return shots;
     },
   },
   {
@@ -273,7 +437,10 @@ const SCENARIOS = [
       await page.goto(link('/usage?panel=realtime'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-governance-active]', { timeout: 20_000 });
       const shots = [await shot(page, 'usage-realtime')];
-      await page.locator('[data-usage-panel="limits"]').click();
+      await page.locator('[data-governance-details-toggle]').click();
+      await page.waitForSelector('[data-governance-dimensions]', { timeout: 20_000 });
+      shots.push(await shot(page, 'usage-live-details'));
+      await page.goto(link('/usage?panel=limits'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-governance-rule="kimi-cap"]', { timeout: 20_000 });
       shots.push(await shot(page, 'usage-limits'));
       await page.locator('[data-governance-rule="kimi-cap"] button').first().click();

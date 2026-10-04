@@ -405,7 +405,7 @@ export async function runProof({
   argv,
   label = 'proof',
   goldensDir = join(root, 'screenshots', 'batch3'),
-  distDir = join(root, '.tmp', 'visual-proof', 'dist'),
+  distDir = resolve(process.env.KIKI_PROOF_DIST_DIR?.trim() || join(root, '.tmp', 'visual-proof', 'dist')),
   workers = Math.max(1, Number(process.env.KIKI_PROOF_WORKERS ?? 4)),
   jobTimeoutMs = Number(process.env.KIKI_PROOF_JOB_TIMEOUT_MS ?? 60_000),
   runTimeoutMs = Number(process.env.KIKI_PROOF_RUN_TIMEOUT_MS ?? 15 * 60_000),

@@ -8,12 +8,20 @@
  *   Sessions give the sidebar something real to show beside the switcher.
  */
 
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { sessionRecord } from './helpers.mjs';
+
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 export const SPACE_ACME = 'h-acme0000000000001';
 export const SPACE_PAPER = 'h-paper000000000002';
 
 export default {
+  // The shipped example pack, with its own picture: the way out for a
+  // background that only exists on this device.
+  appearancePacks: [join(REPO, 'docs', 'examples', 'appearance-packs', 'dusk-harbor')],
   config: {
     default_model: 'fixture/kiki-pro',
     fast_model: 'fixture/kiki-lite',
@@ -32,11 +40,23 @@ export default {
   ],
   spaces: {
     mainPath: 'C:\\Users\\fixture\\.kiki',
+    // The main space's own appearance: what every followed item resolves to.
+    mainPrefs: { theme: 'light' },
     items: [
       {
         id: SPACE_ACME, name: 'ACME confidential', color: '#0f766e', path: 'D:\\secure\\kiki-acme',
         credentials: 'shared', live: true,
         overrides: { default_model: 'fixture/opus-5-5', session_title: { model: 'fixture/kiki-pro' } },
+        // A space with preferences of its own: the theme and skin were changed
+        // here, the config group follows the main space, and three items inside
+        // it are fixed for this space.
+        prefs: { theme: 'dark', skin: { source: 'builtin', id: 'inkstone' }, defaultAppendTiming: 'subagents_done' },
+        selections: {
+          'pref:theme': { mode: 'fixed', reason: 'edited' },
+          'pref:skin': { mode: 'fixed', reason: 'edited' },
+          'pref:proseFont': { mode: 'follow' },
+          'group:config': { mode: 'follow' },
+        },
       },
       {
         id: SPACE_PAPER, name: 'Thesis writing', color: '#7e22ce', path: 'C:\\Users\\fixture\\.kiki-spaces\\thesis-writing',

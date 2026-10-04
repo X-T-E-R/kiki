@@ -1,8 +1,9 @@
 /**
  * Visual-proof walker for native SSH (fixture `native-ssh`):
  *
- *   Settings › SSH hosts: list, an open Kiki row, an open config row, the
- *   add form (with validation), the delete confirm; connection switches.
+ *   Settings › SSH hosts: list, an open Kiki row, an open config row, the add
+ *   form (with validation), the delete confirm; connection switches, each host
+ *   key panel state, and the switch reading its value back after a reload.
  *   Composer: ＋ › SSH hosts panel and the session chips; remove one chip.
  *   Tray: connect + password, connect + key file/passphrase, two-round
  *   keyboard-interactive, first-seen host key, and the changed-key refusal
@@ -79,6 +80,86 @@ export function createNativeSshWalker({ page, shot, resizeViewport, setProofThem
     await page.locator('#st-card-ssh-connection').scrollIntoViewIfNeeded();
     await page.waitForTimeout(200);
     await shot(name('settings-connection', theme, width));
+
+    // Host keys: nothing is read until the row asks, and each state the route
+    // can answer with has to be distinguishable in the panel itself. Rows are
+    // opened from their element state, not by click count: a re-render can
+    // arrive with every details closed and the next click would close it again.
+    const rowOpen = (id) => page.locator(`[data-ssh-host-row="${id}"]`).evaluate((row) => row.open);
+    const setRow = async (id, open) => {
+      if ((await rowOpen(id)) !== open) await page.click(`[data-ssh-host-row="${id}"] > summary`);
+    };
+    const panel = async (id, state) => {
+      await setRow(id, true);
+      const before = await page.locator(`[data-ssh-host-row="${id}"] [data-ssh-host-keys]`).count();
+      expect(before === 0, `${id}: the panel exists before it is asked for`);
+      await page.click(`[data-ssh-host-row="${id}"] [data-ssh-host-keys-toggle]`);
+      await page.waitForSelector(`[data-ssh-host-row="${id}"] [data-ssh-host-keys][data-state="${state}"]`, { timeout: 10_000 });
+      await page.locator(`[data-ssh-host-row="${id}"]`).scrollIntoViewIfNeeded();
+      await page.waitForTimeout(200);
+      return (await page.locator(`[data-ssh-host-row="${id}"] [data-ssh-host-keys]`).textContent()) ?? '';
+    };
+    const hidePanel = async (id) => {
+      if ((await page.locator(`[data-ssh-host-row="${id}"] [data-ssh-host-keys]`).count()) > 0) {
+        await page.click(`[data-ssh-host-row="${id}"] [data-ssh-host-keys-toggle]`);
+      }
+      await setRow(id, false);
+    };
+
+    const recorded = await panel('gpu-box', 'recorded');
+    const entries = await page.locator('[data-ssh-host-row="gpu-box"] [data-ssh-host-key-record]').count();
+    expect(entries === 2, `expected two gpu-box entries, saw ${entries}`);
+    const fingerprint = await page.locator('[data-ssh-host-row="gpu-box"] [data-ssh-host-key-fingerprint]').first().textContent();
+    expect(fingerprint?.startsWith('SHA256:') === true, `gpu-box rendered no fingerprint: ${fingerprint}`);
+    expect(recorded.includes('/home/ubuntu/.ssh/known_hosts:12'), `gpu-box lost its source line: ${recorded}`);
+    expect(recorded.includes('The host itself is not contacted.'), `gpu-box does not say what a local match means: ${recorded}`);
+    await shot(name('host-keys-recorded', theme, width));
+    await hidePanel('gpu-box');
+
+    const unrecorded = await panel('dev', 'unrecorded');
+    expect(unrecorded.includes('No entry for this host'), `dev should report no local entry: ${unrecorded}`);
+    await shot(name('host-keys-unrecorded', theme, width));
+    await hidePanel('dev');
+
+    const unavailable = await panel('prod-db', 'unavailable');
+    expect(unavailable.includes('cannot be determined'), `prod-db should explain the undecidable file: ${unavailable}`);
+    expect(unavailable.includes('/srv/keys/ssh hosts'), `prod-db should list the path it could not use: ${unavailable}`);
+    expect(!unavailable.includes('No entry for this host'), 'an unreadable file must not read as "no record"');
+    await shot(name('host-keys-unavailable', theme, width));
+    await hidePanel('prod-db');
+
+    const revoked = await panel('staging', 'recorded');
+    expect(revoked.includes('@revoked') && revoked.includes('Revoked'), `staging should mark its revoked entry: ${revoked}`);
+    await hidePanel('staging');
+    const authority = await panel('build-runner', 'unavailable');
+    expect(authority.includes('@cert-authority'), `build-runner should name the CA marker: ${authority}`);
+    await hidePanel('build-runner');
+    const invalid = await panel('pi-lab', 'unavailable');
+    expect(invalid.includes('cannot be parsed') && invalid.includes('Fingerprint unavailable'),
+      `pi-lab should mark an unreadable key: ${invalid}`);
+    await hidePanel('pi-lab');
+
+    // SSH-01: the switch shows the stored value. With the aliases gone after a
+    // reload, an inference from the lists would have drawn ON again. The switch
+    // is the label's visible track; the checkbox itself is sr-only.
+    const syncTrack = '[data-ssh-sync] [role="switch"]';
+    const syncBox = '[data-ssh-sync] input[type="checkbox"]';
+    const syncState = (value) => page.waitForFunction(
+      (expected) => document.querySelector('[data-ssh-sync] [role="switch"]')?.getAttribute('aria-checked') === expected,
+      value, { timeout: 10_000 },
+    );
+    await page.locator('#st-card-ssh-connection').scrollIntoViewIfNeeded();
+    expect(await page.locator(syncBox).isChecked(), 'seeded sync should read as on');
+    await page.click(syncTrack);
+    await syncState('false');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector(syncBox, { timeout: 20_000 });
+    await page.locator('#st-card-ssh-connection').scrollIntoViewIfNeeded();
+    await page.waitForTimeout(300);
+    expect(!(await page.locator(syncBox).isChecked()), 'sync read back as on after the switch was turned off');
+    await shot(name('settings-sync-off', theme, width));
+    await page.click(syncTrack);
+    await syncState('true');
 
     // Add form: submit blank to show validation, then fill and save.
     await page.locator('[data-ssh-add-host]').scrollIntoViewIfNeeded();
@@ -214,6 +295,21 @@ export function createNativeSshWalker({ page, shot, resizeViewport, setProofThem
       await page.waitForTimeout(300);
       await reset();
       await approvals(theme, '1280x720');
+      // Narrow: the fingerprint panel and the switch have to stay readable and
+      // reachable at phone width, where the row grid leaves the least room.
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.waitForTimeout(300);
+      await reset();
+      await open('/settings/ssh', '[data-ssh-host-row]');
+      await page.click('[data-ssh-host-row="gpu-box"] > summary');
+      await page.click('[data-ssh-host-row="gpu-box"] [data-ssh-host-keys-toggle]');
+      await page.waitForSelector('[data-ssh-host-row="gpu-box"] [data-ssh-host-keys][data-state="recorded"]', { timeout: 10_000 });
+      await page.locator('[data-ssh-host-row="gpu-box"]').scrollIntoViewIfNeeded();
+      await page.waitForTimeout(200);
+      await shot(name('host-keys-narrow', theme, 390));
+      await page.locator('#st-card-ssh-connection').scrollIntoViewIfNeeded();
+      await page.waitForTimeout(200);
+      await shot(name('settings-connection-narrow', theme, 390));
     }
   };
 }

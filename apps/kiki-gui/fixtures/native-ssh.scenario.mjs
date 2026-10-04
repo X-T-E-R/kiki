@@ -3,7 +3,8 @@
  *
  *   Settings › SSH hosts: three Kiki hosts (one hidden from the agent, one
  *   overriding a ~/.ssh/config alias, one connected), four config aliases
- *   (one failed), both connection switches.
+ *   (one failed), both connection switches, and per-host known_hosts payloads
+ *   covering recorded, revoked, unrecorded and the two unavailable reasons.
  *   Composer: a session with two joined hosts and one temporary target.
  *   Tray: one session per SSH approval kind — connect with password, key
  *   file + passphrase, keyboard-interactive in two rounds (the second round
@@ -85,7 +86,71 @@ export default {
       { id: 'dev', name: 'Dev (pinned roots)', roots: ['/home/dev/project'], agentAccess: 'offered' },
     ],
     config: ['dev', 'bastion', 'build-runner', 'pi-lab'],
+    // The switch reads this pair over GET /ssh/config-sync; the walk turns it
+    // off and reloads, which is what an inference from the host lists cannot do.
+    syncConfig: true,
+    syncSource: 'home',
     status: { 'gpu-box': 'ready', 'build-runner': 'failed', staging: 'idle' },
+    // `GET /ssh/hosts/{id}:host-keys`. Nothing here talks to a host: these are
+    // the entries the server reads out of this computer's known_hosts files.
+    hostKeys: {
+      'gpu-box': {
+        hostname: 'gpu.lab.example.com', port: 2222, label: '[gpu.lab.example.com]:2222',
+        state: 'recorded',
+        records: [
+          { file: '/home/ubuntu/.ssh/known_hosts', line: 12, hostPattern: '[gpu.lab.example.com]:2222',
+            algorithm: 'ssh-ed25519', fingerprint: 'SHA256:qX7Lb3mV0pR2sT8uW4yZ1aC5dE9fG2hJ6kM3nP8qR1s', status: 'recorded' },
+          { file: '/home/ubuntu/.ssh/known_hosts', line: 41, hostPattern: 'gpu.lab.example.com',
+            algorithm: 'ssh-rsa', fingerprint: 'SHA256:tY4nB7vC1xZ9mL2kQ5wE8rT3yU6iO0pA4sD7fG1hJ3k', status: 'recorded' },
+        ],
+        files: [{ path: '/home/ubuntu/.ssh/known_hosts', state: 'read' }],
+      },
+      staging: {
+        hostname: 'staging.example.com', port: 22, label: 'staging.example.com',
+        state: 'recorded',
+        records: [
+          { file: '/home/deploy/.ssh/known_hosts', line: 4, hostPattern: 'staging.example.com',
+            algorithm: 'ssh-ed25519', fingerprint: 'SHA256:W9kL2mN4pQ6rS8tU0vW2xY4zA6bC8dE0fG2hI4jK6lM',
+            marker: '@revoked', status: 'revoked' },
+        ],
+        files: [{ path: '/home/deploy/.ssh/known_hosts', state: 'read' }],
+      },
+      dev: {
+        hostname: 'dev', port: 22, label: 'dev',
+        state: 'unrecorded',
+        records: [],
+        files: [{ path: '/home/dev/.ssh/known_hosts', state: 'read' }, { path: '/etc/ssh/ssh_known_hosts', state: 'missing' }],
+      },
+      'prod-db': {
+        hostname: 'db-01.internal.example.com', port: 22, label: 'db-01.internal.example.com',
+        state: 'unavailable',
+        records: [],
+        // ssh -G drops the quotes in `UserKnownHostsFile "/srv/keys/ssh hosts"`,
+        // so two files and one path with a space are indistinguishable here.
+        files: [
+          { path: '/srv/keys/ssh hosts', state: 'unavailable', reason: 'ambiguous-known-hosts-paths' },
+          { path: '~/.ssh/known_hosts', state: 'unavailable', reason: 'ambiguous-known-hosts-paths' },
+        ],
+      },
+      'build-runner': {
+        hostname: 'build-runner', port: 22, label: 'build-runner',
+        state: 'unavailable',
+        records: [
+          { file: '/home/ci/.ssh/known_hosts', line: 3, hostPattern: 'build-runner',
+            algorithm: 'ssh-rsa', marker: '@cert-authority', status: 'unsupported', reason: 'unsupported-marker:@cert-authority' },
+        ],
+        files: [{ path: '/home/ci/.ssh/known_hosts', state: 'read' }],
+      },
+      'pi-lab': {
+        hostname: 'pi-lab.local', port: 22, label: 'pi-lab.local',
+        state: 'unavailable',
+        records: [
+          { file: '/home/pi/.ssh/known_hosts', line: 8, hostPattern: 'pi-lab.local',
+            algorithm: 'ssh-ed25519', status: 'invalid', reason: 'invalid-public-key' },
+        ],
+        files: [{ path: '/home/pi/.ssh/known_hosts', state: 'read' }],
+      },
+    },
     session: { [S.hosts]: ['gpu-box', 'staging', 'ubuntu@10.0.0.9'] },
     temporary: { [S.hosts]: [{ id: 'ubuntu@10.0.0.9', name: 'ubuntu@10.0.0.9', hostname: '10.0.0.9', user: 'ubuntu', port: 22 }] },
   },

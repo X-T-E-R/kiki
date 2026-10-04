@@ -28,20 +28,39 @@ export function resetPersonas(server, data) {
     examples: seed.examples,
     archived: seed.archived === true,
     avatar: seed.avatar === undefined ? undefined : { bytes: readFileSync(seed.avatar.file), mimeType: seed.avatar.mimeType, shape: seed.avatar.shape },
+    // The daily pointer and the two visibility flags live in the persona's
+    // state file; a seed may name them directly or nest them under `state`.
+    state: { ...(seed.state ?? {}), ...(seed.homeSessionId !== undefined ? { homeSessionId: seed.homeSessionId } : {}), ...(seed.pinned !== undefined ? { pinned: seed.pinned } : {}), ...(seed.hidden !== undefined ? { hidden: seed.hidden } : {}) },
   }]));
   server.personaImport = data.personaImport;
 }
 
 function summaryOf(record) {
   const { id, name, title, job } = record.definition;
+  const state = record.state ?? {};
   return {
     id, name,
     ...(title !== undefined ? { title } : {}),
     ...(job !== undefined ? { job } : {}),
     revision: revisionOf(record),
     archived: record.archived,
+    ...(state.homeSessionId !== undefined ? { homeSessionId: state.homeSessionId } : {}),
+    ...(state.pinned !== undefined ? { pinned: state.pinned } : {}),
+    ...(state.hidden !== undefined ? { hidden: state.hidden } : {}),
     ...(record.avatar !== undefined ? { avatarMime: record.avatar.mimeType } : {}),
     ...(record.avatar?.shape !== undefined ? { avatarShape: record.avatar.shape } : {}),
+  };
+}
+
+/** The persona state file's own shape (`personaStateSchema`). */
+function stateOf(record) {
+  const state = record.state ?? {};
+  return {
+    version: 1,
+    archived: record.archived,
+    ...(state.homeSessionId !== undefined ? { homeSessionId: state.homeSessionId } : {}),
+    ...(state.pinned !== undefined ? { pinned: state.pinned } : {}),
+    ...(state.hidden !== undefined ? { hidden: state.hidden } : {}),
   };
 }
 
@@ -116,7 +135,7 @@ export async function handlePersonas(server, req, res, path, query) {
     return ok({ snapshot: snapshotOf(record), memory: { status: 'committed', count: preview.memoryEntries.length } });
   }
 
-  const match = /^\/personas\/([^/:]+)(?::(duplicate|archive))?(?:\/(avatar|export))?$/u.exec(path);
+  const match = /^\/personas\/([^/:]+)(?::(duplicate|archive))?(?:\/(avatar|export|home|state))?$/u.exec(path);
   if (match === null) return false;
   const id = decodeURIComponent(match[1]);
   if (!ID.test(id)) return fail(40001, 'invalid persona id');
@@ -130,11 +149,33 @@ export async function handlePersonas(server, req, res, path, query) {
     if (record === undefined && body.revision !== undefined) return fail(40425, `persona ${id} does not exist`);
     if (record !== undefined && body.revision === undefined) return fail(40945, `persona ${id} already exists`);
     if (record !== undefined && body.revision !== revisionOf(record)) return fail(40946, `persona ${id} changed since it was read`);
-    const next = { definition: body.definition, examples: body.examples, archived: record?.archived ?? false, avatar: record?.avatar };
+    const next = { definition: body.definition, examples: body.examples, archived: record?.archived ?? false, avatar: record?.avatar, state: record?.state };
     server.personas.set(id, next);
     return ok(snapshotOf(next));
   }
   if (record === undefined) return fail(40425, `persona ${id} does not exist`);
+  if (sub === 'home' && method === 'PUT') {
+    const body = await json();
+    const sessionId = body.sessionId;
+    if (typeof sessionId !== 'string' || sessionId === '') return fail(40001, 'sessionId is required');
+    const session = server.sessions?.get(sessionId)?.record;
+    if (session === undefined) return fail(40402, `session ${sessionId} does not exist`);
+    // The same boundary the server enforces: a room seat is not a persona's
+    // daily conversation, and an ephemeral session cannot be one.
+    if (session.metadata?.room_member_of !== undefined) return fail(40001, 'a room member session cannot become the daily conversation');
+    if (session.ephemeral === true) return fail(40001, 'an ephemeral session cannot become the daily conversation');
+    record.state = { ...(record.state ?? {}), homeSessionId: sessionId };
+    return ok(stateOf(record));
+  }
+  if (sub === 'state' && method === 'PATCH') {
+    const body = await json();
+    record.state = {
+      ...(record.state ?? {}),
+      ...(typeof body.pinned === 'boolean' ? { pinned: body.pinned } : {}),
+      ...(typeof body.hidden === 'boolean' ? { hidden: body.hidden } : {}),
+    };
+    return ok(stateOf(record));
+  }
   if (sub === 'avatar' && method === 'GET') {
     if (record.avatar === undefined) return fail(40425, `persona ${id} has no avatar`);
     res.writeHead(200, { 'content-type': record.avatar.mimeType, 'content-length': record.avatar.bytes.byteLength });

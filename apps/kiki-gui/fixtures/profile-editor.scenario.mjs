@@ -40,7 +40,7 @@ const IMPLEMENTER_PROMPT = [
 
 const profile = (name, fields) => ({
   name, source: 'user', workspace_id: WSID, source_file: `${HOME}/${name}.md`, main: false, disabled: false,
-  subagent_policy: 'advisory', routes: [], ...fields,
+  routes: [], ...fields,
 });
 
 const frontmatter = (lines) => `---\n${lines.join('\n')}\n---\n\n`;
@@ -65,22 +65,24 @@ export default {
     { id: WSID, root: 'C:/fixture/workshop', name: 'workshop', created_at: new Date(Date.now() - 7_200_000).toISOString(), last_opened_at: new Date().toISOString(), session_count: 3, pinned: false },
   ],
   agentProfiles: [
-    { name: 'agent', source: 'builtin', description: 'General-purpose built-in assistant.', main: true, disabled: false, routes: [], subagents: ['explore', 'general'] },
-    { name: 'explore', source: 'builtin', description: 'Read-only codebase exploration agent.', main: false, disabled: false, routes: [], prompt: 'Find the facts the caller asked for and cite where they are.', pinned_model_alias: 'fixture/flash', thinking_effort: 'max', subagents: [] },
+    { name: 'agent', source: 'builtin', description: 'General-purpose built-in assistant.', main: true, disabled: false, routes: [], allowed_subagents: ['explore', 'general'], preferred_subagents: ['explore'] },
+    { name: 'explore', source: 'builtin', description: 'Read-only codebase exploration agent.', main: false, disabled: false, routes: [], prompt: 'Find the facts the caller asked for and cite where they are.', pinned_model_alias: 'fixture/flash', thinking_effort: 'max', can_spawn_subagents: false },
     profile('lead', {
       main: true, description: 'Workspace lead: frames, delegates, accepts.', when_to_use: 'Open a new session for multi-step engineering work.',
       prompt: LEAD_PROMPT, pinned_model_alias: 'fixture/k3', thinking_effort: 'max', auto_compact: 200_000,
-      subagents: [
+      can_spawn_subagents: true,
+      allowed_subagents: [
         'explore',
         { name: 'implementer', model_alias: 'fixture/sol', thinking_effort: 'max' },
         'think',
         { name: 'reviewer', thinking_effort: 'high' },
         'writer',
       ],
+      preferred_subagents: ['implementer', 'explore'],
     }),
     profile('implementer', {
       description: 'Owns an engineering objective end to end.', when_to_use: 'A scoped change that needs reading, editing and verification.',
-      prompt: IMPLEMENTER_PROMPT, pinned_model_alias: 'fixture/sol', thinking_effort: 'max', subagents: ['explore'],
+      prompt: IMPLEMENTER_PROMPT, pinned_model_alias: 'fixture/sol', thinking_effort: 'max', allowed_subagents: ['explore'],
       // A second implementer.md in the same folder lost first-wins discovery.
       shadowed_files: [`${HOME}/archive/implementer.md`, `${HOME}/implementer.old.md`],
       spawn_constraints: { allowed_models: ['fixture/flash', 'fixture/k3'], allowed_efforts: ['high', 'max'], disallowed_tools: ['WebFetch'] },
@@ -90,25 +92,35 @@ export default {
         { alias: 'fixture/m3', when: 'Bulk mechanical edits across many files.', thinking_effort: 'high' },
       ],
     }),
+    // Open preset domain with a scoped lease beside it: the wildcard says "no
+    // scope here", the mapping still pins a private definition.
+    profile('lead-open', {
+      main: true, description: 'Lead with an open preset domain and one scoped lease.',
+      prompt: LEAD_PROMPT, pinned_model_alias: 'fixture/k3',
+      allowed_subagents: ['*', { name: 'explore', source: `${HOME}/archive/explore.md`, model_alias: 'fixture/flash' }],
+      preferred_subagents: ['explore'],
+    }),
     profile('think', {
       description: 'Hard architecture, authority and root-cause questions.', when_to_use: 'A question where a wrong framing is expensive.',
       prompt: 'Reason from evidence. State what you checked and what you could not verify.', pinned_model_alias: 'fixture/astra', thinking_effort: 'xhigh',
-      subagents: ['explore'], allowed_models: ['fixture/astra'],
+      allowed_subagents: ['explore'], allowed_models: ['fixture/astra'],
     }),
     profile('reviewer', {
       description: 'Independent review at a candidate boundary.', prompt: 'Review the candidate against the stated acceptance and report findings with evidence.',
-      pinned_model_alias: 'fixture/so1', thinking_effort: 'max', subagents: ['explore'],
+      pinned_model_alias: 'fixture/so1', thinking_effort: 'max', allowed_subagents: ['explore'],
     }),
+    // Recommendation only: the preset list is never written for it, so a
+    // preferred name must not narrow what this profile can dispatch.
     profile('writer', {
       description: 'Long-form documents and public copy.', prompt: 'Write in the project voice. Keep claims to what the evidence supports.',
-      pinned_model_alias: 'fixture/m3', thinking_effort: 'max', subagents: [],
+      pinned_model_alias: 'fixture/m3', thinking_effort: 'max', preferred_subagents: ['reviewer'],
     }),
     // Loses discovery: a same-name file in an extra directory.
-    { ...profile('writer', { description: 'Older writer draft.', pinned_model_alias: 'fixture/k3', thinking_effort: 'high', subagents: [] }),
+    { ...profile('writer', { description: 'Older writer draft.', pinned_model_alias: 'fixture/k3', thinking_effort: 'high', can_spawn_subagents: false }),
       source: 'extra', source_file: 'C:/Research/agents/writer.md' },
     profile('implementer-grok', {
       description: 'Implementer running on Grok Build.', prompt: IMPLEMENTER_PROMPT, executor: 'grok-acp',
-      pinned_model_alias: 'grok-4.7', thinking_effort: 'xhigh', tools: ['Read', 'Edit', 'Bash'], service_tier: 'priority', subagents: [],
+      pinned_model_alias: 'grok-4.7', thinking_effort: 'xhigh', tools: ['Read', 'Edit', 'Bash'], service_tier: 'priority', allowed_subagents: [],
       executor_fields: {
         prompt: { state: 'mapped', reason: 'Sent to Grok Build as system_prompt_override. The Kiki default system prompt is not added.' },
         pinned_model_alias: { state: 'mapped' },
@@ -117,16 +129,17 @@ export default {
         disallowed_tools: { state: 'ignored', reason: 'Grok Build decides its own tool set; tool lists are kept but not sent.' },
         service_tier: { state: 'ignored', reason: 'A Kiki provider setting; Grok Build bills through its own account.' },
         subagents: { state: 'applied' },
+        allowed_subagents: { state: 'applied' },
       },
     }),
-    { ...profile('general', { description: 'Default subagent when a dispatch names no profile.', prompt: 'Handle the task you were given; report back plainly.', subagents: [] }),
+    { ...profile('general', { description: 'Default subagent when a dispatch names no profile.', prompt: 'Handle the task you were given; report back plainly.', can_spawn_subagents: false }),
       source_file: `${HOME}/builtin/general.md` },
     // Workspace-local agents (.kiki/agents in the workshop root).
     { ...profile('release-lead', { main: true, description: 'Runs a release for this repository.', prompt: 'Cut the release, run the checks, draft the notes.',
-      pinned_model_alias: 'fixture/k3', thinking_effort: 'high', subagents: ['explore', 'reviewer'] }),
+      pinned_model_alias: 'fixture/k3', thinking_effort: 'high', allowed_subagents: ['explore', 'reviewer'], preferred_subagents: ['reviewer'], deny_subagents: ['migrator'] }),
       source: 'workspace', source_file: 'C:/fixture/workshop/.kiki/agents/release-lead.md' },
     { ...profile('migrator', { description: 'Schema migrations for this repository.', prompt: 'Write reversible migrations only.',
-      pinned_model_alias: 'fixture/sol', subagents: [] }),
+      pinned_model_alias: 'fixture/sol', can_spawn_subagents: false }),
       source: 'workspace', source_file: 'C:/fixture/workshop/.kiki/agents/migrator.md' },
   ],
   // GET /executors: native plus two external engines, one not installed.
@@ -144,14 +157,16 @@ export default {
     [`${HOME}/lead.md`]: {
       content: `${frontmatter([
         'name: lead', 'description: "Workspace lead: frames, delegates, accepts."', 'main: true', 'model_alias: fixture/k3', 'thinking_effort: max',
-        'auto_compact: 200000', 'subagents:', '  - explore', '  - name: implementer', '    model_alias: fixture/sol', '    thinking_effort: max',
+        'auto_compact: 200000', 'can_spawn_subagents: true', 'allowed_subagents:', '  - explore',
+        '  - name: implementer', '    model_alias: fixture/sol', '    thinking_effort: max',
         '  - think', '  - name: reviewer', '    thinking_effort: high', '  - writer',
+        'preferred_subagents: [implementer, explore]',
       ])}${LEAD_PROMPT}\n`,
     },
     [`${HOME}/implementer.md`]: {
       content: `${frontmatter([
         'name: implementer', 'description: Owns an engineering objective end to end.', 'model_alias: fixture/sol', 'thinking_effort: max',
-        'allowed_models: [fixture/sol, fixture/k3]', 'subagents: [explore]', 'model_profiles:',
+        'allowed_models: [fixture/sol, fixture/k3]', 'allowed_subagents: [explore]', 'model_profiles:',
         '  - alias: fixture/k3', '    when: The change is small and the context fits in 256k.', '    thinking_effort: max',
         '  - alias: fixture/m3', '    when: Bulk mechanical edits across many files.', '    thinking_effort: high',
         '    request_params: { temperature: 0.2 }',
