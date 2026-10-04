@@ -15,6 +15,7 @@ import {
   normalizeAPIStatusError,
   parseRetryAfterMs,
   parseTraceId,
+  providerStreamErrorDetails,
   throwIfAbortError,
 } from '#/kosong/contract/errors';
 import { extractText } from '#/kosong/contract/message';
@@ -153,6 +154,11 @@ export function convertOpenAIError(
     error.error === undefined
   ) {
     return classifyBaseApiError(error.message);
+  }
+  if (error instanceof OpenAIAPIError && error.error !== undefined) {
+    return new ChatProviderError(`Error: ${error.message}`, undefined, {
+      details: providerStreamErrorDetails(error.error, error.requestID, parseTraceId(error.headers)),
+    });
   }
   if (error instanceof OpenAIError) {
     return new ChatProviderError(`Error: ${error.message}`);

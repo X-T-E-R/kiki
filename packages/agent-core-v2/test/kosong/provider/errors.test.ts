@@ -1,7 +1,11 @@
 import { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
+import { Stream as AnthropicStream } from '@anthropic-ai/sdk/core/streaming';
 import { ApiError as GoogleApiError } from '@google/genai';
 import { APIError as OpenAIAPIError } from 'openai';
+import { Stream as OpenAIStream } from 'openai/core/streaming';
 import { describe, expect, it } from 'vitest';
+
+import { fromErrorPayload, toErrorPayload } from '#/_base/errors/serialize';
 
 import {
   APIProviderQuotaExhaustedError,
@@ -58,6 +62,78 @@ describe('convertAnthropicError abort guard', () => {
   it('throws the standard abort DOMException for abort shapes', () => {
     expectStandardAbort(() => convertAnthropicError(createAbortError()));
     expectStandardAbort(() => convertAnthropicError(new APIUserAbortError('user aborted')));
+  });
+});
+
+describe('SDK stream error metadata', () => {
+  it.each(['openai', 'anthropic'] as const)(
+    'retains whitelisted %s HTTP 200 SSE error identifiers through serialization',
+    async (protocol) => {
+      const message = 'failed to stream request: empty response detected';
+      const body = {
+        error: { type: 'internal_server_error', code: 'stream_failed', message },
+        request_id: 'body-request',
+      };
+      const response = new Response(`event: error\ndata: ${JSON.stringify(body)}\n\n`, {
+        status: 200,
+        headers: {
+          'content-type': 'text/event-stream',
+          'x-request-id': 'header-request',
+          'request-id': 'header-request',
+          'x-trace-id': 'header-trace',
+          authorization: 'Bearer fixture-secret',
+        },
+      });
+      const controller = new AbortController();
+      const stream = protocol === 'openai'
+        ? OpenAIStream.fromSSEResponse(response, controller)
+        : AnthropicStream.fromSSEResponse(response, controller);
+      let source: unknown;
+      try {
+        await consume(stream);
+      } catch (error) {
+        source = error;
+      }
+      expect(source).toBeInstanceOf(protocol === 'openai' ? OpenAIAPIError : AnthropicAPIError);
+      const converted = protocol === 'openai' ? convertOpenAIError(source) : convertAnthropicError(source);
+      const expectedMessage = protocol === 'openai' ? `Error: ${message}` : `Anthropic error: ${JSON.stringify(body)}`;
+      expect(converted).toMatchObject({ name: 'ChatProviderError', code: 'provider.api_error', message: expectedMessage });
+      expect(converted.details).toEqual({
+        errorSource: 'provider_stream', upstreamErrorType: 'internal_server_error', upstreamErrorCode: 'stream_failed',
+        requestId: 'header-request', traceId: 'header-trace', error_kind: 'unknown',
+      });
+      expect(isRetryableGenerateError(converted)).toBe(true);
+      expect(convertOpenAIError(converted)).toBe(converted);
+      expect(convertAnthropicError(converted)).toBe(converted);
+      const payload = toErrorPayload(converted);
+      expect(payload.message).toBe(expectedMessage);
+      expect(payload.details).toEqual(converted.details);
+      expect(fromErrorPayload(payload).details).toEqual(converted.details);
+      expect(payload.cause).toBeUndefined();
+      expect(JSON.stringify(payload.details)).not.toContain('fixture-secret');
+      expect(payload.details).not.toHaveProperty('statusCode');
+      expect(payload.details).not.toHaveProperty('headers');
+      expect(payload.details).not.toHaveProperty('body');
+    },
+  );
+
+  it('uses an envelope request ID when no response header ID is available', () => {
+    const source = new AnthropicAPIError(undefined, {
+      request_id: 'body-request',
+      error: { type: 'internal_server_error', message: 'stream failed' },
+    }, undefined, new Headers());
+    expect(convertAnthropicError(source).details).toMatchObject({ requestId: 'body-request', upstreamErrorType: 'internal_server_error' });
+  });
+
+  it('omits invalid, oversized and credential-shaped metadata identifiers', () => {
+    const source = new OpenAIAPIError(undefined, {
+      type: 'Authorization: Bearer fixture-secret', code: 'x'.repeat(201), message: 'stream failed',
+      api_key: 'fixture-secret',
+    }, undefined, new Headers({ 'x-request-id': 'sk-fixture-secret-123', 'x-trace-id': 'invalid\ttrace' }));
+    expect(convertOpenAIError(source).details).toEqual({
+      errorSource: 'provider_stream', upstreamErrorType: null, upstreamErrorCode: null,
+      requestId: null, traceId: null, error_kind: 'unknown',
+    });
   });
 });
 

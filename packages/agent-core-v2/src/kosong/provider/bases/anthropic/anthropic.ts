@@ -27,6 +27,8 @@ import {
   classifyBaseApiError,
   normalizeAPIStatusError,
   parseRetryAfterMs,
+  parseTraceId,
+  providerStreamErrorDetails,
   throwIfAbortError,
 } from '#/kosong/contract/errors';
 import { Error2 } from '#/_base/errors/errors';
@@ -536,6 +538,11 @@ export function convertAnthropicError(
       undefined,
       error.error,
     );
+  }
+  if (error instanceof AnthropicAPIError && error.error !== undefined) {
+    return new ChatProviderError(`Anthropic error: ${error.message}`, undefined, {
+      details: providerStreamErrorDetails(error.error, error.requestID, parseTraceId(error.headers)),
+    });
   }
   if (error instanceof AnthropicError) {
     return new ChatProviderError(`Anthropic error: ${error.message}`);

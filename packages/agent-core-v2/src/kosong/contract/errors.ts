@@ -439,6 +439,29 @@ function readNestedErrorObject(value: object): object | undefined {
   return typeof raw === 'object' && raw !== null ? raw : undefined;
 }
 
+function readProviderErrorIdentifier(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 200) return null;
+  const redacted = redactSensitiveText(value);
+  return /^[A-Za-z0-9_.:-]+$/.test(redacted) ? redacted : null;
+}
+
+/** Whitelisted identifiers retained from an SDK stream error without its body or headers. */
+export function providerStreamErrorDetails(
+  body: unknown,
+  requestId?: string | null,
+  traceId?: string | null,
+): Readonly<Record<string, unknown>> {
+  const envelope = typeof body === 'object' && body !== null ? body : undefined;
+  const error = envelope === undefined ? undefined : (readNestedErrorObject(envelope) ?? envelope);
+  return {
+    errorSource: 'provider_stream',
+    upstreamErrorType: readProviderErrorIdentifier(error === undefined ? undefined : readObjectStringProp(error, 'type')),
+    upstreamErrorCode: readProviderErrorIdentifier(error === undefined ? undefined : readObjectStringProp(error, 'code')),
+    requestId: readProviderErrorIdentifier(requestId) ?? readProviderErrorIdentifier(envelope === undefined ? undefined : readObjectStringProp(envelope, 'request_id')),
+    traceId: readProviderErrorIdentifier(traceId),
+  };
+}
+
 function extractStatusErrorBodyDetail(body: unknown): string | null {
   if (body === null || body === undefined) return null;
   const sanitized = redactSensitiveValue(body);
