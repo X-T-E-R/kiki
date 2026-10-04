@@ -23,8 +23,6 @@ export async function resolveWindowsNodeShim(
   } catch {
     throw new Error2(ErrorCodes.CONFIG_INVALID, `Cannot read Windows executable shim "${located}"`);
   }
-  // npm's own Windows launcher assigns NPM_CLI_JS before invoking it rather than
-  // putting the script path in the final command (unlike package bin shims).
   const direct = shim.match(/(?:%~dp0|%dp0%)\\node_modules\\([^\r\n"%]+\.[cm]?js)"\s+%\*/i)?.[1];
   const npmCli = /SET "NPM_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npm-cli\.js"/i.test(shim) &&
     /"%NODE_EXE%"\s+"%NPM_CLI_JS%"\s+%\*/i.test(shim)

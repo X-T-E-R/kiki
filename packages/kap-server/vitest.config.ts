@@ -37,6 +37,7 @@ const parallel = {
     exclude: SERIAL_FILES,
     fileParallelism: true,
     maxWorkers: 4,
+    sequence: { groupOrder: 1 },
   },
 };
 
@@ -52,8 +53,10 @@ const serial = {
   },
 };
 
-export default defineConfig({
-  test: {
-    projects: SERIAL_FILES.length === 0 ? [parallel] : [parallel, serial],
+export default defineConfig(
+  SERIAL_FILES.length === 0 ? parallel : {
+    test: {
+      projects: [parallel, serial],
+    },
   },
-});
+);

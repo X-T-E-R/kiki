@@ -132,7 +132,6 @@ export const providerCatalogItemSchema = z.object({
   status: providerCatalogStatusSchema,
   models: z.array(z.string().min(1)).optional(),
   model_source: z.enum(['static', 'discover', 'oauth-catalog']).optional(),
-  // Header and env values may be credentials: only their names are read back.
   custom_header_keys: z.array(z.string()).optional(),
   env_keys: z.array(z.string()).optional(),
   oauth: z.object({ storage: z.enum(['file', 'keyring']), signed_in: z.boolean() }).optional(),

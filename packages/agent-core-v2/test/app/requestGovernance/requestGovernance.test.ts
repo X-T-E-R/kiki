@@ -123,7 +123,6 @@ describe('RequestGovernance', () => {
     update({ rules: [cap(1, { enabled: false })] });
     (await queued).release();
     expect(service.snapshot()).toMatchObject({ active: 1, queued: 0 });
-    // …and a disabled rule still rides along in the snapshot so a GUI can render it.
     expect(service.snapshot().rules[0]).toMatchObject({ id: 'cap', enabled: false });
     update({ rules: [cap(1)] });
     const held = service.acquire(attempt('session-b'));

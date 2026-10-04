@@ -27,11 +27,6 @@ export const AgentExecutorOverridesSchema = z.record(z.string(), AgentExecutorOv
 export type AgentExecutorOverride = z.infer<typeof AgentExecutorOverrideSchema>;
 export type AgentExecutorOverridesConfig = z.infer<typeof AgentExecutorOverridesSchema>;
 
-/**
- * Config PATCH uses null to remove a nested override without replacing other
- * engine entries. Strip those tombstones before the entry schema sees the
- * merged value, and treat an empty args/env patch as clearing that field.
- */
 function mergeAgentExecutorOverrides(
   base: AgentExecutorOverridesConfig | undefined,
   patch: unknown,

@@ -30,9 +30,6 @@ const SEED_TOML = [
   '',
 ].join('\n');
 
-// Settings keys that already exist in the engine config but used to be
-// rejected or silently dropped by the REST wire: each one must now survive a
-// write → config.toml → read round trip.
 describe('settings wire round trips', () => {
   let server: RunningServer | undefined;
   let home: string;
@@ -171,7 +168,6 @@ describe('settings wire round trips', () => {
     expect(wire).not.toContain('header-secret');
     expect(wire).not.toContain('env-secret');
     expect(wire).not.toContain('blue');
-    // Stored as before: config.toml plus the credential split for secret-looking names.
     const stored = `${await rawToml()}\n${await readFile(join(home, 'credentials', 'credentials.toml'), 'utf-8').catch(() => '')}`;
     expect(stored).toContain('header-secret');
     expect(stored).toContain('env-secret');

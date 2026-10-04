@@ -1073,7 +1073,6 @@ describe('AgentPromptService', () => {
     await prompt.enqueue({ id: 'send-now', message: message('change direction') });
     await prompt.steer(['send-now']);
     expect(steers).toHaveLength(1);
-    // The submitter's echo and the delivered frame share this one identity.
     expect(steers[0]!.resolveContextMessages()).toEqual([
       expect.objectContaining({ id: 'send-now', content: [{ type: 'text', text: 'change direction' }] }),
     ]);

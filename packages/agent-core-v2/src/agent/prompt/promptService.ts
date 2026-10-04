@@ -529,9 +529,6 @@ function mergeSteerMessages(records: readonly Record[]): ContextMessage {
     item.message.origin?.kind === 'user' ? (item.message.origin.skillActivations ?? []) : [],
   );
   return {
-    // The delivered context message keeps the first steered prompt's identity,
-    // so its transcript frame is the same message the submitter echoed (a
-    // fresh id would leave the client unable to tell the two apart).
     id: records[0]?.message.id,
     role: 'user',
     content: [

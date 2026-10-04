@@ -19,8 +19,6 @@ export const worktreeConfigSchema = z.object({
 });
 
 export type WorktreeConfig = z.infer<typeof worktreeConfigSchema>;
-// `[worktree.cleanup]` is nested, so its keys need the same snake_case <-> camelCase
-// mapping as the top level; the default conversion only covers one level.
 function worktreeFromToml(raw: unknown): unknown {
   if (!isPlainObject(raw)) return raw;
   const out = transformPlainObject(raw);

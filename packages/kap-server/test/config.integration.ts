@@ -973,7 +973,6 @@ timeout = 600
     expect(persisted).toContain('max_concurrent = 3');
     expect(persisted).toContain('enabled = false');
 
-    // The write lands in the live authority: the realtime route serves the new rules.
     const realtime = await authedFetch(server as RunningServer, base, '/api/usage/realtime');
     expect(realtime.status).toBe(200);
     const snapshot = (await realtime.json()) as Envelope<{ rules: Record<string, unknown>[] }>;
@@ -983,7 +982,6 @@ timeout = 600
       expect.objectContaining({ id: 'session-cap', scope: 'each_session', subagentsOnly: true, enabled: false }),
     ]);
 
-    // A later write replaces the whole list: the removed rule leaves the file.
     await patchConfig({ request_governance: { rules: [rules[0]] } });
     expect(await readFile(configPath, 'utf-8')).not.toContain('session-cap');
 

@@ -2676,7 +2676,7 @@ describe('TranscriptService live integration', () => {
         expect(snapshot?.items.some((item) => item.kind === 'turn' && item.turnId === 't2')).toBe(true);
         expect(get.mock.calls.filter(([collection]) => collection === '__transcript_projection_checkpoint__')).toHaveLength(0);
         expect(put.mock.calls.filter(([collection]) => collection === '__transcript_projection_checkpoint__')).toHaveLength(0);
-        expect(draftCheckpoint).toHaveBeenCalledTimes(1); // The full GUI snapshot still materializes once.
+        expect(draftCheckpoint).toHaveBeenCalledTimes(1);
         expect(adapterCheckpoint).not.toHaveBeenCalled();
       } finally {
         service.dispose();
@@ -2694,7 +2694,7 @@ describe('TranscriptService live integration', () => {
       const service = new TranscriptService({ homeDir: home, core: coldCore() });
       try {
         expect((await service.readColdSnapshot('s1', 'main'))?.items.length).toBeGreaterThan(0);
-        expect(draftCheckpoint).toHaveBeenCalledTimes(1); // Required once by snapshot().
+        expect(draftCheckpoint).toHaveBeenCalledTimes(1);
       } finally {
         service.dispose(); draftCheckpoint.mockRestore();
         await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });

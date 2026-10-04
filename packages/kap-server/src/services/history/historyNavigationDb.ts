@@ -155,9 +155,6 @@ export class HistoryNavigationDb implements NavigationStore {
   clearProjection(scope: string, workspace: string, session: string, agent: string): void {
     this.clearState(scope);
     this.db.prepare('DELETE FROM manifest WHERE scope=?').run(scope);
-    // Commit-4 search checkpoints included a query digest in the scope. Prune
-    // those scalar copies using indexed SQL ranges while rebuilding the one
-    // session projection; never materialize their keys in JavaScript.
     const lower = `${scope}\0`;
     const upper = `${scope}\u0001`;
     for (const table of ['state', 'turn_sequence', 'anchor_sequence', 'manifest']) {

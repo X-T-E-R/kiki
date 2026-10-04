@@ -59,7 +59,6 @@ function blocks(value: unknown, warnings: Set<string>): LocalSessionBlock[] {
       case 'tool_result': case 'server_tool_result':
         return [{ kind: 'tool_result', text: clip(plainText(block.content), warnings) }];
       case 'image': case 'input_image':
-        // Do not inline base64 media, local image paths or private payloads.
         return [{ kind: 'image' }];
       default:
         warnings.add('unsupported_content');
@@ -129,7 +128,6 @@ export function parseLocalSession(engine: LocalSessionEngine, input: string): Pa
       continue;
     }
     if (value.type === 'session_meta' && !codexHeaderSeen) {
-      // The first header belongs to this thread; replayed headers belong to parents.
       codexHeaderSeen = true;
       externalId = text(payload.id);
       cwd = text(payload.cwd);
@@ -154,8 +152,6 @@ export function parseLocalSession(engine: LocalSessionEngine, input: string): Pa
       add('system', text(payload.message) ?? text(payload.summary));
     }
   }
-  // Codex can persist the same spoken turn in both channels. Pair nearby twins
-  // one-to-one; repeated identical prompts in different turns remain distinct.
   const matched = new Set<number>();
   const visible = messages.filter((message, messageIndex) => {
     if (message.channel !== 'response') return true;

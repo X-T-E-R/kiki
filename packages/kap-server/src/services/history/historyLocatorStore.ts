@@ -203,8 +203,6 @@ export class HistoryLocatorStore {
     const incarnation = await historySourceIncarnation(wirePath);
     if (incarnation === undefined) return undefined;
     const key = `${workspace}\0${session}\0${agent}`;
-    // Search callers have independent cancellation signals; only unfiltered
-    // projection scans share a flight.
     const existing = search === undefined ? this.flights.get(key) : undefined;
     if (existing !== undefined) return existing;
     if (this.queuedScans >= MAX_QUEUED_SCANS) throw new Error('history_navigation_busy');
@@ -256,7 +254,6 @@ export class HistoryLocatorStore {
         !Number.isSafeInteger(start) || start < 0 || start > asOf) throw new Error('stale_scan_cursor');
     const target = Math.min(asOf, start + HISTORY_NAV_SCAN_BYTES);
     let saved = db.readManifest(input.key);
-    // Even a completed projection must be checked before using source-derived rows.
     if (saved !== undefined) {
       const manifest = saved;
       if (manifest.incarnation !== input.incarnation ||
@@ -296,9 +293,6 @@ export class HistoryLocatorStore {
       maxLineBytes: HISTORY_NAV_MAX_LINE_BYTES, chunkBytes: HISTORY_NAV_CHUNK_BYTES,
       signal: input.signal, includeRawRecord: true,
       onRecord: async (record, span, raw) => {
-        // Most canonical records carry no searchable text. Check the single source
-        // field before a disk lookup; legacy messages can carry several parts and
-        // still use the source-row path below.
         const event = record['event'];
         const eventType = event !== null && typeof event === 'object'
           ? (event as Record<string, unknown>)['type'] : undefined;
@@ -307,9 +301,6 @@ export class HistoryLocatorStore {
         if (canonicalPart !== undefined) {
           const candidate = originalText(record, canonicalPart);
           if (candidate === undefined) return;
-          // NFKC leaves lowercase ASCII unchanged. A missing ASCII clause can
-          // therefore be rejected before allocating a normalized 8 KiB+ body;
-          // Unicode or uppercase source text keeps the full matcher semantics.
           if (asciiClauses !== undefined && !NON_ASCII_LOWERCASE.test(candidate) &&
               !asciiClauses.some((clause) => candidate.includes(clause))) return;
           if (matchHistoryText(candidate, plan) === undefined) return;
@@ -319,8 +310,6 @@ export class HistoryLocatorStore {
         const recordDigest = hashHistoryRecord(raw!);
         let matched = false;
         for (const row of rows) {
-          // Completed turn rows written by the previous indexer kept the prompt
-          // but dropped its role during the turn.ended metadata update.
           const role = row.role ?? (row.kind === 'turn' && row.part === 'prompt' ? 'user' : undefined);
           if (row.part === undefined || row.part === 'input' || role === undefined ||
               row.anchor.end !== span.endByteOffset || row.anchor.digest !== recordDigest ||

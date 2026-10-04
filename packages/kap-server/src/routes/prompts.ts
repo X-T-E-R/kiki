@@ -702,8 +702,6 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     {
       method: 'POST',
       path: '/sessions/{session_id}/prompts/{tail}',
-      // `agent_id` addresses a child agent's own queue (steer / abort); the
-      // other actions stay main-only.
       querystring: promptActionQuerySchema,
       body: z.union([
         z.undefined(),

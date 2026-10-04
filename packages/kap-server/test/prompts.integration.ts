@@ -1161,10 +1161,8 @@ describe('server-v2 /api prompts', () => {
       agent_id: child.id, prompt_id: 'child-send-now', content: [{ type: 'text', text: 'steer the child' }],
     });
     expect(queued.body.data.status).toBe('queued');
-    // Only steer and abort accept a child target; queue reordering stays main-only.
     const moved = await call('POST', `/api/sessions/${id}/prompts/child-send-now:move?agent_id=${child.id}`, { to: 0 });
     expect(moved.body.code).toBe(40001);
-    // Without the agent id the route resolves the main agent, which does not own it.
     const unscoped = await call('POST', `/api/sessions/${id}/prompts/child-send-now:steer`);
     expect(unscoped.body.code).not.toBe(0);
     expect(prompt.list().pending).toHaveLength(1);

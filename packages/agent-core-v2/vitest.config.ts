@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     name: 'agent-core-v2',
     maxWorkers: 4,
+    sequence: { groupOrder: 1 },
     include: ['test/**/*.{test,integration,e2e}.ts'],
     setupFiles: ['test/setup.ts'],
   },

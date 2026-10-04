@@ -279,7 +279,6 @@ function modelEntity(
   };
 }
 
-/** Top-level keys only: nested maps (request params, prompt fields) keep their own keys. */
 function shallowSnake(value: object | undefined): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
   return Object.fromEntries(Object.entries(value).map(([key, field]) => [camelToSnake(key), field]));

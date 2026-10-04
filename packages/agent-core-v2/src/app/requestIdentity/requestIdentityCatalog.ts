@@ -622,7 +622,6 @@ export class RequestIdentityCatalog extends Disposable implements IRequestIdenti
   }
 }
 
-/** Identity values only: Kiki-internal markers and credentials stay out of the catalog. */
 function isObservableHeader(name: string): boolean {
   const lower = name.toLowerCase();
   return !lower.startsWith('x-kiki-') && !REQUEST_IDENTITY_CREDENTIAL_HEADERS.has(lower);
