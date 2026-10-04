@@ -583,8 +583,9 @@ export class TranscriptService {
       if (snapshot === undefined) return;
       const transcript = new AgentTranscript(agentId);
       transcript.apply([{ op: 'reset', agentId, snapshot: this.reconcileQuestionSnapshot(sessionId, snapshot) }]);
-      if (this.live.get(sessionId) === entry) {
-        entry.store.describeAgent({ agentId, type: 'sub', ...entry.store.agents().find((agent) => agent.agentId === agentId) });
+      const descriptor = entry.store.agents().find((agent) => agent.agentId === agentId);
+      if (this.live.get(sessionId) === entry && (descriptor !== undefined || snapshot.items.length > 0 || snapshot.tasks.length > 0)) {
+        entry.store.describeAgent({ agentId, type: 'sub', ...descriptor });
       }
       return transcript;
     }

@@ -39,6 +39,7 @@ import {
   ISessionMetadata,
   ISessionLifecycleService,
   ISessionManager,
+  ISessionIndex,
   IWireService,
   IWorkspaceInstanceManager,
   MAIN_AGENT_ID,
@@ -418,6 +419,7 @@ function makeCore(
     get(token: unknown): unknown {
       if (token === IAppendLogStore) return { read: async function* () {} };
       if (token === IEventService) return eventBus;
+      if (token === ISessionIndex) return { get: async (sessionId: string) => sessions.has(sessionId) ? { id: sessionId, workspaceId: 'wd' } : undefined };
       if (token === ISessionManager) {
         return {
           get: sessionFor,
@@ -3533,7 +3535,7 @@ describe('SessionEventBroadcaster', () => {
       });
       const connection = new WsConnectionV1({ socket: socket as unknown as WebSocket, broadcaster: bc,
         connectionRegistry: { add() {} } as unknown as WsConnectionV1Options['connectionRegistry'],
-        remoteAddress: null, userAgent: null, heartbeatIntervalMs: 0 });
+        remoteAddress: null, userAgent: null, heartbeatIntervalMs: 0, maxOutboundBufferBytes: 4 * 1024 });
       const release = vi.spyOn(lc.interactions, 'releaseConsumer');
       if (failure === 'drain-error') vi.spyOn(connection, 'drain').mockRejectedValueOnce(new Error('drain failed'));
       socket.emit('message', Buffer.from(JSON.stringify({ type: 'subscribe_v2', id: 'seed', payload: { session_id: 's1', transcript: { main: 'delta' }, transcript_coverage_version: 2 } })));
