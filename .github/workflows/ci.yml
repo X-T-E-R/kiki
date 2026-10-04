@@ -24,7 +24,12 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
+      - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
+      - name: Rebuild host PTY dependency
+        run: |
+          printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
+          pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
       - run: pnpm run build
       - name: Smoke test CLI bundle
         run: pnpm -C apps/kimi-code run smoke
@@ -46,8 +51,44 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install media preview test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
       - run: pnpm install --frozen-lockfile
+      - name: Build host auth binding
+        run: pnpm --filter @kiki/auth-native run build
+      - name: Rebuild host PTY dependency
+        run: |
+          printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
+          pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
       - run: pnpm run test --shard=${{ matrix.shard }}/5
+
+  test-node-packages:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @kiki/auth-native run build
+      - name: Test auth-native with its native runner
+        run: pnpm --filter @kiki/auth-native test
+      - name: Test offline Cargo vendor environment
+        run: pnpm --filter @kiki/auth-native run test:nix-env
+      - name: Build plugin SDK published entrypoints
+        run: pnpm --filter @kiki/plugin-sdk run build
+      - name: Test plugin SDK with its native runner
+        run: node --test packages/plugin-sdk/test/*.test.mjs
 
   # pi-tui's suite runs on node:test (not vitest), so the root `pnpm run test`
   # does not execute it; it needs its own job.
