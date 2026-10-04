@@ -1231,7 +1231,7 @@ describe('generation availability triggers (wal-growth + close publish)', () => 
 
   test('wal-growth trigger publishes a generation without any compaction', async () => {
     const dir = await openTmp('gen-wal-growth');
-    const db = await MiniDb.open<Record<string, unknown>>({ dir, valueCodec: 'json' });
+    const db = await MiniDb.open<Record<string, unknown>>({ dir, valueCodec: 'json', autoCompact: false });
     db.genBuildKickMinIntervalMs = 0; // test knob: no throttle
     // The db started EMPTY, so the open-time generation kick did not fire;
     // nothing re-triggers until the WAL crosses the staleness threshold.
@@ -1261,7 +1261,7 @@ describe('generation availability triggers (wal-growth + close publish)', () => 
 
   test('a failed build backs the wal-growth trigger off instead of re-kicking every write', async () => {
     const dir = await openTmp('gen-kick-backoff');
-    const db = await MiniDb.open<Record<string, unknown>>({ dir, valueCodec: 'json' });
+    const db = await MiniDb.open<Record<string, unknown>>({ dir, valueCodec: 'json', autoCompact: false });
     db.genBuildKickMinIntervalMs = 0;
     db.genBuildKickFailureBackoffMs = 60_000;
     // Make every publish rename fail: the kicked build dies at the publish

@@ -2036,7 +2036,7 @@ describe('server-v2 /api/sessions', () => {
       '/api/sessions?archived_only=true&busy=true&page_size=1',
     );
     expect(page.body.code).toBe(0);
-    expect(page.body.data).toEqual({ items: [], has_more: false });
+    expect(page.body.data).toEqual({ items: [], has_more: false, busy_count: 0 });
   });
 
   it('rejects a malformed workspace_id when listing (40001)', async () => {

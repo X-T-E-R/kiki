@@ -158,6 +158,7 @@ async function main(): Promise<void> {
       valueCodec: 'json',
       fsyncPolicy: 'no',
       lockHoldMs: 0,
+      autoCompact: false,
       compactThresholdBytes: Number(compactThresholdBytes) > 0 ? Number(compactThresholdBytes) : undefined,
     });
     const doc = (i: number) => ({ n: i, c: `c${i % 7}`, u: `${seed}-u${i}`, t: `alpha beta w${i % 13}` });
