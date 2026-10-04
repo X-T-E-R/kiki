@@ -331,6 +331,155 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
+  it.each(['claim', 'recipient-flush'] as const)(
+    'settles a cancelled real turn during mailbox %s without late application, early ack or cancelling the next prompt', async (stage) => {
+      const ctx = createTestAgent();
+      const main: IAgentScopeHandle = {
+        id: 'main', kind: LifecycleScope.Agent,
+        accessor: { get: <T>(id: ServiceIdentifier<T>): T => ctx.get(id) }, dispose: () => {},
+      };
+      const adapter = mailboxStore(tempDir());
+      let enter!: () => void;
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let gated = false;
+      const markDelivered = vi.fn((claim: ThreadDeliveryClaim) => adapter.markDelivered(claim));
+      const store = wrapStore(adapter, {
+        markDelivered,
+        nextQueued: async (sessionId, agentId) => {
+          const queued = await adapter.nextQueued(sessionId, agentId);
+          if (stage === 'claim' && queued !== undefined && !gated) {
+            gated = true;
+            enter();
+            await gate;
+          }
+          return queued;
+        },
+      });
+      const messageId = (await adapter.accept({
+        ...messageInput('queued update', `stop-${stage}`),
+        sourceAgentId: 'agent-sender', sourceTaskName: 'sender', targetAgentId: 'main', targetTaskName: 'root',
+      })).message.messageId;
+      const materializations = () => ctx.context.get().filter((message) =>
+        message.origin?.kind === 'agent_message' && message.origin.messageId === messageId);
+      const flush = ctx.wire.flush.bind(ctx.wire);
+      if (stage === 'recipient-flush') vi.spyOn(ctx.wire, 'flush').mockImplementation(async () => {
+        await flush();
+        if (!gated && materializations().length > 0) {
+          gated = true;
+          enter();
+          await gate;
+        }
+      });
+      const service = messagingService(store, lifecycleHarness([main]).service,
+        sessionContext(), metadataHarness({ main: {} }));
+      const controller = new AbortController();
+      const prompt = ctx.get(IAgentPromptService);
+      const first = await prompt.enqueue({ id: `first-${stage}`, signal: controller.signal,
+        message: { role: 'user', content: [{ type: 'text', text: 'first' }], toolCalls: [], origin: { kind: 'user' } } });
+      const turn = await first.launched;
+      let terminal = false;
+      void first.completion.then(() => { terminal = true; });
+      try {
+        await entered;
+        const next = await prompt.enqueue({ id: `next-${stage}`,
+          message: { role: 'user', content: [{ type: 'text', text: 'independent next prompt' }], toolCalls: [], origin: { kind: 'user' } } });
+        ctx.mockNextResponse({ type: 'text', text: 'next prompt handled' });
+        controller.abort(new Error('stop first run'));
+        expect(turn!.signal.aborted).toBe(true);
+        await vi.waitFor(() => { expect(terminal).toBe(true); });
+        expect((await first.completion).state).toBe('cancelled');
+        const nextTurn = await next.launched;
+        expect(nextTurn!.id).not.toBe(turn!.id);
+        expect(nextTurn!.signal.aborted).toBe(false);
+        expect((await next.completion).state).toBe('completed');
+        expect(materializations()).toHaveLength(stage === 'claim' ? 0 : 1);
+        expect(markDelivered).not.toHaveBeenCalled();
+        const pendingDelivery = (service as unknown as { deliveryTails: Map<string, Promise<void>> }).deliveryTails.get('main');
+        expect(pendingDelivery).toBeDefined();
+        release();
+        await pendingDelivery;
+        expect(materializations()).toHaveLength(stage === 'claim' ? 0 : 1);
+        expect(markDelivered).toHaveBeenCalledTimes(stage === 'claim' ? 0 : 1);
+        ctx.mockNextResponse({ type: 'text', text: 'message handled once' });
+        const resumed = await ctx.get(IAgentExecutionService).run(
+          { kind: 'prompt', prompt: 'after cancellation' }, { signal: new AbortController().signal });
+        await resumed.completion;
+        expect(materializations()).toHaveLength(1);
+        expect(markDelivered).toHaveBeenCalledOnce();
+        expect((await adapter.accept({
+          ...messageInput('queued update', `stop-${stage}`),
+          sourceAgentId: 'agent-sender', sourceTaskName: 'sender', targetAgentId: 'main', targetTaskName: 'root',
+        })).delivery).toBe('delivered');
+        await ctx.expectResumeMatches();
+      } finally {
+        release();
+        await first.completion;
+        service.dispose();
+        await ctx.dispose();
+      }
+    },
+  );
+
+  it('cancels native run admission waiting for a claim and retains that claim for the next run', async () => {
+    const ctx = createTestAgent();
+    const main: IAgentScopeHandle = {
+      id: 'main', kind: LifecycleScope.Agent,
+      accessor: { get: <T>(id: ServiceIdentifier<T>): T => ctx.get(id) }, dispose: () => {},
+    };
+    const adapter = mailboxStore(tempDir());
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let gated = false;
+    const markDelivered = vi.fn((claim: ThreadDeliveryClaim) => adapter.markDelivered(claim));
+    const store = wrapStore(adapter, {
+      markDelivered,
+      nextQueued: async (sessionId, agentId) => {
+        const queued = await adapter.nextQueued(sessionId, agentId);
+        if (queued !== undefined && !gated) { gated = true; enter(); await gate; }
+        return queued;
+      },
+    });
+    const input = { ...messageInput('admission update', 'cancel-run-admission'),
+      sourceAgentId: 'agent-sender', targetAgentId: 'main', targetTaskName: 'root' };
+    const messageId = (await adapter.accept(input)).message.messageId;
+    const service = messagingService(store, lifecycleHarness([main]).service,
+      sessionContext(), metadataHarness({ main: {} }));
+    const controller = new AbortController();
+    const execution = ctx.get(IAgentExecutionService);
+    const admitted = execution.run({ kind: 'prompt', prompt: 'cancel before start' }, { signal: controller.signal });
+    const cancelled = expect(admitted).rejects.toThrow('cancel admission');
+    try {
+      await entered;
+      controller.abort(new Error('cancel admission'));
+      await cancelled;
+      expect(ctx.get(IAgentLoopService).status().state).toBe('idle');
+      expect(markDelivered).not.toHaveBeenCalled();
+      expect(ctx.context.get().some((message) => message.origin?.kind === 'agent_message')).toBe(false);
+      const pendingDelivery = (service as unknown as { deliveryTails: Map<string, Promise<void>> }).deliveryTails.get('main');
+      expect(pendingDelivery).toBeDefined();
+      release();
+      await pendingDelivery;
+      expect(ctx.context.get().some((message) => message.origin?.kind === 'agent_message')).toBe(false);
+      expect(markDelivered).not.toHaveBeenCalled();
+      ctx.mockNextResponse({ type: 'text', text: 'handled after resume' });
+      const resumed = await execution.run({ kind: 'prompt', prompt: 'new run' }, { signal: new AbortController().signal });
+      await resumed.completion;
+      expect(ctx.context.get().filter((message) => message.origin?.kind === 'agent_message' && message.origin.messageId === messageId)).toHaveLength(1);
+      expect(markDelivered).toHaveBeenCalledOnce();
+      expect((await adapter.accept(input)).delivery).toBe('delivered');
+      await ctx.expectResumeMatches();
+    } finally {
+      release();
+      await cancelled;
+      service.dispose();
+      await ctx.dispose();
+    }
+  });
+
   it('delivers a queued child notification to main through a real interactive prompt turn', async () => {
     const ctx = createTestAgent();
     const main: IAgentScopeHandle = {

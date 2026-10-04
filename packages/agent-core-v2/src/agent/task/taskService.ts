@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { createControlledPromise } from '@antfu/utils';
 import { join } from 'pathe';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -165,6 +166,7 @@ interface ManagedTask extends BufferedTaskOutput {
   foregroundSignalCleanup?: () => void;
   lifecyclePromise: Promise<void>;
   stopping?: Promise<AgentTaskInfo | undefined>;
+  stopCleanup?: Promise<void>;
   persistWriteQueue: Promise<void>;
   notificationPromise?: Promise<void>;
   timeoutHandle?: ReturnType<typeof setTimeout>;
@@ -973,8 +975,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       await entry.persistWriteQueue;
       return this.toInfo(entry);
     }
-    const stopping = this.stopEntryWithGrace(entry, options);
+    const stopping = createControlledPromise<AgentTaskInfo | undefined>();
     entry.stopping = stopping;
+    void this.stopEntryWithGrace(entry, options).then(stopping.resolve, stopping.reject);
     try {
       return await stopping;
     } finally {
@@ -1001,19 +1004,22 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       ? this.lifecycle.get(info.agentId)
       : undefined;
     if (child !== undefined) {
-      try {
-        await child.accessor.get(IAgentTaskService).stopAll(
-          options.stopReason ?? (options.finalStatus === 'timed_out' ? 'Timed out' : undefined),
-        );
-      } catch (error) {
-        this.log.error('failed to stop descendant tasks', { agentId: child.id, error });
-      }
+      entry.stopCleanup = Promise.resolve().then(async () => {
+        try {
+          await child.accessor.get(IAgentTaskService).stopAll(
+            options.stopReason ?? (options.finalStatus === 'timed_out' ? 'Timed out' : undefined),
+          );
+        } catch (error) {
+          this.log.error('failed to stop descendant tasks', { agentId: child.id, error });
+        }
+      });
     }
     if (entry.handle) {
       entry.handle.cancel();
     } else {
       entry.abortController.abort(options.abortReason);
     }
+    await entry.stopCleanup;
 
     const graceMs = resolveAgentTaskConfig(this.config)?.killGracePeriodMs ?? SIGTERM_GRACE_MS;
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1060,10 +1066,14 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   async stopAll(reason?: string): Promise<readonly AgentTaskInfo[]> {
-    const results = await Promise.all(
-      Array.from(this.localTaskIds).map((taskId) => this.stop(taskId, reason)),
-    );
-    return results.filter((info): info is AgentTaskInfo => info !== undefined);
+    const stopping = Array.from(this.localTaskIds).map((taskId) => this.stop(taskId, reason));
+    try {
+      const results = await Promise.all(stopping);
+      return results.filter((info): info is AgentTaskInfo => info !== undefined);
+    } catch (error) {
+      await Promise.allSettled(stopping);
+      throw error;
+    }
   }
 
   async stopAllOnExit(reason: string): Promise<readonly AgentTaskInfo[]> {
@@ -1443,6 +1453,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     entry: ManagedTask,
     settlement: AgentTaskSettlement,
   ): Promise<boolean> {
+    if (entry.stopCleanup !== undefined) await entry.stopCleanup;
     if (TERMINAL_STATUSES.has(entry.status)) return false;
     entry.status = settlement.status;
     entry.endedAt = Date.now();

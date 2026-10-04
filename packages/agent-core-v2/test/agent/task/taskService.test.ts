@@ -197,7 +197,7 @@ describe('AgentTaskService', () => {
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each(['TaskStop', 'stopByUser'] as const)(
-    '%s stops grandchild tasks and executions before the parent task, retaining resumable scopes',
+    '%s aborts task-owned runs before waiting for descendant cleanup, retaining resumable scopes',
     async (path) => {
       const docs = mapBackedDocs();
       const bytes = new InMemoryStorageService();
@@ -274,7 +274,7 @@ describe('AgentTaskService', () => {
       }
 
       expect(order).toEqual([
-        'grandchild task', 'child task', 'grandchild execution', 'parent task', 'child execution',
+        'parent task', 'child execution', 'child task', 'grandchild execution', 'grandchild task',
       ]);
       expect(grandchildTasks.getTask(grandchildTaskId)).toMatchObject({ status: 'killed' });
       expect(childTasks.getTask(childTaskId)).toMatchObject({ status: 'killed' });
@@ -288,6 +288,56 @@ describe('AgentTaskService', () => {
     },
     PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
   );
+
+  it.each(['user', 'timeout'] as const)('aborts the task-owned run on %s before descendant force-stop completes without publishing an early terminal', async (path) => {
+    const childIx = buildAgentIx('agent-child', mapBackedDocs(), new InMemoryStorageService());
+    agentHandles.set('agent-child', { id: 'agent-child', accessor: childIx } as unknown as IAgentScopeHandle);
+    childIx.stub(IConfigService, { get: (() => ({ killGracePeriodMs: 0 })) as IConfigService['get'] });
+    const childTasks = childIx.get(IAgentTaskService);
+    let enterForceStop!: () => void;
+    const forceStopEntered = new Promise<void>((resolve) => { enterForceStop = resolve; });
+    let releaseCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    const descendantTaskId = childTasks.registerTask({
+      ...fakeProcessTask(),
+      start: async () => { await cleanup; },
+      forceStop: async () => { enterForceStop(); await cleanup; },
+    });
+    const controller = new AbortController();
+    const abort = vi.fn();
+    const completion = new Promise<{ result: string }>((_resolve, reject) => {
+      controller.signal.addEventListener('abort', () => { abort(); reject(controller.signal.reason); }, { once: true });
+    });
+    const rootTasks = ix.get(IAgentTaskService);
+    const taskId = rootTasks.registerTask(new SubagentTask(
+      { agentId: 'agent-child', profileName: 'coder', completion }, 'run child', controller,
+    ), { timeoutMs: path === 'timeout' ? 1 : undefined });
+    const expectedStatus = path === 'timeout' ? 'timed_out' : 'killed';
+    const dispatch = vi.spyOn(ix.get(IEventDispatcher), 'dispatch');
+    await Promise.resolve();
+    let receiptSettled = false;
+    const stopped = (path === 'timeout' ? rootTasks.wait(taskId) : rootTasks.stopByUser(taskId))
+      .then((info) => { receiptSettled = true; return info; });
+    try {
+      await forceStopEntered;
+      expect(controller.signal.aborted).toBe(true);
+      expect(abort).toHaveBeenCalledOnce();
+      expect(receiptSettled).toBe(false);
+      expect(rootTasks.getTask(taskId)).toMatchObject({ status: 'running' });
+      expect(childTasks.getTask(descendantTaskId)).toMatchObject({ status: 'running' });
+      expect(dispatch.mock.calls.filter(([event]) => event.type === 'task.terminated')).toHaveLength(0);
+    } finally {
+      releaseCleanup();
+      await stopped;
+    }
+    expect(await stopped).toMatchObject({ status: expectedStatus });
+    expect(childTasks.getTask(descendantTaskId)).toMatchObject({ status: 'killed' });
+    await ix.get(IEventDispatcher).flush();
+    expect(dispatch.mock.calls.filter(([event]) => event.type === 'task.terminated')).toHaveLength(1);
+    expect(await rootTasks.stopByUser(taskId)).toMatchObject({ status: expectedStatus });
+    expect(abort).toHaveBeenCalledOnce();
+    expect(agentHandles.has('agent-child')).toBe(true);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('shares concurrent stops and cancels only the task-owned run without child tasks', async () => {
     const childIx = buildAgentIx('agent-child', mapBackedDocs(), new InMemoryStorageService());
@@ -318,14 +368,113 @@ describe('AgentTaskService', () => {
 
     const firstStop = rootTasks.stop(taskId, 'first stop');
     const secondStop = rootTasks.stop(taskId, 'second stop');
-    expect(controller.signal.aborted).toBe(false);
+    expect(controller.signal.aborted).toBe(true);
+    await Promise.resolve();
     expect(stopAll).toHaveBeenCalledTimes(1);
+    expect(rootTasks.getTask(taskId)).toMatchObject({ status: 'running' });
     releaseStop();
     const [first, second] = await Promise.all([firstStop, secondStop]);
     expect(first).toMatchObject({ status: 'killed', stopReason: 'first stop' });
     expect(second).toEqual(first);
     expect(controller.signal.aborted).toBe(true);
     expect(cancel).not.toHaveBeenCalled();
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('retries a rejected tracked cancel and merges a stop reentered by its synchronous cancellation event', async () => {
+    ix.set(ITaskService, new SyncDescriptor(TaskService));
+    const rootTasks = ix.get(IAgentTaskService);
+    const handle = disposables.add(ix.get(ITaskService).defer());
+    const originalCancel = handle.cancel.bind(handle);
+    const cancel = vi.spyOn(handle, 'cancel').mockImplementationOnce(() => { throw new Error('cancel failed'); });
+    const entry = rootTasks.track(handle, {
+      description: 'tracked child', toInfo: (base) => ({ ...base, kind: 'question', questionCount: 1 }),
+    });
+    await expect(rootTasks.stopByUser(entry.taskId)).rejects.toThrow('cancel failed');
+    expect(rootTasks.getTask(entry.taskId)).toMatchObject({ status: 'running' });
+    let reentered: Promise<AgentTaskInfo | undefined> | undefined;
+    cancel.mockImplementation(() => {
+      reentered = rootTasks.stopByUser(entry.taskId);
+      originalCancel();
+    });
+    const dispatch = vi.spyOn(ix.get(IEventDispatcher), 'dispatch');
+    const stopped = await rootTasks.stopByUser(entry.taskId);
+    expect(stopped).toMatchObject({ status: 'killed' });
+    expect(await reentered).toEqual(stopped);
+    expect(cancel).toHaveBeenCalledTimes(2);
+    await ix.get(IEventDispatcher).flush();
+    expect(dispatch.mock.calls.filter(([event]) => event.type === 'task.terminated')).toHaveLength(1);
+    expect(await rootTasks.stopByUser(entry.taskId)).toEqual(stopped);
+    expect(cancel).toHaveBeenCalledTimes(2);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('waits for all descendant stop attempts after a sibling cancel fails before settling the parent', async () => {
+    ix.set(IFileSystemStorageService, new InMemoryStorageService());
+    const childIx = buildAgentIx('agent-child', mapBackedDocs(), new InMemoryStorageService());
+    agentHandles.set('agent-child', { id: 'agent-child', accessor: childIx } as unknown as IAgentScopeHandle);
+    childIx.stub(IConfigService, { get: (() => ({ killGracePeriodMs: 0 })) as IConfigService['get'] });
+    childIx.set(ITaskService, new SyncDescriptor(TaskService));
+    const childTasks = childIx.get(IAgentTaskService);
+    const handle = disposables.add(childIx.get(ITaskService).defer());
+    const cancelError = new Error('cancel failed');
+    const cancel = vi.spyOn(handle, 'cancel').mockImplementationOnce(() => { throw cancelError; });
+    const failed = childTasks.track(handle, {
+      description: 'failed cancel', toInfo: (base) => ({ ...base, kind: 'question', questionCount: 1 }),
+    });
+    let enterForceStop!: () => void;
+    const forceStopEntered = new Promise<void>((resolve) => { enterForceStop = resolve; });
+    let releaseCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    let cleanupFinished = false;
+    const slowId = childTasks.registerTask({
+      ...fakeProcessTask(),
+      start: async () => { await cleanup; },
+      forceStop: async () => { enterForceStop(); await cleanup; cleanupFinished = true; },
+    });
+    const controller = new AbortController();
+    const completion = new Promise<{ result: string }>((_resolve, reject) => {
+      controller.signal.addEventListener('abort', () => { reject(controller.signal.reason); }, { once: true });
+    });
+    const rootTasks = ix.get(IAgentTaskService);
+    const taskId = rootTasks.registerTask(new SubagentTask(
+      { agentId: 'agent-child', profileName: 'coder', completion }, 'run child', controller,
+    ));
+    const stopAll = vi.spyOn(childTasks, 'stopAll');
+    const dispatch = vi.spyOn(ix.get(IEventDispatcher), 'dispatch');
+    const logError = vi.spyOn(ix.get(ILogService), 'error');
+    await Promise.resolve();
+    let receiptSettled = false;
+    const stopped = rootTasks.stopByUser(taskId).then((info) => { receiptSettled = true; return info; });
+    try {
+      await forceStopEntered;
+      await ix.get(IEventDispatcher).flush();
+      expect(controller.signal.aborted).toBe(true);
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(childTasks.getTask(failed.taskId)).toMatchObject({ status: 'running' });
+      expect(childTasks.getTask(slowId)).toMatchObject({ status: 'running' });
+      expect(cleanupFinished).toBe(false);
+      expect(rootTasks.getTask(taskId)).toMatchObject({ status: 'running' });
+      expect(receiptSettled).toBe(false);
+      expect(dispatch.mock.calls.filter(([event]) => event.type === 'task.terminated')).toHaveLength(0);
+      expect(logError).not.toHaveBeenCalled();
+    } finally {
+      releaseCleanup();
+      await stopped;
+    }
+    expect(await stopped).toMatchObject({ status: 'killed' });
+    expect(cleanupFinished).toBe(true);
+    expect(childTasks.getTask(slowId)).toMatchObject({ status: 'killed' });
+    expect(childTasks.getTask(failed.taskId)).toMatchObject({ status: 'running' });
+    await expect(stopAll.mock.results[0]!.value).rejects.toBe(cancelError);
+    expect(logError.mock.calls).toEqual([
+      ['failed to stop descendant tasks', { agentId: 'agent-child', error: cancelError }],
+    ]);
+    await ix.get(IEventDispatcher).flush();
+    expect(dispatch.mock.calls.filter(([event]) => event.type === 'task.terminated')).toHaveLength(1);
+    expect(await childTasks.stopByUser(failed.taskId)).toMatchObject({ status: 'killed' });
+    expect(cancel).toHaveBeenCalledTimes(2);
+    expect(await rootTasks.stopByUser(taskId)).toMatchObject({ status: 'killed' });
+    expect(stopAll).toHaveBeenCalledOnce();
+    expect(agentHandles.has('agent-child')).toBe(true);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stops one prompt-owned subagent task without cancelling another run on its child scope', async () => {

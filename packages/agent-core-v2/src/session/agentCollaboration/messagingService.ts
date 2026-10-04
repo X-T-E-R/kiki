@@ -1,4 +1,5 @@
 import { Disposable, DisposableMap, DisposableStore } from '#/_base/di/lifecycle';
+import { abortable } from '#/_base/utils/abort';
 import { LifecycleScope } from '#/app/scopes';
 import { ILogService } from '#/_base/log/log';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
@@ -199,16 +200,18 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
           await next();
           return;
         }
-        await this.serializeDelivery(handle.id, () => this.deliverBeforeRun(handle));
+        context.signal.throwIfAborted();
+        await abortable(this.serializeDelivery(handle.id, () => this.deliverBeforeRun(handle, context.signal)), context.signal);
         await next();
       },
     ));
     const loop = handle.accessor.get(IAgentLoopService);
     subscriptions.add(loop.hooks.onWillBeginStep.register(
       DELIVERY_HOOK_ID,
-      async (_context, next) => {
+      async (context, next) => {
+        context.signal.throwIfAborted();
         if (!this.isExternalExecutor(handle) && !this.deliveryTails.has(handle.id)) {
-          await this.serializeDelivery(handle.id, () => this.deliverBeforeRun(handle));
+          await abortable(this.serializeDelivery(handle.id, () => this.deliverBeforeRun(handle, context.signal)), context.signal);
         }
         await next();
       },
@@ -446,20 +449,23 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     await this.completeClaim(handle, pending);
   }
 
-  private deliverBeforeRun(handle: IAgentScopeHandle): Promise<void> {
+  private deliverBeforeRun(handle: IAgentScopeHandle, signal?: AbortSignal): Promise<void> {
     const memory = handle.accessor.get(IAgentContextMemoryService);
     return this.deliver(handle, async (message) => {
       memory.appendObservable(message);
       return true;
-    });
+    }, signal);
   }
 
   private async deliver(
     handle: IAgentScopeHandle,
     apply: (message: ContextMessage) => Promise<boolean>,
+    signal?: AbortSignal,
   ): Promise<void> {
     for (;;) {
+      signal?.throwIfAborted();
       const pending = await this.claimNext(handle);
+      signal?.throwIfAborted();
       if (pending === undefined) return;
       const message = pending.queued.message;
       if (!this.hasAppliedMessage(handle, pending) && !await apply(toContextMessage(message))) {
