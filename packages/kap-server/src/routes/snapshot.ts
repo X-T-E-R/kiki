@@ -116,7 +116,9 @@ export async function assembleBrowseSnapshotSource(
   core: Scope,
   broadcaster: SessionEventBroadcaster,
   sessionId: string,
+  mode?: 'legacy',
 ): Promise<SessionSnapshotResponse> {
+  if (mode === 'legacy') return assembleSnapshotSource(core, broadcaster, sessionId, undefined);
   if (core.accessor.get(ISessionManager).get(sessionId) !== undefined) {
     return assembleSnapshotSource(core, broadcaster, sessionId, 'transcript');
   }
@@ -153,7 +155,7 @@ export async function assembleBrowseSnapshotSource(
 }
 
 export async function assembleSnapshot(...args: Parameters<typeof assembleSnapshotSource>): Promise<SessionSnapshotResponse> {
-  return boundedEntity(await assembleSnapshotSource(...args), { kind: 'snapshot', id: '' }, 24 * 1024);
+  return boundedEntity(await assembleSnapshotSource(...args), { kind: 'snapshot', id: args[3] === 'transcript' ? '' : 'legacy' }, 24 * 1024);
 }
 
 async function assembleSnapshotSource(

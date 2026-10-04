@@ -33,7 +33,9 @@ import {
 import { sessionSnapshotResponseSchema } from '../src/protocol/rest-snapshot';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { assembleSnapshot, registerSnapshotRoutes } from '../src/routes/snapshot';
+import { assembleBrowseSnapshotSource, assembleSnapshot, registerSnapshotRoutes } from '../src/routes/snapshot';
+import { applyContentSegment, jsonBytes, type ContentSegment } from '@kiki/transcript';
+import { readContentSegment } from '../src/transport/klient/boundedContent';
 import { type RunningServer, startServer } from '../src/start';
 import {
   type EventEnvelope,
@@ -449,6 +451,38 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     expect(snap.context_breakdown).toBeUndefined();
     expect(snap.pending_approvals).toEqual([]);
     expect(snap.pending_questions).toEqual([]);
+  });
+
+  it('continues legacy message previews through HTTP and rejects changed history references', async () => {
+    const sid = await createSession();
+    await ensureMainAgent(sid);
+    const main = getLiveSessionById(server!.core.accessor, sid)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const memory = main.accessor.get(IAgentContextMemoryService);
+    const messages: ContextMessage[] = Array.from({ length: 10 }, (_, index) => ({ role: 'user', content: [{ type: 'text', text: `Example message ${index}` }], toolCalls: [] }));
+    memory.append(...messages);
+    await main.accessor.get(IWireService).flush();
+    let preview = await snapshot(sid);
+    expect(jsonBytes(preview)).toBeLessThan(24 * 1024);
+    expect(preview.messages.items.length).toBeLessThanOrEqual(4);
+    const originalRef = preview.contentRefs?.find((ref) => ref.path.join('.') === 'messages.items');
+    expect(originalRef?.source).toEqual({ kind: 'snapshot', id: 'legacy' });
+    while (preview.contentRefs?.length) {
+      const response = await fetch(`${base}/api/klient/session-view/${sid}/transcript/content`, {
+        method: 'POST', headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+        body: JSON.stringify({ agentId: 'main', ref: preview.contentRefs[0] }),
+      });
+      const body = await response.json() as { code: number; data: ContentSegment };
+      expect(body.code).toBe(0);
+      expect(jsonBytes(body)).toBeLessThan(64 * 1024);
+      preview = applyContentSegment(preview, body.data);
+    }
+    expect(preview.messages.items.map((message) => message.content)).toEqual(messages.map((message) => message.content));
+    memory.append({ role: 'user', content: [{ type: 'text', text: 'Changed history' }], toolCalls: [] });
+    const changed = await fetch(`${base}/api/klient/session-view/${sid}/transcript/content`, {
+      method: 'POST', headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ agentId: 'main', ref: originalRef }),
+    });
+    expect((await changed.json() as { code: number }).code).toBe(40922);
   });
 
   it.each([
@@ -1161,6 +1195,7 @@ describe('legacy snapshot message tail projection', () => {
     asOfSeq: number;
     epoch: string;
     loadParts: ReturnType<typeof vi.fn>;
+    snapshotLoadPartsCalls: number;
   }> {
     const loadParts = vi.fn(async (parts: unknown) => parts);
     const main = {
@@ -1226,8 +1261,17 @@ describe('legacy snapshot message tail projection', () => {
       getTranscriptToolCallCounts: async () => new Map<string, number>(),
       getMaterializedTranscriptToolCallCounts: () => new Map<string, number>(),
     };
-    const data = await assembleSnapshot(core as never, broadcaster as never, sessionId, mode);
+    let data = await assembleSnapshot(core as never, broadcaster as never, sessionId, mode);
+    const snapshotLoadPartsCalls = loadParts.mock.calls.length;
+    expect(jsonBytes(data)).toBeLessThan(24 * 1024);
+    expect(data.messages.items.length).toBeLessThanOrEqual(4);
+    if (data.contentRefs?.length) {
+      const source = await assembleBrowseSnapshotSource(core as never, broadcaster as never, sessionId, 'legacy');
+      expect(loadParts.mock.calls.length - snapshotLoadPartsCalls).toBe(Math.min(size, 100));
+      while (data.contentRefs?.length) data = applyContentSegment(data, readContentSegment(source, data.contentRefs[0]!));
+    }
     return {
+      snapshotLoadPartsCalls,
       messages: data.messages as {
         items: Array<{ id: string; created_at: string; content: unknown }>;
         has_more: boolean;
@@ -1243,7 +1287,7 @@ describe('legacy snapshot message tail projection', () => {
     'projects only the newest 100 messages when the captured history has %i messages',
     async (size) => {
       const times = Array.from({ length: size }, (_, index) => createdAt + index);
-      const { messages, messageCount, asOfSeq, epoch, loadParts } = await assembleWithHistory(size, times);
+      const { messages, messageCount, asOfSeq, epoch, snapshotLoadPartsCalls } = await assembleWithHistory(size, times);
 
       const expectedCount = Math.min(size, 100);
       expect(messageCount).toBe(size);
@@ -1251,7 +1295,7 @@ describe('legacy snapshot message tail projection', () => {
       expect(messages.has_more).toBe(size > 100);
       expect(asOfSeq).toBe(7);
       expect(epoch).toBe('ep_tail');
-      expect(loadParts).toHaveBeenCalledTimes(expectedCount);
+      expect(snapshotLoadPartsCalls).toBe(expectedCount);
 
       const expectedCreatedAt = projectedCreatedAt(times, size).slice(-expectedCount);
       expect(messages.items.map((message) => message.created_at)).toEqual(expectedCreatedAt);
@@ -1277,10 +1321,10 @@ describe('legacy snapshot message tail projection', () => {
     const times = Array.from({ length: size }, (_, index) =>
       index < 5 ? 60_000 - index * 10_000 : createdAt + index,
     );
-    const { messages, loadParts } = await assembleWithHistory(size, times);
+    const { messages, snapshotLoadPartsCalls } = await assembleWithHistory(size, times);
 
     expect(messages.has_more).toBe(true);
-    expect(loadParts).toHaveBeenCalledTimes(100);
+    expect(snapshotLoadPartsCalls).toBe(100);
     const expectedCreatedAt = projectedCreatedAt(times, size).slice(5);
     expect(messages.items.map((message) => message.created_at)).toEqual(expectedCreatedAt);
     for (let index = 1; index < messages.items.length; index += 1) {

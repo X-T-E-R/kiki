@@ -49,7 +49,7 @@ export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts
         if (parsed.data.ref.source.kind !== 'snapshot') return readSessionViewTranscriptContent(service, sessionId, { ...parsed.data, signal });
         const broadcaster = opts.sessionViewBroadcaster;
         if (broadcaster === undefined) throw new RPCError(50001, 'session view unavailable');
-        const snapshot = await assembleBrowseSnapshotSource(scope, broadcaster, sessionId);
+        const snapshot = await assembleBrowseSnapshotSource(scope, broadcaster, sessionId, parsed.data.ref.source.id === 'legacy' ? 'legacy' : undefined);
         signal.throwIfAborted();
         return readContentSegment(snapshot, parsed.data.ref);
       });
