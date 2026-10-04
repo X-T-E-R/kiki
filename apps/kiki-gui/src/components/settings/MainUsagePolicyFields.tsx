@@ -60,6 +60,17 @@ const FIELD_LABEL: Readonly<Record<UsagePolicyField, I18nKey>> = {
   max_completion_tokens: 'st.usagePolicy.maxCompletionTokens',
 };
 
+/**
+ * Which fields share a line. Every field here is a short control: two pickers
+ * and two token inputs, each of which reads in one glance. Only the compaction
+ * row keeps a line to itself, because it alone carries presets, a hint and the
+ * track, and a slider cannot be squeezed into half a row. Narrow widths fall
+ * back to one column, with the same fields in the same order.
+ */
+const USAGE_PAIRED_FIELDS: readonly UsagePolicyField[] = [
+  'thinking_effort', 'service_tier', 'context_budget', 'max_completion_tokens',
+];
+
 /** One resolved field: what the position really gets, and where it came from. */
 export interface ResolvedUsageField {
   value: string;
@@ -131,18 +142,25 @@ export function MainUsagePolicyFields({
           ? t('st.usagePolicy.sharedHint')
           : t(scope === 'main' ? 'st.usagePolicy.mainHint' : 'st.usagePolicy.independentHint')}
       </Hint>
-      <div className="space-y-1" data-usage-fields={scope}>
+      <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2" data-usage-fields={scope}>
         {USAGE_POLICY_FIELDS.map((field) => (
-          <UsageRow key={field} field={field} scope={scope} modelId={modelId}
-            branch={branch ?? EMPTY_USAGE_BRANCH} shared={view.shared[field]}
-            resolved={scope === 'shared' ? undefined : view.resolved[scope]?.[field]}
-            draftDirty={scope !== 'shared' && view.dirty}
-            invalid={view.issue !== null && view.issue.field === field
-              && (scope === 'shared' || view.issue.position === scope)}
-            onSharedChange={onSharedChange}
-            onChange={(next) => onChange({ ...view.draft, [scope]: next })}
-            compaction={field === 'auto_compact' ? compaction : undefined}
-            compactionControl={field === 'auto_compact' ? compactionControl : undefined} />
+          <div
+            key={field}
+            // Only the compaction row takes the full measure; the short fields
+            // pair up, whatever the width.
+            className={USAGE_PAIRED_FIELDS.includes(field) ? undefined : 'sm:col-span-2'}
+          >
+            <UsageRow field={field} scope={scope} modelId={modelId}
+              branch={branch ?? EMPTY_USAGE_BRANCH} shared={view.shared[field]}
+              resolved={scope === 'shared' ? undefined : view.resolved[scope]?.[field]}
+              draftDirty={scope !== 'shared' && view.dirty}
+              invalid={view.issue !== null && view.issue.field === field
+                && (scope === 'shared' || view.issue.position === scope)}
+              onSharedChange={onSharedChange}
+              onChange={(next) => onChange({ ...view.draft, [scope]: next })}
+              compaction={field === 'auto_compact' ? compaction : undefined}
+              compactionControl={field === 'auto_compact' ? compactionControl : undefined} />
+          </div>
         ))}
       </div>
       {scope === 'shared' ? null : <Hint>{t('st.usagePolicy.capsHelp')}</Hint>}
@@ -215,7 +233,11 @@ function UsageRow({
                 { value: 'not_sent', label: t('st.usagePolicy.omit') },
                 ...USAGE_SERVICE_TIERS.map((tier) => ({ value: tier, label: tier })),
               ]} />
-          : compactionControl ?? <UsageTextInput
+          // The compaction control brings its own presets and hint, so it is
+          // wrapped to the width of its own input: the row's line then holds the
+          // input and the restore together, and the presets, hint and track keep
+          // the lines below instead of pushing the restore off this one.
+          : <div className="min-w-0 max-w-full">{compactionControl ?? <UsageTextInput
             id={fieldId} field={field} label={label}
             value={current}
             invalid={problem !== null}
@@ -225,14 +247,15 @@ function UsageRow({
             onCommit={(next) => {
               if (scope === 'shared') onSharedChange({ [field]: next });
               else onChange(setUsageText(branch, field as Exclude<UsagePolicyField, 'service_tier'>, next));
-            }} />}
+            }} />}</div>}
         {overridden
-          // Always its own line, always at its end. Sharing a line with the input
-          // left it to wrap past the presets on a narrow row and settle between
-          // the hint and the slider, where it read as part of the hint; a `basis-full`
-          // line makes the position the same at every width and on every row.
+          // On the control's own line, at its end, so every row puts this verb in
+          // the same place. A `basis-full` line also pinned it, but in a paired
+          // cell that dropped a full empty line under the field and left the
+          // action nearer the neighbour than its own control. The presets below
+          // sit on their own line, so the control line has the room for it.
           ? <button type="button" data-usage-restore={field}
-            className="basis-full ms-auto mt-0.5 shrink-0 self-start rounded px-1.5 py-1 text-right text-[12px] text-ink-soft underline decoration-ink/20 underline-offset-4 hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40"
+            className="ms-auto shrink-0 self-start rounded px-1.5 py-1 text-[12px] text-ink-soft underline decoration-ink/20 underline-offset-4 hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40"
             onClick={() => { onChange({ ...branch, ...clearUsageField(field) }); }}>{t('st.usagePolicy.restoreInherit')}</button>
           : null}
         {problem !== null

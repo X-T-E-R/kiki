@@ -14,7 +14,7 @@ import { useConnection } from '../../state/connection';
 import { CatalogSourceField } from '../capabilities/AddSourceDialog';
 import { CapabilityLink } from '../capabilities/CapabilityLink';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
+import { FeedbackLine, InlineError, type Feedback } from '../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 
@@ -39,12 +39,10 @@ function QueryRetry({ error, onRetry }: { error: unknown; onRetry: () => void })
   );
 }
 
-const WEBBRIDGE_STEP_LABEL_KEYS: Readonly<Record<string, I18nKey>> = {
+const WEBBRIDGE_BLOCKER_LABEL_KEYS: Readonly<Record<string, I18nKey>> = {
   'daemon-binary': 'st.plugins.runtimeStep.daemon-binary',
   daemon: 'st.plugins.runtimeStep.daemon',
-  'daemon-identity': 'st.plugins.runtimeStep.daemon',
   skill: 'st.plugins.runtimeStep.skill',
-  'plugin-integrity': 'st.plugins.runtimeStep.skill',
   extension: 'st.plugins.runtimeStep.extension',
   detect: 'st.plugins.runtimeStep.detect',
 };
@@ -77,42 +75,34 @@ function WebBridgeReadiness() {
       setRequesting(false);
     }
   };
+  const steps = capability?.steps ?? [];
+  // Only the steps that decide whether the feature works, not the checks that
+  // merely describe it. A required step that is not ready is the one thing the
+  // reader has to act on, so it names itself in the first screen.
+  const blocking = steps.filter((step) => step.optional !== true && step.state !== 'ok');
+  const needsSetup = capability !== undefined && capability.state !== 'unsupported' &&
+    steps.some((step) => step.id === 'daemon' && step.state === 'missing');
   return (
     <SectionCard id="st-card-webbridge" title={t('st.plugins.runtimeTitle')}>
       <div className="space-y-2" data-webbridge-readiness>
-        <Hint>{t('st.plugins.runtimeHint')}</Hint>
         {query.isPending ? <BusyHint>{t('st.plugins.loading')}</BusyHint> : query.isError ? (
           <QueryRetry error={query.error} onRetry={() => { void query.refetch(); }} />
         ) : capability !== undefined ? (
           <>
-            <p className="text-[12px] text-ink-soft" data-webbridge-state={capability.state}>
+            <p className="text-[13px] font-medium text-ink" data-webbridge-state={capability.state}>
               {t(`st.plugins.runtimeState.${capability.state}`)}
             </p>
-            <ul className="space-y-1">
-              {capability.steps.map((step) => {
-                const stepLabelKey = WEBBRIDGE_STEP_LABEL_KEYS[step.id];
-                return (
-                  <li className="text-[11px] text-ink-soft" key={step.id} data-webbridge-step={step.id}
-                    data-webbridge-step-kind={step.optional === true ? 'verification' : 'function'}>
-                    {stepLabelKey === undefined ? step.id : t(stepLabelKey)}
-                    {' · '}{step.optional === true ? `${t('st.plugins.optional')} · ` : ''}
-                    {t(`st.plugins.runtimeStepState.${step.state}`)}
-                    {step.detail ? ` · ${step.detail}` : ''}
-                  </li>
-                );
-              })}
-            </ul>
-            {capability.state === 'ready' && capability.steps.some((step) => step.optional === true && step.state !== 'ok') ? (
-              <Hint>{t('st.plugins.runtimeIdentityUnverified')}</Hint>
+            {capability.state === 'partial' && blocking.length > 0 ? (
+              <p className="text-[12px] leading-4 text-ink-soft" data-webbridge-blocking>
+                {t('st.plugins.runtimeState.partialHint', {
+                  items: blocking.map((step) => t(WEBBRIDGE_BLOCKER_LABEL_KEYS[step.id] ?? 'st.plugins.runtimeStep.detect')).join('、'),
+                })}
+              </p>
             ) : null}
             {capability.install.running ? <BusyHint>{capability.install.step ?? t('st.plugins.runtimeStarted')}</BusyHint> : null}
             {capability.install.error ? <FeedbackLine feedback={{ tone: 'error', text: capability.install.error }} /> : null}
-            {capability.install.note ? <p className="text-[11px] text-ink-soft" data-webbridge-install-note>
-              {capability.install.note.endsWith('identity-unverified') || capability.install.note.endsWith('extension-unverified')
-                ? t('st.plugins.runtimeIdentityUnverified') : capability.install.note}
-            </p> : null}
             {capability.plan?.browserExtensionUrl === 'https://chromewebstore.google.com/detail/kimi-webbridge/fldmhceldgbpfpkbgopacenieobmligc' ? (
-              <a className="inline-block text-[11px] font-medium text-selected-ink hover:underline"
+              <a className="inline-block text-[12px] font-medium text-selected-ink hover:underline"
                 href={capability.plan.browserExtensionUrl} target="_blank" rel="noopener noreferrer"
                 data-webbridge-extension>
                 {t('st.plugins.browserExtension')}
@@ -122,8 +112,7 @@ function WebBridgeReadiness() {
               <button type="button" className={SECONDARY_BUTTON} onClick={() => { void query.refetch(); }} data-webbridge-check>
                 {t('st.plugins.checkHealth')}
               </button>
-              {capability.plan !== undefined && capability.steps.some((step) => step.id === 'daemon' &&
-                step.state === 'missing' && !step.detail?.startsWith('Unverified: loopback status')) ? (
+              {capability.plan !== undefined && needsSetup ? (
                 <button type="button" className={PRIMARY_BUTTON} data-webbridge-prepare
                   disabled={requesting || capability.install.running}
                   onClick={() => { setConfirming(capability); }}>
@@ -143,7 +132,6 @@ function WebBridgeReadiness() {
             `${confirming.plan.artifact.version} · ${confirming.plan.artifact.url}`,
             `SHA-256 ${confirming.plan.artifact.sha256}`,
             confirming.plan.destination,
-            confirming.plan.note,
           ]}
           confirmLabel={t('st.plugins.prepareRuntime')}
           onCancel={() => { setConfirming(null); }}

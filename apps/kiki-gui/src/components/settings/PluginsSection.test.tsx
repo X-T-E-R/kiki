@@ -461,7 +461,7 @@ describe('PluginsSection', () => {
   it('submits the pinned digest only after confirmation and supports a separate health check', async () => {
     const container = await renderLeaf();
     await click(container.querySelector('[data-webbridge-prepare]')!);
-    await click(labeledButton(container.querySelector('[role="alertdialog"]') as HTMLElement, 'Prepare runtime…'));
+    await click(labeledButton(container.querySelector('[role="alertdialog"]') as HTMLElement, 'Set up WebBridge…'));
     await flush();
     expect(installCapability).toHaveBeenCalledWith('kimi-webbridge', WEBBRIDGE.plan?.artifact.sha256);
     expect(installPlugin).not.toHaveBeenCalled();
@@ -482,40 +482,95 @@ describe('PluginsSection', () => {
     getCapability.mockResolvedValue({ ...WEBBRIDGE, install: { running: false, error: 'checksum mismatch' } });
     await click(container.querySelector('[data-webbridge-check]')!);
     await flush();
-    expect(container.querySelector('[data-webbridge-prepare]')?.textContent).toBe('Retry runtime…');
+    expect(container.querySelector('[data-webbridge-prepare]')?.textContent).toBe('Try setup again…');
   });
 
-  it('labels a failed detection step with its own copy instead of the raw step id', async () => {
+  it('names the blocking step by label and never prints the detector sentence', async () => {
     getCapability.mockResolvedValue({ ...WEBBRIDGE, state: 'partial',
       steps: [{ id: 'detect', state: 'failed', detail: 'Loopback health endpoint refused the connection' }] });
     const container = await renderLeaf();
-    const step = container.querySelector('[data-webbridge-step="detect"]')!;
-    expect(step.textContent).toContain('Health check');
-    expect(step.textContent).toContain('Check failed');
-    expect(step.textContent).not.toContain('detect');
+    expect(container.querySelector('[data-webbridge-blocking]')?.textContent).toBe('These parts are not ready: Health check.');
+    expect(container.textContent).not.toContain('Loopback health endpoint refused the connection');
   });
 
-  it('shows observed functionality as ready but distinguishes missing identity and package attestation', async () => {
+  it('shows a working runtime as one status line and nothing else', async () => {
     getCapability.mockResolvedValue({ ...WEBBRIDGE, state: 'ready',
       install: { running: false, note: 'existing-loopback-daemon-observed-identity-unverified' },
       steps: [
-        { id: 'daemon-binary', state: 'missing', optional: true },
-        { id: 'daemon', state: 'ok', detail: 'Loopback status reports running; process identity is not authenticated' },
+        { id: 'daemon-binary', state: 'missing', optional: true, reason: 'binary_unverified',
+          detail: 'Unverified: installed daemon binary does not match the pinned release SHA-256' },
+        { id: 'daemon', state: 'ok', reason: 'daemon_loopback_unauthenticated',
+          detail: 'Loopback status reports running; process identity is not authenticated' },
         { id: 'skill', state: 'ok' }, { id: 'extension', state: 'ok' },
-        { id: 'daemon-identity', state: 'missing', optional: true,
+        { id: 'daemon-identity', state: 'missing', optional: true, reason: 'daemon_identity_unverified',
           detail: 'Unverified: the loopback status cannot authenticate the responding process or browser extension' },
-        { id: 'plugin-integrity', state: 'missing', optional: true,
+        { id: 'plugin-integrity', state: 'missing', optional: true, reason: 'plugin_integrity_unverified',
           detail: 'Unverified: publisher URL does not prove ZIP integrity or daemon compatibility' },
       ] });
     const container = await renderLeaf();
-    expect(container.querySelector('[data-webbridge-state="ready"]')).not.toBeNull();
-    expect(container.querySelector('[data-webbridge-step="daemon"]')?.getAttribute('data-webbridge-step-kind')).toBe('function');
-    expect(container.querySelector('[data-webbridge-step="plugin-integrity"]')?.getAttribute('data-webbridge-step-kind')).toBe('verification');
-    expect(container.querySelector('[data-webbridge-step="daemon-identity"]')?.textContent).toContain('Unverified');
-    expect(container.textContent).toContain('ZIP integrity');
-    expect(container.querySelector('[data-webbridge-install-note]')?.textContent).toContain('process identity');
+    expect(container.querySelector('[data-webbridge-state="ready"]')?.textContent).toBe('Working');
+    // The card is the status, the extension link, and the two actions. The
+    // attestation sentences are gone rather than moved somewhere else.
+    expect(container.querySelector('[data-webbridge-details]')).toBeNull();
+    expect(container.querySelector('[data-webbridge-install-note]')).toBeNull();
+    expect(container.querySelector('[data-webbridge-step]')).toBeNull();
+    const text = container.textContent ?? '';
+    for (const gone of [
+      'Unverified:', 'does not match the pinned release', 'identity is not authenticated',
+      'Service identity', 'Plugin package integrity', 'Check details', 'unverified',
+      'not authenticated', 'compatibility',
+    ]) {
+      expect(text, `still shows: ${gone}`).not.toContain(gone);
+    }
+    expect(container.querySelector('[data-webbridge-check]')).not.toBeNull();
+    expect(container.querySelector('[data-webbridge-extension]')).not.toBeNull();
     expect(container.querySelector('[data-webbridge-prepare]')).toBeNull();
     expect(installCapability).not.toHaveBeenCalled();
+  });
+
+  it('never renders an install note the client does not understand', async () => {
+    getCapability.mockResolvedValue({ ...WEBBRIDGE, state: 'ready',
+      install: { running: false, note: 'some future installer sentence' },
+      steps: [{ id: 'daemon', state: 'ok' }, { id: 'skill', state: 'ok' }, { id: 'extension', state: 'ok' }] });
+    const container = await renderLeaf();
+    expect(container.textContent).not.toContain('some future installer sentence');
+    expect(container.textContent).toContain('Working');
+  });
+
+  it('names the one blocking step when the runtime is only partly up', async () => {
+    getCapability.mockResolvedValue({ ...WEBBRIDGE, state: 'partial',
+      steps: [
+        { id: 'daemon', state: 'ok' },
+        { id: 'skill', state: 'ok' },
+        { id: 'extension', state: 'missing', reason: 'extension_not_connected' },
+      ] });
+    const container = await renderLeaf();
+    expect(container.querySelector('[data-webbridge-state="partial"]')?.textContent).toBe('Set up, but not everything is working');
+    // Only the step that blocks the feature is named; the healthy ones are not.
+    expect(container.querySelector('[data-webbridge-blocking]')?.textContent).toBe('These parts are not ready: Browser extension.');
+  });
+
+  it('names a required missing service binary instead of a health check', async () => {
+    getCapability.mockResolvedValue({ ...WEBBRIDGE, state: 'partial',
+      steps: [
+        { id: 'daemon-binary', state: 'missing' },
+        { id: 'daemon', state: 'missing' },
+        { id: 'daemon-identity', state: 'missing', optional: true },
+      ] });
+    const container = await renderLeaf();
+    const blocking = container.querySelector('[data-webbridge-blocking]')?.textContent;
+    expect(blocking).toBe('These parts are not ready: Service binary、Local service.');
+    expect(blocking).not.toContain('Health check');
+    expect(container.querySelector('[data-webbridge-details]')).toBeNull();
+  });
+
+  it('offers setup again for a missing local service and labels it by what it does', async () => {
+    getCapability.mockResolvedValue({ ...WEBBRIDGE, state: 'not_installed',
+      steps: [{ id: 'daemon', state: 'missing' }, { id: 'skill', state: 'missing', reason: 'plugin_not_installed' }] });
+    const container = await renderLeaf();
+    expect(container.querySelector('[data-webbridge-state="not_installed"]')?.textContent).toBe('Not set up on this machine yet');
+    expect(container.querySelector('[data-webbridge-prepare]')?.textContent).toBe('Set up WebBridge…');
+    expect(container.querySelector('[data-webbridge-check]')?.textContent).toBe('Check again');
   });
 
   it('retries a failed installed-plugin list', async () => {

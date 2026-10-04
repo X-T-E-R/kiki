@@ -956,7 +956,10 @@ describe('ModelCatalogRowEditor usage policy', () => {
     expect(block.getAttribute('data-usage-scope')).toBe('shared');
     // The shared scope writes the model's own parameters, through the same rows.
     expect(block.querySelector<HTMLInputElement>('[data-usage-value="thinking_effort"]')!.value).toBe('medium');
-    expect(block.textContent).toContain('Subagents always use the shared value');
+    // The shared layer states it is the default, not that it overrides every
+    // use: an identity may still set its own value on top of it.
+    expect(block.textContent).toContain('The defaults: anywhere nothing is set separately uses these');
+    expect(block.textContent).toContain('subagents included');
     // No difference row and no restore action while editing the shared layer.
     expect(block.querySelector('[data-usage-restore]')).toBeNull();
     setInputValue(block.querySelector<HTMLInputElement>('[data-usage-value="thinking_effort"]')!, 'low');
@@ -1118,6 +1121,29 @@ describe('ModelCatalogRowEditor usage policy', () => {
     // must not read as the same setting managed twice.
     expect(document.body.textContent).toContain('Supported effort levels');
     expect(document.body.textContent).toContain('Default thinking effort');
+  });
+
+  it('pairs the short fields and gives only the compaction row the full measure', async () => {
+    const container = await openRow(usageEntity({ main: { thinking_effort: 'high', context_budget: 160_000 } }));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const fields = container.querySelector<HTMLElement>('[data-usage-fields="main"]')!;
+    // A two-column grid that collapses to one column on a narrow width, so the
+    // same order and the same fields stay reachable either way.
+    expect(fields.className).toContain('sm:grid-cols-2');
+    const cellOf = (field: string) => fields.querySelector<HTMLElement>(`[data-usage-row="${field}"]`)!.parentElement!;
+    // The two pickers and the two token counts are all short controls, so each
+    // pair shares a line: a number is read in one glance and does not need a
+    // row to itself.
+    for (const field of ['thinking_effort', 'service_tier', 'context_budget', 'max_completion_tokens']) {
+      expect(cellOf(field).className).not.toContain('col-span-2');
+    }
+    // Only the compaction row spans the full width: it alone carries the
+    // presets, the hint and the track.
+    expect(cellOf('auto_compact').className).toContain('sm:col-span-2');
+    // All five remain present and in the same order.
+    expect([...fields.querySelectorAll('[data-usage-row]')].map((row) => row.getAttribute('data-usage-row')))
+      .toEqual(['thinking_effort', 'service_tier', 'auto_compact', 'context_budget', 'max_completion_tokens']);
   });
 
   it('puts the restore control at the end of its own row, wherever the row wraps', async () => {
