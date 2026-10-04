@@ -4,15 +4,24 @@
  * trigger opens a panel with a filter input, ↑/↓ cycles the active row, Enter
  * commits it, Esc closes, and the list scrolls inside a bounded max-height.
  *
+ * Container: unless a caller passes `panelClassName` (the composer, which
+ * anchors its panel itself), the panel is portaled to <body> and positioned
+ * against the viewport. It is never laid out inside the trigger, so a scrolling
+ * sheet, a scrolling page column or an `overflow-hidden` shell frame can no
+ * longer clip it or trap it behind a page edge.
+ *
  * ARIA: the trigger is a button with aria-haspopup="listbox"; the filter
  * input carries role="combobox" with aria-activedescendant pointing at the
  * active option, which is also scrolled into view while arrowing.
  */
 
 import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import { filterSelectOptions } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
+import { owningModalId } from '../lib/uiBusy';
+import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { Icon } from './icons';
 
 /**
@@ -59,16 +68,22 @@ const PANEL_MIN_WIDTH = 224;
 const PANEL_MAX_HEIGHT = 340;
 
 /**
- * Viewport-fixed placement for `placement="auto"`. The panel is at least as
- * wide as its trigger, hangs from the trigger edge `align` names, is clamped
- * inside the viewport horizontally, and takes whichever side (below first)
- * has room, with its height capped to that room. Recomputed on scroll and
- * resize so it follows the trigger instead of floating over neighbours.
+ * Viewport-fixed placement for a panel this component owns.
+ *
+ * The panel is portaled to <body>, so its coordinates are viewport
+ * coordinates and no clipping or transformed ancestor of the trigger can
+ * capture it: the profile editor's scrolling sheet, the settings page's scroll
+ * column and the app shell's `overflow-hidden` frame all stop mattering. It is
+ * at least as wide as its trigger, hangs from the trigger edge `align` names,
+ * is clamped inside the viewport horizontally, and takes whichever side has
+ * room, with its height capped to that room. Recomputed on scroll and resize
+ * so it follows the trigger instead of floating over neighbours.
  */
-function useAutoPlacement(
+function useViewportPlacement(
   active: boolean,
   triggerRef: React.RefObject<HTMLButtonElement | null>,
   align: 'start' | 'end',
+  prefer: 'below' | 'above',
 ): CSSProperties | undefined {
   const [style, setStyle] = useState<CSSProperties | undefined>(undefined);
   useLayoutEffect(() => {
@@ -87,8 +102,17 @@ function useAutoPlacement(
       const left = Math.max(VIEWPORT_MARGIN, Math.min(preferredLeft, viewportWidth - width - VIEWPORT_MARGIN));
       const below = viewportHeight - rect.bottom - PANEL_GAP - VIEWPORT_MARGIN;
       const above = rect.top - PANEL_GAP - VIEWPORT_MARGIN;
-      const openBelow = below >= Math.min(PANEL_MAX_HEIGHT, 200) || below >= above;
-      const maxHeight = Math.max(120, Math.min(PANEL_MAX_HEIGHT, openBelow ? below : above));
+      // `prefer` names the side to take when the other is no better: on a tie
+      // the preference wins, which is what keeps a picker docked near the
+      // bottom (the composer) opening upward. The default also takes below
+      // whenever it holds a usable list, so a short trigger does not flip.
+      const openBelow = prefer === 'below'
+        ? below >= Math.min(PANEL_MAX_HEIGHT, 200) || below >= above
+        : below > above;
+      // Never taller than the room actually there: a floor here would push the
+      // panel past the viewport edge on a trigger that has almost no space.
+      const room = openBelow ? below : above;
+      const maxHeight = Math.max(0, Math.min(PANEL_MAX_HEIGHT, room));
       setStyle(openBelow
         ? { left, width, top: rect.bottom + PANEL_GAP, maxHeight }
         : { left, width, bottom: viewportHeight - rect.top + PANEL_GAP, maxHeight });
@@ -100,7 +124,7 @@ function useAutoPlacement(
       window.removeEventListener('resize', place);
       window.removeEventListener('scroll', place, true);
     };
-  }, [active, triggerRef, align]);
+  }, [active, triggerRef, align, prefer]);
   return style;
 }
 
@@ -143,12 +167,19 @@ export function SearchableSelect({
   /** Rendered with the trimmed query when filtering removes every option. */
   readonly noMatchText?: (query: string) => string;
   readonly buttonClassName?: string;
+  /**
+   * Hands panel positioning to the caller: the panel then renders inline, in
+   * the trigger's own flow, with these classes verbatim. The composer uses it
+   * to anchor the panel to its card through inherited CSS variables. Leave it
+   * unset to get the shared popover, which is portaled to <body> and placed
+   * against the viewport.
+   */
   readonly panelClassName?: string;
   /**
-   * 'above' for triggers docked near the viewport bottom (the composer).
-   * 'auto' measures the trigger: the panel is fixed to the viewport, opens
-   * below when it fits and above otherwise, caps its height to the room it
-   * has, and never runs past either viewport edge.
+   * Which side of the trigger the panel prefers. `above` for triggers docked
+   * near the viewport bottom (the composer). A portaled panel measures the
+   * room on both sides and keeps the preferred one unless the other holds
+   * strictly more, so it never runs past a viewport edge.
    */
   readonly placement?: 'below' | 'above' | 'auto';
   /**
@@ -193,8 +224,33 @@ export function SearchableSelect({
   const [activeIndex, setActiveIndex] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const autoStyle = useAutoPlacement(placement === 'auto' && open, triggerRef, align);
+  /**
+   * A `panelClassName` means the caller positions the panel itself — the
+   * composer anchors it to its card through inherited CSS variables — so that
+   * panel stays inline, in the trigger's own flow. Otherwise this component
+   * owns the placement and portals the panel to <body>.
+   */
+  const ownsPanel = panelClassName === undefined;
+  /**
+   * Which dialog owns this picker, read from the trigger rather than the
+   * panel: the panel renders in <body> and has no dialog ancestor left to
+   * ask. The id goes on the portaled panel so an enclosing dialog's focus trap
+   * accepts this surface and only this one — a picker under a lower dialog, or
+   * on the page behind one, is not exempt while another dialog is on top.
+   */
+  const [ownerId, setOwnerId] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    if (!open) { setOwnerId(undefined); return; }
+    setOwnerId(owningModalId(triggerRef.current));
+  }, [open]);
+  const panelStyle = useViewportPlacement(
+    ownsPanel && open,
+    triggerRef,
+    align,
+    placement === 'above' ? 'above' : 'below',
+  );
 
   const selected = options.find((option) => option.value === value);
   const visible = useMemo(() => filterSelectOptions(options, query), [options, query]);
@@ -229,13 +285,16 @@ export function SearchableSelect({
     setQuery('');
   };
 
-  // Clicking anywhere outside the root dismisses the panel.
+  // Clicking anywhere outside the trigger root or the panel dismisses it. A
+  // portaled panel is outside the root, so it is checked explicitly: clicking
+  // an option is a commit, not a dismissal.
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) {
-        close();
-      }
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) === true) return;
+      if (panelRef.current?.contains(target) === true) return;
+      close();
     };
     document.addEventListener('pointerdown', onPointerDown);
     return () => { document.removeEventListener('pointerdown', onPointerDown); };
@@ -284,6 +343,175 @@ export function SearchableSelect({
   };
 
   const listId = `${id ?? 'searchable-select'}-list`;
+
+  // The panel body, shared by both hosts: a caller-owned inline panel and the
+  // portaled one render exactly the same children, so search, the custom-value
+  // row, grouping and density cannot drift between the two paths.
+  const panel = (
+    <>
+      {panelHeader}
+      {hideFilter ? null : (
+      <div className="border-b border-hairline px-3 py-2">
+        <input
+          type="text"
+          data-autofocus
+          ref={(input) => { input?.focus(); }}
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setActiveIndex(0);
+          }}
+          onKeyDown={onSearchKeyDown}
+          placeholder={searchPlaceholder ?? t('select.search')}
+          aria-label={ariaLabel}
+          role="combobox"
+          aria-expanded="true"
+          aria-controls={listId}
+          aria-activedescendant={
+            rowEnabled(activeIndex) ? `${listId}-option-${activeIndex}` : undefined
+          }
+          className="w-full bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-faint"
+        />
+      </div>
+      )}
+      {hideFilter && options.length === 0 ? null : (
+      <div
+        ref={listRef}
+        id={listId}
+        role="listbox"
+        aria-label={ariaLabel}
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1.5 ${
+          // A caller-owned panel keeps the trigger-flow height cap; the
+          // portaled one is capped by the placement's own maxHeight.
+          ownsPanel ? '' : 'max-h-[min(340px,55vh)]'
+        }`}
+      >
+        {rowCount === 0 ? (
+          <p className="px-2 py-4 text-center text-[12px] text-ink-faint">
+            {options.length === 0
+              ? (emptyText ?? t('select.empty'))
+              : (noMatchText ?? ((q: string) => t('select.noMatches', { query: q })))(query.trim())}
+          </p>
+        ) : (
+          <>
+            {visible.map((option, index) => {
+              const active = index === activeIndex;
+              const isSelected = option.value === value;
+              const previousGroup = index > 0 ? visible[index - 1]?.group : undefined;
+              const groupHeader =
+                showGroups && option.group !== undefined && option.group !== previousGroup
+                  ? option.group
+                  : undefined;
+              return (
+                <div key={`${option.value}-${index}`} role="presentation">
+                  {groupHeader !== undefined ? (
+                    <p
+                      className={`px-3 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-3'}`}
+                    >
+                      {groupHeader}
+                    </p>
+                  ) : null}
+                  {density === 'compact' ? (
+                    <CompactOptionRow
+                      id={`${listId}-option-${index}`}
+                      index={index}
+                      option={option}
+                      active={active}
+                      selected={isSelected}
+                      onCommit={() => { commit(option); }}
+                      onHover={() => { if (!active && !option.disabled) setActiveIndex(index); }}
+                    />
+                  ) : (
+                  <button
+                    type="button"
+                    id={`${listId}-option-${index}`}
+                    data-index={index}
+                    role="option"
+                    data-option-value={option.value}
+                    aria-selected={isSelected}
+                    aria-disabled={option.disabled ? true : undefined}
+                    disabled={option.disabled}
+                    title={option.title ?? option.label}
+                    onClick={() => { commit(option); }}
+                    onMouseMove={() => { if (!active && !option.disabled) setActiveIndex(index); }}
+                    className={`flex w-full flex-col gap-0.5 rounded-md px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] disabled:cursor-not-allowed ${
+                      isSelected
+                        ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]'
+                        : active ? 'bg-ink/[0.04]' : ''
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span
+                        className={`min-w-0 truncate text-[13px] ${option.disabled ? 'text-ink-faint' : 'text-ink'} ${
+                          isSelected ? 'font-medium' : ''
+                        }`}
+                      >
+                        {option.label}
+                      </span>
+                      {isSelected ? (
+                        <Icon name="check" size={12} className="ml-auto text-ink-soft" />
+                      ) : null}
+                    </span>
+                    {option.description !== undefined ? (
+                      <span className="line-clamp-2 text-[12px] leading-snug text-ink-faint">
+                        {option.description}
+                      </span>
+                    ) : null}
+                    {option.hint !== undefined ? (
+                      <span className="truncate font-mono text-[11px] text-ink-faint">
+                        {option.hint}
+                      </span>
+                    ) : null}
+                    {option.badges !== undefined && option.badges.length > 0 ? (
+                      <span className="mt-0.5 flex flex-wrap items-center gap-1">
+                        {option.badges.map((badge) => (
+                          <span
+                            key={badge.label}
+                            className={`rounded-[4px] py-px text-[11px] leading-4 ${
+                              badge.accent === true
+                                ? 'font-medium text-accent-ink'
+                                : badge.tone === 'caution'
+                                  ? 'bg-amber-ink/10 px-1.5 text-amber-ink'
+                                  : 'bg-ink/[0.05] px-1.5 text-ink-faint'
+                            }`}
+                          >
+                            {badge.label}
+                          </span>
+                        ))}
+                      </span>
+                    ) : null}
+                  </button>
+                  )}
+                </div>
+              );
+            })}
+            {customRow !== undefined ? (
+              <button
+                type="button"
+                id={`${listId}-option-${visible.length}`}
+                data-index={visible.length}
+                role="option"
+                aria-selected={customRow === value}
+                title={customRow}
+                onClick={() => { onChange(customRow); close(); }}
+                onMouseMove={() => { setActiveIndex(visible.length); }}
+                className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left font-mono text-[12px] text-ink transition-colors duration-[var(--kiki-motion-quick)] ${
+                  activeIndex === visible.length ? 'bg-ink/[0.04]' : 'hover:bg-ink/[0.04]'
+                }`}
+              >
+                <Icon name="plus" size={12} className="text-ink-faint" />
+                <span className="min-w-0 truncate">
+                  {(customValueLabel ?? ((custom) => custom))(customRow)}
+                </span>
+              </button>
+            ) : null}
+          </>
+        )}
+      </div>
+      )}
+      {panelFooter}
+    </>
+  );
 
   return (
     <div
@@ -338,177 +566,44 @@ export function SearchableSelect({
           </svg>
         )}
       </button>
-      {open ? (
-        <div
-          className={
-            panelClassName ??
-            (placement === 'auto'
-              ? `anim-enter fixed z-50 flex flex-col overflow-hidden ${POPOVER_SURFACE_CLASS}`
-              : `anim-enter absolute z-40 w-64 max-w-[calc(100vw-48px)] overflow-hidden ${POPOVER_SURFACE_CLASS} ${
-                placement === 'above' ? 'bottom-full mb-1' : 'top-full mt-1'
-              } ${align === 'end' ? 'right-0' : 'left-0'}`)
-          }
-          style={placement === 'auto' && panelClassName === undefined ? autoStyle : undefined}
-        >
-          {panelHeader}
-          {hideFilter ? null : (
-          <div className="border-b border-hairline px-3 py-2">
-            <input
-              type="text"
-              data-autofocus
-              ref={(input) => { input?.focus(); }}
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                setActiveIndex(0);
+      {open
+        ? ownsPanel
+          // The panel carries its own Escape handler because it is no longer a
+          // DOM child of this root: the root's keydown never sees its keys.
+          ? createPortal(
+            <div
+              ref={panelRef}
+              data-select-panel
+              // Names the dialog this surface belongs to (its `overlayId`, or
+              // absent outside a dialog), so that dialog's focus trap can tell
+              // its own picker from one belonging to another dialog.
+              {...(ownerId === undefined ? {} : { [MODAL_ESCAPE_ATTRIBUTE]: ownerId })}
+              onKeyDown={(event) => {
+                if (event.key !== 'Escape') return;
+                event.preventDefault();
+                // Keep the global Escape handler (turn abort) and the dialog's
+                // own close-out of a panel dismissal.
+                event.stopPropagation();
+                close();
+                triggerRef.current?.focus();
               }}
-              onKeyDown={onSearchKeyDown}
-              placeholder={searchPlaceholder ?? t('select.search')}
-              aria-label={ariaLabel}
-              role="combobox"
-              aria-expanded="true"
-              aria-controls={listId}
-              aria-activedescendant={
-                rowEnabled(activeIndex) ? `${listId}-option-${activeIndex}` : undefined
-              }
-              className="w-full bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-faint"
-            />
-          </div>
-          )}
-          {hideFilter && options.length === 0 ? null : (
-          <div
-            ref={listRef}
-            id={listId}
-            role="listbox"
-            aria-label={ariaLabel}
-            className={`overflow-x-hidden overflow-y-auto p-1.5 ${placement === 'auto' ? 'min-h-0 flex-1' : 'max-h-[min(340px,55vh)]'}`}
-          >
-            {rowCount === 0 ? (
-              <p className="px-2 py-4 text-center text-[12px] text-ink-faint">
-                {options.length === 0
-                  ? (emptyText ?? t('select.empty'))
-                  : (noMatchText ?? ((q: string) => t('select.noMatches', { query: q })))(query.trim())}
-              </p>
-            ) : (
-              <>
-                {visible.map((option, index) => {
-                  const active = index === activeIndex;
-                  const isSelected = option.value === value;
-                  const previousGroup = index > 0 ? visible[index - 1]?.group : undefined;
-                  const groupHeader =
-                    showGroups && option.group !== undefined && option.group !== previousGroup
-                      ? option.group
-                      : undefined;
-                  return (
-                    <div key={`${option.value}-${index}`} role="presentation">
-                      {groupHeader !== undefined ? (
-                        <p
-                          className={`px-3 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-3'}`}
-                        >
-                          {groupHeader}
-                        </p>
-                      ) : null}
-                      {density === 'compact' ? (
-                        <CompactOptionRow
-                          id={`${listId}-option-${index}`}
-                          index={index}
-                          option={option}
-                          active={active}
-                          selected={isSelected}
-                          onCommit={() => { commit(option); }}
-                          onHover={() => { if (!active && !option.disabled) setActiveIndex(index); }}
-                        />
-                      ) : (
-                      <button
-                        type="button"
-                        id={`${listId}-option-${index}`}
-                        data-index={index}
-                        role="option"
-                        data-option-value={option.value}
-                        aria-selected={isSelected}
-                        aria-disabled={option.disabled ? true : undefined}
-                        disabled={option.disabled}
-                        title={option.title ?? option.label}
-                        onClick={() => { commit(option); }}
-                        onMouseMove={() => { if (!active && !option.disabled) setActiveIndex(index); }}
-                        className={`flex w-full flex-col gap-0.5 rounded-md px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] disabled:cursor-not-allowed ${
-                          isSelected
-                            ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]'
-                            : active ? 'bg-ink/[0.04]' : ''
-                        }`}
-                      >
-                        <span className="flex items-center gap-2">
-                          <span
-                            className={`min-w-0 truncate text-[13px] ${option.disabled ? 'text-ink-faint' : 'text-ink'} ${
-                              isSelected ? 'font-medium' : ''
-                            }`}
-                          >
-                            {option.label}
-                          </span>
-                          {isSelected ? (
-                            <Icon name="check" size={12} className="ml-auto text-ink-soft" />
-                          ) : null}
-                        </span>
-                        {option.description !== undefined ? (
-                          <span className="line-clamp-2 text-[12px] leading-snug text-ink-faint">
-                            {option.description}
-                          </span>
-                        ) : null}
-                        {option.hint !== undefined ? (
-                          <span className="truncate font-mono text-[11px] text-ink-faint">
-                            {option.hint}
-                          </span>
-                        ) : null}
-                        {option.badges !== undefined && option.badges.length > 0 ? (
-                          <span className="mt-0.5 flex flex-wrap items-center gap-1">
-                            {option.badges.map((badge) => (
-                              <span
-                                key={badge.label}
-                                className={`rounded-[4px] py-px text-[11px] leading-4 ${
-                                  badge.accent === true
-                                    ? 'font-medium text-accent-ink'
-                                    : badge.tone === 'caution'
-                                      ? 'bg-amber-ink/10 px-1.5 text-amber-ink'
-                                      : 'bg-ink/[0.05] px-1.5 text-ink-faint'
-                                }`}
-                              >
-                                {badge.label}
-                              </span>
-                            ))}
-                          </span>
-                        ) : null}
-                      </button>
-                      )}
-                    </div>
-                  );
-                })}
-                {customRow !== undefined ? (
-                  <button
-                    type="button"
-                    id={`${listId}-option-${visible.length}`}
-                    data-index={visible.length}
-                    role="option"
-                    aria-selected={customRow === value}
-                    title={customRow}
-                    onClick={() => { onChange(customRow); close(); }}
-                    onMouseMove={() => { setActiveIndex(visible.length); }}
-                    className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left font-mono text-[12px] text-ink transition-colors duration-[var(--kiki-motion-quick)] ${
-                      activeIndex === visible.length ? 'bg-ink/[0.04]' : 'hover:bg-ink/[0.04]'
-                    }`}
-                  >
-                    <Icon name="plus" size={12} className="text-ink-faint" />
-                    <span className="min-w-0 truncate">
-                      {(customValueLabel ?? ((custom) => custom))(customRow)}
-                    </span>
-                  </button>
-                ) : null}
-              </>
-            )}
-          </div>
-          )}
-          {panelFooter}
-        </div>
-      ) : null}
+              className={`anim-enter fixed z-50 flex flex-col overflow-hidden ${POPOVER_SURFACE_CLASS}`}
+              style={panelStyle}
+            >
+              {panel}
+            </div>,
+            document.body,
+          )
+          : (
+            <div
+              ref={panelRef}
+              data-select-panel
+              className={panelClassName}
+            >
+              {panel}
+            </div>
+          )
+        : null}
     </div>
   );
 }

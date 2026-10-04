@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NamedAgentProfile } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { NamedAgentProfilesCard } from './AgentsSection';
-import { optionLabels, pickValue } from './testControls';
+import { openOptions, optionLabels, pickValue } from './testControls';
 import { AgentTaskSettings } from './AgentTaskSettings';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
 
@@ -299,7 +299,7 @@ describe('default main profile settings', () => {
     await act(async () => { [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click(); });
     const dialog = document.body.querySelector('[role="dialog"]')!;
     await act(async () => { dialog.querySelector<HTMLButtonElement>('#agent-model-alias')!.click(); });
-    const options = [...dialog.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+    const options = openOptions();
     expect(options.some((option) => option.textContent?.includes('No model pin (unset)'))).toBe(true);
     const follow = options.find((option) => option.textContent?.includes('Follow caller (inherit)'))!;
     expect(follow).toBeDefined();
@@ -319,7 +319,7 @@ describe('default main profile settings', () => {
     await act(async () => { [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click(); });
     const dialog = document.body.querySelector('[role="dialog"]')!;
     await act(async () => { dialog.querySelector<HTMLButtonElement>('#agent-model-alias')!.click(); });
-    expect([...dialog.querySelectorAll('[role="option"]')].some((option) =>
+    expect(openOptions().some((option) =>
       option.textContent?.includes('Follow caller (inherit)'))).toBe(false);
     await setInputValue(dialog.querySelector<HTMLInputElement>('[data-agent-model-alias]')!, 'inherit');
     expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('A main agent has no caller');

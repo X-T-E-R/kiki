@@ -6,6 +6,7 @@ import { I18nProvider } from '../i18n';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Dialog } from './Dialog';
 import { SidePanel } from './SidePanel';
+import { SearchableSelect } from './SearchableSelect';
 import { useDirtyGuardState } from './dirtyGuard';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -117,4 +118,129 @@ it('closes a clean editor directly without a confirmation', async () => {
   expect(document.querySelector('[role="alertdialog"]')).toBeNull();
   expect(document.querySelector('[aria-label="Editor"]')).toBeNull();
   expect(discard).toHaveBeenCalledTimes(1);
+});
+
+/**
+ * A picker inside a stacked dialog portals its panel to <body>, so it is no
+ * longer a DOM descendant of the dialog panel. The trap must still treat it as
+ * the dialog's own: otherwise the first keystroke in the filter is yanked back
+ * out to the dialog's first control and the field is unusable.
+ */
+function DialogWithPortaledField() {
+  const [sheet, setSheet] = useState(true);
+  return <I18nProvider>
+    {sheet ? <Dialog stacked ariaLabel="Picker sheet" overlayId="picker-sheet-test" onClose={() => setSheet(false)}>
+      <SearchableSelect id="sheet-model" value="a" options={[{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }]}
+        ariaLabel="Pick a model" onChange={() => {}} />
+    </Dialog> : null}
+  </I18nProvider>;
+}
+
+it('leaves focus in a portaled picker panel instead of pulling it back into the dialog', async () => {
+  await act(async () => root.render(<DialogWithPortaledField />));
+  const trigger = document.querySelector<HTMLButtonElement>('#sheet-model')!;
+  await act(async () => { trigger.click(); });
+  const filter = document.querySelector<HTMLInputElement>('input[role="combobox"]')!;
+  // The panel is in <body>, outside the dialog panel, and focus is on it.
+  expect(document.querySelector('[role="dialog"]')!.contains(filter)).toBe(false);
+  expect(document.activeElement).toBe(filter);
+  // Moving focus within the portaled panel must not be undone by the trap.
+  const rows = document.querySelectorAll<HTMLElement>('[data-select-panel] [role="option"]');
+  await act(async () => { (rows[1] as HTMLElement).focus(); });
+  expect(document.activeElement).toBe(rows[1]);
+});
+
+/**
+ * The exemption is per owning dialog, not a bare marker: a portaled panel is
+ * only exempt from the dialog it belongs to, and only while that dialog is
+ * still on top. Without the id, a picker under a lower dialog — or one opened
+ * on the page behind a dialog — would keep focus while an unrelated dialog
+ * sits on top of it, and Tab there would be swallowed by the wrong trap.
+ */
+function Picker({ id }: { id: string }) {
+  return <SearchableSelect id={id} value="a" ariaLabel={`pick ${id}`}
+    options={[{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }]} onChange={() => {}} />;
+}
+
+function TwoDialogs() {
+  const [outer, setOuter] = useState(true);
+  const [inner, setInner] = useState(false);
+  return <I18nProvider>
+    {outer ? <Dialog stacked ariaLabel="Outer" overlayId="outer-dialog" onClose={() => setOuter(false)}>
+      <Picker id="outer-picker" />
+      <button type="button" onClick={() => setInner(true)}>Open inner</button>
+      <button type="button">Outer last</button>
+    </Dialog> : null}
+    {inner ? <Dialog stacked ariaLabel="Inner" overlayId="inner-dialog" onClose={() => setInner(false)}>
+      <button type="button">Inner only</button>
+    </Dialog> : null}
+  </I18nProvider>;
+}
+
+const openPanelFilter = () => document.querySelector<HTMLInputElement>('[data-select-panel] input[role="combobox"]')!;
+const clickByText = (text: string) =>
+  act(async () => { [...document.querySelectorAll('button')].find((b) => b.textContent === text)!.click(); });
+
+it('does not let a lower dialog picker hold focus once another dialog is on top', async () => {
+  await act(async () => root.render(<TwoDialogs />));
+  await act(async () => { document.querySelector<HTMLButtonElement>('#outer-picker')!.click(); });
+  const outerFilter = openPanelFilter();
+  // The panel names the dialog it belongs to, so the trap can tell.
+  expect(outerFilter.closest('[data-modal-escape]')?.getAttribute('data-modal-escape')).toBe('outer-dialog');
+  await clickByText('Open inner');
+  const inner = document.querySelector<HTMLElement>('[aria-label="Inner"]')!;
+  // Focus lands on the foreign panel: the top dialog takes it back.
+  await act(async () => { outerFilter.focus(); });
+  expect(document.activeElement).not.toBe(outerFilter);
+  expect(inner.contains(document.activeElement)).toBe(true);
+});
+
+it('does not let a page picker hold focus through a dialog opened above it', async () => {
+  function OverPage() {
+    const [open, setOpen] = useState(true);
+    return <I18nProvider>
+      <Picker id="page-picker" />
+      {open ? <Dialog stacked ariaLabel="On top" overlayId="on-top-dialog" onClose={() => setOpen(false)}>
+        <button type="button">Top only</button>
+      </Dialog> : null}
+    </I18nProvider>;
+  }
+  await act(async () => root.render(<OverPage />));
+  await act(async () => { document.querySelector<HTMLButtonElement>('#page-picker')!.click(); });
+  const pageFilter = openPanelFilter();
+  // No dialog owns it, so it claims no exemption at all.
+  expect(pageFilter.closest('[data-modal-escape]')).toBeNull();
+  const top = document.querySelector<HTMLElement>('[aria-label="On top"]')!;
+  await act(async () => { pageFilter.focus(); });
+  expect(document.activeElement).not.toBe(pageFilter);
+  expect(top.contains(document.activeElement)).toBe(true);
+});
+
+it('gives the exemption back to the dialog that owns the picker when it is on top again', async () => {
+  function Switcher() {
+    const [inner, setInner] = useState(false);
+    return <I18nProvider>
+      <Dialog stacked ariaLabel="Outer" overlayId="switch-outer" onClose={() => {}}>
+        <Picker id="switch-picker" />
+        <button type="button" onClick={() => setInner((value) => !value)}>Toggle</button>
+      </Dialog>
+      {inner ? <Dialog stacked ariaLabel="Inner" overlayId="switch-inner" onClose={() => setInner(false)}>
+        <button type="button">Inner only</button>
+      </Dialog> : null}
+    </I18nProvider>;
+  }
+  await act(async () => root.render(<Switcher />));
+  await act(async () => { document.querySelector<HTMLButtonElement>('#switch-picker')!.click(); });
+  const filter = openPanelFilter();
+  // Owned and on top: the trap leaves it alone.
+  await act(async () => { filter.focus(); });
+  expect(document.activeElement).toBe(filter);
+  // Another dialog opens: the same panel is no longer exempt.
+  await clickByText('Toggle');
+  await act(async () => { filter.focus(); });
+  expect(document.activeElement).not.toBe(filter);
+  // Close it: ownership returns to the dialog that owns the picker.
+  await clickByText('Toggle');
+  await act(async () => { filter.focus(); });
+  expect(document.activeElement).toBe(filter);
 });

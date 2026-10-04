@@ -10,6 +10,13 @@
  * the child re-focuses it once it enables. Without a marked element the first
  * focusable control takes focus; focus returns to the previously focused
  * element on close.
+ *
+ * The trap leaves one thing alone: a portaled surface that this dialog owns —
+ * a picker's panel in `<body>`, marked with `data-modal-escape` set to that
+ * dialog's `overlayId`. Focus belongs to the surface that owns it, so the trap
+ * would otherwise rip it out from under the user mid-typing. The id is what
+ * keeps that exemption honest: a panel belonging to a dialog underneath, or to
+ * no dialog at all, is not accepted while this one is on top.
  */
 
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
@@ -19,6 +26,15 @@ import { canRestoreModalFocus, nextModalDepth, registerModal, registerOverlay } 
 
 const ModalDepth = createContext<number | undefined>(undefined);
 export function useStackedDialog(): boolean { return useContext(ModalDepth) !== undefined; }
+
+/**
+ * Names the dialog a portaled surface belongs to, so the dialog's focus trap
+ * can tell its own surface from another one's. The value must be the owning
+ * dialog's `overlayId`: the trap accepts a portaled surface only when that id
+ * is still the top modal, which is what keeps a picker under one dialog from
+ * holding focus while another dialog is on top of it.
+ */
+export const MODAL_ESCAPE_ATTRIBUTE = 'data-modal-escape';
 
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -108,6 +124,19 @@ export function Dialog({
     if (panel === null) return;
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const isTop = () => depth === undefined ? canRestoreModalFocus(panel) : ownership.current?.isTop() === true;
+    /**
+     * Focus the dialog keeps: its own subtree, plus a portaled surface that
+     * this dialog owns — identified by its `overlayId` and only while this
+     * dialog is still the top modal. A bare marker would let a picker under a
+     * lower dialog, or one opened on the page behind this one, keep focus
+     * while an unrelated dialog sits on top.
+     */
+    const ownsFocus = (target: EventTarget | null) => {
+      if (!(target instanceof Element)) return false;
+      if (panel.contains(target)) return true;
+      const owner = target.closest(`[${MODAL_ESCAPE_ATTRIBUTE}]`)?.getAttribute(MODAL_ESCAPE_ATTRIBUTE);
+      return owner === overlayId && isTop();
+    };
     const focusable = () => [...panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter(
       (element) => element.offsetParent !== null && (depth === undefined || !element.closest('[inert]')),
     );
@@ -117,6 +146,8 @@ export function Dialog({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Tab' || !isTop()) return;
       if (depth !== undefined) event.stopPropagation();
+      // Tab inside a portaled surface belongs to that surface, not the trap.
+      if (event.target instanceof Element && ownsFocus(event.target) && !panel.contains(event.target)) return;
       const controls = focusable();
       if (controls.length === 0) {
         event.preventDefault();
@@ -135,7 +166,7 @@ export function Dialog({
       }
     };
     const onFocus = (event: FocusEvent) => {
-      if (isTop() && event.target instanceof Node && !panel.contains(event.target)) (focusable()[0] ?? panel).focus();
+      if (isTop() && !ownsFocus(event.target)) (focusable()[0] ?? panel).focus();
     };
     if (depth === undefined) panel.addEventListener('keydown', onKeyDown);
     else {
@@ -149,7 +180,8 @@ export function Dialog({
       if (depth === undefined) previous?.focus();
       else queueMicrotask(() => { if (previous && canRestoreModalFocus(previous)) previous.focus(); });
     };
-  }, [depth]);
+    // overlayId is read by ownsFocus, so the trap has to be rebuilt with it.
+  }, [depth, overlayId]);
 
   return createPortal(
     <ModalDepth.Provider value={depth}>

@@ -23,6 +23,7 @@ import {
   writeSkinPrefs,
 } from '../../lib/skins';
 import { AppearanceSection } from './AppearanceSection';
+import { openOptions, openPanel } from './testControls';
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
@@ -98,7 +99,11 @@ const button = (selector: string) => container.querySelector<HTMLButtonElement>(
 /** Open a font role's picker and pick one of its rows. */
 async function pickFont(role: string, value: string) {
   await act(async () => { button(`[data-font-role="${role}"] [aria-haspopup="listbox"]`).click(); });
-  await act(async () => { button(`[data-font-role="${role}"] [data-option-value="${value}"]`).click(); });
+  // The rows live in the panel, which a picker without its own
+  // `panelClassName` portals to <body> rather than into the card.
+  const row = openOptions().find((option) => option.getAttribute('data-option-value') === value);
+  if (row === undefined) throw new Error(`no font row ${value}`);
+  await act(async () => { row.click(); });
 }
 
 describe('AppearanceSection', () => {
@@ -228,7 +233,7 @@ describe('AppearanceSection', () => {
     // A row control at the right edge of a 1024px viewport.
     trigger.getBoundingClientRect = () => ({ left: 880, right: 1000, top: 200, bottom: 232, width: 120, height: 32, x: 880, y: 200, toJSON: () => ({}) });
     await act(async () => { trigger.click(); });
-    const panel = container.querySelector('[data-font-role="sans"] [role="listbox"]')!.parentElement!;
+    const panel = openPanel();
     // Viewport-fixed, hung from the trigger's right edge, never past the viewport.
     expect(panel.className).toContain('fixed');
     const left = Number.parseFloat(panel.style.left);

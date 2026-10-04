@@ -27,6 +27,21 @@ export function canRestoreModalFocus(element: HTMLElement): boolean {
   return element.isConnected && (!top || top.panel.contains(element));
 }
 
+/**
+ * The id of the open modal that contains `element`, or undefined when it is
+ * not inside one. A surface portaled out of a dialog (a picker panel in
+ * `<body>`) has no DOM ancestor to ask, so its owner is resolved from the
+ * trigger it was opened from instead.
+ */
+export function owningModalId(element: Element | null): string | undefined {
+  if (element === null) return undefined;
+  for (let node: Element | null = element; node !== null; node = node.parentElement) {
+    const owner = modals.find((entry) => entry.panel.contains(node));
+    if (owner !== undefined) return owner.id;
+  }
+  return undefined;
+}
+
 export function registerOverlay(id: string): () => void {
   open.add(id);
   return () => {

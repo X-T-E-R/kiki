@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NamedAgentProfile, ToolDescriptor } from '@kiki/protocol';
 import { I18nProvider } from '../../../i18n';
 import { SubagentToolSettingsCard } from './ToolSettingsCard';
+import { openOptions } from '../testControls';
 
 const { client, editorProps, guardState } = vi.hoisted(() => ({
   guardState: { value: undefined as { confirmDiscard?: (id: string, action: () => void) => void } | undefined },
@@ -137,7 +138,7 @@ async function type(input: HTMLInputElement, value: string) {
 async function selectObject(name: string, fileHint?: string) {
   await act(async () => { container.querySelector<HTMLButtonElement>('#subagent-tools-object')!.click(); });
   // Several objects can share a name; the title carries the identity.
-  const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+  const option = openOptions()
     .find((candidate) => {
       const title = candidate.getAttribute('title') ?? '';
       const named = title === name || title.startsWith(`${name} · `);
@@ -773,10 +774,10 @@ describe('subagent tool settings', () => {
     client.listNamedAgentProfiles.mockResolvedValue(catalog([builtinExplore, { ...explore, override: true }]));
     await render();
     await act(async () => { container.querySelector<HTMLButtonElement>('#subagent-tools-object')!.click(); });
-    const titles = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+    const titles = openOptions()
       .map((candidate) => candidate.getAttribute('title') ?? '');
     expect(titles.filter((title) => title.startsWith('explore · '))).toHaveLength(2);
-    await act(async () => { container.querySelectorAll<HTMLButtonElement>('[role="option"]')[0]!.click(); });
+    await act(async () => { openOptions()[0]!.click(); });
     await settle();
     await selectObject('explore', 'explore.md');
     expect(row('Bash')!.textContent).toContain('Allowed');

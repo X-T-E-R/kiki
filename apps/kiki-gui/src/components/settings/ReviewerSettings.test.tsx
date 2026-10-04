@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
 import { ReviewerSettings } from './ReviewerSettings';
+import { openOptions } from './testControls';
 
 const { client } = vi.hoisted(() => ({ client: { getConfig: vi.fn(), listModels: vi.fn(), patchConfig: vi.fn(), revealSecret: vi.fn() } }));
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client }) }));
@@ -56,7 +57,8 @@ describe('permission reviewer settings', () => {
     const model = container.querySelector('#reviewer-model')!;
     await act(async () => (model as HTMLButtonElement).click());
     await settle();
-    await act(async () => [...container.querySelectorAll<HTMLButtonElement>('button')]
+    // The option rows live in the panel, which the picker portals to <body>.
+    await act(async () => openOptions()
       .find((element) => element.textContent?.includes('Test model'))!.click());
     const timeout = container.querySelector<HTMLInputElement>('input[type="number"]')!;
     await change(timeout, '5000');

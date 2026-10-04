@@ -8,6 +8,7 @@ import { BoardStorageSettings } from './BoardStorageSettings';
 import { ResourceLimitsCard } from './EngineLimitSettings';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
 import { TasksSection } from './TasksSection';
+import { openOptions } from './testControls';
 const { client, board } = vi.hoisted(() => ({ client: { getConfig: vi.fn(), patchConfig: vi.fn(), listWorkspaces: vi.fn(), meta: vi.fn() }, board: { read: vi.fn(), write: vi.fn() } }));
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client, klient: { global: { board } } }) }));
 let root: Root, element: HTMLDivElement, cache: QueryClient;
@@ -26,7 +27,7 @@ async function render(node: React.ReactNode) { await act(async () => root.render
 async function select(id: string, label: string) {
   await act(async () => { element.querySelector<HTMLButtonElement>(`#${id}`)!.click(); });
   await settle();
-  await act(async () => { [...element.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((option) => option.textContent?.includes(label))!.click(); });
+  await act(async () => { openOptions(element).find((option) => option.textContent?.includes(label))!.click(); });
   await settle();
 }
 async function click(text: string) { await act(async () => { [...element.querySelectorAll('button')].find((button) => button.textContent === text)!.click(); }); await settle(); }

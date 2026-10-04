@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NamedAgentProfile } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { SubagentDefaultTargetCard } from './SubagentsSection';
+import { openOptions } from './testControls';
 
 const { client } = vi.hoisted(() => ({
   client: {
@@ -60,7 +61,7 @@ async function choose(value: string) {
   const trigger = container.querySelector<HTMLButtonElement>('#subagent-default-profile-select')!;
   await act(async () => { trigger.click(); });
   const label = value === '__strict__' ? 'Require an explicit agent' : value;
-  const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+  const option = openOptions(trigger)
     .find((candidate) => candidate.querySelector('span span')?.textContent === label);
   expect(option).not.toBeUndefined();
   await act(async () => { option!.click(); });
@@ -76,12 +77,14 @@ describe('default subagent target card', () => {
     expect(target().dataset['value']).toBe('general');
     expect(trigger().textContent).toContain('general');
     await act(async () => { trigger().click(); });
-    expect([...container.querySelectorAll('[role="option"]')].map((option) => option.textContent)).toEqual([
+    expect(openOptions(trigger()).map((option) => option.textContent)).toEqual([
       expect.stringContaining('Require an explicit agent'),
       expect.stringContaining('explore'),
       expect.stringContaining('general'),
     ]);
-    expect(container.textContent).toContain('General subagent');
+    // The description line lives on the option row, which the portaled panel
+    // carries rather than the card behind it.
+    expect(openOptions(trigger()).map((option) => option.textContent).join(' ')).toContain('General subagent');
     // Resolved state: source chip, and the pinned model surfaces for explore only.
     expect(container.querySelector('[data-subagent-default-status="resolved"]')).not.toBeNull();
     expect(container.textContent).toContain('Allowed');
