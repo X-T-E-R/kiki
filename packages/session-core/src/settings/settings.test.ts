@@ -1275,12 +1275,14 @@ describe('settings search breadcrumbs and synonyms', () => {
     expect(searchSettings(index, term).some((hit) => hit.cardId === cardId)).toBe(true);
   });
 
-  it('finds dispatch-policy defaults and opens the subagent settings card in both locales', () => {
-    for (const [translateKey, queries] of [[t, ['dispatch policy', 'advisory', 'strict']], [tZh, ['派遣策略', '建议', '严格']]] as const) {
+  it('finds the profile editor that owns subagent policies in both locales', () => {
+    for (const [translateKey, queries] of [[t, ['profiles', 'subagent', 'pinned model alias']], [tZh, ['profile', '子智能体', '固定模型别名']]] as const) {
       const index = buildSettingsSearchIndex({}, translateKey);
       for (const query of queries) {
-        expect(searchSettings(index, query).find((hit) => hit.cardId === 'st-card-subagent-dispatch-policies'), query)
-          .toMatchObject({ section: 'subagents', cardId: 'st-card-subagent-dispatch-policies' });
+        const hit = searchSettings(index, query).find((entry) => entry.cardId === 'st-card-main-agents');
+        expect(hit, query).toMatchObject({ section: 'agents', cardId: 'st-card-main-agents' });
+        expect(resolveSettingsRoute(hit?.section, `#${hit?.cardId}`), query)
+          .toMatchObject({ status: 'ok', section: 'agents', cardId: 'st-card-main-agents' });
       }
     }
   });

@@ -26,6 +26,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/browser/connections/{id}",
+    ],
+    [
+      "DELETE",
       "/api/cron/{task_id}",
     ],
     [
@@ -75,6 +79,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "DELETE",
       "/api/providers/{provider_id}",
+    ],
+    [
+      "DELETE",
+      "/api/remote-connections/{connectionId}",
     ],
     [
       "DELETE",
@@ -139,6 +147,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/bots",
+    ],
+    [
+      "GET",
+      "/api/browser/connections",
+    ],
+    [
+      "GET",
+      "/api/browser/connections/{tail}",
     ],
     [
       "GET",
@@ -278,7 +294,15 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/homes/{id}/settings",
+    ],
+    [
+      "GET",
       "/api/homes/{id}/ssh-copy-candidates",
+    ],
+    [
+      "GET",
+      "/api/homes/presets",
     ],
     [
       "GET",
@@ -442,6 +466,22 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/remote-connections",
+    ],
+    [
+      "GET",
+      "/api/remote-connections/handshake",
+    ],
+    [
+      "GET",
+      "/api/remote-connections/inbound",
+    ],
+    [
+      "GET",
+      "/api/remote-connections/ssh/status",
+    ],
+    [
+      "GET",
       "/api/request-identity",
     ],
     [
@@ -490,6 +530,18 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/sessions/{session_id}/agents/{agent_id}/hooks",
+    ],
+    [
+      "GET",
+      "/api/sessions/{session_id}/agents/{agent_id}/model-switches",
+    ],
+    [
+      "GET",
+      "/api/sessions/{session_id}/agents/{agent_id}/model-switches/{operation_id}",
+    ],
+    [
+      "GET",
       "/api/sessions/{session_id}/approvals",
     ],
     [
@@ -506,7 +558,15 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/sessions/{session_id}/media/{*}",
+    ],
+    [
+      "GET",
       "/api/sessions/{session_id}/media/{file_id}",
+    ],
+    [
+      "GET",
+      "/api/sessions/{session_id}/media/{file_id}/preview",
     ],
     [
       "GET",
@@ -515,6 +575,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/sessions/{session_id}/messages/{message_id}",
+    ],
+    [
+      "GET",
+      "/api/sessions/{session_id}/persona-settings",
     ],
     [
       "GET",
@@ -614,6 +678,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/space-summary",
+    ],
+    [
+      "GET",
+      "/api/ssh/config-sync",
+    ],
+    [
+      "GET",
       "/api/ssh/connection-approval",
     ],
     [
@@ -627,6 +699,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/ssh/hosts/{tail}",
+    ],
+    [
+      "GET",
+      "/api/thread-bridges",
+    ],
+    [
+      "GET",
+      "/api/thread-bridges/receipts",
     ],
     [
       "GET",
@@ -647,6 +727,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/usage/pricing",
+    ],
+    [
+      "GET",
+      "/api/usage/realtime",
+    ],
+    [
+      "GET",
+      "/api/usage/rescan",
     ],
     [
       "GET",
@@ -710,6 +798,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "PATCH",
+      "/api/personas/{id}/state",
+    ],
+    [
+      "PATCH",
       "/api/providers/{provider_id}",
     ],
     [
@@ -738,6 +830,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/agents/{name}/model-menu{preview}",
+    ],
+    [
+      "POST",
       "/api/agents/shipped/{tail}",
     ],
     [
@@ -755,6 +851,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/bots/{id}/home",
+    ],
+    [
+      "POST",
+      "/api/browser/connections/{tail}",
     ],
     [
       "POST",
@@ -870,11 +970,31 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/homes/{id}/settings/apply",
+    ],
+    [
+      "POST",
+      "/api/homes/{id}/settings/import-preferences",
+    ],
+    [
+      "POST",
+      "/api/homes/{id}/settings/preview",
+    ],
+    [
+      "POST",
+      "/api/homes/{id}/settings/undo",
+    ],
+    [
+      "POST",
       "/api/homes/{tail}",
     ],
     [
       "POST",
       "/api/klient/call",
+    ],
+    [
+      "POST",
+      "/api/klient/session-view/{sessionId}/transcript/content",
     ],
     [
       "POST",
@@ -918,6 +1038,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/mcp/servers:stop",
+    ],
+    [
+      "POST",
       "/api/mcp/servers:test",
     ],
     [
@@ -942,6 +1066,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/nb-search/keys/usage",
+    ],
+    [
+      "POST",
       "/api/notifications/channels/{id}:{test}",
     ],
     [
@@ -963,6 +1091,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/personas/{id}:duplicate",
+    ],
+    [
+      "POST",
+      "/api/personas/{id}/home",
     ],
     [
       "POST",
@@ -1011,6 +1143,54 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/providers/{tail}",
+    ],
+    [
+      "POST",
+      "/api/remote-connections",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/{connectionId}/call",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/{connectionId}/download",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/{connectionId}/retry",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/{connectionId}/upload",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/claim",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/inbound/grants/{grantId}/revoke",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/inbound/invitations",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/provision",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/ssh/plan",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/ssh/plans/{planId}/execute",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/ssh/register",
     ],
     [
       "POST",
@@ -1102,6 +1282,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/sessions/{session_id}/agents/{agent_id}/model-switches",
+    ],
+    [
+      "POST",
+      "/api/sessions/{session_id}/agents/{agent_id}/model-switches/{operation_id}",
+    ],
+    [
+      "POST",
       "/api/sessions/{session_id}/approvals/{approval_id}",
     ],
     [
@@ -1171,6 +1359,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/sessions/{session_id}/messages/{tail}",
+    ],
+    [
+      "POST",
+      "/api/sessions/{session_id}/persona-settings",
     ],
     [
       "POST",
@@ -1250,6 +1442,46 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/thread-bridge/list",
+    ],
+    [
+      "POST",
+      "/api/thread-bridge/read",
+    ],
+    [
+      "POST",
+      "/api/thread-bridge/send",
+    ],
+    [
+      "POST",
+      "/api/thread-bridge/wait",
+    ],
+    [
+      "POST",
+      "/api/thread-bridges/{direction}/{id}/revoke",
+    ],
+    [
+      "POST",
+      "/api/thread-bridges/inbound",
+    ],
+    [
+      "POST",
+      "/api/thread-bridges/local",
+    ],
+    [
+      "POST",
+      "/api/thread-bridges/outbound",
+    ],
+    [
+      "POST",
+      "/api/thread-bridges/retry",
+    ],
+    [
+      "POST",
+      "/api/thread-bridges/targets",
+    ],
+    [
+      "POST",
       "/api/threads:read",
     ],
     [
@@ -1262,6 +1494,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/usage/rescan",
+    ],
+    [
+      "POST",
       "/api/workspace/fs:search",
     ],
     [
@@ -1271,6 +1507,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/workspaces",
+    ],
+    [
+      "POST",
+      "/api/workspaces:inspect",
     ],
     [
       "POST",
@@ -1287,6 +1527,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/worktrees/{tail}",
+    ],
+    [
+      "PUT",
+      "/api/browser/connections/{id}",
+    ],
+    [
+      "PUT",
+      "/api/browser/default",
     ],
     [
       "PUT",
@@ -1326,6 +1574,18 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "PUT",
+      "/api/personas/{id}/home",
+    ],
+    [
+      "PUT",
+      "/api/remote-connections/{connectionId}/enabled",
+    ],
+    [
+      "PUT",
+      "/api/remote-connections/inbound",
+    ],
+    [
+      "PUT",
       "/api/request-identity/manifest",
     ],
     [
@@ -1351,6 +1611,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/ssh/hosts/{id}",
+    ],
+    [
+      "PUT",
+      "/api/thread-bridges/{direction}/{id}/enabled",
     ],
     [
       "PUT",
