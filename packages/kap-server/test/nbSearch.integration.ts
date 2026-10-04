@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import type { NbSearchCapabilities } from '@kiki/protocol';
 import { IFileSystemStorageService, INbSearchService } from '@kiki/agent-core-v2';
 import { tmpdir } from 'node:os';
@@ -361,7 +361,7 @@ describe('server-v2 /api/nb-search', () => {
     expect(ready.data.providers.instances.find((instance) => instance.id === 'tavily.default')?.credential.configured).toBe(true);
     await writeFile(secretPath, JSON.stringify({ schema_version: '1', values: { NB_SEARCH_TAVILY_API_KEY: 'fixture-duplicate,fixture-duplicate' } }));
     const capabilities = await get<NbSearchCapabilities>('/nb-search/capabilities');
-    expect(capabilities.data.config_source).toMatchObject({ availability: 'unavailable', issues: ['EFFECTIVE_CONFIG_INVALID', 'CONFIGURATION_ERROR'] });
+    expect(capabilities.data.config_source).toMatchObject({ availability: 'unavailable', local_credentials: 'rejected', issues: ['LOCAL_CREDENTIAL_CONFIG_OVERRIDE'] });
     expect(capabilities.data.providers.instances).toEqual([]);
     expect(JSON.stringify(capabilities)).not.toContain('fixture-duplicate');
   });
@@ -483,10 +483,7 @@ describe('server-v2 /api/nb-search', () => {
     const restored = await get<NbSearchCapabilities>('/nb-search/capabilities');
     expect(restored.data.revision).toBe(original.data.revision);
     expect(await readFile(localPath, 'utf8')).toBe(localConfig);
-    const isolatedDir = join(home, 'cache', 'nb-search');
-    const isolatedEntry = (await readdir(isolatedDir)).find((entry) => entry.startsWith('isolated-config.') && entry.endsWith('.json'));
-    expect(isolatedEntry).toBeDefined();
-    expect(await readFile(join(isolatedDir, isolatedEntry!), 'utf8')).toBe('{}');
+    await expect(readFile(join(home, 'cache', 'nb-search', 'config.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     expect(process.env['NB_SEARCH_CONFIG']).toBe(localPath);
     expect(process.env['NB_SEARCH_HOME']).toBe(join(home, 'local-nb-search'));
     expect(JSON.stringify([original, isolated, restored])).not.toContain('fixture-local-key');
