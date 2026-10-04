@@ -82,7 +82,7 @@ describe('acp-server config surface', () => {
       expect(ids).toContain('model');
       expect(ids).not.toContain('thinking');
       const mode = configOptions.find((o) => o.id === 'mode')!;
-      expect(mode.currentValue).toBe('default');
+      expect(mode.currentValue).toBe('auto');
     },
     30_000,
   );
@@ -92,7 +92,7 @@ describe('acp-server config surface', () => {
     async () => {
       await boot();
       const { modes } = await newSession();
-      expect(modes?.currentModeId).toBe('default');
+      expect(modes?.currentModeId).toBe('auto');
       expect(modes?.availableModes.map((m) => m.id)).toEqual([
         'default',
         'plan',

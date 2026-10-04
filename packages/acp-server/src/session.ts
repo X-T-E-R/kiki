@@ -358,6 +358,10 @@ export class AcpSession {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    const permission = await this.agent.getPermission();
+    const plan = await this.agent.getPlan();
+    this.currentModeId = permission === 'auto' || permission === 'yolo'
+      ? permission : plan === null ? 'default' : 'plan';
     // Awaited: the post-`session/new` `available_commands_update` must already
     // carry the skills (see `activateSession`).
     await this.refreshSkills();

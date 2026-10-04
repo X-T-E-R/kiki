@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { getLiveSessionById, IAgentLifecycleService, IEventBus } from '@kiki/agent-core-v2';
+import { getLiveSessionById, IAgentLifecycleService, IAgentPermissionModeService, IEventBus } from '@kiki/agent-core-v2';
 import { ToolProgress } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -73,8 +73,12 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
 
     const created = (await c.send('session/new', { cwd: homeDir, mcpServers: [] })) as {
       sessionId: string;
+      modes: { currentModeId: string };
     };
     expect(created.sessionId).toMatch(/^session_/);
+    expect(created.modes.currentModeId).toBe('auto');
+    const main = getLiveSessionById(c.server.core.accessor, created.sessionId)!.accessor.get(IAgentLifecycleService).get('main')!;
+    expect(main.accessor.get(IAgentPermissionModeService).mode).toBe('auto');
     // Drain the post-new available_commands_update so prompt assertions only
     // see turn traffic.
     await c.waitForSessionUpdate('available_commands_update', 10_000);
@@ -129,6 +133,9 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
       sessionId: string;
     };
     await c.waitForSessionUpdate('available_commands_update', 10_000);
+    await c.send('session/set_mode', { sessionId: created.sessionId, modeId: 'default' });
+    const main = getLiveSessionById(c.server.core.accessor, created.sessionId)!.accessor.get(IAgentLifecycleService).get('main')!;
+    expect(main.accessor.get(IAgentPermissionModeService).mode).toBe('manual');
 
     const promptPromise = c.send('session/prompt', {
       sessionId: created.sessionId,
@@ -267,6 +274,7 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
       sessionId: string;
     };
     await c.waitForSessionUpdate('available_commands_update', 10_000);
+    await c.send('session/set_mode', { sessionId: created.sessionId, modeId: 'default' });
 
     const firstPrompt = c.send('session/prompt', {
       sessionId: created.sessionId,

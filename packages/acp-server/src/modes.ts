@@ -43,7 +43,7 @@ export const ACP_MODES = [
 ] as const satisfies readonly SessionMode[];
 
 /** Initial `currentModeId` for every freshly created ACP session. */
-export const DEFAULT_MODE_ID = 'default' as const;
+export const DEFAULT_MODE_ID = 'auto' as const;
 
 /** The four wire-level mode ids understood by this host. */
 export type AcpModeId = 'default' | 'plan' | 'auto' | 'yolo';
