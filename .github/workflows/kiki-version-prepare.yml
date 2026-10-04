@@ -1,0 +1,148 @@
+name: Kiki Release Version Preparation
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: 'Exact prepared commit SHA; the version patch applies only to this commit'
+        required: true
+        type: string
+      expected_version:
+        description: 'Expected stable CLI and desktop version'
+        required: true
+        default: '0.3.0'
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: kiki-version-prepare
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Generate version patch only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      BASE_SHA: ${{ inputs.base_sha }}
+      EXPECTED_VERSION: ${{ inputs.expected_version }}
+      VERSION_OUTPUT: ${{ runner.temp }}/kiki-version-output
+    steps:
+      - name: Checkout exact preparation commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate preparation inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'base_sha must be a full commit SHA.' >&2; exit 1; }
+          [[ "$EXPECTED_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo 'expected_version must be a stable semantic version.' >&2; exit 1; }
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate release versions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm version:release
+
+      - name: Check stable CLI and desktop version
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { readDesktopVersions, assertDesktopVersions } from './apps/kiki-gui/scripts/desktop-version.mjs';
+          const expected = process.env.EXPECTED_VERSION;
+          const actual = assertDesktopVersions(readDesktopVersions(), `kiki-v${expected}`);
+          if (actual !== expected) throw new Error(`Expected ${expected}, received ${actual}`);
+          console.log(`CLI and desktop versions agree: ${actual}`);
+          NODE
+
+      - name: Capture complete version patch and receipt
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import datetime, hashlib, json, os, pathlib, re, subprocess
+
+          def git(*args):
+              return subprocess.check_output(['git', *args])
+
+          base = os.environ['BASE_SHA']
+          version = os.environ['EXPECTED_VERSION']
+          if git('rev-parse', 'HEAD').decode().strip() != base:
+              raise RuntimeError('Preparation commit changed during version generation')
+          raw = git('diff', '--name-status', '-z', '--no-renames', 'HEAD').decode().split('\0')
+          changes = [{'status': raw[i], 'path': raw[i + 1]} for i in range(0, len(raw) - 1, 2)]
+          added = [name for name in git('ls-files', '--others', '--exclude-standard', '-z').decode().split('\0') if name]
+          changes += [{'status': 'A', 'path': name} for name in added]
+          if not changes:
+              raise RuntimeError('No release version changes were generated')
+          allowed = {
+              'package.json', 'CHANGELOG.md', 'pnpm-lock.yaml', 'system.yaml',
+              'apps/kiki-gui/src-tauri/tauri.conf.json',
+              'apps/kiki-gui/src-tauri/Cargo.toml', 'apps/kiki-gui/src-tauri/Cargo.lock',
+          }
+          consumed = []
+          for change in changes:
+              name, status = change['path'], change['status']
+              if re.fullmatch(r'\.changeset/[^/]+\.md', name) and name != '.changeset/README.md' and status == 'D':
+                  consumed.append(name)
+              elif name not in allowed and not re.fullmatch(r'(apps|packages)/[^/]+/(package\.json|CHANGELOG\.md)', name):
+                  raise RuntimeError(f'Unexpected non-version output: {status} {name}')
+              if status not in ('A', 'M', 'D'):
+                  raise RuntimeError(f'Unexpected change kind: {status} {name}')
+          if not consumed:
+              raise RuntimeError('Version generation did not consume any changesets')
+          patch = git('diff', '--binary', '--full-index', '--no-ext-diff', '--no-renames', 'HEAD')
+          for name in sorted(added):
+              result = subprocess.run(['git', 'diff', '--no-index', '--binary', '--full-index', '--no-ext-diff', '--', os.devnull, name], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              if result.returncode != 1 or not result.stdout:
+                  raise RuntimeError(f'Could not capture new version file: {name}')
+              patch += result.stdout
+          output = pathlib.Path(os.environ['VERSION_OUTPUT'])
+          output.mkdir(parents=True, exist_ok=True)
+          patch_path = output / 'version.patch'
+          patch_path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--reverse', '--check', str(patch_path)], check=True)
+          receipt = {
+              'schemaVersion': 1,
+              'repository': os.environ['GITHUB_REPOSITORY'],
+              'baseSha': base,
+              'version': version,
+              'runUrl': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'generatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'patchFile': 'version.patch',
+              'patchSha256': hashlib.sha256(patch).hexdigest(),
+              'changes': sorted(changes, key=lambda item: item['path']),
+              'consumedChangesets': sorted(consumed),
+          }
+          (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+          print(f"Captured {len(changes)} version paths, including {len(added)} new files and {len(consumed)} consumed changesets")
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write(f"## Version preparation only\n\nBase: `{base}`\n\nVersion: `{version}`\n\nApply `version.patch` only to this exact base after checking `receipt.json`. No commit, push, tag, release, or npm publication was performed.\n")
+          PY
+
+      - name: Upload version increment
+        uses: actions/upload-artifact@v7
+        with:
+          name: kiki-version-${{ inputs.expected_version }}-${{ inputs.base_sha }}
+          path: ${{ runner.temp }}/kiki-version-output/
+          if-no-files-found: error
+          retention-days: 7
