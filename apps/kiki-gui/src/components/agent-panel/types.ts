@@ -6,6 +6,7 @@ import type { AgentStatus } from '@kiki/session-core/session';
  */
 export interface AgentIdentity {
   readonly id: string;
+  readonly sessionId?: string;
   readonly profile: string;
   readonly label: string;
   readonly model?: string;

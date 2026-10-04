@@ -36,6 +36,7 @@ import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { RequestGovernanceView } from './RequestGovernanceView';
 import { UsageNavigation, usagePanelFromSearch, type UsagePanel } from './UsageNavigation';
+import { UsageExportPanel } from './usage/export/UsageExportPanel';
 import { useThreadTitleResolver } from '../lib/threadTitles';
 import { ThreadTitle } from './ThreadTitle';
 import {
@@ -69,6 +70,7 @@ import { UsageRescanControl } from './usage/UsageRescanControl';
 import { UsageReliabilityDetails } from './usage/UsageReliabilityDetails';
 import { segmentClass } from './WorkspaceScopeControl';
 import { Icon } from './icons';
+import { getCurrentVisit, getUiSnapshot, saveScrollPosition, saveUiSnapshot } from '../lib/navHistory';
 import { DimensionBreakdown } from './usage/UsageBreakdown';
 import { DrilldownPanel, DrilldownSessionList, TrendChart } from './usage/UsageTrend';
 import {
@@ -676,7 +678,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const selectPanel = (next: UsagePanel) => {
     const params = new URLSearchParams(location.search);
     params.set('panel', next);
-    setSearchParams(params);
+    setSearchParams(params, { replace: true });
   };
   const [usageNowMs, setUsageNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -711,18 +713,61 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const tab: DetailTab = sessionLocator !== undefined && !hasExplicitView
     ? 'sessions'
     : VIEW_TO_DETAIL_TAB[parseUsageDetailView(location.search)];
+  const scrollRef = useRef<HTMLElement | null>(null);
+  const restoredVisitRef = useRef<string | null>(null);
+  const [pendingScrollRestore, setPendingScrollRestore] = useState<number | null>(null);
+
+  // Read the target visit after App's layout transition, not the visit left.
+  // Restore scroll after the selected bucket/data have expanded the content.
+  useEffect(() => {
+    const visit = getCurrentVisit();
+    if (!visit || restoredVisitRef.current === visit.visitId) return;
+    restoredVisitRef.current = visit.visitId;
+    const saved = getUiSnapshot<{ scrollTop?: number; selectedBucketKey?: string | null }>(visit.visitId);
+    setPendingScrollRestore(saved?.scrollTop ?? 0);
+    setSelectedBucketKey(saved?.selectedBucketKey ?? null);
+  }, [location.key]);
+
+  const selectBucketKeyWithSnapshot = (key: string | null) => {
+    setSelectedBucketKey(key);
+    const visit = getCurrentVisit();
+    if (visit) {
+      saveUiSnapshot(visit.visitId, { selectedBucketKey: key });
+    }
+  };
+
+  const handleScroll = () => {
+    if (pendingScrollRestore !== null) return;
+    const cur = getCurrentVisit();
+    if (cur && scrollRef.current) {
+      saveUiSnapshot(cur.visitId, { scrollTop: scrollRef.current.scrollTop });
+      saveScrollPosition(cur.visitId, 'main[data-usage-scroll]', scrollRef.current.scrollTop);
+    }
+  };
+
   const selectTab = (next: DetailTab) => {
-    setSearchParams(new URLSearchParams(usageDetailViewToSearch(DETAIL_TAB_TO_VIEW[next], location.search)));
+    setSearchParams(new URLSearchParams(usageDetailViewToSearch(DETAIL_TAB_TO_VIEW[next], location.search)), { replace: true });
   };
   const [selectedBucketKey, setSelectedBucketKey] = useState<string | null>(null);
-  // Bucket keys only exist within the query that produced them.
-  useEffect(() => { setSelectedBucketKey(null); }, [filters]);
+  const filterKey = usageFiltersToSearch(filters);
+  const previousFilters = useRef<{ key: string; visitId?: string }>({ key: filterKey });
+  // Only a real filter change within this visit invalidates a bucket, not
+  // mount/POP restoration or a panel/tab change with the same query conditions.
+  useEffect(() => {
+    const visit = getCurrentVisit();
+    const changed = previousFilters.current.key !== filterKey;
+    const sameVisit = previousFilters.current.visitId === visit?.visitId;
+    previousFilters.current = { key: filterKey, visitId: visit?.visitId };
+    if (!changed || !sameVisit) return;
+    setSelectedBucketKey(null);
+    if (visit) saveUiSnapshot(visit.visitId, { selectedBucketKey: null });
+  }, [filterKey, location.key]);
 
   const applyFilters = (next: UsageFilters) => {
     writeStoredUsageFilters(next);
     // New conditions → new result set → the old page token drops with the
     // react-query key; the session locator survives in the URL.
-    setSearchParams(new URLSearchParams(usageFiltersToSearch(next, location.search)));
+    setSearchParams(new URLSearchParams(usageFiltersToSearch(next, location.search)), { replace: true });
   };
 
   const usageQuery = useInfiniteQuery({
@@ -766,6 +811,12 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const firstPage = usageQuery.data?.pages[0];
   const trend = useMemo(() => firstPage?.trend ?? [], [firstPage]);
   const selectedBucket = trend.find((bucket) => bucket.key === selectedBucketKey);
+  useLayoutEffect(() => {
+    if (pendingScrollRestore === null || !scrollRef.current) return;
+    if (pendingScrollRestore > 0 && panel === 'history' && firstPage === undefined && !usageQuery.isError) return;
+    scrollRef.current.scrollTop = pendingScrollRestore;
+    setPendingScrollRestore(null);
+  }, [pendingScrollRestore, panel, firstPage, selectedBucketKey, usageQuery.isError]);
 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces'],
@@ -822,10 +873,10 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       {pricingOpen ? (
         <PricingPanel models={reliability?.unknown_price_models ?? []} onClose={() => { setPricingOpen(false); }} />
       ) : null}
-      <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-4 pb-10 lg:px-8">
+      <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-4 pb-10 lg:px-8">
         <div className="mx-auto max-w-[1120px] space-y-4" data-usage-page>
           <UsageNavigation panel={panel} onChange={selectPanel} />
-          {panel !== 'history' ? <RequestGovernanceView view={panel} /> : <>
+          {panel === 'export' ? <UsageExportPanel /> : panel !== 'history' ? <RequestGovernanceView view={new URLSearchParams(location.search).get('panel') === 'limits' ? 'limits' : 'realtime'} /> : <>
           <LiveStrip />
           <FilterBar filters={filters} workspaces={workspaces} onChange={applyFilters} />
           {usageQuery.isPending ? (
@@ -871,7 +922,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                   trend={trend}
                   filters={filters}
                   selectedKey={selectedBucketKey}
-                  onSelect={setSelectedBucketKey}
+                  onSelect={selectBucketKeyWithSnapshot}
                   labelForKey={(key) => {
                     const group = trend.flatMap((bucket) => bucket.groups).find((entry) => entry.key === key);
                     return dimensionKeyLabel(
@@ -887,7 +938,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                   bucket={selectedBucket}
                   filters={filters}
                   sessionTitle={sessionTitle}
-                  onClose={() => { setSelectedBucketKey(null); }}
+                  onClose={() => { selectBucketKeyWithSnapshot(null); }}
                 />
               ) : null}
 

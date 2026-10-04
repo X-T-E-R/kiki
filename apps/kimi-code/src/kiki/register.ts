@@ -10,9 +10,15 @@ import { registerPromptFieldsCommand } from './prompt-fields';
 import { registerPermissionCommand } from './permission';
 import { registerSeatCommand } from './seat';
 import { registerServeCommand } from './serve';
+import { registerConnectionsCommand } from './connections';
+import { registerThreadBridgesCommand } from './thread-bridges';
+import { registerUsageExportCommand } from './usage-export';
 
 export function registerKikiCommands(program: Command): void {
   registerServeCommand(program);
+  registerConnectionsCommand(program);
+  registerThreadBridgesCommand(program);
+  registerUsageExportCommand(program);
   const seat = registerSeatCommand(program);
   registerSeatInstallCommand(seat);
   registerMcpCommand(program);

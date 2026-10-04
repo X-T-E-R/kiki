@@ -12,6 +12,7 @@ import {
 } from '@kiki/pi-tui';
 import { CURRENT_MARK, SELECT_POINTER } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';
+import { homeAlias } from '#/tui/utils/home-alias';
 import { printableChar } from '#/tui/utils/printable-key';
 import { SearchableList } from '#/tui/utils/searchable-list';
 
@@ -38,12 +39,6 @@ function formatRelativeTime(ts: number): string {
   if (hours < 24) return `${String(hours)}h ago`;
   const days = Math.floor(hours / 24);
   return `${String(days)}d ago`;
-}
-
-function homeAlias(path: string): string {
-  const home = process.env['HOME'] ?? '';
-  if (home && path.startsWith(home)) return '~' + path.slice(home.length);
-  return path;
 }
 
 // Truncates from the LEFT (keeps the tail), prefixing an ellipsis when clipped.

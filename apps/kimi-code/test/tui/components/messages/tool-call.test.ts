@@ -49,8 +49,8 @@ describe('ToolCallComponent', () => {
     expect(out).not.toContain(`${String.fromCodePoint(0x23fa, 0xfe0e)} Used Read`);
   });
 
-  describe('detach hint for long-running foreground Bash/Agent', () => {
-    it('shows the Ctrl+B hint after 10s for a running Bash call', () => {
+  describe('Ctrl+B backgrounding hint', () => {
+    it('never advertises Ctrl+B on a long-running foreground Bash card', () => {
       vi.useFakeTimers();
       const component = new ToolCallComponent(
         { id: 'call_bash_long', name: 'Bash', args: { command: 'sleep 30' } },
@@ -58,19 +58,15 @@ describe('ToolCallComponent', () => {
         stubTui(30),
       );
 
-      expect(strip(component.render(100).join('\n'))).not.toContain(
-        'Press Ctrl+B to run in background',
-      );
-
-      vi.advanceTimersByTime(10_000);
-      expect(strip(component.render(100).join('\n'))).toContain(
-        'Press Ctrl+B to run in background',
-      );
+      expect(strip(component.render(100).join('\n'))).not.toContain('Ctrl+B');
+      vi.advanceTimersByTime(60_000);
+      expect(strip(component.render(100).join('\n'))).not.toContain('Ctrl+B');
+      expect(strip(component.render(100).join('\n'))).not.toContain('background');
 
       component.dispose();
     });
 
-    it('shows the hint immediately for a running Agent call', () => {
+    it('never advertises Ctrl+B on a running AgentRun card', () => {
       vi.useFakeTimers();
       const component = new ToolCallComponent(
         { id: 'call_agent_long', name: 'AgentRun', args: { description: 'explore' } },
@@ -78,45 +74,26 @@ describe('ToolCallComponent', () => {
         stubTui(30),
       );
 
-      // No timer advancement — Agents advertise Ctrl+B immediately.
-      expect(strip(component.render(100).join('\n'))).toContain(
-        'Press Ctrl+B to run in background',
-      );
+      expect(strip(component.render(100).join('\n'))).not.toContain('Ctrl+B');
+      expect(strip(component.render(100).join('\n'))).not.toContain('background');
 
       component.dispose();
     });
 
-    it('does not show the hint for non-detachable tools', () => {
+    it('leaves the rest of a long-running card intact after the hint is gone', () => {
       vi.useFakeTimers();
       const component = new ToolCallComponent(
-        { id: 'call_read_long', name: 'Read', args: { path: 'foo.ts' } },
+        { id: 'call_bash_progress', name: 'Bash', args: { command: 'sleep 30' } },
         undefined,
         stubTui(30),
       );
+      component.appendProgress('still working');
 
-      vi.advanceTimersByTime(15_000);
-      expect(strip(component.render(100).join('\n'))).not.toContain(
-        'Press Ctrl+B to run in background',
-      );
-
-      component.dispose();
-    });
-
-    it('does not show the hint when the result lands before 10s', () => {
-      vi.useFakeTimers();
-      const component = new ToolCallComponent(
-        { id: 'call_bash_short', name: 'Bash', args: { command: 'echo hi' } },
-        undefined,
-        stubTui(30),
-      );
-
-      vi.advanceTimersByTime(5_000);
-      component.setResult({ tool_call_id: 'call_bash_short', output: 'hi', is_error: false });
-      vi.advanceTimersByTime(10_000);
-
-      expect(strip(component.render(100).join('\n'))).not.toContain(
-        'Press Ctrl+B to run in background',
-      );
+      vi.advanceTimersByTime(20_000);
+      const out = strip(component.render(100).join('\n'));
+      expect(out).toContain('Running a command');
+      expect(out).toContain('still working');
+      expect(out).not.toContain('Ctrl+B');
 
       component.dispose();
     });

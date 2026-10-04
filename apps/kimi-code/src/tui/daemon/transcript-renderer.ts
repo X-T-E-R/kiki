@@ -1,7 +1,7 @@
 import { Container, Text, type Component, type TUI } from '@kiki/pi-tui';
 
 import type { MediaRef } from '@kiki/session-core/composer/media';
-import type { Block, MessageBlock, ToolBlock } from '@kiki/session-core/session/transcript/types';
+import type { Block, MessageBlock, ToolBlock, UserBlock } from '@kiki/session-core/session/transcript/types';
 
 import { ImageThumbnail } from '#/tui/components/media/image-thumbnail';
 import { AssistantMessageComponent } from '#/tui/components/messages/assistant-message';
@@ -90,7 +90,7 @@ export class DaemonTranscriptRenderer {
 export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): Component {
   switch (block.kind) {
     case 'user':
-      return new DaemonUserMessageComponent(block.text, block.media);
+      return new DaemonUserMessageComponent(block);
     case 'assistant':
       return new DaemonAssistantMessageComponent(block.text, block.streaming, block.media);
     case 'thinking':
@@ -139,11 +139,41 @@ export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): 
 }
 
 class DaemonUserMessageComponent extends Container {
-  constructor(text: string, media: readonly MediaRef[] | undefined) {
+  private readonly message: UserMessageComponent;
+
+  constructor(private block: UserBlock) {
     super();
-    this.addChild(new UserMessageComponent(text));
-    addMediaLabels(this, media);
+    this.message = new UserMessageComponent(block.text);
+    this.addChild(this.message);
+    addMediaLabels(this, block.media);
   }
+
+  update(block: UserBlock): void {
+    this.block = block;
+    this.message.updateContent(block.text);
+  }
+
+  override render(width: number): string[] {
+    const lines = super.render(width);
+    const status = formatUserPromptStatus(this.block);
+    return status === undefined ? lines : [...lines, ...new Text(status, 2, 0).render(width)];
+  }
+}
+
+function formatUserPromptStatus(block: UserBlock): string | undefined {
+  const outcome = block.promptOutcome;
+  if (outcome !== undefined) {
+    const label = outcome.status === 'aborted'
+      ? outcome.delivered ? 'Prompt aborted' : 'Prompt aborted before delivery'
+      : outcome.delivered ? 'Reply failed' : 'Prompt failed before delivery';
+    const detail = outcome.error === undefined ? '' : ` · ${outcome.error}`;
+    return currentTheme.fg(outcome.status === 'failed' ? 'error' : 'warning', `${label}${detail}`);
+  }
+  if (block.promptStatus === 'queued') return currentTheme.dim('Queued');
+  if (block.promptStatus === 'blocked') return currentTheme.fg('warning', 'Blocked');
+  if (block.steerStatus === 'sending') return currentTheme.dim('Sending…');
+  if (block.steerStatus === 'waiting') return currentTheme.dim('Waiting for delivery');
+  return undefined;
 }
 
 class DaemonAssistantMessageComponent extends Container {
@@ -265,8 +295,10 @@ function updateMountedBlock(component: Component, block: Block): void {
       if (result !== undefined) tool.setResult(result);
       return;
     }
-    case 'message':
     case 'user':
+      (component as DaemonUserMessageComponent).update(block);
+      return;
+    case 'message':
     case 'subagent':
     case 'subagent-event':
     case 'approval':

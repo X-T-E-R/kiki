@@ -175,7 +175,6 @@ export function AgentRuntimeCard() {
     identitySlug: draft.identitySlug !== saved.identitySlug,
     advertiseAsKimiCode: draft.advertiseAsKimiCode !== saved.advertiseAsKimiCode,
     extraAgentDirs: !stringListsEqual(draft.extraAgentDirs, saved.extraAgentDirs),
-    disabledNamedProfiles: !stringListsEqual(draft.disabledNamedProfiles, saved.disabledNamedProfiles),
     skipBuiltinProfileInstallation: !stringListsEqual(draft.skipBuiltinProfileInstallation, saved.skipBuiltinProfileInstallation),
   };
   const dirty = Object.values(touched).some(Boolean);
@@ -230,7 +229,6 @@ export function AgentRuntimeCard() {
             />
           </SettingField>
           <StringListEditor label={t('st.agentIdentity.extraAgentDirs')} values={draft.extraAgentDirs} placeholder="C:\agents" onChange={(extraAgentDirs) => { updateDraft({ ...draft, extraAgentDirs }); }} />
-          <StringListEditor label={t('st.agentIdentity.disabledProfiles')} values={draft.disabledNamedProfiles} placeholder="profile-name" onChange={(disabledNamedProfiles) => { updateDraft({ ...draft, disabledNamedProfiles }); }} />
           <div className="space-y-1">
             <StringListEditor label={t('st.agentIdentity.skipBuiltin')} values={draft.skipBuiltinProfileInstallation} placeholder="builtin-name" onChange={(skipBuiltinProfileInstallation) => { updateDraft({ ...draft, skipBuiltinProfileInstallation }); }} />
             <Hint>{t('st.agentIdentity.skipBuiltinHint')}</Hint>

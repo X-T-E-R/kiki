@@ -4,9 +4,10 @@
  * `@kiki/klient`; this module only preserves GUI-facing wire shapes.
  */
 
-import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, type NbSearchManagedCredentialView } from '@kiki/protocol';
-import { createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
+import { nbSearchCapabilitiesSchema, nbSearchKeyUsageViewSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, type NbSearchKeyUsageView, type NbSearchManagedCredentialView } from '@kiki/protocol';
+import { createConnectionTransport, createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
 import { translate } from '@kiki/session-core/i18n';
+import { contentOriginalFileId, type ContentRef } from '@kiki/transcript';
 import { createSessionTransport } from '@kiki/session-core/session/klientTransport';
 import type {
   ActivateSkillRequest,
@@ -90,6 +91,8 @@ import type {
   RestoreSessionResponse,
   Session,
   SessionCreate,
+  SessionPersonaSettings,
+  ApplyPersonaSettingsRequest,
   SetDefaultModelResponse,
   ShippedAgentProfile as ProtocolShippedAgentProfile,
   Task,
@@ -111,7 +114,7 @@ import type {
   PersonaSummary,
 } from '@kiki/protocol';
 
-import { RPCError, type HttpRestCronTask, type OAuthMethodStatus, type SessionViewFacade } from '@kiki/klient';
+import { RPCError, type AgentFacade, type AgentEventPayloads, type HttpRestCronTask, type OAuthMethodStatus, type SessionViewFacade } from '@kiki/klient';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
 import {
   fetchRemoteModels,
@@ -532,6 +535,13 @@ export interface MemoryEntry {
   readonly superseded_by?: string;
   readonly supersedes?: string;
   readonly supersedes_revision?: string;
+  /**
+   * Set on a pending review candidate: the action accepting it will perform on
+   * the entry it supersedes. The candidate's own id and revision are what a
+   * decision is made against; accepting an `update` keeps the original entry's
+   * id, and `archive` archives that entry rather than the candidate.
+   */
+  readonly pending_action?: 'update' | 'archive';
   readonly revision: string;
 }
 
@@ -592,12 +602,14 @@ export const MEMORY_NOT_FOUND = 40423;
 export const MEMORY_REVISION_CONFLICT = 40944;
 
 export interface CapabilityStatus {
-  readonly id: 'kimi-cu' | 'kimi-webbridge';
+  readonly id: 'kimi-cu' | 'kimi-webbridge' | 'kiki-computer';
   readonly pluginId?: string;
   readonly displayName: string;
   readonly description: string;
   readonly supported: boolean;
   readonly state: 'not_installed' | 'partial' | 'ready' | 'unsupported';
+  /** Installed release, when the entry reports one. */
+  readonly version?: string;
   readonly steps: readonly {
     readonly id: string;
     readonly state: 'ok' | 'missing' | 'failed';
@@ -736,7 +748,28 @@ export interface PluginInfo extends PluginSummary {
   readonly diagnostics: readonly PluginDiagnostic[];
 }
 
+export interface KikiClientTransport {
+  readonly fetch: typeof fetch;
+  readonly eventsUrl: string;
+}
+
+export function createRemoteSpaceClient(options: {
+  endpoint: string;
+  token: string;
+  connectionId: string;
+  timeoutMs?: number;
+  onSessionMutation?: (sessionId: string) => void;
+}): KikiClient {
+  const endpoint = options.endpoint === '' ? globalThis.location.origin : options.endpoint;
+  return new KikiClient({
+    baseUrl: endpoint, token: options.token, timeoutMs: options.timeoutMs,
+    onSessionMutation: options.onSessionMutation,
+    transport: createConnectionTransport({ ...options, endpoint }),
+  });
+}
+
 export interface KikiClientOptions {
+  readonly transport?: KikiClientTransport;
   /** Absolute base (`http://host:port`) or '' for same-origin (dev proxy). */
   readonly baseUrl: string;
   readonly token?: string;
@@ -1006,11 +1039,22 @@ export class NativeChildPromptConflictError extends NativeChildPromptSendError {
   }
 }
 
+/** Model-switch contract types, derived from the agent facade so the wire shape has one owner. */
+export type ModelSwitchInput = Parameters<AgentFacade['switchModel']>[0];
+export type ModelSwitchReceipt = Awaited<ReturnType<AgentFacade['switchModel']>>;
+export type QueuedModelSwitch = Awaited<ReturnType<AgentFacade['listModelSwitches']>>[number];
+export type ModelSwitchState = ModelSwitchReceipt['state'];
+export type ModelSwitchMode = ModelSwitchInput['mode'];
+export type AgentModelSwitchEvent =
+  | { readonly kind: 'queued'; readonly entry: AgentEventPayloads['prompt.model_switch_queued']['entry']; readonly queueIndex: number }
+  | { readonly kind: 'status'; readonly operationId: string; readonly receipt: ModelSwitchReceipt };
+
 export class KikiClient {
   readonly baseUrl: string;
   readonly klient: ReturnType<typeof createKlient>;
   readonly sessions: ReturnType<typeof createSessionTransport>;
   private readonly token: string | undefined;
+  private readonly transport: KikiClientTransport | undefined;
   private serverLeaseId: string | undefined;
   private readonly previewBytes = new Map<string, { bytes: Uint8Array; mime: string; name?: string; etag: string }>();
   private previewCacheBytes = 0;
@@ -1018,6 +1062,7 @@ export class KikiClient {
 
   constructor(options: KikiClientOptions) {
     this.onSessionMutation = options.onSessionMutation;
+    this.transport = options.transport;
     this.baseUrl = options.baseUrl;
     this.token = options.token !== undefined && options.token !== '' ? options.token : undefined;
     this.klient = createKlient({
@@ -1025,6 +1070,7 @@ export class KikiClient {
       token: this.token,
       timeoutMs: options.timeoutMs,
       onSocketDiagnostic: (event) => { recordConnectionEvent(event); },
+      ...options.transport,
     });
     const sessions = createSessionTransport(this.klient);
     // Controllers consume this transport directly, not the convenience methods below.
@@ -1061,6 +1107,7 @@ export class KikiClient {
           endpoint: this.baseUrl,
           token: this.token,
           timeoutMs: 0,
+          ...this.transport,
         });
         try {
           return await this.run(() => snapshotKlient.session(sessionId).view.snapshot(options));
@@ -1114,8 +1161,8 @@ export class KikiClient {
     return this.run(() => this.rest.sessions.list(query));
   }
 
-  listEphemeralSessions(): Promise<import('@kiki/protocol').ListEphemeralSessionsResponse> {
-    return this.run(() => this.rest.sessions.listEphemeral());
+  listEphemeralSessions(query?: Pick<ListSessionsOptions, 'before_id' | 'page_size' | 'workspace_id' | 'persona'>): Promise<import('@kiki/protocol').ListEphemeralSessionsResponse> {
+    return this.run(() => this.rest.sessions.listEphemeral(query));
   }
 
   createSession(body: SessionCreate): Promise<Session> {
@@ -1194,6 +1241,19 @@ export class KikiClient {
     body: UpdateSessionProfileRequest,
   ): Promise<Session> {
     return this.run(() => this.rest.sessions.updateProfile(sessionId, body));
+  }
+
+  /** The persona copy this conversation runs, against the persona's current one. */
+  getPersonaSettings(sessionId: string): Promise<SessionPersonaSettings> {
+    return this.run(() => this.rest.sessions.getPersonaSettings(sessionId));
+  }
+
+  /**
+   * Apply the persona's current settings to this conversation at its next idle
+   * boundary. `restoreDefaults` also drops the conversation's own overrides.
+   */
+  applyPersonaSettings(sessionId: string, input: ApplyPersonaSettingsRequest = {}): Promise<SessionPersonaSettings> {
+    return this.run(() => this.rest.sessions.applyPersonaSettings(sessionId, input));
   }
 
   archiveSession(sessionId: string): Promise<ArchiveSessionResponse> {
@@ -1368,6 +1428,7 @@ export class KikiClient {
     text: string,
     content: readonly MessageContent[] | undefined,
     idempotencyKey: string,
+    afterModelSwitch?: string,
   ): Promise<AgentMessageReceipt | null> {
     const session = this.klient.session(sessionId);
     const agents = await this.run(() => session.agents());
@@ -1387,8 +1448,9 @@ export class KikiClient {
       await this.submitPrompt(sessionId, {
         content: promptContent,
         agent_id: agentId,
+        after_model_switch: afterModelSwitch,
         // Attachments and main retain their ordinary prompt semantics.
-        ...(keyedNativeChild ? { prompt_id: idempotencyKey } : {}),
+        prompt_id: keyedNativeChild ? idempotencyKey : undefined,
       });
     } catch (error) {
       // A 40938 may mean mismatched content, a concurrent first submission,
@@ -1410,6 +1472,77 @@ export class KikiClient {
   /** Rebind a live agent's thinking effort (agent-scoped profile call). */
   setAgentEffort(sessionId: string, agentId: string, effort: string) {
     return this.run(this.klient.session(sessionId).agent(agentId).setEffort(effort));
+  }
+
+  /**
+   * Accept a three-mode model switch (direct / compact / fresh) as a queued
+   * control item. The same operationId retries return the same receipt.
+   */
+  switchAgentModel(sessionId: string, agentId: string, input: ModelSwitchInput): Promise<ModelSwitchReceipt> {
+    return this.run(this.klient.session(sessionId).agent(agentId).switchModel(input));
+  }
+
+  /** One switch operation by id; null when the engine never accepted it. */
+  async getAgentModelSwitch(sessionId: string, agentId: string, operationId: string): Promise<ModelSwitchReceipt | null> {
+    return (await this.run(this.klient.session(sessionId).agent(agentId).getModelSwitch(operationId))) ?? null;
+  }
+
+  /** Every switch operation this agent still tracks, with queue positions. */
+  listAgentModelSwitches(sessionId: string, agentId: string): Promise<readonly QueuedModelSwitch[]> {
+    return this.run(this.klient.session(sessionId).agent(agentId).listModelSwitches());
+  }
+
+  /** Edit a still-pending switch (target model / mode); the revision guards races. */
+  updateAgentModelSwitch(sessionId: string, agentId: string, input: ModelSwitchInput, expectedRevision?: number): Promise<ModelSwitchReceipt> {
+    return this.run(this.klient.session(sessionId).agent(agentId).updateModelSwitch(input, expectedRevision));
+  }
+
+  /** Cancel a still-pending switch; preparing operations reject by contract. */
+  cancelAgentModelSwitch(sessionId: string, agentId: string, operationId: string): Promise<ModelSwitchReceipt> {
+    return this.run(this.klient.session(sessionId).agent(agentId).cancelModelSwitch(operationId));
+  }
+
+  /**
+   * Recover a failed switch: retry the accepted input (optionally as a
+   * fresh-context switch — same operation id, so dependent messages keep
+   * waiting on it), or release them onto the original binding.
+   */
+  recoverAgentModelSwitch(
+    sessionId: string,
+    agentId: string,
+    operationId: string,
+    action: 'retry' | 'keep_original',
+    mode?: ModelSwitchMode,
+  ): Promise<ModelSwitchReceipt> {
+    const agent = this.klient.session(sessionId).agent(agentId);
+    // `mode` is only part of the retry contract; keep_original rejects it.
+    return this.run(action === 'retry' ? agent.recoverModelSwitch(operationId, action, mode) : agent.recoverModelSwitch(operationId, action));
+  }
+
+  /**
+   * Subscribe to this agent's switch queue events. Listeners attach before
+   * `ready` resolves; dispose detaches both. Reconnect re-attachment is the
+   * transport's job — the hook re-reads the list on `ready`.
+   */
+  subscribeAgentModelSwitches(
+    sessionId: string,
+    agentId: string,
+    listener: (event: AgentModelSwitchEvent) => void,
+  ): { readonly ready: Promise<void>; dispose(): void } {
+    const events = this.klient.session(sessionId).agent(agentId).events;
+    const queued = events.on('prompt.model_switch_queued', (event) => {
+      listener({ kind: 'queued', entry: event.entry, queueIndex: event.queueIndex });
+    });
+    const status = events.on('prompt.model_switch_status', (event) => {
+      listener({ kind: 'status', operationId: event.operationId, receipt: event.receipt });
+    });
+    return {
+      ready: Promise.all([queued.ready, status.ready]).then(() => undefined),
+      dispose: () => {
+        queued.dispose();
+        status.dispose();
+      },
+    };
   }
 
   /** Loopback-only PTY lifecycle, owned by the shared Klient HTTP capability. */
@@ -1470,6 +1603,16 @@ export class KikiClient {
   /** `GET /api/nb-search/test` — on-demand readiness check; callers pass a signal so the panel can cancel. */
   async testNbSearch(signal?: AbortSignal): Promise<NbSearchTestStatus> {
     return nbSearchTestStatusSchema.parse(await this.run(this.rest.nbSearch.test({ signal })));
+  }
+
+  /**
+   * `POST /api/nb-search/keys/usage` — per-key state and, for the providers
+   * that report one, balance. Never called on mount: a cold cache can reach the
+   * provider even with `refresh: false`, so the panel passes that flag only
+   * from an explicit refresh.
+   */
+  async readNbSearchKeyUsage(instanceId: string, refresh = false, signal?: AbortSignal): Promise<NbSearchKeyUsageView> {
+    return nbSearchKeyUsageViewSchema.parse(await this.run(this.rest.nbSearch.keyUsage(instanceId, refresh, { signal })));
   }
 
   async readNbSearchCredential(instanceId: string, reveal = false): Promise<NbSearchManagedCredentialView> {
@@ -1607,18 +1750,53 @@ export class KikiClient {
   }
 
   /** Binary variant of readHostFile, retaining the server MIME. */
-  readHostFileBytes(path: string): Promise<{ bytes: Uint8Array; mime: string }> {
-    return this.cachedPreviewBytes(`host:${path}`, (etag) =>
-      this.rest.filesystem.readHostFileBytes(path, { ifNoneMatch: etag }));
+  readHostFileBytes(path: string, options?: import('@kiki/klient').HttpRestMediaOptions): Promise<{ bytes: Uint8Array; mime: string }> {
+    return this.run(this.rest.filesystem.readHostFileBytes(path, options));
+  }
+
+  readHostMediaPreviewBytes(path: string, options?: import('@kiki/klient').HttpRestMediaOptions): Promise<{ bytes: Uint8Array; mime: string }> {
+    return this.cachedPreviewBytes(`host-preview:${path}`, (etag) =>
+      this.rest.filesystem.readHostMediaPreview(path, { ...options, ifNoneMatch: etag }));
+  }
+
+  downloadHostFile(path: string, sink: import('@kiki/klient').HttpRestMediaSink, options?: import('@kiki/klient').HttpRestMediaOptions): Promise<import('@kiki/klient').HttpRestMediaReceipt> {
+    return this.run(this.rest.filesystem.downloadHostFile(path, sink, options));
   }
 
   /** Read a canonical transcript attachment (or its staged-upload fallback). */
   readSessionMediaBytes(
     sessionId: string,
     fileId: string,
+    options?: import('@kiki/klient').HttpRestMediaOptions,
   ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
-    return this.cachedPreviewBytes(`media:${sessionId}:${fileId}`, (etag) =>
-      this.rest.sessions.media(sessionId, fileId, { ifNoneMatch: etag }));
+    return this.run(this.rest.sessions.media(sessionId, fileId, options));
+  }
+
+  readSessionMediaPreviewBytes(
+    sessionId: string,
+    fileId: string,
+    options?: import('@kiki/klient').HttpRestMediaOptions,
+  ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
+    return this.cachedPreviewBytes(`media-preview:${sessionId}:${fileId}:${options?.mediaType ?? ''}`, (etag) =>
+      this.rest.sessions.mediaPreview(sessionId, fileId, { ...options, ifNoneMatch: etag }));
+  }
+
+  downloadSessionMedia(
+    sessionId: string,
+    fileId: string,
+    sink: import('@kiki/klient').HttpRestMediaSink,
+    options?: import('@kiki/klient').HttpRestMediaOptions,
+  ): Promise<import('@kiki/klient').HttpRestMediaReceipt> {
+    return this.run(this.rest.sessions.downloadMedia(sessionId, fileId, sink, options));
+  }
+
+  downloadTranscriptContent(
+    sessionId: string, agentId: string, ref: ContentRef, sink: import('@kiki/klient').HttpRestMediaSink,
+    options?: import('@kiki/klient').HttpRestMediaOptions,
+  ): Promise<import('@kiki/klient').HttpRestMediaReceipt> {
+    const fileId = contentOriginalFileId(agentId, ref);
+    if (fileId === undefined) return Promise.reject(new Error('This content has no original-file consumer'));
+    return this.downloadSessionMedia(sessionId, fileId, sink, options);
   }
 
   listWorkspaces(): Promise<ListWorkspacesResponse> {
@@ -1810,6 +1988,26 @@ export class KikiClient {
   /** Account sign-in methods (Kimi Code is one of several) and whether each is signed in. */
   listOAuthMethods(): Promise<readonly OAuthMethodStatus[]> {
     return this.run(this.klient.global.auth.methods());
+  }
+
+  /**
+   * What the original vendor's own sign-in on this machine looks like, read
+   * without running it: the account behind it, where it is stored, and whether
+   * Kiki could attach to that. Safe to call repeatedly; it moves nothing.
+   * `provider` is a method id, not the `managed:` provider id.
+   */
+  probeOriginalOAuth(body: import('@kiki/protocol').OriginalOAuthRequest): Promise<import('@kiki/protocol').OriginalOAuthProbe> {
+    return this.run(this.klient.global.auth.probeOriginal(body));
+  }
+
+  /**
+   * Point a connection at the original vendor's own sign-in. `expected_account_id`
+   * is the account the person was shown by the probe, so a credential that was
+   * replaced on the machine in the meantime is refused rather than silently
+   * adopted.
+   */
+  connectOriginalOAuth(body: import('@kiki/protocol').ConnectOriginalOAuthRequest): Promise<import('@kiki/protocol').OriginalOAuthProbe> {
+    return this.run(this.klient.global.auth.connectOriginal(body));
   }
 
   /** Last persisted connection-test result per provider (secret-free, revision-scoped). */
@@ -2219,7 +2417,7 @@ export class KikiClient {
     if (options.body !== undefined) headers['content-type'] = 'application/json';
     let response: Response;
     try {
-      response = await fetch(url, {
+      response = await (this.transport?.fetch ?? fetch)(url, {
         method,
         headers,
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
@@ -2277,6 +2475,15 @@ export class KikiClient {
   /** Effective automatic-compaction point for one agent of a session. */
   getAutoCompact(sessionId: string, agentId: string): Promise<import('@kiki/protocol').AutoCompactStatus> {
     return this.run(this.rest.sessions.getAutoCompact(sessionId, agentId));
+  }
+
+  /**
+   * Read-only inspection of the hook rules an agent currently runs with:
+   * every rule's source path, event, active flag and cadence state. Powers
+   * the agent panel's "Injected rules" section.
+   */
+  getAgentHooksInspect(sessionId: string, agentId: string): Promise<import('@kiki/protocol').AgentHooksInspect> {
+    return this.run(this.rest.sessions.inspectHooks(sessionId, agentId));
   }
 
   /**

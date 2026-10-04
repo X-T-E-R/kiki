@@ -88,11 +88,22 @@ export interface HostConnectionAdapter {
   saveSshProfile?: (profile: SshProfile) => Promise<SshProfile[]>;
   removeSshProfile?: (id: string) => Promise<SshProfile[]>;
   connectSshProfile?: (id: string, token: string) => Promise<SshResolvedConnection>;
+  prepareSshProfile?: (id: string, token: string) => Promise<SshResolvedConnection>;
+  resumeScopeConnection?: (homeId: string, id: string, tunnelId: string) => Promise<{ profile: SshProfile; connection: SshResolvedConnection }>;
+  commitScopeConnection?: (homeId: string, id: string, tunnelId: string, reload: boolean) => Promise<void>;
+  takeScopeConnection?: () => Promise<{ profile: SshProfile; connection: SshResolvedConnection } | null>;
   sshTunnelRunning?: (id: string, tunnelId: string) => Promise<boolean>;
   disconnectSshProfile?: (id: string, tunnelId: string) => Promise<void>;
   setWorkspaceScope?: (scope: 'local' | 'ssh') => void;
   cancelStartup?: () => Promise<void>;
   onBackendStage?: (callback: (payload: unknown) => void) => Promise<() => void>;
+}
+
+export interface HostSaveSink {
+  readonly streaming: boolean;
+  write(chunk: Uint8Array): Promise<void>;
+  close(): Promise<boolean>;
+  abort(): Promise<void>;
 }
 
 interface HostCapabilities {
@@ -103,7 +114,8 @@ interface HostCapabilities {
    * Present where the shell reports clicks back to the page; the returned
    * function unsubscribes.
    */
-  onNotificationClick?: (callback: (route: string) => void) => () => void;
+  onNotificationClick?: (callback: (route: string, homeId?: string) => void) => () => void;
+  takeNavigationIntent?: () => Promise<{ readonly route: string; readonly homeId?: string } | { readonly connectionId: string } | null>;
   /**
    * The unread count for the taskbar / dock icon (0 clears it). Best effort:
    * a platform without badges ignores it.
@@ -118,6 +130,7 @@ interface HostCapabilities {
   openUrl?: (url: string) => Promise<void>;
   isWindowVisibleAndFocused?: () => Promise<boolean>;
   saveBlob?: (blob: Blob, filename: string) => Promise<boolean>;
+  openSaveSink?: (filename: string) => Promise<HostSaveSink | null>;
   pickFiles?: () => Promise<HostSelectedFile[] | null>;
   /**
    * Subscribe to native OS file drops. Present only where the shell owns
@@ -149,8 +162,12 @@ interface HostCapabilities {
    * leaves the current space in place.
    */
   switchSpace?: (homeId: string) => Promise<void>;
+  /** Navigation staging: switch the backend only; the Router owns route/reload commit. */
+  prepareSpace?: (homeId: string) => Promise<{ readonly homeId: string }>;
   /** Windows mode: open (or focus) the space's own window (`open_space`). */
   openSpace?: (homeId: string) => Promise<void>;
+  /** Windows mode: source-home broker window; only a registered connection id crosses the bridge. */
+  openRemoteSpace?: (connectionId: string) => Promise<void>;
   /** Windows-only. Rejects with `{ code, message }`; never overwrites an existing shortcut. */
   createSpaceShortcut?: (homeId: string) => Promise<{ readonly homeId: string; readonly path: string }>;
   restartSpace?: (homeId: string) => Promise<void>;

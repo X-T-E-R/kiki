@@ -17,8 +17,10 @@ import type { ToolBlock } from '@kiki/session-core/session';
 import { describeError, extractEditSource, diffStat } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { toolDisplayName } from '../lib/pluginCatalog';
+import { ContentContinuation, DISPLAY_ROOTS, EDIT_ROOTS, frameContentSource, INPUT_ROOTS, INPUT_TEXT_ROOTS, OUTPUT_ROOTS } from './ContentContinuation';
 import { DiffCard } from './DiffCard';
 import { isMemoryToolName, MemoryToolRow } from './MemoryToolRow';
+import { MediaJobView, readMediaJobFromToolResult } from './media/MediaJobView';
 import { FilePathLink, MediaPartList } from './mediaPreview';
 import { Icon, OutcomeMark, type IconName } from './icons';
 import { ActivityRow, ActivityStats, type ActivityTone } from './timeline/ActivityRow';
@@ -315,6 +317,14 @@ function OutputView({ output, agentId, island = false }: { output: unknown; agen
       </div>
     );
   }
+  // The media plugin's `generate` result: .
+  // A short generation shows its files right here; a long one shows where it
+  // got to, with the same honesty rules the management view uses. Drawn
+  // before the string branch so a serialized job is never shown as raw JSON.
+  const mediaJob = readMediaJobFromToolResult(output);
+  if (mediaJob !== undefined) {
+    return <MediaJobView job={mediaJob} agentId={agentId} />;
+  }
   if (typeof output === 'string') {
     return (
       <pre className={wellClass(island)}>
@@ -385,6 +395,10 @@ export const ToolCard = memo(function ToolCard({
   const block: ToolBlock = bridged
     ? { ...sourceBlock, name: realName ?? sourceBlock.name, args: bridgedArgs(sourceBlock), argsText: realName === undefined ? '' : bridgedArgsText(sourceBlock.argsText) }
     : sourceBlock;
+  // Bounded bodies (a huge arg text, a huge output) arrive cut; the refs that
+  // continue them belong to this frame, and the reading areas below ask only
+  // for the field roots they actually show.
+  const frameSource = frameContentSource(block);
   // Memory stays quieter than a tool step: one line with View / Undo instead of
   // this header and its input/output wells. Routed here so every mount agrees.
   const memoryRow = isMemoryToolName(block.name);
@@ -468,6 +482,14 @@ ${engineError}`;
     <div>
       <p className={label}>{t('tc.input')}</p>
       <LoadedToolText text={block.args !== undefined ? recordText(block.args) : block.argsText || t('tc.noInput')} />
+      {/* The well shows the parsed args when they exist and the streamed text
+          otherwise, so it continues whichever of the two it is showing. */}
+      <ContentContinuation
+        source={frameSource}
+        roots={block.args === undefined ? INPUT_TEXT_ROOTS : INPUT_ROOTS}
+        label={t('tc.input')}
+        className="mt-1"
+      />
     </div>
   );
   const outputWell = (
@@ -479,6 +501,7 @@ ${engineError}`;
       {toolPayloadIncomplete(block.output) ? <p data-tool-payload-status className="text-[12px] text-ink-faint">{toolRecordCopy('payloadTruncated', semanticContext.locale)}</p> : null}
       {block.output === undefined ? <p className="text-[12px] text-ink-faint">{toolRecordCopy('notLoaded', semanticContext.locale)}</p>
         : <OutputView output={block.output} agentId={agentId} />}
+      <ContentContinuation source={frameSource} roots={OUTPUT_ROOTS} label={t('tc.output')} className="mt-1" />
     </div>
   );
 
@@ -524,12 +547,25 @@ ${engineError}`;
         aside={block.name === 'AskUserQuestion' ? undefined : <SemanticJumpSlot link={semantics.link} onOpenAgent={onOpenAgent} />}
       >
         {expanded ? (
-          <SemanticBody
-            semantics={semantics}
-            onOpenAgent={onOpenAgent}
-            error={block.status === 'error' ? errorTitle : undefined}
-            raw={<>{inputWell}{outputWell}</>}
-          />
+          <>
+            <SemanticBody
+              semantics={semantics}
+              onOpenAgent={onOpenAgent}
+              error={block.status === 'error' ? errorTitle : undefined}
+              raw={<>{inputWell}{outputWell}</>}
+            />
+            {/* The semantic body names the outcome; the fields behind it are
+                still the frame's own, so their controls stay at its tail
+                instead of hiding behind the raw disclosure. */}
+            <div className="space-y-1 pt-1">
+              <ContentContinuation
+                source={frameSource}
+                roots={EDIT_ROOTS}
+                label={editSource === undefined ? t('tc.input') : t('tc.changes')}
+              />
+              <ContentContinuation source={frameSource} roots={OUTPUT_ROOTS} label={t('tc.output')} />
+            </div>
+          </>
         ) : undefined}
       </ActivityRow>
     );
@@ -560,12 +596,20 @@ ${engineError}`;
         // inside carry the only surface.
         <div className="space-y-2">
           {isCommand && block.display?.kind === 'command' ? (
-            <CommandIsland
-              command={block.display.command}
-              output={
-                block.output !== undefined ? <OutputView output={block.output} agentId={agentId} island /> : undefined
-              }
-            />
+            <>
+              <CommandIsland
+                command={block.display.command}
+                output={
+                  block.output !== undefined ? <OutputView output={block.output} agentId={agentId} island /> : undefined
+                }
+              />
+              {/* Controls stay on paper under the island: the command line and
+                  the output below it are the two bodies this card reads. */}
+              <ContentContinuation source={frameSource} roots={DISPLAY_ROOTS} label={t('transcript.content.command')} />
+              {block.output === undefined ? null : (
+                <ContentContinuation source={frameSource} roots={OUTPUT_ROOTS} label={t('tc.output')} />
+              )}
+            </>
           ) : (
             <>
               {block.description !== undefined ? (
@@ -583,6 +627,14 @@ ${engineError}`;
                     </p>
                   ) : null}
                   <DiffCard hunks={editSource.hunks} />
+                  {/* The diff is built from this frame's display/args, so it is
+                      those fields that continue the hunks shown. */}
+                  <ContentContinuation
+                    source={frameSource}
+                    roots={EDIT_ROOTS}
+                    label={t('tc.changes')}
+                    className="mt-1"
+                  />
                 </div>
               ) : inputWell}
               {outputWell}

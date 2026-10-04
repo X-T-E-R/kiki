@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { sessionTitleModelPatch } from '@kiki/session-core/settings';
+import type { SessionTitleTrigger } from '@kiki/protocol';
+
+import { sessionTitleModelPatch, sessionTitleSettingsPatch } from '@kiki/session-core/settings';
 import type { KikiConfigPatch, KikiConfigResponse } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
@@ -35,6 +37,12 @@ export function SessionTitleModelControls({
   draftRef.current = draft;
   const baselineRef = useRef<string>(baseline);
   baselineRef.current = baseline;
+  // The stored moments, read alongside the model. `undefined` means the server
+  // reports none, which is the engine default rather than an empty choice, so
+  // the model-only patch is left alone in that case.
+  const [triggers, setTriggers] = useState<readonly SessionTitleTrigger[] | undefined>(undefined);
+  const triggersRef = useRef<readonly SessionTitleTrigger[] | undefined>(triggers);
+  triggersRef.current = triggers;
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
@@ -52,6 +60,7 @@ export function SessionTitleModelControls({
       setBaseline(serverModel);
       draftRef.current = serverModel;
       baselineRef.current = serverModel;
+      setTriggers(configQuery.data.session_title?.triggers);
     }
   }, [configQuery.data, dirty]);
 
@@ -73,7 +82,12 @@ export function SessionTitleModelControls({
             return null;
           }
           savingRevisionRef.current = revisionRef.current;
-          return sessionTitleModelPatch(currentDraft);
+          // The patch replaces the whole `session_title` domain, so it carries
+          // the stored moments: saving a model from here must not clear them.
+          const stored = triggersRef.current;
+          return stored === undefined
+            ? sessionTitleModelPatch(currentDraft)
+            : sessionTitleSettingsPatch(currentDraft, stored);
         },
         onDiscard: () => {
           revisionRef.current += 1;
@@ -100,13 +114,15 @@ export function SessionTitleModelControls({
 
   const models = modelsQuery.data?.items ?? [];
   const modelOptions = useMemo<readonly SearchableSelectOption[]>(() => {
-    const defaultOption: SearchableSelectOption = {
+    // The engine writes titles with this model and nothing else, so the empty
+    // option is "no title model", not a managed default that still runs.
+    const unsetOption: SearchableSelectOption = {
       value: '',
-      label: t('st.sessionTitleModel.managedDefault'),
-      description: t('st.sessionTitleModel.managedDesc'),
+      label: t('st.sessionTitleModel.noneDefault'),
+      description: t('st.sessionTitleModel.noneDesc'),
     };
     const catalogOptions = buildCatalogModelOptions(models, t);
-    return [defaultOption, ...catalogOptions];
+    return [unsetOption, ...catalogOptions];
   }, [models, t]);
 
   const selectedValue = draft ?? '';
@@ -127,7 +143,7 @@ export function SessionTitleModelControls({
             allowCustomValue
             searchPlaceholder={t('st.sessionTitleModel.placeholder')}
             ariaLabel={t('st.sessionTitleModel.model')}
-            emptyText={t('st.sessionTitleModel.managedDefault')}
+            emptyText={t('st.sessionTitleModel.noneDefault')}
             onChange={updateDraft}
           />
           <input

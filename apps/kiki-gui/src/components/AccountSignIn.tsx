@@ -1,206 +1,185 @@
 /**
- * Account sign-in (OAuth) — one row per method the server offers (Kimi Code,
- * GitHub Copilot, ChatGPT, …), each with its own sign-in / sign-out control
- * and status. At most one device flow runs at a time; its card opens under
- * the method that started it and the panel polls that method's flow at the
- * server-suggested interval. Shared by the Connections settings tab and the
- * onboarding model step.
+ * Signing in with an account — the methods the server offers, each a task a
+ * person can act on: Kimi Code, a ChatGPT subscription, a Grok Build login.
+ *
+ * This is a *catalog of ways in*, not a list of what is connected. It appears
+ * inside "Add connection", and the result of a successful sign-in is a
+ * connection in the list on the page: one row per account, managed there. A
+ * method that already has its connection is therefore named here but not
+ * re-managed — signing in again or out belongs to that row.
+ *
+ * Each row answers which account, whether it is connected, and what to press.
+ * The mechanism — a device code, a verification page — appears only in the
+ * state that needs it. At most one flow runs at a time; its card opens under
+ * the method that started it and polls at the server-suggested interval.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 
-import type { OAuthMethodStatus } from '../lib/client';
-import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 import { OAuthDeviceCard } from './OAuthDeviceCard';
-import { FeedbackLine, InlineError, type Feedback } from './controls';
+import {
+  accountState,
+  accountStateDetail,
+  accountStateKey,
+  accountStateTone,
+  needsSignInAction,
+  type AccountStateFacts,
+} from './accountSignInState';
+import { useOAuthFlow } from './useOAuthFlow';
+import { isOriginalSourceMethod, OriginalSourcePanel } from './OriginalSourcePanel';
+import { FeedbackLine, InlineError } from './controls';
+import { Icon } from './icons';
 import { SECONDARY_BUTTON } from './ui';
-import { protocolLabel } from './providerPresets';
 
 export const OAUTH_METHODS_QUERY_KEY = ['oauth-methods'] as const;
+
+/**
+ * The state word with a mark beside it. An account that was never signed in
+ * gets no mark at all: it is a starting position, not a result, and a dot
+ * there would say "working" in the same green as a live connection.
+ */
+export function AccountStateMark({ facts }: { facts: AccountStateFacts }) {
+  const { t } = useI18n();
+  const tone = accountStateTone(facts);
+  return (
+    <span
+      data-account-state={facts.state}
+      data-account-state-tone={tone}
+      className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${
+        tone === 'bad' ? 'text-danger' : tone === 'warn' ? 'text-amber-ink' : 'text-ink-faint'}`}
+    >
+      {tone === undefined
+        ? null
+        : <span aria-hidden data-account-state-mark className={`h-1.5 w-1.5 rounded-full ${
+          tone === 'bad' ? 'bg-danger' : tone === 'warn' ? 'bg-amber-rule' : 'bg-success'}`} />}
+      {t(accountStateKey(facts))}
+    </span>
+  );
+}
 
 export function AccountSignIn({
   onChanged,
   compact = false,
+  configuredProviderIds,
 }: {
-  /** Called after a sign-in completes or a sign-out lands. */
+  /** Called after a sign-in completes, so the page can re-read its data. */
   onChanged?: () => Promise<void> | void;
-  /** Onboarding density: no protocol line, sign-out hidden. */
+  /** Onboarding density: no account line. */
   compact?: boolean;
+  /**
+   * Provider ids the page already lists. A method whose connection is among
+   * them is not offered here: that connection is managed in its own row, and
+   * a spent credential is recovered there rather than by adding a second one.
+   */
+  configuredProviderIds?: ReadonlySet<string>;
 }) {
   const { client } = useConnection();
-  const { t, locale } = useI18n();
-  const queryClient = useQueryClient();
-  const [active, setActive] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [cancelling, setCancelling] = useState(false);
-  const [feedback, setFeedback] = useState<{ provider: string; value: Feedback } | null>(null);
-  const [dismissed, setDismissed] = useState<readonly string[]>([]);
-  const previousStatus = useRef<string | null>(null);
+  const { t } = useI18n();
+  const flow = useOAuthFlow(onChanged);
 
   const methodsQuery = useQuery({
     queryKey: OAUTH_METHODS_QUERY_KEY,
     queryFn: () => client.listOAuthMethods(),
     staleTime: 10_000,
   });
-  const flowQuery = useQuery({
-    queryKey: ['oauth', active],
-    enabled: active !== null,
-    queryFn: () => client.getOAuthStatus({ provider: active ?? undefined }),
-    staleTime: 0,
-    refetchInterval: (query) => {
-      const data = query.state.data;
-      return data !== null && data !== undefined && data.status === 'pending'
-        ? Math.max(2000, data.interval * 1000)
-        : false;
-    },
-  });
-  const snapshot = active === null ? null : (flowQuery.data ?? null);
+  const snapshot = flow.snapshot;
+  const showing = flow.showing;
 
-  const refresh = useCallback(async () => {
-    await queryClient.invalidateQueries({ queryKey: OAUTH_METHODS_QUERY_KEY });
-    await onChanged?.();
-  }, [onChanged, queryClient]);
-
-  useEffect(() => {
-    if (snapshot === null) {
-      previousStatus.current = null;
-      return;
-    }
-    if (snapshot.status === 'authenticated' && !dismissed.includes(snapshot.flow_id)) {
-      if (previousStatus.current === 'pending') {
-        setFeedback({ provider: snapshot.provider, value: { tone: 'success', text: t('st.oauth.authenticated') } });
-      }
-      setDismissed((flows) => [...flows, snapshot.flow_id]);
-      void refresh();
-    }
-    previousStatus.current = snapshot.status;
-  }, [snapshot, dismissed, refresh, t]);
-
-  const start = async (method: OAuthMethodStatus) => {
-    setBusy(method.provider);
-    setFeedback(null);
-    try {
-      const result = await client.startOAuthLogin({ provider: method.id });
-      setActive(method.provider);
-      if (result.status === 'authenticated') {
-        setFeedback({ provider: method.provider, value: { tone: 'success', text: t('st.auth.already') } });
-        await refresh();
-      } else {
-        setDismissed([]);
-        queryClient.setQueryData(['oauth', method.provider], result);
-      }
-    } catch (error) {
-      setFeedback({ provider: method.provider, value: { tone: 'error', text: errorText(locale, error) } });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const cancel = async () => {
-    if (active === null) return;
-    setCancelling(true);
-    try {
-      await client.cancelOAuthLogin({ provider: active });
-    } catch (error) {
-      setFeedback({ provider: active, value: { tone: 'error', text: errorText(locale, error) } });
-    } finally {
-      setCancelling(false);
-      await queryClient.invalidateQueries({ queryKey: ['oauth', active] });
-    }
-  };
-
-  const signOut = async (method: OAuthMethodStatus) => {
-    setBusy(method.provider);
-    setFeedback(null);
-    try {
-      await client.logoutOAuth({ provider: method.id });
-      setFeedback({ provider: method.provider, value: { tone: 'success', text: t('st.account.signedOut', { method: method.label }) } });
-      await refresh();
-    } catch (error) {
-      setFeedback({ provider: method.provider, value: { tone: 'error', text: errorText(locale, error) } });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const visibleSnapshot = snapshot !== null
-    && snapshot.status !== 'authenticated'
-    && !dismissed.includes(snapshot.flow_id)
-    ? snapshot
-    : null;
-  const methods = methodsQuery.data ?? [];
+  // A method is offered only while its connection does not exist yet. The test
+  // is the configured provider id, not the credential: a method holding a
+  // spent token still has a connection, and that row is where it is recovered,
+  // so re-adding it here would show the same account twice.
+  const all = methodsQuery.data ?? [];
+  const methods = configuredProviderIds === undefined
+    ? all
+    : all.filter((method) => !configuredProviderIds.has(method.provider));
 
   return (
     <div className="space-y-2" data-account-sign-in>
       <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-panel">
         {methods.map((method) => {
-          const pending = visibleSnapshot !== null && visibleSnapshot.provider === method.provider;
-          const rowFeedback = feedback?.provider === method.provider ? feedback.value : null;
+          const pending = showing && snapshot !== null && snapshot.provider === method.provider;
+          const facts = accountState(method, pending ? snapshot.status : undefined);
+          const detail = pending ? null : accountStateDetail(facts);
+          const working = flow.busy === method.provider;
           return (
-            <li key={method.id} data-oauth-method={method.id} className="px-3 py-2">
-              <div className="flex flex-wrap items-center gap-3">
+            <li key={method.id} data-oauth-method={method.id} className="px-3 py-2.5">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <div className="min-w-0 flex-1">
                   <p className="flex flex-wrap items-center gap-2 text-[13px] font-medium text-ink">
                     {method.label}
-                    {method.signed_in ? (
-                      <span className="inline-flex items-center gap-1 rounded-[4px] bg-success/10 px-1.5 py-px text-[11px] font-medium text-success">
-                        <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-success" />
-                        {t('st.account.signedIn')}
-                      </span>
-                    ) : null}
+                    <AccountStateMark facts={facts} />
                   </p>
                   {compact ? null : (
                     <p className="truncate text-[11.5px] text-ink-faint">
-                      {t(`st.account.method.${method.id}` as 'st.account.method.kimi-code')} · {protocolLabel(method.protocol)}
+                      {t(`st.account.method.${method.id}` as 'st.account.method.kimi-code')}
+                      {method.account.state === 'known' ? <> · <span data-account-identity className="text-ink-soft">{method.account.id}</span></> : null}
                     </p>
                   )}
+                  {detail !== null ? (
+                    <p data-account-detail={facts.state} className="mt-1 text-[12px] leading-4 text-ink-soft">
+                      {t(detail)}
+                    </p>
+                  ) : null}
                 </div>
-                {method.signed_in ? (
-                  compact ? null : (
+                {facts.state === 'waiting' ? (
+                  <span className="text-[12px] text-ink-faint">{t('st.account.inProgress')}</span>
+                ) : needsSignInAction(facts) ? (
+                  working ? (
+                    <span className="inline-flex items-center gap-1.5 text-[12px] text-ink-faint">
+                      <span aria-hidden className="status-dot-busy inline-block h-2 w-2 rounded-full bg-accent" />
+                      {t('st.auth.working')}
+                    </span>
+                  ) : (
                     <button
                       type="button"
-                      className={SECONDARY_BUTTON}
-                      disabled={busy !== null}
-                      onClick={() => void signOut(method)}
+                      data-account-sign-in-button
+                      className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+                      disabled={flow.busy !== null}
+                      aria-label={t('st.account.signInWith', { method: method.label })}
+                      onClick={() => { void flow.start(method); }}
                     >
-                      {busy === method.provider ? t('st.auth.working') : t('st.auth.signOut')}
+                      <Icon name="arrowRight" size={12} />
+                      {facts.state === 'signIn' ? t('st.account.signIn') : t('st.account.signInAgain')}
                     </button>
                   )
-                ) : (
-                  <button
-                    type="button"
-                    className={SECONDARY_BUTTON}
-                    disabled={busy !== null || pending}
-                    aria-label={t('st.account.signInWith', { method: method.label })}
-                    onClick={() => void start(method)}
-                  >
-                    {busy === method.provider ? t('st.auth.working') : t('st.account.signIn')}
-                  </button>
-                )}
+                ) : null}
               </div>
               {pending ? (
                 <div className="mt-3">
                   <OAuthDeviceCard
-                    snapshot={visibleSnapshot}
+                    snapshot={snapshot}
                     label={method.label}
-                    cancelling={cancelling}
-                    onCancel={() => void cancel()}
-                    onRetry={() => void start(method)}
-                    onDismiss={() => { setDismissed((flows) => [...flows, visibleSnapshot.flow_id]); }}
+                    cancelling={flow.cancelling}
+                    onCancel={() => { void flow.cancel(); }}
+                    onDismiss={() => { flow.dismiss(snapshot.flow_id); }}
                   />
                 </div>
               ) : null}
-              {rowFeedback !== null ? <div className="mt-2"><FeedbackLine feedback={rowFeedback} /></div> : null}
+              {/* A machine that already has this account signed in can be
+                  attached instead of running a device flow. It is offered here
+                  because this is the one place a new connection is made, and
+                  the connection it creates is the one this page manages. */}
+              {!pending && facts.state !== 'connected' && isOriginalSourceMethod(method) ? (
+                <div className="mt-3">
+                  <OriginalSourcePanel method={method} onChanged={onChanged} />
+                </div>
+              ) : null}
             </li>
           );
         })}
         {methodsQuery.isLoading ? (
           <li className="px-3 py-3 text-[12px] text-ink-faint">{t('st.account.loading')}</li>
         ) : null}
+        {methods.length === 0 && methodsQuery.isSuccess ? (
+          <li data-account-empty className="px-3 py-3 text-[12px] text-ink-faint">
+            {all.length === 0 ? t('st.account.none') : t('st.account.allConnected')}
+          </li>
+        ) : null}
       </ul>
+      {flow.feedback !== null ? <FeedbackLine feedback={flow.feedback.value} /> : null}
       {methodsQuery.isError ? <InlineError error={methodsQuery.error} /> : null}
     </div>
   );

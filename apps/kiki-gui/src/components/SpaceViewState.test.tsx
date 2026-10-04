@@ -3,7 +3,7 @@
 import { act, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate, type NavigateFunction } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readLastSessionId, writeLastSessionId } from '@kiki/session-core/settings';
 import { configureSpaceStorage } from '../lib/spaceStorage';
@@ -14,10 +14,12 @@ import { SpaceViewMemory, SpaceViewState } from './SpaceViewState';
 const getSession = vi.fn();
 const getRoom = vi.fn();
 const host = { kind: 'tauri' };
+const scope = { id: 'local' };
+let navigateRoute: NavigateFunction;
 vi.mock('../host', () => ({ useHost: () => host }));
 vi.mock('../i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 vi.mock('../state/connection', () => ({
-  useConnection: () => ({ scopeId: 'local', client: { getSession, klient: { rest: { rooms: { get: getRoom } } } } }),
+  useConnection: () => ({ scopeId: scope.id, client: { getSession, klient: { rest: { rooms: { get: getRoom } } } } }),
 }));
 
 let root: Root;
@@ -30,16 +32,17 @@ function TargetPage() {
 }
 function Location() {
   const location = useLocation();
-  return <output>{location.pathname}{location.search}{location.hash}</output>;
+  navigateRoute = useNavigate();
+  return <output data-state={JSON.stringify(location.state)}>{location.pathname}{location.search}{location.hash}</output>;
 }
 async function flush() {
   await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
-async function render(route: string) {
+async function render(route: string, state?: Record<string, unknown>) {
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[route]}>
+        <MemoryRouter initialEntries={[state === undefined ? route : { pathname: route, state }]}>
           <Location />
           <SpaceViewMemory />
           <Routes>
@@ -63,6 +66,7 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   host.kind = 'tauri';
+  scope.id = 'local';
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
@@ -124,6 +128,69 @@ describe('space view route validation', () => {
     await render('/s/deleted');
     expect(mounted).not.toHaveBeenCalled();
     expect(container.querySelector('output')?.textContent).toBe('/new');
+  });
+
+  it.each([{}, { initialPrompt: 'Continue' }, { initialSkill: { name: 'inspect', args: '' } }])(
+    'admits a just-created target once and consumes only its creation fact (%j)', async (handoff) => {
+      queryClient.setQueryData(['space-view-target', 'local', 'session', 'created'], true);
+      let settle!: (session: unknown) => void;
+      getSession.mockImplementation(() => new Promise((resolve) => { settle = resolve; }));
+      await render('/usage');
+      await act(async () => { await navigateRoute('/s/created', { state: { ...handoff, createdSession: { id: 'created', scopeId: 'local' } } }); });
+      await flush();
+      expect(mounted).toHaveBeenCalledOnce();
+      expect(JSON.parse(container.querySelector('output')!.getAttribute('data-state')!)).toEqual(handoff);
+      const node = container.querySelector('[data-target]');
+      await act(async () => { settle({ id: 'created' }); });
+      await flush();
+      expect(container.querySelector('[data-target]')).toBe(node);
+      expect(mounted).toHaveBeenCalledOnce();
+      await act(async () => { await navigateRoute('/usage'); });
+      expect(container.querySelector('[data-target]')).toBeNull();
+      getSession.mockImplementation(() => new Promise(() => {}));
+      await act(async () => { await navigateRoute(-1); });
+      await flush();
+      expect(container.querySelector('[data-target]')).toBeNull();
+      expect(mounted).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    { id: 'created', scopeId: 'other-space' },
+    { id: 'other-session', scopeId: 'local' },
+  ])('does not admit a creation from a different target (%j)', async (createdSession) => {
+    queryClient.setQueryData(['space-view-target', 'local', 'session', 'created'], true);
+    getSession.mockImplementation(() => new Promise(() => {}));
+    await render('/s/created', { createdSession });
+    expect(mounted).not.toHaveBeenCalled();
+  });
+
+  it('keeps an admitted target mounted during refresh but still exits on a definite deletion', async () => {
+    getSession.mockResolvedValue({ id: 'existing' });
+    await render('/s/existing');
+    const node = container.querySelector('[data-target]');
+    expect(mounted).toHaveBeenCalledOnce();
+    let fail!: (error: Error) => void;
+    getSession.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+    await act(async () => { void queryClient.invalidateQueries({ queryKey: ['space-view-target'] }); });
+    await flush();
+    expect(container.querySelector('[data-target]')).toBe(node);
+    expect(mounted).toHaveBeenCalledOnce();
+    await act(async () => { fail(new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'session.not_found', data: null })); });
+    await flush();
+    expect(container.querySelector('output')?.textContent).toBe('/new');
+    expect(container.querySelector('[data-target]')).toBeNull();
+  });
+
+  it('does not carry an admitted target across a scope switch', async () => {
+    getSession.mockResolvedValue({ id: 'existing' });
+    await render('/s/existing');
+    expect(mounted).toHaveBeenCalledOnce();
+    scope.id = 'other-space';
+    getSession.mockImplementation(() => new Promise(() => {}));
+    await render('/s/existing');
+    expect(container.querySelector('[data-target]')).toBeNull();
+    expect(mounted).toHaveBeenCalledOnce();
   });
 
   it('persists id-free pages in the active space without probing a session', async () => {

@@ -34,10 +34,12 @@ const SAMPLE_KEY: Record<keyof typeof SAMPLE_CLASS, I18nKey> = {
  * fallbacks. Under the field, a sample line in the chosen face and whether
  * the face is on this machine.
  */
-export function FontRoleField({ role, label, help, presets, presetValue, custom, fallback, onPreset, onCustom }: {
+export function FontRoleField({ role, label, help, note, presets, presetValue, custom, fallback, onPreset, onCustom }: {
   role: keyof typeof SAMPLE_CLASS;
   label: string;
   help?: string;
+  /** The row's source mark, for a value a space can carry. */
+  note?: React.ReactNode;
   presets: readonly FontPreset[];
   /** The preset currently in force (used when no family is typed). */
   presetValue: string;
@@ -95,6 +97,7 @@ export function FontRoleField({ role, label, help, presets, presetValue, custom,
   return (
     <div data-font-role={role}>
       <SettingField label={label} help={help}>
+        {note}
         <SettingsSelect
           ariaLabel={label}
           dataAttr="data-font-choice"

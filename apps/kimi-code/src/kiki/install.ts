@@ -19,6 +19,7 @@ interface McpCommandConfig {
 export function registerSeatInstallCommand(seat: Command): void {
   seat
     .command('install')
+    .description('Create a seat for a workspace and write its MCP config into an external client.')
     .requiredOption('--client <client>', '', parseClient)
     .requiredOption('--workspace <dir>')
     .option('--transport <transport>', '', parseTransport, 'stdio')

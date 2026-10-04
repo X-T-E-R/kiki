@@ -19,7 +19,7 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SaveStatus, Toggle, type Feedback } from '../controls';
-import { useGuardedNavigate } from '../dirtyGuard';
+import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../ui';
 import { AdvancedDetails, SettingField } from './fields';
@@ -92,6 +92,21 @@ function overridesText(overrides: RequestIdentityProfileDraft['overrides']): str
   return overrides === undefined ? '' : JSON.stringify(overrides, null, 2);
 }
 
+interface IdentityEdit {
+  draft: RequestIdentityProfileDraft;
+  overridesJson: string;
+  issue: string | null;
+  overridesIssue: string | null;
+}
+
+function identityBaseline(profile: RequestIdentityProfile) {
+  return { draft: draftOf(profile), overridesJson: overridesText(profile.overrides) };
+}
+
+function identityDirty(edit: Pick<IdentityEdit, 'draft' | 'overridesJson'>, baseline: ReturnType<typeof identityBaseline>): boolean {
+  return JSON.stringify(edit.draft) !== JSON.stringify(baseline.draft) || edit.overridesJson !== baseline.overridesJson;
+}
+
 /** Empty text clears the overrides; anything else must be a JSON object (the server checks its shape). */
 function parseOverrides(text: string): RequestIdentityProfileDraft['overrides'] {
   const trimmed = text.trim();
@@ -139,23 +154,25 @@ function builtinHeaders(profile: RequestIdentityProfile, track: RequestIdentityT
 
 /**
  * Settings → Request identity. One place for which client each request
- * presents itself as: the identities (built-in, read-only; custom, fully
- * editable), the exact values each sends, where client versions come from,
- * where each identity is in use, and what recent requests actually sent.
+ * presents itself as: the global default first, then the identities (built-in,
+ * read-only; custom, fully editable), the exact values each sends, where
+ * client versions come from, where each identity is in use, and what recent
+ * requests actually sent.
  */
 export function IdentitySection() {
   const { t } = useI18n();
   const query = useIdentityCatalog();
-  if (query.isError) {
+  if (query.isError && query.data === undefined) {
     return <div className="space-y-2"><p className="text-[13px] text-ink">{t('st.identity.loadFailed')}</p><InlineError error={query.error} /></div>;
   }
   const catalog = query.data;
   return (
     <div className="space-y-6">
+      {query.isError ? <InlineError error={query.error} /> : null}
+      <GlobalRequestIdentityCard />
       <ProfilesCard catalog={catalog} />
       <TracksCard catalog={catalog} />
       <UsageCard catalog={catalog} />
-      <GlobalRequestIdentityCard />
       <RecentCard catalog={catalog} />
     </div>
   );
@@ -165,11 +182,60 @@ function ProfilesCard({ catalog }: { catalog: RequestIdentityCatalog | undefined
   const { t, locale } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
-  const profiles = catalog?.profiles ?? [];
+  const profiles = useMemo(() => catalog?.profiles ?? [], [catalog?.profiles]);
   const [selectedId, setSelectedId] = useState<string>('codex');
   const [narrowPane, setNarrowPane] = useState<'list' | 'detail'>('list');
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [edits, setEdits] = useState<Record<string, IdentityEdit>>({});
+  const hasDirty = Object.keys(edits).length > 0;
+  useDirtyReporter('identity-profiles', Object.keys(edits).length > 0);
   const selected = profiles.find((profile) => profile.id === selectedId) ?? profiles[0];
+  const baseline = selected === undefined ? undefined : identityBaseline(selected);
+  const selectedEdit = selected === undefined || baseline === undefined ? undefined
+    : edits[selected.id] ?? { ...baseline, issue: null, overridesIssue: null };
+
+  useEffect(() => {
+    if (!hasDirty || catalog === undefined) return;
+    setEdits((current) => {
+      const next = Object.fromEntries(Object.entries(current).filter(([id, edit]) => {
+        const profile = profiles.find((candidate) => candidate.id === id);
+        return profile !== undefined && identityDirty(edit, identityBaseline(profile));
+      }));
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [catalog, profiles, hasDirty]);
+
+  const discard = (id: string) => {
+    setEdits((current) => {
+      if (current[id] === undefined) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  };
+  const patch = (id: string, changes: Partial<IdentityEdit>) => {
+    setEdits((current) => {
+      const profile = queryClient.getQueryData<RequestIdentityCatalog>(REQUEST_IDENTITY_QUERY_KEY)?.profiles.find((candidate) => candidate.id === id);
+      if (profile === undefined) return current;
+      const stored = identityBaseline(profile);
+      const edit = { ...(current[id] ?? { ...stored, issue: null, overridesIssue: null }), ...changes };
+      const next = { ...current };
+      if (identityDirty(edit, stored)) next[id] = edit;
+      else delete next[id];
+      return next;
+    });
+  };
+  const saved = (id: string, next: RequestIdentityCatalog, submitted: IdentityEdit) => {
+    queryClient.setQueryData(REQUEST_IDENTITY_QUERY_KEY, next);
+    setEdits((current) => {
+      const edit = current[id];
+      if (edit === undefined || identityDirty(edit, submitted)) return current;
+      const remaining = { ...current };
+      delete remaining[id];
+      return remaining;
+    });
+    void queryClient.invalidateQueries({ queryKey: [...REQUEST_IDENTITY_QUERY_KEY, 'preview'] });
+  };
 
   const duplicate = async (from: RequestIdentityProfile) => {
     setFeedback(null);
@@ -189,7 +255,11 @@ function ProfilesCard({ catalog }: { catalog: RequestIdentityCatalog | undefined
         aria-current={profile.id === selected?.id ? 'true' : undefined}
         onClick={() => { setSelectedId(profile.id); setNarrowPane('detail'); }}
         className="row-interactive flex w-full min-w-0 flex-col items-start gap-0.5 py-1.5 pl-3 pr-2 text-left">
-        <span className="max-w-full truncate text-[13px] text-ink">{profile.label}</span>
+        <span className="flex w-full min-w-0 items-baseline gap-2">
+          <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{profile.label}</span>
+          {edits[profile.id] === undefined ? null
+            : <span className="shrink-0 text-[11px] text-ink-soft" data-identity-unsaved>{t('st.identity.rowUnsaved')}</span>}
+        </span>
         {view.density === 'compact' ? null : (
           <span className="max-w-full truncate font-mono text-[11px] text-ink-faint">{profile.id}</span>
         )}
@@ -240,9 +310,13 @@ function ProfilesCard({ catalog }: { catalog: RequestIdentityCatalog | undefined
             </button>
             {selected.builtin
               ? <BuiltinProfileDetail key={selected.id} profile={selected} catalog={catalog} onDuplicate={() => void duplicate(selected)} />
-              : <CustomProfileEditor key={selected.id} profile={selected} catalog={catalog}
+              : baseline === undefined || selectedEdit === undefined ? null
+              : <CustomProfileEditor key={selected.id} profile={selected} catalog={catalog} edit={selectedEdit} baseline={baseline}
+                  onPatch={(changes) => { patch(selected.id, changes); }}
+                  onDiscard={() => { discard(selected.id); }}
+                  onSaved={(next, submitted) => { saved(selected.id, next, submitted); }}
                   onDuplicate={() => void duplicate(selected)}
-                  onDeleted={() => { setSelectedId(selected.duplicated_from ?? 'codex'); }} />}
+                  onDeleted={() => { discard(selected.id); setSelectedId(selected.duplicated_from ?? 'codex'); }} />}
             <FeedbackLine feedback={feedback} />
           </div>
         )} />
@@ -301,29 +375,28 @@ function BuiltinProfileDetail({ profile, catalog, onDuplicate }: {
   );
 }
 
-function CustomProfileEditor({ profile, catalog, onDuplicate, onDeleted }: {
+function CustomProfileEditor({ profile, catalog, edit, baseline, onPatch, onDiscard, onSaved, onDuplicate, onDeleted }: {
   profile: RequestIdentityProfile;
   catalog: RequestIdentityCatalog;
+  edit: IdentityEdit;
+  baseline: { draft: RequestIdentityProfileDraft; overridesJson: string };
+  onPatch: (patch: Partial<IdentityEdit>) => void;
+  onDiscard: () => void;
+  onSaved: (catalog: RequestIdentityCatalog, submitted: IdentityEdit) => void;
   onDuplicate: () => void;
   onDeleted: () => void;
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
-  const baseline = useMemo(() => draftOf(profile), [profile]);
-  const [draft, setDraft] = useState<RequestIdentityProfileDraft>(baseline);
+  const { draft, overridesJson, issue, overridesIssue } = edit;
   const [saving, setSaving] = useState(false);
-  const [issue, setIssue] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [saved, markSaved] = useSavedTick();
-  const baselineOverrides = useMemo(() => overridesText(profile.overrides), [profile.overrides]);
-  const [overridesJson, setOverridesJson] = useState(baselineOverrides);
-  const [overridesIssue, setOverridesIssue] = useState<string | null>(null);
-  const dirty = JSON.stringify(draft) !== JSON.stringify(baseline) || overridesJson !== baselineOverrides;
-  useEffect(() => { if (!dirty) { setDraft(baseline); setOverridesJson(baselineOverrides); } }, [baseline, baselineOverrides, dirty]);
-  const set = (patch: Partial<RequestIdentityProfileDraft>) => { setDraft((current) => ({ ...current, ...patch })); setIssue(null); };
+  const dirty = identityDirty(edit, baseline);
+  const set = (patch: Partial<RequestIdentityProfileDraft>) => { onPatch({ draft: { ...draft, ...patch }, issue: null }); };
   const track = trackOf(catalog, draft.track);
 
   const save = async () => {
@@ -331,11 +404,12 @@ function CustomProfileEditor({ profile, catalog, onDuplicate, onDeleted }: {
     try {
       overrides = parseOverrides(overridesJson);
     } catch {
-      setOverridesIssue(t('st.identity.overridesInvalid'));
+      onPatch({ overridesIssue: t('st.identity.overridesInvalid') });
       return;
     }
     setSaving(true);
     setFeedback(null);
+    onPatch({ issue: null, overridesIssue: null });
     try {
       const committedDraft = {
         ...draft,
@@ -343,12 +417,12 @@ function CustomProfileEditor({ profile, catalog, onDuplicate, onDeleted }: {
           ? { mode: 'fixed' as const, value: draft.version.value.trim() }
           : draft.version,
       };
-      setDraft(committedDraft);
-      const next = await client.requestIdentity.updateProfile(profile.id, { ...committedDraft, overrides });
-      queryClient.setQueryData(REQUEST_IDENTITY_QUERY_KEY, next);
+      await client.requestIdentity.updateProfile(profile.id, { ...committedDraft, overrides });
+      const next = await client.requestIdentity.get();
+      onSaved(next, edit);
       markSaved();
     } catch (error) {
-      setIssue(errorText(locale, error));
+      onPatch({ issue: errorText(locale, error) });
     } finally {
       setSaving(false);
     }
@@ -374,7 +448,7 @@ function CustomProfileEditor({ profile, catalog, onDuplicate, onDeleted }: {
     <div className="space-y-4" data-identity-detail={profile.id}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-[15px] font-medium text-ink">{profile.label}</h3>
+          <h3 className="text-[15px] font-medium text-ink">{draft.label.trim() === '' ? profile.label : draft.label}</h3>
           <p className="font-mono text-[11px] text-ink-faint">{profile.id}{profile.duplicated_from === undefined ? '' : ` ← ${profile.duplicated_from}`}</p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -444,13 +518,14 @@ function CustomProfileEditor({ profile, catalog, onDuplicate, onDeleted }: {
         <p className="mt-1 font-mono text-[11px] leading-5 text-ink-soft">{t('st.identity.placeholdersList')}</p>
       </AdvancedDetails>
 
-      <AdvancedDetails summary={t('st.identity.overridesLabel')} open={baselineOverrides !== '' ? true : undefined}>
+      <AdvancedDetails summary={t('st.identity.overridesLabel')} data-identity-overrides-details
+        open={baseline.overridesJson !== '' || overridesJson !== '' || overridesIssue !== null ? true : undefined}>
         <div className="mt-2 space-y-1.5">
           <Hint>{t('st.identity.overridesHelp')}</Hint>
           <textarea className={`${INPUT} min-h-[96px] font-mono ${overridesIssue === null ? '' : 'border-danger'}`}
             aria-label={t('st.identity.overridesLabel')} aria-invalid={overridesIssue !== null} spellCheck={false}
             data-identity-overrides value={overridesJson} placeholder={'{\n  "lineage": { "thread_identity": "none" }\n}'}
-            onChange={(event) => { setOverridesJson(event.target.value); setOverridesIssue(null); setIssue(null); }} />
+            onChange={(event) => { onPatch({ overridesJson: event.target.value, overridesIssue: null, issue: null }); }} />
           {overridesIssue !== null ? <p role="alert" data-field-issue className="text-[12px] leading-4 text-danger">{overridesIssue}</p> : null}
         </div>
       </AdvancedDetails>
@@ -459,7 +534,7 @@ function CustomProfileEditor({ profile, catalog, onDuplicate, onDeleted }: {
       <SettingsDraftFooter id={`identity-${profile.id}`} dirty={dirty} saving={saving} saved={saved}
         saveDisabled={draft.label.trim() === ''}
         onSave={() => void save()}
-        onDiscard={() => { setDraft(baseline); setOverridesJson(baselineOverrides); setIssue(null); setOverridesIssue(null); }} />
+        onDiscard={onDiscard} />
       <FeedbackLine feedback={feedback} />
 
       <IdentityPreview profileId={profile.id} basePreset={draft.base_preset} track={draft.track}
@@ -544,24 +619,42 @@ function IdentityPreview({ profileId, basePreset, track, draft }: {
   });
   const preview: RequestIdentityPreview | undefined = query.data;
   const params = preview === undefined ? [] : Object.entries(preview.params);
+  const userAgent = preview?.headers.find((header) => header.name.toLowerCase() === 'user-agent');
+  const fieldCount = preview === undefined ? 0 : preview.headers.length + params.length;
   return (
     <section aria-labelledby={`identity-preview-${profileId}`} className="space-y-2 border-t border-hairline pt-4" data-identity-preview>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 id={`identity-preview-${profileId}`} className="text-[13px] font-medium text-ink">{t('st.identity.previewTitle')}</h4>
+        <h4 id={`identity-preview-${profileId}`} className="text-[13px] font-medium text-ink">
+          {t(draft === undefined ? 'st.identity.previewTitle' : 'st.identity.previewTitleDraft')}
+        </h4>
         <SettingsSegmented<PreviewProtocol> ariaLabel={t('st.identity.previewProtocol')} value={protocol}
           dataAttr="data-identity-preview-protocol"
           choices={PROTOCOL_LABELS.map((value) => ({ value, label: t(`st.identity.protocol.${value}`) }))}
           onChange={setProtocol} />
       </div>
-      {draft !== undefined ? <Hint>{t('st.identity.previewUnsaved')}</Hint> : null}
       {query.isError ? <InlineError error={query.error} /> : null}
       {preview === undefined ? <p className="text-[12px] text-ink-faint">{t('st.identity.previewLoading')}</p> : preview.error !== undefined ? (
         <p role="alert" data-preview-error className="text-[12px] leading-5 text-danger">{t('st.identity.previewUnsupported', { error: preview.error })}</p>
       ) : (
         <div className="space-y-2" aria-busy={query.isFetching}>
-          {preview.headers.length === 0 && params.length === 0
-            ? <p className="text-[12px] text-ink-faint">{t('st.identity.noHeaders')}</p>
-            : (
+          <dl className="grid grid-cols-[minmax(72px,auto)_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-[13px]">
+            <dt className="text-ink-soft">{t('st.identity.userAgentLabel')}</dt>
+            <dd>{userAgent === undefined
+              ? <span className="text-[12px] text-ink-faint">{t(preview.suppressed_user_agent ? 'st.identity.suppressedUa' : 'st.identity.none')}</span>
+              : <span className={MONO_VALUE}>{userAgent.value}</span>}</dd>
+            <dt className="text-ink-soft">{t('st.identity.versionLabel')}</dt>
+            <dd className="text-[12px] leading-5 text-ink-soft" data-preview-version>
+              {t('st.identity.previewVersion', {
+                version: preview.version,
+                origin: versionOriginText(t, preview.version_origin, track),
+                protocol: t(`st.identity.protocol.${protocol}`),
+                model: PREVIEW_MODEL,
+              })}
+            </dd>
+          </dl>
+          {fieldCount === 0 ? <p className="text-[12px] text-ink-faint">{t('st.identity.noHeaders')}</p> : (
+            <AdvancedDetails data-preview-details className="text-[12px] text-ink-soft"
+              summary={t('st.identity.previewHeaders', { count: fieldCount })}>
               <table className="w-full table-fixed border-collapse text-left">
                 <tbody>
                   {preview.headers.map((header) => (
@@ -579,11 +672,9 @@ function IdentityPreview({ profileId, basePreset, track, draft }: {
                   ))}
                 </tbody>
               </table>
-            )}
-          {preview.suppressed_user_agent ? <Hint>{t('st.identity.suppressedUa')}</Hint> : null}
-          <p className="text-[11px] text-ink-faint" data-preview-version>
-            {t('st.identity.previewVersion', { version: preview.version, origin: versionOriginText(t, preview.version_origin, track), model: PREVIEW_MODEL })}
-          </p>
+            </AdvancedDetails>
+          )}
+          {draft === undefined ? null : <Hint>{t('st.identity.previewUnsaved')}</Hint>}
         </div>
       )}
     </section>

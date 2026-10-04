@@ -96,6 +96,15 @@ describe('native desktop bridge', () => {
     ]);
   });
 
+  it('opens a remote broker window with only the connection id in the existing command payload', async () => {
+    const connectionId = '11111111-1111-4111-8111-111111111111';
+    await tauriHost.openRemoteSpace(connectionId);
+    expect(invoke.mock.calls).toEqual([['open_space', { connectionId }]]);
+    expect(Object.keys(invoke.mock.calls[0]![1])).toEqual(['connectionId']);
+    invoke.mockRejectedValueOnce(new Error('window unavailable'));
+    await expect(tauriHost.openRemoteSpace(connectionId)).rejects.toThrow('window unavailable');
+  });
+
   it('routes external links through the native default-browser command', async () => {
     await openExternalUrl('https://example.test/docs');
     expect(invoke).toHaveBeenCalledWith('open_external_url', { url: 'https://example.test/docs' });

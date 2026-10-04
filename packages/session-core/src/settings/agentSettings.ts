@@ -345,7 +345,9 @@ export type NamedAgentLeaseDetailLabel =
   | 'allowedEfforts'
   | 'tools'
   | 'disallowedTools'
-  | 'subagents'
+  | 'presetList'
+  | 'recommendedFirst'
+  | 'neverDispatch'
   | 'prompt'
   | 'requestParams'
   | 'modelProfile'
@@ -366,7 +368,9 @@ export const NAMED_AGENT_LEASE_DETAIL_LABEL_KEYS: Record<NamedAgentLeaseDetailLa
   allowedEfforts: 'st.namedAgents.allowedEfforts',
   tools: 'st.namedAgents.tools',
   disallowedTools: 'st.namedAgents.disallowedTools',
-  subagents: 'st.namedAgents.subagentLease',
+  presetList: 'st.profiles.dispatchAllowed',
+  recommendedFirst: 'st.profiles.dispatchPreferred',
+  neverDispatch: 'st.profiles.dispatchDeny',
   prompt: 'st.namedAgents.prompt',
   requestParams: 'st.namedAgents.requestParams',
   modelProfile: 'st.namedAgents.modelProfile',
@@ -504,7 +508,9 @@ export function summarizeNamedAgentLease(lease: NamedAgentSubagentLease): NamedA
     ['allowedEfforts', lease.allowed_efforts],
     ['tools', lease.tools],
     ['disallowedTools', lease.disallowed_tools],
-    ['subagents', lease.subagents],
+    ['presetList', lease.allowed_subagents],
+    ['recommendedFirst', lease.preferred_subagents],
+    ['neverDispatch', lease.deny_subagents],
   ] as const;
   for (const [label, values] of listFields) {
     if (values !== undefined && values !== null && values.length > 0) {

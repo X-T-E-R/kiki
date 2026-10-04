@@ -14,6 +14,7 @@ mod ssh_tunnel;
 mod desktop_log;
 mod space_badge;
 mod space_shortcut;
+mod remote_space;
 use desktop_log::DesktopLogLevel;
 include!("app_commands.rs");
 
@@ -1443,8 +1444,22 @@ impl Default for DesktopPrefs {
     }
 }
 
-fn should_hide_on_close(prefs: &DesktopPrefs) -> bool {
-    prefs.close_to_tray
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DesktopCloseAction {
+    Hide,
+    Minimize,
+    Exit,
+}
+
+fn desktop_close_action(prefs: &DesktopPrefs, tray_created: bool, platform: &str) -> DesktopCloseAction {
+    if !prefs.close_to_tray || !tray_created {
+        DesktopCloseAction::Exit
+    } else if platform == "linux" {
+        // An AppIndicator object does not prove the desktop displays its icon.
+        DesktopCloseAction::Minimize
+    } else {
+        DesktopCloseAction::Hide
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1647,39 +1662,28 @@ fn notification_action_opens(action: &str) -> bool {
     matches!(action, "default" | "open")
 }
 
-fn space_notification_navigation_script(route: &str) -> Option<&'static str> {
-    (route == "/activity").then_some("window.history.replaceState(null, '', '/activity'); window.location.reload()")
+static PENDING_NAVIGATION_INTENT: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+
+#[tauri::command]
+fn take_navigation_intent() -> Option<serde_json::Value> {
+    PENDING_NAVIGATION_INTENT.lock().ok()?.take()
+}
+
+fn notification_navigation_intent(route: &str, home_id: Option<&str>) -> serde_json::Value {
+    serde_json::json!({ "route": route, "homeId": home_id })
 }
 
 fn deliver_notification_click(app: &AppHandle, route: &str, home_id: Option<&str>) {
-    let mut switched = false;
-    if let Some(home_id) = home_id {
-        let Some(manager) = app.try_state::<SpaceBackendManager>() else { return; };
-        if let Err(error) = manager.switch(app, home_id) {
-            eprintln!("Kiki could not open the notification's space: {}", error.message);
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-            return;
-        }
-        switched = true;
-    }
+    let intent = notification_navigation_intent(route, home_id);
+    if let Ok(mut pending) = PENDING_NAVIGATION_INTENT.lock() { *pending = Some(intent.clone()); }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
-    let _ = app.emit("kiki://notification-click", serde_json::json!({ "route": route }));
-    if switched {
-        if let (Some(window), Some(script)) = (app.get_webview_window("main"), space_notification_navigation_script(route)) {
-            if let Err(error) = window.eval(script) {
-                eprintln!("Kiki could not open notification activity: {error}");
-            }
-        }
-        if let Ok(space) = app.state::<SpaceBackendManager>().active_space() { set_space_identity(app, &space); }
-    }
+    // The live Router owns guard, source capture and scope commit. A booting
+    // page consumes the same intent without inventing a predecessor.
+    let _ = app.emit("kiki://notification-click", intent);
 }
 
 fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, home_id: Option<String>) -> Result<(), String> {
@@ -1723,6 +1727,13 @@ async fn send_desktop_notification(app: AppHandle, title: String, body: Option<S
 }
 
 #[tauri::command]
+async fn prepare_space(app: AppHandle, manager: State<'_, SpaceBackendManager>, home_id: String) -> Result<DesktopSpace, DesktopStartupFailure> {
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.switch(&app, &home_id))
+        .await.map_err(|error| DesktopStartupFailure::plain(format!("Space startup task failed: {error}")))?
+}
+
+#[tauri::command]
 async fn switch_space(app: AppHandle, manager: State<'_, SpaceBackendManager>, home_id: String) -> Result<DesktopSpace, DesktopStartupFailure> {
     let manager = manager.inner().clone();
     let app_for_switch = app.clone();
@@ -1750,9 +1761,19 @@ async fn create_space_shortcut(manager: State<'_, SpaceBackendManager>, home_id:
 }
 
 #[tauri::command]
-async fn open_space(app: AppHandle, manager: State<'_, SpaceBackendManager>, home_id: String) -> Result<(), String> {
-    let space = manager.find_space(&home_id)?;
+async fn open_space(app: AppHandle, manager: State<'_, SpaceBackendManager>, home_id: Option<String>, connection_id: Option<String>) -> Result<(), String> {
     let mode = manager.inner.lock().map_err(|_| "Space manager lock was poisoned")?.mode;
+    if let Some(id) = connection_id {
+        if home_id.is_some() { return Err("Select a local home or a remote connection, not both".to_string()); }
+        if mode != WindowMode::Windows { return Err("Remote windows require windows mode".to_string()); }
+        let source = manager.active_space()?;
+        let exe = env::current_exe().map_err(|error| error.to_string())?;
+        remote_space::command(&exe, Path::new(&source.path), &id)?.spawn()
+            .map_err(|error| format!("Cannot open remote space window: {error}"))?;
+        return Ok(());
+    }
+    let home_id = home_id.ok_or("A local home or remote connection is required")?;
+    let space = manager.find_space(&home_id)?;
     if mode == WindowMode::Switch {
         let manager = manager.inner().clone();
         let app_for_switch = app.clone();
@@ -1789,15 +1810,77 @@ async fn remove_ssh_profile(id: String) -> Result<Vec<ssh_remote::SshProfile>, S
 async fn connect_ssh_profile(
     id: String,
     token: String,
+    window: tauri::WebviewWindow,
+    spaces: State<'_, SpaceBackendManager>,
     manager: State<'_, ssh_tunnel::TunnelManager>,
 ) -> Result<ssh_tunnel::SshResolvedConnection, String> {
     let manager = manager.inner().clone();
+    let home_id = spaces.active_space()?.home_id;
+    let label = window.label().to_string();
     tauri::async_runtime::spawn_blocking(move || {
         let profiles = ssh_remote::read_profiles(&ssh_remote::config_path()?)?;
         let profile = profiles.iter().find(|profile| profile.id == id)
             .ok_or_else(|| "SSH profile no longer exists".to_string())?;
-        manager.connect(profile, &token)
+        let connection = manager.connect(profile, &token)?;
+        manager.bind(&id, &connection.tunnel_id, &home_id, &label)?;
+        Ok(connection)
     }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn prepare_ssh_profile(id: String, token: String, window: tauri::WebviewWindow,
+    spaces: State<'_, SpaceBackendManager>, manager: State<'_, ssh_tunnel::TunnelManager>) -> Result<ssh_tunnel::SshResolvedConnection, String> {
+    let manager = manager.inner().clone();
+    let home_id = spaces.active_space()?.home_id;
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let profiles = ssh_remote::read_profiles(&ssh_remote::config_path()?)?;
+        let profile = profiles.iter().find(|profile| profile.id == id).ok_or("SSH profile no longer exists")?;
+        manager.prepare(profile, &token, &home_id, &label)
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[derive(Clone)]
+struct ScopeConnectionReference { home_id: String, profile_id: String, tunnel_id: String, window_label: String }
+static PENDING_SCOPE_CONNECTION: Mutex<Option<ScopeConnectionReference>> = Mutex::new(None);
+
+fn resolve_scope_reference(reference: &ScopeConnectionReference, manager: &ssh_tunnel::TunnelManager) -> Result<serde_json::Value, String> {
+    let profiles = ssh_remote::read_profiles(&ssh_remote::config_path()?)?;
+    let profile = profiles.iter().find(|profile| profile.id == reference.profile_id).ok_or("SSH profile no longer exists")?;
+    if !manager.profile_matches(profile, &reference.tunnel_id) { return Err("SSH profile identity changed".to_string()); }
+    let connection = manager.resume(&reference.profile_id, &reference.tunnel_id, &reference.home_id, &reference.window_label)?;
+    if profile.server_home_id.as_deref() != Some(connection.server_home_id.as_str()) { return Err("SSH server identity changed".to_string()); }
+    Ok(serde_json::json!({ "profile": profile, "connection": connection }))
+}
+
+#[tauri::command]
+fn resume_scope_connection(home_id: String, id: String, tunnel_id: String, window: tauri::WebviewWindow,
+    spaces: State<'_, SpaceBackendManager>, manager: State<'_, ssh_tunnel::TunnelManager>) -> Result<serde_json::Value, String> {
+    if spaces.active_space()?.home_id != home_id { return Err("Space identity changed".to_string()); }
+    resolve_scope_reference(&ScopeConnectionReference { home_id, profile_id: id, tunnel_id, window_label: window.label().to_string() }, &manager)
+}
+
+#[tauri::command]
+fn commit_scope_connection(home_id: String, id: String, tunnel_id: String, reload: bool, window: tauri::WebviewWindow,
+    spaces: State<'_, SpaceBackendManager>, manager: State<'_, ssh_tunnel::TunnelManager>) -> Result<(), String> {
+    if spaces.active_space()?.home_id != home_id { return Err("Space identity changed".to_string()); }
+    let reference = ScopeConnectionReference { home_id, profile_id: id, tunnel_id, window_label: window.label().to_string() };
+    resolve_scope_reference(&reference, &manager)?;
+    manager.commit(&reference.profile_id, &reference.tunnel_id, &reference.home_id, &reference.window_label)?;
+    let mut pending = PENDING_SCOPE_CONNECTION.lock().map_err(|_| "Scope handoff unavailable")?;
+    *pending = reload.then_some(reference);
+    Ok(())
+}
+
+#[tauri::command]
+fn take_scope_connection(window: tauri::WebviewWindow, spaces: State<'_, SpaceBackendManager>,
+    manager: State<'_, ssh_tunnel::TunnelManager>) -> Result<Option<serde_json::Value>, String> {
+    let mut pending = PENDING_SCOPE_CONNECTION.lock().map_err(|_| "Scope handoff unavailable")?;
+    let Some(reference) = pending.as_ref() else { return Ok(None); };
+    if reference.window_label != window.label() || reference.home_id != spaces.active_space()?.home_id { return Err("Scope handoff identity changed".to_string()); }
+    let resolved = resolve_scope_reference(reference, &manager)?;
+    *pending = None;
+    Ok(Some(resolved))
 }
 
 #[tauri::command]
@@ -1972,6 +2055,14 @@ fn check_host_path(path: &Path, op: HostPathOp) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("Host path must be absolute".to_string());
     }
+    #[cfg(unix)]
+    if op == HostPathOp::Open {
+        if let Ok(target) = fs::canonicalize(path) {
+            if is_executable_host_path(&target) {
+                return Err(format!("Refusing to open executable host path {}", path.display()));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1981,38 +2072,40 @@ fn write_host_file_text_authorized(path: &Path, text: &str) -> Result<(), String
         .map_err(|error| format!("Cannot write host file {}: {error}", path.display()))
 }
 
-/// Native user confirmation of a workspace root — the dialog is created and
-/// answered entirely on the Rust side, so renderer content cannot forge a
-/// grant. `blocking_show` must not run on the main thread; the commands
-/// dispatch through spawn_blocking.
-/// Extensions the platform opener would EXECUTE rather than view (`open` on
-/// macOS, ShellExecuteW on Windows). Opening one from transcript or menu
-/// content would be code execution, so `open` refuses them outright —
-/// reveal-in-folder stays allowed since selecting a file executes nothing.
-/// `.js` is listed because stock Windows associates "open" with wscript.
-/// The single-document `.url`, `.chm`, `.application` and `.SettingContent-ms`
-/// handlers launch external content or installers, so they are refused too.
-const EXECUTABLE_HOST_EXTENSIONS: &[&str] = &[
+/// Stock Windows associations execute scripts, shortcuts and installers.
+/// Reveal and write do not invoke these associations and remain allowed.
+const WINDOWS_EXECUTABLE_HOST_EXTENSIONS: &[&str] = &[
     "exe", "com", "pif", "scr", "cpl", "msi", "msp", "msc", "bat", "cmd", "ps1", "vbs", "vbe",
     "js", "jse", "wsf", "wsh", "hta", "lnk", "reg", "url", "chm", "application",
     "settingcontent-ms",
 ];
 
 fn is_executable_host_path(path: &Path) -> bool {
-    // Windows' `ShellExecuteW` strips trailing dots and spaces from the final
-    // path component before resolving the file association, so `runme.exe.`
-    // and `runme.exe ` would open as `runme.exe`. Trim that tail before
-    // reading the extension so the denial matches what the shell opens.
+    is_executable_host_path_for(path, env::consts::OS)
+}
+
+fn is_executable_host_path_for(path: &Path, platform: &str) -> bool {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    let trimmed = file_name.trim_matches(|c| c == '.' || c == ' ');
-    let Some(extension) = trimmed.rsplit_once('.').map(|(_, extension)| extension) else {
+    // Only ShellExecuteW strips trailing dots/spaces before association lookup.
+    let file_name = if platform == "windows" {
+        file_name.trim_matches(|c| c == '.' || c == ' ')
+    } else {
+        file_name
+    };
+    let Some(extension) = file_name.rsplit_once('.').map(|(_, extension)| extension) else {
         return false;
     };
-    EXECUTABLE_HOST_EXTENSIONS
-        .iter()
-        .any(|denied| extension.eq_ignore_ascii_case(denied))
+    let extensions: &[&str] = match platform {
+        "windows" => WINDOWS_EXECUTABLE_HOST_EXTENSIONS,
+        // Launch Services launches .app bundles and Terminal handles .command.
+        "macos" => &["app", "command"],
+        // xdg-open delegates to desktop handlers, some of which launch Exec/DBus.
+        "linux" => &["desktop"],
+        _ => &[],
+    };
+    extensions.iter().any(|denied| extension.eq_ignore_ascii_case(denied))
 }
 
 /// UNC (`\\server\share`), device-namespace (`\\.\…`), and verbatim (`\\?\…`)
@@ -2644,7 +2737,23 @@ fn is_loopback_host(host: &str) -> bool {
 }
 
 fn read_token(home: &Path) -> Result<Option<String>, String> {
-    let path = home.join("server.token");
+    let path = home.join("server.local-owner");
+    match fs::metadata(&path) {
+        Ok(metadata) => {
+            if !metadata.is_file() || metadata.len() > 4096 {
+                return Err("Invalid local owner capability file".to_string());
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o077 != 0 {
+                    return Err("Local owner capability must have private permissions".to_string());
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Cannot inspect local owner capability: {error}")),
+    }
     match fs::read_to_string(&path) {
         Ok(value) => {
             let token = value.trim();
@@ -2959,18 +3068,23 @@ fn build_tray_menu(app: &AppHandle, labels: TrayLabels) -> Result<Menu<Wry>, Str
     Ok(menu)
 }
 
-/// Toggle used by the global show/hide shortcut: hide only when the window is
-/// both visible and focused, otherwise restore and focus it.
+fn background_main_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    #[cfg(target_os = "linux")]
+    return window.minimize();
+    #[cfg(not(target_os = "linux"))]
+    window.hide()
+}
+
+/// Linux keeps a taskbar recovery entry even when no indicator is visible.
 fn toggle_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let visible = window.is_visible().unwrap_or(false);
         let focused = window.is_focused().unwrap_or(false);
-        if visible && focused {
-            let _ = window.hide();
+        let minimized = window.is_minimized().unwrap_or(false);
+        if visible && focused && !minimized {
+            let _ = background_main_window(&window);
         } else {
-            let _ = window.unminimize();
-            let _ = window.show();
-            let _ = window.set_focus();
+            let _ = show_main_window(app.clone());
         }
     }
 }
@@ -2993,20 +3107,13 @@ fn build_tray(app: &AppHandle) -> Result<(), String> {
         .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "show" => {
-                let _ = app.get_webview_window("main").and_then(|w| {
-                    let _ = w.show();
-                    w.set_focus().ok()
-                });
+                let _ = show_main_window(app.clone());
             }
             "hide" => {
-                let _ = app.get_webview_window("main").and_then(|w| w.hide().ok());
+                let _ = app.get_webview_window("main").and_then(|w| background_main_window(&w).ok());
             }
             "new" => {
-                let _ = app.get_webview_window("main").and_then(|w| {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                    w.unminimize().ok()
-                });
+                let _ = show_main_window(app.clone());
                 let _ = app.emit("kiki://new-session", ());
             }
             "quit" => {
@@ -3053,12 +3160,20 @@ pub fn run() {
     let startup_home = kiki_home_dir().unwrap_or_else(|error| panic!("Cannot resolve Kiki home: {error}"));
     let main_home = main_home_for(&startup_home).unwrap_or_else(|error| panic!("Cannot resolve main space: {error}"));
     let mode = read_main_desktop_prefs(&main_home).window_mode;
+    let remote_connection = remote_space::requested_connection(&env::args().collect::<Vec<_>>())
+        .unwrap_or_else(|error| panic!("Cannot select remote space: {error}"));
+    if let Some(id) = &remote_connection {
+        if mode != WindowMode::Windows { panic!("Remote windows require windows mode"); }
+        if let Ok(mut pending) = PENDING_NAVIGATION_INTENT.lock() { *pending = Some(serde_json::json!({ "connectionId": id })); }
+    }
     let manager = SpaceBackendManager::new(&startup_home, mode)
         .unwrap_or_else(|error| panic!("Cannot initialize desktop spaces: {error}"));
     let shutdown_manager = manager.clone();
     let second_launch_manager = manager.clone();
     let setup_manager = manager.clone();
     let close_manager = manager.clone();
+    let tray_created = Arc::new(AtomicBool::new(false));
+    let close_tray_created = tray_created.clone();
     let exit_confirmed = Arc::new(AtomicBool::new(false));
     let exit_prompting = Arc::new(AtomicBool::new(false));
     let close_confirmed = exit_confirmed.clone();
@@ -3076,6 +3191,16 @@ pub fn run() {
             let wide = wide_null(std::ffi::OsStr::new(&identifier));
             let result = unsafe { windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(wide.as_ptr()) };
             if result < 0 { eprintln!("Kiki could not set the space taskbar identity: 0x{:x}", result); }
+        }
+    }
+    if let Some(id) = &remote_connection {
+        let identifier = remote_space::window_identifier(&context.config().identifier, &startup_home, id);
+        context.config_mut().identifier = identifier.clone();
+        #[cfg(windows)]
+        {
+            let wide = wide_null(std::ffi::OsStr::new(&identifier));
+            let result = unsafe { windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(wide.as_ptr()) };
+            if result < 0 { eprintln!("Kiki could not set the remote taskbar identity: 0x{:x}", result); }
         }
     }
 
@@ -3108,15 +3233,6 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state == ShortcutState::Pressed {
-                        toggle_main_window(app);
-                    }
-                })
-                .build(),
-        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init());
 
@@ -3144,13 +3260,20 @@ pub fn run() {
                 let prefs = close_manager.active_space()
                     .map(|space| read_desktop_prefs_for(Path::new(&space.path)))
                     .unwrap_or_else(|_| read_desktop_prefs_file());
-                if should_hide_on_close(&prefs) {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
-                if !should_hide_on_close(&prefs) && !close_confirmed.load(Ordering::SeqCst) {
-                    api.prevent_close();
-                    request_confirmed_exit(window.app_handle().clone(), close_manager.clone(), close_confirmed.clone(), close_prompting.clone());
+                if close_confirmed.load(Ordering::SeqCst) { return; }
+                api.prevent_close();
+                let action = desktop_close_action(&prefs, close_tray_created.load(Ordering::SeqCst), env::consts::OS);
+                match action {
+                    DesktopCloseAction::Hide | DesktopCloseAction::Minimize => {
+                        let result = if action == DesktopCloseAction::Minimize { window.minimize() } else { window.hide() };
+                        if let Err(error) = result {
+                            eprintln!("Kiki could not background the main window: {error}");
+                            let _ = show_main_window(window.app_handle().clone());
+                        }
+                    }
+                    DesktopCloseAction::Exit => {
+                        request_confirmed_exit(window.app_handle().clone(), close_manager.clone(), close_confirmed.clone(), close_prompting.clone());
+                    }
                 }
             }
         })
@@ -3173,20 +3296,31 @@ pub fn run() {
                 .map_err(std::io::Error::other)?;
             #[cfg(windows)]
             disable_browser_accelerator_keys(&main_window).map_err(std::io::Error::other)?;
-            #[cfg(not(windows))]
-            let _ = main_window;
-            // The tray is part of the desktop lifecycle contract, not a
-            // best-effort decoration: close-to-tray would strand a hidden
-            // window if the icon could not be created.
-            build_tray(app.handle()).map_err(std::io::Error::other)?;
+            match build_tray(app.handle()) {
+                Ok(()) => { tray_created.store(true, Ordering::SeqCst); }
+                Err(error) => {
+                    eprintln!("Kiki could not create its tray; close-to-tray is disabled for this run: {error}");
+                }
+            }
+            // Saved window visibility and an unavailable hotkey must not strand startup.
+            main_window.unminimize().map_err(std::io::Error::other)?;
+            main_window.show().map_err(std::io::Error::other)?;
             if let Ok(space) = setup_manager.active_space() { set_space_identity(app.handle(), &space); }
-            // Global show/hide hotkey (hardcoded; a configurable surface is a
-            // settings-page concern). A collision with another app degrades to
-            // no hotkey rather than a startup failure.
+            // Both manager initialization and shortcut registration are optional.
             if mode == WindowMode::Switch || startup_home == main_home {
-                let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyK);
-                if let Err(error) = app.global_shortcut().register(shortcut) {
-                    eprintln!("Kiki could not register the Ctrl+Shift+K show/hide hotkey: {error}");
+                let plugin = tauri_plugin_global_shortcut::Builder::new()
+                    .with_handler(|app, _shortcut, event| {
+                        if event.state == ShortcutState::Pressed { toggle_main_window(app); }
+                    })
+                    .build();
+                match app.handle().plugin(plugin) {
+                    Ok(()) => {
+                        let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyK);
+                        if let Err(error) = app.global_shortcut().register(shortcut) {
+                            eprintln!("Kiki could not register the Ctrl+Shift+K show/hide hotkey: {error}");
+                        }
+                    }
+                    Err(error) => eprintln!("Kiki could not initialize global shortcuts: {error}"),
                 }
             }
             if mode == WindowMode::Switch || startup_home == main_home {
@@ -3220,14 +3354,13 @@ pub fn run() {
                 request_confirmed_exit(app_handle.clone(), shutdown_manager.clone(), exit_confirmed.clone(), exit_prompting.clone());
             }
         }
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Reopen { .. } = &event {
+            let _ = show_main_window(app_handle.clone());
+        }
         if let RunEvent::TrayIconEvent(TrayIconEvent::Click { button, .. }) = &event {
-            // Left-click on the tray icon shows the window if it is currently hidden.
             if *button == MouseButton::Left {
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                    let _ = window.unminimize();
-                }
+                let _ = show_main_window(app_handle.clone());
             }
         }
     });
@@ -3337,11 +3470,13 @@ mod tests {
     }
 
     #[test]
-    fn cross_space_notification_only_reloads_into_activity() {
-        let script = space_notification_navigation_script("/activity").unwrap();
-        assert!(script.contains("'/activity'"));
-        assert!(script.contains("location.reload()"));
-        assert_eq!(space_notification_navigation_script("/s/another"), None);
+    fn cross_space_notification_preserves_the_scope_intent_for_router_guarding() {
+        let intent = notification_navigation_intent("/activity", Some("home-b"));
+        assert_eq!(intent, serde_json::json!({ "route": "/activity", "homeId": "home-b" }));
+        assert_eq!(notification_navigation_intent("/s/example", None), serde_json::json!({ "route": "/s/example", "homeId": null }));
+        *PENDING_NAVIGATION_INTENT.lock().unwrap() = Some(intent.clone());
+        assert_eq!(take_navigation_intent(), Some(intent));
+        assert_eq!(take_navigation_intent(), None);
     }
 
     #[test]
@@ -3452,10 +3587,39 @@ mod tests {
     }
 
     #[test]
-    fn explicit_quit_preference_does_not_hide_on_close() {
+    fn explicit_quit_preference_preserves_confirmed_exit_on_every_platform() {
         let prefs: DesktopPrefs =
             serde_json::from_str(r#"{"notifications":true,"closeToTray":false}"#).unwrap();
-        assert!(!should_hide_on_close(&prefs));
+        for platform in ["windows", "macos", "linux"] {
+            for tray_created in [false, true] {
+                assert_eq!(desktop_close_action(&prefs, tray_created, platform), DesktopCloseAction::Exit);
+            }
+        }
+    }
+
+    #[test]
+    fn tray_failure_disables_background_close_without_changing_saved_preferences() {
+        let prefs = DesktopPrefs::default();
+        for platform in ["windows", "macos", "linux"] {
+            assert_eq!(desktop_close_action(&prefs, false, platform), DesktopCloseAction::Exit);
+        }
+        assert!(prefs.close_to_tray);
+    }
+
+    #[test]
+    fn linux_close_keeps_a_taskbar_entry_instead_of_trusting_indicator_visibility() {
+        let prefs = DesktopPrefs::default();
+        assert_eq!(desktop_close_action(&prefs, true, "linux"), DesktopCloseAction::Minimize);
+        for platform in ["windows", "macos"] {
+            assert_eq!(desktop_close_action(&prefs, true, platform), DesktopCloseAction::Hide);
+        }
+    }
+
+    #[test]
+    fn bundle_metadata_matches_the_bundled_node_macos_floor() {
+        let config: tauri::utils::config::Config = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(config.bundle.macos.minimum_system_version.as_deref(), Some("13.5"));
+        assert_eq!(config.bundle.create_updater_artifacts, tauri::utils::config::Updater::Bool(false));
     }
 
     #[test]
@@ -3605,7 +3769,12 @@ mod tests {
             unix_epoch_millis().unwrap()
         ));
         fs::create_dir_all(&home).unwrap();
-        fs::write(home.join("server.token"), "shared-home-token\n").unwrap();
+        fs::write(home.join("server.local-owner"), "shared-home-token\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(home.join("server.local-owner"), fs::Permissions::from_mode(0o600)).unwrap();
+        }
         assert_eq!(
             read_token(&home).unwrap().as_deref(),
             Some("shared-home-token")
@@ -3734,7 +3903,12 @@ mod tests {
         ));
         let instances = home.join("server").join("instances");
         fs::create_dir_all(&instances).unwrap();
-        fs::write(home.join("server.token"), "test-token\n").unwrap();
+        fs::write(home.join("server.local-owner"), "test-token\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(home.join("server.local-owner"), fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let body = serde_json::json!({
             "data": {
                 "server_version": EXPECTED_SIDECAR_SERVER_VERSION,
@@ -3775,7 +3949,12 @@ mod tests {
         ));
         let instances = home.join("server").join("instances");
         fs::create_dir_all(&instances).unwrap();
-        fs::write(home.join("server.token"), "test-token\n").unwrap();
+        fs::write(home.join("server.local-owner"), "test-token\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(home.join("server.local-owner"), fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -4057,6 +4236,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn open_refuses_executables_before_any_io() {
         for raw in [
@@ -4079,6 +4259,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn open_refuses_trailing_dots_and_spaces_the_shell_would_strip() {
         for raw in [
@@ -4097,13 +4278,56 @@ mod tests {
     }
 
     #[test]
-    fn executable_extension_detection_is_case_insensitive() {
-        assert!(is_executable_host_path(Path::new("C:/work/Evil.EXE")));
-        assert!(is_executable_host_path(Path::new("C:/work/run.Ps1")));
-        assert!(is_executable_host_path(Path::new("C:/work/shortcut.URL")));
-        assert!(is_executable_host_path(Path::new("C:/work/spec.SETTINGCONTENT-MS")));
-        assert!(!is_executable_host_path(Path::new("C:/work/notes.txt")));
-        assert!(!is_executable_host_path(Path::new("C:/work/no-extension")));
+    fn executable_extension_detection_matches_each_platform_opener() {
+        for name in ["Evil.EXE", "run.Ps1", "shortcut.URL", "spec.SETTINGCONTENT-MS", "run.exe. ."] {
+            assert!(is_executable_host_path_for(Path::new(name), "windows"), "{name}");
+        }
+        for name in ["Example.app", "Example.APP", "run.command", "run.COMMAND"] {
+            assert!(is_executable_host_path_for(Path::new(name), "macos"), "{name}");
+        }
+        for name in ["example.desktop", "example.DESKTOP"] {
+            assert!(is_executable_host_path_for(Path::new(name), "linux"), "{name}");
+        }
+        for platform in ["windows", "macos", "linux"] {
+            for name in ["notes.txt", "世界 notes.md", "no-extension", "notes.txt."] {
+                assert!(!is_executable_host_path_for(Path::new(name), platform), "{platform}: {name}");
+            }
+        }
+        for platform in ["macos", "linux"] {
+            for name in ["notes.js", "notes.sh", "notes.py"] {
+                assert!(!is_executable_host_path_for(Path::new(name), platform), "{platform}: {name}");
+            }
+        }
+        assert!(!is_executable_host_path_for(Path::new("notes.command.txt"), "macos"));
+        assert!(!is_executable_host_path_for(Path::new("notes.desktop.txt"), "linux"));
+        assert!(!is_executable_host_path_for(Path::new("notes.command."), "macos"));
+        assert!(!is_executable_host_path_for(Path::new("notes.desktop "), "linux"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn posix_open_refuses_launchers_and_symlinks_but_reveal_and_write_remain_allowed() {
+        let root = env::temp_dir().join(format!("kiki-host-launcher-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
+        fs::create_dir_all(&root).unwrap();
+        let names: &[&str] = if cfg!(target_os = "macos") { &["Example.app", "run.command"] } else { &["example.desktop"] };
+        for (index, name) in names.iter().enumerate() {
+            let launcher = root.join(name);
+            if name.ends_with(".app") { fs::create_dir(&launcher).unwrap(); } else { fs::write(&launcher, "test fixture").unwrap(); }
+            let alias = root.join(format!("alias-{index}.txt"));
+            std::os::unix::fs::symlink(&launcher, &alias).unwrap();
+            for path in [&launcher, &alias] {
+                assert!(check_host_path(path, HostPathOp::Open).is_err());
+                assert!(check_host_path(path, HostPathOp::Reveal).is_ok());
+                assert!(check_host_path(path, HostPathOp::Write).is_ok());
+            }
+        }
+        let text = root.join("世界 notes.js");
+        fs::write(&text, "plain text").unwrap();
+        let alias = root.join("text-alias.txt");
+        std::os::unix::fs::symlink(&text, &alias).unwrap();
+        assert!(check_host_path(&text, HostPathOp::Open).is_ok());
+        assert!(check_host_path(&alias, HostPathOp::Open).is_ok());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

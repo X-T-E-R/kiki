@@ -12,6 +12,8 @@ import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path
 
 import { resolveKikiHome } from '@kiki/node-sdk';
 
+import { localizeKikiDoc } from '../../scripts/local-docs.mjs';
+
 import {
   KIKI_DOCS_ASSET_KEY_PREFIX,
   KIKI_DOCS_RUNTIME_PATH_PREFIX,
@@ -111,7 +113,7 @@ function collectMarkdownFiles(root: string): KikiDocFile[] {
       if (entry.isDirectory()) {
         visit(path, relativePath);
       } else if (entry.isFile() && extname(entry.name) === '.md') {
-        const bytes = readFileSync(path);
+        const bytes = Buffer.from(localizeKikiDoc(readFileSync(path, 'utf8'), relativePath));
         files.push({ relativePath: safeRelativePath(relativePath), bytes, sha256: sha256(bytes) });
       }
     }

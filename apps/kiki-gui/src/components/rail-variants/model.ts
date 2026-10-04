@@ -25,9 +25,51 @@ export interface FleetAgent {
   readonly label: string;
   readonly description: string | undefined;
   readonly state: FleetState;
-  /** Levels below the viewed agent (its own children are 0). */
+  /** 正等待用户批准/回答(needs-you 集合);纯依赖挂起不算。 */
+  readonly needsUser: boolean;
   readonly depth: number;
   readonly startedAt: number | undefined;
+  readonly endedAt: number | undefined;
+}
+
+export interface LaneWindow {
+  readonly start: number;
+  readonly end: number;
+  /** 升序刻度,含末刻度=end;2–6 个。 */
+  readonly ticks: readonly number[];
+}
+
+const MINUTE = 60_000;
+const DAY = 24 * 60 * MINUTE;
+const LANE_STEPS = [
+  MINUTE, 5 * MINUTE, 15 * MINUTE, 30 * MINUTE,
+  60 * MINUTE, 2 * 60 * MINUTE, 4 * 60 * MINUTE, 6 * 60 * MINUTE, 12 * 60 * MINUTE,
+  DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY, 90 * DAY, 365 * DAY,
+];
+
+/** Cover the lane's known history, with at least 15 minutes and ticks anchored at now. */
+export function laneWindow(input: {
+  readonly starts: readonly (number | undefined)[];
+  readonly markers: readonly number[];
+  readonly now: number;
+}): LaneWindow {
+  const end = input.now;
+  let start = end - 15 * MINUTE;
+  for (const at of input.starts) {
+    if (at !== undefined && Number.isFinite(at)) start = Math.min(start, at);
+  }
+  for (const at of input.markers) {
+    if (Number.isFinite(at)) start = Math.min(start, at);
+  }
+  const span = end - start;
+  const step = LANE_STEPS.find((candidate) => candidate >= span / 5)
+    ?? Math.ceil(span / 5 / DAY) * DAY;
+  const ticks: number[] = [];
+  for (let k = Math.floor(span / step); k >= 0; k--) {
+    const tick = end - k * step;
+    if (tick >= start) ticks.push(tick);
+  }
+  return { start, end, ticks };
 }
 
 /**
@@ -117,8 +159,10 @@ export function fleetUnder(forest: AgentForest, rootId: string, waitingIds: Read
       label: node.label,
       description: node.description,
       state: stateOf(node.status, waitingIds.has(id)),
+      needsUser: waitingIds.has(id),
       depth,
       startedAt: parseTime(node.startedAt),
+      endedAt: parseTime(node.endedAt),
     });
     for (const child of node.childIds) visit(child, depth + 1);
   };

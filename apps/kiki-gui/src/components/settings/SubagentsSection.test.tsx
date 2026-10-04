@@ -18,11 +18,11 @@ vi.mock('../../state/connection', () => ({ useConnection: () => ({ client }) }))
 
 const general: NamedAgentProfile = {
   name: 'general', main: false, source: 'builtin', description: 'General subagent', disabled: false, routes: [],
-  subagent_policy: 'advisory',
+  can_spawn_subagents: true, allowed_subagents: ['explore'],
 };
 const explore: NamedAgentProfile = {
   name: 'explore', main: false, source: 'builtin', description: 'Explore subagent', disabled: false, routes: [],
-  pinned_model_alias: 'fixture/model-a', subagent_policy: 'strict',
+  pinned_model_alias: 'fixture/model-a', can_spawn_subagents: false,
 };
 const mainAgent: NamedAgentProfile = {
   name: 'agent', main: true, source: 'builtin', description: 'Main agent', disabled: false, routes: [],
@@ -84,7 +84,7 @@ describe('default subagent target card', () => {
     expect(container.textContent).toContain('General subagent');
     // Resolved state: source chip, and the pinned model surfaces for explore only.
     expect(container.querySelector('[data-subagent-default-status="resolved"]')).not.toBeNull();
-    expect(container.textContent).toContain('Advisory');
+    expect(container.textContent).toContain('Allowed');
     expect(container.textContent).toContain('pins no model');
   });
 
@@ -95,7 +95,7 @@ describe('default subagent target card', () => {
     expect(client.patchConfig).toHaveBeenCalledWith({ subagent: { default_profile: 'explore' } });
     expect(target().dataset['value']).toBe('explore');
     expect(container.querySelector('[data-saved-tick]')).not.toBeNull();
-    expect(container.textContent).toContain('Strict');
+    expect(container.textContent).toContain('Off');
     expect(container.textContent).toContain('fixture/model-a');
     expect(container.textContent).not.toContain('pins no model');
   });

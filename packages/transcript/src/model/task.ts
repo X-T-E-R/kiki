@@ -1,3 +1,4 @@
+import type { ContentWindow } from '../contract/content';
 import type { AgentId, TaskId } from './ids';
 import type { StepUsage } from './turn';
 
@@ -27,7 +28,7 @@ export interface TranscriptTaskDetailRef {
   readonly taskId: TaskId;
 }
 
-export interface TranscriptTask {
+export interface TranscriptTask extends ContentWindow {
   readonly taskId: TaskId;
   readonly kind: TaskKind;
   readonly state: TaskState;

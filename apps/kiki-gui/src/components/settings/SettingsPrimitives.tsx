@@ -117,12 +117,18 @@ export function SettingsDiagnosticRow({ label, value }: { label: string; value: 
  * shown at a time (`narrowPane`), so a tap on a row opens the detail instead
  * of dropping it under a long list.
  */
-export function SettingsDetailLayout({ list, detail, narrowPane = 'list' }: {
+export function SettingsDetailLayout({ list, detail, narrowPane = 'list', columns }: {
   list: React.ReactNode;
   detail: React.ReactNode;
   narrowPane?: 'list' | 'detail';
+  /**
+   * Column split override for a surface whose list is the primary working
+   * area (e.g. one row per permission, with the pane carrying only the
+   * reason). Defaults to the detail-first split every other console uses.
+   */
+  columns?: string;
 }) {
-  return <div className="grid min-w-0 gap-6 md:grid-cols-[minmax(168px,0.75fr)_minmax(0,1.7fr)]" data-settings-list-detail data-narrow-pane={narrowPane}>
+  return <div className={`grid min-w-0 gap-6 ${columns ?? 'md:grid-cols-[minmax(168px,0.75fr)_minmax(0,1.7fr)]'}`} data-settings-list-detail data-narrow-pane={narrowPane}>
     <div className={`min-w-0 ${narrowPane === 'detail' ? 'max-md:hidden' : ''}`}>{list}</div>
     <div className={`min-w-0 md:border-l md:border-hairline md:pl-6 ${narrowPane === 'list' ? 'max-md:hidden' : ''}`}>{detail}</div>
   </div>;

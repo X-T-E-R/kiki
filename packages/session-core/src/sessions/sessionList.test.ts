@@ -62,7 +62,7 @@ describe('mergeSessionFirstPage', () => {
   it('replaces only the first page and keeps older pages', () => {
     const old = data(page(['s3', 's2'], true), page(['s1'], false));
     const merged = mergeSessionFirstPage(old, page(['s4', 's3'], true));
-    expect(merged?.pages.map((p) => p.items.map((s) => s.id))).toEqual([['s4', 's3'], ['s1']]);
+    expect(merged?.pages.map((p) => p.items.map((s) => s.id))).toEqual([['s4', 's3', 's2'], ['s1']]);
   });
 
   it('is a no-op before the first load', () => {
@@ -77,7 +77,7 @@ describe('dedupeSessions', () => {
       page(['s1', 's4', 's3'], true),
     );
     // s1 was bumped into page 1; its stale copy on page 2 must not duplicate.
-    expect(dedupeSessions(merged).map((s) => s.id)).toEqual(['s1', 's4', 's3']);
+    expect(dedupeSessions(merged).map((s) => s.id)).toEqual(['s1', 's4', 's3', 's2']);
   });
 
   it('returns every row in order when pages do not overlap', () => {
@@ -330,5 +330,42 @@ describe('created sort order', () => {
     expect(sortSessionItems([first, second], 'created-desc').map((s) => s.id)).toEqual(['second', 'first']);
     expect(isSessionSortOrder('created-desc')).toBe(true);
     expect(isSessionSortOrder('nope')).toBe(false);
+  });
+});
+
+
+describe('poll boundary coverage', () => {
+  it('keeps all 100 loaded sessions after two new head rows and retains the last load-more cursor', () => {
+    const ids = Array.from({ length: 100 }, (_, index) => `s${String(index + 1).padStart(3, '0')}`);
+    const old: SessionListData = { pages: [{ ...page(ids.slice(0, 50), true), next_cursor: 's050' }, { ...page(ids.slice(50), true), next_cursor: 's100' }], pageParams: [undefined, 's050'] };
+    const merged = mergeSessionFirstPage(old, { ...page(['new-a', 'new-b', ...ids.slice(0, 48)], true), next_cursor: 's048' });
+    expect(dedupeSessions(merged).map((entry) => entry.id)).toEqual(['new-a', 'new-b', ...ids]);
+    expect(merged?.pages.at(-1)?.next_cursor).toBe('s100');
+    expect(merged?.pages[0]?.next_cursor).toBe('s050');
+    expect(merged?.pageParams).toEqual([undefined, 's050']);
+    const again = mergeSessionFirstPage(merged, { ...page(['new-a', 'new-b', ...ids.slice(0, 48)], true), next_cursor: 's048' });
+    expect(dedupeSessions(again).map((entry) => entry.id)).toEqual(['new-a', 'new-b', ...ids]);
+  });
+
+  it('reads only the head when overlapping, and bridges a fully displaced head with the same reader', async () => {
+    const { readSessionFirstPage } = await import('./sessionList');
+    const old = data(page(['s3', 's2'], true), page(['s1'], false));
+    const calls: (string | undefined)[] = [];
+    const read = async (cursor?: string) => {
+      calls.push(cursor);
+      return cursor === undefined ? { ...page(['new-b', 'new-a'], true), next_cursor: 'new-a' } : { ...page(['s3', 's2'], true), next_cursor: 's2' };
+    };
+    const first = await readSessionFirstPage(read, old);
+    expect(calls).toEqual([undefined, 'new-a']);
+    expect(dedupeSessions(mergeSessionFirstPage(old, first)).map((entry) => entry.id)).toEqual(['new-b', 'new-a', 's3', 's2', 's1']);
+    calls.length = 0;
+    await readSessionFirstPage(read, data(page(['new-a'], true)));
+    expect(calls).toEqual([undefined]);
+  });
+
+  it('drops absent cached rows only when the refreshed head is complete', () => {
+    const merged = mergeSessionFirstPage(data(page(['deleted', 's2'], true), page(['s1'], false)), page(['s2'], false));
+    expect(dedupeSessions(merged).map((entry) => entry.id)).toEqual(['s2']);
+    expect(merged?.pageParams).toEqual([undefined]);
   });
 });

@@ -185,19 +185,19 @@ it('shows dispatch policy, recommendation and advisory deviation badges, includi
     targets: [
       {
         profile: 'reviewer', executor: 'native', defaults_available: true,
-        dispatch_policy: 'advisory', recommendation_status: 'allowed_nonpreferred', advisory_deviation: true,
+        dispatch_policy: 'fixed', recommendation_status: 'allowed_nonpreferred', advisory_deviation: true,
       },
       {
         profile: 'preferred', executor: 'native', defaults_available: true,
-        dispatch_policy: 'strict', recommendation_status: 'preferred', advisory_deviation: false,
+        dispatch_policy: 'fixed', recommendation_status: 'preferred', advisory_deviation: false,
       },
       {
         profile: 'blocked', executor: 'native', defaults_available: true,
-        dispatch_policy: 'strict', recommendation_status: 'blocked', advisory_deviation: false,
+        dispatch_policy: 'fixed', recommendation_status: 'blocked', advisory_deviation: false,
       },
       {
         profile: 'unconfigured', executor: 'native', defaults_available: true,
-        dispatch_policy: 'advisory', recommendation_status: 'unconfigured', advisory_deviation: false,
+        dispatch_policy: 'fixed', recommendation_status: 'unconfigured', advisory_deviation: false,
       },
       { profile: 'legacy', executor: 'native', defaults_available: true },
     ],
@@ -207,8 +207,8 @@ it('shows dispatch policy, recommendation and advisory deviation badges, includi
 
   await render('child');
 
-  expect(element.querySelector('[data-dispatch-policy="advisory"]')?.textContent).toBe('建议模式');
-  expect(element.querySelector('[data-dispatch-policy="strict"]')?.textContent).toBe('严格模式');
+  expect(element.querySelector('[data-dispatch-policy="fixed"]')?.textContent).toBe('由策略固定');
+  expect(element.querySelector('[data-dispatch-policy="fixed"]')?.textContent).toBe('由策略固定');
   expect(element.querySelector('[data-recommendation-status="allowed_nonpreferred"]')?.textContent).toBe('允许偏离推荐名单');
   expect(element.querySelector('[data-recommendation-status="preferred"]')?.textContent).toBe('推荐目标');
   expect(element.querySelector('[data-recommendation-status="blocked"]')?.textContent).toBe('当前禁止启动');
@@ -222,14 +222,14 @@ it('shows dispatch policy, recommendation and advisory deviation badges, includi
 it('uses the profile policy when the caller has no dispatch targets', async () => {
   getAgentCapabilities.mockResolvedValue({
     context: 'live', owner: { agent_id: 'child' }, available: true, targets: [], tools: [], skills: [],
-    profile: { name: 'general', subagent_policy: 'strict' },
+    profile: { name: 'general', can_spawn_subagents: false },
     metrics: { child: UNKNOWN_AGENT_PANEL_METRICS },
   });
   harness.agents['child'] = viewState();
 
   await render('child');
 
-  expect(element.querySelector('[data-dispatch-policy="strict"]')?.textContent).toBe('严格模式');
+  expect(element.querySelector('[data-dispatch-policy="fixed"]')?.textContent).toBe('由策略固定');
   expect(element.querySelector('[data-dispatch-policy="unknown"]')).toBeNull();
   expect(element.querySelector('[data-recommendation-status="unknown"]')?.textContent).toBe('未报告');
 });
@@ -567,4 +567,89 @@ it('keeps the supplied overview header without a scope switch for children and c
   expect(element.querySelector('[data-overview-test-head] h3')).not.toBeNull();
   expect(element.querySelector('[role="radiogroup"]')).toBeNull();
   expect(element.querySelector('[data-cockpit-overview]')).not.toBeNull();
+});
+
+it('keeps the tree scope standing on main even when it has no children', async () => {
+  // Main alone: there is nothing to sum, but the control is the standing scope
+  // of these figures and must not blink out on a cold open.
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: { main: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 1_200, totalCostUsd: 0.05 } },
+  });
+  await render('main', { part: 'overview', forest: forestOf(['main']), renderOverview: renderOverviewLayout });
+  const head = element.querySelector('[data-overview-test-head]')!;
+  const agent = head.querySelector<HTMLButtonElement>('[data-usage-scope="agent"]')!;
+  const tree = head.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')!;
+  expect(agent).not.toBeNull();
+  expect(tree).not.toBeNull();
+  expect(tree.disabled).toBe(false);
+  // A one-agent tree is fully counted: the total really is main's own, so
+  // nothing is marked incomplete and no caveat is printed.
+  expect(tree.hasAttribute('data-usage-scope-incomplete')).toBe(false);
+  expect(element.querySelector('[data-overview-tree-incomplete]')).toBeNull();
+  await act(async () => { tree.click(); });
+  expect(element.querySelector('[data-tree-metrics]')).not.toBeNull();
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.05');
+});
+
+it('marks the tree scope incomplete while a child has not reported, and says so in words', async () => {
+  // The cold-open case the rail used to hide: a child exists in the forest but
+  // the server has sent no metrics row for it. The switch stays, the summed
+  // numbers are marked partial, and the caveat says what was left out.
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: { main: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 1_200, totalCostUsd: 0.05 } },
+  });
+  await render('main', { part: 'overview', forest: forestOf(['main', 'child']), renderOverview: renderOverviewLayout });
+  const tree = () => element.querySelector<HTMLButtonElement>('[data-overview-test-head] [data-usage-scope="tree"]')!;
+  expect(tree().hasAttribute('data-usage-scope-incomplete')).toBe(true);
+  expect(tree().disabled).toBe(false);
+  expect(tree().title).toContain('尚未上报');
+  // Switching to the tree really changes the scope, and the caveat travels
+  // with it. The sum is the real one over the agents that reported — main's
+  // 1.2k here — and the row says which agents it could not count, rather
+  // than passing 1.2k off as the whole tree or inventing a total.
+  await act(async () => { tree().click(); });
+  expect(tree().getAttribute('aria-checked')).toBe('true');
+  const note = element.querySelector<HTMLElement>('[data-overview-tree-incomplete]');
+  expect(note?.textContent).toContain('仍在统计中');
+  expect(element.querySelector('[data-tree-metrics]')).not.toBeNull();
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('1.2k');
+  // Back on the agent scope the caveat is gone and the real count returns.
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="agent"]')!.click(); });
+  expect(element.querySelector('[data-overview-tree-incomplete]')).toBeNull();
+  expect(element.querySelector('[data-agent-usage]')).not.toBeNull();
+});
+
+it('shows the tree total when every agent has reported, and no caveat', async () => {
+  // The positive case: a full metrics map really is summed and really switches.
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: {
+      main: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 1_200, totalCostUsd: 0.05 },
+      child: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 3_400, totalCostUsd: 0.10 },
+    },
+  });
+  await render('main', { part: 'overview', forest: forestOf(['main', 'child']), renderOverview: renderOverviewLayout });
+  const tree = () => element.querySelector<HTMLButtonElement>('[data-overview-test-head] [data-usage-scope="tree"]')!;
+  expect(tree().hasAttribute('data-usage-scope-incomplete')).toBe(false);
+  await act(async () => { tree().click(); });
+  expect(element.querySelector('[data-tree-metrics]')).not.toBeNull();
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('4.6k');
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.15');
+  expect(element.querySelector('[data-overview-tree-incomplete]')).toBeNull();
+});
+
+it('keeps the permission mode out of the overview; the composer and profile own it', async () => {
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: { main: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 1_200, totalCostUsd: 0.05 } },
+  });
+  harness.agents['main'] = viewState({ permissionMode: 'yolo' });
+  await render('main', { part: 'overview' });
+  // "完全放行" / "自动" / "权限" belong to the composer's permission chip and
+  // the profile card, never below the overview's numbers.
+  expect(element.querySelector('[data-overview-setup]')).toBeNull();
+  expect(element.textContent).not.toContain('完全放行');
+  expect(element.textContent).not.toContain('权限');
 });

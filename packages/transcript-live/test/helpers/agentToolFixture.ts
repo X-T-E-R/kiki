@@ -11,6 +11,7 @@ import {
   IAgentExecutionService,
   IAgentLifecycleService,
   IAgentLoopService,
+  IAgentMemorySnapshot,
   IAgentPermissionModeService,
   IAgentProfileService,
   IAgentStateService,
@@ -91,6 +92,12 @@ export function createAgentLifecycleStub(
           return {
             _serviceBrand: undefined,
             get: () => [],
+          } as never;
+        }
+        if (serviceId === IAgentMemorySnapshot) {
+          return {
+            _serviceBrand: undefined,
+            getPersona: () => undefined,
           } as never;
         }
         if (serviceId === IAgentProfileService) {

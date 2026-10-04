@@ -34,6 +34,8 @@ import { usePersonaList } from './persona/usePersonas';
 import { EphemeralOption } from './EphemeralOption';
 import { LocalSessionsEntry } from './localSessions/LocalSessionsEntry';
 import { useI18n } from '../i18n';
+import { useImportHistoryEnabled } from '../lib/importHistory';
+import { useMediaQuery } from '../lib/layoutHooks';
 import { staggerStyle } from '../lib/motion';
 import { useConnection } from '../state/connection';
 
@@ -99,7 +101,9 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
           />
         </svg>
         <span className="min-w-0 truncate">
-          {label ?? (state.autoWorkspace ? t('new.autoWorkspace') : state.workspacesLoading ? t('hero.workspaceLoading') : t('hero.chooseWorkspace'))}
+          {label ?? (state.autoWorkspace
+            ? state.dailyPersonaName === undefined ? t('new.autoWorkspace') : t('persona.workspaceAuto', { name: state.dailyPersonaName })
+            : state.workspacesLoading ? t('hero.workspaceLoading') : t('hero.chooseWorkspace'))}
         </span>
         <svg
           width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden
@@ -194,24 +198,54 @@ function focusComposer() {
   });
 }
 
-export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
+export function NewSessionPage({
+  onToggleSidebar,
+  dailyPersonaId,
+}: {
+  onToggleSidebar?: () => void;
+  dailyPersonaId?: string;
+}) {
   const location = useLocation();
-  return <NewSessionPageContent key={`${location.key}:${location.search}`} onToggleSidebar={onToggleSidebar} prefillNavigationKey={location.key} />;
+  return (
+    <NewSessionPageContent
+      key={`${location.key}:${location.search}:${dailyPersonaId ?? ''}`}
+      onToggleSidebar={onToggleSidebar ?? (() => {})}
+      prefillNavigationKey={location.key}
+      dailyPersonaId={dailyPersonaId}
+    />
+  );
 }
 
-function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
+function NewSessionPageContent({
+  onToggleSidebar,
+  prefillNavigationKey,
+  dailyPersonaId,
+}: {
   onToggleSidebar: () => void;
   prefillNavigationKey: string;
+  dailyPersonaId?: string;
 }) {
   const { client } = useConnection();
   const { t } = useI18n();
+  const navigate = useNavigate();
+  // Whether this server can read a history at all. A build without the import
+  // routes shows no entry rather than a link that opens an empty page.
+  const canImportHistory = useImportHistoryEnabled(client).enabled === true;
   const [searchParams] = useSearchParams();
   const workspaceParam = searchParams.get('workspace') ?? undefined;
   const agentParam = searchParams.get('agent') ?? undefined;
-  const personaParam = searchParams.get('persona') ?? undefined;
+  const personaParam = dailyPersonaId ?? (searchParams.get('persona') ?? undefined);
+  const isDailyDraft = Boolean(dailyPersonaId || searchParams.get('daily') === '1');
   const { slots } = useConversationShell();
 
-  const state = useNewSessionDraft({ initialWorkspaceId: workspaceParam, initialProfile: agentParam, initialPersona: personaParam, prefillNavigationKey });
+  const state = useNewSessionDraft({
+    initialWorkspaceId: workspaceParam,
+    initialProfile: agentParam,
+    initialPersona: personaParam,
+    isDailyDraft,
+    prefillNavigationKey,
+  });
+  const dailyPersonaName = isDailyDraft ? state.dailyPersonaName : undefined;
   // The chip's face needs the summary's avatar flag; the list is shared with the picker.
   const personaList = usePersonaList();
   const personaChip = useMemo(() => {
@@ -219,6 +253,12 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
     const { id, name } = state.persona.definition;
     return personaAvatarOf({ id, name, avatarMime: personaList.data?.find((item) => item.id === id)?.avatarMime });
   }, [state.persona, personaList.data]);
+  // A daily draft with a known persona leads with its identity block (face,
+  // name, the fixed title); one whose persona the directory cannot name keeps
+  // the plain headline.
+  const dailyIdentity = dailyPersonaName !== undefined && personaChip !== undefined;
+  const narrow = useMediaQuery('(max-width: 639px)');
+  const heroAvatarSize = narrow ? 48 : 56;
   const personaPick = useMemo(() => ({ value: personaChip, onChange: state.selectPersona }), [personaChip, state.selectPersona]);
   const echo = useTypingEcho(state.draft);
 
@@ -367,10 +407,42 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
       <div data-hero-chrome className="mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] px-6 pb-5 text-left">
         <div className="flex min-w-0 flex-col">
           <div data-hero-brand className="flex min-w-0 flex-col">
-            <span data-hero-masthead className="hero-wordmark inline-flex cursor-default self-start">
-              <Wordmark size="xl" echo={echo} />
-            </span>
-            {state.persona !== undefined && personaChip !== undefined && state.persona.definition.greeting?.trim() ? (
+            {dailyIdentity ? (
+              // A daily draft leads with whose conversation this is: the face
+              // carries the identity at reading size, the name and the fixed
+              // title stack beside it, and the group's left edge is the same
+              // column line as the target row and the composer card below.
+              <div data-hero-daily-identity={state.persona?.definition.id} className="flex min-w-0 items-center gap-4">
+                <PersonaAvatar persona={personaChip} size={heroAvatarSize} decorative />
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <span data-hero-persona-name className="min-w-0 truncate text-[13px] leading-[18px] font-medium text-ink-soft">{dailyPersonaName}</span>
+                  <h1
+                    data-hero-headline
+                    className="min-w-0 font-display text-[26px] leading-8 tracking-tight text-ink"
+                    style={{ fontVariationSettings: '"opsz" 32' }}
+                  >
+                    {t('persona.dailyTitle')}
+                  </h1>
+                </div>
+              </div>
+            ) : (
+              <span data-hero-masthead className="hero-wordmark inline-flex cursor-default self-start">
+                <Wordmark size="xl" echo={echo} />
+              </span>
+            )}
+            {isDailyDraft ? (
+              // The identity block above already carries this title; a daily
+              // draft without a named persona still needs it.
+              dailyIdentity ? null : (
+                <h1
+                  data-hero-headline
+                  className="mt-2 min-w-0 font-display text-[22px] leading-7 tracking-tight text-ink"
+                  style={{ fontVariationSettings: '"opsz" 32' }}
+                >
+                  {t('persona.dailyTitle')}
+                </h1>
+              )
+            ) : state.persona !== undefined && personaChip !== undefined && state.persona.definition.greeting?.trim() ? (
               // A chosen persona opens the conversation in its own voice, in
               // the headline's place. Local only: nothing reaches the model
               // unless the first message replies to it.
@@ -392,6 +464,18 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
                 {t('new.headline')}
               </p>
             )}
+            {/* In its own daily conversation the persona still speaks first.
+              * The identity block above is the caption, so no second face;
+              * the quote starts at the name's own column, not under the face. */}
+            {isDailyDraft && state.persona?.definition.greeting?.trim() ? (
+              <blockquote
+                data-hero-daily-greeting={state.persona.definition.id}
+                className={`mt-3 min-w-0 font-display text-[19px] leading-7 tracking-tight whitespace-pre-wrap text-ink-soft ${dailyIdentity ? (narrow ? 'pl-16' : 'pl-[72px]') : ''}`}
+                style={{ fontVariationSettings: '"opsz" 32' }}
+              >
+                {state.persona.definition.greeting}
+              </blockquote>
+            ) : null}
           </div>
           <div data-hero-target className="mt-5 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
             <span className="-ml-3 inline-flex"><HeroWorkspaceChip state={state} /></span>
@@ -432,6 +516,24 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
                   data-hero-starters
                   className="motion-stagger -mx-1 mt-2 flex flex-wrap gap-x-0.5 gap-y-1"
                 >
+                  {/*
+                    Bringing an old conversation in is the other way to start
+                    working, and it belongs beside the starters rather than
+                    behind Capabilities → Plugins: a reader who already has the
+                    history should not have to know that a plugin ships it. It
+                    offers itself only where the server can actually read one.
+                  */}
+                  {canImportHistory ? (
+                    <button
+                      type="button"
+                      data-hero-import
+                      onClick={() => { void navigate('/capabilities?view=import'); }}
+                      className="motion-press inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
+                    >
+                      <Icon name="read" size={12} className="text-ink-faint" />
+                      {t('cap.import.entry')}
+                    </button>
+                  ) : null}
                   {starters.map((starter, index) => (
                     <button
                       key={starter.key}

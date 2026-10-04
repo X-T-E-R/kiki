@@ -8,6 +8,7 @@ import { useHost } from '../../../host';
 import { useI18n } from '../../../i18n';
 import { homesApi, isAbsolutePath, spaceKeys, type SpaceListItem } from '../../../lib/spaces';
 import { useConnection } from '../../../state/connection';
+import type { KikiClient } from '../../../lib/client';
 import { FeedbackLine, Hint, type Feedback } from '../../controls';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../../Dialog';
 import { DANGER_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
@@ -15,11 +16,13 @@ import { FieldIssue, FORM_LABEL } from '../SettingsPrimitives';
 import { SpaceDot } from './SpaceDot';
 
 /** "Add existing space…": registers a folder that already has this main space as its base. */
-export function AttachSpaceDialog({ onClose, onAttached }: {
+export function AttachSpaceDialog({ client: controlClient, onClose, onAttached }: {
+  client?: KikiClient;
   onClose: () => void;
   onAttached: (record: SpaceRecord) => void;
 }) {
-  const { client } = useConnection();
+  const { client: connectionClient } = useConnection();
+  const client = controlClient ?? connectionClient;
   const host = useHost();
   const { t, locale } = useI18n();
   const pathId = useId();
@@ -72,12 +75,14 @@ export function AttachSpaceDialog({ onClose, onAttached }: {
  * delete is recursive and final, and points at "Remove from list" for keeping
  * the files.
  */
-export function DeleteSpaceDialog({ space, onClose, onDeleted }: {
+export function DeleteSpaceDialog({ client: controlClient, space, onClose, onDeleted }: {
+  client?: KikiClient;
   space: SpaceListItem;
   onClose: () => void;
   onDeleted: () => void;
 }) {
-  const { client } = useConnection();
+  const { client: connectionClient } = useConnection();
+  const client = controlClient ?? connectionClient;
   const { t, locale } = useI18n();
   const inputId = useId();
   const [typed, setTyped] = useState('');
@@ -129,12 +134,14 @@ const targetKey = (target: CopyTarget) => `${target.workspaceId ?? ''}\u0000${ta
  * space's saved SSH passwords for the hosts ticked here (default: none).
  * Going back to shared keeps whatever the space saved on its own.
  */
-export function SpaceCredentialsDialog({ space, onClose, onDone }: {
+export function SpaceCredentialsDialog({ client: controlClient, space, onClose, onDone }: {
+  client?: KikiClient;
   space: SpaceListItem;
   onClose: () => void;
   onDone: (result: UpdateSpaceResponse) => void;
 }) {
-  const { client } = useConnection();
+  const { client: connectionClient } = useConnection();
+  const client = controlClient ?? connectionClient;
   const { t, tp, locale } = useI18n();
   const shared = space.credentials_shared !== false;
   const target = shared ? 'isolated' : 'shared';
@@ -142,7 +149,7 @@ export function SpaceCredentialsDialog({ space, onClose, onDone }: {
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const candidates = useQuery({
-    queryKey: spaceKeys.sshCandidates(space.id),
+    queryKey: spaceKeys.sshCandidates(space.id, client),
     queryFn: () => homesApi(client).sshCopyCandidates(space.id),
     enabled: shared,
     staleTime: 0,

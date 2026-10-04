@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -12,9 +12,13 @@ import {
 
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
+import type { KikiClient } from '../../lib/client';
+import { useSpaceSettingsTarget, type SpaceSettingsTarget } from '../../lib/spaceSettings';
+import { useDirtyGuard, useGuardedNavigate } from '../dirtyGuard';
 import {
   MAIN_SPACE_ID,
   currentSpace,
+  currentSpaceId,
   enterSpace,
   homesApi,
   launchWindowMode,
@@ -27,8 +31,11 @@ import {
 } from '../../lib/spaces';
 import { detectShortcutPlatform } from '../../lib/shortcuts';
 import { pushToast } from '../../lib/toasts';
+import { readHomeViewRoute } from '../../lib/spaceViewState';
+import type { PreparedScope } from '../../lib/navScope';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
@@ -38,23 +45,93 @@ import { CreateSpaceDialog } from './spaces/CreateSpaceDialog';
 import { AttachSpaceDialog, DeleteSpaceDialog, SpaceCredentialsDialog } from './spaces/SpaceDialogs';
 import { SpaceDot } from './spaces/SpaceDot';
 import { SpaceRowMenu, type SpaceMenuItem } from './spaces/SpaceRowMenu';
-import { SpaceCredentialsCard, SpaceOverridesCard } from './spaces/SubspaceCards';
+import { SpaceCredentialsCard } from './spaces/SubspaceCards';
+import { SpaceSettingsDetail } from './spaces/SpaceSettingsDetail';
+import { RemoteConnectionsSection } from './RemoteConnectionsSection';
+import { InboundConnectionsSection } from './InboundConnectionsSection';
+import { WebAccessSection } from './WebAccessSection';
 
 /**
  * Settings → Spaces (§9.1). The main space manages the list; a space sees the
- * same list read-only plus its own accounts card and what it changed locally.
- * Physical rename is not offered: the contract has no rename yet.
+ * same list read-only plus its own accounts card and its own settings. Physical
+ * rename is not offered: the contract has no rename yet.
  */
 export function SpacesSection() {
+  const { client, localClient, meta } = useConnection();
+  const host = useHost();
+  const { t } = useI18n();
+  const controlClient = host.kind === 'tauri' ? localClient : client;
+  const controlTarget = useSpaceSettingsTarget(controlClient, controlClient === client ? meta : undefined);
   const sub = currentSpace() !== null;
+  const openLocalSpace = useGuardedSpaceOpen(controlClient);
+  const mode = launchWindowMode(readDesktopPrefs().windowMode);
   return (
     <>
       <WindowModeCard sub={sub} />
-      <SpaceListCard sub={sub} />
-      {sub ? <SpaceCredentialsCard /> : null}
-      {sub ? <SpaceOverridesCard /> : null}
+      {controlClient === null ? <Hint>{t('st.spaces.loading')}</Hint> : <>
+        <SpaceListCard sub={sub} client={controlClient} target={controlTarget} openLocalSpace={openLocalSpace} />
+        <RemoteConnectionsSection />
+        <InboundConnectionsSection />
+        <WebAccessSection />
+        {sub ? <SpaceCredentialsCard client={controlClient} onEnterMain={() => openLocalSpace(MAIN_SPACE_ID, mode)} /> : null}
+        {sub ? <CurrentSpaceSettings target={controlTarget} /> : null}
+      </>}
     </>
   );
+}
+
+/**
+ * The space this window is already in changes itself here (§4.1): the same
+ * detail the row menu opens, read from the same contract, so a space never has
+ * to be opened from the main space to be configured. Flat — no card, no
+ * per-row chrome (design §5.4).
+ *
+ * It keeps the space's "changed here" id so the settings search entry keeps
+ * pointing at the surface that answers that question, exactly as the accounts
+ * card does for its own entry.
+ */
+function CurrentSpaceSettings({ target }: { target: SpaceSettingsTarget | null }) {
+  const here = currentSpace();
+  const selected = target === null ? null : { ...target, identity: { ...target.identity, homeId: currentSpaceId() } };
+  return (
+    <section id="st-card-space-overrides" className="border-t border-hairline pt-6" data-space-settings-section>
+      <SpaceSettingsDetail target={selected} name={here?.name ?? currentSpaceId()} />
+    </section>
+  );
+}
+
+function useGuardedSpaceOpen(client: KikiClient | null) {
+  const { sshLabel, scopeAdapter } = useConnection();
+  const host = useHost();
+  const guard = useDirtyGuard();
+  const navigate = useGuardedNavigate();
+  const clientRef = useRef(client);
+  clientRef.current = client;
+  return (id: string, mode: SpaceWindowMode) => {
+    if (mode === 'switch') {
+      if (client === null || client !== clientRef.current) return Promise.reject(new DOMException('The local space connection changed.', 'AbortError'));
+      return enterSpace(host, id, mode);
+    }
+    const localView = sshLabel !== null ? readHomeViewRoute(currentSpaceId(), 'local') ?? '/new' : undefined;
+    const open = async (signal = new AbortController().signal) => {
+      if (client === null || client !== clientRef.current) throw new DOMException('The local space connection changed.', 'AbortError');
+      let prepared: PreparedScope | undefined;
+      try {
+        if (localView !== undefined) {
+          prepared = await scopeAdapter.prepare({ homeId: currentSpaceId(), scopeId: 'local' }, signal);
+          await prepared.validate(localView, signal);
+        }
+        signal.throwIfAborted();
+        if (client !== clientRef.current) throw new DOMException('The local space connection changed.', 'AbortError');
+        await enterSpace(host, id, mode);
+        // Native success is not rolled back if this window was cancelled meanwhile.
+        signal.throwIfAborted();
+        await prepared?.commit();
+      } catch (error) { await prepared?.dispose(); throw error; }
+    };
+    return guard?.runAction !== undefined ? guard.runAction(open, localView)
+      : open().then(() => { if (localView !== undefined) navigate(localView); });
+  };
 }
 
 function WindowModeCard({ sub }: { sub: boolean }) {
@@ -118,9 +195,14 @@ function WindowModeCard({ sub }: { sub: boolean }) {
   );
 }
 
-function SpaceListCard({ sub }: { sub: boolean }) {
-  const { client } = useConnection();
+function SpaceListCard({ sub, client, target, openLocalSpace }: {
+  sub: boolean;
+  client: KikiClient;
+  target: SpaceSettingsTarget | null;
+  openLocalSpace: (id: string, mode: SpaceWindowMode) => void | Promise<void>;
+}) {
   const host = useHost();
+  const { sshLabel } = useConnection();
   const { t, tp, locale } = useI18n();
   const queryClient = useQueryClient();
   const spaces = useSpaces(client);
@@ -128,7 +210,7 @@ function SpaceListCard({ sub }: { sub: boolean }) {
   const [dialog, setDialog] = useState<
     | { kind: 'create' } | { kind: 'attach' }
     | { kind: 'remove'; space: SpaceListItem } | { kind: 'delete'; space: SpaceListItem }
-    | { kind: 'credentials'; space: SpaceListItem } | null
+    | { kind: 'credentials'; space: SpaceListItem } | { kind: 'settings'; space: SpaceListItem } | null
   >(null);
   const [menu, setMenu] = useState<{ space: SpaceListItem; anchor: DOMRect } | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -176,11 +258,14 @@ function SpaceListCard({ sub }: { sub: boolean }) {
   ], [t, spaceLabel]);
   const view = useListView({ listId: 'spaces', items: ordered, keyOf, textOf, filters, sorts });
 
-  const enter = (space: SpaceListItem) => {
+  const enter = (space: Pick<SpaceListItem, 'id'>) => {
     setEntering(space.id);
     setFeedback(null);
-    void enterSpace(host, space.id, mode)
-      .catch(() => { setFeedback({ tone: 'error', text: t('st.spaces.switchFailed', { name: space.name }) }); })
+    void Promise.resolve(openLocalSpace(space.id, mode))
+      .catch((error: unknown) => {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        setFeedback({ tone: 'error', text: errorText(locale, error) });
+      })
       .finally(() => { setEntering(null); });
   };
 
@@ -231,7 +316,10 @@ function SpaceListCard({ sub }: { sub: boolean }) {
   const menuItems = (space: SpaceListItem): SpaceMenuItem[] => {
     const isMain = space.id === MAIN_SPACE_ID;
     return [
-      ...(host.revealPath !== undefined ? [{ key: 'reveal', label: t('st.spaces.reveal'), run: () => { void host.revealPath?.(space.path).catch(() => undefined); } }] : []),
+      // Every row, the main space included: what this space follows, what it
+      // holds, and the way to change either — without opening the space first.
+      { key: 'settings', label: t('st.spaces.settingsMenu'), run: () => { setDialog({ kind: 'settings', space }); } },
+      ...(host.revealPath !== undefined ? [{ key: 'reveal', label: t('st.spaces.reveal'), separatorBefore: true, run: () => { void host.revealPath?.(space.path).catch(() => undefined); } }] : []),
       ...(!isMain ? [{ key: 'credentials', label: t('st.spaces.credentials'), run: () => { setDialog({ kind: 'credentials', space }); } }] : []),
       ...(desktop && host.createSpaceShortcut !== undefined ? [{
         key: 'shortcut',
@@ -265,7 +353,8 @@ function SpaceListCard({ sub }: { sub: boolean }) {
   };
 
   const renderRow = (space: SpaceListItem) => {
-    const run = spaceRunState(space.id, statuses.data);
+    const localRun = spaceRunState(space.id, statuses.data);
+    const run = sshLabel !== null && localRun === 'current' ? 'hot' : localRun;
     const pending = mode === 'switch' ? (spaceStatus(space.id, statuses.data)?.pendingCount ?? 0) : 0;
     const isMain = space.id === MAIN_SPACE_ID;
     const label = spaceLabel(space);
@@ -380,19 +469,17 @@ function SpaceListCard({ sub }: { sub: boolean }) {
       ) : null}
 
       {dialog?.kind === 'create' ? (
-        <CreateSpaceDialog mainPath={main?.path ?? ''} canOpen={desktop}
+        <CreateSpaceDialog client={client} mainPath={main?.path ?? ''} canOpen={desktop}
           onClose={() => { setDialog(null); }}
           onCreated={(record, open) => {
             setDialog(null);
             refresh();
             pushToast({ tone: 'success', text: t('st.spaces.created', { name: record.name }) });
-            if (open) void enterSpace(host, record.id, mode).catch(() => {
-              setFeedback({ tone: 'error', text: t('st.spaces.switchFailed', { name: record.name }) });
-            });
+            if (open) enter(record);
           }} />
       ) : null}
       {dialog?.kind === 'attach' ? (
-        <AttachSpaceDialog onClose={() => { setDialog(null); }}
+        <AttachSpaceDialog client={client} onClose={() => { setDialog(null); }}
           onAttached={(record) => { setDialog(null); refresh(); setFeedback({ tone: 'success', text: t('st.spaces.attached', { name: record.name }) }); }} />
       ) : null}
       {dialog?.kind === 'remove' ? (
@@ -410,7 +497,7 @@ function SpaceListCard({ sub }: { sub: boolean }) {
           }} />
       ) : null}
       {dialog?.kind === 'delete' ? (
-        <DeleteSpaceDialog space={dialog.space} onClose={() => { setDialog(null); }}
+        <DeleteSpaceDialog client={client} space={dialog.space} onClose={() => { setDialog(null); }}
           onDeleted={() => {
             const name = dialog.space.name;
             setDialog(null);
@@ -418,8 +505,15 @@ function SpaceListCard({ sub }: { sub: boolean }) {
             setFeedback({ tone: 'success', text: t('st.spaces.deleted', { name }) });
           }} />
       ) : null}
+      {dialog?.kind === 'settings' ? (
+        <Dialog onClose={() => { setDialog(null); }} overlayId="space-settings-dialog"
+          ariaLabel={t('st.spaces.settingsTitle', { name: spaceLabel(dialog.space) })}
+          panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
+          <SpaceSettingsDetail target={target === null ? null : { ...target, identity: { ...target.identity, homeId: dialog.space.id } }} name={spaceLabel(dialog.space)} />
+        </Dialog>
+      ) : null}
       {dialog?.kind === 'credentials' ? (
-        <SpaceCredentialsDialog space={dialog.space} onClose={() => { setDialog(null); }}
+        <SpaceCredentialsDialog client={client} space={dialog.space} onClose={() => { setDialog(null); }}
           onDone={(result) => { onCredentialsDone(dialog.space, result); }} />
       ) : null}
     </SectionCard>

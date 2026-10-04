@@ -659,6 +659,34 @@ describe('CLI options parsing', () => {
   });
 
   describe('sub-commands', () => {
+    it.each([
+      ['wait', ['dispatch-example', '--timeout', '2'], { timeout: 2 }],
+      ['dispatch', ['message', '--model', 'model-example', '--thinking', 'high', '--timeout', '3'], { model: 'model-example', thinking: 'high', timeout: 3 }],
+      ['continue', ['dispatch-example', 'message', '--timeout', '4'], { timeout: 4 }],
+    ] as const)('keeps root prompt options out of the %s child option scope', async (name, args, expected) => {
+      const main = vi.fn();
+      const program = createProgram('test', main).exitOverride();
+      const child = program.commands.find((command) => command.name() === name)!;
+      const action = vi.fn();
+      child.action(action);
+      await program.parseAsync(['node', 'main.mjs', name, ...args]);
+      expect(child.opts()).toMatchObject(expected);
+      expect(program.opts()).not.toHaveProperty('timeout');
+      expect(program.opts()).not.toHaveProperty('model');
+      expect(program.opts()).not.toHaveProperty('thinking');
+      expect(action).toHaveBeenCalledOnce();
+      expect(main).not.toHaveBeenCalled();
+    });
+
+    it('rejects a child bad timeout before invoking the action', async () => {
+      const program = createProgram('test', () => {}).exitOverride().configureOutput({ writeErr: () => {} });
+      const child = program.commands.find((command) => command.name() === 'wait')!;
+      const action = vi.fn();
+      child.action(action);
+      await expect(program.parseAsync(['node', 'main.mjs', 'wait', 'dispatch-example', '--timeout', 'bad'])).rejects.toThrow('Invalid integer');
+      expect(action).not.toHaveBeenCalled();
+    });
+
     it('registers the visible sub-commands', () => {
       vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '0');
       onTestFinished(() => { vi.unstubAllEnvs(); });
@@ -680,6 +708,9 @@ describe('CLI options parsing', () => {
         'login',
         'doctor',
         'serve',
+        'connections',
+        'bridges',
+        'usage-export',
         'seat',
         'mcp',
         'host-attach',

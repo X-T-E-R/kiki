@@ -1,9 +1,11 @@
 /**
  * `kimi provider` sub-command — non-interactive provider management.
  *
- * Mirrors the TUI `/provider` flow (apps/kimi-code/src/tui/commands/provider.ts)
- * for the custom-registry path so users can import an api.json document, drop
- * a provider, or inspect what is configured without launching the TUI.
+ * The interactive counterpart is the daemon TUI `/provider` handler in
+ * apps/kimi-code/src/tui/daemon/daemon-tui.ts (`handleProviderCommand`).
+ * This command covers the custom-registry path so users can import an api.json
+ * document, drop a provider, or inspect what is configured without launching
+ * the TUI; `catalog add` is the guided alternative to hand-written JSON.
  *
  * `add` writes the same `source = { kind: 'apiJson', url, apiKey }` blob the
  * TUI does. Later explicit model discovery groups these sources by URL and
@@ -32,6 +34,7 @@ import {
 import type { Command } from 'commander';
 
 import { createKimiCodeHostIdentity, createKimiCodeUserAgent } from '#/cli/version';
+import { CLI_COMMAND_NAME } from '#/constant/app';
 import { fetchCatalogOrBuiltIn } from '#/utils/catalog-fetch';
 
 interface WritableLike {
@@ -354,7 +357,7 @@ export async function handleCatalogAdd(
 
   if (opts.defaultModel !== undefined && !models.some((m) => m.id === opts.defaultModel)) {
     deps.stderr.write(
-      `Model "${opts.defaultModel}" is not in provider "${providerId}". Run "kimi provider catalog list ${providerId}" to see available ids.\n`,
+      `Model "${opts.defaultModel}" is not in provider "${providerId}". Run "${CLI_COMMAND_NAME} provider catalog list ${providerId}" to see available ids.\n`,
     );
     deps.exit(1);
   }

@@ -79,10 +79,10 @@ describe('explicit model migration settings card', () => {
     await click(container, 'Preview migration');
     expect(previewModelGenerationMigration).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain('temperature');
-    expect(container.textContent).toContain('max_output_size');
+    expect(container.textContent).toContain('model: Maximum output size setting is preserved.');
     expect(applyModelGenerationMigration).not.toHaveBeenCalled();
     await click(container, 'Apply previewed changes');
-    expect(container.textContent).toContain('byte-exact config backup');
+    expect(container.textContent).toContain('Migrate only valid parameters and back up current configuration automatically.');
     expect(applyModelGenerationMigration).not.toHaveBeenCalled();
     await click(container, 'Back up and apply');
     expect(applyModelGenerationMigration).toHaveBeenCalledWith(revision);

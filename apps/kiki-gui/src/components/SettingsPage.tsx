@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import {
@@ -11,6 +11,7 @@ import {
   type SettingsSearchEntry,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../i18n';
+import { prefersReducedMotion } from '../lib/motion';
 import { useConnection } from '../state/connection';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { AboutSection } from './settings/AboutSection';
@@ -19,7 +20,7 @@ import { AppearanceSection } from './settings/AppearanceSection';
 import { Icon } from './icons';
 import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
-import { HooksSection } from './settings/AutomationSection';
+import { HooksSection } from './settings/hooks/HooksSection';
 import { ConnectionSection } from './settings/ConnectionSection';
 import { DeveloperSection } from './settings/DeveloperSection';
 import { ExperimentalRows } from './settings/ExperimentalRows';
@@ -32,8 +33,10 @@ import { IdentitySection } from './settings/IdentitySection';
 import { NotificationsSection } from './settings/NotificationsSection';
 import { PermissionsSection } from './settings/PermissionsSection';
 import { PluginsSection } from './settings/PluginsSection';
+import { BrowserControlSection } from './settings/BrowserControlSection';
+import { ComputerControlSection } from './settings/ComputerControlSection';
 import { SECTIONS, type SectionId } from './settings/sections';
-import { SettingsFlashContext, SettingsPageScopeContext } from './settings/SectionCard';
+import { SettingsCardMountContext, SettingsFlashContext, SettingsPageScopeContext } from './settings/SectionCard';
 import { SessionsSection } from './settings/SessionsSection';
 import { ShortcutsSection } from './settings/ShortcutsSection';
 import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
@@ -48,8 +51,13 @@ import { UnknownSettingsSection } from './settings/UnknownSection';
 import { SettingsWorkspaceScopeContext } from './settings/workspaceScope';
 import { WorkspacesSection } from './settings/WorkspacesSection';
 import { SshSection } from './ssh/SshSection';
+import { NavBackButton } from './NavBackButton';
+import { getCurrentVisit, getUiSnapshot, saveScrollPosition, saveUiSnapshot } from '../lib/navHistory';
 
 export { mcpConfigFromDraft, parseNamedAgentTools } from '@kiki/session-core/settings';
+
+/** Keys that move the pane by themselves — the ones that mean "I am scrolling". */
+const SCROLL_KEYS: ReadonlySet<string> = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 
 /**
  * Address of the connected server, only when it is somewhere else. The
@@ -181,7 +189,8 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const rawNavigate = useNavigate();
   const dirty = useDirtyGuard()?.dirty === true;
   const remoteAddress = useRemoteServerAddress();
-  const [focusCard, setFocusCard] = useState<{ cardId: string; nonce: number } | null>(null);
+  const [cardRequest, setCardRequest] = useState<{ cardId: string; section: string; locationKey: string; nonce: number } | null>(null);
+  const [flashCard, setFlashCard] = useState<{ cardId: string; nonce: number } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   // `/settings/<section>#st-card-…` focuses one card, so callers elsewhere in
@@ -196,6 +205,24 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   // page change — the next section reports its own selection.
   const [workspaceScopeName, setWorkspaceScopeName] = useState<string | null>(null);
   useEffect(() => { setWorkspaceScopeName(null); }, [active]);
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // App commits the target visit in its layout transition, before this effect.
+  // The shared section container must also reset for a newly pushed visit.
+  useEffect(() => {
+    const visit = getCurrentVisit();
+    if (!visit || !scrollRef.current) return;
+    const saved = getUiSnapshot<{ scrollTop?: number }>(visit.visitId);
+    const container = scrollRef.current;
+    container.scrollTop = saved?.scrollTop ?? 0;
+    const handleScroll = () => {
+      saveUiSnapshot(visit.visitId, { scrollTop: container.scrollTop });
+      saveScrollPosition(visit.visitId, '[data-settings-scroll]', container.scrollTop);
+    };
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => { container.removeEventListener('scroll', handleScroll); };
+  }, [active, key]);
 
   // Canonicalize legacy / card-moved targets in place: replace, never push,
   // and bypass the dirty guard — this is a redirect, not a user navigation.
@@ -225,18 +252,60 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   useEffect(() => {
     const cardId = hash.replace(/^#/, '');
     if (!cardId.startsWith('st-card-')) return;
-    setFocusCard({ cardId, nonce: Date.now() });
-  }, [hash]);
+    // A visit that already holds the reader's own scroll position restores it
+    // (`scrollRef` above), so the hash it was left with does not pull the pane
+    // again when the reader comes back: the snapshot outranks the older target.
+    const visit = getCurrentVisit();
+    if (visit !== null && getUiSnapshot<{ scrollTop?: number }>(visit.visitId)?.scrollTop !== undefined) return;
+    setCardRequest({ cardId, section: resolution.section, locationKey: key, nonce: Date.now() });
+  }, [hash, resolution.section, key]);
 
-  // Scroll + flash the card a search hit pointed at, then disarm.
+  // Locating one card is a handshake, not a deadline: `/settings/<section>#
+  // st-card-…` and a search hit both ask for a card id, and the page waits until
+  // the card that owns that id says it is on screen (`SettingsCardMountContext`,
+  // announced by `SectionCard`). A card that loads its own data can therefore
+  // arrive as late as it likes — the two seconds below are how long the located
+  // card stays highlighted, not how long the page waits for it.
+  const locateCard = useCallback((id: string) => {
+    if (cardRequest === null || cardRequest.cardId !== id
+      || cardRequest.section !== active || cardRequest.locationKey !== key) return;
+    setCardRequest(null);
+    setFlashCard({ cardId: id, nonce: cardRequest.nonce });
+    const target = document.querySelector(`#${CSS.escape(id)}`);
+    if (target !== null && typeof target.scrollIntoView === 'function') {
+      target.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
+    }
+  }, [cardRequest, active, key]);
+
+  // The highlight, held from the moment the card was located.
   useEffect(() => {
-    if (focusCard === null) return;
-    const frame = requestAnimationFrame(() => {
-      document.querySelector(`#${CSS.escape(focusCard.cardId)}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-    const timer = setTimeout(() => { setFocusCard(null); }, 2000);
-    return () => { cancelAnimationFrame(frame); clearTimeout(timer); };
-  }, [focusCard]);
+    if (flashCard === null) return;
+    const timer = setTimeout(() => { setFlashCard(null); }, 2000);
+    return () => { clearTimeout(timer); };
+  }, [flashCard]);
+
+  // A request must not outlive the reader's own move: scrolling away drops it, so
+  // a slow card keeps its place instead of pulling the view later.
+  useEffect(() => {
+    if (cardRequest === null) return;
+    const drop = () => { setCardRequest(null); };
+    const onKey = (event: KeyboardEvent) => { if (SCROLL_KEYS.has(event.key)) drop(); };
+    window.addEventListener('wheel', drop, { passive: true, once: true });
+    window.addEventListener('touchstart', drop, { passive: true, once: true });
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('wheel', drop);
+      window.removeEventListener('touchstart', drop);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [cardRequest]);
+
+  // …and a request belongs to one committed visit, including its tab: leaving
+  // drops it. Keep a new hash request queued by this visit's effect above.
+  useEffect(() => {
+    setCardRequest((current) => current !== null
+      && (current.section !== active || current.locationKey !== key) ? null : current);
+  }, [active, key]);
 
   // A dirty providers editor also guards closing the app itself.
   useEffect(() => {
@@ -251,12 +320,17 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   }, [navigate]);
 
   const onSearchHit = (entry: SettingsSearchEntry) => {
-    setFocusCard({ cardId: entry.cardId, nonce: Date.now() });
     setDrawerOpen(false);
-    // Tabbed sections (the merged ai entry) need the tab in the target so the
-    // hit's card is actually mounted when the flash scroll runs.
+    if (entry.section === active && (entry.tab === undefined || entry.tab === currentTab)) {
+      setCardRequest({ cardId: entry.cardId, section: entry.section, locationKey: key, nonce: Date.now() });
+      return;
+    }
+    // Carry the target through the existing deep-link route, not local state on
+    // the source page: the router may commit later, or the dirty guard may cancel.
+    // Only the committed destination asks its mounted card to locate itself.
+    setCardRequest(null);
     const target = entry.tab === undefined ? entry.section : `${entry.section}?tab=${entry.tab}`;
-    if (entry.section !== active || entry.tab !== undefined) guardedNavigate(target);
+    guardedNavigate(`${target}#${entry.cardId}`);
   };
 
   const activeGroup = active === null ? undefined : settingsGroupForSection(active);
@@ -279,6 +353,8 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'skills' ? <SkillsSection />
     : active === 'mcp' ? <McpSection />
     : active === 'plugins' ? <PluginsSection />
+    : active === 'browser-control' ? <BrowserControlSection />
+    : active === 'computer-control' ? <ComputerControlSection />
     : active === 'search' ? <NbSearchSection />
     : active === 'hooks' ? <HooksSection />
     : active === 'spaces' ? <SpacesSection />
@@ -299,12 +375,14 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const activeLabel = activeLabelKey === undefined ? undefined : t(activeLabelKey);
 
   return (
-    <SettingsFlashContext.Provider value={focusCard?.cardId ?? null}>
+    <SettingsCardMountContext.Provider value={locateCard}>
+    <SettingsFlashContext.Provider value={flashCard?.cardId ?? null}>
     <SettingsWorkspaceScopeContext.Provider value={setWorkspaceScopeName}>
       <header className="flex h-12 shrink-0 items-center gap-2 px-4 lg:px-6">
         <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink md:hidden">
           <Icon name="menu" size={16} />
         </button>
+        <NavBackButton />
         {/* The page title is the leaf; "Settings" is the breadcrumb above it. */}
         <h1 className="flex min-w-0 flex-1 items-baseline gap-1.5 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
           <span className={activeLabel === undefined ? '' : 'font-normal text-ink-faint'}>{t('st.title')}</span>
@@ -349,7 +427,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               <UnknownSettingsSection section={section ?? ''} onSearchHit={onSearchHit} />
             </div>
           ) : (
-            <div data-settings-scroll className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-16 pt-6 lg:px-10 lg:pt-8">
+            <div ref={scrollRef} data-settings-scroll className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-16 pt-6 lg:px-10 lg:pt-8">
               <div className="mx-auto max-w-[720px]">
                 <SpaceBand />
                 <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} />
@@ -363,5 +441,6 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
       </main>
     </SettingsWorkspaceScopeContext.Provider>
     </SettingsFlashContext.Provider>
+    </SettingsCardMountContext.Provider>
   );
 }

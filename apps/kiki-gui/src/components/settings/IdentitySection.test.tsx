@@ -3,11 +3,13 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { RequestIdentityCatalog, RequestIdentityProfile } from '@kiki/protocol';
-import { I18nProvider } from '../../i18n';
+import { I18nProvider, useI18n } from '../../i18n';
+import { ConfirmDialog } from '../ConfirmDialog';
+import { DirtyGuardContext, useDirtyGuardState } from '../dirtyGuard';
 import { IdentitySection } from './IdentitySection';
 import { optionLabels } from './testControls';
 
@@ -72,8 +74,8 @@ beforeEach(() => {
     params: {}, version: '0.159.2', version_origin: 'track:builtin', suppressed_user_agent: false,
   });
 });
-afterEach(() => {
-  for (const root of roots.splice(0)) root.unmount();
+afterEach(async () => {
+  for (const root of roots.splice(0)) await act(async () => { root.unmount(); });
   for (const container of containers.splice(0)) container.remove();
 });
 afterAll(() => {
@@ -85,15 +87,34 @@ async function settle(): Promise<void> {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
-async function render(): Promise<HTMLDivElement> {
+function GuardHarness() {
+  const { t } = useI18n();
+  const location = useLocation();
+  const rawNavigate = useNavigate();
+  const guard = useDirtyGuardState(location, (target, options) => {
+    if (typeof target === 'number') void rawNavigate(target);
+    else void rawNavigate(target, options);
+  });
+  return <DirtyGuardContext.Provider value={guard.value}>
+    <div data-page-dirty={String(guard.value.dirty)}>
+      <button onClick={() => { guard.navigate('/other'); }}>Leave page</button>
+      <button onClick={() => { guard.navigate('/'); }}>Return to identities</button>
+      {location.pathname === '/' ? <IdentitySection /> : null}
+    </div>
+    <ConfirmDialog open={guard.pending} title={t('st.dirty.leaveTitle')} body={t('st.dirty.leaveBody')}
+      confirmLabel={t('st.dirty.leaveConfirm')} cancelLabel={t('st.dirty.stay')}
+      onConfirm={() => { void guard.confirm(); }} onCancel={guard.cancel} />
+  </DirtyGuardContext.Provider>;
+}
+
+async function render(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
   roots.push(root);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
-    root.render(<MemoryRouter><QueryClientProvider client={queryClient}><I18nProvider><IdentitySection /></I18nProvider></QueryClientProvider></MemoryRouter>);
+    root.render(<MemoryRouter><QueryClientProvider client={queryClient}><I18nProvider><GuardHarness /></I18nProvider></QueryClientProvider></MemoryRouter>);
   });
   await settle();
   await settle();
@@ -107,14 +128,290 @@ function button(container: HTMLElement, text: string | RegExp): HTMLButtonElemen
   return found;
 }
 
-async function type(element: HTMLInputElement, value: string): Promise<void> {
+async function type(element: HTMLInputElement | HTMLTextAreaElement, value: string): Promise<void> {
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(element, value);
+    const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(element, value);
     element.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
 
+const FIRST: RequestIdentityProfile = { ...CODEX, id: 'custom:first', builtin: false, label: 'First', duplicated_from: 'codex' };
+const SECOND: RequestIdentityProfile = { ...FIRST, id: 'custom:second', label: 'Second' };
+const twoCustom = () => catalog({ profiles: [CODEX, FIRST, SECOND] });
+const labelInput = (container: HTMLElement) => container.querySelector<HTMLInputElement>('[data-identity-label]')!;
+const footer = (container: HTMLElement) => container.querySelector<HTMLElement>('[data-settings-draft^="identity-custom:"]')!;
+async function select(container: HTMLElement, id: string) {
+  await act(async () => { container.querySelector<HTMLButtonElement>(`[data-identity-row="${id}"]`)!.click(); });
+}
+
 describe('IdentitySection', () => {
+  it('1: retains the audit label draft across rows without a confirmation or save', async () => {
+    api.get.mockResolvedValue(twoCustom());
+    const container = await render();
+    await select(container, FIRST.id);
+    await type(labelInput(container), 'REVIEW-DRAFT-NOT-SAVED');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-identity-back]')!.click(); });
+    await select(container, 'codex');
+    await select(container, FIRST.id);
+    expect(labelInput(container).value).toBe('REVIEW-DRAFT-NOT-SAVED');
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(api.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it('2: retains headers, params, UA, version, overrides text and the server rejection per identity', async () => {
+    api.get.mockResolvedValue(twoCustom());
+    api.updateProfile.mockRejectedValue(new Error('server rejected this identity'));
+    const container = await render();
+    await select(container, FIRST.id);
+    await type(container.querySelector<HTMLInputElement>('[data-identity-user-agent]')!, 'draft/{version}');
+    await type(container.querySelector<HTMLInputElement>('[data-identity-pairs="header"] input:nth-child(2)')!, 'private draft header');
+    await act(async () => { button(container.querySelector('[data-identity-pairs="param"]')!, 'Add field').click(); });
+    await type(container.querySelector<HTMLInputElement>('[data-identity-pairs="param"] input')!, 'draft-param');
+    await type(container.querySelector<HTMLInputElement>('[data-identity-pairs="param"] input:nth-child(2)')!, 'draft-value');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-identity-version-mode="fixed"]')!.click(); });
+    await type(container.querySelector<HTMLInputElement>('[data-identity-version]')!, ' 2.0.0 ');
+    const json = '{  "lineage": { "thread_identity": "none" }  }\n';
+    await type(container.querySelector<HTMLTextAreaElement>('[data-identity-overrides]')!, json);
+    await act(async () => { button(footer(container), 'Save').click(); });
+    await settle();
+    await select(container, SECOND.id);
+    expect(container.querySelector('[data-field-issue]')).toBeNull();
+    await select(container, FIRST.id);
+    expect(container.querySelector<HTMLInputElement>('[data-identity-user-agent]')!.value).toBe('draft/{version}');
+    expect(container.querySelector<HTMLInputElement>('[data-identity-pairs="header"] input:nth-child(2)')!.value).toBe('private draft header');
+    expect(container.querySelector<HTMLInputElement>('[data-identity-pairs="param"] input')!.value).toBe('draft-param');
+    expect(container.querySelector<HTMLInputElement>('[data-identity-pairs="param"] input:nth-child(2)')!.value).toBe('draft-value');
+    expect(container.querySelector<HTMLInputElement>('[data-identity-version]')!.value).toBe(' 2.0.0 ');
+    expect(container.querySelector<HTMLTextAreaElement>('[data-identity-overrides]')!.value).toBe(json);
+    expect(container.querySelector('[data-field-issue]')?.textContent).toContain('server rejected this identity');
+  });
+
+  it('3: saves only the selected identity and uses a real GET, not the update echo, as its baseline', async () => {
+    api.get.mockResolvedValueOnce(twoCustom());
+    api.updateProfile.mockResolvedValue(catalog({ profiles: [CODEX, { ...FIRST, label: 'Echo', user_agent: 'echo-UA' }, SECOND] }));
+    api.get.mockResolvedValue(catalog({ profiles: [CODEX, { ...FIRST, label: 'Normalized', user_agent: 'normalized-UA' }, SECOND] }));
+    const container = await render();
+    await select(container, FIRST.id);
+    await type(labelInput(container), 'Submitted');
+    await act(async () => { button(footer(container), 'Save').click(); });
+    await settle();
+    expect(api.updateProfile).toHaveBeenCalledExactlyOnceWith(FIRST.id, expect.objectContaining({ label: 'Submitted' }));
+    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(api.get.mock.invocationCallOrder[1]).toBeGreaterThan(api.updateProfile.mock.invocationCallOrder[0]!);
+    expect(labelInput(container).value).toBe('Normalized');
+    expect(container.querySelector<HTMLInputElement>('[data-identity-user-agent]')!.value).toBe('normalized-UA');
+    expect(button(footer(container), 'Discard changes').disabled).toBe(true);
+    expect(container.querySelector('[data-page-dirty]')!.getAttribute('data-page-dirty')).toBe('false');
+  });
+
+  it('4: keeps the second identity draft intact when saving the first', async () => {
+    api.get.mockResolvedValue(twoCustom());
+    const container = await render();
+    await select(container, FIRST.id);
+    await type(labelInput(container), 'First draft');
+    await select(container, SECOND.id);
+    await type(labelInput(container), 'Second draft');
+    await select(container, FIRST.id);
+    expect(labelInput(container).value).toBe('First draft');
+    const saved = catalog({ profiles: [CODEX, { ...FIRST, label: 'First saved' }, SECOND] });
+    api.updateProfile.mockResolvedValue(saved);
+    api.get.mockResolvedValue(saved);
+    await act(async () => { button(footer(container), 'Save').click(); });
+    await settle();
+    expect(api.updateProfile).toHaveBeenCalledExactlyOnceWith(FIRST.id, expect.objectContaining({ label: 'First draft' }));
+    expect(labelInput(container).value).toBe('First saved');
+    await select(container, SECOND.id);
+    expect(labelInput(container).value).toBe('Second draft');
+    expect(button(footer(container), 'Discard changes').disabled).toBe(false);
+  });
+
+  it('5: discards only the selected draft, disables Discard when clean and clears dirtiness on an exact revert', async () => {
+    api.get.mockResolvedValue(twoCustom());
+    const container = await render();
+    await select(container, FIRST.id);
+    await type(labelInput(container), 'First draft');
+    await select(container, SECOND.id);
+    await type(labelInput(container), 'Second draft');
+    await select(container, FIRST.id);
+    await act(async () => { button(footer(container), 'Discard changes').click(); });
+    expect(labelInput(container).value).toBe(FIRST.label);
+    expect(button(footer(container), 'Discard changes').disabled).toBe(true);
+    await select(container, SECOND.id);
+    expect(labelInput(container).value).toBe('Second draft');
+    await type(labelInput(container), SECOND.label);
+    expect(button(footer(container), 'Discard changes').disabled).toBe(true);
+    expect(container.querySelector('[data-page-dirty]')!.getAttribute('data-page-dirty')).toBe('false');
+  });
+
+  it('6: retains invalid JSON and its field issue only on its identity and blocks its save', async () => {
+    api.get.mockResolvedValue(twoCustom());
+    const container = await render();
+    await select(container, FIRST.id);
+    await type(container.querySelector<HTMLTextAreaElement>('[data-identity-overrides]')!, '{ invalid');
+    await act(async () => { button(footer(container), 'Save').click(); });
+    const issue = container.querySelector('[data-field-issue]')!.textContent;
+    await select(container, SECOND.id);
+    expect(container.querySelector('[data-field-issue]')).toBeNull();
+    expect(container.querySelector<HTMLTextAreaElement>('[data-identity-overrides]')!.value).toBe('');
+    await select(container, FIRST.id);
+    expect(container.querySelector<HTMLTextAreaElement>('[data-identity-overrides]')!.value).toBe('{ invalid');
+    expect(container.querySelector('[data-field-issue]')!.textContent).toBe(issue);
+    expect(container.querySelector('[data-identity-overrides]')!.getAttribute('aria-invalid')).toBe('true');
+    await act(async () => { button(footer(container), 'Save').click(); });
+    expect(api.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it('guards leaving with off-selected drafts, cancels without loss and discards all drafts on leave', async () => {
+    api.get.mockResolvedValue(twoCustom());
+    const container = await render();
+    await select(container, FIRST.id);
+    await type(labelInput(container), 'First draft');
+    await select(container, SECOND.id);
+    await type(labelInput(container), 'Second draft');
+    await select(container, 'codex');
+    expect(container.querySelector('[data-page-dirty]')!.getAttribute('data-page-dirty')).toBe('true');
+    await act(async () => { button(container, 'Leave page').click(); });
+    expect(document.querySelectorAll('[role="alertdialog"]')).toHaveLength(1);
+    await act(async () => { button(document.body, 'Keep editing').click(); });
+    await select(container, FIRST.id);
+    expect(labelInput(container).value).toBe('First draft');
+    await select(container, 'codex');
+    await act(async () => { button(container, 'Leave page').click(); });
+    await act(async () => { button(document.body, 'Discard and leave').click(); });
+    expect(container.querySelector('[data-identity-detail]')).toBeNull();
+    await act(async () => { button(container, 'Return to identities').click(); });
+    await settle();
+    await select(container, FIRST.id);
+    expect(labelInput(container).value).toBe(FIRST.label);
+    await select(container, SECOND.id);
+    expect(labelInput(container).value).toBe(SECOND.label);
+    expect(container.querySelector('[data-page-dirty]')!.getAttribute('data-page-dirty')).toBe('false');
+  });
+
+  it('duplicates without losing the source draft and drops only the deleted identity draft', async () => {
+    api.get.mockResolvedValue(twoCustom());
+    const created: RequestIdentityProfile = { ...FIRST, id: 'custom:copy', label: 'Created copy', duplicated_from: FIRST.id };
+    api.duplicateProfile.mockResolvedValue(catalog({ profiles: [CODEX, FIRST, SECOND, created] }));
+    const container = await render();
+    await select(container, SECOND.id);
+    await type(labelInput(container), 'Second draft');
+    await select(container, FIRST.id);
+    await type(labelInput(container), 'First draft');
+    await act(async () => { button(container.querySelector('[data-identity-detail]')!, 'Duplicate to edit').click(); });
+    await settle();
+    expect(container.querySelector('[data-identity-detail]')!.getAttribute('data-identity-detail')).toBe(created.id);
+    expect(labelInput(container).value).toBe(created.label);
+    await select(container, FIRST.id);
+    expect(labelInput(container).value).toBe('First draft');
+    api.deleteProfile.mockResolvedValue(catalog({ profiles: [CODEX, SECOND, created] }));
+    await act(async () => { button(container, 'Delete identity').click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
+    await settle();
+    expect(container.querySelector('[data-identity-detail="codex"]')).not.toBeNull();
+    expect(container.querySelector(`[data-identity-row="${FIRST.id}"]`)).toBeNull();
+    await select(container, SECOND.id);
+    expect(labelInput(container).value).toBe('Second draft');
+    await act(async () => { button(footer(container), 'Discard changes').click(); });
+    expect(container.querySelector('[data-page-dirty]')!.getAttribute('data-page-dirty')).toBe('false');
+  });
+
+  it('keeps the exact draft and its error when the authoritative read-back fails', async () => {
+    api.get.mockResolvedValue(twoCustom());
+    api.updateProfile.mockResolvedValue(twoCustom());
+    const container = await render();
+    await select(container, FIRST.id);
+    await type(labelInput(container), 'First draft');
+    api.get.mockRejectedValue(new Error('read-back failed'));
+    await act(async () => { button(footer(container), 'Save').click(); });
+    await settle();
+    await select(container, 'codex');
+    await select(container, FIRST.id);
+    expect(labelInput(container).value).toBe('First draft');
+    expect(container.querySelector('[data-field-issue]')?.textContent).toContain('read-back failed');
+    expect(button(footer(container), 'Discard changes').disabled).toBe(false);
+  });
+
+  it('does not overwrite edits made while a save is in flight, even across a row switch', async () => {
+    api.get.mockResolvedValue(twoCustom());
+    let resolveUpdate!: (value: RequestIdentityCatalog) => void;
+    api.updateProfile.mockReturnValue(new Promise<RequestIdentityCatalog>((resolve) => { resolveUpdate = resolve; }));
+    const container = await render();
+    await select(container, FIRST.id);
+    await type(labelInput(container), 'Submitted draft');
+    await act(async () => { button(footer(container), 'Save').click(); });
+    await select(container, SECOND.id);
+    await type(labelInput(container), 'Second draft');
+    await select(container, FIRST.id);
+    await type(labelInput(container), 'Newer first draft');
+    const normalized = catalog({ profiles: [CODEX, { ...FIRST, label: 'Normalized submitted draft' }, SECOND] });
+    api.get.mockResolvedValue(normalized);
+    await act(async () => { resolveUpdate(normalized); });
+    await settle();
+    expect(labelInput(container).value).toBe('Newer first draft');
+    await select(container, SECOND.id);
+    expect(labelInput(container).value).toBe('Second draft');
+    await select(container, FIRST.id);
+    await act(async () => { button(footer(container), 'Discard changes').click(); });
+    expect(labelInput(container).value).toBe('Normalized submitted draft');
+  });
+
+  it('retains drafts when a background catalog refresh fails', async () => {
+    api.get.mockResolvedValue(twoCustom());
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = await render(queryClient);
+    await select(container, FIRST.id);
+    await type(labelInput(container), 'First draft');
+    api.get.mockRejectedValue(new Error('refresh failed'));
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['request-identity'], exact: true }); });
+    await settle();
+    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(labelInput(container).value).toBe('First draft');
+    await select(container, 'codex');
+    await select(container, FIRST.id);
+    expect(labelInput(container).value).toBe('First draft');
+    expect(container.querySelector('[data-page-dirty]')!.getAttribute('data-page-dirty')).toBe('true');
+  });
+
+  it('marks the drafted identity in the directory and nothing else', async () => {
+    api.get.mockResolvedValue(twoCustom());
+    const container = await render();
+    const marker = (id: string) => container.querySelector(`[data-identity-row="${id}"] [data-identity-unsaved]`);
+    expect(marker('codex')).toBeNull();
+    await select(container, FIRST.id);
+    await type(labelInput(container), 'First draft');
+    expect(marker(FIRST.id)?.textContent).toBe('Unsaved');
+    expect(marker(SECOND.id)).toBeNull();
+    expect(marker('codex')).toBeNull();
+    await act(async () => { button(footer(container), 'Discard changes').click(); });
+    expect(marker(FIRST.id)).toBeNull();
+  });
+
+  it('names the preview and folds the full header list until asked', async () => {
+    const container = await render();
+    const preview = container.querySelector('[data-identity-preview]')!;
+    expect(preview.querySelector('h4')!.textContent).toBe('Request preview');
+    const details = preview.querySelector<HTMLDetailsElement>('[data-preview-details]')!;
+    expect(details.open).toBe(false);
+    expect(details.querySelector('summary')!.textContent).toBe('All headers and fields (2)');
+    expect(preview.textContent).toContain('codex_cli_rs/0.159.2 (Linux 6.1; x86_64)');
+    expect(preview.querySelector('[data-preview-version]')!.textContent)
+      .toContain('0.159.2 (Codex CLI · Shipped with Kiki) · OpenAI Responses · sample model example-model');
+    expect(details.querySelector('[data-preview-header="session-id"]')).not.toBeNull();
+  });
+
+  it('marks a preview of unsaved edits and says what is sent meanwhile', async () => {
+    const copy: RequestIdentityProfile = { ...CODEX, id: 'custom:first', builtin: false, label: 'First' };
+    api.get.mockResolvedValue(catalog({ profiles: [CODEX, copy] }));
+    const container = await render();
+    await select(container, copy.id);
+    await type(labelInput(container), 'First draft');
+    const preview = container.querySelector('[data-identity-preview]')!;
+    expect(preview.querySelector('h4')!.textContent).toBe('Unsaved request preview');
+    expect(preview.textContent).toContain('Requests keep using the saved identity until you save.');
+    expect(preview.querySelector<HTMLDetailsElement>('[data-preview-details]')!.open).toBe(false);
+  });
+
   it('renders an OpenCode built-in from the catalog and offers it in the global picker', async () => {
     const opencode: RequestIdentityProfile = {
       id: 'opencode', builtin: true, label: 'OpenCode', base_preset: 'opencode_compatible', track: 'opencode_cli',
@@ -146,8 +443,11 @@ describe('IdentitySection', () => {
   it('duplicates a built-in, then edits and saves the copy as a full draft', async () => {
     const copy: RequestIdentityProfile = { ...CODEX, id: 'custom:codex-1', builtin: false, label: 'Codex CLI (copy)', duplicated_from: 'codex' };
     api.duplicateProfile.mockResolvedValue(catalog({ profiles: [CODEX, copy] }));
-    api.updateProfile.mockImplementation(async (_id: string, draft: RequestIdentityProfile) =>
-      catalog({ profiles: [CODEX, { ...copy, ...draft }] }));
+    api.updateProfile.mockImplementation(async (_id: string, draft: RequestIdentityProfile) => {
+      const saved = catalog({ profiles: [CODEX, { ...copy, ...draft }] });
+      api.get.mockResolvedValue(saved);
+      return saved;
+    });
     const container = await render();
 
     await act(async () => { button(container, 'Duplicate to edit').click(); });
@@ -173,8 +473,11 @@ describe('IdentitySection', () => {
       ...CODEX, id: 'custom:codex-1', builtin: false, label: 'Mine', version: { mode: 'fixed', value: '1.0.0' },
     };
     api.get.mockResolvedValue(catalog({ profiles: [CODEX, copy] }));
-    api.updateProfile.mockImplementation(async (_id: string, draft: RequestIdentityProfile) =>
-      catalog({ profiles: [CODEX, { ...copy, ...draft }] }));
+    api.updateProfile.mockImplementation(async (_id: string, draft: RequestIdentityProfile) => {
+      const saved = catalog({ profiles: [CODEX, { ...copy, ...draft }] });
+      api.get.mockResolvedValue(saved);
+      return saved;
+    });
     const container = await render();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-identity-row="custom:codex-1"]')!.click(); });
     const input = container.querySelector<HTMLInputElement>('[data-identity-version]')!;

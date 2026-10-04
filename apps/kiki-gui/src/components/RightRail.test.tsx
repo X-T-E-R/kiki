@@ -21,6 +21,17 @@ vi.mock('./rail-variants/DefaultSections', async (importOriginal) => ({
   CapabilitiesBlock: () => null,
 }));
 
+// The session rail also mounts its cron section and the persona update, both of
+// which read the connection and the settings stores these fixtures have no
+// stand-in for; they render as the same kind of plain stand-in.
+vi.mock('./rail-variants/SessionCronSection', () => ({
+  SessionCronSection: () => <div data-rail-session-cron />,
+}));
+
+vi.mock('./persona/PersonaSettingsUpdate', () => ({
+  PersonaSettingsUpdate: () => <div data-rail-persona-settings />,
+}));
+
 vi.mock('./AgentPanelContainer', () => ({
   AgentPanelContainer: ({ part = 'all', agentId, overviewMode, renderOverview }: {
     part?: string; agentId: string; overviewMode?: string;
@@ -170,6 +181,33 @@ describe('RightRail fixed and switchable parts', () => {
     expect(standard).toContain('data-inspector-agents');
     // Same place, same markup: the agents section does not change with the mode.
     expect([...rail.querySelectorAll('[data-inspector-agents], [data-rail-profile-head]')].map((node) => node.outerHTML)).toEqual(standardHtml);
+  });
+
+  it('widens only the cockpit rail and restores its standard width without changing layout preferences', async () => {
+    const rail = await renderRail();
+    const aside = rail.querySelector<HTMLElement>('[data-session-rail]')!;
+    const before = aside.style.getPropertyValue('--kiki-rail-width');
+    const saved = localStorage.getItem('kiki.layout');
+    for (let repeat = 0; repeat < 3; repeat += 1) {
+      await choose(rail, 'cockpit');
+      expect(localStorage.getItem('kiki.railMode')).toBe('cockpit');
+      expect(aside.style.getPropertyValue('--kiki-rail-width')).toBe('480px');
+      expect(rail.querySelector('[data-panel-props="overview"]')?.getAttribute('data-panel-mode')).toBe('cockpit');
+      await choose(rail, 'default');
+      expect(aside.style.getPropertyValue('--kiki-rail-width')).toBe(before);
+      expect(localStorage.getItem('kiki.layout')).toBe(saved);
+    }
+  });
+
+  it('exits cockpit with the close action and keeps the standard rail open', async () => {
+    const onClose = vi.fn();
+    const rail = await renderRail({ onClose });
+    await choose(rail, 'cockpit');
+    await act(async () => { rail.querySelector<HTMLButtonElement>('[aria-label="Exit cockpit"]')!.click(); });
+    expect(localStorage.getItem('kiki.railMode')).toBe('default');
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => { rail.querySelector<HTMLButtonElement>('[aria-label="Hide panel"]')!.click(); });
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it('switches only the overview block, from a switch in the rail head', async () => {

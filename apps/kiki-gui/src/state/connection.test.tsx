@@ -1,21 +1,28 @@
 // @vitest-environment jsdom
 
-import { StrictMode, act } from 'react';
+import { StrictMode, act, useLayoutEffect, useState } from 'react';
+import { createMemoryRouter, RouterProvider, useLocation, useNavigate, useNavigationType } from 'react-router-dom';
+import { DirtyGuardContext, useDirtyGuardState, useGuardedNavigate } from '../components/dirtyGuard';
+import { NavScopeBoundary } from '../components/NavScopeBoundary';
+import { clearNavHistory, getCurrentVisit, recordNavigation } from '../lib/navHistory';
+import { SpaceSwitcher } from '../components/SpaceSwitcher';
+import { SpacesSection } from '../components/settings/SpacesSection';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { writeSettings } from '@kiki/session-core/settings';
+import { writeDesktopPrefs, writeSettings } from '@kiki/session-core/settings';
 import type { SessionController } from '@kiki/session-core/session';
 import { browserHost, HostProvider } from '../host';
 import { I18nProvider } from '../i18n';
 import { ConnectionSection } from '../components/settings/ConnectionSection';
-import { ConnectionProvider, LiveControllerRegistry, nextGuiLeaseClientId, useConnection } from './connection';
+import { ConnectionProvider, handleGlobalConnectionFrame, LiveControllerRegistry, nextGuiLeaseClientId, useConnection } from './connection';
 
 const mocks = vi.hoisted(() => ({
   detectLocalConnection: vi.fn(),
   invoke: vi.fn(),
   meta: vi.fn(),
+  homes: vi.fn(),
   renewLease: vi.fn(),
   klients: [] as Array<{
     endpoint: string;
@@ -39,13 +46,14 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: (command: string, args?: unknown) =>
     command === 'desktop_connection'
       ? Promise.resolve(mocks.detectLocalConnection()).then((connection) => connection.config)
-      : mocks.invoke(command, args),
+      : command === 'take_scope_connection' ? Promise.resolve(null)
+      : mocks.invoke(command === 'prepare_ssh_profile' ? 'connect_ssh_profile' : command, args),
   isTauri: () => true,
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn((_event: string, listener: (event: { payload: unknown }) => void) => {
-    mocks.stageListener = listener;
+    if (_event === 'kiki://desktop-backend-stage') mocks.stageListener = listener;
     return Promise.resolve(() => {
       if (mocks.stageListener === listener) mocks.stageListener = undefined;
     });
@@ -65,6 +73,10 @@ vi.mock('../lib/client', () => ({
       const klient = {
         endpoint: options.baseUrl, token: options.token, timeoutMs: options.timeoutMs, closed: false,
         close: vi.fn(async () => { klient.closed = true; }),
+        rest: { homes: { list: () => {
+          if (klient.closed) throw new Error('klient closed');
+          return mocks.homes(options.baseUrl);
+        } } },
         global: { mcp: { list: vi.fn(async () => {
           if (klient.closed) throw new Error('klient closed');
           return [];
@@ -72,6 +84,10 @@ vi.mock('../lib/client', () => ({
         events: { on: vi.fn(() => ({ dispose: vi.fn(), ready: Promise.resolve() })) },
         terminal: {
           nudge: vi.fn(),
+          onTerminalSignal: vi.fn(() => {
+            if (klient.closed) throw new Error('http closed');
+            return () => {};
+          }),
           onStatus: vi.fn(() => {
             const subscription = { baseUrl: options.baseUrl, connect: vi.fn(), close: vi.fn() };
             subscription.connect();
@@ -85,6 +101,7 @@ vi.mock('../lib/client', () => ({
     }
 
     meta() { return mocks.meta(this.baseUrl); }
+    getSession(id: string) { return Promise.resolve({ id }); }
     renewLease(body: { clientId: string; kind: 'gui' }) { return mocks.renewLease(body); }
   },
 }));
@@ -105,16 +122,64 @@ function deferred<T>(): Deferred<T> {
 function ConnectedHarness() {
   const connection = useConnection();
   const queryClient = useQueryClient();
+  const [switchError, setSwitchError] = useState('');
   return <>
+    <span data-switch-error>{switchError}</span>
     <span data-connected-url>{connection.config.url}</span>
     <span data-scope-id>{connection.scopeId}</span>
+    <span data-local-control-url>{connection.localClient?.baseUrl ?? 'pending'}</span>
     <span data-cache-value>{queryClient.getQueryData(['workspaces']) ?? 'empty'}</span>
     <button type="button" data-write-cache onClick={() => {
       queryClient.setQueryData(['workspaces'], connection.scopeId);
     }} />
-    <button type="button" data-switch-ssh onClick={() => void connection.activateSshProfile('host-1', 'a'.repeat(43))} />
+    <button type="button" data-switch-ssh onClick={() => {
+      void connection.activateSshProfile('host-1', 'a'.repeat(43)).catch((error: unknown) => { setSwitchError(String(error)); });
+    }} />
     <button type="button" data-switch-local onClick={connection.activateLocal} />
   </>;
+}
+
+function NavigationObserver() {
+  const connection = useConnection();
+  const location = useLocation(); const action = useNavigationType();
+  useLayoutEffect(() => {
+    recordNavigation({ location, scope: { homeId: 'main', scopeId: connection.scopeId, serverHomeId: connection.meta.server_home_id, connectionRef: connection.connectionRef }, action });
+  }, [location, action, connection.scopeId, connection.meta.server_home_id, connection.connectionRef]);
+  return null;
+}
+
+let returnedConnection: ReturnType<typeof useConnection> | undefined;
+function BrowserReturnHarness() {
+  returnedConnection = useConnection();
+  const location = useLocation(); const navigate = useGuardedNavigate();
+  return <>
+    <span data-return-route>{location.pathname}</span>
+    <button data-return-board onClick={() => { navigate('/board'); }} />
+    <button data-return-back onClick={() => { navigate(-1); }} />
+  </>;
+}
+
+function SwitcherHarness() {
+  const location = useLocation();
+  const rawNavigate = useNavigate();
+  const guard = useDirtyGuardState(location, (target, options) => {
+    if (typeof target === 'number') void rawNavigate(target);
+    else void rawNavigate(target, options);
+  });
+  const [error, setError] = useState('');
+  return <DirtyGuardContext.Provider value={guard.value}>
+    <span data-switcher-route>{location.pathname}{location.search}</span>
+    <span data-guard-dirty>{String(guard.value.dirty)}</span>
+    <span data-restore-error>{error}</span>
+    <input data-settings-draft defaultValue="unsaved local routing draft" />
+    <button data-dirty-editor onClick={() => guard.value.reportDirty('provider-editor', true)} />
+    <button data-confirm-leave onClick={() => { void Promise.resolve().then(guard.confirm).catch((failure: unknown) => {
+      if (failure instanceof Error && failure.name === 'AbortError') return;
+      setError(failure instanceof Error ? failure.message : String(failure));
+    }); }} />
+    <button data-cancel-leave onClick={guard.cancel} />
+    <SpaceSwitcher /><SpacesSection />
+  </DirtyGuardContext.Provider>;
 }
 
 function StrictLifecycleHarness() {
@@ -158,12 +223,14 @@ beforeEach(() => {
   mocks.invoke.mockReset();
   mocks.invoke.mockImplementation((command: string) => command === 'list_ssh_profiles' ? Promise.resolve([]) : Promise.resolve(undefined));
   mocks.meta.mockReset();
+  mocks.homes.mockReset().mockResolvedValue({ items: [] });
   mocks.renewLease.mockReset();
   mocks.renewLease.mockResolvedValue(undefined);
   mocks.klients.length = 0;
   mocks.terminalSubscriptions.length = 0;
   mocks.stageListener = undefined;
-  localStorage.clear();
+  localStorage.clear(); sessionStorage.clear(); clearNavHistory();
+  window.history.replaceState(null, '', '/new');
   writeSettings({ requestTimeoutSeconds: 30 });
 });
 
@@ -188,7 +255,7 @@ async function flush(): Promise<void> {
   });
 }
 
-async function mountProvider(strict = false, settings = false): Promise<HTMLDivElement> {
+async function mountProvider(strict = false, settings = false, switcher = false, browserReturn = false): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -196,11 +263,13 @@ async function mountProvider(strict = false, settings = false): Promise<HTMLDivE
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  const connection = (
-    <ConnectionProvider>
-      {strict ? <StrictLifecycleHarness /> : <><ConnectedHarness />{settings ? <ConnectionSection /> : null}</>}
-    </ConnectionProvider>
-  );
+  const router = createMemoryRouter([{ path: '*', element: <NavScopeBoundary>
+    <NavigationObserver />
+    {browserReturn ? <BrowserReturnHarness /> : <><ConnectedHarness />{settings ? <ConnectionSection /> : null}{switcher ? <SwitcherHarness /> : null}</>}
+  </NavScopeBoundary> }], { initialEntries: [browserReturn ? '/s/browser-source' : '/new'] });
+  const connection = <ConnectionProvider>
+    {strict && !browserReturn ? <StrictLifecycleHarness /> : <RouterProvider router={router} />}
+  </ConnectionProvider>;
   const hosted = strict ? <HostProvider host={browserHost}>{connection}</HostProvider> : connection;
   const tree = (
     <QueryClientProvider client={queryClient}>
@@ -373,6 +442,33 @@ describe('ConnectionProvider Klient ownership', () => {
       expect(update).toHaveBeenCalledWith(['search-index-state'], state);
     } finally { cancel.mockRestore(); update.mockRestore(); }
   });
+  it('invalidates all model and provider entities only in the active connection cache', () => {
+    const active = new QueryClient();
+    const other = new QueryClient();
+    const keys = [
+      ['model-entity', 'provider-a/shared-model'],
+      ['model-entity', 'provider-b/shared-model'],
+      ['provider-entity', 'provider-a'],
+    ];
+    for (const cache of [active, other]) {
+      for (const key of keys) cache.setQueryData(key, { id: key[1] });
+      cache.setQueryData(['config'], { loop_control: {} });
+    }
+    try {
+      expect(handleGlobalConnectionFrame({ type: 'event.unrelated' }, active)).toBe(false);
+      expect(active.getQueryState(keys[0]!)?.isInvalidated).toBe(false);
+      expect(handleGlobalConnectionFrame({ type: 'event.model_catalog.changed' }, active)).toBe(true);
+      for (const key of keys) {
+        expect(active.getQueryState(key)?.isInvalidated).toBe(true);
+        expect(other.getQueryState(key)?.isInvalidated).toBe(false);
+      }
+      expect(active.getQueryState(['config'])?.isInvalidated).toBe(false);
+    } finally {
+      active.clear();
+      other.clear();
+    }
+  });
+
   it('refreshes model and provider queries from typed Klient global events', async () => {
     localStorage.setItem('kiki.connection', JSON.stringify({ url: 'http://127.0.0.1:41001', token: 'test-token' }));
     mocks.meta.mockResolvedValue({ serverVersion: 'test' });
@@ -385,6 +481,8 @@ describe('ConnectionProvider Klient ownership', () => {
       await act(async () => { registration[1]({ changed: [], unchanged: [], failed: [] }); });
       expect(invalidate).toHaveBeenCalledWith({ queryKey: ['models'] });
       expect(invalidate).toHaveBeenCalledWith({ queryKey: ['providers'] });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['model-entity'] });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['provider-entity'] });
     } finally { invalidate.mockRestore(); }
   });
 
@@ -516,13 +614,13 @@ describe('ConnectionProvider desktop backend recovery', () => {
     expect(container.querySelector('[data-scope-id]')?.textContent).toBe('local');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
     await flush();
-    expect(container.querySelector('[data-connected-url]')).toBeNull();
-    expect(container.textContent).toContain('SSH server identity changed');
-    expect(container.textContent).toContain('SSH connection blocked');
-    const switchLocal = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Switch to this computer');
-    expect(switchLocal).toBeDefined();
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(localConfig.url);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Kiki stopped');
+    const stay = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Stay on this page');
+    expect(stay).toBeDefined();
     expect(container.textContent).not.toContain('Retry startup');
-    await act(async () => { switchLocal!.click(); });
+    await act(async () => { stay!.click(); });
     await flush();
     expect(container.querySelector('[data-scope-id]')?.textContent).toBe('local');
     expect(container.querySelector('[data-connected-url]')?.textContent).toBe(localConfig.url);
@@ -552,8 +650,8 @@ describe('ConnectionProvider desktop backend recovery', () => {
     const container = await mountProvider();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
     await flush();
-    expect(container.querySelector('[data-connected-url]')).toBeNull();
-    expect(container.textContent).toContain('SSH server identity changed');
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('local');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Kiki stopped');
   });
 
   it('hides a stale local failure while verifying SSH and restarts only the local backend on fallback', async () => {
@@ -632,7 +730,8 @@ describe('ConnectionProvider desktop backend recovery', () => {
     expect(container.querySelector('[data-cache-value]')?.textContent).toBe('local');
     expect(mocks.klients.filter((entry) => !entry.closed)).toHaveLength(1);
     expect(mocks.klients.find((entry) => !entry.closed)?.endpoint).toBe(localConfig.url);
-    expect(mocks.invoke).toHaveBeenCalledWith('disconnect_ssh_profile', { id: 'host-1', tunnelId: 'tunnel-one' });
+    expect(mocks.invoke).not.toHaveBeenCalledWith('disconnect_ssh_profile', { id: 'host-1', tunnelId: 'tunnel-one' });
+    expect(mocks.invoke).toHaveBeenCalledWith('commit_scope_connection', { homeId: 'main', id: 'host-1', tunnelId: 'tunnel-one', reload: false });
 
     mocks.meta.mockImplementation((url: string) => Promise.resolve(url === remoteConfig.url ? {
       server_home_id: 'unexpected-home', server_id: 'server-remote', server_version: '0.1.0',
@@ -640,8 +739,8 @@ describe('ConnectionProvider desktop backend recovery', () => {
     } : { server_id: 'server-local' }));
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
     await flush();
-    expect(container.querySelector('[data-connected-url]')).toBeNull();
-    expect(container.textContent).toContain('SSH server identity changed');
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(localConfig.url);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Kiki stopped');
   });
 
   it('cannot disconnect a newer same-profile SSH tunnel from a late older connection', async () => {
@@ -683,6 +782,199 @@ describe('ConnectionProvider desktop backend recovery', () => {
     expect(mocks.invoke).toHaveBeenCalledWith('disconnect_ssh_profile', { id: 'host-1', tunnelId: 'older' });
     expect(mocks.invoke).not.toHaveBeenCalledWith('disconnect_ssh_profile', { id: 'host-1', tunnelId: 'newer' });
     expect(container.querySelector('[data-scope-id]')?.textContent).toBe('ssh:host-1');
+  });
+
+  it('routes the real SpaceSwitcher through the retained local controller during SSH and local backend recovery', async () => {
+    writeDesktopPrefs({ windowMode: 'windows' });
+    const localConfig = { url: 'http://127.0.0.1:41001', token: 'local-token' };
+    const remoteConfig = { url: 'http://127.0.0.1:42002', token: 'a'.repeat(43) };
+    const recoveredConfig = { url: 'http://127.0.0.1:43003', token: 'recovered-local-token' };
+    const homeId = '46aca369-50e8-4fd3-9c45-606d084450ed';
+    const localHomes = { items: [
+      { id: 'main', name: 'Main', path: 'C:/kiki', primary: true },
+      { id: 'local-only', name: 'GPU', path: 'D:/local-gpu', primary: false },
+      { id: 'shared', name: 'Paper', path: 'E:/local-paper', primary: false },
+    ] };
+    const remoteHomes = { items: [
+      { id: 'main', name: 'Main', path: '/srv/kiki', primary: true },
+      { id: 'remote-only', name: 'GPU', path: '/srv/remote-gpu', primary: false },
+      { id: 'shared', name: 'Paper', path: '/srv/remote-paper', primary: false },
+    ] };
+    const recovery = deferred<{ config: typeof recoveredConfig; persist: boolean }>();
+    const beforeOpenRecovery = deferred<{ config: typeof localConfig; persist: boolean }>();
+    mocks.detectLocalConnection.mockResolvedValueOnce({ config: localConfig, persist: false })
+      .mockReturnValueOnce(beforeOpenRecovery.promise).mockReturnValueOnce(recovery.promise);
+    const opened: string[] = [];
+    let failNextOpen = true;
+    mocks.invoke.mockImplementation((command: string, args?: { homeId?: string }) => {
+      if (command === 'list_ssh_profiles') return Promise.resolve([{ id: 'host-1', label: 'Remote GPU', target: { kind: 'alias', alias: 'example' }, releaseChannel: 'stable', remotePort: 58627, serverHomeId: homeId }]);
+      if (command === 'ssh_tunnel_running') return Promise.resolve(true);
+      if (command === 'connect_ssh_profile') return Promise.resolve({ config: remoteConfig, tunnelId: 'tunnel-one', serverHomeId: homeId,
+        serverInstanceId: 'server-remote', serverVersion: '0.1.0', buildId: null, buildChannel: null });
+      if (command === 'desktop_space_statuses') return Promise.resolve([]);
+      if (command === 'read_desktop_prefs') return Promise.resolve(null);
+      if (command === 'open_space') {
+        const home = localHomes.items.find((item) => item.id === args?.homeId);
+        if (home === undefined) return Promise.reject(new Error('Unknown local home'));
+        expect(mocks.meta.mock.calls.some(([url]) => url === localConfig.url)).toBe(true);
+        if (failNextOpen) {
+          failNextOpen = false;
+          return Promise.reject(new Error('Independent window failed to open'));
+        }
+        opened.push(home.path);
+      }
+      return Promise.resolve(undefined);
+    });
+    mocks.meta.mockImplementation((url: string) => Promise.resolve(url === remoteConfig.url ? {
+      server_home_id: homeId, server_id: 'server-remote', server_version: '0.1.0', dangerous_bypass_auth: false,
+    } : { server_id: 'server-local' }));
+    mocks.homes.mockImplementation((url: string) => Promise.resolve(url === remoteConfig.url ? remoteHomes : localHomes));
+    const settle = async () => act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const container = await mountProvider(false, false, true);
+    await settle();
+    const localController = mocks.klients.find((entry) => entry.endpoint === localConfig.url)!;
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
+    await settle();
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('ssh:host-1');
+    expect(container.querySelector('[data-local-control-url]')?.textContent).toBe(localConfig.url);
+    expect(localController.closed).toBe(false);
+    expect(container.querySelector('[data-space-remote-tag]')).not.toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-space-remote]')!.click(); });
+    expect(document.querySelector('[data-space-switch-item="remote-only"]')).toBeNull();
+    expect(document.querySelector('[data-space-switch-item="local-only"]')?.textContent).toContain('GPU');
+    const sourceDraft = container.querySelector<HTMLInputElement>('[data-settings-draft]')!;
+    const sourceVisit = getCurrentVisit();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-dirty-editor]')!.click(); });
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit2', ctrlKey: true, altKey: true })); });
+    await emitStage('waiting');
+    await settle();
+    expect(container.querySelector('[data-local-control-url]')?.textContent).toBe('pending');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-confirm-leave]')!.click(); });
+    await settle();
+    expect(opened).toEqual([]);
+    expect(getCurrentVisit()).toEqual(sourceVisit);
+    expect(container.querySelector('[data-guard-dirty]')?.textContent).toBe('true');
+    expect(container.querySelector('[data-settings-draft]')).toBe(sourceDraft);
+    await act(async () => { beforeOpenRecovery.resolve({ config: localConfig, persist: false }); });
+    await settle();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit2', ctrlKey: true, altKey: true })); });
+    expect(opened).toEqual([]);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-confirm-leave]')!.click(); });
+    await settle();
+    expect(opened).toEqual([]);
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('ssh:host-1');
+    expect(container.querySelector('[data-settings-draft]')).toBe(sourceDraft);
+    expect(sourceDraft.value).toBe('unsaved local routing draft');
+    expect(container.querySelector('[data-guard-dirty]')?.textContent).toBe('true');
+    expect(container.querySelector('[data-restore-error]')?.textContent).toContain('Independent window failed to open');
+    expect(getCurrentVisit()).toEqual(sourceVisit);
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'open_space')).toHaveLength(1);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit2', ctrlKey: true, altKey: true })); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-confirm-leave]')!.click(); });
+    await settle();
+    expect(opened).toEqual(['D:/local-gpu']);
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('local');
+    expect(container.querySelector('[data-switcher-route]')?.textContent).toBe('/new');
+    expect(getCurrentVisit()?.scope.scopeId).toBe('local');
+    expect(mocks.invoke).not.toHaveBeenCalledWith('disconnect_ssh_profile', { id: 'host-1', tunnelId: 'tunnel-one' });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
+    await settle();
+    await emitStage('waiting');
+    await settle();
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('ssh:host-1');
+    expect(container.querySelector('[data-local-control-url]')?.textContent).toBe('pending');
+    expect(localController.closed).toBe(true);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-space-remote]')!.click(); });
+    expect(document.querySelector('[data-space-directory-pending]')).not.toBeNull();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit3', ctrlKey: true, altKey: true })); });
+    expect(opened).toHaveLength(1);
+    await act(async () => recovery.resolve({ config: recoveredConfig, persist: false }));
+    await settle();
+    expect(container.querySelector('[data-local-control-url]')?.textContent).toBe(recoveredConfig.url);
+    expect(document.querySelector('[data-space-directory-pending]')).toBeNull();
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switch-item="shared"]')!.click(); });
+    await settle();
+    expect(opened).toEqual(['D:/local-gpu', 'E:/local-paper']);
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('local');
+    expect(mocks.homes.mock.calls.every(([url]) => url !== remoteConfig.url)).toBe(true);
+    expect(mocks.homes).toHaveBeenCalledWith(recoveredConfig.url);
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
+    await settle();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-dirty-editor]')!.click(); });
+    let rejectLocal!: (reason: Error) => void;
+    const failedLocal = new Promise<object>((_yes, no) => { rejectLocal = no; });
+    mocks.meta.mockReturnValueOnce(failedLocal);
+    const priorMetaCalls = mocks.meta.mock.calls.length;
+    const priorHistory = window.location.href;
+    const menuAction = async (selector: string) => {
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-space-remote]')!.click(); });
+      await act(async () => { document.querySelector<HTMLButtonElement>(selector)!.click(); });
+    };
+    await menuAction('[data-space-manage]');
+    expect(mocks.meta).toHaveBeenCalledTimes(priorMetaCalls);
+    expect(window.location.href).toBe(priorHistory);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-confirm-leave]')!.click();
+      container.querySelector<HTMLButtonElement>('[data-confirm-leave]')!.click();
+    });
+    expect(mocks.meta).toHaveBeenCalledTimes(priorMetaCalls + 1);
+    await act(async () => { rejectLocal(new Error('Local server unavailable: connection refused')); });
+    await settle();
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('ssh:host-1');
+    expect(container.querySelector('[data-switcher-route]')?.textContent).toBe('/new');
+    expect(container.querySelector('[data-settings-draft]')?.getAttribute('value')).toBe('unsaved local routing draft');
+    expect(container.querySelector('[data-guard-dirty]')?.textContent).toBe('true');
+    expect(container.querySelector('[data-restore-error]')?.textContent).toContain('connection refused');
+    expect(window.location.href).toBe(priorHistory);
+
+    const lateLocal = deferred<object>();
+    mocks.meta.mockReturnValueOnce(lateLocal.promise);
+    await menuAction('[data-space-new-entry]');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-confirm-leave]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-cancel-leave]')!.click(); });
+    await act(async () => { lateLocal.resolve({ server_id: 'server-local' }); });
+    await settle();
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('ssh:host-1');
+    expect(container.querySelector('[data-switcher-route]')?.textContent).toBe('/new');
+    expect(window.location.href).toBe(priorHistory);
+
+    const successfulMeta = deferred<object>();
+    mocks.meta.mockReturnValueOnce(successfulMeta.promise);
+    await menuAction('[data-space-manage]');
+    const beforeRestore = mocks.meta.mock.calls.length;
+    const beforeClients = mocks.klients.length;
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-confirm-leave]')!.click();
+      container.querySelector<HTMLButtonElement>('[data-confirm-leave]')!.click();
+    });
+    expect(container.querySelector('[data-switcher-route]')?.textContent).toBe('/new');
+    await act(async () => { successfulMeta.resolve({ server_id: 'server-local' }); });
+    await settle();
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('local');
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(recoveredConfig.url);
+    expect(container.querySelector('[data-switcher-route]')?.textContent).toBe('/settings/spaces');
+    expect(mocks.meta).toHaveBeenCalledTimes(beforeRestore + 1);
+    expect(mocks.klients).toHaveLength(beforeClients);
+
+    // The direct settings entry uses the same retained client and native local resolver.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
+    await settle();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-dirty-editor]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-space-enter="shared"]')!.click(); });
+    expect(opened).toHaveLength(2);
+    const beforeSettingsMeta = mocks.meta.mock.calls.length;
+    const beforeSettingsClients = mocks.klients.length;
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-confirm-leave]')!.click();
+      container.querySelector<HTMLButtonElement>('[data-confirm-leave]')!.click();
+    });
+    await settle();
+    expect(opened).toEqual(['D:/local-gpu', 'E:/local-paper', 'E:/local-paper']);
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('local');
+    expect(mocks.meta).toHaveBeenCalledTimes(beforeSettingsMeta + 1);
+    expect(mocks.klients).toHaveLength(beforeSettingsClients);
+    expect(mocks.homes.mock.calls.every(([url]) => url !== remoteConfig.url)).toBe(true);
   });
 
   it('invalidates stale meta, closes the old socket, and connects only after the new endpoint validates', async () => {
@@ -829,5 +1121,24 @@ describe('ConnectionProvider desktop backend recovery', () => {
       else Object.defineProperty(crypto, 'randomUUID', descriptor);
       vi.useRealTimers();
     }
+  });
+});
+
+
+describe('same direct return ownership', () => {
+  it('keeps the existing HTTP client and terminal subscription alive across board then Back', async () => {
+    localStorage.setItem('kiki.connection', JSON.stringify({ url: 'http://127.0.0.1:41001', token: 'fixture-browser-token' }));
+    mocks.meta.mockResolvedValue({ server_home_id: 'fixture-browser-home' });
+    const container = await mountProvider(true, false, false, true);
+    const before = returnedConnection!; const active = mocks.klients.find((entry) => !entry.closed)!;
+    const terminalSubscriptions = mocks.terminalSubscriptions.length;
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-return-board]')!.click(); });
+    expect(container.querySelector('[data-return-route]')?.textContent).toBe('/board');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-return-back]')!.click(); }); await flush();
+    expect(container.querySelector('[data-return-route]')?.textContent).toBe('/s/browser-source');
+    expect(returnedConnection!.client).toBe(before.client); expect(returnedConnection!.scopeId).toBe(before.scopeId);
+    expect(active.closed).toBe(false); expect(active.close).not.toHaveBeenCalled();
+    expect(mocks.terminalSubscriptions).toHaveLength(terminalSubscriptions);
+    expect(() => returnedConnection!.socket.onTerminalSignal(() => {})).not.toThrow();
   });
 });

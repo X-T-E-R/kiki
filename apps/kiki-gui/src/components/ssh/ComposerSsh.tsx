@@ -1,17 +1,22 @@
 /**
- * The composer's SSH surface for a live session:
+ * The composer's SSH surface for a live session: one resident control beside
+ * the input that holds the hosts joined to THIS session for as long as the
+ * session lives.
  *
- *   - ＋ › SSH hosts: tick configured hosts to add them to this session
- *     (PUT/DELETE /sessions/{id}/ssh/hosts/{host}); "New host…" opens the same
- *     form as Settings and adds the new host here; "Manage hosts" goes to
- *     Settings › SSH hosts.
- *   - One small chip per added host above the input, removable in place.
+ *   - The strip is a single row under the card's top edge: a quiet label, one
+ *     chip per joined host (removable in place), and a "＋" that opens the same
+ *     host list the ＋ menu's SSH view uses. It is not a send-time attachment
+ *     and it never rides a prompt: a joined host is a session resource, the
+ *     server owns the list, and `GET /sessions/{id}/ssh/hosts` is the truth.
+ *   - On /new there is no session yet, so the strip previews the hosts that
+ *     will join before the first message (and NewSessionDraft performs the
+ *     real PUT once the session exists).
  *
  * Adding a host does not connect to it. There is no push event for session
  * hosts, so every change refetches the session list (contract).
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import type { SshHostAttachment } from '@kiki/session-core/composer';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -30,8 +35,10 @@ import {
   type SshHost,
 } from '../../lib/ssh';
 import { pushToast } from '../../lib/toasts';
+import { registerOverlay } from '../../lib/uiBusy';
 import { useConnection } from '../../state/connection';
 import { Icon } from '../icons';
+import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import { SSH_HOST_CHIP_CLASS, stateDotClass } from './SshBits';
 import { SshHostFormDialog } from './SshHostFormDialog';
 
@@ -48,8 +55,8 @@ export interface ComposerSsh {
   readonly joinedCount: number;
   /** The ＋ menu's SSH view; `close` closes the popover. */
   readonly renderPanel: (close: (refocus?: boolean) => void) => ReactNode;
-  /** Chips above the input; null when nothing is added. */
-  readonly chips: ReactNode;
+  /** The resident session strip; null when there is nothing to show. */
+  readonly resident: ReactNode;
   /** The host form, mounted outside the popover so it survives the close. */
   readonly dialog: ReactNode;
   /** Hosts for the ＋ menu search (same list as the panel). */
@@ -70,6 +77,7 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [creating, setCreating] = useState(false);
   const [selected, setSelected] = useState<readonly SshHost[]>([]);
+  const [listOpen, setListOpen] = useState(false);
   useEffect(() => { setSelected([]); }, [sessionId]);
 
   const joined = sessionId === undefined ? selected.map((host) => ({ host, status: undefined })) : sessionQuery.data ?? [];
@@ -84,9 +92,12 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
     });
   };
 
+  // The server's list is the truth the strip draws, so a change reads it back
+  // instead of trusting the local toggle. Refetching (not only invalidating)
+  // keeps the awaited promise tied to that read.
   const refetchSession = async () => {
     if (sessionId === undefined) return;
-    await queryClient.invalidateQueries({ queryKey: sshKeys.session(sessionId) });
+    await sessionQuery.refetch();
   };
 
   const toggle = async (host: SshHost, join: boolean) => {
@@ -188,9 +199,45 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
     </div>
   );
 
-  const chips = available && joined.length > 0 ? (
-    <div data-composer-ssh-chips role="list" aria-label={t('composer.ssh.chipsAria')} title={t(sessionId === undefined ? 'composer.ssh.draftHint' : 'composer.ssh.sessionHint')} className="mx-3 mt-2 flex flex-wrap items-center gap-1.5">
-      <span data-composer-ssh-scope className="text-[11px] text-ink-faint">{t(sessionId === undefined ? 'composer.ssh.draftHosts' : 'composer.ssh.sessionHosts')}</span>
+  // The resident list: the same rows the ＋ menu shows, docked under the
+  // trigger so the strip can stand on its own without the add menu.
+  const listId = useId();
+  useEffect(() => {
+    if (!listOpen) return;
+    const unregister = registerOverlay('composer-ssh-strip');
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof HTMLElement && event.target.closest('[data-composer-ssh-strip]') === null) setListOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setListOpen(false); };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      unregister();
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [listOpen]);
+
+  const resident = available ? (
+    <div
+      data-composer-ssh-strip
+      data-composer-ssh-open={listOpen ? '' : undefined}
+      className="mx-3 mt-2 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1"
+    >
+      <button
+        type="button"
+        data-composer-ssh-toggle
+        aria-expanded={listOpen}
+        aria-controls={listId}
+        title={t(sessionId === undefined ? 'composer.ssh.draftHint' : 'composer.ssh.sessionHint')}
+        onClick={() => { setListOpen((open) => !open); }}
+        className={`inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md pl-1.5 pr-1.5 text-[11px] font-medium tracking-wide text-ink-faint uppercase transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8 ${listOpen ? 'bg-ink/[0.05] text-ink-soft' : ''}`}
+      >
+        <Icon name="terminal" size={12} className="shrink-0" />
+        <span className="shrink-0">{t(sessionId === undefined ? 'composer.ssh.draftHosts' : 'composer.ssh.sessionHosts')}</span>
+        <span className="shrink-0 tabular-nums">{joined.length}</span>
+        <Icon name="chevron" size={12} className={`shrink-0 transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${listOpen ? 'rotate-90' : ''}`} />
+      </button>
       {joined.map(({ host, status }) => {
         const state = visibleState(status);
         const target = sshTargetLabel(host);
@@ -221,6 +268,17 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
           </span>
         );
       })}
+      {listOpen ? (
+        <div
+          id={listId}
+          data-composer-ssh-list
+          role="group"
+          aria-label={t('composer.ssh.heading')}
+          className={`anim-enter mt-1 w-full min-w-0 rounded-[10px] p-1 ${POPOVER_SURFACE_CLASS}`}
+        >
+          {renderPanel(() => { setListOpen(false); })}
+        </div>
+      ) : null}
     </div>
   ) : null;
 
@@ -244,5 +302,5 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   };
 
   const snapshot: readonly SshHostAttachment[] = available ? joined.map(({ host }) => ({ kind: 'ssh', id: host.id, name: host.name })) : [];
-  return { available, snapshot, pending: pending.size > 0 || (available && sessionId !== undefined && !sessionQuery.isSuccess), joinedCount: joined.length, renderPanel, chips, dialog, hosts: searchHosts, toggleHost };
+  return { available, snapshot, pending: pending.size > 0 || (available && sessionId !== undefined && !sessionQuery.isSuccess), joinedCount: joined.length, renderPanel, resident, dialog, hosts: searchHosts, toggleHost };
 }

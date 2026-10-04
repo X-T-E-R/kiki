@@ -9,7 +9,7 @@ import { SearchableSelect } from '../../SearchableSelect';
 import { SETTINGS_SELECT_TRIGGER, SettingsSegmented } from '../SettingsPrimitives';
 import { ListEmpty, ListToolbar, useListView, type ListSortSpec } from '../list';
 import { diagnosticTone, type ProfileDiagnostic } from './diagnostics';
-import { EFFORTS, effortLabel, isExternalExecutor } from './profileDraft';
+import { dispatchFieldsOf, EFFORTS, effortLabel, isExternalExecutor } from './profileDraft';
 import { TeamRoster } from './TeamRoster';
 import { ModelMenuPreview } from './ModelMenuPreview';
 import { useModelMenuPreview } from './useModelMenuPreview';
@@ -53,9 +53,11 @@ const displayName = (profile: NamedAgentProfile, locale: string) => profile.name
 
 /** Who this profile may dispatch, as a short cell. */
 function dispatchCell(profile: NamedAgentProfile, t: ReturnType<typeof useI18n>['t']): { text: string; names: string[] } {
-  if (profile.subagents === undefined) return { text: t('st.profiles.subagentsAny'), names: [] };
-  if (profile.subagents.length === 0) return { text: t('st.profiles.subagentsNone'), names: [] };
-  const names = profile.subagents.map((entry) => typeof entry === 'string' ? entry : entry.name);
+  const dispatch = dispatchFieldsOf(profile);
+  if (dispatch.can_spawn_subagents === false) return { text: t('st.profiles.dispatchCanSpawnOff'), names: [] };
+  if (dispatch.allowed_subagents === undefined) return { text: t('st.profiles.dispatchNotDeclared'), names: [] };
+  if (dispatch.allowed_subagents.length === 0) return { text: t('st.profiles.dispatchAllowedEmpty'), names: [] };
+  const names = dispatch.allowed_subagents.map((entry) => typeof entry === 'string' ? entry : entry.name);
   return { text: names.join(', '), names };
 }
 

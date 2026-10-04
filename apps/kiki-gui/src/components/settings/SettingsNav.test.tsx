@@ -84,7 +84,7 @@ describe('SettingsNav grouped tree', () => {
     expect(leaves(1)).toEqual(['connection', 'ssh']);
     expect(leaves(2)).toEqual(['ai', 'identity', 'agents', 'subagents']);
     expect(leaves(3)).toEqual(['sessions', 'notifications', 'memory', 'permissions', 'tasks']);
-    expect(leaves(4)).toEqual(['skills', 'mcp', 'plugins', 'search', 'hooks']);
+    expect(leaves(4)).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
     expect(leaves(5)).toEqual(['workspaces', 'spaces']);
     expect(leaves(6)).toEqual(['developer', 'labs', 'about']);
   });

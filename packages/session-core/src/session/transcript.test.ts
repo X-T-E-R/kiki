@@ -1589,6 +1589,25 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(queuedIndex).not.toBe(projected.blocks.length - 1);
   });
 
+  it('projects one operation identity and state without labeling pending switches as completed', () => {
+    const pending = { operationId: 'switch-example', agentId: 'main', fromModel: 'example/old', toModel: 'example/new', mode: 'fresh', state: 'pending' };
+    const journal = [{ type: 'prompt.model_switch_queued', entry: { receipt: pending }, queueIndex: 0, time: 1000 }];
+    const queued = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', journal));
+    expect(queued.blocks).toEqual([expect.objectContaining({ kind: 'notice', id: 'agent-marker-model-switch:switch-example',
+      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'pending' }, i18n: undefined })]);
+    const committedJournal = [...journal,
+      { type: 'agent.model_switch', operationId: 'switch-example', fromModel: 'example/old', toModel: 'example/new', mode: 'fresh', newEpoch: 1, summaryGenerated: false, time: 2000 },
+    ];
+    const preparing = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', committedJournal));
+    expect(preparing.blocks).toEqual([expect.objectContaining({ kind: 'notice', modelSwitch: expect.objectContaining({ state: 'preparing', windowEpoch: 1 }), i18n: undefined })]);
+    const completed = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', [...committedJournal,
+      { type: 'prompt.model_switch_status', operationId: 'switch-example', receipt: { ...pending, state: 'completed', windowEpoch: 1, summaryGenerated: false }, time: 3000 },
+    ]));
+    expect(completed.blocks).toEqual([expect.objectContaining({ kind: 'notice', id: 'agent-marker-model-switch:switch-example',
+      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'completed', windowEpoch: 1, summaryGenerated: false },
+      i18n: { key: 'transcript.marker.modelSwitch', params: { from: 'example/old', to: 'example/new' } } })]);
+  });
+
   it('projects model changes to a neutral divider notice with ordered alias parameters', () => {
     const snapshot = replayAgentWire('main', [
       { type: 'profile.bind', modelAlias: 'example/old', time: 1000 },
@@ -2120,6 +2139,31 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
         userMessageId: 'msg-legacy-user',
       }),
     ]);
+  });
+
+  it('keeps canonical tool and shell identities without changing card or locator ids', () => {
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', {
+      items: [{ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [
+        { kind: 'step', stepId: 's1', turnId: 't1', ordinal: 1, state: 'completed', frames: [
+          { kind: 'tool', frameId: 'read-frame', toolCallId: 'read-call', name: 'Read', state: 'done', output: 'read output' },
+          { kind: 'tool', frameId: 'bash-task-frame', toolCallId: 'bash-task-call', name: 'Bash', state: 'done', taskId: 'shell-task', input: { command: 'echo fixture' }, output: 'frame output' },
+          { kind: 'tool', frameId: 'bash-frame', toolCallId: 'bash-call', name: 'Bash', state: 'done', input: { command: 'echo fixture' }, output: 'frame-only output' },
+        ] },
+      ] }, { kind: 'taskref', refId: 'task-ref', taskId: 'standalone-shell' }],
+      tasks: [
+        { taskId: 'shell-task', kind: 'shell', state: 'completed', detached: false, outputTail: 'task output' },
+        { taskId: 'standalone-shell', kind: 'shell', state: 'completed', detached: true, outputTail: 'standalone output' },
+      ], interactions: [], attachments: [], todos: [], prompts: [], meta: {},
+    });
+    expect(projected.blocks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'tool', id: 'tool-read-call', toolCallId: 'read-call', frameId: 'read-frame', stepId: 's1', turnId: 't1', output: 'read output' }),
+      expect.objectContaining({ kind: 'shell', id: 'shell-bash-task-call', commandId: 'bash-task-call', frameId: 'bash-task-frame', stepId: 's1', turnId: 't1', outputTaskId: 'shell-task', output: 'task output' }),
+      expect.objectContaining({ kind: 'shell', id: 'shell-bash-call', commandId: 'bash-call', frameId: 'bash-frame', stepId: 's1', turnId: 't1', outputTaskId: undefined, output: 'frame-only output' }),
+      expect.objectContaining({ kind: 'shell', id: 'shell-standalone-shell', commandId: 'standalone-shell', outputTaskId: 'standalone-shell', output: 'standalone output' }),
+    ]));
+    const taskOnly = projected.blocks.find((block) => block.id === 'shell-standalone-shell');
+    expect(taskOnly).not.toHaveProperty('frameId');
+    expect(taskOnly).not.toHaveProperty('stepId');
   });
 
   it('projects a shell taskref as a shell card instead of a bare task id', () => {
@@ -4572,6 +4616,31 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(reminderCategory(undefined)).toBeUndefined();
   });
 
+  it('keeps the author slash input separate from loaded instructions in opening and delivered skills', () => {
+    const userInput = ' /skill:review --fix\nPlease keep this second line. ';
+    const prompt = 'User activated the skill "review".\n\n<skill-loaded name="review">\n# Review instructions\n</skill-loaded>';
+    const origin = { kind: 'skill_activation', trigger: 'user-slash', skillName: 'review', skillArgs: '--fix\nPlease keep this second line.', userInput };
+    const opening = agentTranscriptToBlocks({ agent_id: 'main', items: [{
+      kind: 'turn', turnId: 't-slash', ordinal: 0, state: 'completed', prompt, origin: { kind: 'other', payload: origin }, startedAt: FIXED_AT, steps: [],
+    }] });
+    expect(opening.map(block => block.kind)).toEqual(['user', 'skill']);
+    expect(opening[0]).toMatchObject({ kind: 'user', text: userInput });
+    expect(opening[1]).toMatchObject({ kind: 'skill', text: '# Review instructions', name: 'review' });
+    const delivered = agentTranscriptToBlocks({ agent_id: 'main', items: [{
+      kind: 'turn', turnId: 't-slash', ordinal: 0, state: 'completed', origin: { kind: 'user' }, startedAt: FIXED_AT, steps: [{
+        kind: 'step', stepId: 's-slash', turnId: 't-slash', ordinal: 1, state: 'completed', frames: [{
+          kind: 'text', frameId: 'skill-delivery', role: 'user', text: prompt, origin: { kind: 'other', payload: origin },
+        }],
+      }],
+    }] });
+    expect(delivered.map(block => block.kind)).toEqual(['user', 'skill']);
+    expect(delivered[0]).toMatchObject({ kind: 'user', text: userInput });
+    for (const trigger of ['model-tool', 'nested-skill']) {
+      expect(classifyTranscriptText({ text: prompt, origin: { ...origin, trigger } }).userInput).toBeUndefined();
+    }
+    expect(classifyTranscriptText({ text: prompt, origin: { ...origin, userInput: undefined } }).userInput).toBeUndefined();
+  });
+
   it('names a model-loaded skill from its envelope and drops the XML', () => {
     const classified = classifyTranscriptText({
       text: 'Skill loaded for this request.\n\n<skill-loaded name="kiki-desktop-ops" trigger="model-tool" source="project" args="">\n# Ops\n\nBuild, promote, launch.\n</skill-loaded>',
@@ -5100,8 +5169,8 @@ describe('queued prompt scheduling projection', () => {
       }),
     );
     expect(projected.queuedPromptIds).toEqual(['p-timed', 'p-plain']);
-    expect(projected.queuedPromptMeta['p-timed']).toEqual({ appendTiming: 'tasks_done', revision: 4 });
-    expect(projected.queuedPromptMeta['p-plain']).toEqual({ appendTiming: 'agent_idle', revision: undefined });
+    expect(projected.queuedPromptMeta['p-timed']).toEqual({ appendTiming: 'tasks_done', revision: 4, queuePosition: 0 });
+    expect(projected.queuedPromptMeta['p-plain']).toEqual({ appendTiming: 'agent_idle', revision: undefined, queuePosition: 1 });
     const previews = queuedPromptPreviews(projected);
     expect(previews[0]?.appendTiming).toBe('tasks_done');
     expect(previews[0]?.revision).toBe(4);

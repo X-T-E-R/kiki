@@ -4,8 +4,12 @@
  * Workspace is a client-side filter: `?workspace=<id>` (pre-filled when the
  * sidebar nav or the inspector link opens it from a session) narrows the
  * list; the scope bar under the title widens back to all workspaces. Every row
- * keeps its workspace tag either way. Rows split into Active / Paused
- * sections on the server's paused-last order, next fire time leading.
+ * keeps its workspace tag either way. `?session=<id>` (the rail's per-
+ * conversation entry) is a server-side filter instead: the server narrows to
+ * that conversation before it pages, so page N is page N of this
+ * conversation's own tasks. Neither filter is a substitute for the other.
+ * Rows split into Active / Paused sections on the server's paused-last order,
+ * next fire time leading.
  *
  * Row actions ride the per-task routes (`:pause` / `:resume` / `:run` /
  * DELETE); the list's `session_id` always travels back as the disambiguating
@@ -18,6 +22,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import type { Session, Workspace } from '@kiki/protocol';
 import { ErrorCode } from '@kiki/protocol';
+import { useSearchParams } from 'react-router-dom';
 import type { To } from 'react-router-dom';
 
 import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
@@ -249,10 +254,23 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
   const queryClient = useQueryClient();
   const [pendingDelete, setPendingDelete] = useState<CronTask | null>(null);
   const { scope, setScope } = useWorkspaceScope(workspaceOptions);
+  // `?session=<id>` (the rail's "manage" entry) narrows the list to one
+  // conversation at the server, so it pages that conversation's own tasks.
+  const [params, setParams] = useSearchParams();
+  const sessionScope = params.get('session') ?? undefined;
+  const tasksQueryKey = useMemo(
+    () => [...CRON_TASKS_QUERY_KEY, 'filter', sessionScope ?? null] as const,
+    [sessionScope],
+  );
+  const clearSessionScope = useCallback(() => {
+    const updated = new URLSearchParams(params);
+    updated.delete('session');
+    setParams(updated, { replace: true });
+  }, [params, setParams]);
 
   const tasksQuery = useInfiniteQuery({
-    queryKey: CRON_TASKS_QUERY_KEY,
-    queryFn: ({ pageParam }) => client.listCronTasks({ page_size: 100, offset: pageParam }),
+    queryKey: tasksQueryKey,
+    queryFn: ({ pageParam }) => client.listCronTasks({ session_id: sessionScope, page_size: 100, offset: pageParam }),
     initialPageParam: 0,
     getNextPageParam: (lastPage) => lastPage.next_offset,
   });
@@ -279,7 +297,7 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
         ? client.pauseCronTask(task.id, task.session_id ?? undefined)
         : client.resumeCronTask(task.id, task.session_id ?? undefined),
     onSuccess: (result, { pause }) => {
-      queryClient.setQueryData<InfiniteData<ListCronTasksResponse, number>>(CRON_TASKS_QUERY_KEY, (old) =>
+      queryClient.setQueryData<InfiniteData<ListCronTasksResponse, number>>(tasksQueryKey, (old) =>
         old === undefined ? undefined : {
           ...old,
           pages: old.pages.map((page) => ({
@@ -308,7 +326,7 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
   const deleteMutation = useMutation({
     mutationFn: (task: CronTask) => client.deleteCronTask(task.id, task.session_id ?? undefined),
     onSuccess: (_result, task) => {
-      queryClient.setQueryData<InfiniteData<ListCronTasksResponse, number>>(CRON_TASKS_QUERY_KEY, (old) =>
+      queryClient.setQueryData<InfiniteData<ListCronTasksResponse, number>>(tasksQueryKey, (old) =>
         old === undefined ? undefined : {
           ...old,
           pages: old.pages.map((page) => ({
@@ -391,6 +409,22 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
       </PageHeader>
       <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline px-4 py-2 lg:px-6">
         <WorkspaceScopeControl workspaces={workspaceOptions} value={scope} onChange={setScope} />
+        {sessionScope !== undefined ? (
+          <span data-cron-session-scope={sessionScope} className="inline-flex min-w-0 items-center gap-1.5 text-[12px] text-ink-faint">
+            <span className="shrink-0">{t('cron.scope.session')}</span>
+            <span className="min-w-0 max-w-56 truncate text-ink-soft" title={sessionScope}>
+              {sessionsById.get(sessionScope)?.title ?? sessionScope}
+            </span>
+            <button
+              type="button"
+              data-cron-session-clear
+              onClick={clearSessionScope}
+              className="shrink-0 font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
+            >
+              {t('cron.scope.sessionClear')}
+            </button>
+          </span>
+        ) : null}
         {tasksQuery.data !== undefined ? (
           <p data-cron-summary className="ml-auto text-[12px] text-ink-faint tabular-nums">
             {tp('cron.panel.count', tasks.length)}
@@ -420,6 +454,13 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
               className="mt-2 text-[11.5px] font-medium text-danger underline"
             >
               {t('common.retry')}
+            </button>
+          </div>
+        ) : tasks.length === 0 && sessionScope !== undefined ? (
+          <div data-cron-session-empty className="mx-auto max-w-[960px] py-10">
+            <p className="text-[13px] text-ink-soft">{t('cron.scope.sessionEmpty')}</p>
+            <button type="button" onClick={clearSessionScope} className="mt-1 text-[13px] font-medium text-ink underline underline-offset-2">
+              {t('cron.scope.sessionClear')}
             </button>
           </div>
         ) : tasks.length === 0 && scope !== undefined && allTasks.length > 0 ? (

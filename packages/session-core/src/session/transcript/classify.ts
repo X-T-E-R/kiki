@@ -30,6 +30,7 @@ export interface PromptOriginLike {
   readonly skillName?: string;
   readonly commandName?: string;
   readonly skillArgs?: string;
+  readonly userInput?: string;
   readonly commandArgs?: string;
   readonly pluginId?: string;
   readonly name?: string;
@@ -44,7 +45,12 @@ export interface PromptOriginLike {
   readonly senderAgentId?: string;
   readonly senderTaskName?: string;
   readonly messageId?: string;
-  readonly source?: { readonly sessionId?: string; readonly personaId?: string; readonly name?: string };
+  readonly source?: { readonly hostId?: string; readonly workspaceId?: string; readonly sessionId?: string; readonly personaId?: string; readonly name?: string };
+  readonly sourceHomeId?: string;
+  readonly targetHomeId?: string;
+  readonly bridgeId?: string;
+  readonly revision?: number;
+  readonly location?: 'local' | 'network';
 }
 
 export function unwrapOrigin(origin: PromptOriginLike | undefined): PromptOriginLike | undefined {
@@ -77,6 +83,7 @@ export interface ClassifiedText {
   readonly origin: PromptOriginLike | undefined;
   readonly text: string;
   readonly reminders: readonly string[];
+  readonly userInput?: string;
   readonly skill?: { readonly source: 'skill' | 'plugin'; readonly name: string; readonly args: string | undefined };
   readonly systemVariant?: SystemVariant;
   readonly shell?: {
@@ -258,7 +265,7 @@ export function classifyTranscriptText(input: {
   ) {
     return { lane: 'you', origin, text: split.text, reminders: split.reminders };
   }
-  if (kind === 'peer_thread' || kind === 'agent_message') {
+  if (kind === 'peer_thread' || kind === 'bridged_peer' || kind === 'agent_message') {
     return { lane: 'peer', origin, text: split.text, reminders: split.reminders };
   }
   if (kind === 'skill_activation' || kind === 'plugin_command') {
@@ -267,6 +274,7 @@ export function classifyTranscriptText(input: {
       origin,
       text: stripSkillEnvelope(split.text),
       reminders: split.reminders,
+      userInput: kind === 'skill_activation' && origin?.trigger === 'user-slash' && typeof origin.userInput === 'string' ? origin.userInput : undefined,
       skill: origin?.skillName === undefined && origin?.commandName === undefined
         ? skillFromEnvelope(split.text) ?? skillFromOrigin(origin)
         : skillFromOrigin(origin),

@@ -121,6 +121,80 @@ export function costLabelKey(value: string): I18nKey | undefined {
 
 const PINNED_LANES_KEY = 'kiki.nb_search.pinned_lanes';
 
+/**
+ * Human names for the services the engine ships. A service the dictionary does
+ * not know falls back to its id, so a new engine provider still renders.
+ */
+const PROVIDER_LABEL_KEYS: Readonly<Record<string, I18nKey>> = {
+  brave: 'st.nbSearch.provider.brave',
+  'browser-render': 'st.nbSearch.provider.browser-render',
+  context7: 'st.nbSearch.provider.context7',
+  'direct-http': 'st.nbSearch.provider.direct-http',
+  duckduckgo: 'st.nbSearch.provider.duckduckgo',
+  exa: 'st.nbSearch.provider.exa',
+  firecrawl: 'st.nbSearch.provider.firecrawl',
+  github: 'st.nbSearch.provider.github',
+  grok: 'st.nbSearch.provider.grok',
+  'grok-multi-agent': 'st.nbSearch.provider.grok-multi-agent',
+  'jina-reader': 'st.nbSearch.provider.jina-reader',
+  'openai-compatible': 'st.nbSearch.provider.openai-compatible',
+  parallel: 'st.nbSearch.provider.parallel',
+  searxng: 'st.nbSearch.provider.searxng',
+  tavily: 'st.nbSearch.provider.tavily',
+  wayback: 'st.nbSearch.provider.wayback',
+  zhipu: 'st.nbSearch.provider.zhipu',
+};
+
+export function providerLabelKey(providerId: string): I18nKey | undefined {
+  return PROVIDER_LABEL_KEYS[providerId];
+}
+
+/**
+ * What a service row says about itself. `off` and `needs-key` are states the
+ * user chose or must act on; `configured` is the quiet everyday case;
+ * `unsaved` is an instance that exists only in this draft, so the server has
+ * said nothing about it yet — that is not a failure and must not be dressed as
+ * one, nor as a working service.
+ */
+export type ServiceState = 'configured' | 'off' | 'needsKey' | 'failed' | 'unsaved';
+
+export function serviceState(
+  instance: { readonly availability: 'ready' | 'unavailable'; readonly credential: { readonly requirement: string; readonly configured: boolean } },
+  enabled: boolean,
+  options?: { readonly unsaved?: boolean },
+): ServiceState {
+  if (!enabled) return 'off';
+  if (options?.unsaved === true) return 'unsaved';
+  if (instance.credential.requirement !== 'none' && !instance.credential.configured) return 'needsKey';
+  return instance.availability === 'ready' ? 'configured' : 'failed';
+}
+
+const SERVICE_STATE_KEYS: Readonly<Record<ServiceState, I18nKey>> = {
+  configured: 'st.nbSearch.services.stateConfigured',
+  off: 'st.nbSearch.services.stateOff',
+  needsKey: 'st.nbSearch.services.stateNeedsKey',
+  failed: 'st.nbSearch.services.stateFailed',
+  unsaved: 'st.nbSearch.services.stateUnsaved',
+};
+
+export function serviceStateKey(state: ServiceState): I18nKey {
+  return SERVICE_STATE_KEYS[state];
+}
+
+/**
+ * State words carry the meaning in colour, the way the rest of settings does:
+ * something waiting on the user is amber, a normal row stays quiet, and a
+ * service the user turned off is not a problem to solve. `unsaved` stays in the
+ * quiet ink scale for the same reason.
+ */
+export const SERVICE_STATE_CLASS: Readonly<Record<ServiceState, string>> = {
+  configured: 'text-ink-soft',
+  off: 'text-ink-faint',
+  needsKey: 'text-amber-ink',
+  failed: 'text-danger',
+  unsaved: 'text-ink-faint',
+};
+
 export function loadPinnedLanes(): string[] {
   try {
     const raw = spaceStorage.getItem(PINNED_LANES_KEY);

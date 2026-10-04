@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ensureDaemon, resolveDaemonHome } from "../src/daemon";
 
 function childProcess() {
@@ -9,12 +11,57 @@ function childProcess() {
 
 const connection = { url: "http://127.0.0.1:8124", token: "test-token", serverId: "server-example" };
 
-afterEach(() => {
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+const actualPlatform = process.platform;
+const roots: string[] = [];
+beforeEach(() => { Object.defineProperty(process, "platform", { value: "linux", configurable: true }); });
+afterEach(async () => {
+  Object.defineProperty(process, "platform", platformDescriptor);
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
+async function windowsPathFixture(extension: string): Promise<{ bin: string; command: string }> {
+  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+  const scratch = resolve(import.meta.dirname, "../../../.tmp/terminal-host-fixes");
+  await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(join(scratch, "vscode-"));
+  roots.push(root);
+  const bin = join(root, "bin with spaces %KIKI_TEST_VALUE%");
+  await mkdir(bin);
+  vi.spyOn(process, "cwd").mockReturnValue(join(root, "workspace"));
+  vi.stubEnv("PATH", bin);
+  vi.stubEnv("PATHEXT", ".EXE;.CMD");
+  vi.stubEnv("KIKI_TEST_VALUE", "EXPANDED_BAD");
+  return { bin, command: join(bin, `kiki${extension}`) };
+}
+
 describe("shared daemon ensure", () => {
+  it.skipIf(actualPlatform !== "win32")("starts an npm-only .cmd and preserves spaces and percent text as argument data", async () => {
+    const { bin, command } = await windowsPathFixture(".cmd");
+    const homeDir = "C:\\home with spaces %KIKI_TEST_VALUE%";
+    const workspacePath = "C:\\workspace with spaces %KIKI_TEST_VALUE%";
+    const expected = ["serve", "--ensure", "--json", "--home", homeDir, "--workspace", workspacePath];
+    vi.stubEnv("EXPECTED_KIKI_ARGS", JSON.stringify(expected));
+    await writeFile(join(bin, "args.cjs"), `const args = process.argv.slice(2); if (JSON.stringify(args) !== process.env.EXPECTED_KIKI_ARGS) process.exit(1); console.log(${JSON.stringify(JSON.stringify(connection))});`);
+    await writeFile(command, `@echo off\r\n"${process.execPath}" "%~dp0args.cjs" %*\r\n`);
+    await expect(ensureDaemon({ homeDir, workspacePath, timeoutMs: 5000 })).resolves.toEqual({ url: connection.url, token: connection.token });
+  });
+
+  it("keeps Windows native executables on the non-shell path", async () => {
+    const { command } = await windowsPathFixture(".EXE");
+    await writeFile(command, "not executed: spawn is fake");
+    const child = childProcess();
+    const spawn = vi.fn(() => child);
+    const pending = ensureDaemon({ homeDir: "C:/home", spawn: spawn as never });
+    child.stdout.write(JSON.stringify(connection));
+    child.emit("close", 0, null);
+    await pending;
+    expect(spawn).toHaveBeenCalledExactlyOnceWith(command, ["serve", "--ensure", "--json", "--home", "C:/home"],
+      { detached: false, shell: false, windowsVerbatimArguments: undefined, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+  });
   it("uses the existing home override", () => {
     expect(resolveDaemonHome({ KIKI_HOME: "C:/kiki-home" })).toBe("C:/kiki-home");
     expect(resolveDaemonHome({ KIKI_HOME: "C:/new-home" })).toBe("C:/new-home");
@@ -31,7 +78,7 @@ describe("shared daemon ensure", () => {
     await expect(pending).resolves.toEqual({ url: connection.url, token: connection.token });
     expect(spawn).toHaveBeenCalledExactlyOnceWith("kiki", [
       "serve", "--ensure", "--json", "--home", "C:/home with spaces", "--workspace", "C:/workspace with spaces",
-    ], { detached: false, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    ], { detached: false, shell: false, windowsVerbatimArguments: undefined, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
     expect(child.unref).not.toHaveBeenCalled();
     expect(child.kill).not.toHaveBeenCalled();
   });

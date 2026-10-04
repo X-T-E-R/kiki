@@ -12,10 +12,10 @@
  * element on close.
  */
 
-import { createContext, useContext, useEffect, useRef, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-import { canRestoreModalFocus, registerModal, registerOverlay } from '../lib/uiBusy';
+import { canRestoreModalFocus, nextModalDepth, registerModal, registerOverlay } from '../lib/uiBusy';
 
 const ModalDepth = createContext<number | undefined>(undefined);
 export function useStackedDialog(): boolean { return useContext(ModalDepth) !== undefined; }
@@ -71,7 +71,9 @@ export function Dialog({
   children: ReactNode;
 }) {
   const parentDepth = useContext(ModalDepth);
-  const depth = (stacked ?? parentDepth !== undefined) ? (parentDepth ?? -1) + 1 : undefined;
+  // App-level confirmations have no React modal parent but must cover the live stack.
+  const [rootDepth] = useState(nextModalDepth);
+  const depth = (stacked ?? parentDepth !== undefined) ? (parentDepth === undefined ? rootDepth : parentDepth + 1) : undefined;
   const panelRef = useRef<HTMLDivElement>(null);
   const ownership = useRef<ReturnType<typeof registerModal> | null>(null);
   const closeRef = useRef(onClose);
@@ -83,7 +85,7 @@ export function Dialog({
     const modal = depth !== undefined && panelRef.current ? registerModal(overlayId, depth, panelRef.current) : null;
     ownership.current = modal;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || (modal && !modal.isTop())) return;
+      if (event.key !== 'Escape' || (modal ? !modal.isTop() : !panelRef.current || !canRestoreModalFocus(panelRef.current))) return;
       // A confirmation rendered inline inside this panel (not stacked) owns
       // Escape while it is open: it closes, this panel stays.
       if ((panelRef.current?.querySelector('[aria-modal="true"]') ?? null) !== null) return;
@@ -105,7 +107,7 @@ export function Dialog({
     const panel = panelRef.current;
     if (panel === null) return;
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const isTop = () => depth === undefined || ownership.current?.isTop() === true;
+    const isTop = () => depth === undefined ? canRestoreModalFocus(panel) : ownership.current?.isTop() === true;
     const focusable = () => [...panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter(
       (element) => element.offsetParent !== null && (depth === undefined || !element.closest('[inert]')),
     );
@@ -156,7 +158,9 @@ export function Dialog({
         className={overlayClassName ?? 'fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4'}
         style={depth === undefined ? undefined : { zIndex: 50 + depth }}
         onPointerDown={(event) => {
-          if (event.target === event.currentTarget && (depth === undefined || ownership.current?.isTop())) onClose();
+          if (event.target === event.currentTarget && (depth === undefined
+            ? panelRef.current && canRestoreModalFocus(panelRef.current)
+            : ownership.current?.isTop())) onClose();
         }}
       >
         <div ref={panelRef} role={role} aria-modal="true" aria-label={ariaLabel} tabIndex={-1} className={panelClassName ?? DEFAULT_PANEL_CLASS}>

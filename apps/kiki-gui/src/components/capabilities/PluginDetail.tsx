@@ -8,10 +8,12 @@
  */
 
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
+import { importKeys, importsApi, type ImportsFacade } from '../../lib/importHistory';
 import {
   hasAnyPermission,
   pluginContributions,
@@ -31,7 +33,7 @@ import { CapabilityGlyph, CapabilityIcon } from './CapabilityIcon';
 import type { InstallRequest } from './InstallFlow';
 import { PermissionBoundary, PermissionList } from './PermissionList';
 import { PluginSettingsForm } from './PluginSettingsForm';
-import { Disclosure, FactList, Tag } from './primitives';
+import { Disclosure, FactList, QUIET_BUTTON, Tag } from './primitives';
 import {
   subjectIcon,
   subjectName,
@@ -48,6 +50,7 @@ export function PluginDetail({
   onInstall,
   onUpdate,
   onOpenPanel,
+  onOpenImport,
 }: {
   readonly subject: PluginSubject;
   /** Available update from the catalog or GitHub; shown, never auto-installed. */
@@ -56,11 +59,34 @@ export function PluginDetail({
   readonly onInstall: (request: InstallRequest) => void;
   readonly onUpdate?: (plugin: PluginSummary, update: PluginUpdateView) => void;
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
+  /** This plugin's importer in the host-managed import surface. */
+  readonly onOpenImport?: (source: { readonly pluginId: string; readonly sourceId: string }) => void;
 }) {
-  const { client } = useConnection();
+  const { client, scopeId } = useConnection();
   const { t, locale } = useI18n();
   const invalidate = useInvalidatePlugins();
   const installed = subject.installed;
+  // Which importers the host offers for this plugin. Read from the import
+  // surface's own source list, not from the manifest: a source id is whatever
+  // the host registered, and the GUI never guesses one from a plugin's name.
+  //
+  // The key is this connection's `scopeId`, the same key the import surface
+  // reads. One server fact, one cache entry: keying this page separately would
+  // let the two surfaces disagree about which sources a plugin has — this page
+  // offering no importer while the import list shows one, or the reverse — for
+  // as long as either entry stayed fresh.
+  const sourcesQuery = useQuery({
+    queryKey: importKeys.sources(scopeId),
+    queryFn: async () => (importsApi(client) as Partial<ImportsFacade> | undefined)?.sources?.() ?? [],
+    enabled: onOpenImport !== undefined,
+    staleTime: 60_000,
+    retry: false,
+  });
+  // Which importers this plugin contributes, as its own ids. The deep link
+  // carries both halves so it cannot land on another plugin's same-named source.
+  const importerIds = (sourcesQuery.data ?? [])
+    .filter((item) => item.pluginId === subject.id)
+    .map((item) => item.id);
   const infoQuery = usePluginInfo(installed === undefined ? undefined : subject.id);
   const info: PluginInfo | undefined = infoQuery.data;
   const skins = usePluginSkins(installed === undefined ? undefined : subject.id);
@@ -190,6 +216,21 @@ export function PluginDetail({
             )}
           </section>
           {installed !== undefined ? <PluginSettingsForm pluginId={subject.id} /> : null}
+          {onOpenImport !== undefined && importerIds.length > 0 ? (
+            <section data-plugin-detail-import>
+              <h2 className="text-[13px] font-medium text-ink">{t('cap.import.title')}</h2>
+              <p className="mt-1 max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('cap.import.manageSourceHint')}</p>
+              <button
+                type="button"
+                className={`${QUIET_BUTTON} -ml-3 mt-1`}
+                data-plugin-open-import={subject.id}
+                onClick={() => { onOpenImport({ pluginId: subject.id, sourceId: importerIds[0]! }); }}
+              >
+                <Icon name="read" size={14} className="text-ink-faint" />
+                {t('cap.import.entry')}
+              </button>
+            </section>
+          ) : null}
         </div>
 
         <aside className="min-w-0 space-y-6">

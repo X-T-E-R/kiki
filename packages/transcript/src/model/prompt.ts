@@ -1,3 +1,4 @@
+import type { ContentWindow } from '../contract/content';
 import type { PromptId } from './ids';
 
 export type TranscriptPromptStatus =
@@ -15,7 +16,7 @@ export interface TranscriptPromptDetailRef {
   readonly promptId: PromptId;
 }
 
-export interface TranscriptPrompt {
+export interface TranscriptPrompt extends ContentWindow {
   readonly promptId: PromptId;
   readonly status: TranscriptPromptStatus;
   /** The user message this prompt materialized as, when it did. */

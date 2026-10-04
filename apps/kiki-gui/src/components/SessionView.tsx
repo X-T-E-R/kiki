@@ -7,16 +7,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
 import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, Session } from '@kiki/protocol';
 
 import { AgentWorkspace, HEADER_ICON_BUTTON, PanelIcon, ResyncStatusBanner, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
+import { NavBackButton } from './NavBackButton';
+import { useGuardedNavigate } from './dirtyGuard';
 import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort, type ComposerEngine } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { useLastResponseAt } from './composerWorking';
+import { useRequestGovernance } from '../lib/useRequestGovernance';
 import { useContextMeterAutoCompact } from './useContextMeterAutoCompact';
 import {
   useConversationShell,
@@ -29,16 +32,22 @@ import { GoalCard, GoalHeaderSummary, goalShowsInHeader, RecoveryHoldBar } from 
 import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
+import { ModelSwitchDialog } from './model-switch/ModelSwitchDialog';
+import { ModelSwitchActionsContext, type ModelSwitchNoticeActions } from './model-switch/ModelSwitchNotice';
+import { useModelSwitches } from './model-switch/useModelSwitches';
+import { useRailMode } from './rail-variants/shell';
+import { PromptEffectiveDrawer } from './agent-panel/PromptEffectiveDrawer';
 import { useInspectorFocusTracking } from './inspectorFocus';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
 import { TerminalPanel } from './TerminalPanel';
 import { useStableForest, type TranscriptRowActions } from './Transcript';
 import { Icon } from './icons';
-import { PersonaAvatar } from './persona/PersonaAvatar';
 import { MessageViewContext, type MessageViewContextValue } from './message/messageViewContext';
 import { isTimelineViewShortcut, useTimelineView, type TimelineView } from './message/messageViewMode';
 import { TimelineMenuRows, TimelineViewSwitch } from './message/TimelineViewSwitch';
-import { BotSettingsPanel } from './bot/BotSettingsPanel';
+import { PersonaSessionIdentity } from './persona/PersonaSessionIdentity';
+import { PersonaSettingsDialog } from './persona/PersonaSettingsUpdate';
+import { sessionPersonaId } from './persona/personaSessionUtils';
 import { WorktreeMark } from './WorktreeMark';
 import { MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import type { MediaPreviewApi } from './mediaPreviewContext';
@@ -89,15 +98,20 @@ import {
   type SubagentBlock,
   type UserBlock,
 } from '@kiki/session-core/session';
-import { shortCwd } from '@kiki/session-core/sessions';
+import { settingsCardRoute, shortCwd } from '@kiki/session-core/sessions';
 import {
   composerDefaultsForProfile,
+  modelSwitchPreferencesToWire,
   readLastSessionId,
+  readModelSwitchPreferences,
   readSettings,
   readTerminalPanelPrefs,
   markSessionSeen,
+  rememberModelSwitchChoice,
+  resolveCatalogModel,
   resolveEffectiveModel,
   resolveModelSource,
+  resolveModelSwitchPreferences,
   resolveSessionModelOverride,
   settingsServerSnapshot,
   settingsSnapshot,
@@ -113,8 +127,11 @@ import {
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
-import { API_CODES, ApiError, isSessionNotFoundMessage, type UpdateAgentGoalInput } from '../lib/client';
-import { locateInTimeline, normalizeTurnId } from '../lib/timelineLocate';
+import { API_CODES, ApiError, isSessionNotFoundMessage, type ModelSwitchMode, type UpdateAgentGoalInput } from '../lib/client';
+import { locateInTimeline, locateSpawnTarget, normalizeTurnId } from '../lib/timelineLocate';
+import { getReadingSnapshot, timelineSnapshotKey } from '../lib/navViewState';
+import { useNavVisitId } from '../lib/useNavSnapshot';
+import { useTimelineNavigation } from '../lib/useTimelineNavigation';
 import { EphemeralBar, TemporaryMark } from './EphemeralBar';
 import { InteractionPlacementContext, type InteractionPlacement, type PlanReviewResponse } from './Interactions';
 import { HarnessMark } from './harness/HarnessMark';
@@ -220,21 +237,16 @@ function Header({
   onToggleSidebar,
   onRenameSession,
   onSessionAction,
+  freshContextAvailable = false,
   onSideQuestion,
   view,
   onView,
   onDelivery,
   deliveryPending,
-  isBotSession,
-  botPersonaId,
-  onOpenBotSettings,
   harness,
 }: {
   /** External engine behind main: its mark beside the title, and no fork when it refused one. */
   harness?: SessionHarness;
-  isBotSession: boolean;
-  botPersonaId?: string;
-  onOpenBotSettings: () => void;
   controller: SessionController | null;
   railOpen: boolean;
   railAvailable?: boolean;
@@ -244,7 +256,8 @@ function Header({
   onToggleTerminal: () => void;
   onToggleSidebar: () => void;
   onRenameSession: (title: string) => Promise<void>;
-  onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
+  onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => void;
+  freshContextAvailable?: boolean;
   onSideQuestion?: () => void;
   view: TimelineView;
   onView: (view: TimelineView) => void;
@@ -252,12 +265,22 @@ function Header({
   deliveryPending: boolean;
 }) {
   const { t, tp } = useI18n();
+  const navigate = useNavigate();
   const [renaming, setRenaming] = useState(false);
+  const [promptDetailsOpen, setPromptDetailsOpen] = useState(false);
+  const [personaSettingsOpen, setPersonaSettingsOpen] = useState(false);
   const state = useSyncExternalStore(
     controller?.subscribe ?? noopSubscribe,
     controller?.getState ?? emptyState,
   );
   const session = state.session;
+  // Two different questions the old single `isBotSession` answered at once:
+  // whose conversation this is (persona), and whether the reply mode makes
+  // 消息|过程 meaningful (a message-delivering session). An ordinary persona
+  // session is not a Bot and never gets the message view it did not ask for.
+  const persona = session?.agent_config.persona;
+  const personaId = session === undefined ? undefined : sessionPersonaId(session);
+  const deliveryCapable = session?.delivery === 'message';
   const approvals = useMemo(
     () => state.blocks.filter((block) => block.kind === 'approval' && block.resolution === undefined).length,
     [state.blocks],
@@ -278,31 +301,39 @@ function Header({
       >
         <Icon name="menu" size={16} />
       </button>
+      {/* The one history-return entry for this visit: it appears in the title
+          row only while a predecessor visit exists. */}
+      <NavBackButton />
       {session !== undefined ? (
         <>
-          {session.agent_config.persona !== undefined ? (
-            // Who this conversation is with, frozen at creation: the face
-            // leads the title; on narrow headers the name moves to the label.
-            <span
-              data-session-persona={session.agent_config.persona.id}
-              title={t('persona.headerTitle', { name: session.agent_config.persona.name })}
-              className="flex shrink-0 items-center gap-2 self-center"
-            >
-              <PersonaAvatar persona={session.agent_config.persona} size={26} decorative />
-              <span className="hidden max-w-[10rem] truncate text-[13px] font-medium text-section-ink sm:inline">{session.agent_config.persona.name}</span>
-              <span className="sr-only sm:hidden">{t('persona.headerTitle', { name: session.agent_config.persona.name })}</span>
-              <span aria-hidden className="hidden h-3.5 w-px bg-hairline-strong sm:inline-block" />
-            </span>
-          ) : null}
-          <SessionTitle
-            title={session.title}
-            cwd={session.metadata.cwd}
-            worktree={session.worktree}
-            editing={renaming}
-            onEditingChange={setRenaming}
-            onRename={onRenameSession}
-            onOpenRail={railAvailable ? onToggleRail : undefined}
-          />
+          {persona !== undefined ? (
+            // Who this conversation is with and which one it is: two lines,
+            // with the switcher on the name's own chevron.
+            <PersonaSessionIdentity
+              session={session}
+              title={
+                <SessionTitle
+                  title={session.title}
+                  cwd={session.metadata.cwd}
+                  worktree={session.worktree}
+                  editing={renaming}
+                  onEditingChange={setRenaming}
+                  onRename={onRenameSession}
+                  onOpenRail={railAvailable ? onToggleRail : undefined}
+                />
+              }
+            />
+          ) : (
+            <SessionTitle
+              title={session.title}
+              cwd={session.metadata.cwd}
+              worktree={session.worktree}
+              editing={renaming}
+              onEditingChange={setRenaming}
+              onRename={onRenameSession}
+              onOpenRail={railAvailable ? onToggleRail : undefined}
+            />
+          )}
           {session.ephemeral === true ? <TemporaryMark className="self-center" /> : null}
           {harness !== undefined ? <HarnessMark harness={harness} /> : null}
           {/* What is waiting on you — the count and the batch decisions —
@@ -315,43 +346,72 @@ function Header({
               {t('sv.working')}
             </span>
           ) : null}
-          {/* 消息 | 过程: on the header from sm up; the ⋯ menu carries it below. */}
-          {isBotSession ? <TimelineViewSwitch view={view} onChange={onView} className="hidden sm:flex" /> : null}
+          {/* 消息 | 过程 exists for a message-delivering conversation, on the
+              header from sm up; the ⋯ menu carries it below. */}
+          {deliveryCapable ? <TimelineViewSwitch view={view} onChange={onView} className="hidden sm:flex" /> : null}
           <SessionActionsMenu
             terminalAvailable={terminalAvailable}
             terminalOpen={terminalOpen}
             onToggleTerminal={onToggleTerminal}
             onBeginRename={() => { setRenaming(true); }}
+            onPromptDetails={() => { setPromptDetailsOpen(true); }}
             onAction={onSessionAction}
+            freshContextAvailable={freshContextAvailable}
             canFork={!harnessDenies(harness, 'fork')}
             onSideQuestion={harnessDenies(harness, 'fork') ? undefined : onSideQuestion}
-            leading={isBotSession ? (close) => (
+            leading={personaId !== undefined || deliveryCapable ? (close) => (
               <>
-                {botPersonaId !== undefined ? (
-                  <>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      data-bot-settings-open
-                      className="flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper"
-                      onClick={() => { close(); onOpenBotSettings(); }}
-                    >
-                      {t('bot.settings')}
-                    </button>
-                    <div className="my-1 h-px bg-hairline" />
-                  </>
-                ) : null}
+                {/* This person's other surfaces: the conversations this
+                    session belongs to, their settings, their memories. */}
+                {personaId === undefined ? null : ([
+                  ['persona.menu.conversations', `/personas?persona=${encodeURIComponent(personaId)}&view=conversations`],
+                  ['persona.menu.settings', `/personas?persona=${encodeURIComponent(personaId)}&view=settings`],
+                  ['persona.menu.memory', `/memory?persona=${encodeURIComponent(personaId)}${session.workspace_id === undefined ? '' : `&workspace=${encodeURIComponent(session.workspace_id)}`}`],
+                ] as const).map(([key, href]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    role="menuitem"
+                    data-persona-menu={key}
+                    className="flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper"
+                    onClick={() => { close(); navigate(href); }}
+                  >
+                    {t(key)}
+                  </button>
+                ))}
+                {/* The other three entries leave for the persona's own pages;
+                    this one stays on the conversation and is about the copy of
+                    the persona it runs. It is the way in on a narrow screen,
+                    where the rail's chapter does not exist. */}
+                {personaId === undefined ? null : (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-persona-menu="persona.menu.binding"
+                    className="flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper"
+                    onClick={() => { close(); setPersonaSettingsOpen(true); }}
+                  >
+                    {t('persona.binding.menu')}
+                  </button>
+                )}
+                {personaId === undefined ? null : <div className="my-1 h-px bg-hairline" />}
                 <TimelineMenuRows
                   view={view}
                   onView={(next) => { close(); onView(next); }}
                   delivery={session.delivery ?? 'reply'}
                   onDelivery={(next) => { close(); onDelivery(next); }}
                   deliveryPending={deliveryPending}
-                  showView={isNarrow}
+                  // When the header switch hides (narrow), the view choice has
+                  // to be reachable somewhere — the same menu carries it.
+                  showView={isNarrow && deliveryCapable}
                 />
               </>
             ) : undefined}
           />
+          {promptDetailsOpen ? <PromptEffectiveDrawer sessionId={state.sessionId} agentId={MAIN_AGENT_ID}
+            onClose={() => { setPromptDetailsOpen(false); }} /> : null}
+          {personaSettingsOpen ? <PersonaSettingsDialog sessionId={state.sessionId}
+            onClose={() => { setPersonaSettingsOpen(false); }} /> : null}
         </>
       ) : (
         <span className="flex-1" />
@@ -548,6 +608,8 @@ export function SessionActionsMenu({
   onBeginRename,
   onAction,
   onSideQuestion,
+  onPromptDetails,
+  freshContextAvailable = false,
   leading,
   canFork = true,
 }: {
@@ -557,9 +619,15 @@ export function SessionActionsMenu({
   terminalOpen: boolean;
   onToggleTerminal: () => void;
   onBeginRename: () => void;
-  onAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
+  onAction: (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => void;
+  /**
+   * True once the conversation holds something to carry over: starts a fresh
+   * context on the CURRENT model (the same-model fresh switch).
+   */
+  freshContextAvailable?: boolean;
   /** Opens a `/btw` side question beside the conversation; the row is hidden without it. */
   onSideQuestion?: () => void;
+  onPromptDetails?: () => void;
   /** Session-mode rows (view, delivery) above the actions; `close` dismisses the menu. */
   leading?: (close: () => void) => ReactNode;
 }) {
@@ -592,7 +660,7 @@ export function SessionActionsMenu({
 
   const itemClass =
     'flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper';
-  const pick = (action: 'fork' | 'undo' | 'compact' | 'export') => {
+  const pick = (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => {
     setOpen(false);
     onAction(action);
   };
@@ -629,6 +697,8 @@ export function SessionActionsMenu({
           >
             {t('menu.rename')}
           </button>
+          {onPromptDetails !== undefined ? <button type="button" role="menuitem" className={itemClass} data-prompt-details-open
+            onClick={() => { setOpen(false); onPromptDetails(); }}>{t('agentPanel.prompt.title')}</button> : null}
           {terminalAvailable ? (
             <button
               type="button"
@@ -672,6 +742,17 @@ export function SessionActionsMenu({
           <button type="button" role="menuitem" className={itemClass} onClick={() => { pick('compact'); }}>
             {t('menu.compact')}
           </button>
+          {freshContextAvailable ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-session-fresh-context
+              className={itemClass}
+              onClick={() => { pick('fresh-context'); }}
+            >
+              {t('modelSwitch.menuFreshContext')}
+            </button>
+          ) : null}
           <button
             type="button"
             role="menuitem"
@@ -766,6 +847,7 @@ export type SessionCreateSubmission =
       readonly name: string;
       readonly args: string;
       readonly attachments: readonly ComposerAttachment[];
+      readonly userInput?: string;
       readonly goalObjective?: string;
     };
 
@@ -807,6 +889,7 @@ export function resolveSessionCreateSubmission(
       name: handoff.initialSkill.name,
       args: handoff.initialSkill.args,
       attachments: handoff.initialSkill.attachments,
+      userInput: handoff.initialSkill.userInput,
       goalObjective: handoff.goalObjective,
     };
   }
@@ -1293,9 +1376,14 @@ export function SessionView({
   const terminalAvailable = terminalCapabilityAvailable(meta.capabilities);
   const { t, tp, locale } = useI18n();
   const navigate = useNavigate();
+  // Explicit in-page jumps ("在时间线中查看", 派发处, a note's passage) are
+  // visits of their own, so the return arrow can undo them; plain scrolling,
+  // find and filter changes never come through here.
+  const navigateTimeline = useTimelineNavigation();
   const location = useLocation();
   const agentMatch = useMatch('/s/:id/agent/:agentId');
   const selectedAgentId = agentMatch?.params.agentId;
+  const [railMode] = useRailMode();
   const selectedAgentIdRef = useRef(selectedAgentId);
   selectedAgentIdRef.current = selectedAgentId;
   const sessionIdRef = useRef(sessionId);
@@ -1309,13 +1397,18 @@ export function SessionView({
   const locatorParams = new URLSearchParams(location.search);
   const turnLocator = locatorParams.get('turn');
   const blockLocator = locatorParams.get('block');
+  const navVisitId = useNavVisitId();
   useEffect(() => {
     if (turnLocator === null && blockLocator === null) return;
+    // Returning to a visit with an old ?turn/?block URL restores where the
+    // reader actually was; the URL's first-entry target must not re-claim it.
+    if (navVisitId !== null &&
+      getReadingSnapshot(navVisitId, timelineSnapshotKey(sessionId, selectedAgentIdRef.current ?? MAIN_AGENT_ID)) !== undefined) return;
     const target = blockLocator !== null
       ? { kind: 'block' as const, blockId: blockLocator }
       : { kind: 'turn' as const, turnId: normalizeTurnId(turnLocator!) };
     void locateInTimeline(target, { sessionId, agentId: selectedAgentIdRef.current });
-  }, [turnLocator, blockLocator, sessionId]);
+  }, [turnLocator, blockLocator, sessionId, navVisitId]);
   const initialPromptRef = useRef(createHandoff.initialPrompt);
   const initialSkillRef = useRef(createHandoff.initialSkill);
   const initialOptionsRef = useRef(createHandoff);
@@ -1335,6 +1428,11 @@ export function SessionView({
   const isNarrowScreen = useMediaQuery('(max-width: 1023px)');
   const [userRailOpen, setUserRailOpen] = useState(() => defaults.railOpenByDefault);
   const railOpen = !isNarrowScreen && userRailOpen;
+  // Whether a rail can open at all at this width: the one truth every rail
+  // entry point reads, so below lg none of them renders a control that cannot
+  // do anything (the main header, the routed agent page, the preview tab).
+  const railAvailable = !isNarrowScreen;
+  const cockpit = railOpen && railMode === 'cockpit';
   const railIsOverlay = false;
   // Focused panel-tab agent: the active agent panel tab in the preview
   // workspace, reported up by the bridge below. This is the shared right
@@ -1388,6 +1486,9 @@ export function SessionView({
     readonly savedQuote: string | null;
     readonly savedAnnotations: readonly SelectionAnnotation[];
   } | null>(null);
+  const queueEditRef = useRef(queueEdit);
+  queueEditRef.current = queueEdit;
+  const composerOwnerActive = useRef(true);
   const [draft, setDraft] = useState('');
   const [pendingSubmission, setPendingSubmission] = useState<{
     id: string; text: string; createdAt: string; slow: boolean;
@@ -1412,10 +1513,9 @@ export function SessionView({
   draftRef.current = draft;
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
-  // Transcript text quoted into the composer via the floating selection
-  // button. The route keys this component by session id, so the quote resets
-  // with the session; send (and the chip's ×) clear it explicitly.
-  const [quote, setQuote] = useState<string | null>(null);
+  // Unsent quotes share the session's in-memory chrome with annotations;
+  // send (and the chip's ×) clear them explicitly.
+  const [quote, setQuote] = useState<string | null>(restoredComposer.quote ?? null);
   // Selection annotations (quote + one-line comment) accumulate independently
   // of the quote chip — any number ride the same prompt, and unsent ones return
   // with the session's in-memory composer chrome after navigation.
@@ -1555,10 +1655,32 @@ export function SessionView({
   // initializer. The route keys this component by session id, so this runs
   // once per session mount.
   useEffect(() => {
+    composerOwnerActive.current = true;
     const stored = readDraft(sessionId);
     draftRef.current = stored;
     setDraft(stored);
-    return () => { flushDrafts(); };
+    return () => {
+      composerOwnerActive.current = false;
+      // Restore the parked composition before flushing and releasing the hold.
+      const edit = queueEditRef.current;
+      if (edit !== null) {
+        const chrome = readComposerState(sessionId);
+        writeDraft(sessionId, edit.savedDraft);
+        writeComposerState(sessionId, {
+          ...chrome,
+          attachments: attachmentsRef.current,
+          annotations: edit.savedAnnotations,
+          quote: edit.savedQuote,
+          permissionMode: chrome.permissionMode,
+          planMode: chrome.planMode,
+          planGate: chrome.planGate,
+          goalObjective: chrome.goalObjective,
+          modelOverride: chrome.modelOverride,
+          effortOverride: chrome.effortOverride,
+        });
+      }
+      flushDrafts();
+    };
   }, [sessionId]);
   useEffect(() => controller?.subscribeInterruptedPrompt((content) => {
     restorePromptToDraft(sessionId, content);
@@ -1607,6 +1729,7 @@ export function SessionView({
     writeComposerState(sessionId, {
       attachments,
       annotations,
+      quote,
       permissionMode: permissionOverride,
       planMode: planOverride,
       planGate: planGateOverride,
@@ -1618,6 +1741,7 @@ export function SessionView({
     sessionId,
     attachments,
     annotations,
+    quote,
     permissionOverride,
     planOverride,
     planGateOverride,
@@ -1641,14 +1765,18 @@ export function SessionView({
     controller?.getState ?? emptyState,
   );
 
-  // Bot mode: which projection of the timeline this session shows (remembered
-  // per session; a `message` delivery opens in the message view) and the
-  // delivery switch. Delivery freezes per turn on the server, so a change
-  // made mid-turn is labelled "下一轮生效" until the turn ends.
-  const isBotSession = state.session?.agent_config.persona !== undefined || typeof state.session?.metadata['bot_persona_id'] === 'string';
+  // Which projection of the timeline this session shows (remembered per
+  // session; a `message` delivery opens in the message view) and the delivery
+  // switch. Delivery freezes per turn on the server, so a change made mid-turn
+  // is labelled "下一轮生效" until the turn ends.
+  //
+  // `deliveryCapable` is the reply mode, not the identity: a persona session
+  // with ordinary replies has no message view to switch to, and the old
+  // `isBotSession` showed it one anyway.
+  const deliveryCapable = state.session?.delivery === 'message';
   const [timelineView, setTimelineView] = useTimelineView(sessionId, state.session);
   useEffect(() => {
-    if (!isBotSession) return;
+    if (!deliveryCapable) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (!isTimelineViewShortcut(event)) return;
       event.preventDefault();
@@ -1656,7 +1784,7 @@ export function SessionView({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [isBotSession, timelineView, setTimelineView]);
+  }, [deliveryCapable, timelineView, setTimelineView]);
   const [deliveryChangedInTurn, setDeliveryChangedInTurn] = useState(false);
   useEffect(() => { if (!state.busy) setDeliveryChangedInTurn(false); }, [state.busy]);
   const changeDelivery = useCallback((delivery: 'reply' | 'message') => {
@@ -1671,15 +1799,6 @@ export function SessionView({
         pushToast({ tone: 'error', text: t('message.deliverySwitchFailed', { detail: error instanceof Error ? error.message : String(error) }) });
       });
   }, [client, controller, sessionId, state.busy, state.session?.delivery, t]);
-  // A Bot's home session (`bot_persona_id`) offers "Bot 设置" in its ⋯ menu,
-  // which takes over the right rail (design §5.3).
-  const botPersonaId = typeof state.session?.metadata['bot_persona_id'] === 'string'
-    ? state.session.metadata['bot_persona_id'] as string
-    : undefined;
-  const [botSettingsOpen, setBotSettingsOpen] = useState(false);
-  const openBotSettingsRef = useRef<() => void>(() => undefined);
-  const openBotSettings = useCallback(() => { openBotSettingsRef.current(); }, []);
-  const closeBotSettings = useCallback(() => { setBotSettingsOpen(false); }, []);
   const messageViewContext = useMemo<MessageViewContextValue>(() => ({
     persona: state.session?.agent_config.persona,
     sessionId,
@@ -1738,15 +1857,17 @@ export function SessionView({
   // only merges the polled record for ITS session into the live controller.
   // Temporary conversations never enter that list; the sidebar's own query
   // for them (shared through the cache) carries their record instead.
-  const ephemeralQuery = useQuery({
+  const ephemeralQuery = useInfiniteQuery({
     queryKey: ['sessions', 'ephemeral'],
-    queryFn: () => client.listEphemeralSessions(),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => client.listEphemeralSessions({ before_id: pageParam, page_size: 50 }),
+    getNextPageParam: (page) => page.has_more ? page.next_cursor : undefined,
     refetchInterval: 15_000,
   });
   useEffect(() => {
     if (controller === null) return;
     const record = sessions.find((item) => item.id === controller.sessionId)
-      ?? ephemeralQuery.data?.items.find((item) => item.id === controller.sessionId);
+      ?? ephemeralQuery.data?.pages.flatMap((page) => page.items).find((item) => item.id === controller.sessionId);
     if (record !== undefined) controller.handleSessionRecord(record);
   }, [controller, sessions, ephemeralQuery.data]);
 
@@ -1810,12 +1931,189 @@ export function SessionView({
   }, [harness]);
   const profilePending = pendingProfile !== undefined && pendingProfile !== boundProfile;
 
+  // ---- model switching: three-mode confirm + queued control item ----
+  // Preferences are the space's server config (the GUI only caches the query,
+  // read through `configQuery` above); the resolution snapshot is captured
+  // when a pick is accepted, never re-derived later, so a settings edit cannot
+  // change an accepted switch.
+  const modelSwitchPrefs = useMemo(
+    () => readModelSwitchPreferences(configQuery.data?.model_switch),
+    [configQuery.data],
+  );
+  const modelSwitches = useModelSwitches(sessionId, MAIN_AGENT_ID);
+  const [modelSwitchDialog, setModelSwitchDialog] = useState<{
+    readonly fromModel: string;
+    readonly toModel: string;
+    readonly initialMode: ModelSwitchMode;
+    readonly matchedRuleId?: string;
+    readonly editingOperationId?: string;
+    readonly editingRevision?: number;
+  } | undefined>(undefined);
+  const [modelSwitchSubmitting, setModelSwitchSubmitting] = useState(false);
+  const [modelSwitchActionPending, setModelSwitchActionPending] = useState<string | undefined>(undefined);
+  const conversationStarted = state.loaded && sessionHasStartedConversation(state.blocks);
+  // Canonical ids on both sides: a bare alias lands on its provider row, so
+  // "same model" reads as the same model and the panel names what it shows.
+  const canonicalModel = useCallback(
+    (value: string | undefined): string | undefined =>
+      value === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], value)?.id ?? value,
+    [modelsQuery.data],
+  );
+  const currentBoundModel = canonicalModel(sessionModel === '' ? inheritedDefault : sessionModel);
+  const submitModelSwitch = useCallback(async (choice: {
+    readonly fromModel: string;
+    readonly toModel: string;
+    readonly mode: ModelSwitchMode;
+    readonly remember: boolean;
+    readonly editingOperationId?: string;
+    readonly editingRevision?: number;
+  }) => {
+    setModelSwitchSubmitting(true);
+    try {
+      if (choice.editingOperationId !== undefined) {
+        await client.updateAgentModelSwitch(sessionId, MAIN_AGENT_ID, {
+          operationId: choice.editingOperationId,
+          model: choice.toModel,
+          mode: choice.mode,
+          selectedFromModel: choice.fromModel,
+        }, choice.editingRevision);
+      } else {
+        await client.switchAgentModel(sessionId, MAIN_AGENT_ID, {
+          operationId: crypto.randomUUID(),
+          model: choice.toModel,
+          mode: choice.mode,
+          selectedFromModel: choice.fromModel,
+        });
+      }
+      setModelSwitchDialog(undefined);
+      modelSwitches.refresh();
+    } catch (error) {
+      pushToast({
+        tone: 'error',
+        text: t(choice.editingOperationId !== undefined ? 'modelSwitch.updateFailed' : 'modelSwitch.submitFailed', {
+          detail: error instanceof Error ? error.message : String(error),
+        }),
+      });
+      return;
+    } finally {
+      setModelSwitchSubmitting(false);
+    }
+    if (!choice.remember) return;
+    // The switch is already accepted: a preference write failure reports the
+    // unsaved preference and must not revoke the accepted operation. Only the
+    // rule table goes out — sending the whole domain would write back the
+    // default mode and ask flag this session last read, clobbering a change
+    // made in Settings meanwhile.
+    try {
+      const remembered = modelSwitchPreferencesToWire(
+        rememberModelSwitchChoice(modelSwitchPrefs, choice.fromModel, choice.toModel, choice.mode),
+      );
+      const echoed = await client.patchConfig({ model_switch: { rules: remembered.rules } });
+      queryClient.setQueryData(['config'], echoed);
+    } catch (error) {
+      pushToast({
+        tone: 'error',
+        text: t('modelSwitch.prefsSaveFailed', {
+          detail: error instanceof Error ? error.message : String(error),
+        }),
+      });
+    }
+  }, [client, modelSwitchPrefs, modelSwitches, queryClient, sessionId, t]);
+  // Opens the confirm panel per the effective preference, or accepts straight
+  // away when the rule/default says not to ask. `explicitMode` is the user's
+  // own choice (the same-model fresh entry), which outranks rule matching.
+  const openModelSwitchPanel = useCallback((toModel: string, explicitMode?: ModelSwitchMode) => {
+    const fromModel = currentBoundModel;
+    if (fromModel === undefined || (toModel === fromModel && explicitMode === undefined)) return;
+    const resolved = resolveModelSwitchPreferences(modelSwitchPrefs, fromModel, toModel, explicitMode);
+    if (resolved.confirm) {
+      setModelSwitchDialog({ fromModel, toModel, initialMode: resolved.mode, matchedRuleId: resolved.matchedRuleId });
+      return;
+    }
+    void submitModelSwitch({ fromModel, toModel, mode: resolved.mode, remember: false });
+  }, [currentBoundModel, modelSwitchPrefs, submitModelSwitch]);
   // A model/effort pick made while a profile switch is pending is explicit:
   // it overrides the incoming profile's pins on the switch prompt.
   const handleModelChange = useCallback((model: string | undefined) => {
-    setModelOverride(model);
-    if (pendingProfile !== undefined) setProfileModelTouched(true);
-  }, [pendingProfile]);
+    // An empty conversation has nothing to hand over: the pick rides the next
+    // prompt as before, exactly like a pick made while a profile is pending.
+    if (pendingProfile !== undefined || !conversationStarted) {
+      setModelOverride(model);
+      if (pendingProfile !== undefined) setProfileModelTouched(true);
+      return;
+    }
+    // A live conversation switches the bound model instead: the pick is a
+    // queue control item, so the model on screen stays the actual one.
+    setModelOverride(undefined);
+    const target = canonicalModel(model ?? inheritedDefault);
+    if (target === undefined || target === currentBoundModel) return;
+    openModelSwitchPanel(target);
+  }, [canonicalModel, conversationStarted, currentBoundModel, inheritedDefault, openModelSwitchPanel, pendingProfile]);
+
+  const runModelSwitchAction = useCallback((
+    operationId: string,
+    run: () => Promise<unknown>,
+    failureKey: 'modelSwitch.cancelFailed' | 'modelSwitch.recoverFailed',
+  ) => {
+    setModelSwitchActionPending(operationId);
+    void run()
+      .then(() => { modelSwitches.refresh(); })
+      .catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t(failureKey, { detail: error instanceof Error ? error.message : String(error) }),
+        });
+      })
+      .finally(() => { setModelSwitchActionPending((current) => (current === operationId ? undefined : current)); });
+  }, [modelSwitches, t]);
+  // Timeline and queue rows share these actions; the timeline notice reads
+  // them from context so the Transcript renderer stays presentational.
+  const modelSwitchActions = useMemo<ModelSwitchNoticeActions>(() => ({
+    pendingOperationId: modelSwitchActionPending,
+    edit: (operationId) => {
+      const entry = modelSwitches.switches.find((candidate) => candidate.input.operationId === operationId);
+      // Only a pending operation is editable; preparing already committed to
+      // its input (and by contract cannot be cancelled either).
+      if (entry === undefined || entry.receipt.state !== 'pending') return;
+      setModelSwitchDialog({
+        fromModel: entry.receipt.fromModel,
+        toModel: canonicalModel(entry.input.model) ?? entry.receipt.toModel,
+        initialMode: entry.input.mode,
+        editingOperationId: operationId,
+        editingRevision: entry.revision,
+      });
+    },
+    cancel: (operationId) => {
+      runModelSwitchAction(
+        operationId,
+        () => client.cancelAgentModelSwitch(sessionId, MAIN_AGENT_ID, operationId),
+        'modelSwitch.cancelFailed',
+      );
+    },
+    retry: (operationId) => {
+      runModelSwitchAction(
+        operationId,
+        () => client.recoverAgentModelSwitch(sessionId, MAIN_AGENT_ID, operationId, 'retry'),
+        'modelSwitch.recoverFailed',
+      );
+    },
+    // A fresh-mode retry keeps the operation id, so messages waiting on this
+    // switch keep waiting on it instead of hanging on a failed operation.
+    retryAsFresh: (operationId) => {
+      runModelSwitchAction(
+        operationId,
+        () => client.recoverAgentModelSwitch(sessionId, MAIN_AGENT_ID, operationId, 'retry', 'fresh'),
+        'modelSwitch.recoverFailed',
+      );
+    },
+    keepOriginal: (operationId) => {
+      runModelSwitchAction(
+        operationId,
+        () => client.recoverAgentModelSwitch(sessionId, MAIN_AGENT_ID, operationId, 'keep_original'),
+        'modelSwitch.recoverFailed',
+      );
+    },
+  }), [canonicalModel, client, modelSwitchActionPending, modelSwitches.switches, runModelSwitchAction, sessionId]);
   const handleEffortChange = useCallback((effort: string | undefined) => {
     setEffortOverride(effort);
     if (pendingProfile !== undefined) setProfileModelTouched(true);
@@ -2033,37 +2331,44 @@ export function SessionView({
             });
         }
         const submissionId = crypto.randomUUID();
-        setPendingSubmission({ id: submissionId, text: echoText, createdAt: new Date().toISOString(), slow: false });
-        updateDraft('');
-        updateAttachments([]);
-        // The notes riding this prompt leave the composer with its text; a
-        // failed submit hands them back (next to any added meanwhile).
+        // The captured payload, notes and identity belong to X, not whatever
+        // the user composes after a failure toast appears.
         const sentAnnotations = annotations;
         const sentIds = new Set(sentAnnotations.map((annotation) => annotation.id));
-        setAnnotations((current) => current.filter((annotation) => !sentIds.has(annotation.id)));
         // Returned to the composer: it holds its send latch until this round
         // settles, which is what blocks a rapid duplicate send (and releases
         // for a retry when the submit fails).
-        return controller
-          .sendPrompt({
-            text: echoText,
-            content,
-            profile: profileSwitch.profile,
-            model: profileSwitch.model,
-            // FU7: the select's visible value is the prompt's wire value,
-            // including the catalog default when the user leaves it untouched.
-            thinking: profileSwitch.thinking,
-            permissionMode: permissionOverride ?? state.permissionMode,
-            planMode,
-            planGate,
-            goalObjective: promptGoalObjective(options),
-            // The send-timing menu's one-shot pick beats the configured
-            // default for this prompt only.
-            appendTiming: options?.appendTiming ?? liveSettings.defaultAppendTiming,
-            ...(options?.personaGreetingReply === true ? { personaGreetingReply: true } : {}),
-          })
+        const submission = {
+          promptId: submissionId,
+          text: echoText,
+          content,
+          profile: profileSwitch.profile,
+          model: profileSwitch.model,
+          thinking: profileSwitch.thinking,
+          permissionMode: permissionOverride ?? state.permissionMode,
+          planMode,
+          planGate,
+          goalObjective: promptGoalObjective(options),
+          appendTiming: options?.appendTiming ?? liveSettings.defaultAppendTiming,
+          afterModelSwitch: options?.now === true ? undefined : modelSwitches.dependency?.input.operationId,
+          personaGreetingReply: options?.personaGreetingReply,
+        };
+        let accepted = false;
+        const submitCaptured = (first = false): Promise<void> | undefined => {
+          if (!composerOwnerActive.current || (!first && (accepted || pendingSendRef.current))) return;
+          pendingSendRef.current = true;
+          // Only X's recovered composition leaves; a newer Y stays untouched.
+          if (first || (draftRef.current === stripThreadRefContext(text)
+            && JSON.stringify(attachmentsRef.current) === JSON.stringify(composerAttachments))) {
+            updateDraft('');
+            updateAttachments([]);
+          }
+          setAnnotations((current) => current.filter((annotation) => !sentIds.has(annotation.id)));
+          setPendingSubmission({ id: submissionId, text: echoText, createdAt: new Date().toISOString(), slow: false });
+          return controller.sendPrompt(submission)
           .then((result) => {
-            setQuote(null);
+            accepted = true;
+            setQuote((current) => current === quote ? null : current);
             setGoalMode(false);
             // "Send now" (⌘/Ctrl+Enter while busy): the prompt parked behind the
             // running turn joins it right away through the queue's steer route.
@@ -2101,7 +2406,7 @@ export function SessionView({
               detail: error instanceof Error ? error.stack : undefined,
               retry: {
                 run: () => {
-                  void actions?.send(text, composerAttachments, options);
+                  void submitCaptured();
                 },
               },
             });
@@ -2120,12 +2425,15 @@ export function SessionView({
             pendingSendRef.current = false;
             setPendingSubmission((current) => current?.id === submissionId ? undefined : current);
           });
+        };
+        return submitCaptured(true);
       },
       activateSkill: (
         name: string,
         args: string,
         composerAttachments: readonly ComposerAttachment[],
         goalObjectiveOverride?: string,
+        userInput?: string,
       ) => {
         try {
           assertSessionWritable(controller.getState());
@@ -2138,7 +2446,7 @@ export function SessionView({
         }
         const activation = buildSkillActivation(args, composerAttachments);
         const submitted = {
-          draft: draftRef.current,
+          draft: userInput ?? draftRef.current,
           attachments: composerAttachments,
         };
         // Returned for the composer's send latch, same contract as `send`.
@@ -2153,6 +2461,7 @@ export function SessionView({
           activate: () =>
             client.activateSkill(sessionId, name, {
               args: activation.args === '' ? undefined : activation.args,
+              user_input: userInput,
               attachments: activation.attachments,
             }),
           submitted,
@@ -2186,7 +2495,7 @@ export function SessionView({
             detail: error instanceof Error ? error.stack : undefined,
             retry: {
               run: () => {
-                void actions?.activateSkill(name, args, composerAttachments, goalObjectiveOverride);
+                void actions?.activateSkill(name, args, composerAttachments, goalObjectiveOverride, submitted.draft);
               },
             },
           });
@@ -2253,16 +2562,28 @@ export function SessionView({
           });
         });
       },
-      clearQueue: () =>
-        controller.clearQueue().then((result) => {
-          if (result.failed > 0) {
-            pushToast({
-              tone: 'error',
-              text: t('sv.queueClearFailed', { failed: result.failed, total: result.total }),
-            });
-          }
-          return result;
-        }),
+      clearQueue: async () => {
+        // Clear the same mixed objects the strip counts, using existing commands.
+        const switches = modelSwitches.switches.filter((entry) => entry.queueIndex >= 0);
+        const [prompts, cancelled] = await Promise.all([
+          controller.clearQueue(),
+          Promise.allSettled(switches.map((entry) =>
+            client.cancelAgentModelSwitch(sessionId, MAIN_AGENT_ID, entry.input.operationId),
+          )),
+        ]);
+        if (switches.length > 0) modelSwitches.refresh();
+        const result = {
+          total: prompts.total + switches.length,
+          failed: prompts.failed + cancelled.filter((entry) => entry.status === 'rejected').length,
+        };
+        if (result.failed > 0) {
+          pushToast({
+            tone: 'error',
+            text: t('sv.queueClearFailed', { failed: result.failed, total: result.total }),
+          });
+        }
+        return result;
+      },
     };
   }, [
     controller,
@@ -2277,6 +2598,9 @@ export function SessionView({
     planMode,
     planGate,
     liveSettings.defaultAppendTiming,
+    modelSwitches.dependency,
+    modelSwitches.switches,
+    modelSwitches.refresh,
     quote,
     annotations,
     sessionId,
@@ -2333,11 +2657,17 @@ export function SessionView({
   );
 
   const runSessionAction = useCallback(
-    (action: 'fork' | 'undo' | 'compact' | 'export') => {
+    (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => {
       const record = state.session;
       if (record === undefined) return;
       if (action === 'undo') {
         setConfirmUndo(true);
+        return;
+      }
+      if (action === 'fresh-context') {
+        // Same-model fresh: keep the current model, start a new context. The
+        // preference decides whether the panel asks first.
+        if (currentBoundModel !== undefined) openModelSwitchPanel(currentBoundModel, 'fresh');
         return;
       }
       if (action === 'fork') {
@@ -2369,7 +2699,7 @@ export function SessionView({
           });
       }
     },
-    [actionContext, state.session, t, locale],
+    [actionContext, state.session, t, locale, currentBoundModel, openModelSwitchPanel],
   );
 
   const confirmUndoRun = useCallback(() => {
@@ -2514,16 +2844,20 @@ export function SessionView({
   const forest = useStableForest(forestRaw);
 
   const previewRef = useRef<MediaPreviewApi | null>(null);
+  // Opening an agent as a preview tab keeps the page; the two branches that
+  // swap the page for another visit ask the dirty guard first, so an unsaved
+  // preview buffer is never dropped silently.
+  const navigateVisits = useGuardedNavigate();
 
   const openAgent = useCallback(
     (agentId: string) => {
       if (agentId === MAIN_AGENT_ID) {
-        void navigate(`/s/${sessionId}`);
+        navigateVisits(`/s/${sessionId}`);
         return;
       }
       const mode = liveSettings.subagentPanelOpenMode;
       if (mode === 'fullscreen' || previewRef.current === null) {
-        void navigate(agentDetailPath(sessionId, agentId));
+        navigateVisits(agentDetailPath(sessionId, agentId));
         return;
       }
       const node = forest.byId[agentId];
@@ -2562,32 +2896,28 @@ export function SessionView({
     })();
   }, [client, locale, navigate, sessionId, sideQuestionPending, t]);
   // Route-shell seams for the agent workspace: back-to-session and the
-  // route-level agent open (no preview interception — the spawn jump-back).
+  // route-level agent open (the spawn jump-back and the preview tab's "open in
+  // page" — the source visit keeps its preview snapshot, so the return arrow
+  // reopens the panel the reader left).
   const openSession = useCallback(() => {
-    void navigate(`/s/${sessionId}`);
-  }, [navigate, sessionId]);
+    navigateVisits(`/s/${sessionId}`);
+  }, [navigateVisits, sessionId]);
   const openAgentRoute = useCallback(
     (agentId: string) => {
       const path = agentDetailPath(sessionId, agentId);
-      if (location.pathname !== path) void navigate(path);
+      if (location.pathname !== path) navigateVisits(path);
     },
-    [location.pathname, navigate, sessionId],
+    [location.pathname, navigateVisits, sessionId],
   );
   const toggleRail = useCallback(() => {
     setUserRailOpen((value) => !value);
-    setBotSettingsOpen(false);
   }, []);
   const closeRail = useCallback(() => {
     setUserRailOpen(false);
-    setBotSettingsOpen(false);
   }, []);
-  openBotSettingsRef.current = () => {
-    setBotSettingsOpen(true);
-    setUserRailOpen(true);
-  };
   const agentWorkspaceNavigation = useMemo<AgentWorkspaceNavigation>(
-    () => ({ openAgent, openAgentRoute, openSession, sharedRail: { open: railOpen, toggle: toggleRail } }),
-    [openAgent, openAgentRoute, openSession, railOpen, toggleRail],
+    () => ({ openAgent, openAgentRoute, openSession, sharedRail: { open: railOpen, toggle: toggleRail, available: railAvailable } }),
+    [openAgent, openAgentRoute, openSession, railOpen, toggleRail, railAvailable],
   );
 
   // ---- shared-rail focus (panel-tab subagent) ----
@@ -2630,13 +2960,12 @@ export function SessionView({
   const handlePanelFocusJumpToSpawn = useCallback(() => {
     if (panelFocusAgent === undefined) return;
     const parentId = forest.byId[panelFocusAgent]?.parentAgentId ?? panelFocusBlock?.parentAgentId;
-    if (parentId === undefined || parentId === MAIN_AGENT_ID) {
-      // Already on the main timeline: locate the spawning card in place.
-      void locateInTimeline({ kind: 'subagent', agentId: panelFocusAgent }, { sessionId });
-      return;
-    }
-    openAgent(parentId);
-  }, [panelFocusAgent, panelFocusBlock, forest, openAgent]);
+    // Both branches name the same thing — the parent's timeline AND this
+    // child's spawning card — and both are one explicit visit, so the arrow
+    // returns to what the reader was looking at before the jump.
+    const spawn = locateSpawnTarget(sessionId, panelFocusAgent, parentId ?? MAIN_AGENT_ID);
+    navigateTimeline(spawn.target, { ...spawn.options, route: spawn.route });
+  }, [panelFocusAgent, panelFocusBlock, forest, navigateTimeline, sessionId]);
   const focusSubagent =
     panelFocusAgent === undefined
       ? undefined
@@ -2724,6 +3053,7 @@ export function SessionView({
     setConfirmClearQueue(true);
   }, [actions]);
   const queuedItems = useMemo(() => queuedPromptPreviews(state), [state]);
+  const queuedItemCount = queuedItems.length + modelSwitches.switches.filter((entry) => entry.queueIndex >= 0).length;
   const handleRemoveQueuedAttachment = useCallback((promptId: string, attachmentIndex: number) => {
     const item = queuedItems.find((entry) => entry.promptId === promptId);
     if (controller === null || item?.content === undefined) return Promise.resolve();
@@ -2887,7 +3217,7 @@ export function SessionView({
     // doesn't resend the drafted prompt or re-activate the skill.
     void navigate(location.pathname, { replace: true });
     if (submission.kind === 'skill') {
-      const recovery = `/${submission.name}${submission.args === '' ? '' : ` ${submission.args}`}`;
+      const recovery = submission.userInput ?? `/${submission.name}${submission.args === '' ? '' : ` ${submission.args}`}`;
       updateDraft(recovery);
       updateAttachments(submission.attachments);
       void actions.activateSkill(
@@ -2895,6 +3225,7 @@ export function SessionView({
         submission.args,
         submission.attachments,
         submission.goalObjective,
+        recovery,
       );
       return;
     }
@@ -2992,8 +3323,8 @@ export function SessionView({
     [client, sessionId],
   );
   const handleActivateSkill = useCallback(
-    (name: string, args: string, skillAttachments: readonly ComposerAttachment[]) =>
-      actions?.activateSkill(name, args, skillAttachments),
+    (name: string, args: string, skillAttachments: readonly ComposerAttachment[], userInput: string) =>
+      actions?.activateSkill(name, args, skillAttachments, undefined, userInput),
     [actions],
   );
   const handleCompactContext = useCallback(() => { runSessionAction('compact'); }, [runSessionAction]);
@@ -3054,13 +3385,16 @@ export function SessionView({
     }
   ), [headerGoal, t, handleGoalRefresh, handleGoalUpdate, handleGoalPause, handleGoalResume, handleGoalCancel]);
   const headerQueueSection = useMemo<ComposerHeaderSection | undefined>(() => {
-    if (queuedItems.length === 0) return undefined;
+    // A queued switch is a queue item too: the strip stays visible so its
+    // control row can be changed or cancelled before it runs.
+    if (queuedItemCount === 0) return undefined;
+    const total = queuedItemCount;
     return {
       summary: (
-        <QueueHeaderSummary count={queuedItems.length} />
+        <QueueHeaderSummary count={total} />
       ),
       ariaLabel: t('composer.queueStack.openAria'),
-      count: queuedItems.length,
+      count: total,
       // The round-trip edit keeps its row (and the hold notice) in sight.
       forceOpen: queueEdit !== null,
       panel: (
@@ -3068,6 +3402,8 @@ export function SessionView({
           items={queuedItems} onSendNow={handleSendNowQueued} onRemove={handleCancelQueued}
           onRemoveAttachment={handleRemoveQueuedAttachment} onEdit={handleStartQueueEdit}
           onMove={handleMoveQueued} onChangeTiming={handleQueuedTiming}
+          modelSwitches={modelSwitches.switches}
+          onEditModelSwitch={modelSwitchActions.edit} onCancelModelSwitch={modelSwitchActions.cancel}
           editingPromptId={queueEdit?.promptId} onClearAll={handleClearQueue}
           sendNowDisabled={state.resyncing || state.resyncFailed}
           timingReady={queueTimingReady}
@@ -3075,9 +3411,10 @@ export function SessionView({
       ),
     };
   }, [
-    queuedItems, queueEdit, headerGoal, t, handleSendNowQueued, handleCancelQueued,
+    queuedItems, queuedItemCount, queueEdit, headerGoal, t, handleSendNowQueued, handleCancelQueued,
     handleRemoveQueuedAttachment, handleStartQueueEdit, handleMoveQueued, handleQueuedTiming,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady,
+    modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel,
   ]);
   const composerHeader = headerGoalSection === undefined && headerQueueSection === undefined ? undefined : (
     <ComposerHeader goal={headerGoalSection} queue={headerQueueSection} settled={state.loaded} />
@@ -3165,12 +3502,12 @@ export function SessionView({
     for (let index = mainTranscriptBlocks.length - 1; index >= 0; index -= 1) {
       const block = mainTranscriptBlocks[index]!;
       if ((block.kind === 'assistant' || block.kind === 'user') && findQuoteRange(block.text, annotation.quote) !== null) {
-        void locateInTimeline({ kind: 'block', blockId: block.id }, { sessionId });
+        navigateTimeline({ kind: 'block', blockId: block.id }, { sessionId });
         return;
       }
     }
-    void locateInTimeline({ kind: 'latest' }, { sessionId });
-  }, [mainTranscriptBlocks, sessionId]);
+    navigateTimeline({ kind: 'latest' }, { sessionId });
+  }, [mainTranscriptBlocks, navigateTimeline, sessionId]);
   // The one connection fact the line under the card carries.
   const composerStatusNotice = useMemo(() => {
     if (wsStatus === 'connecting') return <span className="truncate">{t('app.reconnecting')}</span>;
@@ -3184,13 +3521,40 @@ export function SessionView({
   // busy (an approval or question hands the floor to the tray instead).
   const composerWorking = composerBusy && state.pendingInteraction === 'none';
   const lastResponseAt = useLastResponseAt(composerWorking, state.blocks, state.turnStartedAt);
+  // Stopping this turn never touches background work; the working line says
+  // how much of it keeps running.
+  const continuingCount = useMemo(
+    () => state.tasks.filter((task) => task.status === 'running').length,
+    [state.tasks],
+  );
+  // A model request parked on a governance permit shows a quiet "Queued" status
+  // with an inline detail popover — the rules themselves stay in /usage.
+  // The poll mounts only while the line can be visible.
+  const { snapshot: governanceSnapshot } = useRequestGovernance({ enabled: composerWorking });
+  const queued = useMemo(() => {
+    const waiting = governanceSnapshot?.waiting.filter((row) => row.sessionId === sessionId);
+    if (waiting === undefined || waiting.length === 0) return undefined;
+    const longest = waiting.reduce((max, cur) => (cur.waitedMs > max.waitedMs ? cur : max), waiting[0]!);
+    return {
+      waitedMs: longest.waitedMs,
+      modelId: longest.modelId,
+      blockingRules: longest.blockingRules,
+    };
+  }, [governanceSnapshot, sessionId]);
   const composerWorkingInfo = useMemo(
-    () => (composerWorking ? { lastResponseAt } : undefined),
-    [composerWorking, lastResponseAt],
+    () => (composerWorking
+      ? {
+        lastResponseAt,
+        continuingCount,
+        queued,
+      }
+      : undefined),
+    [composerWorking, lastResponseAt, continuingCount, queued],
   );
   // Child routes dock their mailbox composer locally in AgentWorkspace;
   // only main publishes the resident prompt composer to ConversationShell.
   const seat = useMemo<ConversationSeat>(() => ({
+    cockpit,
     phase:
       selectedAgentId === undefined
         ? // initialPromptRef / initialSkillRef are mount-time constants until
@@ -3215,6 +3579,14 @@ export function SessionView({
             defaultModel={sessionModel}
             serverDefaultModel={inheritedDefault}
             modelSource={modelSource}
+            pendingModelSwitch={modelSwitches.active === undefined ? undefined : {
+              to: modelSwitches.active.receipt.toModel,
+              mode: modelSwitches.active.input.mode,
+            }}
+            modelSwitchError={modelSwitches.error === undefined ? undefined : {
+              detail: modelSwitches.error.message,
+              onRetry: modelSwitches.refresh,
+            }}
             agentProfile={pendingProfile ?? boundProfile}
             agentProfilePending={profilePending}
             permissionMode={permissionMode}
@@ -3278,6 +3650,7 @@ export function SessionView({
     composerNeedsYou,
     composerStatusNotice,
     selectedAgentId,
+    cockpit,
     state.loaded,
     state.resyncing,
     state.resyncFailed,
@@ -3291,6 +3664,8 @@ export function SessionView({
     sessionModel,
     inheritedDefault,
     modelSource,
+    modelSwitches.active,
+    modelSwitches.error,
     pendingProfile,
     boundProfile,
     profilePending,
@@ -3353,10 +3728,13 @@ export function SessionView({
           railOpen={railOpen}
           railIsOverlay={railIsOverlay}
           onToggleRail={toggleRail}
+          railAvailable={railAvailable}
           onCloseRail={closeRail}
           onCancelTask={handleCancelTask}
           onStopAgentTask={stopAgentTask}
           previewApiRef={previewRef}
+          historyBack
+          locateSpawnInMenu
         />
         <div aria-live="polite" aria-atomic="true" className="sr-only">
           {state.pendingInteraction === 'approval'
@@ -3397,7 +3775,7 @@ export function SessionView({
         <ConfirmDialog
           open={confirmClearQueue}
           overlayId="confirm-clear-queue"
-          title={t('sv.queueClearTitle', { count: queuedItems.length })}
+          title={t('sv.queueClearTitle', { count: queuedItemCount })}
           body={t('sv.queueClearBody')}
           confirmLabel={t('sv.queueClearAll')}
           onConfirm={confirmClearQueueRun}
@@ -3421,6 +3799,7 @@ export function SessionView({
       onStopAgentTask={stopAgentTask}
     >
       <PreviewFocusBridge onFocusedAgent={setPanelFocusAgent} />
+      <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
       <MessageViewContext.Provider value={messageViewContext}>
       <InteractionPlacementContext.Provider value={interactionPlacement}>
       <AgentWorkspace
@@ -3438,16 +3817,15 @@ export function SessionView({
         inheritMediaPreview
         main={{
           header: <Header
-            controller={controller} railOpen={railOpen} railAvailable={!isNarrowScreen}
+            controller={controller} railOpen={railOpen} railAvailable={railAvailable}
             terminalAvailable={terminalAvailable} terminalOpen={terminalOpen}
             onToggleRail={toggleRail} onToggleTerminal={toggleTerminalPanel}
             onToggleSidebar={onToggleSidebar} onRenameSession={renameSession}
             onSessionAction={runSessionAction}
+            freshContextAvailable={conversationStarted}
             onSideQuestion={() => { startSideQuestion(); }}
             view={timelineView} onView={setTimelineView}
             onDelivery={changeDelivery} deliveryPending={deliveryChangedInTurn && state.busy}
-            isBotSession={isBotSession} botPersonaId={botPersonaId}
-            onOpenBotSettings={openBotSettings}
             harness={harness}
           />,
           timeline: {
@@ -3489,14 +3867,7 @@ export function SessionView({
               />
             ) : null}
           </>,
-          rail: botSettingsOpen && botPersonaId !== undefined ? (
-            <BotSettingsPanel
-              className={`app-rail ${railOpen ? 'open' : ''}`}
-              personaId={botPersonaId}
-              session={state.session}
-              onClose={closeBotSettings}
-            />
-          ) : <RightRail
+          rail: <RightRail
             className={`app-rail ${railOpen ? 'open' : ''}`}
             state={focusState} forest={forest} selectedAgentId={panelFocusAgent}
             subagent={focusSubagent} taskOwnerAgentId={focusTaskOwner}
@@ -3510,6 +3881,34 @@ export function SessionView({
       />
       </InteractionPlacementContext.Provider>
       </MessageViewContext.Provider>
+      <ModelSwitchDialog
+        open={modelSwitchDialog !== undefined}
+        fromModel={modelSwitchDialog?.fromModel ?? ''}
+        toModel={modelSwitchDialog?.toModel ?? ''}
+        initialMode={modelSwitchDialog?.initialMode ?? 'direct'}
+        editing={modelSwitchDialog?.editingOperationId !== undefined}
+        busy={state.busy}
+        submitting={modelSwitchSubmitting}
+        matchedRuleId={modelSwitchDialog?.matchedRuleId}
+        onConfirm={(choice) => {
+          const dialog = modelSwitchDialog;
+          if (dialog === undefined) return;
+          void submitModelSwitch({
+            fromModel: dialog.fromModel,
+            toModel: dialog.toModel,
+            mode: choice.mode,
+            remember: choice.remember,
+            editingOperationId: dialog.editingOperationId,
+            editingRevision: dialog.editingRevision,
+          });
+        }}
+        onCancel={() => { setModelSwitchDialog(undefined); }}
+        onOpenSettings={() => {
+          setModelSwitchDialog(undefined);
+          void navigate(settingsCardRoute('ai', 'st-card-model-switch', 'defaults'));
+        }}
+      />
+      </ModelSwitchActionsContext.Provider>
       {slots.footer !== null && terminalOpen && currentTerminalManager !== null
         ? createPortal(
             <TerminalPanel
@@ -3563,7 +3962,7 @@ export function SessionView({
       <ConfirmDialog
         open={confirmClearQueue}
         overlayId="confirm-clear-queue"
-        title={t('sv.queueClearTitle', { count: queuedItems.length })}
+        title={t('sv.queueClearTitle', { count: queuedItemCount })}
         body={t('sv.queueClearBody')}
         confirmLabel={t('sv.queueClearAll')}
         onConfirm={confirmClearQueueRun}

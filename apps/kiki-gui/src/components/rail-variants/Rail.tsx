@@ -5,16 +5,16 @@
  *   head       who this page is about, the 标准 / 驾驶舱 switch, close  fixed
  *   现在        profile head, what the agent is doing, its actions  fixed
  *   待办        checklist, notes, plan                             fixed
+ *   定时任务    what this conversation scheduled for itself        fixed
  *   等你处理    decision stack, from any depth                     fixed
  *   智能体      the team under this agent                          fixed
  *   后台任务                                                       fixed
  *   概览        standard figures | cockpit instruments             switches
  *   能力 · 动态 · 会话信息, folded                                  fixed
  *
- * Only 概览 follows the 标准 / 驾驶舱 preference (`kiki.railMode`). The switch
- * sits in the rail head so it is visible without scrolling, but it still
- * changes nothing outside the overview block. What differs between the main
- * agent's page and a subagent's is decided in one place, `railVisibility`.
+ * Cockpit temporarily widens this rail into the preview's space. Standard
+ * mode restores the original layout. `railVisibility` owns the differences
+ * between a main-agent and a subagent rail.
  */
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -49,16 +49,20 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { useInspectorPeek } from '../inspectorFocus';
 import { RelativeTime } from '../RelativeTime';
 import { TaskDetailModal } from '../TaskDetailModal';
+import { useMediaPreview } from '../mediaPreviewContext';
 import { descendantIds, railVisibility, waitingAgentIds as pendingOrigins } from './model';
 import { FOCUS_RING, ModeSwitch, useRailMode, type RailMode } from './shell';
 import type { RailProps } from './types';
 import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead, RailTodos } from './DefaultSections';
+import { SessionCronSection } from './SessionCronSection';
+import { PersonaSettingsUpdate } from '../persona/PersonaSettingsUpdate';
+import { useEntityPage } from '../transcriptDetail';
 
 /** Sections sit over hairlines; no cards. */
 const SECTION = 'border-t border-hairline py-4 first:border-t-0 first:pt-3';
 /** The context meter stays neutral until the overview calls it near; near is amber, never the "needs you" accent. */
 const OVERVIEW_METER = '[&_[data-overview-context]_[role=meter]>div]:!bg-ink-soft/70 [&_[data-overview-context=warn]_[role=meter]>div]:!bg-amber-rule [&_[data-overview-context=danger]_[role=meter]>div]:!bg-amber-rule [&_[data-overview-context]_span.text-danger]:!text-amber-ink';
-/** Cost, tokens and cache as mono figures. */
+/** Cost, tokens and cache as mono figures on one measured row. */
 const OVERVIEW_FIGURES = '[&_[data-overview-fact]>div:first-child]:font-mono [&_[data-overview-fact]>div:first-child]:text-[17px] [&_[data-overview-fact]>div:first-child]:font-normal [&_[data-overview-fact]>div:first-child]:tracking-tight [&_[data-overview-context]_.text-[13px]]:font-mono';
 /** Waiting agents are already listed in Needs you: their roster rows keep only the trailing state word. */
 const ROSTER_QUIET_WAITING = '[&_[data-roster-waiting]]:!bg-transparent';
@@ -154,6 +158,23 @@ function taskStatusTone(status: Task['status']): string {
     case 'cancelled':
       return 'text-ink-faint';
   }
+}
+
+/**
+ * The folder name the folded session row shows. A working directory is often
+ * named after the thing that created it — a uuid, a hash, a generated slug —
+ * and a 32-character id sitting in the rail's resident line says nothing a
+ * reader can act on. Those are left out of the folded line (the full path is
+ * one click away in the section's own detail) and only a name a person would
+ * recognise gets the space.
+ */
+const OPAQUE_DIR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$|^[0-9a-f]{24,}$|^[0-9a-z]{20,}$/i;
+
+function residentDirName(cwd: string | undefined): string | undefined {
+  if (cwd === undefined) return undefined;
+  const leaf = cwd.split(/[\\/]/).filter((part) => part !== '').pop();
+  if (leaf === undefined || leaf === '') return undefined;
+  return OPAQUE_DIR.test(leaf) ? undefined : leaf;
 }
 
 /** The newest non-empty line of a task's output (or its command). */
@@ -263,14 +284,39 @@ function TasksNotLoadedHint({
 }: {
   coverage: { readonly returned: number; readonly total: number; readonly hasMore: boolean } | undefined;
 }) {
-  const { tp } = useI18n();
+  const { t, tp } = useI18n();
+  // The window carried only the newest finished tasks; the rest are one page
+  // away, read on request into the same canonical store (never all at once).
+  const page = useEntityPage('task');
   if (coverage === undefined || !coverage.hasMore) return null;
   const missing = Math.max(0, coverage.total - coverage.returned);
   if (missing === 0) return null;
+  const status = page.status?.status;
   return (
-    <p data-rail-tasks-not-loaded={missing} className="pt-1.5 text-[12px] text-ink-faint">
-      {tp('rail.tasksNotLoaded', missing)}
-    </p>
+    <div
+      data-rail-tasks-not-loaded={missing}
+      className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-1.5 text-[12px] leading-5 text-ink-faint"
+    >
+      <span className="min-w-0 truncate">{tp('rail.tasksNotLoaded', missing)}</span>
+      {status === 'error' ? (
+        <span role="alert" className="text-danger">{t('transcript.content.entitiesFailed')}</span>
+      ) : null}
+      <button
+        type="button"
+        data-rail-tasks-not-loaded-action
+        onClick={page.request}
+        disabled={status === 'loading'}
+        aria-busy={status === 'loading'}
+        className="inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-2 font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-80 motion-reduce:transition-none"
+      >
+        {status === 'loading' ? (
+          <>
+            <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
+            {t('transcript.content.loading')}
+          </>
+        ) : status === 'error' ? t('transcript.detail.retry') : t('transcript.content.more')}
+      </button>
+    </div>
   );
 }
 
@@ -319,6 +365,7 @@ export function Rail({
   const { t } = useI18n();
   const navigate = useNavigate();
   const [mode, chooseMode] = useRailMode();
+  const preview = useMediaPreview();
   const session = state.session;
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [terminateSnapshot, setTerminateSnapshot] = useState<readonly Task[] | null>(null);
@@ -359,9 +406,8 @@ export function Rail({
   const showTerminateAll = show.stopAll && onStopAgentTask !== undefined && runningSubagentTasks.length > 0;
   const busy = show.isMain ? state.busy : (focusedNode?.busy === true || state.busy);
   const taskOwner = taskOwnerAgentId ?? show.taskOwner;
-  // The mode switch lives in the rail head and changes only the overview
-  // block. Choosing the cockpit lifts that block into view when it sits
-  // outside the rail's scroll viewport; the standard mode never scrolls.
+  // Choosing cockpit lifts its overview into view when it sits outside the
+  // rail's scroll viewport; the standard mode never scrolls.
   const chooseOverviewMode = (next: RailMode) => {
     chooseMode(next);
     if (next !== 'cockpit') return;
@@ -449,16 +495,23 @@ export function Rail({
   useEffect(() => {
     setRailWidthValue(layoutPrefs.railWidth);
   }, [layoutPrefs.railWidth]);
+  const [cockpitWidth, setCockpitWidth] = useState<number | undefined>();
+  useEffect(() => { if (mode === 'default') setCockpitWidth(undefined); }, [mode]);
+  const effectiveWidth = mode === 'cockpit'
+    ? cockpitWidth ?? Math.min(760, Math.max(480, railWidthValue + (preview?.previewPanelWidth ?? 0)))
+    : railWidthValue;
   const { startResize, reset } = usePaneResize({
-    value: railWidthValue,
-    min: RAIL_MIN_WIDTH,
-    max: RAIL_MAX_WIDTH,
+    value: effectiveWidth,
+    min: mode === 'cockpit' ? 360 : RAIL_MIN_WIDTH,
+    max: mode === 'cockpit' ? 760 : RAIL_MAX_WIDTH,
     direction: -1,
     onChange: (value, final) => {
+      if (mode === 'cockpit') { setCockpitWidth(value); return; }
       setRailWidthValue(value);
       if (final) writeLayoutPreferences({ railWidth: value });
     },
     onReset: () => {
+      if (mode === 'cockpit') { setCockpitWidth(undefined); return; }
       setRailWidthValue(RAIL_DEFAULT_WIDTH);
       writeLayoutPreferences({ railWidth: RAIL_DEFAULT_WIDTH });
     },
@@ -511,8 +564,9 @@ export function Rail({
         className={
           className ?? 'app-rail'
         }
-        style={{ '--kiki-rail-width': `${railWidthValue}px`, overflow: 'hidden', display: 'flex', flexDirection: 'column' } as React.CSSProperties}
+        style={{ '--kiki-rail-width': `${effectiveWidth}px`, overflow: 'hidden', display: 'flex', flexDirection: 'column' } as React.CSSProperties}
         data-session-rail
+        data-rail-mode-active={mode}
         data-inspector-agent={focusedAgentId}
         ref={railRef}
         onFocus={() => { focusInRail.current = true; }}
@@ -532,12 +586,10 @@ export function Rail({
         onSelect={selectAgent}
         close={(
           <span className="flex shrink-0 items-center gap-1.5">
-            {/* The 标准 / 驾驶舱 switch heads the rail; it still changes only
-                the overview block. */}
-            <ModeSwitch mode={mode} onChoose={chooseOverviewMode} controls="rail-overview-body" />
+            <ModeSwitch mode={mode} onChoose={chooseOverviewMode} />
             {onClose === undefined ? null : (
-              <button type="button" onClick={onClose} data-rail-close
-                title={t('sv.hidePanel')} aria-label={t('sv.hidePanel')}
+              <button type="button" onClick={mode === 'cockpit' ? () => { chooseMode('default'); } : onClose} data-rail-close
+                title={t(mode === 'cockpit' ? 'rail.cockpit.close' : 'sv.hidePanel')} aria-label={t(mode === 'cockpit' ? 'rail.cockpit.close' : 'sv.hidePanel')}
                 className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7">
                 <Icon name="close" size={16} />
               </button>
@@ -594,7 +646,19 @@ export function Rail({
         <AgentPanelContainer key={`work:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} part="work" />
       </div>
 
-      {/* 3 · What waits on you, from any depth, oldest first. */}
+      {/* 3 · What this conversation has scheduled for itself (session-wide
+          facts, the same page for main and every subagent). */}
+      <div className={`${SECTION} empty:hidden`}>
+        <SessionCronSection sessionId={state.sessionId} />
+      </div>
+
+      {/* 3b · The persona copy this conversation runs, folded to one word of
+          state until someone opens it (session-wide as well). */}
+      <div className={`${SECTION} empty:hidden`}>
+        <PersonaSettingsUpdate sessionId={state.sessionId} />
+      </div>
+
+      {/* 4 · What waits on you, from any depth, oldest first. */}
       {sessionPending !== undefined && sessionPending.length > 0 ? (
         <div className={SECTION}>
           <NeedsYouList
@@ -607,7 +671,7 @@ export function Rail({
         </div>
       ) : null}
 
-      {/* 4 · The team. */}
+      {/* 5 · The team. */}
       {showRoster ? (
         <div className={`${SECTION} ${ROSTER_QUIET_WAITING}`}>
         <RailSection
@@ -654,7 +718,7 @@ export function Rail({
         </div>
       ) : null}
 
-      {/* 5 · 概览, the one block that follows the 标准 / 驾驶舱 preference.
+      {/* 6 · 概览, the one block that follows the 标准 / 驾驶舱 preference.
           The mode switch lives in the rail head (always visible); this head
           keeps the title, usage link and scope switch. The body mounts once the slot
           scrolls into view (it starts the capability and compaction-point
@@ -684,7 +748,7 @@ export function Rail({
         </div>
       </section>
 
-      {/* 6 · Reference, folded: what it can use, what happened. */}
+      {/* 7 · Reference, folded: what it can use, what happened. */}
       <div data-inspector-tail className={`space-y-1 ${SECTION}`}>
         <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
         <ActivityFeed blocks={state.blocks} forest={forest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
@@ -697,7 +761,7 @@ export function Rail({
         {session !== undefined ? (
           <RailSection
             title={t('inspector.sessionInfo')}
-            summary={session.metadata.cwd.split(/[\\/]/).filter((part) => part !== '').pop()}
+            summary={residentDirName(session.metadata.cwd) ?? t('rail.sessionNoName')}
             defaultOpen={false}
             data-inspector-session=""
           >

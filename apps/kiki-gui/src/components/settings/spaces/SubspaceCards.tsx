@@ -1,19 +1,17 @@
 import { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useHost } from '../../../host';
 import { useI18n } from '../../../i18n';
-import { parseKikiConfigResponse } from '../../../lib/client';
+import { type KikiClient } from '../../../lib/client';
 import {
   MAIN_SPACE_ID,
-  configOrigins,
   currentSpaceId,
   enterSpace,
   launchWindowMode,
-  spaceConfigApi,
-  spaceOverrides,
+  spaceKeys,
   spaceSshApi,
   useSpaces,
 } from '../../../lib/spaces';
@@ -31,8 +29,12 @@ import { SectionCard } from '../SectionCard';
  * copy the main space's saved SSH passwords while it still shares, and restart
  * its own backend so a mode change made elsewhere applies.
  */
-export function SpaceCredentialsCard() {
-  const { client } = useConnection();
+export function SpaceCredentialsCard({ client: controlClient, onEnterMain }: {
+  client?: KikiClient;
+  onEnterMain?: () => void | Promise<void>;
+} = {}) {
+  const { client: connectionClient } = useConnection();
+  const client = controlClient ?? connectionClient;
   const host = useHost();
   const { t, tp, locale } = useI18n();
   const spaces = useSpaces(client);
@@ -58,7 +60,11 @@ export function SpaceCredentialsCard() {
           ) : null}
           {host.kind === 'tauri' ? (
             <button type="button" data-space-go-main className={SECONDARY_BUTTON}
-              onClick={() => { void enterSpace(host, MAIN_SPACE_ID, mode).catch(() => { setFeedback({ tone: 'error', text: t('st.spaces.switchFailed', { name: t('st.spaces.main') }) }); }); }}>
+              onClick={() => { void Promise.resolve(onEnterMain !== undefined ? onEnterMain() : enterSpace(host, MAIN_SPACE_ID, mode))
+                .catch((error: unknown) => {
+                  if (error instanceof Error && error.name === 'AbortError') return;
+                  setFeedback({ tone: 'error', text: errorText(locale, error) });
+                }); }}>
               {t('st.spaces.switchToMain')}
             </button>
           ) : null}
@@ -70,7 +76,7 @@ export function SpaceCredentialsCard() {
         <FeedbackLine feedback={feedback} />
       </div>
       {copyOpen ? (
-        <CopySshHereDialog onClose={() => { setCopyOpen(false); }}
+        <CopySshHereDialog client={client} onClose={() => { setCopyOpen(false); }}
           onCopied={(count) => { setCopyOpen(false); setFeedback({ tone: 'success', text: tp('st.spaces.copiedSsh', count) }); }} />
       ) : null}
       {restartOpen ? (
@@ -92,11 +98,10 @@ export function SpaceCredentialsCard() {
 }
 
 /** Copy the main space's saved SSH secrets for this space's Kiki hosts. */
-function CopySshHereDialog({ onClose, onCopied }: { onClose: () => void; onCopied: (count: number) => void }) {
-  const { client } = useConnection();
+function CopySshHereDialog({ client, onClose, onCopied }: { client: KikiClient; onClose: () => void; onCopied: (count: number) => void }) {
   const { t, locale } = useI18n();
   const hosts = useQuery({
-    queryKey: ['spaces', 'ssh-hosts-here'],
+    queryKey: spaceKeys.sshHosts(client),
     queryFn: () => spaceSshApi(client).list(),
     select: (data) => data.hosts.filter((host) => host.source === 'kiki'),
   });
@@ -144,61 +149,5 @@ function CopySshHereDialog({ onClose, onCopied }: { onClose: () => void; onCopie
         </div>
       </div>
     </Dialog>
-  );
-}
-
-/**
- * Every setting this space sets itself, each with Restore inheritance. Skills,
- * plugins and theme files have no per-item origin on the wire yet, so they get
- * one group note instead of per-item marks.
- */
-export function SpaceOverridesCard() {
-  const { client } = useConnection();
-  const { t, locale } = useI18n();
-  const queryClient = useQueryClient();
-  const config = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-  const rows = spaceOverrides(configOrigins(config.data));
-  const [busy, setBusy] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<Feedback>(null);
-
-  const restore = (label: string, domain: string, keyPath: readonly string[]) => {
-    setBusy(label);
-    setFeedback(null);
-    void spaceConfigApi(client).removeOverride({ domain, key_path: [...keyPath] })
-      .then((raw) => {
-        queryClient.setQueryData(['config'], parseKikiConfigResponse(raw));
-        setFeedback({ tone: 'success', text: t('st.origin.restored', { name: label }) });
-      })
-      .catch((error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); })
-      .finally(() => { setBusy(null); });
-  };
-
-  return (
-    <SectionCard id="st-card-space-overrides" title={t('st.spaces.overridesTitle')} scope="server">
-      <div className="space-y-2">
-        <Hint>{t('st.spaces.overridesHint')}</Hint>
-        {config.isError ? <InlineError error={config.error} /> : null}
-        {config.isSuccess && rows.length === 0 ? <p className="text-[12.5px] text-ink-faint" data-space-overrides-empty>{t('st.spaces.overridesEmpty')}</p> : null}
-        {rows.length > 0 ? (
-          <ul className="divide-y divide-hairline rounded-lg border border-hairline bg-paper" data-space-overrides>
-            {rows.map((row) => (
-              <li key={row.label} data-space-override={row.label} className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
-                  <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-ink-faint" />{t('st.origin.local')}
-                </span>
-                <code className="min-w-0 flex-1 truncate font-mono text-[12px] text-ink" title={row.label}>{row.label}</code>
-                <button type="button" data-origin-restore={row.label} disabled={busy !== null} className={SECONDARY_BUTTON}
-                  aria-label={t('st.origin.restoreAria', { name: row.label })}
-                  onClick={() => { restore(row.label, row.domain, row.keyPath); }}>
-                  {t('st.origin.restore')}
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        <p className="pt-1 text-[12px] text-ink-faint" data-space-inherit-groups>{t('st.spaces.inheritGroupsNote')}</p>
-        <FeedbackLine feedback={feedback} />
-      </div>
-    </SectionCard>
   );
 }

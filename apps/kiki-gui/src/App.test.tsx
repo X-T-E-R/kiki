@@ -1,3 +1,4 @@
+import { QueryClient } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { SESSION_FIRST_PAGE_POLL_INTERVAL_MS, SESSION_INDEX_RETRY_LIMIT, isEditableTarget, retryRootReadModelDelay, retryRootReadModelQuery, runStartupUpdateCheck } from './App';
@@ -183,18 +184,30 @@ describe('connection-level activity refresh', () => {
 });
 
 describe('connection-level model catalog refresh', () => {
-  it('invalidates only the models, providers, and discovered-models queries for the global event', () => {
-    const queryClient = { invalidateQueries: vi.fn(async () => undefined) };
-
-    expect(handleGlobalConnectionFrame({ type: 'event.model_catalog.changed' }, queryClient)).toBe(
-      true,
-    );
-    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(3);
-    expect(queryClient.invalidateQueries).toHaveBeenNthCalledWith(1, { queryKey: ['models'] });
-    expect(queryClient.invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: ['providers'] });
-    expect(queryClient.invalidateQueries).toHaveBeenNthCalledWith(3, {
-      queryKey: ['discovered-models'],
-    });
+  it('invalidates catalog lists and editor entities without invalidating unrelated queries', () => {
+    const queryClient = new QueryClient();
+    const catalogKeys = [
+      ['models'],
+      ['providers'],
+      ['model-entity', 'example-model'],
+      ['provider-entity', 'example-provider'],
+      ['discovered-models'],
+    ];
+    const unrelatedKeys = [['sessions'], ['rooms'], ['config']];
+    for (const queryKey of [...catalogKeys, ...unrelatedKeys]) {
+      queryClient.setQueryData(queryKey, {});
+    }
+    try {
+      expect(handleGlobalConnectionFrame({ type: 'event.model_catalog.changed' }, queryClient)).toBe(true);
+      for (const queryKey of catalogKeys) {
+        expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(true);
+      }
+      for (const queryKey of unrelatedKeys) {
+        expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(false);
+      }
+    } finally {
+      queryClient.clear();
+    }
   });
 
   it('does not handle session frames', () => {

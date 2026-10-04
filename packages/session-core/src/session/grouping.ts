@@ -14,6 +14,7 @@
  */
 
 import { extractToolOutputMedia } from '../composer/media';
+import { mergeTaskNotifications } from './transcript/project';
 import type { Block, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock } from './transcript';
 
 export interface ToolGroup {
@@ -58,6 +59,7 @@ export interface SubagentEnding {
   readonly turnId: string | undefined;
   readonly agentId: string;
   readonly taskId: string;
+  readonly task?: EndingTask;
   readonly outcome: SubagentOutcome;
   /** The notification this row stands for (its text is the fallback receipt). */
   readonly note: SystemBlock;
@@ -255,6 +257,11 @@ export interface EndingTask {
   readonly agent_id?: string;
   readonly status: string;
   readonly stop_reason?: string;
+  readonly started_at?: string;
+  readonly completed_at?: string;
+  readonly output_preview?: string;
+  readonly model?: string;
+  readonly thinking_effort?: string;
 }
 
 function outcomeOf(task: EndingTask | undefined, note: SystemBlock): SubagentOutcome {
@@ -282,36 +289,36 @@ export function readSubagentEndings(
   for (const task of tasks) {
     if (task.agent_id !== undefined && task.agent_id !== '') agentByTask.set(task.id, task);
   }
-  if (agentByTask.size === 0) return nodes as DisplayNode[];
+  const merged = mergeTaskNotifications(nodes);
+  if (agentByTask.size === 0) return merged;
   const dispatchTurn = new Map<string, string | undefined>();
   for (const node of nodes) {
     if (node.kind === 'subagent' && !dispatchTurn.has(node.subagentId)) dispatchTurn.set(node.subagentId, normTurn(node.parentTurnId));
   }
-  let changed = false;
   const out: DisplayNode[] = [];
-  for (const node of nodes) {
+  for (const node of merged) {
     const task = node.kind === 'system' && node.variant === 'task' && node.taskId !== undefined ? agentByTask.get(node.taskId) : undefined;
     if (node.kind !== 'system' || task === undefined) {
       out.push(node);
       continue;
     }
-    changed = true;
     const agentId = task.agent_id!;
     const turn = normTurn(node.turnId);
     const onPage = dispatchTurn.has(agentId);
     if (onPage && dispatchTurn.get(agentId) === turn) continue;
     out.push({
       kind: 'subagent-ended',
-      id: `ended-${node.id}`,
+      id: `ended-task-${task.id}`,
       turnId: turn,
       agentId,
       taskId: task.id,
+      task,
       outcome: outcomeOf(task, node),
       note: node,
       dispatchOnPage: onPage,
     });
   }
-  return changed ? out : (nodes as DisplayNode[]);
+  return out;
 }
 
 export interface FoldOptions {

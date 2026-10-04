@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  DEFAULT_DESKTOP_SETTINGS,
   EXPERIMENTAL_FLAG_HOMES,
+  experimentalFlagHome,
   experimentalSectionForFlag,
   agentIdentityPatch,
   appendExtraSkillDirs,
@@ -9,6 +11,8 @@ import {
   aiTabForCard,
   buildSettingsSearchIndex,
   clearRestartRequirement,
+  configureSpacePortableSettings,
+  refreshSpacePortableSettings,
   threadCommunicationPatch,
   tokenCountingPatch,
   agentNotifyParentPatch,
@@ -25,6 +29,8 @@ import {
   parseAdvancedServerConfig,
   parseExperimentalFlags,
   parseHooksJson,
+  parseHooksConfigJson,
+  hooksConfigPatch,
   parseRemoteModels,
   providerDraftFromCatalog,
   providerDefaultRow,
@@ -38,11 +44,13 @@ import {
   isDefaultAppendTiming,
   readDesktopPrefs,
   readRestartRequirement,
+  readDeviceSettings,
   readSettings,
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
   resourceLimitPatch,
   sessionTitleModelPatch,
+  sessionTitleSettingsPatch,
   remoteModelsHeaders,
   remoteModelsUrl,
   resolveEffectiveModel,
@@ -129,6 +137,40 @@ describe('settings persistence and validation', () => {
       value: new MemoryStorage(),
     });
     vi.restoreAllMocks();
+  });
+
+  it('reads normalized device settings without bridge authority and preserves pre-normalization undefined overrides', () => {
+    expect(localStorage.getItem('kiki.settings')).toBeNull();
+    expect(readDeviceSettings()).toEqual(DEFAULT_DESKTOP_SETTINGS);
+    localStorage.setItem('kiki.settings', JSON.stringify({ theme: 'light', foldSteps: false, sendShortcut: 'invalid', requestTimeoutSeconds: -1 }));
+    configureSpacePortableSettings({ read: () => ({ theme: 'dark', foldSteps: true }), write: vi.fn() });
+    try {
+      expect(readDeviceSettings()).toMatchObject({ theme: 'light', foldSteps: false, sendShortcut: 'enter', requestTimeoutSeconds: 30 });
+      expect(readSettings()).toMatchObject({ theme: 'dark', foldSteps: true, sendShortcut: 'enter', requestTimeoutSeconds: 30 });
+      configureSpacePortableSettings({ read: () => ({ theme: undefined, foldSteps: undefined }), write: vi.fn() });
+      expect(readSettings()).toMatchObject({ theme: 'system', foldSteps: false });
+      expect(readDeviceSettings()).toMatchObject({ theme: 'light', foldSteps: false });
+    } finally { configureSpacePortableSettings(); }
+  });
+
+  it('uses space authority for portable settings without changing device preferences or trusting stale cache writes', () => {
+    writeSettings({ theme: 'light', sendShortcut: 'cmd-enter', motion: 'reduce', foldSteps: false });
+    let confirmed = { theme: 'dark' as 'light' | 'dark' | 'system', proseFont: 'sans' as const, foldSteps: true, defaultAppendTiming: 'tasks_done' as const, worktreeSkipConfirm: false };
+    const writes = vi.fn();
+    configureSpacePortableSettings({ read: () => confirmed, write: writes });
+    try {
+      expect(readSettings()).toMatchObject({ theme: 'dark', sendShortcut: 'cmd-enter', motion: 'reduce', foldSteps: true });
+      writeSettings({ theme: 'system', sendShortcut: 'enter', foldSteps: false });
+      expect(writes).toHaveBeenCalledWith({ theme: 'system', foldSteps: false });
+      expect(JSON.parse(localStorage.getItem('kiki.settings')!)).toMatchObject({ theme: 'light', sendShortcut: 'enter', foldSteps: false });
+      expect(readSettings().theme).toBe('dark');
+      confirmed = { ...confirmed, theme: 'system' };
+      refreshSpacePortableSettings();
+      expect(settingsSnapshot().theme).toBe('system');
+      localStorage.setItem('kiki.settings', JSON.stringify({ theme: 'light', sendShortcut: 'cmd-enter' }));
+      expect(readSettings().theme).toBe('system');
+      expect(readSettings().sendShortcut).toBe('cmd-enter');
+    } finally { configureSpacePortableSettings(); }
   });
 
   it('parses named-agent tool text from comma and newline separated input', () => {
@@ -397,6 +439,25 @@ describe('settings persistence and validation', () => {
       expect(patch.replace_domains ?? []).not.toContain('mcp');
       expect(patch.replace_domains ?? []).not.toContain('tools');
     }
+  });
+
+  it('projects task engine defaults while preserving explicit overrides', () => {
+    expect(runtimeConfigDraftFromConfig({}).task).toMatchObject({ bashAutoBackgroundOnTimeout: true, printBackgroundMode: 'steer' });
+    expect(runtimeConfigDraftFromConfig({ task: { keepAliveOnExit: false } }).task.printBackgroundMode).toBe('steer');
+    expect(runtimeConfigDraftFromConfig({ task: { keepAliveOnExit: true } }).task.printBackgroundMode).toBe('drain');
+    for (const printBackgroundMode of ['exit', 'drain', 'steer'] as const) {
+      expect(runtimeConfigDraftFromConfig({ task: { keepAliveOnExit: true, bashAutoBackgroundOnTimeout: false, printBackgroundMode } }).task)
+        .toMatchObject({ bashAutoBackgroundOnTimeout: false, printBackgroundMode });
+    }
+  });
+
+  it('clears saved task timeout fields without writing engine defaults', () => {
+    const draft = runtimeConfigDraftFromConfig({ task: { printWaitCeilingS: 30, bashTaskTimeoutS: 45 } }).task;
+    const patch = taskRuntimePatch({ ...draft, printWaitCeilingS: '', bashTaskTimeoutS: '' });
+    expect(patch.task?.print_wait_ceiling_s).toBeUndefined();
+    expect(patch.task?.bash_task_timeout_s).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(patch)).task).not.toHaveProperty('print_wait_ceiling_s');
+    expect(JSON.parse(JSON.stringify(patch)).task).not.toHaveProperty('bash_task_timeout_s');
   });
 
   it('projects malformed config roots and lists to safe canonical defaults', () => {
@@ -962,6 +1023,26 @@ describe('experimental flag homes', () => {
     expect(experimentalSectionForFlag('subagent_release_idle')).toBe('subagents');
     expect(experimentalSectionForFlag('some_vendor_flag')).toBe('developer');
   });
+
+  it('names the two feature flags the app ships and keeps the unknown fallback for the rest', () => {
+    for (const id of ['usage_export', 'plugin_import']) {
+      const home = experimentalFlagHome(id);
+      expect(home, id).toBeDefined();
+      // The switch rides the existing Developer rows; neither flag invents a page.
+      expect(home?.section, id).toBe('developer');
+      expect(home?.cardId, id).toBeUndefined();
+      expect(home?.labelKey, id).not.toBe('st.exp.unknown.name');
+      expect(home?.descriptionKey, id).not.toBe('st.exp.unknown.desc');
+      // Both strings must be real copy in both languages, not the fallback.
+      expect(translate('en', home!.labelKey), id).not.toBe(home!.labelKey);
+      expect(translate('zh', home!.labelKey), id).not.toBe(home!.labelKey);
+    }
+    // kap-server reads usage_export while booting, so the routes only exist
+    // after a restart; plugin_import is checked per call and applies at once.
+    expect(experimentalFlagHome('usage_export')?.effect).toBe('restart');
+    expect(experimentalFlagHome('plugin_import')?.effect).toBe('now');
+    expect(experimentalFlagHome('some_vendor_flag')).toBeUndefined();
+  });
 });
 
 describe('settings search index', () => {
@@ -986,6 +1067,7 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'denied subagent models').some((hit) => hit.cardId === 'st-card-subagents')).toBe(true);
     expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
     expect(searchSettings(index, 'Agents').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
+    expect(searchSettings(index, t('st.spaces.ownChoices')).some((hit) => hit.cardId === 'st-card-space-overrides')).toBe(true);
     expect(searchSettings(index, 'subagent')[0]?.section).toBe('subagents');
     expect(searchSettings(index, '  ')).toEqual([]);
     expect(searchSettings(index, 'zzzz-no-such-setting')).toEqual([]);
@@ -1063,7 +1145,7 @@ describe('settings nav groups (IA v2)', () => {
     expect(sectionsOf('connection')).toEqual(['connection', 'ssh']);
     expect(sectionsOf('models-agents')).toEqual(['ai', 'identity', 'agents', 'subagents']);
     expect(sectionsOf('work')).toEqual(['sessions', 'notifications', 'memory', 'permissions', 'tasks']);
-    expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'hooks']);
+    expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
     expect(sectionsOf('workspace')).toEqual(['workspaces', 'spaces']);
     // About closes the list.
     expect(sectionsOf('advanced')).toEqual(['developer', 'labs', 'about']);
@@ -1194,10 +1276,12 @@ describe('settings search breadcrumbs and synonyms', () => {
   });
 
   it('finds dispatch-policy defaults and opens the subagent settings card in both locales', () => {
-    for (const [translateKey, query] of [[t, 'dispatch policy'], [tZh, '派遣策略']] as const) {
+    for (const [translateKey, queries] of [[t, ['dispatch policy', 'advisory', 'strict']], [tZh, ['派遣策略', '建议', '严格']]] as const) {
       const index = buildSettingsSearchIndex({}, translateKey);
-      expect(searchSettings(index, query).find((hit) => hit.cardId === 'st-card-subagent-dispatch-policies'))
-        .toMatchObject({ section: 'subagents', cardId: 'st-card-subagent-dispatch-policies' });
+      for (const query of queries) {
+        expect(searchSettings(index, query).find((hit) => hit.cardId === 'st-card-subagent-dispatch-policies'), query)
+          .toMatchObject({ section: 'subagents', cardId: 'st-card-subagent-dispatch-policies' });
+      }
     }
   });
 
@@ -1377,6 +1461,32 @@ describe('hooks and MCP timeout patches (batch 3 split)', () => {
     expect(() => parseHooksJson('{"hooks":[]}')).toThrowError();
   });
 
+  it('parses and patches both hooks config shapes without losing declared values', () => {
+    const legacy = [{ event: 'PreToolUse', command: 'echo example', matcher: '^Read$', timeout: 600 }];
+    const hooks = {
+      schemaVersion: 2, enabled: false, disabled: ['project.reminder'], files: ['hooks/example.toml'], legacy,
+      rules: [
+        { id: 'reminder', event: 'step.before', priority: -10, enabled: true,
+          match: { models: ['example/model'], profiles: ['example'], routes: ['native'], executors: ['native'], agentRoles: ['root'], tools: ['Read'], statuses: ['success'], sources: ['user'], outcomes: ['completed'] },
+          cadence: { everyCompletedSteps: 3, counterScope: 'turn', partitionBy: 'model' }, action: { type: 'inject', textFile: 'guidance/example.txt' } },
+        { id: 'audit', event: 'turn.after', priority: 200, enabled: false, match: {}, action: { type: 'observe' } },
+        { id: 'greeting', event: 'prompt.submit', priority: 100, enabled: true, match: {}, action: { type: 'inject', text: 'Example guidance' } },
+      ],
+    };
+    for (const value of [legacy, hooks]) {
+      const parsed = parseHooksConfigJson(JSON.stringify(value));
+      expect(parsed).toEqual(value);
+      expect(hooksConfigPatch(parsed)).toEqual({ hooks: value });
+      expect(parseHooksConfigJson(JSON.stringify(hooksConfigPatch(parsed).hooks))).toEqual(value);
+    }
+    expect(parseHooksConfigJson('{"schemaVersion":2}')).toEqual({ schemaVersion: 2, enabled: true, disabled: [], files: [], rules: [], legacy: [] });
+    for (const invalid of [null, {}, { ...hooks, files: [''] }, { ...hooks, schemaVersion: 1 }, { ...hooks, rules: [{ id: 'unsupported', event: 'step.before', action: { type: 'command', command: 'echo example' } }] }]) {
+      expect(() => parseHooksConfigJson(JSON.stringify(invalid))).toThrowError();
+      expect(() => hooksConfigPatch(invalid)).toThrowError();
+    }
+    expect(() => parseHooksConfigJson('{not json')).toThrowError();
+  });
+
   it('scopes the MCP timeout patch to the mcp replace-domain', () => {
     expect(mcpTimeoutsPatch('60000', '')).toEqual({
       mcp: { startup_timeout_ms: 60_000, tool_timeout_ms: undefined },
@@ -1410,6 +1520,15 @@ describe('hooks and MCP timeout patches (batch 3 split)', () => {
       session_title: { model: undefined },
       replace_domains: ['session_title'],
     });
+  });
+
+  it('persists the selected title moments, including the manual-only empty set', () => {
+    expect(sessionTitleSettingsPatch(' model ', ['first_user_message', 'context_compacted'])).toEqual({
+      session_title: { model: 'model', triggers: ['first_user_message', 'context_compacted'] }, replace_domains: ['session_title'],
+    });
+    expect(sessionTitleSettingsPatch(' ', [])).toEqual({ session_title: { model: undefined, triggers: [] }, replace_domains: ['session_title'] });
+    expect(runtimeConfigDraftFromConfig({ session_title: { model: 'model' } }).sessionTitleTriggers).toEqual(['first_turn_completed']);
+    expect(runtimeConfigDraftFromConfig({ session_title: { model: 'model', triggers: [] } }).sessionTitleTriggers).toEqual([]);
   });
 
   it('projects the pinned title model out of the config echo', () => {

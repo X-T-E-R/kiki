@@ -56,6 +56,8 @@ export type ConversationPhase = 'hero' | 'settling' | 'active';
 export interface ConversationSeat {
   readonly phase: ConversationPhase;
   readonly composer: ReactNode;
+  /** An open cockpit rail temporarily takes the preview's space. */
+  readonly cockpit?: boolean;
 }
 
 /** Shell-owned portal targets, one per chrome region outside the column flow. */
@@ -71,6 +73,7 @@ export interface ConversationShellSlots {
 
 interface ConversationShellContextValue {
   readonly slots: ConversationShellSlots;
+  readonly cockpit?: boolean;
   readonly registerSeat: (seat: ConversationSeat) => void;
   readonly unregisterSeat: (seat: ConversationSeat) => void;
 }
@@ -213,10 +216,11 @@ export function ConversationShell() {
   const contextValue = useMemo<ConversationShellContextValue>(
     () => ({
       slots: { header, dock, heroFooter, rail, footer, preview },
+      cockpit: seat?.cockpit === true,
       registerSeat,
       unregisterSeat,
     }),
-    [header, dock, heroFooter, rail, footer, preview, registerSeat, unregisterSeat],
+    [header, dock, heroFooter, rail, footer, preview, seat?.cockpit, registerSeat, unregisterSeat],
   );
 
   const isNewRoute = useMatch('/new') !== null;

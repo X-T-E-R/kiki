@@ -9,10 +9,12 @@
  * the connection's client are mocked module-level.
  */
 
-import { act, type ReactNode } from 'react';
+import { act, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes, useLocation, useNavigationType } from 'react-router-dom';
+import { clearNavHistory, getCurrentVisit, recordNavigation } from '../lib/navHistory';
+import { getReadingSnapshot, previewSnapshotKey, type PreviewReadingSnapshot } from '../lib/navViewState';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { clearStoredDrafts, readDraft, resetDraftMemoryForTests } from '@kiki/session-core/composer';
@@ -25,8 +27,9 @@ import { I18nProvider } from '../i18n';
 import { MediaPartList, MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import { ToolCard } from './ToolCard';
 import { Markdown } from './Markdown';
-import { relativeToCwd } from './PreviewWorkspace';
-import { ConversationShell } from './ConversationShell';
+import { PreviewWorkspace, relativeToCwd } from './PreviewWorkspace';
+import { ConversationShell, useRegisterSeat } from './ConversationShell';
+import { useRailMode } from './rail-variants/shell';
 
 const FILES: Record<string, string> = {
   '/work/src/server.ts': "import { boot } from './boot';\nboot(5801);\n",
@@ -92,6 +95,7 @@ vi.mock('./CodeEditor', () => ({
   }) => (
     <textarea
       data-testid="editor"
+      className="cm-scroller"
       data-line={navigation?.line}
       data-column={navigation?.column}
       value={value}
@@ -195,6 +199,36 @@ function tabs(): string[] {
   );
 }
 
+function CockpitPreviewHarness() {
+  const [mode, choose] = useRailMode();
+  const [railOpen, setRailOpen] = useState(true);
+  const seat = useMemo(() => ({ phase: 'active' as const, composer: <textarea data-test-composer />, cockpit: railOpen && mode === 'cockpit' }), [railOpen, mode]);
+  useRegisterSeat(seat);
+  return <MediaPreviewProvider cwd="/work">
+    <div data-test-timeline />
+    <button data-cockpit-on onClick={() => { choose('cockpit'); }}>cockpit</button>
+    <button data-cockpit-off onClick={() => { choose('default'); }}>standard</button>
+    <button data-close-rail onClick={() => { setRailOpen(false); }}>close rail</button>
+    <button data-open-rail onClick={() => { setRailOpen(true); }}>open rail</button>
+    <PreviewToggleButton />
+    <OpenButton path="/work/src/server.ts" reference={{ path: '/work/src/server.ts', line: 2, column: 3 }} />
+    <OpenButton path="/work/docs/design.md" />
+  </MediaPreviewProvider>;
+}
+
+async function mountCockpitPreview() {
+  localStorage.setItem('kiki.railMode', 'default');
+  localStorage.setItem('kiki.previewPanelWidth', '460');
+  const probe = makeRoot();
+  await renderSettled(probe.root, <MemoryRouter><Routes>
+    <Route element={<ConversationShell />}><Route index element={<CockpitPreviewHarness />} /></Route>
+  </Routes></MemoryRouter>);
+  return probe;
+}
+async function pressPreviewControl(selector: string) {
+  await act(async () => { document.querySelector<HTMLButtonElement>(selector)!.click(); });
+}
+
 describe('PreviewWorkspace', () => {
   beforeAll(() => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -218,6 +252,181 @@ describe('PreviewWorkspace', () => {
     }
     for (const container of containers.splice(0)) container.remove();
     document.body.innerHTML = '';
+    localStorage.removeItem('kiki.railMode');
+    localStorage.removeItem('kiki.previewPanelWidth');
+  });
+
+  it('N2 consumer restores delayed editor readiness beyond the old frame window, without chasing scroll reports', async () => {
+    const probe = makeRoot();
+    let resolve!: (value: { text: string; truncated: boolean }) => void;
+    const delayed = new Promise<{ text: string; truncated: boolean }>((done) => { resolve = done; });
+    connectionMock.activeClient = { previewHostFile: () => delayed };
+    let frames = 0;
+    let frameId = 0;
+    const queued = new Map<number, FrameRequestCallback>();
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { queued.set(++frameId, callback); return frameId; });
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { queued.delete(id); });
+    const advanceFrame = async () => { await act(async () => {
+      const batch = [...queued]; queued.clear();
+      for (const [, callback] of batch) { frames += 1; callback(frames * 16); }
+    }); };
+    const report = vi.fn();
+    const props = { tabs: ['/work/src/server.ts'], active: '/work/src/server.ts', dirtyPaths: new Set<string>(), width: 400,
+      onActivate: vi.fn(), onClose: vi.fn(), onCloseOthers: vi.fn(), onCloseAll: vi.fn(), onMove: vi.fn(), onCollapse: vi.fn(),
+      onWidthChange: vi.fn(), onOpenImage: vi.fn(), reportDirty: vi.fn(), onScrollPosition: report };
+    try {
+      await renderSettled(probe.root, <PreviewWorkspace {...props} scrollPositions={{ '/work/src/server.ts': { top: 187, left: 23 } }} />);
+      for (let frame = 0; frame < 35; frame += 1) await advanceFrame();
+      expect(probe.container.querySelector('.cm-scroller')).toBeNull();
+      await act(async () => { resolve({ text: 'loaded after the old attach window', truncated: false }); });
+      await advanceFrame();
+      const scroller = probe.container.querySelector<HTMLElement>('.cm-scroller')!;
+      expect(scroller.scrollTop).toBe(187);
+      expect(scroller.scrollLeft).toBe(23);
+      await act(async () => { scroller.scrollTop = 241; scroller.dispatchEvent(new Event('scroll')); });
+      expect(report).toHaveBeenLastCalledWith('/work/src/server.ts', { top: 241, left: 23 });
+      await renderSettled(probe.root, <PreviewWorkspace {...props} scrollPositions={{ '/work/src/server.ts': { top: 187, left: 23 } }} />);
+      expect(scroller.scrollTop).toBe(241);
+      expect(frames).toBeLessThan(30);
+    } finally { raf.mockRestore(); cancel.mockRestore(); }
+  });
+
+  it('N2 consumer same-provider Back restores editor and markdown positions without remounting the buffer', async () => {
+    clearNavHistory();
+    const probe = makeRoot();
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => window.setTimeout(() => { callback(0); }, 1));
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { window.clearTimeout(id); });
+    function Page() {
+      const location = useLocation();
+      const action = useNavigationType();
+      useLayoutEffect(() => { recordNavigation({ location, scope: { homeId: 'main', scopeId: 'local' }, action }); }, [location, action]);
+      return <I18nProvider><MediaPreviewProvider sessionId="example">
+        <OpenButton path="/work/src/server.ts" /><OpenButton path="/work/docs/design.md" />
+      </MediaPreviewProvider></I18nProvider>;
+    }
+    const router = createMemoryRouter([{ path: '*', element: <Page /> }], { initialEntries: ['/s/example'] });
+    const settle = async () => { await act(async () => { await new Promise((done) => setTimeout(done, 40)); }); };
+    try {
+      await act(async () => { probe.root.render(<RouterProvider router={router} />); });
+      await openFile(probe.container, '/work/docs/design.md');
+      await settle();
+      const markdown = workspace().querySelector<HTMLElement>('[data-preview-scroll]')!;
+      await act(async () => { markdown.scrollTop = 91; markdown.dispatchEvent(new Event('scroll')); });
+      await openFile(probe.container, '/work/src/server.ts');
+      await settle();
+      const editor = workspace().querySelector<HTMLElement>('.cm-scroller')!;
+      await act(async () => { editor.scrollTop = 187; editor.scrollLeft = 23; editor.dispatchEvent(new Event('scroll')); });
+      await act(async () => { await router.navigate('/s/example'); });
+      await settle();
+      await act(async () => { editor.scrollTop = 481; editor.dispatchEvent(new Event('scroll')); });
+      await openFile(probe.container, '/work/docs/design.md');
+      await settle();
+      await act(async () => { markdown.scrollTop = 321; markdown.dispatchEvent(new Event('scroll')); });
+      const forwardVisit = getCurrentVisit()!.visitId;
+      await act(async () => { await router.navigate(-1); });
+      await settle();
+      expect(getReadingSnapshot<PreviewReadingSnapshot>(forwardVisit, previewSnapshotKey('example'))?.positions['/work/docs/design.md']?.top).toBe(321);
+      expect(workspace().querySelector('.cm-scroller')).toBe(editor);
+      expect(editor.scrollTop).toBe(187);
+      expect(editor.scrollLeft).toBe(23);
+      await openFile(probe.container, '/work/docs/design.md');
+      await settle();
+      expect(markdown.scrollTop).toBe(91);
+      await act(async () => { await router.navigate(1); });
+      await settle();
+      expect(getCurrentVisit()!.visitId).toBe(forwardVisit);
+      expect(getReadingSnapshot<PreviewReadingSnapshot>(forwardVisit, previewSnapshotKey('example'))?.positions['/work/docs/design.md']?.top).toBe(321);
+      expect(markdown.scrollTop).toBe(321);
+    } finally { raf.mockRestore(); cancel.mockRestore(); clearNavHistory(); }
+  });
+
+  it.each(['image', 'skill'] as const)('N2 consumer restores and reports %s reading scroll without adding zoom state', async (kind) => {
+    const probe = makeRoot();
+    connectionMock.activeClient = { ...connectionMock.defaultClient as object, readBuiltinSkill: async () => '# Example skill\n\nReading text.' };
+    const objectUrl = vi.spyOn(URL, 'createObjectURL').mockImplementation(() => 'blob:reading-image');
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => window.setTimeout(() => { callback(0); }, 1));
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { window.clearTimeout(id); });
+    const report = vi.fn();
+    const key = kind === 'image' ? '/work/shots/screen.png' : 'skill:builtin:example';
+    const tab = kind === 'image' ? key : { kind: 'skill' as const, name: 'example' };
+    try {
+      await renderSettled(probe.root, <PreviewWorkspace tabs={[tab]} active={key} dirtyPaths={new Set()} width={400}
+        onActivate={vi.fn()} onClose={vi.fn()} onCloseOthers={vi.fn()} onCloseAll={vi.fn()} onMove={vi.fn()}
+        onCollapse={vi.fn()} onWidthChange={vi.fn()} onOpenImage={vi.fn()} reportDirty={vi.fn()}
+        scrollPositions={{ [key]: { top: 73, left: 12 } }} onScrollPosition={report} />);
+      if (kind === 'image') {
+        const image = probe.container.querySelector<HTMLImageElement>('[data-image-viewport] img')!;
+        Object.defineProperty(image, 'naturalWidth', { value: 1440 });
+        Object.defineProperty(image, 'naturalHeight', { value: 2000 });
+        await act(async () => { image.dispatchEvent(new Event('load')); });
+      }
+      await act(async () => { await new Promise((done) => setTimeout(done, 30)); });
+      const scroller = probe.container.querySelector<HTMLElement>(kind === 'image' ? '[data-image-viewport]' : '[data-preview-scroll]')!;
+      expect(scroller.scrollTop).toBe(73);
+      expect(scroller.scrollLeft).toBe(12);
+      await act(async () => { scroller.scrollTop = 129; scroller.dispatchEvent(new Event('scroll')); });
+      expect(report).toHaveBeenLastCalledWith(key, { top: 129, left: 12 });
+      if (kind === 'image') expect(scroller.dataset['imageViewport']).toBe('fit');
+    } finally {
+      await act(async () => { probe.root.unmount(); });
+      objectUrl.mockRestore(); revoke.mockRestore(); raf.mockRestore(); cancel.mockRestore();
+    }
+  });
+
+  it('parks the same preview editors for cockpit and restores selection, draft, citation and width', async () => {
+    const probe = await mountCockpitPreview();
+    await openFile(probe.container, '/work/docs/design.md');
+    await openFile(probe.container, '/work/src/server.ts');
+    const panel = workspace();
+    const editor = panel.querySelector<HTMLTextAreaElement>('[data-preview-tabpanel="/work/src/server.ts"] [data-testid="editor"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(editor, 'draft kept through cockpit');
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    editor.scrollTop = 72;
+    const composer = document.querySelector('[data-test-composer]');
+    const timeline = document.querySelector('[data-test-timeline]');
+    const width = panel.style.width;
+    for (let repeat = 0; repeat < 3; repeat += 1) {
+      await pressPreviewControl('[data-cockpit-on]');
+      expect(workspace()).toBe(panel);
+      expect(panel.hidden).toBe(true);
+      expect(panel.style.display).toBe('none');
+      expect(document.querySelector('[data-test-composer]')).toBe(composer);
+      expect(document.querySelector('[data-test-timeline]')).toBe(timeline);
+      await pressPreviewControl(repeat === 1 ? '[data-close-rail]' : '[data-cockpit-off]');
+      expect(panel.hidden).toBe(false);
+      expect(panel.style.width).toBe(width);
+      expect(panel.querySelector('[data-preview-tabpanel="/work/src/server.ts"] [data-testid="editor"]')).toBe(editor);
+      expect(editor.value).toBe('draft kept through cockpit');
+      expect(editor.scrollTop).toBe(72);
+      expect(editor.dataset['line']).toBe('2');
+      expect(editor.dataset['column']).toBe('3');
+      expect(panel.querySelector('[data-preview-tab="/work/src/server.ts"]')?.getAttribute('aria-selected')).toBe('true');
+      expect(localStorage.getItem('kiki.previewPanelWidth')).toBe('460');
+      await pressPreviewControl('[data-cockpit-off]');
+      await pressPreviewControl('[data-open-rail]');
+    }
+  });
+
+  it('restores an absent or collapsed preview as absent or collapsed', async () => {
+    const probe = await mountCockpitPreview();
+    await pressPreviewControl('[data-cockpit-on]');
+    await pressPreviewControl('[data-cockpit-off]');
+    expect(document.querySelector('[data-preview-workspace]')).toBeNull();
+    await openFile(probe.container, '/work/src/server.ts');
+    await pressPreviewControl('[data-preview-toggle]');
+    const panel = workspace();
+    expect(panel.hidden).toBe(true);
+    await pressPreviewControl('[data-cockpit-on]');
+    await pressPreviewControl('[data-cockpit-off]');
+    expect(workspace()).toBe(panel);
+    expect(panel.hidden).toBe(true);
+    await pressPreviewControl('[data-cockpit-on]');
+    await pressPreviewControl('[data-preview-toggle]');
+    expect(localStorage.getItem('kiki.railMode')).toBe('default');
+    expect(panel.hidden).toBe(false);
   });
 
   it.each(['tool', 'media', 'markdown'] as const)('keeps coexisting literal-percent and space files distinct through %s', async (entry) => {
@@ -1122,7 +1331,7 @@ describe('PreviewWorkspace agent tabs', () => {
   async function renderAgentPreview(
     controller: ReturnType<typeof makeController>,
     openRoute: (agentId: string) => void,
-    sharedRail?: { open: boolean; toggle: () => void },
+    sharedRail?: { open: boolean; toggle: () => void; available?: boolean },
   ) {
     const probe = makeRoot();
     const forest: AgentForest = { roots: [], byId: {} };
@@ -1181,6 +1390,17 @@ describe('PreviewWorkspace agent tabs', () => {
     expect(call?.railOpen).toBe(false);
     expect(call?.onToggleRail).toBe(toggle);
     expect(call?.railIsOverlay).toBe(false);
+  });
+
+  it('offers no rail entry in the panel tab where the shell has no rail (below lg)', async () => {
+    // Below lg the shell hides the shared rail outright, and it says so
+    // through sharedRail.available: the tab header must not offer an entry
+    // that could not open anything.
+    const controller = makeController();
+    const probe = await renderAgentPreview(controller, vi.fn(), { open: false, toggle: vi.fn(), available: false });
+    await openPanel(probe.container, 'sub-123');
+    const call = agentWorkspaceHarness.calls.at(-1);
+    expect(call?.showRailToggle).toBe(false);
   });
 
   it('closes the shared rail before exiting fullscreen on Escape', async () => {

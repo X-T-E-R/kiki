@@ -82,7 +82,7 @@ describe('ExperimentalRows', () => {
     expect(wait.querySelector('[data-flag-effective]')?.textContent).toBe('Currently on');
     // The saved override is the selected choice; the flag id stays visible but quiet.
     expect(wait.querySelector('[data-experimental-choice="on"]')?.getAttribute('aria-pressed')).toBe('true');
-    expect(wait.textContent).toContain('Flag: task_wait');
+    expect(wait.textContent).toContain('task_wait');
   });
 
   it('renders nothing on a page that owns no reported flag', async () => {
@@ -100,6 +100,22 @@ describe('ExperimentalRows', () => {
     await render('developer');
     const row = container.querySelector('[data-experimental-row="vendor_extension"]')!;
     expect(row.textContent).toContain('Server-specific feature');
+  });
+
+  it('names the two shipped feature flags instead of the server-specific fallback', async () => {
+    client.meta.mockResolvedValue({
+      experimental_flags: { usage_export: false, plugin_import: false, vendor_extension: true },
+    });
+    await render('developer');
+    const exportRow = container.querySelector('[data-experimental-row="usage_export"]')!;
+    expect(exportRow.textContent).toContain('Send usage to other tools');
+    expect(exportRow.textContent).toContain('Turning it on needs a server restart.');
+    const importRow = container.querySelector('[data-experimental-row="plugin_import"]')!;
+    expect(importRow.textContent).toContain('Import history from other tools');
+    expect(importRow.querySelector('[data-experimental-effect]')?.textContent).toBe('Applies right away.');
+    // A flag nobody claims still lands on the same page under the fallback name.
+    expect(container.querySelector('[data-experimental-row="vendor_extension"]')?.textContent)
+      .toContain('Server-specific feature');
   });
 
   it('marks a restart when a restart-only flag is turned on', async () => {

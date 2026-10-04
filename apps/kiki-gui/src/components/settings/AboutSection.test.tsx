@@ -109,7 +109,7 @@ describe('AboutSection desktop updates', () => {
     expect(selects.every((select) => select.disabled)).toBe(true);
     expect(checkButton).toBeDefined();
     expect(checkButton!.disabled).toBe(true);
-    expect(container.textContent).toContain('This build does not include an update channel.');
+    expect(container.textContent).toContain('Automatic updates are not configured for this build.');
     expect(checkDesktopUpdate).not.toHaveBeenCalled();
   });
 });

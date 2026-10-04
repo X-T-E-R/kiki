@@ -14,22 +14,31 @@
  *
  * Import is two-step on purpose (design §10): the card's full text is shown
  * unfolded before anything is written, because it becomes system prompt.
+ *
+ * The whole page writes to the connected server, so it declares that once
+ * here: the five editor cards then keep their scope for assistive tech only
+ * instead of repeating the same line under every heading.
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 
 import type { PersonaSummary } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
+import { useConnection } from '../../state/connection';
 import { Icon } from '../icons';
 import { PageHeader } from '../PageChrome';
 import { Toggle } from '../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { errorText } from '@kiki/session-core/i18n';
+import { segmentClass } from '../WorkspaceScopeControl';
+import { SettingsPageScopeContext } from '../settings/SectionCard';
 import { PersonaAvatar, personaAvatarOf } from './PersonaAvatar';
 import { PersonaEditor } from './PersonaEditor';
 import { PersonaImportDialog } from './PersonaImportDialog';
+import { PersonaConversationsSection } from './PersonaConversationsSection';
 import { matchesPersona, sortPersonas, usePersonaList } from './usePersonas';
 
 export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: () => void }) {
@@ -42,17 +51,28 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
 
   const selectedId = params.get('persona') ?? undefined;
   const creating = params.get('new') === '1';
+  const viewMode = params.get('view') === 'conversations' ? 'conversations' : 'settings';
+
+  const { client } = useConnection();
+  const workspacesQuery = useQuery({
+    queryKey: ['workspaces'],
+    queryFn: () => client.listWorkspaces(),
+    staleTime: 60_000,
+  });
+
   const all = useMemo(() => sortPersonas(listQuery.data ?? []), [listQuery.data]);
   const visible = all.filter((item) => (showArchived || !item.archived || item.id === selectedId) && matchesPersona(item, search));
   const archivedCount = all.filter((item) => item.archived).length;
   const selected = all.find((item) => item.id === selectedId);
 
-  const select = (id: string | undefined, options: { readonly creating?: boolean } = {}) => {
+  const select = (id: string | undefined, options: { readonly creating?: boolean; readonly view?: 'conversations' | 'settings' } = {}) => {
     const next = new URLSearchParams(params);
     next.delete('persona');
     next.delete('new');
     if (id !== undefined) next.set('persona', id);
     if (options.creating === true) next.set('new', '1');
+    if (options.view) next.set('view', options.view);
+    else next.delete('view');
     setParams(next);
   };
 
@@ -92,6 +112,7 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
           ) : all.length === 0 && !creating ? (
             <PersonasEmpty onCreate={() => { select(undefined, { creating: true }); }} onImport={() => { setImporting(true); }} />
           ) : (
+            <SettingsPageScopeContext.Provider value="server">
             <div className="grid min-w-0 gap-6 md:grid-cols-[minmax(248px,0.8fr)_minmax(0,1.7fr)]" data-persona-list-detail>
               <div className={`min-w-0 ${detailOpen ? 'max-md:hidden' : ''}`}>
                 <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -128,12 +149,53 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                 {creating ? (
                   <PersonaEditor key="new" personaId={undefined} takenIds={new Set(all.map((item) => item.id))} onSaved={(id) => { select(id); }} onClosed={() => { select(undefined); }} />
                 ) : selected !== undefined ? (
-                  <PersonaEditor key={selected.id} personaId={selected.id} summary={selected} takenIds={new Set(all.map((item) => item.id))} onSaved={(id) => { select(id); }} onClosed={() => { select(undefined); }} />
+                  <div className="space-y-5">
+                    {/* Segmented Control for [对话 | 设置] */}
+                    <div className="flex items-center justify-between border-b border-hairline pb-3">
+                      <div role="tablist" aria-label={t('persona.viewModeAria', { defaultValue: '视图选择' })} className="flex items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={viewMode === 'conversations'}
+                          onClick={() => select(selected.id, { view: 'conversations' })}
+                          className={segmentClass(viewMode === 'conversations', 'h-7 px-3 text-[13px] pointer-coarse:h-10')}
+                        >
+                          {t('persona.tabConversations', { defaultValue: '全部对话' })}
+                        </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={viewMode === 'settings'}
+                          onClick={() => select(selected.id, { view: 'settings' })}
+                          className={segmentClass(viewMode === 'settings', 'h-7 px-3 text-[13px] pointer-coarse:h-10')}
+                        >
+                          {t('persona.tabSettings', { defaultValue: '角色设置' })}
+                        </button>
+                      </div>
+                    </div>
+
+                    {viewMode === 'conversations' ? (
+                      <PersonaConversationsSection
+                        persona={selected}
+                        workspaceOptions={workspacesQuery.data?.items ?? []}
+                      />
+                    ) : (
+                      <PersonaEditor
+                        key={selected.id}
+                        personaId={selected.id}
+                        summary={selected}
+                        takenIds={new Set(all.map((item) => item.id))}
+                        onSaved={(id) => { select(id, { view: 'settings' }); }}
+                        onClosed={() => { select(undefined); }}
+                      />
+                    )}
+                  </div>
                 ) : (
                   <p className="py-8 text-[13px] text-ink-faint">{t('persona.detailNone')}</p>
                 )}
               </div>
             </div>
+            </SettingsPageScopeContext.Provider>
           )}
         </div>
       </div>

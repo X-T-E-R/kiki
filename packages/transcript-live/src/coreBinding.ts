@@ -48,6 +48,7 @@ export interface TranscriptBinding extends IDisposable {
   seedRunningTasks(agentId?: string): void;
   seedPrompts(agentId?: string): void;
   finishReplay(agentId: string): void;
+  releaseDurableTurns(agentId: string, turnIds: readonly string[], promptIds: readonly string[]): void;
 }
 
 export function bindSessionTranscript(
@@ -233,7 +234,7 @@ export function bindSessionTranscript(
   const processEvent = (agentId: string, event: TranscriptWireRecord): void => {
     if (event.type === 'context.spliced') return;
     const liveOwned =
-      event.type.startsWith('prompt.') ||
+      (event.type.startsWith('prompt.') && !event.type.startsWith('prompt.model_switch_')) ||
       event.type === 'subagent.spawned' ||
       event.type === 'subagent.started' ||
       event.type === 'subagent.completed' ||
@@ -244,6 +245,7 @@ export function bindSessionTranscript(
     if (
       event.type === 'task.started' ||
       event.type === 'task.terminated' ||
+      (event.type === 'task.notified' && wireAdapterFor(agentId).hasTaskNotification(event)) ||
       event.type === 'tools.update_store' ||
       event.type === 'goal.create' ||
       event.type === 'goal.update' ||
@@ -425,6 +427,10 @@ export function bindSessionTranscript(
     seedRunningTasks,
     seedPrompts,
     finishReplay,
+    releaseDurableTurns: (agentId, turnIds, promptIds) => {
+      wireAdapters.get(agentId)?.releaseDurableTurns(turnIds);
+      liveAdapters.get(agentId)?.releaseDurableTurns(turnIds, promptIds);
+    },
     dispose: () => {
       for (const d of disposables) d.dispose();
       for (const list of agentDisposables.values()) {

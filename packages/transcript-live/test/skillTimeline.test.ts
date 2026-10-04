@@ -32,6 +32,22 @@ function skillTimeline(names: readonly string[], withLiveEvents: boolean) {
 }
 
 describe('skill activation timeline', () => {
+  it('renders one original user request and one skill document through opening and delivered wire facts', () => {
+    const transcript = new AgentTranscript('main');
+    const wire = new TranscriptWireAdapter('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const userInput = '/skill:review --fix\nKeep this second line.';
+    const origin = { kind: 'skill_activation', activationId: 'slash-review', skillName: 'review', skillArgs: '--fix\nKeep this second line.', trigger: 'user-slash', userInput };
+    const input = [{ type: 'text', text: 'User activated the skill "review".\n\n<skill-loaded name="review">\n# Review instructions\n</skill-loaded>' }];
+    reducer.apply(wire.add({ type: 'turn.prompt', turnId: 0, promptId: 'slash-prompt', input, origin, time: 0 }));
+    reducer.apply(wire.add({ type: 'context.append_message', time: 1, message: { id: 'slash-prompt', role: 'user', content: input, origin },
+      delivery: { deliveryId: 'slash-delivery', messageId: 'slash-prompt', turnId: 0, stepId: 'slash-step', step: 1, deliveredAt: AT, origin: 'user' } }));
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items: transcript.getItems() });
+    expect(blocks.map(block => block.kind)).toEqual(['user', 'skill']);
+    expect(blocks[0]).toMatchObject({ kind: 'user', text: userInput });
+    expect(blocks[1]).toMatchObject({ kind: 'skill', name: 'review', text: '# Review instructions' });
+  });
+
   it.each([['review'], ['review', 'check']])('keeps delivered skills between neighboring messages without live-only dividers: %j', (...names) => {
     const live = skillTimeline(names, true);
     const cold = skillTimeline(names, false);

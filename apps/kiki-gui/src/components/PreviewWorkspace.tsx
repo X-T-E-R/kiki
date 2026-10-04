@@ -29,7 +29,8 @@
  * retargets the shared rail at the active panel tab's agent.
  */
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useNavVisitId } from '../lib/useNavSnapshot';
 
 import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
 import { basenameOf, formatBytes, previewKindOf, type FileReference } from '@kiki/session-core/composer/media';
@@ -82,9 +83,17 @@ export interface PreviewWorkspaceProps {
   readonly onCloseAll: () => void;
   readonly onMove: (key: string, targetIndex: number) => void;
   readonly onCollapse: () => void;
+  readonly onOpenCockpit?: () => void;
   readonly onWidthChange: (width: number, final: boolean) => void;
   readonly onOpenImage: (src: string, name?: string) => void;
   readonly reportDirty: (path: string, dirty: boolean) => void;
+  /**
+   * Per-tab reading positions for this visit (tab key → scroller offset).
+   * Restored when the panel comes back — a lifted preview reopens at the place
+   * the reader left — and reported back while the reader scrolls.
+   */
+  readonly scrollPositions?: Readonly<Record<string, { readonly top: number; readonly left?: number }>>;
+  readonly onScrollPosition?: (key: string, position: { top: number; left?: number }) => void;
   /**
    * Collapsed (not closed): the panel keeps every tab view — and the editor
    * buffer behind it — mounted and hides itself instead. Unmounting here would
@@ -155,9 +164,12 @@ export function PreviewWorkspace({
   onCloseAll,
   onMove,
   onCollapse,
+  onOpenCockpit,
   onWidthChange,
   onOpenImage,
   reportDirty,
+  scrollPositions,
+  onScrollPosition,
   hidden = false,
   overlay = false,
   cwd,
@@ -330,6 +342,10 @@ export function PreviewWorkspace({
             );
           })}
         </div>
+        {onOpenCockpit !== undefined ? <button type="button" data-preview-open-cockpit onClick={onOpenCockpit}
+          className="hidden h-7 shrink-0 items-center rounded-md px-2 text-[12px] text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:flex min-[85rem]:hidden">
+          {t('rail.mode.cockpit')}
+        </button> : null}
         <button
           type="button"
           onClick={() => { setIsFullscreen(!isFullscreen); }}
@@ -390,16 +406,20 @@ export function PreviewWorkspace({
           );
         }
         if (tab.kind === 'skill') {
-          return <PreviewSkillView key={key} tabKey={key} name={tab.name} visible={isTabActive} />;
+          return <PreviewSkillView key={key} tabKey={key} name={tab.name} visible={isTabActive && !hidden}
+            position={scrollPositions?.[key]}
+            onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }} />;
         }
         return (
           <PreviewTabView
             key={key}
             path={tab.path}
-            visible={isTabActive}
+            visible={isTabActive && !hidden}
             navigation={navigation?.path === tab.path && isTabActive ? navigation : undefined}
             onOpenImage={onOpenImage}
             reportDirty={reportDirty}
+            position={scrollPositions?.[key]}
+            onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }}
           />
         );
       })}
@@ -486,7 +506,7 @@ function AgentTabWorkspace({
   // slot); when this tab is the focused surface, SessionView retargets that
   // shared rail at this tab's agent through the preview focus bridge. The
   // tab-local header can reopen that rail without mounting a second one,
-  // including when the narrow overlay obscures the main header.
+  // including when the focused surface covers the main header.
   return (
     <div className="relative flex min-h-0 flex-1 flex-col bg-paper" data-agent-tab-workspace={agentId}>
       <div ref={setHeaderSlot} className="shrink-0" />
@@ -507,7 +527,7 @@ function AgentTabWorkspace({
           inheritMediaPreview
           transcriptVisible={visible}
           showPreviewToggle={false}
-          showRailToggle={navigation.sharedRail !== undefined}
+          showRailToggle={navigation.sharedRail !== undefined && navigation.sharedRail.available !== false}
           showBreadcrumb={false}
         />
       </div>
@@ -1041,10 +1061,14 @@ function PreviewSkillView({
   tabKey,
   name,
   visible,
+  position,
+  onScrollPosition,
 }: {
   readonly tabKey: string;
   readonly name: string;
   readonly visible: boolean;
+  readonly position?: PreviewScrollPosition;
+  readonly onScrollPosition?: (position: { top: number; left?: number }) => void;
 }) {
   const { t } = useI18n();
   const client = useOptionalConnection()?.client;
@@ -1071,9 +1095,12 @@ function PreviewSkillView({
     );
     return () => { cancelled = true; };
   }, [client, name, attempt, t]);
+  const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition);
+  useEffect(() => { if (state.status === 'ready') onReadingReady(); }, [state.status, mode, onReadingReady]);
 
   return (
     <div
+      ref={panelRef}
       role="tabpanel"
       hidden={!visible}
       className={`min-h-0 flex-1 flex-col ${visible ? 'flex' : 'hidden'}`}
@@ -1100,7 +1127,7 @@ function PreviewSkillView({
           ))}
         </span>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div data-preview-scroll className="min-h-0 flex-1 overflow-auto p-4">
         {state.status === 'loading' ? (
           <p role="status" className="text-[12px] text-ink-faint">{t('preview.loading')}</p>
         ) : state.status === 'error' ? (
@@ -1120,22 +1147,94 @@ function PreviewSkillView({
   );
 }
 
+/** The scroller inside a preview tab: the editor's own box, or a rendered page. */
+const PREVIEW_SCROLL_SELECTOR = '.cm-scroller, [data-preview-scroll], [data-image-viewport]';
+type PreviewScrollPosition = { readonly top: number; readonly left?: number };
+
+function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPosition | undefined,
+  onScrollPosition: ((position: { top: number; left?: number }) => void) | undefined) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const visitId = useNavVisitId();
+  const positionRef = useRef(position);
+  positionRef.current = position;
+  const reportRef = useRef(onScrollPosition);
+  reportRef.current = onScrollPosition;
+  const [ready, setReady] = useState(0);
+  const onReadingReady = useCallback(() => { setReady((value) => value + 1); }, []);
+  const appliedRef = useRef<string | null>(null);
+  const appliedPositionRef = useRef<PreviewScrollPosition | undefined>(undefined);
+  const reportedRef = useRef<PreviewScrollPosition | undefined>(undefined);
+  const pendingRef = useRef(false);
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (panel === null) return undefined;
+    const onScroll = (event: Event) => {
+      const target = event.target;
+      if (pendingRef.current || !(target instanceof HTMLElement) || !target.matches(PREVIEW_SCROLL_SELECTOR)) return;
+      const value = { top: target.scrollTop, left: target.scrollLeft };
+      reportedRef.current = value;
+      reportRef.current?.(value);
+    };
+    const onLoad = (event: Event) => { if (event.target instanceof HTMLImageElement) onReadingReady(); };
+    panel.addEventListener('scroll', onScroll, true);
+    panel.addEventListener('load', onLoad, true);
+    return () => {
+      panel.removeEventListener('scroll', onScroll, true);
+      panel.removeEventListener('load', onLoad, true);
+    };
+  }, [onReadingReady]);
+  useEffect(() => {
+    if (!visible) { appliedRef.current = null; return; }
+    if (ready === 0) return;
+    const identity = `${visitId ?? 'embedded'}\0${ready}`;
+    if (appliedRef.current === identity) {
+      const equal = (value: PreviewScrollPosition | undefined) => value?.top === position?.top && value?.left === position?.left;
+      if (equal(appliedPositionRef.current) || equal(reportedRef.current)) return;
+    } else {
+      reportedRef.current = undefined;
+    }
+    pendingRef.current = true;
+    // Ready comes from the renderer, not a DOM polling deadline. One layout
+    // frame also lets a resident provider commit this visit's saved positions.
+    const frame = requestAnimationFrame(() => {
+      const scroller = panelRef.current?.querySelector<HTMLElement>(PREVIEW_SCROLL_SELECTOR);
+      const saved = positionRef.current;
+      if (scroller !== undefined && scroller !== null && saved !== undefined) {
+        scroller.scrollTop = saved.top;
+        if (saved.left !== undefined) scroller.scrollLeft = saved.left;
+        appliedRef.current = identity;
+        appliedPositionRef.current = saved;
+      }
+      pendingRef.current = false;
+    });
+    return () => { cancelAnimationFrame(frame); pendingRef.current = false; };
+  }, [visible, visitId, ready, position?.top, position?.left]);
+  return { panelRef, onReadingReady };
+}
+
 function PreviewTabView({
   path,
   visible,
   navigation,
   onOpenImage,
   reportDirty,
+  position,
+  onScrollPosition,
 }: {
   readonly path: string;
   readonly visible: boolean;
   readonly navigation?: FileReference;
   readonly onOpenImage: (src: string, name?: string) => void;
   readonly reportDirty: (path: string, dirty: boolean) => void;
+  /** This tab's reading position for the current visit, when it has one. */
+  readonly position?: { readonly top: number; readonly left?: number };
+  readonly onScrollPosition?: (position: { top: number; left?: number }) => void;
 }) {
   const kind = previewKindOf(path);
+  const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition);
   return (
     <div
+      ref={panelRef}
       role="tabpanel"
       hidden={!visible}
       className={`min-h-0 flex-1 flex-col ${visible ? 'flex' : 'hidden'}`}
@@ -1148,7 +1247,7 @@ function PreviewTabView({
       ) : kind === 'binary' ? (
         <BinaryTabView path={path} />
       ) : (
-        <TextTabView path={path} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} />
+        <TextTabView path={path} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} onReadingReady={onReadingReady} />
       )}
     </div>
   );
@@ -1414,11 +1513,13 @@ function TextTabView({
   markdown,
   navigation,
   reportDirty,
+  onReadingReady,
 }: {
   readonly path: string;
   readonly markdown: boolean;
   readonly navigation?: FileReference;
   readonly reportDirty: (path: string, dirty: boolean) => void;
+  readonly onReadingReady: () => void;
 }) {
   const host = useHost();
   const { t } = useI18n();
@@ -1484,6 +1585,10 @@ function TextTabView({
   const fullText = fullMarkdown?.controller === controller && fullMarkdown.client === client &&
     fullMarkdown.path === path && fullMarkdown.generation === snap.generation
     ? fullMarkdown.text : undefined;
+  // The renderer, not a frame deadline, says when this tab's text is on screen.
+  useEffect(() => {
+    if (snap.status === 'ready') onReadingReady();
+  }, [snap.status, snap.generation, showEditor, fullText !== undefined, onReadingReady]);
   const normalizedPath = path.replaceAll('\\', '/');
   const documentDirectory = normalizedPath.slice(0, normalizedPath.lastIndexOf('/')) || '/';
   const loadFullMarkdown = async () => {
@@ -1637,7 +1742,7 @@ function TextTabView({
             ariaLabel={t('preview.openFile', { name })}
           />
         ) : (
-          <div className="min-h-0 flex-1 overflow-auto p-4">
+          <div data-preview-scroll className="min-h-0 flex-1 overflow-auto p-4">
             <Markdown mode="static" text={fullText ?? snap.draft} documentDirectory={documentDirectory} />
           </div>
         )}

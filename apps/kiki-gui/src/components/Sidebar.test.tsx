@@ -41,7 +41,9 @@ const searchMessages = vi.fn();
 const getSession = vi.fn<(id: string) => Promise<Session>>();
 const retrySearchIndexer = vi.fn(async () => ({ retried: true }));
 const setWorkspacePinned = vi.fn(async () => {});
-const listEphemeralSessions = vi.fn(async (): Promise<{ items: Session[] }> => ({ items: [] }));
+const listEphemeralSessions = vi.fn(async (_query?: { before_id?: string; page_size?: number }): Promise<{ items: Session[]; has_more?: boolean; next_cursor?: string }> => ({ items: [] }));
+/** The persona roster the 角色 group reads; empty unless a test wants one. */
+const listPersonas = vi.fn(async (): Promise<readonly unknown[]> => []);
 const connectionScope = vi.hoisted(() => ({ id: 'local' }));
 const listTasks = vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] }));
 const listPrompts = vi.fn(async (): Promise<unknown> => ({ active: null, queued: [] }));
@@ -66,6 +68,7 @@ vi.mock('../state/connection', () => ({
       listEphemeralSessions,
       listTasks,
       listPrompts,
+      listPersonas,
       klient: { rest: { rooms: roomRest } },
     },
     scopeId: connectionScope.id,
@@ -185,6 +188,8 @@ beforeEach(() => {
   setWorkspacePinned.mockClear();
   listEphemeralSessions.mockReset();
   listEphemeralSessions.mockResolvedValue({ items: [] });
+  listPersonas.mockReset();
+  listPersonas.mockResolvedValue([]);
   for (const fn of Object.values(roomRest)) fn.mockReset();
   connectionScope.id = 'local';
   // Workspace folds and the list scroll persist across mounts.
@@ -712,6 +717,52 @@ describe('Sidebar temporary conversations', () => {
     expect(blocks).toEqual(['ephemeral', 'today']);
   });
 
+  it('uses paged temporary-session cache data beyond the first 50 without losing row order', async () => {
+    const rows = Array.from({ length: 51 }, (_, index) => ({ ...session(`temporary-${index}`), ephemeral: true }));
+    const { container, queryClient } = await mount();
+    await settle();
+    await act(async () => {
+      queryClient.setQueryData(['sessions', 'ephemeral'], { pages: [{ items: rows.slice(0, 50), has_more: true, next_cursor: rows[49]!.id }, { items: rows.slice(50), has_more: false }], pageParams: [undefined, rows[49]!.id] });
+    });
+    await settle();
+    const ids = [...container.querySelectorAll('[data-session-ephemeral] [data-session-row]')].map((node) => node.getAttribute('data-session-row'));
+    expect(ids).toEqual(rows.map((row) => row.id));
+    expect(listEphemeralSessions).toHaveBeenCalledWith({ before_id: undefined, page_size: 50 });
+  });
+
+  it('reads the next page of temporary conversations on request, and reports a refusal', async () => {
+    const first = Array.from({ length: 50 }, (_, index) => ({ ...session(`temporary-${index}`), ephemeral: true }));
+    const older = { ...session('temporary-50'), ephemeral: true };
+    listEphemeralSessions.mockResolvedValue({ items: first, has_more: true, next_cursor: first[49]!.id });
+    const { container } = await mount();
+    await settle();
+    const more = container.querySelector<HTMLButtonElement>('[data-session-ephemeral-load-more]');
+    expect(more).not.toBeNull();
+    expect(container.querySelector('[data-session-ephemeral-load-error]')).toBeNull();
+    expect(container.querySelectorAll('[data-session-ephemeral]')).toHaveLength(50);
+
+    // The next page is one request, and its rows join the same block in order.
+    listEphemeralSessions.mockResolvedValue({ items: [older], has_more: false });
+    await act(async () => { more?.click(); });
+    await settle();
+    expect(listEphemeralSessions).toHaveBeenLastCalledWith({ before_id: first[49]!.id, page_size: 50 });
+    const ids = [...container.querySelectorAll('[data-session-ephemeral] [data-session-row]')].map((node) => node.getAttribute('data-session-row'));
+    expect(ids.at(-1)).toBe('temporary-50');
+    // Nothing left to read, so the row retires with the page.
+    expect(container.querySelector('[data-session-ephemeral-load-more]')).toBeNull();
+
+    // A refused page keeps the rows it already has and says so, so the reader
+    // can press the same button again.
+    listEphemeralSessions.mockResolvedValue({ items: first, has_more: true, next_cursor: first[49]!.id });
+    const refused = await mount();
+    await settle();
+    listEphemeralSessions.mockRejectedValueOnce(new Error('offline'));
+    await act(async () => { refused.container.querySelector<HTMLButtonElement>('[data-session-ephemeral-load-more]')?.click(); });
+    await settle();
+    expect(refused.container.querySelector('[data-session-ephemeral-load-error]')?.textContent).toBe('offline');
+    expect(refused.container.querySelectorAll('[data-session-ephemeral]').length).toBeGreaterThan(0);
+  });
+
   it('shows no block while there are none', async () => {
     const { container } = await mount();
     await settle();
@@ -791,7 +842,9 @@ describe('Sidebar semantic structure', () => {
     expect(regions[0]?.hasAttribute('data-session-list')).toBe(true);
 
     const labelledGroups = [
-      ...container.querySelectorAll<HTMLElement>('[role="group"][aria-label]'),
+      // Scoped to the session list: the persona group is a group of its own,
+      // above the list, and its presence must not read as a broken time group.
+      ...regions[0]!.querySelectorAll<HTMLElement>('[role="group"][aria-label]'),
     ].map((node) => node.getAttribute('aria-label'));
     expect(labelledGroups).toEqual(['Today', 'Past 7 days']);
 
@@ -804,6 +857,31 @@ describe('Sidebar semantic structure', () => {
     const otherRow = rows.find((row) => row?.textContent?.includes('other') === true);
     expect(activeRow?.getAttribute('aria-current')).toBe('page');
     expect(otherRow?.getAttribute('aria-current')).toBeNull();
+  });
+
+  it('adds the persona group above the session list without disturbing its time groups', async () => {
+    listPersonas.mockResolvedValue([{ id: 'lin-lan', name: '小岚', revision: 'revision-1', archived: false, homeSessionId: 'home_lin' }]);
+    const active = session('active');
+    const { container } = await mount({
+      activeSessionId: 'active',
+      sessions: [active],
+      workspaceOptions: [{ id: 'ws_a', name: 'EasyAgent', root: '/a', created_at: '', last_opened_at: '', pinned: false, session_count: 0, isGit: false }],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [active] }],
+    });
+    await settle();
+
+    const personaGroup = container.querySelector<HTMLElement>('[data-sidebar-personas] [role="group"]');
+    expect(personaGroup?.getAttribute('aria-label')).toBe('Personas');
+    expect(personaGroup?.querySelector('[data-sidebar-persona-row="lin-lan"]')).not.toBeNull();
+    // The name is the persona's stable daily address, never a fixed session.
+    const name = personaGroup!.querySelector<HTMLButtonElement>('[data-sidebar-persona-row="lin-lan"] button')!;
+    expect(name.textContent).toContain('小岚');
+
+    const sessionList = container.querySelector<HTMLElement>('[data-session-list]')!;
+    expect([...sessionList.querySelectorAll<HTMLElement>('[role="group"][aria-label]')].map((node) => node.getAttribute('aria-label')))
+      .toEqual(['Today']);
+    // Not inside the session list region.
+    expect(sessionList.querySelector('[data-sidebar-personas]')).toBeNull();
   });
 
   it('replaces the list with a labelled listbox the search box drives with ↑↓ / Enter', async () => {

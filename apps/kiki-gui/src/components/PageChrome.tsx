@@ -14,6 +14,7 @@ import type { Workspace } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
+import { NavBackButton } from './NavBackButton';
 
 export function PageHeader({
   title,
@@ -27,7 +28,7 @@ export function PageHeader({
 }) {
   const { t } = useI18n();
   return (
-    <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 bg-paper px-4 py-2 lg:px-6">
+    <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-2 gap-y-2 bg-paper px-4 py-2 lg:px-6">
       <button
         type="button"
         onClick={onToggleSidebar}
@@ -36,6 +37,7 @@ export function PageHeader({
       >
         <Icon name="menu" size={16} />
       </button>
+      <NavBackButton />
       <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
         {title}
       </h1>

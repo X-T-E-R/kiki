@@ -1,314 +1,414 @@
-import { useMemo, useState } from 'react';
-import type { NbSearchCapabilities, NbSearchManagedCredentialView } from '@kiki/protocol';
-import { NbSearchCredentialEditor } from './NbSearchCredentialEditor';
-import { nbSearchIssueCodes, type NbSearchProviderDraft } from '@kiki/session-core/settings';
-import { SectionCard } from '../SectionCard';
-import { Hint, Toggle } from '../../controls';
+/**
+ * Services & keys tab.
+ *
+ * The old page rendered every provider instance the engine knows as a form,
+ * auto-opened whatever it judged "needs attention", and sorted the failures to
+ * the top, so a user with one configured service met sixteen open forms and a
+ * wall of red. This page inverts that:
+ *
+ *   - The list holds the services the user actually configured. With one
+ *     service set up, that is one compact row.
+ *   - Two ways to add: "Add service" browses the real instances the server
+ *     reports, while "new instance" builds a second instance of one service with
+ *     its own id, slot and variable — the catalogue cannot express that, because
+ *     the instance does not exist on the server yet.
+ *   - An instance created in this draft is listed and editable before the server
+ *     has ever seen it. Its status says "not saved yet" rather than borrowing a
+ *     readiness or a credential state the server never reported.
+ *   - Selecting a row opens the single editing surface (`NbSearchServiceEditor`)
+ *     with address, key variable, keys, key order and on-demand key status.
+ *
+ * Side by side from `md`; below that one pane at a time, so a 390-wide screen
+ * goes list → detail → back.
+ */
+
+import { useCallback, useMemo, useState } from 'react';
+import type { NbSearchCapabilities, NbSearchKeyUsageView, NbSearchManagedCredentialView } from '@kiki/protocol';
+import type { NbSearchDraft, NbSearchProviderDraft } from '@kiki/session-core/settings';
+
 import { useI18n } from '../../../i18n';
-import { NbSearchIssues } from './NbSearchIssues';
-import { INPUT } from '../../ui';
-import { LIST_ROW_HEIGHT, ListBody, ListEmpty, ListToolbar, useListView, type ListDensity, type ListFilterSpec, type ListSortSpec } from '../list';
+import { Icon } from '../../icons';
+import { Hint } from '../../controls';
+import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
+import { SettingsDetailLayout } from '../SettingsPrimitives';
+import { SectionCard } from '../SectionCard';import { ListEmpty, ListToolbar, useListView } from '../list';
+import { NbSearchServiceEditor } from './NbSearchServiceEditor';
+import { NbSearchInstanceEditor } from './NbSearchInstanceEditor';
+import type { KeyDraft } from './NbSearchMultiKeyEditor';
+import { providerLabelKey, serviceState, serviceStateKey, SERVICE_STATE_CLASS } from './types';
 
 type ProviderInstance = NbSearchCapabilities['providers']['instances'][number];
+type ReadCredential = (instanceId: string, reveal: boolean) => Promise<NbSearchManagedCredentialView>;
+type ReadKeyUsage = (instanceId: string, refresh: boolean) => Promise<NbSearchKeyUsageView>;
 
-function AvailabilityBadge({ availability }: { availability: 'ready' | 'unavailable' }) {
-  const { t } = useI18n();
-  return (
-    <span
-      className={`rounded-full border px-1.5 py-px text-[11px] font-medium shrink-0 ${
-        availability === 'ready'
-          ? 'border-success/40 bg-success/10 text-success'
-          : 'border-danger/40 bg-danger/5 text-danger'
-      }`}
-    >
-      {availability === 'ready'
-        ? t('st.nbSearch.availabilityReady')
-        : t('st.nbSearch.availabilityUnavailable')}
-    </span>
-  );
+interface DirectoryEntry {
+  readonly instance: ProviderInstance;
+  readonly added: boolean;
+  readonly label: string;
 }
 
-function FieldError({ text }: { text: string | null }) {
-  if (text === null) return null;
-  return <p role="alert" data-field-issue className="mt-1 text-[12px] leading-4 text-danger">{text}</p>;
+/** One row: a service the server reports, or one this draft just created. */
+interface ServiceEntry {
+  readonly instance: ProviderInstance;
+  /** True while the instance exists only in the draft. */
+  readonly unsaved: boolean;
 }
 
-function ProviderInstanceCard({
-  instance,
-  descriptor,
-  providerDraft,
-  credentialEnv,
-  onChange,
-  onCredentialEnvChange,
-  readCredential,
-  writeCredential,
-  credentialDisabled,
-  density,
-}: {
-  instance: NbSearchCapabilities['providers']['instances'][number];
-  descriptor: NbSearchCapabilities['providers']['descriptors'][number] | undefined;
-  providerDraft: NbSearchProviderDraft;
-  credentialEnv: string;
-  onChange: (patch: Partial<NbSearchProviderDraft>) => void;
-  onCredentialEnvChange: (credentialEnv: string) => void;
-  readCredential: (id: string, reveal: boolean) => Promise<NbSearchManagedCredentialView>;
-  writeCredential: (id: string, value: string | null, version: string, binding: string) => Promise<NbSearchManagedCredentialView>;
-  credentialDisabled: boolean;
-  density: ListDensity;
-}) {
-  const { t } = useI18n();
-  const compact = density === 'compact';
-  const attention = instance.availability === 'unavailable' || instance.issues.length > 0;
-  const [open, setOpen] = useState(attention);
-  const needsCredential = instance.credential.requirement !== 'none';
-  const needsEndpoint =
-    instance.endpoint.requirement === 'required' || instance.endpoint.requirement === 'optional';
-  const showOptions = (descriptor?.option_keys.length ?? 0) > 0;
-  const credentialPlaceholder = `NB_SEARCH_${instance.provider_id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
-
-  // Field-level validation mirrors the save-time checks so mistakes surface
-  // next to the field instead of only in the sticky bar after a failed save.
-  const baseUrlTrimmed = providerDraft.baseUrl.trim();
-  const baseUrlError =
-    baseUrlTrimmed !== '' && !/^https?:\/\//i.test(baseUrlTrimmed)
-      ? t('st.nbSearch.providers.baseUrlInvalid')
-      : null;
-  const optionsText = providerDraft.optionsJson.trim();
-  const optionsError = useMemo(() => {
-    if (optionsText === '') return null;
-    try {
-      const parsed: unknown = JSON.parse(optionsText);
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return t('st.nbSearch.providers.optionsInvalid');
-      }
-      return null;
-    } catch {
-      return t('st.nbSearch.providers.optionsInvalid');
-    }
-  }, [optionsText, t]);
-
-  const credentialSummaryKey =
-    instance.credential.requirement === 'none'
-      ? 'st.nbSearch.credentialNone'
-      : instance.credential.configured
-        ? 'st.nbSearch.credentialConfigured'
-        : instance.credential.requirement === 'unknown'
-          ? 'st.nbSearch.credentialRequired'
-          : 'st.nbSearch.credentialMissing';
-  const credentialSummaryClass =
-    instance.credential.requirement === 'none'
-      ? 'text-ink-faint'
-      : instance.credential.configured
-        ? 'text-success'
-        : 'text-amber-ink';
-  const endpointSummaryKey =
-    instance.endpoint.requirement === 'none'
-      ? 'st.nbSearch.endpointNone'
-      : instance.endpoint.configured
-        ? 'st.nbSearch.endpointConfigured'
-        : instance.endpoint.requirement === 'required'
-          ? 'st.nbSearch.endpointMissing'
-          : 'st.nbSearch.endpointOptional';
-  const endpointSummaryClass =
-    instance.endpoint.requirement === 'none'
-      ? 'text-ink-faint'
-      : instance.endpoint.configured
-        ? 'text-success'
-        : instance.endpoint.requirement === 'required'
-          ? 'text-amber-ink'
-          : 'text-ink-faint';
-
-  return (
-    <details
-      open={open}
-      onToggle={(event) => {
-        setOpen(event.currentTarget.open);
-      }}
-      className="group/nb px-3"
-    >
-      <summary style={{ minHeight: LIST_ROW_HEIGHT[density] }}
-        className={`flex cursor-pointer flex-wrap items-center justify-between gap-2 select-none ${compact ? 'py-1' : 'py-2'}`}>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[12.5px] font-semibold text-ink">{instance.id}</span>
-          <AvailabilityBadge availability={instance.availability} />
-          {!providerDraft.enabled ? (
-            <span className="rounded bg-hairline/40 px-1.5 py-0.5 text-[11px] font-medium text-ink-soft">
-              {t('st.nbSearch.providers.disabledBadge')}
-            </span>
-          ) : null}
-          {attention ? (
-            <span className="rounded bg-amber-card border border-amber-rule/40 px-1.5 py-0.5 text-[11px] font-medium text-amber-ink">
-              {t('st.nbSearch.providers.attentionBadge')}
-            </span>
-          ) : null}
-        </div>
-
-        {compact ? null : (
-          <span className="text-[12px]">
-            <span className={credentialSummaryClass}>{t(credentialSummaryKey)}</span>
-            <span className="text-ink-faint">{' · '}</span>
-            <span className={endpointSummaryClass}>{t(endpointSummaryKey)}</span>
-          </span>
-        )}
-      </summary>
-
-      <div className="mt-3 space-y-3 border-t border-hairline pt-3">
-        <Toggle
-          label={t('st.nbSearch.enabled')}
-          checked={providerDraft.enabled}
-          onChange={(enabled) => {
-            onChange({ enabled });
-          }}
-        />
-
-        <NbSearchIssues issues={nbSearchIssueCodes(instance.issues)} />
-
-        {needsCredential ? (
-          <div className="space-y-2">
-            <label className="block text-[11px] font-medium text-ink-soft">
-              {t('st.nbSearch.credentialEnvLabel')}
-              <input
-                className={`${INPUT} mt-1 font-mono`}
-                value={credentialEnv}
-                placeholder={credentialPlaceholder}
-                onChange={(event) => { onCredentialEnvChange(event.target.value); }}
-              />
-              <Hint>{t('st.nbSearch.credentialEnvHint')}</Hint>
-            </label>
-            <NbSearchCredentialEditor instanceId={instance.id} disabled={credentialDisabled} read={readCredential} write={writeCredential} />
-          </div>
-        ) : null}
-
-        {needsEndpoint ? (
-          <label className="block text-[11px] font-medium text-ink-soft">
-            {t('st.nbSearch.baseUrlLabel')}
-            <input
-              className={`${INPUT} mt-1 font-mono`}
-              value={providerDraft.baseUrl}
-              placeholder="https://"
-              onChange={(event) => {
-                onChange({ baseUrl: event.target.value });
-              }}
-            />
-            <FieldError text={baseUrlError} />
-          </label>
-        ) : null}
-
-        {showOptions ? (
-          <label className="block text-[11px] font-medium text-ink-soft">
-            {t('st.nbSearch.optionsLabel')}
-            <textarea
-              className={`${INPUT} mt-1 min-h-16 font-mono text-[11.5px]`}
-              value={providerDraft.optionsJson}
-              placeholder="{}"
-              onChange={(event) => {
-                onChange({ optionsJson: event.target.value });
-              }}
-            />
-            <FieldError text={optionsError} />
-            {optionsError === null ? (
-              <Hint>{t('st.nbSearch.optionsHint', { keys: descriptor?.option_keys.join(', ') ?? '' })}</Hint>
-            ) : null}
-          </label>
-        ) : null}
-      </div>
-    </details>
-  );
+/**
+ * A draft instance the server has not reported yet, shaped like a capability
+ * instance so the list and the editor can treat it the same way. Nothing is
+ * invented: availability is unknown (not ready), the key is not configured
+ * (nothing has been stored), and the requirement comes from the real provider
+ * descriptor.
+ */
+function projectDraftInstance(
+  instanceId: string,
+  draft: NbSearchProviderDraft,
+  capabilities: NbSearchCapabilities,
+): ProviderInstance {
+  const providerId = draft.providerId ?? '';
+  const descriptor = capabilities.providers.descriptors.find((entry) => entry.provider_id === providerId);
+  return {
+    id: instanceId,
+    provider_id: providerId,
+    enabled: draft.enabled,
+    availability: 'unavailable',
+    issues: [],
+    credential: {
+      requirement: descriptor?.activation.credential ?? 'required',
+      configured: false,
+      slot_id: draft.credentialSlotId ?? instanceId,
+    },
+    endpoint: {
+      requirement: descriptor?.activation.endpoint ?? 'none',
+      configured: draft.baseUrl.trim() !== '',
+    },
+  };
 }
 
 export function NbSearchProvidersTab({
   capabilities,
+  configuredInstanceIds,
   draftProviders,
   credentialSlots,
+  keyDrafts,
+  nbSearchDraft,
   onUpdateProvider,
   onUpdateCredentialEnv,
+  onKeyDraftChange,
+  onAddService,
+  onRemoveService,
+  onDraftChange,
   readCredential,
-  writeCredential,
-  credentialDisabled,
+  readKeyUsage,
   saving = false,
 }: {
   capabilities: NbSearchCapabilities;
-  draftProviders: Record<string, NbSearchProviderDraft>;
+  /** Instances the server has a saved override for. */
+  configuredInstanceIds: ReadonlySet<string>;
+  draftProviders: Readonly<Record<string, NbSearchProviderDraft>>;
   credentialSlots: unknown;
+  keyDrafts: Readonly<Record<string, KeyDraft>>;
+  /** The whole nb_search draft, for the S2 surfaces that hand back a new one. */
+  nbSearchDraft: NbSearchDraft;
   onUpdateProvider: (id: string, patch: Partial<NbSearchProviderDraft>) => void;
   onUpdateCredentialEnv: (instanceId: string, providerId: string, credentialEnv: string) => void;
-  readCredential: (id: string, reveal: boolean) => Promise<NbSearchManagedCredentialView>;
-  writeCredential: (id: string, value: string | null, version: string, binding: string) => Promise<NbSearchManagedCredentialView>;
-  credentialDisabled: boolean;
+  onKeyDraftChange: (instanceId: string, draft: KeyDraft) => void;
+  onAddService: (instanceId: string) => void;
+  onRemoveService: (instanceId: string) => void;
+  onDraftChange: (next: NbSearchDraft) => void;
+  readCredential: ReadCredential;
+  /** One typed on-demand key-status read; only a click reaches it. */
+  readKeyUsage: ReadKeyUsage;
   saving?: boolean;
 }) {
   const { t } = useI18n();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [narrowPane, setNarrowPane] = useState<'list' | 'detail'>('list');
+  const [directoryOpen, setDirectoryOpen] = useState(false);
+  const [instanceDraftOpen, setInstanceDraftOpen] = useState(false);
 
-  const descriptorByProvider = useMemo(
-    () => new Map(capabilities.providers.descriptors.map((d) => [d.provider_id, d])),
+  const descriptors = useMemo(
+    () => new Map(capabilities.providers.descriptors.map((entry) => [entry.provider_id, entry])),
     [capabilities.providers.descriptors],
   );
+  const labelOf = useCallback((providerId: string) => {
+    const key = providerLabelKey(providerId);
+    return key === undefined ? providerId : t(key);
+  }, [t]);
 
-  const instances = useMemo(() => {
-    return capabilities.providers.instances.toSorted((a, b) => {
-      if (a.availability === b.availability) {
-        return a.id.localeCompare(b.id);
+  /**
+   * Saved override, a draft the user just added, or an instance this draft
+   * created before the server knew about it. Deleted drafts drop out.
+   */
+  const added = useMemo<readonly ServiceEntry[]>(() => {
+    const reported = new Set(capabilities.providers.instances.map((instance) => instance.id));
+    const entries: ServiceEntry[] = [];
+    for (const instance of capabilities.providers.instances) {
+      const draft = draftProviders[instance.id];
+      if (draft?.isDeleted === true) continue;
+      if (draft?.isNew === true || configuredInstanceIds.has(instance.id)) {
+        entries.push({ instance, unsaved: false });
       }
-      return a.availability === 'ready' ? 1 : -1;
-    });
-  }, [capabilities.providers.instances]);
+    }
+    for (const [instanceId, draft] of Object.entries(draftProviders)) {
+      if (draft.isDeleted === true || draft.isNew !== true || reported.has(instanceId)) continue;
+      entries.push({ instance: projectDraftInstance(instanceId, draft, capabilities), unsaved: true });
+    }
+    return entries;
+  }, [capabilities, configuredInstanceIds, draftProviders]);
 
-  const needsAttention = (instance: ProviderInstance) => instance.availability === 'unavailable' || instance.issues.length > 0;
-  const keyOf = (instance: ProviderInstance) => instance.id;
-  const textOf = (instance: ProviderInstance) => [instance.id, instance.provider_id];
-  const filters = useMemo<readonly ListFilterSpec<ProviderInstance>[]>(() => [
-    { id: 'attention', label: t('st.nbSearch.filter.attention'), tone: 'attention', test: needsAttention },
-    { id: 'ready', label: t('st.nbSearch.filter.ready'), test: (instance) => !needsAttention(instance) },
-  ], [t]);
-  const sorts = useMemo<readonly ListSortSpec<ProviderInstance>[]>(() => [
-    { id: 'order', label: t('st.list.sort.order'), compare: () => 0 },
-    { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => a.id.localeCompare(b.id) },
-  ], [t]);
-  const view = useListView({ listId: 'nbsearch-providers', items: instances, keyOf, textOf, filters, sorts });
+  const directory = useMemo<readonly DirectoryEntry[]>(
+    () => capabilities.providers.instances.map((instance) => ({
+      instance,
+      added: added.some((entry) => entry.instance.id === instance.id),
+      label: labelOf(instance.provider_id),
+    })),
+    [capabilities.providers.instances, added, labelOf],
+  );
 
-  const getCredentialEnv = (instanceId: string) => {
-    const pDraft = draftProviders[instanceId];
-    if (!pDraft) return '';
-    const slots = (credentialSlots as Record<string, { env?: string } | null>) ?? {};
-    return slots[pDraft.credentialSlotId]?.env ?? '';
+  const directoryView = useListView({
+    listId: 'nb-search-service-directory',
+    items: directory,
+    keyOf: (entry) => entry.instance.id,
+    textOf: (entry) => [entry.label, entry.instance.id, entry.instance.provider_id],
+  });
+
+  // The list pane swaps to the directory or the new-instance form while either
+  // is open; the detail pane keeps showing the service being edited instead of
+  // going blank.
+  const selected = selectedId === null
+    ? added[0]
+    : added.find((entry) => entry.instance.id === selectedId);
+  const detail = selected === undefined ? null : (
+    <NbSearchServiceEditor
+      key={selected.instance.id}
+      instance={selected.instance}
+      descriptor={descriptors.get(selected.instance.provider_id)}
+      providerDraft={draftProviders[selected.instance.id]!}
+      credentialEnv={credentialEnvOf(credentialSlots, draftProviders[selected.instance.id]!)}
+      keyDraft={keyDrafts[selected.instance.id] ?? { mode: 'keep' }}
+      saving={saving}
+      unsaved={selected.unsaved}
+      readCredential={readCredential}
+      readKeyUsage={readKeyUsage}
+      onProviderChange={(patch) => { onUpdateProvider(selected.instance.id, patch); }}
+      onCredentialEnvChange={(env) => { onUpdateCredentialEnv(selected.instance.id, selected.instance.provider_id, env); }}
+      onKeyDraftChange={(next) => { onKeyDraftChange(selected.instance.id, next); }}
+      onRemove={() => { onRemoveService(selected.instance.id); setSelectedId(null); setNarrowPane('list'); }}
+      onBack={() => { setNarrowPane('list'); }}
+    />
+  );
+
+  const openService = (instanceId: string) => {
+    setSelectedId(instanceId);
+    setNarrowPane('detail');
   };
+
+  const serviceRow = (entry: ServiceEntry) => {
+    const { instance, unsaved } = entry;
+    const draft = draftProviders[instance.id];
+    const state = serviceState(instance, draft?.enabled ?? instance.enabled, { unsaved });
+    return (
+      <li key={instance.id}>
+        <button
+          type="button"
+          data-nb-search-service-row={instance.id}
+          data-nb-search-service-unsaved={unsaved ? 'true' : undefined}
+          aria-current={instance.id === selectedId ? 'true' : undefined}
+          onClick={() => { openService(instance.id); }}
+          className="row-interactive flex w-full min-w-0 flex-col items-start gap-0.5 py-1.5 pl-3 pr-2 text-left"
+        >
+          <span className="flex w-full min-w-0 items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{labelOf(instance.provider_id)}</span>
+            <span className={`shrink-0 text-[12px] ${SERVICE_STATE_CLASS[state]}`} data-nb-search-row-state={state}>
+              {t(serviceStateKey(state))}
+            </span>
+          </span>
+          <span className="max-w-full truncate font-mono text-[11px] text-ink-faint">{instance.id}</span>
+        </button>
+      </li>
+    );
+  };
+
+  const directoryRow = (entry: DirectoryEntry) => {
+    const { instance, added: alreadyAdded } = entry;
+    const draft = draftProviders[instance.id];
+    const state = serviceState(instance, draft?.enabled ?? instance.enabled);
+    return (
+      <li key={instance.id}>
+        <button
+          type="button"
+          data-nb-search-directory-row={instance.id}
+          aria-current={instance.id === selectedId ? 'true' : undefined}
+          onClick={() => {
+            setDirectoryOpen(false);
+            if (!alreadyAdded) onAddService(instance.id);
+            openService(instance.id);
+          }}
+          className="row-interactive flex w-full min-w-0 flex-col items-start gap-0.5 py-1.5 pl-3 pr-2 text-left"
+        >
+          <span className="flex w-full min-w-0 items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{entry.label}</span>
+            <span className={`shrink-0 text-[12px] ${alreadyAdded ? SERVICE_STATE_CLASS[state] : 'text-ink-faint'}`}>
+              {alreadyAdded
+                ? t(serviceStateKey(state))
+                : instance.credential.requirement === 'none'
+                  ? t('st.nbSearch.services.keyless')
+                  : t('st.nbSearch.services.needsKey')}
+            </span>
+          </span>
+          <span className="flex w-full min-w-0 items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={instance.id}>
+              {instance.id}
+            </span>
+            {alreadyAdded ? null : (
+              <span className="shrink-0 text-[12px] font-medium text-ink-soft">
+                {t('st.nbSearch.services.addOne')}
+              </span>
+            )}
+          </span>
+        </button>
+      </li>
+    );
+  };
+
+  const list = (
+    <nav aria-label={t('st.nbSearch.services.listTitle')} className="space-y-2" data-nb-search-services>
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+        <p className="text-[12px] font-medium text-ink-soft">{t('st.nbSearch.services.listTitle')}</p>
+        {/* With nothing configured the empty state owns the single action, so
+            the header does not offer a second way to do the same thing. */}
+        {added.length === 0 && !directoryOpen && !instanceDraftOpen ? null : (
+          <span className="flex min-w-0 flex-wrap items-center gap-2">
+            {/* Two different jobs, so two entries: the catalogue lists instances
+                the server already reports, this one builds a second instance of
+                one service that does not exist yet. */}
+            <button
+              type="button"
+              className={`${SECONDARY_BUTTON} shrink-0`}
+              aria-expanded={instanceDraftOpen}
+              data-nb-search-new-instance
+              onClick={() => {
+                setInstanceDraftOpen((open) => !open);
+                setDirectoryOpen(false);
+              }}
+            >
+              <span className="inline-flex items-center gap-1">
+                <Icon name={instanceDraftOpen ? 'close' : 'plus'} size={12} />
+                {instanceDraftOpen ? t('st.nbSearch.custom.close') : t('st.nbSearch.services.addInstance')}
+              </span>
+            </button>
+            <button
+              type="button"
+              className={`${SECONDARY_BUTTON} shrink-0`}
+              aria-expanded={directoryOpen}
+              data-nb-search-add-service
+              onClick={() => {
+                setDirectoryOpen((open) => !open);
+                setInstanceDraftOpen(false);
+              }}
+            >
+              <span className="inline-flex items-center gap-1">
+                <Icon name={directoryOpen ? 'close' : 'plus'} size={12} />
+                {directoryOpen ? t('st.nbSearch.services.cancelAdd') : t('st.nbSearch.services.add')}
+              </span>
+            </button>
+          </span>
+        )}
+      </div>
+
+      {directoryOpen ? (
+        <div className="space-y-2" data-nb-search-directory>
+          <Hint>{t('st.nbSearch.services.directoryHint')}</Hint>
+          <ListToolbar
+            view={directoryView}
+            total={directory.length}
+            searchLabel={t('st.nbSearch.services.directoryTitle')}
+            searchPlaceholder={t('st.nbSearch.services.searchPlaceholder')}
+            showDensity={false}
+          />
+          {directory.length === 0 ? (
+            <ListEmpty kind="none" title={t('st.nbSearch.services.directoryEmpty')} />
+          ) : directoryView.visible.length === 0 ? (
+            <ListEmpty
+              kind="no-match"
+              title={t('st.nbSearch.services.noMatch', { query: directoryView.query.trim() })}
+              onClear={directoryView.clear}
+            />
+          ) : (
+            <ul className="space-y-0.5">{directoryView.visible.map(directoryRow)}</ul>
+          )}
+        </div>
+      ) : instanceDraftOpen ? (
+        <NbSearchInstanceEditor
+          capabilities={capabilities}
+          draft={nbSearchDraft}
+          saving={saving}
+          onCancel={() => { setInstanceDraftOpen(false); }}
+          onCreated={(next, instanceId) => {
+            // The editor hands back a complete draft (this instance's own slot
+            // and variable included). Adding it to the list must not drop that,
+            // nor anything else already drafted.
+            onDraftChange(next);
+            onAddService(instanceId);
+            setInstanceDraftOpen(false);
+            openService(instanceId);
+          }}
+        />
+      ) : added.length === 0 ? (
+        <ListEmpty
+          kind="none"
+          title={t('st.nbSearch.services.emptyTitle')}
+          body={t('st.nbSearch.services.emptyBody')}
+          action={(
+            <button
+              type="button"
+              className={PRIMARY_BUTTON}
+              data-nb-search-add-service-empty
+              onClick={() => { setDirectoryOpen(true); }}
+            >
+              {t('st.nbSearch.services.emptyAction')}
+            </button>
+          )}
+        />
+      ) : (
+        <ul className="space-y-0.5" data-nb-search-service-rows>{added.map(serviceRow)}</ul>
+      )}
+
+      <p className="px-3 text-[12px] leading-snug text-ink-faint" data-nb-search-default-summary>
+        {defaultSummary(t, capabilities)}
+      </p>
+    </nav>
+  );
 
   return (
     <SectionCard id="st-card-search-providers" title={t('st.nbSearch.providersTitle')}>
-      <div className="space-y-3">
-        <Hint>{t('st.nbSearch.providersHint')}</Hint>
-
-        <ListToolbar view={view} total={instances.length} filters={filters} sorts={sorts}
-          searchLabel={t('st.nbSearch.providers.search')} searchPlaceholder={t('st.nbSearch.providers.filterPlaceholder')} />
-
-        <fieldset disabled={saving} className="disabled:opacity-60">
-          {view.visible.length === 0 ? (
-            <ListEmpty kind="no-match" title={t('st.nbSearch.providers.noMatchTitle')} body={t('st.nbSearch.providers.emptyFilter')}
-              onClear={view.clear} />
-          ) : (
-            <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('st.nbSearch.providersTitle')}
-              virtualizeAfter={Number.POSITIVE_INFINITY}
-              renderRow={(instance) => (
-                <ProviderInstanceCard
-                  instance={instance}
-                  descriptor={descriptorByProvider.get(instance.provider_id)}
-                  providerDraft={draftProviders[instance.id]!}
-                  credentialEnv={getCredentialEnv(instance.id)}
-                  onChange={(patch) => {
-                    onUpdateProvider(instance.id, patch);
-                  }}
-                  onCredentialEnvChange={(env) => {
-                    onUpdateCredentialEnv(instance.id, instance.provider_id, env);
-                  }}
-                  readCredential={readCredential}
-                  writeCredential={writeCredential}
-                  credentialDisabled={credentialDisabled}
-                  density={view.density}
-                />
-              )} />
-          )}
-        </fieldset>
-      </div>
+      <SettingsDetailLayout
+        narrowPane={directoryOpen || instanceDraftOpen ? 'list' : narrowPane}
+        list={list}
+        detail={detail}
+      />
     </SectionCard>
   );
+}
+
+function credentialEnvOf(credentialSlots: unknown, draft: NbSearchProviderDraft): string {
+  const slots = (credentialSlots as Record<string, { env?: string } | null> | undefined) ?? {};
+  return slots[draft.credentialSlotId]?.env ?? '';
+}
+
+/**
+ * One quiet line stating what search currently runs on. Inheriting the default
+ * is the difference the old page got wrong — it printed "off" for a lane the
+ * engine was in fact providing.
+ */
+function defaultSummary(
+  t: ReturnType<typeof useI18n>['t'],
+  capabilities: NbSearchCapabilities,
+): string {
+  const lane = capabilities.search.default_lane;
+  return lane === undefined
+    ? t('st.nbSearch.inheritDefaultNone')
+    : t('st.nbSearch.inheritDefault', { lane });
 }

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import type { AgentCapabilitiesQuery, AgentPanelProfile, NamedAgentProfile, AgentCapabilityTarget } from '@kiki/protocol';
+import type { AgentCapabilitiesQuery, AgentPanelProfile, NamedAgentProfile, AgentCapabilityTarget, AgentPromptDiagnostics } from '@kiki/protocol';
+import { PromptEffectiveDetails } from './PromptEffectiveDetails';
 import {
   agentProfileValueOrigin,
   summarizeNamedAgentModelProfile,
@@ -28,6 +29,9 @@ export interface ProfileDetailSectionsProps {
   readonly profile?: AgentPanelProfile;
   readonly identity?: AgentIdentity;
   readonly query?: AgentCapabilitiesQuery;
+  readonly prompt?: AgentPromptDiagnostics;
+  readonly promptUnavailable?: boolean;
+  readonly promptLoading?: boolean;
   readonly subagentTargets?: readonly AgentSubagentTarget[];
   readonly toolCapabilities?: readonly AgentToolCapability[];
   readonly skills?: readonly AgentSkillCapability[];
@@ -62,6 +66,9 @@ export function ProfileDetailSections({
   profile: propProfile,
   identity,
   query,
+  prompt,
+  promptUnavailable,
+  promptLoading,
   toolCapabilities,
   skills,
   dispatchTargets,
@@ -157,11 +164,11 @@ export function ProfileDetailSections({
   const executionRestriction = profile?.execution_restriction;
 
   const spawnConstraints = profile?.spawn_constraints ?? bound?.spawn_constraints;
-  const subagents = bound?.subagents;
-  const profilePolicy = profile?.subagent_policy ?? bound?.subagent_policy;
+  const presetList = bound?.allowed_subagents;
+  const profilePolicy = bound?.can_spawn_subagents === false ? 'fixed' as const : undefined;
   const hasDerivedConfiguration =
     spawnConstraints !== undefined ||
-    (subagents !== undefined && subagents.length > 0) ||
+    (presetList !== undefined && presetList.length > 0) ||
     profilePolicy !== undefined ||
     (dispatchTargets !== undefined && dispatchTargets.length > 0);
 
@@ -219,6 +226,8 @@ export function ProfileDetailSections({
           </dl>
         </div>
       </details>
+
+      <PromptEffectiveDetails value={prompt} query={query} unavailable={promptUnavailable} loading={promptLoading} />
 
       {/* 1b. 磁盘上的同名定义：与上面这份绑定定义不是同一个文件时单列 */}
       {other ? (
@@ -530,13 +539,13 @@ export function ProfileDetailSections({
             <p className="italic text-ink-faint">{t('agentPanel.unrestricted')}</p>
           ) : null}
 
-          {subagents && subagents.length > 0 ? (
+          {presetList && presetList.length > 0 ? (
             <div className="space-y-1 pt-1">
               <div className="text-[10px] font-semibold uppercase text-ink-faint">
-                {t('agentPanel.subagents')} ({subagents.length})
+                {t('agentPanel.subagents')} ({presetList.length})
               </div>
               <SubagentLeaseList
-                items={subagents}
+                items={presetList}
                 variant="cards"
                 onOpen={
                   onOpenTarget

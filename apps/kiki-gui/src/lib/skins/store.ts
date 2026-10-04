@@ -19,8 +19,15 @@
  * silently resolving to a different skin with the same name.
  */
 
-import { parseSkinFile, type SkinFile } from '@kiki/protocol';
+import { parseSkinFile, type SkinFile, type SpacePreferenceValues } from '@kiki/protocol';
 
+import {
+  spaceAuthoritySnapshot,
+  spacePreferenceEnabled,
+  spacePreferenceValue,
+  subscribeSpaceAuthority,
+  writeSpacePreferenceItem,
+} from '../spaceAuthority';
 import type { SkinTweaks } from './apply';
 import { DEFAULT_SKIN_ID, RETIRED_BUILTIN_SKIN_IDS, findBuiltinSkin } from './builtin';
 import { spaceStorage } from '../spaceStorage';
@@ -115,6 +122,76 @@ export function readSkinPrefs(): SkinPrefs {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Space authority: a space can carry its own skin selection and tweaks. When
+// it does, those decide what the document shows and every edit is a space
+// change; the key below stays this device's own copy for spaces without one.
+// ---------------------------------------------------------------------------
+
+/**
+ * The stylesheet's `--spacing` is a rem step while the protocol carries the
+ * density as a multiple of it, so the default density (0.25rem) is 1 on the
+ * wire. The editor offers 0.88 / 1 / 1.16, but a space can carry the entire
+ * protocol range 0.5–2. Its 0.125–0.5rem step renders directly in CSS; the older
+ * device/file normalizer keeps its own narrower range.
+ */
+const SPACING_BASE_REM = 0.25;
+
+function normalizeSpaceSkinPrefs(raw: SkinPrefs): SkinPrefs {
+  const normalized = normalizeSkinPrefs(raw);
+  const spacing = raw.tweaks.spacing;
+  if (spacing === undefined || !Number.isFinite(spacing) || spacing < 0.5 * SPACING_BASE_REM || spacing > 2 * SPACING_BASE_REM) return normalized;
+  return { ...normalized, tweaks: { ...normalized.tweaks, spacing } };
+}
+
+function tweaksFromSpace(tweaks: SpacePreferenceValues['tweaks']): SkinTweaks {
+  return {
+    ...(tweaks.accent === undefined ? {} : { accent: tweaks.accent }),
+    ...(tweaks.fontSans === undefined ? {} : { fontSans: tweaks.fontSans }),
+    ...(tweaks.fontMono === undefined ? {} : { fontMono: tweaks.fontMono }),
+    ...(tweaks.fontProse === undefined ? {} : { fontProse: tweaks.fontProse }),
+    ...(tweaks.radius === undefined ? {} : { radius: tweaks.radius }),
+    ...(tweaks.spacing === undefined ? {} : { spacing: tweaks.spacing * SPACING_BASE_REM }),
+  };
+}
+
+function tweaksToSpace(tweaks: SkinTweaks): SpacePreferenceValues['tweaks'] {
+  return {
+    ...(tweaks.accent === undefined ? {} : { accent: tweaks.accent }),
+    ...(tweaks.fontSans === undefined ? {} : { fontSans: tweaks.fontSans }),
+    ...(tweaks.fontMono === undefined ? {} : { fontMono: tweaks.fontMono }),
+    ...(tweaks.fontProse === undefined ? {} : { fontProse: tweaks.fontProse }),
+    ...(tweaks.radius === undefined ? {} : { radius: tweaks.radius }),
+    ...(tweaks.spacing === undefined ? {} : { spacing: Number((tweaks.spacing / SPACING_BASE_REM).toFixed(4)) }),
+  };
+}
+
+/** The wire form of this device's tweaks, for the one-time import (§6.2). */
+export { tweaksToSpace as spaceTweaksOf };
+
+/** The space's own selection and tweaks, or `undefined` when it has none. */
+export function spaceSkinPrefs(): SkinPrefs | undefined {
+  const selection = spacePreferenceValue('skin');
+  if (selection === undefined) return undefined;
+  return normalizeSpaceSkinPrefs({ selection, tweaks: tweaksFromSpace(spacePreferenceValue('tweaks') ?? {}) });
+}
+
+// Memoized against the authority state so `useSyncExternalStore` sees one
+// stable object per change instead of a fresh one per read.
+let spaceSource: unknown;
+let spaceValue: SkinPrefs | undefined;
+let spaceValueReady = false;
+
+function spaceSkinPrefsMemo(): SkinPrefs | undefined {
+  const authority = spaceAuthoritySnapshot();
+  if (!spaceValueReady || spaceSource !== authority) {
+    spaceSource = authority;
+    spaceValue = spaceSkinPrefs();
+    spaceValueReady = true;
+  }
+  return spaceValue;
+}
+
 // Pub/sub so the settings editor's live preview, the document sync loop, and
 // any other reader move together without prop drilling through the app.
 const listeners = new Set<() => void>();
@@ -132,6 +209,11 @@ export function subscribeSkinPrefs(listener: () => void): () => void {
  * loop. The transient preview deliberately does NOT move this snapshot.
  */
 export function skinPrefsSnapshot(): SkinPrefs {
+  const fromSpace = spaceSkinPrefsMemo();
+  if (fromSpace !== undefined) {
+    snapshotCache = fromSpace;
+    return fromSpace;
+  }
   snapshotCache ??= readSkinPrefs();
   return snapshotCache;
 }
@@ -156,7 +238,15 @@ function publishStored(next: SkinPrefs): void {
 }
 
 export function writeSkinPrefs(patch: Partial<SkinPrefs>): void {
-  const next = normalizeSkinPrefs({ ...skinPrefsSnapshot(), ...patch });
+  const raw = { ...skinPrefsSnapshot(), ...patch };
+  const next = spacePreferenceEnabled() ? normalizeSpaceSkinPrefs(raw) : normalizeSkinPrefs(raw);
+  // A space that carries its own preferences owns them: the edit is a space
+  // change, and the device key is left alone so it keeps meaning "this machine".
+  if (spacePreferenceEnabled()) {
+    void writeSpacePreferenceItem('skin', next.selection);
+    if (patch.tweaks !== undefined) void writeSpacePreferenceItem('tweaks', tweaksToSpace(next.tweaks));
+    return;
+  }
   try {
     spaceStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
@@ -164,6 +254,13 @@ export function writeSkinPrefs(patch: Partial<SkinPrefs>): void {
   }
   publishStored(next);
 }
+
+// The space's values can arrive after the first paint and change under a draft;
+// either way the document re-applies through the same subscriber set.
+subscribeSpaceAuthority(() => {
+  snapshotCache = undefined;
+  notify();
+});
 
 /**
  * Unsaved preview state. The settings editor writes here on every keystroke so

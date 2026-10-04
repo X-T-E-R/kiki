@@ -74,6 +74,7 @@ function stableMapValues<K, V>(map: ReadonlyMap<K, V>): readonly V[] {
 
 export class AgentTranscript {
   #state: AgentState = EMPTY_AGENT_STATE;
+  #trimmedTurns = 0;
   readonly #listeners = new Set<TranscriptListener>();
   readonly #appendDirty = new Set<string>();
   readonly #toolCalls = new Map<string, TranscriptToolCallLookup>();
@@ -288,10 +289,44 @@ export class AgentTranscript {
     return {
       turns,
       estimatedBytes,
-      trimmedTurns: 0,
+      trimmedTurns: this.#trimmedTurns,
       overBudget: limits !== undefined &&
         (estimatedBytes > limits.maxBytes || turns > limits.tailTurns),
     };
+  }
+
+  /** Release only completed entities reproduced from durable history; this is residency, not a logical deletion. */
+  releaseDurableHistory(durable: AgentTranscriptSnapshot, limits: TranscriptResidentLimits): readonly string[] {
+    const durableTurns = new Map(durable.items.filter((item): item is TranscriptTurn => item.kind === 'turn').map((turn) => [turn.turnId, turn]));
+    let turns = this.#state.items.filter((item) => item.kind === 'turn').length;
+    let bytes = estimateResidentStateBytes(this.#state);
+    const released: string[] = [];
+    const newest = this.#state.items.findLast((item) => item.kind === 'turn');
+    for (const item of this.#state.items) {
+      if (turns <= limits.tailTurns && bytes <= limits.maxBytes) break;
+      if (item.kind !== 'turn' || item.state === 'running' || item === newest) continue;
+      const persisted = durableTurns.get(item.turnId);
+      if (persisted === undefined || !sameResidentEntity(item, persisted)) continue;
+      released.push(item.turnId);
+      turns -= 1;
+      bytes -= estimateResidentValueBytes(item);
+    }
+    if (released.length === 0) return released;
+    const ids = new Set(released);
+    const items = this.#state.items.filter((item) => item.kind !== 'turn' || !ids.has(item.turnId));
+    const selected = windowGlobals(this.#state, items, {
+      taskLimit: limits.tailTurns, attachmentLimit: limits.tailTurns, promptLimit: limits.tailTurns,
+    });
+    const tasks = retainResidentEntities(this.#state.tasks, durable.tasks, (task) => task.taskId, new Set(selected.tasks.map((task) => task.taskId)));
+    const attachments = retainResidentEntities(this.#state.attachments, durable.attachments, (attachment) => attachment.attachmentId, new Set(selected.attachments.map((attachment) => attachment.attachmentId)));
+    const prompts = retainResidentEntities(this.#state.prompts, durable.prompts, (prompt) => prompt.promptId, new Set(selected.prompts.map((prompt) => prompt.promptId)));
+    this.#state = { ...this.#state, items, tasks, attachments, prompts, hasMoreOlder: true };
+    this.rebuildToolCallIndex(items);
+    this.#trimmedTurns += released.length;
+    for (const key of this.#appendDirty) {
+      if (released.some((turnId) => key.startsWith(`frame:${turnId}:`)) || (key.startsWith('task:') && !tasks.has(key.slice(5)))) this.#appendDirty.delete(key);
+    }
+    return released;
   }
 
   private syncToolCallIndex(op: TranscriptOperation, state: AgentState): void {
@@ -346,6 +381,15 @@ interface WindowedGlobals {
   readonly attachmentRefs: readonly TranscriptDetailRef[];
   readonly promptRefs: readonly TranscriptDetailRef[];
   readonly coverage: TranscriptGlobalCoverage;
+}
+
+function sameResidentEntity(left: unknown, right: unknown): boolean {
+  return left === right || JSON.stringify(left) === JSON.stringify(right);
+}
+
+function retainResidentEntities<K, V>(current: ReadonlyMap<K, V>, durable: readonly V[], id: (value: V) => K, keep: ReadonlySet<K>): ReadonlyMap<K, V> {
+  const persisted = new Map(durable.map((value) => [id(value), value]));
+  return new Map([...current].filter(([key, value]) => keep.has(key) || !persisted.has(key) || !sameResidentEntity(value, persisted.get(key))));
 }
 
 function windowGlobals(

@@ -4,7 +4,7 @@
  * Owns the default host/port, option parsers, and health/readiness probes.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { ServerLogLevel } from '@kiki/kap-server';
@@ -160,6 +160,16 @@ export function tryResolveServerToken(homeDir: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Read the local attach capability from the trusted home, never from an HTTP endpoint. */
+export function tryResolveLocalOwnerToken(homeDir: string): string | undefined {
+  try {
+    const path = join(homeDir, 'server.local-owner');
+    const info = statSync(path);
+    if (!info.isFile() || info.size > 4096 || (process.platform !== 'win32' && (info.mode & 0o077) !== 0)) return undefined;
+    return readFileSync(path, 'utf8').trim() || undefined;
+  } catch { return undefined; }
 }
 
 /** An `Authorization: Bearer <token>` header bag for `fetch`. */

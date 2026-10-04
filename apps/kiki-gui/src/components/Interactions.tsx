@@ -889,23 +889,29 @@ function QuestionItemView({
   );
 }
 
-export function QuestionCard({
-  block,
-  onAnswer,
-  onDismiss,
-  originAgentName,
-}: {
+interface QuestionCardProps {
   block: QuestionBlock;
   onAnswer: (answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismiss: () => Promise<void>;
-  /** Display name of the subagent that asked, when not main. */
   originAgentName?: string;
-}) {
+}
+
+export function QuestionCard(props: QuestionCardProps) {
+  return <QuestionCardContent key={`${props.block.request.session_id}:${props.block.request.question_id}`} {...props} />;
+}
+
+function QuestionCardContent({ block, onAnswer, onDismiss, originAgentName }: QuestionCardProps) {
   const { t, tp } = useI18n();
   const [selections, setSelections] = useState<Record<string, QuestionItemAnswer>>({});
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [sent, setSent] = useState<null | 'answered' | 'dismissed'>(null);
+  const responding = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   if (block.outcome !== undefined) {
     return <HistoryLine node={block} originName={originAgentName} />;
@@ -926,7 +932,7 @@ export function QuestionCard({
   const unansweredCount = block.request.questions.filter((item) => !isItemAnswered(item)).length;
 
   const submit = () => {
-    if (unansweredCount > 0) return;
+    if (responding.current || block.outcome !== undefined || unansweredCount > 0) return;
     const answers: Record<string, QuestionAnswer> = {};
     for (const item of block.request.questions) {
       const selection = answerFor(item.id);
@@ -947,11 +953,14 @@ export function QuestionCard({
       }
     }
     if (Object.keys(answers).length === 0) return;
+    responding.current = true;
     setBusy(true);
     setFailed(null);
     onAnswer(answers)
-      .then(() => { setSent('answered'); })
+      .then(() => { if (mounted.current) setSent('answered'); })
       .catch((error: unknown) => {
+        if (!mounted.current) return;
+        responding.current = false;
         setBusy(false);
         setFailed(
           error instanceof Error
@@ -962,11 +971,15 @@ export function QuestionCard({
   };
 
   const dismiss = () => {
+    if (responding.current || block.outcome !== undefined) return;
+    responding.current = true;
     setBusy(true);
     setFailed(null);
     onDismiss()
-      .then(() => { setSent('dismissed'); })
+      .then(() => { if (mounted.current) setSent('dismissed'); })
       .catch((error: unknown) => {
+        if (!mounted.current) return;
+        responding.current = false;
         setBusy(false);
         setFailed(
           error instanceof Error

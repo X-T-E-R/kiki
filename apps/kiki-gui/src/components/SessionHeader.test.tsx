@@ -93,6 +93,17 @@ describe('session header overflow menu', () => {
     ]);
   });
 
+  it('opens prompt details from the menu and closes the menu first', () => {
+    const onPromptDetails = vi.fn();
+    const { container } = actionsMenu({ onPromptDetails });
+    click(container.querySelector('button[aria-haspopup="menu"]'));
+    const item = container.querySelector('[data-prompt-details-open]');
+    expect(item?.textContent).toBe('Effective prompts');
+    click(item);
+    expect(onPromptDetails).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+  });
+
   it('offers a side question above fork when the session can ask one', () => {
     const onSideQuestion = vi.fn();
     const { container } = actionsMenu({ onSideQuestion });

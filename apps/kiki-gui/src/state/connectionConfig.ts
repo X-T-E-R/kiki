@@ -18,8 +18,14 @@ export interface SshProfile {
 export interface ConnectionSelection {
   readonly config: ConnectionConfig;
   readonly persist: boolean;
-  readonly source: 'desktop' | 'deep-link' | 'stored' | 'manual' | 'local-detection' | 'ssh';
+  /**
+   * `web-cookie` is a browser that redeemed a web entry link: it is
+   * authenticated to its own origin by an HttpOnly cookie, so it carries no
+   * token and must not be persisted or re-pointed.
+   */
+  readonly source: 'desktop' | 'deep-link' | 'stored' | 'manual' | 'local-detection' | 'ssh' | 'remote' | 'web-cookie';
   readonly scopeId?: string;
+  readonly connectionId?: string;
   readonly profile?: SshProfile;
   readonly tunnelId?: string;
   readonly serverHomeId?: string;
@@ -43,7 +49,11 @@ export function scrubConnectionUrl(
   const hashParts = location.hash.startsWith('#')
     ? location.hash.slice(1).split('&')
     : [];
-  const scrubbedHashParts = hashParts.filter((part) => !part.startsWith('token='));
+  // `access` is spent by the web-access bootstrap before this runs; dropping it
+  // here too means no ordering of the two can leave a one-time code visible.
+  const scrubbedHashParts = hashParts.filter(
+    (part) => !part.startsWith('token=') && !part.startsWith('access='),
+  );
   const hash =
     scrubbedHashParts.length === hashParts.length
       ? location.hash

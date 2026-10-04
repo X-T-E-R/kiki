@@ -21,10 +21,12 @@
  * document fallback).
  */
 
-import { act, type ComponentProps, type ReactNode } from 'react';
+import { act, useLayoutEffect, useState, type ComponentProps, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { createMemoryRouter, MemoryRouter, RouterProvider, useLocation, useNavigationType } from 'react-router-dom';
+import { clearNavHistory, getCurrentVisit, recordNavigation } from '../lib/navHistory';
+import { getReadingSnapshot, saveReadingSnapshot, timelineSnapshotKey, type TimelineReadingSnapshot } from '../lib/navViewState';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
@@ -532,6 +534,8 @@ describe('media preview wiring', () => {
         />
       </MediaPreviewProvider>,
     );
+    expect(probe.container.querySelector('img')).toBeNull();
+    await act(async () => { probe.container.querySelector<HTMLButtonElement>('button')!.click(); });
     const thumb = probe.container.querySelector('img');
     expect(thumb?.getAttribute('src')).toBe('data:image/png;base64,AA');
     await act(async () => {
@@ -556,6 +560,7 @@ describe('media preview wiring', () => {
         media: [{ kind: 'image', url: 'data:image/png;base64,AA', mime: 'image/png' }],
       }),
     ]);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-user-media] button')!.click(); });
     const img = container.querySelector('img');
     const bubble = [...container.querySelectorAll('div')].find(
       (div) => div.textContent === 'look at this',
@@ -1409,6 +1414,13 @@ describe('live and event chrome', () => {
     const items = [...container.querySelectorAll('[data-notice-reason-list] li')].map((item) => item.textContent);
     expect(items).toHaveLength(3);
     expect(items[2]).toBe('future_code');
+  });
+
+  it('shows an over-limit notes notice without requiring the reasons panel to be opened', async () => {
+    const container = await renderTranscript([{ kind: 'notice', id: 'notes-budget', text: 'compaction', tone: 'neutral',
+      i18n: { key: 'transcript.marker.compactionSummarize' }, reasonCodes: ['notes_directives_budget'], createdAt: '2026-01-01T00:00:00.000Z' }]);
+    expect(container.querySelector('[data-notice-reasons-toggle]')?.textContent).toBe('The summary’s task instructions exceed the notes limit. Existing notes are unchanged; the full text remains in the handoff for review.');
+    expect(container.querySelector('[data-notice-reason-list]')).toBeNull();
   });
 
   it('renders a projected image compression caption as a separate folded reminder, not user text', async () => {
@@ -2634,6 +2646,14 @@ async function settleVirtualizer(): Promise<void> {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 35));
   });
+}
+
+async function settleReadingFrames(): Promise<void> {
+  // Flush React between measured frames, as the browser does. One long act
+  // batches all virtual-row positioning commits until after restore finishes.
+  for (let frame = 0; frame < 20; frame += 1) {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 16)); });
+  }
 }
 
 function transcriptDistanceFromEnd(scroll: HTMLElement): number {
@@ -4232,6 +4252,72 @@ describe('background task notification folding (TUI-01)', () => {
     };
   }
 
+  it('renders question answers once per task and retains different questions with the same title', async () => {
+    const item = (id: string, ordinal: number, answer: string, echo: boolean): SnapshotItem => ({
+      kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'task', taskId: id },
+      steps: [{
+        kind: 'step', stepId: `t${ordinal}.1`, turnId: `t${ordinal}`, ordinal: 1, state: 'completed',
+        frames: [
+          ...(echo ? [{ kind: 'text', frameId: `task-notified:${id}`, role: 'user', taskId: id, origin: { kind: 'task', taskId: id }, text: 'Background question answered\nThe user answered "Which database?".' } as const] : []),
+          { kind: 'text', frameId: `receipt-${id}`, role: 'user', origin: { kind: 'task', taskId: id }, text: `<notification id="task:${id}:completed" category="task" type="task.completed" source_kind="background_task" source_id="${id}">\nTitle: Background question answered\nSeverity: info\nThe user answered "Which database?".\n<answer>\n{"answers":{"Which database?":"${answer}"}}\n</answer>\n</notification>` },
+        ],
+      }],
+    });
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items: [item('question-1', 1, 'Postgres', true), item('question-2', 2, 'SQLite', false)] });
+    expect(blocks.flatMap((block) => block.kind === 'system' && block.variant === 'task' ? [block.taskId] : [])).toEqual(['question-1', 'question-2']);
+    const container = await renderTranscript(blocks);
+    const rows = [...container.querySelectorAll('[data-system="task"]')];
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.textContent).toContain('Background question answered');
+      await act(async () => { click(row.querySelector('[data-activity-toggle]')!); });
+    }
+    expect(rows[0]?.textContent).toContain('<answer>\n{"answers":{"Which database?":"Postgres"}}\n</answer>');
+    expect(rows[1]?.textContent).toContain('<answer>\n{"answers":{"Which database?":"SQLite"}}\n</answer>');
+  });
+
+  it('counts one completion per execution and keeps resumed receipts independent of the latest roster summary', async () => {
+    const card: Block = {
+      kind: 'subagent', id: 'subagent-inspector', subagentId: 'inspector', parentAgentId: 'main', parentToolCallId: undefined,
+      parentTurnId: 't1', name: 'Inspector', description: undefined, model: 'example-model', thinkingEffort: 'high',
+      status: 'completed', summary: 'Latest roster result must not replace past receipts.', error: undefined,
+      startedAt: '2026-01-01T00:00:00.000Z', endedAt: '2026-01-01T00:03:00.000Z', toolCallCount: 0, transcript: [],
+    };
+    const note = (id: string, taskId: string, body: string): Block => ({
+      kind: 'system', id, taskId, variant: 'task', turnId: 't2', createdAt: '2026-01-01T00:03:00.000Z',
+      text: `Title: Background agent completed\n${body}`,
+    });
+    const tasks = ['first', 'second'].map((id, index) => ({
+      id, session_id: 'session_test', kind: 'subagent' as const, agent_id: 'inspector', description: 'Inspect', status: 'completed' as const,
+      created_at: '2026-01-01T00:00:00.000Z', started_at: '2026-01-01T00:00:00.000Z', completed_at: `2026-01-01T00:0${index + 1}:00.000Z`,
+      output_preview: index === 0 ? 'First execution result.' : 'Second execution result.',
+    }));
+    const openAgent = vi.fn();
+    const container = await renderTranscript([
+      card, userBlock({ id: 'next-turn', text: 'Continue.', turnId: 't2' }),
+      { kind: 'thinking', id: 'thought', text: 'Compare.', streaming: false, turnId: 't2', createdAt: undefined },
+      note('system-receipt-first', 'first', 'First execution result.'),
+      note('system-agent-frame-task-notified:first', 'first', 'Completed.'),
+      note('system-receipt-second', 'second', 'Second execution result.'),
+      { ...assistantBlock('reply', 'Reviewed.'), turnId: 't2' },
+    ], undefined, { tasks }, { onOpenAgent: openAgent });
+    const fold = container.querySelector('[data-history-fold]')!;
+    expect(fold.textContent).toContain('2 subagents finished');
+    await act(async () => { flushSync(() => { click(fold.querySelector('button')!); }); });
+    const endings = [...container.querySelectorAll('[data-subagent-ended]')];
+    expect(endings).toHaveLength(2);
+    expect(endings[0]?.textContent).toContain('First execution result.');
+    expect(endings[1]?.textContent).toContain('Second execution result.');
+    expect(endings[0]?.textContent).toContain('1m');
+    expect(endings[1]?.textContent).toContain('2m');
+    expect(endings.every((row) => !row.textContent?.includes('Latest roster result'))).toBe(true);
+    expect(container.querySelectorAll('[data-subagent-ended-dispatch="inspector"]')).toHaveLength(2);
+    await act(async () => { click(endings[0]!.querySelector('[data-agent-open]')!); });
+    expect(openAgent).toHaveBeenCalledWith('inspector');
+    await act(async () => { click(endings[0]!.querySelector('[data-subagent-ended-dispatch]')!); });
+    expect(container.querySelector('[data-subagent-id="inspector"]')).not.toBeNull();
+  });
+
   it('keeps every background notification inline, including successes', async () => {
     const blocks = agentTranscriptToBlocks({
       agent_id: 'main',
@@ -4680,6 +4766,139 @@ describe('settled history folds and the unified locate entry', () => {
     ];
   };
 
+  it('N2 consumer measures a short restored row before accepting its estimated landing', async () => {
+    act(() => clearNavHistory());
+    const location = { key: 'short-row-return', pathname: '/s/session_test', search: '', hash: '' };
+    const visit = recordNavigation({ location, scope: { homeId: 'main', scopeId: 'local' }, action: 'PUSH' });
+    saveReadingSnapshot(visit.visitId, timelineSnapshotKey('session_test'), { anchor: { key: 'short-35', atEnd: false, offset: 10 }, openFolds: [] });
+    const blocks = virtualBlocks(90, 'short');
+    for (const block of blocks) blockHeights.set(block.id, 26);
+    const probe = makeRoot();
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const scroll = this.closest<HTMLElement>('[data-transcript-scroll]');
+      const row = this.closest<HTMLElement>('[data-transcript-virtual-item]');
+      const top = row === null ? 0 : virtualItemStart(row) - (scroll?.scrollTop ?? 0);
+      return { x: 0, y: top, top, bottom: top + this.offsetHeight, left: 0, right: 760, width: 760, height: this.offsetHeight, toJSON: () => ({}) };
+    });
+    const router = createMemoryRouter([{ path: '*', element: <I18nProvider>{virtualTranscript(transcriptState(blocks))}</I18nProvider> }], { initialEntries: [location] });
+    try {
+      await act(async () => { probe.root.render(<RouterProvider router={router} />); });
+      await settleReadingFrames();
+      const block = probe.container.querySelector<HTMLElement>('[data-block-id="short-35"]')!;
+      expect(block).not.toBeNull();
+      expect(block.getBoundingClientRect().top).toBeCloseTo(-10, 0);
+      expect(probe.container.querySelector('[data-reading-restore-retry]')).toBeNull();
+    } finally {
+      await act(async () => { probe.root.unmount(); });
+      rect.mockRestore();
+      for (const block of blocks) blockHeights.delete(block.id);
+      act(() => clearNavHistory());
+    }
+  });
+
+  it.each(['paged', 'unknown'] as const)('N2 consumer retains a failed %s anchor and retries it without landing at end', async (coverage) => {
+    act(() => clearNavHistory());
+    const location = { key: 'reading-return', pathname: '/s/session_test', search: '', hash: '' };
+    const visit = recordNavigation({ location, scope: { homeId: 'main', scopeId: 'local' }, action: 'PUSH' });
+    const saved: TimelineReadingSnapshot = { anchor: { key: 'old-1', atEnd: false, offset: 17 }, openFolds: [], cardForms: {} };
+    saveReadingSnapshot(visit.visitId, timelineSnapshotKey('session_test'), saved);
+    const probe = makeRoot();
+    let fails = true;
+    let update!: (state: SessionViewState) => void;
+    const load = vi.fn(async () => {
+      if (fails) throw new Error('offline');
+      flushSync(() => update(transcriptState([...virtualBlocks(15, 'old'), ...virtualBlocks(30)], { hasMoreHistory: false })));
+      return true;
+    });
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const scroll = this.closest<HTMLElement>('[data-transcript-scroll]');
+      const row = this.closest<HTMLElement>('[data-transcript-virtual-item]');
+      const top = row === null ? 0 : virtualItemStart(row) - (scroll?.scrollTop ?? 0);
+      return { x: 0, y: top, top, bottom: top + this.offsetHeight, left: 0, right: 760, width: 760, height: this.offsetHeight, toJSON: () => ({}) };
+    });
+    function Page() {
+      const location = useLocation();
+      const action = useNavigationType();
+      useLayoutEffect(() => { recordNavigation({ location, scope: { homeId: 'main', scopeId: 'local' }, action }); }, [location, action]);
+      const [state, setState] = useState(transcriptState(virtualBlocks(30), { hasMoreHistory: coverage === 'paged', historyCoverageKind: 'unknown' }));
+      update = setState;
+      return location.pathname === '/away' ? <div>away</div> : virtualTranscript(state, load);
+    }
+    const router = createMemoryRouter([{ path: '*', element: <I18nProvider><Page /></I18nProvider> }], { initialEntries: [location] });
+    await act(async () => { probe.root.render(<RouterProvider router={router} />); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 180)); });
+    const scroll = probe.container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    expect(load).toHaveBeenCalledOnce();
+    expect(transcriptDistanceFromEnd(scroll)).toBeGreaterThan(80);
+    const retry = probe.container.querySelector<HTMLElement>('[data-reading-restore-retry]');
+    expect(retry).not.toBeNull();
+    await act(async () => { await router.navigate('/away'); });
+    expect(getReadingSnapshot(visit.visitId, timelineSnapshotKey('session_test'))).toEqual(saved);
+    await act(async () => { await router.navigate(-1); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 160)); });
+    expect(load).toHaveBeenCalledTimes(2);
+    fails = false;
+    await act(async () => { click(probe.container.querySelector('[data-reading-restore-retry]')!); });
+    await settleReadingFrames();
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(probe.container.querySelector('[data-reading-restore-retry]')).toBeNull();
+    expect(probe.container.querySelector<HTMLElement>('[data-block-id="old-1"]')!.getBoundingClientRect().top).toBeCloseTo(-17, 0);
+    await act(async () => { probe.root.unmount(); });
+    rect.mockRestore();
+    act(() => clearNavHistory());
+  });
+
+  it('N2 consumer returns a raw process block to its measured place inside a settled fold', async () => {
+    act(() => clearNavHistory());
+    const probe = makeRoot();
+    let settled = false;
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const scroll = this.closest<HTMLElement>('[data-transcript-scroll]');
+      const row = this.closest<HTMLElement>('[data-transcript-virtual-item]');
+      const memberInset = this.dataset['blockId'] === 'th1' && this.closest('[data-history-fold-members]') !== null ? 64 : 0;
+      const top = row === null ? 0 : virtualItemStart(row) + memberInset - (scroll?.scrollTop ?? 0);
+      return { x: 0, y: top, top, bottom: top + this.offsetHeight, left: 0, right: 760, width: 760, height: this.offsetHeight, toJSON: () => ({}) };
+    });
+    function Page() {
+      const location = useLocation();
+      const action = useNavigationType();
+      useLayoutEffect(() => { recordNavigation({ location, scope: { homeId: 'main', scopeId: 'local' }, action }); }, [location, action]);
+      if (location.pathname === '/away') return <div>away</div>;
+      const work = settled ? turnBlocks(1, 'reading') : [userBlock({ id: 'u1', text: 'reading', turnId: 't1' }), doneTool('tool1a', 't1'), think('th1', 't1')];
+      return <I18nProvider>{virtualTranscript(transcriptState([...virtualBlocks(30), ...work]))}</I18nProvider>;
+    }
+    const router = createMemoryRouter([{ path: '*', element: <Page /> }], { initialEntries: ['/s/session_test'] });
+    blockHeights.set('th1', 900);
+    // The expanded fold contains that same tall block; its outer height must
+    // contain the member, rather than allowing jsdom-only scroll overshoot.
+    blockHeights.set('fold-th1', 900);
+    try {
+      await act(async () => { probe.root.render(<RouterProvider router={router} />); });
+      await settleVirtualizer();
+      const scroll = probe.container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+      const source = probe.container.querySelector<HTMLElement>('[data-block-id="th1"]')!;
+      expect(source).not.toBeNull();
+      const sourceRow = source.closest<HTMLElement>('[data-transcript-virtual-item]')!;
+      await act(async () => { resizeElement(sourceRow, 900); });
+      await setTranscriptScroll(scroll, virtualItemStart(sourceRow) + 17);
+      await settleVirtualizer();
+      expect(transcriptDistanceFromEnd(scroll)).toBeGreaterThan(80);
+      const visit = getCurrentVisit()!.visitId;
+      await act(async () => { await router.navigate('/away'); });
+      expect(getReadingSnapshot<TimelineReadingSnapshot>(visit, timelineSnapshotKey('session_test'))?.anchor).toMatchObject({ key: 'th1', offset: 17, atEnd: false });
+      settled = true;
+      await act(async () => { await router.navigate(-1); });
+      await settleReadingFrames();
+      const target = probe.container.querySelector<HTMLElement>('[data-history-fold-members] [data-block-id="th1"]');
+      expect(target).not.toBeNull();
+      expect(probe.container.querySelector('[data-reading-restore-retry]')).toBeNull();
+      expect(target!.getBoundingClientRect().top).toBeCloseTo(-17, 0);
+    } finally {
+      await act(async () => { probe.root.unmount(); });
+      rect.mockRestore(); blockHeights.delete('th1'); blockHeights.delete('fold-th1'); act(() => clearNavHistory());
+    }
+  });
+
   it('folds each turn’s work into one line once its answer is in, and expands in place', async () => {
     const container = await renderTranscript([...turnBlocks(1, 'first'), ...turnBlocks(2, 'second')]);
     const folds = container.querySelectorAll('[data-history-fold]');
@@ -4839,6 +5058,7 @@ describe('folding the live turn and what the agent looked at (FOLDING.md)', () =
     expect(latest?.getAttribute('data-media-run')).toBe('2');
     expect(latest?.hasAttribute('data-media-run-latest')).toBe(true);
     expect(latest?.textContent).toContain('Viewed images');
+    await act(async () => { latest?.querySelectorAll<HTMLButtonElement>('[data-media-thumb] button').forEach((button) => button.click()); });
     expect(latest?.querySelectorAll('[data-media-thumb] img')).toHaveLength(2);
     expect(latest?.querySelector('img')?.className).toContain('h-[120px]');
     // Never inside a fold: the fold before it stops there.
@@ -5389,13 +5609,50 @@ describe('Kiki hook injections', () => {
 });
 
 
-it('renders SSH send-time snapshots as small host markers, not raw context or live connection state', async () => {
+it('strips a stored SSH host block from an old message and draws no per-message host row', async () => {
   const container = await renderTranscript([{ kind: 'user', id: 'ssh-user', createdAt: '2026-01-01T00:00:00.000Z',
     text: 'Inspect the host\n\n<ssh_host_refs>\n[{"id":"example-host","name":"Example host"}]\n</ssh_host_refs>',
   }]);
-  expect(container.querySelector('[data-user-ssh-host="example-host"]')?.textContent).toBe('Example host');
-  expect(container.querySelector('[data-user-ssh-hosts]')?.getAttribute('aria-label')).toBe('SSH hosts joined when this message was sent');
+  // The hosts live on the session's control in the composer now; the message
+  // reads exactly as it was typed, with no marker and no raw XML.
   expect(container.querySelector('.bg-bubble-user')?.textContent).toBe('Inspect the host');
   expect(container.textContent).not.toContain('ssh_host_refs');
-  expect(container.querySelector('[data-user-ssh-host] button')).toBeNull();
+  expect(container.textContent).not.toContain('Example host');
+  expect(container.querySelector('[data-user-ssh-hosts]')).toBeNull();
+  expect(container.querySelector('[data-user-ssh-host]')).toBeNull();
+});
+
+
+describe('ordinary bounded message reading', () => {
+  it('continues prompt, assistant and thinking from their exact sources, then restores full copy/edit targets', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const source: import('@kiki/transcript').ContentSource = { kind: 'turn', id: 't0' };
+    const frameSource: import('@kiki/transcript').ContentSource = { kind: 'frame', id: 'f0', turnId: 't0', stepId: 's0' };
+    const thinkingSource = { ...frameSource, id: 'think0' };
+    const refs: import('@kiki/transcript').ContentRef[] = [source, frameSource, thinkingSource].map((entry) => ({ source: entry, path: [entry.kind === 'turn' ? 'prompt' : 'text'], revision: entry.id, kind: 'text', offset: 6, total: 12 }));
+    const loadContent = vi.fn(async (_ref: import('@kiki/transcript').ContentRef) => true);
+    const actions: TranscriptRowActions = { disabled: false, onEditMessage: vi.fn(), onRegenerate: vi.fn(), onFork: vi.fn() };
+    const blocks: Block[] = [userBlock({ id: 'user-m0', text: 'prefix', userMessageId: 'm0', turnId: 't0', contentSource: source }), { ...assistantBlock('agent-frame-f0', 'prefix'), frameId: 'f0', stepId: 's0', turnId: 't0' }, { kind: 'thinking', id: 'agent-frame-think0', text: 'prefix', frameId: 'think0', stepId: 's0', turnId: 't0', streaming: false, createdAt: undefined }];
+    const { root, container } = makeRoot();
+    const show = async (pending: typeof refs, values: Block[]) => renderSettled(root, <TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={pending} loadContent={loadContent}><Transcript state={transcriptState(values)} onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} rowActions={actions} /></TranscriptDetailProvider>);
+    await show(refs, blocks);
+    const user = container.querySelector('[data-block-id="user-m0"]')!;
+    const answer = container.querySelector('[data-block-id="agent-frame-f0"]')!;
+    expect(user.querySelector('[data-row-action="copy"]')).toBeNull();
+    expect(user.querySelector('[data-row-action="edit"]')).toBeNull();
+    expect(answer.querySelector('[data-row-action="copy"]')).toBeNull();
+    await act(async () => { (user.querySelector('[data-content-continuation-action]') as HTMLButtonElement).click(); });
+    await act(async () => { (answer.querySelector('[data-content-continuation-action]') as HTMLButtonElement).click(); });
+    const thought = container.querySelector('[data-block-id="agent-frame-think0"]')!;
+    await act(async () => { (thought.querySelector('button') as HTMLButtonElement).click(); });
+    await act(async () => { (thought.querySelector('[data-content-continuation-action]') as HTMLButtonElement).click(); });
+    expect(loadContent.mock.calls.map(([ref]) => ref)).toEqual(refs);
+    await show([], blocks.map((block) => 'text' in block ? { ...block, text: 'prefixsuffix' } : block));
+    expect(container.querySelectorAll('[data-content-continuation]')).toHaveLength(0);
+    expect(container.querySelector('[data-block-id="user-m0"] [data-row-action="copy"]')).not.toBeNull();
+    const edit = container.querySelector('[data-block-id="user-m0"] [data-row-action="edit"]') as HTMLButtonElement;
+    await act(async () => { edit.click(); });
+    expect(container.querySelector('textarea')?.value).toBe('prefixsuffix');
+    expect(container.querySelector('[data-block-id="agent-frame-f0"] [data-row-action="copy"]')).not.toBeNull();
+  });
 });

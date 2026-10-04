@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
-import type { ModelCatalogItem } from '@kiki/protocol';
+import type { ModelCatalogItem, NamedAgentExecutorField } from '@kiki/protocol';
 import { useI18n } from '../../../i18n';
-import type { NamedAgentExecutorField } from '@kiki/protocol';
 import type { NamedAgentProfile, ShippedAgentProfile } from '../../../lib/client';
 import { formatCompactTokens } from '../../../lib/autoCompact';
 import { useConnection } from '../../../state/connection';
@@ -31,8 +30,9 @@ import {
 } from './profileDraft';
 import { RawPanel } from './RawPanel';
 import { SubagentsField } from './SubagentsField';
-import { SUBAGENT_POLICY_CHOICES, subagentPolicyLabelKey, type SubagentPolicyChoice } from '../subagentPolicy';
 import { useSavedTick } from '../useSavedTick';
+import { PromptIdentityEditor, PromptOverridesContentEditor } from '../PromptIdentityEditor';
+import { promptIdentityProblem, promptOverridesBody, promptOverridesProblem } from '../promptIdentityDraft';
 
 type Mode = 'form' | 'raw';
 
@@ -107,7 +107,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
   const changed = changedFields(baseline, draft);
   const dirty = changed.length > 0;
   const problems = draftProblems(draft);
-  const menuPreview = useModelMenuPreview(profile, modelMenuDraftPatch(patchBody(profile, baseline, draft)), draft.restrictModelsToMenu);
+  const menuPreview = useModelMenuPreview(profile, modelMenuDraftPatch(patchBody(profile, baseline, draft), profile), draft.restrictModelsToMenu);
   useEffect(() => {
     if (dirty) return;
     const next = draftFromProfile(profile);
@@ -156,13 +156,15 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
       : promptDeliveries?.includes('append') ? 'append' : 'preamble');
   const spawn = draft.spawnConstraints;
   const setSpawn = (patch: Partial<SpawnConstraintsDraft>) => set('spawnConstraints', { ...spawn, ...patch });
-  const subagentSummary = draft.subagentsMode === 'unrestricted' ? t('st.profiles.subagentsAny')
-    : draft.subagentsMode === 'none' ? t('st.profiles.subagentsNone') : draft.subagents.map((entry) => entry.name).join(', ');
+  const subagentSummary = draft.subagentPolicy.canSpawnSubagents === false ? t('st.profiles.dispatchCanSpawnOff')
+    : draft.subagentPolicy.allowedSubagents === undefined ? t('st.profiles.dispatchNotDeclared')
+      : draft.subagentPolicy.allowedSubagents.length === 0 ? t('st.profiles.dispatchAllowedEmpty')
+        : draft.subagentPolicy.allowedSubagents.map((entry) => entry.name).join(', ');
   const kikiContextOn = [...(draft.allowKikiSubagents ? [t('st.kikiContext.short.subagents')] : []),
     ...(draft.kikiContext ?? []).map((group) => t(`st.kikiContext.short.${group}` as I18nKey))];
   const kikiContextSummary = kikiContextOn.length === 0 ? t('st.kikiContext.summaryOff') : kikiContextOn.join(' · ');
   const advancedSet = [draft.serviceTier !== '', draft.autoCompact !== undefined, draft.denyModels.length > 0,
-    draft.allowedEfforts.length > 0, draft.subagentPolicy !== 'inherit', profile.routes.length > 0,
+    draft.allowedEfforts.length > 0, profile.routes.length > 0,
     spawnConstraintsSet(draft.spawnConstraints)].filter(Boolean).length;
 
   // Desktop: the body stays in view (sticky, viewport-tall) while the rail scrolls past it.
@@ -250,7 +252,11 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
           </li>)}
         </ul>
       </Section> : null}
-      <Section title={t('st.profiles.subagents')} dataSection="subagents" defaultOpen={profile.subagents !== undefined && profile.subagents.length > 0}
+      <Section title={t('st.profiles.dispatchTitle')} dataSection="subagents"
+        defaultOpen={draft.subagentPolicy.canSpawnSubagents !== undefined
+          || draft.subagentPolicy.allowedSubagents !== undefined
+          || (draft.subagentPolicy.preferredSubagents?.length ?? 0) > 0
+          || (draft.subagentPolicy.denySubagents?.length ?? 0) > 0}
         summary={subagentSummary}>
         <SubagentsField draft={draft} profiles={profiles} models={models} disabled={disabled} self={profile.name}
           onChange={(next) => setDraft((current) => ({ ...current, ...next }))} />
@@ -267,6 +273,15 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
           <AliasChips id="allowed-models" values={draft.allowedModels} models={models} disabled={disabled} addLabel={t('st.profiles.addModel')}
             onChange={(next) => set('allowedModels', next)} />
         </Field>
+      </Section>
+      <Section title={t('st.promptIdentity.fieldsTitle')} dataSection="prompt-overrides">
+        <PromptIdentityEditor value={draft.promptOverrides} disabled={disabled} onChange={(next) => set('promptOverrides', next)}>
+          {(content, onChange, label) => <PromptOverridesContentEditor value={content} onChange={onChange} label={label} />}
+        </PromptIdentityEditor>
+        {(() => {
+          const problem = promptIdentityProblem(draft.promptOverrides, promptOverridesBody, promptOverridesProblem);
+          return problem === undefined ? null : <p role="alert" className="text-[12px] text-danger">{t(`st.promptIdentity.problem.${problem}`)}</p>;
+        })()}
       </Section>
       <Section title={t('st.profiles.softAdvice')} dataSection="soft-advice"
         count={draft.preferredModels.length + draft.discouragedModels.length + draft.preferredEfforts.length}
@@ -293,11 +308,6 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
           applicability={fieldState('disallowed_tools')} engine={engine} onChange={(next) => set('disallowedTools', next)} />
       </Section>
       <Section title={t('st.profiles.advanced')} dataSection="advanced" count={advancedSet} summary={t('st.profiles.advancedSummary')}>
-        <Field label={t('st.profiles.policy')} hint={t('st.profiles.policyHint')} dataField="subagentPolicy">
-          <SettingsSegmented<SubagentPolicyChoice> ariaLabel={t('st.profiles.policy')} value={draft.subagentPolicy} disabled={disabled}
-            dataAttr="data-policy-choice" onChange={(value) => set('subagentPolicy', value)}
-            choices={SUBAGENT_POLICY_CHOICES.map((value) => ({ value, label: t(subagentPolicyLabelKey(value)) }))} />
-        </Field>
         <Field label={t('st.profiles.allowedEfforts')} dataField="allowedEfforts">
           <div className="flex flex-wrap gap-1.5">
             {EFFORTS.map((level) => {

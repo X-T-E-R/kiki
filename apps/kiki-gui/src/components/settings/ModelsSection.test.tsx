@@ -15,13 +15,14 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { GetModelResponse, ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
+import { patchModelRequestSchema, type GetModelResponse, type ModelCatalogItem, type ProviderCatalogItem } from '@kiki/protocol';
 import type { ServerConnection } from '@kiki/session-core/settings';
 
 import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../../i18n';
 import { DirtyGuardContext } from '../dirtyGuard';
 import { CatalogRefreshCard, GlobalDefaultsCard, ModelCatalogCard } from './ModelsSection';
+import { ModelSwitchCard } from './ModelSwitchCard';
 import { pickValue } from './testControls';
 
 const listDiscoveredModels = vi.fn();
@@ -406,9 +407,13 @@ describe('ModelCatalogCard row editor', () => {
 describe('ModelCatalogCard context window and compaction point', () => {
   const openEditor = async (container: HTMLElement) => {
     await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click(); });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    return container.querySelector<HTMLElement>('[data-model-context-fields]')!;
+    // The parameter group hangs off the entity read, so it lands a tick after
+    // the window block beside it.
+    for (let tick = 0; tick < 6; tick += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      if (document.querySelector('[data-compact-point-field]') !== null) break;
+    }
+    return container;
   };
   const saveButton = (container: HTMLElement) =>
     [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save')!;
@@ -418,7 +423,8 @@ describe('ModelCatalogCard context window and compaction point', () => {
     const container = await renderCard();
     const fields = await openEditor(container);
     expect(fields.textContent).toContain('Context window');
-    expect(fields.textContent).toContain('Automatic compaction point');
+    // The compaction point lives in the parameter group now, not in a second
+    // block under the window: one row holds the number and its track.
     const point = fields.querySelector<HTMLInputElement>('[data-compact-point-field="model:kimi-code/kimi-k2"] input')!;
     // Empty = inherit; the placeholder names what applies instead.
     expect(point.value).toBe('');
@@ -475,9 +481,19 @@ describe('ModelCatalogCard row editor draft retention', () => {
     [...container.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent === text)!;
 
-  async function openEditor(container: HTMLElement): Promise<void> {
+  async function openEditor(container: HTMLElement): Promise<HTMLElement> {
+    // The row editor and the blocks inside it are portaled to <body>, so a
+    // query against the card that opened them would find nothing.
     await act(async () => { editToggle(container).click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    // The editor reads its entity through a query of its own, and the
+    // parameter group hangs off that read, so the surface settles a few ticks
+    // after the row opens rather than in the same one.
+    for (let tick = 0; tick < 6; tick += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      if (document.querySelector('[data-compact-point-field]') !== null) break;
+    }
+    return document.documentElement;
   }
 
   it('opens the editor beside the list and keeps the rows in place', async () => {
@@ -617,9 +633,11 @@ describe('GlobalDefaultsCard', () => {
       .toEqual(['new-session', 'session-title', 'fast', 'subagent']);
     const subagentRow = container.querySelector('[data-default-row="subagent"]')!;
     expect(subagentRow.textContent).toContain('only when a subagent has no other pin');
-    expect(container.querySelector('[data-default-row="fast"]')!.textContent).toContain('when no session-title model is set');
-    // No title model: the title row says the fast model names sessions.
-    expect(container.querySelector('[data-default-row="session-title"]')!.textContent).toContain('Falls back to fast model: kimi-code/kimi-k2');
+    expect(container.querySelector('[data-default-row="fast"]')!.textContent).toContain('small background jobs');
+    // No title model, so the title row says the honest thing: nothing writes
+    // a title on its own. A fast model is not a title source any more.
+    expect(container.querySelector('[data-default-row="session-title"]')!.textContent).toContain('No model picked, so no title is written on its own.');
+    expect(container.querySelector('[data-default-row="session-title"]')!.textContent).not.toContain('Falls back to fast model');
     await act(async () => { subagentRow.querySelector<HTMLButtonElement>('#st-default-subagent-model')!.click(); });
     const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent?.includes('Kimi K2'))!;
     await act(async () => { option.click(); });
@@ -631,6 +649,32 @@ describe('GlobalDefaultsCard', () => {
     await act(async () => { unset.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(setFastModel).toHaveBeenCalledWith('');
+  });
+
+  // The engine writes a title with `session_title.model` and nothing else
+  // (no fast_model, no managed tool), so the empty option says "no titles"
+  // in every configuration rather than naming a hidden source.
+  it('keeps the empty title option free of a fast model and a subscription claim', async () => {
+    getConfig.mockResolvedValue({ default_model: 'kimi-code/kimi-k2', fast_model: 'kimi-code/kimi-k2', subagent: {} });
+    const container = await renderDefaults();
+    await act(async () => { container.querySelector<HTMLButtonElement>('#st-default-title-model')!.click(); });
+    const empty = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find((item) => item.textContent?.includes('No title model'))!;
+    expect(empty.textContent).toContain('Pick a model to write titles');
+    expect(empty.textContent).not.toContain('fast model');
+    // An entitlement promise here would name a tool the engine never calls.
+    expect(empty.textContent).not.toContain('Included with your subscription');
+  });
+
+  it('says the same thing about the empty title option with no fast model set', async () => {
+    getConfig.mockResolvedValue({ default_model: 'kimi-code/kimi-k2', subagent: {} });
+    const container = await renderDefaults();
+    await act(async () => { container.querySelector<HTMLButtonElement>('#st-default-title-model')!.click(); });
+    const empty = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find((item) => item.textContent?.includes('No title model'))!;
+    expect(empty.textContent).toContain('Pick a model to write titles');
+    expect(empty.textContent).not.toContain('Included with your subscription');
+    expect(empty.textContent).not.toContain('fast model');
   });
 });
 
@@ -663,5 +707,645 @@ describe('ModelCatalogCard list and detail hierarchy', () => {
     expect(advanced.contains(editor.querySelector('input[aria-label="Display name for kimi-code/kimi-k2"]'))).toBe(false);
     expect(advanced.contains(editor.querySelector('[data-model-context-fields]'))).toBe(false);
     expect(advanced.contains(editor.querySelector('[role="group"][aria-label="Effort levels for kimi-code/kimi-k2"]'))).toBe(false);
+  });
+});
+
+describe('model prompt identity settings', () => {
+  afterEach(() => {
+    for (const [, patch] of updateModel.mock.calls) {
+      expect(() => patchModelRequestSchema.parse(patch)).not.toThrow();
+    }
+  });
+
+  it('returns to a clean draft when a temporary main difference is restored to common', async () => {
+    getModel.mockResolvedValue({ ...ENTITY, cognition: { overlay: 'common.md' } });
+    const container = await renderCard();
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const editor = container.querySelector('[data-model-cognition-editor]')!;
+    const save = () => [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save')!;
+    expect(save().disabled).toBe(true);
+    await act(async () => editor.querySelector<HTMLButtonElement>('[data-prompt-branch-main="off"]')!.click());
+    expect(save().disabled).toBe(false);
+    await act(async () => editor.querySelector<HTMLButtonElement>('[data-prompt-branch-main="same"]')!.click());
+    expect(save().disabled).toBe(true);
+    expect(updateModel).not.toHaveBeenCalled();
+  });
+
+  it('saves main-only differences without copying common steering or anchor', async () => {
+    getModel.mockResolvedValue({ ...ENTITY, cognition: { overlay: 'common.md', steering: 'reminder.md', anchor: 'anchor.md' } });
+    const container = await renderCard();
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const editor = container.querySelector('[data-model-cognition-editor]')!;
+    await act(async () => editor.querySelector<HTMLButtonElement>('[data-prompt-branch-main="custom"]')!.click());
+    const mainPath = editor.querySelector<HTMLTextAreaElement>('[data-prompt-custom="main"] textarea')!;
+    expect(mainPath.value).toBe('');
+    await act(async () => setTextareaValue(mainPath, 'main.md'));
+    const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save')!;
+    await act(async () => save.click());
+    expect(updateModel).toHaveBeenCalledWith('kimi-code/kimi-k2', {
+      base_revision: 'rev-7', cognition: { overlay: 'common.md', steering: 'reminder.md', anchor: 'anchor.md', main: { overlay: 'main.md' } },
+    });
+  });
+});
+
+describe('ModelSwitchCard', () => {
+  const switchConfig = (overrides: Record<string, unknown> = {}) => ({
+    default_mode: 'direct',
+    confirm: true,
+    rules: [],
+    ...overrides,
+  });
+
+  async function renderSwitchCard(): Promise<HTMLElement> {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={client}>
+            <I18nProvider>
+              <DirtyGuardContext.Provider value={{ dirty: false, reportDirty: () => {}, navigate: () => {} }}>
+                <ModelSwitchCard />
+              </DirtyGuardContext.Provider>
+            </I18nProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    return container;
+  }
+
+  const modeButton = (container: HTMLElement, value: string): HTMLButtonElement =>
+    container.querySelector<HTMLButtonElement>(`[data-model-switch-default-mode="${value}"]`)!;
+
+  async function click(element: Element): Promise<void> {
+    await act(async () => {
+      element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+  }
+
+  it('reads the stored preferences and lists the rules in their stored order', async () => {
+    getConfig.mockResolvedValue({
+      default_model: 'kimi-code/kimi-k2',
+      model_switch: switchConfig({
+        default_mode: 'fresh',
+        confirm: false,
+        rules: [
+          { id: 'first', enabled: true, from_models: ['example/a-*'], to_models: ['example/b'], mode: 'compact', confirm: true },
+          { id: 'second', enabled: false, mode: 'fresh' },
+        ],
+      }),
+    });
+    const container = await renderSwitchCard();
+    expect(modeButton(container, 'fresh').getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false);
+    const ruleRows = container.querySelectorAll('[data-model-switch-rule]');
+    expect(ruleRows).toHaveLength(2);
+    expect(ruleRows[0]!.textContent).toContain('example/a-* → example/b');
+    expect(ruleRows[0]!.textContent).toContain('Summarize first');
+    expect(ruleRows[0]!.textContent).toContain('Always ask');
+    expect(ruleRows[1]!.textContent).toContain('Any model → Any model');
+  });
+
+  it('saves a default-mode pick straight away without touching the rule table', async () => {
+    const rules = [{ id: 'keep', enabled: true, to_models: ['example/b'], mode: 'compact' }];
+    getConfig.mockResolvedValue({ model_switch: switchConfig({ rules }) });
+    patchConfig.mockResolvedValue({ model_switch: switchConfig({ default_mode: 'fresh', rules }) });
+    const container = await renderSwitchCard();
+    await click(modeButton(container, 'fresh'));
+    expect(patchConfig).toHaveBeenCalledExactlyOnceWith({
+      model_switch: { default_mode: 'fresh' },
+    });
+    expect(container.textContent).toContain('Saved');
+  });
+
+  it('holds rule edits as one draft and saves the whole table once', async () => {
+    getConfig.mockResolvedValue({ model_switch: switchConfig() });
+    patchConfig.mockResolvedValue({ model_switch: switchConfig() });
+    const container = await renderSwitchCard();
+    await click(container.querySelector<HTMLButtonElement>('[data-model-switch-rule-add]')!);
+    const editor = container.querySelector<HTMLElement>('[data-model-switch-rule-editor]')!;
+    const [fromInput, toInput] = editor.querySelectorAll<HTMLInputElement>('input[type="text"]');
+    setInputValue(fromInput!, 'example/old-*');
+    setInputValue(toInput!, 'example/new, example/alt?');
+    await click(editor.querySelector<HTMLButtonElement>('[data-model-switch-rule-mode="fresh"]')!);
+    expect(patchConfig).not.toHaveBeenCalled();
+    const footer = container.querySelector<HTMLElement>('[data-settings-draft="model-switch-rules"]')!;
+    expect(footer.hidden).toBe(false);
+    await click(footer.querySelector<HTMLButtonElement>('button')!);
+    const payload = patchConfig.mock.calls[0]![0] as { model_switch: { rules: unknown[] } };
+    expect(payload.model_switch.rules).toHaveLength(1);
+    expect(payload.model_switch.rules[0]).toMatchObject({
+      enabled: true,
+      mode: 'fresh',
+      from_models: ['example/old-*'],
+      to_models: ['example/new', 'example/alt?'],
+    });
+  });
+
+  it('keeps the rule draft on screen when the save fails', async () => {
+    getConfig.mockResolvedValue({ model_switch: switchConfig() });
+    patchConfig.mockRejectedValue(new Error('offline'));
+    const container = await renderSwitchCard();
+    await click(container.querySelector<HTMLButtonElement>('[data-model-switch-rule-add]')!);
+    const footer = container.querySelector<HTMLElement>('[data-settings-draft="model-switch-rules"]')!;
+    await click(footer.querySelector<HTMLButtonElement>('button')!);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-model-switch-rule-editor]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-model-switch-rule]')).toHaveLength(1);
+    expect(container.textContent).toContain('offline');
+  });
+
+  it('drops the draft back to the stored table on discard', async () => {
+    getConfig.mockResolvedValue({ model_switch: switchConfig() });
+    const container = await renderSwitchCard();
+    await click(container.querySelector<HTMLButtonElement>('[data-model-switch-rule-add]')!);
+    expect(container.querySelectorAll('[data-model-switch-rule]')).toHaveLength(1);
+    await click(container.querySelector<HTMLButtonElement>('[data-settings-discard="model-switch-rules"]')!);
+    expect(container.querySelectorAll('[data-model-switch-rule]')).toHaveLength(0);
+    expect(container.querySelector('[data-model-switch-rules-empty]')).not.toBeNull();
+  });
+
+  it('answers every rule preview side with words, never with an empty value', async () => {
+    getConfig.mockResolvedValue({ model_switch: switchConfig() });
+    const container = await renderSwitchCard();
+    await click(container.querySelector<HTMLButtonElement>('[data-model-switch-rule-add]')!);
+    const editor = container.querySelector<HTMLElement>('[data-model-switch-rule-editor]')!;
+    const preview = editor.querySelector<HTMLElement>('[data-model-switch-rule-preview]')!;
+    // A fresh rule names no model on either side, so both sides take any model.
+    expect(preview.textContent).toContain('From matches: Any model');
+    expect(preview.textContent).toContain('To matches: Any model');
+    const [fromInput] = editor.querySelectorAll<HTMLInputElement>('input[type="text"]');
+    setInputValue(fromInput!, 'example/missing-*');
+    expect(preview.textContent).toContain('From matches: no known model');
+    setInputValue(fromInput!, 'kimi-code/kimi-*');
+    expect(preview.textContent).toContain('From matches: kimi-code/kimi-k2');
+  });
+
+  it('says nothing rather than guessing while the model catalog is unreadable', async () => {
+    getConfig.mockResolvedValue({ model_switch: switchConfig() });
+    listModels.mockReturnValue(new Promise(() => {}));
+    const container = await renderSwitchCard();
+    await click(container.querySelector<HTMLButtonElement>('[data-model-switch-rule-add]')!);
+    const editor = container.querySelector<HTMLElement>('[data-model-switch-rule-editor]')!;
+    expect(editor.querySelector('[data-model-switch-rule-preview]')).toBeNull();
+  });
+});
+
+/**
+ * Usage policy: one model, one shared set of values, with an identity branch
+ * carrying only its differences. The wire is `usage: { main?, independent? }`
+ * plus the server-resolved `usage_effective` / `usage_sources`; the GUI edits
+ * differences and never rewrites the shared layer.
+ */
+describe('ModelCatalogRowEditor usage policy', () => {
+  const MODEL_ID = 'kimi-code/kimi-k2';
+  const usageEntity = (usage: unknown, effective?: unknown, sources?: unknown, shared?: Partial<GetModelResponse>): GetModelResponse => ({
+    ...ENTITY,
+    effective_parameters: { thinking_effort: 'medium', service_tier: 'auto', max_completion_tokens: 8192 },
+    parameters: { thinking_effort: 'medium', service_tier: 'auto', max_completion_tokens: 8192 },
+    auto_compact: 200_000,
+    context_budget: 180_000,
+    usage,
+    usage_effective: effective,
+    usage_sources: sources,
+    ...shared,
+  } as GetModelResponse);
+
+  const openRow = async (entity: GetModelResponse) => {
+    getModel.mockResolvedValue(entity);
+    const container = await renderCard();
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click(); });
+    for (let tick = 0; tick < 6; tick += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      if (document.querySelector('[data-main-usage-policy]') !== null) break;
+    }
+    return document.body;
+  };
+
+  const saveModel = async (container: HTMLElement) => {
+    // The editor is portaled, so the Save that belongs to this row is the one
+    // inside it rather than any Save on the page.
+    const editor = document.querySelector<HTMLElement>('[data-model-row-editor]') ?? container;
+    const button = [...editor.querySelectorAll<HTMLButtonElement>('button')]
+      .find((candidate) => candidate.textContent === 'Save')!;
+    await act(async () => { button.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  };
+
+  const scopeButton = (container: HTMLElement, scope: string) =>
+    container.querySelector<HTMLButtonElement>('[data-main-usage-policy] [data-usage-scope-choice="' + scope + '"]');
+
+  it('is editable on a model that has never configured a difference', async () => {
+    // Absent `usage` is the ordinary case, not a missing feature: the block
+    // must still be there to write the first difference into.
+    const container = await openRow(ENTITY);
+    expect(container.querySelector('[data-main-usage-policy]')).not.toBeNull();
+  });
+
+  it("edits the model own values in the shared scope", async () => {
+    const container = await openRow(usageEntity({ main: { thinking_effort: 'high' } }));
+    const block = container.querySelector<HTMLElement>('[data-main-usage-policy]')!;
+    expect(block.getAttribute('data-usage-scope')).toBe('shared');
+    // The shared scope writes the model's own parameters, through the same rows.
+    expect(block.querySelector<HTMLInputElement>('[data-usage-value="thinking_effort"]')!.value).toBe('medium');
+    expect(block.textContent).toContain('Subagents always use the shared value');
+    // No difference row and no restore action while editing the shared layer.
+    expect(block.querySelector('[data-usage-restore]')).toBeNull();
+    setInputValue(block.querySelector<HTMLInputElement>('[data-usage-value="thinking_effort"]')!, 'low');
+    await saveModel(container);
+    expect(updateModel).toHaveBeenCalledWith(MODEL_ID, expect.objectContaining({
+      parameters: { thinking_effort: 'low' },
+    }));
+  });
+
+  it('leaves an unset shared value empty rather than writing 0', async () => {
+    const container = await openRow(usageEntity(
+      { main: {} },
+      { main: { thinking_effort: 'medium' } },
+      undefined,
+      { context_budget: undefined, auto_compact: undefined },
+    ));
+    const block = container.querySelector<HTMLElement>('[data-main-usage-policy]')!;
+    // Neither an absent budget nor an absent compaction point may read as 0.
+    expect(block.querySelector<HTMLInputElement>('[data-usage-value="context_budget"]')!.value).toBe('');
+    const compact = block.querySelector<HTMLInputElement>('[data-compact-point-field="model:kimi-code/kimi-k2"] input')!;
+    expect(compact.value).toBe('');
+  });
+
+  it('counts the differences a main-agent branch holds', async () => {
+    const container = await openRow(usageEntity({ main: { thinking_effort: 'high', auto_compact: 160000 } }));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-usage-differences]')?.textContent).toBe('2 differences from shared');
+    expect(container.querySelector('[data-usage-value="thinking_effort"]')).not.toBeNull();
+  });
+
+  it('states the resolved value and its origin only where a difference exists', async () => {
+    const container = await openRow(usageEntity(
+      { main: { thinking_effort: 'high' } },
+      { main: { thinking_effort: 'high', service_tier: 'auto' } },
+      { main: { thinking_effort: '[models.*.usage.main]' } },
+    ));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const block = container.querySelector<HTMLElement>('[data-usage-fields="main"]')!;
+    expect(block.querySelector('[data-usage-effective="thinking_effort"]')?.textContent).toBe('high');
+    // The origin is a config path, so it is reference text behind the label's
+    // `i` rather than a line on the first screen.
+    expect(block.textContent).not.toContain('[models.*.usage.main]');
+    const help = [...block.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.getAttribute('aria-expanded') !== null
+        || button.getAttribute('aria-label')?.includes('more') === true);
+    await act(async () => { help?.click(); });
+    expect(document.body.textContent).toContain('[models.*.usage.main]');
+    // service_tier carries no difference, so nothing is restated for it.
+    expect(block.querySelector('[data-usage-effective="service_tier"]')).toBeNull();
+  });
+
+  it('sends only the changed difference', async () => {
+    const container = await openRow(usageEntity({ main: { thinking_effort: 'high' } }));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const compact = container.querySelector<HTMLInputElement>('[data-compact-point-field="model:kimi-code/kimi-k2"] input')!;
+    // The compaction field commits on blur, so it has to hold focus first.
+    await act(async () => { compact.focus(); setInputValue(compact, '160000'); });
+    await act(async () => { compact.blur(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await saveModel(container);
+    expect(updateModel).toHaveBeenCalledWith(MODEL_ID, expect.objectContaining({
+      base_revision: 'rev-7',
+      usage: { main: { auto_compact: 160000 } },
+    }));
+  });
+
+  it('restores inheritance by writing null for the field rather than omitting it', async () => {
+    const container = await openRow(usageEntity({ main: { thinking_effort: 'high', auto_compact: 160000 } }));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-restore="thinking_effort"]')!.click(); });
+    await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
+    expect(updateModel).toHaveBeenCalledWith(MODEL_ID, expect.objectContaining({
+      usage: { main: { thinking_effort: null } },
+    }));
+  });
+
+  it('keeps "off" and "not sent" apart from being unset', async () => {
+    const container = await openRow(usageEntity({ main: {} }));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const effort = container.querySelector<HTMLInputElement>('[data-usage-value="thinking_effort"]')!;
+    expect(effort.value).toBe('');
+    // An empty field inherits: the shared value is the placeholder, not a value.
+    expect(effort.placeholder).toBe('medium');
+    setInputValue(container.querySelector<HTMLInputElement>('[data-usage-value="thinking_effort"]')!, 'off');
+    expect(container.querySelector('[data-usage-effective="thinking_effort"]')?.textContent).toBe('Off');
+    const tier = container.querySelector<HTMLButtonElement>('button[aria-label="Service tier"]')!;
+    await pickValue(tier, 'data-usage-value', 'not_sent');
+    await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
+    expect(updateModel).toHaveBeenCalledWith(MODEL_ID, expect.objectContaining({
+      usage: { main: { thinking_effort: 'off', service_tier: { kind: 'api_default' } } },
+    }));
+  });
+
+  it('refuses an invalid token count, keeps the draft, and saves once it is valid', async () => {
+    const container = await openRow(usageEntity({ main: {} }));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    setInputValue(container.querySelector<HTMLInputElement>('[data-usage-value="context_budget"]')!, '0');
+    await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
+    expect(updateModel).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-usage-issue="context_budget"]')?.textContent).toBe('Use a whole number of tokens, 1 or more.');
+    expect(container.querySelector<HTMLInputElement>('[data-usage-value="context_budget"]')!.value).toBe('0');
+    setInputValue(container.querySelector<HTMLInputElement>('[data-usage-value="context_budget"]')!, '4096');
+    await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
+    expect(updateModel).toHaveBeenCalledWith(MODEL_ID, expect.objectContaining({ usage: { main: { context_budget: 4096 } } }));
+  });
+
+  it('reads a token count the way the compaction point does, and keeps the wire an integer', async () => {
+    const container = await openRow(usageEntity({ main: { context_budget: 160_000 } }));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const field = () => container.querySelector<HTMLInputElement>('[data-usage-value="context_budget"]')!;
+    // Stored as a number, it is shown the way its neighbours are shown.
+    expect(field().value).toBe('160k');
+    // `160k` and `160000` are the same value, and both land on the wire as 160000.
+    setInputValue(field(), '160k');
+    expect(field().value).toBe('160k');
+    setInputValue(field(), '0.2M');
+    expect(field().value).toBe('0.2M');
+    await act(async () => { [...container.querySelectorAll('button')].find((b) => b.textContent === 'Save')!.click(); });
+    expect(updateModel).toHaveBeenLastCalledWith(MODEL_ID, expect.objectContaining({ usage: { main: { context_budget: 200000 } } }));
+  });
+
+  it('normalises a token count to the k form only once the field is left', async () => {
+    const container = await openRow(usageEntity({ main: { context_budget: 160_000 } }));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const field = container.querySelector<HTMLInputElement>('[data-usage-value="context_budget"]')!;
+    field.focus();
+    await act(async () => { setInputValue(field, '160000'); });
+    // Mid-edit the typed text stands; a half-typed number is never rescaled.
+    expect(field.value).toBe('160000');
+    await act(async () => { field.blur(); });
+    expect(field.value).toBe('160k');
+  });
+
+  it('keeps an unreadable token count on screen for the row to report', async () => {
+    const container = await openRow(usageEntity({ main: { context_budget: 160_000 } }));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const field = () => container.querySelector<HTMLInputElement>('[data-usage-value="context_budget"]')!;
+    field().focus();
+    await act(async () => { setInputValue(field(), 'abc'); });
+    await act(async () => { field().blur(); });
+    expect(field().value).toBe('abc');
+    await act(async () => { [...container.querySelectorAll('button')].find((b) => b.textContent === 'Save')!.click(); });
+    expect(updateModel).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-usage-issue="context_budget"]')).not.toBeNull();
+  });
+
+  it('names the effort chips as what the model supports, not the default', async () => {
+    const container = await openRow(usageEntity({ main: {} }));
+    // The support set and the per-identity default are two different fields and
+    // must not read as the same setting managed twice.
+    expect(document.body.textContent).toContain('Supported effort levels');
+    expect(document.body.textContent).toContain('Default thinking effort');
+  });
+
+  it('puts the restore control at the end of its own row, wherever the row wraps', async () => {
+    const container = await openRow(usageEntity({ main: { thinking_effort: 'high', context_budget: 160_000, auto_compact: 120_000 } }));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    // One action, one anchor: the same control in the same place in every row,
+    // never drifting between a hint and a slider as the row wraps. `ms-auto` is
+    // what holds it at the end of the first line, so that is the thing asserted;
+    // jsdom has no layout, so a geometry check here would prove nothing.
+    for (const field of ['thinking_effort', 'context_budget', 'auto_compact']) {
+      const row = container.querySelector<HTMLElement>(`[data-usage-row="${field}"]`)!;
+      const control = row.querySelector<HTMLElement>('.flex.min-w-0.flex-wrap')!;
+      const restore = row.querySelector<HTMLElement>('[data-usage-restore]')!;
+      expect(restore).not.toBeNull();
+      // It lives in the control row itself, not after the hint or the track.
+      expect(restore.parentElement).toBe(control);
+      expect(restore.className).toContain('ms-auto');
+      expect(restore.className).toContain('self-start');
+      // Last in the row, so nothing can be appended after it and push it off
+      // the line. The issue line only exists while a value is wrong.
+      const trailing = [...control.children].filter((child) => !child.hasAttribute('data-usage-issue'));
+      expect(trailing[trailing.length - 1]).toBe(restore);
+    }
+  });
+
+  it('clears one position without touching the other', async () => {
+    const container = await openRow(usageEntity({ main: { thinking_effort: 'high' }, independent: { thinking_effort: 'off' } }));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-restore="thinking_effort"]')!.click(); });
+    await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
+    expect(updateModel).toHaveBeenCalledWith(MODEL_ID, expect.objectContaining({ usage: { main: { thinking_effort: null } } }));
+    const sent = updateModel.mock.calls[0]?.[1] as { usage: Record<string, unknown> };
+    expect(sent.usage['independent']).toBeUndefined();
+  });
+
+  it('does not present a stale projection as the result of an unsaved edit', async () => {
+    // The server answered the last save: context_budget 180k from the model.
+    const container = await openRow(usageEntity(
+      { main: { context_budget: 150000 } },
+      { main: { context_budget: '150000' } },
+      { main: { context_budget: '[models.*.usage.main.context_budget]' } },
+    ));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const row = () => container.querySelector<HTMLElement>('[data-usage-row="context_budget"]')!;
+    const field = () => container.querySelector<HTMLInputElement>('[data-usage-value="context_budget"]')!;
+    // Before any edit the saved projection is the truth and may be shown.
+    expect(row().querySelector('[data-usage-effective="context_budget"]')?.textContent).toBe('150k');
+    expect(row().querySelector('[data-usage-source="context_budget"]')).toBeNull();
+    // Once edited, that projection answers a draft the person has replaced.
+    setInputValue(field(), '90000');
+    expect(row().querySelector('[data-usage-effective="context_budget"]')?.textContent).toBe('90k');
+    expect(row().querySelector('[data-usage-source="context_budget"]')).toBeNull();
+    // And the saved projection comes back once a save has been answered.
+    await saveModel(container);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(row().querySelector('[data-usage-source="context_budget"]')).toBeNull();
+  });
+
+  it('edits a main difference on a model that has never configured one', async () => {
+    // No `usage` key at all: the model simply has no difference yet, which is
+    // every model until somebody writes one. That must not hide the editor.
+    getModel.mockResolvedValue({ ...ENTITY } as GetModelResponse);
+    const container = await renderCard();
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-main-usage-policy]')).not.toBeNull();
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-usage-differences]')?.textContent).toBe('Same as shared');
+    const compact = container.querySelector<HTMLInputElement>('[data-compact-point-field="model:kimi-code/kimi-k2"] input')!;
+    await act(async () => { compact.focus(); setInputValue(compact, '120000'); });
+    await act(async () => { compact.blur(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await saveModel(container);
+    expect(updateModel).toHaveBeenCalledWith(MODEL_ID, expect.objectContaining({
+      usage: { main: { auto_compact: 120000 } },
+    }));
+  });
+
+  it('offers the independent position only when the server carries it', async () => {
+    const without = await openRow(usageEntity({ main: {} }));
+    expect(scopeButton(without, 'independent')).toBeNull();
+    expect(scopeButton(without, 'main')).not.toBeNull();
+  });
+
+  it('offers the independent position once a branch exists for it', async () => {
+    const withIndependent = await openRow(usageEntity({ main: {}, independent: { service_tier: 'flex' } }));
+    expect(scopeButton(withIndependent, 'independent')).not.toBeNull();
+  });
+
+  it('writes the shared layer without disturbing an untouched branch', async () => {
+    const container = await openRow(usageEntity({ main: { auto_compact: 160000 } }));
+    // The shared scope edits the model's own compaction point, so the main
+    // branch it already carries must come through the save unchanged or not
+    // at all: a shared edit is not a reason to rewrite a difference.
+    const point = container.querySelector<HTMLInputElement>('[data-compact-point-field="model:kimi-code/kimi-k2"] input')!;
+    await act(async () => { point.focus(); setInputValue(point, '150000'); point.blur(); });
+    await saveModel(container);
+    const sent = updateModel.mock.calls[0]?.[1] as { auto_compact?: number; usage?: unknown };
+    expect(sent.auto_compact).toBe(150000);
+    expect(sent.usage).toBeUndefined();
+  });
+
+  it('writes only the main branch when the identity track is dragged', async () => {
+    // The shared point is 200k; the main branch says 120k. Dragging in the main
+    // scope must move the identity's point and leave the shared one alone.
+    const container = await openRow(usageEntity(
+      { main: { auto_compact: 120_000 } },
+      { main: { auto_compact: '120000' }, sub: { auto_compact: '200000' } },
+    ));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const slider = container.querySelector<HTMLInputElement>('[data-compact-slider]')!;
+    await act(async () => { slider.focus(); setInputValue(slider, '90000'); });
+    await act(async () => { slider.blur(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await saveModel(container);
+    const sent = updateModel.mock.calls[0]?.[1] as { auto_compact?: number; usage?: { main?: Record<string, unknown> } };
+    // The shared value is untouched, and only the main branch moves.
+    expect(sent.auto_compact).toBeUndefined();
+    expect(typeof sent.usage?.main?.['auto_compact']).toBe('number');
+  });
+
+  it('writes only the shared point when the shared track is dragged', async () => {
+    const container = await openRow(usageEntity(
+      { main: { auto_compact: 120_000 } },
+      { main: { auto_compact: '120000' } },
+    ));
+    const slider = container.querySelector<HTMLInputElement>('[data-compact-slider]')!;
+    await act(async () => { slider.focus(); setInputValue(slider, '100000'); });
+    await act(async () => { slider.blur(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await saveModel(container);
+    const sent = updateModel.mock.calls[0]?.[1] as { auto_compact?: number; usage?: unknown };
+    // The track snaps to its own step; what matters is the layer it wrote.
+    expect(sent.auto_compact).toBeGreaterThan(0);
+    // An untouched branch is not rewritten just because the shared layer moved.
+    expect(sent.usage).toBeUndefined();
+  });
+
+  it('measures the track against the identity budget, not the shared one', async () => {
+    // Shared budget 180k; the main branch tightens it to 90k. The track and
+    // its hint must reflect the ceiling that actually limits this scope.
+    const container = await openRow(usageEntity(
+      { main: { context_budget: 120_000 } },
+      { main: { context_budget: '120000' }, sub: { context_budget: '180000' } },
+    ));
+    const sharedCeiling = Number(container.querySelector<HTMLInputElement>('[data-compact-slider]')!.max);
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const slider = container.querySelector<HTMLInputElement>('[data-compact-slider]')!;
+    // Both exact ceilings: the identity's is lower because its budget is, and a
+    // regression to the shared number would fail here rather than slip through.
+    expect(sharedCeiling).toBe(130_000);
+    expect(Number(slider.max)).toBe(70_000);
+    // And nothing on screen quotes the other scope's saved budget.
+    const row = container.querySelector<HTMLElement>('[data-usage-row="auto_compact"]')!;
+    expect(row.textContent).not.toContain('180k');
+  });
+
+  it('measures an inheriting identity against the shared point, not the global default', async () => {
+    // The model sets 120k of its own, and the global default would be 85% of a
+    // much larger window. An identity that sets nothing inherits the model's
+    // point, so its track has to land on 120k and nowhere else.
+    const container = await openRow(usageEntity(
+      { main: { thinking_effort: 'high' } },
+      { main: { auto_compact: '120000' }, sub: { auto_compact: '120000' } },
+    ));
+    getConfig.mockResolvedValue({ loop_control: { autoCompact: '85%' } });
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const row = container.querySelector<HTMLElement>('[data-usage-row="auto_compact"]')!;
+    // The input stays empty, because empty is how an identity says "inherit".
+    expect(row.querySelector<HTMLInputElement>('[data-compact-point-field] input')!.value).toBe('');
+    // The track lands on the shared point as the shared clamp resolves it, not
+    // on the 85% global default the engine would otherwise fall back to.
+    expect(row.querySelector<HTMLInputElement>('[data-compact-slider]')!.value).toBe('130000');
+    // And the placeholder names what it falls back to rather than a global default.
+    const placeholder = row.querySelector<HTMLInputElement>('[data-compact-point-field] input')!.placeholder;
+    expect(placeholder).not.toContain('%');
+    expect(placeholder).not.toContain('85');
+  });
+
+  it('follows an unsaved shared point when the identity inherits it', async () => {
+    const container = await openRow(usageEntity(
+      { main: { thinking_effort: 'high' } },
+      { main: { auto_compact: '120000' }, sub: { auto_compact: '120000' } },
+    ));
+    // Move the shared point without saving, then look at the identity.
+    const sharedPoint = container.querySelector<HTMLInputElement>('[data-compact-point-field="model:kimi-code/kimi-k2"] input')!;
+    await act(async () => { sharedPoint.focus(); setInputValue(sharedPoint, '100000'); sharedPoint.blur(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const row = container.querySelector<HTMLElement>('[data-usage-row="auto_compact"]')!;
+    expect(row.querySelector<HTMLInputElement>('[data-compact-slider]')!.value).toBe('100000');
+  });
+
+  it('clears only the identity branch when an inherited difference is restored', async () => {
+    const container = await openRow(usageEntity({ main: { auto_compact: 120_000 } }));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-restore="auto_compact"]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await saveModel(container);
+    const sent = updateModel.mock.calls[0]?.[1] as { auto_compact?: number; usage?: unknown };
+    // Clearing the difference is `null` inside the branch, and the model's own
+    // shared point is not part of this edit.
+    expect(sent.usage).toEqual({ main: { auto_compact: null } });
+    expect(sent.auto_compact).toBeUndefined();
+  });
+
+  it('writes the identity layer when that scope is the one being edited', async () => {
+    const container = await openRow(usageEntity({ main: { auto_compact: 160000 } }));
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const point = container.querySelector<HTMLInputElement>('[data-compact-point-field="model:kimi-code/kimi-k2"] input')!;
+    await act(async () => { point.focus(); setInputValue(point, '150000'); point.blur(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await saveModel(container);
+    const sent = updateModel.mock.calls[0]?.[1] as { auto_compact?: number; usage?: unknown };
+    // The same control writes the branch, not the model, when that is the
+    // scope on screen; the shared value stays where it was.
+    expect(sent.auto_compact).toBeUndefined();
+    expect(sent.usage).toEqual({ main: { auto_compact: 150000 } });
   });
 });

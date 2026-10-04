@@ -29,6 +29,8 @@ export interface MediaPreviewApi {
   readonly previewTabCount: number;
   /** Whether the preview workspace panel is currently expanded. */
   readonly previewPanelOpen: boolean;
+  /** Desired width of an expanded preview, also while the cockpit hides it. */
+  readonly previewPanelWidth?: number;
   /** Collapse/expand the preview workspace (tabs are preserved). */
   readonly togglePreviewPanel: () => void;
   /**

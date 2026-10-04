@@ -24,7 +24,7 @@ export function UsageReliabilityDetails({ summary, reliability }: Pick<UsageResp
   const missing = coverage?.missing_records ?? 0;
   const legacyZero = coverage?.legacy_zero_records ?? 0;
   const models = reliability.unknown_price_models;
-  const partial = summary.cost_unknown || summary.tokens_unknown === true || models.length > 0 ||
+  const partial = !reliability.complete || summary.cost_unknown || summary.tokens_unknown === true || models.length > 0 ||
     missing > 0 || legacyZero > 0 || reliability.incomplete_reason !== null || reliability.incomplete_sessions > 0;
   const formatDate = (ms: number) => new Date(ms).toLocaleDateString(locale === 'zh' ? 'zh-CN' : 'en', {
     year: 'numeric', month: 'short', day: 'numeric',
@@ -49,10 +49,12 @@ export function UsageReliabilityDetails({ summary, reliability }: Pick<UsageResp
         <div id={detailsId} data-usage-reliability className="max-w-3xl pt-2 pb-3 text-[12px] leading-relaxed text-ink-soft">
           {partial ? (
             <div data-usage-accounting-notices className="space-y-1.5">
-              {reliability.incomplete_reason !== null || reliability.incomplete_sessions > 0 ? (
+              {!reliability.complete || reliability.incomplete_reason !== null || reliability.incomplete_sessions > 0 ? (
                 <p data-usage-incomplete>
                   {reliability.incomplete_reason !== null ? t(INCOMPLETE_REASON_KEYS[reliability.incomplete_reason]) : null}
                   {reliability.incomplete_sessions > 0 ? ` ${t('usage.incomplete.sessions', { count: reliability.incomplete_sessions })}` : ''}
+                  {!reliability.complete && reliability.incomplete_reason === null && reliability.incomplete_sessions === 0
+                    ? `${t('usage.reliability.coverage')} · ${t('usage.reliability.partial')}` : null}
                 </p>
               ) : null}
               {missing > 0 ? <p data-usage-accounting-missing>{t('usage.accounting.missing', { count: missing })}</p> : null}

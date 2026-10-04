@@ -11,7 +11,7 @@ import { AgentMessagingCard } from './CommunicationSection';
 import { LoopLimitsCard } from './LoopLimitsCard';
 import { RetryPolicyCard } from './RetryPolicyCard';
 import { SessionResidencyCard } from './SessionResidencyCard';
-import { TaskPolicyCard } from './TaskRuntimeSettings';
+import { CronRuntimeCard, TaskPolicyCard } from './TaskRuntimeSettings';
 import { WorktreePolicy } from './WorktreePolicy';
 import { commitText, pickValue, selectText } from './testControls';
 
@@ -121,6 +121,128 @@ describe('config gap cards', () => {
     await click(hints);
     await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
     expect(patchConfig.mock.calls[0]![0]).toMatchObject({ task: { bash_file_tool_hints: false } });
+  });
+
+  it('keeps everyday task limits on the card, moves the CLI run and kill grace under Advanced', async () => {
+    const container = await render(<TaskPolicyCard />);
+    const card = container.querySelector('#st-card-task-policy')!;
+    const advanced = card.querySelector('[data-task-policy-advanced]')!;
+    const fieldFor = (label: string) => [...card.querySelectorAll('label')]
+      .find((node) => node.textContent === label)!.control as HTMLInputElement;
+    for (const label of ['Maximum running tasks', 'Bash task timeout (s)']) {
+      expect(advanced.contains(fieldFor(label))).toBe(false);
+    }
+    for (const label of ['Wait ceiling (s)', 'Maximum steered turns', 'Kill grace period (ms)']) {
+      expect(advanced.contains(fieldFor(label))).toBe(true);
+    }
+    // The rule "empty uses the engine default" is stated once, by the card
+    // lead. Each number's own default, its 0, and its floor live behind that
+    // field's `i` — the page opens without five copies of the same sentence.
+    expect(card.textContent).toContain('A number left empty uses the engine default.');
+    expect(card.textContent).not.toContain('Empty allows any number of background tasks at once');
+    // A switch already shows whether it is on: "on by default" restated under
+    // it told a reader nothing they could not see. What each switch *does*
+    // stays, because that is not visible anywhere else.
+    for (const suffix of ['On by default.', 'Off by default.']) {
+      expect(card.textContent).not.toContain(suffix);
+    }
+    expect(card.textContent).toContain('keeps running as a background task instead of being stopped.');
+    expect(card.textContent).toContain('leaves running background tasks alone instead of stopping them.');
+    expect(card.textContent).toContain('add a short hint pointing to Read, Grep or Edit.');
+    const openHelp = async (label: string): Promise<string> => {
+      const node = [...card.querySelectorAll('label')].find((entry) => entry.textContent === label)!;
+      const trigger = node.parentElement!.querySelector<HTMLButtonElement>('[data-setting-help]')!;
+      await act(async () => { trigger.click(); });
+      // Read through this trigger's own describedby target: only one bubble is
+      // open at a time, so the page-level query would prove nothing.
+      const id = trigger.getAttribute('aria-describedby');
+      return id === null ? '' : document.querySelector(`#${id}`)?.textContent ?? '';
+    };
+    expect(await openHelp('Maximum running tasks')).toContain('At least 1.');
+    expect(await openHelp('Bash task timeout (s)')).toContain('600 s');
+    expect(await openHelp('Wait ceiling (s)')).toContain('2147483 s');
+    expect(await openHelp('Maximum steered turns')).toContain('100000');
+    expect(await openHelp('Kill grace period (ms)')).toContain('5000 ms');
+    expect(card.textContent).toContain('Command-line non-interactive runs');
+  });
+
+  it('names the three non-interactive outcomes and keeps the stored value as a caption', async () => {
+    const container = await render(<TaskPolicyCard />);
+    const card = container.querySelector('#st-card-task-policy')!;
+    const choices = [...card.querySelectorAll<HTMLElement>('[data-task-print-mode-choice]')];
+    expect(choices.map((choice) => choice.dataset['taskPrintModeChoice'])).toEqual(['exit', 'drain', 'steer']);
+    expect(choices[0]!.textContent).toContain('Exit right away');
+    expect(choices[1]!.textContent).toContain('Wait for tasks, then exit');
+    expect(choices[2]!.textContent).toContain('Stay running, steer turns');
+    for (const [index, mode] of ['exit', 'drain', 'steer'].entries()) {
+      expect(choices[index]!.textContent).toContain(mode);
+    }
+    // The picker shows the engine's own default, so a config with no explicit mode reads as steer.
+    expect((card.querySelector('[data-task-print-mode]') as HTMLElement).dataset['taskPrintMode']).toBe('steer');
+    await click(choices[1]!.querySelector('input')!);
+    await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
+    expect(patchConfig.mock.calls[0]![0]).toMatchObject({ task: { print_background_mode: 'drain' } });
+  });
+
+  it('reads the auto-background switch as the engine default and writes an explicit value', async () => {
+    const container = await render(<TaskPolicyCard />);
+    const card = container.querySelector('#st-card-task-policy')!;
+    const toggle = (label: string) => [...card.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+      .find((input) => input.closest('label')?.textContent?.includes(label))!;
+    // The engine auto-backgrounds a timed-out command unless told not to.
+    expect(toggle('Auto-background Bash on timeout').checked).toBe(true);
+    expect(toggle('Keep tasks alive on exit').checked).toBe(false);
+    await click(toggle('Auto-background Bash on timeout'));
+    await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
+    expect(patchConfig.mock.calls[0]![0]).toMatchObject({ task: { bash_auto_background_on_timeout: false } });
+  });
+
+  it('clears a saved CLI limit instead of writing the engine default', async () => {
+    getConfig.mockResolvedValue({ ...CONFIG, task: { printWaitCeilingS: 30, printMaxTurns: 12 } });
+    const container = await render(<TaskPolicyCard />);
+    const card = container.querySelector('#st-card-task-policy')!;
+    const wait = [...card.querySelectorAll('label')].find((node) => node.textContent === 'Wait ceiling (s)')!.control as HTMLInputElement;
+    expect(wait.value).toBe('30');
+    await type(wait, '');
+    await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
+    const patch = patchConfig.mock.calls.at(-1)![0] as { task: Record<string, unknown> };
+    expect(patch.task['print_wait_ceiling_s']).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(patch.task))).not.toHaveProperty('print_wait_ceiling_s');
+    expect(patch.task['print_max_turns']).toBe(12);
+  });
+
+  it('keeps the task draft and names the failure when the save is rejected', async () => {
+    getConfig.mockResolvedValue({ task: { maxRunningTasks: 4 } });
+    patchConfig.mockRejectedValueOnce(new Error('server offline'));
+    const container = await render(<TaskPolicyCard />);
+    const card = container.querySelector('#st-card-task-policy')!;
+    const maxRunning = [...card.querySelectorAll('label')].find((node) => node.textContent === 'Maximum running tasks')!.control as HTMLInputElement;
+    expect(maxRunning.value).toBe('4');
+    await type(maxRunning, '6');
+    const save = [...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
+    await click(save);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(card.querySelector('[role="alert"]')?.textContent).toContain('server offline');
+    // The draft is still the user's, not the last stored value.
+    expect(maxRunning.value).toBe('6');
+    expect(save.hasAttribute('disabled')).toBe(false);
+  });
+
+  it('shows cron diagnostics as on/off in readable units and never as controls', async () => {
+    getConfig.mockResolvedValue({
+      ...CONFIG,
+      cron: { debug: true, noJitter: false, noStale: true, disabled: false, manualTick: false, clock: 'utc', pollIntervalMs: 30_000 },
+    });
+    const container = await render(<CronRuntimeCard />);
+    const card = container.querySelector('#st-card-cron')!;
+    const rowValue = (label: string) => [...card.querySelectorAll('dt')]
+      .find((term) => term.textContent === label)!.nextElementSibling!.textContent;
+    expect(rowValue('Debug logging')).toBe('On');
+    expect(rowValue('Disable jitter')).toBe('Off');
+    expect(rowValue('Manual tick mode')).toBe('Off');
+    expect(rowValue('Clock')).toBe('utc');
+    expect(rowValue('Poll interval (s)')).toBe('30');
+    expect(card.querySelector('input, [role="switch"]')).toBeNull();
   });
 
   it('writes a residency duration in ms from seconds and rejects out-of-range counts', async () => {

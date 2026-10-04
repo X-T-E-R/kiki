@@ -14,7 +14,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import { readLastSessionId } from '@kiki/session-core/settings';
@@ -53,6 +53,24 @@ export function pluginsRouteFrom(params: URLSearchParams): PluginsRoute {
   const view = params.get('view');
   // `manage` is the retired name of the Installed view; old links still land.
   if (view === 'installed' || view === 'manage') return { view: 'installed' };
+  // Import history is a plugins sub-view, so it deep-links with the rest of them
+  // and keeps the same `?source=` handle a plugin detail uses to hand off.
+  if (view === 'import') {
+    const source = params.get('source');
+    // A source is named by its plugin and its id. A link that carries only the
+    // source id still resolves (the view matches on the id alone); carrying the
+    // plugin too is what makes the link unambiguous when two plugins contribute
+    // the same source name.
+    const plugin = params.get('sourcePlugin');
+    return {
+      view: 'import',
+      ...(source !== null && source !== '' ? { sourceId: source } : {}),
+      ...(plugin !== null && plugin !== '' ? { sourcePluginId: plugin } : {}),
+    };
+  }
+  // Media is a plugins sub-view for the same reason import history is: it
+  // manages what installed plugin packages can do.
+  if (view === 'media') return { view: 'media' };
   const shelf = params.get('shelf');
   if (view === 'shelf' && isCatalogShelf(shelf)) return { view: 'shelf', shelf };
   return { view: 'market' };
@@ -63,8 +81,16 @@ export function applyPluginsRoute(params: URLSearchParams, route: PluginsRoute):
   next.delete('plugin');
   next.delete('view');
   next.delete('shelf');
+  next.delete('source');
+  next.delete('sourcePlugin');
   if (route.view === 'detail') next.set('plugin', route.id);
   if (route.view === 'installed') next.set('view', 'installed');
+  if (route.view === 'import') {
+    next.set('view', 'import');
+    if (route.sourceId !== undefined) next.set('source', route.sourceId);
+    if (route.sourcePluginId !== undefined) next.set('sourcePlugin', route.sourcePluginId);
+  }
+  if (route.view === 'media') next.set('view', 'media');
   if (route.view === 'shelf') { next.set('view', 'shelf'); next.set('shelf', route.shelf); }
   return next;
 }
@@ -119,6 +145,10 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [params, setParams] = useSearchParams();
+  // A finished native import hands back a real session, and the reader continues
+  // it where every other session is opened. The dirty guard in App wraps this
+  // navigator, so an unsaved draft is still asked about before leaving.
+  const navigate = useNavigate();
   const tab: CapabilityTab = isTab(params.get('tab')) ? params.get('tab') as CapabilityTab : 'plugins';
   const route = pluginsRouteFrom(params);
   const { workspaces, workspace, workspaceId, setWorkspaceId, query: workspacesQuery } = useCapabilityWorkspace();
@@ -188,7 +218,11 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   );
 
   return (
-    <MediaPreviewProvider>
+    // The session matters here: a session-scoped file id is only resolvable by
+    // a preview surface that knows which session it belongs to, and the media
+    // sources view lists exactly those. Without it a thumbnail stays on
+    // "Loading…" forever rather than admitting it cannot resolve.
+    <MediaPreviewProvider sessionId={sessionId}>
       <div className="flex h-full min-h-0 flex-col bg-paper" data-capabilities-page={tab}>
         <PageHeader title={t('cap.page.title')} onToggleSidebar={onToggleSidebar}>
           <IconButton glyph={<CapabilityGlyph kind="refresh" />} label={t('cap.page.refresh')} onClick={refresh} dataAttrs={{ 'data-capabilities-refresh': '' }} />
@@ -240,6 +274,8 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
                 workspaceRoot={workspace?.root}
                 onOpenPanel={openPanel}
                 onOpenPlugin={(id) => { setRoute({ view: 'detail', id }); }}
+                sessionId={sessionId}
+                onOpenSession={(sessionId) => { void navigate(`/s/${sessionId}`); }}
               />
             )}
           </div>
@@ -265,6 +301,8 @@ export function CapabilityTabBody({
   workspaceRoot,
   onOpenPanel,
   onOpenPlugin,
+  onOpenSession,
+  sessionId,
 }: {
   readonly tab: CapabilityTab;
   readonly route: PluginsRoute;
@@ -273,8 +311,12 @@ export function CapabilityTabBody({
   readonly workspaceRoot?: string;
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
   readonly onOpenPlugin?: (pluginId: string) => void;
+  /** Open an imported conversation as a live session, on the session route. */
+  readonly onOpenSession?: (sessionId: string) => void;
+  /** Session in focus; the media sub-view lists its jobs. */
+  readonly sessionId?: string;
 }) {
-  if (tab === 'plugins') return <PluginsView route={route} onRoute={onRoute} workspaceRoot={workspaceRoot} onOpenPanel={onOpenPanel} />;
+  if (tab === 'plugins') return <PluginsView route={route} onRoute={onRoute} workspaceRoot={workspaceRoot} onOpenPanel={onOpenPanel} onOpenSession={onOpenSession} sessionId={sessionId} />;
   if (tab === 'skills') return <SkillsView workspaceId={workspaceId} onOpenPlugin={onOpenPlugin} />;
   if (tab === 'mcp') return <McpView cwd={workspaceRoot ?? ''} />;
   return <ToolsView />;

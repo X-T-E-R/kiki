@@ -81,10 +81,11 @@ import {
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
-import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
+import { API_CODES, ApiError, type ModelSwitchMode, type NamedAgentProfile } from '../lib/client';
 import { registerOverlay } from '../lib/uiBusy';
 import { pushToast } from '../lib/toasts';
 import { matchesShortcutAction } from '../lib/shortcuts';
+import { useRemoteConnections } from '../lib/remoteConnections';
 import { useConnection } from '../state/connection';
 import { ImageTile, QuoteChip, SkillChip, TextTile } from './ContextChips';
 import { ComposerNotes } from './ComposerNotes';
@@ -269,6 +270,8 @@ export function Composer({
   defaultModel,
   serverDefaultModel,
   modelSource,
+  pendingModelSwitch,
+  modelSwitchError,
   agentProfile,
   agentProfilePending = false,
   permissionMode,
@@ -360,6 +363,16 @@ export function Composer({
   /** Where the effective model value comes from. */
   modelSource: ComposerModelSource;
   /**
+   * A queued model switch: shown beside the model control so the pending
+   * target is visible without pretending the actual model already changed.
+   */
+  pendingModelSwitch?: { readonly to: string; readonly mode: ModelSwitchMode };
+  /**
+   * A failed read of the queued switch list. Known operations are kept, so this
+   * is reported quietly with a retry instead of pretending the queue is empty.
+   */
+  modelSwitchError?: { readonly detail: string; readonly onRetry: () => void };
+  /**
    * Main-agent profile shown in the picker (pending choice included). Omit
    * together with `onChangeAgentProfile` to hide the control entirely.
    */
@@ -433,7 +446,7 @@ export function Composer({
       | ((previous: readonly ComposerAttachment[]) => readonly ComposerAttachment[]),
   ) => void;
   /** Skill activation — the wire path for slash commands (POST :activate). */
-  onActivateSkill?: (name: string, args: string, attachments: readonly ComposerAttachment[]) => void | Promise<unknown>;
+  onActivateSkill?: (name: string, args: string, attachments: readonly ComposerAttachment[], userInput: string) => void | Promise<unknown>;
   /** Session-scoped shortcuts (/fork, /undo, /compact). */
   onSessionAction?: (action: 'fork' | 'undo' | 'compact') => void;
   /** `/btw [question]`: open a side question beside the session; the text, when given, is sent to it. */
@@ -502,8 +515,18 @@ export function Composer({
    * The agent is working on this conversation: the row under the card shows
    * a quiet working line with the age of its latest output. Omit when idle
    * or while the session waits on the user (the tray says that instead).
+   * `continuingCount` names the background work a stop will NOT end;
+   * `queued` holds details if a model request is waiting on governance admission.
    */
-  working?: { readonly lastResponseAt: number | undefined };
+  working?: {
+    readonly lastResponseAt: number | undefined;
+    readonly continuingCount?: number;
+    readonly queued?: {
+      readonly waitedMs: number;
+      readonly modelId?: string;
+      readonly blockingRules?: readonly string[];
+    };
+  };
   /** Omit when there is nothing to abort (e.g. /new session creation). */
   onAbort?: () => void;
   /**
@@ -584,7 +607,14 @@ export function Composer({
     }
   }
   const vscodeConversationId = vscodeConversationRef.current?.key;
-  const { client } = useConnection();
+  const { client, connectionId, localClient } = useConnection();
+  // In a remote space the message is delivered on another machine's home, so
+  // the line above the card names that home. Nothing to say in a local space.
+  const remoteRecords = useRemoteConnections(localClient);
+  const remoteTarget = connectionId === null
+    ? null
+    : remoteRecords.data?.find((record) => record.id === connectionId) ?? null;
+  const remoteTargetLabel = remoteTarget?.label.trim() ?? '';
   const { t, tp, locale } = useI18n();
   const navigate = useNavigate();
   const sendShortcut = useSyncExternalStore(
@@ -1012,7 +1042,7 @@ export function Composer({
     attachments.length > 0 ||
     attachmentError !== null ||
     slashConfirm !== null ||
-    ssh.chips !== null;
+    ssh.resident !== null;
 
   /**
    * Snapshot the pre-edit state. Any genuine edit clears the redo lane —
@@ -1632,7 +1662,14 @@ export function Composer({
     // Linked threads ride along as a trailing <thread_refs> context block the
     // model reads; the transcript strips it back off and shows chips.
     const withContext = (prepared: string) => appendThreadRefContext(prepared, threadRefDirectory.info);
-    const sentAttachments = ssh.snapshot.length === 0 ? attachments : [...attachments.filter((item) => item.kind !== 'ssh'), ...ssh.snapshot];
+    // Hosts joined to a live session live on the server's session host list and
+    // ride no message, so a send in a session carries exactly the draft's own
+    // attachments. On /new there is no session yet: the preselected hosts ride
+    // the create request, which joins them BEFORE the first prompt; the draft's
+    // own send path splits them back out, so they never reach the message.
+    const sentAttachments = sessionId === undefined && ssh.snapshot.length > 0
+      ? [...attachments, ...ssh.snapshot]
+      : attachments;
     const deliver = (raw: string) => {
       const prepared = withContext(raw);
       if (now && options === undefined && onSendNow !== undefined) {
@@ -1661,17 +1698,16 @@ export function Composer({
 
   const activateSkill = (name: string, args: string) => {
     if (!vscodeRuntime) {
-      const sentAttachments = ssh.snapshot.length === 0 ? attachments : [...attachments.filter((item) => item.kind !== 'ssh'), ...ssh.snapshot];
       runAgentTurn(async () => {
         recordSubmission();
-        await onActivateSkill?.(name, args, sentAttachments);
+        await onActivateSkill?.(name, args, attachments, text);
       });
       return;
     }
     runAgentTurn(async () => {
       await vscodeHost.preparePrompt('', vscodeConversationId, false);
       recordSubmission();
-      await onActivateSkill?.(name, args, attachments);
+      await onActivateSkill?.(name, args, attachments, text);
     });
   };
 
@@ -1915,6 +1951,10 @@ export function Composer({
   // The status line names the model by its catalog display name (the inherit
   // source and provider live in the picker and the tooltip).
   const modelShortLabel = selectedModel?.display_name ?? effectiveModel;
+  // The queued switch names its target the same way the picker does.
+  const pendingSwitchLabel = pendingModelSwitch === undefined
+    ? undefined
+    : resolveCatalogModel(models, pendingModelSwitch.to)?.display_name ?? pendingModelSwitch.to;
 
   // Focus continuity across a busy flip: becoming `disabled` force-blurs the
   // textarea (platform behavior), which used to be invisible because the
@@ -1934,13 +1974,20 @@ export function Composer({
     const armOnDisableBlur = () => {
       if (textarea.disabled) refocusOnEnableRef.current = true;
     };
+    const cancelOnFocusElsewhere = (event: globalThis.FocusEvent) => {
+      if (event.target !== textarea) refocusOnEnableRef.current = false;
+    };
     textarea.addEventListener('blur', armOnDisableBlur);
-    return () => textarea.removeEventListener('blur', armOnDisableBlur);
+    document.addEventListener('focusin', cancelOnFocusElsewhere);
+    return () => {
+      textarea.removeEventListener('blur', armOnDisableBlur);
+      document.removeEventListener('focusin', cancelOnFocusElsewhere);
+    };
   }, []);
   useEffect(() => {
     if (disabled || !refocusOnEnableRef.current) return;
     refocusOnEnableRef.current = false;
-    textareaRef.current?.focus();
+    if (document.activeElement === document.body) textareaRef.current?.focus();
   }, [disabled]);
 
   const confirmContextRebuild = () => {
@@ -1973,6 +2020,7 @@ export function Composer({
     goalAvailable: onChangeGoalMode !== undefined || onChangeGoalObjective !== undefined,
     planGateFree: planGate === undefined || onChangePlanGate === undefined ? undefined : planGate === 'free',
     onChangePlanGateFree: onChangePlanGate === undefined ? undefined : (free) => { onChangePlanGate(free ? 'free' : 'gated'); },
+    permissionMode,
     goalObjective: onChangeGoalObjective !== undefined ? goalObjective : undefined,
     onChangeGoalObjective,
   };
@@ -2119,6 +2167,27 @@ export function Composer({
       />
     ),
   });
+  if (pendingModelSwitch !== undefined) {
+    statusSegments.push({
+      key: 'model-switch',
+      node: (
+        <span
+          data-model-switch-pending={pendingModelSwitch.mode}
+          title={`${pendingModelSwitch.to} — ${t('modelSwitch.pendingChipTitle')}`}
+          // A narrow composer drops this chip entirely and says the same thing
+          // in words above the input instead of clipping it to "fixture/…".
+          className="@max-[30rem]/composer:hidden flex h-7 max-w-56 min-w-0 items-center px-1.5 text-[12px] font-medium text-accent-ink"
+        >
+          {/* The width cap matches the model chip's, so a long target id
+              truncates where the model beside it would. */}
+          <span className="truncate">
+            {t('modelSwitch.pendingChipPrefix')}
+            {pendingModelSwitch.to}
+          </span>
+        </span>
+      ),
+    });
+  }
   if (variant !== 'subagent') {
     statusSegments.push({
       key: 'permission',
@@ -2152,10 +2221,41 @@ export function Composer({
       />
       {/* One width axis with the transcript: the conversation shell declares
           --kiki-chat-content-width; the 760px fallback is defensive. */}
-      <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
+      <div className="@container/composer mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
         {variant === 'subagent' && replyingTo !== undefined ? (
           <p data-composer-replying-to className="mb-1.5 truncate px-1 text-[12px] text-ink-faint">
             {t('composer.replyingTo', { agent: replyingTo })}
+          </p>
+        ) : null}
+        {modelSwitchError !== undefined ? (
+          <p data-model-switch-error className="mb-1.5 flex flex-wrap items-center gap-2 px-1 text-[12px] leading-snug text-danger">
+            <span className="min-w-0 break-words" title={modelSwitchError.detail}>
+              {t('modelSwitch.listFailed')}
+            </span>
+            <button
+              type="button"
+              onClick={modelSwitchError.onRetry}
+              className="shrink-0 rounded-full border border-hairline px-2 py-0.5 font-medium text-ink-soft transition-colors hover:border-accent hover:text-ink pointer-coarse:h-8"
+            >
+              {t('common.retry')}
+            </button>
+          </p>
+        ) : null}
+        {/* A queued switch is named in words here while the toolbar is too
+            narrow to say it: the model that is on its way matters more than the
+            one already bound, and a wrapped line beats a clipped label. */}
+        {pendingModelSwitch !== undefined ? (
+          <p
+            data-model-switch-pending-line={pendingModelSwitch.mode}
+            className="mb-1.5 flex items-start gap-1.5 px-1 text-[12px] leading-snug text-accent-ink @min-[30rem]/composer:hidden"
+          >
+            <Icon name="arrowRight" size={12} className="mt-[3px]" />
+            <span className="min-w-0 break-words">
+              {t('modelSwitch.pendingLine', {
+                model: pendingSwitchLabel ?? pendingModelSwitch.to,
+                mode: t(`modelSwitch.modeName.${pendingModelSwitch.mode}` as I18nKey),
+              })}
+            </span>
           </p>
         ) : null}
         {selectionBlocked ? <div data-selection-diagnostic role={selectionLoading ? 'status' : 'alert'} className="mb-2 space-y-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[11.5px] text-danger">
@@ -2193,6 +2293,17 @@ export function Composer({
           </button>
         ) : null}
         {header}
+        {remoteTarget !== null ? (
+          <p
+            data-composer-remote-target
+            className="mb-1.5 flex items-center gap-1.5 truncate px-1 text-[12px] leading-snug text-ink-faint"
+          >
+            <Icon name="web" size={12} className="shrink-0" />
+            <span className="min-w-0 truncate">
+              {t('composer.remoteTarget', { label: remoteTargetLabel === '' ? remoteTarget.endpoint : remoteTargetLabel })}
+            </span>
+          </p>
+        ) : null}
         <div
           ref={cardRef}
           data-composer-card
@@ -2281,7 +2392,10 @@ export function Composer({
               </button>
             </div>
           ) : null}
-          {ssh.chips}
+          {/* Session SSH: a resident control for the hosts joined to this
+              session, kept apart from the tray below it, which carries what
+              rides the next message. */}
+          {ssh.resident}
           {/* Goal mode armed: the next message becomes the session goal. The
               run-state card (pause/resume/cancel/edit) lives above the
               composer dock — see GoalCard. */}
@@ -2521,6 +2635,7 @@ export function Composer({
             ) : null}
             <textarea
               ref={textareaRef}
+              data-composer-input
               rows={1}
               // A catalog/seat rerender can precede the browser's IME input
               // event. Never restore an older controlled prop over preedit text.
@@ -2887,6 +3002,8 @@ export function Composer({
               {working !== undefined ? (
                 <ComposerWorkingLine
                   lastResponseAt={working.lastResponseAt}
+                  continuingCount={working.continuingCount}
+                  queued={working.queued}
                   sendNowHint={text.trim() !== '' && onSendNow !== undefined && !busySendsNow && !queueEditing && !takenOver
                     ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowHintCmdEnter' : 'composer.sendNowHint')
                     : undefined}
@@ -3343,33 +3460,139 @@ function EffortGauge({
 /**
  * "Working · last response 12s ago" under the composer card. One faint line
  * led by the busy pulse, ticking once a second; before the turn's first
- * output it just says "Working". With a draft typed it also teaches the
- * send-now key, the one moment that key matters.
+ * output it just says "Working". When waiting on governance admission, the
+ * line shows a concise "Queued" status without noisy second counts or page
+ * jumping, offering an inline popover on click for exact details and rules.
+ * With a draft typed it also teaches the send-now key, while background work
+ * shows "N more still running" (composer.continuing).
  */
 function ComposerWorkingLine({
   lastResponseAt,
+  continuingCount,
+  queued,
   sendNowHint,
 }: {
   readonly lastResponseAt: number | undefined;
+  readonly continuingCount: number | undefined;
+  readonly queued?: {
+    readonly waitedMs: number;
+    readonly modelId?: string;
+    readonly blockingRules?: readonly string[];
+  };
   readonly sendNowHint: string | undefined;
 }) {
   const { t, time } = useI18n();
+  const navigate = useNavigate();
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   useNow();
+
+  useEffect(() => {
+    if (!detailsOpen) return undefined;
+    const onPointerDown = (e: MouseEvent) => {
+      if (
+        panelRef.current &&
+        !panelRef.current.contains(e.target as Node) &&
+        triggerRef.current &&
+        !triggerRef.current.contains(e.target as Node)
+      ) {
+        setDetailsOpen(false);
+      }
+    };
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setDetailsOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [detailsOpen]);
+
   const status = lastResponseAt === undefined
     ? t('composer.working')
     : t('composer.workingLastResponse', { ago: time.relativeTime(new Date(lastResponseAt).toISOString()) });
+  const isQueued = queued !== undefined;
+  const waitedSec = queued !== undefined ? Math.max(1, Math.round(queued.waitedMs / 1000)) : 1;
+
   return (
-    <p
-      data-composer-working
-      data-last-response-at={lastResponseAt}
-      className="anim-enter flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint"
-    >
-      <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
-      <span className="min-w-0 truncate tabular-nums">{status}</span>
-      {sendNowHint !== undefined ? (
-        <span data-composer-send-now-hint className="hidden shrink-0 sm:inline">· {sendNowHint}</span>
+    <div className="relative flex min-w-0 items-center">
+      <p
+        data-composer-working
+        data-last-response-at={lastResponseAt}
+        className="anim-enter flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint"
+      >
+        <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
+        {isQueued ? (
+          <span data-composer-queued className="flex shrink-0 items-center gap-1">
+            <button
+              ref={triggerRef}
+              type="button"
+              data-composer-queued-trigger
+              aria-expanded={detailsOpen}
+              onClick={() => { setDetailsOpen((v) => !v); }}
+              className="font-medium text-ink-soft underline decoration-dotted transition-colors hover:text-ink hover:decoration-solid focus-visible:outline-2 focus-visible:outline-selected-ink"
+            >
+              {t('composer.queued')}
+            </button>
+          </span>
+        ) : (
+          <span className="min-w-0 truncate tabular-nums">{status}</span>
+        )}
+        {continuingCount !== undefined && continuingCount > 0 ? (
+          <span data-composer-continuing className="hidden shrink-0 sm:inline">· {t('composer.continuing', { count: continuingCount })}</span>
+        ) : null}
+        {sendNowHint !== undefined ? (
+          <span data-composer-send-now-hint className="hidden shrink-0 sm:inline">· {sendNowHint}</span>
+        ) : null}
+      </p>
+
+      {isQueued && detailsOpen ? (
+        <div
+          ref={panelRef}
+          data-composer-queued-popover
+          className="anim-enter absolute bottom-full left-0 z-30 mb-2 w-72 rounded-lg border border-hairline bg-paper p-3 shadow-lg text-[12px] text-ink"
+        >
+          <div className="flex items-center justify-between pb-1.5 border-b border-hairline/60">
+            <span className="font-semibold">{t('composer.queuedTitle')}</span>
+            <span className="font-mono text-[11px] text-ink-faint tabular-nums">
+              {t('composer.queuedWaited', { seconds: waitedSec })}
+            </span>
+          </div>
+          <p className="mt-1.5 leading-snug text-ink-soft text-[11.5px]">
+            {t('composer.queuedBody')}
+          </p>
+          {queued.modelId !== undefined ? (
+            <p className="mt-1 font-mono text-[11px] text-ink-faint">
+              {t('composer.queuedModel', { model: queued.modelId })}
+            </p>
+          ) : null}
+          {queued.blockingRules !== undefined && queued.blockingRules.length > 0 ? (
+            <p className="mt-0.5 text-[11px] text-ink-faint">
+              {t('composer.queuedRules', { rules: queued.blockingRules.join(', ') })}
+            </p>
+          ) : null}
+          <div className="mt-2.5 pt-1.5 border-t border-hairline/60">
+            <button
+              type="button"
+              data-composer-queued-usage
+              onClick={() => {
+                setDetailsOpen(false);
+                void navigate('/usage');
+              }}
+              className="text-[11.5px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+            >
+              {t('composer.queuedUsageLink')}
+            </button>
+          </div>
+        </div>
       ) : null}
-    </p>
+    </div>
   );
 }
 

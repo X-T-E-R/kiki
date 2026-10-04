@@ -1,3 +1,4 @@
+import type { ContentWindow } from '../contract/content';
 import type { MarkerId, TaskId, TaskRefId } from './ids';
 import type { TranscriptTurn } from './turn';
 
@@ -31,7 +32,7 @@ export const KNOWN_MARKERS = [
  * hook results, and step-less notices (`marker: 'notice'` with a notice
  * payload).
  */
-export interface TranscriptMarker {
+export interface TranscriptMarker extends ContentWindow {
   readonly kind: 'marker';
   readonly markerId: MarkerId;
   readonly marker: MarkerKey;

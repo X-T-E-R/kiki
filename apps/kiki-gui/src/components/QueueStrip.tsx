@@ -31,12 +31,15 @@
  * (promotion, steer, abort) — never by local removal.
  */
 
-import { useEffect, useId, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
 
 import type { DeferredAppendTiming } from '@kiki/protocol';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import { stripThreadRefContext } from '@kiki/session-core/composer';
 import type { QueuedPromptPreview } from '@kiki/session-core/session';
+import { mergeSessionQueueRows, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
 import { useI18n } from '../i18n';
+import type { QueuedModelSwitch } from '../lib/client';
 import { Icon } from './icons';
 
 /** The armed remove falls back to idle after this long without the second click. */
@@ -76,6 +79,7 @@ export function QueueHeaderSummary({ count }: { readonly count: number }) {
 
 export function QueueStrip({
   items,
+  modelSwitches,
   onSendNow,
   onRemove,
   onRemoveAttachment,
@@ -84,10 +88,19 @@ export function QueueStrip({
   editingPromptId,
   onMove,
   onChangeTiming,
+  onEditModelSwitch,
+  onCancelModelSwitch,
   sendNowDisabled = false,
   timingReady,
 }: {
   readonly items: readonly QueuedPromptPreview[];
+  /**
+   * Queued model-switch control items. They share this list's drain order and
+   * never render as messages: each keeps its own row with edit/cancel while
+   * pending. A preparing item shows its state without a cancel button — by
+   * contract only a pending operation can be cancelled.
+   */
+  readonly modelSwitches?: readonly QueuedModelSwitch[];
   readonly onSendNow: (promptId: string) => Promise<void> | void;
   readonly onRemove: (promptId: string) => Promise<void> | void;
   readonly onRemoveAttachment?: (promptId: string, index: number) => Promise<void> | void;
@@ -118,6 +131,10 @@ export function QueueStrip({
    * sending; absent means "unknown" and the row just shows its timing.
    */
   readonly timingReady?: (timing: DeferredAppendTiming) => boolean;
+  /** Reopen the switch panel for a pending control item. */
+  readonly onEditModelSwitch?: (operationId: string) => void;
+  /** Cancel a pending control item (clears the queued switch). */
+  readonly onCancelModelSwitch?: (operationId: string) => Promise<void> | void;
 }) {
   const { t } = useI18n();
   const noticeId = useId();
@@ -134,9 +151,30 @@ export function QueueStrip({
   // terms, 0..items.length) the pointer currently hovers.
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropSlot, setDropSlot] = useState<number | null>(null);
+  // One drain order over both kinds: messages keep their state order, a
+  // switch claims its engine-assigned shared slot. A message move's target
+  // index is then the very index the engine splices by.
+  const rows = useMemo<readonly SessionQueueRow[]>(
+    () => mergeSessionQueueRows(
+      items.map((item) => ({ promptId: item.promptId, queuePosition: item.queuePosition })),
+      (modelSwitches ?? [])
+        .filter((entry) => entry.queueIndex >= 0)
+        .map((entry) => ({ operationId: entry.input.operationId, queueIndex: entry.queueIndex })),
+    ),
+    [items, modelSwitches],
+  );
+  const itemById = useMemo(() => new Map(items.map((item) => [item.promptId, item])), [items]);
+  const switchById = useMemo(
+    () => new Map((modelSwitches ?? []).map((entry) => [entry.input.operationId, entry])),
+    [modelSwitches],
+  );
+  const rowKeys = useMemo(
+    () => new Set(rows.map((row) => (row.kind === 'message' ? row.promptId : row.operationId))),
+    [rows],
+  );
   useEffect(() => {
-    setPendingIds((current) => current.filter((id) => items.some((item) => item.promptId === id)));
-  }, [items]);
+    setPendingIds((current) => current.filter((id) => rowKeys.has(id)));
+  }, [rowKeys]);
   // Disarm a remove whose row left the queue underneath it.
   useEffect(() => {
     if (armedRemoveId !== null && !items.some((item) => item.promptId === armedRemoveId)) {
@@ -150,14 +188,16 @@ export function QueueStrip({
     [],
   );
 
-  if (items.length === 0) return null;
+  if (rows.length === 0) return null;
 
   // An in-flight action locks drag reordering: a second move computed against
   // the pre-move order would land on a stale slot.
   const interactionLocked = pendingIds.length > 0;
-  const draggable = onMove !== undefined && items.length > 1;
+  const draggable = onMove !== undefined && rows.length > 1;
   // Edit hold: the edited row and every row behind it wait for the edit.
-  const editIndex = editingPromptId === undefined ? -1 : items.findIndex((item) => item.promptId === editingPromptId);
+  const editIndex = editingPromptId === undefined
+    ? -1
+    : rows.findIndex((row) => row.kind === 'message' && row.promptId === editingPromptId);
 
   const run = (promptId: string, action: (promptId: string) => Promise<void> | void) => {
     if (pendingIds.includes(promptId)) return;
@@ -186,7 +226,7 @@ export function QueueStrip({
   const moveBy = (promptId: string, index: number, delta: -1 | 1) => {
     if (onMove === undefined || interactionLocked) return;
     const targetIndex = index + delta;
-    if (targetIndex < 0 || targetIndex >= items.length) return;
+    if (targetIndex < 0 || targetIndex >= rows.length) return;
     run(promptId, (id) => onMove(id, targetIndex));
   };
 
@@ -207,7 +247,7 @@ export function QueueStrip({
   const rowDrop = (event: DragEvent) => {
     if (dragId === null) return;
     event.preventDefault();
-    const from = items.findIndex((item) => item.promptId === dragId);
+    const from = rows.findIndex((row) => row.kind === 'message' && row.promptId === dragId);
     const slot = dropSlot;
     clearDrag();
     if (onMove === undefined || interactionLocked || from < 0 || slot === null) return;
@@ -241,8 +281,76 @@ export function QueueStrip({
     }
   };
 
-  const rows: ReactNode[] = [];
-  items.forEach((item, index) => {
+  const rowNodes: ReactNode[] = [];
+  rows.forEach((row, index) => {
+    if (dropSlot === index) {
+      rowNodes.push(<li key={`drop-${index}`} aria-hidden className="pointer-events-none mx-1 h-0.5 rounded-full bg-accent" />);
+    }
+    if (row.kind === 'modelSwitch') {
+      const entry = switchById.get(row.operationId);
+      if (entry === undefined) return;
+      const pending = pendingIds.includes(row.operationId);
+      const waitsForEdit = editIndex >= 0 && index > editIndex;
+      rowNodes.push(
+        <li
+          key={`switch-${row.operationId}`}
+          data-queue-model-switch={row.operationId}
+          data-model-switch-state={entry.receipt.state}
+          data-queue-waits-edit={waitsForEdit ? '' : undefined}
+          className="anim-enter group flex min-h-8 items-center gap-2 rounded-md px-1.5 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-within:bg-ink/[0.04]"
+        >
+          {/* Same widths as a message row's grip + index so the drain-order
+              numbers line up; a control item does not reorder. */}
+          {draggable ? <span aria-hidden className="h-5 w-4 shrink-0" /> : null}
+          <span aria-hidden className="w-4 shrink-0 text-right text-[12px] text-ink-faint tabular-nums">
+            {index + 1}
+          </span>
+          <Icon name="arrowRight" size={12} className="shrink-0 text-ink-faint" />
+          <span className="min-w-0 flex-1 truncate text-[13px] text-ink-soft" title={entry.input.model}>
+            {entry.receipt.state === 'preparing'
+              ? t(
+                entry.input.mode === 'compact' ? 'transcript.modelSwitch.preparing.compact' : entry.input.mode === 'fresh'
+                  ? 'transcript.modelSwitch.preparing.fresh'
+                  : 'transcript.modelSwitch.preparing.direct',
+                { from: entry.receipt.fromModel, to: entry.receipt.toModel },
+              )
+              : `${t('transcript.modelSwitch.pending', { to: entry.receipt.toModel })} · ${t(`modelSwitch.modeName.${entry.input.mode}` as I18nKey)}`}
+          </span>
+          {waitsForEdit ? (
+            <span data-queue-waits-hint className="shrink-0 text-[12px] text-ink-faint">
+              {t('queue.waitsForEdit')}
+            </span>
+          ) : null}
+          {entry.receipt.state === 'pending' ? (
+            <span data-queue-model-switch-actions className="ml-auto flex shrink-0 items-center gap-0.5">
+              {onEditModelSwitch !== undefined ? (
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => { onEditModelSwitch(row.operationId); }}
+                  className="h-7 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+                >
+                  {t('modelSwitch.action.edit')}
+                </button>
+              ) : null}
+              {onCancelModelSwitch !== undefined ? (
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => { run(row.operationId, (id) => onCancelModelSwitch(id)); }}
+                  className="h-7 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+                >
+                  {t('modelSwitch.action.cancel')}
+                </button>
+              ) : null}
+            </span>
+          ) : null}
+        </li>,
+      );
+      return;
+    }
+    const item = itemById.get(row.promptId);
+    if (item === undefined) return;
     const pending = pendingIds.includes(item.promptId);
     const isEditing = editingPromptId === item.promptId;
     const editLocked = editingPromptId !== undefined && !isEditing;
@@ -250,10 +358,7 @@ export function QueueStrip({
     // Queued behind the prompt being edited: holds its place until the edit ends.
     const waitsForEdit = editIndex >= 0 && index > editIndex;
     const timing = item.appendTiming ?? 'agent_idle';
-    if (dropSlot === index) {
-      rows.push(<li key={`drop-${index}`} aria-hidden className="pointer-events-none mx-1 h-0.5 rounded-full bg-accent" />);
-    }
-    rows.push(
+    rowNodes.push(
       <li
         key={item.promptId}
         onDragOver={(event) => { rowDragOver(event, index); }}
@@ -407,8 +512,8 @@ export function QueueStrip({
       </li>,
     );
   });
-  if (dropSlot === items.length) {
-    rows.push(<li key="drop-end" aria-hidden className="pointer-events-none mx-1 h-0.5 rounded-full bg-accent" />);
+  if (dropSlot === rows.length) {
+    rowNodes.push(<li key="drop-end" aria-hidden className="pointer-events-none mx-1 h-0.5 rounded-full bg-accent" />);
   }
 
   return (
@@ -439,7 +544,7 @@ export function QueueStrip({
         </p>
       ) : null}
       <ol className="flex flex-col gap-0.5 pb-1">
-        {rows}
+        {rowNodes}
       </ol>
     </section>
   );

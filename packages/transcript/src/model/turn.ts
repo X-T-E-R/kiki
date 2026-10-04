@@ -1,3 +1,4 @@
+import type { ContentWindow } from '../contract/content';
 import type { MessageDelivery, TranscriptFrame } from './frame';
 import type { AttachmentId, StepId, TaskId, TurnId } from './ids';
 import type { TranscriptMessageIdentity } from './identity';
@@ -80,7 +81,7 @@ export interface StepRetry {
   readonly statusCode?: number;
 }
 
-export interface TranscriptTurn {
+export interface TranscriptTurn extends ContentWindow {
   readonly kind: 'turn';
   readonly turnId: TurnId;
   /** Per-agent monotonic ordinal; also the pagination cursor anchor. */

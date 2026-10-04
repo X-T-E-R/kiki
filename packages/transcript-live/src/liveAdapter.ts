@@ -61,6 +61,7 @@ import type {
 } from '@kiki/agent-core-v2/session/subagent/mirrorAgentRun';
 import {
   projectInteractionEndState,
+  releaseToolFramePayload,
   taskNotificationFrameId,
   type AgentRef,
   type AgentUsageMeta,
@@ -239,6 +240,7 @@ export class AgentTranscriptLiveAdapter {
   private openText: OpenTextFrame | undefined;
   private openThinking: OpenTextFrame | undefined;
   private readonly toolFrames = new Map<string, ToolFrameRecord>();
+  private readonly releasedTurnIds = new Set<string>();
   /** Last whole TranscriptTask emitted per task id (`task.upsert` replaces, so the local copy must carry `outputTail` forward). */
   private readonly tasks = new Map<string, TranscriptTask>();
   /** shell `commandId` → transcript `taskId` (`shell.output` is keyed by command id only). */
@@ -298,7 +300,30 @@ export class AgentTranscriptLiveAdapter {
     private readonly lookups?: LiveAdapterLookups,
   ) {}
 
+  /** Keep only routing identity for turns the binding has reproduced from durable history. */
+  releaseDurableTurns(turnIds: readonly string[], promptIds: readonly string[] = []): void {
+    for (const turnId of turnIds) this.releasedTurnIds.add(turnId);
+    for (const [toolId, hit] of this.toolFrames) {
+      if (this.releasedTurnIds.has(hit.turnId)) this.toolFrames.set(toolId, { ...hit, frame: releaseToolFramePayload(hit.frame) });
+    }
+    for (const promptId of promptIds) {
+      const prompt = this.prompts.get(promptId);
+      if (prompt !== undefined && prompt.status !== 'running' && prompt.status !== 'queued' && prompt.status !== 'blocked') this.prompts.set(promptId, { ...prompt, content: undefined });
+    }
+    if (this.currentTurn !== undefined && this.releasedTurnIds.has(this.currentTurn.turnId)) this.currentTurn = { ...this.currentTurn, prompt: undefined };
+  }
+
   map(event: LiveAdapterBusEvent): TranscriptOperation[] {
+    const operations = this.mapEvent(event);
+    for (const operation of operations) {
+      if (operation.op !== 'frame.upsert' || operation.frame.kind !== 'tool' || !this.releasedTurnIds.has(operation.turnId)) continue;
+      const hit = this.toolFrames.get(operation.frame.toolCallId);
+      if (hit !== undefined) this.toolFrames.set(operation.frame.toolCallId, { ...hit, frame: releaseToolFramePayload(hit.frame) });
+    }
+    return operations;
+  }
+
+  private mapEvent(event: LiveAdapterBusEvent): TranscriptOperation[] {
     switch (event.type) {
       case 'plan.revision':
         return this.onPlanRevision(event);
@@ -412,6 +437,7 @@ export class AgentTranscriptLiveAdapter {
   }): TranscriptOperation[] {
     const n = event.turnId;
     const turnId = `t${n}`;
+    this.releasedTurnIds.delete(turnId);
     const existing = this.lookups?.turn?.(turnId);
     if (existing !== undefined) {
       const current = existing.state === 'running' ? existing : { ...existing, state: 'running' as const };

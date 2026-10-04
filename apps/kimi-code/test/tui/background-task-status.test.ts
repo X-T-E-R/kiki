@@ -61,6 +61,14 @@ describe('formatBackgroundTaskTranscript', () => {
     expect(data.headline).toContain('question task started');
   });
 
+  it('renders a media stop as a media task while retaining local-stop and job details', () => {
+    const data = formatBackgroundTaskTranscript({ taskId: 'media-fixture', kind: 'media', jobId: 'media-job-fixture', description: 'Media generation media-job-fixture', status: 'killed', startedAt: 1, endedAt: 2, stopReason: 'Local reception stopped; remote generation may continue' });
+    expect(data.headline).toBe('media task stopped');
+    expect(data.detail).toContain('media-job-fixture');
+    expect(data.detail).toContain('Local reception stopped; remote generation may continue');
+    expect(data.headline).not.toContain('bash');
+  });
+
   it('renders a completed entry with exit code in detail', () => {
     const data = formatBackgroundTaskTranscript(
       task({ status: 'completed', exitCode: 0, endedAt: Date.now() }),

@@ -90,7 +90,6 @@ export function WorkspacesSection() {
             {t('connect.switchLocal')}
           </button>
         ) : null}
-        <SshProfilesPanel onConnect={activateSshProfile} />
         {items.length > 0 ? (
           <WorkspaceList
             items={items}
@@ -183,6 +182,11 @@ export function WorkspacesSection() {
         />
       ) : null}
     </SectionCard>
+    {/* A whole remote environment is its own object (F06): not part of the
+        workspace directory card, and named differently from the session's
+        SSH tool hosts. D24 will give remote spaces their real home; until
+        then the panel stays here as a peer, not nested in workspace management. */}
+    <SshProfilesPanel onConnect={activateSshProfile} />
     <WorktreesCard />
     </>
   );

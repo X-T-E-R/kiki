@@ -3,7 +3,7 @@ import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin 
 import { projectTranscriptUserOrigin } from '../contract/origin';
 import { todoNotesUpdateSchema, transcriptTaskSchema } from '../contract/schema';
 import type { AttachmentSource } from '../model/attachment';
-import type { MessageDelivery, ToolCallFrame } from '../model/frame';
+import { releaseFramePayload, releaseToolFramePayload, type MessageDelivery, type ToolCallFrame } from '../model/frame';
 import { projectInteractionEndState, type TranscriptInteraction } from '../model/interaction';
 import type { GoalMeta, GoalStatus } from '../model/meta';
 import type { TranscriptPrompt, TranscriptPromptAppendTiming } from '../model/prompt';
@@ -106,6 +106,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly currentTurnId?: string;
   readonly currentPromptId?: string;
   readonly modelAlias?: string;
+  readonly queuedModelSwitchIds?: readonly string[];
   readonly prompts?: readonly [string, TranscriptPrompt][];
   readonly hiddenPromptIds?: readonly string[];
   readonly deliveries?: readonly [string, MessageDelivery][];
@@ -141,10 +142,12 @@ export class TranscriptWireAdapter {
   readonly #executions = new Map<string, TranscriptTurnExecution>();
   readonly #cancelRequests = new Map<string, TurnCancellation>();
   readonly #prompts = new Map<string, TranscriptPrompt>();
+  readonly #queuedModelSwitchIds = new Set<string>();
   readonly #hiddenPromptIds = new Set<string>();
   readonly #deliveries = new Map<string, MessageDelivery>();
   readonly #deliveryUndoRecords = new Map<string, DeliveryUndoRecord>();
   readonly #frameRecords = new Map<string, FrameRecord>();
+  readonly #releasedTurnIds = new Set<string>();
   readonly #turnRecordOrdinals = new Map<string, number>();
   readonly #stepRecordOrdinals = new Map<string, number>();
   #goal: GoalMeta | undefined;
@@ -202,6 +205,7 @@ export class TranscriptWireAdapter {
       currentTurnId: this.#currentTurnId,
       currentPromptId: this.#currentPromptId,
       modelAlias: this.#modelAlias,
+      queuedModelSwitchIds: [...this.#queuedModelSwitchIds],
       prompts: [...this.#prompts],
       hiddenPromptIds: [...this.#hiddenPromptIds],
       deliveries: [...this.#deliveries],
@@ -210,6 +214,27 @@ export class TranscriptWireAdapter {
         turns: [...this.#turnRecordOrdinals], steps: [...this.#stepRecordOrdinals],
       },
     };
+  }
+
+  /** The caller has reproduced these completed turns from durable history; keep undo and event-routing identity. */
+  releaseDurableTurns(turnIds: readonly string[]): void {
+    const released = new Set(turnIds);
+    const prompts = new Set<string>();
+    for (const turnId of released) {
+      const turn = this.#turnHeaders.get(turnId);
+      if (turn?.promptId !== undefined) prompts.add(turn.promptId);
+      if (turn !== undefined) this.#turnHeaders.set(turnId, { ...turn, prompt: undefined });
+      this.#releasedTurnIds.add(turnId);
+    }
+    for (const [toolId, hit] of this.#tools) {
+      if (released.has(hit.turnId)) this.#tools.set(toolId, { ...hit, frame: releaseToolFramePayload(hit.frame) });
+    }
+    for (const [key, record] of this.#frameRecords) {
+      if (released.has(record.operation.turnId)) this.#frameRecords.set(key, { ...record, operation: { ...record.operation, frame: releaseFramePayload(record.operation.frame) } });
+    }
+    for (const [promptId, prompt] of this.#prompts) {
+      if (prompts.has(promptId) && prompt.status !== 'running' && prompt.status !== 'queued' && prompt.status !== 'blocked') this.#prompts.set(promptId, { ...prompt, content: undefined });
+    }
   }
 
   restore(checkpoint: TranscriptWireAdapterCheckpoint): void {
@@ -258,6 +283,7 @@ export class TranscriptWireAdapter {
     this.#currentTurnId = checkpoint.currentTurnId;
     this.#currentPromptId = checkpoint.currentPromptId;
     this.#modelAlias = checkpoint.modelAlias;
+    replaceSet(this.#queuedModelSwitchIds, checkpoint.queuedModelSwitchIds ?? []);
     replaceMap(this.#prompts, checkpoint.prompts ?? []);
     replaceSet(this.#hiddenPromptIds, checkpoint.hiddenPromptIds ?? []);
     replaceMap(this.#deliveries, checkpoint.deliveries ?? []);
@@ -282,6 +308,11 @@ export class TranscriptWireAdapter {
     ];
   }
 
+  hasTaskNotification(record: TranscriptWireRecord): boolean {
+    const id = taskNotificationIdOfRecord(record);
+    return id !== undefined && (this.#deliveredTaskNotifications.has(id) || this.#projectedTaskNotificationIds.has(id));
+  }
+
   private rememberProjection(operations: readonly TranscriptOperation[], ordinal: number): void {
     for (const operation of operations) {
       if (operation.op === 'turn.upsert' && !this.#turnRecordOrdinals.has(operation.turn.turnId)) {
@@ -291,7 +322,8 @@ export class TranscriptWireAdapter {
       } else if (operation.op === 'frame.upsert') {
         const key = `${operation.turnId}\0${operation.stepId}\0${operation.frame.frameId}`;
         const previous = this.#frameRecords.get(key);
-        this.#frameRecords.set(key, { ordinal: previous?.ordinal ?? ordinal, operation });
+        const retained = this.#releasedTurnIds.has(operation.turnId) ? { ...operation, frame: releaseFramePayload(operation.frame) } : operation;
+        this.#frameRecords.set(key, { ordinal: previous?.ordinal ?? ordinal, operation: retained });
       }
     }
   }
@@ -340,13 +372,37 @@ export class TranscriptWireAdapter {
   }
 
   private operations(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
+    if (record.type === 'agent.model_switch' || record.type === 'prompt.model_switch_queued' || record.type === 'prompt.model_switch_status') {
+      const entry = objectOf(record['entry']);
+      const receipt = objectOf(record['receipt']) ?? objectOf(entry?.['receipt']);
+      const operationId = stringOf(record['operationId']) ?? stringOf(receipt?.['operationId']);
+      if (operationId === undefined) return [];
+      if (record.type === 'prompt.model_switch_queued') this.#queuedModelSwitchIds.add(operationId);
+      const committed = record.type === 'agent.model_switch';
+      const from = stringOf(committed ? record['fromModel'] : receipt?.['fromModel']);
+      const to = stringOf(committed ? record['toModel'] : receipt?.['toModel']);
+      const state = committed ? (this.#queuedModelSwitchIds.has(operationId) ? 'preparing' : 'completed') : stringOf(receipt?.['state']);
+      if ((committed || state === 'completed') && to !== undefined) this.#modelAlias = to;
+      return [{ op: 'marker.upsert', item: { kind: 'marker', markerId: `model-switch:${operationId}`, marker: 'model.switch', at: isoOf(record.time),
+        payload: { operationId, from, to, state, mode: committed ? record['mode'] : receipt?.['mode'],
+          windowEpoch: committed ? record['newEpoch'] : receipt?.['windowEpoch'],
+          summaryGenerated: committed ? record['summaryGenerated'] : receipt?.['summaryGenerated'], error: receipt?.['error'] } } }];
+    }
     if (record.type === 'profile.bind' || record.type === 'config.update') {
-      const to = stringOf(record['modelAlias']);
-      if (to === undefined || to.length === 0) return [];
+      const model = stringOf(record['modelAlias']);
+      const thinkingEffort = stringOf(record['thinkingEffort']) ?? stringOf(record['thinkingLevel']);
+      const agent: { model?: string; thinkingEffort?: string } = {};
+      if (model !== undefined && model.length > 0) agent.model = model;
+      if (thinkingEffort !== undefined) agent.thinkingEffort = thinkingEffort;
+      const operations: TranscriptOperation[] = Object.keys(agent).length === 0
+        ? [] : [{ op: 'meta.merge', meta: { agent } }];
+      if (agent.model === undefined) return operations;
       const from = this.#modelAlias;
-      this.#modelAlias = to;
-      if (from === undefined || from === to) return [];
-      return [this.marker(record, ordinal, 'model.switch', { from, to })];
+      this.#modelAlias = agent.model;
+      if (from !== undefined && from !== agent.model) {
+        operations.push(this.marker(record, ordinal, 'model.switch', { from, to: agent.model }));
+      }
+      return operations;
     }
     if (record.type === 'turn.prompt') return this.turnPrompt(record, ordinal);
     if (record.type === 'turn.steer') return this.turnSteer(record, ordinal);
@@ -552,13 +608,22 @@ export class TranscriptWireAdapter {
         items: todoItemsOf(record['value']),
         notes: this.#todo?.notes,
         notesMeta: this.#todo?.notesMeta,
+        notesStatus: this.#todo?.notesStatus,
         updatedAt: isoOf(record.time),
       };
       return [{ op: 'todo.upsert', todo: this.#todo }];
     }
     if (record.type === 'tools.update_store' && record['key'] === 'todo_notes') {
       const value = todoNotesUpdateSchema.safeParse(record['value']);
-      if (!value.success) return [];
+      if (!value.success) {
+        this.#todo = {
+          todoId: 'todo', items: this.#todo?.items ?? [], notes: this.#todo?.notes, notesMeta: this.#todo?.notesMeta,
+          notesStatus: { state: 'incompatible', wireOrdinal: ordinal, schemaVersion: 1,
+            fields: value.error.issues.map((issue) => issue.path.map(String).join('.') || 'value') },
+          updatedAt: isoOf(record.time),
+        };
+        return [{ op: 'todo.upsert', todo: this.#todo }];
+      }
       this.#todo = {
         todoId: 'todo',
         items: this.#todo?.items ?? [],
@@ -721,7 +786,7 @@ export class TranscriptWireAdapter {
         return [];
       }
       const notificationId = taskNotificationIdOfRecord(record);
-      if (notificationId !== undefined && this.#deliveredTaskNotifications.has(notificationId)) return [];
+      if (notificationId !== undefined && (this.#deliveredTaskNotifications.has(notificationId) || this.#projectedTaskNotificationIds.has(notificationId))) return [];
       if (notificationId !== undefined) this.#projectedTaskNotificationIds.add(notificationId);
       const stepRef = this.#steps.get(turnId);
       const step = stepRef === undefined ? undefined : this.#stepHeaders.get(stepRef.stepId);
@@ -1239,14 +1304,19 @@ export class TranscriptWireAdapter {
     const content = arrayOf(message['content']);
     if (role === 'user') {
       const notificationId = taskNotificationIdOfMessage(message);
-      if (notificationId !== undefined && this.#projectedTaskNotificationIds.has(notificationId)) return [];
-      if (notificationId !== undefined) this.#deliveredTaskNotifications.set(notificationId, messageId);
+      if (notificationId !== undefined) {
+        this.#deliveredTaskNotifications.set(notificationId, messageId);
+        for (const [turnId, pending] of this.#pendingTaskNotifications) {
+          this.#pendingTaskNotifications.set(turnId, pending.filter((notification) => taskNotificationIdOfRecord(notification) !== notificationId));
+        }
+      }
       const canonicalDelivery = objectOf(record['delivery']);
       if (canonicalDelivery !== undefined) return this.deliveredMessage(record, message, ordinal, canonicalDelivery);
       if (messageId === this.#currentPromptId || this.#deliveries.has(messageId)) return [];
       const origin = objectOf(message['origin']);
       if (this.consumeSteeredUserMessage(messageId, origin)) return [];
       if (
+        notificationId !== undefined ||
         origin?.['kind'] === 'agent_message' ||
         origin?.['kind'] === 'injection' ||
         (this.#canonicalTurns.size > 0 && isVisibleLegacyTurnOrigin(this.agentId, origin))
@@ -1941,7 +2011,7 @@ export class TranscriptWireAdapter {
       this.#toolIdsByTurn.get(previousTurnId)?.delete(toolCallId);
       this.#runningToolIdsByTurn.get(previousTurnId)?.delete(toolCallId);
     }
-    this.#tools.set(toolCallId, hit);
+    this.#tools.set(toolCallId, this.#releasedTurnIds.has(hit.turnId) ? { ...hit, frame: releaseToolFramePayload(hit.frame) } : hit);
     let toolIds = this.#toolIdsByTurn.get(hit.turnId);
     if (toolIds === undefined) {
       toolIds = new Set();
@@ -2049,6 +2119,7 @@ export class TranscriptWireAdapter {
     const removedToolIds = new Set(turns.flatMap((turnId) => [...(this.#toolIdsByTurn.get(turnId) ?? [])]));
     for (const turnId of turns) {
       this.#turnIds.delete(turnId);
+      this.#releasedTurnIds.delete(turnId);
       this.#undoAnchors.delete(turnId);
       this.#canonicalTurns.delete(turnId);
       this.#turnOwnedItemIds.delete(turnId);
@@ -2100,6 +2171,9 @@ export function transcriptFactsFromWire(
 
 function durableRecord(type: string): boolean {
   return (
+    type === 'agent.model_switch' ||
+    type === 'prompt.model_switch_queued' ||
+    type === 'prompt.model_switch_status' ||
     type === 'config.update' ||
     type === 'profile.bind' ||
     type === 'turn.prompt' ||

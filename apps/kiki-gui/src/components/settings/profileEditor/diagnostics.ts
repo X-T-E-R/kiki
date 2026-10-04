@@ -1,6 +1,7 @@
 import type { NamedAgentProfile, ShippedAgentProfile } from '../../../lib/client';
+import type { NamedAgentSubagentLease } from '@kiki/protocol';
 import type { NamedAgentOverrideRelation } from '@kiki/session-core/settings';
-import { isExternalExecutor } from './profileDraft';
+import { dispatchFieldsOf, isExternalExecutor } from './profileDraft';
 
 /**
  * What the editor can honestly say about one profile. Each entry is a fact
@@ -39,6 +40,14 @@ export function profileLocation(profile: NamedAgentProfile): string {
   return profile.source_file ?? profile.source;
 }
 
+/**
+ * The leases this profile dispatches. The preset list is the only place lease
+ * pins live, so it is also the only place a missing pin can be diagnosed.
+ */
+function dispatchLeases(profile: NamedAgentProfile): readonly NamedAgentSubagentLease[] | readonly (string | NamedAgentSubagentLease)[] {
+  return dispatchFieldsOf(profile).allowed_subagents ?? [];
+}
+
 /** Wire keys that count as "set" for the executor-applicability check. */
 const SET_CHECKS: Readonly<Record<string, (profile: NamedAgentProfile) => boolean>> = {
   tools: (profile) => profile.tools !== undefined,
@@ -48,7 +57,7 @@ const SET_CHECKS: Readonly<Record<string, (profile: NamedAgentProfile) => boolea
   thinking_effort: (profile) => profile.thinking_effort !== undefined,
   pinned_model_alias: (profile) => profile.pinned_model_alias !== undefined,
   auto_compact: (profile) => profile.auto_compact !== undefined,
-  subagents: (profile) => profile.subagents !== undefined,
+  allowed_subagents: (profile) => dispatchFieldsOf(profile).allowed_subagents !== undefined,
 };
 
 export function ignoredSetFields(profile: NamedAgentProfile): string[] {
@@ -71,7 +80,7 @@ export function profileDiagnostics(profile: NamedAgentProfile, context: Diagnost
     for (const alias of profile.allowed_models ?? []) {
       if (missing(alias)) out.push({ kind: 'aliasMissing', field: 'allowed_models', alias });
     }
-    for (const entry of profile.subagents ?? []) {
+    for (const entry of dispatchLeases(profile)) {
       if (typeof entry === 'string') continue;
       for (const alias of [entry.model_alias, ...(entry.allowed_models ?? [])]) {
         if (missing(alias)) out.push({ kind: 'aliasMissing', field: 'lease', alias: alias!, via: entry.name });
@@ -79,7 +88,7 @@ export function profileDiagnostics(profile: NamedAgentProfile, context: Diagnost
     }
   }
   const names = new Set(context.profiles.map((candidate) => candidate.name));
-  for (const entry of profile.subagents ?? []) {
+  for (const entry of dispatchLeases(profile)) {
     const name = typeof entry === 'string' ? entry : entry.name;
     // Scoped leases resolve a private source file; their status says it.
     const scoped = typeof entry !== 'string' && entry.source !== undefined;

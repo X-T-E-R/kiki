@@ -1,4 +1,11 @@
-import type { ModelEntity, PatchModelRequest } from '@kiki/protocol';
+import { modelCognitionSchema, modelPromptOverridesSchema, type ModelEntity, type PatchModelRequest } from '@kiki/protocol';
+import { LocalizedError } from '@kiki/session-core/i18n';
+import { CognitionContentEditor, PromptIdentityEditor, PromptOverridesContentEditor } from './PromptIdentityEditor';
+import {
+  cognitionBody, cognitionDraft, cognitionProblem, promptOverridesBody, promptOverridesDraft, promptOverridesProblem,
+  promptIdentityProblem, promptTableDraft, promptTableText, updatePromptTable,
+  type CognitionDraft, type PromptOverridesDraft, type PromptTableDraft,
+} from './promptIdentityDraft';
 
 import { useI18n } from '../../i18n';
 import { ChipSelect } from '../ChipSelect';
@@ -22,8 +29,8 @@ export interface ModelEngineDraft {
   reasoningKey: string;
   adaptiveThinking: 'inherit' | 'on' | 'off';
   requestParams: string;
-  cognition: string;
-  promptOverrides: string;
+  cognition: PromptTableDraft<CognitionDraft>;
+  promptOverrides: PromptTableDraft<PromptOverridesDraft>;
   overrides: string;
 }
 
@@ -39,14 +46,19 @@ export function modelEngineDraft(entity: ModelEntity): ModelEngineDraft {
     reasoningKey: entity.reasoning_key ?? '',
     adaptiveThinking: entity.adaptive_thinking === undefined ? 'inherit' : entity.adaptive_thinking ? 'on' : 'off',
     requestParams: jsonText(entity.request_params),
-    cognition: jsonText(entity.cognition),
-    promptOverrides: jsonText(entity.prompt_overrides),
+    cognition: promptTableDraft(entity.cognition, cognitionDraft),
+    promptOverrides: promptTableDraft(entity.prompt_overrides, promptOverridesDraft),
     overrides: jsonText(entity.overrides),
   };
 }
 
 export function modelEngineDraftsEqual(a: ModelEngineDraft, b: ModelEngineDraft): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+  const content = (value: ModelEngineDraft) => ({
+    ...value,
+    cognition: promptTableText(value.cognition, cognitionBody),
+    promptOverrides: promptTableText(value.promptOverrides, promptOverridesBody),
+  });
+  return JSON.stringify(content(a)) === JSON.stringify(content(b));
 }
 
 export type EngineField = keyof ModelEngineDraft;
@@ -70,14 +82,23 @@ export function modelEnginePatch(draft: ModelEngineDraft, baseline: ModelEngineD
     const text = (draft[field] as string).trim();
     if (text !== (baseline[field] as string).trim()) patch[wire] = text === '' ? null : text;
   };
-  const table = (field: EngineField, wire: string) => {
-    const text = (draft[field] as string).trim();
-    if (text === (baseline[field] as string).trim()) return;
+  const table = (field: 'requestParams' | 'overrides' | 'cognition' | 'promptOverrides', wire: string) => {
+    const content = (value: ModelEngineDraft) => field === 'cognition' ? promptTableText(value.cognition, cognitionBody)
+      : field === 'promptOverrides' ? promptTableText(value.promptOverrides, promptOverridesBody) : value[field];
+    const text = content(draft).trim();
+    if (text === content(baseline).trim()) return;
+    const problem = field === 'cognition' && !draft.cognition.rawActive
+      ? promptIdentityProblem(draft.cognition.value, cognitionBody, cognitionProblem)
+      : field === 'promptOverrides' && !draft.promptOverrides.rawActive
+        ? promptIdentityProblem(draft.promptOverrides.value, promptOverridesBody, promptOverridesProblem) : undefined;
+    if (problem !== undefined) throw new LocalizedError({ key: `st.promptIdentity.problem.${problem}` });
     if (text === '') { patch[wire] = null; return; }
     let parsed: unknown;
     try { parsed = JSON.parse(text); } catch { throw new ModelEngineFieldError(field, 'json'); }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new ModelEngineFieldError(field, 'object');
-    patch[wire] = parsed;
+    if (field === 'cognition') modelCognitionSchema.parse(parsed);
+    if (field === 'promptOverrides') modelPromptOverridesSchema.parse(parsed);
+    patch[wire] = Object.keys(parsed).length === 0 ? null : parsed;
   };
   if (JSON.stringify(draft.aliases) !== JSON.stringify(baseline.aliases)) {
     patch['aliases'] = draft.aliases.length === 0 ? null : draft.aliases;
@@ -97,22 +118,39 @@ export function modelEnginePatch(draft: ModelEngineDraft, baseline: ModelEngineD
   return patch as PatchModelRequest;
 }
 
-const TABLES: readonly { field: EngineField; label: 'st.modelEngine.requestParams' | 'st.modelEngine.cognition' | 'st.modelEngine.promptOverrides' | 'st.modelEngine.overrides'; help: 'st.modelEngine.requestParamsHelp' | 'st.modelEngine.cognitionHelp' | 'st.modelEngine.promptOverridesHelp' | 'st.modelEngine.overridesHelp' }[] = [
+const TABLES = [
   { field: 'requestParams', label: 'st.modelEngine.requestParams', help: 'st.modelEngine.requestParamsHelp' },
   { field: 'overrides', label: 'st.modelEngine.overrides', help: 'st.modelEngine.overridesHelp' },
-  { field: 'cognition', label: 'st.modelEngine.cognition', help: 'st.modelEngine.cognitionHelp' },
-  { field: 'promptOverrides', label: 'st.modelEngine.promptOverrides', help: 'st.modelEngine.promptOverridesHelp' },
-];
+] as const;
 
-export function ModelEngineFields({ modelId, value, onChange, issue }: {
+export function ModelEngineFields({ modelId, value, onChange, issue, disabled = false }: {
   modelId: string;
   value: ModelEngineDraft;
   onChange: (next: ModelEngineDraft) => void;
+  disabled?: boolean;
   /** The field that blocked the last save, with its message. */
   issue: { field: EngineField; text: string } | null;
 }) {
   const { t } = useI18n();
   const set = <K extends EngineField>(field: K, next: ModelEngineDraft[K]) => { onChange({ ...value, [field]: next }); };
+  const rawResult = (field: 'cognition' | 'promptOverrides') => {
+    let parsed: unknown;
+    try { parsed = value[field].raw.trim() === '' ? {} : JSON.parse(value[field].raw); } catch { return { error: t('st.modelEngine.issueJson') }; }
+    const result = (field === 'cognition' ? modelCognitionSchema : modelPromptOverridesSchema).safeParse(parsed);
+    return result.success ? { value: result.data } : { error: result.error.issues[0]?.message ?? t('st.modelEngine.issueObject') };
+  };
+  const restoreFormButton = (field: 'cognition' | 'promptOverrides') => {
+    if (!value[field].rawActive) return null;
+    const result = rawResult(field);
+    return <div className="pt-2">
+      <button type="button" disabled={result.error !== undefined} className="rounded px-2 py-1 text-[12px] text-ink-soft hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:opacity-50"
+        onClick={() => { if (result.error === undefined) {
+          if (field === 'cognition') set(field, promptTableDraft(result.value, cognitionDraft));
+          else set(field, promptTableDraft(result.value, promptOverridesDraft));
+        } }}>{t('st.profiles.modeForm')}</button>
+      {result.error !== undefined ? <p role="alert" className="text-[12px] text-danger">{result.error}</p> : null}
+    </div>;
+  };
   const issueLine = (field: EngineField) => (issue?.field === field
     ? <p role="alert" className="mt-1 text-[12px] font-normal text-danger">{issue.text}</p>
     : null);
@@ -135,7 +173,7 @@ export function ModelEngineFields({ modelId, value, onChange, issue }: {
   );
 
   return (
-    <div className="space-y-3 border-t border-hairline pt-3" data-model-engine-fields={modelId}>
+    <fieldset disabled={disabled} className="min-w-0 space-y-3 pt-3 disabled:opacity-60" data-model-engine-fields={modelId}>
       <p className="text-[12px] font-semibold text-ink">{t('st.modelEngine.title')}</p>
       <div className="space-y-1">
         <p className={FORM_LABEL}>{t('st.modelEngine.aliases')}</p>
@@ -172,6 +210,40 @@ export function ModelEngineFields({ modelId, value, onChange, issue }: {
         </div>
       </div>
       <Hint>{t('st.modelEngine.thinkingHelp')}</Hint>
+      <details data-model-cognition-editor className="pt-2">
+        <summary className="cursor-pointer py-1 text-[13px] font-medium text-ink">{t('st.promptIdentity.cognitionTitle')}</summary>
+        <div className="space-y-4 pt-3">
+          {!value.cognition.rawActive ? <PromptIdentityEditor value={value.cognition.value}
+            onChange={(next) => set('cognition', updatePromptTable(value.cognition, next, cognitionBody))}>
+            {(content, change, label) => <CognitionContentEditor value={content} onChange={change} label={label} />}
+          </PromptIdentityEditor> : null}
+          <details data-prompt-json="cognition">
+            <summary className="cursor-pointer text-[11.5px] text-ink-faint">{t('st.promptIdentity.raw')}</summary>
+            <textarea rows={6} spellCheck={false} data-model-engine="cognition" aria-label={t('st.promptIdentity.cognitionTitle')}
+              className={`${INPUT} mt-2 h-auto border-0 bg-ink/[0.035] font-mono text-[12px] leading-5`}
+              value={value.cognition.raw} onChange={(event) => set('cognition', { ...value.cognition, raw: event.target.value, rawActive: true })} />
+            {restoreFormButton('cognition')}
+          </details>
+          {issueLine('cognition')}
+        </div>
+      </details>
+      <details data-model-overrides-editor className="pt-2">
+        <summary className="cursor-pointer py-1 text-[13px] font-medium text-ink">{t('st.promptIdentity.fieldsTitle')}</summary>
+        <div className="space-y-4 pt-3">
+          {!value.promptOverrides.rawActive ? <PromptIdentityEditor value={value.promptOverrides.value}
+            onChange={(next) => set('promptOverrides', updatePromptTable(value.promptOverrides, next, promptOverridesBody))}>
+            {(content, change, label) => <PromptOverridesContentEditor value={content} onChange={change} label={label} />}
+          </PromptIdentityEditor> : null}
+          <details data-prompt-json="promptOverrides">
+            <summary className="cursor-pointer text-[11.5px] text-ink-faint">{t('st.promptIdentity.raw')}</summary>
+            <textarea rows={6} spellCheck={false} data-model-engine="promptOverrides" aria-label={t('st.promptIdentity.fieldsTitle')}
+              className={`${INPUT} mt-2 h-auto border-0 bg-ink/[0.035] font-mono text-[12px] leading-5`}
+              value={value.promptOverrides.raw} onChange={(event) => set('promptOverrides', { ...value.promptOverrides, raw: event.target.value, rawActive: true })} />
+            {restoreFormButton('promptOverrides')}
+          </details>
+          {issueLine('promptOverrides')}
+        </div>
+      </details>
       {TABLES.map(({ field, label, help }) => (
         <label key={field} className={`${FORM_LABEL} block`}>
           {t(label)}
@@ -183,6 +255,6 @@ export function ModelEngineFields({ modelId, value, onChange, issue }: {
           {issueLine(field)}
         </label>
       ))}
-    </div>
+    </fieldset>
   );
 }

@@ -4,7 +4,7 @@ import { useI18n } from '../../../i18n';
 import type { NamedAgentProfile } from '../../../lib/client';
 import { Icon } from '../../icons';
 import { diagnosticTone } from './diagnostics';
-import { isExternalExecutor } from './profileDraft';
+import { dispatchFieldsOf, isExternalExecutor } from './profileDraft';
 import type { TeamRow } from './TeamView';
 
 interface Member {
@@ -16,10 +16,15 @@ interface Member {
   readonly leased: boolean;
 }
 
-function membersOf(lead: NamedAgentProfile, byName: ReadonlyMap<string, TeamRow>): Member[] | 'any' | 'none' {
-  if (lead.subagents === undefined) return 'any';
-  if (lead.subagents.length === 0) return 'none';
-  return lead.subagents.map((entry) => {
+function membersOf(lead: NamedAgentProfile, byName: ReadonlyMap<string, TeamRow>): Member[] | 'any' | 'none' | 'leaf' {
+  const dispatch = dispatchFieldsOf(lead);
+  // A hard switch off outranks whatever the preset list says: this lead calls
+  // nothing at all, so it has no roster to draw.
+  if (dispatch.can_spawn_subagents === false) return 'leaf';
+  const allowed = dispatch.allowed_subagents;
+  if (allowed === undefined) return 'any';
+  if (allowed.length === 0) return 'none';
+  return allowed.map((entry) => {
     const name = typeof entry === 'string' ? entry : entry.name;
     const row = byName.get(name);
     const lease = typeof entry === 'string' ? undefined : entry;
@@ -79,7 +84,7 @@ export function TeamRoster({ rows, onOpen, displayName }: {
           <span className="flex min-w-0 items-center gap-1.5">
             {nameButton(lead, displayName(profile), 'font-medium text-ink')}
             <span className={BADGE}>{t('st.agentManager.main')}</span>
-            {profile.subagent_policy === 'strict' ? <span className={BADGE}>{t('st.profiles.rosterStrict')}</span> : null}
+            {dispatchFieldsOf(profile).can_spawn_subagents === false ? <span className={BADGE} data-roster-leaf>{t('st.profiles.dispatchCanSpawnOff')}</span> : null}
             {warnCount > 0 ? <span className="shrink-0 text-amber-ink" title={tp('st.profiles.rowWarnings', warnCount)}><Icon name="warning" size={12} />
               <span className="sr-only">{tp('st.profiles.rowWarnings', warnCount)}</span></span> : null}
             {profile.disabled ? <span className="shrink-0 text-[11.5px] text-ink-faint">{t('st.namedAgents.disabledBadge')}</span> : null}
@@ -87,9 +92,9 @@ export function TeamRoster({ rows, onOpen, displayName }: {
           {modelCell(profile.pinned_model_alias, isExternalExecutor(profile.executor), lead.engineLabel)}
           {effortCell(profile.thinking_effort)}
         </div>
-        {members === 'any' || members === 'none'
+        {members === 'leaf' || members === 'any' || members === 'none'
           ? <p className="border-b border-hairline py-2 pl-5 text-[12px] text-ink-soft">
-            {t(members === 'any' ? 'st.profiles.subagentsAnyHint' : 'st.profiles.subagentsNoneHint')}
+            {t(members === 'leaf' ? 'st.profiles.dispatchCanSpawnOffHint' : members === 'any' ? 'st.profiles.dispatchAllowedUnset' : 'st.profiles.dispatchAllowedEmpty')}
           </p>
           : <ol data-roster-members>
             {members.map((member, index) => {

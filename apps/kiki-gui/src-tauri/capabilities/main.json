@@ -23,6 +23,8 @@
     "allow-desktop-space-statuses",
     "allow-set-unread-count",
     "allow-switch-space",
+    "allow-prepare-space",
+    "allow-take-navigation-intent",
     "allow-restart-space",
     "allow-open-space",
     "allow-create-space-shortcut",
@@ -30,6 +32,10 @@
     "allow-save-ssh-profile",
     "allow-remove-ssh-profile",
     "allow-connect-ssh-profile",
+    "allow-prepare-ssh-profile",
+    "allow-resume-scope-connection",
+    "allow-commit-scope-connection",
+    "allow-take-scope-connection",
     "allow-ssh-tunnel-running",
     "allow-disconnect-ssh-profile",
     "allow-cancel-desktop-startup",
@@ -80,6 +86,12 @@
         "$APPLOCALDATA",
         "$APPLOCALDATA/**"
       ]
-    }
+    },
+    { "identifier": "fs:allow-open", "allow": ["$APPLOCALDATA/kiki-media-saves", "$APPLOCALDATA/kiki-media-saves/**"] },
+    { "identifier": "fs:allow-write", "allow": ["$APPLOCALDATA/kiki-media-saves", "$APPLOCALDATA/kiki-media-saves/**"] },
+    { "identifier": "fs:allow-mkdir", "allow": ["$APPLOCALDATA/kiki-media-saves", "$APPLOCALDATA/kiki-media-saves/**"] },
+    { "identifier": "fs:allow-rename", "allow": ["$APPLOCALDATA/kiki-media-saves", "$APPLOCALDATA/kiki-media-saves/**"] },
+    { "identifier": "fs:allow-copy-file", "allow": ["$APPLOCALDATA/kiki-media-saves", "$APPLOCALDATA/kiki-media-saves/**"] },
+    { "identifier": "fs:allow-remove", "allow": ["$APPLOCALDATA/kiki-media-saves", "$APPLOCALDATA/kiki-media-saves/**"] }
   ]
 }

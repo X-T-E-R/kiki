@@ -1187,7 +1187,7 @@ export class SessionEventHandler {
         }
       }
       if (!this.backgroundTaskTranscriptedTerminal.has(info.taskId)) {
-        if (info.kind === 'process' || info.kind === 'question') {
+        if (info.kind === 'process' || info.kind === 'question' || info.kind === 'media') {
           this.appendBackgroundTaskEntry(info);
         }
         this.backgroundTaskTranscriptedTerminal.add(info.taskId);

@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
-import { HooksSection, ToolPolicyCard } from './AutomationSection';
+import { ToolPolicyCard } from './AutomationSection';
 import { ExperimentalRows } from './ExperimentalRows';
 import { pickOption } from './testControls';
 
@@ -29,12 +29,6 @@ let root: Root;
 let container: HTMLDivElement;
 let query: QueryClient;
 const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); }); };
-async function change(element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement, value: string) {
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')!.set!.call(element, value);
-    element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }));
-  });
-}
 const policy = (name: string) => container.querySelector(`[aria-label="Policy for ${name}"]`)!.closest('[data-tool-policy]')!;
 const policyValue = (name: string) => policy(name).getAttribute('data-tool-policy');
 async function pick(target: Element, label: string) { await pickOption(target, label); await flush(); }
@@ -45,7 +39,7 @@ async function click(text: string, scope: Element = container) {
   await flush();
 }
 async function mount(view: 'automation' | 'rows' = 'automation') {
-  await act(async () => root.render(<QueryClientProvider client={query}><I18nProvider>{view === 'rows' ? <ExperimentalRows section="mcp" /> : <><ToolPolicyCard /><HooksSection /></>}</I18nProvider></QueryClientProvider>));
+  await act(async () => root.render(<QueryClientProvider client={query}><I18nProvider>{view === 'rows' ? <ExperimentalRows section="mcp" /> : <ToolPolicyCard />}</I18nProvider></QueryClientProvider>));
   await flush();
   await flush();
 }
@@ -72,64 +66,9 @@ describe('safe automation drafts', () => {
     expect(policyValue('ThreadList')).toBe('inherited');
   });
 
-  it('preserves a hook draft across tool save/refetch, validates, saves and reloads', async () => {
-    await mount();
-    await click('Add rule');
-    const event = container.querySelector('#st-card-hooks [data-hook-event]')!;
-    expect(event.getAttribute('data-hook-event')).toBe('PreToolUse');
-    expect(event.textContent).toContain('Before a tool runs');
-    expect(event.textContent).not.toContain('PreToolUse');
-    const command = container.querySelector<HTMLTextAreaElement>('#st-card-hooks textarea')!;
-    await change(command, 'echo example');
-    const tools = container.querySelector('#st-card-tools')!;
-    await pick(tools.querySelector('[data-tool-mode]')!, 'Only allow selected tools');
-    expect(container.querySelector<HTMLButtonElement>('[data-settings-draft="tool-policy"] button')!.disabled).toBe(true);
-    await pick(policy('Read'), 'Selected');
-    await click('Save tool policy');
-    expect(config.tools).toEqual({ enabled: ['Read'], disabled: [] });
-    expect(command.value).toBe('echo example');
-    await act(async () => query.setQueryData(['config'], { ...config, hooks: [] }));
-    await flush();
-    expect(command.value).toBe('echo example');
-    const matcher = container.querySelector<HTMLInputElement>('#st-card-hooks input:not([type="number"])')!;
-    await change(matcher, '[');
-    await click('Save actions');
-    expect(container.textContent).toContain('check matcher');
-    expect(config.hooks).toEqual([]);
-    expect(command.value).toBe('echo example');
-    await change(matcher, '^Read$');
-    await click('Save actions');
-    expect(config.hooks).toEqual([{ event: 'PreToolUse', command: 'echo example', matcher: '^Read$' }]);
-    await act(async () => root.unmount());
-    root = createRoot(container);
-    await mount();
-    expect(container.querySelector<HTMLTextAreaElement>('#st-card-hooks textarea')!.value).toBe('echo example');
-  });
-
-  it('keeps invalid advanced JSON editable and round-trips all supported fields through the form', async () => {
-    await mount();
-    await click('Advanced: edit JSON');
-    const json = container.querySelector<HTMLTextAreaElement>('#st-card-hooks textarea')!;
-    await change(json, '{broken');
-    await click('Use rule form');
-    expect(json.value).toBe('{broken');
-    expect(client.patchConfig).not.toHaveBeenCalled();
-    const rule = { event: 'Notification', command: 'echo example', matcher: 'ready', timeout: 17 };
-    await change(json, JSON.stringify([rule]));
-    await click('Use rule form');
-    expect(container.querySelector('#st-card-hooks [data-hook-event]')!.getAttribute('data-hook-event')).toBe('Notification');
-    expect(container.querySelector<HTMLInputElement>('#st-card-hooks input[type="number"]')!.value).toBe('17');
-    await click('Save actions');
-    expect(config.hooks).toEqual([rule]);
-  });
-
-  it('preserves tool edits across hook saves and failed saves', async () => {
+  it('preserves tool edits across failed saves', async () => {
     await mount();
     await pick(policy('Write'), 'Deny');
-    await click('Add rule');
-    await change(container.querySelector<HTMLTextAreaElement>('#st-card-hooks textarea')!, 'echo example');
-    await click('Save actions');
-    expect(policyValue('Write')).toBe('disabled');
     client.patchConfig.mockRejectedValueOnce(new Error('offline'));
     await click('Save tool policy');
     expect(container.textContent).toContain('offline');

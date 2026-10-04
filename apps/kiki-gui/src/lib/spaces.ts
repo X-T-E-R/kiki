@@ -18,16 +18,32 @@ import type { SpaceWindowMode } from '@kiki/session-core/settings';
 
 import type { DesktopSpaceStatus, HostAdapter } from '../host';
 import type { KikiClient } from './client';
+import { requestScopeNavigation } from './navScope';
 
 export type SpaceListItem = ListSpacesResponse['items'][number] & { readonly credentials_shared?: boolean };
 
 export const MAIN_SPACE_ID = 'main';
 
+const clientScopes = new WeakMap<KikiClient, number>();
+let nextClientScope = 0;
+
+function clientScope(client: KikiClient | null): number | null {
+  if (client === null) return null;
+  let scope = clientScopes.get(client);
+  if (scope === undefined) {
+    scope = ++nextClientScope;
+    clientScopes.set(client, scope);
+  }
+  return scope;
+}
+
 export const spaceKeys = {
   all: ['spaces'] as const,
-  list: () => ['spaces', 'list'] as const,
+  list: (client: KikiClient | null) => ['spaces', 'list', clientScope(client)] as const,
   statuses: () => ['spaces', 'statuses'] as const,
-  sshCandidates: (id: string) => ['spaces', 'ssh-copy-candidates', id] as const,
+  sshCandidates: (id: string, client: KikiClient) => ['spaces', 'ssh-copy-candidates', clientScope(client), id] as const,
+  sshHosts: (client: KikiClient) => ['spaces', 'ssh-hosts-here', clientScope(client)] as const,
+  config: (client: KikiClient) => ['spaces', 'config', clientScope(client)] as const,
 };
 
 type HomesRest = NonNullable<KikiClient['klient']['rest']>['homes'];
@@ -67,10 +83,14 @@ export function currentSpaceId(): string {
 }
 
 /** `GET /homes`. A server without the route yields an empty list (single-home). */
-export function useSpaces(client: KikiClient) {
+export function useSpaces(client: KikiClient | null) {
   return useQuery({
-    queryKey: spaceKeys.list(),
-    queryFn: () => homesApi(client).list(),
+    queryKey: spaceKeys.list(client),
+    queryFn: () => {
+      if (client === null) throw new Error('The local space connection is not ready.');
+      return homesApi(client).list();
+    },
+    enabled: client !== null,
     staleTime: 30_000,
     select: (data) => data.items as readonly SpaceListItem[],
   });
@@ -108,18 +128,16 @@ export function otherSpacesPending(statuses: readonly DesktopSpaceStatus[] | und
 }
 
 /**
- * Enter a space. `open_space` covers both window modes on the native side:
- * in switch mode it starts the space's backend if needed and reloads this
- * window into it; in windows mode it opens (or focuses) the space's own
- * window. `mode` only picks the fallback for a build that lacks it.
+ * Same-window switching is a guarded Router visit with verified scope restore.
+ * Windows mode still delegates to `open_space` to open or focus its own window.
  */
 export async function enterSpace(host: HostAdapter, id: string, mode: SpaceWindowMode): Promise<void> {
-  if (host.openSpace !== undefined) {
-    await host.openSpace(id);
+  if (mode === 'switch') {
+    await requestScopeNavigation({ homeId: id, scopeId: 'local' });
     return;
   }
-  if (mode === 'switch' && host.switchSpace !== undefined) {
-    await host.switchSpace(id);
+  if (host.openSpace !== undefined) {
+    await host.openSpace(id);
     return;
   }
   throw new Error('Opening a space needs the Kiki desktop app.');

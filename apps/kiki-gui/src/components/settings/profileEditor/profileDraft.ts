@@ -1,7 +1,7 @@
 import { parseNamedAgentTools } from '@kiki/session-core/settings';
 import type { NamedAgentProfile, UpdateNamedAgentProfileRequest } from '../../../lib/client';
 import type { KikiContextGroup } from '../../harness/kikiContext';
-import { subagentPolicyBody, subagentPolicyChoice, type SubagentPolicyChoice } from '../subagentPolicy';
+import { modelPromptBody, modelPromptDraft, modelPromptIdentityBody, modelPromptProblem, promptIdentityBody, promptIdentityDraft, promptIdentityProblem, promptOverridesBody, promptOverridesDraft, promptOverridesProblem, type ModelPromptDraft, type PromptIdentityDraft, type PromptOverridesDraft } from '../promptIdentityDraft';
 import {
   executorPromptBody, executorPromptDraftFrom, executorPromptIncludesValid, type ExecutorPromptDraft,
 } from './executorPromptDraft';
@@ -32,26 +32,204 @@ export function toolFieldUnnamed(field: ToolFieldValue): boolean {
   return field.mode === 'list' && parseNamedAgentTools(field.text) === null;
 }
 
-/** `unrestricted`: no whitelist (absent or `"*"`); `none`: `[]`, a leaf; `list`: the names below. */
-export type SubagentsMode = 'unrestricted' | 'none' | 'list';
+/**
+ * The hard/soft split of one profile's dispatch rights, as the editor models
+ * it. `canSpawnSubagents` is the single on/off switch and the only thing that
+ * makes a profile a leaf; the three lists only speak about the named presets
+ * and routes a preset list can reach. An absent list is its own state: this
+ * layer adds no hard scope, which is different from an empty list (this layer
+ * allows no preset) and different again from the switch being off.
+ */
+export interface SubagentPolicyDraft {
+  /** `undefined` = this layer declares nothing; `false` = a hard leaf. */
+  readonly canSpawnSubagents: boolean | undefined;
+  /** `undefined` = no preset scope added here; `[]` = no preset selectable here. */
+  readonly allowedSubagents: readonly SubagentLeaseDraft[] | undefined;
+  /** Pure names: a recommendation never widens or narrows what may run. */
+  readonly preferredSubagents: readonly string[] | undefined;
+  readonly denySubagents: readonly string[] | undefined;
+}
 
-export interface SubagentDraft {
+export interface SubagentLeaseDraft {
   readonly name: string;
   /** Lease pins; '' = the lease does not pin it. */
   readonly modelAlias: string;
   readonly effort: string;
-  /** Read-only lease facts carried for display. */
+  /** Read-only lease facts carried for display and round-trip. */
   readonly source?: string;
   readonly status?: 'ready' | 'unavailable';
   readonly allowedModels?: readonly string[];
+  readonly modelPrompts?: 'preserve' | 'replace';
+  readonly modelProfiles?: readonly import('@kiki/protocol').NamedAgentModelProfile[];
+  /** Complete existing mapping; unedited configuration stays owned by the writer's sparse merge. */
+  readonly lease?: import('@kiki/protocol').NamedAgentSubagentLease;
 }
 
-export interface ModelProfileDraft { readonly alias: string; readonly when: string; readonly effort: string }
+/**
+ * The name that opens the preset domain instead of naming a preset. It can sit
+ * in the same list as lease mappings: `['*', { name: 'explore', … }]` means
+ * "no preset scope added here, but pin explore", and the mapping must survive
+ * a later edit of the scope.
+ */
+export const PRESET_DOMAIN_OPEN = '*';
+
+function leaseIsBare(entry: SubagentLeaseDraft): boolean {
+  return entry.lease === undefined && entry.modelAlias === '' && entry.effort === '' && entry.source === undefined
+    && entry.allowedModels === undefined && entry.modelPrompts === undefined && entry.modelProfiles === undefined;
+}
+
+/** Whether a name is `*` without depending on the wire constant. */
+export function isOpenDomain(name: string): boolean {
+  return name === PRESET_DOMAIN_OPEN;
+}
+
+/**
+ * "Stop limiting this layer", as a draft list: the key is dropped when nothing
+ * is pinned, and otherwise the domain is left open while the pins stay. A bare
+ * name beside `*` says nothing the wildcard does not, so it is dropped here
+ * rather than written and normalised back on the next read.
+ */
+export function openAllowedSubagents(entries: readonly SubagentLeaseDraft[] | undefined): SubagentLeaseDraft[] | undefined {
+  const pinned = (entries ?? []).filter((entry) => !isOpenDomain(entry.name) && !leaseIsBare(entry));
+  return pinned.length === 0 ? undefined : [{ name: PRESET_DOMAIN_OPEN, modelAlias: '', effort: '' }, ...pinned];
+}
+
+/** Whether the list already leaves the preset domain open. */
+export function allowedSubagentsOpen(entries: readonly SubagentLeaseDraft[] | undefined): boolean {
+  return (entries ?? []).some((entry) => isOpenDomain(entry.name));
+}
+
+/** A profile that declares no `can_spawn_subagents` follows the layers above it. */
+export function canSpawnDraft(value: boolean | undefined): boolean {
+  return value !== false;
+}
+
+/**
+ * The four dispatch fields, read and written through the wire contract the
+ * agent-profiles lane owns. `NamedAgentProfile` and
+ * `UpdateNamedAgentProfileRequest` are the only shapes named here: the editor
+ * holds no copy of this schema, so the two `Pick`s below are the entire seam
+ * to delete once the naming settles.
+ */
+type SubagentPolicyRead = Pick<NamedAgentProfile,
+  'can_spawn_subagents' | 'allowed_subagents' | 'preferred_subagents' | 'deny_subagents'>;
+type SubagentPolicyWrite = Pick<UpdateNamedAgentProfileRequest,
+  'can_spawn_subagents' | 'allowed_subagents' | 'preferred_subagents' | 'deny_subagents'>;
+type SubagentPolicyPatch = SubagentPolicyWrite;
+
+function dispatchFields(profile: NamedAgentProfile): SubagentPolicyRead {
+  return profile;
+}
+
+/** The same read projection for display-only callers outside the editor. */
+export function dispatchFieldsOf(profile: NamedAgentProfile): SubagentPolicyRead {
+  return dispatchFields(profile);
+}
+
+function assignSubagentPolicy(body: UpdateNamedAgentProfileRequest, patch: SubagentPolicyPatch): void {
+  Object.assign(body, patch);
+}
+
+/**
+ * The switch on its own, for editors that expose only that one control: the
+ * same three-state binding, so a dialog cannot write `true` where the profile
+ * said nothing and thereby turn an inherited value into a declaration.
+ */
+export function canSpawnSubagentsPatch(
+  baseline: boolean | undefined,
+  draft: boolean | undefined,
+): SubagentPolicyPatch | undefined {
+  return baseline === draft ? undefined : { can_spawn_subagents: draft ?? null };
+}
+
+export function assignCanSpawnSubagents(body: UpdateNamedAgentProfileRequest, patch: SubagentPolicyPatch | undefined): void {
+  if (patch !== undefined) assignSubagentPolicy(body, patch);
+}
+
+type LeaseWireEntry = NonNullable<SubagentPolicyRead['allowed_subagents']>[number];
+
+function leaseFromWire(entry: LeaseWireEntry): SubagentLeaseDraft {
+  if (typeof entry === 'string') return { name: entry, modelAlias: '', effort: '' };
+  return {
+    name: entry.name, modelAlias: entry.model_alias ?? '', effort: entry.thinking_effort ?? '',
+    source: entry.source, status: entry.status, allowedModels: entry.allowed_models,
+    modelPrompts: entry.model_prompts, modelProfiles: entry.model_profiles, lease: entry,
+  };
+}
+
+export function subagentPolicyFromProfile(profile: NamedAgentProfile): SubagentPolicyDraft {
+  const wire = dispatchFields(profile);
+  return {
+    canSpawnSubagents: wire.can_spawn_subagents,
+    allowedSubagents: wire.allowed_subagents === undefined ? undefined : wire.allowed_subagents.map(leaseFromWire),
+    preferredSubagents: wire.preferred_subagents ?? undefined,
+    denySubagents: wire.deny_subagents ?? undefined,
+  };
+}
+
+/**
+ * The PATCH for the four fields. Only a field the draft actually changed
+ * rides along, so touching one list never rewrites the others: editing
+ * `preferred_subagents` alone must not write `allowed_subagents: []` or
+ * `can_spawn_subagents: false`, which would turn a recommendation into a
+ * restriction. `null` drops this layer's declaration, which is not the same
+ * as writing an empty list.
+ */
+export function subagentPolicyPatch(
+  baseline: SubagentPolicyDraft,
+  draft: SubagentPolicyDraft,
+): SubagentPolicyPatch | undefined {
+  const patch: Record<string, unknown> = {};
+  if (baseline.canSpawnSubagents !== draft.canSpawnSubagents) {
+    patch['can_spawn_subagents'] = draft.canSpawnSubagents ?? null;
+  }
+  if (baseline.allowedSubagents !== draft.allowedSubagents) {
+    const before = new Map((baseline.allowedSubagents ?? []).map((entry) => [entry.name, entry]));
+    if (draft.allowedSubagents === undefined) {
+      patch['allowed_subagents'] = null;
+    } else {
+      const open = allowedSubagentsOpen(draft.allowedSubagents);
+      // A bare name leaves the entry's whole lease mapping (source, pins,
+      // per-child prompts and model profiles) exactly as it is on disk. The
+      // baseline is matched on names alone, so opening the domain — which adds
+      // a `*` row and changes no pin — still finds each entry it came from.
+      const rows = draft.allowedSubagents.filter((entry) => !isOpenDomain(entry.name)).map((entry) => {
+        const prior = before.get(entry.name);
+        const promptsChanged = entry.modelPrompts !== prior?.modelPrompts;
+        const pinChanged = prior === undefined
+          || prior.modelAlias !== entry.modelAlias || prior.effort !== entry.effort;
+        if (!pinChanged && !promptsChanged) return open && leaseIsBare(entry) ? null : entry.name;
+        return {
+          name: entry.name, model_alias: textOrNull(entry.modelAlias), thinking_effort: textOrNull(entry.effort),
+          model_prompts: promptsChanged ? entry.modelPrompts : undefined,
+          model_profiles: promptsChanged && entry.modelProfiles !== undefined ? [...entry.modelProfiles] : undefined,
+        };
+      }).filter((row) => row !== null);
+      patch['allowed_subagents'] = open ? [PRESET_DOMAIN_OPEN, ...rows] : rows;
+    }
+  }
+  if (baseline.preferredSubagents !== draft.preferredSubagents) {
+    patch['preferred_subagents'] = draft.preferredSubagents === undefined ? null : [...draft.preferredSubagents];
+  }
+  if (baseline.denySubagents !== draft.denySubagents) {
+    patch['deny_subagents'] = draft.denySubagents === undefined ? null : [...draft.denySubagents];
+  }
+  return Object.keys(patch).length === 0 ? undefined : (patch as SubagentPolicyPatch);
+}
+
+export interface ModelProfileDraft {
+  readonly alias: string;
+  readonly when: string;
+  readonly effort: string;
+  readonly modelPrompt?: PromptIdentityDraft<ModelPromptDraft>;
+  readonly promptOverrides?: PromptIdentityDraft<PromptOverridesDraft>;
+}
 
 export interface ProfileDraft {
   readonly description: string;
   readonly whenToUse: string;
   readonly prompt: string;
+  readonly promptOverrides: PromptIdentityDraft<PromptOverridesDraft>;
   readonly main: boolean;
   /** '' = native (field absent). */
   readonly executor: string;
@@ -71,9 +249,8 @@ export interface ProfileDraft {
   readonly allowedModels: readonly string[];
   readonly denyModels: readonly string[];
   readonly allowedEfforts: readonly string[];
-  readonly subagentsMode: SubagentsMode;
-  readonly subagents: readonly SubagentDraft[];
-  readonly subagentPolicy: SubagentPolicyChoice;
+  /** The one place dispatch rights live: the switch plus the three lists. */
+  readonly subagentPolicy: SubagentPolicyDraft;
   readonly modelProfiles: readonly ModelProfileDraft[];
   readonly serviceTier: '' | NonNullable<NamedAgentProfile['service_tier']>;
   readonly autoCompact: number | undefined;
@@ -157,11 +334,11 @@ export function toggleKikiContext(
 }
 
 export function draftFromProfile(profile: NamedAgentProfile): ProfileDraft {
-  const subagents = profile.subagents;
   return {
     description: profile.description ?? '',
     whenToUse: profile.when_to_use ?? '',
     prompt: profile.prompt ?? '',
+    promptOverrides: promptIdentityDraft(profile.prompt_overrides, promptOverridesDraft),
     main: profile.main,
     executor: isExternalExecutor(profile.executor) ? profile.executor! : '',
     allowKikiSubagents: profile.allow_kiki_subagents === true,
@@ -175,16 +352,11 @@ export function draftFromProfile(profile: NamedAgentProfile): ProfileDraft {
     allowedModels: profile.allowed_models ?? [],
     denyModels: profile.deny_models ?? [],
     allowedEfforts: profile.allowed_efforts ?? [],
-    subagentsMode: subagents === undefined ? 'unrestricted' : subagents.length === 0 ? 'none' : 'list',
-    subagents: (subagents ?? []).map((entry) => typeof entry === 'string'
-      ? { name: entry, modelAlias: '', effort: '' }
-      : {
-          name: entry.name, modelAlias: entry.model_alias ?? '', effort: entry.thinking_effort ?? '',
-          source: entry.source, status: entry.status, allowedModels: entry.allowed_models,
-        }),
-    subagentPolicy: subagentPolicyChoice(profile.subagent_policy),
+    subagentPolicy: subagentPolicyFromProfile(profile),
     modelProfiles: (profile.model_profiles ?? []).map((entry) => ({
       alias: entry.alias, when: entry.when ?? '', effort: entry.thinking_effort ?? '',
+      modelPrompt: promptIdentityDraft(entry, modelPromptDraft),
+      promptOverrides: promptIdentityDraft(entry.prompt_overrides, promptOverridesDraft),
     })),
     serviceTier: profile.service_tier ?? '',
     autoCompact: profile.auto_compact,
@@ -256,21 +428,25 @@ export function patchBody(
   if (changed.has('allowedModels')) body.allowed_models = listOrNull(draft.allowedModels);
   if (changed.has('denyModels')) body.deny_models = listOrNull(draft.denyModels);
   if (changed.has('allowedEfforts')) body.allowed_efforts = listOrNull(draft.allowedEfforts);
-  if (changed.has('subagentPolicy')) body.subagent_policy = subagentPolicyBody(draft.subagentPolicy);
-  if (changed.has('subagentsMode') || changed.has('subagents')) {
-    const before = new Map(baseline.subagents.map((entry) => [entry.name, entry]));
-    body.subagents = draft.subagentsMode === 'unrestricted' ? null
-      : draft.subagentsMode === 'none' ? []
-        : draft.subagents.map((entry) => {
-            const prior = before.get(entry.name);
-            if (prior !== undefined && prior.modelAlias === entry.modelAlias && prior.effort === entry.effort) return entry.name;
-            return { name: entry.name, model_alias: textOrNull(entry.modelAlias), thinking_effort: textOrNull(entry.effort) };
-          });
-  }
+  const dispatch = subagentPolicyPatch(baseline.subagentPolicy, draft.subagentPolicy);
+  if (dispatch !== undefined) assignSubagentPolicy(body, dispatch);
+  if (changed.has('promptOverrides')) body.prompt_overrides = overridesPatch(draft.promptOverrides);
   if (changed.has('modelProfiles')) {
-    body.model_profiles = draft.modelProfiles.length === 0 ? null : draft.modelProfiles.map((entry) => ({
-      alias: entry.alias.trim(), when: textOrNull(entry.when), thinking_effort: textOrNull(entry.effort),
-    }));
+    body.model_profiles = draft.modelProfiles.length === 0 ? null : draft.modelProfiles.map((entry) => {
+      const previous = baseline.modelProfiles.find((item) => item.alias === entry.alias);
+      const patch: NonNullable<UpdateNamedAgentProfileRequest['model_profiles']>[number] = {
+        alias: entry.alias.trim(), when: textOrNull(entry.when), thinking_effort: textOrNull(entry.effort),
+      };
+      if (entry.modelPrompt !== undefined && !same(entry.modelPrompt, previous?.modelPrompt)) {
+        const prompt = modelPromptIdentityBody(entry.modelPrompt);
+        patch.prompt_mode = prompt.prompt_mode ?? null;
+        patch.prompt = prompt.prompt ?? null;
+        patch.main = prompt.main ?? null;
+        patch.independent = prompt.independent ?? null;
+      }
+      if (entry.promptOverrides !== undefined && !same(entry.promptOverrides, previous?.promptOverrides)) patch.prompt_overrides = overridesPatch(entry.promptOverrides);
+      return patch;
+    });
   }
   if (changed.has('serviceTier')) body.service_tier = draft.serviceTier === '' ? null : draft.serviceTier;
   if (changed.has('autoCompact')) body.auto_compact = draft.autoCompact ?? null;
@@ -286,16 +462,34 @@ export function patchBody(
   return body;
 }
 
+function overridesPatch(draft: PromptIdentityDraft<PromptOverridesDraft>) {
+  const value = promptIdentityBody(draft, promptOverridesBody);
+  return Object.values(value).some((item) => item !== undefined) ? value : null;
+}
+
 /** Reasons the current draft cannot be saved, as i18n keys (empty = savable). */
-export function draftProblems(draft: ProfileDraft): ('description' | 'mainInherit' | 'tools' | 'subagents' | 'modelProfiles' | 'executorPrompt')[] {
-  const problems: ('description' | 'mainInherit' | 'tools' | 'subagents' | 'modelProfiles' | 'executorPrompt')[] = [];
+export function draftProblems(draft: ProfileDraft): ('description' | 'mainInherit' | 'tools' | 'subagents' | 'modelProfiles' | 'executorPrompt' | 'promptOverrides')[] {
+  const problems: ('description' | 'mainInherit' | 'tools' | 'subagents' | 'modelProfiles' | 'executorPrompt' | 'promptOverrides')[] = [];
+  if (promptIdentityProblem(draft.promptOverrides, promptOverridesBody, promptOverridesProblem) !== undefined) problems.push('promptOverrides');
+  if (draft.modelProfiles.some((entry) =>
+    (entry.modelPrompt !== undefined && promptIdentityProblem(entry.modelPrompt, modelPromptBody, modelPromptProblem) !== undefined)
+    || (entry.promptOverrides !== undefined && promptIdentityProblem(entry.promptOverrides, promptOverridesBody, promptOverridesProblem) !== undefined))) problems.push('promptOverrides');
   if (!executorPromptIncludesValid(draft.executorPrompt)) problems.push('executorPrompt');
   if (draft.description.trim() === '') problems.push('description');
   if (draft.main && draft.modelAlias.trim() === 'inherit') problems.push('mainInherit');
   if (toolFieldUnnamed(draft.tools) || toolFieldUnnamed(draft.disallowedTools)) problems.push('tools');
-  const names = draft.subagents.map((entry) => entry.name.trim());
-  if (draft.subagentsMode === 'list' && (names.length === 0 || names.some((name) => name === '') || new Set(names).size !== names.length)) {
-    problems.push('subagents');
+  // Each list is checked on its own: a recommendation naming a preset that is
+  // already allowed is the normal case, not a conflict. A hard leaf is not
+  // checked at all, because the switch is off and the lists are kept as they
+  // are rather than edited.
+  if (draft.subagentPolicy.canSpawnSubagents !== false) {
+    const lists = [
+      (draft.subagentPolicy.allowedSubagents ?? []).map((entry) => entry.name.trim()),
+      (draft.subagentPolicy.preferredSubagents ?? []).map((name) => name.trim()),
+      (draft.subagentPolicy.denySubagents ?? []).map((name) => name.trim()),
+    ];
+    const broken = lists.some((names) => names.some((name) => name === '') || new Set(names).size !== names.length);
+    if (broken) problems.push('subagents');
   }
   const aliases = draft.modelProfiles.map((entry) => entry.alias.trim());
   if (aliases.some((alias) => !/^\S+$/.test(alias)) || new Set(aliases).size !== aliases.length) problems.push('modelProfiles');

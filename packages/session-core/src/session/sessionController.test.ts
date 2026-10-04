@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { MessageContent, Session, SessionSnapshotResponse } from '@kiki/protocol';
+import { sessionViewSignalSchema } from '@kiki/klient/contract/session/view';
 
 import type {
   AgentTranscriptResponse,
   SessionTransport as KikiClient,
 } from '../transport';
+import { ApiError, API_CODES } from '../transport';
 import { readDraft, readComposerState, resetDraftMemoryForTests, resetComposerMemoryForTests, writeDraft, subscribeDraftAppends, restorePromptToDraft } from '../composer/drafts';
 import { buildPromptContent } from '../composer/attachments';
 import { resolveSelectedEffort } from '../settings/agentSettings';
@@ -241,6 +243,7 @@ interface Harness {
     regenerateMessage: ReturnType<typeof vi.fn>;
     forkSession: ReturnType<typeof vi.fn>;
     getTranscriptOps: ReturnType<typeof vi.fn>;
+    getAgentTranscript: ReturnType<typeof vi.fn>;
   };
   socket: { subscribe: ReturnType<typeof vi.fn>; updateCursor: ReturnType<typeof vi.fn> };
   flushAll: () => void;
@@ -789,6 +792,20 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
+  it('forwards a captured prompt identity on retries without assigning one to other callers', async () => {
+    const { controller, client } = await openController();
+    const receipt = { prompt_id: 'captured-x', user_message_id: 'captured-x', status: 'running',
+      content: [{ type: 'text', text: 'X' }], created_at: '2026-01-01T00:00:02.000Z' };
+    client.submitPrompt.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(receipt);
+    try {
+      await expect(controller.sendPrompt({ promptId: 'captured-x', text: 'X' })).rejects.toThrow('offline');
+      await controller.sendPrompt({ promptId: 'captured-x', text: 'X' });
+      expect(client.submitPrompt.mock.calls.slice(0, 2).map((call) => call[1].prompt_id)).toEqual(['captured-x', 'captured-x']);
+      await controller.sendPrompt({ text: 'Y' });
+      expect(client.submitPrompt.mock.calls[2]![1].prompt_id).toBeUndefined();
+    } finally { controller.close(); }
+  });
+
   it('forwards an explicit persona greeting reply without opting ordinary prompts in', async () => {
     const { controller, client } = await openController();
     client.submitPrompt.mockResolvedValue({
@@ -1184,7 +1201,7 @@ describe('SessionController transcript authority', () => {
       movePrompt: vi.fn(),
       timingPrompt: vi.fn(),
       holdPrompt: vi.fn(async (_id: string, target: string, body: { held: boolean }) => ({ prompt_id: target, held: body.held })),
-      getTranscriptOps: vi.fn(async () => ({
+      getTranscriptOps: vi.fn(async (): ReturnType<SessionViewFacade['transcript']['catchUp']> => ({
         session_id: 'session_test',
         agent_id: 'main',
         epoch: 'epoch-1',
@@ -3799,6 +3816,34 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
+  it('reads at most two bounded catchup pages and restores the live gap from their canonical batches', async () => {
+    const { controller, client, socket, flushAll } = await openTranscriptController();
+    seedTextAgent(controller, 'main', 'f1', 'Hello');
+    const target = { type: 'frame' as const, turnId: 't1', stepId: 't1.1', frameId: 'f1' };
+    client.getTranscriptOps.mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 2, complete: true, has_more: true, batches: [{ seq: 2, ops: [{ op: 'append', target, offset: 5, text: ' world' }] }] });
+    client.getTranscriptOps.mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 3, complete: true, has_more: false, batches: [{ seq: 3, ops: [{ op: 'append', target, offset: 11, text: '!' }] }] });
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'main', seq: 3, ops: [{ op: 'append', target, offset: 11, text: '!' }] }));
+    flushAll();
+    await waitFor(() => { flushAll(); return controller.getState().blocks.some((block) => block.kind === 'assistant' && block.text === 'Hello world!'); });
+    expect(client.getTranscriptOps).toHaveBeenCalledTimes(2);
+    expect(client.getTranscriptOps).toHaveBeenLastCalledWith('session_test', 'main', { seq: 2, epoch: 'epoch-1' }, 'delta');
+    expect(socket.restartGeneration).not.toHaveBeenCalled();
+    controller.close();
+  });
+
+  it('resynchronizes the current window instead of draining an unbounded catchup backlog', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    seedTextAgent(controller, 'main', 'f1', 'Hello');
+    const before = client.snapshot.mock.calls.length;
+    client.getTranscriptOps.mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 2, complete: true, has_more: true, batches: [] });
+    client.getTranscriptOps.mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 3, complete: true, has_more: true, batches: [] });
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'main', seq: 9, ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 99, text: 'gap' }] }));
+    flushAll();
+    await waitFor(() => client.snapshot.mock.calls.length > before);
+    expect(client.getTranscriptOps).toHaveBeenCalledTimes(2);
+    controller.close();
+  });
+
   it('coalesces concurrent gaps on the same agent into one catchup', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
     const held = deferred<{
@@ -4153,4 +4198,114 @@ it('keeps selected answers visible immediately after a successful question respo
   } finally {
     controller.close();
   }
+});
+
+
+describe('question terminal REST reconciliation', () => {
+  const pending = {
+    interactionId: 'q-reply', interactionKind: 'question' as const, state: 'pending' as const,
+    request: { questions: [{ question: 'Pick one', options: [{ label: 'Yes' }, { label: 'No' }] }] },
+  };
+  const answers = { q_0: { kind: 'single' as const, option_id: 'opt_0_0' } };
+
+  it.each([
+    [API_CODES.QUESTION_NOT_FOUND, 'unavailable'],
+    [API_CODES.APPROVAL_ALREADY_RESOLVED, 'resolvedElsewhere'],
+    [API_CODES.QUESTION_EXPIRED, 'expired'],
+  ] as const)('closes a stale card for code %s without claiming delivery', async (code, kind) => {
+    const { controller, client, flushAll } = await openController();
+    const resolveQuestion = vi.fn(async () => { throw new ApiError({ code, msg: 'Question ended', data: null }); });
+    Object.assign(client, { resolveQuestion });
+    try {
+      controller.handleTranscript(resetEvent('main', emptySnapshot({ interactions: [pending] }), 1));
+      flushAll();
+      await controller.answerQuestion('q-reply', answers);
+      expect(controller.getState().blocks.find((block) => block.kind === 'question')).toMatchObject({ outcome: { kind } });
+      expect(controller.getState().pendingInteraction).toBe('none');
+      controller.handleTranscript(opsEvent('main', [{ op: 'meta.merge', meta: { agent: { phase: { kind: 'idle' } } } }], 2));
+      flushAll();
+      expect(controller.getState().blocks.find((block) => block.kind === 'question')).toMatchObject({ outcome: { kind } });
+      await controller.answerQuestion('q-reply', answers);
+      expect(resolveQuestion).toHaveBeenCalledOnce();
+    } finally { controller.close(); }
+  });
+
+  it.each([
+    ['dismissed', null, 'dismissed'],
+    ['dismissed', { cancelled: true, reason: 'no_consumer' }, 'cancelled'],
+    ['answered', { answers: { 'Pick one': 'No' } }, 'answered'],
+  ] as const)('reads the actual %s outcome after a stale answer fails', async (state, response, kind) => {
+    const { controller, client, flushAll } = await openController();
+    Object.assign(client, { resolveQuestion: vi.fn(async () => { throw new ApiError({ code: API_CODES.QUESTION_NOT_FOUND, msg: 'Not found', data: null }); }) });
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [], has_more: false, interactions: [{ ...pending, state, response }] });
+    try {
+      controller.handleTranscript(resetEvent('main', emptySnapshot({ interactions: [pending] }), 1));
+      flushAll();
+      await controller.answerQuestion('q-reply', answers);
+      const block = controller.getState().blocks.find((entry) => entry.kind === 'question');
+      expect(block).toMatchObject({ outcome: { kind } });
+      if (kind === 'cancelled') expect(block).toMatchObject({ outcome: { reason: 'no_consumer' } });
+      if (kind === 'answered') expect(block).toMatchObject({ outcome: { answers: { q_0: 'No' } } });
+    } finally { controller.close(); }
+  });
+
+  it('retains a recoverable failure and sends the selected answer on retry to its source session', async () => {
+    const { controller, client, flushAll } = await openController();
+    const resolveQuestion = vi.fn().mockRejectedValueOnce(new Error('Connection lost')).mockResolvedValueOnce(undefined);
+    Object.assign(client, { resolveQuestion });
+    try {
+      controller.handleTranscript(resetEvent('main', emptySnapshot({ interactions: [pending] }), 1));
+      flushAll();
+      await expect(controller.answerQuestion('q-reply', answers)).rejects.toThrow('Connection lost');
+      expect(controller.getState().blocks.find((block) => block.kind === 'question')).toMatchObject({ outcome: undefined });
+      await controller.answerQuestion('q-reply', answers);
+      expect(resolveQuestion).toHaveBeenLastCalledWith('session_test', 'q-reply', { answers, method: 'click' });
+      expect(controller.getState().blocks.find((block) => block.kind === 'question')).toMatchObject({ outcome: { kind: 'answered', answers: { q_0: 'Yes' } } });
+    } finally { controller.close(); }
+  });
+
+  it('settles a question visible only in the focused child view', async () => {
+    const { controller, client, flushAll } = await openController();
+    Object.assign(client, { resolveQuestion: vi.fn(async () => { throw new ApiError({ code: API_CODES.QUESTION_NOT_FOUND, msg: 'Not found', data: null }); }) });
+    try {
+      controller.handleTranscript(resetEvent('child', emptySnapshot({ interactions: [{ ...pending, origin: { agentId: 'child' } }] }), 1));
+      flushAll();
+      await controller.answerQuestion('q-reply', answers);
+      expect(controller.getAgentState('child').blocks.find(block => block.kind === 'question')).toMatchObject({ outcome: { kind: 'unavailable' } });
+      expect(client.getAgentTranscript).toHaveBeenCalledWith('session_test', 'child', { pageSize: 1 });
+    } finally { controller.close(); }
+  });
+
+  it('does not submit a question projected from a different source session', async () => {
+    const { controller, client, flushAll } = await openController();
+    const resolveQuestion = vi.fn();
+    Object.assign(client, { resolveQuestion });
+    try {
+      controller.handleTranscript(resetEvent('main', emptySnapshot({ interactions: [{ ...pending, request: { ...pending.request, session_id: 'session_other' } }] }), 1));
+      flushAll();
+      await expect(controller.answerQuestion('q-reply', answers)).rejects.toThrow('different session');
+      expect(resolveQuestion).not.toHaveBeenCalled();
+    } finally { controller.close(); }
+  });
+});
+
+it('retains the current view and refuses a gap ready cursor while restoring the session baseline', async () => {
+  const pending = deferred<SessionSnapshotResponse>();
+  const read = vi.fn(async () => snapshot()).mockImplementationOnce(async () => snapshot()).mockImplementationOnce(() => pending.promise);
+  const client = { snapshot: read };
+  const socket = { subscribe: vi.fn(), unsubscribe: vi.fn() };
+  const controller = new SessionController(client as unknown as KikiClient, fakeView(client, socket), 'session_test');
+  try {
+    await controller.open();
+    const prior = controller.getState();
+    controller.handleSignal(sessionViewSignalSchema.parse({ type: 'resyncRequired', reason: 'journal_gap', currentSessionCursor: { seq: 99, epoch: 'epoch-1' }, generation: 1 }));
+    expect(controller.getState().resyncing).toBe(true);
+    expect(controller.getState().blocks).toEqual(prior.blocks);
+    controller.handleSignal({ type: 'ready', generation: 1, currentSessionCursor: { seq: 99, epoch: 'epoch-1' }, reconnected: true });
+    expect(controller.getState().cursor.seq).toBe(10);
+    pending.resolve(snapshot({ as_of_seq: 99 }));
+    await waitFor(() => !controller.getState().resyncing);
+    expect(controller.getState().cursor).toEqual({ seq: 99, epoch: 'epoch-1' });
+    expect(socket.subscribe).toHaveBeenLastCalledWith('session_test', { seq: 99, epoch: 'epoch-1' }, expect.anything());
+  } finally { pending.resolve(snapshot()); controller.close(); }
 });

@@ -103,6 +103,9 @@ function usageResponse(overrides: {
         defaulted_to_all_history: overrides.defaulted ?? false,
       },
       dimension: 'model',
+      models: [],
+      providers: [],
+      agent_ids: [],
       workspace_ids: [],
       include_archived: true,
       timezone_offset_minutes: 0,
@@ -154,6 +157,7 @@ function usageResponse(overrides: {
       next_page_token: overrides.nextPageToken ?? null,
     },
     reliability: {
+      complete: overrides.incompleteReason == null && (overrides.incompleteSessions ?? 0) === 0,
       usage_coverage: overrides.usageCoverage,
       coverage: { earliest_at: day, latest_at: day + 2 * 24 * 3600_000 },
       scanned_sessions: items.length,
@@ -229,16 +233,30 @@ beforeEach(() => {
 });
 
 describe('UsagePage (V2)', () => {
-  it('opens live requests by default and switches between live, limits and historical usage', async () => {
+  it('opens history by default and offers History, the combined Live tab and Export', async () => {
     const { container, root } = await renderPage('/usage');
-    expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
-    expect(mainCalls()).toHaveLength(0);
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-panel="limits"]')!.click(); });
-    expect(container.querySelector('[data-governance-empty]')).not.toBeNull();
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-panel="history"]')!.click(); });
-    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect([...container.querySelectorAll<HTMLElement>('[data-usage-panel]')].map((node) => node.dataset['usagePanel'])).toEqual(['history', 'realtime', 'export']);
+    expect(container.querySelector('[data-usage-panel="history"]')?.getAttribute('aria-current')).toBe('page');
     expect(mainCalls().length).toBeGreaterThan(0);
+    expect(container.querySelector('[data-governance-active]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-panel="realtime"]')!.click(); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
+    expect(container.querySelector('[data-governance-empty]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-rescan]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-panel="history"]')!.click(); });
     await openReliability(container);
+    await act(async () => { root.unmount(); });
+  });
+
+  it.each(['realtime', 'limits'])('preserves the %s deep link in the combined Live tab', async (panel) => {
+    const { container, root } = await renderPage(`/usage?panel=${panel}`);
+    expect(container.querySelector('[data-usage-panel="realtime"]')?.getAttribute('aria-current')).toBe('page');
+    expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
+    expect(container.querySelector('[data-governance-rules]')).not.toBeNull();
+    expect(mainCalls()).toHaveLength(0);
+    if (panel === 'limits') expect(document.activeElement).toBe(container.querySelector('#usage-limits'));
+    expect(container.querySelector('[data-location-probe]')?.textContent).toBe(`/usage?panel=${panel}`);
     await act(async () => { root.unmount(); });
   });
 
@@ -891,7 +909,7 @@ describe('UsagePage manual full rescan', () => {
   });
 
   it('does not mount the history action on live governance panels', async () => {
-    const { container, root } = await renderPage('/usage');
+    const { container, root } = await renderPage('/usage?panel=realtime');
     expect(container.querySelector('[data-usage-rescan]')).toBeNull();
     expect(getUsageRescan).not.toHaveBeenCalled();
     await act(async () => { root.unmount(); });

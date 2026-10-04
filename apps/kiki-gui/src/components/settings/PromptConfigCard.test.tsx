@@ -171,3 +171,36 @@ describe('PromptConfigCard', () => {
     expect(client.patchConfig).not.toHaveBeenCalled();
   });
 });
+
+describe('prompt identity branches', () => {
+  it('preserves independent content while switching main off and saves the full domain', async () => {
+    Object.assign(config.prompt.overrides, { main: { fields: { 'system.shared': 'Main only' } }, independent: 'same' });
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-prompt-branch-main="off"]')!.click());
+    await click('Save prompt fields');
+    expect(client.patchConfig).toHaveBeenCalledWith({ prompt: {
+      variables: { search_guidance: 'Prefer documentation' },
+      overrides: { files: ['prompt/team.toml'], fields: { 'system.shared': 'Use ${search_guidance}', 'tool.web-search.guidance': '${search_guidance}' }, main: 'off', independent: 'same' },
+    }, replace_domains: ['prompt'] });
+  });
+
+  it('restores common by removing only the main branch and retains unrelated variables', async () => {
+    Object.assign(config.prompt.overrides, { main: 'off', independent: 'off' });
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-prompt-branch-main="same"]')!.click());
+    await click('Save prompt fields');
+    const saved = client.patchConfig.mock.calls[0]![0].prompt;
+    expect(saved.overrides.main).toBeUndefined();
+    expect(saved.overrides.independent).toBe('off');
+    expect(saved.variables).toEqual(config.prompt.variables);
+  });
+
+  it('does not allow a new empty main branch to save', async () => {
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-prompt-branch-main="custom"]')!.click());
+    expect(container.textContent).toContain('Add content for the separate setting');
+    const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save prompt fields')!;
+    expect(save.disabled).toBe(true);
+    expect(client.patchConfig).not.toHaveBeenCalled();
+  });
+});

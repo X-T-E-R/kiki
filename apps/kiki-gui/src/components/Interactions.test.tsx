@@ -435,6 +435,53 @@ describe('QuestionCard', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
+  it('sends once on rapid clicks and retains the selection after a recoverable failure', async () => {
+    let reject!: (error: Error) => void;
+    const onAnswer = vi.fn().mockImplementationOnce(() => new Promise<void>((_resolve, fail) => { reject = fail; })).mockResolvedValueOnce(undefined);
+    const container = await renderQuestion(questionBlock([{ id: 'q1', question: 'Pick one', options: TWO_OPTIONS }]), onAnswer);
+    await act(async () => { optionButton(container, 'Option A').click(); });
+    const submit = submitButton(container);
+    await act(async () => {
+      submit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      submit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onAnswer).toHaveBeenCalledOnce();
+    expect(onAnswer).toHaveBeenCalledWith({ q1: { kind: 'single', option_id: 'opt-a' } });
+    await act(async () => { reject(new Error('Connection lost')); });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Connection lost');
+    expect(optionButton(container, 'Option A').getAttribute('aria-pressed')).toBe('true');
+    await act(async () => { submitButton(container).click(); });
+    expect(onAnswer).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('Sent to kiki');
+  });
+
+  it('resets selection and ignores a late response when the tray moves to another question', async () => {
+    let resolve!: () => void;
+    const onAnswer = vi.fn(() => new Promise<void>((done) => { resolve = done; }));
+    const first = questionBlock([{ id: 'q1', question: 'Pick one', options: TWO_OPTIONS }]);
+    const container = await renderQuestion(first, onAnswer);
+    const root = roots.at(-1)!;
+    await act(async () => { optionButton(container, 'Option A').click(); });
+    await act(async () => { submitButton(container).click(); });
+    const second = { ...first, id: 'question-2', request: { ...first.request, question_id: 'question-2' } };
+    await act(async () => { root.render(<MemoryRouter><I18nProvider><QuestionCard block={second} onAnswer={onAnswer} onDismiss={async () => {}} /></I18nProvider></MemoryRouter>); });
+    expect(optionButton(container, 'Option A').getAttribute('aria-pressed')).toBe('false');
+    expect(submitButton(container).disabled).toBe(true);
+    await act(async () => { resolve(); });
+    expect(container.textContent).not.toContain('Sent to kiki');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('renders a system cancellation with its actual reason instead of answer controls', async () => {
+    const block = questionBlock([{ id: 'q1', question: 'Pick one', options: TWO_OPTIONS }]);
+    const container = await renderQuestion({ ...block, outcome: { kind: 'cancelled', at: '', reason: 'no_consumer' } }, vi.fn());
+    expect(container.textContent).toContain('Question cancelled');
+    expect(container.querySelector('button[aria-pressed]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-activity-toggle]')!.click(); });
+    expect(container.textContent).toContain('client disconnected');
+    expect(container.textContent).not.toContain('Question dismissed');
+  });
+
   it('shows expiry only from terminal lifecycle state, never from 30 seconds of pending time', async () => {
     const transcript = new AgentTranscript('main');
     const createdAt = '2026-01-01T00:00:00.000Z';

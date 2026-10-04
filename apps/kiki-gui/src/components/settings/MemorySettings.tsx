@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
@@ -13,6 +14,8 @@ import { CommitInput, SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
 const MEMORY_SETTINGS_KEY = ['memory-settings'] as const;
+/** Every workspace's computed effective state, whichever one the card shows. */
+const MEMORY_WORKSPACE_SETTINGS_KEY = ['memory-workspace-settings'] as const;
 
 type MemoryPatch = { enabled?: boolean; approval?: MemoryApproval; budget?: number };
 
@@ -22,6 +25,8 @@ export function MemorySettingsCard() {
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
   const [saved, ping] = useSavedTick();
+  // The text budget keeps its system default; it surfaces only behind Advanced.
+  const [advanced, setAdvanced] = useState(false);
   const settingsQuery = useQuery({
     queryKey: MEMORY_SETTINGS_KEY,
     queryFn: () => client.getMemorySettings(),
@@ -29,7 +34,14 @@ export function MemorySettingsCard() {
   });
   const update = useMutation({
     mutationFn: (patch: MemoryPatch) => client.patchMemorySettings(patch),
-    onSuccess: (next: MemorySettings) => { queryClient.setQueryData(MEMORY_SETTINGS_KEY, next); ping(); },
+    onSuccess: async (next: MemorySettings) => {
+      queryClient.setQueryData(MEMORY_SETTINGS_KEY, next);
+      // The global switch decides every workspace's effective state, so a save
+      // that touched it has to re-read all of them, not just the ones this
+      // card happens to be holding.
+      await queryClient.invalidateQueries({ queryKey: MEMORY_WORKSPACE_SETTINGS_KEY });
+      ping();
+    },
   });
   // Which row the last write came from, so its row alone shows the save state.
   const pendingKey = update.variables === undefined ? undefined : Object.keys(update.variables)[0];
@@ -67,12 +79,22 @@ export function MemorySettingsCard() {
             disabled={busy}
             onChange={(approval) => { update.mutate({ approval }); }}
             choices={[
-              { value: 'auto', label: t('st.memory.approval.auto') },
-              { value: 'review', label: t('st.memory.approval.review') },
-              { value: 'off', label: t('st.memory.approval.off') },
+              { value: 'auto', label: t('st.memory.approval.auto'), hint: t('st.memory.approvalHint.auto') },
+              { value: 'review', label: t('st.memory.approval.review'), hint: t('st.memory.approvalHint.review') },
+              { value: 'off', label: t('st.memory.approval.off'), hint: t('st.memory.approvalHint.off') },
             ]}
           />
         </SettingField>
+        <button
+          type="button"
+          data-memory-advanced-toggle
+          aria-expanded={advanced}
+          onClick={() => { setAdvanced((value) => !value); }}
+          className="inline-flex min-h-7 items-center text-[12px] font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+        >
+          {t(advanced ? 'st.memory.advancedHide' : 'st.memory.advanced')}
+        </button>
+        {advanced ? (
         <SettingField label={t('st.memory.budget')} htmlFor="memory-budget" help={t('st.memory.budgetHint')}>
           {status('budget')}
           <CommitInput
@@ -86,6 +108,7 @@ export function MemorySettingsCard() {
             onCommit={(text) => { update.mutate({ budget: Number(text) }); }}
           />
         </SettingField>
+        ) : null}
         <button
           type="button"
           data-memory-settings-link
@@ -123,7 +146,7 @@ export function MemoryWorkspaceSettingsCard() {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: MEMORY_SETTINGS_KEY }),
-        queryClient.invalidateQueries({ queryKey: ['memory-workspace-settings', selectedId] }),
+        queryClient.invalidateQueries({ queryKey: [...MEMORY_WORKSPACE_SETTINGS_KEY, selectedId] }),
       ]);
       ping();
     },

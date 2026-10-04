@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 export interface DaemonConnection {
   readonly url: string;
@@ -41,9 +42,14 @@ export function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<DaemonC
       finish(new Error(`Timed out waiting for kiki serve --ensure after ${options.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms. The shared daemon was not stopped.`));
     }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     try {
-      const child = spawnImpl("kiki", args, {
+      const command = process.platform === "win32" ? resolveWindowsKikiPath() : "kiki";
+      const batch = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
+      const child = spawnImpl(batch ? process.env["ComSpec"] ?? "cmd.exe" : command, batch
+        ? ["/d", "/s", "/c", `"${escapeCmd(command)} ${args.map(quoteCmdArgument).join(" ")}"`]
+        : args, {
         detached: false,
         shell: false,
+        windowsVerbatimArguments: batch ? true : undefined,
         windowsHide: true,
         stdio: ["ignore", "pipe", "ignore"],
       });
@@ -78,6 +84,35 @@ export function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<DaemonC
       finish(error instanceof Error ? error : new Error("Could not start kiki serve --ensure."));
     }
   });
+}
+
+// Follow the CLI PATH resolver's PATHEXT and workspace-shadowing rules locally;
+// the extension must not import the CLI application or bootstrap its runtime.
+function resolveWindowsKikiPath(): string {
+  const extensions = (process.env["PATHEXT"] || ".COM;.EXE;.BAT;.CMD").split(";").map((ext) => ext.trim()).filter(Boolean);
+  for (const dir of (process.env["PATH"] ?? "").split(";")) {
+    if (dir === "") continue;
+    for (const ext of extensions) {
+      const candidate = resolve(dir, `kiki${ext}`);
+      try {
+        if (!statSync(candidate).isFile()) continue;
+      } catch { continue; }
+      const rel = relative(resolve(process.cwd()).toLowerCase(), candidate.toLowerCase());
+      if (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)) break;
+      return candidate;
+    }
+  }
+  throw new Error("spawn kiki ENOENT");
+}
+
+function escapeCmd(value: string): string {
+  return value.replaceAll(/([()%!^"<>&|;, *?])/g, "^$1");
+}
+
+function quoteCmdArgument(value: string): string {
+  const quoted = `"${value.replaceAll(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1")}"`;
+  // npm's batch shim forwards %*: escape once for cmd and once for the shim.
+  return escapeCmd(escapeCmd(quoted));
 }
 
 function parseConnection(output: string): DaemonConnection {

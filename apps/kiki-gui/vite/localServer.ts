@@ -6,12 +6,12 @@
  *
  * kap-server self-registers under
  * `<kiki home>/server/instances/<serverId>.json` and keeps the token at
- * `<kiki home>/server.token`. The token is included only when Vite is bound to
+ * `<kiki home>/server.local-owner`. The capability is included only when Vite is bound to
  * loopback; non-loopback dev/preview listeners still report the URL but never
  * disclose the bearer credential over HTTP.
  */
 
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -149,6 +149,7 @@ async function probeServer(url: string, token: string): Promise<boolean> {
     const response = await fetch(`${url}/api/meta`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(IDENTITY_PROBE_TIMEOUT_MS),
+      redirect: 'error',
     });
     if (!response.ok) return false;
     const payload = (await response.json()) as { data?: { server_version?: unknown } };
@@ -191,8 +192,11 @@ export async function findLiveInstance(
 
 async function readToken(home: string): Promise<string | undefined> {
   try {
-    const token = (await readFile(join(home, 'server.token'), 'utf8')).trim();
-    return token.length > 0 ? token : undefined;
+    const path = join(home, 'server.local-owner');
+    const info = await stat(path);
+    if (!info.isFile() || info.size > 4096 || (process.platform !== 'win32' && (info.mode & 0o077) !== 0)) return undefined;
+    const token = (await readFile(path, 'utf8')).trim();
+    return token.length > 0 && token.length <= 4096 ? token : undefined;
   } catch {
     return undefined;
   }

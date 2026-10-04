@@ -10,15 +10,18 @@ import { resolve } from 'node:path';
  * mounts and the retired-capabilities legacy redirects.
  */
 
-import { act } from 'react';
+import { act, useCallback } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SETTINGS_SEARCH_SPEC } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
 import { SettingsPage } from './SettingsPage';
+import { DirtyGuardContext, useDirtyGuardState, type GuardedNavigate } from './dirtyGuard';
+import { SectionCard, SettingsCardMountContext } from './settings/SectionCard';
+import { clearNavHistory, getUiSnapshot, recordNavigation, saveUiSnapshot } from '../lib/navHistory';
 import { commitText, pickOption } from './settings/testControls';
 
 const WORKSPACES = {
@@ -70,6 +73,8 @@ const client = {
   })),
   listWorkspaces: vi.fn(async () => WORKSPACES),
   listDiscoveredModels: vi.fn(async () => ({ items: [] })),
+  refreshAllProviders: vi.fn(async () => ({ changed: [], unchanged: [], failed: [], discovered: [] })),
+  createModel: vi.fn(),
   listMcpServers: vi.fn(async () => ({ servers: [] })),
   listPlugins: vi.fn(async () => ({ plugins: [] })),
   listPluginMarketplace: vi.fn(async () => ({ configured: false, entries: [] })),
@@ -178,7 +183,28 @@ async function flush(): Promise<void> {
   });
 }
 
-async function renderSettings(initialPath: string, handles?: { queryClient?: QueryClient }): Promise<HTMLDivElement> {
+function GuardedSettingsFixture() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const rawNavigate = useCallback<GuardedNavigate>((target, options) => {
+    if (typeof target === 'number') void navigate(target);
+    else void navigate(target, options);
+  }, [navigate]);
+  const guard = useDirtyGuardState(location, rawNavigate);
+  return (
+    <DirtyGuardContext.Provider value={guard.value}>
+      <SettingsPage onToggleSidebar={() => {}} />
+      <output data-test-location data-test-location-key={location.key}>{location.pathname}{location.search}{location.hash}</output>
+      <button data-test-dirty onClick={() => { guard.value.reportDirty('fixture-editor', true); }}>Edit draft</button>
+      {guard.pending ? <>
+        <button data-test-cancel onClick={guard.cancel}>Stay</button>
+        <button data-test-confirm onClick={() => { void guard.confirm(); }}>Discard and leave</button>
+      </> : null}
+    </DirtyGuardContext.Provider>
+  );
+}
+
+async function renderSettings(initialPath: string, handles?: { queryClient?: QueryClient; guarded?: boolean }): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -192,7 +218,8 @@ async function renderSettings(initialPath: string, handles?: { queryClient?: Que
         <I18nProvider>
           <MemoryRouter initialEntries={[initialPath]}>
             <Routes>
-              <Route path="/settings/:section?" element={<SettingsPage onToggleSidebar={() => {}} />} />
+              <Route path="/settings/:section?" element={handles?.guarded === true
+                ? <GuardedSettingsFixture /> : <SettingsPage onToggleSidebar={() => {}} />} />
             </Routes>
           </MemoryRouter>
         </I18nProvider>
@@ -224,6 +251,13 @@ async function setTextarea(textarea: HTMLTextAreaElement, value: string): Promis
     setter.call(textarea, value);
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
   });
+}
+
+/** A promise a test resolves by hand, to hold a card's own read open. */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
 }
 
 function scopeHeader(container: HTMLDivElement): HTMLElement {
@@ -275,11 +309,21 @@ describe('SettingsPage panel scopes', () => {
   });
 
   it('mounts the catalog-refresh card on the models tab of the merged ai entry', async () => {
+    client.refreshAllProviders.mockClear();
+    client.createModel.mockClear();
     const container = await renderSettings('/settings/ai?tab=models');
     const card = container.querySelector('#st-card-catalog-refresh');
     expect(card).not.toBeNull();
+    expect(container.querySelector('[data-ai-tab="models"]')?.getAttribute('aria-selected')).toBe('true');
     expect(card!.textContent).toContain('Add models from your connections');
-    expect(card!.textContent).toContain('fetched only when you click Get models');
+    expect(card!.textContent).toContain('Click Get models to query supported models from your providers.');
+    expect(client.refreshAllProviders).not.toHaveBeenCalled();
+    const reads = client.listDiscoveredModels.mock.calls.length;
+    await click([...card!.querySelectorAll('button')].find((button) => button.textContent === 'Get models')!);
+    await flush();
+    expect(client.refreshAllProviders).toHaveBeenCalledTimes(1);
+    expect(client.listDiscoveredModels.mock.calls.length).toBeGreaterThan(reads);
+    expect(client.createModel).not.toHaveBeenCalled();
   });
 
   it('shows memory beside sessions and edits global and workspace settings independently', async () => {
@@ -297,20 +341,58 @@ describe('SettingsPage panel scopes', () => {
     await pickOption(container.querySelector('[data-memory-approval]')!, 'Review in Inbox');
     expect(client.patchMemorySettings).toHaveBeenCalledWith({ approval: 'review' });
 
-    // The budget saves itself on Enter; there is no separate save button.
+    // K04 keeps the text limit under Advanced; it still commits on Enter.
+    const advanced = container.querySelector('[data-memory-advanced-toggle]')!;
+    expect(advanced.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-memory-budget]')).toBeNull();
+    await click(advanced);
+    expect(advanced.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelector('[data-memory-budget-save]')).toBeNull();
-    await commitText(container.querySelector<HTMLInputElement>('[data-memory-budget]')!, '1735');
+    const budget = container.querySelector<HTMLInputElement>('[data-memory-budget]')!;
+    expect(budget.value).toBe('2000');
+    await commitText(budget, '1735');
     expect(client.patchMemorySettings).toHaveBeenCalledWith({ budget: 1735 });
+    await flush();
+    expect(budget.value).toBe('1735');
+    expect(client.patchWorkspaceMemorySettings).not.toHaveBeenCalled();
 
     await pickOption(container.querySelector('[data-memory-workspace-override]')!, 'Off');
     expect(client.patchWorkspaceMemorySettings).toHaveBeenCalledWith('ws-beta', false);
+  });
+
+  it('re-reads the workspace effective state after the global switch is saved', async () => {
+    // The server computes effective from the global switch and the workspace
+    // override; this workspace has no override, so it follows global exactly.
+    let global = true;
+    client.getMemorySettings.mockImplementation(async () => ({ enabled: global, approval: 'auto' as const, budget: 2000, workspaces: {} }));
+    client.getWorkspaceMemorySettings.mockImplementation(async (id: string) => ({ workspace_id: id, enabled: null, effective_enabled: global }));
+    client.patchMemorySettings.mockImplementation(async (patch: { enabled?: boolean }) => {
+      global = patch.enabled ?? global;
+      return { enabled: global, approval: 'auto' as const, budget: 2000, workspaces: {} };
+    });
+
+    const container = await renderSettings('/settings/memory?workspace=ws-beta');
+    await flush();
+    expect(container.querySelector('[data-memory-workspace-effective]')?.textContent).toContain('On');
+    const readsBefore = client.getWorkspaceMemorySettings.mock.calls.length;
+
+    await click(container.querySelector('#memory-enabled')!);
+    await flush();
+    await flush();
+
+    expect(client.patchMemorySettings).toHaveBeenCalledWith({ enabled: false });
+    // Without this re-read the row keeps saying the workspace is on.
+    expect(client.getWorkspaceMemorySettings.mock.calls.length).toBeGreaterThan(readsBefore);
+    expect(container.querySelector('[data-memory-workspace-effective]')?.textContent).toContain('Off');
   });
 
   it('shows other workspace overrides and refuses an out-of-range budget', async () => {
     client.getMemorySettings.mockResolvedValueOnce({ enabled: true, approval: 'review', budget: 2000, workspaces: { 'ws-alpha': false } });
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
     expect(container.querySelector('[data-memory-other-overrides]')?.textContent).toContain('Alpha: Off');
+    await click(container.querySelector('[data-memory-advanced-toggle]')!);
     const budget = container.querySelector<HTMLInputElement>('[data-memory-budget]')!;
+    expect(budget.value).toBe('2000');
     const writes = client.patchMemorySettings.mock.calls.length;
     await commitText(budget, '4001');
     expect(client.patchMemorySettings.mock.calls.length).toBe(writes);
@@ -390,7 +472,9 @@ describe('SettingsPage batch-3 leaves', () => {
     const startup = inputs[0]!;
     expect(startup.value).toBe('30000');
     expect(inputs[1]!.value).toBe('60000');
-    const save = card.querySelector('button')!;
+    // Not the first button: each timeout now carries an on-demand help trigger
+    // ahead of the commit row.
+    const save = [...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
     expect(save.disabled).toBe(true);
 
     await setInput(startup, '45000');
@@ -413,6 +497,44 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.querySelector('[data-saved-tick]')?.textContent).toBe('Saved');
   });
 
+  it('reads an empty MCP timeout as the default and keeps the clearing rule on demand', async () => {
+    const container = await renderSettings('/settings/mcp');
+    await flush();
+    const card = container.querySelector('#st-card-mcp-timeouts')!;
+    // The first screen says what the unit is and that empty means the default.
+    const visible = card.textContent ?? '';
+    expect(visible).toContain('Server-wide MCP timeouts in milliseconds. Leave a field empty to use the default.');
+    // The consequence of clearing a saved value is not on it.
+    expect(visible).not.toContain('clearing a field that has a value removes it');
+    expect(card.querySelector('[data-setting-help-bubble]')).toBeNull();
+
+    // Each timeout says so behind its own trigger.
+    for (const trigger of card.querySelectorAll<HTMLButtonElement>('[data-setting-help]')) {
+      await act(async () => {
+        trigger.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body }));
+      });
+      expect(document.body.textContent).toContain('clearing a field that has a value removes it');
+    }
+  });
+
+  it('clears an MCP timeout back to the default when the field is emptied', async () => {
+    client.getConfig.mockResolvedValue({ mcp: { startupTimeoutMs: 30000 } });
+    client.patchConfig.mockResolvedValueOnce({ mcp: {} });
+    const container = await renderSettings('/settings/mcp');
+    const card = container.querySelector('#st-card-mcp-timeouts')!;
+    const startup = card.querySelectorAll('input')[0]!;
+    expect(startup.value).toBe('30000');
+    await setInput(startup, '');
+    await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
+    await flush();
+    // Empty is `undefined` on the wire: the saved override is removed, not set to zero.
+    expect(client.patchConfig).toHaveBeenCalledWith({
+      mcp: { startup_timeout_ms: undefined, tool_timeout_ms: undefined },
+      replace_domains: ['mcp'],
+    });
+    expect(startup.value).toBe('');
+  });
+
   it('splits the retired automation leaf into permissions and hooks', async () => {
     const container = await renderSettings('/settings/automation');
     expect(container.querySelector('#st-card-permission-defaults')).not.toBeNull();
@@ -422,7 +544,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(container.querySelector('#st-card-hooks')).toBeNull();
     const hooks = await renderSettings('/settings/hooks');
     expect(hooks.querySelector('#st-card-hooks')).not.toBeNull();
-    expect(hooks.querySelector('[data-settings-intro]')?.textContent).toContain('Commands the server runs automatically');
+    expect(hooks.querySelector('[data-settings-intro]')?.textContent).toContain('Declarative text injection');
   });
 
   it('redirects the retired runtime leaf to the tasks page', async () => {
@@ -436,7 +558,7 @@ describe('SettingsPage batch-3 leaves', () => {
   it('mounts the split runtime content on its new leaves', async () => {
     const tasks = await renderSettings('/settings/tasks');
     expect(tasks.querySelector('#st-card-task-policy')).not.toBeNull();
-    expect(tasks.querySelector('#st-card-task-policy')!.textContent).toContain('Concurrency, timeouts, and printing for background tasks.');
+    expect(tasks.querySelector('#st-card-task-policy')!.textContent).toContain('Everyday background-task limits.');
     expect(tasks.querySelector('#st-card-cron')).toBeNull();
 
     const sessions = await renderSettings('/settings/communication');
@@ -449,9 +571,11 @@ describe('SettingsPage batch-3 leaves', () => {
     const developer = await renderSettings('/settings/advanced');
     expect(developer.querySelector('#st-card-token-counting')).not.toBeNull();
     expect(developer.querySelector('#st-card-resource-limits')).not.toBeNull();
-    expect(developer.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle TTL');
+    expect(developer.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle reclamation (s)');
     expect(developer.querySelector('#st-card-cron [data-settings-diagnostics]')).not.toBeNull();
-    expect(developer.querySelector('#st-card-cron [data-settings-panel-scope]')?.textContent).toContain('read-only environment');
+    const diagnosticsScope = developer.querySelector('#st-card-cron [data-settings-panel-scope]');
+    expect(diagnosticsScope?.getAttribute('data-settings-panel-scope')).toBe('readOnly');
+    expect(diagnosticsScope?.textContent).toBe('diagnostic view');
     expect(developer.querySelector('#st-card-cron input, #st-card-cron [role="switch"]')).toBeNull();
 
     const agents = await renderSettings('/settings/agents');
@@ -546,10 +670,13 @@ describe('SettingsPage batch-3 leaves', () => {
   });
 
   it('redirects the retired experimental URL to the labs index', async () => {
-    const container = await renderSettings('/settings/experimental');
+    const container = await renderSettings('/settings/experimental', { guarded: true });
+    expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/labs');
     expect(container.querySelector('#st-card-labs')).not.toBeNull();
     expect(container.querySelector('#st-card-advanced')).toBeNull();
-    expect(scopeHeader(container).textContent).toContain('still being tested');
+    expect(scopeHeader(container).textContent).toBe('Experimental features and feature flags.');
+    expect(container.querySelector('#st-card-labs [data-labs-index]')).not.toBeNull();
+    expect(container.querySelector('#st-card-labs [role="switch"]')).toBeNull();
   });
 
   it('sends an old single-flag card link to the flag’s new row', async () => {
@@ -562,11 +689,17 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/developer');
     const card = container.querySelector('#st-card-advanced')!;
     expect(card).not.toBeNull();
-    expect(scopeHeader(container).textContent).toContain('Most people never need this page.');
-    expect(card.textContent).toContain('the server validates each domain');
+    expect(scopeHeader(container).textContent).toBe('Engine parameters, low-level configuration, and system diagnostics.');
+    expect(card.textContent).toContain('Advanced configuration for permissions, loop controls, and background tasks. Validated on save.');
     expect(card.textContent).not.toContain('kap-server');
     const order = [...container.querySelectorAll('[data-settings-card]')].map((node) => node.id);
     expect(order).toEqual(['st-card-resource-limits', 'st-card-retry', 'st-card-session-residency', 'st-card-token-counting', 'st-card-advanced', 'st-card-cron', 'st-card-exp-developer']);
+
+    const writes = client.patchConfig.mock.calls.length;
+    await setTextarea(card.querySelector('textarea')!, '{');
+    await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save advanced domains')!);
+    expect(client.patchConfig.mock.calls.length).toBe(writes);
+    expect(card.querySelector('[role="alert"]')?.textContent).toBeTruthy();
   });
 
   it('saves advanced settings without the retired services domain', async () => {
@@ -733,5 +866,295 @@ describe('SettingsPage search ownership', () => {
     rendered.delete('st-card-subagent-profiles');
     expect([...rendered].filter((id) => !indexed.has(id))).toEqual([]);
     expect([...indexed].filter((id) => !rendered.has(id))).toEqual([]);
+  });
+});
+
+describe('SettingsPage search locating', () => {
+  it.each([
+    // The default-target card sits with the other subagent rules, so the hit
+    // opens that leaf; the card itself and its selector are unchanged.
+    ['en', 'default profile', 'Subagent rules', 'Default subagent'],
+    ['zh', '默认 profile', '子智能体规则', '默认子智能体'],
+  ] as const)('clicks the %s default-target search hit into the mounted subagent card', async (locale, query, pageTitle, cardTitle) => {
+    localStorage.setItem('kiki.locale', locale);
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    try {
+      const container = await renderSettings('/settings/general');
+      const search = container.querySelector<HTMLInputElement>('[data-settings-search]')!;
+      await setInput(search, query);
+      const option = search.parentElement?.querySelector<HTMLButtonElement>('[role="option"]');
+      expect(option?.textContent).toContain(cardTitle);
+
+      await click(option!);
+      for (let attempt = 0; attempt < 5; attempt++) await flush();
+
+      expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe(pageTitle);
+      const card = container.querySelector<HTMLElement>('#st-card-subagent-default-target');
+      expect(card).not.toBeNull();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(card?.className).toContain('settings-card-flash');
+      expect(card?.querySelector('[data-subagent-default-target]')).not.toBeNull();
+    } finally {
+      scrollIntoView.mockRestore();
+    }
+  });
+
+  it('locates the already-mounted card on every same-page search click', async () => {
+    localStorage.setItem('kiki.locale', 'en');
+    // The default-target card lives on the subagent leaf, so that is the page
+    // a same-page hit must be started from: the hit locates the mounted card
+    // instead of navigating.
+    const container = await renderSettings('/settings/subagents', { guarded: true });
+    const visitKey = container.querySelector('[data-test-location]')?.getAttribute('data-test-location-key');
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    try {
+      for (let hit = 1; hit <= 2; hit++) {
+        const search = container.querySelector<HTMLInputElement>('[data-settings-search]')!;
+        await setInput(search, 'default profile');
+        await click(search.parentElement!.querySelector('[role="option"]')!);
+        await flush();
+        expect(scrollIntoView).toHaveBeenCalledTimes(hit);
+        expect(container.querySelector('#st-card-subagent-default-target')?.className).toContain('settings-card-flash');
+        expect(container.querySelector('[data-test-location]')?.getAttribute('data-test-location-key')).toBe(visitKey);
+      }
+    } finally {
+      scrollIntoView.mockRestore();
+    }
+  });
+
+  it('commits a tabbed search destination before locating and repeats without a new visit', async () => {
+    localStorage.setItem('kiki.locale', 'en');
+    const container = await renderSettings('/settings/ai?tab=defaults', { guarded: true });
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    try {
+      expect(container.querySelector('#st-card-catalog-refresh')).toBeNull();
+      for (let hit = 1; hit <= 2; hit++) {
+        const visitKey = container.querySelector('[data-test-location]')?.getAttribute('data-test-location-key');
+        const search = container.querySelector<HTMLInputElement>('[data-settings-search]')!;
+        await setInput(search, 'catalog refresh');
+        await click(search.parentElement!.querySelector('[role="option"]')!);
+        await flush();
+        expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?tab=models#st-card-catalog-refresh');
+        expect(container.querySelector('[data-ai-tab="models"]')?.getAttribute('aria-selected')).toBe('true');
+        const card = container.querySelector('#st-card-catalog-refresh');
+        expect(card?.className).toContain('settings-card-flash');
+        expect(scrollIntoView).toHaveBeenCalledTimes(hit);
+        expect(scrollIntoView.mock.instances[hit - 1]).toBe(card);
+        if (hit === 2) expect(container.querySelector('[data-test-location]')?.getAttribute('data-test-location-key')).toBe(visitKey);
+      }
+    } finally {
+      scrollIntoView.mockRestore();
+    }
+  });
+
+  it('locates a guarded search hit only after the reader confirms navigation', async () => {
+    localStorage.setItem('kiki.locale', 'en');
+    const container = await renderSettings('/settings/ai?tab=defaults', { guarded: true });
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    try {
+      await click(container.querySelector('[data-test-dirty]')!);
+      const search = container.querySelector<HTMLInputElement>('[data-settings-search]')!;
+      await setInput(search, 'catalog refresh');
+      await click(search.parentElement!.querySelector('[role="option"]')!);
+      expect(container.querySelector('[data-test-confirm]')).not.toBeNull();
+      expect(container.querySelector('#st-card-catalog-refresh')).toBeNull();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      await click(container.querySelector('[data-test-confirm]')!);
+      await flush();
+      const card = container.querySelector('#st-card-catalog-refresh');
+      expect(card?.className).toContain('settings-card-flash');
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView.mock.instances[0]).toBe(card);
+    } finally {
+      scrollIntoView.mockRestore();
+    }
+  });
+
+  it('does not keep a canceled guarded search target for a later ordinary tab visit', async () => {
+    localStorage.setItem('kiki.locale', 'en');
+    const container = await renderSettings('/settings/ai?tab=defaults', { guarded: true });
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    try {
+      await click(container.querySelector('[data-test-dirty]')!);
+      const search = container.querySelector<HTMLInputElement>('[data-settings-search]')!;
+      await setInput(search, 'catalog refresh');
+      await click(search.parentElement!.querySelector('[role="option"]')!);
+      expect(container.querySelector('[data-test-cancel]')).not.toBeNull();
+      expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?tab=defaults');
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      await click(container.querySelector('[data-test-cancel]')!);
+
+      // This is a new, ordinary navigation, not confirmation of the search hit.
+      await click(container.querySelector('[data-ai-tab="models"]')!);
+      await click(container.querySelector('[data-test-confirm]')!);
+      await flush();
+      expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?tab=models');
+      const card = container.querySelector('#st-card-catalog-refresh');
+      expect(card).not.toBeNull();
+      expect(card?.className).not.toContain('settings-card-flash');
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      scrollIntoView.mockRestore();
+    }
+  });
+
+  /**
+   * Locating a card is a handshake with the card, not a deadline: these cover a
+   * card whose own read finishes long after the page painted, a reader who has
+   * scrolled in the meantime, and the announcement the two ends rely on.
+   */
+  it('locates a card whose own read outlasts the old two-second wait', async () => {
+    const gate = deferred<{ experimental_flags?: Record<string, boolean> }>();
+    client.meta.mockReturnValueOnce(gate.promise);
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    const container = await renderSettings('/settings/developer#st-card-exp-developer');
+
+    // The Experimental rows are still waiting on their own read, so the card is
+    // not there — and the page does not give up on it while it waits.
+    expect(container.querySelector('#st-card-exp-developer')).toBeNull();
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 2100); }); });
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    gate.resolve({ experimental_flags: { native_browser: false } });
+    await flush();
+    await flush();
+
+    const card = container.querySelector('#st-card-exp-developer');
+    expect(card).not.toBeNull();
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(card?.className).toContain('settings-card-flash');
+    scrollIntoView.mockRestore();
+  });
+
+  it('does not pull the view once the reader has scrolled themselves', async () => {
+    const gate = deferred<{ experimental_flags?: Record<string, boolean> }>();
+    client.meta.mockReturnValueOnce(gate.promise);
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    const container = await renderSettings('/settings/developer#st-card-exp-developer');
+
+    await act(async () => { window.dispatchEvent(new Event('wheel')); });
+    gate.resolve({ experimental_flags: { native_browser: false } });
+    await flush();
+    await flush();
+
+    expect(container.querySelector('#st-card-exp-developer')).not.toBeNull();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    scrollIntoView.mockRestore();
+  });
+
+  it('drops the old hash target on a new visit to the same section', async () => {
+    const gate = deferred<{ experimental_flags?: Record<string, boolean> }>();
+    client.meta.mockReturnValueOnce(gate.promise);
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    try {
+      const container = await renderSettings('/settings/developer#st-card-exp-developer', { guarded: true });
+      expect(container.querySelector('#st-card-exp-developer')).toBeNull();
+      const visitKey = container.querySelector('[data-test-location]')?.getAttribute('data-test-location-key');
+      await click(container.querySelector('[data-settings-nav-leaf="developer"]')!);
+      expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/developer');
+      expect(container.querySelector('[data-test-location]')?.getAttribute('data-test-location-key')).not.toBe(visitKey);
+      gate.resolve({ experimental_flags: { native_browser: false } });
+      await flush();
+      expect(container.querySelector('#st-card-exp-developer')).not.toBeNull();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      scrollIntoView.mockRestore();
+    }
+  });
+
+  it('drops an unmounted target when the reader leaves for another section', async () => {
+    const gate = deferred<{ experimental_flags?: Record<string, boolean> }>();
+    client.meta.mockReturnValueOnce(gate.promise);
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    try {
+      const container = await renderSettings('/settings/developer#st-card-exp-developer');
+      expect(container.querySelector('#st-card-exp-developer')).toBeNull();
+      await click(container.querySelector('[data-settings-nav-leaf="general"]')!);
+      gate.resolve({ experimental_flags: { native_browser: false } });
+      await flush();
+      await click(container.querySelector('[data-settings-nav-leaf="developer"]')!);
+      await flush();
+      expect(container.querySelector('#st-card-exp-developer')).not.toBeNull();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      scrollIntoView.mockRestore();
+    }
+  });
+
+  /**
+   * The visit store keeps the reader's own position for a visit they return to.
+   * A hash left over from an earlier deep link is older than that position, so a
+   * card that mounts late on the return trip must not pull the pane.
+   */
+  it('leaves a return visit where the reader left it, not at the hash it carries', async () => {
+    const visit = recordNavigation({
+      location: { pathname: '/settings/developer', search: '', hash: '#st-card-exp-developer', key: 'return-visit' },
+      scope: { homeId: 'main', scopeId: 'local' },
+    });
+    saveUiSnapshot(visit.visitId, { scrollTop: 320 });
+    const gate = deferred<{ experimental_flags?: Record<string, boolean> }>();
+    client.meta.mockReturnValueOnce(gate.promise);
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    const container = await renderSettings('/settings/developer#st-card-exp-developer');
+
+    gate.resolve({ experimental_flags: { native_browser: false } });
+    await flush();
+    await flush();
+
+    expect(container.querySelector('#st-card-exp-developer')).not.toBeNull();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    scrollIntoView.mockRestore();
+    clearNavHistory();
+  });
+
+  /**
+   * The pair to the test above: a visit the reader has not scrolled yet owns no
+   * position to protect, so the hash it was opened with still locates its card.
+   * The two tests differ only in that saved position.
+   */
+  it('still locates the hash on a visit that has no position of its own', async () => {
+    const visit = recordNavigation({
+      location: { pathname: '/settings/developer', search: '', hash: '#st-card-exp-developer', key: 'fresh-visit' },
+      scope: { homeId: 'main', scopeId: 'local' },
+    });
+    expect(visit.visitId).not.toBe('');
+    expect(getUiSnapshot(visit.visitId)).toBeUndefined();
+    const gate = deferred<{ experimental_flags?: Record<string, boolean> }>();
+    client.meta.mockReturnValueOnce(gate.promise);
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    const container = await renderSettings('/settings/developer#st-card-exp-developer');
+
+    gate.resolve({ experimental_flags: { native_browser: false } });
+    await flush();
+    await flush();
+
+    expect(container.querySelector('#st-card-exp-developer')).not.toBeNull();
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    scrollIntoView.mockRestore();
+    clearNavHistory();
+  });
+
+  it('announces a card on mount, and again when the page asks for one', async () => {
+    const seen: string[] = [];
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const tree = (notify: (id: string) => void) => (
+      <I18nProvider>
+        <SettingsCardMountContext.Provider value={notify}>
+          <SectionCard id="st-card-fixture" title="Fixture" />
+        </SettingsCardMountContext.Provider>
+      </I18nProvider>
+    );
+
+    await act(async () => { root.render(tree((id) => { seen.push(id); })); });
+    expect(seen).toEqual(['st-card-fixture']);
+
+    // Every request carries a new asker identity, so a card that is already on
+    // screen is asked again instead of being missed.
+    await act(async () => { root.render(tree((id) => { seen.push(`${id}:again`); })); });
+    expect(seen).toEqual(['st-card-fixture', 'st-card-fixture:again']);
   });
 });

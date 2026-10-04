@@ -1,3 +1,4 @@
+import type { ContentWindow } from '../contract/content';
 import type { AgentId, AttachmentId, FrameId, InteractionId, TaskId, TodoId } from './ids';
 import type { TranscriptPartIdentity } from './identity';
 
@@ -143,8 +144,18 @@ export interface NoticeFrame {
   readonly detail?: unknown;
 }
 
-export type TranscriptFrame =
-  | TextFrame
-  | ThinkingFrame
-  | ToolCallFrame
-  | NoticeFrame;
+export type TranscriptFrame = (TextFrame | ThinkingFrame | ToolCallFrame | NoticeFrame) & ContentWindow;
+
+/** Keep routing and undo identity without retaining a durably released tool's body. */
+export function releaseToolFramePayload(frame: ToolCallFrame): ToolCallFrame {
+  const { input: _input, output: _output, display: _display, error: _error, inputText: _inputText, progress: _progress, ...identity } = frame;
+  return identity;
+}
+
+/** Internal adapter identity only; never a user-visible canonical frame. */
+export function releaseFramePayload(frame: TranscriptFrame): TranscriptFrame {
+  const { contentRefs: _refs, ...identity } = frame;
+  if (identity.kind === 'tool') return releaseToolFramePayload(identity);
+  if (identity.kind === 'notice') return { ...identity, message: '', detail: undefined };
+  return { ...identity, text: '' };
+}

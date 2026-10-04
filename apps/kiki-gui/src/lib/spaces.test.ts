@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { configureSpaceStorage } from '@kiki/session-core/storage';
+import { registerScopeNavigation } from './navScope';
 
 import {
   enterSpace,
@@ -8,6 +9,7 @@ import {
   otherSpacesPending,
   spaceOverrides,
   spaceRunState,
+  spaceKeys,
   suggestSpacePath,
   type ConfigOrigins,
 } from './spaces';
@@ -57,15 +59,30 @@ describe('space run state', () => {
 });
 
 describe('enterSpace', () => {
-  it('prefers open_space and falls back to switch_space only in switch mode', async () => {
+  it('keeps native windows open and sends same-window entry to the single scope navigator', async () => {
     const openSpace = vi.fn(async () => undefined);
     const switchSpace = vi.fn(async () => undefined);
-    await enterSpace({ kind: 'tauri', openSpace, switchSpace } as never, 'h-a', 'windows');
-    expect(openSpace).toHaveBeenCalledWith('h-a');
-    await enterSpace({ kind: 'tauri', switchSpace } as never, 'h-b', 'switch');
-    expect(switchSpace).toHaveBeenCalledWith('h-b');
-    await expect(enterSpace({ kind: 'browser' } as never, 'h-a', 'windows')).rejects.toThrow();
+    const navigateScope = vi.fn(async () => undefined);
+    const unregister = registerScopeNavigation(navigateScope);
+    try {
+      await enterSpace({ kind: 'tauri', openSpace, switchSpace } as never, 'h-a', 'windows');
+      expect(openSpace).toHaveBeenCalledExactlyOnceWith('h-a');
+      await enterSpace({ kind: 'tauri', openSpace, switchSpace } as never, 'h-b', 'switch');
+      expect(navigateScope).toHaveBeenCalledExactlyOnceWith({ homeId: 'h-b', scopeId: 'local' });
+      expect(switchSpace).not.toHaveBeenCalled();
+      expect(openSpace).toHaveBeenCalledTimes(1);
+      await expect(enterSpace({ kind: 'browser' } as never, 'h-a', 'windows')).rejects.toThrow();
+    } finally { unregister(); }
   });
+});
+
+it('keys the directory by authenticated client identity, not a tunnel URL or home ID', () => {
+  const a = { baseUrl: 'http://127.0.0.1:41001' } as never;
+  const b = { baseUrl: 'http://127.0.0.1:41001' } as never;
+  expect(spaceKeys.list(a)).toEqual(spaceKeys.list(a));
+  expect(spaceKeys.list(a)).not.toEqual(spaceKeys.list(b));
+  expect(spaceKeys.list(null)).not.toEqual(spaceKeys.list(a));
+  expect(spaceKeys.list(a).slice(0, 1)).toEqual(spaceKeys.all);
 });
 
 it('suggests ~/.kiki-spaces/<slug> beside the main home', () => {

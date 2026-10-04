@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { errorText, type I18nKey } from '@kiki/session-core/i18n';
+import { errorText } from '@kiki/session-core/i18n';
 import {
   disabledProfilePatch,
   mergeNamedAgentProfiles,
@@ -16,12 +16,6 @@ import {
   type NamedAgentOverrideRelation,
   type SubagentGovernanceDraft,
 } from '@kiki/session-core/settings';
-import {
-  subagentDispatchPoliciesDraftFromConfig,
-  subagentDispatchPoliciesPatch,
-  type SubagentDispatchPolicy,
-  type SubagentDispatchPoliciesDraft,
-} from '@kiki/session-core/settings/subagentToolsSettings';
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import { useI18n } from '../../i18n';
 import { agentProfileCatalogQueryKey, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
@@ -37,92 +31,23 @@ import type {
   ShippedAgentProfile,
 } from '../../lib/client';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, SaveStatus, SavedTick, Toggle, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
+import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
-import { SettingsDraftFooter, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
-import { AdvancedDetails, SettingField } from './fields';
+import { SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
 import { AgentProfileEditorDialog } from './AgentProfileEditorDialog';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
 import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
-import { useInstantSave } from './useInstantSave';
 import { useSavedTick } from './useSavedTick';
-import { subagentPolicyChoice, subagentPolicyLabelKey } from './subagentPolicy';
+import { dispatchFieldsOf } from './profileEditor/profileDraft';
 
 const EMPTY_SUBAGENT_GOVERNANCE: SubagentGovernanceDraft = { denyModels: '' };
 
 export function SubagentGovernanceCard() {
   return <><SubagentLimitsSettings /><SubagentModelGovernanceCard /></>;
-}
-
-/**
- * The two server-wide dispatch-policy defaults (redesign agents leaf): the
- * main-agent and subagent-profile fallbacks for profiles that declare no
- * `subagent_policy`. Each select saves on change, like the other single-choice
- * server settings.
- */
-export function SubagentDispatchPoliciesCard() {
-  const { client } = useConnection();
-  const { t, locale } = useI18n();
-  const queryClient = useQueryClient();
-  const save = useInstantSave();
-  const [lastRow, setLastRow] = useState<'mainDispatchPolicy' | 'subagentDispatchPolicy' | null>(null);
-  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-  const draft = subagentDispatchPoliciesDraftFromConfig(configQuery.data);
-  const stored = useMemo(() => subagentDispatchPoliciesDraftFromConfig(configQuery.data), [configQuery.data]);
-  const saving = save.saving;
-
-  const apply = async (name: 'mainDispatchPolicy' | 'subagentDispatchPolicy', next: SubagentDispatchPoliciesDraft) => {
-    setLastRow(name);
-    await save.run(async () => {
-      const echoed = await client.patchConfig(subagentDispatchPoliciesPatch(next, stored));
-      queryClient.setQueryData(['config'], echoed);
-      await queryClient.invalidateQueries({ queryKey: ['agentCapabilities'] });
-    });
-  };
-
-  const select = (
-    name: 'mainDispatchPolicy' | 'subagentDispatchPolicy',
-    labelKey: I18nKey,
-    value: SubagentDispatchPolicy,
-  ) => (
-    <div data-dispatch-policy={name}>
-      <SettingField label={t(labelKey)} labelId={`${name}-label`}>
-        {lastRow === name ? <SaveStatus saving={save.saving} saved={save.saved} /> : null}
-        <span title={t('st.settings.configKey', { key: name === 'mainDispatchPolicy' ? '[subagent].main_dispatch_policy' : '[subagent].subagent_dispatch_policy' })}>
-          <SettingsSegmented<SubagentDispatchPolicy>
-            ariaLabelledBy={`${name}-label`}
-            dataAttr="data-policy-choice"
-            value={value}
-            disabled={saving || configQuery.isPending}
-            onChange={(policy) => void apply(name, { ...draft, [name]: policy })}
-            choices={(['advisory', 'strict'] as SubagentDispatchPolicy[]).map((policy) => ({
-              value: policy, label: t(`agentPanel.subagentPolicy.${policy}` as I18nKey),
-            }))}
-          />
-        </span>
-      </SettingField>
-    </div>
-  );
-
-  return (
-    <SectionCard id="st-card-subagent-dispatch-policies" title={t('st.dispatchPolicies.title')}>
-      <div className="space-y-2">
-        <Hint>{t('st.dispatchPolicies.hintShort')}</Hint>
-        {select('mainDispatchPolicy', 'st.dispatchPolicies.mainLabel', draft.mainDispatchPolicy)}
-        {select('subagentDispatchPolicy', 'st.dispatchPolicies.subLabel', draft.subagentDispatchPolicy)}
-        <AdvancedDetails summary={t('st.namedAgents.technicalDetails')}>
-          <p>{t('st.dispatchPolicies.hint')}</p>
-          <p className="font-mono text-[11px] text-ink-faint">[subagent].main_dispatch_policy · [subagent].subagent_dispatch_policy</p>
-        </AdvancedDetails>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-        <FeedbackLine feedback={save.error} />
-      </div>
-    </SectionCard>
-  );
 }
 
 function SubagentModelGovernanceCard() {
@@ -249,8 +174,7 @@ export function NamedAgentProfileRow({
     profile.max_completion_tokens !== undefined ||
     (profile.request_params !== undefined && Object.keys(profile.request_params).length > 0) ||
     (profile.model_profiles?.length ?? 0) > 0 ||
-    constraints !== undefined ||
-    (profile.subagents?.length ?? 0) > 0;
+    constraints !== undefined;
   const [editorOpen, setEditorOpen] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [rowSaved, pingRowSaved] = useSavedTick();
@@ -297,8 +221,17 @@ export function NamedAgentProfileRow({
       summaryChips.push(`${t('st.namedAgents.disallowedTools')} ${constraints.disallowed_tools.join(', ')}`);
     }
   }
-  const subagentPolicy = subagentPolicyChoice(profile.subagent_policy);
-  const subagentPolicyLabel = t(subagentPolicyLabelKey(subagentPolicy));
+  // The one switch and the preset list, as this row states them: a profile
+  // that declared neither is not described as restricted.
+  const dispatch = dispatchFieldsOf(profile);
+  const subagentDispatch = dispatch.can_spawn_subagents === false
+    ? { key: 'leaf', label: t('st.profiles.dispatchCanSpawnOff') }
+    : dispatch.allowed_subagents === undefined
+      ? { key: 'undeclared', label: t('st.profiles.dispatchNotDeclared') }
+      : { key: 'presets', label: dispatch.allowed_subagents.length === 0
+          ? t('st.profiles.dispatchAllowedEmpty')
+          : dispatch.allowed_subagents.map((entry) => typeof entry === 'string' ? entry : entry.name).join(', ') };
+  const subagentLeases = dispatch.allowed_subagents ?? [];
 
   // A built-in shadowed by an overriding same-name file profile collapses to
   // a single muted line — rendering it as a normal enabled row would suggest
@@ -315,10 +248,10 @@ export function NamedAgentProfileRow({
           <p className="font-mono text-[12.5px] text-ink-faint">{profile.name}</p>
           <SourceBadge source={profile.source} variant="muted" />
           <span
-            data-subagent-policy={subagentPolicy}
+            data-subagent-policy={subagentDispatch.key}
             className="rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-faint"
           >
-            {subagentPolicyLabel}
+            {subagentDispatch.label}
           </span>
           <span className="min-w-0 truncate text-[12px] text-ink-faint" title={overriddenBy.file}>
             {t('st.namedAgents.overriddenByFile', { file: overriddenBy.file })}
@@ -392,11 +325,11 @@ export function NamedAgentProfileRow({
             variant="muted"
             suffix={writable ? undefined : ` · ${t('st.namedAgents.readOnly')}`}
           />}
-          {embedded && subagentPolicy === 'inherit' ? null : <span
-            data-subagent-policy={subagentPolicy}
+          {embedded && subagentDispatch.key === 'undeclared' ? null : <span
+            data-subagent-policy={subagentDispatch.key}
             className={embedded ? 'rounded-[4px] bg-hairline/60 px-1.5 py-px text-[12px] text-ink-faint' : 'rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-faint'}
           >
-            {subagentPolicyLabel}
+            {subagentDispatch.label}
           </span>}
           {shippedEntry !== undefined ? (
             <ShippedProfileControls
@@ -451,8 +384,8 @@ export function NamedAgentProfileRow({
               />
             </div>
           ) : null}
-          {profile.subagents !== undefined && profile.subagents.length > 0 ? (
-            <SubagentLeaseList items={profile.subagents} variant="compact" />
+          {subagentLeases.length > 0 ? (
+            <SubagentLeaseList items={subagentLeases} variant="compact" />
           ) : null}
           <details className="mt-2 border-t border-hairline pt-2" data-technical-details>
             <summary className="cursor-pointer select-none text-[12px] font-medium text-ink-faint hover:text-ink-soft">
@@ -494,10 +427,10 @@ export function NamedAgentProfileRow({
               </p>
             ))}
             <p data-technical-subagent-policy>
-              {t('agentPanel.subagentPolicy')}: {subagentPolicyLabel}
+              {t('st.profiles.dispatchTitle')}: {subagentDispatch.label}
             </p>
-            {profile.subagents !== undefined && profile.subagents.length > 0 ? (
-              <SubagentLeaseList items={profile.subagents} variant="details" />
+            {subagentLeases.length > 0 ? (
+              <SubagentLeaseList items={subagentLeases} variant="details" />
             ) : null}
             </div>
             {hasProjection ? <Hint>{t('st.namedAgents.projectionHint')}</Hint> : null}
@@ -737,7 +670,6 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
 export function AgentsSection() {
   return (
     <div className="space-y-4">
-      <SubagentDispatchPoliciesCard />
       <AgentRuntimeCard />
       <PromptConfigCard />
     </div>

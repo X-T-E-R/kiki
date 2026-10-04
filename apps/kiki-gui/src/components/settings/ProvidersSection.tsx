@@ -1,9 +1,8 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ProviderCatalogItem } from '@kiki/protocol';
-import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
@@ -14,28 +13,31 @@ import { NewProviderWizard, PROVIDER_HEALTH_QUERY_KEY, ProviderEditor } from '..
 import { connectionKind, type ConnectionKind } from '../providerPresets';
 import { SidePanel } from '../SidePanel';
 import { SECONDARY_BUTTON } from '../ui';
-import { AccountQuotaCard } from './AccountQuotaCard';
-import { CatalogImportCard } from './CatalogImportCard';
 import { ExternalEnginesList } from './ExternalEnginesSection';
 import { ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec, type ListSortSpec } from './list';
-import { SectionCard } from './SectionCard';
+import { SectionCard, SettingsCardMountContext } from './SectionCard';
 
 const KIND_ORDER: readonly ConnectionKind[] = ['account', 'api', 'local'];
 
 /**
- * Connections tab: the services Kiki can reach. One list of configured
- * connections — account sign-ins, hosted APIs and local servers side by side,
- * each a row with its address, model count and health in words — and one
- * "Add connection" entry that first asks how (API key or account), then
- * which protocol. Vendors are presets inside that flow, never a type.
+ * Connections tab: one list, and one way to add to it.
+ *
+ * Every way Kiki reaches a model is a connection — an account sign-in, a hosted
+ * API, a server on this machine — so there is one list of them and each row
+ * says how it is reached, what it carries and whether it works. An account's
+ * sign-in is part of its connection rather than a separate list of accounts, so
+ * a subscription is added, checked, renewed and removed in exactly one place.
+ *
+ * "Add connection" is that single entry: it offers the sign-in methods the
+ * server has and the protocols you can bring a key to, and it is what an empty
+ * page shows instead of an empty table.
  */
 export function ConnectionsTab() {
   const { client } = useConnection();
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const { hash } = useLocation();
   const queryClient = useQueryClient();
-  const [signingOut, setSigningOut] = useState<string | null>(null);
-  const [signOutFeedback, setSignOutFeedback] = useState<Feedback>(null);
+  const [feedback, setFeedback] = useState<Feedback>(null);
 
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
@@ -56,6 +58,9 @@ export function ConnectionsTab() {
   const providerItems = providersQuery.data?.items ?? [];
   const methods = methodsQuery.data ?? [];
   const accountProviders = useMemo(() => new Set(methods.map((method) => method.provider)), [methods]);
+  // A sign-in method that has no connection yet is offered inside "Add
+  // connection" rather than as a row of its own; the list holds connections
+  // that exist, including one whose credential has gone stale.
   const methodFor = (providerId: string) => methods.find((method) => method.provider === providerId);
   const modelCount = (providerId: string) =>
     (modelsQuery.data?.items ?? []).filter((model) => model.provider_id === providerId).length;
@@ -73,9 +78,13 @@ export function ConnectionsTab() {
     })),
     {
       id: 'attention', label: t('st.connections.filter.attention'), tone: 'attention' as const,
-      test: (provider: ProviderCatalogItem) => provider.status === 'error' || provider.status === 'unconfigured',
+      test: (provider: ProviderCatalogItem) => {
+        const facts = methodFor(provider.id);
+        return provider.status === 'error' || provider.status === 'unconfigured'
+          || (facts !== undefined && facts.signed_in && facts.connection_state === 'reconnect_required');
+      },
     },
-  ], [t, accountProviders]);
+  ], [t, accountProviders, methods]);
   const sorts = useMemo<readonly ListSortSpec<ProviderCatalogItem>[]>(() => [
     {
       id: 'kind', label: t('st.list.sort.order'),
@@ -85,30 +94,36 @@ export function ConnectionsTab() {
     { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => a.id.localeCompare(b.id) },
   ], [t, accountProviders]);
   const view = useListView({ listId: 'connections', items: providerItems, keyOf, textOf, filters, sorts });
-  // The /new banner deep-links to account sign-in; open the add flow on it.
-  const wantsAccount = hash === '#st-card-auth';
+
+  // Both deep links open the one entry point: `#st-card-auth` asked for a
+  // sign-in and `#st-card-providers-add` for the form, and a person who
+  // arrived from either wants the same thing — add a connection.
   const [adding, setAdding] = useState(false);
-  // A deep link opens the add flow once; closing it stays closed.
+  // A deep link opens it once; closing it stays closed.
   const [linkClosed, setLinkClosed] = useState<string | null>(null);
-  const linked = (wantsAccount || hash === '#st-card-providers-add') && linkClosed !== hash;
+  const wanted = hash === '#st-card-auth' || hash === '#st-card-providers-add';
+  const linked = wanted && linkClosed !== hash;
   const addOpen = adding || empty || linked;
   const closeAdd = () => { setAdding(false); setLinkClosed(hash); };
+  const openAdd = () => { setAdding(true); setFeedback(null); };
 
-  const signOut = async (providerId: string) => {
-    const method = methodFor(providerId);
-    if (method === undefined) return;
-    setSigningOut(providerId);
-    setSignOutFeedback(null);
-    try {
-      await client.logoutOAuth({ provider: method.id });
-      setSignOutFeedback({ tone: 'success', text: t('st.account.signedOut', { method: method.label }) });
-      await refreshProviderData();
-    } catch (error) {
-      setSignOutFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSigningOut(null);
-    }
-  };
+  // `#st-card-auth` no longer names a card of its own — sign-in is the account
+  // lane of the one add flow. The page only scrolls and flashes a card that
+  // announces itself, so this anchor answers the locate request itself, and
+  // only while the flow is actually on screen to receive the arrival.
+  const onCardMount = useContext(SettingsCardMountContext);
+  useEffect(() => {
+    if (addOpen && hash === '#st-card-auth') onCardMount?.('st-card-auth');
+  }, [addOpen, hash, onCardMount]);
+
+  const addButton = (
+    <button type="button" data-add-connection
+      className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+      onClick={() => { openAdd(); }}>
+      <Icon name="plus" size={12} />
+      {t('st.connections.add')}
+    </button>
+  );
 
   return (
     <div className="space-y-6">
@@ -116,25 +131,12 @@ export function ConnectionsTab() {
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <p className="mr-auto max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.connections.intro')}</p>
-            {empty && !addOpen ? (
-              <button type="button" data-add-connection className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
-                onClick={() => { setAdding(true); }}>
-                <Icon name="plus" size={12} />
-                {t('st.connections.add')}
-              </button>
-            ) : null}
           </div>
           {providerItems.length > 0 ? (
             <>
               <ListToolbar view={view} total={providerItems.length} filters={filters} sorts={sorts}
                 searchLabel={t('st.connections.search')} searchPlaceholder={t('st.connections.searchPlaceholder')}
-                actions={!addOpen ? (
-                  <button type="button" data-add-connection className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
-                    onClick={() => { setAdding(true); }}>
-                    <Icon name="plus" size={12} />
-                    {t('st.connections.add')}
-                  </button>
-                ) : undefined} />
+                actions={addOpen ? undefined : addButton} />
               {view.visible.length === 0 ? (
                 <ListEmpty kind="no-match" title={t('st.connections.noMatchTitle')}
                   body={view.query.trim() !== '' ? t('st.connections.noMatches', { query: view.query.trim() }) : undefined}
@@ -153,9 +155,7 @@ export function ConnectionsTab() {
                           modelCount={modelCount(provider.id)}
                           onSaved={refreshProviderData}
                           accountLabel={method?.label}
-                          account={method}
-                          onSignOut={method?.signed_in === true ? () => void signOut(provider.id) : undefined}
-                          signingOut={signingOut === provider.id}
+                          accountMethod={method}
                           density={view.density}
                         />
                       );
@@ -171,13 +171,9 @@ export function ConnectionsTab() {
           ) : null}
           {providersQuery.isLoading ? <Hint>{t('st.providers.loading')}</Hint> : null}
           {providersQuery.isError ? <InlineError error={providersQuery.error} /> : null}
-          <FeedbackLine feedback={signOutFeedback} />
+          <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
-
-      <AccountQuotaCard methods={methods} />
-
-      <CatalogImportCard configuredIds={new Set(providerItems.map((provider) => provider.id))} onImported={refreshProviderData} />
 
       <SectionCard id="st-card-engines" title={t('st.engines.title')}><ExternalEnginesList /></SectionCard>
 
@@ -185,10 +181,11 @@ export function ConnectionsTab() {
           opens beside the list in a side panel, so the list stays in view. */}
       {addOpen && empty ? (
         <SectionCard id="st-card-providers-add" title={t('st.connections.addTitle')}>
-          <span id="st-card-auth" aria-hidden className="block" />
+          <span id="st-card-auth" className="scroll-mt-4" />
           <NewProviderWizard
-            key={wantsAccount ? 'account' : 'api'}
-            initialMethod={wantsAccount ? 'account' : 'api'}
+            key={hash === '#st-card-auth' ? 'account' : 'api'}
+            initialMethod={hash === '#st-card-auth' ? 'account' : 'api'}
+            configuredIds={new Set(providerItems.map((provider) => provider.id))}
             onSaved={async () => { await refreshProviderData(); closeAdd(); }}
             onAccountChanged={refreshProviderData}
           />
@@ -203,10 +200,11 @@ export function ConnectionsTab() {
           data={{ 'data-add-connection-panel': '' }}
         >
           <div id="st-card-providers-add">
-            <span id="st-card-auth" aria-hidden className="block" />
+            <span id="st-card-auth" className="scroll-mt-4" />
             <NewProviderWizard
-              key={wantsAccount ? 'account' : 'api'}
-              initialMethod={wantsAccount ? 'account' : 'api'}
+              key={hash === '#st-card-auth' ? 'account' : 'api'}
+              initialMethod={hash === '#st-card-auth' ? 'account' : 'api'}
+              configuredIds={new Set(providerItems.map((provider) => provider.id))}
               onSaved={async () => { await refreshProviderData(); closeAdd(); }}
               onAccountChanged={refreshProviderData}
             />

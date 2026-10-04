@@ -18,6 +18,9 @@ import type { CLIOptions } from './options';
 import { resolveAgentProfileSelection } from './agent-selection';
 
 export async function runShell(opts: CLIOptions, version: string): Promise<void> {
+  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+    throw new Error('Interactive mode needs a terminal on stdin and stdout. To pass a prompt without one, use kiki -p -.');
+  }
   let tuiConfig: TuiConfig;
   let configWarning: string | undefined;
   try {

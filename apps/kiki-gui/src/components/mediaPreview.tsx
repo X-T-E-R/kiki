@@ -15,7 +15,9 @@
  * that dirty set); closing the last tab is what unmounts the workspace.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { browserSaveSink, bufferedSaveSink } from '../host/saveSink';
+import type { HostSaveSink } from '../host/host';
 import { createPortal } from 'react-dom';
 
 import { useHost } from '../host';
@@ -37,11 +39,13 @@ import {
 import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
 import type { AgentWorkspaceNavigation } from './agent-workspace';
 import { useOptionalConversationShell } from './ConversationShell';
+import { useRailMode } from './rail-variants/shell';
 import { locateInTimeline } from '../lib/timelineLocate';
+import { previewSnapshotKey, type PreviewReadingSnapshot } from '../lib/navViewState';
+import { useNavSnapshotAdapter } from '../lib/useNavSnapshot';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
-import { previewThumbnail } from './imageThumbnail';
 import { MediaLightbox } from './MediaLightbox';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { PreviewCloseConfirm, PreviewWorkspace } from './PreviewWorkspace';
@@ -119,6 +123,7 @@ export function MediaPreviewProvider({
   workspaceNavigation,
   onCancelTask,
   onStopAgentTask,
+  snapshotAgentId = 'main',
   children,
 }: {
   cwd?: string;
@@ -140,19 +145,62 @@ export function MediaPreviewProvider({
   workspaceNavigation?: AgentWorkspaceNavigation;
   onCancelTask?: (taskId: string, ownerAgentId?: string) => void;
   onStopAgentTask?: (ownerAgentId: string, taskId: string) => Promise<void>;
+  /**
+   * Which visit this panel belongs to. The tab set, its active tab and each
+   * tab's reading position are remembered per visit, so lifting a preview to a
+   * page and returning reopens the panel the reader left.
+   */
+  snapshotAgentId?: string;
   children: ReactNode;
 }) {
-  const [image, setImage] = useState<{ src: string; name?: string } | null>(null);
-  const [attachment, setAttachment] = useState<MediaRef | null>(null);
+  const clientIdentity = useOptionalConnection()?.client;
+  const [image, setImage] = useState<{ src: string; name?: string; client: unknown; sessionId?: string; agentId: string } | null>(null);
+  const [attachment, setAttachment] = useState<{ item: MediaRef; client: unknown; sessionId?: string; agentId: string } | null>(null);
+  useEffect(() => { setImage(null); setAttachment(null); }, [clientIdentity, sessionId, snapshotAgentId]);
   const [tabsState, setTabsState] = useState<PreviewTabsState>(EMPTY_PREVIEW_TABS);
   const [panelOpen, setPanelOpen] = useState(false);
   const [width, setWidth] = useState(readStoredWidth);
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set());
+  const [positions, setPositions] = useState<Readonly<Record<string, { top: number; left?: number }>>>({});
   const [confirmClose, setConfirmClose] = useState<{
     dirty: readonly string[];
     action: CloseAction;
   } | null>(null);
   const shell = useOptionalConversationShell();
+  const reportPosition = useCallback((key: string, position: { top: number; left?: number }) => {
+    setPositions((previous) => {
+      const current = previous[key];
+      if (current !== undefined && current.top === position.top && current.left === position.left) return previous;
+      return { ...previous, [key]: position };
+    });
+  }, []);
+  // Per-visit preview state (see lib/navViewState.ts): the tab set, its active
+  // tab and each tab's reading position belong to the visit, not to the panel
+  // instance. Returning to a visit reopens that visit's panel even when the
+  // provider stayed mounted across a same-URL visit change. Restoring never
+  // closes a buffer that is dirty right now.
+  const previewKey = sessionId === undefined ? 'preview:unsessioned' : previewSnapshotKey(sessionId, snapshotAgentId);
+  useNavSnapshotAdapter<PreviewReadingSnapshot>(previewKey, {
+    ready: sessionId !== undefined,
+    capture: () => ({ tabsState, panelOpen, positions }),
+    restore: (snapshot) => {
+      setTabsState((current) => {
+        const kept = current.tabs.filter((tab) => tab.kind === 'file' && dirtyPaths.has(tab.path) &&
+          !snapshot.tabsState.tabs.some((candidate) => previewTabKey(candidate) === previewTabKey(tab)));
+        if (kept.length === 0) return snapshot.tabsState;
+        const active = snapshot.tabsState.active ?? previewTabKey(kept[0]!);
+        return { tabs: [...snapshot.tabsState.tabs, ...kept], active };
+      });
+      setPanelOpen(snapshot.panelOpen && snapshot.tabsState.tabs.length > 0);
+      setPositions(snapshot.positions);
+    },
+  });
+  const [, chooseMode] = useRailMode();
+  const cockpit = shell?.cockpit === true;
+  const revealPreview = useCallback(() => {
+    if (cockpit) chooseMode('default');
+    setPanelOpen(true);
+  }, [cockpit, chooseMode]);
 
   const [navigation, setNavigation] = useState<FileReference | undefined>();
   const openFile = useCallback((input: string | FileReference) => {
@@ -160,25 +208,28 @@ export function MediaPreviewProvider({
     const reference = { ...raw, path: normalizeRawPath(raw.path) };
     setTabsState((state) => openPreviewTab(state, reference.path));
     setNavigation(reference);
-    setPanelOpen(true);
-  }, []);
+    revealPreview();
+  }, [revealPreview]);
 
   const openAgentPanel = useCallback((agentId: string, title?: string) => {
     setTabsState((state) => openPreviewTab(state, { kind: 'panel', agentId, title }));
-    setPanelOpen(true);
+    revealPreview();
     // Opening (or re-opening) an agent lands on its latest message; a reader
     // who scrolled that tab up keeps their place.
     if (sessionId !== undefined) {
       void locateInTimeline({ kind: 'latest', respectReader: true }, { sessionId, agentId, notify: false });
     }
-  }, [sessionId]);
+  }, [sessionId, revealPreview]);
 
   const openBuiltinSkill = useCallback((name: string) => {
     setTabsState((state) => openPreviewTab(state, { kind: 'skill', name }));
-    setPanelOpen(true);
-  }, []);
+    revealPreview();
+  }, [revealPreview]);
 
-  const togglePanel = useCallback(() => { setPanelOpen((value) => !value); }, []);
+  const togglePanel = useCallback(() => {
+    if (cockpit) revealPreview();
+    else setPanelOpen((value) => !value);
+  }, [cockpit, revealPreview]);
 
   const reportDirty = useCallback((path: string, dirty: boolean) => {
     setDirtyPaths((previous) => {
@@ -261,17 +312,18 @@ export function MediaPreviewProvider({
     () => ({
       cwd,
       sessionId,
-      openImage: (src, name) => { setImage({ src, name }); },
+      openImage: (src, name) => { setImage({ src, name, client: clientIdentity, sessionId, agentId: snapshotAgentId }); },
       openFile,
-      openAttachment: (item) => { setAttachment(item); },
+      openAttachment: (item) => { setAttachment({ item, client: clientIdentity, sessionId, agentId: snapshotAgentId }); },
       openAgentPanel,
       openBuiltinSkill,
       previewTabCount: tabsState.tabs.length,
-      previewPanelOpen: panelOpen,
+      previewPanelOpen: panelOpen && !cockpit,
+      previewPanelWidth: panelOpen ? width : undefined,
       togglePreviewPanel: togglePanel,
       activeAgentPanelId,
     }),
-    [cwd, sessionId, openFile, openAgentPanel, openBuiltinSkill, tabsState.tabs, tabsState.active, panelOpen, togglePanel, activeAgentPanelId],
+    [cwd, sessionId, clientIdentity, snapshotAgentId, openFile, openAgentPanel, openBuiltinSkill, tabsState.tabs, tabsState.active, panelOpen, cockpit, width, togglePanel, activeAgentPanelId],
   );
 
   useEffect(() => {
@@ -293,7 +345,7 @@ export function MediaPreviewProvider({
       navigation={navigation}
       dirtyPaths={dirtyPaths}
       width={width}
-      hidden={!panelOpen}
+      hidden={!panelOpen || cockpit}
       sessionViewState={workspaceSessionState ?? sessionViewState}
       agentForest={agentForest}
       onOpenSubagent={onOpenSubagent}
@@ -307,9 +359,16 @@ export function MediaPreviewProvider({
       onCloseAll={() => { requestClose({ kind: 'all' }); }}
       onMove={handleMove}
       onCollapse={() => { setPanelOpen(false); }}
+      onOpenCockpit={shell?.slots.preview !== null && shell?.slots.preview !== undefined && workspaceNavigation?.sharedRail !== undefined ? () => {
+        const sharedRail = workspaceNavigation.sharedRail;
+        if (sharedRail !== undefined && !sharedRail.open) sharedRail.toggle();
+        chooseMode('cockpit');
+      } : undefined}
       onWidthChange={handleWidthChange}
-      onOpenImage={(src, name) => { setImage({ src, name }); }}
+      onOpenImage={(src, name) => { setImage({ src, name, client: clientIdentity, sessionId, agentId: snapshotAgentId }); }}
       reportDirty={reportDirty}
+      scrollPositions={positions}
+      onScrollPosition={reportPosition}
       overlay={shell?.slots.preview === null || shell?.slots.preview === undefined}
       cwd={cwd}
       sessionId={sessionId}
@@ -329,14 +388,14 @@ export function MediaPreviewProvider({
           onCancel={() => { setConfirmClose(null); }}
         />
       ) : null}
-      {attachment !== null ? (
+      {attachment !== null && attachment.client === clientIdentity && attachment.sessionId === sessionId && attachment.agentId === snapshotAgentId ? (
         <AttachmentPreviewDialog
-          item={attachment}
-          sessionId={sessionId}
+          item={attachment.item}
+          sessionId={attachment.sessionId}
           onClose={() => { setAttachment(null); }}
         />
       ) : null}
-      {image !== null ? (
+      {image !== null && image.client === clientIdentity && image.sessionId === sessionId && image.agentId === snapshotAgentId ? (
         <MediaLightbox
           src={image.src}
           name={image.name}
@@ -393,45 +452,40 @@ function useSessionMedia(
   item: MediaRef,
   sessionId: string | undefined,
   enabled = true,
+  previewOnly = true,
 ): SessionMediaLoad {
   const client = useOptionalConnection()?.client;
-  const [load, setLoad] = useState<SessionMediaLoad>({ status: 'loading' });
+  const source = useMemo(() => ({ client, sessionId, fileId: item.fileId, path: item.path }), [client, sessionId, item.fileId, item.path, item.mime, item.kind, previewOnly]);
+  const [loaded, setLoaded] = useState<{ source: typeof source; load: SessionMediaLoad }>({ source, load: { status: 'loading' } });
+  const setLoad = useCallback((load: SessionMediaLoad) => { setLoaded({ source, load }); }, [source]);
+  const load: SessionMediaLoad = loaded.source === source ? loaded.load : { status: 'loading' };
 
   useEffect(() => {
-    if (!enabled) {
-      setLoad({ status: 'loading' });
-      return;
-    }
-    if (client === undefined || sessionId === undefined || item.fileId === undefined) {
+    if (!enabled) { setLoad({ status: 'loading' }); return; }
+    if (client === undefined || (item.path === undefined && (sessionId === undefined || item.fileId === undefined)) || (previewOnly && item.kind !== 'image' && item.kind !== 'video')) {
       setLoad({ status: 'failed' });
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
     let objectUrl: string | undefined;
-    let thumbnailUrl: string | undefined;
     setLoad({ status: 'loading' });
-    client.readSessionMediaBytes(sessionId, item.fileId).then(
-      async ({ bytes, mime, name }) => {
-        if (cancelled) return;
-        const mediaType = item.blobHash === undefined ? mime : (item.mime ?? mime);
-        thumbnailUrl = item.kind === 'image' ? await previewThumbnail(bytes, mediaType) : undefined;
-        if (cancelled) {
-          if (thumbnailUrl !== undefined) URL.revokeObjectURL(thumbnailUrl);
-          return;
-        }
-        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mediaType }));
-        setLoad({ status: 'ready', bytes, mime: mediaType, name, url: objectUrl, thumbnailUrl });
-      },
-      () => {
-        if (!cancelled) setLoad({ status: 'failed' });
-      },
-    );
+    const options = { signal: controller.signal, mediaType: item.mime, timeoutMs: previewOnly ? undefined : 0 };
+    const read: Promise<{ bytes: Uint8Array; mime: string; name?: string }> = item.path !== undefined
+      ? previewOnly ? client.readHostMediaPreviewBytes(item.path, options) : client.readHostFileBytes(item.path, options)
+      : previewOnly ? client.readSessionMediaPreviewBytes(sessionId!, item.fileId!, options) : client.readSessionMediaBytes(sessionId!, item.fileId!, options);
+    read.then(({ bytes, mime, name }) => {
+      if (controller.signal.aborted) return;
+      const mediaType = !previewOnly && item.blobHash !== undefined ? item.mime ?? mime : mime;
+      objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mediaType }));
+      setLoad({ status: 'ready', bytes, mime: mediaType, name, url: objectUrl });
+    }, () => {
+      if (!controller.signal.aborted) setLoad({ status: 'failed' });
+    });
     return () => {
-      cancelled = true;
+      controller.abort();
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
-      if (thumbnailUrl !== undefined) URL.revokeObjectURL(thumbnailUrl);
     };
-  }, [client, enabled, item.blobHash, item.fileId, item.mime, item.kind, sessionId]);
+  }, [client, enabled, previewOnly, item.blobHash, item.fileId, item.mime, item.kind, sessionId, setLoad]);
 
   return load;
 }
@@ -467,15 +521,6 @@ function isTextPreview(mime: string, name: string): boolean {
   return /\.(?:md|markdown|txt|log|json|jsonl|ya?ml|toml|ini|csv|tsv|xml|html?|css|jsx?|tsx?|py|rs|go|java|c|cc|cpp|h|hpp|sh|zsh|fish|ps1)$/i.test(name);
 }
 
-function downloadUrl(url: string, name: string): void {
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = name;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-}
-
 function AttachmentPreviewDialog({
   item,
   sessionId,
@@ -486,9 +531,47 @@ function AttachmentPreviewDialog({
   onClose: () => void;
 }) {
   const { t } = useI18n();
-  const load = useSessionMedia(item, sessionId);
+  const host = useHost();
+  const client = useOptionalConnection()?.client;
+  const [original, setOriginal] = useState(false);
+  const [textLimit, setTextLimit] = useState(1024 * 1024);
+  const [transfer, setTransfer] = useState<{ status: 'idle' | 'downloading' | 'saving' | 'saved' | 'failed'; bytes?: number; total?: number; message?: string }>({ status: 'idle' });
+  const downloadController = useRef<AbortController | null>(null);
+  const load = useSessionMedia(item, sessionId, true, !original);
   const name = attachmentName(item, load.status === 'ready' ? load.name : undefined);
   const title = t('preview.openFile', { name });
+  useEffect(() => () => { downloadController.current?.abort(); }, [client, sessionId, item.fileId, item.path]);
+  const download = async () => {
+    if (client === undefined || (item.path === undefined && (sessionId === undefined || item.fileId === undefined))) return;
+    downloadController.current?.abort();
+    const controller = new AbortController();
+    downloadController.current = controller;
+    let sink: HostSaveSink | null = null;
+    setTransfer({ status: 'downloading', bytes: 0, total: item.size });
+    try {
+      sink = host.openSaveSink !== undefined ? await host.openSaveSink(name)
+        : host.saveBlob !== undefined ? bufferedSaveSink((blob) => host.saveBlob!(blob, name)) : await browserSaveSink(name);
+      if (sink === null) { if (!controller.signal.aborted) setTransfer({ status: 'idle' }); return; }
+      controller.signal.throwIfAborted();
+      const target = sink;
+      const consume: import('@kiki/klient').HttpRestMediaSink = async (chunk, progress) => {
+        await target.write(chunk);
+        if (!controller.signal.aborted) setTransfer({ status: 'downloading', bytes: progress.bytes, total: progress.totalBytes });
+      };
+      const options = { signal: controller.signal, timeoutMs: 0 };
+      if (item.path !== undefined) await client.downloadHostFile(item.path, consume, options);
+      else await client.downloadSessionMedia(sessionId!, item.fileId!, consume, options);
+      controller.signal.throwIfAborted();
+      setTransfer({ status: 'saving' });
+      const saved = await sink.close();
+      if (!controller.signal.aborted) setTransfer({ status: saved ? 'saved' : 'idle' });
+    } catch (error) {
+      await sink?.abort().catch(() => {});
+      if (!controller.signal.aborted) setTransfer({ status: 'failed', message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      if (downloadController.current === controller) downloadController.current = null;
+    }
+  };
   let body: ReactNode;
 
   if (load.status === 'loading') {
@@ -504,14 +587,13 @@ function AttachmentPreviewDialog({
   } else if (load.mime === 'application/pdf' || name.toLowerCase().endsWith('.pdf')) {
     body = <iframe src={load.url} title={name} className="h-[72vh] w-full rounded-lg border border-hairline bg-white" />;
   } else if (isTextPreview(load.mime, name)) {
-    const limit = 1024 * 1024;
-    const shown = load.bytes.subarray(0, limit);
-    const text = new TextDecoder().decode(shown);
+    const shown = load.bytes.subarray(0, textLimit);
+    const text = new TextDecoder().decode(shown, { stream: shown.byteLength < load.bytes.byteLength });
     body = (
       <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-hairline bg-paper p-3">
         <pre className="font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink">{text}</pre>
         {load.bytes.byteLength > shown.byteLength ? (
-          <p className="mt-3 text-[11px] text-ink-faint">{t('preview.truncated')}</p>
+          <button type="button" onClick={() => { setTextLimit((value) => value + 1024 * 1024); }} className="mt-3 text-[11px] text-accent">{t('transcript.showMore')}</button>
         ) : null}
       </div>
     );
@@ -519,20 +601,14 @@ function AttachmentPreviewDialog({
     body = (
       <div className="flex min-h-48 flex-col items-center justify-center gap-3 text-sm text-ink-faint">
         <span>{t('preview.unsupported')}</span>
-        <button
-          type="button"
-          onClick={() => { downloadUrl(load.url, name); }}
-          className="rounded-lg border border-hairline px-3 py-1.5 text-ink-soft transition-colors hover:border-accent hover:text-ink"
-        >
-          {t('media.download')}
-        </button>
+
       </div>
     );
   }
 
   return (
     <Dialog
-      onClose={onClose}
+      onClose={() => { if (transfer.status !== 'saving') onClose(); }}
       ariaLabel={title}
       overlayId="session-attachment-preview"
       overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/55 p-4"
@@ -545,18 +621,23 @@ function AttachmentPreviewDialog({
             <p className="truncate font-mono text-[11px] text-ink-faint">{load.mime} · {formatBytes(load.bytes.byteLength)}</p>
           ) : null}
         </div>
-        {load.status === 'ready' ? (
-          <button
-            type="button"
-            onClick={() => { downloadUrl(load.url, name); }}
-            className="rounded-lg border border-hairline px-3 py-1 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-ink"
-          >
-            {t('media.download')}
+        {!original ? (
+          <button type="button" onClick={() => { setOriginal(true); }} className="rounded-lg border border-hairline px-3 py-1 text-[11px] text-ink-soft hover:border-accent hover:text-ink">
+            {t('preview.loadFullFile')}
           </button>
         ) : null}
         <button
           type="button"
+          disabled={transfer.status === 'downloading' || transfer.status === 'saving'}
+          onClick={() => { void download(); }}
+          className="rounded-lg border border-hairline px-3 py-1 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-ink disabled:opacity-50"
+        >
+          {t('media.download')}
+        </button>
+        <button
+          type="button"
           data-autofocus
+          disabled={transfer.status === 'saving'}
           onClick={onClose}
           aria-label={t('common.close')}
           className="flex h-7 w-7 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink"
@@ -564,6 +645,14 @@ function AttachmentPreviewDialog({
           <Icon name="close" />
         </button>
       </header>
+      {transfer.status !== 'idle' ? (
+        <div role={transfer.status === 'failed' ? 'alert' : 'status'} className="mb-3 flex shrink-0 items-center gap-3 text-[11px] text-ink-soft">
+          {transfer.status === 'downloading' ? <>
+            <span className="font-mono">{formatBytes(transfer.bytes ?? 0)}{transfer.total === undefined ? '' : ` / ${formatBytes(transfer.total)}`}</span>
+            <button type="button" onClick={() => { downloadController.current?.abort(); setTransfer({ status: 'idle' }); }} className="text-accent">{t('common.cancel')}</button>
+          </> : transfer.status === 'saving' ? t('preview.saving') : transfer.status === 'saved' ? t('preview.saved') : <span className="text-danger">{transfer.message}</span>}
+        </div>
+      ) : null}
       <div data-attachment-preview className="flex min-h-0 flex-1 items-center justify-center overflow-auto">
         {body}
       </div>
@@ -581,22 +670,20 @@ function SessionMediaThumb({ item, size = 'default' }: { item: MediaRef; size?: 
   let body: ReactNode;
   if (load.status === 'failed') {
     body = size === 'default'
-      ? <FileChip item={item.blobHash === undefined ? item : { ...item, path: undefined, fileId: undefined }} />
-      : <BrokenThumb size={size} name={name} />;
+      ? <FileChip item={item} />
+      : <button type="button" onClick={() => { preview?.openAttachment(item); }} title={name}><BrokenThumb size={size} name={name} /></button>;
   } else if (load.status === 'loading') {
     body = (
       <span className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} border border-hairline bg-paper text-[11px] text-ink-faint`}>
         {size === 'strip' ? null : t('preview.loading')}
       </span>
     );
-  } else if (item.kind === 'video' || load.mime.startsWith('video/')) {
-    body = <video src={load.url} controls className="max-h-52 rounded-lg border border-hairline" />;
   } else {
     body = (
       <button
         type="button"
         title={name}
-        onClick={() => { preview?.openImage(load.url, name); }}
+        onClick={() => { preview?.openAttachment(item); }}
         className={`block overflow-hidden ${THUMB_SIZE[size].frame} border border-hairline transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
       >
         <img src={load.thumbnailUrl ?? load.url} alt={name} className={`${THUMB_SIZE[size].img} object-cover`} />
@@ -657,7 +744,8 @@ function FileChip({ item }: { item: MediaRef }) {
       className={className}
       title={item.path ?? item.fileId}
       onClick={() => {
-        if (item.path !== undefined) preview.openFile(item.path);
+        if ((item.kind === 'image' || item.kind === 'video') && item.path !== undefined) preview.openAttachment(item);
+        else if (item.path !== undefined) preview.openFile(item.path);
         else if (item.fileId !== undefined) preview.openAttachment(item);
       }}
     >
@@ -666,75 +754,9 @@ function FileChip({ item }: { item: MediaRef }) {
   );
 }
 
-/** Preview for path-backed image/video results (fs:content needs the bearer header). */
+/** Host media uses the same bounded source-preview and explicit-original UI. */
 function HostMediaThumb({ item, size = 'default' }: { item: MediaRef & { kind: 'image' | 'video'; path: string }; size?: MediaThumbSize }) {
-  const { t } = useI18n();
-  const client = useOptionalConnection()?.client;
-  const preview = useMediaPreview();
-  const { path, name, kind } = item;
-  const [url, setUrl] = useState<string | null>(null);
-  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    setUrl(null);
-    setThumbnailUrl(null);
-    setFailed(false);
-    if (client === undefined) {
-      setFailed(true);
-      return;
-    }
-    let cancelled = false;
-    let objectUrl: string | undefined;
-    let thumbnail: string | undefined;
-    client.readHostFileBytes(path).then(
-      async ({ bytes, mime }) => {
-        if (cancelled) return;
-        if (!mime.startsWith(`${kind}/`)) {
-          setFailed(true);
-          return;
-        }
-        thumbnail = kind === 'image' ? await previewThumbnail(bytes, mime) : undefined;
-        if (cancelled) {
-          if (thumbnail !== undefined) URL.revokeObjectURL(thumbnail);
-          return;
-        }
-        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
-        setThumbnailUrl(thumbnail ?? null);
-        setUrl(objectUrl);
-      },
-      () => {
-        if (!cancelled) setFailed(true);
-      },
-    );
-    return () => {
-      cancelled = true;
-      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
-      if (thumbnail !== undefined) URL.revokeObjectURL(thumbnail);
-    };
-  }, [client, kind, path]);
-
-  if (failed) return size === 'default' ? <FileChip item={item} /> : <BrokenThumb size={size} name={name ?? basenameOf(path)} />;
-  if (url === null) {
-    return (
-      <span className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} border border-hairline bg-paper text-[11px] text-ink-faint`}>
-        {size === 'strip' ? null : t('preview.loading')}
-      </span>
-    );
-  }
-  if (kind === 'video') {
-    return <video src={url} controls className="max-h-52 rounded-lg border border-hairline" />;
-  }
-  return (
-    <button
-      type="button"
-      title={name ?? path}
-      onClick={() => { preview?.openImage(url, name ?? basenameOf(path)); }}
-      className={`block overflow-hidden ${THUMB_SIZE[size].frame} border border-hairline transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
-    >
-      <img src={thumbnailUrl ?? url} alt={name ?? basenameOf(path)} className={`${THUMB_SIZE[size].img} object-cover`} />
-    </button>
-  );
+  return <SessionMediaThumb item={item} size={size} />;
 }
 
 /**
@@ -752,10 +774,30 @@ const THUMB_SIZE: Record<MediaThumbSize, { img: string; slot: string; frame: str
 
 const LOADABLE_MEDIA_URL = /^(?:data:|blob:|https?:\/\/)/i;
 
+function UrlMediaPart({ item, size }: { item: MediaRef & { url: string }; size: MediaThumbSize }) {
+  const { t } = useI18n();
+  const preview = useMediaPreview();
+  const client = useOptionalConnection()?.client;
+  const source = useMemo(() => ({ client, sessionId: preview?.sessionId, url: item.url }), [client, preview?.sessionId, item.url]);
+  const [opened, setOpened] = useState<typeof source | null>(null);
+  const name = attachmentName(item);
+  if (!LOADABLE_MEDIA_URL.test(item.url)) return <FileChip item={item} />;
+  if (opened !== source) return (
+    <button type="button" onClick={() => { setOpened(source); }} title={name} className={`flex ${THUMB_SIZE[size].slot} flex-col items-center justify-center gap-2 ${THUMB_SIZE[size].frame} border border-hairline bg-paper p-2 text-[11px] text-accent`}>
+      <Icon name="file" /><span>{t('preview.loadFullFile')}</span>
+    </button>
+  );
+  return <span className="flex flex-col gap-1">
+    {item.kind === 'video' ? <video src={item.url} controls className="max-h-52 rounded-lg border border-hairline" /> :
+      <button type="button" onClick={() => { preview?.openImage(item.url, name); }} title={name}><img src={item.url} alt={name} className={`${THUMB_SIZE[size].img} ${THUMB_SIZE[size].frame} border border-hairline object-cover`} /></button>}
+    <a href={item.url} download={name} target="_blank" rel="noopener noreferrer" className="text-[11px] text-accent">{t('media.download')}</a>
+  </span>;
+}
+
 /**
- * An attachment whose source the transcript window left out (too large, or an
- * inline data URL). It costs nothing until the reader opens it; the loaded
- * entity then re-projects as an ordinary thumbnail in the same place.
+ * A referenced attachment outside the collection window, or with its source
+ * omitted. It costs nothing until the reader opens it; the loaded entity then
+ * re-projects as an ordinary thumbnail in the same place.
  */
 function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNullable<MediaRef['detail']> }; size: MediaThumbSize }) {
   const { t } = useI18n();
@@ -811,8 +853,6 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
 }
 
 export function MediaPart({ item, agentId, size = 'default' }: { item: MediaRef; agentId?: string; size?: MediaThumbSize }) {
-  const { t } = useI18n();
-  const preview = useMediaPreview();
   if (item.detail !== undefined) return <DeferredMediaPart item={{ ...item, detail: item.detail }} size={size} />;
   if (item.blobHash !== undefined) {
     const savedItem = {
@@ -824,43 +864,15 @@ export function MediaPart({ item, agentId, size = 'default' }: { item: MediaRef;
     return savedItem.fileId === undefined ? <FileChip item={savedItem} /> : <SessionMediaThumb item={savedItem} size={size} />;
   }
   if (item.kind === 'image') {
-    // Only schemes a browser can load reach <img>; anything else (a stray
-    // `blobref:` / `kimi-file:` reference) degrades to the file chip.
-    if (item.url !== undefined && !LOADABLE_MEDIA_URL.test(item.url)) {
-      return item.fileId !== undefined ? <SessionMediaThumb item={item} size={size} /> : <FileChip item={item} />;
-    }
-    if (item.url !== undefined) {
-      const name = item.name ?? t('media.viewImage');
-      const url = item.url;
-      const image = (
-        <img
-          src={url}
-          alt={name}
-          className={`${THUMB_SIZE[size].img} ${THUMB_SIZE[size].frame} border border-hairline object-cover`}
-        />
-      );
-      if (preview === null) return image;
-      return (
-        <button
-          type="button"
-          title={name}
-          onClick={() => { preview.openImage(url, item.name); }}
-          className="overflow-hidden rounded-lg transition-shadow hover:shadow-[0_4px_16px_-8px_rgb(var(--kiki-shadow-ink)/0.4)]"
-        >
-          {image}
-        </button>
-      );
-    }
+    if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} />;
+    if (item.url !== undefined) return <UrlMediaPart item={{ ...item, url: item.url }} size={size} />;
     if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'image', path: item.path }} size={size} />;
     if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} />;
     return <FileChip item={item} />;
   }
   if (item.kind === 'video') {
-    if (item.url !== undefined) {
-      return (
-        <video src={item.url} controls className="max-h-52 rounded-lg border border-hairline" />
-      );
-    }
+    if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} />;
+    if (item.url !== undefined) return <UrlMediaPart item={{ ...item, url: item.url }} size={size} />;
     if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'video', path: item.path }} />;
     if (item.fileId !== undefined) return <SessionMediaThumb item={item} />;
     return <FileChip item={item} />;

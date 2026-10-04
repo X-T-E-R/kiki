@@ -13,7 +13,77 @@ import {
   getNativePackageRoot,
 } from './native-assets';
 
-const smokePackages = ['@mariozechner/clipboard', '@napi-rs/keyring', '@kiki/pi-tui'];
+const smokePackages = ['@mariozechner/clipboard', '@napi-rs/keyring', '@kiki/pi-tui', 'node-pty'];
+
+export async function smokeNativePty(): Promise<void> {
+  const pty = await import('node-pty');
+  const windows = process.platform === 'win32';
+  const shell = windows
+    ? join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    : '/bin/sh';
+  const token = `pty-${process.pid}-${Date.now()}`;
+  for (const killed of [false, true]) {
+    const script = windows
+      ? `[Console]::WriteLine('PTY_READY'); $line = [Console]::ReadLine(); [Console]::WriteLine('PTY_INPUT:' + $line); [Console]::WriteLine('PTY_SIZE:' + [Console]::WindowWidth + ':' + [Console]::WindowHeight); exit 23`
+      : `printf 'PTY_READY\\n'; IFS= read -r line; printf 'PTY_INPUT:%s\\n' "$line"; printf 'PTY_SIZE:'; stty size; exit 23`;
+    const proc = pty.spawn(shell, windows ? ['-NoLogo', '-NoProfile', '-Command', script] : ['-c', script], {
+      name: 'xterm-256color', cwd: process.cwd(), cols: 80, rows: 24, env: process.env,
+    });
+    let output = '';
+    let exited = false;
+    let changed: (() => void) | undefined;
+    const data = proc.onData((chunk) => { output += chunk; changed?.(); });
+    let exitTimer: ReturnType<typeof setTimeout>;
+    const exit = new Promise<number>((resolve, reject) => {
+      exitTimer = setTimeout(() => reject(new Error(`PTY exit timed out: ${output}`)), 15_000);
+      proc.onExit((event) => { exited = true; clearTimeout(exitTimer); resolve(event.exitCode); changed?.(); });
+    });
+    // Attach rejection handling before waiting for the first output event.
+    void exit.catch(() => {});
+    const waitFor = (expected: string): Promise<void> => new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        changed = undefined;
+        reject(new Error(`PTY output did not include ${expected}: ${output}`));
+      }, 10_000);
+      changed = () => {
+        const plain = output.replaceAll(/\u001B\[[0-?]*[ -/]*[@-~]/g, '').replaceAll('\r', '');
+        if (plain.includes(expected)) {
+          clearTimeout(timeout); changed = undefined; resolve();
+        } else if (exited) {
+          clearTimeout(timeout); changed = undefined; reject(new Error(`PTY exited before ${expected}: ${output}`));
+        }
+      };
+      changed();
+    });
+    try {
+      await waitFor('PTY_READY');
+      proc.resize(96, 31);
+      if (killed) {
+        proc.kill();
+        await exit;
+      } else {
+        proc.write(`${token}\r`);
+        await waitFor(`PTY_INPUT:${token}`);
+        await waitFor(windows ? 'PTY_SIZE:96:31' : 'PTY_SIZE:31 96');
+        const code = await exit;
+        if (code !== 23) throw new Error(`PTY exit code ${code} !== 23`);
+      }
+      try {
+        process.kill(proc.pid, 0);
+        throw new Error(`PTY child ${proc.pid} is still alive after ${killed ? 'kill' : 'exit'}`);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+    } finally {
+      if (!exited) {
+        proc.kill();
+        await exit.catch(() => {});
+      }
+      clearTimeout(exitTimer!);
+      data.dispose();
+    }
+  }
+}
 
 function smokeKeyringNativeLoad(): void {
   const keyring = createRequire(import.meta.url)('@napi-rs/keyring') as { AsyncEntry?: unknown };
@@ -112,6 +182,47 @@ async function smokeSearchWorker(): Promise<void> {
   }
 }
 
+export async function smokeAuthNative(): Promise<void> {
+  const auth = createRequire(import.meta.url)('@kiki/auth-native') as typeof import('@kiki/auth-native');
+  const cacheBase = getNativeCacheBase();
+  mkdirSync(cacheBase, { recursive: true });
+  const dir = mkdtempSync(join(cacheBase, 'auth-native-smoke-'));
+  try {
+    const plaintext = Buffer.from('SYNTHETIC_AUTH_SMOKE');
+    const ciphertext = await auth.ageEncrypt(plaintext, 'synthetic-smoke-passphrase');
+    const decrypted = await auth.ageDecrypt(ciphertext, 'synthetic-smoke-passphrase');
+    if (!Buffer.from(decrypted).equals(plaintext)) throw new Error('auth-native age roundtrip mismatch');
+    const canonical = await auth.canonicalizeOriginalHome(dir);
+    if (canonical.length === 0 || (process.platform === 'win32' && !canonical.startsWith('\\\\?\\'))) {
+      throw new Error('auth-native original home canonicalization mismatch');
+    }
+    const authPath = join(dir, 'auth.json');
+    const guard = await auth.acquireGrokAuthLock(authPath, { timeoutMs: 1000 });
+    try {
+      if (!guard.isCurrent()) throw new Error('auth-native held lock identity mismatch');
+      if (auth.tryAcquireGrokAuthLock(authPath) !== null) throw new Error('auth-native same-process mutual exclusion failed');
+      let timedOut = false;
+      try { await auth.acquireGrokAuthLock(authPath, { timeoutMs: 30 }); }
+      catch (error) { timedOut = (error as { code?: string }).code === 'AUTH_LOCK_TIMEOUT'; }
+      if (!timedOut) throw new Error('auth-native timeout did not preserve holder');
+      const controller = new AbortController();
+      const waiting = auth.acquireGrokAuthLock(authPath, { signal: controller.signal });
+      controller.abort();
+      let cancelled = false;
+      try { await waiting; }
+      catch (error) { cancelled = (error as { name?: string }).name === 'AbortError'; }
+      if (!cancelled) throw new Error('auth-native acquisition did not cancel');
+    } finally { guard.release(); }
+    guard.release();
+    if (guard.isCurrent()) throw new Error('auth-native released lock still reports current');
+    const next = await auth.acquireGrokAuthLock(authPath, { timeoutMs: 0 });
+    next.release();
+    process.stdout.write('Auth native smoke passed: age encrypt/decrypt; canonical home; lock exclusion/timeout/cancel/release\n');
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}
+
 async function runSmoke(): Promise<void> {
   const manifest = getEmbeddedNativeAssetManifest();
   if (manifest === null) throw new Error('Native asset manifest is not available.');
@@ -124,15 +235,18 @@ async function runSmoke(): Promise<void> {
   smokeKeyringNativeLoad();
   await smokeMinidbWorker();
   await smokeSearchWorker();
+  await smokeNativePty();
+  await smokeAuthNative();
   process.stdout.write(
-    `Native asset smoke passed: ${manifest.target}; MiniDb worker build passed; search worker ready\n`,
+    `Native asset smoke passed: ${manifest.target}; MiniDb worker build passed; search worker ready; PTY input/resize/exit/kill passed\n`,
   );
 }
 
 export function runNativeAssetSmokeIfRequested(): boolean {
-  if (process.env['KIKI_NATIVE_ASSET_SMOKE'] !== '1') return false;
-  void runSmoke().then(
-    () => process.exit(0),
+  const authOnly = process.env['KIKI_AUTH_NATIVE_SMOKE'] === '1';
+  if (!authOnly && process.env['KIKI_NATIVE_ASSET_SMOKE'] !== '1') return false;
+  void (authOnly ? smokeAuthNative() : runSmoke()).then(
+    () => { process.exitCode = 0; },
     (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`Native asset smoke failed: ${message}\n`);

@@ -5,16 +5,27 @@
  *
  *   1. context: bar with the automatic-compaction point marked, used / limit
  *   2. three figures: cost, tokens, cache hits (with compactions beside)
- *   3. quiet ink-soft lines: model · effort · permissions, then how long the
- *      session has been open, turns, tool calls
+ *   3. one quiet line: the work this conversation has done — turns, tool
+ *      calls, compactions
  *
- * Unknown values are left out rather than printed as "Unknown".
+ * How long the session has been open is history, not something to read while
+ * checking the present, so it lives in the work line's hover as the absolute
+ * start time rather than occupying the first screen.
+ *
+ * What this agent is set up to do is not here either: model, effort, window
+ * and permission mode already live in the profile card, and the permission
+ * mode is set from the composer. Restating them below the numbers is the
+ * duplication this component exists without.
+ *
+ * The figures sit in one measured row that ends where the numbers do, so a
+ * missing figure closes its gap instead of holding a third of the column open
+ * as blank paper. Unknown values are left out rather than printed as
+ * "Unknown", and an incomplete count says so rather than reading as final.
  */
 
 import { memo, type ReactNode } from 'react';
 
 import { useI18n } from '../../i18n';
-import { useNow } from '../RelativeTime';
 
 export interface OverviewFigures {
   readonly costUsd?: number;
@@ -25,6 +36,8 @@ export interface OverviewFigures {
   readonly cacheTitle?: string;
   readonly compactions?: number;
   readonly partial?: boolean;
+  /** This count covers part of the tree, not all of it. */
+  readonly incomplete?: boolean;
 }
 
 export interface InspectorOverviewProps {
@@ -37,7 +50,6 @@ export interface InspectorOverviewProps {
   readonly treeFigures?: OverviewFigures;
   readonly scope: 'agent' | 'tree';
   readonly onScope: (scope: 'agent' | 'tree') => void;
-  readonly setupLine: readonly string[];
   /** ISO start of the session (main) or of the agent's run (subagent). */
   readonly startedAt?: string;
   readonly turns?: number;
@@ -54,20 +66,6 @@ function compactTokens(value: number): string {
 function costText(value: number): string {
   if (value > 0 && value < 0.01) return '<$0.01';
   return `$${value.toFixed(2)}`;
-}
-
-/** Coarse age: "4m", "2h 5m", "3d 1h". */
-function useAge(startedAt: string | undefined): string | undefined {
-  const { t } = useI18n();
-  const now = useNow();
-  if (startedAt === undefined) return undefined;
-  const start = Date.parse(startedAt);
-  if (!Number.isFinite(start)) return undefined;
-  const minutes = Math.max(1, Math.floor((now - start) / 60_000));
-  if (minutes < 60) return t('inspector.durationM', { m: minutes });
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return t('inspector.durationH', { h: hours, m: minutes % 60 });
-  return t('inspector.durationD', { d: Math.floor(hours / 24), h: hours % 24 });
 }
 
 function Figure({ value, label, title, tone = 'text-ink', ...data }: {
@@ -92,14 +90,12 @@ export const InspectorOverview = memo(function InspectorOverview({
   treeFigures,
   scope,
   onScope,
-  setupLine,
   startedAt,
   turns,
   toolCalls,
   renderLayout,
 }: InspectorOverviewProps) {
   const { t, tp } = useI18n();
-  const age = useAge(startedAt);
   const tree = scope === 'tree' && treeFigures !== undefined;
   const shown = tree ? treeFigures : figures;
   const pct = contextUsed !== undefined && contextLimit !== undefined && contextLimit > 0
@@ -131,13 +127,38 @@ export const InspectorOverview = memo(function InspectorOverview({
       {label}
     </button>
   );
-  const scopeSwitch = treeFigures !== undefined ? (
-    <div role="radiogroup" aria-label={t('inspector.scopeAria')} className="ml-auto flex min-w-0 flex-nowrap items-baseline justify-end whitespace-nowrap">
+  // The scope is a standing control of these figures on the page that owns a
+  // whole tree, not a treat that appears once the tree happens to be fully
+  // measurable: main always carries the switch, and a tree the server has not
+  // finished counting is marked rather than dropped. A subagent's own figures
+  // have no tree of their own, so it has nothing to switch to.
+  const treePartial = treeFigures?.incomplete === true;
+  const scopeSwitch = treeFigures === undefined ? null : (
+    <div
+      role="radiogroup"
+      aria-label={t('inspector.scopeAria')}
+      className="ml-auto flex min-w-0 flex-nowrap items-baseline justify-end whitespace-nowrap"
+    >
       {scopeButton('agent', t('inspector.scopeAgent'))}
       <span aria-hidden className="shrink-0 text-[12px] text-hairline-strong">/</span>
-      {scopeButton('tree', t('inspector.scopeTree'), t('inspector.treeTotal'))}
+      <button
+        type="button"
+        role="radio"
+        aria-checked={scope === 'tree'}
+        aria-label={t('inspector.treeTotal')}
+        title={treePartial ? t('inspector.treeTotalPartial') : t('inspector.treeTotal')}
+        data-usage-scope="tree"
+        data-usage-scope-incomplete={treePartial || undefined}
+        onClick={() => { onScope('tree'); }}
+        className={`h-7 shrink-0 truncate rounded-md px-1 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+          scope === 'tree' ? 'text-ink' : treePartial ? 'text-amber-ink hover:text-amber-ink' : 'text-ink-faint hover:text-ink-soft'
+        }`}
+      >
+        {t('inspector.scopeTree')}
+        {treePartial ? <span className="ml-1 text-[11px]" aria-hidden>*</span> : null}
+      </button>
     </div>
-  ) : null;
+  );
   const figureCells = [
     shown.costUsd !== undefined
       ? <Figure key="cost" data-overview-fact="cost" value={costText(shown.costUsd)} label={t('inspector.cost')} title={`$${shown.costUsd.toFixed(4)}`} />
@@ -157,14 +178,16 @@ export const InspectorOverview = memo(function InspectorOverview({
       ? <Figure key="cache" data-overview-fact="cache" value={`${shown.cacheRate}%`} label={t('agentPanel.cacheRate')} title={shown.cacheTitle} />
       : null,
   ].filter((cell) => cell !== null);
-  const sessionLine = [
-    age !== undefined ? t('inspector.sessionAge', { duration: age }) : undefined,
+  const workLine = [
     turns !== undefined && turns > 0 ? tp('inspector.turns', turns) : undefined,
     toolCalls !== undefined && toolCalls > 0 ? tp('inspector.toolCalls', toolCalls) : undefined,
     !tree && shown.compactions !== undefined && shown.compactions > 0 ? tp('inspector.compactions', shown.compactions) : undefined,
   ].filter((part): part is string => part !== undefined);
+  // Where the session began is a question only asked while tracing it, so it
+  // rides the work line as its title and prints no line of its own.
+  const startedTitle = startedAt === undefined ? undefined : t('inspector.sessionAgeTitle', { at: new Date(startedAt).toLocaleString() });
   const body = (
-    <section data-inspector-overview className="space-y-3">
+    <section data-inspector-overview className="space-y-2.5">
       {renderLayout === undefined ? scopeSwitch : null}
 
       {contextUsed !== undefined ? (
@@ -212,31 +235,27 @@ export const InspectorOverview = memo(function InspectorOverview({
       ) : null}
 
       {figureCells.length > 0 ? (
-        <div {...(tree ? { 'data-tree-metrics': '' } : { 'data-agent-usage': '' })} className="grid grid-cols-3 gap-3">
+        <div {...(tree ? { 'data-tree-metrics': '' } : { 'data-agent-usage': '' })} className="flex flex-wrap items-baseline gap-x-4 gap-y-1.5">
           {figureCells}
-          {shown.partial === true ? <span className="col-span-3 -mt-1 text-[11.5px] text-amber-ink">{t('agentPanel.partialBadge')}</span> : null}
+          {shown.partial === true ? <span className="text-[11.5px] text-amber-ink">{t('agentPanel.partialBadge')}</span> : null}
         </div>
       ) : null}
 
-      {setupLine.length > 0 || sessionLine.length > 0 ? (
-        <div className="space-y-0.5 text-[12px] leading-[18px] text-ink-soft">
-          {setupLine.length > 0 ? (
-            <p data-overview-setup className="truncate" title={setupLine.join(' · ')}>
-              {setupLine.map((part, index) => (
-                <span key={`${index}:${part}`}>
-                  {index > 0 ? <span aria-hidden className="mx-1.5 text-ink-faint">·</span> : null}
-                  {part}
-                </span>
-              ))}
-            </p>
-          ) : null}
-          {sessionLine.length > 0 ? (
-            <p data-overview-session className="truncate text-ink-faint tabular-nums" title={startedAt === undefined ? undefined : t('inspector.sessionAgeTitle', { at: new Date(startedAt).toLocaleString() })}>
-              {sessionLine.join(' · ')}
-            </p>
-          ) : null}
-        </div>
+      {tree && treePartial ? (
+        <p data-overview-tree-incomplete className="-mt-1 text-[11.5px] leading-4 text-amber-ink">
+          {t('inspector.treePartialNote')}
+        </p>
       ) : null}
+
+      {workLine.length > 0 ? (
+        <p data-overview-session className="truncate text-[12px] leading-[18px] text-ink-faint tabular-nums" title={startedTitle}>
+          {workLine.join(' · ')}
+        </p>
+      ) : startedTitle === undefined ? null : (
+        // A conversation with no turns, tool calls or compactions yet has no
+        // counters line to hang the start time on; screen readers still get it.
+        <p data-overview-started className="sr-only">{startedTitle}</p>
+      )}
     </section>
   );
   return renderLayout === undefined ? body : renderLayout(body, scopeSwitch);

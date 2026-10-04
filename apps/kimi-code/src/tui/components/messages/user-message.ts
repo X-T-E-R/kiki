@@ -28,6 +28,12 @@ export class UserMessageComponent implements Component {
     this.imageThumbnails = images?.map((img) => new ImageThumbnail(img)) ?? [];
   }
 
+  updateContent(text: string): void {
+    if (this.text === text) return;
+    this.text = text;
+    this.markRenderDirty();
+  }
+
   private markRenderDirty(): void {
     this.renderCache = undefined;
   }

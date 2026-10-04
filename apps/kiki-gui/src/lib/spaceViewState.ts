@@ -1,4 +1,4 @@
-import { activeSpace, spaceStorage } from './spaceStorage';
+import { activeSpace, readHomeStorageItem, spaceStorage } from './spaceStorage';
 
 const VIEW_ROUTE_KEY = 'kiki.viewRoute';
 const ROUTE_OWNER_KEY = 'kiki.viewRouteOwner';
@@ -30,6 +30,14 @@ function readRoutes(): Record<string, unknown> {
     // Storage may be disabled, full, or left by an older build.
   }
   return {};
+}
+
+export function readHomeViewRoute(home: string, scopeId = 'local'): string | undefined {
+  try {
+    const routes = JSON.parse(readHomeStorageItem(home, VIEW_ROUTE_KEY) ?? '{}') as Record<string, unknown>;
+    const route = Object.hasOwn(routes, scopeId) ? routes[scopeId] : undefined;
+    return isSpaceViewRoute(route) ? route : undefined;
+  } catch { return undefined; }
 }
 
 export function readSpaceViewRoute(scopeId = 'local'): string | undefined {

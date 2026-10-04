@@ -824,6 +824,11 @@ body[data-pane-resizing='true'] {
   .preview-workspace:not(.preview-workspace--overlay) > .preview-workspace__resizer::after {
     left: 0;
   }
+  /* The temporary cockpit width yields at the slot as well as the aside,
+   * keeping the conversation and its input inside the window. */
+  .conversation-rail-slot:has([data-rail-mode-active='cockpit']) {
+    min-width: 240px;
+  }
   /* The inspector yields second, down to its own 240px floor. */
   .app-sheet > .conversation-shell .app-rail-shell {
     flex-shrink: 1;

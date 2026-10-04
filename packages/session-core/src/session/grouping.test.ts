@@ -282,6 +282,34 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     expect(isReadStep(image('t1'))).toBe(false);
   });
 
+  it.each([false, true])('merges completion echoes by execution, retaining separate resumes and same-name agents (summaryFirst=%s)', (summaryFirst) => {
+    const note = (id: string, taskId: string, body: string): SystemBlock => ({
+      kind: 'system', id, variant: 'task', taskId, turnId: 't2', createdAt: undefined,
+      text: `Title: Background agent completed\n${body}`,
+    });
+    const full = note('system-receipt-1', 'run-1', 'First result.');
+    const summary = note('system-agent-frame-task-notified:run-1', 'run-1', 'Completed.');
+    const tasks = [
+      { id: 'run-1', agent_id: 'a1', status: 'completed', output_preview: 'First result.' },
+      { id: 'run-2', agent_id: 'a1', status: 'completed', output_preview: 'Second result.' },
+      { id: 'run-3', agent_id: 'a2', status: 'completed', output_preview: 'First result.' },
+    ];
+    const nodes = readSubagentEndings([
+      { ...agent('a1', 'completed', 't1'), name: 'Inspector' },
+      { ...agent('a2', 'completed', 't1'), name: 'Inspector' },
+      inTurn(thinking(), 't2'),
+      ...(summaryFirst ? [summary, full] : [full, summary]),
+      note('system-receipt-2', 'run-2', 'Second result.'),
+      note('system-receipt-3', 'run-3', 'First result.'),
+      inTurn(text('assistant'), 't2'),
+    ], tasks);
+    const endings = nodes.filter((node) => node.kind === 'subagent-ended');
+    expect(endings.map((node) => node.taskId)).toEqual(['run-1', 'run-2', 'run-3']);
+    expect(endings[0]).toMatchObject({ id: 'ended-task-run-1', note: full, task: tasks[0], dispatchOnPage: true });
+    expect(foldHistory(nodes, 't9').find((node) => node.kind === 'history-fold' && node.turnId === 't2')).toMatchObject({ agentsDone: 3, thoughts: 1 });
+    expect(readSubagentEndings(nodes, tasks).filter((node) => node.kind === 'subagent-ended')).toEqual(endings);
+  });
+
   it('reads a subagent’s task notification as its end: dropped beside its card, a row in a later turn', () => {
     const note = (id: string, taskId: string, turnId: string, text = 'Background agent completed\nDone.'): SystemBlock =>
       ({ kind: 'system', id, variant: 'task', text, createdAt: undefined, turnId, taskId });

@@ -39,7 +39,9 @@ export type LocateOutcome =
 export interface TimelineLocator {
   /** False while the timeline is hidden (inactive tab, collapsed panel). */
   readonly isVisible: () => boolean;
-  readonly locate: (target: TimelineTarget) => Promise<LocateOutcome>;
+  readonly locate: (target: TimelineTarget, options?: { readonly signal?: AbortSignal }) => Promise<LocateOutcome>;
+  /** True only while the reader is still at this explicit target (not merely its URL). */
+  readonly isAtTarget?: (target: TimelineTarget) => boolean;
 }
 
 export interface LocateOptions {
@@ -49,6 +51,8 @@ export interface LocateOptions {
   readonly notify?: boolean;
   /** How long to wait for the timeline to mount and become visible. */
   readonly waitMs?: number;
+  /** Cancel stale visits without emitting a failure toast. Never serialized. */
+  readonly signal?: AbortSignal;
 }
 
 const DEFAULT_WAIT_MS = 4000;
@@ -92,7 +96,8 @@ function visibleLocators(key: string): TimelineLocator[] {
   return (locators.get(key) ?? []).filter((locator) => locator.isVisible()).reverse();
 }
 
-function waitForVisible(key: string, waitMs: number): Promise<TimelineLocator[]> {
+function waitForVisible(key: string, waitMs: number, signal?: AbortSignal): Promise<TimelineLocator[]> {
+  if (signal?.aborted) return Promise.resolve([]);
   const ready = visibleLocators(key);
   if (ready.length > 0) return Promise.resolve(ready);
   return new Promise((resolve) => {
@@ -104,6 +109,7 @@ function waitForVisible(key: string, waitMs: number): Promise<TimelineLocator[]>
       waiters.get(key)?.delete(check);
       if (frame !== null) cancelAnimationFrame(frame);
       clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
       resolve(value);
     };
     // Visibility has no event of its own (a tab un-hides by a class flip),
@@ -121,6 +127,8 @@ function waitForVisible(key: string, waitMs: number): Promise<TimelineLocator[]>
     waiters.set(key, set);
     frame = requestAnimationFrame(tick);
     const timer = setTimeout(() => { finish([]); }, waitMs);
+    const abort = () => { finish([]); };
+    signal?.addEventListener('abort', abort, { once: true });
   });
 }
 
@@ -155,15 +163,21 @@ function turnLabel(turnId: string): string {
  */
 export async function locateInTimeline(target: TimelineTarget, options: LocateOptions): Promise<LocateOutcome> {
   const key = keyOf(options.sessionId, options.agentId ?? 'main');
-  const ready = await waitForVisible(key, options.waitMs ?? DEFAULT_WAIT_MS);
+  const ready = await waitForVisible(key, options.waitMs ?? DEFAULT_WAIT_MS, options.signal);
   let outcome: LocateOutcome = { status: 'no-timeline' };
-  if (target.kind === 'latest') {
-    // Every visible copy of this agent's timeline lands (routed view + tab).
-    const results = await Promise.all(ready.map((locator) => locator.locate(target)));
-    outcome = results[0] ?? outcome;
-  } else if (ready[0] !== undefined) {
-    outcome = await ready[0].locate(target);
+  if (options.signal?.aborted) return outcome;
+  try {
+    if (target.kind === 'latest') {
+      // Every visible copy of this agent's timeline lands (routed view + tab).
+      const results = await Promise.all(ready.map((locator) => locator.locate(target, { signal: options.signal })));
+      outcome = results[0] ?? outcome;
+    } else if (ready[0] !== undefined) {
+      outcome = await ready[0].locate(target, { signal: options.signal });
+    }
+  } catch {
+    outcome = { status: 'load-failed' };
   }
+  if (options.signal?.aborted) return { status: 'no-timeline' };
   const key18n = failureKey(target, outcome.status === 'no-timeline' ? { status: 'not-found' } : outcome);
   if (options.notify !== false && key18n !== undefined) {
     const turn = target.kind === 'turn' ? turnLabel(target.turnId) : '';
@@ -179,6 +193,39 @@ export async function locateInTimeline(target: TimelineTarget, options: LocateOp
 export function normalizeTurnId(turn: string | number): string {
   const raw = String(turn).trim();
   return raw.startsWith('t') ? raw : `t${raw}`;
+}
+
+/** Stable identity of a locate target: dedupe repeats without comparing URLs. */
+export function timelineTargetKey(target: TimelineTarget): string {
+  switch (target.kind) {
+    case 'block': return JSON.stringify(['block', target.blockId]);
+    case 'turn': return JSON.stringify(['turn', normalizeTurnId(target.turnId)]);
+    case 'subagent': return JSON.stringify(['subagent', target.agentId]);
+    case 'interaction': return JSON.stringify(['interaction', target.id]);
+    case 'annotation': return JSON.stringify(['annotation', target.annotationId, target.blockId]);
+    case 'latest': return JSON.stringify(['latest', target.respectReader === true]);
+  }
+}
+
+/** True only while the reader is still exactly at this target (geometry, not URL). */
+export function isTimelineTargetCurrent(target: TimelineTarget, options: LocateOptions): boolean {
+  return visibleLocators(keyOf(options.sessionId, options.agentId ?? 'main'))[0]?.isAtTarget?.(target) === true;
+}
+
+/**
+ * Where a child's 派发处 lives: the parent agent's timeline plus the card that
+ * spawned this child. A nested child's card sits on its parent's page, not the
+ * main session's, so both the route and the locate scope name the parent.
+ */
+export function locateSpawnTarget(sessionId: string, childAgentId: string, parentAgentId = 'main'): {
+  route: string; target: TimelineTarget; options: LocateOptions;
+} {
+  const base = `/s/${encodeURIComponent(sessionId)}`;
+  return {
+    route: parentAgentId === 'main' ? base : `${base}/agent/${encodeURIComponent(parentAgentId)}`,
+    target: { kind: 'subagent', agentId: childAgentId },
+    options: { sessionId, agentId: parentAgentId },
+  };
 }
 
 /** Test-only: drop every registration and pending request. */

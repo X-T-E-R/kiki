@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { Klient } from '@kiki/klient';
+import { executeWebCommand } from '#/tui/daemon/web-command';
 
 import {
   DAEMON_COMMANDS,
@@ -35,8 +37,15 @@ describe('daemon command registry', () => {
     expect(permission).toBeDefined();
     expect(validateDaemonCommandArgs(exit as never)).toBe('/q does not accept arguments.');
     expect(validateDaemonCommandArgs(permission as never)).toBe(
-      '/permission expects manual, yolo, or auto.',
+      '/permission expects manual, auto, review, or yolo.',
     );
+  });
+
+  it.each(['manual', 'auto', 'review', 'yolo'])('accepts the existing permission mode %s', (mode) => {
+    const command = resolveDaemonCommand('permission', mode);
+    if (command === undefined || !('definition' in command)) throw new Error('Permission command is unavailable');
+    expect(validateDaemonCommandArgs(command)).toBeUndefined();
+    expect(command.definition.argumentHint).toBe('[manual|auto|review|yolo]');
   });
 
   it('canonicalizes the token without collapsing argument whitespace', () => {
@@ -92,7 +101,19 @@ describe('daemon command registry', () => {
     );
     expect(daemonCommandHelp()).toContain('Supported:');
     expect(daemonCommandHelp()).toContain('Export loaded user and assistant text as Markdown');
-    expect(daemonCommandHelp()).toContain('Disabled:');
+    expect(daemonCommandHelp()).toContain('Disabled in daemon TUI:');
+  });
+
+  it('generates help usage, aliases, and descriptions from the active catalog', () => {
+    const help = daemonCommandHelp();
+    for (const command of DAEMON_COMMANDS) {
+      expect(help).toContain(`/${command.name}${command.argumentHint === undefined ? '' : ` ${command.argumentHint}`}`);
+      expect(help).toContain(`\n  ${command.description}`);
+      for (const alias of command.aliases) expect(help).toContain(`/${alias}`);
+    }
+    expect(help).toContain('/undo\n  Withdraw the last prompt');
+    expect(help).not.toContain('/undo [');
+    expect(help).toContain('type / in the input box');
   });
 
   it('keeps the required daemon parity commands supported', () => {
@@ -114,9 +135,32 @@ describe('daemon command registry', () => {
     ]) {
       expect(statuses.get(name), name).toBe('supported');
     }
-    for (const name of ['add-dir', 'export-md', 'export-debug-zip', 'reload-tui', 'web']) {
+    expect(statuses.get('web')).toBe('supported');
+    for (const name of ['add-dir', 'export-md', 'export-debug-zip', 'reload-tui']) {
       expect(statuses.get(name), name).toBe('disabled');
     }
     expect([...statuses.values()].filter((status) => status === 'supported').length).toBeGreaterThan(29);
+  });
+});
+
+
+describe('daemon /web execution', () => {
+  function client() {
+    const status = { enabled: true, mode: 'temporary', url: 'http://example.test', insecure: false, sessions: [] };
+    const web = { enable: vi.fn().mockResolvedValue(status), issueLink: vi.fn().mockResolvedValue({ url: 'http://example.test#access=once', expiresAt: 1 }), status: vi.fn().mockResolvedValue(status), disable: vi.fn().mockResolvedValue({ ...status, enabled: false }), revoke: vi.fn().mockResolvedValue(status) };
+    return { web, klient: { rest: { webAccess: web } } as unknown as Klient };
+  }
+  it('opens a daemon-issued link in place and passes persistent/network configuration without stopping the TUI', async () => {
+    const c = client(); const opened = await executeWebCommand(c.klient, '');
+    expect(opened.openUrl).toBe('http://example.test#access=once'); expect(c.web.enable).toHaveBeenCalledWith({ mode: 'temporary' });
+    const persistent = await executeWebCommand(c.klient, 'persistent --host 127.0.0.1 --port 0 --public-url https://example.test --no-open');
+    expect(c.web.enable).toHaveBeenLastCalledWith({ mode: 'persistent', host: '127.0.0.1', port: 0, publicUrl: 'https://example.test' }); expect(persistent.openUrl).toBeUndefined();
+  });
+  it('uses authoritative status/off/revoke calls and rejects invalid arguments before daemon mutation', async () => {
+    const c = client(); await executeWebCommand(c.klient, 'status'); await executeWebCommand(c.klient, 'off'); await executeWebCommand(c.klient, 'revoke');
+    expect(c.web.status).toHaveBeenCalledOnce(); expect(c.web.disable).toHaveBeenCalledOnce(); expect(c.web.revoke).toHaveBeenCalledWith(undefined); expect(c.web.issueLink).not.toHaveBeenCalled();
+    await expect(executeWebCommand(c.klient, 'persistent --port nope')).rejects.toThrow();
+    await expect(executeWebCommand(c.klient, 'off --host 0.0.0.0')).rejects.toThrow();
+    await expect(executeWebCommand(c.klient, 'unknown')).rejects.toThrow(); expect(c.web.enable).not.toHaveBeenCalled();
   });
 });

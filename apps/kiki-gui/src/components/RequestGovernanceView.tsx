@@ -1,17 +1,10 @@
 /**
- * RequestGovernanceView — the /usage page's Live and Limits panels.
- *
- * Live reads like the cockpit: a fact strip (running / queued), the
- * per-dimension breakdown, and whoever is waiting, all in the page's card
- * language with mono tabular figures and hairline dividers. Limits is the
- * editor for the concurrency rules: each row summarizes a rule, the row opens
- * in place for edits, the switch pauses a rule without losing it, and every
- * write goes through the config save path so it persists and applies to the
- * next request. Session-dimension rows stay out of Live: without a title a
- * raw session id helps nobody.
+ * The Live tab pairs a compact request summary with the concurrency rules.
+ * Request details expand in place; legacy Limits links focus the rules.
+ * Rule edits still use the config save path and preserve paused rules.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { RequestGovernanceSnapshot } from '@kiki/protocol';
@@ -25,12 +18,11 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { FeedbackLine, Toggle } from './controls';
 import { Icon } from './icons';
 import { InlineEditor } from './InlineEditor';
-import { AxisGroup, UsageCard } from './usage/usageShared';
+import { AxisGroup } from './usage/usageShared';
 import { DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 type GovernanceRule = RequestGovernanceSnapshot['rules'][number];
 
-const NOTICE_AMBER = 'rounded-lg border border-amber-rule/40 bg-amber-card px-3 py-2 text-[12.5px] leading-relaxed text-amber-ink';
 const FIELD_INPUT = 'h-8 w-full rounded-md border border-hairline bg-paper px-2 font-mono text-[12.5px] text-ink tabular-nums outline-none transition-colors duration-[var(--kiki-motion-quick)] placeholder:text-ink-faint focus:border-selected-ink aria-[invalid=true]:border-danger';
 
 /** Server messages arrive as `msg (code N)`; the editor's inline line drops the diagnostic tail. */
@@ -63,24 +55,41 @@ export function RequestGovernanceBadge({ compact = false }: { compact?: boolean 
 
 export function RequestGovernanceView({ view }: { view: 'realtime' | 'limits' }) {
   const { snapshot, stale, loading } = useRequestGovernance();
-  const { t } = useI18n();
+  const { t, time } = useI18n();
+  const limitsRef = useRef<HTMLDivElement>(null);
+  const ready = snapshot !== undefined;
+  useEffect(() => {
+    if (view !== 'limits' || !ready) return;
+    limitsRef.current?.scrollIntoView?.({ block: 'start' });
+    limitsRef.current?.focus({ preventScroll: true });
+  }, [view, ready]);
   if (snapshot === undefined) {
     return (
-      <p role="status" className="rounded-xl border border-hairline bg-panel px-4 py-12 text-center text-[13px] text-ink-faint">
+      <p role="status" className="py-12 text-center text-[13px] text-ink-faint">
         {t(loading ? 'usage.governance.loading' : 'usage.governance.unavailable')}
       </p>
     );
   }
-  return view === 'realtime'
-    ? <RealtimePanel snapshot={snapshot} stale={stale} />
-    : <LimitsPanel snapshot={snapshot} stale={stale} />;
+  return (
+    <div className="space-y-6" data-request-governance>
+      {stale ? (
+        <p role="status" data-governance-stale className="text-[12px] text-amber-ink">
+          {t('usage.governance.stale', { time: time.absoluteTime(snapshot.asOf) ?? snapshot.asOf })}
+        </p>
+      ) : null}
+      <RealtimePanel snapshot={snapshot} />
+      <div ref={limitsRef} id="usage-limits" role="region" aria-label={t('usage.governance.limitsTitle')} tabIndex={-1} className="scroll-mt-4" style={{ outline: 'none' }}>
+        <LimitsPanel snapshot={snapshot} />
+      </div>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Live — running and queued right now
 // ---------------------------------------------------------------------------
 
-function RealtimePanel({ snapshot, stale }: { snapshot: RequestGovernanceSnapshot; stale: boolean }) {
+function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
   const { t, time } = useI18n();
   const dimensions = snapshot.dimensions.filter((row) => row.dimension !== 'session');
   const dimensionLabel = (row: (typeof dimensions)[number]): string => {
@@ -90,65 +99,66 @@ function RealtimePanel({ snapshot, stale }: { snapshot: RequestGovernanceSnapsho
     return row.id;
   };
   return (
-    <div className="space-y-4" data-request-governance>
-      {stale ? (
-        <p role="status" data-governance-stale className={NOTICE_AMBER}>
-          {t('usage.governance.stale', { time: time.absoluteTime(snapshot.asOf) ?? snapshot.asOf })}
-        </p>
-      ) : null}
-      <section className="rounded-xl border border-hairline bg-panel p-4 sm:p-5">
-        <dl className="grid grid-cols-2 divide-x divide-hairline text-center">
-          <div>
-            <dt className="text-[11.5px] text-ink-faint">{t('usage.governance.running')}</dt>
-            <dd data-governance-active className="font-mono text-[14px] text-ink tabular-nums">{snapshot.active}</dd>
-          </div>
-          <div>
-            <dt className="text-[11.5px] text-ink-faint">{t('usage.governance.queued')}</dt>
-            <dd data-governance-queued className="font-mono text-[14px] text-ink tabular-nums">{snapshot.queued}</dd>
-          </div>
-        </dl>
-      </section>
-      <UsageCard title={t('usage.governance.byDimension')}>
-        {dimensions.length === 0 ? (
-          <p className="text-[12.5px] text-ink-faint">{t('usage.governance.idleNow')}</p>
-        ) : (
-          <div data-governance-dimensions>
-            <div aria-hidden className="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] px-2 pb-2 text-[11px] text-ink-faint">
-              <span>{t('usage.governance.target')}</span>
-              <span className="text-right">{t('usage.governance.running')}</span>
-              <span className="text-right">{t('usage.governance.queued')}</span>
+    <details data-governance-live className="group/live">
+      <summary data-governance-details-toggle className="flex min-h-9 cursor-pointer list-none flex-wrap items-center gap-x-6 gap-y-2 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-selected-ink [&::-webkit-details-marker]:hidden">
+        <span className="inline-flex items-baseline gap-2">
+          <span className="text-[11.5px] text-ink-faint">{t('usage.governance.running')}</span>
+          <span data-governance-active className="font-mono text-[14px] text-ink tabular-nums">{snapshot.active}</span>
+        </span>
+        <span className="inline-flex items-baseline gap-2">
+          <span className="text-[11.5px] text-ink-faint">{t('usage.governance.queued')}</span>
+          <span data-governance-queued className="font-mono text-[14px] text-ink tabular-nums">{snapshot.queued}</span>
+        </span>
+        <span className="ml-auto inline-flex items-center gap-1.5 text-[11.5px] text-ink-soft">
+          {t('usage.governance.details')}
+          <Icon name="chevron" size={12} className="text-ink-faint group-open/live:rotate-90" />
+        </span>
+      </summary>
+      <div className="grid gap-x-8 gap-y-5 pt-3 lg:grid-cols-2">
+        <section className="min-w-0">
+          <h2 className="mb-3 text-[11.5px] font-medium text-ink-faint">{t('usage.governance.byDimension')}</h2>
+          {dimensions.length === 0 ? (
+            <p className="text-[12.5px] text-ink-faint">{t('usage.governance.idleNow')}</p>
+          ) : (
+            <div data-governance-dimensions>
+              <div aria-hidden className="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] pb-2 text-[11px] text-ink-faint">
+                <span>{t('usage.governance.target')}</span>
+                <span className="text-right">{t('usage.governance.running')}</span>
+                <span className="text-right">{t('usage.governance.queued')}</span>
+              </div>
+              <ol className="divide-y divide-hairline border-t border-hairline">
+                {dimensions.map((row) => (
+                  <li key={`${row.dimension}:${row.id}`} className="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] items-baseline py-2">
+                    <span className="flex min-w-0 items-baseline gap-1.5">
+                      <span className="shrink-0 text-[11.5px] text-ink-faint">{t(`usage.governance.${row.dimension}` as I18nKey)}</span>
+                      <span className="min-w-0 truncate font-mono text-[12.5px] text-ink" title={row.id}>{dimensionLabel(row)}</span>
+                    </span>
+                    <span className="text-right font-mono text-[12.5px] text-ink tabular-nums">{row.active}</span>
+                    <span className="text-right font-mono text-[12.5px] text-ink-soft tabular-nums">{row.queued}</span>
+                  </li>
+                ))}
+              </ol>
             </div>
-            <ol className="divide-y divide-hairline border-t border-hairline">
-              {dimensions.map((row) => (
-                <li key={`${row.dimension}:${row.id}`} className="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] items-baseline px-2 py-2">
-                  <span className="flex min-w-0 items-baseline gap-1.5">
-                    <span className="shrink-0 text-[11.5px] text-ink-faint">{t(`usage.governance.${row.dimension}` as I18nKey)}</span>
-                    <span className="min-w-0 truncate font-mono text-[12.5px] text-ink" title={row.id}>{dimensionLabel(row)}</span>
-                  </span>
-                  <span className="text-right font-mono text-[12.5px] text-ink tabular-nums">{row.active}</span>
-                  <span className="text-right font-mono text-[12.5px] text-ink-soft tabular-nums">{row.queued}</span>
+          )}
+        </section>
+        {snapshot.waiting.length > 0 ? (
+          <section className="min-w-0" data-governance-waiting>
+            <h2 className="mb-3 text-[11.5px] font-medium text-ink-faint">{t('usage.governance.waitingTitle')}</h2>
+            <ol className="divide-y divide-hairline">
+              {snapshot.waiting.map((row) => (
+                <li key={row.attemptId} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-2 text-[12.5px]">
+                  <span className="min-w-0 truncate font-mono text-ink" title={row.modelId}>{row.modelId}</span>
+                  {row.blockingRules.length > 0 ? (
+                    <span className="min-w-0 truncate text-ink-faint">{t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}</span>
+                  ) : null}
+                  <span className="ml-auto shrink-0 font-mono text-ink-soft tabular-nums">{time.formatDuration(row.waitedMs)}</span>
                 </li>
               ))}
             </ol>
-          </div>
-        )}
-      </UsageCard>
-      {snapshot.waiting.length > 0 ? (
-        <UsageCard title={t('usage.governance.waitingTitle')} data-governance-waiting="">
-          <ol className="divide-y divide-hairline border-t border-hairline">
-            {snapshot.waiting.map((row) => (
-              <li key={row.attemptId} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-2 py-2 text-[12.5px]">
-                <span className="min-w-0 truncate font-mono text-ink" title={row.modelId}>{row.modelId}</span>
-                {row.blockingRules.length > 0 ? (
-                  <span className="min-w-0 truncate text-ink-faint">{t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}</span>
-                ) : null}
-                <span className="ml-auto shrink-0 font-mono text-ink-soft tabular-nums">{time.formatDuration(row.waitedMs)}</span>
-              </li>
-            ))}
-          </ol>
-        </UsageCard>
-      ) : null}
-    </div>
+          </section>
+        ) : null}
+      </div>
+    </details>
   );
 }
 
@@ -390,8 +400,8 @@ function RuleEditor({ initial, otherIds, isNew, modelOptions, providerOptions, o
   );
 }
 
-function LimitsPanel({ snapshot, stale }: { snapshot: RequestGovernanceSnapshot; stale: boolean }) {
-  const { t, tp, time } = useI18n();
+function LimitsPanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
+  const { t, tp } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
   const rules = snapshot.rules;
@@ -436,20 +446,27 @@ function LimitsPanel({ snapshot, stale }: { snapshot: RequestGovernanceSnapshot;
   };
 
   const list = (
-    <section className="rounded-xl border border-hairline bg-panel p-4 sm:p-5" data-governance-rules>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[12px] text-ink-faint">{tp('usage.governance.ruleCount', rules.length)}</p>
+    <section data-governance-rules>
+      <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+        <h2 className="text-[13px] font-medium text-ink">{t('usage.governance.limitsTitle')}</h2>
+        <p className="text-[11.5px] text-ink-faint">{tp('usage.governance.ruleCount', rules.length)}</p>
         <button
           type="button"
           data-governance-add
           disabled={editorFor !== null}
           onClick={() => { setEditorFor('new'); }}
-          className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+          className="ml-auto inline-flex min-h-8 items-center gap-1.5 rounded-sm text-[12px] text-ink-soft hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-selected-ink disabled:opacity-50"
         >
           <Icon name="plus" size={12} />
           {t('usage.governance.addRule')}
         </button>
       </div>
+      {rules.length === 0 && editorFor !== 'new' ? (
+        <div data-governance-empty className="py-3">
+          <p className="text-[12.5px] text-ink-soft">{t('usage.governance.emptyTitle')}</p>
+          <p className="mt-1 max-w-md text-[12px] leading-relaxed text-ink-faint">{t('usage.governance.emptyBody')}</p>
+        </div>
+      ) : null}
       {editorFor === 'new' ? (
         <div className="mb-3 rounded-lg bg-ink/[0.03] p-3">
           <RuleEditor
@@ -463,7 +480,7 @@ function LimitsPanel({ snapshot, stale }: { snapshot: RequestGovernanceSnapshot;
           />
         </div>
       ) : null}
-      <ol className="divide-y divide-hairline border-t border-hairline">
+      <ol className={`divide-y divide-hairline ${rules.length > 0 ? 'border-t border-hairline' : ''}`}>
         {rules.map((rule) => {
           const open = editorFor === rule.id;
           const editorId = `governance-rule-editor-${rule.id}`;
@@ -514,21 +531,8 @@ function LimitsPanel({ snapshot, stale }: { snapshot: RequestGovernanceSnapshot;
   );
 
   return (
-    <div className="space-y-4" data-request-governance>
-      {stale ? (
-        <p role="status" data-governance-stale className={NOTICE_AMBER}>
-          {t('usage.governance.stale', { time: time.absoluteTime(snapshot.asOf) ?? snapshot.asOf })}
-        </p>
-      ) : null}
-      {rules.length === 0 && editorFor !== 'new' ? (
-        <section className="rounded-xl border border-hairline bg-panel px-4 py-12 text-center" data-governance-empty>
-          <p className="text-[13px] font-medium text-ink">{t('usage.governance.emptyTitle')}</p>
-          <p className="mx-auto mt-1.5 max-w-md text-[12.5px] leading-relaxed text-ink-faint">{t('usage.governance.emptyBody')}</p>
-          <button type="button" data-governance-add className={`${PRIMARY_BUTTON} mt-4`} onClick={() => { setEditorFor('new'); }}>
-            {t('usage.governance.addRule')}
-          </button>
-        </section>
-      ) : list}
+    <div>
+      {list}
       <ConfirmDialog
         open={pendingDelete !== null}
         title={t('usage.governance.deleteTitle')}

@@ -13,8 +13,8 @@ const connection = vi.hoisted(() => ({
   client: {
     getRequestGovernance: vi.fn(),
     setRequestGovernanceRules: vi.fn(),
-    listModels: vi.fn(),
-    listProviders: vi.fn(),
+    listModels: vi.fn().mockResolvedValue({ items: [] }),
+    listProviders: vi.fn().mockResolvedValue({ items: [] }),
   },
 }));
 vi.mock('../state/connection', () => ({ useConnection: () => connection }));
@@ -58,15 +58,36 @@ async function settle(render: () => void, ms = 10) {
 }
 
 describe('live request governance', () => {
-  it('keeps the last authoritative counts on disconnection and marks them stale, never zero', async () => {
+  it('shows a compact live summary above editable rules and keeps request details available', async () => {
     vi.useFakeTimers();
     localStorage.setItem('kiki.locale', 'en');
+    connection.wsStatus = 'open';
+    connection.client.getRequestGovernance.mockResolvedValue(snapshot);
+    const { container, render } = mount('realtime');
+    await settle(render);
+    const live = container.querySelector<HTMLDetailsElement>('[data-governance-live]')!;
+    const rules = container.querySelector('[data-governance-rules]')!;
+    expect(live.open).toBe(false);
+    expect(live.compareDocumentPosition(rules) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
+    expect(rules.textContent).toContain('Concurrency limits');
+    await act(async () => { live.querySelector('summary')!.click(); });
+    expect(live.open).toBe(true);
+    expect(live.querySelector('[data-governance-dimensions]')?.textContent).toContain('provider-example');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-rule="provider-cap"] button')!.click(); });
+    expect(container.querySelector('[data-governance-editor]')).not.toBeNull();
+  });
+
+  it.each(['zh', 'en'] as const)('keeps authoritative counts and one amber stale line on disconnection (%s)', async (locale) => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', locale);
     connection.wsStatus = 'open';
     connection.client.getRequestGovernance.mockResolvedValue(snapshot);
     const { container, render } = mount('realtime', true);
     await settle(render);
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     expect(container.querySelector('[data-governance-queued]')?.textContent).toBe('2');
+    expect(container.querySelector('[data-governance-stale]')).toBeNull();
     expect(container.textContent).not.toContain('unmanaged');
     connection.wsStatus = 'closed';
     connection.client.getRequestGovernance.mockRejectedValue(new Error('offline'));
@@ -74,7 +95,13 @@ describe('live request governance', () => {
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     expect(container.querySelector('[data-governance-queued]')?.textContent).toBe('2');
     expect(container.querySelector('[data-request-governance-badge]')?.textContent).toContain('3 · +2');
-    expect(container.textContent).toContain('may be out of date');
+    const staleLines = container.querySelectorAll('[data-governance-stale]');
+    expect(staleLines).toHaveLength(1);
+    expect(staleLines[0]?.textContent).toContain(locale === 'zh'
+      ? '数据可能已过期 · 最后更新 '
+      : 'This view may be out of date · last update ');
+    expect(staleLines[0]?.classList.contains('text-amber-ink')).toBe(true);
+    expect(staleLines[0]?.className).not.toMatch(/(?:^|\s)(?:bg-|border)/);
   });
 
   it('hides raw session dimension rows from the live breakdown', async () => {

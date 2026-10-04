@@ -977,6 +977,86 @@ describe('bindSessionTranscript', () => {
     },
   );
 
+  it.each([
+    { kind: 'agent', order: 'delivery-first' },
+    { kind: 'agent', order: 'summary-first' },
+    { kind: 'question', order: 'delivery-first' },
+    { kind: 'question', order: 'summary-first' },
+  ] as const)('keeps one complete receipt per task through live, replay and reconnect ($kind, $order)', ({ kind, order }) => {
+    const question = kind === 'question';
+    const taskId = question ? 'question-1' : 'run-1';
+    const title = question ? 'Background question answered' : 'Background agent completed';
+    const body = question ? 'The user answered "Which database?".' : 'run-1 completed.';
+    const result = question ? '<answer>\n{"answers":{"Which database?":"Postgres"}}\n</answer>' : 'Final agent receipt.\nFirst execution result.';
+    const delivery = {
+      type: 'context.append_message', time: 3_000,
+      message: {
+        id: 'receipt-message', role: 'user', toolCalls: [],
+        content: [{ type: 'text', text: `<notification id="task:${taskId}:completed" category="task" type="task.completed" source_kind="background_task" source_id="${taskId}">\nTitle: ${title}\nSeverity: info\n${body}\n${result}\n</notification>` }],
+        origin: { kind: 'task', taskId, status: 'completed', notificationId: `task:${taskId}:completed` },
+      },
+      delivery: { deliveryId: 'delivery-1', messageId: 'receipt-message', turnId: 0, stepId: 'step-1', step: 1, deliveredAt: '1970-01-01T00:00:03.000Z', origin: 'queue' },
+    };
+    const summary = {
+      type: 'task.notified', time: 3_100, sourceId: taskId, sourceKind: 'background_task',
+      notificationType: 'task.completed', title, body, severity: 'info',
+    };
+    const secondDelivery = {
+      ...delivery,
+      message: {
+        ...delivery.message, id: 'receipt-message-2',
+        content: [{ type: 'text', text: delivery.message.content[0]!.text.replaceAll('question-1', 'question-2').replace('Postgres', 'SQLite') }],
+        origin: { ...delivery.message.origin, taskId: 'question-2', notificationId: 'task:question-2:completed' },
+      },
+      delivery: { ...delivery.delivery, deliveryId: 'delivery-2', messageId: 'receipt-message-2' },
+    };
+    const secondSummary = { ...summary, sourceId: 'question-2' };
+    const records = [
+      { type: 'turn.prompt', turnId: 0, promptId: 'prompt-1', input: [{ type: 'text', text: 'Continue work.' }], origin: { kind: 'user' }, time: 1_000 },
+      { type: 'turn.started', turnId: 0, promptId: 'prompt-1', prompt: 'Continue work.', origin: { kind: 'user' }, time: 1_000 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' }, time: 2_000 },
+      { type: 'turn.step.started', turnId: 0, step: 1, stepId: 'step-1', time: 2_000 },
+      ...(order === 'delivery-first' ? [delivery, summary] : [summary, delivery]),
+      ...(question ? (order === 'delivery-first' ? [secondDelivery, secondSummary] : [secondSummary, secondDelivery]) : []),
+    ];
+    const cold = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(cold);
+    const adapter = new TranscriptWireAdapter('main', { turn: (id) => cold.getTurn(id) });
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
+    const replayOps: TranscriptOperation[] = [];
+    const receipts = (snapshot: AgentTranscriptSnapshot) => normalizedBlocks(snapshot).filter((block) => block['kind'] === 'system' && block['variant'] === 'task');
+    for (const [index, record] of records.entries()) {
+      const facts = adapter.add(record);
+      replayOps.push(...facts.flatMap((fact) => fact.operations));
+      reducer.apply(facts);
+      main.bus.emit(record as unknown as Event2<any>);
+      if (index === 5) {
+        expect(receipts(store.getAgent('main')!.snapshot())).toHaveLength(1);
+        expect(receipts(cold.snapshot())).toHaveLength(1);
+      }
+    }
+    const live = store.getAgent('main')!;
+    expect(receipts(live.snapshot())).toHaveLength(question ? 2 : 1);
+    expect(receipts(live.snapshot())[0]?.['text']).toContain(result);
+    if (question) {
+      expect(receipts(live.snapshot()).map((block) => block['taskId'])).toEqual(['question-1', 'question-2']);
+      expect(receipts(live.snapshot())[1]?.['text']).toContain('<answer>\n{"answers":{"Which database?":"SQLite"}}\n</answer>');
+    }
+    expect(receipts(live.snapshot())).toEqual(receipts(cold.snapshot()));
+    const reconnect = new AgentTranscript('main');
+    reconnect.apply([{ op: 'reset', agentId: 'main', snapshot: live.snapshot() }]);
+    reconnect.apply(replayOps);
+    const restoredAdapter = new TranscriptWireAdapter('main', { turn: (id) => reconnect.getTurn(id) });
+    restoredAdapter.restore(adapter.checkpoint());
+    const restoredReducer = new TranscriptFactReducer(reconnect);
+    for (const record of records.slice(4)) restoredReducer.apply(restoredAdapter.add(record));
+    expect(receipts(cold.snapshot())).toEqual(receipts(reconnect.snapshot()));
+    binding.dispose();
+  });
+
   it('keeps live and cold task notification blocks equivalent without a user bubble', () => {
     const records = [
       {
@@ -1092,7 +1172,7 @@ describe('bindSessionTranscript', () => {
       expect.objectContaining({
         turnId: 't0',
         variant: 'task',
-        text: 'Background process completed\npnpm test — 42 passed',
+        text: 'Title: Background process completed\npnpm test — 42 passed',
       }),
     ]);
     expect(live.getTurn('t1')).toBeUndefined();
@@ -2175,3 +2255,48 @@ async function executeAgentTool(
     signal: new AbortController().signal,
   } as never);
 }
+
+
+describe('durable transcript residency', () => {
+  it('releases completed tool bodies but preserves adapter routing, undo anchors, and fact deduplication', () => {
+    const transcript = new AgentTranscript('main');
+    const adapter = new TranscriptWireAdapter('main', { turn: (id) => transcript.getTurn(id), tool: (id) => transcript.getToolCall(id), task: (id) => transcript.getTask(id) });
+    const reducer = new TranscriptFactReducer(transcript);
+    const samples: { rounds: number; resident: number; toolBytes: number }[] = [];
+    let firstFacts: ReturnType<TranscriptWireAdapter['add']> = [];
+    for (let index = 0; index < 80; index += 1) {
+      const records = [
+        { type: 'turn.prompt', turnId: index, promptId: `p${index}`, input: [{ type: 'text', text: 'tool round' }], origin: { kind: 'user' }, time: 1000 + index * 1000 },
+        { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: index, step: 1, uuid: `s${index}` } },
+        { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: index, stepUuid: `s${index}`, uuid: `f${index}`, toolCallId: `c${index}`, name: 'Read', args: { path: 'synthetic' } } },
+        { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: `c${index}`, result: { output: `${index}:${'x'.repeat(256 << 10)}`, isError: false } } },
+        { type: 'turn.ended', turnId: index, reason: 'completed', time: 1999 + index * 1000 },
+      ];
+      for (const record of records) {
+        const facts = adapter.add(record);
+        if (index === 0) firstFacts.push(...facts);
+        reducer.apply(facts);
+      }
+      const durable = transcript.snapshot();
+      const released = transcript.releaseDurableHistory(durable, { tailTurns: 20, maxBytes: 16 << 20 });
+      adapter.releaseDurableTurns(released);
+      if ((index + 1) % 20 === 0) {
+        samples.push({ rounds: index + 1, resident: transcript.residentReport().estimatedBytes,
+          toolBytes: adapter.checkpoint().tools.reduce((total, [, tool]) => total + JSON.stringify(tool.frame.output ?? '').length, 0) });
+      }
+    }
+    console.log('[durable-tool-residency]', samples);
+    expect(samples.map((sample) => sample.toolBytes)).toEqual([5242970, 5243020, 5243060, 5243100]);
+    expect(samples.every((sample) => sample.resident < (16 << 20))).toBe(true);
+    const checkpoint = adapter.checkpoint();
+    expect(checkpoint.turns).toHaveLength(80);
+    expect(checkpoint.undoAnchors).toHaveLength(80);
+    expect(checkpoint.messageProjection?.frames).toHaveLength(80);
+    expect(reducer.apply(firstFacts).acceptedOperations).toEqual([]);
+    const late = adapter.add({ type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: 'c0', result: { output: 'late result', isError: false } } });
+    expect(late.flatMap((fact) => fact.operations)).toContainEqual(expect.objectContaining({ op: 'frame.upsert', turnId: 't0', stepId: 's0', frame: expect.objectContaining({ toolCallId: 'c0', output: 'late result' }) }));
+    expect(adapter.checkpoint().tools.find(([id]) => id === 'c0')?.[1].frame.output).toBeUndefined();
+    const undo = adapter.add({ type: 'context.undo', count: 80 });
+    expect(undo.flatMap((fact) => fact.operations).find((operation) => operation.op === 'items.remove')).toMatchObject({ ids: expect.arrayContaining(['t0', 't79']) });
+  });
+});

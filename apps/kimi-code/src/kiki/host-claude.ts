@@ -81,6 +81,7 @@ async function claimWatcher(directory: string): Promise<(() => Promise<void>) | 
 
 export function registerHostClaudeCommands(program: Command): void {
   program.command('host-claude-bind')
+    .description('Register a dispatch event cursor for Claude host notifications.')
     .requiredOption('--workspace <dir>')
     .requiredOption('--dispatch <id>')
     .action(async (options: { workspace: string; dispatch: string }) => {
@@ -92,6 +93,7 @@ export function registerHostClaudeCommands(program: Command): void {
       process.stdout.write(`BOUND ${options.dispatch}\n`);
     });
   program.command('host-claude-rewake')
+    .description('Wait for a Claude host notification from bound dispatches.')
     .requiredOption('--workspace <dir>')
     .option('--home <dir>')
     .option('--timeout-s <seconds>', '', (value: string) => Number(value), 36_000)

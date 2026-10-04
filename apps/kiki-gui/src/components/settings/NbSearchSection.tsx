@@ -21,13 +21,15 @@ import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 
 import type { ExtendedNbSearchDraft, NbSearchEditorBaseline, NbSearchTab } from './nbSearch/types';
-import { CARD_ID_TO_TAB, NB_SEARCH_TABS } from './nbSearch/types';
+import { CARD_ID_TO_TAB, NB_SEARCH_TABS, serviceState } from './nbSearch/types';
 import { NbSearchTabBar } from './nbSearch/NbSearchTabBar';
 import { NbSearchOverviewTab } from './nbSearch/NbSearchOverviewTab';
 import { NbSearchLanesTab } from './nbSearch/NbSearchLanesTab';
 import { NbSearchFetchTab } from './nbSearch/NbSearchFetchTab';
 import { NbSearchProvidersTab } from './nbSearch/NbSearchProvidersTab';
 import { NbSearchAdvancedTab, type TestRun } from './nbSearch/NbSearchAdvancedTab';
+import type { NbSearchAdvancedBinding } from './nbSearch/advancedSupport';
+import { keyDraftIssue, pendingKeyValue, type KeyDraft } from './nbSearch/NbSearchMultiKeyEditor';
 import { SearchIndexStatusCard } from './SearchIndexStatusCard';
 import { NbSearchActionBar } from './nbSearch/NbSearchActionBar';
 
@@ -51,23 +53,44 @@ function resolveTabFromLocation(
 export function NbSearchSection() {
   const { client, scopeId } = useConnection();
   const readCredential = useCallback((id: string, reveal: boolean) => client.readNbSearchCredential(id, reveal), [client]);
+  const readKeyUsage = useCallback((id: string, refresh: boolean) => client.readNbSearchKeyUsage(id, refresh), [client]);
   const writeCredential = useCallback((id: string, value: string | null, version: string, binding: string) => client.writeNbSearchCredential(id, value, version, binding), [client]);
-  const { t, locale } = useI18n();
+  const { t, tp, locale } = useI18n();
   const queryClient = useQueryClient();
   const location = useLocation();
   const navigate = useNavigate();
 
   const [editorBaseline, setEditorBaseline] = useState<NbSearchEditorBaseline | null>(null);
   const [draft, setDraft] = useState<ExtendedNbSearchDraft | null>(null);
+  /**
+   * Pending key writes, per service. They live beside the config draft because
+   * the two commit separately on the server (config patch, then a
+   * version-checked credential write), and a failed key write must survive the
+   * config half landing.
+   */
+  const [keyDrafts, setKeyDrafts] = useState<Readonly<Record<string, KeyDraft>>>({});
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   // Set when a save landed but the capabilities refresh failed: the editor
   // drops back to the error shell instead of showing pre-save capabilities
   // as if they were the new state.
   const [refreshError, setRefreshError] = useState<unknown>(null);
+  const [statusStale, setStatusStale] = useState<unknown>(null);
   const [refreshRetrying, setRefreshRetrying] = useState(false);
   const [testRun, setTestRun] = useState<TestRun>({ status: 'idle' });
   const testAbort = useRef<AbortController | null>(null);
+  // A landed patch may still need its post-patch binding read after a failed refresh.
+  const bindingBeforePatch = useRef(new Map<string, string>());
+
+  const fetchCapabilities = useCallback(async () => {
+    const fresh = await client.getNbSearchCapabilities();
+    setStatusStale(null);
+    if (statusStale !== null) {
+      setFeedback((current) => current?.tone === 'info' ? null : current);
+      setEditorBaseline((current) => current === null ? current : { ...current, capabilities: fresh });
+    }
+    return fresh;
+  }, [client, statusStale]);
 
   // Tab selection: driven by URL query / hash, fallback to overview
   const activeTab = useMemo(
@@ -91,7 +114,7 @@ export function NbSearchSection() {
 
   const capsQuery = useQuery({
     queryKey: ['nb-search-capabilities'],
-    queryFn: () => client.getNbSearchCapabilities(),
+    queryFn: fetchCapabilities,
     staleTime: 30_000,
   });
 
@@ -120,23 +143,39 @@ export function NbSearchSection() {
 
   const capabilities = editorBaseline?.capabilities;
 
+  /** Instances the server has a saved override for: the user's own services. */
+  const configuredInstanceIds = useMemo(
+    () => new Set(Object.keys((editorBaseline?.config?.provider_instances ?? {}) as Record<string, unknown>)),
+    [editorBaseline],
+  );
+
+  const pendingKeys = useMemo(
+    () => Object.entries(keyDrafts).filter(([, entry]) => entry.mode !== 'keep'),
+    [keyDrafts],
+  );
+
   const dirty = useMemo(() => {
-    if (draft === null || editorBaseline === null) return false;
+    if (draft === null || editorBaseline === null) return pendingKeys.length > 0;
     const nbSearchDirty = nbSearchDraftDirty(editorBaseline.draft.nbSearch, draft.nbSearch);
     const sourceDirty = editorBaseline.draft.reuseLocalConfig !== draft.reuseLocalConfig;
-    return nbSearchDirty || sourceDirty;
-  }, [draft, editorBaseline]);
+    return nbSearchDirty || sourceDirty || pendingKeys.length > 0;
+  }, [draft, editorBaseline, pendingKeys.length]);
 
   useDirtyReporter('nb-search', dirty);
+  // Key drafts are registered on their own id as well: an unsaved key is the
+  // one draft the old page dropped without a word when you navigated away.
+  useDirtyReporter('nb-search-keys', pendingKeys.length > 0);
 
   const retryCapabilitiesRefresh = async () => {
     setRefreshRetrying(true);
     try {
-      const fresh = await client.getNbSearchCapabilities();
+      const fresh = await fetchCapabilities();
       queryClient.setQueryData(['nb-search-capabilities'], fresh);
+      setEditorBaseline((current) => current === null ? current : { ...current, capabilities: fresh });
       setRefreshError(null);
     } catch (error) {
-      setRefreshError(error);
+      if (editorBaseline === null) setRefreshError(error);
+      else setStatusStale(error);
     } finally {
       setRefreshRetrying(false);
     }
@@ -151,6 +190,9 @@ export function NbSearchSection() {
                 the raw error so this never reads as a failed save. */}
             <p className="rounded-md border border-amber-rule/60 bg-amber-card px-3 py-1.5 text-[11px] text-amber-ink">
               {t('st.nbSearch.savedStatusFailed')}
+              {pendingKeys.length > 0 ? (
+                <span className="mt-1 block">{tp('st.nbSearch.savedStatusFailedPendingKeys', pendingKeys.length)}</span>
+              ) : null}
             </p>
             <InlineError error={refreshError} />
             <button
@@ -237,6 +279,28 @@ export function NbSearchSection() {
     );
   };
 
+  /**
+   * Replaces the whole nb_search draft. The S2 surfaces (advanced tabs, the
+   * second-instance editor) hand back a complete draft rather than one field,
+   * and they all land in the same draft and the same save as the S1 fields.
+   */
+  const updateNbSearchDraft = (next: NbSearchDraft) => {
+    setDraft((current) => (current === null ? current : { ...current, nbSearch: next }));
+  };
+
+  /**
+   * One binding for the three advanced sub-pages: lane and preset profiles, the
+   * eight fetch-chain groups, file scopes and the quality fallback all read and
+   * write the page draft, so the bottom save row commits them with everything
+   * else. A plain object, not a hook: this sits after the loading early return.
+   */
+  const advancedBinding: NbSearchAdvancedBinding = {
+    capabilities,
+    draft: draft.nbSearch,
+    config: editorBaseline.config,
+    onChange: updateNbSearchDraft,
+  };
+
   const toggleReuseLocal = (reuseLocalConfig: boolean) => {
     setDraft((current) =>
       current === null ? current : { ...current, reuseLocalConfig },
@@ -246,16 +310,61 @@ export function NbSearchSection() {
   const handleDiscard = () => {
     if (editorBaseline) {
       setDraft(editorBaseline.draft);
+      setKeyDrafts({});
+      bindingBeforePatch.current.clear();
       setFeedback(null);
     }
   };
 
+  const updateKeyDraft = (instanceId: string, next: KeyDraft) => {
+    const previous = keyDrafts[instanceId];
+    if (next.mode === 'keep' || (previous?.mode !== 'keep' && next.base !== previous?.base)) {
+      bindingBeforePatch.current.delete(instanceId);
+    }
+    setKeyDrafts((current) => {
+      const entries = { ...current };
+      if (next.mode === 'keep') delete entries[instanceId];
+      else entries[instanceId] = next;
+      return entries;
+    });
+  };
+
+  /** Adding a service saves an explicit override for an instance the server already reports. */
+  const addService = (instanceId: string) => {
+    updateProviders(instanceId, { isNew: true, enabled: true, isDeleted: false });
+  };
+
+  const removeService = (instanceId: string) => {
+    const name = capabilities.providers.instances.find((entry) => entry.id === instanceId)?.provider_id ?? instanceId;
+    updateProviders(instanceId, { isDeleted: true, isNew: false });
+    updateKeyDraft(instanceId, { mode: 'keep' });
+    setFeedback({ tone: 'info', text: t('st.nbSearch.service.removed', { name }) });
+  };
+
+  /**
+   * One save for the page. The config half and the key half commit in the order
+   * the server requires — the patch first, because it can move a credential slot
+   * and therefore the binding the key write is checked against — and a key that
+   * fails to write stays in its field instead of being reported as saved.
+   */
   const save = async () => {
     const nbSearchChanged = nbSearchDraftDirty(editorBaseline.draft.nbSearch, draft.nbSearch);
     const sourceChanged = editorBaseline.draft.reuseLocalConfig !== draft.reuseLocalConfig;
-    if (!nbSearchChanged && !sourceChanged) return;
+    const pendingWrites = Object.entries(keyDrafts).filter(([, entry]) => entry.mode !== 'keep');
+    if (!nbSearchChanged && !sourceChanged && pendingWrites.length === 0) return;
 
-    let patchPayload: Record<string, unknown>;
+    // A key list that cannot be stored must not be reported as stored, and it
+    // must not take the rest of the page down with it either.
+    for (const [, entry] of pendingWrites) {
+      const issue = keyDraftIssue(t, entry);
+      if (issue !== null) {
+        setFeedback({ tone: 'error', text: issue });
+        selectTab('providers');
+        return;
+      }
+    }
+
+    let patchPayload: Record<string, unknown> | null = null;
     if (nbSearchChanged) {
       let nbSearchPatch;
       try {
@@ -269,7 +378,7 @@ export function NbSearchSection() {
         ...(sourceChanged ? { nb_search_source: { reuse_local_config: draft.reuseLocalConfig } } : {}),
         replace_domains: sourceChanged ? ['nb_search', 'nb_search_source'] : ['nb_search'],
       };
-    } else {
+    } else if (sourceChanged) {
       // Source-only save: skip the canonical nb_search form validation and
       // never rewrite the saved nb_search domain. This is the recovery path
       // when an inherited broken local config must be switched off.
@@ -282,39 +391,115 @@ export function NbSearchSection() {
     setSaving(true);
     setFeedback(null);
     try {
-      const echoed = await client.patchConfig(patchPayload);
-      queryClient.setQueryData(['config'], echoed);
-      // Refetch capabilities directly rather than invalidate-and-hope: a
-      // failed refresh must not leave the pre-save capabilities posing as the
-      // post-save state.
+      const patchBindings = new Map<string, string>();
+      if (patchPayload !== null) {
+        for (const [instanceId, entry] of pendingWrites) {
+          if (entry.mode === 'keep' || entry.base === undefined) continue;
+          const view = await readCredential(instanceId, false);
+          if (view.binding_version === entry.base.binding) patchBindings.set(instanceId, view.binding_version);
+        }
+      }
+      const config = patchPayload === null
+        ? { nb_search: editorBaseline.config, nb_search_source: editorBaseline.sourceConfig }
+        : await client.patchConfig(patchPayload);
+      if (patchPayload !== null) {
+        queryClient.setQueryData(['config'], config);
+        for (const [instanceId, binding] of patchBindings) bindingBeforePatch.current.set(instanceId, binding);
+      }
+
+      // The config is already saved. A failed refresh hides old capabilities,
+      // but neither the pending keys nor their migration check may be discarded.
       let refreshedCapabilities: NbSearchCapabilities;
       try {
-        refreshedCapabilities = await client.getNbSearchCapabilities();
+        refreshedCapabilities = await fetchCapabilities();
       } catch (error) {
-        // The cached (pre-save) capabilities stay in the query but are never
-        // rendered: the error shell owns the screen until Retry succeeds.
         setEditorBaseline(null);
         setDraft(null);
         setRefreshError(error);
         return;
       }
-      queryClient.setQueryData(['nb-search-capabilities'], refreshedCapabilities);
+
+      const written = new Set<string>();
+      const keyFailures: string[] = [];
+      const conflictMessage = t('st.nbSearch.keys.conflict');
+      for (const [instanceId, entry] of pendingWrites) {
+        try {
+          if (entry.mode === 'keep') continue;
+          const value = pendingKeyValue(entry);
+          if (value === undefined) continue;
+          let base = entry.base;
+          const previousBinding = bindingBeforePatch.current.get(instanceId);
+          if (base === undefined || previousBinding !== undefined) {
+            const view = await readCredential(instanceId, false);
+            // A binding observed unchanged before our landed patch but changed
+            // after it (slot, endpoint, or consumers) permits a new base. A version
+            // change with the same binding never replaces the user's editing base:
+            // the write must return 40941. The marker survives a failed refresh.
+            if (base === undefined || (previousBinding === base.binding && view.binding_version !== base.binding)) {
+              // A direct paste into an unobserved empty field has no editing base
+              // to protect. This first read protects only read -> write; retaining
+              // it below gives subsequent retries the same CAS protection.
+              base = { version: view.version, binding: view.binding_version };
+            }
+            bindingBeforePatch.current.delete(instanceId);
+          }
+          const expected = base;
+          setKeyDrafts((current) => current[instanceId] !== entry ? current : {
+            ...current, [instanceId]: { ...entry, base: expected },
+          });
+          await writeCredential(instanceId, value, expected.version, expected.binding);
+          written.add(instanceId);
+        } catch (error) {
+          const conflict = error !== null && typeof error === 'object' && 'code' in error && error.code === 40941;
+          keyFailures.push(conflict ? conflictMessage : errorText(locale, error));
+        }
+      }
+      let statusRefreshFailed = false;
+      if (written.size > 0) {
+        try {
+          refreshedCapabilities = await fetchCapabilities();
+        } catch (error) {
+          statusRefreshFailed = true;
+          setStatusStale(error);
+        }
+      }
+      // Never republish the pre-key snapshot as a successful post-key refresh.
+      if (!statusRefreshFailed) queryClient.setQueryData(['nb-search-capabilities'], refreshedCapabilities);
+
       const resetDraft: ExtendedNbSearchDraft = {
-        nbSearch: nbSearchDraftFromConfig(echoed.nb_search, refreshedCapabilities),
+        nbSearch: nbSearchDraftFromConfig(config.nb_search, refreshedCapabilities),
         reuseLocalConfig:
-          echoed.nb_search_source?.reuse_local_config ??
-          refreshedCapabilities.config_source?.reuse_local_config ??
-          draft.reuseLocalConfig,
+          config.nb_search_source?.reuse_local_config
+          ?? refreshedCapabilities.config_source?.reuse_local_config
+          ?? draft.reuseLocalConfig,
       };
 
       setEditorBaseline({
-        config: echoed.nb_search,
-        sourceConfig: echoed.nb_search_source,
+        config: config.nb_search,
+        sourceConfig: config.nb_search_source,
         capabilities: refreshedCapabilities,
         draft: resetDraft,
       });
       setDraft(resetDraft);
-      setFeedback({ tone: 'success', text: t('st.nbSearch.saved') });
+      setKeyDrafts((current) => Object.fromEntries(
+        Object.entries(current).filter(([instanceId]) => !written.has(instanceId)),
+      ));
+      if (keyFailures.length > 0) {
+        const reasons = [...new Set(keyFailures)];
+        // A conflict carries its own recovery — reread the key list, then save —
+        // so it leads alone. Appending the generic "save again to retry" line
+        // would send the user straight back into the same rejected write.
+        setFeedback({
+          tone: 'error',
+          text: reasons.length === 1 && reasons[0] === conflictMessage
+            ? conflictMessage
+            : `${t('st.nbSearch.keys.saveFailed')} ${reasons.join(' ')}`,
+        });
+      } else if (statusRefreshFailed) {
+        setFeedback({ tone: 'info', text: t('st.nbSearch.statusRefreshStale') });
+      } else {
+        setFeedback({ tone: 'success', text: t('st.nbSearch.saved') });
+      }
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -341,17 +526,27 @@ export function NbSearchSection() {
     testAbort.current?.abort();
   };
 
-  const attentionCount = capabilities.providers.instances.filter(
-    (i) => i.availability === 'unavailable' || i.issues.length > 0,
-  ).length;
+  // Only a configured service that actually fails is worth a number on the tab.
+  // The engine ships seventeen instances, so counting every unavailable one
+  // turns a normal page into a permanent alarm.
+  const attentionCount = capabilities.providers.instances.filter((instance) => {
+    if (!configuredInstanceIds.has(instance.id)) return false;
+    const instanceDraft = draft.nbSearch.providers[instance.id];
+    const state = serviceState(instance, instanceDraft?.enabled ?? instance.enabled);
+    return state === 'needsKey' || state === 'failed';
+  }).length;
 
   return (
-    // Bottom padding after the sticky action bar keeps the last card (and the
-    // diagnostics error line) scrollable fully above the bar instead of
-    // sliding under it at max scroll. The 160px scroll-margin makes every
-    // scroll-into-view (proof assertions, keyboard focus) park controls and
-    // alerts above the bar even when its buttons wrap to a second row.
-    <div className="space-y-4 pb-16 [&_input]:scroll-mb-40 [&_textarea]:scroll-mb-40 [&_button]:scroll-mb-40 [&_[role=switch]]:scroll-mb-40 [&_[role=radio]]:scroll-mb-40 [&_[role=alert]]:scroll-mb-40">
+    <div className="space-y-4">
+      {statusStale !== null ? (
+        <div className="rounded-md border border-amber-rule/60 bg-amber-card px-3 py-1.5 text-[11px] text-amber-ink" data-nb-search-status-stale>
+          <p>{t('st.nbSearch.statusRefreshStale')}</p>
+          <button type="button" className={`${SECONDARY_BUTTON} mt-1`} disabled={refreshRetrying || saving}
+            onClick={() => { void retryCapabilitiesRefresh(); }}>
+            {t('common.retry')}
+          </button>
+        </div>
+      ) : null}
       {/* Sub-page Tab bar navigation */}
       <NbSearchTabBar
         activeTab={activeTab}
@@ -395,6 +590,7 @@ export function NbSearchSection() {
           defaultSearchLane={draft.nbSearch.defaultSearchLane}
           onSelectLane={updateDefaultLane}
           saving={saving}
+          advanced={advancedBinding}
         />
       </div>
 
@@ -412,6 +608,7 @@ export function NbSearchSection() {
           onChangeChain={updateFetchChain}
           onToggleInherited={updateFetchChainInherited}
           saving={saving}
+          advanced={advancedBinding}
         />
       </div>
 
@@ -425,13 +622,19 @@ export function NbSearchSection() {
         <NbSearchProvidersTab
           key={scopeId}
           capabilities={capabilities}
+          configuredInstanceIds={configuredInstanceIds}
           draftProviders={draft.nbSearch.providers}
           credentialSlots={draft.nbSearch.credentialSlots}
+          keyDrafts={keyDrafts}
+          nbSearchDraft={draft.nbSearch}
           onUpdateProvider={updateProviders}
           onUpdateCredentialEnv={updateCredentialEnv}
+          onKeyDraftChange={updateKeyDraft}
+          onAddService={addService}
+          onRemoveService={removeService}
+          onDraftChange={updateNbSearchDraft}
           readCredential={readCredential}
-          writeCredential={writeCredential}
-          credentialDisabled={dirty || saving}
+          readKeyUsage={readKeyUsage}
           saving={saving}
         />
       </div>
@@ -453,10 +656,11 @@ export function NbSearchSection() {
           }}
           onCancelCheck={cancelCheck}
           saving={saving}
+          advanced={advancedBinding}
         />
       </div>
 
-      {/* Persistent / Sticky Action Bar with dirty state, discard, and save */}
+      {/* Page-end save row with dirty state and the last result. */}
       <NbSearchActionBar
         dirty={dirty}
         saving={saving}

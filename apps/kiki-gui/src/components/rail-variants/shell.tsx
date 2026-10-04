@@ -1,10 +1,7 @@
 /**
- * Small shared rail chrome: the overview mode preference and its switch, the
- * agent state mark, and the in-place approve / reject.
- *
- * The mode is a device preference kept in `kiki.railMode`; with nothing
- * stored the overview opens in the standard mode. It changes only the
- * overview block; every other part of the rail is the same in both modes.
+ * Shared mode switch, agent state marks and in-place approval actions.
+ * The right-panel mode is a device preference kept in `kiki.railMode`;
+ * with nothing stored the conversation opens in standard mode.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -17,7 +14,7 @@ import { pendingId } from './model';
 export type RailMode = 'default' | 'cockpit';
 
 const STORAGE_KEY = 'kiki.railMode';
-const listeners = new Set<() => void>();
+const listeners = new Set<(mode: RailMode) => void>();
 
 function readStored(): string | null {
   try {
@@ -32,13 +29,18 @@ export function useRailMode(): [RailMode, (next: RailMode) => void] {
   const [stored, setStored] = useState(readStored);
   const mode: RailMode = stored === 'cockpit' ? 'cockpit' : 'default';
   useEffect(() => {
-    const sync = () => { setStored(readStored()); };
+    const sync = (next: RailMode) => { setStored(next); };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === STORAGE_KEY || event.key === null) setStored(readStored());
+    };
     listeners.add(sync);
-    return () => { listeners.delete(sync); };
+    window.addEventListener('storage', onStorage);
+    return () => { listeners.delete(sync); window.removeEventListener('storage', onStorage); };
   }, []);
   const choose = useCallback((next: RailMode) => {
     try { localStorage.setItem(STORAGE_KEY, next); } catch { /* storage unavailable: this window only */ }
-    for (const listener of listeners) listener();
+    setStored(next);
+    for (const listener of listeners) listener(next);
   }, []);
   return [mode, choose];
 }
@@ -48,8 +50,7 @@ export const FOCUS_RING = 'focus-visible:outline-2 focus-visible:outline-offset-
 const MODE_LABEL = { default: 'rail.mode.default', cockpit: 'rail.mode.cockpit' } as const;
 
 /**
- * Two-segment switch in the rail head. `controls` names the block it changes
- * (the overview), so assistive tech reads the scope too.
+ * Two-segment right-panel mode switch.
  */
 export function ModeSwitch({ mode, onChoose, controls }: { mode: RailMode; onChoose: (next: RailMode) => void; controls?: string }) {
   const { t } = useI18n();

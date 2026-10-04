@@ -28,6 +28,7 @@ const { client, navigate, scope } = vi.hoisted(() => ({
     listNamedAgentProfiles: vi.fn(),
     getAuth: vi.fn(),
     createSession: vi.fn(),
+    getPersona: vi.fn(),
   },
   navigate: vi.fn(),
 }));
@@ -68,6 +69,7 @@ beforeEach(() => {
   client.listNamedAgentProfiles.mockReset().mockResolvedValue({ items: [] });
   client.getAuth.mockReset().mockResolvedValue({ ready: true });
   client.createSession.mockReset().mockResolvedValue({ id: 'session-new' });
+  client.getPersona.mockReset();
 });
 
 afterEach(async () => {
@@ -79,13 +81,13 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-function DraftHarness(props: { initialWorkspaceId?: string; initialProfile?: string; prefillNavigationKey?: string }) {
+function DraftHarness(props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; prefillNavigationKey?: string }) {
   latestDraftState = useNewSessionDraft(props);
   return null;
 }
 
 async function renderDraft(
-  props: { initialWorkspaceId?: string; initialProfile?: string; prefillNavigationKey?: string } = {},
+  props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; prefillNavigationKey?: string } = {},
 ): Promise<QueryClient> {
   const container = document.createElement('div');
   document.body.append(container);
@@ -300,6 +302,41 @@ describe('useNewSessionDraft agent profile scope', () => {
     await settleDraft(() => client.createSession.mock.calls.length > 0);
     return client.createSession.mock.calls.at(-1)?.[0] as SessionCreate;
   };
+
+  it('refreshes workspace choices after creation but leaves them unchanged on a failed submit', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    const queryClient = await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    const before = client.listWorkspaces.mock.calls.length;
+    client.createSession.mockRejectedValueOnce(new Error('directory unavailable'));
+    await act(async () => { await state.send('Start work', []); });
+    expect(client.listWorkspaces).toHaveBeenCalledTimes(before);
+    state = await settleDraft((value) => value.error === 'directory unavailable' && !value.busy);
+    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_new', 'New')] });
+    await act(async () => { await state.send('Start work', []); });
+    state = await settleDraft((value) => value.workspaces.some((item) => item.id === 'wd_new'));
+    expect(queryClient.getQueryData<{ items: { id: string }[] }>(['workspaces'])?.items[0]?.id).toBe('wd_new');
+    expect(client.createSession).toHaveBeenCalledTimes(2);
+    expect(navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it('hands the confirmed creation to the exact connection scope, not the local draft scope', async () => {
+    scope.id = 'space:example';
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    const queryClient = await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    client.createSession.mockRejectedValueOnce(new Error('creation failed'));
+    await act(async () => { await state.send('Start work', []); });
+    expect(queryClient.getQueryData(['space-view-target', scope.id, 'session', 'session-new'])).toBeUndefined();
+    expect(navigate).not.toHaveBeenCalled();
+    state = await settleDraft((value) => value.error === 'creation failed' && !value.busy);
+    await act(async () => { await state.send('Start work', []); });
+    expect(queryClient.getQueryData(['space-view-target', scope.id, 'session', 'session-new'])).toBe(true);
+    expect(queryClient.getQueryData(['space-view-target', 'local', 'session', 'session-new'])).toBeUndefined();
+    expect(navigate).toHaveBeenCalledWith('/s/session-new', expect.objectContaining({
+      state: expect.objectContaining({ createdSession: { id: 'session-new', scopeId: scope.id }, initialPrompt: 'Start work' }),
+    }));
+  });
 
   it('uses workspace Git metadata and refreshes it with the workspace list', async () => {
     client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
@@ -1186,7 +1223,7 @@ describe('buildAgentProfileOptions', () => {
         profile({
           name: 'agent',
           main: true,
-          subagents: [
+          allowed_subagents: [
             'reviewer',
             {
               name: 'writer',
@@ -1239,18 +1276,30 @@ describe('new-session SSH creation handoff', () => {
     client.klient.rest.ssh.addSessionHost.mockReset().mockResolvedValue({});
   });
   const hosts = [{ kind: 'ssh' as const, id: 'example-host', name: 'Example host' }];
-  it.each(['prompt', 'skill'])('joins selected hosts after creation and before navigating the first %s', async (kind) => {
+  it.each(['prompt', 'skill'])('joins selected hosts after creation and before navigating the first %s, and keeps them out of it', async (kind) => {
     const join = deferred<object>();
     client.klient.rest.ssh.addSessionHost.mockReturnValue(join.promise);
     await renderDraft();
     const state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'fixture/model');
     let sending: void | Promise<unknown>;
-    await act(async () => { sending = kind === 'prompt' ? state.send('Inspect', hosts) : state.activateSkill('inspect', '', hosts); });
+    await act(async () => { sending = kind === 'prompt' ? state.send('Inspect', hosts) : state.activateSkill('inspect', '--new\nKeep this line.', hosts, '/inspect --new\nKeep this line.'); });
     expect(client.klient.rest.ssh.addSessionHost).toHaveBeenCalledWith('session-new', 'example-host');
     expect(navigate).not.toHaveBeenCalled();
     await act(async () => { join.resolve({}); await sending; });
+    // The join is a session fact; the message itself carries no host.
+    const carried = navigate.mock.calls[0]![1]!.state as Record<string, unknown>;
+    expect(JSON.stringify(carried)).not.toContain('example-host');
     expect(navigate).toHaveBeenCalledWith('/s/session-new', expect.objectContaining({ state: expect.objectContaining(kind === 'prompt'
-      ? { initialAttachments: hosts } : { initialSkill: { name: 'inspect', args: '', attachments: hosts } }) }));
+      ? { initialAttachments: [], initialPrompt: 'Inspect' } : { initialSkill: { name: 'inspect', args: '--new\nKeep this line.', attachments: [], userInput: '/inspect --new\nKeep this line.' } }) }));
+  });
+  it('keeps file mentions on the first message while the host joins the session', async () => {
+    await renderDraft();
+    const state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'fixture/model');
+    const mention = { kind: 'file' as const, path: 'src/app.ts', name: 'app.ts', isDir: false };
+    await act(async () => { await state.send('Inspect', [...hosts, mention]); });
+    expect(client.klient.rest.ssh.addSessionHost).toHaveBeenCalledWith('session-new', 'example-host');
+    const carried = navigate.mock.calls[0]![1]!.state as { initialAttachments: unknown };
+    expect(carried.initialAttachments).toEqual([mention]);
   });
   it('does not hand off a prompt after join failure and reuses the created session on retry', async () => {
     client.klient.rest.ssh.addSessionHost.mockRejectedValueOnce(new Error('Join failed'));
@@ -1262,5 +1311,58 @@ describe('new-session SSH creation handoff', () => {
     await act(async () => { await state.send('Inspect', hosts); });
     expect(client.createSession).toHaveBeenCalledTimes(1);
     expect(navigate).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('persona model and effort choice sources', () => {
+  beforeEach(() => {
+    client.listModels.mockResolvedValue({ items: [{
+      id: 'fixture/model', provider_id: 'fixture', remote_id: 'model',
+      support_efforts: ['high'], default_effort: 'high',
+    }] });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{
+      name: 'agent', source: 'builtin', main: true, disabled: false, routes: [],
+      pinned_model_alias: 'fixture/model', thinking_effort: 'high',
+    }] });
+    client.getPersona.mockResolvedValue({ revision: 'revision-1', definition: {
+      id: 'sample', name: 'Sample', description: 'Sample persona',
+      modelAlias: 'fixture/model', thinkingEffort: 'high',
+    } });
+  });
+
+  it.each([false, true])('shows persona defaults but submits only explicit same-value choices (explicit=%s)', async (explicit) => {
+    await renderDraft({ initialPersona: 'sample' });
+    let state = await settleDraft((value) => value.persona !== undefined && !value.personaPending && !value.agentProfileCatalogPending);
+    expect(state.modelOverride).toBe('fixture/model');
+    expect(state.effectiveEffort).toBe('high');
+    expect(readStoredDraft()['modelOverride']).toBeUndefined();
+    expect(readStoredDraft()['effortOverride']).toBeUndefined();
+    if (explicit) {
+      await act(async () => { state.setModelOverride('fixture/model'); state.setEffortOverride('high'); });
+      state = latestDraftState!;
+      expect(readStoredDraft()).toMatchObject({ modelOverride: 'fixture/model', effortOverride: 'high', modelFromProfile: false, effortFromProfile: false });
+    }
+    await act(async () => { await state.send('Hello', []); });
+    const body = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(body.persona).toBe('sample');
+    expect(body.agent_config?.model).toBe(explicit ? 'fixture/model' : undefined);
+    expect(body.agent_config?.thinking).toBe(explicit ? 'high' : undefined);
+    const handoff = navigate.mock.calls[0]![1].state;
+    expect(handoff.model).toBe(explicit ? 'fixture/model' : undefined);
+    expect(handoff.thinking).toBe(explicit ? 'high' : undefined);
+  });
+
+  it('keeps unpinned persona profile defaults inherited and clearing persona restores ordinary profile submission', async () => {
+    client.getPersona.mockResolvedValue({ revision: 'revision-1', definition: { id: 'sample', name: 'Sample', description: 'Sample persona' } });
+    await renderDraft({ initialPersona: 'sample' });
+    let state = await settleDraft((value) => value.persona !== undefined && !value.personaPending && !value.agentProfileCatalogPending);
+    expect(state.modelOverride).toBe('fixture/model');
+    await act(async () => { state.selectPersona(undefined); });
+    state = latestDraftState!;
+    await act(async () => { await state.send('Hello', []); });
+    const body = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(body.persona).toBeUndefined();
+    expect(body.agent_config).toMatchObject({ profile: 'agent', model: 'fixture/model', thinking: 'high' });
   });
 });

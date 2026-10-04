@@ -4,11 +4,13 @@ import { useConnection } from '../../../state/connection';
 import type { ModelMenuPreviewData } from './ModelMenuPreview';
 
 /** Only permission-affecting changes belong in the server's preview request. */
-export function modelMenuDraftPatch(patch: UpdateNamedAgentProfileRequest): AgentModelMenuDraft {
+export function modelMenuDraftPatch(patch: UpdateNamedAgentProfileRequest, profile?: NamedAgentProfile): AgentModelMenuDraft {
+  const aliases = patch.model_profiles?.map((entry) => ({ alias: entry.alias })) ?? patch.model_profiles;
+  const sameMenu = profile !== undefined && JSON.stringify(aliases ?? []) === JSON.stringify(profile.model_profiles?.map((entry) => ({ alias: entry.alias })) ?? []);
   return {
     pinned_model_alias: patch.pinned_model_alias,
     restrict_models_to_menu: patch.restrict_models_to_menu,
-    model_profiles: patch.model_profiles,
+    model_profiles: sameMenu ? undefined : aliases,
     allowed_models: patch.allowed_models,
     deny_models: patch.deny_models,
     executor: patch.executor,

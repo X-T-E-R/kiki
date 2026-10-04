@@ -13,6 +13,9 @@ import { isRainbowDancing, renderDanceWelcomeHeader } from '#/tui/easter-eggs/da
 import type { AppState } from '#/tui/types';
 import { currentTheme } from '#/tui/theme';
 
+const LOGIN_HINT = 'Run /login to get started.';
+const MODEL_UNSET_HINT = 'not set';
+
 export class WelcomeComponent implements Component {
   private state: AppState;
 
@@ -32,10 +35,10 @@ export class WelcomeComponent implements Component {
     if (safeWidth < 24) {
       const title = chalk.bold.hex(currentTheme.palette.primary)('Welcome to Kiki!');
       const prompt = isLoggedOut
-        ? chalk.hex(currentTheme.palette.warning)('Run /login or /provider to get started.')
+        ? chalk.hex(currentTheme.palette.warning)(LOGIN_HINT)
         : chalk.hex(currentTheme.palette.textDim)('Send /help for help information.');
       const model = isLoggedOut
-        ? chalk.hex(currentTheme.palette.warning)('not set, run /login or /provider')
+        ? chalk.hex(currentTheme.palette.warning)(MODEL_UNSET_HINT)
         : (effectiveActiveModel?.displayName ?? effectiveActiveModel?.model ?? this.state.model);
       return ['', title, prompt, `Model: ${model}`].map((line) =>
         truncateToWidth(line, safeWidth, '…'),
@@ -59,7 +62,7 @@ export class WelcomeComponent implements Component {
     const dim = chalk.hex(currentTheme.palette.textDim);
     const labelStyle = chalk.bold.hex(currentTheme.palette.textDim);
     const rightRow1 = truncateToWidth(
-      dim(isLoggedOut ? 'Run /login or /provider to get started.' : 'Send /help for help information.'),
+      dim(isLoggedOut ? LOGIN_HINT : 'Send /help for help information.'),
       textWidth,
       '…',
     );
@@ -73,7 +76,7 @@ export class WelcomeComponent implements Component {
     }
 
     const modelValue = isLoggedOut
-      ? chalk.hex(currentTheme.palette.warning)('not set, run /login or /provider')
+      ? chalk.hex(currentTheme.palette.warning)(MODEL_UNSET_HINT)
       : (effectiveActiveModel?.displayName ?? effectiveActiveModel?.model ?? this.state.model);
 
     const infoLines = [

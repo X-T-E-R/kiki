@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 
 import type { DaemonConnection } from "./daemon";
 import type { VscodeIntegrationSettings } from "./settings";
+import { StreamSave } from "./stream-save";
 
 interface HostRequest {
   readonly channel: "kiki.vscode-host.request";
@@ -26,6 +27,10 @@ const EXTERNAL_OPEN_SCHEMES = new Set(["http:", "https:", "mailto:"]);
 export class VscodeHostBridge {
   private readonly injectedEditorContext = new Map<string, string>();
   private readonly connection: DaemonConnection;
+  private readonly defaultOwner = {};
+  private readonly saves = new Map<string, { owner: object; save: StreamSave }>();
+  private readonly ownerGenerations = new WeakMap<object, number>();
+  private readonly closedOwners = new WeakSet<object>();
 
   constructor(
     connection: DaemonConnection,
@@ -38,7 +43,7 @@ export class VscodeHostBridge {
     this.settings = settings;
   }
 
-  async handle(message: unknown): Promise<HostResponse | null> {
+  async handle(message: unknown, owner: object = this.defaultOwner): Promise<HostResponse | null> {
     const request = parseHostRequest(message);
     if (request === null) return null;
     try {
@@ -46,7 +51,7 @@ export class VscodeHostBridge {
         channel: "kiki.vscode-host.response",
         id: request.id,
         ok: true,
-        result: await this.dispatch(request),
+        result: await this.dispatch(request, owner),
       };
     } catch (error) {
       return {
@@ -58,7 +63,18 @@ export class VscodeHostBridge {
     }
   }
 
-  private async dispatch(request: HostRequest): Promise<unknown> {
+  async releaseOwner(owner: object, closed = true): Promise<void> {
+    this.ownerGenerations.set(owner, (this.ownerGenerations.get(owner) ?? 0) + 1);
+    if (closed) this.closedOwners.add(owner);
+    const pending: Promise<void>[] = [];
+    for (const [id, entry] of this.saves) if (entry.owner === owner) {
+      this.saves.delete(id);
+      pending.push(entry.save.abort());
+    }
+    await Promise.all(pending);
+  }
+
+  private async dispatch(request: HostRequest, owner: object): Promise<unknown> {
     switch (request.method) {
       case "connection.discover":
         return { config: this.connection, persist: false };
@@ -80,6 +96,35 @@ export class VscodeHostBridge {
         return this.pickDirectories(true);
       case "file.save":
         return this.saveFile(request.params);
+      case "file.save.open": {
+        if (this.closedOwners.has(owner)) throw new Error("This view is closed.");
+        const generation = this.ownerGenerations.get(owner) ?? 0;
+        const target = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.file(readString(request.params, "filename")) });
+        if (target === undefined || this.closedOwners.has(owner) || (this.ownerGenerations.get(owner) ?? 0) !== generation) return null;
+        if (target.scheme !== "file") return { supported: false };
+        const save = await StreamSave.open(target.fsPath);
+        if (this.closedOwners.has(owner) || (this.ownerGenerations.get(owner) ?? 0) !== generation) { await save.abort(); return null; }
+        const sinkId = crypto.randomUUID();
+        this.saves.set(sinkId, { owner, save });
+        return { supported: true, sinkId };
+      }
+      case "file.save.write": {
+        const entry = this.saveEntry(request.params, owner);
+        const offset = request.params["offset"];
+        if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0) throw new TypeError("Invalid save offset.");
+        return { bytes: await entry.save.write(readSaveChunk(request.params["bytes"]), offset) };
+      }
+      case "file.save.close": {
+        const entry = this.saveEntry(request.params, owner);
+        try { return await entry.save.close(); }
+        finally { this.saves.delete(readString(request.params, "sinkId")); }
+      }
+      case "file.save.abort": {
+        const entry = this.saveEntry(request.params, owner);
+        this.saves.delete(readString(request.params, "sinkId"));
+        await entry.save.abort();
+        return undefined;
+      }
       case "file.writeText":
         await vscode.workspace.fs.writeFile(
           vscode.Uri.file(readString(request.params, "path")),
@@ -117,6 +162,12 @@ export class VscodeHostBridge {
       default:
         throw new Error(`Unknown VS Code host method: ${request.method}`);
     }
+  }
+
+  private saveEntry(params: Record<string, unknown>, owner: object): { owner: object; save: StreamSave } {
+    const entry = this.saves.get(readString(params, "sinkId"));
+    if (entry === undefined || entry.owner !== owner) throw new Error("The save stream does not belong to this view.");
+    return entry;
   }
 
   private async openExternal(url: string): Promise<void> {
@@ -255,6 +306,16 @@ function readNumberArray(params: Record<string, unknown>, key: string): readonly
     throw new TypeError(`${key} must be a number array.`);
   }
   return value;
+}
+
+function readSaveChunk(value: unknown): Uint8Array {
+  let bytes: Uint8Array;
+  if (value instanceof ArrayBuffer) bytes = new Uint8Array(value);
+  else if (ArrayBuffer.isView(value)) bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  else if (Array.isArray(value) && value.length <= 64 * 1024 && value.every((item) => Number.isInteger(item) && item >= 0 && item <= 255)) bytes = Uint8Array.from(value);
+  else throw new TypeError("Save bytes must be a binary chunk.");
+  if (bytes.byteLength > 64 * 1024) throw new TypeError("Save chunk exceeds 64 KiB.");
+  return bytes;
 }
 
 function mimeTypeForPath(path: string): string {

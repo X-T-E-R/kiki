@@ -145,8 +145,8 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
   navigateRef.current = navigate;
   useEffect(() => {
     if (host.onNotificationClick === undefined) return;
-    return host.onNotificationClick((route) => {
-      if (route.startsWith('/')) navigateRef.current(route);
+    return host.onNotificationClick((route, homeId) => {
+      if (homeId === undefined && route.startsWith('/')) navigateRef.current(route);
     });
   }, [host]);
 }

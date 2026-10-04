@@ -1,10 +1,12 @@
 /**
- * Connections → "Add a provider from the directory": the models.dev catalog
- * the server reads, searchable, one row per provider. A row opens an inline
- * import form (local id, base URL when the entry has none, API key); entries
- * this version cannot reach stay listed, greyed, with the reason, so the user
- * learns why rather than wondering where they went. Importing an id that
- * already exists is a refresh, and the form says so before the press.
+ * The models.dev directory as a way to pick a service, inside "Add
+ * connection". It is a source of names, addresses and model lists, not a
+ * separate thing to manage: picking an entry opens the same form a manual
+ * entry uses, prefilled, and saving writes the same connection the rest of the
+ * page lists. An entry this version cannot reach stays listed with its reason,
+ * so a person learns why rather than wondering where it went. An id that is
+ * already configured makes the form an update of that connection, and says so
+ * before the press.
  */
 
 import { useId, useMemo, useState } from 'react';
@@ -21,7 +23,6 @@ import { InlineEditor } from '../InlineEditor';
 import { protocolLabel } from '../providerPresets';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
-import { SectionCard } from './SectionCard';
 import { FORM_LABEL } from './SettingsPrimitives';
 
 export const CATALOG_PROVIDERS_QUERY_KEY = ['catalog-providers'] as const;
@@ -57,11 +58,11 @@ function matches(item: CatalogProviderItem, query: string): boolean {
   return needle === '' || item.name.toLowerCase().includes(needle) || item.id.toLowerCase().includes(needle);
 }
 
-export function CatalogImportCard({
+export function CatalogImportPicker({
   configuredIds,
   onImported,
 }: {
-  /** Provider ids already configured: importing one of these refreshes it. */
+  /** Provider ids already configured: importing one of these updates it. */
   configuredIds: ReadonlySet<string>;
   onImported: () => Promise<void>;
 }) {
@@ -85,48 +86,46 @@ export function CatalogImportCard({
   const total = catalog.data?.items.length ?? 0;
 
   return (
-    <SectionCard id="st-card-catalog-import" title={t('st.catalog.title')}>
-      <div className="space-y-3">
-        <Hint>{t('st.catalog.intro')}</Hint>
-        {total > 0 ? (
-          <div className="max-w-[420px]">
-            <SearchField value={query} onChange={setQuery} placeholder={t('st.catalog.searchPlaceholder')} ariaLabel={t('st.catalog.searchAria')} />
-          </div>
-        ) : null}
-        {catalog.isLoading ? <Hint>{t('st.catalog.loading')}</Hint> : null}
-        {catalog.isError ? (
-          <div className="flex flex-wrap items-center gap-3">
-            <FeedbackLine feedback={{ tone: 'error', text: t('st.catalog.loadFailed', { detail: errorText(locale, catalog.error) }) }} />
-            <button type="button" className={SECONDARY_BUTTON} onClick={() => void catalog.refetch()}>{t('common.retry')}</button>
-          </div>
-        ) : null}
-        {catalog.isSuccess && total === 0 ? <Hint>{t('st.catalog.empty')}</Hint> : null}
-        {total > 0 && items.length === 0 ? (
-          <p data-catalog-no-match className="text-[12px] text-ink-faint">{t('st.catalog.noMatch', { query: query.trim() })}</p>
-        ) : null}
-        {items.length > 0 ? (
-          <ul data-catalog-list className="max-h-[420px] overflow-y-auto rounded-lg border border-hairline bg-panel">
-            {items.map((item) => (
-              <CatalogRow
-                key={item.id}
-                item={item}
-                exists={configuredIds.has(item.id)}
-                configuredIds={configuredIds}
-                open={openId === item.id}
-                onOpen={() => { setOpenId(item.id); setResult(null); }}
-                onClose={() => { setOpenId(null); }}
-                onImported={async (name, count) => {
-                  setOpenId(null);
-                  setResult({ tone: 'success', text: tp('st.catalog.imported', count, { name }) });
-                  await onImported();
-                }}
-              />
-            ))}
-          </ul>
-        ) : null}
-        <FeedbackLine feedback={result} />
-      </div>
-    </SectionCard>
+    <div id="st-card-catalog-import" className="space-y-3" data-catalog-picker>
+      <Hint>{t('st.catalog.intro')}</Hint>
+      {total > 0 ? (
+        <div className="max-w-[420px]">
+          <SearchField value={query} onChange={setQuery} placeholder={t('st.catalog.searchPlaceholder')} ariaLabel={t('st.catalog.searchAria')} />
+        </div>
+      ) : null}
+      {catalog.isLoading ? <Hint>{t('st.catalog.loading')}</Hint> : null}
+      {catalog.isError ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <FeedbackLine feedback={{ tone: 'error', text: t('st.catalog.loadFailed', { detail: errorText(locale, catalog.error) }) }} />
+          <button type="button" className={SECONDARY_BUTTON} onClick={() => void catalog.refetch()}>{t('common.retry')}</button>
+        </div>
+      ) : null}
+      {catalog.isSuccess && total === 0 ? <Hint>{t('st.catalog.empty')}</Hint> : null}
+      {total > 0 && items.length === 0 ? (
+        <p data-catalog-no-match className="text-[12px] text-ink-faint">{t('st.catalog.noMatch', { query: query.trim() })}</p>
+      ) : null}
+      {items.length > 0 ? (
+        <ul data-catalog-list className="max-h-[420px] overflow-y-auto rounded-lg border border-hairline bg-panel">
+          {items.map((item) => (
+            <CatalogRow
+              key={item.id}
+              item={item}
+              exists={configuredIds.has(item.id)}
+              configuredIds={configuredIds}
+              open={openId === item.id}
+              onOpen={() => { setOpenId(item.id); setResult(null); }}
+              onClose={() => { setOpenId(null); }}
+              onImported={async (name, count) => {
+                setOpenId(null);
+                setResult({ tone: 'success', text: tp('st.catalog.imported', count, { name }) });
+                await onImported();
+              }}
+            />
+          ))}
+        </ul>
+      ) : null}
+      <FeedbackLine feedback={result} />
+    </div>
   );
 }
 function CatalogRow({

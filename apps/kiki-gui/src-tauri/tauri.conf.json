@@ -43,6 +43,9 @@
     "resources": [
       "../THIRD_PARTY_NOTICES.md"
     ],
+    "macOS": {
+      "minimumSystemVersion": "13.5"
+    },
     "linux": {
       "deb": {
         "postInstallScript": "./linux/postinst.sh",

@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ModelCatalogItem, ModelGenerationMigrationPreviewResponse } from '@kiki/protocol';
+import type {
+  GenerationParametersPatch,
+  GenerationParametersWire,
+  ModelCatalogItem,
+  ModelEntity,
+  ModelGenerationMigrationPreviewResponse,
+  SessionTitleTrigger,
+} from '@kiki/protocol';
 
 import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
 import {
@@ -13,6 +20,7 @@ import {
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
   sessionTitleModelPatch,
+  sessionTitleSettingsPatch,
   validateImagePolicyDraft,
   validateRequestIdentityLayerDraft,
   writeSettings,
@@ -34,7 +42,8 @@ import {
   SavedGenerationParametersEditor,
 } from '../ProviderFields';
 import { OAUTH_METHODS_QUERY_KEY } from '../AccountSignIn';
-import { GlobalCompactionCard, ModelContextFields } from './ContextWindowSettings';
+import { GlobalCompactionCard, ModelContextFields, CompactPointTrack, useModelCompactionTrack } from './ContextWindowSettings';
+import { CompactPointField } from './CompactPointField';
 import { vendorLabelFor } from '../providerPresets';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
 import { REQUEST_IDENTITY_QUERY_KEY, useCustomIdentityChoices } from './IdentitySection';
@@ -47,6 +56,7 @@ import { effortLabel } from './profileEditor/profileDraft';
 import { SettingField } from './fields';
 import { useInstantSave } from './useInstantSave';
 import { LoopLimitsCard } from './LoopLimitsCard';
+import { ModelSwitchCard } from './ModelSwitchCard';
 import {
   ModelEngineFieldError,
   ModelEngineFields,
@@ -56,7 +66,39 @@ import {
   type EngineField,
   type ModelEngineDraft,
 } from './ModelEngineFields';
+import { MainUsagePolicyFields, type SharedUsageEdit, type UsagePolicyView } from './MainUsagePolicyFields';
+import {
+  EMPTY_USAGE_BRANCH,
+  USAGE_POLICY_FIELDS,
+  USAGE_POSITIONS,
+  usageBranchDraft,
+  usageBranchProblem,
+  usageEffectiveFor,
+  setUsageText,
+  usagePolicyDraftsEqual,
+  usagePolicyPatch,
+  usageSourceFor,
+  type UsageBranchDraft,
+  type UsagePolicyDraft,
+  type UsagePolicyField,
+  type UsagePosition,
+} from './mainUsagePolicyDraft';
 import { useSavedTick } from './useSavedTick';
+import { QuestionGuardFields, rangeTextFor } from './QuestionGuardFields';
+import {
+  EMPTY_GUARD_DRAFT,
+  clearGuardNumber,
+  guardDraftFromGlobalEffective,
+  guardDraftFromModelBehavior,
+  guardDraftProblem,
+  guardDraftsEqual,
+  guardEffective,
+  guardInherited,
+  questionGuardModelPatch,
+  setGuardNumber,
+  type GuardNumberField,
+  type QuestionGuardDraft,
+} from './questionGuardDraft';
 import { DisclosureChevron, Icon } from '../icons';
 import { isInSubspace } from '../../lib/spaces';
 import { OriginBadge } from './spaces/OriginBadge';
@@ -451,7 +493,15 @@ export function GlobalDefaultsCard() {
     setBusy('title');
     setFeedback(null);
     try {
-      queryClient.setQueryData(['config'], await client.patchConfig(sessionTitleModelPatch(modelId)));
+      // The patch replaces the whole `session_title` domain, so it carries the
+      // stored moments: picking a model here must not clear them. An absent
+      // list is the engine default, so the model-only patch is left alone.
+      const stored = (await client.getConfig()).session_title?.triggers;
+      queryClient.setQueryData(['config'], await client.patchConfig(
+        stored === undefined
+          ? sessionTitleModelPatch(modelId)
+          : sessionTitleSettingsPatch(modelId, stored as readonly SessionTitleTrigger[]),
+      ));
       ping();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -484,18 +534,24 @@ export function GlobalDefaultsCard() {
       id: 'session-title',
       origin: { domain: 'session_title', keyPath: ['model'] },
       label: t('st.defaults.row.title'),
-      help: titleModel === '' && fastModel !== ''
-        ? t('st.defaults.row.titleFallsBack', { model: fastModel })
+      help: titleModel === ''
+        ? t('st.defaults.row.titleUnset')
         : t('st.defaults.row.titleHelp'),
       picker: (
         <SearchableSelect
           id="st-default-title-model"
           value={titleModel}
-          options={[{ value: '', label: t('st.sessionTitleModel.managedDefault'), description: t('st.sessionTitleModel.managedDesc') }, ...options]}
+          options={[{
+            value: '',
+            label: t('st.sessionTitleModel.noneDefault'),
+            // The engine writes titles with this model and nothing else, so
+            // the empty option is "no titles", not a hidden default.
+            description: t('st.sessionTitleModel.noneDesc'),
+          }, ...options]}
           onChange={(value) => void pickTitle(value)}
           ariaLabel={t('st.defaults.row.title')}
           searchPlaceholder={t('st.models.searchPlaceholder')}
-          emptyText={t('st.sessionTitleModel.managedDefault')}
+          emptyText={t('st.sessionTitleModel.noneDefault')}
           allowCustomValue
           disabled={busy !== null}
           buttonClassName={DEFAULT_PICKER}
@@ -1000,6 +1056,7 @@ export function DefaultsTab() {
   return (
     <div className="space-y-6">
       <GlobalDefaultsCard />
+      <ModelSwitchCard />
       <ThinkingCard />
       <GlobalCompactionCard />
       <LoopLimitsCard />
@@ -1194,7 +1251,23 @@ function ModelCatalogRowEditor({
   const [engine, setEngine] = useState<ModelEngineDraft | null>(null);
   const [engineBaseline, setEngineBaseline] = useState<ModelEngineDraft | null>(null);
   const [engineIssue, setEngineIssue] = useState<{ field: EngineField; text: string } | null>(null);
+  // The identity difference layer rides beside them: shared values stay in the
+  // editors above it, and only the differences live here.
+  const [usage, setUsage] = useState<UsagePolicyDraft | null>(null);
+  const [usageBaseline, setUsageBaseline] = useState<UsagePolicyDraft | null>(null);
+  const [usageIssue, setUsageIssue] = useState<{ position: UsagePosition; field: UsagePolicyField } | null>(null);
+  const [usageScope, setUsageScope] = useState<'shared' | UsagePosition>('shared');
+  // The shared scope of the parameter group writes the model's own generation
+  // parameters, which live in `parameters` rather than on the entity root.
+  const [sharedGeneration, setSharedGeneration] = useState<GenerationParametersWire>({});
+  const [sharedGenerationBaseline, setSharedGenerationBaseline] = useState<GenerationParametersWire>({});
+  // The question guard is a difference layer like the usage one above it: a
+  // field this model does not hold stays inheriting, so a row that is opened
+  // and saved without a decision writes no `behavior` at all.
+  const [behavior, setBehavior] = useState<QuestionGuardDraft>(EMPTY_GUARD_DRAFT);
+  const [behaviorBaseline, setBehaviorBaseline] = useState<QuestionGuardDraft>(EMPTY_GUARD_DRAFT);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const globalGuard = configQuery.data?.interaction?.askUserQuestionGuard;
 
   useEffect(() => {
     if (entity === undefined) return;
@@ -1220,7 +1293,75 @@ function ModelCatalogRowEditor({
     setEngineBaseline(next);
   }, [entity, engineDirty]);
 
-  const dirty = (draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline)) || compactDirty || engineDirty;
+  const usageDirty = usage !== null && usageBaseline !== null && !usagePolicyDraftsEqual(usage, usageBaseline);
+  const sharedGenerationDirty = JSON.stringify(sharedGeneration) !== JSON.stringify(sharedGenerationBaseline);
+  const behaviorDirty = !guardDraftsEqual(behavior, behaviorBaseline);
+  useEffect(() => {
+    if (entity === undefined || sharedGenerationDirty) return;
+    const next = entity.parameters ?? {};
+    setSharedGeneration(next);
+    setSharedGenerationBaseline(next);
+  }, [entity, sharedGenerationDirty]);
+  useEffect(() => {
+    // An unsaved difference must survive a re-read of the entity, so the
+    // baseline only moves when the stored value actually differs from it.
+    if (entity === undefined || behaviorDirty) return;
+    const next = guardDraftFromModelBehavior(entity.behavior);
+    if (!guardDraftsEqual(next, behaviorBaseline)) {
+      setBehavior(next);
+      setBehaviorBaseline(next);
+    }
+  }, [entity, behaviorDirty, behaviorBaseline]);
+  useEffect(() => {
+    // An unsaved difference must survive a re-read of the entity, so the
+    // baseline only moves when the stored value actually differs from it.
+    if (entity === undefined || usageDirty) return;
+    const branches: Record<string, UsageBranchDraft> = {};
+    for (const position of USAGE_POSITIONS) branches[position] = usageBranchDraft(entity, position);
+    const next = branches as UsagePolicyDraft;
+    if (usageBaseline !== null && usagePolicyDraftsEqual(next, usageBaseline)) return;
+    setUsage(next);
+    setUsageBaseline(next);
+  }, [entity, usageDirty, usageBaseline]);
+
+  /**
+   * The compaction point and track, read through whichever scope is on screen.
+   *
+   * An identity inherits the shared window and input limit but carries its own
+   * budget and trigger point, and the engine resolves the two with the same
+   * lower-of-the-two rule it uses everywhere else: a difference can tighten the
+   * budget, never widen it past the shared value. Feeding the shared numbers
+   * while an identity was on screen would show one scope's ceiling above the
+   * other scope's number, and dragging the track would write the shared point.
+   *
+   * This resolves the scope the engine would; it is not a second solver, and it
+   * never invents a value the shared layer or the identity does not hold.
+   */
+  const sharedContextBudget = engine !== null && /^\d+$/.test(engine.contextBudget.trim())
+    ? Number(engine.contextBudget.trim()) : undefined;
+  const compactionScope: UsagePosition | 'shared' = usageScope;
+  const identityBudget = compactionScope === 'shared' || usage === null
+    ? undefined
+    : identityUsageNumber(usage[compactionScope]?.contextBudget);
+  const identityPoint = compactionScope === 'shared' || usage === null
+    ? undefined
+    : identityUsageNumber(usage[compactionScope]?.autoCompact);
+  const compaction = useModelCompactionTrack({
+    windowTokens: draft?.maxContextSize ?? 0,
+    inputTokens: engine !== null && /^\d+$/.test(engine.maxInputSize.trim()) ? Number(engine.maxInputSize.trim()) : undefined,
+    // The budget on screen is the one that actually limits this scope.
+    contextBudget: minOptional(sharedContextBudget, identityBudget),
+    overrides: engine?.overrides,
+    // An identity that sets no point of its own is still measured against the
+    // model's shared point, unsaved edits included: the track answers "where
+    // does this scope land", and for an inheriting scope that is the shared
+    // value rather than the global default the engine would otherwise use.
+    autoCompact: compactionScope === 'shared' ? autoCompact : (identityPoint ?? autoCompact),
+    loopControl: configQuery.data?.loop_control,
+  });
+
+  const dirty = (draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline))
+    || compactDirty || engineDirty || usageDirty || sharedGenerationDirty || behaviorDirty;
   useDirtyReporter(`catalog-model:${item.id}`, dirty);
   // The row owns the collapse/close decision, and the draft stays dirty while
   // the editor is hidden, so the parent needs this flag either way.
@@ -1230,6 +1371,76 @@ function ModelCatalogRowEditor({
   if (entity === undefined || draft === null || baseline === null || engine === null || engineBaseline === null) {
     return <Hint>{t('st.models.loading')}</Hint>;
   }
+
+  /**
+   * Editing in the shared scope writes the model's own value. Each field goes
+   * to the draft that already owns it, so one Save writes both layers and no
+   * value is ever held in two places at once. `thinking_effort`, `service_tier`
+   * and `max_completion_tokens` live in `parameters`, which this editor writes
+   * through a sparse patch alongside the rest.
+   */
+  /**
+   * The compaction point, read and written through whichever scope is on
+   * screen: the shared scope edits the model's own value, an identity scope
+   * edits only its difference. One control, two layers.
+   */
+  const compactionPoint: number | undefined = compactionScope === 'shared' ? autoCompact : identityPoint;
+  const setCompactionPoint = (next: number | undefined) => {
+    if (compactionScope === 'shared') { setAutoCompact(next); return; }
+    if (usage === null) return;
+    setUsage({
+      ...usage,
+      [compactionScope]: setUsageText(
+        usage[compactionScope] ?? EMPTY_USAGE_BRANCH, 'auto_compact', next === undefined ? '' : String(next)),
+    });
+  };
+
+  // The shared scope falls back to the global default, so it keeps the shared
+  // hint. An identity scope inherits the shared value, which the scope line
+  // above already states, so the global-default sentence would be false here.
+  const compactionHint = compaction.hint === undefined
+    ? undefined
+    : compaction.hint === t('st.compact.pointHint')
+      ? (compactionScope === 'shared' ? compaction.hint : t('st.compact.pointHintIdentity'))
+      : compaction.hint;
+  const compactionTrack = (
+    <div className="space-y-1 pt-1">
+      <CompactPointTrack
+        label={t('st.compact.trackLabel')}
+        dataAttribute={`model:${entity.id}`}
+        usable={compaction.usable}
+        bounds={compaction.bounds}
+        reserved={compaction.reserved}
+        value={compaction.trackValue}
+        title={compaction.trackTitle}
+        reason={compaction.trackReason}
+        pinned={compaction.overridden}
+        onChange={setCompactionPoint}
+      />
+
+    </div>
+  );
+
+  const applySharedUsageEdit = (edit: SharedUsageEdit) => {
+    if (edit['auto_compact'] !== undefined) {
+      setAutoCompact(edit['auto_compact'] === '' ? undefined : Number(edit['auto_compact']));
+    }
+    if (edit['context_budget'] !== undefined) {
+      setEngine({ ...engine, contextBudget: edit['context_budget'] });
+      setEngineIssue(null);
+    }
+    if (edit['thinking_effort'] !== undefined) {
+      setSharedGeneration({ ...sharedGeneration, thinking_effort: edit['thinking_effort'] === '' ? undefined : edit['thinking_effort'] });
+    }
+    if (edit['service_tier'] !== undefined) {
+      setSharedGeneration({ ...sharedGeneration, service_tier: edit['service_tier'] === '' ? undefined : edit['service_tier'] as never });
+    }
+    if (edit['max_completion_tokens'] !== undefined) {
+      const text = edit['max_completion_tokens'];
+      setSharedGeneration({ ...sharedGeneration, max_completion_tokens: text === '' ? undefined : Number(text) });
+    }
+    setUsageIssue(null);
+  };
 
   const save = async () => {
     if (draft.remoteId.trim() === '') {
@@ -1262,12 +1473,31 @@ function ModelCatalogRowEditor({
         return;
       }
       setEngineIssue(null);
+      // The difference layer is validated before anything leaves the page, so a
+      // half-typed token count cannot ride along with a valid PATCH.
+      const usageProblem = usage === null
+        ? undefined
+        : USAGE_POSITIONS.map((position) => ({ position, field: usageBranchProblem(usage[position] ?? EMPTY_USAGE_BRANCH) }))
+          .find((entry) => entry.field !== undefined);
+      setUsageIssue(usageProblem?.field === undefined ? null : { position: usageProblem.position, field: usageProblem.field });
+      if (usageProblem?.field !== undefined) return;
+      const usagePatch = usage === null || usageBaseline === null ? {} : usagePolicyPatch(usage, usageBaseline);
+      const generationPatch = generationParametersPatch(sharedGeneration, sharedGenerationBaseline);
+      // A half-typed threshold must not ride along with an otherwise valid
+      // PATCH, so the guard refuses the whole save the same way the row above
+      // refuses a half-typed token count.
+      if (guardDraftProblem(behavior, (field) => rangeTextFor(t, field)) !== null) return;
+      const behaviorPatch = questionGuardModelPatch(behavior, behaviorBaseline);
       const fieldPatch = modelPatchBody(draft, baseline);
-      if (fieldPatch === null && !compactDirty && Object.keys(enginePatch).length === 0) return;
+      if (fieldPatch === null && !compactDirty && Object.keys(enginePatch).length === 0
+        && Object.keys(usagePatch).length === 0 && generationPatch === null && behaviorPatch === undefined) return;
       const patch = {
         ...(fieldPatch ?? {}),
         ...(compactDirty ? { auto_compact: autoCompact ?? null } : {}),
         ...enginePatch,
+        ...usagePatch,
+        ...(generationPatch === null ? {} : { parameters: generationPatch }),
+        ...(behaviorPatch === undefined ? {} : { behavior: behaviorPatch }),
       };
       await client.updateModel(entity.id, { ...patch, base_revision: entity.revision });
       await onSaved();
@@ -1275,6 +1505,9 @@ function ModelCatalogRowEditor({
       setBaseline(draft);
       setAutoCompactBaseline(autoCompact);
       setEngineBaseline(engine);
+      setUsageBaseline(usage);
+      setSharedGenerationBaseline(sharedGeneration);
+      setBehaviorBaseline(behavior);
       pingDetailSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -1322,11 +1555,43 @@ function ModelCatalogRowEditor({
         modelId={entity.id}
         windowTokens={draft.maxContextSize}
         inputTokens={/^\d+$/.test(engine.maxInputSize.trim()) ? Number(engine.maxInputSize.trim()) : undefined}
+        contextBudget={/^\d+$/.test(engine.contextBudget.trim()) ? Number(engine.contextBudget.trim()) : undefined}
+        overrides={engine.overrides}
         onWindowChange={(maxContextSize) => { setDraft({ ...draft, maxContextSize }); }}
         autoCompact={autoCompact}
         onAutoCompactChange={setAutoCompact}
         loopControl={configQuery.data?.loop_control}
+        hideCompaction
       />
+      {usage !== null ? (
+        <MainUsagePolicyFields
+          modelId={entity.id}
+          scope={usageScope}
+          showIndependent={entity.usage?.independent !== undefined}
+          onScopeChange={setUsageScope}
+          view={usagePolicyView(entity, usage, usageDirty, usageIssue, autoCompact, engine, sharedGeneration)}
+          onSharedChange={applySharedUsageEdit}
+          onChange={(next) => { setUsage(next); setUsageIssue(null); }}
+          compaction={compactionTrack}
+          compactionControl={(
+            <CompactPointField
+              dataAttribute={`model:${entity.id}`}
+              labelClassName="sr-only"
+              label={t('st.compact.pointLabel')}
+              value={compactionPoint}
+              onChange={setCompactionPoint}
+              windowTokens={compaction.usable}
+              placeholder={compactionScope === 'shared'
+                ? compaction.inheritedLabel
+                : t('st.usagePolicy.inheritSharedPoint')}
+              presets={compaction.presets}
+              presetsLabel={compaction.presetsLabel}
+              hint={compactionHint}
+            />
+          )}
+          disabled={saving}
+        />
+      ) : null}
       <AdvancedDisclosure id={`model-${entity.id}`} summary={t('st.models.advancedSummary')}>
         <label className={FORM_LABEL}>
           {t('st.models.remoteIdLabel')}
@@ -1364,8 +1629,20 @@ function ModelCatalogRowEditor({
           inheritLabel={t('st.requestIdentity.inheritProvider')}
           hint={t('st.models.requestIdentityHint')}
         />
-        <ModelEngineFields modelId={entity.id} value={engine} issue={engineIssue}
+        <ModelEngineFields modelId={entity.id} value={engine} issue={engineIssue} disabled={saving}
           onChange={(next) => { setEngine(next); setEngineIssue(null); }} />
+        <div className="border-t border-hairline pt-3" data-model-behavior={entity.id}>
+          <QuestionGuardFields
+            scope="model"
+            draft={behavior}
+            enabled={guardEffective(globalGuard, behavior).enabled}
+            disabled={saving}
+            inherited={(field) => guardInherited(field, globalGuard, behavior)}
+            onEnabledChange={(choice) => { setBehavior({ ...behavior, enabled: choice }); }}
+            onNumberCommit={(field: GuardNumberField, text) => { setBehavior(setGuardNumber(behavior, field, text)); }}
+            onNumberClear={(field) => { setBehavior(clearGuardNumber(behavior, field)); }}
+          />
+        </div>
       </AdvancedDisclosure>
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
@@ -1385,4 +1662,88 @@ function ModelCatalogRowEditor({
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+
+
+/** A stored identity value, or undefined when it inherits. */
+function identityUsageNumber(value: string | undefined): number | undefined {
+  return value === undefined || value === '' || !/^\d+$/.test(value.trim())
+    ? undefined
+    : Number(value.trim());
+}
+
+/** The lower of two optional token counts: the engine's own budget rule. */
+function minOptional(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.min(a, b);
+}
+
+/**
+ * The shared generation parameters, as a sparse patch: only the keys that
+ * changed, with `null` for a key the person emptied. Sending the whole object
+ * would otherwise rewrite values this editor does not even show.
+ */
+function generationParametersPatch(
+  draft: GenerationParametersWire,
+  baseline: GenerationParametersWire,
+): GenerationParametersPatch | null {
+  const patch: Record<string, unknown> = {};
+  for (const key of ['thinking_effort', 'service_tier', 'max_completion_tokens'] as const) {
+    if (JSON.stringify(draft[key]) === JSON.stringify(baseline[key])) continue;
+    patch[key] = draft[key] ?? null;
+  }
+  return Object.keys(patch).length === 0 ? null : patch as GenerationParametersPatch;
+}
+
+/**
+ * What the shared layer holds right now, and what each identity really gets.
+ *
+ * The shared side is read from the same effective projection the
+ * request-parameter editor shows, so the two never disagree about what
+ * "shared" means. The two draft-carried numbers are passed in rather than read
+ * back from the entity: while the editor is dirty the draft is the value the
+ * user is looking at, and a difference reviewed against a stale shared value
+ * would be reviewed against the wrong baseline.
+ *
+ * The resolved side comes from `usage_effective` / `usage_sources`, which the
+ * server computes per position. When the server does not report one, the row
+ * falls back to the position's own draft value, and simply shows no origin
+ * rather than inventing one.
+ */
+function usagePolicyView(
+  entity: ModelEntity,
+  draft: UsagePolicyDraft,
+  dirty: boolean,
+  issue: { position: UsagePosition; field: UsagePolicyField } | null,
+  autoCompact: number | undefined,
+  engine: ModelEngineDraft,
+  sharedGeneration: GenerationParametersWire,
+): UsagePolicyView {
+  const count = (text: string) => (/^\d+$/.test(text.trim()) ? Number(text.trim()) : undefined);
+  // The shared layer reads the drafts, not the stored entity: an edit made in
+  // the shared scope has to show up immediately, or the row would report the
+  // value the person just replaced.
+  const sharedText: Record<UsagePolicyField, string> = {
+    thinking_effort: sharedGeneration.thinking_effort ?? '',
+    service_tier: sharedGeneration.service_tier === undefined
+      ? (typeof entity.service_tier === 'string' ? entity.service_tier : '')
+      : (typeof sharedGeneration.service_tier === 'string' ? sharedGeneration.service_tier : ''),
+    auto_compact: String(autoCompact ?? entity.auto_compact ?? ''),
+    context_budget: count(engine.contextBudget) === undefined ? '' : String(count(engine.contextBudget)),
+    max_completion_tokens: sharedGeneration.max_completion_tokens === undefined
+      ? ''
+      : String(sharedGeneration.max_completion_tokens),
+  };
+  const resolved: Record<string, UsagePolicyView['resolved'][UsagePosition]> = {};
+  for (const position of USAGE_POSITIONS) {
+    const table = usageEffectiveFor(entity, position) ?? {};
+    resolved[position] = Object.fromEntries(USAGE_POLICY_FIELDS.map((field) => {
+      const raw = table[field];
+      const value = raw === undefined || typeof raw === 'object' ? '' : String(raw);
+      return [field, { value, source: usageSourceFor(entity, position, field) }];
+    }));
+  }
+  return { draft, shared: sharedText, resolved: resolved as UsagePolicyView['resolved'], issue, dirty };
 }

@@ -131,6 +131,7 @@ export function resetDraftMemoryForTests(): void {
 export interface ComposerSessionState {
   attachments: readonly ComposerAttachment[];
   annotations: readonly SelectionAnnotation[];
+  quote?: string | null;
   /** Pill overrides; `undefined` means "no local override" (store/default). */
   permissionMode: PermissionMode | undefined;
   planMode: boolean | undefined;
@@ -368,6 +369,7 @@ export function restorePromptToDraft(sessionId: string, content: readonly import
   writeComposerState(sessionId, {
     attachments: [...(previous.attachments ?? []), ...restored],
     annotations: previous.annotations ?? [],
+    quote: previous.quote,
     permissionMode: previous.permissionMode,
     planMode: previous.planMode,
     planGate: previous.planGate,

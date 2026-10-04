@@ -7,10 +7,12 @@ import { useHost } from '../../../host';
 import { useI18n } from '../../../i18n';
 import { SPACE_COLORS, homesApi, isAbsolutePath, suggestSpacePath } from '../../../lib/spaces';
 import { useConnection } from '../../../state/connection';
+import type { KikiClient } from '../../../lib/client';
 import { FeedbackLine, type Feedback } from '../../controls';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../../Dialog';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { FieldIssue, FORM_LABEL, SettingsSegmented } from '../SettingsPrimitives';
+import { AdvancedDetails } from '../fields';
 
 type Inherit = NonNullable<CreateSpaceRequest['inherit']>;
 
@@ -22,9 +24,17 @@ const DEFAULT_INHERIT: Required<Inherit> = {
 
 type RowKey = keyof Inherit;
 
-const ROWS: readonly { key: RowKey; labelKey: I18nKey }[] = [
-  { key: 'config', labelKey: 'st.spaces.inh.config' },
+/**
+ * Credentials decides whether this space shares the main space's accounts, so
+ * it stays on the first screen. Everything else is cold configuration: a
+ * person creating a space has not yet decided to change how plugins or MCP
+ * servers behave, and nine rows of it hides the one answer that matters here.
+ */
+const FIRST_SCREEN_ROWS: readonly { key: RowKey; labelKey: I18nKey }[] = [
   { key: 'credentials', labelKey: 'st.spaces.inh.credentials' },
+];
+const FOLDED_ROWS: readonly { key: RowKey; labelKey: I18nKey }[] = [
+  { key: 'config', labelKey: 'st.spaces.inh.config' },
   { key: 'agents', labelKey: 'st.spaces.inh.agents' },
   { key: 'instructions', labelKey: 'st.spaces.inh.instructions' },
   { key: 'skills', labelKey: 'st.spaces.inh.skills' },
@@ -61,14 +71,16 @@ function decode(key: RowKey, value: string): Inherit[RowKey] {
  * the main space. The "copy once" column of the wireframe is not offered: the
  * create contract only knows inherit or not.
  */
-export function CreateSpaceDialog({ mainPath, canOpen, onClose, onCreated }: {
+export function CreateSpaceDialog({ client: controlClient, mainPath, canOpen, onClose, onCreated }: {
+  client?: KikiClient;
   mainPath: string;
   /** Desktop only: the primary action also opens the new space. */
   canOpen: boolean;
   onClose: () => void;
   onCreated: (record: SpaceRecord, open: boolean) => void;
 }) {
-  const { client } = useConnection();
+  const { client: connectionClient } = useConnection();
+  const client = controlClient ?? connectionClient;
   const host = useHost();
   const { t, locale } = useI18n();
   const nameId = useId();
@@ -160,7 +172,7 @@ export function CreateSpaceDialog({ mainPath, canOpen, onClose, onCreated }: {
           <legend className="sr-only">{t('st.spaces.inheritHeading')}</legend>
           <p aria-hidden className="text-[13px] font-medium text-ink">{t('st.spaces.inheritHeading')}</p>
           <div className="mt-2 divide-y divide-hairline">
-            {ROWS.map((row) => {
+            {FIRST_SCREEN_ROWS.map((row) => {
               const labelId = `${pathId}-inh-${row.key}`;
               return (
                 <div key={row.key} data-space-inherit-row={row.key}
@@ -173,7 +185,26 @@ export function CreateSpaceDialog({ mainPath, canOpen, onClose, onCreated }: {
               );
             })}
           </div>
-          <p className="mt-2 text-[12px] text-ink-faint">{t('st.spaces.alwaysSeparate')}</p>
+          {/* The rest of the inheritance, and the always-separate note, are one
+              disclosure: they are how this space is wired later, not a
+              decision made while naming it. Defaults and payload are unchanged. */}
+          <AdvancedDetails summary={t('st.spaces.inheritMore')} data-space-inherit-more className="mt-1">
+            <div className="divide-y divide-hairline">
+              {FOLDED_ROWS.map((row) => {
+                const labelId = `${pathId}-inh-${row.key}`;
+                return (
+                  <div key={row.key} data-space-inherit-row={row.key}
+                    className="flex flex-col gap-1.5 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                    <span id={labelId} className="text-[13px] text-ink">{t(row.labelKey)}</span>
+                    <SettingsSegmented<string> ariaLabelledBy={labelId} dataAttr={`data-space-inherit-${row.key}`}
+                      value={encode(inherit[row.key])} choices={choicesFor(row.key, t)}
+                      onChange={(value) => { setInherit((current) => ({ ...current, [row.key]: decode(row.key, value) })); }} />
+                  </div>
+                );
+              })}
+            </div>
+            <p className="mt-2 text-[12px] text-ink-faint">{t('st.spaces.alwaysSeparate')}</p>
+          </AdvancedDetails>
         </fieldset>
 
         <div className="mt-4"><FeedbackLine feedback={feedback} /></div>

@@ -1,14 +1,9 @@
-/**
- * `kimi web` — run the local server in the foreground and open the web UI.
- *
- * The server always runs in the current process, attached to the terminal,
- * and shuts down cleanly on SIGINT/SIGTERM. `--no-open` skips the browser.
- * Multiple instances can share the home directory: each registers itself in
- * the instance registry and takes the next free port (see kap-server's
- * `startServer`).
- */
+/** Enable browser access on the shared daemon without replacing its engine. */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { createKlient } from '@kiki/klient/http';
+import { ensureServer, findReachableServer } from '#/kiki/serve';
+import { resolveKikiHome } from '#/kiki/home';
 import { isAbsolute, join } from 'node:path';
 
 import { createServerLogger, startServer, type ServerLogger } from '@kiki/kap-server';
@@ -16,34 +11,18 @@ import chalk from 'chalk';
 import type { Command } from 'commander';
 
 import { WEB_USER_AGENT_SUFFIX } from '#/constant/app';
+import { getBrowserDriverFile } from '#/native/native-assets';
 import {
   getNativeWebAssetsDir,
   resolveServerWebAssetsDir,
 } from '#/native/web-assets';
 import { darkColors } from '#/tui/theme/colors';
 import { openUrl as defaultOpenUrl } from '#/utils/open-url';
-import { getDataDir } from '#/utils/paths';
 import { createKimiCodeHostIdentity, getVersion } from '../../version';
-import {
-  accessUrlLines,
-  browserOpenOrigin,
-  buildOpenableUrl,
-  isLoopbackHost,
-  splitTokenFragment,
-} from './access-urls';
+import { accessUrlLines, buildOpenableUrl, isLoopbackHost, splitTokenFragment } from './access-urls';
 import { resolveHeapWatchdogPolicy, startHeapWatchdog } from './heap-watchdog';
 import { type NetworkAddress } from './networks';
-import {
-  DEFAULT_FOREGROUND_LOG_LEVEL,
-  DEFAULT_LAN_HOST,
-  DEFAULT_SERVER_HOST,
-  DEFAULT_SERVER_PORT,
-  parseServerOptions,
-  tryResolveServerToken,
-  VALID_LOG_LEVELS,
-  type ParsedServerOptions,
-  type ServerCliOptions,
-} from './shared';
+import { parseServerOptions, type ParsedServerOptions, type ServerCliOptions } from './shared';
 
 /**
  * Minimal surface `runServerInProcess` needs from the server. kap-server's
@@ -58,6 +37,14 @@ interface RoutedServer {
 
 export interface WebCliOptions extends ServerCliOptions {
   open?: boolean;
+  home?: string;
+  persistent?: boolean;
+  temporary?: boolean;
+  status?: boolean;
+  off?: boolean;
+  revoke?: string | boolean;
+  publicUrl?: string;
+  json?: boolean;
 }
 
 export interface ExternalCatalogSourceOptions {
@@ -78,26 +65,10 @@ export interface StartForegroundHooks {
 }
 
 export interface WebCommandDeps {
-  /** Foreground runner; defaults to the real in-process runner when omitted. */
-  startServerForeground?: (
-    options: ParsedServerOptions,
-    hooks?: StartForegroundHooks,
-  ) => Promise<never>;
+  ensureServer?: typeof ensureServer;
+  findServer?: typeof findReachableServer;
+  createKlient?: typeof createKlient;
   openUrl(url: string): void;
-  /**
-   * Best-effort read of the server's persistent bearer token. When it returns
-   * a token, the ready banner prints it and the opened Web UI URL carries it in
-   * the `#token=` fragment (M5.5). Optional so callers/tests that don't supply
-   * it simply print/open the plain origin.
-   */
-  resolveToken?: () => string | undefined;
-  resolveHomeId?: () => string | undefined;
-  /**
-   * Non-loopback interface addresses to display for a wildcard bind. Defaults
-   * to the machine's own interfaces (`listNetworkAddresses()`); inject a fixed
-   * list in tests for deterministic output.
-   */
-  networkAddresses?: NetworkAddress[];
   stdout: Pick<NodeJS.WriteStream, 'write'>;
   stderr: Pick<NodeJS.WriteStream, 'write'>;
 }
@@ -116,49 +87,18 @@ export function buildWebUrl(origin: string, token: string): string {
 /** Build the `web` command, mounting the runner action on `cmd` itself. */
 export function buildWebCommand(cmd: Command): Command {
   return cmd
-    .option(
-      '--port <port>',
-      `Bind port (default ${DEFAULT_SERVER_PORT})`,
-      String(DEFAULT_SERVER_PORT),
-    )
-    .option(
-      '--host [host]',
-      `Bind host. Omit to bind ${DEFAULT_SERVER_HOST} (this machine only); pass --host to bind ${DEFAULT_LAN_HOST} (all interfaces), or --host <host> for a specific host. The bearer token is printed at startup.`,
-    )
-    .option(
-      '--allowed-host <host...>',
-      'Extra Host header value to allow through the DNS-rebinding check. Repeat or comma-separate; a leading dot matches a domain suffix (e.g. .example.com).',
-    )
-    .option(
-      '--insecure-no-tls',
-      'Allow a non-loopback bind without a TLS-terminating reverse proxy. Disabled by default; without this flag, non-loopback binds are refused.',
-      false,
-    )
-    .option(
-      '--allow-remote-shutdown',
-      'On a non-loopback bind, keep POST /api/shutdown enabled (default: route is disabled → 404).',
-      false,
-    )
-    .option(
-      '--dangerous-bypass-auth',
-      'Disable bearer-token auth on every REST and WebSocket route, and advertise it via /api/meta so the web UI connects without a token. Only use on a trusted network or behind your own authenticating proxy.',
-      false,
-    )
-    .option(
-      '--log-level <level>',
-      `Server log level: ${VALID_LOG_LEVELS.join('|')}. Omit to keep logs off.`,
-    )
-    .option(
-      '--debug-endpoints',
-      'Mount /api/debug/* routes for test introspection. OFF by default; production callers leave this unset.',
-      false,
-    )
-    .option(
-      '--web-title <title>',
-      'Set a custom browser tab title for this web UI instance (default: "<workspace dir> | Kiki").',
-    )
-    .option('--idle-exit <duration>', 'Exit once there are no GUI leases or busy sessions for this duration (e.g. 30m).')
-    .option('--no-open', 'Do not open the web UI in the default browser.', true)
+    .option('--home <dir>', 'Kiki home directory.')
+    .option('--persistent', 'Keep Web access enabled across daemon restarts.')
+    .option('--temporary', 'Enable Web access for eight hours (default).')
+    .option('--status', 'Show Web access without starting a daemon.')
+    .option('--off', 'Disable Web access without stopping Kiki or its tasks.')
+    .option('--revoke [session-id]', 'Revoke one browser, or all browsers when no id is given.')
+    .option('--port <port>', 'Port for the additional Web listener; omission reuses the local daemon port.')
+    .option('--host [host]', 'Bind the Web listener; --host alone listens on all IPv4 interfaces.')
+    .option('--public-url <url>', 'Explicit browser origin, for example the HTTPS URL of your reverse proxy.')
+    .option('--insecure-no-tls', 'Allow LAN HTTP; traffic and browser access are not encrypted.')
+    .option('--json', 'Print the Web access result as JSON.')
+    .option('--no-open', 'Do not open the Web UI in the default browser.', true)
     .action(async (opts: WebCliOptions) => {
       try {
         await handleWebCommand(opts);
@@ -174,34 +114,29 @@ export async function handleWebCommand(
   deps: WebCommandDeps = DEFAULT_WEB_COMMAND_DEPS,
 ): Promise<void> {
   const parsed = parseServerOptions(opts);
-  const run = deps.startServerForeground ?? startServerForeground;
-  await run(parsed, {
-    onReady: (origin) => {
-      // Resolve the persistent token only once the server is up: a fresh
-      // server writes `server.token` on first boot, so reading it beforehand
-      // would miss first-time starts and the browser would hit the auth gate.
-      // It is printed in the ready banner and rides in the opened Web UI
-      // URL's `#token=` fragment (M5.5); falls back to the plain origin / no
-      // token line when unavailable. When auth is bypassed, the token is
-      // meaningless and is intentionally NOT shown or carried in the URL.
-      const token = parsed.dangerousBypassAuth ? undefined : deps.resolveToken?.();
-      const homeId = token !== undefined && isLoopbackHost(parsed.host) ? deps.resolveHomeId?.() : undefined;
-      deps.stdout.write(
-        parsed.logLevel === DEFAULT_FOREGROUND_LOG_LEVEL
-          ? formatReadyBanner(origin, parsed.host, {
-              token,
-              homeId,
-              networkAddresses: deps.networkAddresses,
-              dangerousBypassAuth: parsed.dangerousBypassAuth,
-            })
-          : formatReadyLine(origin, token, parsed.dangerousBypassAuth, homeId),
-      );
-      if (opts.open === true) {
-        const openOrigin = browserOpenOrigin(origin);
-        deps.openUrl(token !== undefined ? buildWebUrl(openOrigin, token) : openOrigin);
-      }
-    },
-  });
+  if ([opts.status, opts.off, opts.revoke !== undefined].filter(Boolean).length > 1 || (opts.persistent && opts.temporary)) throw new Error('Choose one Web action and one access mode.');
+  const homeDir = resolveKikiHome(opts.home);
+  const manageExisting = opts.status || opts.off || opts.revoke !== undefined;
+  const connection = manageExisting
+    ? await (deps.findServer ?? findReachableServer)(homeDir)
+    : await (deps.ensureServer ?? ensureServer)({ homeDir, idleExit: '0ms' });
+  if (connection === undefined) {
+    if (!opts.status) throw new Error('No reachable Kiki daemon was found.');
+    deps.stdout.write(opts.json ? '{"enabled":false,"running":false}\n' : 'Web access is off; Kiki is not running.\n'); return;
+  }
+  const klient = (deps.createKlient ?? createKlient)({ endpoint: connection.url, token: connection.token });
+  try {
+    const web = klient.rest!.webAccess;
+    if (opts.status || opts.off || opts.revoke !== undefined) {
+      const status = opts.off ? await web.disable() : opts.revoke !== undefined ? await web.revoke(typeof opts.revoke === 'string' ? opts.revoke : undefined) : await web.status();
+      deps.stdout.write(opts.json ? `${JSON.stringify(status)}\n` : status.enabled ? `Web access (${status.mode}): ${status.url}\n` : 'Web access is off.\n'); return;
+    }
+    const status = await web.enable({ mode: opts.persistent ? 'persistent' : 'temporary', host: opts.host === undefined ? undefined : parsed.host,
+      port: opts.port === undefined ? undefined : parsed.port, publicUrl: opts.publicUrl, insecureNoTls: opts.insecureNoTls });
+    const link = await web.issueLink();
+    deps.stdout.write(opts.json ? `${JSON.stringify({ ...status, link })}\n` : `Web access (${status.mode}): ${link.url}\nThis single-use link grants full Web use and expires in 10 minutes.\n${status.insecure ? 'LAN HTTP is not encrypted. Use a trusted network or HTTPS reverse proxy.\n' : ''}Kiki and its running tasks remain active; use kiki web --off to close Web access.\n`);
+    if (opts.open !== false) deps.openUrl(link.url);
+  } finally { await klient.close(); }
 }
 
 function formatReadyLine(
@@ -313,6 +248,7 @@ async function runServerInProcess(
     userAgentProfileHomeDir: externalCatalog?.userAgentProfileHomeDir,
     modelAccountHomeDir: desktopInheritance?.oauthHomeDir,
     userSkillDir: desktopInheritance?.userSkillDir,
+    browserDriverPath: getBrowserDriverFile() ?? undefined,
     debugEndpoints: options.debugEndpoints,
     insecureNoTls: options.insecureNoTls,
     allowRemoteShutdown: options.allowRemoteShutdown,
@@ -518,22 +454,7 @@ export function formatReadyBanner(
 }
 
 const DEFAULT_WEB_COMMAND_DEPS: WebCommandDeps = {
-  startServerForeground,
   openUrl: defaultOpenUrl,
-  resolveToken: () => {
-    // Read the persistent `<homeDir>/server.token` written on first boot
-    // (M5.1). Best-effort: a missing/older server yields undefined and the
-    // caller opens the plain origin.
-    return tryResolveServerToken(getDataDir());
-  },
-  resolveHomeId: () => {
-    try {
-      const id = readFileSync(join(getDataDir(), 'server', 'home-id'), 'utf8').trim();
-      return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id) ? id : undefined;
-    } catch {
-      return undefined;
-    }
-  },
   stdout: process.stdout,
   stderr: process.stderr,
 };

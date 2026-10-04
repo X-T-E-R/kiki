@@ -1317,6 +1317,48 @@ describe('TranscriptWireAdapter', () => {
     expect(child.getTurn('t0')).toMatchObject({ prompt: 'scan the repo', origin: { kind: 'other' } });
   });
 
+  it('keeps a queued canonical commit preparing through serialized checkpoint tails until completion', () => {
+    const pending = { operationId: 'switch-1', fromModel: 'old', toModel: 'new', mode: 'fresh', state: 'pending' };
+    const queued: TranscriptWireRecord = { type: 'prompt.model_switch_queued', entry: { receipt: pending }, time: 1 };
+    const commit: TranscriptWireRecord = { type: 'agent.model_switch', operationId: 'switch-1', fromModel: 'old', toModel: 'new', mode: 'fresh', newEpoch: 1, summaryGenerated: false, time: 2 };
+    const completed: TranscriptWireRecord = { type: 'prompt.model_switch_status', receipt: { ...pending, state: 'completed', windowEpoch: 1, summaryGenerated: false }, time: 3 };
+    const source = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(source);
+    const adapter = new TranscriptWireAdapter('main');
+    reducer.apply(adapter.add(queued));
+    const resumed = new AgentTranscript('main');
+    resumed.apply([{ op: 'reset', agentId: 'main', snapshot: source.snapshot() }]);
+    const resumedReducer = new TranscriptFactReducer(resumed);
+    resumedReducer.restore(JSON.parse(JSON.stringify(reducer.checkpoint())));
+    const resumedAdapter = new TranscriptWireAdapter('main');
+    resumedAdapter.restore(JSON.parse(JSON.stringify(adapter.checkpoint())));
+    resumedReducer.apply(resumedAdapter.add(commit));
+    expect(resumed.getItems()).toEqual([expect.objectContaining({ kind: 'marker', markerId: 'model-switch:switch-1', payload: expect.objectContaining({ state: 'preparing', windowEpoch: 1 }) })]);
+    expect(resumed.snapshot()).toEqual(replay([queued, commit]).snapshot());
+    resumedReducer.apply(resumedAdapter.add(completed));
+    expect(resumed.getItems()).toHaveLength(1);
+    expect(resumed.snapshot()).toEqual(replay([queued, commit, completed]).snapshot());
+    expect(resumed.getItems()[0]).toMatchObject({ payload: { state: 'completed' } });
+    expect(resumedAdapter.add({ type: 'config.update', modelAlias: 'new', time: 4 })[0]?.operations).toEqual([
+      { op: 'meta.merge', meta: { agent: { model: 'new' } } },
+    ]);
+  });
+
+  it('accepts older adapter checkpoints without queue identities and retains standalone model markers', () => {
+    const source = new TranscriptWireAdapter('main');
+    source.add({ type: 'profile.bind', modelAlias: 'old', time: 1 });
+    const { queuedModelSwitchIds: _queueIds, ...checkpoint } = JSON.parse(JSON.stringify(source.checkpoint()));
+    const restored = new TranscriptWireAdapter('main');
+    expect(() => { restored.restore(checkpoint); }).not.toThrow();
+    const legacy = restored.add({ type: 'config.update', modelAlias: 'new', time: 2 });
+    expect(legacy[0]?.operations).toEqual([
+      { op: 'meta.merge', meta: { agent: { model: 'new' } } },
+      expect.objectContaining({ op: 'marker.upsert', item: expect.objectContaining({ marker: 'model.switch', payload: { from: 'old', to: 'new' } }) }),
+    ]);
+    const canonical = restored.add({ type: 'agent.model_switch', operationId: 'standalone', fromModel: 'new', toModel: 'newer', mode: 'direct', time: 3 });
+    expect(canonical[0]?.operations).toEqual([expect.objectContaining({ op: 'marker.upsert', item: expect.objectContaining({ markerId: 'model-switch:standalone', payload: expect.objectContaining({ state: 'completed' }) }) })]);
+  });
+
   it('projects notes metadata alongside todos, including notes-only writes and restored checkpoints', () => {
     const transcript = new AgentTranscript('main');
     const reducer = new TranscriptFactReducer(transcript);
@@ -1327,7 +1369,7 @@ describe('TranscriptWireAdapter', () => {
     };
     const notes = {
       goal: 'Ship', directives: 'Read only', decided: 'Reuse channel', rejected: 'New endpoint',
-      evidence: 'Tests pass', files: 'example.ts', next: 'Review', open: 'None',
+      evidence: 'Tests pass', files: 'example.ts', next: 'Review', open: 'None', future_section: 'Keep future text',
     };
     reducer.apply(adapter.add({ type: 'tools.update_store', key: 'todo', value: [{ title: 'keep', status: 'pending' }] }));
     reducer.apply(adapter.add({ type: 'tools.update_store', key: 'todo_notes', value: { notes, notesMeta: meta } }));
@@ -1344,6 +1386,30 @@ describe('TranscriptWireAdapter', () => {
     reducer.apply(restored.add({ type: 'tools.update_store', key: 'todo_notes', value: {} }));
     expect(transcript.getTodo('todo')).toMatchObject({ items: [{ title: 'next', status: 'in_progress' }] });
     expect(transcript.getTodo('todo')?.notesMeta).toBeUndefined();
+  });
+
+  it('keeps last readable notes with visible incompatibility diagnostics and recovers on a valid clear', () => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main');
+    reducer.apply(adapter.add({ type: 'tools.update_store', key: 'todo_notes', value: { notes: { directives: 'KEEP', future: 'future text' } } }));
+    for (const value of [{ notes: { future: { invalid: true } } }, { notes: { directives: 42 } }, 'bad payload']) {
+      reducer.apply(adapter.add({ type: 'tools.update_store', key: 'todo_notes', value }));
+      expect(transcript.getTodo('todo')?.notes).toEqual({ directives: 'KEEP', future: 'future text' });
+      expect(transcript.getTodo('todo')?.notesStatus).toMatchObject({ state: 'incompatible', wireOrdinal: expect.any(Number), schemaVersion: 1 });
+      const todo = transcript.getTodo('todo');
+      expect(transcriptOperationSchema.parse({ op: 'todo.upsert', todo })).toMatchObject({ todo: { notesStatus: { state: 'incompatible' } } });
+    }
+    const restored = new TranscriptWireAdapter('main');
+    restored.restore(adapter.checkpoint());
+    reducer.apply(restored.add({ type: 'tools.update_store', key: 'todo', value: [] }));
+    expect(transcript.getTodo('todo')?.notesStatus?.state).toBe('incompatible');
+    reducer.apply(restored.add({ type: 'tools.update_store', key: 'todo_notes', value: {} }));
+    expect(transcript.getTodo('todo')?.notes).toBeUndefined();
+    expect(transcript.getTodo('todo')?.notesStatus).toBeUndefined();
+    const unreadable = replay([{ type: 'tools.update_store', key: 'todo_notes', value: { notes: { future: 42 } } }]);
+    expect(unreadable.getTodo('todo')?.notes).toBeUndefined();
+    expect(unreadable.getTodo('todo')?.notesStatus?.state).toBe('incompatible');
   });
 
   it('folds todo, goal, plan, task, and interruption facts through the shared reducer', () => {
@@ -2245,12 +2311,12 @@ describe('TranscriptWireAdapter', () => {
     ]);
 
     expect(transcript.getTurn('t1')).toBeUndefined();
-    expect(transcript.getTurn('t0')?.steps[1]?.frames).toEqual([
+    expect(transcript.getTurn('t0')?.steps.flatMap((step) => step.frames)).toEqual([
       expect.objectContaining({
-        frameId: 'task-notified:task-1',
+        frameId: 'notification-message',
         role: 'user',
-        taskId: 'task-1',
-        text: 'Background process completed\npnpm test — 42 passed',
+        origin: expect.objectContaining({ taskId: 'task-1' }),
+        text: '<notification id="task:task-1:completed" category="task" type="task.completed" source_kind="background_task" source_id="task-1">\nTitle: Background process completed\npnpm test — 42 passed\n</notification>',
       }),
     ]);
   });
@@ -2337,11 +2403,11 @@ describe('TranscriptWireAdapter', () => {
     ]);
 
     expect(transcript.getTurn('t1')).toBeUndefined();
-    expect(transcript.getTurn('t0')?.steps[1]?.frames).toEqual([
+    expect(transcript.getTurn('t0')?.steps.flatMap((step) => step.frames)).toEqual([
       expect.objectContaining({
-        frameId: 'task-notified:question-1',
-        taskId: 'question-1',
-        text: 'Background question answered\nThe user answered "Which database?".',
+        frameId: 'notification-message',
+        origin: expect.objectContaining({ taskId: 'question-1' }),
+        text: expect.stringContaining('<answer>\n{"answers":{"Which database?":"Postgres"}}\n</answer>'),
       }),
     ]);
   });
@@ -3952,21 +4018,30 @@ describe('AgentTranscriptDraft differential replay', () => {
 });
 
 describe('wire model binding facts', () => {
-  it('emits only alias changes and never copies configuration prompts', () => {
+  it('restores model and effort metadata while marking only alias changes and never copying configuration prompts', () => {
     const adapter = new TranscriptWireAdapter('main');
-    expect(adapter.add({ type: 'profile.bind', modelAlias: 'example/old' })).toEqual([]);
-    expect(adapter.add({ type: 'config.update', modelAlias: 'example/old', thinkingEffort: 'high' })).toEqual([]);
-    expect(adapter.add({ type: 'config.update', thinkingEffort: 'low' })).toEqual([]);
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    reducer.apply(adapter.add({ type: 'profile.bind', modelAlias: 'example/old', thinkingEffort: 'high' }));
+    expect(transcript.getMeta().agent).toEqual({ model: 'example/old', thinkingEffort: 'high' });
+    reducer.apply(adapter.add({ type: 'config.update', thinkingLevel: 'low' }));
+    expect(transcript.getMeta().agent).toEqual({ model: 'example/old', thinkingEffort: 'low' });
+    reducer.apply(adapter.add({ type: 'config.update', thinkingLevel: 'low', thinkingEffort: 'high' }));
+    expect(transcript.getMeta().agent).toEqual({ model: 'example/old', thinkingEffort: 'high' });
     const facts = adapter.add({ type: 'config.update', modelAlias: 'example/new', systemPrompt: 'private prompt'.repeat(1000), time: 1000 });
     expect(facts).toHaveLength(1);
     expect(facts[0]?.durability).toBe('durable');
-    expect(facts[0]?.operations).toEqual([{
-      op: 'marker.upsert', item: {
+    expect(facts[0]?.operations).toEqual([
+      { op: 'meta.merge', meta: { agent: { model: 'example/new' } } },
+      { op: 'marker.upsert', item: {
         kind: 'marker', markerId: expect.any(String), marker: 'model.switch',
         payload: { from: 'example/old', to: 'example/new' }, at: new Date(1000).toISOString(),
-      },
-    }]);
-    expect(adapter.add({ type: 'config.update', modelAlias: 'example/new' })).toEqual([]);
+      } },
+    ]);
+    reducer.apply(facts);
+    reducer.apply(adapter.add({ type: 'config.update', modelAlias: 'example/new' }));
+    expect(transcript.getItems()).toHaveLength(1);
+    expect(transcript.getMeta().agent).toEqual({ model: 'example/new', thinkingEffort: 'high' });
     expect(adapter.add({ type: 'config.update', modelAlias: '' })).toEqual([]);
   });
 
@@ -3975,11 +4050,16 @@ describe('wire model binding facts', () => {
     adapter.add({ type: 'profile.bind', modelAlias: 'example/old' });
     const restored = new TranscriptWireAdapter('main');
     restored.restore(adapter.checkpoint());
-    expect(restored.add({ type: 'profile.bind', modelAlias: 'example/old' })).toEqual([]);
+    expect(restored.add({ type: 'profile.bind', modelAlias: 'example/old' })[0]?.operations).toEqual([
+      { op: 'meta.merge', meta: { agent: { model: 'example/old' } } },
+    ]);
     const ops = restored.add({ type: 'profile.bind', modelAlias: 'example/new' }).flatMap((fact) => fact.operations);
-    expect(ops).toEqual([expect.objectContaining({ op: 'marker.upsert', item: expect.objectContaining({
-      marker: 'model.switch', payload: { from: 'example/old', to: 'example/new' },
-    }) })]);
+    expect(ops).toEqual([
+      { op: 'meta.merge', meta: { agent: { model: 'example/new' } } },
+      expect.objectContaining({ op: 'marker.upsert', item: expect.objectContaining({
+        marker: 'model.switch', payload: { from: 'example/old', to: 'example/new' },
+      }) }),
+    ]);
   });
 
   it('preserves the dispatch model through task updates and schema validation', () => {

@@ -11,6 +11,9 @@ const modals: Array<{ id: string; depth: number; panel: HTMLElement }> = [];
 function topModal() {
   return modals.reduce<(typeof modals)[number] | undefined>((top, entry) => !top || entry.depth >= top.depth ? entry : top, undefined);
 }
+export function nextModalDepth(): number {
+  return (topModal()?.depth ?? 0) + 1;
+}
 export function registerModal(id: string, depth: number, panel: HTMLElement) {
   const entry = { id, depth, panel };
   modals.push(entry);

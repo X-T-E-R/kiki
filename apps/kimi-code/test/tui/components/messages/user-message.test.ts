@@ -30,6 +30,17 @@ describe('UserMessageComponent', () => {
     expect(out).not.toContain('\u001B]1337;File=');
   });
 
+  it('updates the body after a cached render without losing the source label', () => {
+    const component = new UserMessageComponent('Original body', [], undefined, 'Peer thread');
+    expect(stripAnsi(component.render(80).join('\n'))).toContain('Original body');
+
+    component.updateContent('Refined body');
+    const output = stripAnsi(component.render(80).join('\n'));
+    expect(output).toContain('Refined body');
+    expect(output).toContain('Peer thread');
+    expect(output).not.toContain('Original body');
+  });
+
   it('renders an external source label above the message body', () => {
     setCapabilities({ images: null, trueColor: true, hyperlinks: true });
 

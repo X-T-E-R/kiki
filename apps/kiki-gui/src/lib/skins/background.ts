@@ -24,8 +24,16 @@ import {
   type BackgroundAlignment,
   type BackgroundLook,
   type BackgroundMediaKind,
+  type SpacePreferenceValues,
 } from '@kiki/protocol';
 
+import {
+  spaceAuthoritySnapshot,
+  spacePreferenceEnabled,
+  spacePreferenceValue,
+  subscribeSpaceAuthority,
+  writeSpacePreferenceItem,
+} from '../spaceAuthority';
 import type { ResolvedTheme } from '../theme';
 import { spaceStorage } from '../spaceStorage';
 
@@ -177,8 +185,93 @@ export function subscribeBackgroundPrefs(listener: () => void): () => void {
   return () => { listeners.delete(listener); };
 }
 
+// ---------------------------------------------------------------------------
+// Space authority: the space's background wins when it carries one. Pictures
+// that only exist on this device (local media) cannot travel with the space,
+// so they stay here and the surface says so instead of dropping them.
+// ---------------------------------------------------------------------------
+
+/** The device's own stored prefs, never the space's — the import path reads this. */
+export function readStoredBackgroundPrefs(): BackgroundPrefs {
+  return readStored();
+}
+
+function portableMedia(ref: BackgroundMediaRef): { id: string; kind: BackgroundMediaKind; mime: string; name: string; bytes: number } {
+  return { id: ref.id, kind: ref.kind, mime: ref.mime, name: ref.name, bytes: ref.bytes };
+}
+
+function portableSlot(slot: BackgroundSlot | null): SpacePreferenceValues['background']['light'] {
+  if (slot === null) return null;
+  return {
+    media: slot.media.map(portableMedia),
+    ...(slot.poster === undefined ? {} : { poster: portableMedia(slot.poster) }),
+    interval: slot.interval,
+    look: slot.look,
+    ...(slot.packId === undefined ? {} : { packId: slot.packId }),
+    ...(slot.sample === undefined ? {} : { sample: slot.sample }),
+  };
+}
+
+function slotIsPortable(slot: BackgroundSlot | null): boolean {
+  if (slot === null) return true;
+  return [...slot.media, ...(slot.poster === undefined ? [] : [slot.poster])].every((ref) => ref.id.startsWith('pack:'));
+}
+
+/**
+ * The wire form of a background, or `undefined` when it holds media that only
+ * exists on this device. Used by the one-time import and by the writer, so a
+ * picture that cannot travel is never sent as if it had.
+ */
+export function spaceBackgroundOf(prefs: BackgroundPrefs): SpacePreferenceValues['background'] | undefined {
+  if (!slotIsPortable(prefs.light) || !slotIsPortable(prefs.dark)) return undefined;
+  return { light: portableSlot(prefs.light), dark: portableSlot(prefs.dark), linked: prefs.linked, assist: prefs.assist };
+}
+
+/** The space's background, or `undefined` when it carries none. */
+export function spaceBackgroundPrefs(): BackgroundPrefs | undefined {
+  const values = spacePreferenceValue('background');
+  if (values === undefined) return undefined;
+  return normalizeBackgroundPrefs(values);
+}
+
+let spaceSource: unknown;
+let spaceValue: BackgroundPrefs | undefined;
+let spaceValueReady = false;
+
+function spaceBackgroundPrefsMemo(): BackgroundPrefs | undefined {
+  const authority = spaceAuthoritySnapshot();
+  if (!spaceValueReady || spaceSource !== authority) {
+    spaceSource = authority;
+    spaceValue = spaceBackgroundPrefs();
+    spaceValueReady = true;
+  }
+  return spaceValue;
+}
+
+/**
+ * True when the picture on screen is this device's own because it cannot be a
+ * space resource yet. The surface next to it offers the way out: keep the file
+ * on the device and pick an appearance pack, or drop it here.
+ */
+let deviceOnly = false;
+
+export function backgroundIsDeviceOnly(): boolean {
+  return deviceOnly;
+}
+
+function rememberDeviceOnly(active: boolean): void {
+  if (deviceOnly === active) return;
+  deviceOnly = active;
+  for (const listener of listeners) listener();
+}
+
 /** Stable-identity snapshot for `useSyncExternalStore`. */
 export function backgroundPrefsSnapshot(): BackgroundPrefs {
+  const fromSpace = spaceBackgroundPrefsMemo();
+  if (fromSpace !== undefined) {
+    stored = fromSpace;
+    return fromSpace;
+  }
   stored ??= readStored();
   return stored;
 }
@@ -193,6 +286,20 @@ export function backgroundPrefsServerSnapshot(): BackgroundPrefs {
  */
 export function writeBackgroundPrefs(next: Omit<BackgroundPrefs, 'assist'> & { readonly assist?: boolean }): void {
   const normalized = normalizeBackgroundPrefs({ ...next, assist: next.assist ?? backgroundPrefsSnapshot().assist });
+  // The space owns its background: a picture it can carry is a space change.
+  // A device-only picture cannot be one, so it stays on this device and the
+  // surface says why rather than sending a space value that would lose it.
+  if (spacePreferenceEnabled() && slotIsPortable(normalized.light) && slotIsPortable(normalized.dark)) {
+    rememberDeviceOnly(false);
+    void writeSpacePreferenceItem('background', {
+      light: portableSlot(normalized.light),
+      dark: portableSlot(normalized.dark),
+      linked: normalized.linked,
+      assist: normalized.assist,
+    } satisfies SpacePreferenceValues['background']);
+    return;
+  }
+  rememberDeviceOnly(spacePreferenceEnabled() && !(slotIsPortable(normalized.light) && slotIsPortable(normalized.dark)));
   try {
     if (normalized.light === null && normalized.dark === null && normalized.linked && normalized.assist) spaceStorage.removeItem(STORAGE_KEY);
     else spaceStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
@@ -202,6 +309,13 @@ export function writeBackgroundPrefs(next: Omit<BackgroundPrefs, 'assist'> & { r
   if (JSON.stringify(normalized) !== JSON.stringify(stored)) stored = normalized;
   for (const listener of listeners) listener();
 }
+
+// The space's values can arrive after the first paint, so the document
+// re-applies through the same subscriber set the editor already uses.
+subscribeSpaceAuthority(() => {
+  stored = undefined;
+  for (const listener of listeners) listener();
+});
 
 /** What the document shows. Every control applies on change, so this is storage. */
 export function effectiveBackgroundPrefs(): BackgroundPrefs {

@@ -1,10 +1,20 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useEffect } from 'react';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 
 /** Card id a settings-search hit asked to flash; null when idle. */
 export const SettingsFlashContext = createContext<string | null>(null);
+
+/**
+ * How a card says it is on screen. A card that loads its own data (the
+ * Experimental rows, a capability catalog) can mount long after the page's
+ * first frame, so the page holds a deep-link request until the card that owns
+ * that id announces itself instead of waiting out a deadline it would have to
+ * guess. The notifier's identity changes with every request, so a card that was
+ * already mounted is asked again too.
+ */
+export const SettingsCardMountContext = createContext<((id: string) => void) | null>(null);
 
 export type PanelScope = 'app' | 'server' | 'workspace' | 'readOnly';
 
@@ -80,7 +90,12 @@ export function SectionCard({
 }) {
   const { t } = useI18n();
   const flashId = useContext(SettingsFlashContext);
+  const onCardMount = useContext(SettingsCardMountContext);
   const pageScope = useContext(SettingsPageScopeContext);
+  // Say "this card is here" on mount, and again whenever the page asks for a
+  // card: the asker's identity changes with every request, so a card that was
+  // already on screen is asked again instead of being missed.
+  useEffect(() => { if (id !== undefined) onCardMount?.(id); }, [id, onCardMount]);
   const note = effect ?? badge;
   const target: PanelScope = scope ?? (id !== undefined && DEVICE_CARD_IDS.has(id) ? 'app' : 'server');
   const hasBody = children !== undefined && children !== null && children !== false;

@@ -17,6 +17,7 @@ import type { AgentEventPayloads, AgentHandle, EventSubscription, Klient, Sessio
 import { createKimiDefaultHeaders } from '@kiki/oauth';
 
 import { CLI_SHUTDOWN_TIMEOUT_MS, PROMPT_CLEANUP_TIMEOUT_MS } from '#/constant/app';
+import { getBrowserDriverFile } from '#/native/native-assets';
 
 import {
   formatGoalSummaryText,
@@ -93,6 +94,7 @@ export async function runV2Print(
       requestHeaders: createKimiDefaultHeaders({ homeDir, ...identity }),
       skillDirs: opts.skillsDirs,
       agentFiles: opts.agentFiles,
+      browserDriverPath: getBrowserDriverFile() ?? undefined,
     },
   }).then(async (created) => {
     if (signal.aborted) {

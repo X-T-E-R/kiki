@@ -11,11 +11,15 @@
  *   AdvancedDetails collapsed tail of a card — background, diagnostics, policy text
  *   CardActions     the save/verify row, always last and always aligned the same
  *
+ * `help` is the first-screen line and `detail` is the same field's on-demand
+ * text, so one field can carry both without paying for the second on everyone.
+ *
  * No new colors or tokens: everything below composes the existing hairline /
  * ink / accent scale and the shared `Hint` help line.
  */
 
 import { Hint } from '../controls';
+import { SettingHelp } from './SettingHelp';
 
 /**
  * A labelled step inside a card. Cards use these top-to-bottom in the order a
@@ -53,6 +57,7 @@ export function SettingField({
   htmlFor,
   labelId,
   help,
+  detail,
   layout = 'row',
   children,
 }: {
@@ -63,6 +68,13 @@ export function SettingField({
   labelId?: string;
   /** Plain language: what changing this does, and what the default is. */
   help?: React.ReactNode;
+  /**
+   * Read on demand behind the label's `i`, the same slot `NumberField.detail`
+   * uses. `help` is what a reader needs before choosing; `detail` is the
+   * consequence, the entitlement or the inheritance rule they ask for once
+   * the choice is in front of them.
+   */
+  detail?: React.ReactNode;
   layout?: 'row' | 'stack';
   children: React.ReactNode;
 }) {
@@ -72,18 +84,23 @@ export function SettingField({
   const labelNode = htmlFor === undefined
     ? <span id={labelId} className={labelClass}>{label}</span>
     : <label id={labelId} htmlFor={htmlFor} className={labelClass}>{label}</label>;
+  // The `i` rides the label's own line, so a field that carries one reads as
+  // one label with a footnote rather than a label and a second row of text.
+  const headingNode = detail === undefined || detail === null
+    ? labelNode
+    : <div className="flex items-center gap-1.5">{labelNode}<SettingHelp>{detail}</SettingHelp></div>;
   const helpNode = help !== undefined && help !== null ? <Hint>{help}</Hint> : null;
 
   // Row: label and its help on the left, control on the right edge. Below
   // `sm` the control drops under the text so nothing is squeezed.
   return layout === 'row' ? (
     <div className="flex flex-col gap-2 py-1 sm:flex-row sm:items-start sm:justify-between sm:gap-6" data-settings-field>
-      <div className="min-w-0 space-y-0.5 sm:pt-1.5 sm:leading-5">{labelNode}{helpNode}</div>
+      <div className="min-w-0 space-y-0.5 sm:pt-1.5 sm:leading-5">{headingNode}{helpNode}</div>
       <div className="flex shrink-0 flex-wrap items-center gap-2">{children}</div>
     </div>
   ) : (
     <div className="space-y-1.5 py-1" data-settings-field>
-      {labelNode}
+      {headingNode}
       <div className="space-y-1">{children}</div>
       {helpNode}
     </div>

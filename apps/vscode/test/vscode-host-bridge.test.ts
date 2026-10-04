@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { parseHostRequest, VscodeHostBridge } from "../src/vscode-host-bridge";
 
 const host = vi.hoisted(() => {
   class Uri {
-    constructor(readonly fsPath: string) {}
+    constructor(readonly fsPath: string, readonly scheme = "file") {}
     static file(path: string): Uri {
       return new Uri(path);
     }
@@ -236,5 +239,63 @@ describe("VS Code host bridge protocol", () => {
     await bridge.handle(request("external.open", { url: "http://example.com/a" }));
     await bridge.handle(request("external.open", { url: "mailto:someone@example.com" }));
     expect(host.openExternal).toHaveBeenCalledTimes(3);
+  });
+});
+
+
+describe("webview-owned save streams", () => {
+  it("requires ordered <=64 KiB chunks, binds sinks to their view, and disposes only that view's temporary files", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "kiki-webview-save-test-"));
+    const ownerA = {};
+    const ownerB = {};
+    const a = join(directory, "a.bin");
+    const b = join(directory, "b.bin");
+    await writeFile(a, "existing user file");
+    const current = new VscodeHostBridge({ url: "http://fixture", token: "fixture" }, { autosave: false, editorContext: "never" });
+    try {
+      host.showSaveDialog.mockResolvedValueOnce(host.Uri.file(a)).mockResolvedValueOnce(host.Uri.file(b));
+      const openedA = await current.handle(request("file.save.open", { filename: "a.bin" }), ownerA);
+      const openedB = await current.handle(request("file.save.open", { filename: "b.bin" }), ownerB);
+      const sinkA = (openedA?.result as { sinkId: string }).sinkId;
+      const sinkB = (openedB?.result as { sinkId: string }).sinkId;
+      expect(openedA?.ok).toBe(true);
+      expect(sinkA).not.toBe(sinkB);
+      expect((await current.handle(request("file.save.write", { sinkId: sinkA, bytes: [1], offset: 0 }), ownerB))?.ok).toBe(false);
+      expect((await current.handle(request("file.save.abort", { sinkId: sinkA }), ownerB))?.ok).toBe(false);
+      expect((await current.handle(request("file.save.write", { sinkId: sinkA, bytes: new Uint8Array(65 * 1024), offset: 0 }), ownerA))?.ok).toBe(false);
+      expect((await current.handle(request("file.save.write", { sinkId: sinkA, bytes: [1], offset: 1 }), ownerA))?.ok).toBe(false);
+      expect((await current.handle(request("file.save.write", { sinkId: sinkA, bytes: new Uint8Array([1, 2]).buffer, offset: 0 }), ownerA))?.result).toEqual({ bytes: 2 });
+      expect((await current.handle(request("file.save.write", { sinkId: sinkB, bytes: [3, 4], offset: 0 }), ownerB))?.result).toEqual({ bytes: 2 });
+      await current.releaseOwner(ownerA);
+      expect((await current.handle(request("file.save.close", { sinkId: sinkA }), ownerA))?.ok).toBe(false);
+      expect((await current.handle(request("file.save.open", { filename: "late.bin" }), ownerA))?.ok).toBe(false);
+      expect(await readFile(a, "utf8")).toBe("existing user file");
+      expect((await current.handle(request("file.save.write", { sinkId: sinkB, bytes: [5], offset: 2 }), ownerB))?.result).toEqual({ bytes: 3 });
+      expect((await current.handle(request("file.save.close", { sinkId: sinkB }), ownerB))?.result).toBe(true);
+      expect(await readFile(b)).toEqual(Buffer.from([3, 4, 5]));
+    } finally {
+      await current.releaseOwner(ownerA);
+      await current.releaseOwner(ownerB);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not reinterpret a non-file URI as a local disk path and keeps the existing provider save route", async () => {
+    const target = new host.Uri("provider/path", "vscode-remote");
+    host.showSaveDialog.mockResolvedValueOnce(target).mockResolvedValueOnce(target);
+    expect((await bridge.handle(request("file.save.open", { filename: "file.bin" }), {}))?.result).toEqual({ supported: false });
+    expect((await bridge.handle(request("file.save", { filename: "file.bin", bytes: [7, 8] })))?.result).toBe(true);
+    expect(host.writeFile).toHaveBeenLastCalledWith(target, Uint8Array.from([7, 8]));
+  });
+
+  it("discards a save dialog result when its originating webview closes", async () => {
+    let finish!: (value: InstanceType<typeof host.Uri>) => void;
+    host.showSaveDialog.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const owner = {};
+    const current = new VscodeHostBridge({ url: "http://fixture", token: "fixture" }, { autosave: false, editorContext: "never" });
+    const opening = current.handle(request("file.save.open", { filename: "pending.bin" }), owner);
+    await current.releaseOwner(owner);
+    finish(host.Uri.file("not-created.bin"));
+    expect((await opening)?.result).toBeNull();
   });
 });

@@ -1,3 +1,4 @@
+import type { ContentWindow } from '../contract/content';
 import type { InteractionId } from './ids';
 import type { TranscriptAnchor } from './identity';
 
@@ -45,7 +46,7 @@ export function projectInteractionEndState(
   return readApprovalInteractionDecision(response) ?? 'cancelled';
 }
 
-export interface TranscriptInteraction {
+export interface TranscriptInteraction extends ContentWindow {
   readonly interactionId: InteractionId;
   readonly interactionKind: InteractionKind;
   /**

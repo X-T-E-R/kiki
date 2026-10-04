@@ -10,7 +10,7 @@ function stringOf(value: unknown): string | undefined {
 export function isUndoAnchorOrigin(value: unknown): boolean {
   const origin = objectOf(value);
   const kind = stringOf(origin?.['kind']);
-  if (kind === undefined || kind === 'user' || kind === 'peer_thread' || kind === 'agent_message') return true;
+  if (kind === undefined || kind === 'user' || kind === 'peer_thread' || kind === 'bridged_peer' || kind === 'agent_message') return true;
   return (kind === 'skill_activation' || kind === 'plugin_command') && origin?.['trigger'] === 'user-slash';
 }
 

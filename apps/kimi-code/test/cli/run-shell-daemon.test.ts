@@ -152,8 +152,11 @@ const options = {
   addDirs: [],
 };
 
+const ttyDescriptors = [process.stdin, process.stdout].map((stream) => Object.getOwnPropertyDescriptor(stream, 'isTTY'));
+
 describe('runShell daemon startup', () => {
   beforeEach(() => {
+    for (const stream of [process.stdin, process.stdout]) Object.defineProperty(stream, 'isTTY', { value: true, configurable: true });
     vi.clearAllMocks();
     mocks.order.length = 0;
     mocks.trust.mockResolvedValue(true);
@@ -167,6 +170,12 @@ describe('runShell daemon startup', () => {
   });
 
   afterEach(() => {
+    for (const [index, stream] of [process.stdin, process.stdout].entries()) {
+      const descriptor = ttyDescriptors[index];
+      if (descriptor === undefined) Reflect.deleteProperty(stream, 'isTTY');
+      else Object.defineProperty(stream, 'isTTY', descriptor);
+    }
+    vi.restoreAllMocks();
     for (const listener of process.listeners('uncaughtException')) {
       if (!uncaughtExceptionListeners.has(listener)) process.off('uncaughtException', listener);
     }
@@ -192,6 +201,16 @@ describe('runShell daemon startup', () => {
     expect(isTerminalOutputError(Object.assign(new Error('closed'), { code: 'EIO' }))).toBe(true);
     expect(isTerminalOutputError(Object.assign(new Error('pipe'), { code: 'EPIPE' }))).toBe(true);
     expect(isTerminalOutputError(Object.assign(new Error('other'), { code: 'EINVAL' }))).toBe(false);
+  });
+
+  it.each(['stdin', 'stdout'] as const)('rejects non-TTY %s before reading input, trust, or daemon discovery', async (stream) => {
+    Object.defineProperty(process[stream], 'isTTY', { value: false, configurable: true });
+    const listeners = process.stdin.listenerCount('data');
+    await expect(runShell(options, '1.0.0')).rejects.toThrow('use kiki -p -');
+    expect(process.stdin.listenerCount('data')).toBe(listeners);
+    expect(mocks.order).toEqual([]);
+    expect(mocks.trust).not.toHaveBeenCalled();
+    expect(mocks.ensure).not.toHaveBeenCalled();
   });
 
   it('attaches the interactive shell to DaemonTUI by default', async () => {

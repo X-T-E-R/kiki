@@ -1,7 +1,10 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
+import type { I18nKey } from '@kiki/session-core/i18n';
+
 import {
+  agentProfileSourceLabelKey,
   mergeNamedAgentProfiles,
   readSettings,
   subagentDefaultTargetFromConfig,
@@ -19,12 +22,20 @@ import { SearchableSelect, type SearchableSelectOption } from '../SearchableSele
 import { SubagentGovernanceCard } from './AgentsSection';
 import { SettingField } from './fields';
 import { SectionCard } from './SectionCard';
-import { SETTINGS_SELECT_TRIGGER } from './SettingsPrimitives';
+import { SETTINGS_SELECT_TRIGGER, SettingsSegmented } from './SettingsPrimitives';
 import { useInstantSave } from './useInstantSave';
-import { SubagentToolDefaultsCard } from './SubagentToolDefaultsCard';
-import { subagentPolicyChoice, subagentPolicyLabelKey } from './subagentPolicy';
+import { dispatchFieldsOf } from './profileEditor/profileDraft';
+import { SubagentToolSettingsCard } from './subagentTools/ToolSettingsCard';
 
 const STRICT_TARGET_VALUE = '__strict__';
+
+/** How this profile's own dispatch rights read as one short label. */
+function dispatchSummaryKey(profile: NamedAgentProfile): I18nKey {
+  const dispatch = dispatchFieldsOf(profile);
+  if (dispatch.can_spawn_subagents === false) return 'st.profiles.dispatchCanSpawnOff';
+  if (dispatch.allowed_subagents === undefined) return 'st.profiles.dispatchNotDeclared';
+  return dispatch.allowed_subagents.length === 0 ? 'st.profiles.dispatchAllowedEmpty' : 'st.profiles.dispatchCanSpawnOn';
+}
 
 /**
  * Default subagent target (redesign §5.1/§7): the server-wide
@@ -88,7 +99,7 @@ export function SubagentDefaultTargetCard() {
       hint: profile.pinned_model_alias,
       badges: [
         { label: profile.source },
-        { label: t(subagentPolicyLabelKey(subagentPolicyChoice(profile.subagent_policy))) },
+        { label: t(dispatchSummaryKey(profile)) },
       ],
     }));
     const values = new Set(profileOptions.map((option) => option.value));
@@ -124,12 +135,15 @@ export function SubagentDefaultTargetCard() {
     });
   };
 
-  const summaryChips: string[] = [];
+  // Secondary text, not badges: the source, policy and model pin of the chosen
+  // profile are one quiet line of facts under the selector.
+  const summaryParts: string[] = [];
   if (selectedProfile !== undefined) {
-    summaryChips.push(selectedProfile.source);
-    summaryChips.push(t(subagentPolicyLabelKey(subagentPolicyChoice(selectedProfile.subagent_policy))));
+    const sourceKey = agentProfileSourceLabelKey(selectedProfile.source);
+    summaryParts.push(sourceKey === undefined ? selectedProfile.source : t(sourceKey));
+    summaryParts.push(t(dispatchSummaryKey(selectedProfile)));
     if (selectedProfile.pinned_model_alias !== undefined && selectedProfile.pinned_model_alias !== '') {
-      summaryChips.push(`${t('st.namedAgents.modelPin')} ${selectedProfile.pinned_model_alias}`);
+      summaryParts.push(`${t('st.namedAgents.modelPin')} ${selectedProfile.pinned_model_alias}`);
     }
   }
 
@@ -163,11 +177,7 @@ export function SubagentDefaultTargetCard() {
         ) : null}
         {selectedProfile !== undefined ? (
           <div className="space-y-1.5" data-subagent-default-status="resolved">
-            <div className="flex flex-wrap gap-1.5">
-              {summaryChips.map((chip) => (
-                <span key={chip} className="rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[11px] text-ink-faint">{chip}</span>
-              ))}
-            </div>
+            <p data-subagent-default-summary className="text-[11.5px] text-ink-faint">{summaryParts.join(' · ')}</p>
             {selectedProfile.disabled ? (
               <div data-subagent-default-status="disabled">
                 <FeedbackLine feedback={{ tone: 'error', text: t('st.subagentDefault.disabledTarget', { name: selectedProfile.name }) }} />
@@ -200,29 +210,18 @@ function SubagentOpenModeCard() {
   return (
     <SectionCard id="st-card-subagent-open-mode" title={t('st.subagentOpenMode.title')}>
       <div className="space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          <span id="subagent-open-mode-label" className="text-[12.5px] font-medium text-ink">
-            {t('st.subagentOpenMode.label')}
-          </span>
-          <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby="subagent-open-mode-label">
-            {(['tab', 'fullscreen'] as SubagentPanelOpenMode[]).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                data-open-mode-choice={mode}
-                aria-pressed={currentMode === mode}
-                onClick={() => { updateMode(mode); }}
-                className={`h-8 rounded-md px-3 text-[13px] transition-colors ${
-                  currentMode === mode
-                    ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
-                    : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
-                }`}
-              >
-                {t(`st.subagentOpenMode.${mode}`)}
-              </button>
-            ))}
-          </div>
-        </div>
+        <SettingField label={t('st.subagentOpenMode.label')} labelId="subagent-open-mode-label">
+          <SettingsSegmented<SubagentPanelOpenMode>
+            ariaLabelledBy="subagent-open-mode-label"
+            dataAttr="data-open-mode-choice"
+            value={currentMode}
+            choices={(['tab', 'fullscreen'] as SubagentPanelOpenMode[]).map((mode) => ({
+              value: mode,
+              label: t(`st.subagentOpenMode.${mode}`),
+            }))}
+            onChange={updateMode}
+          />
+        </SettingField>
         <Hint>{t('st.subagentOpenMode.hint')}</Hint>
       </div>
     </SectionCard>
@@ -233,10 +232,10 @@ function SubagentOpenModeCard() {
 export function SubagentsSection() {
   return (
     <div className="space-y-4">
-      <SubagentToolDefaultsCard />
       <SubagentDefaultTargetCard />
-      <SubagentOpenModeCard />
       <SubagentGovernanceCard />
+      <SubagentOpenModeCard />
+      <SubagentToolSettingsCard />
     </div>
   );
 }

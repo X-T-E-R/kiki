@@ -27,9 +27,15 @@ export const KEEP_SECRET: SecretDraft = { mode: 'keep' };
 /** Fixed width so the mask never hints at the length of the value. */
 const MASK = '••••••••••••••••';
 
+/** The same mask for a list of secrets, so one key row reads like one field. */
+export const SECRET_MASK = MASK;
+
 const ICON_BUTTON =
   'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-11 pointer-coarse:w-11';
 const TEXT_BUTTON = `${SECONDARY_BUTTON} min-h-8 pointer-coarse:min-h-11`;
+
+/** The shared icon-button shape for a secret row, so key rows match the field. */
+export const SECRET_ICON_BUTTON = ICON_BUTTON;
 
 export interface SecretFieldProps {
   readonly label: string;
@@ -225,6 +231,25 @@ function SourceText({ text, name }: { text: string; name?: string }) {
   if (name === undefined || !text.includes(name)) return <span>{text}</span>;
   const [before, ...rest] = text.split(name);
   return <span>{before}<code className="font-mono text-[11.5px] text-ink">{name}</code>{rest.join(name)}</span>;
+}
+
+/**
+ * The "where does this value come from" line. Shared so a multi-value secret
+ * (a key list) names its source exactly the way the single-value field does.
+ */
+export function SecretSourceLine({ source, envName, sourceText }: {
+  readonly source: SecretSource;
+  readonly envName?: string;
+  readonly sourceText?: string;
+}) {
+  const { t } = useI18n();
+  const text = sourceText ?? secretSourceText(t, source, envName);
+  return (
+    <span className={`inline-flex items-center gap-1.5 ${source === 'none' ? 'text-ink-faint' : 'text-ink-soft'}`}>
+      <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${sourceDot(source)}`} />
+      <SourceText text={text} name={envName} />
+    </span>
+  );
 }
 
 function sourceDot(source: SecretSource): string {

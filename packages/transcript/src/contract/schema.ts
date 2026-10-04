@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { contentWindowSchema } from './content';
 
 export const turnIdSchema = z.string().min(1);
 export const stepIdSchema = z.string().min(1);
@@ -128,6 +129,7 @@ export const messageDeliverySchema = z.object({
 });
 
 export const textFrameSchema = z.object({
+  ...contentWindowSchema.shape,
   kind: z.literal('text'),
   delivery: messageDeliverySchema.optional(),
   frameId: frameIdSchema,
@@ -142,6 +144,7 @@ export const textFrameSchema = z.object({
 export const thinkingFrameSchema = z.object({
   kind: z.literal('thinking'),
   frameId: frameIdSchema,
+  contentRefs: contentWindowSchema.shape.contentRefs,
   part: transcriptPartIdentitySchema.optional(),
   text: z.string(),
 });
@@ -162,6 +165,7 @@ export const toolFrameProgressSchema = z.object({
 export const toolCallFrameSchema = z.object({
   kind: z.literal('tool'),
   frameId: frameIdSchema,
+  contentRefs: contentWindowSchema.shape.contentRefs,
   part: transcriptPartIdentitySchema.optional(),
   toolCallId: z.string(),
   name: z.string(),
@@ -183,6 +187,7 @@ export const toolCallFrameSchema = z.object({
 });
 
 export const interactionSchema = z.object({
+  ...contentWindowSchema.shape,
   interactionId: z.string(),
   interactionKind: z.enum(['approval', 'question']),
   toolCallId: z.string().optional(),
@@ -201,6 +206,7 @@ export const interactionSchema = z.object({
 export const noticeFrameSchema = z.object({
   kind: z.literal('notice'),
   frameId: frameIdSchema,
+  contentRefs: contentWindowSchema.shape.contentRefs,
   part: transcriptPartIdentitySchema.optional(),
   level: z.enum(['error', 'warning', 'info']),
   source: z.string().optional(),
@@ -235,6 +241,7 @@ export const transcriptStepSchema = z.object({
 export const transcriptTurnSchema = z.object({
   kind: z.literal('turn'),
   turnId: turnIdSchema,
+  contentRefs: contentWindowSchema.shape.contentRefs,
   ordinal: z.number().int(),
   state: turnStateSchema,
   origin: turnOriginSchema,
@@ -254,6 +261,7 @@ export const transcriptTurnSchema = z.object({
 });
 
 export const transcriptMarkerSchema = z.object({
+  ...contentWindowSchema.shape,
   kind: z.literal('marker'),
   markerId: z.string(),
   marker: z.string(),
@@ -275,6 +283,7 @@ export const transcriptItemSchema = z.discriminatedUnion('kind', [
 ]);
 
 export const transcriptTaskSchema = z.object({
+  ...contentWindowSchema.shape,
   taskId: taskIdSchema,
   kind: z.enum(['shell', 'subagent', 'tool', 'other']),
   state: z.enum(['running', 'completed', 'failed', 'timed_out', 'killed', 'lost']),
@@ -418,6 +427,7 @@ export const promptQueueHoldMetaSchema = z.object({
 });
 
 export const transcriptMetaSchema = z.object({
+  ...contentWindowSchema.shape,
   goal: goalMetaSchema.optional(),
   modes: modesMetaSchema.optional(),
   activity: z.enum(['idle', 'turn', 'disposing', 'unknown']).optional(),
@@ -433,6 +443,7 @@ export const transcriptMetaMergeSchema = transcriptMetaSchema.extend({
 });
 
 export const attachmentSchema = z.object({
+  ...contentWindowSchema.shape,
   attachmentId: z.string(),
   mediaType: z.string(),
   name: z.string().optional(),
@@ -462,7 +473,7 @@ export const todoNotesSchema = z.object({
   files: z.string().optional(),
   next: z.string().optional(),
   open: z.string().optional(),
-});
+}).catchall(z.string());
 
 export const todoNotesMetaSchema = z.object({
   rev: z.number().int().nonnegative(),
@@ -471,18 +482,30 @@ export const todoNotesMetaSchema = z.object({
   writtenStep: z.string(),
   coveredMessageId: z.string(),
   windowEpoch: z.number().int().nonnegative(),
+  reviewedMessageId: z.string().optional(),
+  reviewedWindowEpoch: z.number().int().nonnegative().optional(),
+});
+
+export const todoNotesStatusSchema = z.object({
+  state: z.literal('incompatible'),
+  wireOrdinal: z.number().int().nonnegative(),
+  schemaVersion: z.number().int().nonnegative(),
+  fields: z.array(z.string()),
 });
 
 export const todoNotesUpdateSchema = z.object({
   notes: todoNotesSchema.optional(),
   notesMeta: todoNotesMetaSchema.optional(),
-});
+  writer: z.string().optional(),
+}).strict();
 
 export const todoSchema = z.object({
+  ...contentWindowSchema.shape,
   todoId: z.string(),
   items: z.array(todoItemSchema),
   notes: todoNotesSchema.optional(),
   notesMeta: todoNotesMetaSchema.optional(),
+  notesStatus: todoNotesStatusSchema.optional(),
   updatedAt: z.string().optional(),
 });
 
@@ -518,9 +541,12 @@ export const transcriptGlobalCoverageSchema = z.object({
   tasks: transcriptGlobalEntityCoverageSchema,
   attachments: transcriptGlobalEntityCoverageSchema,
   prompts: transcriptGlobalEntityCoverageSchema,
+  interactions: transcriptGlobalEntityCoverageSchema.optional(),
+  todos: transcriptGlobalEntityCoverageSchema.optional(),
 });
 
 export const transcriptPromptSchema = z.object({
+  ...contentWindowSchema.shape,
   promptId: z.string(),
   status: z.enum(['running', 'queued', 'blocked', 'completed', 'failed', 'aborted']),
   userMessageId: z.string().optional(),
@@ -558,6 +584,7 @@ export const agentTranscriptSnapshotSchema = z.object({
   toolCallCountKnown: z.boolean().optional(),
   meta: transcriptMetaSchema,
   hasMoreOlder: z.boolean().optional(),
+  olderCursor: z.string().optional(),
 });
 
 export const turnHeaderSchema = transcriptTurnSchema.omit({ steps: true });
@@ -700,14 +727,16 @@ export const transcriptQuerySchema = z
   .object({
     agent_id: agentIdSchema,
     before_turn: z.string().min(1).optional(),
+    before_item: z.string().min(1).max(512).optional(),
     after_turn: z.string().min(1).optional(),
+    after_item: z.string().min(1).optional(),
     page_size: z.number().int().min(1).max(100).optional(),
   })
   .superRefine((value, ctx) => {
-    if (value.before_turn !== undefined && value.after_turn !== undefined) {
+    if ([value.before_turn, value.before_item, value.after_turn, value.after_item].filter((entry) => entry !== undefined).length > 1) {
       ctx.addIssue({
         code: 'custom',
-        message: 'before_turn and after_turn are mutually exclusive',
+        message: 'before_turn, before_item, after_turn and after_item are mutually exclusive',
         path: ['before_turn'],
       });
     }
@@ -740,6 +769,8 @@ export const transcriptResponseSchema = z.object({
   agent_id: agentIdSchema,
   items: z.array(transcriptItemSchema),
   has_more: z.boolean(),
+  next_cursor: z.string().optional(),
+  globalCoverage: transcriptGlobalCoverageSchema.optional(),
   tool_call_count: z.number().int().nonnegative().optional(),
   tasks: z.array(transcriptTaskSchema),
   interactions: z.array(interactionSchema).default([]),
@@ -766,6 +797,7 @@ export const transcriptOpsCatchupResponseSchema = z.object({
   ),
   through_seq: transcriptSeqSchema,
   complete: z.boolean(),
+  has_more: z.boolean().optional(),
 });
 export type TranscriptOpsCatchupResponse = z.infer<typeof transcriptOpsCatchupResponseSchema>;
 
@@ -882,7 +914,7 @@ export const transcriptDetailResponseSchema = z.discriminatedUnion('kind', [
 export const transcriptDetailListQuerySchema = z
   .object({
     agent_id: agentIdSchema,
-    kind: z.enum(['task', 'attachment', 'prompt']),
+    kind: z.enum(['task', 'attachment', 'prompt', 'interaction', 'todo']),
     cursor: z.string().min(1).max(4096).optional(),
     limit: z.coerce.number().int().min(1).max(100).default(20),
   })
@@ -896,31 +928,20 @@ export const transcriptDetailListQuerySchema = z
     }
   });
 
+const transcriptDetailListBaseSchema = z.object({
+  session_id: z.string().min(1),
+  agent_id: agentIdSchema,
+  has_more: z.boolean(),
+  next_cursor: z.string().min(1).optional(),
+  total: z.number().int().nonnegative().optional(),
+});
+
 export const transcriptDetailListResponseSchema = z.discriminatedUnion('kind', [
-  z.object({
-    session_id: z.string().min(1),
-    agent_id: agentIdSchema,
-    kind: z.literal('task'),
-    items: z.array(transcriptTaskSchema),
-    has_more: z.boolean(),
-    next_cursor: z.string().min(1).optional(),
-  }),
-  z.object({
-    session_id: z.string().min(1),
-    agent_id: agentIdSchema,
-    kind: z.literal('attachment'),
-    items: z.array(attachmentSchema),
-    has_more: z.boolean(),
-    next_cursor: z.string().min(1).optional(),
-  }),
-  z.object({
-    session_id: z.string().min(1),
-    agent_id: agentIdSchema,
-    kind: z.literal('prompt'),
-    items: z.array(transcriptPromptSchema),
-    has_more: z.boolean(),
-    next_cursor: z.string().min(1).optional(),
-  }),
+  transcriptDetailListBaseSchema.extend({ kind: z.literal('task'), items: z.array(transcriptTaskSchema) }),
+  transcriptDetailListBaseSchema.extend({ kind: z.literal('attachment'), items: z.array(attachmentSchema) }),
+  transcriptDetailListBaseSchema.extend({ kind: z.literal('prompt'), items: z.array(transcriptPromptSchema) }),
+  transcriptDetailListBaseSchema.extend({ kind: z.literal('interaction'), items: z.array(interactionSchema) }),
+  transcriptDetailListBaseSchema.extend({ kind: z.literal('todo'), items: z.array(todoSchema) }),
 ]);
 
 export type TranscriptDetailListQuery = z.infer<typeof transcriptDetailListQuerySchema>;

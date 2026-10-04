@@ -39,6 +39,12 @@ import {
 
 export * from '@kiki/session-core/storage';
 
+/** Read another home's last-view without rebinding this window's namespace. */
+export function readHomeStorageItem(homeId: string, key: string): string | null {
+  const namespaced = homeId === 'main' ? key : `kiki.space.${homeId}.${key}`;
+  try { return localStorage.getItem(namespaced); } catch { return null; }
+}
+
 /** Global the desktop entry may write before the app bundle runs. */
 export const ACTIVE_SPACE_BOOT_GLOBAL = '__KIKI_ACTIVE_SPACE__';
 
@@ -164,6 +170,8 @@ export const SPACE_SCOPED_KEY_PREFIXES = ['kiki.draft.new.'] as const;
 export const GLOBAL_STORAGE_KEYS = [
   'kiki.locale',
   'kiki.viewRouteOwner',
+  'kiki.navHistory.v1',
+  'kiki.navScopeHandoff.v1',
   'kiki.settings',
   'kiki.layout',
   'kiki.desktopPrefs',
@@ -176,6 +184,13 @@ export const GLOBAL_STORAGE_KEYS = [
   // selects UI over generic buckets, never a space's own ids, so it stays
   // shared across spaces (`components/settings/list/listState.ts`).
   'kiki.settingsLists',
+  // The device's cached copy of each space's preferences, keyed inside the
+  // value by server + home (`lib/spaceAuthority.ts`). The server stays the
+  // authority, so the key itself is device-level.
+  'kiki.spacePreferences.cache',
+  // This device's own id, sent once when a space that has never carried
+  // preferences is told which client its earlier look came from.
+  'kiki.deviceId',
 ] as const;
 
 /** `kiki.*` names that are deliberately neither of the above. */

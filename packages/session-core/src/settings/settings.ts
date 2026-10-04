@@ -3,22 +3,29 @@ import {
   providerIdSchema,
   requestIdentityPolicySchema,
   permissionConfigPatchSchema,
+  hooksConfigSchema,
+  LEGACY_HOOK_EVENTS,
+  type HooksConfig,
+  type LegacyHookConfig,
   type CreateModelRequest,
   type CreateProviderRequest,
   type GetModelResponse,
   type ImagePolicyPatch,
   type ImagePolicyWire,
   type ModelCatalogItem,
+  type ModelBehaviorWire,
   type PatchConfigRequest,
   type PatchModelRequest,
   type PatchProviderRequest,
   type ProviderCatalogItem,
   type RequestIdentityPolicyWire,
+  type SessionTitleTrigger,
 } from '@kiki/protocol';
 
 import { LocalizedError, type I18nKey, type ValidationIssue } from '../i18n/locale';
 import { spaceStorage } from '../storage/spaceStorage';
 import type { KikiConfigPatch, KikiConfigResponse } from '../transport';
+import { questionGuardDraftFromBehavior, questionGuardModelPatch } from './questionGuardSettings';
 
 /** Client-local preferences stored in localStorage (`kiki.settings`). */
 export type SendShortcut = 'enter' | 'cmd-enter';
@@ -299,6 +306,7 @@ export interface ProviderModelDraft extends RequestIdentityLayerDraft, ImagePoli
   displayName: string;
   capabilities: string[];
   supportEfforts: string[];
+  behavior?: ModelBehaviorWire;
 }
 
 export interface ProviderDraft extends RequestIdentityLayerDraft, ImagePolicyDraft {
@@ -317,6 +325,19 @@ export interface ProviderDraft extends RequestIdentityLayerDraft, ImagePolicyDra
   clearApiKey: boolean;
   models: ProviderModelDraft[];
 }
+
+export type SpacePortableDesktopSettings = Pick<DesktopSettings, 'theme' | 'proseFont' | 'defaultAppendTiming' | 'foldSteps' | 'worktreeSkipConfirm'>;
+export interface SpacePortableSettingsBridge {
+  read(): Partial<SpacePortableDesktopSettings>;
+  write(patch: Partial<SpacePortableDesktopSettings>): void;
+}
+const PORTABLE_DESKTOP_KEYS: readonly (keyof SpacePortableDesktopSettings)[] = ['theme', 'proseFont', 'defaultAppendTiming', 'foldSteps', 'worktreeSkipConfirm'];
+let portableSettingsBridge: SpacePortableSettingsBridge | undefined;
+export function configureSpacePortableSettings(bridge?: SpacePortableSettingsBridge): void {
+  portableSettingsBridge = bridge;
+  publishSettings(readSettings());
+}
+export function refreshSpacePortableSettings(): void { publishSettings(readSettings()); }
 
 const STORAGE_KEY = 'kiki.settings';
 /** Space-scoped (§6.4): the session to reopen belongs to one space's list. */
@@ -344,6 +365,8 @@ const DEFAULTS: DesktopSettings = {
   proseFont: 'serif',
   awayNotifications: DEFAULT_AWAY_NOTIFICATION_KINDS,
 };
+
+export const DEFAULT_DESKTOP_SETTINGS: Readonly<DesktopSettings> = DEFAULTS;
 
 const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
   notifications: true,
@@ -382,8 +405,15 @@ export function validateRequestTimeoutSeconds(value: number): ValidationIssue | 
     : { key: 'val.requestTimeoutSeconds' };
 }
 
+export function readDeviceSettings(): DesktopSettings {
+  return normalizeSettings(readObject(STORAGE_KEY));
+}
+
 export function readSettings(): DesktopSettings {
-  const stored = readObject(STORAGE_KEY) as Partial<DesktopSettings>;
+  return normalizeSettings({ ...readObject(STORAGE_KEY), ...portableSettingsBridge?.read() });
+}
+
+function normalizeSettings(stored: Partial<DesktopSettings>): DesktopSettings {
   const requestTimeoutSeconds = stored.requestTimeoutSeconds;
   return {
     ...DEFAULTS,
@@ -495,7 +525,16 @@ function publishSettings(next: DesktopSettings): DesktopSettings {
 }
 
 export function writeSettings(patch: Partial<DesktopSettings>): void {
-  const next = { ...readObject(STORAGE_KEY), ...patch };
+  const devicePatch = { ...patch };
+  if (portableSettingsBridge !== undefined) {
+    const portablePatch: Partial<SpacePortableDesktopSettings> = {};
+    for (const key of PORTABLE_DESKTOP_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(patch, key)) Object.assign(portablePatch, { [key]: patch[key] });
+      delete devicePatch[key];
+    }
+    if (Object.keys(portablePatch).length > 0) portableSettingsBridge.write(portablePatch);
+  }
+  const next = { ...readObject(STORAGE_KEY), ...devicePatch };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
@@ -805,21 +844,33 @@ export function parseAdvancedServerConfig(value: string): AdvancedServerConfigPa
   };
 }
 
-export const HOOK_EVENTS = [
-  'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest', 'PermissionResult',
-  'UserPromptSubmit', 'UserPromptQueued', 'TurnStarted', 'Stop', 'StopFailure', 'Interrupt',
-  'SessionStart', 'SessionEnd', 'SessionHeartbeat', 'SubagentStart', 'SubagentStop',
-  'TaskStarted', 'PreCompact', 'PostCompact', 'Notification',
-] as const;
+export const HOOK_EVENTS = LEGACY_HOOK_EVENTS;
+export type SettingsHook = LegacyHookConfig;
 
-export interface SettingsHook {
-  event: (typeof HOOK_EVENTS)[number];
-  command: string;
-  matcher?: string;
-  timeout?: number;
+/** Validates the complete legacy or v2 config value without loading files or running hooks. */
+export function hooksConfigPatch(hooks: unknown): { hooks: HooksConfig } {
+  const result = hooksConfigSchema.safeParse(hooks);
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    throw new LocalizedError({ key: 'st.hooks.configInvalid', params: {
+      field: issue?.path.join('.') || 'hooks', message: issue?.message ?? 'Invalid input',
+    } });
+  }
+  return { hooks: result.data };
 }
 
-/** Mirrors the externalHooks config section, not its broader runtime HookDef. */
+/** Parses both config shapes; use Array.isArray to choose the editor. */
+export function parseHooksConfigJson(value: string): HooksConfig {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new LocalizedError({ key: 'val.advancedJson' });
+  }
+  return hooksConfigPatch(parsed).hooks;
+}
+
+/** Legacy-only form adapter. Use parseHooksConfigJson for a full config editor. */
 export function parseHooksJson(value: string): SettingsHook[] {
   let parsed: unknown;
   try {
@@ -875,17 +926,23 @@ export function marketplaceUrlPatch(url: string): KikiConfigPatch {
   };
 }
 
-/**
- * Narrow session-title patch for the pinned title model. An empty draft
- * clears the alias, which puts title generation back on the managed
- * `chat_title` tool.
- */
+/** An empty model disables all AI title requests. */
 export function sessionTitleModelPatch(model: string): KikiConfigPatch {
   const trimmed = model.trim();
   return {
     session_title: { model: trimmed.length === 0 ? undefined : trimmed },
     replace_domains: ['session_title'],
   };
+}
+
+export const SESSION_TITLE_TRIGGERS: readonly SessionTitleTrigger[] = [
+  'first_user_message', 'first_turn_completed', 'context_compacted',
+];
+
+/** Replaces only the title settings; an empty trigger set disables automatic generation. */
+export function sessionTitleSettingsPatch(model: string, triggers: readonly SessionTitleTrigger[]): KikiConfigPatch {
+  const patch = sessionTitleModelPatch(model);
+  return { ...patch, session_title: { ...patch.session_title, triggers: [...new Set(triggers)] } };
 }
 
 export type TokenCountingStrategy = 'measured+estimated' | 'measured' | 'estimated';
@@ -925,6 +982,7 @@ export interface RuntimeConfigDraft {
   disabledNamedProfiles: string[];
   skipBuiltinProfileInstallation: string[];
   sessionTitleModel: string;
+  sessionTitleTriggers: SessionTitleTrigger[];
 }
 
 function optionalNumberDraft(value: number | null | undefined): string {
@@ -960,12 +1018,12 @@ export function runtimeConfigDraftFromConfig(value: unknown): RuntimeConfigDraft
     task: {
       maxRunningTasks: optionalNumberDraft(task?.maxRunningTasks),
       keepAliveOnExit: task?.keepAliveOnExit ?? false,
-      bashAutoBackgroundOnTimeout: task?.bashAutoBackgroundOnTimeout ?? false,
+      bashAutoBackgroundOnTimeout: task?.bashAutoBackgroundOnTimeout ?? true,
       bashFileToolHints: task?.bashFileToolHints ?? true,
       bashTaskTimeoutS: optionalNumberDraft(task?.bashTaskTimeoutS),
       killGracePeriodMs: optionalNumberDraft(task?.killGracePeriodMs),
       printWaitCeilingS: optionalNumberDraft(task?.printWaitCeilingS),
-      printBackgroundMode: task?.printBackgroundMode ?? 'steer',
+      printBackgroundMode: task?.printBackgroundMode ?? (task?.keepAliveOnExit === true ? 'drain' : 'steer'),
       printMaxTurns: optionalNumberDraft(task?.printMaxTurns),
     },
     identityName: config.identity?.name ?? '',
@@ -975,6 +1033,7 @@ export function runtimeConfigDraftFromConfig(value: unknown): RuntimeConfigDraft
     disabledNamedProfiles: normalizeConfigStringList(config.disabled_named_profiles),
     skipBuiltinProfileInstallation: normalizeConfigStringList(config.skip_builtin_profile_installation),
     sessionTitleModel: config.session_title?.model ?? '',
+    sessionTitleTriggers: [...(config.session_title?.triggers ?? ['first_turn_completed'])],
   };
 }
 
@@ -1307,6 +1366,7 @@ export function providerModelDraftFromCatalog(
     displayName: model.display_name ?? '',
     capabilities: [...(model.capabilities ?? [])],
     supportEfforts: [...(model.support_efforts ?? [])],
+    behavior: model.behavior,
     ...requestIdentityLayerDraftFromPolicy(model.request_identity),
     ...imagePolicyDraftFromWire(model.images),
   };
@@ -1505,6 +1565,7 @@ export function providerModelDraftsEqual(
     && model.remoteId === other.remoteId
     && model.maxContextSize === other.maxContextSize
     && model.displayName === other.displayName
+    && JSON.stringify(model.behavior) === JSON.stringify(other.behavior)
     && model.requestIdentityChoice === other.requestIdentityChoice
     && model.requestIdentityOverridesJson === other.requestIdentityOverridesJson
     && imagePolicyDraftsEqual(model, other)
@@ -1563,6 +1624,7 @@ export function providerCreateBody(draft: ProviderDraft): CreateProviderRequest 
         capabilities: model.capabilities.length > 0 ? [...model.capabilities] : undefined,
         support_efforts: model.supportEfforts.length > 0 ? [...model.supportEfforts] : undefined,
         request_identity: modelIdentity,
+        behavior: model.behavior,
         images: modelImages,
       };
     }),
@@ -1630,6 +1692,8 @@ export function modelPatchBody(
   }
   const imagePatch = imagePolicyPatchFromDraft(draft, baseline);
   if (imagePatch !== undefined) patch.images = imagePatch;
+  const behaviorPatch = questionGuardModelPatch(questionGuardDraftFromBehavior(draft.behavior), questionGuardDraftFromBehavior(baseline.behavior));
+  if (behaviorPatch !== undefined) patch.behavior = behaviorPatch;
   return Object.keys(patch).length === 0 ? null : patch;
 }
 
@@ -1648,6 +1712,7 @@ export function modelCreateBody(
     max_context_size: row.maxContextSize > 0 ? row.maxContextSize : undefined,
     capabilities: row.capabilities.length > 0 ? [...row.capabilities] : undefined,
     support_efforts: row.supportEfforts.length > 0 ? [...row.supportEfforts] : undefined,
+    behavior: row.behavior,
     request_identity: requestIdentity,
     images,
   };
@@ -1803,12 +1868,12 @@ const AI_TAB_BY_CARD: Readonly<Record<string, AiSettingsTab>> = {
   'st-card-providers': 'providers',
   'st-card-providers-add': 'providers',
   'st-card-engines': 'providers',
-  'st-card-account-quota': 'providers',
   'st-card-catalog-import': 'providers',
   'st-card-models': 'models',
   'st-card-catalog-refresh': 'models',
   'st-card-model-migration': 'models',
   'st-card-global-defaults': 'defaults',
+  'st-card-model-switch': 'defaults',
   'st-card-thinking': 'defaults',
   'st-card-auto-compact': 'defaults',
   'st-card-loop-limits': 'defaults',
@@ -1905,6 +1970,8 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'mcp', labelKey: 'st.section.mcp' },
   { id: 'plugins', labelKey: 'st.section.plugins' },
   { id: 'search', labelKey: 'st.section.search' },
+  { id: 'browser-control', labelKey: 'st.section.browserControl' },
+  { id: 'computer-control', labelKey: 'st.section.computerControl' },
   { id: 'hooks', labelKey: 'st.section.hooks' },
   { id: 'workspaces', labelKey: 'st.section.workspaces' },
   { id: 'spaces', labelKey: 'st.section.spaces' },
@@ -1943,7 +2010,7 @@ export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'ssh'] },
   { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'identity', 'agents', 'subagents'] },
   { kind: 'group', id: 'work', labelKey: 'st.group.work', sections: ['sessions', 'notifications', 'memory', 'permissions', 'tasks'] },
-  { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'hooks'] },
+  { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks'] },
   { kind: 'group', id: 'workspace', labelKey: 'st.group.workspace', sections: ['workspaces', 'spaces'] },
   { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['developer', 'labs', 'about'] },
 ];
@@ -1991,6 +2058,8 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   mcp: { scopes: ['server', 'workspace'] },
   plugins: { scopes: ['server'], purposeKey: 'st.purpose.plugins' },
   search: { scopes: ['server'], purposeKey: 'st.purpose.search' },
+  'browser-control': { scopes: ['server'], purposeKey: 'st.purpose.browserControl' },
+  'computer-control': { scopes: ['server'], purposeKey: 'st.purpose.computerControl' },
   hooks: { scopes: ['server'], purposeKey: 'st.purpose.hooks' },
   workspaces: { scopes: ['server'], purposeKey: 'st.purpose.workspaces' },
   ssh: { scopes: ['server'], purposeKey: 'st.purpose.ssh' },
@@ -2038,7 +2107,21 @@ export const EXPERIMENTAL_FLAG_HOMES: readonly ExperimentalFlagHome[] = [
   { id: 'desktop_search', section: 'search', labelKey: 'st.exp.desktopSearch.name', descriptionKey: 'st.exp.desktopSearch.desc', effect: 'restart' },
   { id: 'image_format_conversion', section: 'ai', labelKey: 'st.exp.imageConversion.name', descriptionKey: 'st.exp.imageConversion.desc', effect: 'now' },
   { id: 'native_ssh', section: 'ssh', labelKey: 'st.exp.nativeSsh.name', descriptionKey: 'st.exp.nativeSsh.desc', effect: 'restart' },
+  // Stays on Developer: the browser page states this flag's outcome and points
+  // here, but does not host a browser-local switch for it. The gate is read per
+  // call, so the page's own connect works as soon as it is on; the agent's
+  // browser tools are registered per scope, so a running session keeps its set.
+  { id: 'native_browser', section: 'developer', labelKey: 'st.exp.nativeBrowser.name', descriptionKey: 'st.exp.nativeBrowser.desc', effect: 'newSessions' },
   { id: 'persistence_minidb_readmodel', section: 'developer', labelKey: 'st.exp.readModel.name', descriptionKey: 'st.exp.readModel.desc', effect: 'now' },
+  // Stays on Developer: kap-server reads this flag once while booting and only
+  // then registers the /api/usage-export routes, so the switch has no home
+  // that could restart anything for it. The panel that would sit on the section
+  // is on the Usage page and states its own outcome.
+  { id: 'usage_export', section: 'developer', labelKey: 'st.exp.usageExport.name', descriptionKey: 'st.exp.usageExport.desc', effect: 'restart' },
+  // Stays on Developer for the same reason: the gate is read on every call, so
+  // the switch works the moment it is on, and the import history it opens lives
+  // under Plugins rather than on a settings page.
+  { id: 'plugin_import', section: 'developer', labelKey: 'st.exp.pluginImport.name', descriptionKey: 'st.exp.pluginImport.desc', effect: 'now' },
 ];
 
 /** Leaf that hosts flags nobody else claims (server-specific extensions). */
@@ -2092,7 +2175,6 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'subagents', cardId: 'st-card-subagent-open-mode', titleKey: 'st.subagentOpenMode.title', keywordKeys: ['st.subagentOpenMode.hint', 'st.subagentOpenMode.tab', 'st.subagentOpenMode.fullscreen'], synonyms: ['subagent panel', '子代理面板', '打开方式'] },
   { section: 'subagents', cardId: 'st-card-subagent-limits', titleKey: 'st.subagentLimits.title', keywordKeys: ['st.subagentLimits.timeout', 'st.subagentLimits.direct', 'st.subagentLimits.total'], synonyms: ['timeout', '超时', '限额'] },
   { section: 'subagents', cardId: 'st-card-subagent-tool-defaults', titleKey: 'st.subagentTools.title', keywordKeys: ['st.subagentTools.hint'], synonyms: ['subagent tools', '子代理工具', 'tool defaults', '工具权限', 'board', '看板'] },
-  { section: 'subagents', cardId: 'st-card-subagent-dispatch-policies', titleKey: 'st.dispatchPolicies.title', keywordKeys: ['st.dispatchPolicies.hint', 'st.dispatchPolicies.mainLabel', 'st.dispatchPolicies.subLabel'], synonyms: ['dispatch policy', 'advisory', 'strict', '派遣策略', '建议', '严格'] },
   { section: 'general', cardId: 'st-card-language', titleKey: 'st.language.title', keywordKeys: ['st.language.hint'] },
   { section: 'appearance', cardId: 'st-card-appearance', titleKey: 'st.appearance.colorTitle', keywordKeys: ['st.appearance.theme', 'st.appearance.theme.dark', 'st.appearance.theme.light', 'st.appearance.theme.system', 'st.skin.title', 'st.skin.hint', 'st.skin.accent'], synonyms: ['skin', '皮肤', '换肤', 'dark mode', '暗色模式', 'accent color', '强调色', 'color', '颜色'] },
   { section: 'appearance', cardId: 'st-card-appearance-background', titleKey: 'st.bg.title', keywordKeys: ['st.bg.hint', 'st.bg.chooseFile', 'st.bg.opacity', 'st.bg.blur', 'st.bg.scrim', 'st.bg.surface', 'st.bg.perTheme'], synonyms: ['wallpaper', '壁纸', '背景', 'background image', '背景图', 'video background', '视频背景', 'anime', '二次元', 'opacity', '不透明度', 'blur', '模糊'] },
@@ -2109,11 +2191,12 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'shortcuts', cardId: 'st-card-shortcuts-fixed', titleKey: 'st.shortcuts.fixedTitle', keywordKeys: ['st.shortcuts.fixedHint'], synonyms: ['esc', 'enter', '固定按键'] },
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.tray', 'st.desktop.quit'] },
   { section: 'notifications', cardId: 'st-card-notify-away', titleKey: 'st.away.title', keywordKeys: ['st.away.enabled', 'st.away.completed', 'st.away.failed', 'st.away.question', 'st.away.approval'], synonyms: ['system notification', '系统通知', 'desktop notification', '桌面通知', 'unread', '未读', 'badge', '角标', 'activity', '活动'] },
-  { section: 'sessions', cardId: 'st-card-session-title', titleKey: 'st.sessions.titlesTitle', keywordKeys: ['st.sessions.titlesToggle', 'st.sessionTitleModel.model'], synonyms: ['session title', '会话标题', 'title model', '标题模型'] },
+  { section: 'sessions', cardId: 'st-card-session-title', titleKey: 'st.sessions.titlesTitle', keywordKeys: ['st.sessions.titlesToggle', 'st.sessions.titleMoments', 'st.sessionTitleModel.model'], synonyms: ['session title', '会话标题', 'title model', '标题模型', 'title moment', '标题时机', 'automatic title', '自动标题', 'generate when', '生成时机'] },
   { section: 'ai', tab: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder', 'st.models.remoteIdAria', 'st.images.acceptedTypes', 'st.images.convertUnsupported'], synonyms: ['模型目录', 'model catalog', '模型列表', 'model editing', '模型编辑', 'remote id', '远端模型 ID', 'image policy', '图片策略', '图片类型', '图片转换'] },
   { section: 'ai', tab: 'models', cardId: 'st-card-catalog-refresh', titleKey: 'st.catalogRefresh.title', keywordKeys: ['st.catalogRefresh.hint', 'st.catalogRefresh.getModels'], synonyms: ['模型目录刷新', 'catalog refresh', '获取模型', 'get models'] },
   { section: 'ai', tab: 'models', cardId: 'st-card-model-migration', titleKey: 'st.modelMigration.title', keywordKeys: ['st.modelMigration.hint', 'st.modelMigration.preview', 'st.modelMigration.restore'], synonyms: ['model migration', '模型迁移', '旧版模型参数', 'model parameters backup'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-global-defaults', titleKey: 'st.defaults.globalTitle', keywordKeys: ['st.models.providerLabel', 'st.defaults.globalHint'] },
+  { section: 'ai', tab: 'defaults', cardId: 'st-card-model-switch', titleKey: 'st.modelSwitch.title', keywordKeys: ['st.modelSwitch.defaultMode', 'st.modelSwitch.confirm', 'st.modelSwitch.rulesTitle', 'st.modelSwitch.ruleFrom'], synonyms: ['模型切换', 'model switch', 'switch model', '换模型', '切换方式', '全新上下文', 'fresh context', '压缩后切换', 'exception rule', '例外规则'] },
   { section: 'identity', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'], synonyms: ['请求身份', 'request identity', 'User-Agent', 'UA', 'header', '请求头', 'fingerprint', '指纹'] },
   { section: 'identity', cardId: 'st-card-identity-profiles', titleKey: 'st.identity.listTitle', keywordKeys: ['st.identity.userAgentLabel', 'st.identity.headersLabel', 'st.identity.paramsLabel', 'st.identity.duplicate'], synonyms: ['Codex', 'Claude Code', 'Grok', 'originator', 'X-Stainless'] },
   { section: 'identity', cardId: 'st-card-identity-tracks', titleKey: 'st.identity.tracksTitle', keywordKeys: ['st.identity.checkNpm', 'st.identity.checkLocal', 'st.identity.pin', 'st.identity.manifestLabel'], synonyms: ['client version', '客户端版本', 'npm', 'rollback', '回滚'] },
@@ -2127,10 +2210,9 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'connection', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },
   { section: 'connection', cardId: 'st-card-conn-disconnect', titleKey: 'st.conn.disconnectTitle', keywordKeys: ['st.conn.disconnectBody', 'sidebar.disconnect'] },
   { section: 'connection', cardId: 'st-card-conn-log', titleKey: 'st.conn.logTitle', keywordKeys: ['st.conn.logBody', 'st.conn.logCopy'], synonyms: ['connection log', '连接日志', 'disconnect', '断线', 'heartbeat', '心跳', 'close code'] },
-  { section: 'ai', tab: 'providers', cardId: 'st-card-auth', titleKey: 'st.auth.title', keywordKeys: ['st.auth.signIn', 'st.auth.signOut'], synonyms: ['提供商', '供应商', 'provider', '认证'] },
-  { section: 'ai', tab: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty', 'st.images.acceptedTypes', 'st.images.convertUnsupported'], synonyms: ['提供商', '供应商', 'provider', 'image policy', '图片策略', '图片类型', '图片转换', 'accepted image types', 'convert unsupported'] },
+  { section: 'ai', tab: 'providers', cardId: 'st-card-auth', titleKey: 'st.connections.addTitle', keywordKeys: ['st.auth.signIn', 'st.account.signIn', 'st.connect.accountTitle'], synonyms: ['提供商', '供应商', 'provider', '认证', '登录', 'sign in', '账号', 'account', '订阅', 'subscription'] },
+  { section: 'ai', tab: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty', 'st.images.acceptedTypes', 'st.images.convertUnsupported', 'st.quota.intro', 'st.quota.refresh'], synonyms: ['提供商', '供应商', 'provider', 'image policy', '图片策略', '图片类型', '图片转换', 'accepted image types', 'convert unsupported', '额度', '配额', 'quota', 'limit', '限额', 'Kimi Code', '订阅', 'subscription'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'], synonyms: ['提供商', '供应商', 'provider'] },
-  { section: 'ai', tab: 'providers', cardId: 'st-card-account-quota', titleKey: 'st.quota.title', keywordKeys: ['st.quota.intro', 'st.quota.refresh'], synonyms: ['额度', '配额', 'quota', 'limit', '限额', 'Kimi Code', '订阅', 'subscription'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-catalog-import', titleKey: 'st.catalog.title', keywordKeys: ['st.catalog.intro', 'st.catalog.searchPlaceholder'], synonyms: ['models.dev', '目录', 'catalog', 'directory', '导入', 'import', '提供商', 'provider'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-engines', titleKey: 'st.engines.title', keywordKeys: ['st.engines.intro', 'st.engines.check'], synonyms: ['外部引擎', 'executor', 'harness', 'Codex', 'Claude Code', 'Grok Build', 'ACP'] },
   { section: 'skills', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.extraDirs', 'st.sidecar.builtinSkills'], synonyms: ['能力', 'skills', '技能'] },
@@ -2161,7 +2243,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'search', tab: 'overview', cardId: 'st-card-search-status', titleKey: 'st.nbSearch.statusTitle', keywordKeys: ['st.nbSearch.statusHint'], synonyms: ['web search', 'fetch', '联网搜索', '网页抓取', 'nb-search', 'nb_search'] },
   { section: 'search', tab: 'overview', cardId: 'st-card-search-source', titleKey: 'st.nbSearch.source.title', keywordKeys: ['st.nbSearch.source.hint', 'st.nbSearch.source.reuseLocalLabel'], synonyms: ['配置来源', 'config source', 'nb-search config', '本地配置', 'local config'] },
   { section: 'search', tab: 'search', cardId: 'st-card-search-defaults', titleKey: 'st.nbSearch.defaultsTitle', keywordKeys: ['st.nbSearch.defaultLaneLabel'], synonyms: ['搜索 lane', 'search lane', 'default lane'] },
-  { section: 'search', tab: 'fetch', cardId: 'st-card-search-fetch', titleKey: 'st.nbSearch.fetchChainLabel', keywordKeys: ['st.nbSearch.fetchChainHint'], synonyms: ['fetch chain', '抓取链', 'pipeline chain', 'fallback'] },
+  { section: 'search', tab: 'fetch', cardId: 'st-card-search-fetch', titleKey: 'st.nbSearch.fetch.title', keywordKeys: ['st.nbSearch.fetchChainHint'], synonyms: ['fetch chain', '抓取链', 'pipeline chain', 'fallback'] },
   { section: 'search', tab: 'providers', cardId: 'st-card-search-providers', titleKey: 'st.nbSearch.providersTitle', keywordKeys: ['st.nbSearch.credentialEnvLabel', 'st.nbSearch.baseUrlLabel'], synonyms: ['exa', 'tavily', 'brave', 'searxng', 'jina', '搜索提供商'] },
   { section: 'search', tab: 'advanced', cardId: 'st-card-search-execution', titleKey: 'st.nbSearch.executionTitle', keywordKeys: ['st.nbSearch.groupBudgets', 'st.nbSearch.groupTimeouts', 'st.nbSearch.groupFetchLimits'], synonyms: ['搜索超时', 'search timeout', 'concurrency', '并发'] },
   { section: 'search', tab: 'advanced', cardId: 'st-card-search-index', titleKey: 'st.searchIndex.title', keywordKeys: ['st.searchIndex.retry'], synonyms: ['full-text index', '全文索引', 'history search', '历史搜索', 'indexer', '索引'] },
@@ -2170,6 +2252,11 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'mcp', cardId: 'st-card-mcp-timeouts', titleKey: 'st.mcp.timeoutsTitle', keywordKeys: ['st.runtime.mcpStartupTimeout', 'st.runtime.mcpToolTimeout'], synonyms: ['mcp 超时', 'mcp timeout'] },
   { section: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.title', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理', 'marketplace', '插件市场', '安装插件'] },
   { section: 'plugins', cardId: 'st-card-webbridge', titleKey: 'st.plugins.runtimeTitle', keywordKeys: ['st.plugins.runtimeHint'], synonyms: ['webbridge', '浏览器扩展', 'browser daemon'] },
+  { section: 'browser-control', cardId: 'st-card-browser-default', titleKey: 'st.browser.defaultTitle', keywordKeys: ['st.browser.defaultLabel', 'st.browser.defaultHint'], synonyms: ['默认浏览器', 'default browser', '浏览器', 'browser'] },
+  { section: 'browser-control', cardId: 'st-card-browser-connections', titleKey: 'st.browser.connectionsTitle', keywordKeys: ['st.browser.add', 'st.browser.fieldType', 'st.browser.fieldEndpoint', 'st.browser.disconnect'], synonyms: ['browser control', '浏览器控制', 'cdp', 'profile', 'chromium', 'chrome', 'agent-browser', '浏览器连接', '调试端口'] },
+  { section: 'computer-control', cardId: 'st-card-computer-machine', titleKey: 'st.computer.title', keywordKeys: ['st.computer.machineLabel', 'st.computer.statusLabel'], synonyms: ['computer control', '电脑控制', 'desktop control', '桌面控制', 'cua', 'cua-driver', 'mouse', 'keyboard', '屏幕'] },
+  { section: 'computer-control', cardId: 'st-card-computer-setup', titleKey: 'st.computer.setupTitle', keywordKeys: ['st.computer.statusLabel', 'st.computer.installButton', 'st.computer.recheckButton'], synonyms: ['executor', '执行器', '安装', 'install', '版本'] },
+  { section: 'computer-control', cardId: 'st-card-computer-mcp', titleKey: 'st.computer.connectionsTitle', keywordKeys: ['st.computer.connectionsHint', 'st.computer.fieldCommand', 'st.computer.stopButton'], synonyms: ['mcp', 'kiki-computer', 'stdio', '配置', 'connect', '连接', '停止'] },
   { section: 'workspaces', cardId: 'st-card-workspaces', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.hint'] },
   { section: 'workspaces', cardId: 'st-card-worktrees', titleKey: 'st.worktrees.title', keywordKeys: ['st.worktrees.hint', 'st.worktrees.cleanup', 'st.worktreePolicy.prefix', 'st.worktreePolicy.base', 'st.worktreePolicy.autoCleanup'], synonyms: ['branch prefix', '分支前缀', 'worktree policy', 'worktree 策略'] },
   { section: 'ssh', cardId: 'st-card-ssh-hosts', titleKey: 'st.ssh.hostsTitle', keywordKeys: ['st.ssh.addHost', 'st.ssh.writeBack'], synonyms: ['ssh', 'ssh config', '~/.ssh/config', 'remote host', '远程主机', '主机'] },
@@ -2178,8 +2265,11 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'about', cardId: 'st-card-about', titleKey: 'st.about.title', keywordKeys: ['st.about.serverVersion', 'st.about.serverId'] },
   { section: 'spaces', cardId: 'st-card-space-window', titleKey: 'st.spaces.windowTitle', keywordKeys: ['st.spaces.windowSwitch', 'st.spaces.windowWindows', 'st.spaces.windowNextLaunch'], synonyms: ['window mode', '窗口模式', 'multi window', '多窗口'] },
   { section: 'spaces', cardId: 'st-card-spaces', titleKey: 'st.spaces.listTitle', keywordKeys: ['st.spaces.new', 'st.spaces.attach', 'st.spaces.removeFromList', 'st.spaces.delete', 'st.spaces.credentials'], synonyms: ['space', 'spaces', '空间', 'home', 'kiki home', 'profile', '多开', '独立空间', 'isolated'] },
+  { section: 'spaces', cardId: 'st-card-remote-connections', titleKey: 'st.remote.outboundTitle', keywordKeys: ['st.remote.addTitle', 'st.remote.way.ssh', 'st.remote.removeTitle'], synonyms: ['remote kiki', 'remote space', 'connection', '远端 kiki', '远端空间', '连接', 'broker', 'over ssh'] },
+  { section: 'spaces', cardId: 'st-card-inbound-connections', titleKey: 'st.inbound.title', keywordKeys: ['st.inbound.gate', 'st.inbound.invitationLabel', 'st.inbound.bridgeNote'], synonyms: ['inbound', 'allow', 'invitation', '入站', '准入', '允许', '邀请', '被连接'] },
   { section: 'spaces', cardId: 'st-card-space-credentials', titleKey: 'st.spaces.credTitle', keywordKeys: ['st.spaces.credShared', 'st.spaces.credIsolated', 'st.spaces.copySsh'], synonyms: ['credentials', '凭据', '账号与密钥', 'ssh password', 'oauth'] },
-  { section: 'spaces', cardId: 'st-card-space-overrides', titleKey: 'st.spaces.overridesTitle', keywordKeys: ['st.origin.restore', 'st.origin.local', 'st.origin.inherited'], synonyms: ['inherit', '继承', '恢复继承', 'override', '覆盖'] },
+  { section: 'spaces', cardId: 'st-card-space-overrides', titleKey: 'st.spaces.ownChoices', keywordKeys: ['st.origin.restore', 'st.origin.local', 'st.origin.inherited'], synonyms: ['inherit', '继承', '恢复继承', 'override', '覆盖'] },
+  { section: 'spaces', cardId: 'st-card-web-access', titleKey: 'st.web.title', keywordKeys: ['st.web.newLink', 'st.web.turnOff', 'st.web.address', 'st.web.signedIn', 'st.web.persistent', 'st.web.temporary'], synonyms: ['web access', 'web 访问', '浏览器访问', 'browser access', '网页', '临时开启', 'always on', '始终开启', 'entry link', '入口链接', 'web link', '手机', 'phone'] },
 ];
 
 export interface SettingsSearchEntry {

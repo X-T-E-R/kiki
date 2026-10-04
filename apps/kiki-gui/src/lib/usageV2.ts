@@ -1,9 +1,7 @@
 /**
- * Usage dashboard — the client half of `GET /api/usage` (kap-server
- * `protocol/rest-usage.ts`). This module owns:
+ * Usage dashboard — the client half of `GET /api/usage`. This module owns:
  *
- *   - the wire types (mirrored locally; the schema lives in kap-server and is
- *     not re-exported through @kiki/protocol);
+ *   - wire type aliases from the shared @kiki/protocol schema;
  *   - the three-axis filter model (granularity × range × dimension) plus its
  *     URL query serialization — the URL is the canonical, shareable state;
  *   - localStorage persistence for filter selections; the page intentionally
@@ -29,18 +27,12 @@ import type { Locale } from '@kiki/session-core/i18n';
 import { spaceStorage } from './spaceStorage';
 
 // ---------------------------------------------------------------------------
-// Wire types (mirror of kap-server src/protocol/rest-usage.ts)
+// Shared wire type aliases
 // ---------------------------------------------------------------------------
 
-export type UsageGranularity = 'day' | 'week' | 'month' | 'session' | 'five_hour';
-export type UsageRangePreset =
-  | 'today'
-  | 'last_7_days'
-  | 'this_week'
-  | 'this_month'
-  | 'all'
-  | 'custom';
-export type UsageDimension = 'agent' | 'model' | 'project' | 'session';
+export type UsageGranularity = UsageResponseWire['query']['granularity'];
+export type UsageRangePreset = UsageResponseWire['query']['range']['preset'];
+export type UsageDimension = UsageResponseWire['query']['dimension'];
 
 export const USAGE_GRANULARITIES: readonly UsageGranularity[] = [
   'day',
@@ -64,101 +56,13 @@ export const USAGE_DIMENSIONS: readonly UsageDimension[] = [
   'session',
 ];
 
-export interface UsageTokensWire {
-  readonly input_other: number;
-  readonly output: number;
-  readonly input_cache_read: number;
-  readonly input_cache_creation: number;
-}
-
-export interface UsageAggregateWire {
-  readonly tokens: UsageTokensWire;
-  /** True when token accounting is missing or historical zero-record provenance is unknown. */
-  readonly tokens_unknown?: boolean;
-  readonly cost_usd_estimated: number;
-  /** True when pricing or token accounting is uncertain; the estimate is only the known portion. */
-  readonly cost_unknown: boolean;
-}
-
-export interface UsageGroupWire extends UsageAggregateWire {
-  readonly key: string;
-  readonly provider: string | null;
-  readonly model_alias: string | null;
-  readonly agent_id: string | null;
-  readonly parent_agent_id: string | null;
-  readonly profile_name: string | null;
-}
-
-export interface UsageDrilldownSessionWire {
-  readonly session_id: string;
-  readonly turn_ids: readonly number[];
-  readonly turn_count: number;
-  readonly unknown_turn_records: number;
-  readonly turn_ids_truncated: boolean;
-}
-
-export interface UsageTrendBucketWire {
-  readonly key: string;
-  readonly start_at: number;
-  readonly end_at: number;
-  readonly groups: readonly UsageGroupWire[];
-  readonly drilldown: {
-    readonly sessions: readonly UsageDrilldownSessionWire[];
-    readonly sessions_truncated: boolean;
-  };
-}
-
-export interface UsageSessionItemWire {
-  readonly id: string;
-  readonly workspace_id: string;
-  readonly title: string | null;
-  readonly created_at: number;
-  readonly updated_at: number;
-  readonly archived: boolean;
-  readonly deleted: boolean;
-  readonly usage: UsageAggregateWire;
-  readonly unknown_price_models: readonly string[];
-}
-
-export interface UsageResponseWire {
-  readonly query: {
-    readonly granularity: UsageGranularity;
-    readonly range: {
-      readonly preset: UsageRangePreset;
-      readonly start_at: number | null;
-      readonly end_at: number | null;
-      readonly defaulted_to_all_history: boolean;
-    };
-    readonly dimension: UsageDimension;
-    readonly workspace_ids: readonly string[];
-    readonly include_archived: boolean;
-    readonly timezone_offset_minutes: number;
-  };
-  readonly summary: UsageAggregateWire & { readonly session_count: number };
-  readonly trend: readonly UsageTrendBucketWire[];
-  readonly sessions: {
-    readonly items: readonly UsageSessionItemWire[];
-    readonly total: number;
-    readonly has_more: boolean;
-    readonly next_page_token: string | null;
-  };
-  readonly reliability: {
-    readonly usage_coverage?: {
-      readonly known_records: number;
-      readonly missing_records: number;
-      readonly legacy_zero_records: number;
-    };
-    readonly coverage: {
-      readonly earliest_at: number | null;
-      readonly latest_at: number | null;
-    };
-    readonly scanned_sessions: number;
-    readonly incomplete_sessions: number;
-    readonly unknown_price_models: readonly string[];
-    readonly includes_deleted_sessions: boolean;
-    readonly incomplete_reason: 'session_cap' | 'record_budget' | 'deadline' | null;
-  };
-}
+export type UsageResponseWire = import('@kiki/protocol').UsageResponse;
+export type UsageAggregateWire = import('@kiki/protocol').UsageAggregateWire;
+export type UsageTokensWire = UsageAggregateWire['tokens'];
+export type UsageTrendBucketWire = UsageResponseWire['trend'][number];
+export type UsageGroupWire = UsageTrendBucketWire['groups'][number];
+export type UsageDrilldownSessionWire = UsageTrendBucketWire['drilldown']['sessions'][number];
+export type UsageSessionItemWire = UsageResponseWire['sessions']['items'][number];
 
 // ---------------------------------------------------------------------------
 // Filter model — granularity × range × dimension, URL-carried and persisted

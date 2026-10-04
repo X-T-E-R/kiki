@@ -51,7 +51,10 @@ describe('kimi acp', () => {
 
     const acpV2 = program.commands.find((c) => c.name() === 'acp');
     expect(acpV2).toBeDefined();
+    // The description must name the product users invoke, not the app
+    // directory name.
     expect(acpV2?.description()).toMatch(/Agent Client Protocol/);
+    expect(acpV2?.description()).not.toContain('kimi-code');
   });
 
   it('uses the v2 server for the default `acp` command', async () => {

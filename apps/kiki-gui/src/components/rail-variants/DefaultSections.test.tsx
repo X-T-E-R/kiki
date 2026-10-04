@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
 /**
- * The rail's 能力 block (DefaultSections CapabilitiesBlock): folded is two
- * lines, not one — the head's per-kind counts plus one quiet line naming the
- * first few usable entries. A failed read (or an answer without the
- * capability fields) keeps the block as a plain title, one grey status line
- * and a text retry — "can't be read right now", never an alert and never a
- * silent gap.
+ * The rail's 能力 block (DefaultSections CapabilitiesBlock): folded is the
+ * head's per-kind counts and nothing else, because the names behind them read
+ * as a wall of slugs rather than a summary — they live in the block's own
+ * detail, where each carries its scope and state. A failed read (or an answer
+ * without the capability fields) keeps the block as a plain title, one grey
+ * status line and a text retry — "can't be read right now", never an alert and
+ * never a silent gap.
  */
 
 import { act } from 'react';
@@ -92,7 +93,7 @@ async function settle() {
 }
 
 describe('CapabilitiesBlock', () => {
-  it('folds to the counts head plus one line of usable names, and expands on toggle', async () => {
+  it('folds to the counts head alone, and expands onto the named detail', async () => {
     readCapabilities.mockResolvedValue(full);
     await render();
     await settle();
@@ -102,27 +103,28 @@ describe('CapabilitiesBlock', () => {
     expect(head.getAttribute('aria-expanded')).toBe('false');
     expect(head.textContent).toContain('工具 3 · 技能 4 · 子智能体 2 · 扩展 2');
     expect(block.querySelector('[data-agent-capabilities-section]')).toBeNull();
-    // The line under the head names what the role can use: workspace skills
-    // first, then global, then dispatch targets, then answering extensions.
-    const preview = block.querySelector('[data-rail-capabilities-preview]')!;
-    expect(preview.textContent).toContain('api-diff · release-notes · code-review · explore');
-    expect(preview.textContent).toContain('+1');
-    expect(preview.getAttribute('title')).toContain('github');
-    // Unusable entries never appear in the preview's promise.
-    expect(preview.getAttribute('title')).not.toContain('disabled-skill');
-    expect(preview.getAttribute('title')).not.toContain('release-bot');
-    expect(preview.getAttribute('title')).not.toContain('figma');
-    // Open: the full tabs mount, the preview line folds away.
+    // No name pile-up above the fold. Those slugs are a wall of ids, and the
+    // detail below carries each one with its scope and state.
+    expect(block.querySelector('[data-rail-capabilities-preview]')).toBeNull();
+    expect(block.textContent).not.toContain('api-diff');
+    expect(block.textContent).not.toContain('release-notes');
+    expect(block.textContent).not.toContain('+1');
+    // Open: the full tabs mount, where every name is readable on purpose —
+    // each behind its own tab, with its scope and state.
     await act(async () => { head.click(); });
     expect(block.querySelector('[data-agent-capabilities-section]')).not.toBeNull();
-    expect(block.querySelector('[data-rail-capabilities-preview]')).toBeNull();
-    // Close: the preview comes back.
+    expect(block.querySelector('[data-capability-tab-button="skills"]')).not.toBeNull();
+    const skills = block.querySelector<HTMLButtonElement>('[data-capability-tab-button="skills"]')!;
+    await act(async () => { skills.click(); });
+    expect(block.textContent).toContain('api-diff');
+    expect(block.textContent).toContain('release-notes');
+    // Close: the block is the counts head again, and nothing more.
     await act(async () => { head.click(); });
     expect(block.querySelector('[data-agent-capabilities-section]')).toBeNull();
-    expect(block.querySelector('[data-rail-capabilities-preview]')).not.toBeNull();
+    expect(block.textContent).not.toContain('api-diff');
   });
 
-  it('falls back to usable built-in tool names when there is nothing more telling', async () => {
+  it('keeps every usable name reachable in the detail, disabled ones out of the counts', async () => {
     readCapabilities.mockResolvedValue({
       context: 'live',
       owner: { profile: 'agent', agent_id: 'main' },
@@ -133,9 +135,12 @@ describe('CapabilitiesBlock', () => {
     });
     await render();
     await settle();
-    const preview = container.querySelector('[data-rail-capabilities-preview]')!;
-    expect(preview.textContent).toContain('Read · Write · Bash');
-    expect(preview.textContent).not.toContain('Grep');
+    // Built-ins alone: 3 of 4 enabled (Grep is off), and no name line at all.
+    const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
+    expect(head.textContent).toContain('工具 3');
+    expect(container.querySelector('[data-rail-capabilities-preview]')).toBeNull();
+    await act(async () => { head.click(); });
+    expect(container.querySelector('[data-agent-capabilities-section]')).not.toBeNull();
   });
 
   it('shows a quiet status line with a text retry when the read fails, and recovers', async () => {
@@ -159,7 +164,9 @@ describe('CapabilitiesBlock', () => {
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[data-rail-capabilities-unavailable]')).toBeNull();
-    expect(container.querySelector('[data-rail-capabilities-preview]')).not.toBeNull();
+    // Back to a working folded block: counts, no alert, nothing left over.
+    expect(container.querySelector('[data-rail-capabilities]')?.textContent).toContain('工具 3');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
   it('shows the same quiet line when the answer lacks the capability fields', async () => {

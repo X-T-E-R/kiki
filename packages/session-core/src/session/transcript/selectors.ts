@@ -3,10 +3,15 @@ import type { AgentTranscriptSnapshot, TranscriptItem } from '@kiki/transcript';
 
 import type { AgentTranscriptResponse } from '../../transport';
 import { MAIN_AGENT_ID, countToolBlocks, type AgentForest, type AgentTreeNode } from '../agentTree';
+import { isModelSwitchQueueId } from '../modelSwitchQueue';
 import { bump, type ApprovalBlock, type ApprovalResolution, type Block, type FloorEntry, type QueuedPromptPreview, type QuestionBlock, type QuestionOutcome, type SessionViewState, type SubagentBlock, type UserBlock } from './types';
 
 export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPromptPreview[] {
-  return state.queuedPromptIds.map((promptId) => {
+  return state.queuedPromptIds
+    // A stale move receipt can briefly reintroduce control ids before the next
+    // snapshot fold filters them; they never have a message row to show.
+    .filter((promptId) => !isModelSwitchQueueId(promptId))
+    .map((promptId) => {
     const block = state.blocks.find(
       (candidate): candidate is UserBlock => candidate.kind === 'user' && candidate.promptId === promptId,
     );
@@ -18,6 +23,7 @@ export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPr
       content: block?.queuedContent,
       appendTiming: meta?.appendTiming ?? 'agent_idle',
       revision: meta?.revision,
+      queuePosition: meta?.queuePosition,
     };
   });
 }

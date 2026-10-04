@@ -1,3 +1,4 @@
+import type { ContentWindow } from '../contract/content';
 import type { StepUsage } from './turn';
 
 export type GoalStatus = 'active' | 'paused' | 'blocked' | 'complete';
@@ -128,7 +129,7 @@ export interface PromptQueueHoldMeta {
   readonly count: number;
 }
 
-export interface TranscriptMeta {
+export interface TranscriptMeta extends ContentWindow {
   readonly goal?: GoalMeta;
   readonly modes?: ModesMeta;
   readonly activity?: ActivityMeta;

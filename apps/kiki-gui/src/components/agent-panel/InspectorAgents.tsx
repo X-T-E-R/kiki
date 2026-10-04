@@ -134,7 +134,10 @@ export const RailCrumbs = memo(function RailCrumbs({
                 data-inspect-parent={id !== MAIN_AGENT_ID ? '' : undefined}
                 title={id === MAIN_AGENT_ID ? t('inspector.backToMainAria') : t('subagent.openAgent', { name: label(id) })}
                 onClick={() => { onSelect(id); }}
-                className={`${CRUMB} ${id === MAIN_AGENT_ID ? 'shrink-0' : 'max-w-[7.5rem]'}`}
+                // Every crumb keeps a truncation budget. The main crumb used to
+                // hold `shrink-0`, so on a 300px rail its label stopped
+                // shrinking and ran into the current-page heading.
+                className={`${CRUMB} max-w-[7.5rem]`}
               >
                 <span className="truncate">{label(id)}</span>
               </button>

@@ -1,28 +1,194 @@
 import { describe, expect, it } from 'vitest';
 import type { NamedAgentProfile } from '@kiki/protocol';
 
-import { draftFromProfile, patchBody, toggleKikiContext } from './profileDraft';
+import { allowedSubagentsOpen, canSpawnDraft, draftFromProfile, openAllowedSubagents, patchBody, toggleKikiContext } from './profileDraft';
 
 const base: NamedAgentProfile = {
   name: 'helper', description: 'Helper', main: false, source: 'user',
   source_file: '/fixture/helper.md', workspace_id: 'ws-one', disabled: false, routes: [],
 };
 
-describe('profile draft subagent_policy', () => {
-  it('reads an absent policy as inherit, not advisory', () => {
-    expect(draftFromProfile(base).subagentPolicy).toBe('inherit');
-    expect(draftFromProfile({ ...base, subagent_policy: 'advisory' }).subagentPolicy).toBe('advisory');
-    expect(draftFromProfile({ ...base, subagent_policy: 'strict' }).subagentPolicy).toBe('strict');
+describe('profile draft subagent dispatch fields', () => {
+  it('reads an absent field as not declared, not as a grant', () => {
+    const policy = draftFromProfile(base).subagentPolicy;
+    expect(policy.canSpawnSubagents).toBeUndefined();
+    expect(policy.allowedSubagents).toBeUndefined();
+    expect(policy.preferredSubagents).toBeUndefined();
+    expect(policy.denySubagents).toBeUndefined();
+    expect(canSpawnDraft(policy.canSpawnSubagents)).toBe(true);
   });
 
-  it('writes null to clear, the value to set, and nothing when unchanged', () => {
-    const strict = { ...base, subagent_policy: 'strict' as const };
-    const baseline = draftFromProfile(strict);
-    expect(patchBody(strict, baseline, { ...baseline, subagentPolicy: 'inherit' }).subagent_policy).toBeNull();
-    expect(patchBody(strict, baseline, { ...baseline, subagentPolicy: 'advisory' }).subagent_policy).toBe('advisory');
-    expect('subagent_policy' in patchBody(strict, baseline, baseline)).toBe(false);
-    const unset = draftFromProfile(base);
-    expect(patchBody(base, unset, { ...unset, subagentPolicy: 'strict' }).subagent_policy).toBe('strict');
+  it('keeps an empty allowed list apart from an absent one, and both apart from the switch', () => {
+    const absent = draftFromProfile(base).subagentPolicy;
+    const empty = draftFromProfile({ ...base, allowed_subagents: [] }).subagentPolicy;
+    expect(empty.allowedSubagents).toEqual([]);
+    expect(empty.canSpawnSubagents).toBeUndefined();
+    const leaf = draftFromProfile({ ...base, can_spawn_subagents: false }).subagentPolicy;
+    expect(leaf.canSpawnSubagents).toBe(false);
+    expect(leaf.allowedSubagents).toBeUndefined();
+    expect(canSpawnDraft(leaf.canSpawnSubagents)).toBe(false);
+  });
+
+  it('recommends without silently restricting: a preferred-only edit writes no allowed list and no false', () => {
+    const baseline = draftFromProfile(base);
+    const body = patchBody(base, baseline, {
+      ...baseline, subagentPolicy: { ...baseline.subagentPolicy, preferredSubagents: ['explore'] },
+    });
+    expect(body.preferred_subagents).toEqual(['explore']);
+    expect(body).not.toHaveProperty('allowed_subagents');
+    expect(body).not.toHaveProperty('can_spawn_subagents');
+    expect(body).not.toHaveProperty('deny_subagents');
+    expect(body).not.toHaveProperty('subagent_policy');
+  });
+
+  it('writes null to drop this layer and nothing at all when untouched', () => {
+    const profile: NamedAgentProfile = {
+      ...base, can_spawn_subagents: false,
+      allowed_subagents: ['explore'], preferred_subagents: ['explore'], deny_subagents: ['legacy'],
+    };
+    const baseline = draftFromProfile(profile);
+    expect('can_spawn_subagents' in patchBody(profile, baseline, baseline)).toBe(false);
+    expect(patchBody(profile, baseline, {
+      ...baseline, subagentPolicy: { ...baseline.subagentPolicy, canSpawnSubagents: undefined },
+    }).can_spawn_subagents).toBeNull();
+    expect(patchBody(profile, baseline, {
+      ...baseline, subagentPolicy: { ...baseline.subagentPolicy, allowedSubagents: undefined },
+    }).allowed_subagents).toBeNull();
+    expect(patchBody(profile, baseline, {
+      ...baseline, subagentPolicy: { ...baseline.subagentPolicy, preferredSubagents: [] },
+    }).preferred_subagents).toEqual([]);
+  });
+
+  it('round-trips nested source, lease pins and per-child prompts through an unrelated edit', () => {
+    const profile: NamedAgentProfile = {
+      ...base,
+      allowed_subagents: [{
+        name: 'explore', source: 'scoped/agents/explore.md', model_alias: 'fixture/sol', thinking_effort: 'high',
+        model_prompts: 'replace', model_profiles: [{ alias: 'fixture/sol' }],
+      }, 'reviewer'],
+    };
+    const baseline = draftFromProfile(profile);
+    // An untouched list rides along with nothing: a description edit cannot
+    // restate the preset list, let alone drop a scoped source.
+    const body = patchBody(profile, baseline, { ...baseline, description: 'A different summary' });
+    expect(body.description).toBe('A different summary');
+    expect(body).not.toHaveProperty('allowed_subagents');
+
+    // Reordering writes the scoped entry as a bare name, which the server
+    // merges onto the mapping already on disk, and the pin comes back whole.
+    const reordered = baseline.subagentPolicy.allowedSubagents!.toReversed();
+    const moved = patchBody(profile, baseline, {
+      ...baseline, subagentPolicy: { ...baseline.subagentPolicy, allowedSubagents: reordered },
+    });
+    expect(moved.allowed_subagents).toEqual(['reviewer', 'explore']);
+  });
+
+  it('writes only the changed pin and leaves the nested per-child prompts to the sparse merge', () => {
+    const profile: NamedAgentProfile = {
+      ...base,
+      allowed_subagents: [{
+        name: 'explore', source: 'scoped/agents/explore.md', model_alias: 'fixture/sol', thinking_effort: 'high',
+        model_prompts: 'replace', model_profiles: [{ alias: 'fixture/sol' }],
+      }],
+    };
+    const baseline = draftFromProfile(profile);
+    const moved = patchBody(profile, baseline, {
+      ...baseline,
+      subagentPolicy: {
+        ...baseline.subagentPolicy,
+        allowedSubagents: [{ ...baseline.subagentPolicy.allowedSubagents![0]!, modelAlias: 'fixture/k3' }],
+      },
+    });
+    // Only the pin is restated; source, prompts and model_profiles are omitted
+    // so the server keeps what is already on disk.
+    expect(moved.allowed_subagents).toEqual([{
+      name: 'explore', model_alias: 'fixture/k3', thinking_effort: 'high',
+      model_prompts: undefined, model_profiles: undefined,
+    }]);
+  });
+
+  it('keeps a source-only scoped lease when the list stops limiting presets', () => {
+    // A scoped lease whose only configuration is its private source is still a
+    // real mapping: dropping it would delete a definition the server resolves.
+    const profile: NamedAgentProfile = {
+      ...base,
+      allowed_subagents: ['*', { name: 'explore', source: 'scoped/agents/explore.md' }],
+    };
+    const baseline = draftFromProfile(profile);
+    expect(allowedSubagentsOpen(baseline.subagentPolicy.allowedSubagents)).toBe(true);
+    const opened = openAllowedSubagents(baseline.subagentPolicy.allowedSubagents);
+    expect(opened?.map((entry) => entry.name)).toEqual(['*', 'explore']);
+    const body = patchBody(profile, baseline, {
+      ...baseline, subagentPolicy: { ...baseline.subagentPolicy, allowedSubagents: opened },
+    });
+    // The source is not restated, so the server's sparse merge keeps it.
+    expect(body.allowed_subagents).toEqual(['*', 'explore']);
+  });
+
+  it('keeps a source-only lease when the open domain is written back unchanged', () => {
+    const profile: NamedAgentProfile = {
+      ...base,
+      allowed_subagents: ['*', { name: 'explore', source: 'scoped/agents/explore.md' }, 'reviewer'],
+    };
+    const baseline = draftFromProfile(profile);
+    // Reordering the named leases under an open domain must not drop the
+    // scoped one, and a genuinely bare name may go.
+    const rows = [...baseline.subagentPolicy.allowedSubagents!].filter((entry) => entry.name !== '*').toReversed();
+    const body = patchBody(profile, baseline, {
+      ...baseline, subagentPolicy: { ...baseline.subagentPolicy, allowedSubagents: [{ name: '*', modelAlias: '', effort: '' }, ...rows] },
+    });
+    // 'reviewer' is a bare name beside the wildcard, which already says it, so
+    // it is normalised away; the scoped lease is kept and the order stands.
+    expect(body.allowed_subagents).toEqual(['*', 'explore']);
+  });
+
+  it('keeps a lease pin when the list stops limiting presets', () => {
+    const profile: NamedAgentProfile = {
+      ...base,
+      allowed_subagents: [{ name: 'explore', model_alias: 'fixture/sol', thinking_effort: 'high' }],
+    };
+    const baseline = draftFromProfile(profile);
+    const opened = openAllowedSubagents(baseline.subagentPolicy.allowedSubagents);
+    const body = patchBody(profile, baseline, {
+      ...baseline, subagentPolicy: { ...baseline.subagentPolicy, allowedSubagents: opened },
+    });
+    // "Stop limiting" opens the domain and carries the pin; it does not drop it.
+    expect(body.allowed_subagents).toEqual(['*', 'explore']);
+    // With nothing pinned there is no key left to write.
+    expect(openAllowedSubagents([{ name: 'reviewer', modelAlias: '', effort: '' }])).toBeUndefined();
+  });
+
+  it.each([
+    { name: 'explore', can_spawn_subagents: false },
+    { name: 'explore', allowed_subagents: [] },
+    { name: 'explore', preferred_subagents: ['reviewer'] },
+    { name: 'explore', deny_subagents: ['worker'] },
+    { name: 'explore', deny_models: ['fixture/blocked'] },
+    { name: 'explore', tools: [] },
+    { name: 'explore', disallowed_tools: ['Bash'] },
+  ])('keeps the complete readonly mapping when opening and reordering: %j', (lease) => {
+    const profile: NamedAgentProfile = { ...base, allowed_subagents: [lease, 'reviewer'] };
+    const baseline = draftFromProfile(profile);
+    expect(baseline.subagentPolicy.allowedSubagents![0]!.lease).toEqual(lease);
+    const opened = openAllowedSubagents(baseline.subagentPolicy.allowedSubagents);
+    expect(opened?.map((entry) => entry.name)).toEqual(['*', 'explore']);
+    const body = patchBody(profile, baseline, {
+      ...baseline, subagentPolicy: { ...baseline.subagentPolicy, allowedSubagents: opened!.toReversed() },
+    });
+    expect(body.allowed_subagents).toEqual(['*', 'explore']);
+    expect(body).not.toHaveProperty('preferred_subagents');
+    expect(body).not.toHaveProperty('can_spawn_subagents');
+  });
+
+  it('keeps denial and preference independent of the preset list', () => {
+    const profile: NamedAgentProfile = { ...base, deny_subagents: ['legacy'] };
+    const baseline = draftFromProfile(profile);
+    const body = patchBody(profile, baseline, {
+      ...baseline, subagentPolicy: { ...baseline.subagentPolicy, denySubagents: ['legacy', 'other'] },
+    });
+    expect(body.deny_subagents).toEqual(['legacy', 'other']);
+    expect(body).not.toHaveProperty('allowed_subagents');
+    expect(body).not.toHaveProperty('preferred_subagents');
   });
 });
 

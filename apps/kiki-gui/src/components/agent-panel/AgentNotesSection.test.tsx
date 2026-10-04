@@ -5,7 +5,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
-import { AgentNotesSection, type AgentNotesSectionProps } from './AgentNotesSection';
+import { AgentNotesSection, NOTE_SECTION_LABELS, type AgentNotesSectionProps } from './AgentNotesSection';
+import { NOTE_SECTIONS } from '../../../../../packages/agent-core-v2/src/session/todo/todoNotes';
+import { TodoNotesSchema } from '../../../../../packages/agent-core-v2/src/agent/tools/todo-list/todo-list';
+import { todoNotesSchema, transcriptOperationSchema, AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter } from '@kiki/transcript';
+import { createViewState, projectAgentTranscriptView } from '@kiki/session-core';
 
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -96,6 +100,48 @@ describe('AgentNotesSection', () => {
       .toEqual(['goal', 'directives', 'decided', 'rejected', 'evidence', 'files', 'next', 'open']);
     const labels = parts.map((part) => part.querySelector('dt')?.textContent);
     expect(labels).toEqual(['Goal', 'User instructions', 'Decided', 'Ruled out', 'Evidence', 'Files', 'Next', 'Open questions']);
+    await cleanup();
+  });
+
+  it('round-trips core section sentinels through live and cold projection and renders unknown strings safely', async () => {
+    const notes = Object.fromEntries(NOTE_SECTIONS.map((section) => [section, `${section}:exact\nsecond line`]));
+    expect(Object.keys(TodoNotesSchema.shape)).toEqual([...NOTE_SECTIONS]);
+    expect(Object.keys(todoNotesSchema.shape)).toEqual([...NOTE_SECTIONS]);
+    expect(Object.keys(NOTE_SECTION_LABELS)).toEqual([...NOTE_SECTIONS]);
+    const complete = { ...notes, future_field: '<script>not executable</script>' };
+    const record = { type: 'tools.update_store', key: 'todo_notes', value: { notes: complete, notesMeta: meta } };
+    const live = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(live);
+    const adapter = new TranscriptWireAdapter('main');
+    reducer.apply(adapter.add(record));
+    const operation = transcriptOperationSchema.parse(JSON.parse(JSON.stringify({ op: 'todo.upsert', todo: live.getTodo('todo') })));
+    expect(operation).toMatchObject({ todo: { notes: complete } });
+    const cold = new AgentTranscript('main');
+    new TranscriptFactReducer(cold).apply(new TranscriptWireAdapter('main').add(JSON.parse(JSON.stringify(record))));
+    expect(cold.getTodo('todo')?.notes).toEqual(complete);
+    expect(live.getTodo('todo')?.notes).toEqual(complete);
+    const projected = projectAgentTranscriptView(createViewState('session'), 'main', live.snapshot());
+    expect(projected.todoNotes).toEqual(complete);
+    const { container, cleanup } = await render({ notes: projected.todoNotes, meta: projected.todoNotesMeta, loaded: true });
+    await openSection(container);
+    expect([...container.querySelectorAll<HTMLElement>('[data-agent-notes-part]')].map((node) => node.dataset['agentNotesPart'])).toEqual([...NOTE_SECTIONS, 'future_field']);
+    for (const section of NOTE_SECTIONS) expect(container.querySelector(`[data-agent-notes-part="${section}"] dd`)?.textContent).toBe(notes[section]);
+    expect(container.textContent).toContain('Newer notes field: future_field');
+    expect(container.querySelector('script')).toBeNull();
+    await cleanup();
+  });
+
+  it('distinguishes incompatible, stale, and explicitly empty notes', async () => {
+    const status = { state: 'incompatible' as const, wireOrdinal: 12, schemaVersion: 1, fields: ['notes.future_field'] };
+    const { container, rerender, cleanup } = await render({ notes: undefined, meta: undefined, status, loaded: true });
+    expect(container.textContent).toContain('Working notes cannot be read right now.');
+    expect(container.textContent).not.toContain('No working notes yet.');
+    await rerender({ notes: { goal: 'last readable goal' }, meta, status, loaded: true });
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('Showing the last readable version');
+    expect(container.textContent).toContain('last readable goal');
+    await rerender({ notes: undefined, meta, loaded: true });
+    expect(container.textContent).toContain('Working notes are empty · revision 4');
+    expect(container.querySelector('[role="status"]')).toBeNull();
     await cleanup();
   });
 

@@ -17,12 +17,17 @@ import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import type { PluginMarketplaceEntry, PluginSummary } from '../../lib/client';
+import { useImportHistoryEnabled } from '../../lib/importHistory';
 import { pluginUpdate, shelfOverflow, shelveCatalog, type CatalogShelfId, type PluginUpdateView } from '../../lib/pluginCatalog';
+import { useConnection } from '../../state/connection';
 import { InlineError } from '../controls';
 import { Icon, Spinner } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { AddSourceDialog, CatalogSourceField } from './AddSourceDialog';
 import { CapabilityIcon } from './CapabilityIcon';
+import { ImportHistoryView } from './ImportHistoryView';
+import { MediaKindGlyph } from '../media/MediaKindGlyph';
+import { MediaSourcesView } from '../media/MediaSourcesView';
 import { InstalledList } from './InstalledList';
 import { InstallFlow, type InstallRequest } from './InstallFlow';
 import { PluginCard } from './PluginCard';
@@ -37,21 +42,35 @@ export type PluginsRoute =
   | { readonly view: 'market' }
   | { readonly view: 'installed' }
   | { readonly view: 'detail'; readonly id: string }
-  | { readonly view: 'shelf'; readonly shelf: CatalogShelfId };
+  | { readonly view: 'shelf'; readonly shelf: CatalogShelfId }
+  /** D27 import history: the session-source importers, and the archives they wrote. */
+  | { readonly view: 'import'; readonly sourceId?: string; readonly sourcePluginId?: string }
+  /** D12: the media surface — providers, defaults, and this session's jobs. */
+  | { readonly view: 'media' };
 
 export function PluginsView({
   route,
   onRoute,
   workspaceRoot,
   onOpenPanel,
+  onOpenSession,
+  sessionId,
 }: {
   readonly route: PluginsRoute;
   readonly onRoute: (next: PluginsRoute) => void;
   /** Root of the workspace in focus; the only task signal sent for suggestions. */
   readonly workspaceRoot?: string;
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
+  /** Continue a finished native import on the normal session route. */
+  readonly onOpenSession?: (sessionId: string) => void;
+  /** Session whose media jobs this view lists; without one, no job list. */
+  readonly sessionId?: string;
 }) {
   const { t, tp, locale, time } = useI18n();
+  const { client } = useConnection();
+  // The entry exists only where the server offers the import routes, so a build
+  // without them shows no dead control.
+  const importAvailable = useImportHistoryEnabled(client).enabled === true;
   const installedQuery = useInstalledPlugins();
   const marketQuery = usePluginMarketplace();
   const recommendQuery = usePluginRecommendations(workspaceRoot);
@@ -105,6 +124,34 @@ export function PluginsView({
     </>
   );
 
+  if (route.view === 'import') {
+    return (
+      <div data-plugins-view="import">
+        <ImportHistoryView
+          initialSourceId={route.sourceId}
+          initialSourcePluginId={route.sourcePluginId}
+          onOpenPlugin={open}
+          onOpenSession={onOpenSession}
+          onBack={() => { onRoute({ view: 'installed' }); }}
+        />
+        {sheets}
+      </div>
+    );
+  }
+
+  if (route.view === 'media') {
+    return (
+      <div data-plugins-view="media">
+        <MediaSourcesView
+          sessionId={sessionId}
+          onBack={() => { onRoute({ view: 'installed' }); }}
+          onOpenPlugin={(id) => { onRoute({ view: 'detail', id }); }}
+        />
+        {sheets}
+      </div>
+    );
+  }
+
   if (route.view === 'detail') {
     return (
       <>
@@ -115,6 +162,9 @@ export function PluginsView({
           onInstall={setInstall}
           onUpdate={startUpdate}
           onOpenPanel={onOpenPanel}
+          onOpenImport={importAvailable
+            ? (source) => { onRoute({ view: 'import', sourceId: source.sourceId, sourcePluginId: source.pluginId }); }
+            : undefined}
         />
         {sheets}
       </>
@@ -167,6 +217,32 @@ export function PluginsView({
             />
           ) : null}
         </div>
+        {/* Import history is a plugin capability, so it lives on the Plugins tab
+            next to install/manage rather than as a second global destination. */}
+        {/* Media is a plugin capability too: the providers, their keys and
+            the per-modality defaults are all reached through installed plugin
+            packages, so it belongs on this tab rather than as a second
+            destination. */}
+        <button
+          type="button"
+          className={`${QUIET_BUTTON} shrink-0 self-start min-[720px]:self-auto`}
+          data-plugins-open-media
+          onClick={() => { onRoute({ view: 'media' }); }}
+        >
+          <MediaKindGlyph kind="image" className="h-3.5 w-3.5 text-ink-faint" />
+          {t('cap.media.title')}
+        </button>
+        {importAvailable ? (
+          <button
+            type="button"
+            className={`${QUIET_BUTTON} shrink-0 self-start min-[720px]:self-auto`}
+            data-plugins-open-import
+            onClick={() => { onRoute({ view: 'import' }); }}
+          >
+            <Icon name="read" size={14} className="text-ink-faint" />
+            {t('cap.import.entry')}
+          </button>
+        ) : null}
       </div>
 
       {tab === 'installed' ? (

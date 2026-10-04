@@ -31,7 +31,7 @@ import type { Klient, TerminalFacade, TerminalConnectionStatus as WsStatus } fro
 import type { MetaResponse } from '@kiki/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
-import { ConnectScreen } from '../components/ConnectScreen';
+import { ConnectScreen, type WebLinkProblem } from '../components/ConnectScreen';
 import { useHost } from '../host';
 import { translate, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
 import type { SessionController } from '@kiki/session-core/session';
@@ -42,7 +42,7 @@ import {
 } from '@kiki/session-core/settings';
 import { isVscodeWebview } from '../host/vscode';
 import { useI18n } from '../i18n';
-import { ApiError, KikiClient } from '../lib/client';
+import { ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
 import {
   clearStoredConfig,
   readDeepLinkConfig,
@@ -59,6 +59,16 @@ import {
   type DesktopFailureInfo,
 } from './desktopConnection';
 import { watchPageLifecycle } from './connectionDiagnostics';
+import { createScopeConnectionAdapter } from '../lib/navScopeConnection';
+import { pendingScopeReloadScope, requestScopeNavigation, type ScopeConnectionAdapter } from '../lib/navScope';
+import { activeSpace, parseActiveSpacePayload } from '../lib/spaceStorage';
+import {
+  claimWebCookie as askForWebCookie,
+  resetWebAccessBootstrap,
+  webAccessBootstrap,
+  webEntryProblemFor,
+  type WebAccessBootstrap,
+} from '../lib/webAccess';
 
 export type { ConnectionConfig } from './connectionConfig';
 
@@ -76,7 +86,7 @@ function scrubUrl(): void {
   const scrubbedUrl = scrubConnectionUrl(window.location);
   if (scrubbedUrl !== currentUrl) {
     try {
-      window.history.replaceState(null, '', scrubbedUrl);
+      window.history.replaceState(window.history.state, '', scrubbedUrl);
     } catch {
       // Connection still succeeds when history mutation is unavailable.
     }
@@ -90,6 +100,8 @@ export function handleGlobalConnectionFrame(
   if (frame.type !== 'event.model_catalog.changed') return false;
   void queryClient.invalidateQueries({ queryKey: ['models'] });
   void queryClient.invalidateQueries({ queryKey: ['providers'] });
+  void queryClient.invalidateQueries({ queryKey: ['model-entity'] });
+  void queryClient.invalidateQueries({ queryKey: ['provider-entity'] });
   void queryClient.invalidateQueries({ queryKey: ['discovered-models'] });
   return true;
 }
@@ -102,12 +114,27 @@ export function refreshSessionAttention(queryClient: Pick<QueryClient, 'invalida
 }
 
 interface ConnectionValue {
+  readonly connectionId: string | null;
+  /**
+   * Which kind of connection this window is holding. `connectionId` names a
+   * remote space and is null for everything local, so a surface that needs to
+   * tell "a browser signed in through a web link" from "the owner on this
+   * machine" has to read this, not that.
+   */
+  readonly connectionSource: ConnectionSelection['source'] | null;
+  readonly spaceKey: string;
   readonly scopeId: string;
+  readonly connectionRef?: string;
   readonly sshLabel: string | null;
   readonly activateSshProfile: (id: string, token: string) => Promise<void>;
   readonly activateLocal: () => void;
+  readonly restoreLocal: (signal?: AbortSignal) => Promise<void>;
+  readonly scopeAdapter: ScopeConnectionAdapter;
+  readonly needsScopeReload: boolean;
   readonly config: ConnectionConfig;
   readonly client: KikiClient;
+  /** Desktop control connection, retained independently of the active SSH session. */
+  readonly localClient: KikiClient | null;
   readonly klient: Klient;
   readonly socket: TerminalFacade;
   readonly meta: MetaResponse;
@@ -420,22 +447,51 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const vscodeRuntime = isVscodeWebview();
   const { locale, t } = useI18n();
   const scopesRef = useRef(new Map<string, QueryClient>());
+  const bootScope = pendingScopeReloadScope();
+  const remoteBootRef = useRef(bootScope?.scopeId.startsWith('remote:') ? bootScope : null);
   const localSettings = useSyncExternalStore(
     subscribeSettings,
     settingsSnapshot,
     settingsServerSnapshot,
   );
   const requestTimeoutMs = localSettings.requestTimeoutSeconds * 1000;
-  const [selection, setSelection] = useState<ConnectionSelection | null>(() =>
-    desktopRuntime || vscodeRuntime
-      ? null
-      : selectInitialConnection({
-          deepLink: readDeepLinkConfig(),
-          stored: readStoredConfig(),
-        }),
+  // A browser that just redeemed a web entry link is already signed in to this
+  // origin by cookie, and that is the connection it wants. A stored `?server=`
+  // from an earlier visit must not take it over: same-origin is a stronger
+  // claim than anything left in localStorage, and a link handed to someone must
+  // land on the Kiki that issued it.
+  const [webEntry, setWebEntry] = useState<WebAccessBootstrap>(() => webAccessBootstrap());
+  // A link that failed is remembered only for as long as this page lives, so a
+  // reload or a later visit is a clean slate rather than a permanent dead end.
+  const [webLinkProblem, setWebLinkProblem] = useState<WebLinkProblem | undefined>(
+    webEntry.kind === 'failed' ? webEntryProblemFor(webEntry.reason) : undefined,
   );
+  const [selection, setSelection] = useState<ConnectionSelection | null>(() => {
+    if (desktopRuntime || vscodeRuntime) return null;
+    if (webEntry.kind === 'signed-in') {
+      return { config: { url: '', token: '' }, persist: false, source: 'web-cookie' };
+    }
+    // No code in this page load. A browser that redeemed a link earlier still
+    // holds the cookie, and must be recognized on a refresh or a later visit
+    // rather than being asked for a token it does not have. The answer comes
+    // from the server, not from anything stored here, and until it arrives the
+    // ordinary connect screen stands — so nothing claims a session it cannot
+    // prove.
+    void askForWebCookie((claimed) => {
+      if (!claimed || selectionRef.current !== null) return;
+      connectionEpochRef.current += 1;
+      setSelection({ config: { url: '', token: '' }, persist: false, source: 'web-cookie' });
+    });
+    return selectInitialConnection({
+      deepLink: readDeepLinkConfig(),
+      stored: readStoredConfig(),
+    });
+  });
   const config = selection?.config ?? null;
   const scopeId = selection?.scopeId ?? (desktopRuntime ? 'local' : `direct:${config?.url.trim().replace(/\/+$/, '') ?? ''}`);
+  const connectionId = selection?.source === 'remote' ? selection.connectionId ?? null : null;
+  const connectionSource = selection?.source ?? null;
+  const spaceKey = connectionId === null ? activeSpace()?.homeId ?? 'main' : `remote:${connectionId}`;
   let queryClient = scopesRef.current.get(scopeId);
   if (queryClient === undefined) {
     queryClient = new QueryClient({
@@ -458,9 +514,16 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const connectionEpochRef = useRef(0);
   const sshAttemptRef = useRef(0);
   const localSelectionRef = useRef<ConnectionSelection | null>(null);
+  const [localSelection, setLocalSelection] = useState<ConnectionSelection | null>(null);
+  const updateLocalSelection = useCallback((next: ConnectionSelection | null) => {
+    localSelectionRef.current = next;
+    setLocalSelection(next);
+  }, []);
+  const stagedClientRef = useRef<{ selection: ConnectionSelection; client: KikiClient; meta: MetaResponse } | null>(null);
   const boundHomeIdsRef = useRef(new Map<string, string>());
   const connectedSshProfileRef = useRef<{ id: string; tunnelId: string } | null>(null);
-  const routesRef = useRef(new Map<string, string>());
+  const scopePreparingRef = useRef(false);
+  const reloadSelectionRef = useRef<{ promise: Promise<ConnectionSelection | null> | null; consumed: boolean }>({ promise: null, consumed: false });
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
   const leaseClientIdRef = useRef(nextGuiLeaseClientId());
@@ -508,12 +571,22 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
     const resolveDesktopConnection = () => {
       const generation = ++resolveGeneration;
-      void host.connection.discover().then(
-        (connection) => {
+      const resume = reloadSelectionRef.current;
+      resume.promise ??= (host.connection.takeScopeConnection?.() ?? Promise.resolve(null)).then((handoff): ConnectionSelection | null => {
+        if (handoff === null) return null;
+        const resolved = handoff.connection;
+        return { config: resolved.config, persist: false, source: 'ssh', scopeId: `ssh:${handoff.profile.id}`, profile: handoff.profile,
+          tunnelId: resolved.tunnelId, serverHomeId: resolved.serverHomeId, serverInstanceId: resolved.serverInstanceId,
+          serverVersion: resolved.serverVersion, buildId: resolved.buildId, buildChannel: resolved.buildChannel };
+      }).catch(() => null);
+      void Promise.all([host.connection.discover(), resume.consumed ? Promise.resolve(null) : resume.promise]).then(
+        ([connection, handoff]) => {
           if (cancelled || generation !== resolveGeneration) return;
           setDesktopBoot(null);
           setDesktopFailure(null);
           if (connection === null) {
+            updateLocalSelection(null);
+            if (selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote') return;
             setConnectError({ kind: 'key', key: 'conn.desktopNoServer' });
             return;
           }
@@ -523,14 +596,24 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
             source: 'desktop',
             scopeId: 'local',
           };
-          localSelectionRef.current = local;
-          if (selectionRef.current?.source === 'ssh') return;
+          updateLocalSelection(local);
+          if (handoff !== null && !resume.consumed) {
+            resume.consumed = true;
+            resume.promise = Promise.resolve(null);
+            selectionRef.current = handoff;
+            if (handoff.profile && handoff.tunnelId) connectedSshProfileRef.current = { id: handoff.profile.id, tunnelId: handoff.tunnelId };
+            connectionEpochRef.current += 1;
+            setSelection(handoff);
+            return;
+          }
+          if (selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote') return;
           connectionEpochRef.current += 1;
           setSelection(local);
         },
         (error: unknown) => {
           if (cancelled || generation !== resolveGeneration) return;
-          if (selectionRef.current?.source === 'ssh') return;
+          updateLocalSelection(null);
+          if (selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote') return;
           connectionEpochRef.current += 1;
           setDesktopBoot(null);
           setMeta(null);
@@ -544,8 +627,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     // Runtime recovery reuses the boot stage event. Each waiting stage resolves
     // the newly spawned sidecar connection because its random port may change.
     void host.connection.onBackendStage((payload) => {
+      if (scopePreparingRef.current) return;
       if (payload === 'waiting') {
-        if (selectionRef.current?.source === 'ssh') {
+        updateLocalSelection(null);
+        if (selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote') {
           resolveDesktopConnection();
           return;
         }
@@ -571,8 +656,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         return;
       }
       resolveGeneration += 1;
-      localSelectionRef.current = null;
-      if (selectionRef.current?.source === 'ssh') return;
+      updateLocalSelection(null);
+      if (selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote') return;
       connectionEpochRef.current += 1;
       setMeta(null);
       setSelection(null);
@@ -597,7 +682,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       resolveGeneration += 1;
       unlisten?.();
     };
-  }, [host, desktopAttempt]);
+  }, [host, desktopAttempt, updateLocalSelection]);
 
   const retryDesktopBoot = useCallback(() => {
     setDesktopFailure(null);
@@ -613,6 +698,27 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     void host.connection.cancelStartup?.().catch(() => undefined);
   }, [host, t]);
 
+  const localEndpoint = localSelection?.config.url.trim().replace(/\/+$/, '') ?? null;
+  const localToken = localSelection?.config.token.trim() ?? null;
+  const [localControl, setLocalControl] = useState<{ selection: ConnectionSelection; client: KikiClient } | null>(null);
+  const localClient = localSelection !== null && localControl?.selection === localSelection ? localControl.client : null;
+  const localClientRef = useRef(localClient);
+  localClientRef.current = localClient;
+  const restoredMetaRef = useRef<{ client: KikiClient; meta: MetaResponse } | null>(null);
+
+  useEffect(() => {
+    if (localSelection === null || localEndpoint === null || localToken === null) return;
+    const instance = new KikiClient({
+      baseUrl: localEndpoint, token: localToken, timeoutMs: requestTimeoutMs,
+      onSessionMutation: (sessionId) => {
+        const localQueries = scopesRef.current.get('local');
+        if (localQueries !== undefined) refreshSessionAttention(localQueries, sessionId);
+      },
+    });
+    setLocalControl({ selection: localSelection, client: instance });
+    return () => { void instance.klient.close(); };
+  }, [localSelection, localEndpoint, localToken, requestTimeoutMs]);
+
   const endpoint = config?.url.trim().replace(/\/+$/, '') ?? null;
   const token = config?.token.trim() ?? null;
   const [clients, setClients] = useState<{
@@ -621,33 +727,37 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     scopeId: string;
     client: KikiClient;
   } | null>(null);
-  const client = clients?.endpoint === endpoint && clients.token === token && clients.scopeId === scopeId ? clients.client : null;
+  const usesLocalControl = selection?.source === 'desktop';
+  const staged = stagedClientRef.current?.selection === selection ? stagedClientRef.current : null;
+  const selectedLocalClient = usesLocalControl ? localClient : null;
+  const client = staged?.client ?? (clients?.endpoint === endpoint && clients.token === token && clients.scopeId === scopeId &&
+    (!usesLocalControl || clients.client === selectedLocalClient) ? clients.client : null);
   const klient = client?.klient ?? null;
 
   useEffect(() => {
-    if (endpoint === null || token === null) return;
-    const instance = new KikiClient({
-      baseUrl: endpoint,
-      token,
-      timeoutMs: requestTimeoutMs,
-      onSessionMutation: (sessionId) => { refreshSessionAttention(queryClient, sessionId); },
-    });
+    if (endpoint === null || token === null || (usesLocalControl && selectedLocalClient === null)) return;
+    const onSessionMutation = (sessionId: string) => { refreshSessionAttention(queryClient, sessionId); };
+    const instance = staged?.client ?? selectedLocalClient ?? (selection?.source === 'remote'
+      ? createRemoteSpaceClient({ endpoint, token, connectionId: selection.connectionId!, timeoutMs: requestTimeoutMs, onSessionMutation })
+      : new KikiClient({ baseUrl: endpoint, token, timeoutMs: requestTimeoutMs, onSessionMutation }));
     setClients({ endpoint, token, scopeId, client: instance });
     const controllers = controllersRef.current;
     return () => {
       // Parked views are bound to this client's socket; they cannot outlive it.
       controllers.evictScope(instance);
-      void instance.klient.close();
+      if (instance !== selectedLocalClient) void instance.klient.close();
     };
-  }, [endpoint, token, scopeId, requestTimeoutMs, queryClient]);
+  }, [endpoint, token, scopeId, requestTimeoutMs, queryClient, usesLocalControl, selectedLocalClient, staged?.client]);
 
   // Validate the config against /meta before entering the app.
   useEffect(() => {
-    if (client === null) return;
+    if (client === null || (remoteBootRef.current !== null && selection?.source !== 'remote')) return;
     let cancelled = false;
     const connectionEpoch = connectionEpochRef.current;
     setConnectError(null);
-    client.meta().then(
+    const restored = staged?.client === client ? staged : restoredMetaRef.current?.client === client ? restoredMetaRef.current : null;
+    if (restored !== null) restoredMetaRef.current = null;
+    (restored !== null ? Promise.resolve(restored.meta) : client.meta()).then(
       (value) => {
         if (cancelled || connectionEpoch !== connectionEpochRef.current) return;
         scrubUrl();
@@ -667,7 +777,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           }
           boundHomeIdsRef.current.set(scopeId, claimedHomeId);
         }
-        if (selection?.persist === true && config !== null) writeStoredConfig(config);
+        if (selection?.source === 'remote' && (!selection.serverHomeId || value.server_home_id !== selection.serverHomeId)) {
+          setMeta(null);
+          setConnectError({ kind: 'raw', text: 'identity-mismatch' });
+          return;
+        }
+        if (selection?.source !== 'remote' && selection?.persist === true && config !== null) writeStoredConfig(config);
         setMeta(value);
       },
       (error: unknown) => {
@@ -801,23 +916,119 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     };
   }, [socket]);
 
+  const [needsScopeReload, setNeedsScopeReload] = useState(false);
+  const adapterActiveRef = useRef({ scope: { homeId: spaceKey, scopeId }, selection, client });
+  adapterActiveRef.current = { scope: { homeId: spaceKey, scopeId }, selection, client };
+  const scopeAdapter = useMemo(() => createScopeConnectionAdapter({
+    host,
+    active: () => {
+      const active = adapterActiveRef.current;
+      if (active.selection === null || active.client === null) throw new Error('No active connection');
+      return { scope: active.scope, selection: active.selection, client: active.client };
+    },
+    local: () => localSelectionRef.current !== null && localClientRef.current !== null
+      ? { selection: localSelectionRef.current, client: localClientRef.current } : null,
+    control: () => {
+      if (localSelectionRef.current !== null && localClientRef.current !== null) return { selection: localSelectionRef.current, client: localClientRef.current };
+      const active = adapterActiveRef.current;
+      return active.selection !== null && active.client !== null && active.selection.source !== 'remote' && active.selection.source !== 'ssh'
+        ? { selection: active.selection, client: active.client } : null;
+    },
+    createClient: (next) => next.source === 'remote'
+      ? createRemoteSpaceClient({ endpoint: next.config.url, token: next.config.token, connectionId: next.connectionId!, timeoutMs: requestTimeoutMs,
+        onSessionMutation: (sessionId) => { const queries = scopesRef.current.get(next.scopeId!); if (queries !== undefined) refreshSessionAttention(queries, sessionId); } })
+      : new KikiClient({ baseUrl: next.config.url, token: next.config.token, timeoutMs: requestTimeoutMs }),
+    reload: () => { if (remoteBootRef.current === null) setNeedsScopeReload(true); },
+    preparing: (preparing) => { scopePreparingRef.current = preparing; },
+    commit: (next, instance, nextMeta) => {
+      sshAttemptRef.current += 1;
+      connectionEpochRef.current += 1;
+      if (next === adapterActiveRef.current.selection && instance === adapterActiveRef.current.client) {
+        // A same-connection return only revalidates identity. Restaging this
+        // already-owned client would trigger effect cleanup and then reuse it closed.
+        setMeta(nextMeta);
+        return;
+      }
+      const sourceSelection = adapterActiveRef.current.selection;
+      if (next.source === 'remote' && !desktopRuntime && sourceSelection !== null && sourceSelection.source !== 'remote' && sourceSelection.source !== 'ssh') {
+        updateLocalSelection({ ...sourceSelection, scopeId: adapterActiveRef.current.scope.scopeId });
+      }
+      const nextTunnel = next.source === 'ssh' && next.profile && next.tunnelId ? { id: next.profile.id, tunnelId: next.tunnelId } : null;
+      connectedSshProfileRef.current = nextTunnel;
+      // Native retains only the adopted connection and one staged tunnel. Leaving
+      // for local does not revoke the exact authenticated reference in history.
+      stagedClientRef.current = { selection: next, client: instance, meta: nextMeta };
+      selectionRef.current = next;
+      setSelection(next);
+      setClients({ endpoint: next.config.url.trim().replace(/\/+$/, ''), token: next.config.token.trim(), scopeId: next.scopeId ?? 'local', client: instance });
+      setConnectError(null);
+      setMeta(nextMeta);
+    },
+  }), [host, requestTimeoutMs, desktopRuntime, updateLocalSelection]);
+
+  useEffect(() => {
+    const scope = remoteBootRef.current;
+    if (scope === null || client === null || selection?.source === 'remote') return;
+    const controller = new AbortController();
+    void (async () => {
+      const prepared = await scopeAdapter.prepare(scope, controller.signal);
+      try {
+        await prepared.validate(`${window.location.pathname}${window.location.search}${window.location.hash}`, controller.signal);
+        controller.signal.throwIfAborted();
+        await prepared.commit();
+        remoteBootRef.current = null;
+      } catch (error) { await prepared.dispose(); throw error; }
+    })().catch((error: unknown) => {
+      if (controller.signal.aborted) return;
+      setMeta(null);
+      setConnectError({ kind: 'raw', text: error instanceof Error ? error.message : String(error) });
+    });
+    return () => { controller.abort(); };
+  }, [client, selection?.source, scopeAdapter]);
+
+  const restoreLocal = useCallback(async (signal = new AbortController().signal) => {
+    const instance = localClientRef.current;
+    const priorSelection = selectionRef.current;
+    const attempt = sshAttemptRef.current;
+    const homeId = priorSelection?.source === 'remote'
+      ? host.activeSpace === undefined ? 'main' : parseActiveSpacePayload(await host.activeSpace())?.homeId ?? 'main'
+      : activeSpace()?.homeId ?? 'main';
+    const prepared = await scopeAdapter.prepare({ homeId, scopeId: 'local' }, signal);
+    try {
+      signal.throwIfAborted();
+      if (instance !== localClientRef.current || priorSelection !== selectionRef.current || attempt !== sshAttemptRef.current) {
+        throw new DOMException('Local connection restoration was superseded.', 'AbortError');
+      }
+      await prepared.commit();
+    } catch (error) { await prepared.dispose(); throw error; }
+  }, [scopeAdapter, host]);
   const activateLocal = useCallback(() => {
+    if (meta !== null && client !== null) {
+      if (selectionRef.current?.source === 'remote') {
+        void (async () => {
+          const homeId = host.activeSpace === undefined ? 'main' : parseActiveSpacePayload(await host.activeSpace())?.homeId ?? 'main';
+          await requestScopeNavigation({ homeId, scopeId: localSelectionRef.current?.scopeId ?? 'local' });
+        })().catch(() => undefined);
+      } else void requestScopeNavigation({ scopeId: 'local' }).catch(() => undefined);
+      return;
+    }
     sshAttemptRef.current += 1;
     connectionEpochRef.current += 1;
     const ssh = connectedSshProfileRef.current;
     connectedSshProfileRef.current = null;
     if (ssh !== null) void host.connection.disconnectSshProfile?.(ssh.id, ssh.tunnelId).catch(() => undefined);
-    if (selectionRef.current?.source === 'ssh') {
-      routesRef.current.set(selectionRef.current.scopeId ?? '', `${window.location.pathname}${window.location.search}`);
-      window.history.replaceState(null, '', routesRef.current.get('local') ?? '/new');
-    }
     setMeta(null);
     setConnectError(null);
     setSelection(localSelectionRef.current);
     if (localSelectionRef.current === null && desktopRuntime) retryDesktopBoot();
-  }, [desktopRuntime, host, retryDesktopBoot]);
-
+  }, [meta, client, host, desktopRuntime, retryDesktopBoot]);
   const activateSshProfile = useCallback(async (id: string, token: string) => {
+    if (adapterActiveRef.current.client !== null && adapterActiveRef.current.selection !== null) {
+      await requestScopeNavigation({ scopeId: `ssh:${id}`, token });
+      return;
+    }
+    // A cold connect has no source visit to push. The normal SSH handshake still
+    // runs, but requires a fresh token from the existing connect form.
     if (!host.connection.connectSshProfile || !host.connection.listSshProfiles) {
       throw new Error('SSH connections are available only in the desktop application.');
     }
@@ -842,8 +1053,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       throw new Error('SSH tunnel endpoint or server home ID could not be verified.');
     }
     connectedSshProfileRef.current = { id, tunnelId: resolved.tunnelId };
-    routesRef.current.set(selectionRef.current?.scopeId ?? 'local', `${window.location.pathname}${window.location.search}`);
-    window.history.replaceState(null, '', routesRef.current.get(`ssh:${id}`) ?? '/new');
     connectionEpochRef.current += 1;
     setMeta(null);
     setConnectError(null);
@@ -875,6 +1084,19 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     scrubUrl();
   }, [activateLocal]);
 
+  /**
+   * Retry a link that did not work.
+   *
+   * The code is gone from the URL and from memory, so this cannot re-send it;
+   * what it does is clear the failure so the ordinary connect form is reachable,
+   * which is the only recovery a browser in this state can actually use.
+   */
+  const retryWebLink = useCallback(() => {
+    resetWebAccessBootstrap();
+    setWebEntry({ kind: 'none' });
+    setWebLinkProblem(undefined);
+  }, []);
+
   const connect = useCallback((next: ConnectionConfig, persist = true) => {
     const generation = ++connectionEpochRef.current;
     const prior = selectionRef.current;
@@ -895,7 +1117,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   // is an explicit choice, the same as one typed into the connect screen.
   const applyConnection = useCallback(
     (next: ConnectionConfig) => {
-      if (selectionRef.current?.source === 'ssh') return;
+      if (selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote') return;
       connect(next, true);
     },
     [connect],
@@ -904,11 +1126,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const value = useMemo<ConnectionValue | null>(() => {
     if (config === null || client === null || klient === null || socket === null || meta === null) return null;
     return {
-      scopeId, sshLabel: selection?.profile?.label ?? null,
-      activateSshProfile, activateLocal,
-      config, client, klient, socket, meta, wsStatus, disconnect, applyConnection,
+      connectionId, connectionSource: selection?.source ?? null, spaceKey, scopeId, connectionRef: selection?.source === 'remote' ? selection.connectionId : selection?.source === 'ssh' ? selection.tunnelId : undefined, sshLabel: selection?.profile?.label ?? null,
+      activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload,
+      config, client, localClient, klient, socket, meta, wsStatus, disconnect, applyConnection,
     };
-  }, [scopeId, selection?.profile?.label, activateSshProfile, activateLocal, config, client, klient, socket, meta, wsStatus, disconnect, applyConnection]);
+  }, [connectionId, connectionSource, spaceKey, scopeId, selection?.tunnelId, selection?.profile?.label, activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload, config, client, localClient, klient, socket, meta, wsStatus, disconnect, applyConnection]);
 
   const connectErrorText =
     connectError === null
@@ -929,7 +1151,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   return (
     <ConnectionContext.Provider value={value}>
       {value !== null ? (
-        <QueryClientProvider key={scopeId} client={queryClient}>
+        <QueryClientProvider client={queryClient}>
           <ControllerRegistryContext.Provider value={controllersRef.current}>
             {children}
           </ControllerRegistryContext.Provider>
@@ -948,6 +1170,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           onConnectSsh={activateSshProfile}
           onSwitchLocal={selection?.source === 'ssh' ? activateLocal : undefined}
           sshProfile={selection?.source === 'ssh' ? selection.profile : undefined}
+          webLink={webLinkProblem}
+          onRetryWebLink={retryWebLink}
         />
       )}
     </ConnectionContext.Provider>

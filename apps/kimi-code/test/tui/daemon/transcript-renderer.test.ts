@@ -1,4 +1,4 @@
-import { Container } from '@kiki/pi-tui';
+import { Container, visibleWidth } from '@kiki/pi-tui';
 import type { Block } from '@kiki/session-core/session/transcript/types';
 import { describe, expect, it } from 'vitest';
 
@@ -153,6 +153,91 @@ describe('DaemonTranscriptRenderer', () => {
     expect(output).toContain('Message not sent (failed): Failed result');
     expect(output).toContain('Message not sent (cancelled): Cancelled greeting');
     expect(output).not.toContain('INTERNAL_ONLY');
+  });
+
+  it('updates queued and blocked user messages in place and removes the label on delivery', () => {
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+    const user = {
+      kind: 'user' as const,
+      id: 'user-queue',
+      text: 'Keep this prompt',
+      media: [{ kind: 'file' as const, name: 'notes.txt' }],
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    renderer.sync([{ ...user, promptStatus: 'queued' }]);
+    const mounted = container.children[0];
+    expect(strip(container.render(80).join('\n'))).toContain('Queued');
+
+    renderer.sync([{ ...user, promptStatus: 'blocked' }]);
+    expect(container.children[0]).toBe(mounted);
+    expect(strip(container.render(80).join('\n'))).toContain('Blocked');
+    expect(strip(container.render(80).join('\n'))).not.toContain('Queued');
+
+    renderer.sync([{ ...user, text: 'Keep this refined prompt', promptStatus: 'running' }]);
+    expect(container.children[0]).toBe(mounted);
+    const delivered = strip(container.render(80).join('\n'));
+    expect(delivered).toContain('Keep this refined prompt');
+    expect(delivered).toContain('[file: notes.txt]');
+    expect(delivered).not.toMatch(/Queued|Blocked|Delivered|Running/);
+    renderer.sync([user]);
+    expect(strip(container.render(80).join('\n'))).not.toMatch(/Queued|Blocked|Delivered|Running/);
+  });
+
+  it.each([
+    ['failed', true, 'Reply failed'],
+    ['failed', false, 'Prompt failed before delivery'],
+    ['aborted', true, 'Prompt aborted'],
+    ['aborted', false, 'Prompt aborted before delivery'],
+  ] as const)('updates %s outcomes (delivered=%s) on their own user message', (status, delivered, label) => {
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+    const user = {
+      kind: 'user' as const,
+      id: 'user-outcome',
+      text: 'Original prompt stays visible',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const neighbor = { ...user, id: 'user-neighbor', text: 'Unrelated successful prompt' };
+    renderer.sync([user, neighbor]);
+    const mounted = container.children[0];
+    renderer.sync([
+      { ...user, promptOutcome: { status, delivered, error: 'Provider stopped\nOriginal reason' } },
+      neighbor,
+    ]);
+
+    expect(container.children[0]).toBe(mounted);
+    const output = strip(mounted!.render(80).join('\n'));
+    expect(output).toContain(user.text);
+    expect(output).toContain(label);
+    expect(output).toContain('Provider stopped');
+    expect(output).toContain('Original reason');
+    expect(output).not.toContain('/undo');
+    expect(strip(container.children[1]!.render(80).join('\n'))).not.toContain(label);
+    for (const width of [24, 60, 80]) {
+      for (const line of mounted!.render(width)) {
+        expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+      }
+    }
+    renderer.sync([user, neighbor]);
+    expect(strip(mounted!.render(80).join('\n'))).not.toContain(label);
+  });
+
+  it('updates steer delivery labels without leaving a success label', () => {
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+    const user = {
+      kind: 'user' as const,
+      id: 'user-steer',
+      text: 'Follow-up',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    renderer.sync([{ ...user, steerStatus: 'sending' }]);
+    expect(strip(container.render(80).join('\n'))).toContain('Sending');
+    renderer.sync([{ ...user, steerStatus: 'waiting' }]);
+    expect(strip(container.render(80).join('\n'))).toContain('Waiting for delivery');
+    renderer.sync([user]);
+    expect(strip(container.render(80).join('\n'))).not.toMatch(/Sending|Waiting|Delivered/);
   });
 
   it('renders structured media on user and assistant blocks', () => {

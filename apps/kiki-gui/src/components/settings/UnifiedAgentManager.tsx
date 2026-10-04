@@ -13,10 +13,12 @@ import type { NamedAgentProfile } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
 import { Dialog } from '../Dialog';
+import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { useDirtyGuard, useGuardedNavigate } from '../dirtyGuard';
 import { SearchableSelect } from '../SearchableSelect';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SectionCard } from './SectionCard';
+import { AdvancedDetails } from './fields';
 import { SETTINGS_SELECT_TRIGGER } from './SettingsPrimitives';
 import { profileDiagnostics, sameProfile } from './profileEditor/diagnostics';
 import { engineLabel, useExecutorCatalog } from './profileEditor/engines';
@@ -48,6 +50,7 @@ export function UnifiedAgentManager() {
   const [workspaceId, setWorkspaceId] = useState<string>();
   const [sheet, setSheet] = useState<Sheet>(null);
   const [toggleSaving, setToggleSaving] = useState(false);
+  const [namedDisabled, setNamedDisabled] = useState<string | null>(null);
   const [quickSaving, setQuickSaving] = useState<string>();
   const [quickSaved, pingQuickSaved] = useSavedTick();
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -119,6 +122,29 @@ export function UnifiedAgentManager() {
       await invalidateAgentProfileCatalogs(queryClient);
     } finally { setToggleSaving(false); }
   };
+  /**
+   * The same server-wide list the row toggle writes, addressed by name. A name
+   * that is not in this catalog can still be disabled ahead of time, which is
+   * what the row toggle alone cannot reach.
+   */
+  const setDisabledByName = async (name: string, enabled: boolean) => {
+    const trimmed = name.trim();
+    if (trimmed === '') return;
+    setToggleSaving(true);
+    setFeedback(null);
+    try {
+      const current = configQuery.data?.disabled_named_profiles ?? [];
+      const next = enabled
+        ? current.filter((entry) => entry !== trimmed)
+        : [...new Set([...current, trimmed])];
+      const echoed = await client.patchConfig({ disabled_named_profiles: next });
+      queryClient.setQueryData(['config'], echoed);
+      await invalidateAgentProfileCatalogs(queryClient);
+      setNamedDisabled('');
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally { setToggleSaving(false); }
+  };
   const quickSave = async (row: TeamRow, patch: { pinned_model_alias?: string | null; thinking_effort?: string | null }) => {
     if (!row.writable || row.profile.workspace_id === undefined) return;
     setQuickSaving(row.key); setFeedback(null);
@@ -136,6 +162,13 @@ export function UnifiedAgentManager() {
     value: workspace.id, label: workspace.name ?? workspace.root, hint: workspace.root, title: workspace.root,
   })), [workspacesQuery.data]);
   const editing = sheet?.kind === 'edit' ? rows.find((row) => row.key === sheet.key) : undefined;
+  // Names disabled server-wide that no visible row exposes, so the by-name entry
+  // can re-enable a profile the workspace filter does not show.
+  const disabledNames = useMemo(
+    () => (configQuery.data?.disabled_named_profiles ?? []).filter((name) =>
+      !profiles.some((profile) => profile.name === name)),
+    [configQuery.data, profiles],
+  );
   const removed = shippedEntries.filter((entry) => entry.managed && entry.status === 'removed'
     && (filter === 'all' || (filter === 'main') === entry.main));
 
@@ -166,6 +199,51 @@ export function UnifiedAgentManager() {
       {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
       {effectiveQuery.isError ? <InlineError error={effectiveQuery.error} /> : null}
       {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
+      <AdvancedDetails summary={t('st.agentManager.disabledByName')}>
+        <p className="max-w-[72ch] text-[11.5px] leading-5 text-ink-faint">{t('st.agentManager.disabledByNameHint')}</p>
+        <p className="font-mono text-[11px] leading-5 text-ink-soft">
+          {t('st.agentIdentity.disabledProfiles')} ={' '}
+          {(configQuery.data?.disabled_named_profiles ?? []).join(', ') || '—'}
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            className={`${INPUT} font-mono`}
+            value={namedDisabled ?? ''}
+            placeholder="profile-name"
+            aria-label={t('st.agentManager.disabledByName')}
+            onChange={(event) => { setNamedDisabled(event.target.value); }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void setDisabledByName(namedDisabled ?? '', false);
+            }}
+          />
+          <button
+            type="button"
+            className={SECONDARY_BUTTON}
+            data-disabled-by-name-add
+            disabled={toggleSaving || (namedDisabled ?? '').trim() === ''}
+            onClick={() => { void setDisabledByName(namedDisabled ?? '', false); }}
+          >
+            {t('st.agentManager.disableByName')}
+          </button>
+        </div>
+        {disabledNames.length > 0 ? (
+          <ul className="space-y-1">
+            {disabledNames.map((name) => (
+              <li key={name} data-disabled-by-name={name} className="flex items-center justify-between gap-2 text-[12px] text-ink-soft">
+                <span className="font-mono">{name}</span>
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  disabled={toggleSaving}
+                  onClick={() => { void setDisabledByName(name, true); }}
+                >
+                  {t('st.agentManager.enableByName', { name })}
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </AdvancedDetails>
       <FeedbackLine feedback={feedback} />
     </div>
     {sheet !== null ? <Dialog onClose={closeSheet} overlayId="agent-profile-sheet"

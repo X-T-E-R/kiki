@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -326,12 +327,22 @@ function readFileSha256(path: string): string | null {
   }
 }
 
+function ensureFileMode(path: string, mode?: number): void {
+  if (mode !== undefined && process.platform !== 'win32' && (statSync(path).mode & 0o777) !== mode) {
+    chmodSync(path, mode);
+  }
+}
+
 function ensureFile(path: string, bytes: Buffer, expectedSha256: string, mode?: number): void {
-  if (readFileSha256(path) === expectedSha256) return;
+  if (readFileSha256(path) === expectedSha256) {
+    ensureFileMode(path, mode);
+    return;
+  }
 
   mkdirSync(dirname(path), { recursive: true });
   const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tempPath, bytes, { mode: mode ?? 0o644 });
+  ensureFileMode(tempPath, mode);
 
   try {
     renameSync(tempPath, path);
@@ -339,6 +350,7 @@ function ensureFile(path: string, bytes: Buffer, expectedSha256: string, mode?: 
   } catch {
     if (readFileSha256(path) === expectedSha256) {
       rmSync(tempPath, { force: true });
+      ensureFileMode(path, mode);
       return;
     }
   }
@@ -348,7 +360,10 @@ function ensureFile(path: string, bytes: Buffer, expectedSha256: string, mode?: 
     renameSync(tempPath, path);
   } catch (error) {
     rmSync(tempPath, { force: true });
-    if (readFileSha256(path) === expectedSha256) return;
+    if (readFileSha256(path) === expectedSha256) {
+      ensureFileMode(path, mode);
+      return;
+    }
     throw error;
   }
 }
@@ -428,8 +443,29 @@ export function getKapSqliteQueryWorkerFile(options: NativeAssetOptions = {}): s
   return getNativeRuntimeFile(KAP_SQLITE_QUERY_WORKER_ASSET.key, options);
 }
 
+export function getBrowserDriverFile(options: NativeAssetOptions = {}): string | null {
+  const source = options.source ?? getSeaAssetSource();
+  if (source === null) return null;
+  const manifest = options.manifest ?? getEmbeddedNativeAssetManifest(source, currentTarget());
+  if (manifest === null || !manifest.runtimeFiles.some((file) => file.key === 'browser-driver')) return null;
+  if (['LICENSE', 'NOTICE', 'build.json', 'kiki-no-replay-r1.patch'].some((name) => !manifest.runtimeFiles.some((file) => file.key === `browser-driver/${name}` && file.relativePath === `runtime/browser-driver/${name}`))) {
+    throw new Error('Managed browser resources are incomplete');
+  }
+  const binary = getNativeRuntimeFile('browser-driver', { ...options, source, manifest });
+  if (binary === null) return null;
+  const metadata = JSON.parse(readFileSync(join(dirname(binary), 'build.json'), 'utf8')) as { version?: string; marker?: string; stdioMarker?: string; artifactSha256?: string };
+  if (metadata.version !== '0.38.2' || metadata.marker !== 'kiki-no-replay-r1' || metadata.stdioMarker !== 'kiki-stdio-r1' || sha256(readFileSync(binary)) !== metadata.artifactSha256) {
+    throw new Error('Managed browser build metadata or binary checksum mismatch');
+  }
+  return binary;
+}
+
 export function getPluginHostRunnerFile(options: NativeAssetOptions = {}): string | null {
   return getNativeRuntimeFile(PLUGIN_HOST_RUNNER_ASSET.key, options);
+}
+
+export function getHistoryImportEntryFile(options: NativeAssetOptions = {}): string | null {
+  return getNativeRuntimeFile('history-import/entry.mjs', options);
 }
 
 export function getKapModelPricesFile(options: NativeAssetOptions = {}): string | null {

@@ -19,7 +19,7 @@
  * `document.title` follows the active route; toasts mount at the root.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { Workspace } from '@kiki/protocol';
@@ -30,6 +30,7 @@ import {
   useLocation,
   useMatch,
   useNavigate,
+  useNavigationType,
   type NavigateOptions,
   type To,
 } from 'react-router-dom';
@@ -37,7 +38,7 @@ import {
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { CronPage } from './components/GlobalCronPanel';
 import { TaskBoardPage } from './components/GlobalTaskBoard';
-import { DirtyGuardContext, shouldGuardNavigation } from './components/dirtyGuard';
+import { DirtyGuardContext, useDirtyGuardState } from './components/dirtyGuard';
 import { NewSessionPage } from './components/NewSessionPage';
 import {
   OnboardingWizard,
@@ -54,13 +55,14 @@ import { QuickSwitcher } from './components/QuickSwitcher';
 import { RestartBanner } from './components/RestartBanner';
 import { SessionRouteView } from './components/SessionView';
 import { PersonasPage } from './components/persona/PersonasPage';
+import { PersonaDailyRoute } from './components/persona/PersonaDailyRoute';
 import { RoomPage } from './components/room/RoomPage';
 import { SettingsPage } from './components/SettingsPage';
 import { SpaceViewMemory, SpaceViewState } from './components/SpaceViewState';
 import { readSpaceViewRoute } from './lib/spaceViewState';
 import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 import { Sidebar } from './components/Sidebar';
-import { isBotOrRoomSession } from './components/bot/SidebarBotRoomGroups';
+import { isBotOrRoomSession } from './components/persona/personaSessionUtils';
 import { TasksPage } from './components/TasksPage';
 import { Toasts } from './components/Toasts';
 import { UsagePage } from './components/UsagePage';
@@ -70,6 +72,7 @@ import {
   dedupeSessions,
   groupConversationItems,
   mergeSessionFirstPage,
+  readSessionFirstPage,
   sortWorkspacesByPinnedThenRecency,
   type ConversationListItem,
   type SessionGroup,
@@ -97,6 +100,9 @@ import { useAwayNotifications } from './lib/useAwayNotifications';
 import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
 import { useI18n } from './i18n';
 import { useConnection } from './state/connection';
+import { recordNavigation } from './lib/navHistory';
+import { activeSpace } from './lib/spaceStorage';
+import { NavHistoryBridge } from './components/NavBackButton';
 
 export const SESSION_FIRST_PAGE_POLL_INTERVAL_MS = 15_000;
 export const SESSION_INDEX_RETRY_LIMIT = 4;
@@ -156,7 +162,45 @@ export function App() {
   const { t, locale } = useI18n();
   const rawNavigate = useNavigate();
   const location = useLocation();
+  const navType = useNavigationType();
+  const { scopeId, meta, connectionRef } = useConnection();
   const desktop = host.kind === 'tauri';
+
+  // Commit the target visit before descendants' passive restoration effects.
+  // A blocked transition never changes location and never advances this store.
+  useLayoutEffect(() => {
+    // A remote Kiki is not a local home: its scope key is its own home, the
+    // same rule the scope boundary uses. Reading the local home here would
+    // stamp every visit `main` beside a remote scope id, and the window that
+    // boots into that visit would refuse its own entry as unreachable.
+    const localHome = host.kind === 'tauri' ? (activeSpace()?.homeId ?? 'main') : 'main';
+    const home = scopeId.startsWith('remote:') ? scopeId : localHome;
+    const label = location.pathname.startsWith('/settings')
+      ? 'Settings'
+      : location.pathname === '/usage'
+        ? 'Usage'
+        : location.pathname === '/board'
+          ? 'Task board'
+          : location.pathname === '/cron'
+            ? 'Scheduled tasks'
+            : location.pathname === '/memory'
+              ? 'Memory'
+              : location.pathname === '/new'
+                ? 'New session'
+                : undefined;
+    const entry = recordNavigation({
+      location,
+      scope: { homeId: home, scopeId, serverHomeId: meta.server_home_id, connectionRef },
+      label,
+      action: navType === 'POP' ? 'POP' : navType === 'REPLACE' ? 'REPLACE' : 'PUSH',
+    });
+    const browserState = window.history.state;
+    if (browserState?.key === location.key || (location.key === 'default' && browserState?.key == null)) {
+      const userState = browserState?.usr ?? {};
+      window.history.replaceState({ ...browserState, usr: { ...userState,
+        kikiNav: { ...userState.kikiNav, visitId: entry.visitId, scope: entry.scope } } }, '');
+    }
+  }, [location, navType, scopeId, host.kind, meta.server_home_id, connectionRef]);
   // User skin files live on the server, so the catalog loads app-wide: a skin
   // chosen from the themes folder must paint on every route, not only after a
   // visit to Settings → Appearance.
@@ -209,48 +253,12 @@ export function App() {
     () => subscribeOnboardingOpenRequests(() => { setOnboardingOpen(true); }),
     [],
   );
-  const [dirtyIds, setDirtyIds] = useState<readonly string[]>([]);
-  const [pendingNavigation, setPendingNavigation] = useState<{
-    readonly target: To;
-    readonly options?: NavigateOptions;
-  } | null>(null);
-  const [pendingDraftSwitch, setPendingDraftSwitch] = useState<{ id: string; action: () => void } | null>(null);
-
-  const reportDirty = useCallback((id: string, dirty: boolean) => {
-    setDirtyIds((current) => {
-      const has = current.includes(id);
-      if (has === dirty) return current;
-      return dirty ? [...current, id] : current.filter((entry) => entry !== id);
-    });
-  }, []);
-  const navigate = useCallback((target: To, options?: NavigateOptions) => {
-    if (shouldGuardNavigation(location, target, dirtyIds.length > 0)) {
-      setPendingNavigation({ target, options });
-      return;
-    }
-    void rawNavigate(target, options);
-  }, [dirtyIds.length, location, rawNavigate]);
-  const confirmDiscard = useCallback((id: string, action: () => void) => {
-    if (dirtyIds.includes(id)) setPendingDraftSwitch({ id, action });
-    else action();
-  }, [dirtyIds]);
-  const dirtyGuardValue = useMemo(
-    () => ({ dirty: dirtyIds.length > 0, reportDirty, navigate, confirmDiscard }),
-    [dirtyIds.length, navigate, reportDirty, confirmDiscard],
-  );
-  const confirmNavigation = () => {
-    const pending = pendingNavigation;
-    const draftSwitch = pendingDraftSwitch;
-    setPendingNavigation(null);
-    setPendingDraftSwitch(null);
-    if (draftSwitch !== null) {
-      setDirtyIds((current) => current.filter((id) => id !== draftSwitch.id));
-      draftSwitch.action();
-    } else if (pending !== null) {
-      setDirtyIds([]);
-      void rawNavigate(pending.target, pending.options);
-    }
-  };
+  const performNavigation = useCallback((target: To | number, options?: NavigateOptions) => {
+    if (typeof target === 'number') void rawNavigate(target);
+    else void rawNavigate(target, options);
+  }, [rawNavigate]);
+  const { value: dirtyGuardValue, navigate, pending: pendingNavigation, confirm: confirmNavigation, cancel: cancelNavigation } =
+    useDirtyGuardState(location, performNavigation);
 
   // Sync native desktop prefs into localStorage on boot; listen for tray
   // "New Session" events.
@@ -304,30 +312,30 @@ export function App() {
     queryKey: ['sessions', showArchived, workspaceFilter],
     queryFn: ({ pageParam }) =>
       client.listSessions({
-        page_size: 100,
+        page_size: 50,
         include_archive: showArchived || undefined,
         workspace_id: workspaceFilter,
         before_id: pageParam,
       }),
     getNextPageParam: (lastPage) =>
-      lastPage.has_more ? lastPage.items.at(-1)?.id : undefined,
+      lastPage.has_more ? lastPage.next_cursor ?? lastPage.items.at(-1)?.id : undefined,
     initialPageParam: undefined as string | undefined,
     retry: retryRootReadModelQuery,
     retryDelay: retryRootReadModelDelay,
   });
-  // Poll only the first page (where every change lands). Interval-refetching
-  // an infinite query refetches ALL loaded pages on every tick; older pages
-  // instead refresh on demand (load-more) or on invalidation.
+  // Refresh the head, bridging to the loaded boundary only when it no longer
+  // overlaps. Older loaded pages are not interval-refetched.
   const queryClient = useQueryClient();
   useEffect(() => {
     return startVisiblePoll({
       intervalMs: SESSION_FIRST_PAGE_POLL_INTERVAL_MS,
       task: async () => {
-        const first = await client.listSessions({
-          page_size: 100,
+        const first = await readSessionFirstPage((before_id) => client.listSessions({
+          page_size: 50,
           include_archive: showArchived || undefined,
           workspace_id: workspaceFilter,
-        });
+          before_id,
+        }), queryClient.getQueryData<SessionListData>(['sessions', showArchived, workspaceFilter]));
         queryClient.setQueryData(
           ['sessions', showArchived, workspaceFilter],
           (old: SessionListData | undefined) => mergeSessionFirstPage(old, first),
@@ -550,6 +558,7 @@ export function App() {
 
   return (
     <DirtyGuardContext.Provider value={dirtyGuardValue}>
+      <NavHistoryBridge>
       <div className="flex h-full overflow-hidden bg-canvas">
       <Sidebar
         className={`app-sidebar ${sidebarOpen ? 'open' : ''}`}
@@ -602,6 +611,17 @@ export function App() {
             <Route
               path="/new"
               element={<NewSessionPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+            />
+            {/* The persona's stable address lives in the shell too: it hands
+                over to /s/:id on the same mount when a daily conversation
+                already exists, and renders the daily draft when it does not. */}
+            <Route
+              path="/p/:personaId/daily"
+              element={
+                <SpaceViewState>
+                  <PersonaDailyRoute onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />
+                </SpaceViewState>
+              }
             />
             <Route
               path="/s/:id/*"
@@ -664,6 +684,7 @@ export function App() {
             element={
               <MemoryPage
                 workspaceOptions={workspaceOptions}
+                workspacesLoading={workspacesQuery.isPending}
                 onNavigate={navigate}
                 onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
               />
@@ -735,14 +756,19 @@ export function App() {
         <Toasts />
       </div>
       <ConfirmDialog
-        open={pendingNavigation !== null || pendingDraftSwitch !== null}
+        stacked
+        open={pendingNavigation}
         title={t('st.dirty.leaveTitle')}
         body={t('st.dirty.leaveBody')}
         confirmLabel={t('st.dirty.leaveConfirm')}
         cancelLabel={t('st.dirty.stay')}
-        onConfirm={confirmNavigation}
-        onCancel={() => { setPendingNavigation(null); setPendingDraftSwitch(null); }}
+        onConfirm={() => { void Promise.resolve().then(confirmNavigation).catch((error: unknown) => {
+          if (error instanceof Error && error.name === 'AbortError') return;
+          pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+        }); }}
+        onCancel={cancelNavigation}
       />
+      </NavHistoryBridge>
     </DirtyGuardContext.Provider>
   );
 }

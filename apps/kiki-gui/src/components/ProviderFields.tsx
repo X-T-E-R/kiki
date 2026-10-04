@@ -31,6 +31,8 @@ import type {
 import type { OAuthMethodStatus } from '@kiki/klient';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
+import { AccountConnectionPanel } from './AccountConnectionPanel';
+import { accountState, accountStateKey } from './accountSignInState';
 import {
   humanizeMs,
   isProviderDraftDirty,
@@ -923,72 +925,74 @@ export function ProviderFields({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2">
-        {/* A stored connection is named in its row header; its id is fixed. */}
-        {idLocked || managed ? null : (
-          <div className="min-w-0">
-            <label htmlFor="provider-field-id" className={FORM_LABEL}>{t('st.providers.idLabel')}</label>
+      {/* An account connection is written by the sign-in, not by a form: its
+          address and protocol are the provider's, so only the model list and
+          the test belong here. A key connection keeps the whole field set. */}
+      {managed ? null : (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {/* A stored connection is named in its row header; its id is fixed. */}
+            {idLocked ? null : (
+              <div className="min-w-0">
+                <label htmlFor="provider-field-id" className={FORM_LABEL}>{t('st.providers.idLabel')}</label>
+                <input
+                  id="provider-field-id"
+                  className={`${INPUT} mt-1 ${idIssue !== null ? 'border-danger/60' : ''}`}
+                  value={draft.id}
+                  aria-invalid={idIssue !== null || undefined}
+                  aria-describedby={idIssue !== null ? 'provider-field-id-issue' : undefined}
+                  placeholder="my-provider"
+                  onChange={(event) => { onChange({ ...draft, id: event.target.value }); }}
+                />
+                <FieldIssue id="provider-field-id-issue" text={idIssue} />
+              </div>
+            )}
+            <div className="min-w-0">
+              <span className={FORM_LABEL}>{t('st.providers.protocol')}</span>
+              <div className="mt-1">
+                <SearchableSelect
+                  id={idLocked ? `${scope}-protocol` : 'provider-field-protocol'}
+                  ariaLabel={t('st.providers.protocol')}
+                  value={draft.type}
+                  hideFilter
+                  options={protocols.map((type) => ({ value: type, label: protocolLabel(type), hint: type }))}
+                  onChange={(next) => { onChange({ ...draft, type: next as ProviderDraft['type'] }); }}
+                  buttonClassName={FORM_SELECT_TRIGGER}
+                />
+              </div>
+            </div>
+          </div>
+          <div>
+            <label htmlFor={baseUrlId} className={FORM_LABEL}>{t('st.providers.baseUrl')}</label>
             <input
-              id="provider-field-id"
-              className={`${INPUT} mt-1 ${idIssue !== null ? 'border-danger/60' : ''}`}
-              value={draft.id}
-              aria-invalid={idIssue !== null || undefined}
-              aria-describedby={idIssue !== null ? 'provider-field-id-issue' : undefined}
-              placeholder="my-provider"
-              onChange={(event) => { onChange({ ...draft, id: event.target.value }); }}
+              id={baseUrlId}
+              className={`${INPUT} mt-1 ${baseUrlIssue !== null ? 'border-danger/60' : ''}`}
+              value={draft.baseUrl}
+              aria-invalid={baseUrlIssue !== null || undefined}
+              aria-describedby={baseUrlIssue !== null ? 'provider-field-base-url-issue' : undefined}
+              onChange={(event) => {
+                // A new connection's id follows the address until the user names it.
+                onChange(idLocked ? { ...draft, baseUrl: event.target.value } : withBaseUrl(draft, event.target.value));
+              }}
+              placeholder="https://api.example.com/v1"
             />
-            <FieldIssue id="provider-field-id-issue" text={idIssue} />
+            <FieldIssue id="provider-field-base-url-issue" text={baseUrlIssue} />
           </div>
-        )}
-        <div className="min-w-0">
-          <span className={FORM_LABEL}>{t('st.providers.protocol')}</span>
-          <div className="mt-1">
-            <SearchableSelect
-              id={idLocked || managed ? `${scope}-protocol` : 'provider-field-protocol'}
-              ariaLabel={t('st.providers.protocol')}
-              value={draft.type}
-              disabled={managed}
-              hideFilter
-              options={protocols.map((type) => ({ value: type, label: protocolLabel(type), hint: type }))}
-              onChange={(next) => { onChange({ ...draft, type: next as ProviderDraft['type'] }); }}
-              buttonClassName={FORM_SELECT_TRIGGER}
+          <div>
+            <SecretField
+              label={t('st.providers.apiKey')}
+              source={apiKeyEnv !== undefined ? 'environment' : hasStoredKey ? 'kiki' : 'none'}
+              envName={apiKeyEnv}
+              draft={providerSecretDraft(draft, baselineApiKey, keyEditing)}
+              onChange={(next) => {
+                setKeyEditing(next.mode === 'set');
+                onChange(withProviderSecret(draft, next, baselineApiKey));
+              }}
+              reveal={revealKey}
+              placeholder={hasStoredKey || apiKeyEnv !== undefined ? undefined : t('st.providers.keyNew')}
             />
           </div>
-        </div>
-      </div>
-      <div>
-        <label htmlFor={baseUrlId} className={FORM_LABEL}>{t('st.providers.baseUrl')}</label>
-        <input
-          id={baseUrlId}
-          className={`${INPUT} mt-1 ${baseUrlIssue !== null ? 'border-danger/60' : ''}`}
-          value={draft.baseUrl}
-          aria-invalid={baseUrlIssue !== null || undefined}
-          aria-describedby={baseUrlIssue !== null ? 'provider-field-base-url-issue' : undefined}
-          onChange={(event) => {
-            // A new connection's id follows the address until the user names it.
-            onChange(idLocked || managed ? { ...draft, baseUrl: event.target.value } : withBaseUrl(draft, event.target.value));
-          }}
-          placeholder="https://api.example.com/v1"
-        />
-        <FieldIssue id="provider-field-base-url-issue" text={baseUrlIssue} />
-      </div>
-      {managed ? (
-        <Hint>{t('st.providers.managedHint')}</Hint>
-      ) : (
-        <div>
-          <SecretField
-            label={t('st.providers.apiKey')}
-            source={apiKeyEnv !== undefined ? 'environment' : hasStoredKey ? 'kiki' : 'none'}
-            envName={apiKeyEnv}
-            draft={providerSecretDraft(draft, baselineApiKey, keyEditing)}
-            onChange={(next) => {
-              setKeyEditing(next.mode === 'set');
-              onChange(withProviderSecret(draft, next, baselineApiKey));
-            }}
-            reveal={revealKey}
-            placeholder={hasStoredKey || apiKeyEnv !== undefined ? undefined : t('st.providers.keyNew')}
-          />
-        </div>
+        </>
       )}
       <div className="flex flex-wrap items-center gap-3" data-connection-test>
         <button type="button" className={SECONDARY_BUTTON} disabled={probing} onClick={() => void probe()}>
@@ -1110,9 +1114,7 @@ export function ProviderEditor({
   modelCount,
   onSaved,
   accountLabel,
-  account,
-  onSignOut,
-  signingOut = false,
+  accountMethod,
   density = 'comfortable',
 }: {
   provider: ProviderCatalogItem;
@@ -1122,13 +1124,10 @@ export function ProviderEditor({
   /** Configured models on this connection, shown in the collapsed row. */
   modelCount?: number;
   onSaved: () => Promise<void>;
-  /** Signed-in account name for an OAuth connection ("GitHub Copilot"). */
+  /** The sign-in method that provisions this connection, when it has one. */
+  accountMethod?: OAuthMethodStatus;
+  /** How the person recognizes an account connection ("GitHub Copilot"). */
   accountLabel?: string;
-  /** The sign-in method's account and quota facts; `unknown` parts are not shown. */
-  account?: Pick<OAuthMethodStatus, 'signed_in' | 'account' | 'quota'>;
-  /** OAuth connections sign out instead of clearing a key. */
-  onSignOut?: () => void;
-  signingOut?: boolean;
   /** Row density from the surrounding settings list; compact drops the second line. */
   density?: ListDensity;
 }) {
@@ -1338,9 +1337,21 @@ export function ProviderEditor({
     : health === 'setup'
       ? (needsKey ? t('st.connections.statusNeedsKey') : t('st.connections.statusSetup'))
       : t('st.connections.statusOk');
+  // An account row's health is the account's, not the transport's: a
+  // credential that must be replaced reads as needing attention here even
+  // while the last request through it still succeeds.
+  const accountFacts = accountMethod === undefined ? null : accountState(accountMethod, undefined);
+  const healthTone = health === 'error' || accountFacts?.state === 'failed'
+    ? 'error'
+    : health === 'setup' || accountFacts?.state === 'signIn' || accountFacts?.state === 'reconnect'
+      ? 'setup' : 'ok';
+  // An account row always speaks in its sign-in's words, because that is what
+  // the person can act on; "not set up" would hide a spent credential behind a
+  // word about the whole connection.
+  const statusText = accountFacts === null ? healthText : t(accountStateKey(accountFacts));
   const checkedAgo = lastTest === undefined ? undefined : time.relativeTime(new Date(lastTest.checked_at).toISOString());
-  const identity = account?.signed_in === true && account.account.state === 'known' ? account.account.id : undefined;
-  const quota = account?.signed_in === true && account.quota.state === 'known' ? account.quota : undefined;
+  const identity = accountMethod?.account.state === 'known' ? accountMethod.account.id : undefined;
+  const quota = accountMethod?.signed_in === true && accountMethod.quota.state === 'known' ? accountMethod.quota : undefined;
   const quotaText = quota === undefined ? undefined : formatQuota(quota, locale, t);
 
   const runTest = async () => {
@@ -1364,7 +1375,7 @@ export function ProviderEditor({
     <details
       data-connection-row={provider.id}
       data-connection-kind={kind}
-      data-connection-health={health}
+      data-connection-health={healthTone}
       className="group/provider [&[open]]:bg-paper"
     >
       <summary style={{ minHeight: LIST_ROW_HEIGHT[density] }}
@@ -1391,14 +1402,16 @@ export function ProviderEditor({
           )}
         </span>
         {dirty ? <span className="shrink-0 text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
-        <span data-connection-status={health}
+        <span data-connection-status={healthTone}
           title={checkedAgo === undefined ? undefined : t('st.connections.testedAgo', { time: checkedAgo })}
           className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${
-          health === 'error' ? 'text-danger' : health === 'setup' ? 'text-amber-ink' : 'text-ink-faint'}`}>
+          healthTone === 'error' ? 'text-danger' : healthTone === 'setup' ? 'text-amber-ink' : 'text-ink-faint'}`}>
           <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
-            health === 'error' ? 'bg-danger' : health === 'setup' ? 'bg-amber-rule' : 'bg-success'}`} />
-          <span className="hidden sm:inline">{healthText}</span>
-          <span className="sr-only sm:hidden">{healthText}</span>
+            healthTone === 'error' ? 'bg-danger' : healthTone === 'setup' ? 'bg-amber-rule' : 'bg-success'}`} />
+          {/* An account connection says what its sign-in is doing, in the same
+              words as its panel; a key connection says its transport's health. */}
+          <span className="hidden sm:inline">{statusText}</span>
+          <span className="sr-only sm:hidden">{statusText}</span>
         </span>
         <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/provider:rotate-90" />
       </summary>
@@ -1438,6 +1451,12 @@ export function ProviderEditor({
             </p>
           </div>
         ) : null}
+        {/* How this connection authenticates. For an account that is the
+            sign-in itself, so it replaces the key fields rather than sitting
+            beside a form that cannot apply to it. */}
+        {accountMethod !== undefined ? (
+          <AccountConnectionPanel method={accountMethod} onChanged={onSaved} />
+        ) : null}
         <fieldset disabled={saving} className="min-w-0 disabled:opacity-60">
           <ProviderFields
             draft={draft}
@@ -1465,18 +1484,12 @@ export function ProviderEditor({
           </button>
           {dirty ? <span className="text-[12px] text-ink-faint">{t('st.tools.unsaved')}</span> : null}
           <span className="ml-auto flex flex-wrap items-center gap-2">
-            {managed ? (
-              onSignOut !== undefined ? (
-                <button type="button" className={SECONDARY_BUTTON} disabled={saving || signingOut} onClick={onSignOut}>
-                  {signingOut ? t('st.auth.working') : t('st.connections.signOut')}
-                </button>
-              ) : null
-            ) : (
-              <>
-                <button type="button" className={DANGER_GHOST_BUTTON} disabled={saving} onClick={() => { setConfirming('remove'); }}>
-                  {t('st.danger.removeProvider')}
-                </button>
-              </>
+            {/* An account connection is removed by signing out, which is in
+                its panel above; a key or local server is a configuration. */}
+            {managed ? null : (
+              <button type="button" className={DANGER_GHOST_BUTTON} disabled={saving} onClick={() => { setConfirming('remove'); }}>
+                {t('st.danger.removeProvider')}
+              </button>
             )}
           </span>
         </div>
@@ -1675,11 +1688,14 @@ export function NewProviderWizard({
   onSaved,
   onAccountChanged,
   initialMethod = 'api',
+  configuredIds,
 }: {
   onSaved: () => Promise<void>;
-  /** An account sign-in completed or signed out inside the picker. */
+  /** An account sign-in completed inside the picker. */
   onAccountChanged?: () => Promise<void> | void;
   initialMethod?: 'api' | 'account';
+  /** Ids already on the list, so a directory pick can say it updates one. */
+  configuredIds?: ReadonlySet<string>;
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
@@ -1746,7 +1762,10 @@ export function NewProviderWizard({
   if (step === 'template') {
     return (
       <div className="space-y-3">
-        <ConnectionMethodPicker initialMethod={initialMethod} onPickApi={chooseTemplate} onAccountChanged={onAccountChanged ?? onSaved} />
+        <ConnectionMethodPicker initialMethod={initialMethod}
+          onPickApi={chooseTemplate}
+          onAccountChanged={onAccountChanged ?? onSaved}
+          configuredIds={configuredIds ?? new Set<string>()} />
         <FeedbackLine feedback={feedback} />
       </div>
     );

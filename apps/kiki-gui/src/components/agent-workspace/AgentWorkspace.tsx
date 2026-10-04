@@ -14,12 +14,12 @@
  * with the shell, expressed here through `navigation` and the rail props.
  */
 
-import { useCallback, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PermissionMode } from '@kiki/protocol';
-import { buildPromptContent, type ComposerAttachment } from '@kiki/session-core/composer';
+import { buildPromptContent, flushDrafts, readComposerState, readDraft, writeComposerState, writeDraft, type ComposerAttachment } from '@kiki/session-core/composer';
 import {
   agentPath,
   createViewState,
@@ -34,14 +34,26 @@ import {
   type SubagentBlock,
   type TranscriptDetailKind,
 } from '@kiki/session-core/session';
-import { resolveCatalogModel } from '@kiki/session-core/settings';
+import {
+  modelSwitchPreferencesToWire,
+  readModelSwitchPreferences,
+  rememberModelSwitchChoice,
+  resolveCatalogModel,
+  resolveModelSwitchPreferences,
+} from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
-import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptSendError } from '../../lib/client';
+import type { ContentRef } from '@kiki/transcript';
+import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptSendError, type ModelSwitchMode } from '../../lib/client';
+import { ModelSwitchDialog } from '../model-switch/ModelSwitchDialog';
+import { ModelSwitchActionsContext, type ModelSwitchNoticeActions } from '../model-switch/ModelSwitchNotice';
+import { useModelSwitches } from '../model-switch/useModelSwitches';
 import { pushToast } from '../../lib/toasts';
 import type { PlanReviewResponse } from '../Interactions';
 import { useConnection } from '../../state/connection';
-import { locateInTimeline } from '../../lib/timelineLocate';
+import { locateSpawnTarget } from '../../lib/timelineLocate';
+import { useTimelineNavigation } from '../../lib/useTimelineNavigation';
+import { NavBackButton } from '../NavBackButton';
 import { AgentBreadcrumb, AgentRelations } from '../AgentBreadcrumb';
 import {
   EMPTY_SLOTS,
@@ -56,8 +68,9 @@ import { MediaPreviewProvider, PreviewToggleButton } from '../mediaPreview';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { RightRail } from '../RightRail';
 import { Transcript } from '../Transcript';
-import { TranscriptDetailProvider } from '../transcriptDetail';
+import { TranscriptDetailProvider, type TranscriptEntityKind } from '../transcriptDetail';
 import { ResyncStatusBanner } from './ResyncStatusBanner';
+import { registerOverlay } from '../../lib/uiBusy';
 
 /** Inspector toggle mark, drawn from the shared icon family at header size. */
 export function PanelIcon({ className = '' }: { className?: string }) {
@@ -79,9 +92,14 @@ export interface AgentWorkspaceNavigation {
   /** Route-level open, bypassing any preview interception (spawn jump-back). */
   readonly openAgentRoute: (agentId: string) => void;
   readonly openSession: () => void;
-  /** The preview tab can reopen the session's one shared rail even when its
-   * full-width narrow overlay obscures the main header. */
-  readonly sharedRail?: { readonly open: boolean; readonly toggle: () => void };
+  /** The preview tab can reopen the session's one shared rail even when it is
+   * covered by the focused surface. `available` is false where no rail can
+   * open at all (the shell hides it below lg), so no entry point renders. */
+  readonly sharedRail?: {
+    readonly open: boolean;
+    readonly toggle: () => void;
+    readonly available?: boolean;
+  };
 }
 
 export interface AgentWorkspaceProps {
@@ -94,7 +112,9 @@ export interface AgentWorkspaceProps {
   readonly forest: AgentForest;
   readonly navigation: AgentWorkspaceNavigation;
   readonly railOpen: boolean;
-  /** Below lg the rail is a fixed overlay drawer; the shell measures the viewport. */
+  /** True where the rail floats over the conversation. The session shell hides
+   * the rail outright below lg instead (see `railAvailable`), so it passes
+   * false today; embedding shells may still overlay. */
   readonly railIsOverlay: boolean;
   readonly onToggleRail: () => void;
   readonly onCloseRail: () => void;
@@ -124,8 +144,26 @@ export interface AgentWorkspaceProps {
    * preview tab opens the same session rail, not a local second rail.
    */
   readonly showRailToggle?: boolean;
+  /**
+   * Whether a rail can open at the current width. The shell hides the rail
+   * outright below lg, so below that breakpoint the header entry would be a
+   * control that does nothing.
+   */
+  readonly railAvailable?: boolean;
   /** Header breadcrumb; suppressed in narrow containers (the relations row stays). */
   readonly showBreadcrumb?: boolean;
+  /**
+   * Routed-page marker: this workspace owns the page chrome, so its header
+   * carries the one history-return entry. Off in the preview panel tab, which
+   * is not a visit of its own.
+   */
+  readonly historyBack?: boolean;
+  /**
+   * Offer 派发处 in this page's ⋯ menu. The rail carries that entry where a rail
+   * exists; below lg there is no rail, so the page keeps it in the menu instead
+   * of leaving a control that cannot open anything.
+   */
+  readonly locateSpawnInMenu?: boolean;
   readonly transcriptVisible?: boolean;
   /** Main's prompt/queue/goal orchestration remains in the session owner; only its
    * presentation crosses this boundary. Child commands never use this adapter. */
@@ -164,8 +202,30 @@ function WorkspaceSurface({
       controller?.loadTranscriptDetail(agentId, kind, id) ?? Promise.resolve(false),
     [controller],
   );
+  // Bounded-content reads stay bound to the agent this workspace renders: the
+  // refs below are that agent's, and a late segment lands in that agent's own
+  // canonical body rather than in whatever the reader switched to.
+  const loadContent = useCallback(
+    (ref: ContentRef) => controller?.loadContentSegment(target.agentId, ref) ?? Promise.resolve(false),
+    [controller, target.agentId],
+  );
+  // A windowed entity collection (the rail's task list, say) reads one page at
+  // a time into the same canonical store; a page never overwrites an entity the
+  // session already holds.
+  const loadEntities = useCallback(
+    (kind: TranscriptEntityKind) => controller?.loadTranscriptEntities(target.agentId, kind) ?? Promise.resolve(false),
+    [controller, target.agentId],
+  );
   return (
-    <TranscriptDetailProvider load={loadDetail} loads={timeline.state.detailLoads}>
+    <TranscriptDetailProvider
+      load={loadDetail}
+      loads={timeline.state.detailLoads}
+      contentRefs={timeline.state.contentRefs}
+      sessionId={target.sessionId}
+      agentId={target.agentId}
+      loadContent={loadContent}
+      loadEntities={loadEntities}
+    >
       {slots.header !== null ? createPortal(header, slots.header) : null}
       <div ref={timelineRef} className="contents" data-agent-workspace-target={target.agentId}>
         {/* One list instance per agent. Child row ids are turn-scoped
@@ -240,7 +300,12 @@ function AgentWorkspaceHeader({
   navigation,
   showPreviewToggle,
   showRailToggle,
+  railAvailable = true,
   showBreadcrumb,
+  freshContextAvailable,
+  onFreshContext,
+  onLocateSpawn,
+  showHistoryBack,
 }: {
   target: AgentWorkspaceTarget;
   name: string;
@@ -254,13 +319,42 @@ function AgentWorkspaceHeader({
   showPreviewToggle: boolean;
   /** Off in the embedded panel tab: the toggle's railOpen state is a local no-op. */
   showRailToggle: boolean;
+  /** Off where no rail can open (below lg): the entry would do nothing. */
+  railAvailable?: boolean;
   /** Off in narrow containers (tabs): the relations row below keeps the navigation. */
   showBreadcrumb: boolean;
+  /** The child has a conversation to renew: the menu offers a fresh context. */
+  freshContextAvailable: boolean;
+  onFreshContext: () => void;
+  /** 派发处 in the menu where no rail carries it; undefined keeps the menu as-is. */
+  onLocateSpawn?: () => void;
+  showHistoryBack: boolean;
 }) {
   const { t } = useI18n();
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const unregister = registerOverlay('agent-actions-menu');
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof HTMLElement) || event.target.closest('[data-agent-actions]') === null) {
+        setMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => {
+      unregister();
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('pointerdown', onPointerDown, true);
+    };
+  }, [menuOpen]);
   return (
     <>
       <WorkspaceHeader>
+        {showHistoryBack ? <NavBackButton /> : null}
         <div className="min-w-24 flex-1" title={`${t('sv.subagentNote')} · ${t('sv.agentActionsNote')}`}>
           {showBreadcrumb ? (
             <AgentBreadcrumb
@@ -287,10 +381,56 @@ function AgentWorkspaceHeader({
         </div>
 
         {showPreviewToggle ? <PreviewToggleButton /> : null}
+        {/* Same intent as the session's ⋯ menu: renew this child's context
+            without having to make a switch fail first, and — where no rail
+            exists to carry 派发处 — locate the card that spawned this child.
+            A child with neither keeps no menu at all. */}
+        {freshContextAvailable || onLocateSpawn !== undefined ? (
+          <div className="relative shrink-0" data-agent-actions>
+            <button
+              type="button"
+              onClick={() => { setMenuOpen((value) => !value); }}
+              title={t('sv.actionsAria')}
+              aria-label={t('sv.actionsAria')}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              className={HEADER_ICON_BUTTON}
+            >
+              <Icon name="more" size={16} />
+            </button>
+            {menuOpen ? (
+              <div
+                role="menu"
+                className="anim-enter absolute right-0 top-full z-40 mt-1 w-56 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
+              >
+                {onLocateSpawn !== undefined ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-agent-locate-spawn
+                    className="flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper"
+                    onClick={() => { setMenuOpen(false); onLocateSpawn(); }}
+                  >
+                    {t('inspector.locate')}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-agent-fresh-context
+                  className="flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper"
+                  onClick={() => { setMenuOpen(false); onFreshContext(); }}
+                >
+                  {t('modelSwitch.menuFreshContext')}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {/* Pure open-rail entry: renders only while the shared rail is
             collapsed. Once expanded, the rail's own collapse affordances take
             over — no "hide panel" button in this header. */}
-        {showRailToggle && !railOpen ? (
+        {showRailToggle && railAvailable && !railOpen ? (
           <button
             type="button"
             onClick={onToggleRail}
@@ -318,6 +458,7 @@ function AgentWorkspaceHeader({
 
 export function AgentWorkspace(props: AgentWorkspaceProps) {
   const ambientSlots = useOptionalConversationShell()?.slots;
+  const { scopeId } = useConnection();
   if (props.target.agentId === MAIN_AGENT_ID) {
     if (props.main === undefined) throw new Error('Main workspace requires the session prompt adapter');
     const main = props.main;
@@ -338,7 +479,7 @@ export function AgentWorkspace(props: AgentWorkspaceProps) {
       />
     );
   }
-  return <ChildAgentWorkspace {...props} />;
+  return <ChildAgentWorkspace key={JSON.stringify([scopeId, props.target.sessionId, props.target.agentId])} {...props} />;
 }
 
 function ChildAgentWorkspace({
@@ -358,28 +499,62 @@ function ChildAgentWorkspace({
   inheritMediaPreview = false,
   showPreviewToggle = true,
   showRailToggle = true,
+  railAvailable = true,
   showBreadcrumb = true,
+  historyBack = false,
+  locateSpawnInMenu = false,
   transcriptVisible = true,
 }: AgentWorkspaceProps) {
   const { t } = useI18n();
   const { client, scopeId } = useConnection();
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState('');
-  const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>([]);
+  // 派发处 is an explicit visit, not a plain scroll: the arrow returns to what
+  // the reader was looking at before the jump.
+  const navigateTimeline = useTimelineNavigation();
+  const { sessionId, agentId } = target;
+  // Target identity owns both the composition and Composer's transient state.
+  // A remount reads the old target back rather than discarding its unsent work.
+  const draftKey = JSON.stringify([scopeId, sessionId, agentId]);
+  const [draft, setDraftState] = useState(() => readDraft(draftKey));
+  const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(
+    () => readComposerState(draftKey).attachments ?? [],
+  );
+  const setDraft = (text: string) => {
+    writeDraft(draftKey, text);
+    setDraftState(text);
+  };
+  useEffect(() => {
+    const chrome = readComposerState(draftKey);
+    writeComposerState(draftKey, {
+      attachments,
+      annotations: chrome.annotations ?? [],
+      permissionMode: chrome.permissionMode,
+      planMode: chrome.planMode,
+      planGate: chrome.planGate,
+      goalObjective: chrome.goalObjective,
+      modelOverride: chrome.modelOverride,
+      effortOverride: chrome.effortOverride,
+    });
+  }, [draftKey, attachments]);
+  useEffect(() => () => { flushDrafts(); }, []);
   const contextSlots = useOptionalConversationShell()?.slots;
   const slots = slotsOverride ?? contextSlots ?? EMPTY_SLOTS;
-  const { sessionId, agentId } = target;
   // A key belongs to one unacknowledged submission, not to the draft text
   // forever. Switching the connection or endpoint invalidates it even if a
   // later render switches back to the same target and unchanged draft.
   const sendScope = JSON.stringify([scopeId, sessionId, agentId]);
   const [sendNotice, setSendNotice] = useState<{ scope: string; text: string } | null>(null);
-  const pendingSendRef = useRef<{ scope: string; payload: string; key: string } | null>(null);
-  const previousSendScopeRef = useRef(sendScope);
-  if (previousSendScopeRef.current !== sendScope) {
-    previousSendScopeRef.current = sendScope;
-    pendingSendRef.current = null;
-  }
+  const pendingSendRef = useRef<{
+    scope: string; payload: string; key: string; afterModelSwitch: string | undefined;
+  } | null>(null);
+  const composerOwnerActive = useRef(true);
+  useEffect(() => {
+    composerOwnerActive.current = true;
+    return () => {
+      composerOwnerActive.current = false;
+      pendingSendRef.current = null;
+    };
+  }, []);
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const handleDraftChange = (next: string) => {
@@ -479,18 +654,13 @@ function ChildAgentWorkspace({
 
   // Parent jump-back: navigate to the spawning agent's timeline, then locate
   // this agent's card there (the locate entry waits for the target view to
-  // mount, pages older history in, and reports when the card is gone).
+  // mount, pages older history in, and reports when the card is gone). Both
+  // branches name the same target — parent timeline AND this child's card —
+  // so the return arrow can undo the jump.
   const handleJumpToSpawn = (): void => {
-    const spawnParentId = selectedNode?.parentAgentId ?? selectedSubagent?.parentAgentId;
-    if (spawnParentId === undefined || spawnParentId === MAIN_AGENT_ID) {
-      navigation.openSession();
-    } else {
-      navigation.openAgentRoute(spawnParentId);
-    }
-    void locateInTimeline(
-      { kind: 'subagent', agentId },
-      { sessionId: target.sessionId, agentId: spawnParentId ?? MAIN_AGENT_ID },
-    );
+    const spawnParentId = selectedNode?.parentAgentId ?? selectedSubagent?.parentAgentId ?? MAIN_AGENT_ID;
+    const spawn = locateSpawnTarget(sessionId, agentId, spawnParentId);
+    navigateTimeline(spawn.target, { ...spawn.options, route: spawn.route });
   };
   const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
   const displayName = selectedNode?.label ?? selectedSubagent?.name ?? agentId;
@@ -512,20 +682,24 @@ function ChildAgentWorkspace({
   const handleComposerSend = async (
     text: string,
     composerAttachments: readonly ComposerAttachment[],
+    _options?: Parameters<ComponentProps<typeof Composer>['onSend']>[2],
+    useSwitchDependency = true,
   ) => {
     if (!agentKnown) return;
     const content = buildPromptContent(text, composerAttachments);
     if (content === null) return;
-    const payload = JSON.stringify([text, content]);
+    const payload = JSON.stringify([text, content, useSwitchDependency]);
     const previous = pendingSendRef.current;
+    // A lost acceptance retries the original execution payload, even if the queue advances.
     const submission = previous?.scope === sendScope && previous.payload === payload
       ? previous
-      : { scope: sendScope, payload, key: crypto.randomUUID() };
+      : { scope: sendScope, payload, key: crypto.randomUUID(),
+        afterModelSwitch: useSwitchDependency ? modelSwitches.dependency?.input.operationId : undefined };
     pendingSendRef.current = submission;
     const hasNonTextAttachment = content.some((part) => part.type !== 'text');
     let receipt: Awaited<ReturnType<typeof client.sendAgentMessage>>;
     try {
-      receipt = await client.sendAgentMessage(sessionId, agentId, text, content, submission.key);
+      receipt = await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch);
     } catch (error) {
       // Native attachments have no replay receipt; a failed request may have
       // been accepted already. The external path rejects attachments before send.
@@ -588,8 +762,13 @@ function ChildAgentWorkspace({
     if (!agentKnown) return;
     const content = buildPromptContent(text, composerAttachments);
     if (content === null) return;
-    if (controller === null || !(await client.isNativeAgent(sessionId, agentId))) {
+    if (!(await client.isNativeAgent(sessionId, agentId))) {
+      // External Send now is still the same durable mailbox submission/retry.
       await handleComposerSend(text, composerAttachments);
+      return;
+    }
+    if (controller === null) {
+      await handleComposerSend(text, composerAttachments, undefined, false);
       return;
     }
     draftRef.current = '';
@@ -601,7 +780,7 @@ function ChildAgentWorkspace({
       if (result.outcome === 'queued') pushToast({ tone: 'info', text: t('sv.steerTurnEnded') });
     } catch (error) {
       const reason = error instanceof SendNowError ? error.reason : 'submit';
-      if (reason !== 'unknown' && draftRef.current === '') {
+      if (composerOwnerActive.current && reason !== 'unknown' && draftRef.current === '') {
         // Nothing reached the turn: hand the text back to its author.
         draftRef.current = text;
         setDraft(text);
@@ -640,23 +819,186 @@ function ChildAgentWorkspace({
       setStoppingTaskId(null);
     }
   };
-  const handleChangeAgentModel = async (model: string | undefined) => {
-    if (!agentKnown || model === undefined || model === displayModel) return;
+  // ---- model switching (child): the same panel and queue as main ----
+  const configQuery = useQuery({
+    queryKey: ['config'],
+    queryFn: () => client.getConfig(),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const modelSwitchPrefs = useMemo(
+    () => readModelSwitchPreferences(configQuery.data?.model_switch),
+    [configQuery.data],
+  );
+  const modelSwitches = useModelSwitches(sessionId, agentId);
+  const [modelSwitchDialog, setModelSwitchDialog] = useState<{
+    readonly fromModel: string;
+    readonly toModel: string;
+    readonly initialMode: ModelSwitchMode;
+    readonly matchedRuleId?: string;
+    readonly editingOperationId?: string;
+    readonly editingRevision?: number;
+  } | undefined>(undefined);
+  const [modelSwitchSubmitting, setModelSwitchSubmitting] = useState(false);
+  const [modelSwitchActionPending, setModelSwitchActionPending] = useState<string | undefined>(undefined);
+  const submitModelSwitch = useCallback(async (choice: {
+    readonly fromModel: string;
+    readonly toModel: string;
+    readonly mode: ModelSwitchMode;
+    readonly remember: boolean;
+    readonly editingOperationId?: string;
+    readonly editingRevision?: number;
+  }) => {
+    setModelSwitchSubmitting(true);
     try {
-      await client.setAgentModel(sessionId, agentId, model);
+      if (choice.editingOperationId !== undefined) {
+        await client.updateAgentModelSwitch(sessionId, agentId, {
+          operationId: choice.editingOperationId,
+          model: choice.toModel,
+          mode: choice.mode,
+          selectedFromModel: choice.fromModel,
+        }, choice.editingRevision);
+      } else {
+        await client.switchAgentModel(sessionId, agentId, {
+          operationId: crypto.randomUUID(),
+          model: choice.toModel,
+          mode: choice.mode,
+          selectedFromModel: choice.fromModel,
+        });
+      }
+      setModelSwitchDialog(undefined);
+      modelSwitches.refresh();
     } catch (error) {
-      // The pick is a server-side rebind that can fail (a closed child whose
-      // persisted binding cannot be restored). Swallow it here — the select is
-      // controlled by the live agent, so a failure leaves the old model on
-      // screen — but never silently: report it and keep the failing state out
-      // of the trigger.
       pushToast({
         tone: 'error',
-        text: t('subagent.modelChangeFailed', {
+        text: t(choice.editingOperationId !== undefined ? 'modelSwitch.updateFailed' : 'modelSwitch.submitFailed', {
           detail: error instanceof Error ? error.message : String(error),
         }),
       });
+      return;
+    } finally {
+      setModelSwitchSubmitting(false);
     }
+    if (!choice.remember) return;
+    // Accepted already: an unsaved preference is reported, never treated as a
+    // rollback of the switch. Only the rule table goes out, so the default mode
+    // and ask flag some other surface owns are never rewritten from here.
+    try {
+      const remembered = modelSwitchPreferencesToWire(
+        rememberModelSwitchChoice(modelSwitchPrefs, choice.fromModel, choice.toModel, choice.mode),
+      );
+      const echoed = await client.patchConfig({ model_switch: { rules: remembered.rules } });
+      queryClient.setQueryData(['config'], echoed);
+    } catch (error) {
+      pushToast({
+        tone: 'error',
+        text: t('modelSwitch.prefsSaveFailed', { detail: error instanceof Error ? error.message : String(error) }),
+      });
+    }
+  }, [agentId, client, modelSwitchPrefs, modelSwitches, queryClient, sessionId, t]);
+  const runModelSwitchAction = useCallback((
+    operationId: string,
+    run: () => Promise<unknown>,
+    failureKey: 'modelSwitch.cancelFailed' | 'modelSwitch.recoverFailed',
+  ) => {
+    setModelSwitchActionPending(operationId);
+    void run()
+      .then(() => { modelSwitches.refresh(); })
+      .catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t(failureKey, { detail: error instanceof Error ? error.message : String(error) }),
+        });
+      })
+      .finally(() => { setModelSwitchActionPending((current) => (current === operationId ? undefined : current)); });
+  }, [modelSwitches, t]);
+  const modelSwitchActions = useMemo<ModelSwitchNoticeActions>(() => ({
+    pendingOperationId: modelSwitchActionPending,
+    edit: (operationId) => {
+      const entry = modelSwitches.switches.find((candidate) => candidate.input.operationId === operationId);
+      if (entry === undefined || entry.receipt.state !== 'pending') return;
+      setModelSwitchDialog({
+        fromModel: entry.receipt.fromModel,
+        toModel: resolveCatalogModel(modelsQuery.data?.items ?? [], entry.input.model)?.id ?? entry.receipt.toModel,
+        initialMode: entry.input.mode,
+        editingOperationId: operationId,
+        editingRevision: entry.revision,
+      });
+    },
+    cancel: (operationId) => {
+      runModelSwitchAction(
+        operationId,
+        () => client.cancelAgentModelSwitch(sessionId, agentId, operationId),
+        'modelSwitch.cancelFailed',
+      );
+    },
+    retry: (operationId) => {
+      runModelSwitchAction(
+        operationId,
+        () => client.recoverAgentModelSwitch(sessionId, agentId, operationId, 'retry'),
+        'modelSwitch.recoverFailed',
+      );
+    },
+    retryAsFresh: (operationId) => {
+      runModelSwitchAction(
+        operationId,
+        () => client.recoverAgentModelSwitch(sessionId, agentId, operationId, 'retry', 'fresh'),
+        'modelSwitch.recoverFailed',
+      );
+    },
+    keepOriginal: (operationId) => {
+      runModelSwitchAction(
+        operationId,
+        () => client.recoverAgentModelSwitch(sessionId, agentId, operationId, 'keep_original'),
+        'modelSwitch.recoverFailed',
+      );
+    },
+  }), [agentId, client, modelSwitchActionPending, modelSwitches.switches, modelsQuery.data, runModelSwitchAction, sessionId]);
+  const handleChangeAgentModel = async (model: string | undefined) => {
+    if (!agentKnown || model === undefined) return;
+    const target = resolveCatalogModel(modelsQuery.data?.items ?? [], model)?.id ?? model;
+    const current = displayModel === undefined
+      ? undefined
+      : resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)?.id ?? displayModel;
+    if (current !== undefined && target === current) return;
+    // A child with no conversation yet has nothing to hand over: the pick is a
+    // plain rebind, exactly the pre-switch behaviour.
+    if (agentLiveState.blocks.length === 0) {
+      try {
+        await client.setAgentModel(sessionId, agentId, model);
+      } catch (error) {
+        // The pick is a server-side rebind that can fail (a closed child whose
+        // persisted binding cannot be restored). Swallow it here — the select is
+        // controlled by the live agent, so a failure leaves the old model on
+        // screen — but never silently: report it and keep the failing state out
+        // of the trigger.
+        pushToast({
+          tone: 'error',
+          text: t('subagent.modelChangeFailed', {
+            detail: error instanceof Error ? error.message : String(error),
+          }),
+        });
+      }
+      return;
+    }
+    // A child with history switches through the shared three-mode panel.
+    const fromModel = current ?? displayModel ?? '';
+    const resolved = resolveModelSwitchPreferences(modelSwitchPrefs, fromModel, target);
+    if (resolved.confirm) {
+      setModelSwitchDialog({ fromModel, toModel: target, initialMode: resolved.mode, matchedRuleId: resolved.matchedRuleId });
+      return;
+    }
+    await submitModelSwitch({ fromModel, toModel: target, mode: resolved.mode, remember: false });
+  };
+  // The explicit "new context" entry: same model, so the panel offers only the
+  // two context-renewing modes. No rule is consulted — asking for it is the
+  // choice, exactly as the session menu treats it.
+  const openFreshContextPanel = () => {
+    const current = displayModel === undefined
+      ? undefined
+      : resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)?.id ?? displayModel;
+    if (current === undefined) return;
+    setModelSwitchDialog({ fromModel: current, toModel: current, initialMode: 'fresh' });
   };
   const displayEffort =
     agentLiveState.thinkingEffort ?? selectedNode?.thinkingEffort ?? selectedSubagent?.thinkingEffort;
@@ -749,6 +1091,7 @@ function ChildAgentWorkspace({
   };
 
   const chrome = (
+    <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
     <WorkspaceSurface
       target={target}
       controller={controller}
@@ -757,7 +1100,12 @@ function ChildAgentWorkspace({
         target={target} name={displayName} model={displayModel} effort={displayEffort}
         crumbs={crumbs} forest={forest} railOpen={railOpen} onToggleRail={onToggleRail}
         navigation={navigation} showPreviewToggle={showPreviewToggle}
-        showRailToggle={showRailToggle} showBreadcrumb={showBreadcrumb}
+        showRailToggle={showRailToggle} railAvailable={railAvailable}
+        showBreadcrumb={showBreadcrumb}
+        showHistoryBack={historyBack}
+        freshContextAvailable={agentBlocks.length > 0 && displayModel !== undefined}
+        onFreshContext={openFreshContextPanel}
+        onLocateSpawn={locateSpawnInMenu ? handleJumpToSpawn : undefined}
       />}
       timeline={{
         state: agentState, agentId, onLoadOlder: handleLoadOlder,
@@ -783,6 +1131,14 @@ function ChildAgentWorkspace({
           value={draft} onChange={handleDraftChange}
           model={displayModel} defaultModel={displayModel} serverDefaultModel={displayModel}
           modelSource="session" permissionMode={agentLiveState.permissionMode ?? ('manual' as PermissionMode)}
+          pendingModelSwitch={modelSwitches.active === undefined ? undefined : {
+            to: modelSwitches.active.receipt.toModel,
+            mode: modelSwitches.active.input.mode,
+          }}
+          modelSwitchError={modelSwitches.error === undefined ? undefined : {
+            detail: modelSwitches.error.message,
+            onRetry: modelSwitches.refresh,
+          }}
           planMode={false} efforts={supportedEfforts} effort={displayEffort}
           contextUsage={displayContextTokens !== undefined && displayMaxContextTokens !== undefined
             ? { used: displayContextTokens, limit: displayMaxContextTokens } : undefined}
@@ -810,6 +1166,30 @@ function ChildAgentWorkspace({
       />}
       railOpen={railOpen} railIsOverlay={railIsOverlay} onCloseRail={onCloseRail}
     />
+    <ModelSwitchDialog
+      open={modelSwitchDialog !== undefined}
+      fromModel={modelSwitchDialog?.fromModel ?? ''}
+      toModel={modelSwitchDialog?.toModel ?? ''}
+      initialMode={modelSwitchDialog?.initialMode ?? 'direct'}
+      editing={modelSwitchDialog?.editingOperationId !== undefined}
+      busy={headerBusy}
+      submitting={modelSwitchSubmitting}
+      matchedRuleId={modelSwitchDialog?.matchedRuleId}
+      onConfirm={(choice) => {
+        const dialog = modelSwitchDialog;
+        if (dialog === undefined) return;
+        void submitModelSwitch({
+          fromModel: dialog.fromModel,
+          toModel: dialog.toModel,
+          mode: choice.mode,
+          remember: choice.remember,
+          editingOperationId: dialog.editingOperationId,
+          editingRevision: dialog.editingRevision,
+        });
+      }}
+      onCancel={() => { setModelSwitchDialog(undefined); }}
+    />
+    </ModelSwitchActionsContext.Provider>
   );
 
   // Embedded mode (preview tab): the ambient session-level provider already
@@ -829,6 +1209,7 @@ function ChildAgentWorkspace({
       workspaceSessionState={sessionState}
       workspaceNavigation={navigation}
       onCancelTask={onCancelTask}
+      snapshotAgentId={agentId}
       onStopAgentTask={onStopAgentTask}
     >
       {chrome}

@@ -6,24 +6,30 @@ import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-route
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { clearComposerState, clearStoredDrafts, readComposerState, resetComposerMemoryForTests, resetDraftMemoryForTests, type SelectionAnnotation } from '@kiki/session-core/composer';
+import { clearComposerState, clearStoredDrafts, readComposerState, resetComposerMemoryForTests, resetDraftMemoryForTests, readDraft, writeDraft, type ComposerAttachment, type SelectionAnnotation } from '@kiki/session-core/composer';
 import { SendNowError } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { SessionRouteView } from './SessionView';
+import { clearToasts, getToasts } from '../lib/toasts';
+import type { QueuedModelSwitch } from '../lib/client';
 
 const { seat, submit, queueStub, fixture } = vi.hoisted(() => ({
-  fixture: { external: false },
+  fixture: { external: false, records: [] as { sessionId: string; record: unknown }[] },
   seat: { composer: null as unknown },
   submit: {
     // Each send hands the test a deferred result so it can inspect the
     // composer mid-flight, then settle it (accepted / queued / rejected).
-    calls: [] as { text: string; input?: { model?: string; thinking?: string; permissionMode?: string; appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done' }; now?: true; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
+    calls: [] as { text: string; input?: { promptId?: string; content?: unknown; model?: string; thinking?: string; permissionMode?: string; appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done' }; now?: true; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
     steered: [] as string[],
   },
   queueStub: {
     // Queued prompts the stub controller reports; set before rendering.
     items: [] as { promptId: string; text: string }[],
     replaced: [] as { promptId: string; text: string }[],
+    holds: [] as { promptId: string; held: boolean; draft: string; annotations: unknown }[],
+    switches: [] as QueuedModelSwitch[],
+    cancelledSwitches: [] as string[],
+    clearCalls: 0,
   },
 }));
 
@@ -33,6 +39,14 @@ vi.mock('../state/connection', () => {
     sessionView: () => ({}),
     getConfig: () => Promise.resolve({ default_model: 'provider/native-model' }),
     listModels: () => Promise.resolve({ items: [] }),
+    listEphemeralSessions: () => new Promise(() => {}),
+    listAgentModelSwitches: () => Promise.resolve(queueStub.switches),
+    cancelAgentModelSwitch: (_sessionId: string, _agentId: string, operationId: string) => {
+      queueStub.cancelledSwitches.push(operationId);
+      queueStub.switches = queueStub.switches.filter((entry) => entry.input.operationId !== operationId);
+      return Promise.resolve();
+    },
+    subscribeAgentModelSwitches: () => ({ ready: Promise.resolve(), dispose: () => {} }),
   };
   const registry = {
     add: () => {},
@@ -92,6 +106,7 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     }
 
     setFocusedAgent() {}
+    handleSessionRecord(record: unknown) { fixture.records.push({ sessionId: this.sessionId, record }); }
     sendPrompt(input: { text: string; model?: string; thinking?: string; permissionMode?: string; appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done' }) {
       return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, input, resolve, reject }); });
     }
@@ -107,7 +122,16 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
       return Promise.resolve();
     }
     abortPrompt() { return Promise.resolve(); }
-    holdQueued() { return Promise.resolve(); }
+    holdQueued(promptId: string, held: boolean) {
+      queueStub.holds.push({ promptId, held, draft: readDraft(this.sessionId), annotations: readComposerState(this.sessionId).annotations });
+      return Promise.resolve();
+    }
+    clearQueue() {
+      queueStub.clearCalls += 1;
+      const total = queueStub.items.length;
+      queueStub.items = [];
+      return Promise.resolve({ total, failed: 0 });
+    }
     refreshSession() { return Promise.resolve(); }
     open() { return Promise.resolve(); }
     close() {}
@@ -139,10 +163,11 @@ vi.mock('./Transcript', async (importOriginal) => {
   return { ...actual, Transcript: () => <div data-transcript /> };
 });
 vi.mock('./SelectionQuoteButton', () => ({
-  SelectionQuoteButton: ({ onAnnotate }: { onAnnotate: (quote: string, comment: string) => void }) => (
-    <button type="button" data-annotate onClick={() => { onAnnotate('selected source', 'keep this'); }}>
-      Annotate
-    </button>
+  SelectionQuoteButton: ({ onAnnotate, onQuote }: { onAnnotate: (quote: string, comment: string) => void; onQuote: (text: string) => void }) => (
+    <>
+      <button type="button" data-annotate onClick={() => { onAnnotate('selected source', 'keep this'); }}>Annotate</button>
+      <button type="button" data-quote onClick={() => { onQuote('personal quote'); }}>Quote</button>
+    </>
   ),
 }));
 
@@ -166,10 +191,16 @@ function ActiveSession() {
 
 type ComposerProps = {
   value: string;
+  onChange: (text: string) => void;
+  onChangeAttachments: (attachments: readonly ComposerAttachment[]) => void;
+  attachments: readonly ComposerAttachment[];
+  queueEditing: boolean;
+  quote: string | null;
+  header?: ReactElement<{ queue: { count: number; panel: ReactElement<{ onEdit: (id: string) => void; onClearAll: () => void }> } }>;
   annotations: readonly SelectionAnnotation[];
   onSend: (
     text: string,
-    attachments: readonly never[],
+    attachments: readonly ComposerAttachment[],
     options?: { readonly goalObjective?: string; readonly appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done' },
   ) => Promise<unknown> | undefined;
   onSendNow: (text: string, attachments: readonly never[]) => Promise<unknown> | undefined;
@@ -201,6 +232,29 @@ afterAll(() => {
 });
 
 describe('session selection annotations', () => {
+  it('merges the selected temporary session from later shared pages without another session record', async () => {
+    fixture.records.length = 0;
+    fixture.external = false;
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const unrelated = Array.from({ length: 50 }, (_, index) => ({ id: `temporary-${index}`, ephemeral: true }));
+    const selected = { id: 'session-a', title: 'Selected temporary', ephemeral: true };
+    queries.setQueryData(['sessions', 'ephemeral'], { pages: [{ items: unrelated, has_more: true, next_cursor: 'temporary-49' }, { items: [selected], has_more: false }], pageParams: [undefined, 'temporary-49'] });
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={queries}><I18nProvider><MemoryRouter initialEntries={['/s/session-a']}><RoutesWithNavigation /></MemoryRouter></I18nProvider></QueryClientProvider>);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(fixture.records).toContainEqual({ sessionId: 'session-a', record: selected });
+      expect(fixture.records.every((entry) => (entry.record as { id: string }).id === entry.sessionId)).toBe(true);
+    } finally {
+      await act(async () => { root.unmount(); });
+      queries.clear();
+      container.remove();
+    }
+  });
   it.each([false, true])('only inherits native model defaults for native sessions: external=%s', async (external) => {
     resetComposerMemoryForTests();
     clearComposerState('session-a');
@@ -452,6 +506,123 @@ describe('session selection annotations', () => {
       resetComposerMemoryForTests();
       resetDraftMemoryForTests();
       clearStoredDrafts();
+    }
+  });
+
+  it('restores the parked personal composition before releasing a queue edit on A/B/A navigation', async () => {
+    resetDraftMemoryForTests();
+    clearStoredDrafts();
+    writeDraft('session-a', 'ORIGINAL UNSENT DRAFT');
+    queueStub.items = [{ promptId: 'p-edit', text: '> queue quote\n\nComment: queued note\n\nQUEUED TEXT' }];
+    queueStub.holds = [];
+    try {
+      await withSession(async (container) => {
+        const originalNotes = currentAnnotations();
+        await act(async () => { container.querySelector<HTMLButtonElement>('[data-quote]')!.click(); });
+        expect(composerProps().quote).toBe('personal quote');
+        await act(async () => { composerProps().header!.props.queue.panel.props.onEdit('p-edit'); });
+        expect(composerProps().value).toBe('QUEUED TEXT');
+        expect(composerProps().queueEditing).toBe(true);
+        await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-b]')!.click(); });
+        expect(readDraft('session-a')).toBe('ORIGINAL UNSENT DRAFT');
+        expect(readComposerState('session-a').annotations).toEqual(originalNotes);
+        expect(queueStub.holds.at(-1)).toMatchObject({ held: false, draft: 'ORIGINAL UNSENT DRAFT', annotations: originalNotes });
+        await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-a]')!.click(); });
+        expect(composerProps().value).toBe('ORIGINAL UNSENT DRAFT');
+        expect(currentAnnotations()).toEqual(originalNotes);
+        expect(composerProps().quote).toBe('personal quote');
+        expect(composerProps().queueEditing).toBe(false);
+      });
+    } finally {
+      queueStub.items = [];
+      resetDraftMemoryForTests();
+      clearStoredDrafts();
+    }
+  });
+
+  it.each([false, true])('retries captured X with its original identity and keeps newer Y (retry fails=%s)', async (retryFails) => {
+    clearToasts();
+    resetDraftMemoryForTests();
+    clearStoredDrafts();
+    await withSession(async () => {
+      const xAttachment: ComposerAttachment = { kind: 'retained', name: 'x.txt', content: { type: 'file', file_id: 'x-file', name: 'x.txt', media_type: 'text/plain', size: 1 } };
+      let sent: Promise<unknown> | undefined;
+      await act(async () => { sent = composerProps().onSend('FAILED X', [xAttachment]); });
+      const captured = submit.calls[0]!.input;
+      const yAttachment: ComposerAttachment = { kind: 'retained', name: 'y.txt', content: { type: 'file', file_id: 'y-file', name: 'y.txt', media_type: 'text/plain', size: 2 } };
+      await act(async () => { composerProps().onChange('NEW Y'); composerProps().onChangeAttachments([yAttachment]); });
+      await act(async () => { submit.calls[0]!.reject(new Error('offline')); await sent; });
+      const retry = getToasts().at(-1)!.retry!;
+      await act(async () => { retry.run(); retry.run(); });
+      expect(submit.calls).toHaveLength(2);
+      expect(submit.calls[1]!.input).toEqual(captured);
+      expect(composerProps().value).toBe('NEW Y');
+      if (retryFails) {
+        await act(async () => { submit.calls[1]!.reject(new Error('prompt_id already in use')); });
+        expect(getToasts().at(-1)!.retry).toBeDefined();
+        expect(currentAnnotations()).toHaveLength(1);
+      } else {
+        await act(async () => { submit.calls[1]!.resolve(accepted('running')); });
+        await act(async () => { retry.run(); });
+        expect(submit.calls).toHaveLength(2);
+      }
+      expect(readDraft('session-a')).toBe('NEW Y');
+      expect(composerProps().attachments).toEqual([yAttachment]);
+      await act(async () => { sent = composerProps().onSend('NEW Y', [yAttachment]); });
+      expect(submit.calls[2]!.input?.promptId).not.toBe(captured?.promptId);
+      await act(async () => { submit.calls[2]!.resolve(accepted('queued')); await sent; });
+    });
+    clearToasts();
+  });
+
+  it('retries the recovered X composition once and removes its draft and notes after acceptance', async () => {
+    clearToasts();
+    resetDraftMemoryForTests();
+    clearStoredDrafts();
+    await withSession(async () => {
+      let sent: Promise<unknown> | undefined;
+      await act(async () => { sent = composerProps().onSend('X', []); });
+      await act(async () => { submit.calls[0]!.reject(new Error('rejected')); await sent; });
+      expect(composerProps().value).toBe('X');
+      expect(currentAnnotations()).toHaveLength(1);
+      await act(async () => { getToasts().at(-1)!.retry!.run(); });
+      expect(composerProps().value).toBe('');
+      expect(currentAnnotations()).toEqual([]);
+      expect(submit.calls[1]!.input?.promptId).toBe(submit.calls[0]!.input?.promptId);
+      await act(async () => { submit.calls[1]!.resolve(accepted('running')); });
+      expect(readDraft('session-a')).toBe('');
+    });
+    clearToasts();
+  });
+
+  it.each([0, 1])('counts and clears all mixed queue objects, including switch-only (%s messages)', async (messages) => {
+    queueStub.items = messages === 0 ? [] : [{ promptId: 'queued-message', text: 'queued message' }];
+    queueStub.switches = [{
+      input: { operationId: 'queued-switch', model: 'fixture/other', mode: 'direct' },
+      receipt: { operationId: 'queued-switch', state: 'pending', fromModel: 'fixture/one', toModel: 'fixture/other', mode: 'direct' },
+      revision: 1, queueIndex: messages,
+    } as QueuedModelSwitch];
+    queueStub.cancelledSwitches = [];
+    queueStub.clearCalls = 0;
+    try {
+      await withSession(async () => {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+        const queue = composerProps().header!.props.queue;
+        expect(queue.count).toBe(messages + 1);
+        await act(async () => { queue.panel.props.onClearAll(); });
+        const dialog = document.querySelector('[role="alertdialog"]') ?? document.querySelector('[role="dialog"]');
+        expect(dialog?.textContent).toContain(String(messages + 1));
+        const confirm = [...dialog!.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Clear all')!;
+        await act(async () => { confirm.click(); });
+        expect(queueStub.clearCalls).toBe(1);
+        expect(queueStub.cancelledSwitches).toEqual(['queued-switch']);
+        expect(queueStub.switches).toEqual([]);
+        expect(queueStub.items).toEqual([]);
+        expect(composerProps().header).toBeUndefined();
+      });
+    } finally {
+      queueStub.items = [];
+      queueStub.switches = [];
     }
   });
 

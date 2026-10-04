@@ -1,8 +1,10 @@
 /**
  * "Add from source" — a local folder, a GitHub repository, or a ZIP URL with
  * its SHA-256. Every path ends in the same preview + consent sheet as the
- * marketplace, so a hand-typed source gets no weaker a review. The catalog
- * address lives here too, folded under Advanced: it is rarely changed.
+ * marketplace, so a hand-typed source gets no weaker a review.
+ *
+ * This dialog is about one install's input. The catalog address is a standing
+ * server setting, edited where it is read: Plugins' Advanced, and Settings.
  */
 
 import { useEffect, useState } from 'react';
@@ -18,7 +20,7 @@ import { FeedbackLine, type Feedback } from '../controls';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import type { InstallRequest } from './InstallFlow';
-import { Disclosure, Segmented } from './primitives';
+import { Segmented } from './primitives';
 import { PLUGIN_QUERY_KEYS } from './usePlugins';
 
 type SourceKind = 'path' | 'github' | 'zip';
@@ -35,7 +37,6 @@ export function AddSourceDialog({
   const [kind, setKind] = useState<SourceKind>('github');
   const [source, setSource] = useState('');
   const [sha256, setSha256] = useState('');
-  const [advanced, setAdvanced] = useState(false);
   const trimmed = source.trim();
   const shaValid = /^[0-9a-fA-F]{64}$/.test(sha256.trim());
   const ready = trimmed !== '' && (kind !== 'zip' || shaValid);
@@ -110,9 +111,6 @@ export function AddSourceDialog({
         ) : kind === 'github' ? (
           <p className="text-[12px] leading-4 text-ink-faint">{t('cap.source.githubHint')}</p>
         ) : null}
-        <Disclosure label={t('cap.advanced')} open={advanced} onToggle={() => { setAdvanced((value) => !value); }}>
-          <CatalogSourceField />
-        </Disclosure>
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" className={SECONDARY_BUTTON} onClick={onClose}>{t('common.cancel')}</button>
           <button type="submit" className={PRIMARY_BUTTON} disabled={!ready} data-add-source-submit>{t('cap.source.review')}</button>

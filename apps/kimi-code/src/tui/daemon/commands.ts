@@ -40,7 +40,8 @@ export type DaemonCommandName =
   | 'init'
   | 'theme'
   | 'help'
-  | 'version';
+  | 'version'
+  | 'web';
 
 type DaemonCommandArgument = 'none' | 'optional-one' | 'optional-rest' | 'permission';
 
@@ -94,11 +95,11 @@ const SUPPORTED_COMMANDS = [
   command('agent', [], 'Select the agent profile for new sessions', 'optional-one', '[name]'),
   command('persona', [], 'List personas or start a new session with one', 'optional-rest', '[list|switch <id>]'),
   command('model', [], 'Switch LLM model', 'optional-one', '[model]'),
-  command('permission', [], 'Select permission mode', 'permission', '[manual|yolo|auto]'),
+  command('permission', [], 'Select permission mode', 'permission', '[manual|auto|review|yolo]'),
   command('yolo', ['yes'], 'Toggle YOLO mode', 'none'),
   command('auto', [], 'Toggle Auto mode', 'none'),
   command('plan', [], 'Toggle plan mode', 'none'),
-  command('agents', [], 'List agents in the current session', 'none'),
+  command('agents', [], 'Browse agents and open a transcript', 'none'),
   command('agent-transcript', [], 'Show an agent transcript', 'optional-one', '[agent-id]'),
   command('effort', ['thinking'], 'Switch thinking effort', 'optional-one', '[effort]'),
   command('title', ['rename'], 'Set or show session title', 'optional-rest', '[title]'),
@@ -107,7 +108,7 @@ const SUPPORTED_COMMANDS = [
   command('compact', [], 'Compact the conversation context', 'optional-rest', '[instruction]'),
   command('tasks', ['task'], 'Browse background tasks', 'optional-rest', '[stop|output] [task-id]'),
   command('fork', [], 'Fork the current session', 'optional-rest', '[title]'),
-  command('plugins', [], 'Manage plugins', 'optional-rest', '[marketplace|install|enable|disable|remove|reload]'),
+  command('plugins', [], 'Manage plugins (install --trust consents to full account permissions)', 'optional-rest', '[marketplace|install [--trust] <source>|enable|disable|remove|reload]'),
   command('provider', ['providers'], 'Manage AI providers', 'optional-rest', '[add|remove|refresh]'),
   command('reload', [], 'Reload daemon configuration and plugins', 'none'),
   command('login', [], 'Authenticate a provider', 'optional-one', '[provider]'),
@@ -126,14 +127,14 @@ const SUPPORTED_COMMANDS = [
   command('theme', [], 'Set the theme for this TUI session', 'optional-one', '[dark|light|auto]'),
   command('help', ['h', '?'], 'Show daemon TUI command support', 'none'),
   command('version', [], 'Show version information', 'none'),
+  command('web', [], 'Manage browser access without leaving the TUI', 'optional-rest', '[temporary|persistent|status|off|link|revoke [id]] [--host <host>] [--port <port>] [--public-url <url>] [--insecure-no-tls] [--no-open]'),
 ] as const satisfies readonly DaemonCommandDefinition[];
 
 const DISABLED_COMMANDS = [
-  disabled('add-dir', [], 'Add a directory to the current workspace'),
-  disabled('export-md', [], 'Export the complete session as Markdown'),
-  disabled('export-debug-zip', [], 'Export current session as a debug ZIP archive'),
+  disabled('add-dir', [], 'Start a session with another directory; use the kiki --add-dir startup flag'),
+  disabled('export-md', [], 'Export the session as a ZIP archive; use kiki export in a terminal'),
+  disabled('export-debug-zip', [], 'Export the session as a ZIP archive; use kiki export in a terminal'),
   disabled('reload-tui', [], 'Reload TUI preferences'),
-  disabled('web', [], 'Open the current session in the Web UI'),
 ] as const satisfies readonly DaemonCommandDefinition[];
 
 export const DAEMON_COMMANDS: readonly DaemonCommandDefinition[] = [
@@ -185,9 +186,9 @@ export function validateDaemonCommandArgs(command: ResolvedDaemonCommand): strin
     case 'optional-rest':
       return undefined;
     case 'permission':
-      return args === '' || args === 'manual' || args === 'yolo' || args === 'auto'
+      return args === '' || args === 'manual' || args === 'auto' || args === 'review' || args === 'yolo'
         ? undefined
-        : `/${command.invokedAs} expects manual, yolo, or auto.`;
+        : `/${command.invokedAs} expects manual, auto, review, or yolo.`;
   }
 }
 
@@ -219,9 +220,9 @@ export function daemonAutocompleteCommands(
 }
 
 export function daemonCommandHelp(): string {
-  const supported = SUPPORTED_COMMANDS.map(formatCommand).join(', ');
-  const disabled = DISABLED_COMMANDS.map(formatCommand).join(', ');
-  return `Daemon TUI commands\nSupported: ${supported}\n${EXPORT_VIEW_DESCRIPTION}\nDisabled: ${disabled}`;
+  const supported = SUPPORTED_COMMANDS.map(formatCommand).join('\n\n');
+  const disabled = DISABLED_COMMANDS.map(formatCommand).join('\n\n');
+  return `Supported:\n\n${supported}\n\nDisabled in daemon TUI:\n\n${disabled}\n\nSkills and agent profiles: type / in the input box to browse the current catalog.`;
 }
 
 function command(
@@ -244,5 +245,6 @@ function disabled(
 
 function formatCommand(command: DaemonCommandDefinition): string {
   const aliases = command.aliases.map((alias) => `/${alias}`).join(', ');
-  return aliases === '' ? `/${command.name}` : `/${command.name} (${aliases})`;
+  const usage = `/${command.name}${command.argumentHint === undefined ? '' : ` ${command.argumentHint}`}`;
+  return `${usage}${aliases === '' ? '' : ` (${aliases})`}\n  ${command.description}`;
 }

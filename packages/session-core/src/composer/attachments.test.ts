@@ -306,15 +306,28 @@ describe('buildSkillActivation with uploads', () => {
 });
 
 
-describe('SSH host display snapshots', () => {
+describe('SSH hosts as session state, not message content', () => {
   const hosts: ComposerAttachment[] = [{ kind: 'ssh', id: 'example-host', name: 'Example <host>\nname' }];
-  it('roundtrips display-only id/name safely through prompt and skill text', () => {
+  it('writes no host into prompt text or skill args, and still sends the message', () => {
     const content = buildPromptContent('Inspect', hosts)!;
     expect(content).toHaveLength(1);
     const text = content[0]!.type === 'text' ? content[0]!.text : '';
-    expect(parseSshHostContext(text)).toEqual({ body: 'Inspect', hosts });
-    expect(parseSshHostContext(buildSkillActivation('Inspect', hosts).args)).toEqual({ body: 'Inspect', hosts });
-    expect(text).not.toContain('ssh_hosts_added');
+    expect(text).toBe('Inspect');
+    expect(text).not.toContain('ssh_host_refs');
+    const activation = buildSkillActivation('Inspect', hosts);
+    expect(activation.args).toBe('Inspect');
+  });
+  it('keeps file mentions and media intact alongside a joined host', () => {
+    const withFile: ComposerAttachment[] = [...hosts, { kind: 'file', path: 'src/app.ts', name: 'app.ts', isDir: false }, image('a.png', 10)];
+    const content = buildPromptContent('Look', withFile)!;
+    const text = content[0]!.type === 'text' ? content[0]!.text : '';
+    expect(text).toBe('@src/app.ts\n\nLook');
+    expect(content.some((part) => part.type === 'image')).toBe(true);
+    expect(buildSkillActivation('run', withFile).args).toBe('@src/app.ts run');
+  });
+  it('reads a stored legacy block back so old history renders as typed', () => {
+    const legacy = 'Inspect\n\n<ssh_host_refs>\n[{"id":"example-host","name":"Example host"}]\n</ssh_host_refs>';
+    expect(parseSshHostContext(legacy)).toEqual({ body: 'Inspect', hosts: [{ kind: 'ssh', id: 'example-host', name: 'Example host' }] });
   });
   it.each(['Plain text', '<ssh_host_refs>\nnot JSON\n</ssh_host_refs>', '<ssh_host_refs>\n[{"id":42}]\n</ssh_host_refs>'])('leaves non-snapshots verbatim: %s', (text) => {
     expect(parseSshHostContext(text)).toEqual({ body: text, hosts: [] });

@@ -108,7 +108,7 @@ describe('SubAgentEventHandler — activity record pruning', () => {
   });
 });
 
-function makeSessionEventHost() {
+function makeSessionEventHost(appendTranscriptEntry = vi.fn()) {
   const host = {
     state: {
       appState: {
@@ -145,7 +145,7 @@ function makeSessionEventHost() {
     mountEditorReplacement: vi.fn(),
     restoreEditor: vi.fn(),
     restoreInputText: vi.fn(),
-    appendTranscriptEntry: vi.fn(),
+    appendTranscriptEntry,
     sendNormalUserInput: vi.fn(),
     sendQueuedMessage: vi.fn(),
     shiftQueuedMessage: vi.fn(),
@@ -156,6 +156,15 @@ function makeSessionEventHost() {
 }
 
 describe('SessionEventHandler — background.task.terminated', () => {
+  it('preserves a media job terminal status once instead of dropping it as a non-process task', () => {
+    const append = vi.fn();
+    const handler = new SessionEventHandler(makeSessionEventHost(append));
+    const event: Event = { sessionId: 's1', agentId: 'main', type: 'background.task.terminated', info: { taskId: 'media-fixture', kind: 'media', jobId: 'media-job-fixture', description: 'Media generation media-job-fixture', status: 'killed', startedAt: 1, endedAt: 2, stopReason: 'Local reception stopped; remote generation may continue' } };
+    handler.handleEvent(event, vi.fn());
+    handler.handleEvent(event, vi.fn());
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(append.mock.calls[0]![0]).toMatchObject({ content: 'media task stopped', detail: expect.stringContaining('media-job-fixture') });
+  });
   function terminatedEvent(agentId: string, status: string): Event {
     return {
       sessionId: 's1',

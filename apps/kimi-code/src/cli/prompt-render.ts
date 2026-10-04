@@ -9,6 +9,8 @@
  * event-filtering / completion flow intact.
  */
 
+import { CLI_COMMAND_NAME } from '#/constant/app';
+
 import type { PromptOutputFormat } from './options';
 
 /**
@@ -393,7 +395,7 @@ export function writeExperimentalVersion(
     stdout.write(`${JSON.stringify(message)}\n`);
     return;
   }
-  stderr.write(`kimi version ${version}\n`);
+  stderr.write(`${CLI_COMMAND_NAME} version ${version}\n`);
 }
 
 export function writeResumeHint(
@@ -402,7 +404,7 @@ export function writeResumeHint(
   stdout: PromptOutput,
   stderr: PromptOutput,
 ): void {
-  const command = `kimi -r ${sessionId}`;
+  const command = `${CLI_COMMAND_NAME} -r ${sessionId}`;
   const content = `To resume this session: ${command}`;
   if (outputFormat === 'stream-json') {
     const message: PromptJsonResumeMetaMessage = {

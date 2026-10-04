@@ -11,6 +11,7 @@ import { runSqliteIndexerCommand } from '@kiki/kap-server/sqlite-indexer-runtime
 import { isSea } from 'node:sea';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { CommanderError } from 'commander';
 
 import {
   flushDiagnosticLogs,
@@ -31,7 +32,7 @@ import { formatStartupError } from './cli/startup-error';
 import { runPluginNodeEntry } from './cli/sub/plugin-run-node';
 import { getVersion } from './cli/version';
 import { PROCESS_NAME } from './constant/app';
-import { cleanupStaleNativeCacheForCurrent, getPluginHostRunnerFile, getKapSqliteQueryWorkerFile } from './native/native-assets';
+import { cleanupStaleNativeCacheForCurrent, getPluginHostRunnerFile, getHistoryImportEntryFile, getKapSqliteQueryWorkerFile } from './native/native-assets';
 import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
 import { installKikiDocs } from './native/product-docs';
@@ -99,6 +100,8 @@ function bootstrap(): void {
   installNativeModuleHook();
   const pluginHostRunner = getPluginHostRunnerFile();
   if (pluginHostRunner !== null) process.env['KIKI_PLUGIN_HOST_RUNNER'] = pluginHostRunner;
+  const historyEntry = getHistoryImportEntryFile();
+  if (historyEntry !== null) process.env['KIKI_HISTORY_IMPORT_ENTRY'] = historyEntry;
   // Best-effort SEA worker installation. Diagnostics are trace-only and avoid
   // exposing the user's cache path; failure keeps MiniDb's bounded inline mode.
   const workerInstall = installMinidbTextBuildWorker();
@@ -199,6 +202,10 @@ function bootstrap(): void {
   );
 
   void program.parseAsync(process.argv).catch((error: unknown) => {
+    if (error instanceof CommanderError && error.exitCode === 0) {
+      process.exitCode = 0;
+      return;
+    }
     const code = typeof error === 'object' && error !== null && 'exitCode' in error ? Number(error.exitCode) : 1;
     process.exitCode = Number.isInteger(code) && code > 0 ? code : 1;
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

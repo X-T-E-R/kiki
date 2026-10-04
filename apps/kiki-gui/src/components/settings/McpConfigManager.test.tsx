@@ -401,7 +401,7 @@ describe('MCP OAuth credential reset', () => {
     mcp.revealStoredOAuthCredential.mockResolvedValue({ canonicalUrl: secretUrl });
     const container = await render([readOnly]);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.textContent).toContain('Configuration source unknown');
+    expect(container.textContent).toContain('Saved connection');
     expect(container.textContent).toContain('https://a.example.test/…');
     expect(container.textContent).toContain('https://b.example.test/…');
     expect(container.outerHTML).not.toContain('fixture-secret');
@@ -456,12 +456,12 @@ describe('MCP OAuth credential reset', () => {
     mcp.revokeStoredOAuthCredential.mockRejectedValueOnce(new Error('expired credential id'));
     const container = await render([]);
     await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
-    expect(container.textContent).toContain('Identity dddddddd');
+    expect(container.textContent).toContain('Credential dddddddd');
     await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Show full URL')!);
     await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
     expect(mcp.revealStoredOAuthCredential).toHaveBeenCalledWith({ credentialId: 'd'.repeat(64) });
-    expect(container.textContent).toContain('Identity eeeeeeee');
-    expect(container.textContent).not.toContain('Identity dddddddd');
+    expect(container.textContent).toContain('Credential eeeeeeee');
+    expect(container.textContent).not.toContain('Credential dddddddd');
     expect(container.outerHTML).not.toContain('pin=0000');
 
     await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Show full URL')!);
@@ -471,8 +471,8 @@ describe('MCP OAuth credential reset', () => {
     await click(document.querySelector('[role="alertdialog"] button:last-child')!);
     await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
     expect(mcp.revokeStoredOAuthCredential).toHaveBeenCalledExactlyOnceWith({ credentialId: 'e'.repeat(64) });
-    expect(container.textContent).toContain('Identity ffffffff');
-    expect(container.textContent).not.toContain('Identity eeeeeeee');
+    expect(container.textContent).toContain('Credential ffffffff');
+    expect(container.textContent).not.toContain('Credential eeeeeeee');
     expect(container.outerHTML).not.toContain('pin=0000');
     expect(container.textContent).toContain('Could not clear saved OAuth credentials');
     expect(container.textContent).not.toContain('expired credential id');
@@ -485,11 +485,11 @@ describe('MCP OAuth credential reset', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(container.textContent).toContain('Could not load saved OAuth credentials');
     expect(container.textContent).not.toContain('fixture offline');
-    expect(container.textContent).not.toContain('Configuration source unknown');
+    expect(container.textContent).not.toContain('Saved connection');
     expect(mcp.resetAuth).not.toHaveBeenCalled();
     await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Retry credential list')!);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.textContent).toContain('No saved OAuth credentials with identity metadata were found');
+    expect(container.textContent).toContain('No saved OAuth credentials found.');
   });
 
   it('warns about the original name and URL when editing the identity, URL or transport', async () => {

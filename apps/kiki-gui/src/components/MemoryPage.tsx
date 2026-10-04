@@ -5,17 +5,21 @@
  * off, this page is the turn-on guide (what it does, where the files live, one
  * switch); switched on, it is the entry console.
  *
- * Scope is the page's spine: Global, or one workspace via the shared
- * `WorkspaceScopeControl` (the scope rides `?workspace=` like /board and /cron,
- * so the sidebar can deep-link the active session's workspace). A workspace
- * scope also carries its own switch — follow global / on / off.
+ * Scope is the page's spine and stays three-way: Global, one Workspace, or one
+ * Persona. Workspace and Persona pickers are searchable selects (a workspace
+ * list can run to hundreds); picking one clears the other, and the choice
+ * rides `?workspace=` / `?persona=` so deep links keep working. A workspace
+ * scope also carries its own switch — follow global / on / off. A persona
+ * scope surfaces the persona's own namespaces (its Bot home included) plus the
+ * shared memory its policy reads.
  *
  * List → detail: search and a type filter narrow the list; the detail pane
- * reads and edits the body, and offers pin, delete, and the journal-backed
- * history with per-operation Undo. Deletes are undoable, so the confirmation
- * says exactly that instead of claiming anything is permanent. Every write
- * carries `expected_revision`; 40944 surfaces as "reload before saving" and
- * never silently overwrites.
+ * shows the reading view with edit behind a toggle, plus pin, delete, and the
+ * journal-backed history. History rows stay one line each; a row opens the
+ * change in a panel with the full before/after and per-operation Undo. Deletes
+ * are undoable, so the confirmation says exactly that instead of claiming
+ * anything is permanent. Every write carries `expected_revision`; 40944
+ * surfaces as "reload before saving" and never silently overwrites.
  *
  * The Inbox tab exists only while `approval` is `review` — with the default
  * `auto` there is nothing pending, so there is no tab.
@@ -24,13 +28,13 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemorySources, type MemorySource } from './useMemorySources';
-import { MemoryHistorySnapshot, MemoryReadView } from './MemoryHistory';
+import { historyLabel, MemoryHistoryDialog, MemoryReadView, TypeTag } from './MemoryHistory';
 import { MemorySharingControls } from './MemorySharingControls';
 import { useSearchParams, type To } from 'react-router-dom';
 
 import type { Workspace } from '@kiki/protocol';
 
-import { errorText, type I18nKey } from '@kiki/session-core/i18n';
+import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
@@ -48,18 +52,25 @@ import {
 import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
-import { PageHeader, useWorkspaceScope } from './PageChrome';
+import { PageHeader } from './PageChrome';
 import { RelativeTime } from './RelativeTime';
 import { Toggle } from './controls';
+import { useDirtyGuard, useDirtyReporter } from './dirtyGuard';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
-import { WorkspaceScopeControl, segmentClass } from './WorkspaceScopeControl';
-import { memoryTargetKey, PersonaMemoryScope, personaMemoryTarget } from './persona/PersonaMemoryScope';
+import { SearchableSelect } from './SearchableSelect';
+import { segmentClass } from './WorkspaceScopeControl';
+import { memoryTargetKey, personaMemoryTarget } from './persona/PersonaMemoryScope';
 import { usePersonaList } from './persona/usePersonas';
 
 export const MEMORY_SETTINGS_QUERY_KEY = ['memory-settings'] as const;
+/** One dirty seat for the memory editor; the guard keys everything by it. */
+const MEMORY_EDITOR_DIRTY_ID = 'memory-editor';
+/** Every workspace's computed effective state, whichever one the card shows. */
+const MEMORY_WORKSPACE_SETTINGS_KEY = ['memory-workspace-settings'] as const;
 
 export interface MemoryPageProps {
   readonly workspaceOptions: readonly Workspace[];
+  readonly workspacesLoading?: boolean;
   readonly onNavigate: (target: To) => void;
   readonly onToggleSidebar: () => void;
 }
@@ -83,21 +94,8 @@ function memoryTargetOf(scope: string | undefined, personaId?: string): MemoryTa
 
 const targetKey = memoryTargetKey;
 
-/** Journal actions the history list names; anything else shows its raw verb. */
-const HISTORY_LABELS = {
-  create: 'memory.history.create',
-  update: 'memory.history.update',
-  delete: 'memory.history.delete',
-  archive: 'memory.history.archive',
-  supersede: 'memory.history.supersede',
-  supersede_previous: 'memory.history.supersede_previous',
-  undo: 'memory.history.undo',
-} as const satisfies Readonly<Record<string, I18nKey>>;
-
-function historyLabel(action: string, t: (key: I18nKey) => string): string {
-  const key = (HISTORY_LABELS as Readonly<Record<string, I18nKey>>)[action];
-  return key === undefined ? action : t(key);
-}
+/** Row-2 object pickers: the default bordered trigger pinned to the 28px row rhythm. */
+const scopePickerClass = 'flex h-7 max-w-56 items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 text-[13px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint';
 
 function LeafGlyph({ className }: { readonly className?: string }) {
   return (
@@ -108,33 +106,80 @@ function LeafGlyph({ className }: { readonly className?: string }) {
   );
 }
 
-export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: MemoryPageProps) {
+export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, onToggleSidebar }: MemoryPageProps) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
-  const { scope, setScope } = useWorkspaceScope(workspaceOptions);
-  // The persona group narrows the page to one persona's own namespace
-  // (`?persona=`); the workspace control keeps choosing the range.
+  // Observe App's directory query without starting a second request. Its error
+  // and refetch remain available even though the route only passes isPending.
+  const workspaceDirectory = useQuery({
+    queryKey: ['workspaces'],
+    queryFn: () => client.listWorkspaces(),
+    enabled: false,
+  });
+  const [emptyKind, setEmptyKind] = useState<{ search: string; kind: 'workspace' | 'persona' }>();
+  // Exactly one scope at a time: persona wins over workspace when a deep link
+  // carries both. The kind buttons and object pickers are mutually exclusive —
+  // choosing one clears the other's param, so the URL always names the visible scope.
   const [params, setParams] = useSearchParams();
   const personasQuery = usePersonaList();
   const personas = (personasQuery.data ?? []).filter((item) => !item.archived);
-  const personaParam = params.get('persona') ?? undefined;
+  const rawPersona = params.get('persona');
+  const personaParam = rawPersona && rawPersona.trim() !== '' ? rawPersona : undefined;
   const persona = personas.find((item) => item.id === personaParam);
-  const setPersona = (next: string | undefined) => {
+  // While personas are still loading, honour personaParam to prevent prematurely
+  // falling back to another namespace. Once loaded, an unknown/empty/archived
+  // persona recovers to workspace or global.
+  const hasPersonaScope = personaParam !== undefined && (personasQuery.isPending || personasQuery.isError || persona !== undefined);
+  const rawWorkspace = params.get('workspace');
+  const normalizedWorkspaceParam = rawWorkspace && rawWorkspace.trim() !== '' ? rawWorkspace : undefined;
+  const scope = normalizedWorkspaceParam !== undefined && (workspacesLoading || workspaceDirectory.isError || workspaceOptions.some((workspace) => workspace.id === normalizedWorkspaceParam))
+    ? normalizedWorkspaceParam : undefined;
+  const mode = hasPersonaScope ? 'persona' : scope !== undefined ? 'workspace'
+    : emptyKind?.search === params.toString() ? emptyKind.kind : 'global';
+  // Persona ranges may also be a Bot home outside the directory. The hook
+  // validates that range, and waits rather than treating pending as absent.
+  const effectiveScope = mode === 'persona' ? normalizedWorkspaceParam : scope;
+  const patchParams = (workspaceId: string | undefined, personaId: string | undefined, kind?: 'workspace' | 'persona') => {
     const updated = new URLSearchParams(params);
-    if (next === undefined) updated.delete('persona');
-    else updated.set('persona', next);
+    if (workspaceId === undefined) updated.delete('workspace');
+    else updated.set('workspace', workspaceId);
+    if (personaId === undefined) updated.delete('persona');
+    else updated.set('persona', personaId);
+    setEmptyKind(kind !== undefined && workspaceId === undefined && personaId === undefined ? { search: updated.toString(), kind } : undefined);
     setParams(updated);
   };
-  const target = memoryTargetOf(scope, persona?.id);
-
   const settingsQuery = useQuery({
     queryKey: MEMORY_SETTINGS_QUERY_KEY,
     queryFn: () => client.getMemorySettings(),
     staleTime: 15_000,
   });
   const settings = settingsQuery.data;
-  const memorySources = useMemorySources({ workspaceId: scope, workspaces: workspaceOptions, persona, settings });
+  const memorySources = useMemorySources({
+    workspaceId: effectiveScope,
+    workspaces: workspaceOptions,
+    workspacesLoading,
+    workspacesError: workspaceDirectory.error,
+    persona,
+    settings,
+  });
+  const resolvedPersonaScope = memorySources.effectiveWorkspaceId;
+  const target = memoryTargetOf(resolvedPersonaScope, persona?.id);
+  const missingObject = (mode === 'workspace' && scope === undefined) || (mode === 'persona' && persona === undefined);
+  const objectLoading = mode === 'workspace' ? workspacesLoading : mode === 'persona' && personasQuery.isPending;
+  const scopeError = (mode === 'persona' ? personasQuery.error : null)
+    ?? (mode === 'workspace' && missingObject ? workspaceDirectory.error : null)
+    ?? memorySources.error;
+  // A Bot's home may live outside the workspace directory, so it joins the
+  // memory-range options explicitly to keep that slice reachable.
+  const botHomeId = memorySources.botWorkspaceId;
+  const shardOptions = [
+    { value: '', label: t('memory.shard.longterm') },
+    ...workspaceOptions.map((workspace) => ({ value: workspace.id, label: workspace.name, hint: workspace.root, keywords: workspace.id })),
+    ...(botHomeId !== undefined && !workspaceOptions.some((workspace) => workspace.id === botHomeId)
+      ? [{ value: botHomeId, label: t('memory.source.botHome'), hint: memorySources.personaSnapshot?.definition.homeWorkspace ?? '', keywords: botHomeId }]
+      : []),
+  ];
   const globalEnabled = settings?.enabled === true;
   const workspaceOverride = scope === undefined ? null : settings?.workspaces[scope] ?? null;
   const scopeEnabled = scope === undefined ? globalEnabled : globalEnabled && workspaceOverride !== false;
@@ -144,14 +189,30 @@ export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: Me
   };
   const globalToggle = useMutation({
     mutationFn: (enabled: boolean) => client.patchMemorySettings({ enabled }),
-    onSuccess: applySettings,
+    // Every workspace's effective state is computed from this switch, including
+    // the ones no card is showing. Re-reading only the settings key would leave
+    // a cached `effective_enabled` contradicting the switch that was just turned.
+    onSuccess: async (next) => {
+      applySettings(next);
+      await queryClient.invalidateQueries({ queryKey: MEMORY_WORKSPACE_SETTINGS_KEY });
+    },
     onError: (error: unknown) => {
       pushToast({ tone: 'error', text: t('memory.toggleFailed', { detail: errorText(locale, error) }) });
     },
   });
   const workspaceToggle = useMutation({
     mutationFn: (enabled: boolean | null) => client.patchWorkspaceMemorySettings(scope!, enabled),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: MEMORY_SETTINGS_QUERY_KEY }),
+    // The settings page's workspace card holds this workspace's own computed
+    // read, and this page is the other entry that writes that field. Only this
+    // workspace moved, so only this workspace's read is re-read; the global
+    // settings still are, because their `workspaces` map is what this page and
+    // the header render from.
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: MEMORY_SETTINGS_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: [...MEMORY_WORKSPACE_SETTINGS_KEY, scope!] }),
+      ]);
+    },
     onError: (error: unknown) => {
       pushToast({ tone: 'error', text: t('memory.toggleFailed', { detail: errorText(locale, error) }) });
     },
@@ -179,47 +240,131 @@ export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: Me
         />
       ) : (
         <>
-          <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2 lg:px-6 [&_[role=group]]:border-0 [&_button]:ring-0 [&_button]:shadow-none [&_[data-memory-scope]>button]:shrink-0">
-            <WorkspaceScopeControl
-              workspaces={workspaceOptions}
-              value={scope}
-              onChange={(next) => { setScope(next); }}
-              dataAttribute="data-memory-scope"
-            />
-            <PersonaMemoryScope personas={personas} value={persona?.id} onChange={setPersona} />
-            {scope !== undefined ? (
-              <div className="flex min-w-0 items-center gap-2" data-memory-workspace-switch>
-                <span className="shrink-0 text-[12px] text-ink-faint">{t('memory.ws.label')}</span>
-                <div role="group" aria-label={t('memory.ws.label')} className="flex items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
-                  {([[null, 'memory.ws.follow'], [true, 'memory.ws.on'], [false, 'memory.ws.off']] as const).map(([value, key]) => {
-                    const active = workspaceOverride === value;
-                    return (
-                      <button
-                        key={String(value)}
-                        type="button"
-                        data-memory-ws-option={String(value)}
-                        aria-pressed={active}
-                        disabled={workspaceToggle.isPending}
-                        onClick={() => { if (!active) workspaceToggle.mutate(value); }}
-                        className={`${segmentClass(active, 'h-7 px-3 text-[13px]')} disabled:cursor-not-allowed disabled:opacity-60`}
-                      >
-                        {t(key)}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : null}
+          {/* Row 1 names the three fixed kinds; the labels never change. Row 2
+              picks the concrete object inside the active kind (workspace /
+              persona + memory range). */}
+          <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 px-4 pt-2 lg:px-6">
+            <div role="group" aria-label={t('memory.scope.aria')} data-memory-scope-kind={mode} className="flex min-w-0 items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
+              <button
+                type="button"
+                data-memory-kind="global"
+                aria-pressed={mode === 'global'}
+                onClick={() => { patchParams(undefined, undefined); }}
+                className={segmentClass(mode === 'global', 'h-7 shrink-0 px-3 text-[13px]')}
+              >
+                {t('memory.scope.global')}
+              </button>
+              <button
+                type="button"
+                data-memory-kind="workspace"
+                aria-pressed={mode === 'workspace'}
+                onClick={() => { if (mode !== 'workspace') patchParams(workspaceOptions.find((workspace) => workspace.id === scope)?.id ?? workspaceOptions[0]?.id, undefined, 'workspace'); }}
+                className={`${segmentClass(mode === 'workspace', 'h-7 shrink-0 px-3 text-[13px]')} disabled:cursor-not-allowed disabled:opacity-60`}
+              >
+                {t('memory.scope.workspace')}
+              </button>
+              <button
+                type="button"
+                data-memory-kind="persona"
+                aria-pressed={mode === 'persona'}
+                onClick={() => { if (mode !== 'persona') patchParams(undefined, persona?.id ?? personas[0]?.id, 'persona'); }}
+                className={segmentClass(mode === 'persona', 'h-7 shrink-0 px-3 text-[13px]')}
+              >
+                {t('memory.scope.persona')}
+              </button>
+            </div>
           </div>
+          {mode !== 'global' ? (
+            <div data-memory-scope-target={mode} className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 px-4 pb-1 pt-1.5 lg:px-6">
+              {mode === 'workspace' ? (
+                <SearchableSelect
+                  id="memory-workspace-picker"
+                  ariaLabel={t('memory.workspace.aria')}
+                  options={workspaceOptions.map((workspace) => ({ value: workspace.id, label: workspace.name, hint: workspace.root, keywords: workspace.id }))}
+                  value={memorySources.effectiveWorkspaceId ?? ''}
+                  disabled={workspaceOptions.length === 0}
+                  triggerLabel={memorySources.rangeError !== null || (missingObject && workspaceDirectory.isError) ? t('memory.loadFailed') : memorySources.rangeLoading || (missingObject && workspacesLoading) ? t('memory.workspace.loading') : workspaceOptions.length === 0 ? t('memory.workspace.empty') : undefined}
+                  onChange={(next) => { patchParams(next, undefined); }}
+                  emptyText={t('memory.workspace.aria')}
+                  searchPlaceholder={t('memory.workspace.search')}
+                  density="compact"
+                  buttonClassName={scopePickerClass}
+                />
+              ) : null}
+              {mode === 'workspace' && memorySources.effectiveWorkspaceId !== undefined ? (
+                <div className="flex min-w-0 items-center gap-2" data-memory-workspace-switch>
+                  <span className="shrink-0 text-[12px] text-ink-faint">{t('memory.ws.label')}</span>
+                  <div role="group" aria-label={t('memory.ws.label')} className="flex items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
+                    {([[null, 'memory.ws.follow'], [true, 'memory.ws.on'], [false, 'memory.ws.off']] as const).map(([value, key]) => {
+                      const active = workspaceOverride === value;
+                      return (
+                        <button
+                          key={String(value)}
+                          type="button"
+                          data-memory-ws-option={String(value)}
+                          aria-pressed={active}
+                          disabled={workspaceToggle.isPending}
+                          onClick={() => { if (!active) workspaceToggle.mutate(value); }}
+                          className={`${segmentClass(active, 'h-7 px-3 text-[13px]')} disabled:cursor-not-allowed disabled:opacity-60`}
+                        >
+                          {t(key)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+              {mode === 'persona' ? (
+                <>
+                  <SearchableSelect
+                    id="memory-persona-picker"
+                    ariaLabel={t('memory.persona.aria')}
+                    options={personas.map((item) => ({ value: item.id, label: item.name, description: item.title ?? item.job }))}
+                    value={persona?.id ?? ''}
+                    disabled={personas.length === 0}
+                    triggerLabel={personasQuery.isPending ? t('memory.persona.loading') : personasQuery.isError ? t('memory.loadFailed') : personas.length === 0 ? t('memory.persona.empty') : undefined}
+                    onChange={(next) => { patchParams(undefined, next); }}
+                    emptyText={t('memory.persona.aria')}
+                    searchPlaceholder={t('memory.persona.search')}
+                    hideFilter={personas.length <= 8}
+                    buttonClassName={scopePickerClass}
+                  />
+                  {persona !== undefined ? (
+                    <div className="flex min-w-0 items-center gap-2" data-memory-shard>
+                      <span className="shrink-0 text-[12px] text-ink-faint">{t('memory.shard.label')}</span>
+                      <SearchableSelect
+                        id="memory-shard-picker"
+                        ariaLabel={t('memory.shard.label')}
+                        options={shardOptions}
+                        value={resolvedPersonaScope ?? ''}
+                        triggerLabel={memorySources.rangeError !== null ? t('memory.loadFailed') : memorySources.rangeLoading ? t('memory.workspace.loading') : undefined}
+                        onChange={(next) => { patchParams(next === '' ? undefined : next, personaParam); }}
+                        searchPlaceholder={t('memory.workspace.search')}
+                        density="compact"
+                        buttonClassName={scopePickerClass}
+                      />
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          ) : null}
           {persona !== undefined && memorySources.personaSnapshot !== undefined ? <MemorySharingControls key={persona.id} snapshot={memorySources.personaSnapshot} /> : null}
-          {personasQuery.isError || memorySources.error !== null ? (
+          {scopeError !== null ? (
             <div role="alert" className="px-4 py-6 text-[13px] text-danger lg:px-6">
               <p>{t('memory.loadFailed')}</p>
-              <p className="mt-1">{errorText(locale, personasQuery.error ?? memorySources.error)}</p>
-              <button type="button" onClick={() => { void personasQuery.refetch(); memorySources.retry(); }} className="mt-2 underline">{t('common.retry')}</button>
+              <p className="mt-1">{errorText(locale, scopeError)}</p>
+              <button type="button" data-memory-scope-retry disabled={((memorySources.rangeError !== null || (mode === 'workspace' && missingObject)) && workspaceDirectory.isFetching) || (mode === 'persona' && personasQuery.isError && personasQuery.isFetching)}
+                onClick={() => {
+                  if (mode === 'persona' && personasQuery.isError) void personasQuery.refetch();
+                  if (memorySources.rangeError !== null || (mode === 'workspace' && missingObject)) void workspaceDirectory.refetch();
+                  memorySources.retry();
+                }} className="mt-2 underline">{t('common.retry')}</button>
             </div>
-          ) : (personaParam !== undefined && personasQuery.isPending) || memorySources.loading ? (
-            <p role="status" className="px-4 py-8 text-[13px] text-ink-faint lg:px-6">{t('memory.loading')}</p>
+          ) : (missingObject && objectLoading) || memorySources.loading ? (
+            <p data-memory-scope-loading role="status" className="px-4 py-8 text-[13px] text-ink-faint lg:px-6">{t(memorySources.rangeLoading || mode === 'workspace' ? 'memory.workspace.loading' : missingObject ? 'memory.persona.loading' : 'memory.loading')}</p>
+          ) : missingObject ? (
+            <p data-memory-scope-empty className="px-4 py-8 text-[13px] text-ink-faint lg:px-6">{t(mode === 'workspace' ? 'memory.workspace.empty' : 'memory.persona.empty')}</p>
           ) : (
             <MemoryScopeView
               key={targetKey(target)}
@@ -301,6 +446,15 @@ function MemoryScopeView({
   const [showInactive, setShowInactive] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const guard = useDirtyGuard();
+
+  /** Leave the open editor. An unsaved draft asks first, through the app-wide
+   *  confirmation seat already used by the other editors on this page. */
+  const leaveEditor = (go: () => void) => {
+    if (guard === null) { go(); return; }
+    guard.confirmDiscard?.(MEMORY_EDITOR_DIRTY_ID, go);
+    if (guard.confirmDiscard === undefined) go();
+  };
 
   const lists = useQueries({ queries: sources.map((source) => ({
     queryKey: ['memory', targetKey(source.target), { search, typeFilter, showInactive }],
@@ -365,6 +519,12 @@ function MemoryScopeView({
       onOpenSession={onOpenSession}
       onChanged={refresh}
       onClosed={() => { setSelectedId(null); }}
+      onOpenReplacement={
+        selected.entry.superseded_by !== undefined &&
+        entries.some((item) => item.key === `${targetKey(selected.source.target)}:${selected.entry.superseded_by}`)
+          ? () => { setSelectedId(`${targetKey(selected.source.target)}:${selected.entry.superseded_by}`); }
+          : undefined
+      }
     />
   ) : null;
 
@@ -436,7 +596,7 @@ function MemoryScopeView({
                   );
                 })}
               </div>
-              <Toggle label={t('memory.showInactive')} checked={showInactive} onChange={setShowInactive} />
+              <span data-memory-show-inactive><Toggle label={t('memory.showInactive')} checked={showInactive} onChange={setShowInactive} /></span>
               <span className="ml-auto flex items-center gap-3">
                 {listQuery.data !== undefined ? (
                   <span data-memory-count className="text-[12px] text-ink-faint tabular-nums">
@@ -446,7 +606,7 @@ function MemoryScopeView({
                 <button
                   type="button"
                   data-memory-new
-                  onClick={() => { setSelectedId(null); setCreating(true); }}
+                  onClick={() => { leaveEditor(() => { setSelectedId(null); setCreating(true); }); }}
                   className={SECONDARY_BUTTON}
                 >
                   {t('memory.new')}
@@ -500,7 +660,7 @@ function MemoryScopeView({
                           const key = `${targetKey(group.target)}:${entry.id}`;
                           return (
                             <li key={key}>
-                              <MemoryListRow entry={entry} active={key === selectedId} onOpen={() => { setCreating(false); setSelectedId(key); }} />
+                              <MemoryListRow entry={entry} active={key === selectedId} onOpen={() => { leaveEditor(() => { setCreating(false); setSelectedId(key); }); }} />
                             </li>
                           );
                         })}
@@ -513,7 +673,7 @@ function MemoryScopeView({
                     <button
                       type="button"
                       data-memory-detail-back
-                      onClick={() => { setSelectedId(null); setCreating(false); }}
+                      onClick={() => { leaveEditor(() => { setSelectedId(null); setCreating(false); }); }}
                       className="mb-4 text-[12px] text-ink-soft underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
                     >
                       {t('memory.back')}
@@ -527,15 +687,6 @@ function MemoryScopeView({
         )}
       </div>
     </div>
-  );
-}
-
-function TypeTag({ type }: { readonly type: MemoryType }) {
-  const { t } = useI18n();
-  return (
-    <span data-memory-type={type} className="shrink-0 rounded-sm bg-ink/[0.05] px-1.5 py-px text-[11px] font-medium text-ink-soft">
-      {t(`memory.type.${type}`)}
-    </span>
   );
 }
 
@@ -590,6 +741,7 @@ function MemoryDetail({
   onOpenSession,
   onChanged,
   onClosed,
+  onOpenReplacement,
 }: {
   readonly target: MemoryTarget;
   readonly entry: MemoryEntry;
@@ -597,10 +749,12 @@ function MemoryDetail({
   readonly onOpenSession: (sessionId: string) => void;
   readonly onChanged: () => void;
   readonly onClosed: () => void;
+  readonly onOpenReplacement?: () => void;
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [openHistory, setOpenHistory] = useState<string | null>(null);
 
   const journalQuery = useQuery({
     queryKey: ['memory-journal', targetKey(target), entry.id],
@@ -674,9 +828,9 @@ function MemoryDetail({
   const [editing, setEditing] = useState(false);
 
   return (
-    <div data-memory-detail={entry.id} className="min-w-0 space-y-6">
+    <div data-memory-detail={entry.id} className="min-w-0 space-y-4">
       {editing && !inactive ? <MemoryEditor target={target} entry={entry} onDone={() => { setEditing(false); onChanged(); }} />
-        : <MemoryReadView entry={entry} target={target} sourceLabel={sourceLabel} />}
+        : <MemoryReadView entry={entry} target={target} sourceLabel={sourceLabel} onOpenReplacement={onOpenReplacement} />}
 
       <div className="flex flex-wrap items-center gap-3">
         {!inactive ? <>
@@ -700,27 +854,49 @@ function MemoryDetail({
 
       <section data-memory-history aria-labelledby={`memory-history-${entry.id}`}>
         <h3 id={`memory-history-${entry.id}`} className={FIELD_LABEL}>{t('memory.history')}</h3>
-        {journalQuery.isPending ? <p role="status" className="mt-2 text-[12px] text-ink-faint">{t('memory.loading')}</p>
-          : journalQuery.isError ? <div role="alert" className="mt-2 text-[12px] text-danger">
+        {journalQuery.isPending ? <p role="status" className="mt-1.5 text-[12px] text-ink-faint">{t('memory.loading')}</p>
+          : journalQuery.isError ? <div role="alert" className="mt-1.5 text-[12px] text-danger">
             <p>{t('memory.loadFailed')}</p>
             <button type="button" onClick={() => { void journalQuery.refetch(); }} className="mt-1 underline">{t('common.retry')}</button>
           </div>
-          : history.length === 0 ? <p className="mt-2 text-[12px] text-ink-faint">{t('memory.history.empty')}</p>
-          : <ul className="mt-2 space-y-1">
+          : history.length === 0 ? <p className="mt-1.5 text-[12px] text-ink-faint">{t('memory.history.empty')}</p>
+          : <ul className="mt-1.5 space-y-px">
             {[...history].reverse().map((record) => (
-              <li key={`${record.operationId}:${record.at}`} className="min-w-0">
-                <details className="group" data-memory-history-record={record.operationId}>
-                  <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md py-2 text-[12px] text-ink-soft hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink [&::-webkit-details-marker]:hidden">
-                    <Icon name="chevron" size={12} className="shrink-0 group-open:rotate-90" />
-                    <span>{historyLabel(record.action, t)}</span>
-                    <span className="ml-auto text-ink-faint"><RelativeTime at={record.at} /></span>
-                  </summary>
-                  <MemoryHistorySnapshot record={record} history={history} current={entry} target={target} sourceLabel={sourceLabel} />
-                  <div className="pb-3 pl-5"><UndoButton record={record} busy={undoMutation.isPending} onUndo={() => { undoMutation.mutate(record.operationId); }} /></div>
-                </details>
+              <li key={`${record.operationId}:${record.at}`} className="flex min-w-0 items-center gap-2 py-1 text-[12px] text-ink-faint">
+                <button
+                  type="button"
+                  data-memory-history-record={record.operationId}
+                  title={t('memory.history.view')}
+                  onClick={() => { setOpenHistory(record.operationId); }}
+                  className="min-w-0 flex-1 truncate rounded-sm text-left hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  {historyLabel(record.action, t)}
+                  {' · '}
+                  {t(`memory.writer.${record.writer}`)}
+                  {' · '}
+                  <RelativeTime at={record.at} />
+                </button>
+                <UndoButton
+                  record={record}
+                  busy={undoMutation.isPending}
+                  onUndo={() => { undoMutation.mutate(record.operationId); }}
+                />
               </li>
             ))}
           </ul>}
+        {openHistory !== null ? (
+          <MemoryHistoryDialog
+            recordId={openHistory}
+            onNavigate={setOpenHistory}
+            onClose={() => { setOpenHistory(null); }}
+            history={history}
+            current={entry}
+            target={target}
+            sourceLabel={sourceLabel}
+            onUndo={(record) => { undoMutation.mutate(record.operationId); }}
+            undoBusy={undoMutation.isPending}
+          />
+        ) : null}
       </section>
 
       <ConfirmDialog
@@ -767,6 +943,12 @@ function UndoButton({
  * The write surface for both new and existing entries. Existing entries always
  * send `expected_revision`, so a concurrent edit fails loudly (40944) instead
  * of overwriting; the error line says to reload.
+ *
+ * The form is seeded once, from the entry the reader opened. A newer revision
+ * arriving while they are typing is a real fact, but re-seeding on it would
+ * throw the draft away and silently move `expected_revision` to a version the
+ * reader never saw — so the seed stays put, and the save is what discovers the
+ * conflict.
  */
 function MemoryEditor({
   target,
@@ -779,37 +961,39 @@ function MemoryEditor({
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
-  const [title, setTitle] = useState(entry?.title ?? '');
-  const [body, setBody] = useState(entry?.body ?? '');
-  const [type, setType] = useState<MemoryType>(entry?.type ?? 'project');
+  // The fact the draft started from, including the revision a save must be
+  // measured against. Read once, and never advanced by a background read.
+  const [seed] = useState(() => ({
+    id: entry?.id,
+    revision: entry?.revision,
+    title: entry?.title ?? '',
+    body: entry?.body ?? '',
+    type: entry?.type ?? ('project' as MemoryType),
+  }));
+  const [title, setTitle] = useState(seed.title);
+  const [body, setBody] = useState(seed.body);
+  const [type, setType] = useState<MemoryType>(seed.type);
   const [reason, setReason] = useState('');
   const [conflict, setConflict] = useState(false);
 
-  // Re-seed from the entry whenever the server hands back a different
-  // revision; the `expected_revision` guard still catches a real conflict.
-  useEffect(() => {
-    setTitle(entry?.title ?? '');
-    setBody(entry?.body ?? '');
-    setType(entry?.type ?? 'project');
-    setReason('');
-    setConflict(false);
-  }, [entry?.id, entry?.revision, entry?.title, entry?.body, entry?.type]);
-
-  const dirty = entry === undefined
-    ? title.trim() !== '' || body.trim() !== ''
-    : title !== entry.title || body !== entry.body || type !== entry.type;
+  // `reason` rides the same save, so it is part of the same draft: a reader who
+  // typed only a reason has an unsaved change worth keeping.
+  const dirty = title !== seed.title || body !== seed.body || type !== seed.type || reason.trim() !== '';
+  // The whole editor is one dirty seat in the app-wide guard, so leaving the
+  // page, switching entries or going back asks before it unmounts.
+  useDirtyReporter(MEMORY_EDITOR_DIRTY_ID, dirty);
   const valid = title.trim() !== '' && body.trim() !== '' && title.length <= 200 && body.length <= 1_500;
 
   const save = useMutation({
-    mutationFn: () => client.putMemory(target, entry?.id ?? 'new', {
-      action: entry === undefined ? 'create' : 'update',
+    mutationFn: () => client.putMemory(target, seed.id ?? 'new', {
+      action: seed.id === undefined ? 'create' : 'update',
       type,
       title: title.trim(),
       body: body.trim(),
       reason: reason.trim() === ''
-        ? t(entry === undefined ? 'memory.defaultReason.create' : 'memory.defaultReason.edit')
+        ? t(seed.id === undefined ? 'memory.defaultReason.create' : 'memory.defaultReason.edit')
         : reason.trim(),
-      expected_revision: entry?.revision,
+      expected_revision: seed.revision,
     }),
     onSuccess: (result) => {
       setConflict(false);
@@ -826,9 +1010,9 @@ function MemoryEditor({
     },
   });
 
-  const fieldId = `memory-${entry?.id ?? 'new'}`;
+  const fieldId = `memory-${seed.id ?? 'new'}`;
   return (
-    <div data-memory-editor={entry?.id ?? 'new'} className="min-w-0 space-y-3">
+    <div data-memory-editor={seed.id ?? 'new'} className="min-w-0 space-y-3">
       <div className="space-y-1.5">
         <label htmlFor={`${fieldId}-title`} className={FIELD_LABEL}>{t('memory.field.title')}</label>
         <input
@@ -902,18 +1086,21 @@ function MemoryEditor({
           onClick={() => { save.mutate(); }}
           className={PRIMARY_BUTTON}
         >
-          {t(entry === undefined ? 'memory.create' : 'memory.save')}
+          {t(seed.id === undefined ? 'memory.create' : 'memory.save')}
         </button>
         <button
           type="button"
           data-memory-discard
           disabled={!dirty || save.isPending}
           onClick={() => {
-            setTitle(entry?.title ?? '');
-            setBody(entry?.body ?? '');
-            setType(entry?.type ?? 'project');
+            // The reader chose the stored text, so the form is clean again and
+            // asking them a second time would be noise.
+            setTitle(seed.title);
+            setBody(seed.body);
+            setType(seed.type);
             setReason('');
-            if (entry === undefined) onDone();
+            setConflict(false);
+            if (seed.id === undefined) onDone();
           }}
           className={SECONDARY_BUTTON}
         >
@@ -925,9 +1112,16 @@ function MemoryEditor({
 }
 
 /**
- * Inbox — only reachable while `approval` is `review`. Keep promotes the
- * pending entry to active; Discard removes it. Both are journal-backed, so
- * both are undoable from the entry's history.
+ * Inbox — only reachable while `approval` is `review`.
+ *
+ * A pending entry is a *proposal*: it names the entry it supersedes and, in
+ * `pending_action`, what accepting it would do to that entry. Accepting is one
+ * `update` on the candidate; the store performs the proposed action on the
+ * original entry, so an accepted `update` keeps the original entry's id and an
+ * accepted `archive` archives that entry. Discarding deletes only the
+ * candidate, so the entry it proposed to change is left exactly as it was.
+ *
+ * Both are journal-backed, so both are undoable from the entry's history.
  */
 function MemoryInbox({
   target,
@@ -946,6 +1140,9 @@ function MemoryInbox({
     pushToast({ tone: 'error', text: t('memory.actionFailed', { detail: errorText(locale, error) }) });
   };
   const keep = useMutation({
+    // Accepting is an update *of the candidate*; which action that performs on
+    // the entry it supersedes is the candidate's own `pending_action`, decided
+    // by the store, so this page does not restate or guess it.
     mutationFn: (entry: MemoryEntry) => client.putMemory(target, entry.id, {
       action: 'update',
       type: entry.type,
@@ -958,6 +1155,8 @@ function MemoryInbox({
     onError: fail,
   });
   const discard = useMutation({
+    // Discarding is the candidate's own deletion: the entry it proposed to
+    // change stays as it was.
     mutationFn: (entry: MemoryEntry) => client.deleteMemory(target, entry.id, entry.revision),
     onSuccess: onChanged,
     onError: fail,
@@ -988,10 +1187,26 @@ function MemoryInbox({
             {entry.reason !== '' ? (
               <p className="mt-0.5 text-[12px] text-ink-faint">{t('memory.tool.reason')}: {entry.reason}</p>
             ) : null}
+            {/* What accepting does is the consequence the reader is deciding
+                on, and it differs by proposal: an update replaces the entry's
+                text under the same id, an archive retires the entry. Saying
+                "keep" alone would present a retirement as a re-activation. */}
+            {entry.pending_action !== undefined ? (
+              <p data-memory-inbox-action={entry.pending_action} className="mt-0.5 text-[12px] text-ink-soft">
+                {t(entry.pending_action === 'archive' ? 'memory.inbox.proposesArchive' : 'memory.inbox.proposesUpdate')}
+              </p>
+            ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <button type="button" data-memory-inbox-keep disabled={busy} onClick={() => { keep.mutate(entry); }} className={PRIMARY_BUTTON}>
-              {t('memory.inbox.keep')}
+            <button
+              type="button"
+              data-memory-inbox-keep
+              data-memory-inbox-keep-action={entry.pending_action ?? 'none'}
+              disabled={busy}
+              onClick={() => { keep.mutate(entry); }}
+              className={PRIMARY_BUTTON}
+            >
+              {t(entry.pending_action === 'archive' ? 'memory.inbox.acceptArchive' : 'memory.inbox.keep')}
             </button>
             <button type="button" data-memory-inbox-discard disabled={busy} onClick={() => { discard.mutate(entry); }} className={SECONDARY_BUTTON}>
               {t('memory.inbox.discard')}

@@ -13,6 +13,7 @@ import { ensureServer } from './serve';
 export function registerMcpCommand(program: Command): void {
   program
     .command('mcp')
+    .description('Run the delegation MCP server over stdio for a workspace.')
     .requiredOption('--workspace <dir>')
     .option('--home <dir>')
     .option('--attached', 'Use an existing host-provisioned delegation binding')

@@ -16,9 +16,10 @@
  *   their height, so the observer stays silent and estimates stick. It is
  *   never called; `reconcileMountedRows` re-reads mounted rows instead.
  *
- * Scroll anchoring follows CSS scroll anchoring: while the viewport follows
- * the end, every size change keeps the bottom pinned; otherwise only a change
- * that happens entirely above the first visible row moves `scrollTop`.
+ * While following the end, size changes keep the bottom pinned. Away from the
+ * end, whole rows above the viewport retain the original compensation; within
+ * the first visible row, only movement of the reader's visible prose moves
+ * scrollTop. Growth below that prose must not drag the reader.
  */
 
 import type { VirtualItem, Virtualizer } from '@tanstack/react-virtual';
@@ -68,9 +69,9 @@ export type RowResize = {
  * - Following the end: always, so the newest content stays in view.
  * - A never-measured row whose estimated top sat above the viewport: yes —
  *   the estimate was a guess about space the reader has already passed.
- * - Otherwise only rows entirely above the viewport top. A row that spans the
- *   top edge (a long answer still streaming, a block the reader just
- *   expanded) changes below the reader's anchor and must not drag the view.
+ * - Otherwise only rows entirely above the viewport top. A row spanning the
+ *   top edge cannot use its entire delta: streaming growth may be below the
+ *   reader. Its visible prose's local displacement is handled separately.
  */
 export function shouldCompensateRowResize(resize: RowResize): boolean {
   if (resize.distanceFromEnd <= resize.endThreshold) return true;
@@ -78,22 +79,72 @@ export function shouldCompensateRowResize(resize: RowResize): boolean {
   return resize.itemStart + resize.itemSize <= resize.scrollOffset;
 }
 
-/** Install the anchoring model on a virtualizer instance (instance field, not an option). */
-export function installTranscriptAnchoring(instance: TranscriptVirtualizer): void {
+/** Install row anchoring and retain the visible prose's inset within its row. */
+export function installTranscriptAnchoring(instance: TranscriptVirtualizer): () => void {
+  const scroll = instance.scrollElement;
+  let anchor: { key: VirtualItem['key']; row: HTMLElement; prose: HTMLElement; inset: number; scrollTop: number } | undefined;
+  let frame: number | undefined;
+  const capture = () => {
+    anchor = undefined;
+    if (scroll === null || !scroll.isConnected || scroll.clientHeight === 0
+      || scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= TRANSCRIPT_END_THRESHOLD) return;
+    const viewport = scroll.getBoundingClientRect();
+    for (const [key, row] of instance.elementsCache) {
+      const index = instance.indexFromElement(row);
+      if (!row.isConnected || index < 0 || index >= instance.options.count || instance.options.getItemKey(index) !== key) continue;
+      const box = row.getBoundingClientRect();
+      if (box.top > viewport.top || box.bottom <= viewport.top) continue;
+      const prose = [...row.querySelectorAll<HTMLElement>('.kiki-md p, .kiki-md pre, .kiki-md li, .kiki-md h1, .kiki-md h2, .kiki-md h3, .kiki-md h4, .kiki-md table')]
+        .find((element) => {
+          const rect = element.getBoundingClientRect();
+          return element.textContent !== '' && rect.height > 0 && rect.bottom > viewport.top && rect.top < viewport.bottom;
+        });
+      if (prose !== undefined) anchor = { key, row, prose, inset: prose.getBoundingClientRect().top - box.top, scrollTop: scroll.scrollTop };
+      break;
+    }
+  };
+  const onScroll = () => {
+    capture();
+    // Newly mounted rows settle after the scroll delivery.
+    if (frame !== undefined) cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => { frame = undefined; capture(); });
+  };
+  scroll?.addEventListener('scroll', onScroll, { passive: true });
+  capture();
   instance.shouldAdjustScrollPositionOnItemSizeChange = (item: VirtualItem) => {
     const element = instance.scrollElement;
     const scrollOffset = (instance.scrollOffset ?? 0) + instance.scrollAdjustments;
     const distanceFromEnd = element instanceof HTMLElement
       ? element.scrollHeight - element.clientHeight - element.scrollTop
       : Number.POSITIVE_INFINITY;
-    return shouldCompensateRowResize({
+    if (shouldCompensateRowResize({
       itemStart: item.start,
       itemSize: item.size,
       firstMeasure: !instance.itemSizeCache.has(item.key),
       scrollOffset,
       distanceFromEnd,
       endThreshold: TRANSCRIPT_END_THRESHOLD,
-    });
+    })) return true;
+    // A measured row spanning the viewport can change above OR below the reader.
+    // Compare local prose geometry, not the row's full delta or its translated top.
+    if (anchor !== undefined && anchor.key === item.key && element === scroll && scroll !== null
+      && anchor.row === instance.elementsCache.get(item.key) && anchor.prose.isConnected
+      && anchor.row.contains(anchor.prose) && scroll.clientHeight > 0 && scroll.scrollTop === anchor.scrollTop) {
+      const inset = anchor.prose.getBoundingClientRect().top - anchor.row.getBoundingClientRect().top;
+      const delta = inset - anchor.inset;
+      anchor.inset = inset;
+      if (Math.abs(delta) > 0.5) {
+        instance.scrollToOffset(scroll.scrollTop + delta, { align: 'start' });
+        instance.scrollOffset = scroll.scrollTop;
+        anchor.scrollTop = scroll.scrollTop;
+      }
+    }
+    return false;
+  };
+  return () => {
+    scroll?.removeEventListener('scroll', onScroll);
+    if (frame !== undefined) cancelAnimationFrame(frame);
+    anchor = undefined;
   };
 }
 

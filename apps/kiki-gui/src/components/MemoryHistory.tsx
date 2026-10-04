@@ -1,9 +1,15 @@
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
+
+import { type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
 import { MEMORY_TYPES, type MemoryEntry, type MemoryJournalRecord, type MemoryTarget } from '../lib/client';
 import { useConnection } from '../state/connection';
+import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from './Dialog';
+import { Icon } from './icons';
 import { memoryTargetKey } from './persona/PersonaMemoryScope';
+import { SECONDARY_BUTTON } from './ui';
 
 /** Store-written snapshots have JSON frontmatter. Keep hand-edited formats intact as raw text. */
 export function memorySnapshot(raw: string | null, revision: string | null): MemoryEntry | undefined {
@@ -25,16 +31,55 @@ export function memorySnapshot(raw: string | null, revision: string | null): Mem
       superseded_by: typeof meta.superseded_by === 'string' ? meta.superseded_by : undefined,
       supersedes: typeof meta.supersedes === 'string' ? meta.supersedes : undefined,
       supersedes_revision: typeof meta.supersedes_revision === 'string' ? meta.supersedes_revision : undefined,
+      // What this entry proposes to do to the one it supersedes. Absent on an
+      // entry that is itself the fact; present on a review candidate, whose
+      // own id and revision are what a decision is made about.
+      pending_action: meta.pending_action === 'update' || meta.pending_action === 'archive' ? meta.pending_action : undefined,
     };
   } catch { return undefined; }
 }
 
-export function MemoryReadView({ entry, target, sourceLabel }: {
+/** Journal actions the history list names; anything else shows its raw verb. */
+const HISTORY_LABELS = {
+  create: 'memory.history.create',
+  update: 'memory.history.update',
+  delete: 'memory.history.delete',
+  archive: 'memory.history.archive',
+  supersede: 'memory.history.supersede',
+  supersede_previous: 'memory.history.supersede_previous',
+  undo: 'memory.history.undo',
+} as const satisfies Readonly<Record<string, I18nKey>>;
+
+export function historyLabel(action: string, t: (key: I18nKey) => string): string {
+  const key = (HISTORY_LABELS as Readonly<Record<string, I18nKey>>)[action];
+  return key === undefined ? action : t(key);
+}
+
+export function TypeTag({ type }: { readonly type: MemoryEntry['type'] }) {
+  const { t } = useI18n();
+  return (
+    <span data-memory-type={type} className="shrink-0 rounded-sm bg-ink/[0.05] px-1.5 py-px text-[11px] font-medium text-ink-soft">
+      {t(`memory.type.${type}`)}
+    </span>
+  );
+}
+
+const dateText = (locale: string, value: string) => Number.isNaN(Date.parse(value)) ? value : new Date(value).toLocaleString(locale);
+
+/**
+ * The reading face of one entry: source, title, body, and the reason when one
+ * was written. Provenance (revisions, exact timestamps, replacement chains)
+ * stays in the history panel, so the normal view carries only what a reader
+ * needs. A superseded entry still reads its retirement reason from the
+ * replacement's journal, and links to the replacement when it is in view.
+ */
+export function MemoryReadView({ entry, target, sourceLabel, onOpenReplacement }: {
   readonly entry: MemoryEntry;
   readonly target: MemoryTarget;
   readonly sourceLabel: string;
+  readonly onOpenReplacement?: () => void;
 }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const { client } = useConnection();
   const replacement = useQuery({
     queryKey: ['memory-related', memoryTargetKey(target), entry.superseded_by],
@@ -52,66 +97,182 @@ export function MemoryReadView({ entry, target, sourceLabel }: {
   const originalReplacement = supersede === undefined ? undefined
     : replacement.data?.revision === supersede.afterRevision ? replacement.data
       : memorySnapshot(replacementHistory.data?.find((record) => record.beforeRevision === supersede.afterRevision)?.before ?? null, supersede.afterRevision);
-  const date = (value: string) => Number.isNaN(Date.parse(value)) ? value : new Date(value).toLocaleString(locale);
   const retired = entry.status === 'archived' || entry.status === 'superseded';
   const reason = entry.status === 'superseded' ? originalReplacement?.reason : entry.reason;
   return (
-    <article data-memory-read={entry.id} className="min-w-0 space-y-4">
+    <article data-memory-read={entry.id} className="min-w-0 space-y-3">
       <div>
-        <p className="mb-2 flex flex-wrap gap-x-2 gap-y-1 text-[12px] text-ink-soft">
-          <span>{sourceLabel}</span><span>·</span><span>{t(`memory.type.${entry.type}`)}</span>
-          {entry.status !== 'active' ? <><span>·</span><span>{t(`memory.status.${entry.status}`)}</span></> : null}
+        <p className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-ink-faint">
+          <span>{sourceLabel}</span><span aria-hidden>·</span><span>{t(`memory.type.${entry.type}`)}</span>
+          {entry.status !== 'active' ? <><span aria-hidden>·</span><span>{t(`memory.status.${entry.status}`)}</span></> : null}
         </p>
         <h3 className="break-words text-[17px] leading-snug font-medium text-ink">{entry.title}</h3>
       </div>
       <p data-memory-read-body className="text-[13px] leading-7 break-words whitespace-pre-wrap text-ink">{entry.body}</p>
-      {reason ? <div className="space-y-1">
-        <p className="text-[12px] font-medium text-ink-soft">{t(retired ? 'memory.history.retirementReason' : 'memory.field.reason')}</p>
-        <p data-memory-read-reason className="text-[13px] leading-6 break-words whitespace-pre-wrap text-ink-soft">{reason}</p>
-      </div> : retired ? <p className="text-[12px] text-ink-faint">{t(entry.status === 'superseded' && (replacement.isPending || replacementHistory.isPending) ? 'memory.loading' : 'memory.history.reasonUnavailable')}</p> : null}
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-[12px] text-ink-soft">
-        <dt>{t('memory.history.createdAt')}</dt><dd>{date(entry.created)}</dd>
-        <dt>{t('memory.history.updatedAt')}</dt><dd>{date(entry.updated)}</dd>
-        <dt>{t('memory.history.scope')}</dt><dd className="break-all">{sourceLabel} <span className="text-ink-faint">({memoryTargetKey(target)})</span></dd>
-        <dt>{t('memory.history.revision')}</dt><dd className="break-all font-mono text-[11px]">{entry.revision}</dd>
-        {entry.supersedes !== undefined ? <><dt>{t('memory.history.replaces')}</dt><dd className="break-all font-mono text-[11px]">{entry.supersedes}{entry.supersedes_revision ? ` · ${entry.supersedes_revision}` : ''}</dd></> : null}
-        {entry.superseded_by !== undefined ? <><dt>{t('memory.history.replacedBy')}</dt><dd className="break-all">{replacement.data?.title ?? entry.superseded_by}<span className="mt-1 block font-mono text-[11px] text-ink-faint">{entry.superseded_by}{replacement.data?.revision ? ` · ${replacement.data.revision}` : ''}</span></dd></> : null}
-      </dl>
+      {reason ? (
+        <p className="text-[13px] leading-6 break-words text-ink-soft">
+          <span className="font-medium">{t(retired ? 'memory.history.retirementReason' : 'memory.field.reason')}</span>
+          {' · '}
+          <span data-memory-read-reason className="whitespace-pre-wrap">{reason}</span>
+        </p>
+      ) : retired ? (
+        <p className="text-[12px] text-ink-faint">
+          {t(entry.status === 'superseded' && (replacement.isPending || replacementHistory.isPending) ? 'memory.loading' : 'memory.history.reasonUnavailable')}
+        </p>
+      ) : null}
+      {entry.superseded_by !== undefined ? (
+        onOpenReplacement !== undefined && replacement.data !== undefined ? (
+          <button
+            type="button"
+            data-memory-open-replacement
+            onClick={onOpenReplacement}
+            className="text-[13px] text-ink-soft underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+          >
+            {t('memory.replacedBy', { title: replacement.data.title })}
+          </button>
+        ) : (
+          <p data-memory-replacement-text role={replacement.isPending ? 'status' : undefined} className="text-[13px] text-ink-faint">
+            {replacement.isPending ? t('memory.loading') : t('memory.replacedBy', { title: replacement.data?.title ?? entry.superseded_by })}
+          </p>
+        )
+      ) : null}
     </article>
   );
 }
 
-export function MemoryHistorySnapshot({ record, history, current, target, sourceLabel }: {
-  readonly record: MemoryJournalRecord;
+function VersionBlock({ label, entry, raw, revision }: {
+  readonly label: string;
+  readonly entry: MemoryEntry | undefined;
+  readonly raw: string | null | undefined;
+  readonly revision: string | null;
+}) {
+  const { t, locale } = useI18n();
+  if (revision === null) return null;
+  const dates = entry === undefined ? '' : [
+    entry.created === '' ? '' : `${t('memory.history.createdAt')} ${dateText(locale, entry.created)}`,
+    entry.updated === '' ? '' : `${t('memory.history.updatedAt')} ${dateText(locale, entry.updated)}`,
+  ].filter((part) => part !== '').join(' · ');
+  return (
+    <section className="space-y-2">
+      <h4 className="text-[12px] font-medium text-ink-soft">{label}</h4>
+      {entry !== undefined ? (
+        <div className="space-y-2">
+          <p className="flex flex-wrap items-center gap-1.5">
+            <TypeTag type={entry.type} />
+            {entry.status !== 'active' ? <span className="text-[11px] text-ink-faint">{t(`memory.status.${entry.status}`)}</span> : null}
+          </p>
+          <p className="break-words text-[14px] font-medium leading-snug text-ink">{entry.title}</p>
+          <p className="text-[13px] leading-6 break-words whitespace-pre-wrap text-ink">{entry.body}</p>
+          {entry.reason !== '' ? (
+            <p className="text-[13px] leading-6 break-words text-ink-soft">{t('memory.field.reason')} · {entry.reason}</p>
+          ) : null}
+          {dates === '' ? null : <p className="text-[12px] text-ink-faint">{dates}</p>}
+        </div>
+      ) : raw !== null && raw !== undefined ? (
+        <pre className="font-mono text-[12px] leading-6 break-words whitespace-pre-wrap text-ink-soft">{raw}</pre>
+      ) : (
+        <p className="text-[12px] text-ink-faint">{t('memory.history.snapshotUnavailable')}</p>
+      )}
+    </section>
+  );
+}
+
+/**
+ * One journal record as a panel: when, who, the revision chain, and the full
+ * before/after content. Newer / Older steps through the records newest-first,
+ * so the panel doubles as version browsing instead of a one-shot lookup.
+ */
+export function MemoryHistoryDialog({
+  recordId,
+  onNavigate,
+  onClose,
+  history,
+  current,
+  sourceLabel,
+  onUndo,
+  undoBusy,
+}: {
+  readonly recordId: string;
+  readonly onNavigate: (recordId: string) => void;
+  readonly onClose: () => void;
   readonly history: readonly MemoryJournalRecord[];
   readonly current: MemoryEntry;
   readonly target: MemoryTarget;
   readonly sourceLabel: string;
+  readonly onUndo: (record: MemoryJournalRecord) => void;
+  readonly undoBusy: boolean;
 }) {
   const { t, locale } = useI18n();
+  // Newest first, matching the order of the history rows in the detail pane.
+  const records = [...history].reverse();
+  const index = records.findIndex((candidate) => candidate.operationId === recordId);
+  const record = index >= 0 ? records[index] : undefined;
+  useEffect(() => { if (record === undefined) onClose(); }, [record, onClose]);
+  if (record === undefined) return null;
+
   const before = memorySnapshot(record.before, record.beforeRevision);
   // Journal records carry only "before". Match revisions, never assume the next row is the next version.
   const afterRecord = record.afterRevision === null ? undefined : history.find((candidate) => candidate.id === record.id && candidate.beforeRevision === record.afterRevision && candidate.before !== null);
   const after = current.revision === record.afterRevision ? current : memorySnapshot(afterRecord?.before ?? null, record.afterRevision);
-  const versions = [
-    { label: t('memory.history.after'), entry: after, raw: afterRecord?.before, revision: record.afterRevision },
-    { label: t('memory.history.before'), entry: before, raw: record.before, revision: record.beforeRevision },
-  ];
+
+  const navClass = 'text-[12px] text-ink-soft underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:text-ink-faint disabled:no-underline disabled:opacity-60';
   return (
-    <div data-memory-history-detail={record.operationId} className="space-y-5 pt-3 pb-5 pl-5">
-      <p className="text-[12px] text-ink-soft">{new Date(record.at).toLocaleString(locale)} · {t(`memory.writer.${record.writer}`)}</p>
-      <div className="space-y-1 text-[11px] text-ink-faint" data-memory-revision-chain>
-        <p className="font-medium">{t('memory.history.revision')}</p>
-        <p className="font-mono break-all">{record.beforeRevision ?? t('memory.history.noVersion')} → {record.afterRevision ?? t('memory.history.noVersion')}</p>
+    <Dialog
+      onClose={onClose}
+      ariaLabel={t('memory.history')}
+      overlayId="memory-history"
+      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} flex max-h-[85dvh] flex-col`}
+    >
+      <div className="min-h-0 flex-1 overflow-y-auto" data-memory-history-detail={record.operationId}>
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <h3 className="font-display text-[18px] font-semibold text-ink">{historyLabel(record.action, t)}</h3>
+          <span className="text-[12px] text-ink-faint">
+            {dateText(locale, record.at)} · {t(`memory.writer.${record.writer}`)}
+          </span>
+          {records.length > 1 ? (
+            <span className="ml-auto text-[12px] text-ink-faint tabular-nums">{index + 1} / {records.length}</span>
+          ) : null}
+        </div>
+        <p className="mt-0.5 truncate text-[12px] text-ink-faint">{current.title} · {sourceLabel}</p>
+        {record.beforeRevision !== null || record.afterRevision !== null ? (
+          <p className="mt-3 text-[11px] text-ink-faint" data-memory-revision-chain>
+            {t('memory.history.revision')}{' '}
+            <span className="font-mono break-all">{record.beforeRevision ?? t('memory.history.noVersion')} → {record.afterRevision ?? t('memory.history.noVersion')}</span>
+          </p>
+        ) : null}
+        <div className="mt-4 space-y-4">
+          <VersionBlock label={t('memory.history.after')} entry={after} raw={afterRecord?.before} revision={record.afterRevision} />
+          {record.beforeRevision !== null ? <hr className="border-hairline" /> : null}
+          <VersionBlock label={t('memory.history.before')} entry={before} raw={record.before} revision={record.beforeRevision} />
+        </div>
       </div>
-      {versions.map((version) => version.revision === null ? null : (
-        <section key={version.label} className="space-y-3">
-          <h4 className="text-[12px] font-medium text-ink-soft">{version.label}</h4>
-          {version.entry !== undefined ? <MemoryReadView entry={version.entry} target={target} sourceLabel={sourceLabel} />
-            : version.raw ? <pre className="font-mono text-[12px] leading-6 break-words whitespace-pre-wrap text-ink-soft">{version.raw}</pre>
-            : <p className="text-[12px] text-ink-faint">{t('memory.history.snapshotUnavailable')}</p>}
-        </section>
-      ))}
-    </div>
+      <div className="mt-4 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-t border-hairline pt-4">
+        {records.length > 1 ? (
+          <span className="flex items-center gap-3">
+            <button type="button" data-memory-history-nav="newer" disabled={index === 0}
+              onClick={() => { onNavigate(records[index - 1]!.operationId); }} className={`${navClass} flex items-center gap-1`}>
+              <Icon name="chevron" size={12} className="rotate-90" />
+              <span>{t('memory.history.newer')}</span>
+            </button>
+            <button type="button" data-memory-history-nav="older" disabled={index === records.length - 1}
+              onClick={() => { onNavigate(records[index + 1]!.operationId); }} className={`${navClass} flex items-center gap-1`}>
+              <span>{t('memory.history.older')}</span>
+              <Icon name="chevron" size={12} className="-rotate-90" />
+            </button>
+          </span>
+        ) : null}
+        <span className="ml-auto flex items-center gap-2">
+          {record.action !== 'undo' ? (
+            <button type="button" data-memory-undo={record.operationId} disabled={undoBusy}
+              onClick={() => { onUndo(record); }} className={SECONDARY_BUTTON}>
+              {t('memory.undo')}
+            </button>
+          ) : null}
+          <button type="button" data-memory-history-close onClick={onClose} className={SECONDARY_BUTTON}>
+            {t('common.close')}
+          </button>
+        </span>
+      </div>
+    </Dialog>
   );
 }

@@ -15,28 +15,33 @@ use crate::ssh_remote::{ReleaseChannel, SshProfile};
 const PROBE_TIMEOUT: Duration = Duration::from_secs(12);
 const MAX_META_BYTES: u64 = 64 * 1024;
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SshResolvedConnection {
-    config: SshConnectionConfig,
-    tunnel_id: String,
-    server_home_id: String,
-    server_instance_id: String,
-    server_version: String,
-    build_id: Option<String>,
-    build_channel: Option<String>,
+    pub config: SshConnectionConfig,
+    pub tunnel_id: String,
+    pub server_home_id: String,
+    pub server_instance_id: String,
+    pub server_version: String,
+    pub build_id: Option<String>,
+    pub build_channel: Option<String>,
 }
 
-#[derive(Serialize)]
-struct SshConnectionConfig {
-    url: String,
-    token: String,
+#[derive(Clone, Serialize)]
+pub struct SshConnectionConfig {
+    pub url: String,
+    pub token: String,
 }
 
 struct Tunnel {
     profile_id: String,
     tunnel_id: String,
     child: Child,
+    home_id: String,
+    window_label: String,
+    connection: Option<SshResolvedConnection>,
+    accepted: bool,
+    profile: SshProfile,
 }
 
 impl Drop for Tunnel {
@@ -49,6 +54,8 @@ impl Drop for Tunnel {
 #[derive(Clone, Default)]
 pub struct TunnelManager {
     active: Arc<Mutex<Option<Tunnel>>>,
+    prepared: Arc<Mutex<Option<Tunnel>>>,
+    selected: Arc<Mutex<Option<String>>>,
     next_id: Arc<AtomicU64>,
 }
 
@@ -57,14 +64,32 @@ impl TunnelManager {
         self.connect_with_binary(profile, token, Path::new("ssh"))
     }
 
+    pub fn prepare(&self, profile: &SshProfile, token: &str, home_id: &str, window_label: &str) -> Result<SshResolvedConnection, String> {
+        {
+            let mut prepared = self.prepared.lock().map_err(|_| "SSH tunnel manager unavailable")?;
+            let selected = self.selected.lock().map_err(|_| "SSH tunnel manager unavailable")?;
+            if prepared.as_ref().is_some_and(|tunnel| tunnel.accepted && selected.as_deref() == Some(tunnel.tunnel_id.as_str())) {
+                let mut active = self.active.lock().map_err(|_| "SSH tunnel manager unavailable")?;
+                *active = prepared.take();
+            }
+        }
+        let connection = self.connect_to(profile, token, Path::new("ssh"), true)?;
+        self.bind(&profile.id, &connection.tunnel_id, home_id, window_label)?;
+        Ok(connection)
+    }
+
     fn connect_with_binary(&self, profile: &SshProfile, token: &str, ssh: &Path) -> Result<SshResolvedConnection, String> {
+        self.connect_to(profile, token, ssh, false)
+    }
+
+    fn connect_to(&self, profile: &SshProfile, token: &str, ssh: &Path, staged: bool) -> Result<SshResolvedConnection, String> {
         profile.validate()?;
         let remote_port = profile.remote_port.ok_or("Set the running Kiki server port in this SSH profile")?;
         let expected_home = profile.server_home_id.as_deref().ok_or("Set the expected home ID from the trusted remote Kiki terminal")?;
         if token.len() != 43 || !token.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')) {
             return Err("Enter the 43-character bearer token printed by the remote Kiki server".to_string());
         }
-        let mut active = self.active.lock().map_err(|_| "SSH tunnel manager unavailable")?;
+        let mut active = (if staged { &self.prepared } else { &self.active }).lock().map_err(|_| "SSH tunnel manager unavailable")?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|e| format!("Cannot reserve a local SSH port: {e}"))?;
         let local_port = listener.local_addr().map_err(|e| format!("Cannot read the local SSH port: {e}"))?.port();
         drop(listener);
@@ -89,7 +114,8 @@ impl TunnelManager {
             }
         });
         let tunnel_id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
-        let mut candidate = Tunnel { profile_id: profile.id.clone(), tunnel_id: tunnel_id.clone(), child };
+        let mut candidate = Tunnel { profile_id: profile.id.clone(), tunnel_id: tunnel_id.clone(), child,
+            home_id: String::new(), window_label: String::new(), connection: None, accepted: !staged, profile: profile.clone() };
         let start = Instant::now();
         // Never send the bearer to a freshly freed port until this exact SSH
         // process reports binding it. A competing listener must not get a probe.
@@ -117,8 +143,7 @@ impl TunnelManager {
         if candidate.child.try_wait().map_err(|e| format!("Cannot inspect the SSH tunnel: {e}"))?.is_some() {
             return Err("SSH tunnel closed before the server identity was verified".to_string());
         }
-        *active = Some(candidate);
-        Ok(SshResolvedConnection {
+        let connection = SshResolvedConnection {
             config: SshConnectionConfig { url: format!("http://127.0.0.1:{local_port}"), token: token.to_string() },
             tunnel_id,
             server_home_id: verified.home_id,
@@ -126,29 +151,77 @@ impl TunnelManager {
             server_version: verified.version,
             build_id: verified.build_id,
             build_channel: verified.build_channel,
-        })
+        };
+        candidate.connection = Some(connection.clone());
+        *active = Some(candidate);
+        Ok(connection)
+    }
+
+    pub fn bind(&self, profile_id: &str, tunnel_id: &str, home_id: &str, window_label: &str) -> Result<(), String> {
+        for slot in [&self.prepared, &self.active] {
+            let mut value = slot.lock().map_err(|_| "SSH tunnel manager unavailable")?;
+            if let Some(tunnel) = value.as_mut().filter(|t| t.profile_id == profile_id && t.tunnel_id == tunnel_id) {
+                tunnel.home_id = home_id.to_string();
+                tunnel.window_label = window_label.to_string();
+                return Ok(());
+            }
+        }
+        Err("SSH connection reference expired".to_string())
+    }
+
+    pub fn profile_matches(&self, profile: &SshProfile, tunnel_id: &str) -> bool {
+        for slot in [&self.prepared, &self.active] {
+            if let Ok(value) = slot.lock() {
+                if let Some(tunnel) = value.as_ref().filter(|t| t.profile_id == profile.id && t.tunnel_id == tunnel_id) {
+                    return &tunnel.profile == profile;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn resume(&self, profile_id: &str, tunnel_id: &str, home_id: &str, window_label: &str) -> Result<SshResolvedConnection, String> {
+        for slot in [&self.prepared, &self.active] {
+            let mut value = slot.lock().map_err(|_| "SSH tunnel manager unavailable")?;
+            if let Some(tunnel) = value.as_mut().filter(|t| t.profile_id == profile_id && t.tunnel_id == tunnel_id &&
+                t.home_id == home_id && t.window_label == window_label) {
+                if tunnel.child.try_wait().map_err(|e| e.to_string())?.is_some() { return Err("SSH tunnel is offline".to_string()); }
+                return tunnel.connection.clone().ok_or_else(|| "SSH connection reference expired".to_string());
+            }
+        }
+        Err("SSH connection reference expired".to_string())
+    }
+
+    pub fn commit(&self, profile_id: &str, tunnel_id: &str, home_id: &str, window_label: &str) -> Result<(), String> {
+        self.resume(profile_id, tunnel_id, home_id, window_label)?;
+        let mut prepared = self.prepared.lock().map_err(|_| "SSH tunnel manager unavailable")?;
+        if let Some(tunnel) = prepared.as_mut().filter(|t| t.profile_id == profile_id && t.tunnel_id == tunnel_id) {
+            tunnel.accepted = true;
+        }
+        *self.selected.lock().map_err(|_| "SSH tunnel manager unavailable")? = Some(tunnel_id.to_string());
+        Ok(())
     }
 
     pub fn is_running(&self, profile_id: &str, tunnel_id: &str) -> bool {
-        let Ok(mut active) = self.active.lock() else { return false; };
-        let Some(tunnel) = active.as_mut() else { return false; };
-        if tunnel.profile_id != profile_id || tunnel.tunnel_id != tunnel_id { return false; }
-        match tunnel.child.try_wait() {
-            Ok(None) => true,
-            _ => { *active = None; false },
+        for slot in [&self.prepared, &self.active] {
+            let Ok(mut value) = slot.lock() else { continue; };
+            if let Some(tunnel) = value.as_mut().filter(|t| t.profile_id == profile_id && t.tunnel_id == tunnel_id) {
+                return match tunnel.child.try_wait() { Ok(None) => true, _ => { *value = None; false } };
+            }
         }
+        false
     }
 
     pub fn disconnect(&self, profile_id: &str, tunnel_id: &str) {
-        if let Ok(mut active) = self.active.lock() {
-            if active.as_ref().is_some_and(|tunnel| tunnel.profile_id == profile_id && tunnel.tunnel_id == tunnel_id) {
-                *active = None;
+        for slot in [&self.prepared, &self.active] {
+            if let Ok(mut value) = slot.lock() {
+                if value.as_ref().is_some_and(|t| t.profile_id == profile_id && t.tunnel_id == tunnel_id) { *value = None; }
             }
         }
     }
 
     pub fn shutdown(&self) {
-        if let Ok(mut active) = self.active.lock() { *active = None; }
+        for slot in [&self.prepared, &self.active] { if let Ok(mut value) = slot.lock() { *value = None; } }
     }
 }
 
@@ -274,6 +347,64 @@ fn decode_http_body(headers: &str, body: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore]
+    fn scope_reference_child_process() { thread::sleep(Duration::from_secs(30)); }
+
+    fn fixture_tunnel(id: &str, home: &str, window: &str) -> Tunnel {
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "ssh_tunnel::tests::scope_reference_child_process"])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        Tunnel { profile_id: "example".to_string(), tunnel_id: id.to_string(), child,
+            home_id: home.to_string(), window_label: window.to_string(), accepted: false,
+            profile: SshProfile { id: "example".to_string(), label: "Example".to_string(), target: crate::ssh_remote::SshTarget::Alias { alias: "example".to_string() },
+                identity_file: None, release_channel: ReleaseChannel::Stable, remote_port: Some(58627), server_home_id: Some("server-example".to_string()) },
+            connection: Some(SshResolvedConnection { config: SshConnectionConfig { url: "http://127.0.0.1:41321".to_string(), token: "fixture-memory-bearer".to_string() },
+                tunnel_id: id.to_string(), server_home_id: "server-example".to_string(), server_instance_id: "instance-example".to_string(),
+                server_version: "0.1.0".to_string(), build_id: None, build_channel: Some("stable".to_string()) }) }
+    }
+
+    #[test]
+    fn scope_reference_is_bound_to_window_home_profile_and_exact_live_tunnel() {
+        let manager = TunnelManager::default();
+        *manager.active.lock().unwrap() = Some(fixture_tunnel("original", "home-a", "window-a"));
+        assert!(manager.resume("example", "original", "home-a", "window-a").is_ok());
+        assert!(manager.resume("example", "original", "home-b", "window-a").is_err());
+        assert!(manager.resume("example", "original", "home-a", "window-b").is_err());
+        assert!(manager.resume("other-profile", "original", "home-a", "window-a").is_err());
+        assert!(manager.resume("example", "same-name-new-tunnel", "home-a", "window-a").is_err());
+        let mut profile = manager.active.lock().unwrap().as_ref().unwrap().profile.clone();
+        assert!(manager.profile_matches(&profile, "original"));
+        profile.remote_port = Some(58628);
+        assert!(!manager.profile_matches(&profile, "original"));
+        manager.disconnect("example", "original");
+        assert!(manager.resume("example", "original", "home-a", "window-a").is_err());
+    }
+
+    #[test]
+    fn scope_reference_cancelled_candidate_never_revokes_the_source() {
+        let manager = TunnelManager::default();
+        *manager.active.lock().unwrap() = Some(fixture_tunnel("original", "home-a", "window-a"));
+        *manager.prepared.lock().unwrap() = Some(fixture_tunnel("candidate", "home-b", "window-a"));
+        assert!(manager.commit("example", "candidate", "home-b", "window-a").is_ok());
+        assert!(manager.resume("example", "original", "home-a", "window-a").is_ok());
+        manager.disconnect("example", "candidate");
+        assert!(manager.resume("example", "original", "home-a", "window-a").is_ok());
+        assert!(!manager.is_running("example", "candidate"));
+    }
+
+    #[test]
+    fn scope_reference_return_selects_the_exact_prior_connection_without_reauthentication() {
+        let manager = TunnelManager::default();
+        *manager.active.lock().unwrap() = Some(fixture_tunnel("original", "home-a", "window-a"));
+        *manager.prepared.lock().unwrap() = Some(fixture_tunnel("candidate", "home-b", "window-a"));
+        manager.commit("example", "candidate", "home-b", "window-a").unwrap();
+        manager.commit("example", "original", "home-a", "window-a").unwrap();
+        assert_eq!(manager.selected.lock().unwrap().as_deref(), Some("original"));
+        assert_eq!(manager.resume("example", "original", "home-a", "window-a").unwrap().tunnel_id, "original");
+        assert!(manager.is_running("example", "candidate"));
+    }
 
     #[test]
     fn accepts_complete_meta_body_and_rejects_incomplete_framing() {

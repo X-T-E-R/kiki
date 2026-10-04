@@ -16,7 +16,7 @@ import type { ApprovalBlock } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../../i18n';
 import { ApprovalCard } from '../Interactions';
-import { canWriteBack, inferConfigSync, sshHostInput, sshTargetLabel } from '../../lib/ssh';
+import { canWriteBack, sshHostInput, sshTargetLabel } from '../../lib/ssh';
 import { sshHostFromAction } from './SshApprovalBody';
 
 const submitApproval = vi.fn(async () => ({ resolved: true as const }));
@@ -188,14 +188,6 @@ describe('ssh helpers', () => {
     expect(canWriteBack({ id: 'a', name: 'a', source: 'kiki', hostname: 'h', user: 'u' })).toBe(true);
     expect(canWriteBack({ id: 'a', name: 'a', source: 'kiki', hostname: 'h' })).toBe(false);
     expect(canWriteBack({ id: 'a', name: 'a', source: 'ssh-config', hostname: 'h', user: 'u' })).toBe(false);
-  });
-
-  it('infers config sync from what the list shows', () => {
-    const alias = { id: 'dev', name: 'dev', source: 'ssh-config' as const };
-    expect(inferConfigSync([alias], [alias])).toBe(true);
-    expect(inferConfigSync([], [alias])).toBe(false);
-    expect(inferConfigSync([{ ...alias, source: 'kiki' }], [alias])).toBeUndefined();
-    expect(inferConfigSync([], [])).toBeUndefined();
   });
 
   it('builds a PUT body that leaves blank fields to ssh config', () => {

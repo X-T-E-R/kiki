@@ -115,6 +115,7 @@ async function queueCodex(command: string, thread: string, message: string): Pro
 
 export function registerHostCodexCommands(program: Command): void {
   program.command('host-codex-bind')
+    .description('Bind a dispatch to a Codex thread and queue pending notifications.')
     .requiredOption('--workspace <dir>')
     .requiredOption('--dispatch <id>')
     .requiredOption('--thread <id>')
@@ -132,6 +133,7 @@ export function registerHostCodexCommands(program: Command): void {
       process.stdout.write(`BOUND ${input.dispatch} ${input.thread}\n`);
     });
   program.command('host-codex-queue')
+    .description('Queue pending dispatch notifications to the bound Codex thread.')
     .option('--workspace <dir>')
     .option('--dispatch <id>')
     .option('--home <dir>')

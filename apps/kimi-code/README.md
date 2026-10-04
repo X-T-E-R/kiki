@@ -24,9 +24,9 @@ kiki --version
 
 ### A note on npm
 
-The CLI is currently not published to npm; use the release artifacts, or run from source while developing.
+With Node.js 24.15.0 or later, the CLI is also published on npm as `kiki-agent` (CLI/TUI plus a checksum-verified desktop download) and `kiki-agent-lite` (CLI/TUI only). Install one, not both — they supply the same `kiki` command. GitHub Releases remain the way to fetch a standalone executable.
 
-For uninstall instructions, see the [installation guide](https://x-t-e-r.github.io/kiki/en/getting-started/installation).
+For checksums, update channels, and uninstall steps, see the [installation guide](https://x-t-e-r.github.io/kiki/en/getting-started/installation).
 
 ## Quick Start
 

@@ -1,3 +1,4 @@
+import type { ContentWindow } from '../contract/content';
 import type { AttachmentId } from './ids';
 import type { TranscriptAnchor } from './identity';
 
@@ -17,7 +18,7 @@ export interface TranscriptAttachmentDetailRef {
   readonly attachmentId: AttachmentId;
 }
 
-export interface TranscriptAttachment {
+export interface TranscriptAttachment extends ContentWindow {
   readonly attachmentId: AttachmentId;
   /** e.g. 'image/png'. */
   readonly mediaType: string;

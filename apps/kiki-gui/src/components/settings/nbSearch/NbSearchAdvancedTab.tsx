@@ -8,6 +8,9 @@ import { useI18n } from '../../../i18n';
 import { fetchUrlState, webSearchState } from './types';
 import { NbSearchReadinessRow } from './NbSearchReadinessRow';
 import { INPUT, SECONDARY_BUTTON } from '../../ui';
+import { NbSearchFileScopeEditor } from './NbSearchFileScopeEditor';
+import { NbSearchQualityEditor } from './NbSearchQualityEditor';
+import type { NbSearchAdvancedBinding } from './advancedSupport';
 
 function NumberField({
   label,
@@ -71,6 +74,7 @@ export function NbSearchAdvancedTab({
   onRunCheck,
   onCancelCheck,
   saving = false,
+  advanced,
 }: {
   execution: NbSearchDraft['execution'];
   testRun: TestRun;
@@ -78,6 +82,8 @@ export function NbSearchAdvancedTab({
   onRunCheck: () => void;
   onCancelCheck: () => void;
   saving?: boolean;
+  /** Present once the page hands its draft over; adds the fetch-scope and quality domains. */
+  advanced?: NbSearchAdvancedBinding;
 }) {
   const { t } = useI18n();
 
@@ -182,6 +188,21 @@ export function NbSearchAdvancedTab({
                 />
               </div>
             </Group>
+
+            {/* The two domains below belong to the same fetch behaviour as the
+                limits above, so they live in this card instead of a fifth
+                section the page's deep links do not know about. Each is a group
+                of its own and opens on demand. */}
+            {advanced === undefined ? null : (
+              <>
+                <Group title={t('st.nbSearch.fileScope.title')}>
+                  <NbSearchFileScopeEditor binding={advanced} saving={saving} />
+                </Group>
+                <Group title={t('st.nbSearch.quality.title')}>
+                  <NbSearchQualityEditor binding={advanced} saving={saving} />
+                </Group>
+              </>
+            )}
           </fieldset>
         </div>
       </SectionCard>
@@ -219,6 +240,12 @@ export function NbSearchAdvancedTab({
             <div className="space-y-2 mt-2">
               <p className="font-mono text-[11px] text-ink-faint">
                 {t('st.nbSearch.lastChecked', { revision: testRun.result.revision })}
+              </p>
+              {/* The readiness check reads the saved configuration. It never
+                  contacts a provider, so a green row must not read as "paid
+                  search verified". */}
+              <p className="text-[12px] leading-snug text-ink-faint" data-nb-search-check-scope>
+                {t('st.nbSearch.advanced.checkScope')}
               </p>
               <NbSearchReadinessRow
                 label={t('st.nbSearch.webSearch')}

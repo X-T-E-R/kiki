@@ -19,6 +19,7 @@ describe('HelpPanelComponent', () => {
     const panel = new HelpPanelComponent({
       commands: [cmd('exit', 'Exit', ['quit', 'q'])],
       onClose: () => {},
+      maxVisible: 100,
     });
     const out = strip(panel.render(80).join('\n'));
     expect(out).toMatch(/help/);

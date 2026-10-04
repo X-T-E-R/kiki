@@ -47,6 +47,7 @@ export async function watchDispatchEvents(
 
 export function registerHostAttachCommand(program: Command): void {
   program.command('host-attach')
+    .description('Stream host notifications for a dispatch or run a prompt-file attachment.')
     .option('--prompt-file <file>')
     .option('--workspace <dir>')
     .option('--dispatch <id>')

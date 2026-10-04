@@ -27,12 +27,18 @@ export class KikiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
   }
 
   dispose(): void {
+    for (const webview of this.webviews) this.detachWebview(webview);
     this.webviews.clear();
+  }
+
+  private detachWebview(webview: vscode.Webview): void {
+    this.webviews.delete(webview);
+    void this.bridge.releaseOwner(webview).catch((error) => console.error("Kiki media save cleanup failed", error));
   }
 
   async resolveWebviewView(webviewView: vscode.WebviewView): Promise<void> {
     await this.setupWebview(webviewView.webview);
-    webviewView.onDidDispose(() => this.webviews.delete(webviewView.webview));
+    webviewView.onDidDispose(() => this.detachWebview(webviewView.webview));
   }
 
   createPanel(): vscode.WebviewPanel {
@@ -42,7 +48,7 @@ export class KikiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
       localResourceRoots: [this.guiRoot],
     });
     void this.setupWebview(panel.webview);
-    panel.onDidDispose(() => this.webviews.delete(panel.webview));
+    panel.onDidDispose(() => this.detachWebview(panel.webview));
     return panel;
   }
 
@@ -61,7 +67,7 @@ export class KikiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
     };
     this.webviews.add(webview);
     webview.onDidReceiveMessage(async (message: unknown) => {
-      const response = await this.bridge.handle(message);
+      const response = await this.bridge.handle(message, webview);
       // oxlint-disable-next-line unicorn/require-post-message-target-origin
       if (response !== null) await webview.postMessage(response);
     });
@@ -70,6 +76,7 @@ export class KikiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
 
   private async loadHtml(webview: vscode.Webview): Promise<void> {
     const source = await readFile(vscode.Uri.joinPath(this.guiRoot, "index.html").fsPath, "utf8");
+    await this.bridge.releaseOwner(webview, false);
     webview.html = this.renderHtml(source, webview);
   }
 

@@ -14,11 +14,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentPanelProfile, NamedAgentProfile } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { ProfileDetailSections, type ProfileDetailSectionsProps } from './ProfileDetailSections';
+import { AgentDetailDrawer } from './AgentDetailDrawer';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
-const { client } = vi.hoisted(() => ({
-  client: { listNamedAgentProfiles: vi.fn(), readHostFile: vi.fn() },
+const { client, panelRead } = vi.hoisted(() => ({
+  client: { listNamedAgentProfiles: vi.fn(), readHostFile: vi.fn() }, panelRead: vi.fn(),
 }));
-vi.mock('../../state/connection', () => ({ useOptionalConnection: () => ({ client, scopeId: 'local' }) }));
+vi.mock('../../state/connection', () => ({ useOptionalConnection: () => ({ client, klient: { global: { agentPanel: { read: panelRead } } }, scopeId: 'local' }) }));
 
 const BOUND_FILE = '/ws-one/.kiki/agents/agent.md';
 const OTHER_FILE = '/ws-two/.kiki/agents/agent.md';
@@ -178,7 +180,7 @@ describe('running profile definition lookup', () => {
   it('recovers source and derived leases from the bound definition and opens the full profile', async () => {
     const onOpenTarget = vi.fn();
     client.listNamedAgentProfiles.mockResolvedValue({
-      items: [{ ...boundDefinition, subagents: ['explore'] }],
+      items: [{ ...boundDefinition, allowed_subagents: ['explore'] }],
       complete: true,
     });
     await render({
@@ -204,7 +206,7 @@ describe('running profile definition lookup', () => {
     client.listNamedAgentProfiles.mockResolvedValue({
       items: [{
         ...boundDefinition,
-        subagents: [{
+        allowed_subagents: [{
           name: 'missing-writer',
           source: './_private/missing.md',
           scope: 'private',
@@ -266,4 +268,110 @@ describe('model and effort source labels', () => {
     expect(container.querySelector('[data-value-origin="effort"]')).toBeNull();
     expect(section('model').textContent).toContain('Locked by profile, immutable in session');
   });
+});
+
+describe('effective prompt details', () => {
+  const prompt: import('@kiki/protocol').AgentPromptDiagnostics = {
+    identity: { delegation_position: 'main', profile: 'agent', model_alias: 'fixture/model-a', executor: 'native' },
+    binding_revision: 'bound-7', disk_revision: 'disk-8', disk_changed: true,
+    apply_on: 'next-binding-or-context-rebuild', lease_model_prompts: 'preserve',
+    channels: [
+      { id: 'system.shared', channel: 'system', state: 'effective', selection: 'common', sources: [{ surface: 'global', kind: 'file', path: '/fixture/prompt/common.toml', line: 4, order: 1 }] },
+      { id: 'system.base', channel: 'system', state: 'shadowed', selection: 'main', reason: 'Replaced by selected model overlay', sources: [] },
+      { id: 'tool.read.guidance', channel: 'tool', state: 'effective', selection: 'main', sources: [{ surface: 'profile', kind: 'inline' }] },
+      { id: 'cognition.steering', channel: 'cognition_steering', state: 'inactive', selection: 'off', reason: 'Turned off in this branch', sources: [] },
+      { id: 'cognition.anchor', channel: 'cognition_anchor', state: 'effective', selection: 'main', anchor_steps: 2, anchor_scope: 'turn', sources: [] },
+    ],
+    request: { system_prompt_hash: 'actual-system-hash', tools_hash: 'actual-tools-hash', at: 1_790_979_200_000, turn_step: 't2.1', attempt: 'attempt-1' },
+  };
+
+  it('shows identity, four channels, source order, disk drift and unknown request anchor without guessing', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [], complete: true });
+    await render({ profile: runningProfile, prompt });
+    const details = section('prompt');
+    expect(details.querySelector('[data-prompt-identity]')?.textContent).toContain('Main agent');
+    expect(details.querySelectorAll('[data-prompt-channel-group]')).toHaveLength(4);
+    expect(details.querySelector('[data-prompt-disk-changed]')?.textContent).toContain('next binding or context rebuild');
+    expect(details.querySelector('[data-prompt-source]')?.textContent).toContain('/fixture/prompt/common.toml');
+    expect(details.querySelector('[data-prompt-source]')?.textContent).toContain(':4');
+    expect(details.querySelector('[data-prompt-state="shadowed"]')?.textContent).toContain('Replaced by selected model overlay');
+    expect(details.querySelector('[data-prompt-request]')?.textContent).toContain('actual-system-hash');
+    expect(details.querySelector('[data-prompt-request]')?.textContent).toContain('did not record whether the anchor was applied');
+    expect(details.querySelector('[data-prompt-request]')?.textContent).not.toContain('did not replace');
+    expect(details.textContent).toContain('First 2 request steps');
+  });
+
+  it('checks all branches only on demand and shows file errors for the selected agent', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [], complete: true });
+    const checks = [
+      { surface: 'model', branch: 'common', channel: 'cognition_overlay', path: '/fixture/common.md', status: 'ok' },
+      { surface: 'model', branch: 'independent', channel: 'cognition_anchor', path: '/fixture/independent/anchor.md', status: 'error', reason: 'File not found', model_alias: 'fixture/model-a' },
+    ];
+    panelRead.mockResolvedValue({ prompt: { ...prompt, file_checks: checks } });
+    await render({ profile: runningProfile, query: { session_id: 'session-files', agent_id: 'child-files' }, prompt });
+    expect(panelRead).not.toHaveBeenCalled();
+    await act(async () => section('prompt').querySelector<HTMLButtonElement>('[data-prompt-file-check-run]')!.click());
+    expect(panelRead).toHaveBeenCalledWith({ session_id: 'session-files', agent_id: 'child-files', check_all_prompt_files: true }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    const results = section('prompt').querySelector('[data-prompt-file-check-results]')!;
+    expect(results.textContent).toContain('Files checked: 2 · Issues: 1');
+    expect(results.getAttribute('open')).not.toBeNull();
+    expect(results.querySelector('[data-prompt-file-status="error"]')?.textContent).toContain('Externally delegated agent');
+    expect(results.textContent).toContain('File not found');
+    expect(section('prompt').querySelector('[data-prompt-request]')?.textContent).toContain('actual-system-hash');
+  });
+
+  it('distinguishes no files from omitted audit results and clears results when the agent changes', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [], complete: true });
+    panelRead.mockResolvedValueOnce({ prompt: { ...prompt, file_checks: [] } }).mockResolvedValueOnce({ prompt });
+    const props = { profile: runningProfile, query: { session_id: 'session-files', agent_id: 'child-one' }, prompt };
+    await render(props);
+    await act(async () => section('prompt').querySelector<HTMLButtonElement>('[data-prompt-file-check-run]')!.click());
+    expect(section('prompt').querySelector('[data-prompt-file-check-empty]')?.textContent).toContain('no prompt files');
+    await act(async () => section('prompt').querySelector<HTMLButtonElement>('[data-prompt-file-check-run]')!.click());
+    expect(section('prompt').querySelector('[data-prompt-file-check-missing]')?.textContent).toContain('did not include file-check results');
+    expect(section('prompt').querySelector('[data-prompt-file-check-empty]')).toBeNull();
+    await render({ ...props, query: { session_id: 'session-files', agent_id: 'child-two' } });
+    expect(section('prompt').querySelector('[data-prompt-file-check-missing]')).toBeNull();
+  });
+
+  it('shows audit failures and supports a fresh explicit retry', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [], complete: true });
+    panelRead.mockRejectedValueOnce(new Error('Audit unavailable')).mockResolvedValueOnce({ prompt: { ...prompt, file_checks: [] } });
+    await render({ profile: runningProfile, query: { session_id: 'session-files', agent_id: 'main' }, prompt });
+    await act(async () => section('prompt').querySelector<HTMLButtonElement>('[data-prompt-file-check-run]')!.click());
+    expect(section('prompt').querySelector('[role="alert"]')?.textContent).toContain('Audit unavailable');
+    await act(async () => section('prompt').querySelector<HTMLButtonElement>('[data-prompt-file-check-run]')!.click());
+    expect(section('prompt').querySelector('[role="alert"]')).toBeNull();
+    expect(section('prompt').querySelector('[data-prompt-file-check-empty]')).not.toBeNull();
+  });
+
+  it('shows no request evidence when absent and marks unavailable bindings honestly', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [], complete: true });
+    await render({ profile: runningProfile, prompt: { ...prompt, request: undefined } });
+    expect(section('prompt').textContent).toContain('No request evidence has been recorded');
+    expect(section('prompt').textContent).not.toContain('actual-system-hash');
+    await render({ profile: runningProfile, promptUnavailable: true });
+    expect(section('prompt').textContent).toContain('bound prompts for this agent are unavailable');
+    expect(section('prompt').querySelector('[data-prompt-state="effective"]')).toBeNull();
+  });
+});
+
+it('reads prompt evidence for the selected child in its own session, never main', async () => {
+  client.listNamedAgentProfiles.mockResolvedValue({ items: [], complete: true });
+  panelRead.mockResolvedValue({ context: 'live', owner: { agent_id: 'child-two' }, available: true, targets: [],
+    prompt: { identity: { delegation_position: 'sub', profile: 'reviewer', model_alias: 'fixture/model-b', executor: 'native' },
+      apply_on: 'next-binding-or-context-rebuild', channels: [],
+      request: { system_prompt_hash: 'child-hash', tools_hash: 'child-tools', at: 1790979200000 } },
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const identity = { id: 'child-two', sessionId: 'session-two', profile: 'reviewer', label: 'Reviewer', context: 'live' as const, status: 'completed' as const };
+  await act(async () => root.render(<QueryClientProvider client={queryClient}><I18nProvider>
+    <AgentDetailDrawer target={{ kind: 'profile', identity }} onClose={() => undefined} />
+  </I18nProvider></QueryClientProvider>));
+  await settle();
+  expect(panelRead).toHaveBeenCalledWith({ session_id: 'session-two', agent_id: 'child-two' }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  expect(document.querySelector('[data-prompt-request]')?.textContent).toContain('child-hash');
+  expect(document.querySelector('[data-prompt-identity]')?.textContent).toContain('Subagent');
+  await act(async () => root.render(<I18nProvider><span /></I18nProvider>));
+  queryClient.clear();
 });

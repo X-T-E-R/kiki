@@ -20,7 +20,6 @@ import { MAIN_AGENT_ID } from '@kiki/session-core/session';
 import { sumAgentTreeMetrics, UNKNOWN_AGENT_PANEL_METRICS } from '@kiki/session-core/session/agentPanel';
 import { useConnection, useOptionalControllerRegistry } from '../state/connection';
 import { useI18n } from '../i18n';
-import { permissionModeDef } from '../lib/permissionModes';
 import { useAutoCompact } from './useAutoCompact';
 import { InspectorOverview, type OverviewFigures } from './agent-panel/InspectorOverview';
 import { CockpitOverview } from './rail-variants/CockpitOverview';
@@ -30,6 +29,7 @@ import type { AgentTokenUsage } from './agent-panel/types';
 import { AgentIdentitySection } from './agent-panel/AgentIdentitySection';
 import { AgentTodoSection } from './agent-panel/AgentTodoSection';
 import { AgentNotesSection } from './agent-panel/AgentNotesSection';
+import { AgentHooksSection } from './agent-panel/AgentHooksSection';
 import { AgentPlanSection } from './agent-panel/AgentPlanSection';
 import { AgentCapabilitiesSection, capabilityCounts } from './agent-panel/AgentCapabilitiesSection';
 import { usageSessionDeepLink } from '../lib/usageV2';
@@ -120,7 +120,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   onOpenAgent?: (agentId: string) => void;
 }) {
   const { klient } = useConnection();
-  const { t, tp } = useI18n();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const query = { session_id: state.sessionId, agent_id: agentId };
   const node = forest.byId[agentId];
@@ -163,7 +163,10 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const usage = metrics[agentId] ?? UNKNOWN_AGENT_PANEL_METRICS;
   const ids = [...new Set([MAIN_AGENT_ID, ...Object.keys(forest.byId), ...Object.keys(metrics)])];
   const treeComplete = ids.every((id) => metrics[id] !== undefined);
-  const tree = treeComplete ? sumAgentTreeMetrics(ids, metrics) : { totalTokens: null, totalCostUsd: null };
+  // Sums the agents the server has actually reported, and `null` only when
+  // none are known. Callers label an incomplete sum as such rather than
+  // passing it off as the whole tree.
+  const tree = sumAgentTreeMetrics(ids, metrics);
   const todos = (agentState?.todos ?? []).filter((todo): todo is typeof todo & { status: 'pending' | 'in_progress' | 'done' } =>
     todo.status === 'pending' || todo.status === 'in_progress' || todo.status === 'done');
   const loaded = agentState?.loaded === true;
@@ -213,18 +216,24 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   // (TodoList), read-only here, from this agent's state only. The section
   // itself tells a still-loading agent from one that has no notes yet.
   const notesSection = agentState !== undefined
-    ? <AgentNotesSection notes={agentState.todoNotes} meta={agentState.todoNotesMeta} loaded={loaded} />
+    ? <AgentNotesSection notes={agentState.todoNotes} meta={agentState.todoNotesMeta} status={agentState.todoNotesStatus} loaded={loaded} />
+    : null;
+  // Which hook rules this agent runs with, and from which file: an on-demand
+  // detail under its notes, asked only when this agent has live state.
+  const hooksSection = agentState !== undefined
+    ? <AgentHooksSection key={`hooks:${state.sessionId}:${agentId}`} sessionId={state.sessionId} agentId={agentId} />
     : null;
   if (part === 'work') {
     return <div data-agent-panel-container data-agent-panel-part="work" className="space-y-4 empty:hidden">
       {todoSection}
       {notesSection}
+      {hooksSection}
       {planSection}
     </div>;
   }
   const identityProps = {
     identity: {
-      id: agentId, profile: profileName,
+      id: agentId, sessionId: state.sessionId, profile: profileName,
       label: node?.label ?? agentId, model: profile?.model ?? agentState?.model,
       thinkingEffort: profile?.thinking_effort,
       thinkingEffortSource: profile?.thinking_effort_source,
@@ -236,10 +245,13 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
       configContentPreview: profile === undefined ? undefined : JSON.stringify(profile, null, 2),
       rawProfile: profile,
     },
-    profilePolicy: profile?.subagent_policy, dispatchTargets: data?.targets,
+    profilePolicy: profile?.can_spawn_subagents === false ? 'fixed' as const : undefined, dispatchTargets: data?.targets,
     subagentTargets, skills: mappedSkills, toolCapabilities: mappedTools, draftScope, usage,
+    // The profile card has no way to mark a count as partial, so it keeps the
+    // stricter rule: a tree that is not fully reported shows no total at all.
+    // The overview labels its own partial sum instead.
     treeMetrics: agentId === MAIN_AGENT_ID ? {
-      ...tree,
+      ...(treeComplete ? tree : { totalTokens: null, totalCostUsd: null }),
       cacheHitRate: treeComplete ? aggregateTreeCacheHitRate(ids, metrics) : null,
       cacheReadTokens: treeComplete ? aggregateTreeCacheReadTokens(ids, metrics) : null,
       cacheWriteTokens: treeComplete ? aggregateTreeCacheWriteTokens(ids, metrics) : null,
@@ -252,10 +264,8 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     return <AgentIdentitySection {...identityProps} part="usage" />;
   }
   const facts = overviewFacts({
-    t, tp, agentId, state, agentState, forest, usage, metrics, ids, treeComplete, tree,
-    profileModel: profile?.model, profileEffort: profile?.thinking_effort,
+    t, agentId, state, agentState, forest, usage, metrics, ids, treeComplete, tree,
     compactPoint: autoCompact?.status?.tokens,
-    tools: data?.tools,
   });
   if (part === 'overview') {
     const cockpit = (
@@ -281,10 +291,9 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
           compactPoint={facts.compactPoint}
           figures={facts.figures}
           treeFigures={facts.treeFigures}
-          scope={facts.treeFigures === undefined ? 'agent' : scope}
+          scope={scope}
           onScope={setScope}
           renderLayout={renderOverview}
-          setupLine={facts.setupLine}
           startedAt={facts.startedAt}
           turns={facts.turns}
           toolCalls={facts.toolCalls}
@@ -330,7 +339,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   }
   return <div data-agent-panel-container className="space-y-5">
     <AgentIdentitySection identity={{
-      id: agentId, profile: profileName,
+      id: agentId, sessionId: state.sessionId, profile: profileName,
       label: node?.label ?? agentId, model: profile?.model ?? agentState?.model,
       thinkingEffort: profile?.thinking_effort,
       thinkingEffortSource: profile?.thinking_effort_source,
@@ -341,13 +350,13 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
       context: data?.context ?? 'live', isMain: agentId === MAIN_AGENT_ID,
       configContentPreview: profile === undefined ? undefined : JSON.stringify(profile, null, 2),
       rawProfile: profile,
-    }} profilePolicy={profile?.subagent_policy} dispatchTargets={data?.targets}
+    }} profilePolicy={profile?.can_spawn_subagents === false ? 'fixed' : undefined} dispatchTargets={data?.targets}
       subagentTargets={subagentTargets}
       skills={mappedSkills}
       toolCapabilities={mappedTools}
       draftScope={draftScope}
       usage={usage} treeMetrics={agentId === MAIN_AGENT_ID ? {
-      ...tree,
+      ...(treeComplete ? tree : { totalTokens: null, totalCostUsd: null }),
       cacheHitRate: treeComplete ? aggregateTreeCacheHitRate(ids, metrics) : null,
       cacheReadTokens: treeComplete ? aggregateTreeCacheReadTokens(ids, metrics) : null,
       cacheWriteTokens: treeComplete ? aggregateTreeCacheWriteTokens(ids, metrics) : null,
@@ -386,8 +395,6 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
 }
 
 type Translate = ReturnType<typeof useI18n>['t'];
-type TranslatePlural = ReturnType<typeof useI18n>['tp'];
-type PanelTools = import('@kiki/protocol').AgentCapabilitiesResponse['tools'];
 
 const known = (value: number | null | undefined): value is number =>
   value !== null && value !== undefined && Number.isFinite(value);
@@ -427,25 +434,12 @@ function figuresFromSession(state: SessionViewState): OverviewFigures | undefine
   };
 }
 
-function isMcp(tool: NonNullable<PanelTools>[number]): boolean {
-  return tool.source === 'mcp' || tool.name.startsWith('mcp__');
-}
-function isPlugin(tool: NonNullable<PanelTools>[number]): boolean {
-  return tool.source === 'plugin' || tool.name.startsWith('plugin__');
-}
-/** Server part of a qualified `mcp__<server>__<tool>` / `plugin__<id>__<tool>` name. */
-function extensionOwner(name: string): string | undefined {
-  const match = /^(?:mcp|plugin)__(.+?)__/.exec(name);
-  return match?.[1];
-}
-
 /**
- * Everything the overview and the setup facts show, derived once. Only known
- * values are returned; each consumer drops what is missing.
+ * Everything the overview shows, derived once. Only known values are returned;
+ * each consumer drops what is missing.
  */
 function overviewFacts(input: {
   t: Translate;
-  tp: TranslatePlural;
   agentId: string;
   state: SessionViewState;
   agentState: SessionViewState | undefined;
@@ -455,12 +449,9 @@ function overviewFacts(input: {
   ids: readonly string[];
   treeComplete: boolean;
   tree: { totalTokens: number | null; totalCostUsd: number | null };
-  profileModel: string | undefined;
-  profileEffort: string | undefined;
   compactPoint: number | undefined;
-  tools: PanelTools;
 }) {
-  const { t, tp, agentId, state, agentState, forest, usage, metrics, ids, treeComplete, tree } = input;
+  const { t, agentId, state, agentState, forest, usage, metrics, ids, treeComplete, tree } = input;
   const isMain = agentId === MAIN_AGENT_ID;
   const node = forest.byId[agentId];
   const contextUsed = known(usage.contextTokens) ? usage.contextTokens
@@ -469,64 +460,27 @@ function overviewFacts(input: {
     : agentState?.maxContextTokens ?? (isMain ? state.maxContextTokens ?? (state.session?.usage?.context_limit || undefined) : node?.maxContextTokens);
   const hasPanelUsage = known(usage.totalTokens) || known(usage.totalCostUsd);
   const figures = hasPanelUsage ? figuresFrom(usage, t) : (isMain ? figuresFromSession(state) : undefined) ?? figuresFrom(usage, t);
-  const subagentCount = Object.keys(forest.byId).filter((id) => id !== MAIN_AGENT_ID).length;
-  const treeFigures: OverviewFigures | undefined = isMain && subagentCount > 0 && treeComplete
-    ? {
-        costUsd: tree.totalCostUsd ?? undefined,
-        totalTokens: tree.totalTokens ?? undefined,
-        cacheRate: aggregateTreeCacheHitRate(ids, metrics) ?? undefined,
-      }
-    : undefined;
-  const model = input.profileModel ?? agentState?.model ?? node?.model;
-  const effort = input.profileEffort ?? agentState?.thinkingEffort ?? node?.thinkingEffort;
-  const permission = agentState?.permissionMode ?? (isMain ? state.permissionMode : undefined);
-  const permissionDef = permission === undefined ? undefined : permissionModeDef(permission);
-  const permissionLabel = permissionDef === undefined ? undefined : t(permissionDef.labelKey);
-  // Model and effort head the profile card; the overview only adds the
-  // permission mode so the rail never says the same thing twice.
-  const setupLine = [permissionLabel].filter((part): part is string => part !== undefined && part !== '');
+  // Main's page always offers the tree scope. A tree that is not fully
+  // counted yet sums only the agents the server has actually reported and
+  // says so, rather than disappearing from the rail or passing a partial sum
+  // off as the whole tree.
+  const treeFigures: OverviewFigures | undefined = isMain ? {
+    costUsd: tree.totalCostUsd ?? undefined,
+    totalTokens: tree.totalTokens ?? undefined,
+    cacheRate: aggregateTreeCacheHitRate(ids, metrics) ?? undefined,
+    incomplete: !treeComplete,
+  } : undefined;
   const startedAt = isMain ? state.session?.created_at : node?.startedAt;
   const turns = isMain ? state.session?.usage?.turn_count : undefined;
   const toolCalls = !isMain && node?.toolCallCountKnown === true ? node.toolCallCount : undefined;
-
-  const setupRows: { key: string; label: string; value: string; title?: string }[] = [];
-  if (model !== undefined && model !== '') setupRows.push({ key: 'model', label: t('inspector.modelRow'), value: model, title: model });
-  if (effort !== undefined && effort !== '') setupRows.push({ key: 'effort', label: t('inspector.effort'), value: effort });
-  if (contextLimit !== undefined) {
-    setupRows.push({ key: 'window', label: t('inspector.window'), value: `${contextLimit.toLocaleString()}` });
-  }
-  if (input.compactPoint !== undefined) {
-    const pct = contextLimit !== undefined && contextLimit > 0 ? Math.round((input.compactPoint / contextLimit) * 100) : undefined;
-    setupRows.push({
-      key: 'compact',
-      label: t('inspector.compactPoint'),
-      value: pct === undefined ? input.compactPoint.toLocaleString() : t('inspector.compactPointValue', { point: input.compactPoint.toLocaleString(), pct }),
-    });
-  }
-  if (permissionLabel !== undefined) setupRows.push({ key: 'permission', label: t('inspector.permission'), value: permissionLabel });
-  const tools = input.tools;
-  if (tools !== undefined && tools.length > 0) {
-    const enabled = tools.filter((tool) => tool.state === 'enabled').length;
-    setupRows.push({ key: 'tools', label: t('inspector.toolsRow'), value: t('inspector.toolsCount', { enabled, total: tools.length }) });
-    const mcpServers = new Set(tools.filter(isMcp).map((tool) => extensionOwner(tool.name) ?? tool.name));
-    const plugins = new Set(tools.filter(isPlugin).map((tool) => extensionOwner(tool.name) ?? tool.name));
-    setupRows.push({
-      key: 'extensions',
-      label: t('inspector.extensions'),
-      value: `${tp('inspector.mcpServers', mcpServers.size)} · ${tp('inspector.plugins', plugins.size)}`,
-      title: [...mcpServers, ...plugins].join(', ') || undefined,
-    });
-  }
   return {
     contextUsed,
     contextLimit,
     compactPoint: input.compactPoint,
     figures,
     treeFigures,
-    setupLine,
     startedAt,
     turns,
     toolCalls,
-    setupRows,
   };
 }

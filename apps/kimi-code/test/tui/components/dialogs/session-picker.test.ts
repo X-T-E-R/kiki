@@ -3,6 +3,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SessionPickerComponent } from '#/tui/components/dialogs/session-picker';
 
+vi.mock('node:os', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:os')>(),
+  homedir: () => 'C:\\Users\\example',
+}));
+
 function stripAnsi(text: string): string {
   return text.replaceAll(/\[[0-?]*[ -/]*[@-~]/g, '');
 }
@@ -17,6 +22,23 @@ const ESC = String.fromCodePoint(27);
 describe('SessionPickerComponent', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it.each([
+    ['C:\\Users\\example', '~'],
+    ['C:\\Users\\example\\repo', '~\\repo'],
+    ['C:/Users/example/repo', '~/repo'],
+    ['C:\\Users\\example/repo', '~/repo'],
+    ['C:\\Users\\example-backup\\repo', 'C:\\Users\\example-backup\\repo'],
+    ['C:/Users/examplex/repo', 'C:/Users/examplex/repo'],
+  ])('does not confuse similar home prefixes (%s)', (work_dir, expected) => {
+    const component = new SessionPickerComponent({
+      sessions: [{ id: 'session-path', title: 'Path test', work_dir, updated_at: 1 }],
+      loading: false, currentSessionId: '', onSelect: vi.fn(), onCancel: vi.fn(),
+    });
+    const output = renderPlain(component);
+    expect(output).toContain(expected);
+    if (work_dir.includes('example-backup') || work_dir.includes('examplex')) expect(output).not.toContain('~');
   });
 
   it('forwards Ctrl-C and Ctrl-D to optional host shortcuts', () => {

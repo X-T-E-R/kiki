@@ -3,8 +3,10 @@
 
 import type { PageResponse, Session, Workspace } from '@kiki/protocol';
 
+export type SessionListPage = PageResponse<Session> & { readonly next_cursor?: string };
+
 export interface SessionListData {
-  readonly pages: PageResponse<Session>[];
+  readonly pages: SessionListPage[];
   readonly pageParams: unknown[];
 }
 
@@ -54,18 +56,44 @@ export function shortCwd(cwd: string): string {
   return `…/${parts.slice(-2).join('/')}`;
 }
 
+/** Read only a new head and, if needed, the gap before the loaded head. */
+export async function readSessionFirstPage(
+  read: (beforeId?: string) => Promise<SessionListPage>,
+  loaded: SessionListData | undefined,
+): Promise<SessionListPage> {
+  let head = await read();
+  const ids = new Set(loaded?.pages[0]?.items.map((item) => item.id));
+  const cursors = new Set<string>();
+  while (ids.size > 0 && head.has_more && !head.items.some((item) => ids.has(item.id))) {
+    const cursor = head.next_cursor ?? head.items.at(-1)?.id;
+    if (cursor === undefined || cursors.has(cursor)) throw new Error('Session list cursor did not advance');
+    cursors.add(cursor);
+    const page = await read(cursor);
+    head = { ...page, items: [...head.items, ...page.items] };
+  }
+  return head;
+}
+
 /**
- * Poll merge for the 5s cadence: only page 1 is refetched (every sidebar
- * change lands there); older loaded pages are kept as-is and refresh on
- * demand (load-more) or invalidation. Interval-refetching an infinite query
- * would otherwise refetch ALL loaded pages on every tick.
+ * Poll merge keeps the loaded boundary after the newest overlapping row.
+ * Only the head is refreshed; rows displaced by new sessions remain loaded,
+ * and the last covered cursor still drives load-more.
  */
 export function mergeSessionFirstPage(
   old: SessionListData | undefined,
-  first: PageResponse<Session>,
+  first: SessionListPage,
 ): SessionListData | undefined {
   if (old === undefined) return old;
-  return { ...old, pages: [first, ...old.pages.slice(1)] };
+  const previous = old.pages[0];
+  if (previous === undefined || !first.has_more) return { pages: [first], pageParams: [undefined] };
+  const ids = new Set(first.items.map((item) => item.id));
+  const overlap = previous.items.findLastIndex((item) => ids.has(item.id));
+  const retained = previous.items.slice(overlap + 1);
+  const head = retained.length === 0 ? first : {
+    ...first, items: [...first.items, ...retained], has_more: previous.has_more,
+    next_cursor: previous.next_cursor ?? previous.items.at(-1)?.id,
+  };
+  return { ...old, pages: [head, ...old.pages.slice(1)] };
 }
 
 /** A fresher page 1 can overlap an older loaded page as sessions shift. */

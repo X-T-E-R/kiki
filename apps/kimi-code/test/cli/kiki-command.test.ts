@@ -23,7 +23,8 @@ import { resolveKikiHome } from '../../src/kiki/home';
 import { mcpCommandConfig, upsertMcpServer } from '../../src/kiki/install';
 import { createSeatOnConnection } from '../../src/kiki/seat';
 import { mcpPrincipal } from '../../src/kiki/mcp';
-import { parseDuration, startServeServer } from '../../src/kiki/serve';
+import { registerKikiCommands } from '../../src/kiki/register';
+import { parseDuration, startServeServer, registerServeCommand, findReachableServer, ensureServer } from '../../src/kiki/serve';
 
 const roots: string[] = [];
 
@@ -34,6 +35,37 @@ afterEach(async () => {
 });
 
 describe('kiki command helpers', () => {
+  it('describes the daemon, seat, MCP, and host root commands', () => {
+    const program = new Command('kiki');
+    registerKikiCommands(program);
+    const descriptions = Object.fromEntries(program.commands.map((command) => [command.name(), command.description()]));
+    expect(descriptions).toMatchObject({
+      serve: expect.stringContaining('foreground'),
+      seat: expect.stringContaining('delegation seats'),
+      mcp: expect.stringContaining('stdio'),
+      'host-attach': expect.stringContaining('prompt-file'),
+      'host-claude-bind': expect.stringContaining('event cursor'),
+      'host-claude-rewake': expect.stringContaining('notification'),
+      'host-codex-bind': expect.stringContaining('Codex thread'),
+      'host-codex-queue': expect.stringContaining('notifications'),
+    });
+  });
+
+  it('gives every seat subcommand a description that names what it acts on', () => {
+    const program = new Command('kiki');
+    registerKikiCommands(program);
+    const seat = program.commands.find((command) => command.name() === 'seat');
+    const descriptions = Object.fromEntries(
+      (seat?.commands ?? []).map((command) => [command.name(), command.description()]),
+    );
+    expect(descriptions).toEqual({
+      create: expect.stringContaining('workspace and principal'),
+      list: expect.stringContaining('this home'),
+      revoke: expect.stringContaining('by id'),
+      install: expect.stringContaining('MCP config'),
+    });
+  });
+
   it('parses daemon idle durations', () => {
     expect(parseDuration('250ms')).toBe(250);
     expect(parseDuration('45s')).toBe(45_000);
@@ -51,7 +83,7 @@ describe('kiki command helpers', () => {
     };
 
     await startServeServer(
-      { homeDir: String.raw`C:\Users\Example\.kiki`, port: 0, idleExitMs: 60_000 },
+      { homeDir: String.raw`C:\Users\Example\.kiki`, port: 0, idleExitMs: 60_000, debugEndpoints: true },
       webAssetsDir,
       startServer,
     );
@@ -61,8 +93,50 @@ describe('kiki command helpers', () => {
       port: 0,
       homeDir: String.raw`C:\Users\Example\.kiki`,
       idleExitMs: 60_000,
+      debugEndpoints: true,
       webAssetsDir,
     });
+  });
+
+  it('attaches a live backend and refuses ensure when its identity handshake cannot be verified', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-query-live-')); roots.push(root);
+    await writeFile(join(root, 'config.toml'), 'search_backend = "minidb"\n[search]\nenabled = false\n');
+    await writeFile(join(root, 'index.html'), '<!doctype html><title>CLI attach fixture</title>');
+    const server = await startServeServer({ homeDir: root, port: 0, idleExitMs: 0 }, root);
+    try {
+      const connection = await findReachableServer(root);
+      expect(connection).toMatchObject({ serverId: server.serverId, identity: server.admission.identity, token: server.localOwnerToken });
+      expect((await ensureServer({ homeDir: root })).serverId).toBe(server.serverId);
+      const fetchImpl = globalThis.fetch;
+      vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => String(input).endsWith('/api/remote-connections/handshake')
+        ? new Response('{}', { status: 404 }) : fetchImpl(input, init));
+      await expect(findReachableServer(root)).rejects.toThrow('identity handshake could not be verified');
+      await expect(ensureServer({ homeDir: root })).rejects.toThrow('identity handshake could not be verified');
+      expect(await readdir(join(root, 'server', 'instances'))).toHaveLength(1);
+    } finally { vi.unstubAllGlobals(); await server.close(); }
+  }, 30000);
+
+  it('queries an empty explicit home without starting a server or creating home state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-query-test-')); roots.push(root);
+    const program = new Command(); registerServeCommand(program);
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await program.parseAsync(['node', 'kiki', 'serve', '--home', root, '--query', '--json']);
+      expect(output).toHaveBeenCalledWith('{"running":false}\n');
+      expect(await readdir(root)).toEqual([]);
+    } finally { output.mockRestore(); }
+  });
+
+  it('requires one serve effect and gives explicit zero idle timeout a persistent daemon', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-query-flags-')); roots.push(root);
+    const program = new Command(); registerServeCommand(program);
+    await expect(program.parseAsync(['node', 'kiki', 'serve', '--home', root, '--query', '--ensure'])).rejects.toThrow('--ensure, --stop and --query');
+    const started: ServerStartOptions[] = [];
+    const start = async (options: ServerStartOptions): Promise<RunningServer> => { started.push(options); return {} as RunningServer; };
+    await startServeServer({ homeDir: root, idleExitMs: parseDuration('0ms') }, root, start);
+    await startServeServer({ homeDir: root, idleExitMs: parseDuration('30m') }, root, start);
+    expect(started[0]!.idleExitMs).toBeUndefined();
+    expect(started[1]!.idleExitMs).toBe(1800000);
   });
 
   it('resolves Kiki home consistently and reports the KIKI_HOME token path', async () => {
@@ -228,12 +302,17 @@ describe('kiki command helpers', () => {
     await p7.parseAsync(['node', 'kiki', 'doctor', 'agents']);
     expect(exits).toEqual([1]);
 
-    // 8. Help output contains both --agents and agents subcommand
+    // 8. Help output contains both --agents and agents subcommand, and the
+    // flag points at the subcommand so the two entries read as one action.
     const p8 = new Command('kiki').exitOverride();
     const doctorCmd = registerDoctorCommand(p8, deps);
     const help = doctorCmd.helpInformation();
     expect(help).toContain('--agents');
     expect(help).toContain('agents [options]');
+    const agentsFlag = doctorCmd.options.find((option) => option.long === '--agents');
+    expect(agentsFlag?.description).toBe(
+      'Validate agent profiles and configuration. Same as `kiki doctor agents`.',
+    );
   });
 });
 
@@ -259,6 +338,72 @@ describe('kiki delegation CLI', () => {
       'cancel',
     ]);
     expect(program.commands.map((command) => command.name())).toEqual(projected.map((entry) => entry.command.split(/[ <[]/u)[0]));
+  });
+
+  it('describes every delegation command and option with procedure-specific help', () => {
+    const program = new Command('kiki');
+    registerDelegationCommands(program);
+    for (const command of program.commands) {
+      expect(command.description().trim()).not.toBe('');
+      for (const option of command.options) expect(option.description.trim()).not.toBe('');
+    }
+    const helpFor = (name: string) => program.commands.find((command) => command.name() === name)!.helpInformation().replace(/\s+/gu, ' ');
+    expect(helpFor('list')).toContain('children and continuations owned by the CLI seat');
+    expect(helpFor('send')).toContain('next run boundary');
+    expect(helpFor('continue')).toContain('terminal main-agent or named-child');
+    expect(helpFor('events')).toContain('lifecycle or turn');
+    expect(helpFor('transcript')).toContain('text or items');
+    expect(helpFor('result')).toContain('bytes per page');
+    expect(helpFor('respond')).toContain('bare key means true');
+  });
+
+  it.each([['list', '--help'], ['dispatch', '--help']])(
+    'terminates help parsing without startup, seat, RPC, or root action: %s %s',
+    async (...args) => {
+      const harness = runtimeHarness('unused', [], {});
+      let stdout = '';
+      let stderr = '';
+      const rootAction = vi.fn();
+      const program = new Command('kiki').configureOutput({
+        writeOut: (text) => { stdout += text; },
+        writeErr: (text) => { stderr += text; },
+      }).action(rootAction);
+      registerDelegationCommands(program, delegationProcedureTable, harness.dependencies);
+      await expect(program.parseAsync(args, { from: 'user' })).rejects.toMatchObject({
+        code: 'commander.helpDisplayed', exitCode: KIKI_EXIT.success,
+      });
+      expect(stdout).toContain('Usage: kiki');
+      expect(stderr).toBe('');
+      expect(rootAction).not.toHaveBeenCalled();
+      expect(harness.ensure).not.toHaveBeenCalled();
+      expect(harness.createSeat).not.toHaveBeenCalled();
+      expect(harness.createClient).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { args: ['dispatch'], message: 'missing required argument' },
+    { args: ['list', '--unknown'], message: 'unknown option' },
+  ])('preserves Commander usage errors without RPC: $args', async ({ args, message }) => {
+    const harness = runtimeHarness('unused', [], {});
+    let stderr = '';
+    const program = new Command('kiki').configureOutput({ writeErr: (text) => { stderr += text; } });
+    registerDelegationCommands(program, delegationProcedureTable, harness.dependencies);
+    await expect(program.parseAsync(args, { from: 'user' })).rejects.toMatchObject({ exitCode: KIKI_EXIT.usage });
+    expect(stderr).toContain(message);
+    expect(harness.ensure).not.toHaveBeenCalled();
+    expect(harness.createClient).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid canonical input before daemon startup', async () => {
+    const harness = runtimeHarness('unused', [], {});
+    let stderr = '';
+    expect(await runDelegationCommand('respond', ['example'], {}, {
+      ...harness.dependencies, stderr: { write: (text) => { stderr += text; return true; } },
+    })).toBe(KIKI_EXIT.usage);
+    expect(stderr).toContain('Select exactly one approval decision or provide --answer.');
+    expect(harness.ensure).not.toHaveBeenCalled();
+    expect(harness.createClient).not.toHaveBeenCalled();
   });
 
   it('keeps the delegation CLI free of direct agent-core imports', async () => {
@@ -429,6 +574,29 @@ describe('kiki delegation CLI', () => {
     expect(await runDelegationCommand('status', ['dispatch-1'], { workspace }, failed.dependencies)).toBe(KIKI_EXIT.failure);
     const cancelled = runtimeHarness(workspace, [], { status: [{ dispatchId: 'dispatch-1', status: 'cancelled' }] });
     expect(await runDelegationCommand('status', ['dispatch-1'], { workspace }, cancelled.dependencies)).toBe(KIKI_EXIT.notFound);
+  });
+
+  it('advances follow after full and short pages, retains the watermark on empty pages, and emits new turn events once', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-follow-test-'));
+    roots.push(root);
+    const calls: { name: string; input: unknown }[] = [];
+    const harness = runtimeHarness(root, calls, {
+      events: [
+        { items: [{ seq: 6, type: 'started' }], nextCursor: 6 },
+        { items: [{ seq: 7, type: 'delta' }] },
+        { items: [] },
+        { items: [{ seq: 8, type: 'completed' }] },
+      ],
+      status: [{ status: 'running' }, { status: 'running' }, { status: 'running' }, { status: 'completed' }],
+    });
+    expect(await runDelegationCommand('events', ['dispatch-1'], {
+      workspace: root, cursor: 5, detail: 'turn', follow: true, interval: 1, json: true,
+    }, harness.dependencies)).toBe(KIKI_EXIT.success);
+    expect(harness.stdout().trim().split('\n').map((line) => JSON.parse(line).seq)).toEqual([6, 7, 8]);
+    expect(calls.filter((call) => call.name === 'events').map((call) => call.input)).toEqual(
+      [5, 6, 7, 7].map((cursor) => ({ dispatchId: 'dispatch-1', detail: 'turn', cursor })),
+    );
+    expect(harness.closed()).toBe(1);
   });
 
   it('resolves home/workspace, reuses the CLI seat identity, and never prints tokens', async () => {

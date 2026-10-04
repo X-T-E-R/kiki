@@ -1,4 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { collectAuthNativePackage, collectNodePtyPackage } from '../../../scripts/native/assets.mjs';
 
 import {
   nativeDeps,
@@ -125,5 +129,94 @@ describe('nativeDeps registry shape', () => {
     const piTui = nativeDeps.find((d) => d.id === 'pi-tui');
     expect(piTui?.collect).toBe('native-file-only');
     expect(piTui?.parent).toBe(null);
+  });
+});
+
+
+describe('auth-native loading unit', () => {
+  it('registers all six targets and collects only the selected host binding with licenses', async () => {
+    for (const target of SUPPORTED_TARGETS) {
+      expect(resolveTargetDeps(target).find((dep) => dep.id === 'auth-native')).toMatchObject({
+        collect: 'auth-native', resolvedName: '@kiki/auth-native', parentName: null,
+      });
+    }
+    const packageRoot = resolve(import.meta.dirname, '../../../../../packages/auth-native');
+    const target = `${process.platform}-${process.arch}`;
+    const collected = await collectAuthNativePackage({ packageRoot, target });
+    const paths = collected.packageManifest.files.map((file: { relativePath: string }) => file.relativePath);
+    expect(paths).toContain(`node_modules/@kiki/auth-native/prebuilds/${target}/auth-native.node`);
+    expect(paths).toContain('node_modules/@kiki/auth-native/index.cjs');
+    expect(paths).toContain('node_modules/@kiki/auth-native/licenses/Apache-2.0.txt');
+    expect(paths).toContain('node_modules/@kiki/auth-native/licenses/upstream-mit.txt');
+    expect(paths.filter((path: string) => path.endsWith('.node'))).toHaveLength(1);
+    expect(paths.some((path: string) => /\/src\/|\/target\/|\/tests\//.test(path))).toBe(false);
+    mkdirSync(resolve('.tmp'), { recursive: true });
+    const missingRoot = mkdtempSync(resolve('.tmp', 'auth-native-missing-'));
+    try {
+      writeFileSync(join(missingRoot, 'package.json'), '{"main":"index.cjs"}');
+      writeFileSync(join(missingRoot, 'index.cjs'), 'module.exports = {};');
+      for (const foreign of SUPPORTED_TARGETS.filter((candidate) => candidate !== target)) {
+        await expect(collectAuthNativePackage({ packageRoot: missingRoot, target: foreign })).rejects.toThrow(`prebuilds/${foreign}/auth-native.node`);
+      }
+    } finally {
+      rmSync(missingRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('node-pty loading unit', () => {
+  it('registers node-pty under the engine install root for every target', () => {
+    for (const target of SUPPORTED_TARGETS) {
+      expect(resolveTargetDeps(target).find((dep) => dep.id === 'node-pty')).toMatchObject({
+        collect: 'node-pty', resolvedName: 'node-pty', parentName: '@kiki/agent-core-v2',
+      });
+    }
+  });
+
+  it('collects the installed host binding and dynamic worker/agent entrypoints', async () => {
+    const req = createRequire(new URL('../../../../../packages/agent-core-v2/package.json', import.meta.url));
+    const packageRoot = dirname(req.resolve('node-pty/package.json'));
+    const result = await collectNodePtyPackage({ packageRoot, target: `${process.platform}-${process.arch}` });
+    const paths = result.packageManifest.files.map((file: { relativePath: string }) => file.relativePath);
+    expect(paths).toContain('node_modules/node-pty/LICENSE');
+    expect(paths).toContain('node_modules/node-pty/lib/worker/conoutSocketWorker.js');
+    expect(paths).toContain('node_modules/node-pty/lib/conpty_console_list_agent.js');
+    expect(paths.some((path: string) => path.endsWith('/pty.node'))).toBe(true);
+    expect(paths.some((path: string) => /\.test\.js|\.pdb|\.map/.test(path))).toBe(false);
+  });
+
+  it('selects only the named foreign target, including helper mode, and rejects missing helpers', async () => {
+    mkdirSync(resolve('.tmp'), { recursive: true });
+    const packageRoot = mkdtempSync(resolve('.tmp', 'pty-collector-'));
+    const put = (path: string, content = 'fixture') => {
+      mkdirSync(dirname(join(packageRoot, path)), { recursive: true });
+      writeFileSync(join(packageRoot, path), content);
+    };
+    try {
+      put('package.json', '{"main":"lib/index.js"}');
+      put('lib/index.js', 'module.exports = {};');
+      put('lib/worker/conoutSocketWorker.js');
+      put('lib/unused.test.js');
+      put('LICENSE', 'MIT');
+      put('deps/winpty/LICENSE', 'MIT');
+      for (const target of SUPPORTED_TARGETS.filter((target) => target !== `${process.platform}-${process.arch}`)) {
+        const binaries = target.startsWith('win32-')
+          ? ['pty.node', 'conpty.node', 'conpty_console_list.node', 'winpty.dll', 'winpty-agent.exe', 'conpty/conpty.dll', 'conpty/OpenConsole.exe']
+          : ['pty.node', 'spawn-helper'];
+        for (const name of binaries) put(`prebuilds/${target}/${name}`);
+        const result = await collectNodePtyPackage({ packageRoot, target });
+        const files = result.packageManifest.files as Array<{ relativePath: string; mode?: number }>;
+        expect(files.filter((file) => file.relativePath.includes('/prebuilds/')).map((file) => file.relativePath)).toEqual(
+          binaries.map((name) => `node_modules/node-pty/prebuilds/${target}/${name}`).toSorted((a, b) => a.localeCompare(b)),
+        );
+        if (!target.startsWith('win32-')) {
+          expect(files.find((file) => file.relativePath.endsWith('/spawn-helper'))?.mode).toBe(0o755);
+          rmSync(join(packageRoot, `prebuilds/${target}/spawn-helper`));
+          await expect(collectNodePtyPackage({ packageRoot, target })).rejects.toThrow(`prebuilds/${target}/spawn-helper`);
+        }
+      }
+    } finally {
+      rmSync(packageRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 });

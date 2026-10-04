@@ -5,8 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NamedAgentProfile } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
-import { AgentCapabilitiesPanel } from '../AgentCapabilitiesPanel';
-import { NamedAgentProfilesCard, SubagentDispatchPoliciesCard } from './AgentsSection';
+import { NamedAgentProfilesCard } from './AgentsSection';
 import { optionLabels, pickValue } from './testControls';
 import { AgentTaskSettings } from './AgentTaskSettings';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
@@ -39,7 +38,6 @@ const profile: NamedAgentProfile = {
   pinned_model_alias: 'fixture/model-a',
   thinking_effort: 'medium',
   service_tier: 'flex',
-  subagent_policy: 'advisory',
   context_budget: 4096,
   max_completion_tokens: 512,
   request_params: { temperature: 0.2, stream: true },
@@ -139,7 +137,6 @@ describe('agent runtime identity settings', () => {
     expect(client.patchConfig).toHaveBeenNthCalledWith(1, { disabled_named_profiles: ['reviewer', 'agent'] });
     expect(checkbox.checked).toBe(false);
     expect(identityInput.value).toBe('Edited name');
-    expect([...card.querySelectorAll('input')].some((input) => input.value === 'agent')).toBe(true);
     await act(async () => [...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click());
     await settle();
     expect(client.patchConfig).toHaveBeenNthCalledWith(2, {
@@ -150,7 +147,19 @@ describe('agent runtime identity settings', () => {
     expect(checkbox.checked).toBe(false);
   });
 
-  it.each(['Extra agent directories', 'Disabled built-in agents'])('keeps %s nodes, focus and caret across typing, paste and preceding-row removal', async (label) => {
+  it('leaves the server-wide disabled-profile list to the agent list, and keeps identity saving independent of it', async () => {
+    client.getConfig.mockResolvedValue({ extra_agent_dirs: ['first', 'second'], disabled_named_profiles: ['first', 'second'] });
+    await act(async () => root.render(
+      <QueryClientProvider client={queries}><I18nProvider><AgentRuntimeCard /></I18nProvider></QueryClientProvider>,
+    ));
+    await settle();
+    // The agent list is the one place that writes this list, by row or by name,
+    // so the identity card does not carry a second copy of it.
+    expect(container.textContent).not.toContain('Disabled built-in agents');
+  });
+
+  it('keeps the extra agent directory nodes, focus and caret across typing, paste and preceding-row removal', async () => {
+    const label = 'Extra agent directories';
     client.getConfig.mockResolvedValue({ extra_agent_dirs: ['first', 'second'], disabled_named_profiles: ['first', 'second'] });
     await act(async () => root.render(
       <QueryClientProvider client={queries}><I18nProvider><AgentRuntimeCard /></I18nProvider></QueryClientProvider>,
@@ -173,7 +182,7 @@ describe('agent runtime identity settings', () => {
     expect(input.selectionStart).toBe(3);
   });
 
-  it('refreshes the profile toggle after saving the disabled-profile list', async () => {
+  it('refreshes the profile toggle after a row toggle writes the disabled-profile list', async () => {
     let disabled: string[] = [];
     client.getConfig.mockImplementation(async () => ({ disabled_named_profiles: disabled }));
     client.listNamedAgentProfiles.mockImplementation(async () => ({ items: [{ ...profile, disabled: disabled.includes('agent') }] }));
@@ -190,15 +199,14 @@ describe('agent runtime identity settings', () => {
     await settle();
     const checkbox = container.querySelector<HTMLInputElement>('[data-agent-profile="agent"] input[type="checkbox"]')!;
     expect(checkbox.checked).toBe(true);
-    const card = container.querySelector('#st-card-agent-runtime')!;
-    const listEditor = [...card.querySelectorAll('.space-y-2')].find((block) => /Disabled built-in agents/.test(block.textContent ?? ''))!;
-    await act(async () => { listEditor.querySelector<HTMLButtonElement>('button')!.click(); });
-    await setInputValue(listEditor.querySelector<HTMLInputElement>('input')!, 'agent');
-    await act(async () => [...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click());
+    const before = client.listNamedAgentProfiles.mock.calls.length;
+    await act(async () => { checkbox.click(); });
     await settle();
-    expect(client.patchConfig).toHaveBeenCalledWith({ disabled_named_profiles: ['agent'], replace_domains: ['disabled_named_profiles'] });
-    expect(client.listNamedAgentProfiles.mock.calls.length).toBeGreaterThan(1);
-    expect(checkbox.checked).toBe(false);
+    // The row toggle is the single entry to this list: it adds the name, and
+    // the catalog reload is what the checkbox then reads.
+    expect(client.patchConfig).toHaveBeenCalledWith({ disabled_named_profiles: ['agent'] });
+    expect(client.listNamedAgentProfiles.mock.calls.length).toBeGreaterThan(before);
+    expect(disabled).toEqual(['agent']);
     expect(queries.getQueryState(['agentProfiles', 'cwd', '/fixture', 'effective'])?.isInvalidated).toBe(true);
   });
 });
@@ -231,57 +239,12 @@ describe('default main profile settings', () => {
     expect(row.querySelector('[data-raw-file-collapse]')).not.toBeNull();
   });
 
-  it('shows the projected advisory profile policy and repeats it in technical details', async () => {
+  it('states plainly that nothing is declared rather than implying a restriction', async () => {
     await render();
     const row = container.querySelector('[data-default-agent="true"]')!;
-    expect(row.querySelector('[data-subagent-policy="advisory"]')?.textContent).toBe('Advisory');
-    expect(row.querySelector('[data-technical-subagent-policy]')?.textContent).toContain('Dispatch policy: Advisory');
-  });
-
-  it('shows Inherit default when the profile declares no policy of its own', async () => {
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, subagent_policy: undefined }] });
-    await render();
-    const row = container.querySelector('[data-default-agent="true"]')!;
-    expect(row.querySelector('[data-subagent-policy="inherit"]')?.textContent).toBe('Inherit default');
-    expect(row.querySelector('[data-technical-subagent-policy]')?.textContent).toContain('Dispatch policy: Inherit default');
+    expect(row.querySelector('[data-subagent-policy="undeclared"]')?.textContent).toBe('Not declared');
     expect(row.textContent).not.toContain('Not reported');
-  });
-
-  it('offers inherit, advisory and strict in the editor and clears the key with null', async () => {
-    client.updateNamedAgentProfile.mockResolvedValue({ ...profile, subagent_policy: undefined });
-    await render();
-    const row = container.querySelector('[data-default-agent="true"]')!;
-    await act(async () => { [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click(); });
-    const dialog = document.body.querySelector('[role="dialog"]')!;
-    const choices = [...dialog.querySelectorAll<HTMLButtonElement>('[data-policy-choice]')];
-    expect(choices.map((button) => button.textContent)).toEqual(['Inherit default', 'Advisory', 'Strict']);
-    expect(choices.find((button) => button.getAttribute('aria-pressed') === 'true')?.dataset['policyChoice']).toBe('advisory');
-    await act(async () => { choices[0]!.click(); });
-    await act(async () => { [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
-    await settle();
-    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ subagent_policy: null }));
-  });
-
-  it('opens an unset profile on Inherit default and writes strict only when picked', async () => {
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, subagent_policy: undefined }] });
-    client.updateNamedAgentProfile.mockResolvedValue({ ...profile, subagent_policy: 'strict' });
-    await render();
-    const row = container.querySelector('[data-default-agent="true"]')!;
-    await act(async () => { [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click(); });
-    const dialog = document.body.querySelector('[role="dialog"]')!;
-    const pressed = dialog.querySelector<HTMLButtonElement>('[data-policy-choice][aria-pressed="true"]');
-    expect(pressed?.dataset['policyChoice']).toBe('inherit');
-    await act(async () => { dialog.querySelector<HTMLButtonElement>('[data-policy-choice="strict"]')!.click(); });
-    await act(async () => { [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
-    await settle();
-    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ subagent_policy: 'strict' }));
-  });
-
-  it('shows the projected strict profile policy', async () => {
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, subagent_policy: 'strict' }] });
-    await render();
-    const row = container.querySelector('[data-default-agent="true"]')!;
-    expect(row.querySelector('[data-subagent-policy="strict"]')?.textContent).toBe('Strict');
+    expect(row.textContent).not.toContain('Advisory');
   });
 
   it('shows top-level budgets, request params, and model-profile projections', async () => {
@@ -826,87 +789,69 @@ describe('shipped (built-in) profile management', () => {
   });
 });
 
-describe('dispatch policy defaults card', () => {
-  async function renderPolicies() {
-    await act(async () => root.render(
-      <QueryClientProvider client={queries}><I18nProvider><SubagentDispatchPoliciesCard /></I18nProvider></QueryClientProvider>,
-    ));
-    await settle();
-  }
-  // Policies are segmented choices: the pressed button carries the value.
-  const policyValue = (scope: ParentNode, name: string) =>
-    scope.querySelector(`[data-dispatch-policy="${name}"] button[aria-pressed="true"]`)?.getAttribute('data-policy-choice');
-  async function setPolicy(scope: ParentNode, name: string, value: string) {
-    await act(async () => {
-      scope.querySelector<HTMLButtonElement>(`[data-dispatch-policy="${name}"] [data-policy-choice="${value}"]`)!.click();
-    });
-  }
-
-  it('defaults to advisory for main and strict for subagent profiles when the keys are unset', async () => {
-    client.getConfig.mockResolvedValue({});
-    await renderPolicies();
-    const card = container.querySelector('#st-card-subagent-dispatch-policies')!;
-    expect(policyValue(card, 'mainDispatchPolicy')).toBe('advisory');
-    expect(policyValue(card, 'subagentDispatchPolicy')).toBe('strict');
-    expect(client.patchConfig).not.toHaveBeenCalled();
+describe('child agent dispatch rights', () => {
+  // The row states the switch and the preset list; a profile that declared
+  // neither is not described as restricted.
+  it('reads a declared switch and preset list into the row badge', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{
+      ...profile, can_spawn_subagents: true, allowed_subagents: ['explore', 'reviewer'],
+    }] });
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    expect(row.querySelector('[data-subagent-policy="presets"]')?.textContent).toBe('explore, reviewer');
   });
 
-  it('reads the camel projection keys and saves only the changed snake_case key', async () => {
-    let config = { subagent: { mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'strict' } };
-    client.getConfig.mockImplementation(async () => config);
-    client.patchConfig.mockImplementation(async (patch: { subagent?: { main_dispatch_policy?: string; subagent_dispatch_policy?: string } }) => {
-      config = {
-        subagent: {
-          mainDispatchPolicy: patch.subagent?.main_dispatch_policy ?? config.subagent.mainDispatchPolicy,
-          subagentDispatchPolicy: patch.subagent?.subagent_dispatch_policy ?? config.subagent.subagentDispatchPolicy,
-        },
-      };
-      return config;
-    });
-    await renderPolicies();
-    const card = container.querySelector('#st-card-subagent-dispatch-policies')!;
-    expect(policyValue(card, 'mainDispatchPolicy')).toBe('strict');
-    await setPolicy(card, 'mainDispatchPolicy', 'advisory');
-    await settle();
-    expect(client.patchConfig).toHaveBeenCalledWith({
-      subagent: { main_dispatch_policy: 'advisory', subagent_dispatch_policy: undefined },
-    });
-    expect(card.querySelector('[data-saved-tick]')).not.toBeNull();
-    expect(policyValue(card, 'subagentDispatchPolicy')).toBe('strict');
+  it('shows a hard leaf as off rather than as an empty preset list', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, can_spawn_subagents: false }] });
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    expect(row.querySelector('[data-subagent-policy="leaf"]')?.textContent).toBe('Off');
+    expect(row.textContent).not.toContain('Dispatch policy');
   });
 
-  it('refreshes an already open capability badge when the dispatch default changes', async () => {
-    let config = { subagent: { mainDispatchPolicy: 'advisory', subagentDispatchPolicy: 'strict' } };
-    client.getConfig.mockImplementation(async () => config);
-    client.patchConfig.mockImplementation(async (patch: { subagent: { main_dispatch_policy: string } }) => {
-      config = { subagent: { ...config.subagent, mainDispatchPolicy: patch.subagent.main_dispatch_policy } };
-      return config;
-    });
-    client.getAgentCapabilities.mockImplementation(async () => ({
-      context: 'draft', owner: { profile: 'agent' }, available: true,
-      targets: [{ profile: 'reviewer', executor: 'native', defaults_available: true,
-        recommendation_status: config.subagent.mainDispatchPolicy === 'strict' ? 'blocked' : 'allowed_nonpreferred' }],
-    }));
-    await act(async () => root.render(
-      <QueryClientProvider client={queries}><I18nProvider>
-        <SubagentDispatchPoliciesCard />
-        <AgentCapabilitiesPanel query={{ workspace_id: 'ws-one', profile: 'agent' }} />
-      </I18nProvider></QueryClientProvider>,
-    ));
-    await settle();
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-agent-capabilities] button')!.click());
-    await settle();
-    const badge = () => container.querySelector('[data-capability-target="reviewer"] [data-recommendation-status]');
-    expect(badge()?.getAttribute('data-recommendation-status')).toBe('allowed_nonpreferred');
-    expect(client.getAgentCapabilities).toHaveBeenCalledTimes(1);
+  it('says not declared when the profile constrains nothing', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, can_spawn_subagents: undefined }] });
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    expect(row.querySelector('[data-subagent-policy="undeclared"]')?.textContent).toBe('Not declared');
+    expect(row.textContent).not.toContain('Advisory');
+    expect(row.textContent).not.toContain('Strict');
+  });
 
-    await setPolicy(container, 'mainDispatchPolicy', 'strict');
+  it('turns the switch off from the editor with null, and never writes the lists beside it', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, can_spawn_subagents: true, preferred_subagents: ['explore'] }] });
+    client.updateNamedAgentProfile.mockResolvedValue({ ...profile, can_spawn_subagents: false });
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    await act(async () => { [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click(); });
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    // One three-state control: a switch could not express "not declared", so
+    // the segments carry the whole value.
+    const choices = dialog.querySelectorAll<HTMLButtonElement>('[data-profile-field="canSpawnSubagents"] [data-dispatch-can-spawn-mode]');
+    expect([...choices].map((button) => button.textContent)).toEqual(['Not declared', 'Allowed', 'Off']);
+    expect(dialog.querySelector('[data-dispatch-can-spawn-mode="on"][aria-pressed="true"]')).not.toBeNull();
+    await act(async () => { choices[2]!.click(); });
+    await act(async () => { [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
     await settle();
-    expect(client.patchConfig).toHaveBeenCalledWith({
-      subagent: { main_dispatch_policy: 'strict', subagent_dispatch_policy: undefined },
-    });
-    expect(client.getAgentCapabilities).toHaveBeenCalledTimes(2);
-    expect(badge()?.getAttribute('data-recommendation-status')).toBe('blocked');
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ can_spawn_subagents: false }));
+    const body = client.updateNamedAgentProfile.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('allowed_subagents');
+    expect(body).not.toHaveProperty('preferred_subagents');
+    expect(body).not.toHaveProperty('deny_subagents');
+    expect(body).not.toHaveProperty('subagent_policy');
+  });
+
+  it('clears an inherited switch with null instead of writing true', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, can_spawn_subagents: undefined }] });
+    client.updateNamedAgentProfile.mockResolvedValue({ ...profile, can_spawn_subagents: false });
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    await act(async () => { [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click(); });
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('[data-profile-field="canSpawnSubagents"] [data-dispatch-can-spawn-mode="off"]')!.click(); });
+    await act(async () => { [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
+    await settle();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ can_spawn_subagents: false }));
   });
 });
 

@@ -14,7 +14,7 @@ export interface MemorySource {
   readonly label: string;
 }
 
-/** A display composition only; the workspace switch still controls engine enablement. */
+/** Persona memory includes long-term and only the selected workspace slice; shared sources may use the Bot's home. */
 export function memorySourceTargets(
   workspaceId: string | undefined,
   personaId: string | undefined,
@@ -27,8 +27,6 @@ export function memorySourceTargets(
     : [personaMemoryTarget(personaId, undefined)];
   if (personaId !== undefined) {
     if (workspaceId !== undefined) own.push(personaMemoryTarget(personaId, workspaceId));
-    // A Bot's home may not be the workspace from which Memory was opened.
-    if (botWorkspaceId !== undefined) own.push(personaMemoryTarget(personaId, botWorkspaceId));
   }
   const effectiveWorkspace = workspaceId ?? botWorkspaceId;
   const followsGlobal = settings?.enabled === true
@@ -46,11 +44,15 @@ export function memorySourceTargets(
 export function useMemorySources({
   workspaceId,
   workspaces,
+  workspacesLoading = false,
+  workspacesError = null,
   persona,
   settings,
 }: {
   readonly workspaceId: string | undefined;
   readonly workspaces: readonly Workspace[];
+  readonly workspacesLoading?: boolean;
+  readonly workspacesError?: Error | null;
   readonly persona: PersonaSummary | undefined;
   readonly settings: MemorySettings | undefined;
 }) {
@@ -77,6 +79,12 @@ export function useMemorySources({
     staleTime: 15_000,
   });
   const botWorkspaceId = home.data?.workspace_id;
+  const isKnownWorkspace = workspaceId !== undefined && (workspaces.some((item) => item.id === workspaceId) || (persona !== undefined && workspaceId === botWorkspaceId));
+  const needsWorkspaceDirectory = workspaceId !== undefined && !isKnownWorkspace;
+  const personaLoading = persona !== undefined && (definition.isPending || bots.isPending || (bot?.homeSessionId !== undefined && home.isPending));
+  const rangeLoading = needsWorkspaceDirectory && (workspacesLoading || personaLoading);
+  const rangeError = needsWorkspaceDirectory ? workspacesError : null;
+  const validatedWorkspaceId = isKnownWorkspace ? workspaceId : undefined;
   const workspaceName = (id: string | undefined) => workspaces.find((item) => item.id === id)?.name
     ?? (id === botWorkspaceId ? t('memory.source.botHome') : id ?? '');
   const sourceLabel = (target: MemoryTarget) => {
@@ -87,10 +95,14 @@ export function useMemorySources({
   };
   return {
     personaSnapshot: definition.data,
-    sources: memorySourceTargets(workspaceId, persona?.id, botWorkspaceId, settings, definition.data?.definition.memory?.shared)
+    botWorkspaceId,
+    effectiveWorkspaceId: validatedWorkspaceId,
+    sources: rangeLoading || rangeError !== null ? [] : memorySourceTargets(validatedWorkspaceId, persona?.id, botWorkspaceId, settings, definition.data?.definition.memory?.shared)
       .map((target) => ({ target, label: sourceLabel(target) })),
-    loading: persona !== undefined && (definition.isPending || bots.isPending || (bot?.homeSessionId !== undefined && home.isPending)),
-    error: persona === undefined ? null : definition.error ?? bots.error ?? home.error,
-    retry: () => { void definition.refetch(); void bots.refetch(); if (bot?.homeSessionId !== undefined) void home.refetch(); },
+    rangeLoading,
+    rangeError,
+    loading: rangeLoading || personaLoading,
+    error: rangeError ?? (persona === undefined ? null : definition.error ?? bots.error ?? home.error),
+    retry: () => { if (persona !== undefined) { void definition.refetch(); void bots.refetch(); if (bot?.homeSessionId !== undefined) void home.refetch(); } },
   };
 }

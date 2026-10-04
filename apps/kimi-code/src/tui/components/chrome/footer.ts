@@ -16,6 +16,7 @@ import { isRainbowDancing, renderDanceFooterModel } from '#/tui/easter-eggs/danc
 import { currentTheme } from '#/tui/theme';
 import type { ColorPalette } from '#/tui/theme/colors';
 import type { AppState } from '#/tui/types';
+import { homeAlias } from '#/tui/utils/home-alias';
 import {
   StatusLineCommandRunner,
   type StatusLinePayload,
@@ -149,16 +150,8 @@ function modelDisplayName(state: AppState): string {
 
 function shortenCwd(path: string): string {
   if (!path) return path;
-  const home = process.env['HOME'] ?? '';
-  let work = path;
-  if (home && path === home) {
-    return '~';
-  }
-  if (home && path.startsWith(home + '/')) {
-    work = '~' + path.slice(home.length);
-  }
-
-  const segments = work.split('/').filter((s) => s.length > 0);
+  const work = homeAlias(path);
+  const segments = work.split(/[\\/]/u).filter((s) => s.length > 0);
   if (segments.length <= MAX_CWD_SEGMENTS) return work;
   const tail = segments.slice(-MAX_CWD_SEGMENTS).join('/');
   return `…/${tail}`;

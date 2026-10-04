@@ -33,6 +33,7 @@ import type {
 import { mediaFromContentParts, mediaRefFromUrl, type MediaRef } from '../../composer/media';
 import type { I18nKey } from '../../i18n/locale';
 import { MAIN_AGENT_ID, type AgentTurnOutcome } from '../agentTree';
+import { isModelSwitchQueueId } from '../modelSwitchQueue';
 import { describeError } from '../../util/errorText';
 import {
   classifyTranscriptText,
@@ -150,6 +151,7 @@ function reminderBlocks(
 function classifiedTextToBlocks(input: {
   id: string;
   classified: ReturnType<typeof classifyTranscriptText>;
+  contentSource?: UserBlock['contentSource'];
   createdAt: string;
   media?: readonly MediaRef[];
   promptId?: string;
@@ -168,6 +170,7 @@ function classifiedTextToBlocks(input: {
         blocks.push({
           kind: 'user',
           id: `user-${identity}`,
+          contentSource: input.contentSource,
           text: classified.text,
           media: input.media !== undefined && input.media.length > 0 ? input.media : undefined,
           createdAt: input.createdAt,
@@ -183,6 +186,15 @@ function classifiedTextToBlocks(input: {
                   senderTaskName: classified.origin.senderTaskName,
                 }
               : undefined,
+          bridgedPeer: classified.origin?.kind === 'bridged_peer' ? {
+            source: classified.origin.source,
+            sourceHomeId: classified.origin.sourceHomeId,
+            targetHomeId: classified.origin.targetHomeId,
+            bridgeId: classified.origin.bridgeId,
+            revision: classified.origin.revision,
+            location: classified.origin.location,
+            messageId: classified.origin.messageId,
+          } : undefined,
           peerThread:
             classified.origin?.kind === 'peer_thread'
               ? { sessionId: classified.origin.source?.sessionId,
@@ -194,6 +206,12 @@ function classifiedTextToBlocks(input: {
       }
       break;
     case 'skill': {
+      if (classified.userInput !== undefined) {
+        blocks.push(...classifiedTextToBlocks({
+          ...input,
+          classified: { lane: 'you', origin: { kind: 'user' }, text: classified.userInput, reminders: [] },
+        }));
+      }
       const skill = classified.skill ?? { source: 'skill' as const, name: 'skill', args: undefined };
       blocks.push({
         kind: 'skill',
@@ -260,7 +278,7 @@ function originFromFrame(frame: unknown): PromptOriginLike | undefined {
 
 function isUserVisibleOrigin(origin: PromptOriginLike | undefined): boolean {
   const kind = unwrapOrigin(origin)?.kind;
-  return kind === 'user' || kind === 'peer_thread';
+  return kind === 'user' || kind === 'peer_thread' || kind === 'bridged_peer';
 }
 
 function identityFromTurnOrigin(origin: PromptOriginLike | undefined): {
@@ -352,11 +370,14 @@ function mediaFromAttachmentIds(
   attachmentsById: ReadonlyMap<string, AgentTranscriptAttachment> | undefined,
   agentId?: string,
 ): readonly MediaRef[] | undefined {
-  if (ids === undefined || ids.length === 0 || attachmentsById === undefined) return undefined;
+  if (ids === undefined || ids.length === 0) return undefined;
   const media: MediaRef[] = [];
   for (const id of ids) {
-    const attachment = attachmentsById.get(id);
-    if (attachment === undefined) continue;
+    const attachment = attachmentsById?.get(id);
+    if (attachment === undefined) {
+      if (agentId !== undefined) media.push({ kind: 'file', detail: { agentId, attachmentId: id } });
+      continue;
+    }
     const source = attachment.source;
     const kind = attachment.mediaType.startsWith('video/')
       ? 'video'
@@ -399,7 +420,7 @@ function engineQuestionItems(raw: unknown): QuestionItem[] {
     const item = value as Record<string, unknown> & { options?: unknown };
     const options = Array.isArray(item.options) ? item.options : [];
     items.push({
-      id: typeof item['id'] === 'string' ? item['id'] : `q-${index}`,
+      id: typeof item['id'] === 'string' ? item['id'] : `q_${index}`,
       header: typeof item['header'] === 'string' ? item['header'] : undefined,
       question: typeof item['question'] === 'string' ? item['question'] : '',
       body: typeof item['body'] === 'string' ? item['body'] : undefined,
@@ -408,7 +429,7 @@ function engineQuestionItems(raw: unknown): QuestionItem[] {
         const record = option as Record<string, unknown>;
         return [
           {
-            id: typeof record['id'] === 'string' ? record['id'] : `opt-${index}-${optionIndex}`,
+            id: typeof record['id'] === 'string' ? record['id'] : `opt_${index}_${optionIndex}`,
             label: typeof record['label'] === 'string' ? record['label'] : '',
             description: typeof record['description'] === 'string' ? record['description'] : undefined,
           },
@@ -456,7 +477,7 @@ function recordNumber(record: Record<string, unknown>, ...keys: readonly string[
   return undefined;
 }
 
-function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: string): Block | undefined {
+export function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: string): Block | undefined {
   const originAgentId = originAgentFromInteraction(interaction);
   if (interaction.interactionKind === 'approval') {
     const request =
@@ -532,9 +553,11 @@ function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: st
       outcome:
         interaction.state === 'pending'
           ? undefined
-          : interaction.state === 'answered'
-            ? { kind: 'answered', at, answers: questionAnswerTexts(questions, response['answers']) }
-            : interaction.state === 'dismissed'
+          : response['cancelled'] === true
+            ? { kind: 'cancelled', at, reason: recordString(response, 'reason') }
+            : interaction.state === 'answered'
+              ? { kind: 'answered', at, answers: questionAnswerTexts(questions, response['answers']) }
+              : interaction.state === 'dismissed'
               ? { kind: 'dismissed', at }
               : { kind: 'expired' },
       originAgentId,
@@ -611,7 +634,20 @@ function markerToBlock(item: {
     const from = payloadRecord?.['from'];
     const to = payloadRecord?.['to'];
     if (typeof from !== 'string' || typeof to !== 'string') return undefined;
-    return { ...base, text: item.marker, i18n: { key: 'transcript.marker.modelSwitch', params: { from, to } } };
+    const operationId = payloadRecord?.['operationId'];
+    const mode = payloadRecord?.['mode'];
+    const state = payloadRecord?.['state'];
+    const error = payloadRecord?.['error'];
+    const modelSwitch: NoticeBlock['modelSwitch'] = typeof operationId === 'string' &&
+      (mode === 'direct' || mode === 'compact' || mode === 'fresh') &&
+      (state === 'pending' || state === 'preparing' || state === 'completed' || state === 'failed' || state === 'cancelled')
+      ? { operationId, mode, state, from, to,
+        summaryGenerated: typeof payloadRecord?.['summaryGenerated'] === 'boolean' ? payloadRecord['summaryGenerated'] : undefined,
+        windowEpoch: typeof payloadRecord?.['windowEpoch'] === 'number' ? payloadRecord['windowEpoch'] : undefined,
+        error: typeof error === 'object' && error !== null && 'code' in error && 'message' in error && typeof error.code === 'string' && typeof error.message === 'string'
+          ? { code: error.code, message: error.message } : undefined } : undefined;
+    return { ...base, text: item.marker, modelSwitch,
+      i18n: modelSwitch === undefined || modelSwitch.state === 'completed' ? { key: 'transcript.marker.modelSwitch', params: { from, to } } : undefined };
   }
 
   // Older live snapshots append activation receipts outside the turn. The
@@ -2278,6 +2314,7 @@ export function agentTranscriptToBlocks(
           commandId: task.taskId,
           command: undefined,
           output: task.outputTail,
+          outputTaskId: task.taskId,
           outputDetail: task.detailRef === undefined ? undefined : { agentId: response.agent_id, taskId: task.taskId },
           done: task.state !== 'running',
           isError:
@@ -2330,6 +2367,7 @@ export function agentTranscriptToBlocks(
         }),
         createdAt: (item as { delivery?: { deliveredAt?: string } }).delivery?.deliveredAt ?? item.startedAt ?? '',
         turnId: item.turnId,
+        contentSource: { kind: 'turn', id: item.turnId },
         promptId: identity.promptId,
         userMessageId: turnUserMessageId,
         media: mediaFromAttachmentIds(
@@ -2390,6 +2428,7 @@ export function agentTranscriptToBlocks(
                     item.startedAt ??
                     '',
                   turnId: item.turnId,
+                  contentSource: { kind: 'frame', id: frame.frameId, turnId: item.turnId, stepId: step.stepId },
                   userMessageId,
                   media: mediaFromAttachmentIds(
                     (frame as { attachmentIds?: readonly string[] }).attachmentIds,
@@ -2405,6 +2444,8 @@ export function agentTranscriptToBlocks(
               blocks.push({
                 kind: 'assistant',
                 id: `agent-frame-${frame.frameId}`,
+                frameId: frame.frameId,
+                stepId: step.stepId,
                 text: frame.text,
                 streaming: isLiveStreamingFrame(item, step, frame, lastTextFrameId, phase),
                 stopped:
@@ -2424,6 +2465,8 @@ export function agentTranscriptToBlocks(
             blocks.push({
               kind: 'thinking',
               id: `agent-frame-${frame.frameId}`,
+              frameId: frame.frameId,
+              stepId: step.stepId,
               text: frame.text,
               streaming: isLiveStreamingFrame(item, step, frame, lastThinkingFrameId, phase),
               createdAt: step.endedAt ?? item.endedAt,
@@ -2463,6 +2506,9 @@ export function agentTranscriptToBlocks(
               blocks.push({
                 kind: 'shell',
                 id: `shell-${frame.toolCallId}`,
+                frameId: frame.frameId,
+                stepId: step.stepId,
+                outputTaskId: fromTask ? shellTask.taskId : undefined,
                 commandId: frame.toolCallId,
                 command,
                 output,
@@ -2485,6 +2531,8 @@ export function agentTranscriptToBlocks(
             const tool: ToolBlock = {
               kind: 'tool',
               id: `tool-${frame.toolCallId}`,
+              frameId: frame.frameId,
+              stepId: step.stepId,
               toolCallId: frame.toolCallId,
               name: frame.name,
               argsText: frame.inputText ?? '',
@@ -2586,12 +2634,32 @@ export function agentTranscriptToBlocks(
   });
   const withSubagents = insertSubagentBlocks(navigableBlocks, projectedSubagents.blocks, previous);
   const withSubagentEvents = insertSubagentEventBlocks(withSubagents, projectedSubagents.events, previous);
-  return foldConsecutiveMarkerDividers(insertInteractionBlocks(
+  return foldConsecutiveMarkerDividers(mergeTaskNotifications(insertInteractionBlocks(
     withSubagentEvents,
     response.interactions ?? [],
     response.agent_id,
     previous,
-  ));
+  )));
+}
+
+/** One terminal notification per task execution, preferring its delivered receipt over a summary echo. */
+export function mergeTaskNotifications<T extends { readonly kind: string; readonly id: string; readonly variant?: string; readonly taskId?: string }>(nodes: readonly T[]): T[] {
+  const out: T[] = [];
+  const indexByTask = new Map<string, number>();
+  for (const node of nodes) {
+    if (node.kind !== 'system' || node.variant !== 'task' || node.taskId === undefined || node.taskId === '') {
+      out.push(node);
+      continue;
+    }
+    const index = indexByTask.get(node.taskId);
+    if (index === undefined) {
+      indexByTask.set(node.taskId, out.length);
+      out.push(node);
+    } else if (out[index]!.id.startsWith('system-agent-frame-task-notified:') && !node.id.startsWith('system-agent-frame-task-notified:')) {
+      out[index] = node;
+    }
+  }
+  return out;
 }
 
 function isMarkerDivider(block: Block | undefined): block is NoticeBlock {
@@ -2857,7 +2925,10 @@ export function projectAgentTranscriptView(
     runningTurn?.startedAt === undefined ? Number.NaN : Date.parse(runningTurn.startedAt);
   const meta = snapshot.meta.agent;
   const queuedPrompts = prompts
-    .filter((prompt) => prompt.status === 'queued')
+    // Model-switch control items share the drain order under reserved ids;
+    // they are not messages and surface through the model-switch event pair,
+    // never as queue rows or transcript blocks.
+    .filter((prompt) => prompt.status === 'queued' && !isModelSwitchQueueId(prompt.promptId))
     .toSorted(
       (left, right) =>
         (left.queuePosition ?? Number.MAX_SAFE_INTEGER) -
@@ -2870,10 +2941,11 @@ export function projectAgentTranscriptView(
     const existing = previousQueuedMeta[prompt.promptId];
     const appendTiming = prompt.appendTiming ?? existing?.appendTiming ?? 'agent_idle';
     const revision = prompt.revision ?? existing?.revision;
+    const queuePosition = prompt.queuePosition ?? existing?.queuePosition;
     queuedPromptMeta[prompt.promptId] =
-      existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision
+      existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision && existing.queuePosition === queuePosition
         ? existing
-        : { appendTiming, revision };
+        : { appendTiming, revision, queuePosition };
   }
   let running: TranscriptPrompt | undefined;
   for (const prompt of prompts) {
@@ -2924,6 +2996,7 @@ export function projectAgentTranscriptView(
     todos: todos.at(-1)?.items ?? [],
     todoNotes: agentTodo?.notes,
     todoNotesMeta: agentTodo?.notesMeta,
+    todoNotesStatus: agentTodo?.notesStatus,
     tasks: tasks.map(transcriptTaskToSessionTask),
     goal: goal === undefined ? null : projectGoalSnapshot(goal),
     hasMoreHistory: snapshot.hasMoreOlder === true,

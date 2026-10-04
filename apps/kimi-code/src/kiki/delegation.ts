@@ -48,6 +48,7 @@ interface CliPositionalMetadata {
 
 interface CliOptionMetadata {
   readonly flags: string;
+  readonly description: string;
   readonly input?: string;
   readonly kind?: ValueKind;
   readonly value?: unknown;
@@ -57,6 +58,7 @@ interface CliOptionMetadata {
 interface CliProcedureMetadata {
   readonly procedure: DelegationProcedureName;
   readonly command: string;
+  readonly description: string;
   readonly positionals?: readonly CliPositionalMetadata[];
   readonly options?: readonly CliOptionMetadata[];
   readonly prepare?: (wire: Record<string, unknown>, options: Record<string, unknown>) => void;
@@ -66,6 +68,7 @@ interface CliProcedureMetadata {
 export interface ProjectedDelegationCommand {
   readonly procedure: DelegationProcedureEntry;
   readonly command: string;
+  readonly description: string;
   readonly positionals: readonly CliPositionalMetadata[];
   readonly options: readonly CliOptionMetadata[];
   readonly behavior: 'dispatch' | 'events' | 'plain';
@@ -73,27 +76,28 @@ export interface ProjectedDelegationCommand {
 }
 
 const COMMON_OPTIONS: readonly CliOptionMetadata[] = [
-  { flags: '--home <dir>' },
-  { flags: '--workspace <dir>' },
-  { flags: '--json', kind: 'boolean' },
+  { flags: '--home <dir>', description: 'Use this Kiki home directory.' },
+  { flags: '--workspace <dir>', description: 'Use this workspace for the CLI delegation seat (default: current directory).' },
+  { flags: '--json', description: 'Print JSON; followed events are printed as JSONL.', kind: 'boolean' },
 ];
 
 const CLI_METADATA: readonly CliProcedureMetadata[] = [
-  { procedure: 'profiles', command: 'agents', behavior: 'plain' },
-  { procedure: 'list', command: 'list', behavior: 'plain' },
+  { procedure: 'profiles', command: 'agents', description: 'List named agent profiles, models, and tools.', behavior: 'plain' },
+  { procedure: 'list', command: 'list', description: 'List children and continuations owned by the CLI seat.', behavior: 'plain' },
   {
     procedure: 'dispatch',
     command: 'dispatch <message>',
+    description: 'Dispatch main-agent work or start/reuse a named child asynchronously.',
     positionals: [{ name: 'message', input: 'message', required: true }],
     options: [
-      { flags: '--main', input: 'target', kind: 'boolean', value: 'main' },
-      { flags: '--profile <name>', input: 'profile_name' },
-      { flags: '--name <task>', input: 'task_name' },
-      { flags: '--model <alias>', input: 'model_alias' },
-      { flags: '--thinking <effort>', input: 'thinking_effort' },
-      { flags: '--dispatch-key <key>', input: 'dispatch_key' },
-      { flags: '--wait', kind: 'boolean' },
-      { flags: '--timeout <seconds>', kind: 'integer' },
+      { flags: '--main', description: 'Target the main agent instead of a named child.', input: 'target', kind: 'boolean', value: 'main' },
+      { flags: '--profile <name>', description: 'Profile for a named child.', input: 'profile_name' },
+      { flags: '--name <task>', description: 'Stable child name: lowercase letters, digits, and underscores; not root.', input: 'task_name' },
+      { flags: '--model <alias>', description: 'Bind a model when the named child is first created.', input: 'model_alias' },
+      { flags: '--thinking <effort>', description: 'Bind thinking effort when the named child is first created.', input: 'thinking_effort' },
+      { flags: '--dispatch-key <key>', description: 'Deduplicate dispatch retries with this key (default: generated).', input: 'dispatch_key' },
+      { flags: '--wait', description: 'Wait for completion or pending interaction, then read the result if completed.', kind: 'boolean' },
+      { flags: '--timeout <seconds>', description: 'Timeout for --wait in seconds; does not cancel the dispatch.', kind: 'integer' },
     ],
     prepare: (wire) => {
       wire['target'] ??= 'named';
@@ -103,40 +107,47 @@ const CLI_METADATA: readonly CliProcedureMetadata[] = [
   {
     procedure: 'continue',
     command: 'continue <dispatchId> <message>',
+    description: 'Continue an owned terminal main-agent or named-child dispatch.',
     positionals: [
       { name: 'dispatchId', input: 'dispatch_id', required: true },
       { name: 'message', input: 'message', required: true },
     ],
     options: [
-      { flags: '--dispatch-key <key>', input: 'dispatch_key' },
-      { flags: '--wait', kind: 'boolean' },
-      { flags: '--timeout <seconds>', kind: 'integer' },
+      { flags: '--dispatch-key <key>', description: 'Deduplicate continuation retries with this key (default: generated).', input: 'dispatch_key' },
+      { flags: '--wait', description: 'Wait for completion or pending interaction, then read the result if completed.', kind: 'boolean' },
+      { flags: '--timeout <seconds>', description: 'Timeout for --wait in seconds; does not cancel the dispatch.', kind: 'integer' },
     ],
     behavior: 'dispatch',
   },
   {
     procedure: 'send',
     command: 'send <taskName> <message>',
+    description: 'Queue a message for an owned named child at its next run boundary.',
     positionals: [
       { name: 'taskName', input: 'task_name', required: true },
       { name: 'message', input: 'message', required: true },
     ],
-    options: [{ flags: '--idempotency-key <key>', input: 'idempotency_key' }],
+    options: [{ flags: '--idempotency-key <key>', description: 'Deduplicate message retries with this key (default: generated).', input: 'idempotency_key' }],
   },
-  { procedure: 'interactions', command: 'interactions', options: [{ flags: '--cursor <cursor>', input: 'cursor', kind: 'integer' }] },
+  {
+    procedure: 'interactions', command: 'interactions',
+    description: 'List pending approvals and questions from owned children.',
+    options: [{ flags: '--cursor <cursor>', description: 'Resume from the returned nextCursor.', input: 'cursor', kind: 'integer' }],
+  },
   {
     procedure: 'respond',
     command: 'respond <interactionId>',
+    description: 'Answer an owned child approval or question.',
     positionals: [{ name: 'interactionId', input: 'interaction_id', required: true }],
     options: [
-      { flags: '--approve', kind: 'boolean' },
-      { flags: '--reject', kind: 'boolean' },
-      { flags: '--cancel', kind: 'boolean' },
-      { flags: '--answer <key=value...>', kind: 'key-value' },
-      { flags: '--method <method>' },
-      { flags: '--feedback <text>' },
-      { flags: '--selected-label <label>' },
-      { flags: '--selected-option-id <id>' },
+      { flags: '--approve', description: 'Approve the request; select exactly one approval decision.', kind: 'boolean' },
+      { flags: '--reject', description: 'Reject the approval request.', kind: 'boolean' },
+      { flags: '--cancel', description: 'Cancel the approval request.', kind: 'boolean' },
+      { flags: '--answer <key=value...>', description: 'Answer a question with key=value pairs; a bare key means true.', kind: 'key-value' },
+      { flags: '--method <method>', description: 'Question input method: enter, space, or number_key.' },
+      { flags: '--feedback <text>', description: 'Feedback for an approval decision.' },
+      { flags: '--selected-label <label>', description: 'Selected approval option label.' },
+      { flags: '--selected-option-id <id>', description: 'Selected approval option ID.' },
     ],
     prepare: (wire, options) => {
       if (options['answer'] !== undefined) {
@@ -161,49 +172,55 @@ const CLI_METADATA: readonly CliProcedureMetadata[] = [
   {
     procedure: 'status',
     command: 'status <dispatchId>',
+    description: 'Read the status of an owned dispatch.',
     positionals: [{ name: 'dispatchId', input: 'dispatch_id', required: true }],
   },
   {
     procedure: 'wait',
     command: 'wait [dispatchId]',
+    description: 'Wait for one or the next owned dispatch to finish or request interaction.',
     positionals: [{ name: 'dispatchId', input: 'dispatch_id' }],
-    options: [{ flags: '--timeout <seconds>', input: 'timeout_s', kind: 'integer' }],
+    options: [{ flags: '--timeout <seconds>', description: 'Wait up to 600 seconds; timeout does not cancel the dispatch.', input: 'timeout_s', kind: 'integer' }],
   },
   {
     procedure: 'result',
     command: 'result <dispatchId>',
+    description: 'Read a UTF-8-bounded result page for an owned dispatch.',
     positionals: [{ name: 'dispatchId', input: 'dispatch_id', required: true }],
     options: [
-      { flags: '--cursor <cursor>', input: 'cursor', kind: 'integer' },
-      { flags: '--limit <bytes>', input: 'max_bytes', kind: 'integer' },
+      { flags: '--cursor <cursor>', description: 'Resume from the returned nextCursor.', input: 'cursor', kind: 'integer' },
+      { flags: '--limit <bytes>', description: 'Maximum result bytes per page (4–65536; larger values are capped).', input: 'max_bytes', kind: 'integer' },
     ],
   },
   {
     procedure: 'events',
     command: 'events <dispatchId>',
+    description: 'Read ordered lifecycle or turn events for an owned dispatch.',
     positionals: [{ name: 'dispatchId', input: 'dispatch_id', required: true }],
     options: [
-      { flags: '--cursor <cursor>', input: 'cursor', kind: 'integer' },
-      { flags: '--limit <count>', input: 'limit', kind: 'integer' },
-      { flags: '--detail <level>', input: 'detail' },
-      { flags: '--follow', kind: 'boolean' },
-      { flags: '--interval <milliseconds>', kind: 'integer', defaultValue: 250 },
+      { flags: '--cursor <cursor>', description: 'Resume after this event sequence; each detail level has its own cursor.', input: 'cursor', kind: 'integer' },
+      { flags: '--limit <count>', description: 'Maximum events per page (1–100).', input: 'limit', kind: 'integer' },
+      { flags: '--detail <level>', description: 'Event detail: lifecycle or turn.', input: 'detail' },
+      { flags: '--follow', description: 'Poll events until the dispatch reaches a terminal status.', kind: 'boolean' },
+      { flags: '--interval <milliseconds>', description: 'Polling interval for --follow.', kind: 'integer', defaultValue: 250 },
     ],
     behavior: 'events',
   },
   {
     procedure: 'transcript',
     command: 'transcript <dispatchId>',
+    description: 'Read text or structured transcript items for an owned dispatch.',
     positionals: [{ name: 'dispatchId', input: 'dispatch_id', required: true }],
     options: [
-      { flags: '--cursor <cursor>', input: 'cursor', kind: 'integer' },
-      { flags: '--limit <count>', input: 'limit', kind: 'integer' },
-      { flags: '--detail <level>', input: 'detail' },
+      { flags: '--cursor <cursor>', description: 'Resume from the returned nextCursor.', input: 'cursor', kind: 'integer' },
+      { flags: '--limit <count>', description: 'Maximum transcript items per page (1–100).', input: 'limit', kind: 'integer' },
+      { flags: '--detail <level>', description: 'Transcript detail: text or items.', input: 'detail' },
     ],
   },
   {
     procedure: 'cancel',
     command: 'cancel <dispatchId>',
+    description: 'Idempotently cancel an owned active dispatch.',
     positionals: [{ name: 'dispatchId', input: 'dispatch_id', required: true }],
   },
 ];
@@ -219,6 +236,7 @@ export function projectDelegationCommands(
     return {
       procedure,
       command: metadata.command,
+      description: metadata.description,
       positionals,
       options,
       behavior: metadata.behavior ?? 'plain',
@@ -246,7 +264,7 @@ export function registerDelegationCommands(
   dependencies: DelegationRuntimeDependencies = {},
 ): void {
   for (const projected of projectDelegationCommands(table)) {
-    const command = program.command(projected.command).exitOverride((error) => {
+    const command = program.command(projected.command).description(projected.description).exitOverride((error) => {
       if (error.exitCode !== 0) error.exitCode = KIKI_EXIT.usage;
       throw error;
     });
@@ -258,8 +276,8 @@ export function registerDelegationCommands(
           : option.kind === 'key-value'
             ? collectKeyValue
             : undefined;
-      if (option.defaultValue === undefined) command.option(option.flags, '', parser as never);
-      else command.option(option.flags, '', parser as never, option.defaultValue);
+      if (option.defaultValue === undefined) command.option(option.flags, option.description, parser as never);
+      else command.option(option.flags, option.description, parser as never, option.defaultValue);
     }
     command.action(async (...args: unknown[]) => {
       const commander = args.at(-1) as Command;
@@ -367,7 +385,9 @@ async function followEvents(
     const page = record(await client.call('events', { ...initialInput, cursor }));
     const items = Array.isArray(page['items']) ? page['items'] : [];
     for (const item of items) writeOutput(stdout, item, options['json'] === true);
-    cursor = page['nextCursor'] ?? cursor;
+    if (items.length > 0) {
+      cursor = page['nextCursor'] ?? record(items.at(-1))['seq'];
+    }
     const status = record(await client.call('status', { dispatchId: initialInput['dispatchId'] }));
     if (isTerminalStatus(status['status'])) return exitCodeForOutput('status', status);
     await (dependencies.sleep ?? ((milliseconds) => sleep(milliseconds)))(Number(options['interval']));

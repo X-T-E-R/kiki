@@ -17,10 +17,10 @@ import { CompactPointField } from './CompactPointField';
 import { AliasChips, Field, Section } from './profileEditor/fields';
 import { ModelMenuField } from './profileEditor/ModelMenuField';
 import { ModelProfilesField } from './profileEditor/ModelProfilesField';
-import { changedFields, draftFromProfile, draftProblems, EFFORTS, patchBody } from './profileEditor/profileDraft';
+import { PromptIdentityEditor, PromptOverridesContentEditor } from './PromptIdentityEditor';
+import { changedFields, canSpawnSubagentsPatch, assignCanSpawnSubagents, draftFromProfile, draftProblems, EFFORTS, patchBody, subagentPolicyFromProfile } from './profileEditor/profileDraft';
 import { modelMenuDraftPatch, useModelMenuPreview } from './profileEditor/useModelMenuPreview';
 import { FORM_LABEL, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
-import { SUBAGENT_POLICY_CHOICES, subagentPolicyBody, subagentPolicyChoice, subagentPolicyLabelKey, type SubagentPolicyChoice } from './subagentPolicy';
 
 /**
  * Three-way state of one frontmatter tool list. `inherit` writes nothing (the
@@ -163,7 +163,7 @@ export function AgentProfileEditorDialog({
     disallowedTools: toolFieldFrom(profile.disallowed_tools),
     routeAliases: Object.fromEntries(profile.routes.map((route) => [route.id, route.model_alias ?? ''])),
     autoCompact: profile.auto_compact,
-    subagentPolicy: subagentPolicyChoice(profile.subagent_policy),
+    canSpawnSubagents: subagentPolicyFromProfile(profile).canSpawnSubagents,
   }));
   const [autoCompact, setAutoCompact] = useState(baseline.autoCompact);
   const [description, setDescription] = useState(baseline.description);
@@ -174,11 +174,11 @@ export function AgentProfileEditorDialog({
   const [tools, setTools] = useState(baseline.tools);
   const [disallowedTools, setDisallowedTools] = useState(baseline.disallowedTools);
   const [routeAliases, setRouteAliases] = useState(baseline.routeAliases);
-  const [subagentPolicy, setSubagentPolicy] = useState<SubagentPolicyChoice>(baseline.subagentPolicy);
+  const [canSpawnSubagents, setCanSpawnSubagents] = useState<boolean | undefined>(baseline.canSpawnSubagents);
   const [menuBaseline] = useState(() => draftFromProfile(profile));
   const [menuDraft, setMenuDraft] = useState(menuBaseline);
   const menuPatch = patchBody(profile, menuBaseline, { ...menuDraft, modelAlias });
-  const menuPreview = useModelMenuPreview(profile, modelMenuDraftPatch(menuPatch), menuDraft.restrictModelsToMenu);
+  const menuPreview = useModelMenuPreview(profile, modelMenuDraftPatch(menuPatch, profile), menuDraft.restrictModelsToMenu);
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
@@ -200,7 +200,7 @@ export function AgentProfileEditorDialog({
     || !toolFieldsEqual(disallowedTools, baseline.disallowedTools)
     || changedRoutes.length > 0
     || autoCompact !== baseline.autoCompact
-    || subagentPolicy !== baseline.subagentPolicy
+    || canSpawnSubagents !== baseline.canSpawnSubagents
     || changedFields(menuBaseline, menuDraft).length > 0;
   useDirtyReporter(`agent-profile-editor:${profile.source}:${profile.name}`, dirty);
 
@@ -211,7 +211,7 @@ export function AgentProfileEditorDialog({
     && !toolFieldUnnamed(tools)
     && !toolFieldUnnamed(disallowedTools)
     && menuPreview.ready
-    && !draftProblems(menuDraft).includes('modelProfiles')
+    && !draftProblems(menuDraft).some((problem) => problem === 'modelProfiles' || problem === 'promptOverrides')
     && profile.workspace_id !== undefined;
 
   const save = async () => {
@@ -225,6 +225,7 @@ export function AgentProfileEditorDialog({
         source_file: profile.source_file,
         restrict_models_to_menu: menuPatch.restrict_models_to_menu,
         model_profiles: menuPatch.model_profiles,
+        prompt_overrides: menuPatch.prompt_overrides,
         preferred_models: menuPatch.preferred_models,
         discouraged_models: menuPatch.discouraged_models,
         preferred_efforts: menuPatch.preferred_efforts,
@@ -242,7 +243,6 @@ export function AgentProfileEditorDialog({
           ? (serviceTier === '' ? null : serviceTier)
           : undefined,
         auto_compact: autoCompact !== baseline.autoCompact ? (autoCompact ?? null) : undefined,
-        subagent_policy: subagentPolicy !== baseline.subagentPolicy ? subagentPolicyBody(subagentPolicy) : undefined,
         tools: toolFieldsEqual(tools, baseline.tools) ? undefined : toolFieldBody(tools),
         disallowed_tools: toolFieldsEqual(disallowedTools, baseline.disallowedTools)
           ? undefined
@@ -254,6 +254,7 @@ export function AgentProfileEditorDialog({
             : (routeAliases[route.id] ?? '').trim(),
         })),
       };
+      assignCanSpawnSubagents(body, canSpawnSubagentsPatch(baseline.canSpawnSubagents, canSpawnSubagents));
       const echoed = await client.updateNamedAgentProfile(profile.name, body);
       onSaved(echoed);
       onClose();
@@ -355,6 +356,13 @@ export function AgentProfileEditorDialog({
           <ModelProfilesField values={menuDraft.modelProfiles} models={modelsQuery.data?.items ?? []} disabled={saving}
             onChange={(modelProfiles) => setMenuDraft((current) => ({ ...current, modelProfiles }))} />
         </Section>
+        <Section title={t('st.promptIdentity.fieldsTitle')} dataSection="prompt-overrides">
+          <PromptIdentityEditor value={menuDraft.promptOverrides} disabled={saving}
+            onChange={(promptOverrides) => setMenuDraft((current) => ({ ...current, promptOverrides }))}>
+            {(content, onChange, label) => <PromptOverridesContentEditor value={content} onChange={onChange} label={label} />}
+          </PromptIdentityEditor>
+          {draftProblems(menuDraft).includes('promptOverrides') ? <p role="alert" className="text-[12px] text-danger">{t('st.profiles.problem.promptOverrides')}</p> : null}
+        </Section>
         <Section title={t('st.profiles.softAdvice')} dataSection="soft-advice"
           defaultOpen={menuDraft.preferredModels.length + menuDraft.discouragedModels.length + menuDraft.preferredEfforts.length > 0}>
           <p className="text-[11.5px] text-ink-soft">{t('st.profiles.softAdviceHint')}</p>
@@ -371,12 +379,22 @@ export function AgentProfileEditorDialog({
               addLabel={t('st.profiles.addEffort')} onChange={(preferredEfforts) => setMenuDraft((current) => ({ ...current, preferredEfforts }))} />
           </Field>
         </Section>
-        <div data-profile-field="subagentPolicy" className="space-y-1">
-          <p id="agent-subagent-policy-label" className={FORM_LABEL}>{t('st.profiles.policy')}</p>
-          <SettingsSegmented<SubagentPolicyChoice> ariaLabelledBy="agent-subagent-policy-label" dataAttr="data-policy-choice"
-            value={subagentPolicy} onChange={setSubagentPolicy}
-            choices={SUBAGENT_POLICY_CHOICES.map((value) => ({ value, label: t(subagentPolicyLabelKey(value)) }))} />
-          <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.profiles.policyHint')}</p>
+        <div data-profile-field="canSpawnSubagents" className="space-y-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+            <p id="agent-can-spawn-label" className={FORM_LABEL}>{t('st.profiles.dispatchCanSpawn')}</p>
+            <SettingsSegmented<'inherit' | 'on' | 'off'> ariaLabelledBy="agent-can-spawn-label"
+              dataAttr="data-dispatch-can-spawn-mode" disabled={saving}
+              value={canSpawnSubagents === undefined ? 'inherit' : canSpawnSubagents ? 'on' : 'off'}
+              onChange={(mode) => setCanSpawnSubagents(mode === 'inherit' ? undefined : mode === 'on')}
+              choices={[
+                { value: 'inherit', label: t('st.profiles.dispatchNotDeclared') },
+                { value: 'on', label: t('st.profiles.dispatchCanSpawnOn') },
+                { value: 'off', label: t('st.profiles.dispatchCanSpawnOff') },
+              ]} />
+          </div>
+          <p className="text-[11.5px] leading-snug text-ink-faint">{t(canSpawnSubagents === false
+            ? 'st.profiles.dispatchCanSpawnOffHint'
+            : canSpawnSubagents === undefined ? 'st.profiles.dispatchCanSpawnInheritHint' : 'st.profiles.dispatchHint')}</p>
         </div>
         <div data-profile-auto-compact className="space-y-1">
           <CompactPointField

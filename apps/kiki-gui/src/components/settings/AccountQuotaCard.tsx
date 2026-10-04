@@ -1,9 +1,12 @@
 /**
- * Connections → "Account quota": what each signed-in managed account has left
- * at its vendor. Kimi Code reports per-window limits (`/oauth/usage`); other
+ * What a signed-in account has left at its vendor, shown on that account's own
+ * connection. Kimi Code reports per-window limits (`/oauth/usage`); other
  * accounts show the one-line quota their sign-in status carries, when any.
- * This is the vendor's allowance, not this Kiki's token usage — the card says
+ * This is the vendor's allowance, not this Kiki's token usage — the panel says
  * so and links to the Usage page for the latter.
+ *
+ * It lives inside the connection it belongs to rather than in a list of its
+ * own, so an account is never described in two places at once.
  */
 
 import { useQuery } from '@tanstack/react-query';
@@ -17,7 +20,6 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
-import { SectionCard } from './SectionCard';
 
 type UsageRow = Extract<ManagedUsageResult, { kind: 'ok' }>['limits'][number];
 
@@ -34,33 +36,18 @@ const WINDOW_KEYS: Record<NonNullable<UsageRow['window']>['unit'], I18nKey> = {
   week: 'st.quota.window.week',
 };
 
-export function AccountQuotaCard({ methods }: { methods: readonly OAuthMethodStatus[] }) {
-  const { t } = useI18n();
-  const signedIn = methods.filter((method) => method.signed_in);
-  if (signedIn.length === 0) return null;
-  return (
-    <SectionCard id="st-card-account-quota" title={t('st.quota.title')}>
-      <div className="space-y-4">
-        <Hint>
-          {t('st.quota.intro')}{' '}
-          <Link to="/usage" className="text-selected-ink underline-offset-2 hover:underline">{t('st.quota.usageLink')}</Link>
-        </Hint>
-        <div className="divide-y divide-hairline">
-          {signedIn.map((method) => (
-            DETAILED_USAGE_METHODS.has(method.id)
-              ? <DetailedQuota key={method.id} method={method} />
-              : <SummaryQuota key={method.id} method={method} />
-          ))}
-        </div>
-      </div>
-    </SectionCard>
-  );
+/** Renders nothing for an account the vendor reports no allowance for. */
+export function AccountQuotaPanel({ method }: { method: OAuthMethodStatus }) {
+  return DETAILED_USAGE_METHODS.has(method.id)
+    ? <DetailedQuota method={method} />
+    : <SummaryQuota method={method} />;
 }
 
 function AccountHeading({ method }: { method: OAuthMethodStatus }) {
+  const { t } = useI18n();
   return (
     <p className="flex min-w-0 items-baseline gap-2">
-      <span className="text-[13px] font-medium text-ink">{method.label}</span>
+      <span className="text-[12.5px] font-medium text-ink">{method.label}</span>
       {method.account.state === 'known' ? <span className="truncate font-mono text-[11px] text-ink-faint">{method.account.id}</span> : null}
     </p>
   );
@@ -85,7 +72,7 @@ function DetailedQuota({ method }: { method: OAuthMethodStatus }) {
     ? [...(data.summary !== null ? [data.summary] : []), ...data.limits]
     : [];
   return (
-    <section data-quota-account={method.id} className="space-y-3 py-3 first:pt-0 last:pb-0">
+    <section data-quota-account={method.id} className="space-y-3">
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1"><AccountHeading method={method} /></div>
         <button type="button" className={SECONDARY_BUTTON} disabled={usage.isFetching} onClick={() => void usage.refetch()}>
@@ -116,6 +103,10 @@ function DetailedQuota({ method }: { method: OAuthMethodStatus }) {
             : ''}
         </p>
       ) : null}
+      <p className="text-[11px] leading-4 text-ink-faint">
+        {t('st.quota.intro')}{' '}
+        <Link to="/usage" className="text-selected-ink underline-offset-2 hover:underline">{t('st.quota.usageLink')}</Link>
+      </p>
     </section>
   );
 }
@@ -172,7 +163,7 @@ function SummaryQuota({ method }: { method: OAuthMethodStatus }) {
   const quota = method.quota;
   const reset = quota.state === 'known' ? resetText(quota.reset_at, locale) : null;
   return (
-    <section data-quota-account={method.id} className="space-y-1 py-3 first:pt-0 last:pb-0">
+    <section data-quota-account={method.id} className="space-y-1">
       <AccountHeading method={method} />
       {quota.state === 'known' ? (
         <p className="text-[12px] text-ink-soft">

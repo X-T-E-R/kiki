@@ -4,6 +4,7 @@ import type {
   HostSelectedFile,
   LocalConnection,
 } from './host';
+import { bufferedSaveSink } from './saveSink';
 
 interface VscodeApi {
   postMessage(message: unknown): void;
@@ -79,6 +80,29 @@ export const vscodeHost: VscodeHostAdapter = {
   async saveBlob(blob, filename) {
     const bytes = [...new Uint8Array(await blob.arrayBuffer())];
     return requestVscodeHost<boolean>('file.save', { filename, bytes });
+  },
+  async openSaveSink(filename) {
+    const result = await requestVscodeHost<{ supported: boolean; sinkId?: string } | null>('file.save.open', { filename });
+    if (result === null) return null;
+    if (!result.supported) return bufferedSaveSink((blob) => vscodeHost.saveBlob!(blob, filename));
+    if (result.sinkId === undefined) throw new Error('The host did not open a save stream');
+    const sinkId = result.sinkId;
+    let offset = 0;
+    let closed = false;
+    return {
+      streaming: true,
+      async write(chunk: Uint8Array) {
+        if (closed) throw new Error('The save stream is closed');
+        for (let start = 0; start < chunk.byteLength; start += 64 * 1024) {
+          const bytes = chunk.slice(start, Math.min(chunk.byteLength, start + 64 * 1024));
+          const ack = await requestVscodeHost<{ bytes: number }>('file.save.write', { sinkId, offset, bytes: bytes.buffer });
+          offset += bytes.byteLength;
+          if (ack.bytes !== offset) throw new Error('The host did not write the complete download chunk');
+        }
+      },
+      async close() { if (closed) return false; closed = true; return requestVscodeHost<boolean>('file.save.close', { sinkId }); },
+      async abort() { if (closed) return; closed = true; await requestVscodeHost<void>('file.save.abort', { sinkId }); },
+    };
   },
   async pickFiles() {
     const files = await requestVscodeHost<readonly SelectedFilePayload[] | null>('file.pick');

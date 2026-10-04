@@ -6,8 +6,48 @@ import type {
 } from '@kiki/protocol';
 
 import { LocalizedError } from '../i18n/locale';
+import { nbSearchAdvancedDraftFromConfig, validateNbSearchReferences, NbSearchReferenceError, type NbSearchAdvancedDraft } from './nbSearchAdvanced';
+export * from './nbSearchAdvanced';
 
 export type NbSearchReadiness = NbSearchTestStatus['search'];
+
+export const NB_SEARCH_MAX_KEYS = 32;
+
+export function parseMultiKey(raw: string | null | undefined): string[] {
+  return (raw ?? '').split(',').map((key) => key.trim()).filter((key) => key !== '');
+}
+
+export function formatMultiKey(keys: readonly string[]): string {
+  return keys.join(',');
+}
+
+export function validateKeyList(keys: readonly string[]): {
+  readonly valid: boolean;
+  readonly tooMany: boolean;
+  readonly duplicates: readonly string[];
+  readonly empty: boolean;
+} {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  let empty = false;
+  for (const raw of keys) {
+    const key = raw.trim();
+    if (key === '') empty = true;
+    else if (seen.has(key)) duplicates.add(key);
+    else seen.add(key);
+  }
+  const tooMany = keys.length > NB_SEARCH_MAX_KEYS;
+  return { valid: !tooMany && duplicates.size === 0 && !empty, tooMany, duplicates: [...duplicates], empty };
+}
+
+export function resolveEffectiveDefaultLane(
+  capabilities: NbSearchCapabilities,
+  draftDefaultLane: string,
+): { readonly laneId: string | undefined; readonly inherited: boolean } {
+  return draftDefaultLane === ''
+    ? { laneId: capabilities.inherited_configuration === undefined ? capabilities.search.default_lane : capabilities.inherited_configuration.default_search_lane, inherited: true }
+    : { laneId: draftDefaultLane, inherited: false };
+}
 
 export function nbSearchReuseLocalConfig(source: NbSearchSourceConfig | undefined): boolean {
   return source?.reuse_local_config ?? true;
@@ -113,11 +153,16 @@ export interface NbSearchExecutionDraft {
 }
 
 export interface NbSearchProviderDraft {
+  readonly providerId?: string;
   readonly enabled: boolean;
   readonly baseUrl: string;
   readonly credentialSlotId: string;
   readonly credentialSlotExplicit: boolean;
   readonly optionsJson: string;
+  readonly keyStrategy?: 'round-robin' | 'priority';
+  readonly balanceTtlMs?: string;
+  readonly isNew?: boolean;
+  readonly isDeleted?: boolean;
 }
 
 export interface NbSearchDraft {
@@ -128,6 +173,7 @@ export interface NbSearchDraft {
   readonly providers: Readonly<Record<string, NbSearchProviderDraft>>;
   readonly credentialSlots: NbSearchConfigPatch['credential_slots'];
   readonly execution: NbSearchExecutionDraft;
+  readonly advanced?: NbSearchAdvancedDraft;
 }
 
 function numberField(value: unknown): string {
@@ -221,6 +267,10 @@ export function nbSearchDraftFromConfig(
       credentialSlotId,
       credentialSlotExplicit: configuredSlotId !== '',
       optionsJson: Object.keys(options).length > 0 ? JSON.stringify(options, null, 2) : '',
+      keyStrategy: override['key_strategy'] === 'round-robin' || override['key_strategy'] === 'priority'
+        ? override['key_strategy']
+        : undefined,
+      balanceTtlMs: typeof override['balance_ttl_ms'] === 'number' ? numberField(override['balance_ttl_ms']) : undefined,
     };
   }
   return {
@@ -232,6 +282,7 @@ export function nbSearchDraftFromConfig(
     providers,
     credentialSlots,
     execution: executionDraftFromConfig(asRecord(config['execution'])),
+    advanced: nbSearchAdvancedDraftFromConfig(configValue, capabilities),
   };
 }
 
@@ -274,12 +325,21 @@ export function nbSearchConfigPatch(
   const baselineDraft = nbSearchDraftFromConfig(configValue, capabilities);
   const instances: Record<string, unknown> = { ...asRecord(config['provider_instances']) };
   let providerInstancesChanged = false;
-  for (const instance of capabilities.providers.instances) {
-    const providerDraft = draft.providers[instance.id];
-    const baselineProvider = baselineDraft.providers[instance.id];
-    if (providerDraft === undefined || baselineProvider === undefined) continue;
+  for (const [id, providerDraft] of Object.entries(draft.providers)) {
+    const existingInstance = capabilities.providers.instances.find((instance) => instance.id === id);
+    const baselineProvider = baselineDraft.providers[id] ?? { ...providerDraft, isNew: false };
+    if (providerDraft.isDeleted) {
+      delete instances[id];
+      providerInstancesChanged = true;
+      continue;
+    }
+    if (!providerDraft.isNew && JSON.stringify(providerDraft) === JSON.stringify(baselineProvider)) continue;
+    const providerId = providerDraft.providerId ?? existingInstance?.provider_id;
+    if (providerId === undefined || ((!existingInstance || providerDraft.optionsJson !== baselineProvider.optionsJson) && !optionKeysByProvider.has(providerId))) throw new Error(`Unknown provider for instance: ${id}`);
+    const instance = existingInstance ?? { id, provider_id: providerId, enabled: true };
     const optionsText = providerDraft.optionsJson.trim();
-    let options: Record<string, unknown> | undefined;
+    const allowedOptionKeys = optionKeysByProvider.get(instance.provider_id) ?? new Set<string>();
+    let options: Record<string, unknown> = {};
     if (optionsText !== '') {
       let parsed: unknown;
       try {
@@ -291,36 +351,56 @@ export function nbSearchConfigPatch(
         throw new LocalizedError({ key: 'st.nbSearch.invalidOptions', params: { id: instance.id } });
       }
       options = parsed as Record<string, unknown>;
-      const allowedOptionKeys = optionKeysByProvider.get(instance.provider_id) ?? new Set<string>();
       if (Object.keys(options).some((key) => !allowedOptionKeys.has(key))) {
         throw new LocalizedError({ key: 'st.nbSearch.invalidOptions', params: { id: instance.id } });
       }
     }
+    const balanceTtlMs = parsePositiveInt(providerDraft.balanceTtlMs ?? '');
+    if (balanceTtlMs !== undefined && (balanceTtlMs < 60_000 || balanceTtlMs > 86_400_000)) {
+      throw new RangeError(`Provider balance TTL for ${instance.id} must be between 60000 and 86400000 milliseconds.`);
+    }
     const providerChanged =
       providerDraft.enabled !== baselineProvider.enabled
       || providerDraft.baseUrl !== baselineProvider.baseUrl
-      || providerDraft.optionsJson !== baselineProvider.optionsJson;
+      || providerDraft.credentialSlotId !== baselineProvider.credentialSlotId
+      || providerDraft.credentialSlotExplicit !== baselineProvider.credentialSlotExplicit
+      || providerDraft.optionsJson !== baselineProvider.optionsJson
+      || providerDraft.keyStrategy !== baselineProvider.keyStrategy
+      || providerDraft.balanceTtlMs !== baselineProvider.balanceTtlMs
+      || providerDraft.isNew === true;
     if (!providerChanged) continue;
     providerInstancesChanged = true;
-    const inherited =
-      providerDraft.enabled === instance.enabled
-      && providerDraft.baseUrl.trim() === ''
-      && !providerDraft.credentialSlotExplicit
-      && optionsText === '';
-    if (inherited) {
-      delete instances[instance.id];
-      continue;
-    }
-    instances[instance.id] = {
-      ...asRecord(instances[instance.id]),
+    const savedInstance = asRecord(instances[instance.id]);
+    const hiddenOptions = Object.fromEntries(
+      Object.entries(asRecord(savedInstance['options'])).filter(([key]) => !allowedOptionKeys.has(key)),
+    );
+    const mergedOptions = { ...hiddenOptions, ...options };
+    const nextInstance = {
+      ...savedInstance,
       provider_id: instance.provider_id,
       enabled: providerDraft.enabled,
       credential_slot_id: providerDraft.credentialSlotExplicit
         ? providerDraft.credentialSlotId
         : undefined,
       base_url: providerDraft.baseUrl.trim() === '' ? undefined : providerDraft.baseUrl.trim(),
-      options: options ?? {},
+      key_strategy: providerDraft.keyStrategy,
+      balance_ttl_ms: balanceTtlMs,
+      options: !providerDraft.isNew && providerDraft.optionsJson === baselineProvider.optionsJson ? savedInstance['options'] : mergedOptions,
     };
+    const inherited =
+      providerDraft.enabled === instance.enabled
+      && nextInstance.base_url === undefined
+      && !providerDraft.credentialSlotExplicit
+      && nextInstance.key_strategy === undefined
+      && nextInstance.balance_ttl_ms === undefined
+      && Object.keys(asRecord(nextInstance.options)).length === 0
+      && !providerDraft.isNew
+      && instance.id === `${instance.provider_id}.default`
+      && Object.keys(savedInstance).every((key) => [
+        'provider_id', 'enabled', 'credential_slot_id', 'base_url', 'key_strategy', 'balance_ttl_ms', 'options',
+      ].includes(key));
+    if (inherited) delete instances[instance.id];
+    else instances[instance.id] = nextInstance;
   }
   if (providerInstancesChanged) {
     if (Object.keys(instances).length > 0) result['provider_instances'] = instances;
@@ -357,6 +437,51 @@ export function nbSearchConfigPatch(
       },
     ];
   }
+  const advanced = draft.advanced;
+  const baselineAdvanced = baselineDraft.advanced;
+  const changed = (left: unknown, right: unknown) => JSON.stringify(left) !== JSON.stringify(right);
+  if (advanced !== undefined && baselineAdvanced !== undefined) {
+    const referenceChanges = changed(advanced.lanes, baselineAdvanced.lanes)
+      || changed(advanced.presets, baselineAdvanced.presets)
+      || changed(advanced.fetchChains, baselineAdvanced.fetchChains)
+      || changed(advanced.routing, baselineAdvanced.routing)
+      || draft.defaultSearchLane !== baselineDraft.defaultSearchLane
+      || Object.values(draft.providers).some((provider) => provider.isDeleted);
+    if (referenceChanges) {
+      const issues = validateNbSearchReferences(configValue, draft, capabilities);
+      if (issues.length > 0) throw new NbSearchReferenceError(issues);
+    }
+    if (changed(advanced.lanes, baselineAdvanced.lanes)) {
+      if (Object.keys(advanced.lanes).length === 0) delete result['lanes'];
+      else result['lanes'] = structuredClone(advanced.lanes);
+    }
+    if (changed(advanced.presets, baselineAdvanced.presets)) {
+      if (Object.keys(advanced.presets).length === 0) delete result['presets'];
+      else result['presets'] = structuredClone(advanced.presets);
+    }
+    if (changed(advanced.fetchChains, baselineAdvanced.fetchChains)) {
+      const ownChains = advanced.fetchChains.filter((chain) => !chain.inherited);
+      if (ownChains.some((chain) => chain.pipelines.length === 0)) throw new LocalizedError({ key: 'st.nbSearch.chainEmpty' });
+      if (ownChains.length === 0) delete defaults['fetch_chain'];
+      else defaults['fetch_chain'] = advanced.fetchChains.filter((chain) => chain.pipelines.length > 0).map((chain) => {
+        const saved = asArray(asRecord(config['defaults'])['fetch_chain']).map(asRecord).find((entry) => entry['input_kind'] === chain.inputKind && (entry['representation'] ?? 'markdown') === chain.representation);
+        return { ...saved, input_kind: chain.inputKind, representation: chain.representation, pipelines: [...chain.pipelines] };
+      });
+    }
+    if (changed(advanced.fileScopes, baselineAdvanced.fileScopes) || changed(advanced.routing, baselineAdvanced.routing)) {
+      const fetchConfig = { ...asRecord(config['fetch']) };
+      if (changed(advanced.fileScopes, baselineAdvanced.fileScopes)) {
+        if (advanced.fileScopes === undefined) delete fetchConfig['file_scopes'];
+        else fetchConfig['file_scopes'] = structuredClone(advanced.fileScopes);
+      }
+      if (changed(advanced.routing, baselineAdvanced.routing)) {
+        if (advanced.routing === undefined) delete fetchConfig['routing'];
+        else fetchConfig['routing'] = structuredClone(advanced.routing);
+      }
+      if (Object.keys(fetchConfig).length > 0) result['fetch'] = fetchConfig;
+      else delete result['fetch'];
+    }
+  }
   if (Object.keys(defaults).length > 0) result['defaults'] = defaults;
   else delete result['defaults'];
 
@@ -372,7 +497,18 @@ export function nbSearchConfigPatch(
   assignNumber(fetchLimits, 'max_response_bytes', draft.execution.fetchMaxResponseBytes);
   assignNumber(fetchLimits, 'max_content_chars', draft.execution.fetchMaxContentChars);
   assignNumber(fetchLimits, 'max_redirects', draft.execution.fetchMaxRedirects);
+  if (advanced !== undefined && baselineAdvanced !== undefined
+    && (advanced.qualityMinContentChars !== baselineAdvanced.qualityMinContentChars
+      || changed(advanced.qualityBlockedMarkers, baselineAdvanced.qualityBlockedMarkers))) {
+    const quality = { ...asRecord(fetchLimits['quality']) };
+    assignNumber(quality, 'min_content_chars', advanced.qualityMinContentChars);
+    if (advanced.qualityBlockedMarkers === undefined) delete quality['blocked_markers'];
+    else quality['blocked_markers'] = [...advanced.qualityBlockedMarkers];
+    if (Object.keys(quality).length > 0) fetchLimits['quality'] = quality;
+    else delete fetchLimits['quality'];
+  }
   if (Object.keys(fetchLimits).length > 0) execution['fetch'] = fetchLimits;
+  else delete execution['fetch'];
   if (Object.keys(execution).length > 0) result['execution'] = execution;
   else delete result['execution'];
 

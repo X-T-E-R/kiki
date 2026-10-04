@@ -22,7 +22,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
 
 import type { RoomListItem, Session, Workspace } from '@kiki/protocol';
@@ -94,7 +94,8 @@ import { useGuardedNavigate } from './dirtyGuard';
 import { LifeMark } from './LifeMark';
 import { DisclosureChevron, Icon } from './icons';
 import { SpaceSwitcher } from './SpaceSwitcher';
-import { SidebarBotRoomGroups } from './bot/SidebarBotRoomGroups';
+import { SidebarPersonaSection } from './persona/SidebarPersonaSection';
+import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
 import { JoinRoomDialog, NewThreadRoomDialog } from './room/ThreadRoomDialogs';
 import { isSubagentSession, ROOM_MAX_MEMBERS, useThreadCommsEnabled } from './room/threadRooms';
 import { WorktreeArchiveDialog } from './WorktreeArchiveDialog';
@@ -916,12 +917,14 @@ export function Sidebar({
   // Temporary conversations stay out of the paged list (and its search and
   // grouping); they get their own block at the top while any exist. The key
   // sits under ['sessions'], so every list refresh refreshes it too.
-  const ephemeralQuery = useQuery({
+  const ephemeralQuery = useInfiniteQuery({
     queryKey: ['sessions', 'ephemeral'],
-    queryFn: () => client.listEphemeralSessions(),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => client.listEphemeralSessions({ before_id: pageParam, page_size: 50 }),
+    getNextPageParam: (page) => page.has_more ? page.next_cursor : undefined,
     refetchInterval: 15_000,
   });
-  const ephemeralSessions = ephemeralQuery.data?.items ?? [];
+  const ephemeralSessions = ephemeralQuery.data?.pages.flatMap((page) => page.items) ?? [];
   // While a filter narrows the list, a workspace group shows what matched
   // even if it is folded (the fold is kept for later), and its header counts
   // the matches against everything loaded in that workspace.
@@ -1093,7 +1096,7 @@ export function Sidebar({
       </div>
 
       <PrimaryNav activeWorkspaceId={activeWorkspaceId} badges={navBadges} />
-      <SidebarBotRoomGroups sessions={sessions} activeSessionId={activeSessionId} seen={seen} />
+      <SidebarPersonaSection sessions={sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
 
       <div className="flex items-center gap-0.5 pt-3 pr-2 pb-0.5 pl-4">
         {/* The section label never gives way: it is T5, unshrinkable and
@@ -1312,6 +1315,24 @@ export function Sidebar({
                 />
               </div>
             ))}
+            {/* The window carried the newest temporary sessions; the rest are one
+                page away, read on request into the same list and order. */}
+            {ephemeralQuery.hasNextPage ? (
+              <button
+                type="button"
+                data-session-ephemeral-load-more
+                disabled={ephemeralQuery.isFetchingNextPage}
+                onClick={() => void ephemeralQuery.fetchNextPage?.()}
+                className="mt-1 h-8 w-full rounded-lg px-2 text-center text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink-soft disabled:opacity-60"
+              >
+                {ephemeralQuery.isFetchingNextPage ? t('sidebar.loadingMore') : t('sidebar.loadMore')}
+              </button>
+            ) : null}
+            {ephemeralQuery.isError ? (
+              <p role="alert" data-session-ephemeral-load-error className="px-2 py-1 text-[12px] text-danger">
+                {ephemeralQuery.error?.message ?? t('common.unknownError')}
+              </p>
+            ) : null}
           </div>
         ) : null}
         {sessionTree.map((group) => {
@@ -1842,6 +1863,12 @@ function SessionRow({
             {/* Pinned is said by the Pinned group; only a list with no groups
               * needs the glyph. */}
             {pinned && showPin ? <PinIcon className="text-ink-faint" /> : null}
+            {/* Show 16px persona avatar if session belongs to a persona */}
+            {session.agent_config?.persona ? (
+              <span className="shrink-0 -my-0.5">
+                <PersonaAvatar persona={personaAvatarOf(session.agent_config.persona)} size={16} decorative />
+              </span>
+            ) : null}
             {/* The one kind glyph: a fork. Sessions a parent started carry none. */}
             {nested && relation?.kind === 'branch' ? (
               <span data-session-relation="branch" aria-hidden className="shrink-0 text-ink-faint">

@@ -95,6 +95,12 @@ import {
 import { API_CODES, ApiError } from '../lib/client';
 
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
+// The 286 header test surface opens this dialog lazily; keep the test harness
+// focused on session chrome without requiring a live connection context.
+vi.mock('./persona/PersonaSettingsUpdate', () => ({
+  PersonaSettingsDialog: () => null,
+  PersonaSettingsUpdate: () => null,
+}));
 
 describe('terminal shortcut', () => {
   it('recognises Ctrl+` and nothing near it', () => {
@@ -140,7 +146,7 @@ describe('QueueStrip', () => {
     expect(html).toMatch(/>2<\/span>/);
     expect(html).toContain('first parked prompt');
     expect(html).toContain('second parked prompt');
-    expect(html).toContain('Send now');
+    expect(html).toContain('Send into this turn');
     expect(html).toContain('Remove');
     // The strip is the queue drawer body: its header carries Clear all.
     expect(html).toContain('Clear all');
@@ -158,7 +164,7 @@ describe('QueueStrip', () => {
         />
       </I18nProvider>,
     );
-    expect(html).toContain('aria-label="Send now"');
+    expect(html).toContain('aria-label="Send into this turn"');
     expect(html).toMatch(/disabled="" title="Sending is paused until the session is in sync."/);
     expect(html).toContain('Sending is paused until the session is in sync.');
     expect(html).toContain('aria-label="Remove"');
@@ -277,7 +283,7 @@ describe('QueueStrip', () => {
         />
       </I18nProvider>,
     );
-    expect(html).toContain('Editing · starts when idle');
+    expect(html).toContain('Editing · starts after this turn');
     expect(html).toContain('data-queue-hold-notice');
     expect(html).toContain('the 1 ahead still send');
     expect(html).not.toContain('hidden=""');
@@ -479,7 +485,7 @@ describe('parseSessionCreateHandoff', () => {
       resolveSessionCreateSubmission({
         initialPrompt: 'must not also send',
         initialAttachments: [],
-        initialSkill: { name: 'review', args: '--fix', attachments },
+        initialSkill: { name: 'review', args: '--fix', attachments, userInput: '/skill:review --fix\nKeep this line.' },
         goalObjective: 'ship safely',
       }),
     ).toEqual({
@@ -487,6 +493,7 @@ describe('parseSessionCreateHandoff', () => {
       name: 'review',
       args: '--fix',
       attachments,
+      userInput: '/skill:review --fix\nKeep this line.',
       goalObjective: 'ship safely',
     });
   });
@@ -520,6 +527,17 @@ describe('promptGoalObjective', () => {
 });
 
 describe('activateSkillWithConditionalClear', () => {
+  it('retains the full submission on failure for a retry', async () => {
+    const attachments = [{ kind: 'file' as const, path: 'note.md', name: 'note.md', isDir: false }];
+    const submitted = { draft: '/review --fix\nKeep this line.', attachments };
+    const clear = vi.fn();
+    await expect(activateSkillWithConditionalClear({
+      activate: async () => { throw new Error('activation rejected'); },
+      submitted, current: () => submitted, clear,
+    })).rejects.toThrow('activation rejected');
+    expect(clear).not.toHaveBeenCalled();
+  });
+
   it('applies the handoff goal before activating the skill', async () => {
     const order: string[] = [];
     const attachments: readonly [] = [];

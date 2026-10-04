@@ -29,9 +29,10 @@ interface SeatCreateOptions {
 }
 
 export function registerSeatCommand(program: Command): Command {
-  const seat = program.command('seat');
+  const seat = program.command('seat').description('Create, list, revoke, or install external delegation seats.');
   seat
     .command('create')
+    .description('Create an external delegation seat bound to a workspace and principal.')
     .requiredOption('--workspace <dir>')
     .requiredOption('--principal <name>')
     .option('--mode <mode>', '', parseMode, 'manual')
@@ -46,6 +47,7 @@ export function registerSeatCommand(program: Command): Command {
 
   seat
     .command('list')
+    .description('List external delegation seats in this home.')
     .option('--home <dir>')
     .option('--json')
     .action(async (options: { readonly home?: string; readonly json?: boolean }) => {
@@ -60,6 +62,7 @@ export function registerSeatCommand(program: Command): Command {
 
   seat
     .command('revoke <seatId>')
+    .description('Revoke one external delegation seat by id.')
     .option('--home <dir>')
     .option('--json')
     .action(async (seatId: string, options: { readonly home?: string; readonly json?: boolean }) => {

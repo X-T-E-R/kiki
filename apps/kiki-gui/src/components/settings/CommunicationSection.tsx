@@ -1,7 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { errorText } from '@kiki/session-core/i18n';
+import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import {
   agentNotifyParentPatch,
   runtimeConfigDraftFromConfig,
@@ -37,6 +37,18 @@ const APPEND_TIMING_HINT_KEY = {
   subagents_done: 'timing.hint.subagentsDone',
   tasks_done: 'timing.hint.tasksDone',
 } as const;
+
+/**
+ * The three token-counting strategies, named for what they report instead of
+ * their wire value: the stored value stays as the option's mono caption.
+ */
+const TOKEN_STRATEGIES = ['measured+estimated', 'measured', 'estimated'] as const;
+
+const TOKEN_STRATEGY_LABEL_KEY: Record<TokenCountingStrategy, I18nKey> = {
+  'measured+estimated': 'st.communication.tokenStrategy.measuredEstimated',
+  measured: 'st.communication.tokenStrategy.measured',
+  estimated: 'st.communication.tokenStrategy.estimated',
+};
 
 /**
  * Instant-apply binding for one value projected out of the server config:
@@ -133,7 +145,11 @@ export function AgentMessagingCard() {
   );
 }
 
-/** Developer → Token counting: a reporting detail, applied on change. */
+/**
+ * Developer → Token counting: a reporting detail, applied on change. The
+ * labels say what each strategy reports; the stored value stays visible in the
+ * option's mono caption for config files.
+ */
 export function TokenCountingCard() {
   const { t } = useI18n();
   const choice = useServerChoice((draft) => draft.tokenCountingStrategy, tokenCountingPatch);
@@ -150,8 +166,7 @@ export function TokenCountingCard() {
               value={choice.value}
               disabled={choice.saving}
               onChange={(next) => { void choice.apply(next); }}
-              choices={(['measured+estimated', 'measured', 'estimated'] as const).map((value) => ({ value, label: value }))}
-              className="font-mono"
+              choices={TOKEN_STRATEGIES.map((value) => ({ value, label: t(TOKEN_STRATEGY_LABEL_KEY[value]), hint: value }))}
             />
             <SavedTick show={choice.saved} />
           </SettingField>

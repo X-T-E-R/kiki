@@ -73,6 +73,7 @@ type PluginApi = Pick<
   Session,
   | 'listPlugins'
   | 'installPlugin'
+  | 'previewPlugin'
   | 'setPluginEnabled'
   | 'setPluginMcpServerEnabled'
   | 'removePlugin'
@@ -93,7 +94,8 @@ async function resolvePluginApi(host: SlashCommandHost): Promise<PluginApi> {
   }
   return {
     listPlugins: () => host.harness.listPlugins(),
-    installPlugin: (source) => host.harness.installPlugin(source),
+    previewPlugin: (input) => host.harness.previewPlugin(input),
+    installPlugin: (source, options) => host.harness.installPlugin(source, options),
     setPluginEnabled: (id, enabled) => host.harness.setPluginEnabled(id, enabled),
     setPluginMcpServerEnabled: (id, server, enabled) =>
       host.harness.setPluginMcpServerEnabled(id, server, enabled),
@@ -169,7 +171,7 @@ export async function handlePluginsCommand(host: SlashCommandHost, rawArgs: stri
       }
       await session.setPluginMcpServerEnabled(id, server, action === 'enable');
       host.showStatus(
-        `${action === 'enable' ? 'Enabled' : 'Disabled'} MCP server ${server} for ${id}. Run /reload or /new to apply.`,
+        `${action === 'enable' ? 'Enabled' : 'Disabled'} MCP server ${server} for ${id}. Run /new or /reload to apply.`,
       );
       return;
     }
@@ -672,7 +674,7 @@ async function installFromPanel(
     return;
   }
   // Close the panel after installing so the result status and the
-  // "/reload or /new" tip are visible in the transcript.
+  // apply-timing tip are visible in the transcript.
   host.restoreEditor();
 }
 
@@ -695,7 +697,7 @@ async function applyPluginEnabled(
       ? ` Some MCP servers are disabled; re-enable with /plugins mcp enable ${id} <server>.`
       : '';
   if (showStatus) {
-    host.showStatus(`${enabled ? 'Enabled' : 'Disabled'} ${id}. Run /reload or /new to apply.${mcpHint}`);
+    host.showStatus(`${enabled ? 'Enabled' : 'Disabled'} ${id}. Plugin tools update in this conversation on the next call.${mcpHint}`);
   }
   const inlineMcpHint = mcpHint.length > 0 ? ' · MCP servers disabled' : '';
   return `${pluginInlineChangeHint()}${inlineMcpHint}`;
@@ -836,13 +838,15 @@ async function installPluginFromSource(
 ): Promise<void> {
   const session = await resolvePluginApi(host);
   const beforeList = await session.listPlugins();
-  const summary = await session.installPlugin(
-    resolvePluginInstallSource(source, host.state.appState.workDir),
-  );
+  const consent = source.startsWith('--trust ');
+  const resolved = resolvePluginInstallSource(consent ? source.slice('--trust '.length).trim() : source, host.state.appState.workDir);
+  const plan = await session.previewPlugin({ source: resolved });
+  if (plan.consentRequired && !consent) throw new Error(`Plugin ${plan.id} (${plan.contributions.join(', ')}) runs trusted code with full account permissions. Consent once with /plugins install --trust <source>.`);
+  const summary = await session.installPlugin(resolved, { fingerprint: plan.fingerprint, consent });
   showPluginInstallResult(host, beforeList, summary);
 }
 
-const PLUGIN_RELOAD_HINT = 'Run /new or /reload to apply plugin changes.';
+const PLUGIN_RELOAD_HINT = 'Plugin tools update in this conversation on the next call. Run /new or /reload for its skills, prompts, and MCP servers.';
 
 const WEBBRIDGE_POST_INSTALL_MARKDOWN = [
   '*Two steps left to use Kimi Browser Extension:*',
@@ -934,5 +938,5 @@ function resolvePluginInstallSource(source: string, workDir: string): string {
 }
 
 function pluginInlineChangeHint(): string {
-  return 'run /reload or /new to apply';
+  return 'plugin tools update on the next call · run /new or /reload for skills and prompts';
 }

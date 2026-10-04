@@ -1,11 +1,16 @@
 import chalk from 'chalk';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FooterComponent } from '#/tui/components/chrome/footer';
 import { setRainbowDance, type RainbowDanceController } from '#/tui/easter-eggs/dance';
 import { currentTheme, darkColors, lightColors } from '#/tui/theme';
 import type { ModelAlias } from '@kiki/node-sdk';
 import type { AppState } from '#/tui/types';
+
+vi.mock('node:os', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:os')>(),
+  homedir: () => 'C:\\Users\\example',
+}));
 
 const TRUECOLOR_PATTERN = /\[38;2;(\d+);(\d+);(\d+)m/g;
 
@@ -60,6 +65,25 @@ const appState: AppState = {
 };
 
 describe('FooterComponent', () => {
+  it.each([
+    ['C:\\Users\\example', '~'],
+    ['C:\\Users\\example\\repo', '~\\repo'],
+    ['C:/Users/example/repo', '~/repo'],
+    ['C:\\Users\\example/repo', '~/repo'],
+    ['C:\\Users\\example-backup\\repo', '…/Users/example-backup/repo'],
+    ['C:/Users/examplex/repo', '…/Users/examplex/repo'],
+    ['C:\\other\\one\\two\\three', '…/one/two/three'],
+  ])('aliases home with separator boundaries and preserves the last three directories (%s)', (workDir, expected) => {
+    const footer = new FooterComponent({ ...appState, workDir, statusLine: { items: ['cwd'], command: null } });
+    try {
+      const output = footer.render(120).join('\n');
+      expect(output).toContain(expected);
+      if (workDir.includes('example-backup') || workDir.includes('examplex')) expect(output).not.toContain('~');
+    } finally {
+      footer.dispose();
+    }
+  });
+
   const previousChalkLevel = chalk.level;
 
   beforeEach(() => {

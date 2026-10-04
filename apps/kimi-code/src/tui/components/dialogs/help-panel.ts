@@ -12,16 +12,15 @@ import {
   Container,
   matchesKey,
   Key,
-  decodeKittyPrintable,
+  Text,
   type Focusable,
   truncateToWidth,
 } from '@kiki/pi-tui';
+import { DEFAULT_KEYBOARD_SHORTCUTS, type KeyboardShortcut } from '#/tui/constant/help';
 import { currentTheme } from '#/tui/theme';
+import { printableChar } from '#/tui/utils/printable-key';
 
-export interface KeyboardShortcut {
-  readonly keys: string;
-  readonly description: string;
-}
+export { DEFAULT_KEYBOARD_SHORTCUTS, type KeyboardShortcut } from '#/tui/constant/help';
 
 export interface HelpPanelCommand {
   readonly name: string;
@@ -29,27 +28,12 @@ export interface HelpPanelCommand {
   readonly description: string;
 }
 
-/** Static list — keep in sync with the global editor bindings. */
-export const DEFAULT_KEYBOARD_SHORTCUTS: readonly KeyboardShortcut[] = [
-  { keys: 'Shift-Tab', description: 'Toggle plan mode' },
-  { keys: 'Ctrl-G', description: 'Edit in external editor ($VISUAL / $EDITOR)' },
-  { keys: 'Ctrl-O', description: 'Toggle tool output / compaction summary expansion' },
-  { keys: 'Ctrl-T', description: 'Expand / collapse the todo list (when truncated)' },
-  { keys: 'Ctrl-S', description: 'Steer — inject a follow-up during streaming' },
-  { keys: 'Shift-Enter / Ctrl-J', description: 'Insert newline' },
-  { keys: 'Ctrl-C', description: 'Interrupt stream / clear input' },
-  { keys: 'Ctrl-D', description: 'Exit (on empty input)' },
-  { keys: 'Esc', description: 'Close dialogs / interrupt streaming' },
-  { keys: '↑ / ↓', description: 'Browse input history' },
-  { keys: 'Enter', description: 'Submit' },
-];
-
 export interface HelpPanelOptions {
-  readonly commands: readonly HelpPanelCommand[];
+  readonly commands?: readonly HelpPanelCommand[];
+  readonly content?: string;
   readonly shortcuts?: readonly KeyboardShortcut[];
   readonly onClose: () => void;
-  /** Terminal height — used to decide whether to show the hint tail. */
-  readonly maxVisible?: number;
+  readonly maxVisible?: number | (() => number);
 }
 
 export class HelpPanelComponent extends Container implements Focusable {
@@ -63,7 +47,7 @@ export class HelpPanelComponent extends Container implements Focusable {
   }
 
   handleInput(data: string): void {
-    const printable = decodeKittyPrintable(data) ?? data;
+    const printable = printableChar(data);
     if (
       matchesKey(data, Key.escape) ||
       matchesKey(data, Key.enter) ||
@@ -98,48 +82,32 @@ export class HelpPanelComponent extends Container implements Focusable {
     const slashColor = (text: string) => currentTheme.fg('primary', text);
 
     const shortcuts = this.opts.shortcuts ?? DEFAULT_KEYBOARD_SHORTCUTS;
-    const kbdWidth = Math.max(8, ...shortcuts.map((s) => s.keys.length));
-    const sortedCmds = [...this.opts.commands].toSorted(compareSlashCommandsForDisplay);
-    const cmdLabels = sortedCmds.map((c) => {
-      const aliases = c.aliases.length > 0 ? ` (${c.aliases.map((a) => '/' + a).join(', ')})` : '';
-      return `/${c.name}${aliases}`;
-    });
-    const cmdWidth = Math.max(12, ...cmdLabels.map((l) => l.length));
-    const lines: string[] = [
-      accent('─'.repeat(width)),
-      currentTheme.boldFg('primary', ' help ') + muted('· Esc / Enter / q to cancel · ↑↓ scroll'),
+    const sortedCmds = [...(this.opts.commands ?? [])].toSorted(compareSlashCommandsForDisplay);
+    const commands = this.opts.content ?? sortedCmds.map((cmd) => {
+      const aliases = cmd.aliases.length > 0 ? ` (${cmd.aliases.map((a) => '/' + a).join(', ')})` : '';
+      return `${slashColor(`/${cmd.name}${aliases}`)}\n  ${dim(cmd.description)}`;
+    }).join('\n\n');
+    const body = [
+      currentTheme.bold('Slash commands'),
+      commands,
       '',
-      // Greeting
-      `  ${dim('Sure, Kiki is ready to help! Just send a message to get started.')}`,
+      currentTheme.bold('Keyboard shortcuts (input box)'),
+      ...shortcuts.map((s) => `${kbdColor(s.keys)}\n  ${dim(s.description)}`),
+    ].join('\n');
+    const content = new Text(body, 0, 0).render(Math.max(1, width));
+    const limit = typeof this.opts.maxVisible === 'function' ? this.opts.maxVisible() : this.opts.maxVisible;
+    const maxVisible = Math.max(1, limit ?? 24);
+    this.scrollTop = Math.max(0, Math.min(this.scrollTop, Math.max(0, content.length - maxVisible)));
+    const slice = content.slice(this.scrollTop, this.scrollTop + maxVisible);
+    const lines = [
+      accent('─'.repeat(Math.max(1, width))),
+      currentTheme.boldFg('primary', ' help '),
+      ...new Text(muted('Esc / Enter / q cancel · ↑↓ scroll · PgUp/PgDn page'), 0, 0).render(Math.max(1, width)),
       '',
-      // Section: keyboard shortcuts
-      `  ${currentTheme.bold('Keyboard shortcuts')}`,
-      ...shortcuts.map((s) => `    ${kbdColor(s.keys.padEnd(kbdWidth))}  ${dim(s.description)}`),
-      '',
-      // Section: slash commands
-      `  ${currentTheme.bold('Slash commands')}`,
-      ...sortedCmds.map((cmd, i) => {
-        const label = cmdLabels[i] ?? `/${cmd.name}`;
-        return `    ${slashColor(label.padEnd(cmdWidth))}  ${dim(cmd.description)}`;
-      }),
-      '',
-      accent('─'.repeat(width)),
+      ...slice,
+      muted(` showing ${String(this.scrollTop + 1)}-${String(this.scrollTop + slice.length)} of ${String(content.length)}`),
+      accent('─'.repeat(Math.max(1, width))),
     ];
-
-    // Apply scroll windowing — keep the borders visible.
-    const content = lines.slice(1, lines.length - 1);
-    const maxVisible = Math.max(5, this.opts.maxVisible ?? 24);
-    if (content.length > maxVisible) {
-      this.scrollTop = Math.max(0, Math.min(this.scrollTop, content.length - maxVisible));
-      const slice = content.slice(this.scrollTop, this.scrollTop + maxVisible);
-      const scrollInfo = muted(
-        ` showing ${String(this.scrollTop + 1)}-${String(this.scrollTop + slice.length)} of ${String(content.length)}`,
-      );
-      return [lines[0] ?? '', ...slice, scrollInfo, lines.at(-1) ?? ''].map((line) =>
-        truncateToWidth(line, width),
-      );
-    }
-    this.scrollTop = 0;
     return lines.map((line) => truncateToWidth(line, width));
   }
 }

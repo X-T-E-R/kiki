@@ -4,7 +4,11 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_SPACE_PREFERENCES, type SpaceDetail } from '@kiki/protocol';
+import type { KikiClient } from '../client';
+import { clearSpaceAuthority, configureSpaceAuthority, configureSpacePreferencePorts } from '../spaceAuthority';
+import { skinPrefsSnapshot } from './store';
 
 import { translate } from '@kiki/session-core/i18n';
 import { writeSettings } from '@kiki/session-core/settings';
@@ -30,6 +34,7 @@ import {
   setUserSkins,
   skinVariablesFor,
   slugify,
+  spaceTweaksOf,
   startSkinSync,
   variantToCssVariables,
   writeSkinPrefs,
@@ -498,5 +503,71 @@ describe('buildSkinExport', () => {
       '///',
     ).filename).toBe('my-skin.json');
     expect(slugify('  Ocean Blue 2  ')).toBe('ocean-blue-2');
+  });
+});
+
+describe('tweaks as a space value', () => {
+  // The protocol carries the density as a multiple of the stylesheet's step,
+  // not as the rem value the sheet uses, so the three densities this GUI
+  // offers (compact 0.22rem, default 0.25rem, roomy 0.29rem) travel as the
+  // multiples 0.88 / 1 / 1.16 and read back as those same rem values.
+  it('sends the density as a multiple of the stylesheet step', () => {
+    expect(spaceTweaksOf({ spacing: 0.22 }).spacing).toBe(0.88);
+    expect(spaceTweaksOf({ spacing: 0.25 }).spacing).toBe(1);
+    expect(spaceTweaksOf({ spacing: 0.29 }).spacing).toBe(1.16);
+  });
+
+  it('passes the rest of the tweaks through unchanged', () => {
+    expect(spaceTweaksOf({ accent: '#0b6e87', fontSans: 'Georgia, serif', radius: 6, spacing: 0.25 }))
+      .toEqual({ accent: '#0b6e87', fontSans: 'Georgia, serif', radius: 6, spacing: 1 });
+  });
+});
+
+describe('server spacing consumption', () => {
+  const identity = { serverId: 'server-a', homeId: 'main' };
+  function detail(spacing?: number): SpaceDetail {
+    return {
+      schema: 2, id: 'main', name: 'Main', primary: true, revision: 'r1',
+      inherit: { config: true, agents: true, instructions: true, skills: true, mcp: true, appearance: true, plugins: false, credentials: 'shared', generic_roots: true },
+      groups: [], items: [], preferences: { ...DEFAULT_SPACE_PREFERENCES, tweaks: spacing === undefined ? {} : { spacing } },
+      preference_authority: true, restart_required: false,
+    };
+  }
+  afterEach(() => {
+    clearSpaceAuthority();
+    configureSpacePreferencePorts(undefined);
+  });
+
+  it.each([[0.5, 0.125], [1, 0.25], [2, 0.5]])('renders wire density %s as %srem and preserves it in an ordinary tweak save', async (wire, rem) => {
+    localStorage.setItem('kiki.skin', JSON.stringify({ selection: { source: 'builtin', id: 'paper' }, tweaks: { spacing: 0.22 } }));
+    configureSpaceAuthority(identity, detail(wire));
+    const stop = startSkinSync();
+    try {
+      expect(skinPrefsSnapshot().tweaks.spacing).toBe(rem);
+      expect(document.documentElement.style.getPropertyValue('--spacing')).toBe(`${rem}rem`);
+      expect(spaceTweaksOf(skinPrefsSnapshot().tweaks).spacing).toBe(wire);
+      const preview = vi.fn().mockResolvedValue({ token: 't', rows: [{ id: 'pref:skin' }, { id: 'pref:tweaks' }] });
+      const client = { klient: { rest: { homes: { preview, apply: vi.fn().mockResolvedValue({ detail: detail(wire) }) } } } } as unknown as KikiClient;
+      configureSpacePreferencePorts({ client: () => client, identity: () => identity, spaceId: () => 'main' });
+      writeSkinPrefs({ tweaks: { ...skinPrefsSnapshot().tweaks, radius: 6 } });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(preview).toHaveBeenCalledWith('main', { action: 'edit', changes: [{ id: 'pref:tweaks', value: { spacing: wire, radius: 6 } }] });
+      expect(readSkinPrefs().tweaks.spacing).toBe(0.22);
+      configureSpaceAuthority(identity, detail());
+      expect(skinPrefsSnapshot().tweaks.spacing).toBeUndefined();
+      expect(document.documentElement.style.getPropertyValue('--spacing')).toBe('');
+    } finally {
+      stop();
+    }
+  });
+
+  it('keeps legacy device/file spacing validation separate from the space wire range', () => {
+    for (const spacing of [0.125, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(normalizeSkinPrefs({ tweaks: { spacing } }).tweaks.spacing).toBeUndefined();
+    }
+    for (const spacing of [0.19, 0.22, 0.25, 0.29, 0.33]) {
+      expect(normalizeSkinPrefs({ tweaks: { spacing } }).tweaks.spacing).toBe(spacing);
+    }
   });
 });

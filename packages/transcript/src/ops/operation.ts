@@ -187,9 +187,12 @@ export interface TranscriptGlobalCoverage {
   readonly tasks: TranscriptGlobalEntityCoverage;
   readonly attachments: TranscriptGlobalEntityCoverage;
   readonly prompts: TranscriptGlobalEntityCoverage;
+  readonly interactions?: TranscriptGlobalEntityCoverage;
+  readonly todos?: TranscriptGlobalEntityCoverage;
 }
 
 export interface AgentTranscriptSnapshot {
+  readonly olderCursor?: string;
   readonly items: readonly TranscriptItem[];
   readonly tasks: readonly TranscriptTask[];
   /** Global interaction entities (approvals / questions); never paginated. */

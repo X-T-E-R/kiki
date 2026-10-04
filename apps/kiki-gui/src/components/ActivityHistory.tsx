@@ -124,6 +124,9 @@ export const HistoryLine = memo(function HistoryLine({
     tone = 'plain';
     text = node.request.questions[0]?.question ?? '';
     stateLabel = t(`ia.question.${outcome.kind}` as I18nKey);
+    if (outcome.kind === 'cancelled' && ['no_consumer', 'turn_ended', 'agent_closed', 'aborted'].includes(outcome.reason ?? '')) {
+      stateTitle = t(`ia.question.cancelled.${outcome.reason}` as I18nKey);
+    }
     at = outcome.kind === 'expired' ? undefined : outcome.at;
   }
   return (
@@ -141,6 +144,7 @@ export const HistoryLine = memo(function HistoryLine({
     >
       {node.kind === 'question' && expanded ? (
         <div data-question-details className="space-y-4 py-2 pl-[26px] pr-2 text-[13px]">
+          {stateTitle === undefined ? null : <p className="text-ink-soft">{stateTitle}</p>}
           {node.request.questions.map((item) => {
             const answer = node.outcome?.kind === 'answered' ? node.outcome.answers?.[item.id] : undefined;
             return (

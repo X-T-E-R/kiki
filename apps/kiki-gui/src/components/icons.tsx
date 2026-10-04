@@ -42,6 +42,8 @@ export type IconName =
   | 'cross'
   | 'dash'
   | 'warning'
+  // On-demand help beside a label or control.
+  | 'info'
   | 'hold'
   // Controls
   | 'chevron'
@@ -187,6 +189,13 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <path d="M8 2.6 13.8 13H2.2z" />
       <path d="M8 6.6v2.8M8 11.3h.01" />
+    </>
+  ),
+  // A circled question: the fine print behind a label, one hover away.
+  info: (
+    <>
+      <circle cx="8" cy="8" r="5.9" />
+      <path d="M6.5 6.4a1.6 1.6 0 1 1 2.2 1.5c-.5.2-.7.5-.7 1v.4M8 11.4h.01" />
     </>
   ),
   // A partly filled dial: something held back, waiting to resume.

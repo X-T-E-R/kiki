@@ -19,6 +19,49 @@ import { SshProfilesPanel } from './SshProfilesPanel';
 
 declare const __KIKI_PROXY_TARGET__: string;
 
+import type { WebEntryProblem as WebLinkProblem } from '../lib/webAccess';
+
+// The vocabulary is shared with the bootstrap that decides it, so the connect
+// screen and the code that sent it here cannot drift into two different stories.
+export type { WebEntryProblem as WebLinkProblem } from '../lib/webAccess';
+
+/**
+ * A browser that opened a link and did not get in.
+ *
+ * This is the state a person reaches when a link has expired or was already
+ * used, and it is the one state where the connect form is the wrong answer: a
+ * token box would be asking them to do something that is not theirs to do. The
+ * recovery is the thing they can actually do — ask for a new link — plus, for
+ * the case where they simply are not on the right machine, the ordinary connect
+ * form underneath.
+ */
+function WebLinkProblemCard({ problem, onRetry }: { problem: WebLinkProblem; onRetry?: () => void }) {
+  const { t } = useI18n();
+  const [showConnect, setShowConnect] = useState(false);
+  return (
+    <div className="px-7 pt-6 pb-7" data-web-link-problem={problem}>
+      <Wordmark size="lg" />
+      <p className="mt-3 text-[14px] font-medium text-ink">
+        {t(problem === 'retargeted' ? 'connect.webLinkRetargeted' : 'connect.webLinkRefused')}
+      </p>
+      <p className="mt-1.5 max-w-[46ch] text-[13px] leading-relaxed text-ink-soft">
+        {t(problem === 'retargeted' ? 'connect.webLinkRetargetedBody' : 'connect.webLinkRefusedBody')}
+      </p>
+      {onRetry !== undefined ? (
+        <button type="button" data-web-link-retry onClick={onRetry}
+          className="mt-5 w-full rounded-md bg-accent px-3 py-2 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none">
+          {t('connect.webLinkRetry')}
+        </button>
+      ) : null}
+      <button type="button" data-web-link-connect aria-expanded={showConnect}
+        onClick={() => { setShowConnect((open) => !open); }}
+        className="mt-3 w-full rounded-md px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:text-ink">
+        {t(showConnect ? 'connect.webLinkHideConnect' : 'connect.webLinkUseConnect')}
+      </button>
+    </div>
+  );
+}
+
 export function ConnectScreen({
   initial,
   connecting,
@@ -32,6 +75,8 @@ export function ConnectScreen({
   onConnectSsh,
   onSwitchLocal,
   sshProfile,
+  webLink,
+  onRetryWebLink,
 }: {
   initial: ConnectionConfig;
   connecting: boolean;
@@ -45,6 +90,9 @@ export function ConnectScreen({
   onConnectSsh: (id: string, token: string) => Promise<void>;
   onSwitchLocal?: () => void;
   sshProfile?: SshProfile;
+  /** Set when this browser arrived with a web entry link it could not use. */
+  webLink?: WebLinkProblem;
+  onRetryWebLink?: () => void;
 }) {
   if (onSwitchLocal !== undefined) {
     return (
@@ -70,6 +118,13 @@ export function ConnectScreen({
       <Card>
         <DesktopFailureCard failure={desktopFailure} onRetry={onRetryDesktop} />
         <div className="px-7 pb-7"><SshProfilesPanel onConnect={onConnectSsh} /></div>
+      </Card>
+    );
+  }
+  if (webLink !== undefined) {
+    return (
+      <Card>
+        <WebLinkProblemCard problem={webLink} onRetry={onRetryWebLink} />
       </Card>
     );
   }

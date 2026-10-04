@@ -764,7 +764,7 @@ describe('kimi provider catalog add', () => {
     expect(exitCodes).toEqual([1]);
     const err = stderr.join('');
     expect(err).toContain('"does-not-exist" is not in provider "anthropic"');
-    expect(err).toContain('kimi provider catalog list anthropic');
+    expect(err).toContain('kiki provider catalog list anthropic');
   });
 
   it('preserves an existing default_model when re-importing the same provider without --default-model', async () => {

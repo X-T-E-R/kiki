@@ -21,11 +21,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
+import type { OAuthMethodStatus } from '@kiki/klient';
 
 import { I18nProvider } from '../i18n';
+import { accountState, needsSignInAction } from './accountSignInState';
+import { AccountConnectionPanel } from './AccountConnectionPanel';
 import { NewProviderWizard, ProviderEditor } from './ProviderFields';
 import { DirtyGuardContext } from './dirtyGuard';
 import { ConnectionsTab } from './settings/ProvidersSection';
+import { SettingsCardMountContext } from './settings/SectionCard';
 import { optionValues, pickValue } from './settings/testControls';
 
 const listDiscoveredModels = vi.fn(async () => ({ items: [] as Array<{ provider_id: string; fetched_at: number | null; attempted_at: number; models: Array<{ remote_id: string }> }> }));
@@ -43,7 +47,11 @@ const listProviders = vi.fn();
 const listModels = vi.fn();
 const getAuth = vi.fn();
 const getOAuthStatus = vi.fn();
+const startOAuthLogin = vi.fn();
+const cancelOAuthLogin = vi.fn(async () => ({ cancelled: true, status: 'cancelled' }));
 const listOAuthMethods = vi.fn(async (): Promise<unknown[]> => []);
+const probeOriginalOAuth = vi.fn(async (): Promise<unknown> => ({}));
+const connectOriginalOAuth = vi.fn(async (): Promise<unknown> => ({}));
 const SIGNED_IN_KIMI = [
   { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: true,
     account: { state: 'unknown' }, quota: { state: 'unknown' } },
@@ -53,13 +61,15 @@ const testProviderConnection = vi.fn();
 const logoutOAuth = vi.fn(async () => ({ logged_out: true }));
 const reportDirty = vi.fn();
 const revealSecret = vi.fn();
+const connectionClientOverride = vi.hoisted(() => ({ current: null as object | null, scopeId: null as string | null }));
 
 // One client for the whole run, like the app's connection context: a fresh
 // object per render would renew every callback that depends on it.
 vi.mock('../state/connection', () => {
-  let connection: unknown;
+  let connection: ReturnType<typeof build>;
   const build = () => ({
     config: {},
+    scopeId: 'scope-a',
     client: {
       listDiscoveredModels,
       refreshProvider,
@@ -76,14 +86,25 @@ vi.mock('../state/connection', () => {
       listModels,
       getAuth,
       getOAuthStatus,
+      startOAuthLogin,
+      cancelOAuthLogin,
       listOAuthMethods,
       logoutOAuth,
+      probeOriginalOAuth,
+      connectOriginalOAuth,
       listProviderHealth,
       testProviderConnection,
       revealSecret,
     },
   });
-  return { useConnection: () => (connection ??= build()) };
+  return { useConnection: () => {
+    connection ??= build();
+    return {
+      ...connection,
+      client: connectionClientOverride.current ?? connection.client,
+      scopeId: connectionClientOverride.scopeId ?? connection.scopeId,
+    };
+  } };
 });
 vi.mock('../host', () => ({
   useHost: () => ({ kind: 'browser' }),
@@ -143,6 +164,8 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  connectionClientOverride.current = null;
+  connectionClientOverride.scopeId = null;
   listDiscoveredModels.mockReset().mockResolvedValue({ items: [] });
   listProviderHealth.mockReset().mockResolvedValue({ items: [] });
   testProviderConnection.mockReset();
@@ -197,6 +220,23 @@ beforeEach(() => {
   listModels.mockReset().mockResolvedValue({ items: [...FAST_MODELS, ...MANAGED_MODELS] });
   getAuth.mockReset().mockResolvedValue({ ready: true, providers_count: 2 });
   getOAuthStatus.mockReset().mockResolvedValue(null);
+  startOAuthLogin.mockReset().mockResolvedValue({
+    flow_id: 'flow-1', provider: 'managed:openai-codex', status: 'pending',
+    verification_uri: 'https://auth.example.test/device',
+    verification_uri_complete: 'https://auth.example.test/device?code=WXYZ-1234',
+    user_code: 'WXYZ-1234', expires_in: 900, interval: 5,
+    expires_at: new Date(Date.now() + 900_000).toISOString(),
+  });
+  cancelOAuthLogin.mockClear();
+  logoutOAuth.mockClear();
+  probeOriginalOAuth.mockReset().mockResolvedValue({
+    provider: 'openai-codex', home_dir: '/home/dev/.codex', storage_backend: 'file',
+    state: 'ready', account: { state: 'known', id: 'dev@example.test' }, can_connect: true,
+  });
+  connectOriginalOAuth.mockReset().mockResolvedValue({
+    provider: 'openai-codex', home_dir: '/home/dev/.codex', storage_backend: 'file',
+    state: 'ready', account: { state: 'known', id: 'dev@example.test' }, can_connect: true,
+  });
   reportDirty.mockClear();
   revealSecret.mockReset().mockResolvedValue({ source: 'kiki', value: 'sk-stored' });
 });
@@ -220,21 +260,24 @@ async function renderSurface(children: ReactNode) {
   const root = createRoot(container);
   roots.push(root);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  await act(async () => {
-    root.render(
-      <MemoryRouter>
-        <QueryClientProvider client={client}>
-          <I18nProvider>
-            <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
-              {children}
-            </DirtyGuardContext.Provider>
-          </I18nProvider>
-        </QueryClientProvider>
-      </MemoryRouter>,
-    );
-  });
+  const rerender = async (content: ReactNode) => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={client}>
+            <I18nProvider>
+              <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
+                {content}
+              </DirtyGuardContext.Provider>
+            </I18nProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+  };
+  await rerender(children);
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-  return { container, client };
+  return { container, client, rerender };
 }
 
 async function renderEditor(
@@ -530,6 +573,7 @@ describe('ProviderEditor save channel', () => {
   it('saves a connection without models after removing the last wizard row', async () => {
     const onSaved = vi.fn(async () => {});
     const { container } = await renderSurface(<NewProviderWizard onSaved={onSaved} />);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-connection-source-choice="manual"]')!.click(); });
     const template = container.querySelector<HTMLButtonElement>('button[data-provider-template="openai"]');
     expect(template, 'OpenAI preset').not.toBeNull();
     await act(async () => { template!.click(); });
@@ -549,6 +593,9 @@ describe('ProviderEditor save channel', () => {
   it('a protocol card in Settings names the connection from its address and flags an empty one', async () => {
     const onSaved = vi.fn(async () => {});
     const { container } = await renderSurface(<NewProviderWizard onSaved={onSaved} />);
+    // A key needs a service to go to: the directory is the default source, so
+    // the hand-written path is one switch away.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-connection-source-choice="manual"]')!.click(); });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-provider-protocol="openai"]')!.click(); });
     await act(async () => { buttonByText(container, 'Create provider').click(); });
     expect(createProvider).not.toHaveBeenCalled();
@@ -588,14 +635,16 @@ describe('ProviderEditor save channel', () => {
     const onSaved = vi.fn(async () => {});
     const container = await renderEditor(MANAGED_PROVIDER, MANAGED_MODELS, true, onSaved);
 
-    const baseUrlInput = [...container.querySelectorAll('input')].find(
-      (input) => input.value === 'https://api.managed.example.test/v1',
-    );
-    expect(baseUrlInput, 'base URL input').toBeDefined();
-    await act(async () => {
-      setInputValue(baseUrlInput!, 'https://api.changed.example.test/v1');
-    });
+    // An account connection's address and protocol belong to the provider, so
+    // the form offers neither: the fields that remain are the ones the person
+    // actually owns.
+    expect(container.querySelector('#provider-field-base-url')).toBeNull();
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(container.querySelector('#provider-field-id')).toBeNull();
 
+    const select = [...container.querySelectorAll<HTMLElement>('[data-provider-default-model]')][0]!;
+    expect(select, 'provider default model select').toBeDefined();
+    await pickValue(select, 'data-provider-default-model', '');
     await act(async () => {
       buttonByText(container, 'Save provider').click();
     });
@@ -605,7 +654,7 @@ describe('ProviderEditor save channel', () => {
     const [providerId, patch] = updateProvider.mock.calls[0] as [string, Record<string, unknown>];
     expect(providerId).toBe('managed:kimi-code');
     expect(patch).toEqual({
-      base_url: 'https://api.changed.example.test/v1',
+      default_model: null,
       base_revision: 'provider-rev-1',
     });
     expect(patch).not.toHaveProperty('models');
@@ -1028,17 +1077,633 @@ describe('Connections list', () => {
     expect(advanced.textContent).toContain('Provider request identity');
   });
 
-  it('opens the add flow on an empty server and lets the person choose API key or account first', async () => {
+  it('offers one add entry — sign in, or a service by key — over an empty list', async () => {
     listProviders.mockResolvedValue({ items: [] });
+    listOAuthMethods.mockResolvedValue([
+      { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: true,
+        account: { state: 'unknown' }, quota: { state: 'unknown' } },
+      { id: 'openai-codex', label: 'ChatGPT', provider: 'managed:openai-codex', protocol: 'openai_responses', signed_in: false,
+        account: { state: 'unknown' }, quota: { state: 'unknown' } },
+    ]);
     const { container } = await renderSurface(<ConnectionsTab />);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(container.querySelector('[data-connections-empty]')).not.toBeNull();
+
+    // An empty page is the add flow, and the two ways in are one question.
     const picker = container.querySelector<HTMLElement>('[data-connection-method-picker]')!;
     expect(picker.dataset['connectionMethod']).toBe('api');
+    // A key needs a service, so the directory leads and the hand-written path
+    // is a switch away — not a second card to find.
+    expect(picker.querySelector<HTMLElement>('[data-connection-source]')!.dataset['connectionSource']).toBe('directory');
+    expect(picker.querySelector('[data-catalog-picker]')).not.toBeNull();
+    expect(picker.querySelectorAll('[data-provider-protocol]')).toHaveLength(0);
+    await act(async () => { picker.querySelector<HTMLButtonElement>('[data-connection-source-choice="manual"]')!.click(); });
     expect(picker.querySelectorAll('[data-provider-protocol]')).toHaveLength(5);
+
+
+    // Signing in is the other lane, and it offers only what the list does not
+    // already have. The fixture has no connections at all, so both appear.
     await act(async () => { picker.querySelector<HTMLButtonElement>('[data-connection-choice="account"]')!.click(); });
-    expect(picker.dataset['connectionMethod']).toBe('account');
-    expect(picker.querySelector('[data-provider-protocol]')).toBeNull();
-    expect(picker.querySelector('[data-account-sign-in]')).not.toBeNull();
+    const methods = [...picker.querySelectorAll<HTMLElement>('[data-oauth-method]')];
+    expect(methods.map((row) => row.getAttribute('data-oauth-method'))).toEqual(['kimi-code', 'openai-codex']);
+    expect(methods[1]!.querySelector('[data-account-sign-in-button]')).not.toBeNull();
   });
-});
+
+  it('offers no sign-in for an account the list already has, and leaves that row to recover it', async () => {
+    listOAuthMethods.mockResolvedValue([
+      { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: true,
+        connection_state: 'ready', account: { state: 'unknown' }, quota: { state: 'unknown' } },
+      { id: 'grok-build', label: 'Grok Build', provider: 'managed:grok-build', protocol: 'openai', signed_in: true,
+        connection_state: 'reconnect_required', account: { state: 'known', id: 'team@example.test' }, quota: { state: 'unknown' } },
+      { id: 'openai-codex', label: 'ChatGPT', provider: 'managed:openai-codex', protocol: 'openai_responses', signed_in: false,
+        account: { state: 'unknown' }, quota: { state: 'unknown' } },
+    ]);
+    // Both accounts exist as connections, one of them with a spent credential.
+    listProviders.mockResolvedValue({ items: [
+      { ...MANAGED_PROVIDER, id: 'managed:kimi-code' },
+      { ...MANAGED_PROVIDER, id: 'managed:grok-build', status: 'unconfigured', models: [] },
+    ] });
+    const { container } = await renderSurface(<ConnectionsTab />);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // The add flow opens beside a list that already has rows, in a portaled
+    // side panel, so it is reached through the document rather than the tree
+    // the page rendered into.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-add-connection]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const picker = document.querySelector<HTMLElement>('[data-connection-method-picker]');
+    expect(picker, 'the add flow opened').not.toBeNull();
+    await act(async () => { picker!.querySelector<HTMLButtonElement>('[data-connection-choice="account"]')!.click(); });
+
+    // The filter is the configured provider id, not the credential: a spent
+    // Grok token still has a connection, and that row is where it is recovered.
+    const offered = [...picker!.querySelectorAll('[data-oauth-method]')].map((row) => row.getAttribute('data-oauth-method'));
+    expect(offered).toEqual(['openai-codex']);
+    // And both connections are still on the list, Grok among them.
+    expect([...container.querySelectorAll('[data-connection-row]')].map((row) => row.getAttribute('data-connection-row')))
+      .toEqual(expect.arrayContaining(['managed:kimi-code', 'managed:grok-build']));
+  });
+  });
+
+  it('keeps an account in one row: its state, its account and the way back in', async () => {
+    const codex: ProviderCatalogItem = { ...MANAGED_PROVIDER, id: 'managed:openai-codex', status: 'unconfigured', models: [] };
+    listOAuthMethods.mockResolvedValue([
+      { id: 'openai-codex', label: 'ChatGPT', provider: 'managed:openai-codex', protocol: 'openai_responses',
+        signed_in: true, connection_state: 'reconnect_required', account: { state: 'known', id: 'dev@example.test' }, quota: { state: 'unknown' } },
+    ]);
+    listProviders.mockResolvedValue({ items: [codex] });
+    const { container } = await renderSurface(<ConnectionsTab />);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // A due refresh is still connected: Kiki renews it, so nothing is asked of
+    // the person.
+    const dueRefresh = accountState({ signed_in: true, connection_state: 'refresh_required' }, undefined);
+    expect(dueRefresh.state).toBe('connected');
+    expect(needsSignInAction(dueRefresh)).toBe(false);
+
+    // One row holds the whole account: the name a person recognizes, the
+    // account behind it, the state, and the one action that changes it.
+    const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:openai-codex"]')!;
+    expect(row.querySelector('summary')!.textContent).toContain('ChatGPT');
+    expect(row.dataset['connectionHealth']).toBe('setup');
+    expect(row.querySelector('summary')!.textContent).toContain('Sign-in expired');
+    await act(async () => { row.open = true; });
+    const panel = row.querySelector<HTMLElement>('[data-connection-account-panel="openai-codex"]')!;
+    expect(panel).not.toBeNull();
+    expect(panel.textContent).toContain('The provider no longer accepts this sign-in');
+    expect(panel.querySelector('[data-connection-sign-in]')!.textContent).toContain('Sign in again');
+    // The state is stated once, by the row: the panel adds the action and the
+    // reason, not a second copy of the status the header already carries.
+    expect(panel.querySelector('[data-account-state]')).toBeNull();
+    expect(panel.querySelector('[data-account-state-mark]')).toBeNull();
+    // The account it knows is still shown — the sign-in is spent, not the account.
+    expect(row.querySelector('[data-connection-account]')!.textContent).toBe('dev@example.test');
+    // A spent credential is neither removed nor replaced by a second row.
+    expect(container.querySelectorAll('[data-connection-row]')).toHaveLength(1);
+  });
+
+  it('gives a connected account its sign-out on the same row', async () => {
+    const kimi: ProviderCatalogItem = { ...MANAGED_PROVIDER, id: 'managed:kimi-code' };
+    listOAuthMethods.mockResolvedValue([
+      { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: true,
+        connection_state: 'ready', account: { state: 'known', id: 'dev@example.test' }, quota: { state: 'unknown' } },
+    ]);
+    listProviders.mockResolvedValue({ items: [kimi] });
+    const { container } = await renderSurface(<ConnectionsTab />);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:kimi-code"]')!;
+    await act(async () => { row.open = true; });
+    const panel = row.querySelector<HTMLElement>('[data-connection-account-panel="kimi-code"]')!;
+    // Connected keeps the green mark on the row; a spent credential is amber.
+    expect(panel.querySelector('[data-account-state-mark]')).toBeNull();
+    expect(row.querySelector('summary')!.textContent).toContain('Connected');
+    await act(async () => { panel.querySelector<HTMLButtonElement>('[data-connection-sign-out]')!.click(); });
+    expect(logoutOAuth).toHaveBeenCalledWith({ provider: 'kimi-code' });
+  });
+
+  it('states a cancelled sign-in once, and leaves no connection behind', async () => {
+    listOAuthMethods.mockResolvedValue([
+      { id: 'openai-codex', label: 'ChatGPT', provider: 'managed:openai-codex', protocol: 'openai_responses',
+        signed_in: false, account: { state: 'unknown' }, quota: { state: 'unknown' } },
+    ]);
+    listProviders.mockResolvedValue({ items: [] });
+    // The server keeps the flow it issued and answers the poll with it, which
+    // is what the real service does while the code is live.
+    const flow = (status: string) => ({
+      flow_id: 'flow-1', provider: 'managed:openai-codex', status,
+      verification_uri: 'https://auth.example.test/device',
+      verification_uri_complete: 'https://auth.example.test/device?code=WXYZ-1234',
+      user_code: 'WXYZ-1234', expires_in: 900, interval: 5,
+      expires_at: new Date(Date.now() + 900_000).toISOString(),
+    });
+    let issued = false;
+    startOAuthLogin.mockImplementation(async () => { issued = true; return flow('pending'); });
+    getOAuthStatus.mockImplementation(async () => (issued ? flow('cancelled') : null));
+    const { container } = await renderSurface(<ConnectionsTab />);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const picker = () => document.querySelector<HTMLElement>('[data-connection-method-picker]')!;
+    await act(async () => { picker().querySelector<HTMLButtonElement>('[data-connection-choice="account"]')!.click(); });
+    const row = () => container.querySelector<HTMLElement>('[data-oauth-method="openai-codex"]')!;
+    await act(async () => { row().querySelector<HTMLButtonElement>('[data-account-sign-in-button]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // The reason is said once: the card names it, the row adds no second copy
+    // of it and offers the single retry.
+    const terminal = row().querySelector<HTMLElement>('[data-oauth-terminal="cancelled"]')!;
+    expect(terminal.textContent).toContain('Sign-in was cancelled.');
+    expect(row().querySelector('[data-account-detail="failed"]')).toBeNull();
+    expect([...terminal.querySelectorAll('button')].map((button) => button.textContent)).toEqual(['Dismiss']);
+
+    // A flow that never completed creates no connection: the list is still
+    // empty rather than holding a row pretending to be signed in.
+    expect(container.querySelector('[data-connection-list]')).toBeNull();
+    expect(createProvider).not.toHaveBeenCalled();
+
+    // Dismissing puts the card away, and the catalog returns to the only fact
+    // the server still has: no credential, so "Not signed in" with a fresh
+    // Sign in. The row does not keep a remembered failure the server no
+    // longer reports — the dismissal is the person closing that thread.
+    await act(async () => { terminal.querySelector<HTMLButtonElement>('[data-oauth-dismiss]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(row().querySelector('[data-oauth-terminal]')).toBeNull();
+    expect(row().querySelector<HTMLElement>('[data-account-state]')!.dataset['accountState']).toBe('signIn');
+    expect(row().textContent).not.toContain('You cancelled the sign-in');
+  });
+
+  it('opens the sign-in lane for a #st-card-auth deep link, in both list states', async () => {
+    // `/new` and settings search both still point at this id. There is no
+    // sign-in card any more, so the link has to land on the one add flow and
+    // say it is on screen — the page only scrolls to a card that announces
+    // itself, so a flow that renders without announcing would be a dead link.
+    const announce = vi.fn();
+    listOAuthMethods.mockResolvedValue([
+      { id: 'openai-codex', label: 'ChatGPT', provider: 'managed:openai-codex', protocol: 'openai_responses',
+        signed_in: false, account: { state: 'unknown' }, quota: { state: 'unknown' } },
+    ]);
+
+    const renderLinked = async () => {
+      const container = document.createElement('div');
+      document.body.append(container);
+      containers.push(container);
+      const root = createRoot(container);
+      roots.push(root);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={['/settings/ai?tab=providers#st-card-auth']}>
+            <QueryClientProvider client={client}>
+              <I18nProvider>
+                <SettingsCardMountContext.Provider value={announce}>
+                  <ConnectionsTab />
+                </SettingsCardMountContext.Provider>
+              </I18nProvider>
+            </QueryClientProvider>
+          </MemoryRouter>,
+        );
+      });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      // The add flow opens in a portal, so tearing the tree down — not just
+      // removing the container — is what actually takes the flow off the page.
+      return async () => { await act(async () => { root.unmount(); }); };
+    };
+
+    // With connections on the page the flow opens beside the list, and the id
+    // it carries is the one the link asked for.
+    listProviders.mockResolvedValue({ items: [MANAGED_PROVIDER] });
+    const unmount = await renderLinked();
+    expect(announce).toHaveBeenCalledWith('st-card-auth');
+    const flow = document.querySelector<HTMLElement>('[data-connection-method-picker]');
+    expect(flow).not.toBeNull();
+    // The account lane is the one a sign-in link asked for, not the key form.
+    expect(flow!.querySelector<HTMLElement>('[data-connection-choice="account"]')!.getAttribute('aria-checked')).toBe('true');
+    // Exactly one element owns the id, so the page's scroll lands on one place.
+    expect(document.querySelectorAll('#st-card-auth')).toHaveLength(1);
+    await unmount();
+
+    // With nothing configured the flow is the page, and the link still lands.
+    announce.mockClear();
+    listProviders.mockResolvedValue({ items: [] });
+    const unmountEmpty = await renderLinked();
+    expect(announce).toHaveBeenCalledWith('st-card-auth');
+    expect(document.querySelector('[data-connection-method-picker]')).not.toBeNull();
+    expect(document.querySelectorAll('#st-card-auth')).toHaveLength(1);
+    await unmountEmpty();
+  });
+
+  describe('reusing the machine’s own sign-in', () => {
+    const CODEX_ROW: ProviderCatalogItem = { ...MANAGED_PROVIDER, id: 'managed:openai-codex' };
+    const codexMethod = (extra: Record<string, unknown> = {}) => ({
+      id: 'openai-codex', label: 'ChatGPT', provider: 'managed:openai-codex', protocol: 'openai_responses',
+      signed_in: true, connection_state: 'ready', account: { state: 'known', id: 'dev@example.test' },
+      quota: { state: 'unknown' }, ...extra,
+    });
+    const panel = () => document.querySelector<HTMLElement>('[data-original-source="openai-codex"]')!;
+
+    it.each(['completed', 'pending'] as const)('invalidates a %s probe when the client changes', async (status) => {
+      const method = codexMethod() as OAuthMethodStatus;
+      const onChanged = vi.fn();
+      const found = {
+        provider: 'openai-codex', home_dir: '/server-a/.codex', storage_backend: 'file',
+        state: 'ready', account: { state: 'known', id: 'account-a@example.test' }, can_connect: true,
+      };
+      let release!: (value: unknown) => void;
+      if (status === 'pending') {
+        probeOriginalOAuth.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+      } else {
+        probeOriginalOAuth.mockResolvedValueOnce(found);
+      }
+      const { rerender } = await renderSurface(<AccountConnectionPanel method={method} onChanged={onChanged} />);
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+
+      const probeB = vi.fn(async () => ({ ...found, home_dir: '/server-b/.codex', account: { state: 'known', id: 'account-b@example.test' } }));
+      const connectB = vi.fn(async () => ({ ...found, account: { state: 'known', id: 'account-b@example.test' } }));
+      connectionClientOverride.current = { probeOriginalOAuth: probeB, connectOriginalOAuth: connectB };
+      await rerender(<AccountConnectionPanel method={method} onChanged={onChanged} />);
+      if (status === 'pending') await act(async () => { release(found); });
+
+      expect(panel().querySelector('[data-original-source-result]')).toBeNull();
+      expect(panel().querySelector('[data-original-source-connect]')).toBeNull();
+      expect(panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.disabled).toBe(false);
+      expect(connectB).not.toHaveBeenCalled();
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      expect(panel().textContent).toContain('account-b@example.test');
+      expect(panel().textContent).not.toContain('account-a@example.test');
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-connect]')!.click(); });
+      expect(connectB).toHaveBeenCalledWith({ provider: 'openai-codex', expected_account_id: 'account-b@example.test' });
+      expect(connectOriginalOAuth).not.toHaveBeenCalled();
+    });
+
+    it.each(['success', 'error'] as const)('ignores server A’s late %s after server B has answered', async (outcome) => {
+      const method = codexMethod() as OAuthMethodStatus;
+      const onChanged = vi.fn();
+      let release!: (value: unknown) => void;
+      let reject!: (reason: Error) => void;
+      probeOriginalOAuth.mockImplementationOnce(() => new Promise((resolve, fail) => { release = resolve; reject = fail; }));
+      const { rerender } = await renderSurface(<AccountConnectionPanel method={method} onChanged={onChanged} />);
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      const foundB = {
+        provider: 'openai-codex', home_dir: '/server-b/.codex', storage_backend: 'file',
+        state: 'ready', account: { state: 'known', id: 'account-b@example.test' }, can_connect: true,
+      };
+      const connectB = vi.fn(async () => foundB);
+      connectionClientOverride.current = { probeOriginalOAuth: vi.fn(async () => foundB), connectOriginalOAuth: connectB };
+      await rerender(<AccountConnectionPanel method={method} onChanged={onChanged} />);
+      expect(panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.disabled).toBe(false);
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      await act(async () => {
+        if (outcome === 'success') release({ ...foundB, account: { state: 'known', id: 'account-a@example.test' } });
+        else reject(new Error('server A cannot read its sign-in'));
+      });
+      expect(panel().textContent).toContain('account-b@example.test');
+      expect(panel().textContent).not.toContain('account-a@example.test');
+      expect(panel().textContent).not.toContain('server A cannot read its sign-in');
+      expect(panel().querySelector('[data-original-source-connect]')).not.toBeNull();
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-connect]')!.click(); });
+      expect(connectB).toHaveBeenCalledWith({ provider: 'openai-codex', expected_account_id: 'account-b@example.test' });
+    });
+
+    it('invalidates a pending probe when the connection scope changes with the same client', async () => {
+      const method = codexMethod() as OAuthMethodStatus;
+      const onChanged = vi.fn();
+      let release!: (value: unknown) => void;
+      probeOriginalOAuth.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+      const { rerender } = await renderSurface(<AccountConnectionPanel method={method} onChanged={onChanged} />);
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      connectionClientOverride.scopeId = 'scope-b';
+      await rerender(<AccountConnectionPanel method={method} onChanged={onChanged} />);
+      await act(async () => { release({
+        provider: 'openai-codex', home_dir: '/server/.codex', storage_backend: 'file',
+        state: 'ready', account: { state: 'known', id: 'scope-a@example.test' }, can_connect: true,
+      }); });
+      expect(panel().querySelector('[data-original-source-result]')).toBeNull();
+      expect(panel().querySelector('[data-original-source-connect]')).toBeNull();
+      expect(panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.disabled).toBe(false);
+      expect(connectOriginalOAuth).not.toHaveBeenCalled();
+    });
+
+    it('invalidates a pending probe when the account method changes', async () => {
+      const method = codexMethod() as OAuthMethodStatus;
+      const onChanged = vi.fn();
+      let release!: (value: unknown) => void;
+      probeOriginalOAuth.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+      const { container, rerender } = await renderSurface(<AccountConnectionPanel method={method} onChanged={onChanged} />);
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      await rerender(<AccountConnectionPanel method={{ ...method, id: 'grok-build', provider: 'managed:grok-build' }} onChanged={onChanged} />);
+      await act(async () => { release({
+        provider: 'openai-codex', home_dir: '/server/.codex', storage_backend: 'file',
+        state: 'ready', account: { state: 'known', id: 'codex@example.test' }, can_connect: true,
+      }); });
+      const source = container.querySelector('[data-original-source="grok-build"]')!;
+      expect(source.querySelector('[data-original-source-result]')).toBeNull();
+      expect(source.querySelector('[data-original-source-connect]')).toBeNull();
+      expect(source.querySelector<HTMLButtonElement>('[data-original-source-probe]')!.disabled).toBe(false);
+      expect(connectOriginalOAuth).not.toHaveBeenCalled();
+    });
+
+    it.each(['openai-codex', 'grok-build'] as const)('recovers %s in the attached custom home, not the default home', async (id) => {
+      const homeDir = `/srv/custom/${id}`;
+      const method = {
+        ...codexMethod(), id, provider: `managed:${id}`, connection_state: 'reconnect_required',
+        auth_source: { kind: 'local_original', home_dir: homeDir, storage_backend: 'file', source_state: 'account_changed' },
+      } as OAuthMethodStatus;
+      const ready = {
+        provider: id, home_dir: homeDir, storage_backend: 'file', state: 'ready',
+        account: { state: 'known', id: 'replacement@example.test' }, can_connect: true,
+      };
+      probeOriginalOAuth.mockResolvedValue(ready);
+      connectOriginalOAuth.mockResolvedValue(ready);
+      const onChanged = vi.fn();
+      const { container, rerender } = await renderSurface(<AccountConnectionPanel
+        method={{ ...method, connection_state: 'ready', auth_source: { kind: 'local_original', home_dir: homeDir, storage_backend: 'file', source_state: 'ready' } }}
+        onChanged={onChanged}
+      />);
+      expect(container.querySelector('[data-original-source-probe]')).toBeNull();
+      await rerender(<AccountConnectionPanel method={method} onChanged={onChanged} />);
+      const source = container.querySelector<HTMLElement>(`[data-original-source="${id}"]`)!;
+      await act(async () => { source.querySelector<HTMLButtonElement>('[data-original-source-advanced]')!.click(); });
+      expect(source.querySelector<HTMLInputElement>('[data-original-source-home-dir]')!.value).toBe(homeDir);
+      await act(async () => { source.querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      expect(probeOriginalOAuth).toHaveBeenCalledWith({ provider: id, home_dir: homeDir });
+      expect(probeOriginalOAuth).not.toHaveBeenCalledWith({ provider: id });
+      expect(source.querySelector<HTMLElement>('[data-original-source-result]')!.dataset['originalSourceResult']).toBe('connectable');
+      await act(async () => { source.querySelector<HTMLButtonElement>('[data-original-source-connect]')!.click(); });
+      expect(connectOriginalOAuth).toHaveBeenCalledWith({ provider: id, home_dir: homeDir, expected_account_id: 'replacement@example.test' });
+      expect(onChanged).toHaveBeenCalledOnce();
+    });
+
+    it('reads the machine before offering to attach, and names the account it found', async () => {
+      listOAuthMethods.mockResolvedValue([codexMethod()]);
+      listProviders.mockResolvedValue({ items: [CODEX_ROW] });
+      const { container } = await renderSurface(<ConnectionsTab />);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:openai-codex"]')!;
+      await act(async () => { row.open = true; });
+
+      // Nothing is offered before the machine has been read: attaching to an
+      // account nobody has seen is not a decision someone can make.
+      expect(panel().querySelector('[data-original-source-result]')).toBeNull();
+      expect(panel().querySelector('[data-original-source-connect]')).toBeNull();
+
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+      expect(panel().querySelector<HTMLElement>('[data-original-source-result]')!.dataset['originalSourceResult']).toBe('connectable');
+      expect(panel().textContent).toContain('dev@example.test');
+      // A credential in a plain file is a fact about this machine worth saying.
+      expect(panel().textContent).toContain('a file on disk');
+      // The provider here is the method id, never the managed: provider id.
+      expect(probeOriginalOAuth).toHaveBeenCalledWith({ provider: 'openai-codex' });
+    });
+
+    it('connects carrying the account it just showed, then re-reads the list', async () => {
+      listOAuthMethods.mockResolvedValue([codexMethod()]);
+      listProviders.mockResolvedValue({ items: [CODEX_ROW] });
+      const { container } = await renderSurface(<ConnectionsTab />);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:openai-codex"]')!;
+      await act(async () => { row.open = true; });
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-connect]')!.click(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+      // expected_account_id is what stops a credential replaced in the
+      // meantime from being adopted silently.
+      expect(connectOriginalOAuth).toHaveBeenCalledWith({ provider: 'openai-codex', expected_account_id: 'dev@example.test' });
+      // The method list is the authority on what is connected, so it is re-read.
+      expect(listOAuthMethods.mock.calls.length).toBeGreaterThan(1);
+    });
+
+    it('refuses a stale check rather than connecting to what the machine no longer has', async () => {
+      listOAuthMethods.mockResolvedValue([codexMethod()]);
+      listProviders.mockResolvedValue({ items: [CODEX_ROW] });
+      const { container } = await renderSurface(<ConnectionsTab />);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:openai-codex"]')!;
+      await act(async () => { row.open = true; });
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(panel().querySelector('[data-original-source-connect]')).not.toBeNull();
+
+      // Pointing the search at a different directory is a different question,
+      // so the previous answer stops being offered as the thing to connect to.
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-advanced]')!.click(); });
+      const input = panel().querySelector<HTMLInputElement>('[data-original-source-home-dir]')!;
+      await act(async () => { setInputValue(input, '/srv/agent-home/.codex'); });
+
+      expect(panel().querySelector('[data-original-source-result]')).toBeNull();
+      expect(panel().querySelector('[data-original-source-connect]')).toBeNull();
+      expect(connectOriginalOAuth).not.toHaveBeenCalled();
+    });
+
+    it('discards a check that answers a directory the person has already left', async () => {
+      listOAuthMethods.mockResolvedValue([codexMethod()]);
+      listProviders.mockResolvedValue({ items: [CODEX_ROW] });
+      // The machine takes its time. The probe is asked about one directory and
+      // the person moves back to the default before the answer lands — so the
+      // answer is about a folder that is no longer on screen.
+      let release: ((value: unknown) => void) | null = null;
+      probeOriginalOAuth.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+
+      const { container } = await renderSurface(<ConnectionsTab />);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:openai-codex"]')!;
+      await act(async () => { row.open = true; });
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-advanced]')!.click(); });
+      const input = panel().querySelector<HTMLInputElement>('[data-original-source-home-dir]')!;
+      await act(async () => { setInputValue(input, '/srv/agent-home/.codex'); });
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+
+      // Back to the default before the answer arrives.
+      await act(async () => { setInputValue(input, ''); });
+      await act(async () => { release!({
+        provider: 'openai-codex', home_dir: '/srv/agent-home/.codex', storage_backend: 'file',
+        state: 'ready', account: { state: 'known', id: 'other@example.test' }, can_connect: true,
+      }); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+      // An answer about a directory nobody is looking at is not an answer about
+      // this screen, and it must not become something to connect to.
+      expect(panel().querySelector('[data-original-source-result]')).toBeNull();
+      expect(panel().querySelector('[data-original-source-connect]')).toBeNull();
+    });
+
+    it('sends a pointed-at directory on the next check', async () => {
+      listOAuthMethods.mockResolvedValue([codexMethod()]);
+      listProviders.mockResolvedValue({ items: [CODEX_ROW] });
+      const { container } = await renderSurface(<ConnectionsTab />);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:openai-codex"]')!;
+      await act(async () => { row.open = true; });
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-advanced]')!.click(); });
+      const input = panel().querySelector<HTMLInputElement>('[data-original-source-home-dir]')!;
+      await act(async () => { setInputValue(input, '/srv/agent-home/.codex'); });
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+      expect(probeOriginalOAuth).toHaveBeenCalledWith({ provider: 'openai-codex', home_dir: '/srv/agent-home/.codex' });
+    });
+
+    it('explains a machine whose sign-in was replaced, and attaches nothing', async () => {
+      listOAuthMethods.mockResolvedValue([codexMethod()]);
+      listProviders.mockResolvedValue({ items: [CODEX_ROW] });
+      probeOriginalOAuth.mockResolvedValue({
+        provider: 'openai-codex', home_dir: '/home/dev/.codex', storage_backend: 'keyring',
+        state: 'account_changed', account: { state: 'known', id: 'other@example.test' },
+        can_connect: false, reason: 'account changed on disk',
+      });
+      const { container } = await renderSurface(<ConnectionsTab />);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:openai-codex"]')!;
+      await act(async () => { row.open = true; });
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+      // The reason a person can act on, not the server's wording of it.
+      expect(panel().querySelector<HTMLElement>('[data-original-source-result]')!.dataset['originalSourceResult']).toBe('accountChanged');
+      expect(panel().textContent).toContain('now a different account');
+      expect(panel().textContent).not.toContain('account changed on disk');
+      expect(panel().querySelector('[data-original-source-connect]')).toBeNull();
+    });
+
+    it('treats a due renewal as usable rather than as a problem', async () => {
+      listOAuthMethods.mockResolvedValue([codexMethod()]);
+      listProviders.mockResolvedValue({ items: [CODEX_ROW] });
+      probeOriginalOAuth.mockResolvedValue({
+        provider: 'openai-codex', home_dir: '/home/dev/.codex', storage_backend: 'encrypted',
+        state: 'refresh_required', account: { state: 'known', id: 'dev@example.test' }, can_connect: true,
+      });
+      const { container } = await renderSurface(<ConnectionsTab />);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:openai-codex"]')!;
+      await act(async () => { row.open = true; });
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+      expect(panel().querySelector<HTMLElement>('[data-original-source-result]')!.dataset['originalSourceResult']).toBe('connectable');
+      expect(panel().textContent).toContain('an encrypted store');
+      expect(panel().textContent).toContain('Kiki renews it when it runs out');
+      expect(panel().querySelector('[data-original-source-connect]')).not.toBeNull();
+    });
+
+    it('does not promise a renewal the machine cannot back, and keeps the way back', async () => {
+      // Attached, but the credential on the machine has been replaced. The
+      // server maps that to a sign-in that must be redone, so the row says so;
+      // this panel must not contradict it by promising a renewal.
+      listOAuthMethods.mockResolvedValue([codexMethod({
+        connection_state: 'reconnect_required',
+        auth_source: {
+          kind: 'local_original', home_dir: '/home/dev/.codex', storage_backend: 'file', source_state: 'account_changed',
+        },
+      })]);
+      listProviders.mockResolvedValue({ items: [CODEX_ROW] });
+      const { container } = await renderSurface(<ConnectionsTab />);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:openai-codex"]')!;
+      await act(async () => { row.open = true; });
+
+      // The row owns the state, in sign-in words.
+      expect(row.querySelector('summary')!.textContent).toContain('Sign-in expired');
+      // The panel says what is actually wrong, in the same vocabulary a check uses.
+      expect(panel().querySelector<HTMLElement>('[data-original-source-unusable]')!.dataset['originalSourceUnusable']).toBe('accountChanged');
+      expect(panel().textContent).toContain('now a different account');
+      // And it does not claim a working credential that Kiki will renew.
+      expect(panel().textContent).not.toContain('Kiki renews it when it runs out');
+      expect(panel().textContent).not.toContain('This connection now uses the sign-in already on this machine');
+      // The description of what reuse is is also a claim about this credential,
+      // so it is written as a capability rather than a statement of fact.
+      expect(panel().textContent).toContain('Kiki can use the sign-in Codex has on this machine');
+      expect(panel().textContent).not.toContain('Kiki uses the sign-in Codex already has on this machine');
+      // Replacing a spent credential is done by checking the machine, so the
+      // check stays available beside the way to let go of it.
+      expect(panel().querySelector('[data-original-source-probe]')).not.toBeNull();
+      expect(panel().querySelector('[data-original-source-detach]')).not.toBeNull();
+    });
+
+    it('lets go of the machine’s sign-in without claiming the other app was signed out', async () => {
+      listOAuthMethods.mockResolvedValue([codexMethod({
+        auth_source: { kind: 'local_original', home_dir: '/home/dev/.codex', storage_backend: 'file', source_state: 'ready' },
+      })]);
+      listProviders.mockResolvedValue({ items: [CODEX_ROW] });
+      const { container } = await renderSurface(<ConnectionsTab />);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:openai-codex"]')!;
+      await act(async () => { row.open = true; });
+
+      expect(panel().querySelector<HTMLElement>('[data-original-source-state]')!.dataset['originalSourceState']).toBe('ready');
+      // The consequence is on screen before the button, because the mistake this
+      // prevents is pressing it while expecting to sign out the other app.
+      // What will happen, not what has: this connection is still attached, and
+      // "Kiki no longer uses that sign-in" would be false until the button is
+      // pressed.
+      expect(panel().textContent).toContain('Kiki will stop using that sign-in');
+      expect(panel().textContent).toContain('Codex is unaffected');
+      expect(panel().textContent).not.toContain('Kiki no longer uses that sign-in');
+      // One action, one button. A generic "Sign out" beside "Stop using it"
+      // would be the same action twice — the mistake this page used to make
+      // with two lists — and nothing offers to attach what is already attached.
+      expect(panel().querySelectorAll('[data-original-source-detach]')).toHaveLength(1);
+      expect(row.querySelector('[data-connection-sign-out]')).toBeNull();
+      expect(panel().querySelector('[data-original-source-probe]')).toBeNull();
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-detach]')!.click(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+      expect(logoutOAuth).toHaveBeenCalledWith({ provider: 'openai-codex' });
+      expect(listOAuthMethods.mock.calls.length).toBeGreaterThan(1);
+    });
+
+    it('hints each app’s own directory rather than another app’s', async () => {
+      listOAuthMethods.mockResolvedValue([codexMethod()]);
+      listProviders.mockResolvedValue({ items: [CODEX_ROW] });
+      const { container } = await renderSurface(<ConnectionsTab />);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:openai-codex"]')!;
+      await act(async () => { row.open = true; });
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-advanced]')!.click(); });
+
+      // Codex's row hints at Codex's directory. A hint naming another vendor's
+      // path sends someone to a folder that is not there.
+      expect(panel().querySelector<HTMLInputElement>('[data-original-source-home-dir]')!.placeholder).toBe('~/.codex');
+    });
+
+    it('offers no reuse for a method whose machine sign-in is not a thing', async () => {
+      listOAuthMethods.mockResolvedValue([{
+        id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai',
+        signed_in: true, connection_state: 'ready', account: { state: 'known', id: 'dev@example.test' },
+        quota: { state: 'unknown' },
+      }]);
+      listProviders.mockResolvedValue({ items: [MANAGED_PROVIDER] });
+      const { container } = await renderSurface(<ConnectionsTab />);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:kimi-code"]')!;
+      await act(async () => { row.open = true; });
+
+      expect(document.querySelector('[data-original-source]')).toBeNull();
+      expect(probeOriginalOAuth).not.toHaveBeenCalled();
+    });
+  });

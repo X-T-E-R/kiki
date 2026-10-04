@@ -1,17 +1,20 @@
 import { spawn } from 'node:child_process';
 import { open, mkdir, realpath, stat, unlink } from 'node:fs/promises';
 import { join, normalize, resolve } from 'node:path';
+import { isSea } from 'node:sea';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { sameWorkDir } from '@kiki/node-sdk';
+import { resolveGlobalLogPath, sameWorkDir } from '@kiki/node-sdk';
 import {
   listLiveServerInstances,
-  readServerToken,
+  readLocalOwnerToken,
   startServer,
   type RunningServer,
   type ServerInstanceInfo,
 } from '@kiki/kap-server';
 import type { Command } from 'commander';
+import { connectionIdentitySchema, type ConnectionIdentity } from '@kiki/protocol';
+import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 
 import { createKimiCodeHostIdentity, getVersion } from '../cli/version';
 import { requireServerWebAssetsDir } from '../native/web-assets';
@@ -21,6 +24,10 @@ export interface ServerConnection {
   readonly url: string;
   readonly token: string;
   readonly serverId: string;
+  readonly identity?: ConnectionIdentity;
+  readonly serverVersion?: string;
+  readonly dangerousBypassAuth?: boolean;
+  readonly buildChannel?: string;
 }
 
 interface ServeOptions {
@@ -28,9 +35,11 @@ interface ServeOptions {
   readonly port?: number;
   readonly idleExit: string;
   readonly ensure?: boolean;
+  readonly query?: boolean;
   readonly workspace?: string;
   readonly json?: boolean;
   readonly stop?: boolean;
+  readonly debugEndpoints?: boolean;
 }
 
 const ENSURE_TIMEOUT_MS = 60_000;
@@ -39,18 +48,29 @@ const ENSURE_LOCK_STALE_MS = 65_000;
 export function registerServeCommand(program: Command): void {
   program
     .command('serve')
-    .option('--home <dir>')
-    .option('--port <port>', '', parsePort)
-    .option('--idle-exit <duration>', '', '30m')
-    .option('--ensure')
-    .option('--workspace <dir>')
-    .option('--json')
-    .option('--stop')
+    .description('Run the local daemon in the foreground, or ensure, query, or stop it.')
+    .option('--home <dir>', 'Kiki home directory to operate on.')
+    .option('--port <port>', 'Port to bind when starting the daemon.', parsePort)
+    .option('--idle-exit <duration>', 'Idle timeout; 0ms keeps a newly started daemon running until explicit stop.', '30m')
+    .option('--ensure', 'Start the daemon if none is reachable, then print the connection.')
+    .option('--query', 'Query this home without starting a server; JSON contains a private local-owner capability.')
+    .option('--workspace <dir>', 'Prefer the server instance serving this workspace.')
+    .option('--json', 'Print the connection as JSON.')
+    .option('--stop', 'Stop the daemon for this home.')
+    .option('--debug-endpoints', 'Mount local-owner debug routes on a new foreground daemon only.')
     .action(async (options: ServeOptions) => {
       const homeDir = resolveKikiHome(options.home);
       const idleExitMs = parseDuration(options.idleExit);
-      if (options.ensure === true && options.stop === true) {
-        throw new Error('--ensure and --stop cannot be used together.');
+      if ([options.ensure, options.stop, options.query].filter(Boolean).length > 1) {
+        throw new Error('--ensure, --stop and --query cannot be used together.');
+      }
+      if (options.debugEndpoints === true && (options.ensure || options.stop || options.query)) throw new Error('--debug-endpoints applies only to a new foreground daemon.');
+      if (options.query === true) {
+        const connection = await findReachableServer(homeDir, options.workspace);
+        process.stdout.write(options.json === true
+          ? `${JSON.stringify(connection === undefined ? { running: false } : { ...connection, running: true })}\n`
+          : connection === undefined ? 'No reachable Kiki server was found.\n' : `Kiki server: ${connection.url}\n`);
+        return;
       }
       if (options.stop === true) {
         await stopServer(homeDir);
@@ -66,7 +86,7 @@ export function registerServeCommand(program: Command): void {
         writeConnection(connection, options.json === true);
         return;
       }
-      await runServeForeground({ homeDir, port: options.port, idleExitMs, json: options.json });
+      await runServeForeground({ homeDir, port: options.port, idleExitMs, json: options.json, debugEndpoints: options.debugEndpoints });
     });
 }
 
@@ -97,7 +117,12 @@ export async function ensureServer(options: {
       const ready = await findReachableServer(homeDir, workspace);
       if (ready !== undefined) return ready;
     }
-    throw new Error('Kiki server did not become ready before the startup deadline.');
+    throw new Error([
+      'Kiki server did not become ready before the startup deadline.',
+      `See log: ${resolveGlobalLogPath(homeDir)}`,
+      `Check daemon status: kiki doctor --home "${homeDir}"`,
+      `Validate configuration: kiki doctor agents --home "${homeDir}"`,
+    ].join('\n'));
   });
 }
 
@@ -105,7 +130,7 @@ export async function findReachableServer(
   homeDir: string,
   workspace?: string,
 ): Promise<ServerConnection | undefined> {
-  const token = await readServerToken(homeDir);
+  const token = await readLocalOwnerToken(homeDir);
   if (token === undefined) return undefined;
   const instances = [...await listLiveServerInstances(homeDir)];
   if (workspace !== undefined) {
@@ -122,24 +147,43 @@ export async function findReachableServer(
   return undefined;
 }
 
+class ServerProtocolMismatchError extends Error {
+  constructor() { super('A running Kiki server was found but its identity handshake could not be verified; retry or stop and upgrade it before starting another server.'); }
+}
+
 async function probeInstance(
   instance: ServerInstanceInfo,
   token: string,
 ): Promise<ServerConnection | undefined> {
   const url = instanceUrl(instance);
+  let identified = false;
   try {
     const response = await fetch(`${url}/api/meta`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(5_000),
+      redirect: 'error',
     });
     if (!response.ok) return undefined;
-    const envelope = await response.json() as {
+    const envelope = await readBoundedJsonBody(response, 65536) as {
       readonly code?: number;
-      readonly data?: { readonly server_id?: string };
+      readonly data?: { readonly server_id?: string; readonly server_home_id?: string; readonly server_version?: string; readonly dangerous_bypass_auth?: boolean; readonly build_channel?: string };
     };
     if (envelope.code !== 0 || envelope.data?.server_id !== instance.serverId) return undefined;
-    return { url, token, serverId: instance.serverId };
-  } catch {
+    identified = true;
+    const handshake = await fetch(`${url}/api/remote-connections/handshake`, {
+      headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000), redirect: 'error',
+    });
+    if (!handshake.ok) throw new ServerProtocolMismatchError();
+    const hello = await readBoundedJsonBody(handshake, 8192) as { code: number; data?: { identity: unknown; serverId: string } };
+    if (hello.code !== 0 || hello.data?.serverId !== instance.serverId) throw new ServerProtocolMismatchError();
+    const parsedIdentity = connectionIdentitySchema.safeParse(hello.data.identity);
+    if (!parsedIdentity.success || parsedIdentity.data.homeId !== envelope.data.server_home_id) throw new ServerProtocolMismatchError();
+    const identity = parsedIdentity.data;
+    return { url, token, serverId: instance.serverId, identity, serverVersion: envelope.data.server_version,
+      dangerousBypassAuth: envelope.data.dangerous_bypass_auth, buildChannel: envelope.data.build_channel };
+  } catch (error) {
+    if (error instanceof ServerProtocolMismatchError) throw error;
+    if (identified) throw new ServerProtocolMismatchError();
     return undefined;
   }
 }
@@ -148,6 +192,7 @@ interface ServeStartOptions {
   readonly homeDir: string;
   readonly port?: number;
   readonly idleExitMs: number;
+  readonly debugEndpoints?: boolean;
 }
 
 export function startServeServer(
@@ -160,7 +205,8 @@ export function startServeServer(
     host: '127.0.0.1',
     port: options.port,
     homeDir: options.homeDir,
-    idleExitMs: options.idleExitMs,
+    idleExitMs: options.idleExitMs === 0 ? undefined : options.idleExitMs,
+    debugEndpoints: options.debugEndpoints,
     serverVersion: version,
     hostIdentity: createKimiCodeHostIdentity(version, { homeDir: options.homeDir }),
     webAssetsDir,
@@ -171,7 +217,7 @@ async function runServeForeground(
   options: ServeStartOptions & { readonly json?: boolean },
 ): Promise<void> {
   const running = await startServeServer(options);
-  const token = await readServerToken(options.homeDir);
+  const token = await readLocalOwnerToken(options.homeDir);
   const connection = {
     url: `http://127.0.0.1:${running.port}`,
     token: token!,
@@ -206,8 +252,9 @@ function spawnDetachedServer(options: {
   readonly port?: number;
   readonly idleExit: string;
 }): void {
+  const entryArgs = isSea() ? [] : [...process.execArgv, process.argv[1]!];
   const args = [
-    process.argv[1]!,
+    ...entryArgs,
     'serve',
     '--home',
     options.homeDir,

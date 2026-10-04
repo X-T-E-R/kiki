@@ -1,8 +1,8 @@
 /**
  * Native SSH hosts: the GUI side of the wired `klient.rest.ssh` contract.
  * Only the routes the contract marks as wired are called here (hosts CRUD,
- * discover, config sync, connection approval, write-back, status, disconnect,
- * session join/leave). Nothing here reads or sends a credential.
+ * discover, config sync, host keys, connection approval, write-back, status,
+ * disconnect, session join/leave). Nothing here reads or sends a credential.
  */
 
 import { useQuery } from '@tanstack/react-query';
@@ -26,6 +26,7 @@ export const sshKeys = {
   discovered: () => ['ssh', 'discovered'] as const,
   approval: () => ['ssh', 'connection-approval'] as const,
   configSync: () => ['ssh', 'config-sync'] as const,
+  hostKeys: (id: string) => ['ssh', 'host-keys', id] as const,
   status: (id: string) => ['ssh', 'status', id] as const,
   session: (sessionId: string) => ['ssh', 'session-hosts', sessionId] as const,
 };
@@ -52,22 +53,31 @@ export function canWriteBack(host: SshHost): boolean {
 }
 
 /**
- * The server exposes a PUT for "always sync ~/.ssh/config" but no GET, so the
- * current value is read off the host list: a discovered alias listed with
- * `source: "ssh-config"` means sync is on; discovered aliases that are all
- * missing (and not shadowed by a Kiki host of the same id) mean it is off.
- * With nothing discovered the value cannot be observed — undefined.
+ * The stored "always sync ~/.ssh/config" value, read from the server instead
+ * of being guessed from the host lists: a discovered alias may be missing
+ * because sync is off, because a Kiki host shadows it, or because the file is
+ * empty, and none of those is the setting.
  */
-export function inferConfigSync(listed: readonly SshHost[], discovered: readonly SshHost[]): boolean | undefined {
-  if (discovered.length === 0) return undefined;
-  const byId = new Map(listed.map((host) => [host.id, host]));
-  let unshadowed = 0;
-  for (const alias of discovered) {
-    const row = byId.get(alias.id);
-    if (row?.source === 'ssh-config') return true;
-    if (row === undefined) unshadowed += 1;
-  }
-  return unshadowed > 0 ? false : undefined;
+export function useSshConfigSync(client: KikiClient) {
+  return useQuery({
+    queryKey: sshKeys.configSync(),
+    queryFn: () => sshApi(client).configSync(),
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * Known_hosts entries for one host, read only when `enabled` turns true: the
+ * list screen must not fan out one file read per host, and the route opens no
+ * connection of its own.
+ */
+export function useSshHostKeys(client: KikiClient, hostId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: sshKeys.hostKeys(hostId),
+    queryFn: () => sshApi(client).hostKeys(hostId),
+    enabled,
+    staleTime: 30_000,
+  });
 }
 
 /** Connected-host state words shown on rows and chips; idle draws nothing. */

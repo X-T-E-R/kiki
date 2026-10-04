@@ -3,6 +3,7 @@
  * editor components: inline feedback lines, the switch Toggle, and Hint.
  */
 
+import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
 
@@ -34,12 +35,20 @@ export function FeedbackLine({ feedback }: { feedback: Feedback }) {
   );
 }
 
+/**
+ * One failed action, one quiet line. The text comes from the shared
+ * `errorText` pipeline so an error carrying a dictionary issue speaks the
+ * active locale, and anything without a usable message still reads as a
+ * sentence instead of `[object Object]`. The recorded reason and its code
+ * stay in the text: this formats what the server sent, it does not replace it.
+ */
 export function InlineError({ error }: { error: unknown }) {
+  const { locale } = useI18n();
   return (
     <FeedbackLine
       feedback={{
         tone: 'error',
-        text: error instanceof Error ? error.message : String(error),
+        text: errorText(locale, error),
       }}
     />
   );

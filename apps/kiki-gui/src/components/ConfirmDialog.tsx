@@ -23,6 +23,8 @@ export interface ConfirmDialogProps {
   readonly cancelLabel?: string;
   readonly tone?: 'danger' | 'default';
   readonly busy?: boolean;
+  /** Opt into modal ownership for app-level confirmations outside a Dialog. */
+  readonly stacked?: boolean;
   /** uiBusy overlay id so Escape closes this dialog instead of aborting. */
   readonly overlayId?: string;
   readonly onConfirm: () => void;
@@ -39,12 +41,14 @@ export function ConfirmDialog({
   cancelLabel,
   tone = 'danger',
   busy = false,
+  stacked: ownStack = false,
   overlayId = 'confirm-dialog',
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
   const { t } = useI18n();
-  const stacked = useStackedDialog();
+  const inheritedStack = useStackedDialog();
+  const stacked = ownStack || inheritedStack;
   const cancelRef = useRef<HTMLButtonElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
 
@@ -117,7 +121,7 @@ export function ConfirmDialog({
     </>
   );
   if (stacked) return (
-    <Dialog role="alertdialog" ariaLabel={title} overlayId={overlayId} onClose={() => { if (!busy) onCancel(); }}>
+    <Dialog stacked role="alertdialog" ariaLabel={title} overlayId={overlayId} onClose={() => { if (!busy) onCancel(); }}>
       {content}
     </Dialog>
   );

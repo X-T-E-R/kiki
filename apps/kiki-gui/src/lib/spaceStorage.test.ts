@@ -331,6 +331,9 @@ const RAW_STORAGE_ALLOWLIST = new Set<string>([
   'apps/kiki-gui/src/components/settings/list/listState.ts',
   // Excluded: `kiki.connection` (desktop connections never persist).
   'apps/kiki-gui/src/state/connectionConfig.ts',
+  // Global: `kiki.spacePreferences.cache` (each space's cached preferences,
+  // keyed by server + home inside the value) and `kiki.deviceId`.
+  'apps/kiki-gui/src/lib/spaceAuthority.ts',
 ]);
 
 const KEY_LITERAL = /kiki\.[A-Za-z0-9_.-]*/g;

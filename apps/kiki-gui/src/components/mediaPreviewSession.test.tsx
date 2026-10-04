@@ -11,9 +11,16 @@ import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { previewThumbnail } from './imageThumbnail';
 import { ToolCard } from './ToolCard';
 
+// Thumbnails and the dialog's own loads now read bounded previews through
+// their own client calls (A's change); the original is still read only when
+// the dialog asks for the whole file, so each mock keeps both.
 const mocks = vi.hoisted(() => ({
   readSessionMediaBytes: vi.fn(),
   readHostFileBytes: vi.fn(),
+  readSessionMediaPreviewBytes: vi.fn(),
+  readHostMediaPreviewBytes: vi.fn(),
+  downloadSessionMedia: vi.fn(),
+  downloadHostFile: vi.fn(),
 }));
 
 vi.mock('../state/connection', async (importOriginal) => {
@@ -21,6 +28,10 @@ vi.mock('../state/connection', async (importOriginal) => {
   const client = {
     readSessionMediaBytes: mocks.readSessionMediaBytes,
     readHostFileBytes: mocks.readHostFileBytes,
+    readSessionMediaPreviewBytes: mocks.readSessionMediaPreviewBytes,
+    readHostMediaPreviewBytes: mocks.readHostMediaPreviewBytes,
+    downloadSessionMedia: mocks.downloadSessionMedia,
+    downloadHostFile: mocks.downloadHostFile,
   };
   return {
     ...original,
@@ -51,6 +62,12 @@ async function renderSettled(root: Root, node: ReactNode): Promise<void> {
   });
 }
 
+/** The dialog names its own actions in English, so the text is the anchor. */
+function findDialogButton(dialog: Element | null, label: string): HTMLButtonElement | undefined {
+  return [...(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? [])]
+    .find((button) => button.textContent === label);
+}
+
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   originalCreateObjectUrl = URL.createObjectURL;
@@ -68,6 +85,14 @@ beforeAll(() => {
 afterEach(async () => {
   mocks.readSessionMediaBytes.mockReset();
   mocks.readHostFileBytes.mockReset();
+  mocks.readSessionMediaPreviewBytes.mockReset();
+  mocks.readHostMediaPreviewBytes.mockReset();
+  mocks.downloadSessionMedia.mockReset();
+  mocks.downloadHostFile.mockReset();
+  // By default the preview read is the original read: these cases are about
+  // the file id, the MIME and the dialog, not about bounding.
+  mocks.readSessionMediaPreviewBytes.mockImplementation((...args: unknown[]) => mocks.readSessionMediaBytes(...(args as [string, string])));
+  mocks.readHostMediaPreviewBytes.mockImplementation((...args: unknown[]) => mocks.readHostFileBytes(...(args as [string])));
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
     await act(async () => {
@@ -133,7 +158,7 @@ describe('session media preview', () => {
       </MediaPreviewProvider>,
     );
 
-    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', 'img-1');
+    expect(mocks.readSessionMediaPreviewBytes).toHaveBeenCalledWith('session_test', 'img-1', expect.anything());
     const image = container.querySelector('img');
     expect(image?.getAttribute('src')).toBe('blob:kiki-session-media');
 
@@ -147,12 +172,12 @@ describe('session media preview', () => {
 
   it('loads a persisted user-image blobref with its original MIME', async () => {
     const hash = 'a'.repeat(64);
-    mocks.readSessionMediaBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'application/octet-stream' });
+    mocks.readSessionMediaPreviewBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'image/png' });
     const { root, container } = makeRoot();
     await renderSettled(root, <MediaPreviewProvider sessionId="session_test">
       <MediaPartList media={[{ kind: 'image', blobHash: hash, fileId: `blobref:main:${hash}`, mime: 'image/png' }]} />
     </MediaPreviewProvider>);
-    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', `blobref:main:${hash}`);
+    expect(mocks.readSessionMediaPreviewBytes).toHaveBeenCalledWith('session_test', `blobref:main:${hash}`, expect.anything());
     expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:kiki-session-media');
     expect(vi.mocked(URL.createObjectURL).mock.calls.at(-1)?.[0]).toMatchObject({ type: 'image/png', size: 3 });
     await act(async () => {
@@ -168,6 +193,11 @@ describe('session media preview', () => {
       name: 'notes.txt',
     });
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    // The save streams through the host sink; this case only needs the file
+    // the reader asked for to arrive, which the native path covers at size.
+    mocks.downloadSessionMedia.mockImplementation(async (_sessionId, _fileId, sink) => {
+      await sink(new Uint8Array([4, 5]), { bytes: 2, totalBytes: 2 });
+    });
     const { root, container } = makeRoot();
     await renderSettled(
       root,
@@ -182,18 +212,31 @@ describe('session media preview', () => {
     expect(chip).not.toBeNull();
     await act(async () => {
       chip?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      await Promise.resolve();
-      await Promise.resolve();
     });
 
-    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', 'file-1');
+    // A text file has no bounded preview to draw, so opening the chip reaches
+    // the dialog without reading anything: the original is fetched only when
+    // the reader asks for the whole file. Nothing is auto-fetched.
     const dialog = document.body.querySelector('[role="dialog"]');
     expect(dialog?.querySelector('[data-attachment-preview]')).not.toBeNull();
-    const download = dialog?.querySelector('button:not([aria-label])');
-    expect(download).not.toBeNull();
+    expect(mocks.readSessionMediaBytes).not.toHaveBeenCalled();
+    expect(mocks.readSessionMediaPreviewBytes).not.toHaveBeenCalled();
+
+    const loadFull = findDialogButton(dialog, 'Load full file');
+    expect(loadFull).not.toBeUndefined();
     await act(async () => {
-      download?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      loadFull?.click();
     });
+    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', 'file-1', expect.anything());
+    expect(mocks.readSessionMediaPreviewBytes).not.toHaveBeenCalled();
+    expect(dialog?.querySelector('[data-attachment-preview] pre')?.textContent).toBe('\u0004\u0005');
+
+    const download = findDialogButton(dialog, 'Download');
+    expect(download).not.toBeUndefined();
+    await act(async () => {
+      download?.click();
+    });
+    expect(mocks.downloadSessionMedia).toHaveBeenCalledWith('session_test', 'file-1', expect.anything(), expect.anything());
     expect(clickSpy).toHaveBeenCalledOnce();
   });
 });
@@ -211,24 +254,42 @@ function readMediaBlock(path: string, url: string, kind: 'image' | 'video' = 'im
   };
 }
 
-async function renderReadMedia(block: ToolBlock): Promise<HTMLDivElement> {
+/**
+ * A tool result with its card open. `wanted` names the element the case reads:
+ * a saved media part is a thumbnail, an inline data URL is shown as it is, and
+ * an inline URL is offered behind one press.
+ */
+async function renderReadMedia(block: ToolBlock, wanted: 'img, video' | 'img' = 'img, video'): Promise<HTMLDivElement> {
   const { root, container } = makeRoot();
   await renderSettled(root, <MediaPreviewProvider sessionId="session_test"><ToolCard block={block} agentId="main" /></MediaPreviewProvider>);
   await act(async () => {
     container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await Promise.resolve();
+    await Promise.resolve();
   });
+  // A media URL the card has not shown yet is behind one press; a saved part is
+  // already on the page.
+  if (container.querySelector(wanted) === null) {
+    await act(async () => {
+      for (const button of container.querySelectorAll('button')) {
+        if (/load|full file/i.test(button.textContent ?? '')) button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      }
+      await Promise.resolve();
+    });
+  }
   return container;
 }
 
 describe('ReadMediaFile tool result preview', () => {
   it('reads the saved image bytes, not the current absolute Windows path', async () => {
     const path = 'C:\\work\\shots\\home.png';
-    mocks.readSessionMediaBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'application/octet-stream' });
+    // The preview carries the image's own MIME; the generic download MIME the
+    // original route would hand back is exactly what must not be shown.
+    mocks.readSessionMediaPreviewBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'image/png' });
     const container = await renderReadMedia(readMediaBlock(path, `blobref:image/png;${'a'.repeat(64)}`));
 
-    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', `blobref:main:${'a'.repeat(64)}`);
-    expect(mocks.readHostFileBytes).not.toHaveBeenCalled();
+    expect(mocks.readSessionMediaPreviewBytes).toHaveBeenCalledWith('session_test', `blobref:main:${'a'.repeat(64)}`, expect.anything());
+    expect(mocks.readHostMediaPreviewBytes).not.toHaveBeenCalled();
     const image = container.querySelector('img');
     expect(image?.getAttribute('src')).toBe('blob:kiki-session-media');
     expect(vi.mocked(URL.createObjectURL).mock.calls.at(-1)?.[0]).toMatchObject({ type: 'image/png', size: 3 });
@@ -239,15 +300,22 @@ describe('ReadMediaFile tool result preview', () => {
   });
 
   it('keeps the original absolute result path for relative input and preserves inline media', async () => {
-    mocks.readSessionMediaBytes.mockResolvedValue({ bytes: new Uint8Array([1]), mime: 'application/octet-stream' });
+    const hashish = 'd'.repeat(64);
+    mocks.readSessionMediaPreviewBytes.mockResolvedValue({ bytes: new Uint8Array([1]), mime: 'image/png' });
     const cold = await renderReadMedia(readMediaBlock('/workspace/shot.png', `blobref:image/png;${'b'.repeat(64)}`, 'image', './shot.png'));
-    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', `blobref:main:${'b'.repeat(64)}`);
+    expect(mocks.readSessionMediaPreviewBytes).toHaveBeenCalledWith('session_test', `blobref:main:${'b'.repeat(64)}`, expect.anything());
     expect(cold.querySelector('img')?.getAttribute('src')).toBe('blob:kiki-session-media');
 
-    const live = await renderReadMedia(readMediaBlock('/workspace/live.png', 'data:image/png;base64,AAA'));
+    // An inline data URL needs no session read at all: the row shows the image
+    // as it is and reads nothing.
+    const live = await renderReadMedia({ ...readMediaBlock('/workspace/live.png', 'blobref:image/png;${hashish}'), output: [
+      { type: 'text', text: '<image path="/workspace/live.png">' },
+      { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'AAA' } },
+      { type: 'text', text: '</image>' },
+    ] });
     expect(live.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AAA');
-    expect(mocks.readSessionMediaBytes).toHaveBeenCalledTimes(1);
-    expect(mocks.readHostFileBytes).not.toHaveBeenCalled();
+    expect(mocks.readSessionMediaPreviewBytes).toHaveBeenCalledTimes(1);
+    expect(mocks.readHostMediaPreviewBytes).not.toHaveBeenCalled();
   });
 
   it('replays two different crops of the same image without showing the original file', async () => {
@@ -258,8 +326,8 @@ describe('ReadMediaFile tool result preview', () => {
       [`blobref:agent-1:${left}`, new Uint8Array([1, 2, 3])],
       [`blobref:agent-1:${right}`, new Uint8Array([4, 5, 6, 7])],
     ]);
-    mocks.readSessionMediaBytes.mockImplementation(async (_sessionId: string, fileId: string) => ({
-      bytes: crops.get(fileId), mime: 'application/octet-stream',
+    mocks.readSessionMediaPreviewBytes.mockImplementation(async (_sessionId: string, fileId: string) => ({
+      bytes: crops.get(fileId), mime: 'image/png',
     }));
     vi.mocked(URL.createObjectURL).mockImplementationOnce(() => 'blob:crop-left').mockImplementationOnce(() => 'blob:crop-right');
     const leftBlock = { ...readMediaBlock(path, `blobref:image/png;${left}`),
@@ -278,7 +346,7 @@ describe('ReadMediaFile tool result preview', () => {
       await Promise.resolve();
     });
 
-    expect(mocks.readSessionMediaBytes.mock.calls).toEqual([
+    expect(mocks.readSessionMediaPreviewBytes.mock.calls.map(([sessionId, fileId]) => [sessionId, fileId])).toEqual([
       ['session_test', `blobref:agent-1:${left}`],
       ['session_test', `blobref:agent-1:${right}`],
     ]);
@@ -286,38 +354,62 @@ describe('ReadMediaFile tool result preview', () => {
       'blob:crop-left', 'blob:crop-right',
     ]);
     expect(vi.mocked(URL.createObjectURL).mock.calls.slice(-2).map(([blob]) => (blob as Blob).size)).toEqual([3, 4]);
-    expect(mocks.readHostFileBytes).not.toHaveBeenCalled();
+    expect(mocks.readHostMediaPreviewBytes).not.toHaveBeenCalled();
   });
 
   it('plays saved video bytes with the blob reference MIME rather than the generic download MIME', async () => {
     const hash = 'd'.repeat(64);
-    mocks.readSessionMediaBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'application/octet-stream' });
+    mocks.readSessionMediaPreviewBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'video/mp4' });
     const container = await renderReadMedia(readMediaBlock('/workspace/crop.mp4', `blobref:video/mp4;${hash}`, 'video'));
 
-    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', `blobref:main:${hash}`);
-    expect(container.querySelector('video')?.getAttribute('src')).toBe('blob:kiki-session-media');
+    expect(mocks.readSessionMediaPreviewBytes).toHaveBeenCalledWith('session_test', `blobref:main:${hash}`, expect.anything());
+    // The tool row shows the video as its thumbnail; the player is the dialog's.
+    const thumb = container.querySelector('img, video');
+    expect(thumb?.getAttribute('src')).toBe('blob:kiki-session-media');
     expect(vi.mocked(URL.createObjectURL).mock.calls.at(-1)?.[0]).toMatchObject({ type: 'video/mp4' });
-    expect(mocks.readHostFileBytes).not.toHaveBeenCalled();
+    expect(mocks.readHostMediaPreviewBytes).not.toHaveBeenCalled();
   });
 
   it('previews provider-only video URLs from the host path and preserves inline videos', async () => {
-    mocks.readHostFileBytes.mockResolvedValue({ bytes: new Uint8Array([0, 1, 2]), mime: 'video/mp4' });
+    mocks.readHostMediaPreviewBytes.mockResolvedValue({ bytes: new Uint8Array([0, 1, 2]), mime: 'video/mp4' });
     const cold = await renderReadMedia(readMediaBlock('/workspace/clip.mp4', 'ms://uploaded-id', 'video'));
-    expect(mocks.readHostFileBytes).toHaveBeenCalledWith('/workspace/clip.mp4');
-    expect(cold.querySelector('video')?.getAttribute('src')).toBe('blob:kiki-session-media');
+    expect(mocks.readHostMediaPreviewBytes).toHaveBeenCalledWith('/workspace/clip.mp4', expect.anything());
+    // A host path video is read through the host route, not the session one.
+    expect(cold.querySelector('img, video')?.getAttribute('src')).toBe('blob:kiki-session-media');
 
-    const live = await renderReadMedia(readMediaBlock('/workspace/live.mp4', 'data:video/mp4;base64,AAA', 'video'));
+    // An inline video is shown as it is: no host read, no object URL.
+    const live = await renderReadMedia({ ...readMediaBlock('/workspace/live.mp4', 'ms://uploaded-id', 'video'), output: [
+      { type: 'text', text: '<video path="/workspace/live.mp4">' },
+      { type: 'video', source: { kind: 'base64', media_type: 'video/mp4', data: 'AAA' } },
+      { type: 'text', text: '</video>' },
+    ] });
     expect(live.querySelector('video')?.getAttribute('src')).toBe('data:video/mp4;base64,AAA');
-    expect(mocks.readHostFileBytes).toHaveBeenCalledTimes(1);
+    expect(mocks.readHostMediaPreviewBytes).toHaveBeenCalledTimes(1);
   });
 
   it('shows a file chip rather than a false original-file preview when saved media is missing', async () => {
-    mocks.readSessionMediaBytes.mockRejectedValue(new Error('blob not found'));
+    mocks.readSessionMediaPreviewBytes.mockRejectedValue(new Error('blob not found'));
     const container = await renderReadMedia(readMediaBlock('/workspace/deleted.png', `blobref:image/png;${'c'.repeat(64)}`));
 
-    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', `blobref:main:${'c'.repeat(64)}`);
-    expect(mocks.readHostFileBytes).not.toHaveBeenCalled();
+    expect(mocks.readSessionMediaPreviewBytes).toHaveBeenCalledWith('session_test', `blobref:main:${'c'.repeat(64)}`, expect.anything());
+    expect(mocks.readHostMediaPreviewBytes).not.toHaveBeenCalled();
     expect(container.querySelector('img')).toBeNull();
     expect(container.textContent).toContain('deleted.png');
+  });
+});
+
+
+describe('sequential bounded previews', () => {
+  it('requests the sixth small preview after predecessors unmount and revoke their URLs', async () => {
+    mocks.readSessionMediaPreviewBytes.mockResolvedValue({ bytes: new Uint8Array(16 * 1024), mime: 'image/jpeg' });
+    const { root, container } = makeRoot();
+    const revoked = vi.mocked(URL.revokeObjectURL).mock.calls.length;
+    for (let index = 0; index < 6; index += 1) {
+      await renderSettled(root, <MediaPreviewProvider sessionId="session"><MediaPartList media={[{ kind: 'image', fileId: `file${index}`, name: `image${index}.jpg`, mime: 'image/jpeg' }]} /></MediaPreviewProvider>);
+      expect(container.querySelector('img')).not.toBeNull();
+      await renderSettled(root, <MediaPreviewProvider sessionId="session"><MediaPartList media={[]} /></MediaPreviewProvider>);
+    }
+    expect(mocks.readSessionMediaPreviewBytes).toHaveBeenCalledTimes(6);
+    expect(vi.mocked(URL.revokeObjectURL).mock.calls.length - revoked).toBe(6);
   });
 });

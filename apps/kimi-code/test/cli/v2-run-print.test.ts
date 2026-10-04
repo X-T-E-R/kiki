@@ -362,7 +362,7 @@ describe('runV2Print', () => {
       mocks.resolveKikiHome.mockReturnValue(homeDir);
       const priorErr = writer();
       await runV2Print(opts({ prompt: 'prior prompt', timeout: '30' }) as never, 'test', { stdout: writer(), stderr: priorErr });
-      priorSessionId = /kimi -r (\S+)/.exec(priorErr.text())?.[1];
+      priorSessionId = /kiki -r (\S+)/.exec(priorErr.text())?.[1];
       expect(priorSessionId).toBeDefined();
       const stdout = writer();
       await runV2Print(opts({ prompt: 'browse current history', timeout: '30' }) as never, 'test', { stdout, stderr: writer() });
@@ -448,9 +448,33 @@ describe('runV2Print', () => {
 
     const promptService = agentServices.get(IAgentPromptService) as { submitAndWait: Mock<IAgentPromptService['submitAndWait']> };
     expect(promptService.submitAndWait).toHaveBeenCalledWith({ input: [{ type: 'text', text: 'say hello' }] }, undefined);
-    expect(stderr.write).toHaveBeenNthCalledWith(1, 'kimi version 1.2.3-test\n');
+    expect(stderr.write).toHaveBeenNthCalledWith(1, 'kiki version 1.2.3-test\n');
+    expect(stderr.text()).toContain('To resume this session: kiki -r ses_v2');
+    expect(stderr.text()).not.toContain('kimi ');
     expect(stdout.text()).toContain('hello world');
     expect(app.dispose).toHaveBeenCalled();
+  });
+
+  it('names the kiki binary in the stream-json resume hint', async () => {
+    const stdout = writer();
+    const { app, agent } = makeFakeHarness();
+    mocks.bootstrap.mockReturnValue({ app });
+    mocks.ensureMainAgent.mockResolvedValue(agent);
+
+    await runV2Print(opts({ outputFormat: 'stream-json' }) as never, '1.2.3-test', {
+      stdout,
+      stderr: writer(),
+    });
+
+    const lines = stdout.text().trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(lines).toContainEqual({ role: 'meta', type: 'system.version', version: '1.2.3-test' });
+    expect(lines).toContainEqual({
+      role: 'meta',
+      type: 'session.resume_hint',
+      session_id: 'ses_v2',
+      command: 'kiki -r ses_v2',
+      content: 'To resume this session: kiki -r ses_v2',
+    });
   });
 
   it('emits thinking deltas only when stream-json opts in', async () => {

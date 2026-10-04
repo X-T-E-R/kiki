@@ -14,13 +14,15 @@ import { SectionCard } from './SectionCard';
 import { FieldIssue, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 import { Icon } from '../icons';
+import { PromptIdentityEditor, PromptOverridesContentEditor } from './PromptIdentityEditor';
+import { promptIdentityBody, promptIdentityDraft, promptIdentityProblem, promptOverridesBody, promptOverridesDraft, promptOverridesProblem, type PromptIdentityDraft, type PromptOverridesDraft } from './promptIdentityDraft';
 
 type PromptRow = { id: string; name: string; value: string };
 type PromptFileRow = { id: string; value: string };
-type PromptDraft = { files: PromptFileRow[]; variables: PromptRow[]; fields: PromptRow[] };
-type PromptErrors = { files: Record<number, string>; variables: Record<number, string>; fields: Record<number, string> };
+type PromptDraft = { files: PromptFileRow[]; variables: PromptRow[]; fields: PromptRow[]; identity: PromptIdentityDraft<PromptOverridesDraft> };
+type PromptErrors = { files: Record<number, string>; variables: Record<number, string>; fields: Record<number, string>; identity: Record<number, string> };
 
-const EMPTY_DRAFT: PromptDraft = { files: [], variables: [], fields: [] };
+const EMPTY_DRAFT: PromptDraft = { files: [], variables: [], fields: [], identity: promptIdentityDraft(undefined, promptOverridesDraft) };
 const FIELD_ID_PATTERN = /^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)+$/;
 let promptRowCounter = 0;
 
@@ -32,6 +34,7 @@ function newPromptRowId(kind: 'variable' | 'field' | 'file'): string {
 function promptDraftFromConfig(value: unknown): PromptDraft {
   const config = typeof value === 'object' && value !== null ? value as Partial<PromptConfig> : {};
   return {
+    identity: promptIdentityDraft(config.overrides, promptOverridesDraft),
     files: (config.overrides?.files ?? []).filter((path): path is string => typeof path === 'string').map((path) => ({ id: newPromptRowId('file'), value: path })),
     variables: Object.entries(config.variables ?? {}).filter(([, variable]) => typeof variable === 'string').map(([name, variable]) => ({ id: newPromptRowId('variable'), name, value: variable })),
     fields: Object.entries(config.overrides?.fields ?? {}).filter(([, text]) => typeof text === 'string').map(([name, text]) => ({ id: newPromptRowId('field'), name, value: text })),
@@ -42,6 +45,7 @@ function promptConfigFromDraft(draft: PromptDraft): PromptConfig {
   return {
     variables: Object.fromEntries(draft.variables.map((row) => [row.name.trim(), row.value])),
     overrides: {
+      ...promptIdentityBody(draft.identity, promptOverridesBody),
       files: draft.files.map((row) => row.value.trim()),
       fields: Object.fromEntries(draft.fields.map((row) => [row.name.trim(), row.value])),
     },
@@ -53,7 +57,9 @@ function variableNameValid(name: string): boolean {
 }
 
 function validatePromptDraft(draft: PromptDraft, t: (key: I18nKey, params?: I18nParams) => string): PromptErrors {
-  const errors: PromptErrors = { files: {}, variables: {}, fields: {} };
+  const errors: PromptErrors = { files: {}, variables: {}, fields: {}, identity: {} };
+  const identityProblem = promptIdentityProblem({ ...draft.identity, common: { files: draft.files.map((row) => row.value).join('\n'), fields: draft.fields } }, promptOverridesBody, promptOverridesProblem);
+  if (identityProblem !== undefined) errors.identity[0] = t(`st.promptIdentity.problem.${identityProblem}`);
   const validateRows = (rows: PromptRow[], target: Record<number, string>, kind: 'variables' | 'fields') => {
     const seen = new Set<string>();
     for (const [index, row] of rows.entries()) {
@@ -211,6 +217,11 @@ export function PromptConfigCard() {
               <button type="button" className={SECONDARY_BUTTON} onClick={() => { update({ ...draft, fields: [...draft.fields, newRow('field')] }); }}>{t('st.prompt.addField')}</button>
               {draft.fields.length === 0 ? <Hint>{t('st.prompt.emptyFields')}</Hint> : null}
             </fieldset>
+            <PromptIdentityEditor value={draft.identity} showCommon={false} disabled={!ready || saving}
+              onChange={(identity) => update({ ...draft, identity })}>
+              {(content, onChange, label) => <PromptOverridesContentEditor value={content} onChange={onChange} label={label} />}
+            </PromptIdentityEditor>
+            <FieldIssue id="prompt-identity-issue" text={errors.identity[0] ?? null} />
           </fieldset>
 
           <AdvancedDetails summary={t('st.prompt.preview')} data-prompt-preview>

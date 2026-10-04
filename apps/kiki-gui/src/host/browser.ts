@@ -1,4 +1,5 @@
 import type { BrowserHostAdapter, HostNotification } from './host';
+import { browserSaveSink } from './saveSink';
 
 const clickListeners = new Set<(route: string) => void>();
 
@@ -36,6 +37,7 @@ interface ViteLocalServerPayload {
 
 export const browserHost: BrowserHostAdapter = {
   kind: 'browser',
+  openSaveSink: browserSaveSink,
   ...(notificationsAvailable()
     ? {
       notify: browserNotify,
@@ -54,7 +56,7 @@ export const browserHost: BrowserHostAdapter = {
       if (payload.url === undefined) return null;
       return {
         config: { url: payload.url, token: payload.token ?? '' },
-        persist: true,
+        persist: false,
       };
     },
   },

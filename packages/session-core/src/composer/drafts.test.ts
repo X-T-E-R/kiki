@@ -312,7 +312,7 @@ describe('restorePromptToDraft', () => {
     writeDraft('s1', 'new follow-up');
     const previous = emptyState({
       attachments: [{ kind: 'file', path: 'new.ts', name: 'new.ts', isDir: false }],
-      annotations: addAnnotation([], 'source', 'comment'), permissionMode: 'manual',
+      annotations: addAnnotation([], 'source', 'comment'), quote: 'unsent quote', permissionMode: 'manual',
       planMode: true, planGate: 'gated', goalObjective: 'goal', modelOverride: 'fixture/model', effortOverride: 'high',
     });
     writeComposerState('s1', previous);

@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   AuthSummary,
   NamedAgentProfile,
@@ -32,6 +32,7 @@ import {
   writeNewSessionDraft,
   type ComposerAttachment,
   type PersistedNewSessionDraft,
+  type SshHostAttachment,
 } from '@kiki/session-core/composer';
 import { sortWorkspacesByPinnedThenRecency, sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import {
@@ -48,6 +49,7 @@ import {
   subscribeSettings,
 } from '@kiki/session-core/settings';
 import { DEFAULT_AGENT_PROFILE } from './Composer';
+import { personaDailyDraftKey, personaDailySettingsKey } from './persona/personaNavigation';
 import { useHost } from '../host';
 import {
   agentProfileCatalogQueryKey,
@@ -59,12 +61,48 @@ import { runNewSessionHandoff } from '../lib/newSessionHandoff';
 import { spaceStorage } from '../lib/spaceStorage';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
+import { errorText } from '@kiki/session-core/i18n';
+import { pushToast } from '../lib/toasts';
 import { useWorktreeAvailability, workspaceGitState } from '../lib/worktrees';
 import { useConnection } from '../state/connection';
-import { sshApi } from '../lib/ssh';
+import { sshApi, sshKeys } from '../lib/ssh';
 
 const DRAFT_KEY = 'new';
 const remoteDraftStorageKey = (scopeId: string) => `kiki.draft.new.${scopeId}`;
+
+/**
+ * A daily draft keeps its own target and settings. Sharing the /new key would
+ * hand persona B the project persona A had picked for its daily conversation.
+ */
+function readDailyDraftSettings(storageKey: string): PersistedNewSessionDraft {
+  if (!readSettings().draftPersistence) return {};
+  try {
+    const value = JSON.parse(spaceStorage.getItem(storageKey) ?? '{}') as unknown;
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+    const record = value as Record<string, unknown>;
+    return {
+      workspaceId: typeof record['workspaceId'] === 'string' ? record['workspaceId'] : undefined,
+      cwd: typeof record['cwd'] === 'string' ? record['cwd'] : undefined,
+      profile: typeof record['profile'] === 'string' ? record['profile'] : undefined,
+      modelOverride: typeof record['modelOverride'] === 'string' ? record['modelOverride'] : undefined,
+      effortOverride: typeof record['effortOverride'] === 'string' ? record['effortOverride'] : undefined,
+      modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
+      effortFromProfile: typeof record['effortFromProfile'] === 'boolean' ? record['effortFromProfile'] : undefined,
+      prefillSource: typeof record['prefillSource'] === 'string' ? record['prefillSource'] : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function writeDailyDraftSettings(storageKey: string, draft: PersistedNewSessionDraft): void {
+  if (!readSettings().draftPersistence) return;
+  try {
+    spaceStorage.setItem(storageKey, JSON.stringify(draft));
+  } catch {
+    return;
+  }
+}
 
 function readScopedNewSessionDraft(scopeId: string): PersistedNewSessionDraft {
   if (scopeId === 'local' || !readSettings().draftPersistence) return scopeId === 'local' ? readNewSessionDraft() : {};
@@ -117,6 +155,17 @@ export interface DraftSkillHandoff {
   readonly name: string;
   readonly args: string;
   readonly attachments: readonly ComposerAttachment[];
+  readonly userInput?: string;
+}
+
+/** Hosts preselected on /new, split off before anything becomes a message. */
+function sshOf(attachments: readonly ComposerAttachment[]): readonly SshHostAttachment[] {
+  return attachments.filter((item): item is SshHostAttachment => item.kind === 'ssh');
+}
+
+/** Everything a message carries: a joined host is session state, not content. */
+function withoutSsh(attachments: readonly ComposerAttachment[]): readonly ComposerAttachment[] {
+  return attachments.filter((item) => item.kind !== 'ssh');
 }
 
 /** Build the create-time execution configuration applied before the first handoff runs. */
@@ -137,8 +186,10 @@ export function buildNewSessionCreate(input: {
    * thinking are sent only when the user picked them after the persona.
    */
   readonly persona?: string;
+  /** Whether this session creation claims the persona's fixed daily conversation entrance (D3) */
+  readonly personaHome?: boolean;
 }): SessionCreate {
-  const persona = input.persona === undefined ? {} : { persona: input.persona };
+  const persona = input.persona === undefined ? {} : { persona: input.persona, ...(input.personaHome ? { persona_home: true } : {}) };
   const agent_config = {
     ...(input.persona === undefined ? { profile: input.profile } : {}),
     model: input.model,
@@ -189,6 +240,7 @@ export function useNewSessionDraft({
   initialWorkspaceId,
   initialProfile,
   initialPersona,
+  isDailyDraft,
   prefillNavigationKey,
 }: {
   initialWorkspaceId?: string;
@@ -196,22 +248,39 @@ export function useNewSessionDraft({
   initialProfile?: string;
   /** `?persona=` prefill — the persona the new session binds at creation. */
   initialPersona?: string;
+  /** When true, marks this session draft as the persona's daily conversation, claiming the pointer on first send. */
+  isDailyDraft?: boolean;
   /** Router history-entry identity survives reload/back but changes on a new navigation. */
   prefillNavigationKey?: string;
 } = {}) {
   const host = useHost();
+  const queryClient = useQueryClient();
   const { client, scopeId, sshLabel } = useConnection();
   const draftScopeId = sshLabel === null ? 'local' : scopeId;
-  const draftKey = draftScopeId === 'local' ? DRAFT_KEY : `${DRAFT_KEY}:${draftScopeId}`;
+  /**
+   * A daily draft is the persona's, not the shared `/new` scratch pad: its own
+   * text and its own target, keyed by connection scope and persona so two
+   * personas (or one persona over SSH and locally) never read each other's.
+   */
+  const dailyPersonaId = isDailyDraft === true ? initialPersona : undefined;
+  const dailySettingsKey = dailyPersonaId === undefined
+    ? undefined
+    : personaDailySettingsKey(scopeId, dailyPersonaId);
+  const draftKey = dailyPersonaId !== undefined
+    ? personaDailyDraftKey(scopeId, dailyPersonaId)
+    : draftScopeId === 'local' ? DRAFT_KEY : `${DRAFT_KEY}:${draftScopeId}`;
   const navigate = useGuardedNavigate();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const liveSettings = useSyncExternalStore(
     subscribeSettings,
     settingsSnapshot,
     settingsServerSnapshot,
   );
   const settings = useMemo(() => readSettings(), []);
-  const initialRestoredDraft = useMemo(() => readScopedNewSessionDraft(draftScopeId), [draftScopeId]);
+  const initialRestoredDraft = useMemo(
+    () => (dailySettingsKey === undefined ? readScopedNewSessionDraft(draftScopeId) : readDailyDraftSettings(dailySettingsKey)),
+    [dailySettingsKey, draftScopeId],
+  );
   const [prefillSource] = useState(() => initialWorkspaceId !== undefined || initialProfile !== undefined
     ? JSON.stringify([initialWorkspaceId ?? null, initialProfile ?? null, prefillNavigationKey ?? null])
     : initialRestoredDraft.prefillSource);
@@ -246,8 +315,8 @@ export function useNewSessionDraft({
   const [agentProfile, setAgentProfileState] = useState(
     (applyPrefill ? initialProfile : undefined) ?? initialRestoredDraft.profile ?? DEFAULT_AGENT_PROFILE,
   );
-  // The selected effort is the wire value. When the model catalog supplies a
-  // visible default, sending without touching the select still submits it.
+  // The visible effort follows the catalog for ordinary drafts. A persona's
+  // inherited preview is not a user override, even when it has the same value.
   const [effortOverride, setEffortOverrideState] = useState<string | undefined>(
     initialRestoredDraft.effortOverride,
   );
@@ -261,6 +330,8 @@ export function useNewSessionDraft({
   const hasNewProfilePrefill = applyPrefill && initialProfile !== undefined;
   const modelOverrideFromProfile = useRef(hasNewProfilePrefill || (initialRestoredDraft.modelFromProfile ?? initialRestoredDraft.profile === undefined));
   const effortOverrideFromProfile = useRef(hasNewProfilePrefill || (initialRestoredDraft.effortFromProfile ?? initialRestoredDraft.profile === undefined));
+  const modelOverrideFromPersona = useRef(false);
+  const effortOverrideFromPersona = useRef(false);
 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces'],
@@ -272,10 +343,10 @@ export function useNewSessionDraft({
 
   const effectiveWorkspace: Workspace | undefined = useMemo(
     () =>
-      workspaceId === '' ? sortWorkspacesByRecency(workspaces)[0]
+      workspaceId === '' ? (dailyPersonaId === undefined ? sortWorkspacesByRecency(workspaces)[0] : undefined)
         : workspaceId === AUTO_WORKSPACE_ID ? undefined
         : workspaces.find((w) => w.id === workspaceId),
-    [workspaces, workspaceId],
+    [dailyPersonaId, workspaces, workspaceId],
   );
   const autoWorkspace = cwd.trim() === '' && effectiveWorkspace === undefined
     && (workspaceId === '' || workspaceId === AUTO_WORKSPACE_ID);
@@ -356,11 +427,13 @@ export function useNewSessionDraft({
   }, [draftKey]);
 
   const setModelOverride = useCallback((model: string | undefined) => {
+    modelOverrideFromPersona.current = false;
     modelOverrideFromProfile.current = false;
     setModelOverrideState(model);
     setSelectionRevision((value) => value + 1);
   }, []);
   const setEffortOverride = useCallback((thinking: string | undefined) => {
+    effortOverrideFromPersona.current = false;
     effortOverrideFromProfile.current = false;
     setEffortOverrideState(thinking);
     setSelectionRevision((value) => value + 1);
@@ -371,6 +444,8 @@ export function useNewSessionDraft({
   ) => {
     const defaults = composerDefaultsForProfile(items, name);
     setAgentProfileState(name);
+    modelOverrideFromPersona.current = false;
+    effortOverrideFromPersona.current = false;
     modelOverrideFromProfile.current = true;
     effortOverrideFromProfile.current = true;
     setModelOverrideState(defaults.model);
@@ -396,17 +471,52 @@ export function useNewSessionDraft({
   }, [agentProfile, agentProfileCatalogMode, agentProfilesQuery.data, agentProfilesQuery.isError, agentProfilesQuery.isPending]);
 
   useEffect(() => {
+    if (dailySettingsKey !== undefined) {
+      writeDailyDraftSettings(dailySettingsKey, {
+        workspaceId: workspaceId || effectiveWorkspace?.id,
+        cwd,
+        profile: agentProfile,
+        modelOverride: modelOverrideFromPersona.current ? undefined : modelOverride,
+        effortOverride: effortOverrideFromPersona.current ? undefined : effortOverride,
+        modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
+        effortFromProfile: effortOverrideFromProfile.current || effortOverrideFromPersona.current,
+        prefillSource,
+      });
+      return;
+    }
     writeScopedNewSessionDraft(draftScopeId, {
       workspaceId: workspaceId || effectiveWorkspace?.id,
       cwd,
       profile: agentProfile,
-      modelOverride,
-      effortOverride,
-      modelFromProfile: modelOverrideFromProfile.current,
-      effortFromProfile: effortOverrideFromProfile.current,
+      modelOverride: modelOverrideFromPersona.current ? undefined : modelOverride,
+      effortOverride: effortOverrideFromPersona.current ? undefined : effortOverride,
+      modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
+      effortFromProfile: effortOverrideFromProfile.current || effortOverrideFromPersona.current,
       prefillSource,
     });
-  }, [draftScopeId, workspaceId, effectiveWorkspace?.id, cwd, agentProfile, modelOverride, effortOverride, selectionRevision, prefillSource]);
+  }, [dailySettingsKey, draftScopeId, workspaceId, effectiveWorkspace?.id, cwd, agentProfile, modelOverride, effortOverride, selectionRevision, prefillSource]);
+
+  // A daily draft starts in the persona's own workspace when the persona names
+  // one and the user has not already chosen for this draft. A directory the
+  // user is still choosing from (or one that has failed) decides nothing.
+  const dailyDefaultApplied = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (dailyPersonaId === undefined || persona === undefined) return;
+    if (persona.definition.id !== dailyPersonaId) return;
+    if (dailyDefaultApplied.current === dailyPersonaId) return;
+    if (workspacesQuery.isPending) return;
+    dailyDefaultApplied.current = dailyPersonaId;
+    if (workspaceId !== '' || cwd.trim() !== '') return;
+    const home = persona.definition.homeWorkspace;
+    if (home === undefined) return;
+    const named = workspaces.find((workspace) => workspace.id === home)
+      ?? workspaces.find((workspace) => workspace.root === home);
+    if (named !== undefined) {
+      setWorkspaceId(named.id);
+      return;
+    }
+    if (isAbsoluteCwdPath(home)) setCwd(home);
+  }, [cwd, dailyPersonaId, persona, workspaceId, workspaces, workspacesQuery.isPending]);
 
   const updateDraft = useCallback((text: string) => {
     setDraft(text);
@@ -432,8 +542,8 @@ export function useNewSessionDraft({
     agentProfileCatalogPending,
     cwd,
     effectiveWorkspace,
-    modelOverride,
-    effectiveEffort,
+    modelOverride: persona !== undefined && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
+    effectiveEffort: persona !== undefined && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
     agentProfile,
     permissionMode,
     planMode,
@@ -447,8 +557,8 @@ export function useNewSessionDraft({
     agentProfileCatalogPending,
     cwd,
     effectiveWorkspace,
-    modelOverride,
-    effectiveEffort,
+    modelOverride: persona !== undefined && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
+    effectiveEffort: persona !== undefined && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
     agentProfile,
     permissionMode,
     planMode,
@@ -463,6 +573,12 @@ export function useNewSessionDraft({
     initialPrompt?: string;
     initialAttachments?: readonly ComposerAttachment[];
     initialSkill?: DraftSkillHandoff;
+    /**
+     * Hosts preselected on /new. They are session resources, not message
+     * content, so they ride the create request (joined before the first
+     * prompt) and never the prompt itself.
+     */
+    sshHosts?: readonly SshHostAttachment[];
     /**
      * A `/goal …` prefix send carries its objective out-of-band: the draft
      * state only catches up on the next render, which is too late for the
@@ -495,6 +611,7 @@ export function useNewSessionDraft({
       worktree: context.worktree,
       ephemeral: context.ephemeral || undefined,
       persona: context.persona?.definition.id,
+      personaHome: isDailyDraft,
     });
 
     // Returned so the composer's send latch rides the create round trip: a
@@ -505,12 +622,29 @@ export function useNewSessionDraft({
     const creation = retry?.body === bodyKey ? Promise.resolve({ id: retry.sessionId }) : client.createSession(body);
     return creation
       .then(async (session) => {
+        void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
         createdForRetry.current = { body: bodyKey, sessionId: session.id };
-        const sshHosts = (handoff.initialAttachments ?? handoff.initialSkill?.attachments ?? []).filter((item) => item.kind === 'ssh');
-        for (const host of sshHosts) await sshApi(client).addSessionHost(session.id, host.id);
+        // Hosts preselected on /new become session resources before anything
+        // is sent: the real PUT lands first, and a failure here aborts the
+        // navigation instead of delivering a first message that believes it
+        // has hosts the session does not have.
+        for (const host of handoff.sshHosts ?? []) {
+          try {
+            await sshApi(client).addSessionHost(session.id, host.id);
+          } catch (cause: unknown) {
+            pushToast({
+              tone: 'error',
+              text: t('composer.ssh.addFailed', { name: host.name, detail: errorText(locale, cause) }),
+            });
+            throw cause;
+          }
+        }
         createdForRetry.current = undefined;
         writeDraft(draftKey, '');
         clearScopedNewSessionDraft(draftScopeId);
+        // Creation already confirmed this target in this connection scope.
+        // Let the route mount immediately while its guard revalidates it.
+        queryClient.setQueryData(['space-view-target', scopeId, 'session', session.id], true);
         // react-router's navigate returns a promise in data routers; the
         // navigation is fire-and-forget here (the catch below covers createSession).
         // The hand-off motion rides along with it and never delays the send.
@@ -518,6 +652,7 @@ export function useNewSessionDraft({
           text: handoff.initialPrompt,
           navigate: () => navigate(`/s/${session.id}`, {
             state: {
+              createdSession: { id: session.id, scopeId },
               initialPrompt: handoff.initialPrompt,
               initialAttachments: handoff.initialAttachments,
               initialSkill: handoff.initialSkill,
@@ -539,7 +674,7 @@ export function useNewSessionDraft({
         setBusy(false);
         setError(error instanceof Error ? error.message : String(error));
       });
-  }, [client, draftKey, draftScopeId, sshLabel, navigate, t]);
+  }, [client, draftKey, draftScopeId, locale, scopeId, sshLabel, navigate, queryClient, t]);
 
   const send = useCallback((
     text: string,
@@ -550,7 +685,8 @@ export function useNewSessionDraft({
     if (options?.goalObjective !== undefined) setGoalObjective(options.goalObjective);
     return createThenNavigate({
       initialPrompt: text.trim(),
-      initialAttachments: composerAttachments,
+      initialAttachments: withoutSsh(composerAttachments),
+      sshHosts: sshOf(composerAttachments),
       goalObjectiveOverride: options?.goalObjective,
     });
   }, [createThenNavigate]);
@@ -559,9 +695,11 @@ export function useNewSessionDraft({
     name: string,
     args: string,
     composerAttachments: readonly ComposerAttachment[],
+    userInput?: string,
   ) => {
     return createThenNavigate({
-      initialSkill: { name, args, attachments: composerAttachments },
+      initialSkill: { name, args, attachments: withoutSsh(composerAttachments), userInput },
+      sshHosts: sshOf(composerAttachments),
     });
   }, [createThenNavigate]);
 
@@ -624,8 +762,10 @@ export function useNewSessionDraft({
     const profile = definition.profile ?? DEFAULT_AGENT_PROFILE;
     const defaults = composerDefaultsForProfile(items, profile);
     setAgentProfileState(profile);
-    // A persona pin is held like a user choice so the profile-default effect
-    // does not replace it; an unpinned value still follows the profile.
+    // Persona pins preview the effective values without becoming explicit
+    // request overrides. Unpinned values continue following the profile.
+    modelOverrideFromPersona.current = definition.modelAlias !== undefined;
+    effortOverrideFromPersona.current = definition.thinkingEffort !== undefined;
     modelOverrideFromProfile.current = definition.modelAlias === undefined;
     effortOverrideFromProfile.current = definition.thinkingEffort === undefined;
     setModelOverrideState(definition.modelAlias ?? defaults.model);
@@ -633,13 +773,21 @@ export function useNewSessionDraft({
     setSelectionRevision((value) => value + 1);
   }, [agentProfilesQuery.data, applyAgentProfile]);
 
+  // A persona read that lands after a newer pick has committed must not speak
+  // for the newer pick: two slower/faster round trips are not a user's order.
+  const personaSelectionRef = useRef(0);
   const selectPersona = useCallback((id: string | undefined) => {
+    const token = personaSelectionRef.current + 1;
+    personaSelectionRef.current = token;
     if (id === undefined) { applyPersona(undefined); return; }
     setPersonaPending(true);
     void client.getPersona(id)
-      .then((snapshot) => { applyPersona(snapshot); })
-      .catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : String(cause)); })
-      .finally(() => { setPersonaPending(false); });
+      .then((snapshot) => { if (personaSelectionRef.current === token) applyPersona(snapshot); })
+      .catch((cause: unknown) => {
+        if (personaSelectionRef.current !== token) return;
+        setError(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => { if (personaSelectionRef.current === token) setPersonaPending(false); });
   }, [applyPersona, client]);
 
   // `?persona=` from the Personas page's "Start a chat" — applied once the
@@ -656,6 +804,10 @@ export function useNewSessionDraft({
     persona,
     personaPending,
     selectPersona,
+    /** Set when this draft is one persona's daily conversation. */
+    dailyPersonaId,
+    /** Its name, for the hero's identity line and the workspace chip's auto label. */
+    dailyPersonaName: dailyPersonaId !== undefined && persona?.definition.id === dailyPersonaId ? persona.definition.name : undefined,
     draft,
     attachments,
     busy,

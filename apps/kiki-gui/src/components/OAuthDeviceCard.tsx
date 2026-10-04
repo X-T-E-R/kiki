@@ -1,9 +1,14 @@
 /**
- * OAuth device-code card — renders a pending flow with the user code, copy
- * and open-verification actions, a live expiry countdown, a polling
- * animation, and cancel; terminal states collapse to a status line with
- * retry/dismiss. The parent owns polling (react-query refetchInterval) and
- * the authenticated → refresh-and-collapse transition.
+ * The one device sign-in card, shared by every account method — Kimi Code, a
+ * ChatGPT subscription, a Grok Build login — because they all complete the
+ * same way: a code, a verification page, and a wait for the server to confirm.
+ *
+ * Pending shows the code at a size meant to be read off the screen, one
+ * primary action (open the verification page) and the wait. Terminal states
+ * collapse to one line that says what happened and one action that recovers,
+ * so a denial, an expiry and a cancel do not read as three failures with
+ * three vocabularies. The parent owns polling and the authenticated →
+ * refresh-and-collapse transition.
  */
 
 import { useEffect, useState } from 'react';
@@ -13,25 +18,27 @@ import type { OAuthFlowSnapshot } from '@kiki/protocol';
 import { useHost } from '../host';
 import { openExternalUrl } from '../host/external';
 import { useI18n } from '../i18n';
+import { Icon } from './icons';
 import { SECONDARY_BUTTON } from './ui';
 
 export interface OAuthDeviceCardProps {
   readonly snapshot: OAuthFlowSnapshot;
   readonly cancelling: boolean;
   readonly onCancel: () => void;
-  readonly onRetry: () => void;
   readonly onDismiss: () => void;
   /** Display name of the sign-in method; defaults to the provider id. */
   readonly label?: string;
+  /** The server's reason for a terminal state, when it sent one. */
+  readonly errorMessage?: string | undefined;
 }
 
 export function OAuthDeviceCard({
   snapshot,
   cancelling,
   onCancel,
-  onRetry,
   onDismiss,
   label,
+  errorMessage,
 }: OAuthDeviceCardProps) {
   const { t, time } = useI18n();
   const host = useHost();
@@ -69,23 +76,23 @@ export function OAuthDeviceCard({
   };
 
   if (snapshot.status !== 'pending') {
-    const statusKey =
-      snapshot.status === 'denied' ? 'st.oauth.denied'
-        : snapshot.status === 'expired' ? 'st.oauth.expired'
-          : 'st.oauth.cancelled';
+    // The card owns the reason while it is on screen: one sentence, plus the
+    // server's own text when it sent one, which names the actual failure. The
+    // row above then carries only the state and the retry, so the two never
+    // say the same thing twice.
+    const detail = errorMessage ?? snapshot.error_message;
     return (
-      <div className="rounded-xl border border-hairline bg-paper p-3">
+      <div data-oauth-terminal={snapshot.status} className="anim-enter rounded-xl border border-hairline bg-paper p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-[12.5px] text-ink-soft">
-            {t(statusKey)}
-            {snapshot.error_message !== undefined ? (
-              <span className="ml-1 font-mono text-[11px] text-ink-faint">{snapshot.error_message}</span>
+          <p className="min-w-0 text-[12.5px] text-ink-soft">
+            {t(`st.oauth.${snapshot.status}` as 'st.oauth.denied')}
+            {detail !== undefined ? (
+              <span className="ml-1 break-all font-mono text-[11px] text-ink-faint">{detail}</span>
             ) : null}
           </p>
-          <div className="flex gap-2">
-            <button type="button" className={SECONDARY_BUTTON} onClick={onRetry}>{t('st.oauth.retry')}</button>
-            <button type="button" className={SECONDARY_BUTTON} onClick={onDismiss}>{t('st.oauth.dismiss')}</button>
-          </div>
+          <button type="button" data-oauth-dismiss className={SECONDARY_BUTTON} onClick={onDismiss}>
+            {t('st.oauth.dismiss')}
+          </button>
         </div>
       </div>
     );
@@ -107,9 +114,10 @@ export function OAuthDeviceCard({
         </button>
         <button
           type="button"
-          className={SECONDARY_BUTTON}
+          className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
           onClick={() => void openVerificationPage()}
         >
+          <Icon name="external" size={12} />
           {t('st.oauth.openPage')}
         </button>
       </div>
@@ -122,7 +130,7 @@ export function OAuthDeviceCard({
           <span aria-hidden className="status-dot-busy inline-block h-2 w-2 rounded-full bg-accent" />
           {t('st.oauth.waiting')}
         </p>
-        <button type="button" className={SECONDARY_BUTTON} disabled={cancelling} onClick={onCancel}>
+        <button type="button" data-oauth-cancel className={SECONDARY_BUTTON} disabled={cancelling} onClick={onCancel}>
           {cancelling ? t('st.oauth.cancelling') : t('st.oauth.cancel')}
         </button>
       </div>

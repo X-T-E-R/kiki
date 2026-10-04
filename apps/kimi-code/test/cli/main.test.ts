@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ErrorCodes, KimiError } from '@kiki/node-sdk';
+import { CommanderError } from 'commander';
 
 import { validateOptions } from '#/cli/options';
 import type { CLIOptions } from '#/cli/options';
@@ -279,6 +280,41 @@ describe('main entry command handling', () => {
     await waitForAssertion(() => {
       expect(mocks.parseAsync).toHaveBeenCalledWith(process.argv);
     });
+  });
+
+  it.each(['commander.helpDisplayed', 'commander.version'])('treats successful Commander termination as success: %s', async (code) => {
+    const originalExitCode = process.exitCode;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    mocks.parseAsync.mockRejectedValueOnce(new CommanderError(0, code, '(outputHelp)'));
+    try {
+      process.exitCode = undefined;
+      main();
+      await waitForAssertion(() => { expect(process.exitCode).toBe(0); });
+      expect(stderr).not.toHaveBeenCalled();
+      expect(mocks.runShell).not.toHaveBeenCalled();
+      expect(mocks.runPrompt).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+      process.exitCode = originalExitCode;
+    }
+  });
+
+  it.each([
+    { error: new CommanderError(2, 'commander.missingArgument', 'Missing message.'), expected: 2 },
+    { error: Object.assign(new Error('Action failed.'), { exitCode: 0 }), expected: 1 },
+  ])('preserves parse failures instead of swallowing them: $expected', async ({ error, expected }) => {
+    const originalExitCode = process.exitCode;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    mocks.parseAsync.mockRejectedValueOnce(error);
+    try {
+      process.exitCode = undefined;
+      main();
+      await waitForAssertion(() => { expect(process.exitCode).toBe(expected); });
+      expect(stderr).toHaveBeenCalledWith(`${error.message}\n`);
+    } finally {
+      stderr.mockRestore();
+      process.exitCode = originalExitCode;
+    }
   });
 
   it('sets the process title during startup', () => {

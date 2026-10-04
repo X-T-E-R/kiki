@@ -15,7 +15,7 @@ import type {
   ToolInputDisplay,
   UsageStatus,
 } from '@kiki/protocol';
-import type { TranscriptGlobalCoverage, TranscriptTodoNotes, TranscriptTodoNotesMeta } from '@kiki/transcript';
+import type { TranscriptGlobalCoverage, TranscriptTodoNotes, TranscriptTodoNotesMeta, TranscriptTodoNotesStatus } from '@kiki/transcript';
 
 import type { I18nKey, I18nParams } from '../../i18n/locale';
 import type { MediaRef } from '../../composer/media';
@@ -23,6 +23,7 @@ import type { ContextBreakdown, WireTokenUsage } from '../../wire';
 
 export interface UserBlock {
   readonly kind: 'user';
+  readonly contentSource?: import('@kiki/transcript').ContentSource;
   readonly id: string;
   readonly text: string;
   readonly media?: readonly MediaRef[];
@@ -49,6 +50,15 @@ export interface UserBlock {
   readonly agentMessage?: {
     readonly senderAgentId?: string;
     readonly senderTaskName?: string;
+  };
+  readonly bridgedPeer?: {
+    readonly source?: { readonly hostId?: string; readonly workspaceId?: string; readonly sessionId?: string };
+    readonly sourceHomeId?: string;
+    readonly targetHomeId?: string;
+    readonly bridgeId?: string;
+    readonly revision?: number;
+    readonly location?: 'local' | 'network';
+    readonly messageId?: string;
   };
   readonly peerThread?: {
     readonly sessionId?: string;
@@ -138,6 +148,8 @@ export interface SkillBlock {
 
 export interface AssistantBlock {
   readonly kind: 'assistant';
+  readonly frameId?: string;
+  readonly stepId?: string;
   readonly id: string;
   readonly text: string;
   readonly media?: readonly MediaRef[];
@@ -150,6 +162,8 @@ export interface AssistantBlock {
 
 export interface ThinkingBlock {
   readonly kind: 'thinking';
+  readonly frameId?: string;
+  readonly stepId?: string;
   readonly id: string;
   readonly text: string;
   readonly streaming: boolean;
@@ -165,6 +179,8 @@ export interface ToolAgentRef {
 }
 
 export interface ToolBlock {
+  readonly frameId?: string;
+  readonly stepId?: string;
   readonly kind: 'tool';
   readonly id: string;
   readonly toolCallId: string;
@@ -257,6 +273,9 @@ export interface ActivitySummary {
 }
 
 export interface ShellBlock {
+  readonly frameId?: string;
+  readonly stepId?: string;
+  readonly outputTaskId?: string;
   readonly kind: 'shell';
   readonly id: string;
   readonly commandId: string;
@@ -347,6 +366,16 @@ export interface SubagentEventBlock {
 }
 
 export interface NoticeBlock {
+  readonly modelSwitch?: {
+    readonly operationId: string;
+    readonly mode: 'direct' | 'compact' | 'fresh';
+    readonly state: 'pending' | 'preparing' | 'completed' | 'failed' | 'cancelled';
+    readonly from: string;
+    readonly to: string;
+    readonly summaryGenerated?: boolean;
+    readonly windowEpoch?: number;
+    readonly error?: { readonly code: string; readonly message: string };
+  };
   readonly kind: 'notice';
   readonly id: string;
   readonly text: string;
@@ -406,6 +435,9 @@ export interface ApprovalBlock {
 export type QuestionOutcome =
   | { readonly kind: 'answered'; readonly at: string; readonly answers?: Readonly<Record<string, string>> }
   | { readonly kind: 'dismissed'; readonly at: string }
+  | { readonly kind: 'cancelled'; readonly at: string; readonly reason?: string }
+  | { readonly kind: 'resolvedElsewhere'; readonly at: string }
+  | { readonly kind: 'unavailable'; readonly at: string }
   | { readonly kind: 'expired' };
 
 export interface QuestionBlock {
@@ -506,6 +538,7 @@ export function transcriptDetailKey(kind: TranscriptDetailKind, id: string): str
 }
 
 export interface SessionViewState {
+  readonly contentRefs?: readonly import('@kiki/transcript').ContentRef[];
   readonly version: number;
   readonly transcriptResetVersion: number;
   readonly sessionId: string;
@@ -548,6 +581,7 @@ export interface SessionViewState {
   readonly todos: readonly TodoItem[];
   readonly todoNotes: TranscriptTodoNotes | undefined;
   readonly todoNotesMeta: TranscriptTodoNotesMeta | undefined;
+  readonly todoNotesStatus: TranscriptTodoNotesStatus | undefined;
   readonly tasks: readonly Task[];
   /**
    * Compact REST snapshot roster (`snapshot.subagents`). Display fallback for
@@ -623,6 +657,7 @@ export function createViewState(sessionId: string): SessionViewState {
     todos: [],
     todoNotes: undefined,
     todoNotesMeta: undefined,
+    todoNotesStatus: undefined,
     tasks: [],
     snapshotSubagents: [],
     globalCoverage: undefined,
@@ -650,6 +685,12 @@ export interface FloorEntry {
 export interface QueuedPromptMeta {
   readonly appendTiming: DeferredAppendTiming;
   readonly revision?: number;
+  /**
+   * The engine's shared queue-order slot (model-switch control items occupy
+   * slots in the same sequence). Absent for locally echoed prompts that the
+   * server has not parked yet.
+   */
+  readonly queuePosition?: number;
 }
 
 export interface QueuedPromptPreview {
@@ -660,6 +701,8 @@ export interface QueuedPromptPreview {
   /** Effective append timing; absent on older servers, displays as agent_idle. */
   readonly appendTiming?: DeferredAppendTiming;
   readonly revision?: number;
+  /** Shared queue-order slot, when the server has parked the prompt. */
+  readonly queuePosition?: number;
 }
 
 export interface SpawnInstruction {

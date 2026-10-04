@@ -222,7 +222,7 @@ describe('QueueStrip edit round-trip', () => {
     const list = rows(container);
 
     // The edited row swaps its action group for its own start condition.
-    expect(list[1]!.querySelector('[data-queue-edit-status]')?.textContent).toBe('Editing · starts when idle');
+    expect(list[1]!.querySelector('[data-queue-edit-status]')?.textContent).toBe('Editing · starts after this turn');
     expect(list[1]!.querySelector('button[aria-label="Edit queued prompt"]')).toBeNull();
     expect(list[1]!.querySelector('button[aria-label="Remove"]')).toBeNull();
     // Other rows keep their actions but Edit is disabled for the duration.
@@ -422,7 +422,7 @@ describe('QueueStrip timing picker', () => {
     // Older servers omit the field; the display falls back to agent_idle.
     const second = container.querySelector<HTMLSelectElement>('[data-timing-picker="p2"]')!;
     expect(second.value).toBe('agent_idle');
-    expect(second.querySelector('[data-timing="agent_idle"]')?.textContent).toBe('when idle');
+    expect(second.querySelector('[data-timing="agent_idle"]')?.textContent).toBe('after this turn');
   });
 
   it('calls onChangeTiming with the picked timing and ignores the current one', async () => {
@@ -458,5 +458,72 @@ describe('QueueStrip timing picker', () => {
       gate.resolve();
     });
     expect(picker.disabled).toBe(false);
+  });
+});
+
+describe('QueueStrip model-switch control rows', () => {
+  const switchEntry = (overrides: {
+    operationId?: string;
+    state?: 'pending' | 'preparing' | 'completed' | 'failed' | 'cancelled';
+    mode?: 'direct' | 'compact' | 'fresh';
+    queueIndex?: number;
+    toModel?: string;
+  } = {}) => {
+    const operationId = overrides.operationId ?? 'op-1';
+    const mode = overrides.mode ?? 'fresh';
+    const state = overrides.state ?? 'pending';
+    const toModel = overrides.toModel ?? 'example/new';
+    return {
+      input: { operationId, model: toModel, mode, selectedFromModel: 'example/old' },
+      receipt: {
+        operationId,
+        agentId: 'main',
+        state,
+        fromModel: 'example/old',
+        toModel,
+        mode,
+      },
+      revision: 1,
+      originalBinding: { model: 'example/old', thinking: 'high' },
+      queueIndex: overrides.queueIndex ?? 0,
+    };
+  };
+
+  it('renders a queued switch in drain order with its mode, and cancels by operation id', async () => {
+    const onCancelModelSwitch = vi.fn();
+    const { container } = await renderStrip({
+      items: [{ promptId: 'p1', text: 'first parked prompt', queuePosition: 1 }],
+      modelSwitches: [switchEntry({ queueIndex: 0 })],
+      onCancelModelSwitch,
+      onEditModelSwitch: () => {},
+    });
+    const rowTexts = rows(container).map((row) => row.textContent ?? '');
+    expect(rowTexts[0]).toContain('Will switch to example/new when idle');
+    expect(rowTexts[0]).toContain('Fresh context');
+    expect(rowTexts[1]).toContain('first parked prompt');
+    const cancel = container.querySelector<HTMLButtonElement>('[data-queue-model-switch-actions] button:last-child')!;
+    await click(cancel);
+    expect(onCancelModelSwitch).toHaveBeenCalledExactlyOnceWith('op-1');
+  });
+
+  it('names the progress of a preparing switch and offers no cancel for it', async () => {
+    const { container } = await renderStrip({
+      items: [],
+      modelSwitches: [switchEntry({ state: 'preparing', mode: 'compact' })],
+      onCancelModelSwitch: () => {},
+      onEditModelSwitch: () => {},
+    });
+    expect(container.textContent).toContain('example/old is summarizing the conversation…');
+    expect(container.querySelector('[data-queue-model-switch-actions]')).toBeNull();
+    expect(container.querySelector('[data-queue-strip]')).not.toBeNull();
+  });
+
+  it('leaves a launched switch out of the strip', async () => {
+    const { container } = await renderStrip({
+      items: [],
+      modelSwitches: [switchEntry({ state: 'completed', queueIndex: -1 })],
+      onCancelModelSwitch: () => {},
+    });
+    expect(container.querySelector('[data-queue-strip]')).toBeNull();
   });
 });

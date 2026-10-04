@@ -25,6 +25,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import type { FsSearchHit, PermissionMode } from '@kiki/protocol';
 import { filterSlashItems, type SlashItem } from '@kiki/session-core/commands';
+import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
 import { registerOverlay } from '../lib/uiBusy';
@@ -281,9 +282,32 @@ export interface RunModeControls {
   /** Present only with a session-scoped gate handler. */
   readonly planGateFree?: boolean;
   readonly onChangePlanGateFree?: (free: boolean) => void;
+  /**
+   * The session's permission mode, shown next to the plan gate: the gate is
+   * only a human pause in Ask-every-time mode — Auto / Approve-for-me /
+   * Full-access auto-approve plan changes (planService skips their review),
+   * so the switch never promises a wait the mode will not honor.
+   */
+  readonly permissionMode?: PermissionMode;
   /** Persistent objective field (the /new draft); absent in a live session. */
   readonly goalObjective?: string;
   readonly onChangeGoalObjective?: (objective: string) => void;
+}
+
+/**
+ * What the plan gate actually does under the current permission mode: only
+ * Ask-every-time turns a gated plan change into a human pause (planService
+ * waits for review). Auto / Approve-for-me / Full-access automatically execute
+ * without pausing for review; they do not show a warning, keeping the UI clean.
+ */
+function planGateEffectiveText(
+  free: boolean,
+  permissionMode: PermissionMode | undefined,
+  t: (key: I18nKey, params?: I18nParams) => string,
+): string | undefined {
+  if (free) return undefined;
+  if (permissionMode === 'manual') return t('composer.planGateFreeHint');
+  return undefined;
 }
 
 /**
@@ -321,19 +345,28 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
                 </span>
               </button>
               {on && mode.id === 'plan' && showGate ? (
+                <>
                 <button
                   type="button"
                   role="switch"
                   aria-checked={controls.planGateFree}
                   data-menu-row
                   data-mode-switch="planGate"
-                  title={t('composer.planGateFreeHint')}
                   onClick={() => { controls.onChangePlanGateFree?.(!controls.planGateFree); }}
                   className={`${MENU_ROW_CLASS} mt-0.5 pl-8`}
                 >
                   <span className="min-w-0 flex-1">{t('composer.planGateFree')}</span>
                   <Switch on={controls.planGateFree === true} />
                 </button>
+                {(() => {
+                  const effective = planGateEffectiveText(controls.planGateFree === true, controls.permissionMode, t);
+                  return effective !== undefined ? (
+                    <p data-plan-gate-effective className="pr-3 pb-1 pl-8 text-[12px] leading-snug text-ink-faint">
+                      {effective}
+                    </p>
+                  ) : null;
+                })()}
+                </>
               ) : null}
               {on && mode.id === 'goal' && showObjective ? (
                 <div className="pt-1.5 pr-3 pb-2 pl-8" data-goal-open>

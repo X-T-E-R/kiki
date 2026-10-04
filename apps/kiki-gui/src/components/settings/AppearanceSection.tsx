@@ -31,6 +31,7 @@ import { FontRoleField } from './FontRoleField';
 import { firstFamily } from '../../lib/fontDetect';
 import { SettingsSegmented } from './SettingsPrimitives';
 import { SkinFiles, SkinPicker, useSkinPrefs } from './SkinSettings';
+import { SpacePrefOrigin } from './spaces/SpacePrefOrigin';
 
 const DENSITY_CHOICES = [
   { value: 'compact' as const, rem: 0.22 },
@@ -177,6 +178,7 @@ export function AppearanceSection() {
       <SectionCard id="st-card-appearance" title={t('st.appearance.colorTitle')}>
         <div className="space-y-2">
           <SettingField label={t('st.appearance.theme')} labelId="theme-label">
+            <SpacePrefOrigin item="theme" label={t('st.appearance.theme')} />
             <SettingsSegmented<ThemePreference>
               ariaLabelledBy="theme-label"
               dataAttr="data-theme-choice"
@@ -192,9 +194,11 @@ export function AppearanceSection() {
               <span id="skin-label" className="text-[13px] text-ink">{t('st.skin.title')}</span>
               <p className="text-[12px] leading-4 text-ink-faint">{t('st.skin.hint')}</p>
             </div>
+            <SpacePrefOrigin item="skin" label={t('st.skin.title')} />
             <SkinPicker theme={theme} labelledBy="skin-label" />
           </div>
           <SettingField label={t('st.skin.accent')} htmlFor="skin-accent" help={t('st.skin.accentHint')}>
+            <SpacePrefOrigin item="tweaks" label={t('st.skin.accent')} />
             <input
               id="skin-accent"
               type="color"
@@ -214,6 +218,7 @@ export function AppearanceSection() {
       <SectionCard id="st-card-appearance-background" title={t('st.bg.title')} scope="app">
         <div className="space-y-2">
           <Hint>{t('st.bg.hint')}</Hint>
+          <SpacePrefOrigin item="background" label={t('st.bg.title')} />
           <BackgroundSettings theme={theme} />
         </div>
       </SectionCard>
@@ -230,10 +235,12 @@ export function AppearanceSection() {
             onPreset={(value) => { setTweak('fontSans', value === '' ? undefined : value); }}
             onCustom={(stack) => { setTweak('fontSans', stack); }}
           />
+          {/* The mark belongs to this row, not to the interface font above it. */}
           <FontRoleField
             role="prose"
             label={t('st.appearance.prose')}
             help={t('st.appearance.proseHint')}
+            note={<SpacePrefOrigin item="proseFont" label={t('st.appearance.prose')} />}
             presets={[
               { value: 'serif', label: t('st.appearance.prose.serif') },
               { value: 'sans', label: t('st.appearance.prose.sans') },

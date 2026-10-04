@@ -3,7 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { NamedAgentProfile } from '@kiki/protocol';
+import { updateNamedAgentProfileRequestSchema, type NamedAgentProfile } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { UnifiedAgentManager } from './UnifiedAgentManager';
 
@@ -29,12 +29,12 @@ const main: NamedAgentProfile = {
   name: 'agent', main: true, source: 'user', source_file: '/fixture/agent/SYSTEM.md',
   workspace_id: 'ws-one', description: 'Default', prompt: 'Old instructions', disabled: false, routes: [],
   pinned_model_alias: 'fixture/opus', thinking_effort: 'high',
-  subagents: ['reviewer', { name: 'explore', model_alias: 'fixture/lite', thinking_effort: 'max' }],
+  allowed_subagents: ['reviewer', { name: 'explore', model_alias: 'fixture/lite', thinking_effort: 'max' }],
 };
 const sub: NamedAgentProfile = {
   name: 'reviewer', main: false, source: 'user', source_file: '/fixture/reviewer/SYSTEM.md',
   workspace_id: 'ws-one', description: 'Review work', prompt: 'Check changes', disabled: false, routes: [],
-  pinned_model_alias: 'typo/model', subagents: [],
+  pinned_model_alias: 'typo/model', allowed_subagents: [],
   model_profiles: [{ alias: 'fixture/lite', when: 'short diffs', thinking_effort: 'high', request_params: { temperature: 0 } }],
 };
 const explore: NamedAgentProfile = {
@@ -113,7 +113,8 @@ describe('agents team view', () => {
     expect(lead.querySelector('[data-team-dispatch]')?.textContent).toContain('reviewer, explore');
     expect(lead.querySelector('[data-team-effort]')?.textContent).toContain('High');
     const reviewer = container.querySelector('[data-team-row="reviewer"]')!;
-    expect(reviewer.querySelector('[data-team-dispatch]')?.textContent).toContain('None');
+    // An empty preset list says what it is: no preset selectable, path still works.
+    expect(reviewer.querySelector('[data-team-dispatch]')?.textContent).toContain('No preset selectable here.');
     expect(reviewer.querySelector('[data-team-warning]')).not.toBeNull();
     expect(container.querySelector('[data-team-warnings]')?.textContent).toContain('1 setting needs attention');
     // A built-in is read-only: its cells are text, not pickers.
@@ -153,7 +154,7 @@ describe('agents team view', () => {
   });
 
   it('shows each main agent with its roster, lease pins winning over the member pin', async () => {
-    const second: NamedAgentProfile = { ...sub, name: 'lead-two', main: true, source_file: '/fixture/lead-two/SYSTEM.md', subagents: ['agent'] };
+    const second: NamedAgentProfile = { ...sub, name: 'lead-two', main: true, source_file: '/fixture/lead-two/SYSTEM.md', allowed_subagents: ['agent'] };
     client.listNamedAgentProfiles.mockResolvedValue({ items: [main, sub, explore, second], complete: true });
     await render();
     await act(async () => container.querySelector<HTMLButtonElement>('[data-team-layout="teams"]')!.click());
@@ -213,7 +214,7 @@ describe('profile editor sheet', () => {
     await choose(field.querySelector<HTMLElement>('#lease-effort-explore')!, 'High');
     await save();
     expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({
-      subagents: ['reviewer', { name: 'explore', model_alias: 'fixture/lite', thinking_effort: 'high' }],
+      allowed_subagents: ['reviewer', { name: 'explore', model_alias: 'fixture/lite', thinking_effort: 'high' }],
     }));
   });
 
@@ -228,7 +229,7 @@ describe('profile editor sheet', () => {
     expect([...field.querySelectorAll('[data-subagent-row]')].map((row) => row.getAttribute('data-subagent-row'))).toEqual(['explore', 'reviewer']);
     expect(field.querySelector<HTMLButtonElement>('[data-subagent-up="explore"]')!.disabled).toBe(true);
     await save();
-    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ subagents: ['explore', 'reviewer'] }));
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ allowed_subagents: ['explore', 'reviewer'] }));
   });
 
   it('lists same-name files the profile shadows', async () => {
@@ -256,12 +257,17 @@ describe('profile editor sheet', () => {
     expect(client.updateNamedAgentProfile).toHaveBeenLastCalledWith('agent', expect.objectContaining({ spawn_constraints: null }));
   });
 
-  it('switches a leaf to an explicit list and blocks saving an empty one', async () => {
+  it('blocks saving a preset list that repeats a name, and accepts an explicitly empty one', async () => {
     await render();
     await open('reviewer');
-    await act(async () => sheet().querySelector<HTMLButtonElement>('[data-subagents-mode="list"]')!.click());
-    expect(buttonIn(sheet(), 'Save').disabled).toBe(true);
-    expect(sheet().textContent).toContain('The subagent list is empty or repeats a name.');
+    // An empty list is a real state: no preset is selectable here, while a
+    // preset file given by path still works, so it is not a save blocker.
+    const field = sheet().querySelector<HTMLElement>('[data-dispatch-allowed]')!;
+    expect(field.getAttribute('data-declared')).toBe('true');
+    expect(field.querySelector('[data-dispatch-allowed-empty]')?.textContent).toContain('A definition supplied by path is unaffected by this list');
+    // Nothing is edited, so the footer is not a save blocker: the old
+    // "empty list" rejection is gone with the removed three-way control.
+    expect(sheet().querySelector('[data-settings-draft]')?.getAttribute('data-dirty')).not.toBe('true');
   });
 
   it('edits model candidates with their condition and effort', async () => {
@@ -597,4 +603,115 @@ it('keeps failed previews unsavable and shows an empty effective set after retry
   expect(sheet().querySelector('[data-menu-empty]')?.textContent).toContain('No model can bind');
   expect(sheet().querySelector('[data-menu-declared]')?.textContent).toContain('fixture/opus');
   expect(buttonIn(sheet(), 'Save').disabled).toBe(false);
+});
+
+describe('profile prompt editing', () => {
+  afterEach(() => {
+    for (const [, patch] of client.updateNamedAgentProfile.mock.calls) {
+      expect(() => updateNamedAgentProfileRequestSchema.parse(patch)).not.toThrow();
+    }
+  });
+
+  it.each([false, true])('explicit sharing can be cleared directly after common content is absent (empty on load: %s)', async (emptyOnLoad) => {
+    const profile: NamedAgentProfile = { ...sub, prompt_overrides: {
+      main: 'same', independent: 'off', fields: emptyOnLoad ? undefined : { 'system.shared': 'Common instructions' },
+    } };
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile], complete: true });
+    client.updateNamedAgentProfile.mockImplementation(async (_name, patch) => ({ ...profile, ...patch }));
+    await render(); await open('reviewer');
+    const fields = sheet().querySelector('[data-profile-section="prompt-overrides"]')!;
+    if (!emptyOnLoad) {
+      await act(async () => fields.querySelector<HTMLButtonElement>('[data-prompt-common] [data-identity-field-row] button')!.click());
+    }
+    await typeIn(sheet().querySelector<HTMLTextAreaElement>('#profile-description')!, 'Updated description');
+    expect(buttonIn(sheet(), 'Save').disabled).toBe(true);
+    const same = fields.querySelector<HTMLButtonElement>('[data-prompt-branch-main="same"]')!;
+    expect(same.getAttribute('aria-pressed')).toBe('true');
+    await act(async () => same.click());
+    expect(buttonIn(sheet(), 'Save').disabled).toBe(true);
+    expect(client.updateNamedAgentProfile).not.toHaveBeenCalled();
+    const clear = fields.querySelector<HTMLButtonElement>('[data-prompt-clear-explicit="main"]');
+    expect(clear, 'a direct recovery action for an explicit same declaration').not.toBeNull();
+    await act(async () => clear!.click());
+    expect(buttonIn(sheet(), 'Save').disabled).toBe(false);
+    await save();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('reviewer', expect.objectContaining({
+      description: 'Updated description', prompt_overrides: { independent: 'off' },
+    }));
+  });
+
+  it('preserves valid explicit sharing when saving an unrelated profile field', async () => {
+    const profile: NamedAgentProfile = { ...sub, prompt_overrides: { main: 'same', fields: { 'system.shared': 'Keep this content' } } };
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile], complete: true });
+    client.updateNamedAgentProfile.mockImplementation(async (_name, patch) => ({ ...profile, ...patch }));
+    await render(); await open('reviewer');
+    await typeIn(sheet().querySelector<HTMLTextAreaElement>('#profile-description')!, 'Updated description');
+    expect(buttonIn(sheet(), 'Save').disabled).toBe(false);
+    await save();
+    expect(client.updateNamedAgentProfile.mock.calls[0]![1].prompt_overrides).toBeUndefined();
+    expect(sheet().querySelector<HTMLTextAreaElement>('[data-profile-section="prompt-overrides"] [data-identity-field-row] textarea')!.value).toBe('Keep this content');
+  });
+
+  it('clears model-specific body and mode together when no body is selected', async () => {
+    const profile: NamedAgentProfile = { ...sub,
+      model_profiles: [{ alias: 'fixture/lite', prompt_mode: 'append', prompt: 'Common instructions' }] };
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile], complete: true });
+    client.updateNamedAgentProfile.mockResolvedValue({ ...profile, model_profiles: [{ alias: 'fixture/lite' }] });
+    await render(); await open('reviewer');
+    const content = sheet().querySelector('[data-model-profile-prompts] [data-prompt-common] [data-model-prompt-content]')!;
+    await act(async () => content.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!.click());
+    await act(async () => [...document.body.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find((option) => option.textContent === 'No model-specific instructions')!.click());
+    expect(content.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('');
+    await save();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('reviewer', expect.objectContaining({ model_profiles: [{
+      alias: 'fixture/lite', when: null, thinking_effort: null,
+      prompt_mode: null, prompt: null, main: null, independent: null,
+    }] }));
+  });
+
+  it('clears model main differences with null while leaving fields and menu untouched', async () => {
+    const profile: NamedAgentProfile = { ...sub, restrict_models_to_menu: true,
+      model_profiles: [{ alias: 'fixture/lite', prompt_mode: 'append', prompt: 'Common instructions',
+        main: { prompt_mode: 'append', prompt: 'Main instructions' },
+        prompt_overrides: { main: 'off', fields: { 'tool.read.guidance': 'Read complete context' } } }] };
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile], complete: true });
+    client.updateNamedAgentProfile.mockResolvedValue(profile);
+    await render(); await open('reviewer');
+    await act(async () => sheet().querySelector<HTMLButtonElement>('[data-model-profile-prompts] [data-prompt-branch-main="same"]')!.click());
+    await save();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('reviewer', expect.objectContaining({ model_profiles: [{
+      alias: 'fixture/lite', when: null, thinking_effort: null,
+      prompt_mode: 'append', prompt: 'Common instructions', main: null, independent: null,
+    }] }));
+    expect(client.klient.rest.agents.previewModelMenu).not.toHaveBeenCalled();
+  });
+
+  it('edits profile fields separately from model body and round trips from the save echo', async () => {
+    const profile: NamedAgentProfile = { ...sub, prompt_overrides: { fields: { 'system.shared': 'Common' }, main: 'off' } };
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile], complete: true });
+    client.updateNamedAgentProfile.mockImplementation(async (_name, patch) => ({ ...profile, prompt_overrides: patch.prompt_overrides }));
+    await render(); await open('reviewer');
+    const field = sheet().querySelector<HTMLTextAreaElement>('[data-profile-section="prompt-overrides"] [data-prompt-common] [data-identity-field-row] textarea')!;
+    await typeIn(field, 'Updated common');
+    await save();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('reviewer', expect.objectContaining({
+      prompt_overrides: { fields: { 'system.shared': 'Updated common' }, main: 'off' },
+    }));
+    expect(client.updateNamedAgentProfile.mock.calls[0]![1].model_profiles).toBeUndefined();
+    expect(sheet().querySelector<HTMLTextAreaElement>('[data-profile-section="prompt-overrides"] [data-identity-field-row] textarea')!.value).toBe('Updated common');
+  });
+
+  it('sets lease replace explicitly without changing the child model table', async () => {
+    const leaseModels = [{ alias: 'fixture/lite', prompt_mode: 'append' as const, prompt: 'Caller instructions' }];
+    const profile: NamedAgentProfile = { ...main, allowed_subagents: [{ name: 'explore', model_profiles: leaseModels }] };
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile, explore], complete: true });
+    client.updateNamedAgentProfile.mockResolvedValue(profile);
+    await render(); await open('agent');
+    await act(async () => buttonIn(sheet().querySelector('[data-lease-model-prompts]')!, 'Replace').click());
+    await save();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({
+      allowed_subagents: [{ name: 'explore', model_alias: null, thinking_effort: null, model_prompts: 'replace', model_profiles: leaseModels }],
+    }));
+  });
 });

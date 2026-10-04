@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { getNativePackageRoot, getSeaAssetSource } from './native-assets';
 import { loadNativePackage } from './native-require';
@@ -13,7 +14,7 @@ interface ModuleWithLoad {
 
 const nodeRequire = createRequire(import.meta.url);
 let installed = false;
-let loadingKeyring = false;
+const loadingPackages = new Set<string>();
 
 // pi-tui loads its platform-specific native helpers via an absolute-path
 // require() computed from import.meta.url / process.execPath
@@ -39,14 +40,23 @@ export function installNativeModuleHook(): void {
     parent: unknown,
     isMain: boolean,
   ): unknown {
-    if (request === '@napi-rs/keyring' && !loadingKeyring && getSeaAssetSource() !== null) {
-      loadingKeyring = true;
+    if (
+      (request === '@napi-rs/keyring' || request === 'node-pty' || request === '@kiki/auth-native') &&
+      !loadingPackages.has(request) && getSeaAssetSource() !== null
+    ) {
+      loadingPackages.add(request);
       try {
-        const keyring = loadNativePackage('@napi-rs/keyring');
-        if (keyring === null) throw new Error('Native keyring assets are unavailable');
-        return keyring;
+        const pkg = loadNativePackage(request);
+        if (pkg === null) throw new Error(`Native package assets are unavailable: ${request}`);
+        return pkg;
       } finally {
-        loadingKeyring = false;
+        loadingPackages.delete(request);
+      }
+    }
+    if (request === '@kiki/auth-native' && getSeaAssetSource() === null) {
+      const packagedRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'native', 'auth-native');
+      if (existsSync(join(packagedRoot, 'package.json'))) {
+        return originalLoad.call(this, packagedRoot, parent, isMain);
       }
     }
     if (

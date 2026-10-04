@@ -1,9 +1,12 @@
+import type { ConnectionIdentity } from '@kiki/protocol';
 import { ensureServer, findReachableServer } from '#/kiki/serve';
 import { resolveKikiHome } from '#/kiki/home';
 
 export interface DaemonConnection {
   readonly url: string;
   readonly token: string;
+  readonly serverId?: string;
+  readonly identity?: ConnectionIdentity;
 }
 
 export interface EnsureDaemonOptions {

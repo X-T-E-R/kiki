@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { getKeybindings, KeybindingsManager, setKeybindings, TUI_KEYBINDINGS, visibleWidth } from '@kiki/pi-tui';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SessionController } from '@kiki/session-core/session/sessionController';
@@ -183,6 +184,7 @@ function driver(
   };
   const pluginsFacade = {
     list: vi.fn(async () => []),
+    preview: vi.fn(async () => ({ id: 'fixture-source', fingerprint: 'f'.repeat(64), contributions: ['session-source:fixture'], consentRequired: true })),
     install: vi.fn(),
     setEnabled: vi.fn(),
     remove: vi.fn(),
@@ -304,6 +306,83 @@ afterEach(async () => {
 });
 
 describe('DaemonTUI commands', () => {
+  it.each([80, 60, 24])('opens readable production help at %s columns and restores the draft', async (width) => {
+    const { tui, internal, controllerState } = driver();
+    const focus = vi.spyOn(tui.state.ui, 'setFocus');
+    vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+    vi.spyOn(tui.state.terminal, 'rows', 'get').mockReturnValue(24);
+    tui.state.editor.setText('unfinished draft\n第二行');
+    await internal.handleSlash('/help');
+    const panel = focus.mock.lastCall?.[0];
+    if (panel === undefined || panel === null) throw new Error('Help was not focused');
+    expect(panel).not.toBe(tui.state.editor);
+    const frames: string[] = [];
+    let previous = '';
+    for (let i = 0; i < 600; i++) {
+      const lines = tui.state.editorContainer.render(width);
+      expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+      const frame = lines.join('\n').replaceAll(/\u001B\[[0-?]*[ -/]*[@-~]/g, '');
+      if (frame === previous) break;
+      previous = frame;
+      frames.push(frame.replaceAll(/\s+/g, ' '));
+      panel.handleInput?.('\u001B[B');
+    }
+    for (const text of [
+      '/tasks [stop|output] [task-id]', 'Browse background tasks',
+      '/help (/h, /?)', 'Disabled in daemon TUI:',
+      'Export the session as a ZIP archive; use kiki export', 'Local docs:',
+      'type / in the input box', 'Ctrl--',
+      'Prompt steering shortcut is disabled in daemon TUI',
+      'Backgrounding the active turn is disabled in daemon TUI',
+    ]) expect(frames.some((frame) => frame.includes(text)), text).toBe(true);
+    controllerState.busy = true;
+    (tui as unknown as { renderActivityState(view: unknown): void }).renderActivityState({
+      ...controllerState, tasks: [],
+    });
+    expect(focus.mock.lastCall?.[0]).toBe(panel);
+    panel.handleInput?.('\u001B');
+    expect(focus.mock.lastCall?.[0]).toBe(tui.state.editor);
+    expect(tui.state.editor.getText()).toBe('unfinished draft\n第二行');
+    expect(internal.client.createSession).not.toHaveBeenCalled();
+  });
+
+  it.each(['a', 'b'])('shows connection identity and cwd without a query or local-home substitution (%s)', async (scope) => {
+    const homeId = scope === 'a' ? '11111111-1111-4111-8111-111111111111' : '22222222-2222-4222-8222-222222222222';
+    const connection = {
+      url: `http://example-${scope}.test:57580`, token: 'private-token',
+      serverId: `daemon-${scope}`,
+      identity: { homeId, hostId: `host-${scope}`, protocol: 1 as const },
+    };
+    const tui = new DaemonTUI(connection, {
+      cliOptions: { continue: false, yolo: false, auto: false, plan: false, agentFiles: [], skillsDirs: [] },
+      tuiConfig: DEFAULT_TUI_CONFIG, version: '1.0.0', workDir: `C:/workspace-${scope}`,
+    });
+    created.push(tui);
+    vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+    vi.stubEnv('KIKI_HOME', 'C:/client-only-home');
+    const internal = tui as unknown as { handleSlash(text: string): Promise<void> };
+    await internal.handleSlash('/status');
+    const output = tui.state.activityContainer.render(120).join('\n');
+    expect(output).toContain(`Working directory: C:/workspace-${scope}`);
+    expect(output).toContain(`Daemon: ${connection.url}`);
+    expect(output).toContain(`Daemon ID: daemon-${scope}`);
+    expect(output).toContain(`Home ID: ${homeId}`);
+    expect(output).toContain(`Host ID: host-${scope}`);
+    expect(output).toContain('Session: not started');
+    expect(output).not.toContain('client-only-home');
+    expect(output).not.toContain(connection.token);
+  });
+
+  it('marks missing connection identity unavailable instead of guessing from client home', async () => {
+    const { tui, internal } = driver();
+    vi.stubEnv('KIKI_HOME', 'C:/client-only-home');
+    await internal.handleSlash('/status');
+    expect(internal.showStatus).toHaveBeenCalledWith(expect.stringContaining('Home ID: unavailable from this connection'));
+    expect(internal.showStatus).toHaveBeenCalledWith(expect.stringContaining('Host ID: unavailable from this connection'));
+    expect(internal.showStatus.mock.calls[0]?.[0]).not.toContain('client-only-home');
+    expect(internal.client.createSession).not.toHaveBeenCalled();
+  });
+
   it('labels loaded-view exports and omits tool, media, and other blocks', () => {
     const markdown = buildLoadedTranscriptMarkdown({
       sessionId: 'session-1',
@@ -349,6 +428,29 @@ describe('DaemonTUI commands', () => {
     expect(controller.sendPrompt).toHaveBeenCalledWith(
       expect.objectContaining({ text: 'hello', planMode: true }),
     );
+  });
+
+  it('accepts review directly and offers it in the mounted permission selector', async () => {
+    const { tui, internal } = driver();
+    const focus = vi.spyOn(tui.state.ui, 'setFocus');
+    vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+    await internal.handleSlash('/permission review');
+    expect(internal.client.setPermission).toHaveBeenCalledWith('session-1', 'review');
+    expect(tui.state.appState.permissionMode).toBe('review');
+    await internal.handleSlash('/permission manual');
+    tui.state.editor.setText('unfinished draft');
+    await internal.handleSlash('/permission');
+    const picker = focus.mock.lastCall?.[0];
+    if (picker === undefined || picker === null) throw new Error('Permission picker was not focused');
+    const rendered = tui.state.editorContainer.render(80).join('\n');
+    expect(rendered).toContain('Approve for me');
+    picker.handleInput?.('\u001B[B');
+    picker.handleInput?.('\u001B[B');
+    picker.handleInput?.('\r');
+    await vi.waitFor(() => { expect(tui.state.appState.permissionMode).toBe('review'); });
+    expect(internal.client.setPermission).toHaveBeenLastCalledWith('session-1', 'review');
+    expect(focus.mock.lastCall?.[0]).toBe(tui.state.editor);
+    expect(tui.state.editor.getText()).toBe('unfinished draft');
   });
 
   it('validates agent profiles and applies permission aliases through REST', async () => {
@@ -402,6 +504,28 @@ describe('DaemonTUI commands', () => {
     });
   });
 
+  it.each([
+    '/plugins install --trust C:\\plugins\\local',
+    '/plugins enable fixture-source',
+    '/plugins disable fixture-source',
+    '/plugins remove fixture-source',
+  ])('refreshes the live session without a global plugin reload after %s', async (command) => {
+    const { internal, controller, pluginsFacade, configFacade } = driver();
+    await internal.handleSlash(command);
+    expect(pluginsFacade.reload).not.toHaveBeenCalled();
+    expect(configFacade.reload).not.toHaveBeenCalled();
+    expect(controller.resync).toHaveBeenCalledOnce();
+    expect(internal.client.listAgentProfiles).toHaveBeenCalled();
+    expect(internal.client.listSkills).toHaveBeenCalledWith('session-1');
+  });
+
+  it('performs exactly one explicit global plugin reload', async () => {
+    const { internal, controller, pluginsFacade } = driver();
+    await internal.handleSlash('/plugins reload');
+    expect(pluginsFacade.reload).toHaveBeenCalledOnce();
+    expect(controller.resync).toHaveBeenCalledOnce();
+  });
+
   it('routes daemon-backed session and management commands through real facades', async () => {
     const {
       internal,
@@ -421,7 +545,9 @@ describe('DaemonTUI commands', () => {
     await internal.handleSlash('/tasks stop task-1');
     await internal.handleSlash('/fork Review copy');
     await internal.handleSlash(`/plugins marketplace ${marketplacePath}`);
-    await internal.handleSlash('/plugins install C:\\plugins\\local');
+    await expect(internal.handleSlash('/plugins install C:\\plugins\\local')).rejects.toThrow('consent once');
+    expect(pluginsFacade.install).not.toHaveBeenCalled();
+    await internal.handleSlash('/plugins install --trust C:\\plugins\\local');
     await internal.handleSlash('/provider add example {"type":"openai_legacy","baseUrl":"https://example.test","auth":{"method":"oauth"}}');
     await internal.handleSlash('/reload');
     await internal.handleSlash('/login example');
@@ -437,7 +563,8 @@ describe('DaemonTUI commands', () => {
     expect(openSession).not.toHaveBeenCalled();
     expect(internal.controller).toBe(controller);
     expect(internal.showStatus).toHaveBeenCalledWith('Session forked: fork-1');
-    expect(pluginsFacade.install).toHaveBeenCalledWith('C:\\plugins\\local');
+    expect(pluginsFacade.install).toHaveBeenCalledWith({ source: 'C:\\plugins\\local', fingerprint: 'f'.repeat(64), consent: true });
+    expect(pluginsFacade.preview).toHaveBeenCalledWith({ source: 'C:\\plugins\\local' });
     expect(providerFacade.addProvider).toHaveBeenCalledWith(
       'example',
       expect.objectContaining({ baseUrl: 'https://example.test' }),
@@ -1191,30 +1318,79 @@ describe('DaemonTUI commands', () => {
     expect(tui.state.footer.render(120).join('\n')).toContain('task');
   });
 
-  it('binds image paste, todo expansion, undo, and built-in history callbacks', () => {
+  it('binds image paste, todo expansion, and history without hijacking editor undo', () => {
     const { tui } = driver();
 
     expect(tui.state.editor.onPasteImage).toBeTypeOf('function');
     expect(tui.state.editor.onToggleTodoExpand).toBeTypeOf('function');
-    expect(tui.state.editor.onUndo).toBeTypeOf('function');
+    expect(tui.state.editor.onUndo).toBeUndefined();
     expect(tui.state.editor.onRecall).toBeTypeOf('function');
     expect(tui.state.editor.onTextPaste).toBeTypeOf('function');
   });
 
+  it.each([false, true])('restores a Ctrl-C-cleared draft with native undo (busy=%s), leaving /undo explicit', async (busy) => {
+    const { tui, internal, controller, controllerState } = driver();
+    controllerState.busy = busy;
+    const editor = tui.state.editor;
+    const draft = 'Keep my unfinished draft\nincluding this line';
+    editor.setText(draft);
+
+    editor.handleInput('\u0003');
+    expect(editor.getText()).toBe('');
+    expect(controller.abortActive).not.toHaveBeenCalled();
+    editor.handleInput('\u001F');
+    expect(editor.getText()).toBe(draft);
+    expect(internal.client.undoSession).not.toHaveBeenCalled();
+    expect(controller.resync).not.toHaveBeenCalled();
+
+    await internal.handleSlash('/undo');
+    expect(internal.client.undoSession).toHaveBeenCalledExactlyOnceWith('session-1');
+    expect(controller.resync).toHaveBeenCalledExactlyOnceWith({ rewrite: true });
+    expect(editor.getText()).toBe(draft);
+  });
+
+  it('preserves native custom undo and other editor bindings without a session fallback', () => {
+    const original = getKeybindings();
+    setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS, {
+      'tui.editor.undo': 'ctrl+z',
+      'tui.editor.deleteToLineStart': 'ctrl+-',
+    }));
+    try {
+      const { tui, internal } = driver();
+      const editor = tui.state.editor;
+      editor.setText('Custom draft');
+      editor.setText('');
+      editor.handleInput('\u001A');
+      expect(editor.getText()).toBe('Custom draft');
+      editor.handleInput('\u001F');
+      expect(editor.getText()).toBe('');
+      editor.handleInput('\u001A');
+      expect(editor.getText()).toBe('Custom draft');
+      expect(internal.client.undoSession).not.toHaveBeenCalled();
+    } finally {
+      setKeybindings(original);
+    }
+  });
+
   it('normalizes aliases, runs experiments, and rejects unknown slash input', async () => {
     const { tui, internal, controller, configFacade } = driver();
+    const focus = vi.spyOn(tui.state.ui, 'setFocus');
+    vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
 
     await internal.handleSlash('/thinking high');
     await internal.handleSlash('/h');
+    const help = focus.mock.lastCall?.[0];
+    if (help === undefined || help === null) throw new Error('Help was not focused');
+    expect(help).not.toBe(tui.state.editor);
+    expect(tui.state.editorContainer.render(80).join('\n')).toContain('Supported:');
+    help.handleInput?.('\u001B');
+    expect(focus.mock.lastCall?.[0]).toBe(tui.state.editor);
     await internal.handleSlash('/config');
     await internal.handleSlash('/experimental');
     await internal.handleSlash('/custom value');
 
     expect(internal.client.setThinking).toHaveBeenCalledWith('session-1', 'high');
     expect(tui.state.appState.thinkingEffort).toBe('high');
-    expect(internal.showStatus).toHaveBeenCalledWith(
-      expect.stringContaining('Supported:'),
-    );
     expect(configFacade.getAll).toHaveBeenCalledOnce();
     expect(internal.showStatus).toHaveBeenCalledWith(
       expect.stringContaining('example-flag'),

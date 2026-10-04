@@ -49,7 +49,7 @@ export function registerDoctorCommand(
     .description('Show daemon status or validate agent profiles.')
     .option('--home <dir>', 'Kiki home directory.')
     .option('--json', 'Print daemon report as JSON.')
-    .option('--agents', 'Validate agent profiles and configuration.')
+    .option('--agents', 'Validate agent profiles and configuration. Same as `kiki doctor agents`.')
     .action(async (options: { readonly home?: string; readonly json?: boolean; readonly agents?: boolean }) => {
       if (options.agents === true) {
         await runDoctorAgents(options.home, deps);

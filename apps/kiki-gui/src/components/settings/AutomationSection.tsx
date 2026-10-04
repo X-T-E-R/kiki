@@ -3,9 +3,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
 import {
-  HOOK_EVENTS,
-  type SettingsHook,
-  parseHooksJson,
   setToolPolicy,
   toolPolicyDraftFromConfig,
   toolPolicyPatch,
@@ -15,10 +12,10 @@ import {
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
-import { INPUT, SECONDARY_BUTTON, DANGER_GHOST_BUTTON } from '../ui';
+import { INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails, SettingField } from './fields';
-import { FORM_LABEL, SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
+import { SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
 /**
@@ -141,125 +138,5 @@ export function ToolPolicyCard() {
   );
 }
 
-function HooksCard() {
-  const { client } = useConnection();
-  const { t, locale } = useI18n();
-  const queryClient = useQueryClient();
-  const [draft, setDraft] = useState('[]');
-  const [rules, setRules] = useState<SettingsHook[]>([]);
-  const [advanced, setAdvanced] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
-  const [justSaved, pingSaved] = useSavedTick();
-  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-
-  useEffect(() => {
-    if (configQuery.data !== undefined && !dirty) {
-      const json = JSON.stringify(configQuery.data.hooks ?? [], null, 2);
-      setDraft(json);
-      try { setRules(parseHooksJson(json)); } catch { setAdvanced(true); }
-    }
-  }, [configQuery.data, dirty]);
-
-  const edit = (next: SettingsHook[]) => {
-    setRules(next);
-    setDraft(JSON.stringify(next, null, 2));
-    setDirty(true);
-    setFeedback(null);
-  };
-  const update = (index: number, patch: Partial<SettingsHook>) => edit(rules.map((rule, i) => i === index ? { ...rule, ...patch } : rule));
-  const switchEditor = () => {
-    if (advanced) {
-      try { setRules(parseHooksJson(draft)); } catch (error) {
-        setFeedback({ tone: 'error', text: errorText(locale, error) });
-        return;
-      }
-    }
-    setAdvanced(!advanced);
-    setFeedback(null);
-  };
-  const save = async () => {
-    let hooks: SettingsHook[];
-    try {
-      hooks = parseHooksJson(draft);
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-      return;
-    }
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.patchConfig({ hooks });
-      queryClient.setQueryData(['config'], echoed);
-      setDraft(JSON.stringify(echoed.hooks ?? [], null, 2));
-      setDirty(false);
-      pingSaved();
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <SectionCard id="st-card-hooks" title={t('st.hooks.title')}>
-      <div className="space-y-3">
-        <Hint>{t('st.hooks.hint')}</Hint>
-        {configQuery.isLoading ? <Hint>{t('st.runtime.loading')}</Hint> : null}
-        <fieldset disabled={saving || configQuery.data === undefined} className="min-w-0 space-y-3">
-          {advanced ? (
-            <textarea className={`${INPUT} min-h-48 font-mono`} value={draft} onChange={(event) => { setDraft(event.target.value); setDirty(true); setFeedback(null); }} aria-label={t('st.hooks.aria')} />
-          ) : (
-            <>
-              {rules.length === 0 ? <Hint>{t('st.hooks.empty')}</Hint> : null}
-              {rules.map((rule, index) => (
-                <fieldset key={index} className="min-w-0 space-y-2 border-b border-hairline pb-4">
-                  <legend className="text-[13px] font-medium text-ink">{t('st.hooks.rule', { rule: index + 1 })}</legend>
-                  <div className="grid gap-1">
-                    <span className={FORM_LABEL}>{t('st.hooks.event')}</span>
-                    <SettingsSelect<SettingsHook['event']>
-                      variant="form"
-                      dataAttr="data-hook-event"
-                      ariaLabel={t('st.hooks.event')}
-                      value={rule.event}
-                      onChange={(next) => update(index, { event: next })}
-                      choices={HOOK_EVENTS.map((event) => ({ value: event, label: t(`st.hooks.event.${event}`) }))}
-                    />
-                  </div>
-                  <label className="grid gap-1 text-[12px] text-ink">{t('st.hooks.command')}
-                    <textarea className={`${INPUT} min-h-16 font-mono`} value={rule.command} onChange={(event) => update(index, { command: event.target.value })} />
-                  </label>
-                  <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_10rem]">
-                    <label className="grid gap-1 text-[12px] text-ink">{t('st.hooks.matcher')}
-                      <input className={INPUT} value={rule.matcher ?? ''} onChange={(event) => update(index, { matcher: event.target.value || undefined })} />
-                    </label>
-                    <label className="grid gap-1 text-[12px] text-ink">{t('st.hooks.timeout')}
-                      <input type="number" min={1} max={600} step={1} placeholder="30" className={INPUT} value={rule.timeout ?? ''} onChange={(event) => update(index, { timeout: event.target.value === '' ? undefined : Number(event.target.value) })} />
-                    </label>
-                  </div>
-                  <Hint>{t('st.hooks.matchHint')}</Hint>
-                  <button type="button" className={DANGER_GHOST_BUTTON} aria-label={t('st.hooks.removeRule', { rule: index + 1 })} onClick={() => edit(rules.filter((_, i) => i !== index))}>{t('st.hooks.remove')}</button>
-                </fieldset>
-              ))}
-            </>
-          )}
-          {/* The editor switch shares the Add rule row, so it reads as a second way to edit the same list. */}
-          <div className="flex flex-wrap items-center gap-3">
-            {!advanced ? <button type="button" className={SECONDARY_BUTTON} onClick={() => edit([...rules, { event: 'PreToolUse', command: '' }])}>{t('st.hooks.add')}</button> : null}
-            <button type="button" data-hooks-editor-switch className="ml-auto inline-flex min-h-7 items-center text-[12px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11" onClick={switchEditor}>{t(advanced ? 'st.hooks.form' : 'st.hooks.advanced')}</button>
-          </div>
-          <SettingsDraftFooter saved={justSaved} id="hooks" dirty={dirty} saving={saving} saveLabel={t('st.hooks.save')} onSave={() => void save()}
-            onDiscard={() => { const json = JSON.stringify(configQuery.data?.hooks ?? [], null, 2); setDraft(json); try { setRules(parseHooksJson(json)); } catch { setAdvanced(true); } setDirty(false); setFeedback(null); }} />
-        </fieldset>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-        <FeedbackLine feedback={feedback} />
-      </div>
-    </SectionCard>
-  );
-}
-
-/** Hooks leaf: lifecycle commands the server runs on its own. */
-export function HooksSection() {
-  return <HooksCard />;
-}
+// The hooks editor moved to ./hooks/HooksSection (S4-B dual-shape editor);
+// this file keeps the tool-policy card for the Permissions leaf.

@@ -43,12 +43,15 @@ async function ensureNotificationPermission(): Promise<boolean> {
 }
 
 /** Native notification clicks forwarded by the desktop shell with `{ route }`. */
-function onNotificationClick(callback: (route: string) => void): () => void {
+function onNotificationClick(callback: (route: string, homeId?: string) => void): () => void {
   let unsubscribed = false;
   let unlisten: (() => void) | undefined;
   void listen<unknown>('kiki://notification-click', (event) => {
-    const payload = event.payload as { route?: unknown } | null;
-    if (!unsubscribed && typeof payload?.route === 'string') callback(payload.route);
+    const payload = event.payload as { route?: unknown; homeId?: unknown } | null;
+    if (!unsubscribed && typeof payload?.route === 'string') {
+      void invoke('take_navigation_intent');
+      callback(payload.route, typeof payload.homeId === 'string' ? payload.homeId : undefined);
+    }
   }).then((fn) => {
     if (unsubscribed) fn();
     else unlisten = fn;
@@ -122,6 +125,10 @@ export const tauriHost: TauriHostAdapter = {
     saveSshProfile: (profile) => invoke('save_ssh_profile', { profile }),
     removeSshProfile: (id) => invoke('remove_ssh_profile', { id }),
     connectSshProfile: (id, token) => invoke('connect_ssh_profile', { id, token }),
+    prepareSshProfile: (id, token) => invoke('prepare_ssh_profile', { id, token }),
+    resumeScopeConnection: (homeId, id, tunnelId) => invoke('resume_scope_connection', { homeId, id, tunnelId }),
+    commitScopeConnection: (homeId, id, tunnelId, reload) => invoke('commit_scope_connection', { homeId, id, tunnelId, reload }),
+    takeScopeConnection: () => invoke('take_scope_connection'),
     sshTunnelRunning: (id, tunnelId) => invoke('ssh_tunnel_running', { id, tunnelId }),
     disconnectSshProfile: (id, tunnelId) => invoke('disconnect_ssh_profile', { id, tunnelId }),
     setWorkspaceScope: (scope) => { remoteWorkspaceActive = scope === 'ssh'; },
@@ -165,6 +172,60 @@ export const tauriHost: TauriHostAdapter = {
     const bytes = new Uint8Array(await blob.arrayBuffer());
     await writeFile(path, bytes);
     return true;
+  },
+  async openSaveSink(filename) {
+    const [{ save }, { open, mkdir, rename, copyFile, remove, BaseDirectory }] = await Promise.all([
+      import('@tauri-apps/plugin-dialog'), import('@tauri-apps/plugin-fs'),
+    ]);
+    const target = await save({ defaultPath: filename });
+    if (target === null) return null;
+    await mkdir('kiki-media-saves', { baseDir: BaseDirectory.AppLocalData, recursive: true });
+    const temporary = `kiki-media-saves/${crypto.randomUUID()}.part`;
+    const file = await open(temporary, { baseDir: BaseDirectory.AppLocalData, write: true, createNew: true });
+    let phase: 'writing' | 'committing' | 'closed' = 'writing';
+    return {
+      streaming: true,
+      async write(chunk) {
+        if (phase !== 'writing') throw new Error('The save stream is closed');
+        if (chunk.byteLength > 64 * 1024) throw new Error('The save chunk exceeds 64 KiB');
+        let offset = 0;
+        while (offset < chunk.byteLength) {
+          const written = await file.write(chunk.subarray(offset));
+          if (written <= 0) throw new Error('The file could not accept the next download chunk');
+          offset += written;
+        }
+      },
+      async close() {
+        if (phase !== 'writing') return false;
+        phase = 'committing';
+        let fileClosed = false;
+        try {
+          await file.close();
+          fileClosed = true;
+          try {
+            await rename(temporary, target, { oldPathBaseDir: BaseDirectory.AppLocalData });
+          } catch (error) {
+            if (!/EXDEV|cross[- ]device|different disk|os error (?:17|18)/iu.test(String(error))) throw error;
+            try {
+              await copyFile(temporary, target, { fromPathBaseDir: BaseDirectory.AppLocalData });
+            } catch (cause) {
+              throw new Error('Could not finish saving. The selected file may be incomplete.', { cause });
+            }
+          }
+          return true;
+        } finally {
+          phase = 'closed';
+          if (!fileClosed) await file.close().catch(() => {});
+          await remove(temporary, { baseDir: BaseDirectory.AppLocalData }).catch(() => {});
+        }
+      },
+      async abort() {
+        if (phase !== 'writing') return;
+        phase = 'closed';
+        try { await file.close(); }
+        finally { await remove(temporary, { baseDir: BaseDirectory.AppLocalData }); }
+      },
+    };
   },
   async pickFiles(): Promise<HostSelectedFile[] | null> {
     const [{ open }, { readFile, stat }] = await Promise.all([
@@ -264,6 +325,7 @@ export const tauriHost: TauriHostAdapter = {
    * pre-space key names; it must not fail the launch.
    */
   activeSpace: () => invoke<unknown>('desktop_active_space'),
+  takeNavigationIntent: () => invoke('take_navigation_intent'),
   async spaceStatuses() {
     try {
       return await invoke<DesktopSpaceStatus[]>('desktop_space_statuses');
@@ -272,11 +334,15 @@ export const tauriHost: TauriHostAdapter = {
       return [];
     }
   },
+  prepareSpace: (homeId) => invoke('prepare_space', { homeId }),
   async switchSpace(homeId) {
     await invoke('switch_space', { homeId });
   },
   async openSpace(homeId) {
     await invoke('open_space', { homeId });
+  },
+  async openRemoteSpace(connectionId) {
+    await invoke('open_space', { connectionId });
   },
   createSpaceShortcut: (homeId) => invoke('create_space_shortcut', { homeId }),
   async restartSpace(homeId) {

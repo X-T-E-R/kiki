@@ -21,6 +21,8 @@ import {
   type ApprovalPanelResponse,
 } from '#/tui/components/dialogs/approval-panel';
 import { ChoicePickerComponent } from '#/tui/components/dialogs/choice-picker';
+import { PermissionSelectorComponent } from '#/tui/components/dialogs/permission-selector';
+import { HelpPanelComponent } from '#/tui/components/dialogs/help-panel';
 import { QuestionDialogComponent } from '#/tui/components/dialogs/question-dialog';
 import { SessionPickerComponent, type SessionRow } from '#/tui/components/dialogs/session-picker';
 import { FileMentionProvider } from '#/tui/components/editor/file-mention-provider';
@@ -61,6 +63,7 @@ import { loadPluginMarketplace } from '#/utils/plugin-marketplace';
 import { editInExternalEditor, resolveEditorCommand } from '#/utils/process/external-editor';
 
 import { projectAttachmentSettlement } from './attachment-settlement';
+import { executeWebCommand } from './web-command';
 import {
   prepareDaemonPrompt,
   type DaemonFileAttachment,
@@ -76,7 +79,7 @@ import {
   validateDaemonCommandArgs,
   type DaemonSkillCommand,
 } from './commands';
-import type { DaemonConnection } from './discovery';
+import { resolveDaemonHome, type DaemonConnection } from './discovery';
 import { DaemonTranscriptRenderer } from './transcript-renderer';
 
 export interface DaemonTUIStartupInput {
@@ -165,7 +168,7 @@ export class DaemonTUI {
   private readonly temporarySessionIds = new Set<string>();
   private stopped = false;
 
-  constructor(connection: DaemonConnection, startup: DaemonTUIStartupInput) {
+  constructor(private readonly connection: DaemonConnection, startup: DaemonTUIStartupInput) {
     this.startup = startup;
     this.state = createTUIState(createOptions(startup));
     this.client = new DaemonClient(connection);
@@ -347,11 +350,6 @@ export class DaemonTUI {
       this.state.todoPanel.setExpanded(this.todoExpanded);
       this.state.ui.requestRender(true);
       return true;
-    };
-    editor.onUndo = () => {
-      void this.undoLastTurn().catch((error: unknown) => {
-        this.showStatus(formatErrorMessage(error), 'error');
-      });
     };
     editor.onTextPaste = () => {
       this.clearPendingExit();
@@ -1435,8 +1433,20 @@ export class DaemonTUI {
         await this.applyTheme(args);
         return;
       case 'help':
-        this.showStatus(daemonCommandHelp());
+        this.mountEditorReplacement(new HelpPanelComponent({
+          content: `${daemonCommandHelp()}\n\nLocal docs: ${resolve(resolveDaemonHome(), 'docs')} (en/ or zh/)`,
+          maxVisible: () => Math.max(1, this.state.terminal.rows - 10),
+          onClose: () => {
+            this.restoreEditor();
+          },
+        }));
         return;
+      case 'web': {
+        const result = await executeWebCommand(this.client.klient, args);
+        this.showStatus(result.message);
+        if (result.openUrl !== undefined) openUrl(result.openUrl);
+        return;
+      }
       case 'version':
         this.showStatus(this.state.appState.version);
         return;
@@ -1507,6 +1517,11 @@ export class DaemonTUI {
     this.showStatus(
       [
         `Session: ${state.sessionId === '' ? 'not started' : state.sessionId}`,
+        `Working directory: ${state.workDir}`,
+        `Daemon: ${this.connection.url}`,
+        `Daemon ID: ${this.connection.serverId ?? 'unavailable from this connection'}`,
+        `Home ID: ${this.connection.identity?.homeId ?? 'unavailable from this connection'}`,
+        `Host ID: ${this.connection.identity?.hostId ?? 'unavailable from this connection'}`,
         `Model: ${state.model === '' ? 'not selected' : state.model}`,
         `Profile: ${state.agentProfile ?? 'default'}`,
         `Thinking: ${state.thinkingEffort}`,
@@ -1614,8 +1629,13 @@ export class DaemonTUI {
       return;
     }
     if (action === 'install') {
-      if (rest === '') throw new Error('/plugins install requires an explicit source.');
-      await plugins.install(rest);
+      const consent = rest.startsWith('--trust ');
+      const source = consent ? rest.slice('--trust '.length).trim() : rest;
+      if (source === '') throw new Error('/plugins install [--trust] requires an explicit source.');
+      const plan = await plugins.preview({ source });
+      this.showStatus(`Plugin: ${plan.id}\nSource: ${source}\nContributions: ${plan.contributions.join(', ')}\nTrusted Node code runs with your full account permissions, not in a sandbox.`);
+      if (plan.consentRequired && !consent) throw new Error('To consent once to this source, run /plugins install --trust <source>.');
+      await plugins.install({ source, fingerprint: plan.fingerprint, consent });
     } else if (action === 'enable' || action === 'disable') {
       if (rest === '') throw new Error(`/plugins ${action} requires a plugin id.`);
       await plugins.setEnabled({ id: rest, enabled: action === 'enable' });
@@ -1627,7 +1647,9 @@ export class DaemonTUI {
     } else {
       throw new Error('Use /plugins marketplace|install|enable|disable|remove|reload.');
     }
-    await this.reloadDaemonState();
+    await this.controller?.resync();
+    await this.refreshAgentCommands();
+    if (this.controller !== undefined) await this.refreshSkillCommands(this.controller.sessionId);
   }
 
   private async handleProviderCommand(args: string): Promise<void> {
@@ -1648,7 +1670,9 @@ export class DaemonTUI {
     } else if (action === 'add') {
       const [id, json] = splitFirst(rest);
       if (id === '' || json === '') {
-        throw new Error('/provider add requires an id and JSON configuration.');
+        throw new Error(
+          '/provider add requires an id and JSON configuration. To import a known provider without writing JSON, use `kiki provider catalog add <providerId> --api-key <key>` in a terminal.',
+        );
       }
       await providers.addProvider(id, parseProviderInput(json) as never);
     } else {
@@ -1673,7 +1697,7 @@ export class DaemonTUI {
     }
     openUrl(flow.verification_uri_complete);
     this.showStatus(
-      `Open ${flow.verification_uri} and enter code ${flow.user_code}. Run /reload after authentication completes.`,
+      `Open ${flow.verification_uri} and enter code ${flow.user_code}. The provider is added to the daemon as soon as authentication completes.`,
     );
   }
 
@@ -2010,17 +2034,11 @@ export class DaemonTUI {
   }
 
   private showPermissionPicker(): void {
-    const picker = new ChoicePickerComponent({
-      title: 'Select permission mode',
-      options: [
-        { value: 'manual', label: 'Manual' },
-        { value: 'yolo', label: 'YOLO' },
-        { value: 'auto', label: 'Auto' },
-      ],
+    const picker = new PermissionSelectorComponent({
       currentValue: this.state.appState.permissionMode,
       onSelect: (mode) => {
         this.restoreEditor();
-        void this.applyPermission(mode as PermissionMode).catch((error: unknown) => {
+        void this.applyPermission(mode).catch((error: unknown) => {
           this.showStatus(formatErrorMessage(error), 'error');
         });
       },

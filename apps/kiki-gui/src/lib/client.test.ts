@@ -323,13 +323,13 @@ describe('KikiClient.sendAgentMessage', () => {
       throw new Error(`unexpected procedure: ${body.procedure.method}`);
     }));
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
-    const receipt = await client.sendAgentMessage('s1', 'child', 'next step', [{ type: 'text', text: 'next step' }], 'submission-1');
+    const receipt = await client.sendAgentMessage('s1', 'child', 'next step', [{ type: 'text', text: 'next step' }], 'submission-1', 'tail-operation');
     expect(receipt).toMatchObject({ delivery: 'delivered', deduplicated: false, payloadConflict: false });
     expect(receipt?.message).toMatchObject({ messageId: 'message-1', targetAgentId: 'child', senderKind: 'user' });
     expect(calls.map((call) => [call.service, call.method])).toEqual([
       ['sessionMetadata', 'read'], ['agentCollaborationMessagingService', 'sendUserMessage'],
     ]);
-    expect(calls[1]?.params[0]).toMatchObject({ targetAgentId: 'child', content: 'next step',
+    expect(calls[1]?.params[0]).toEqual({ targetAgentId: 'child', content: 'next step',
       idempotencyKey: 'submission-1' });
     await expect(client.sendAgentMessage('s1', 'child', 'next step', [
       { type: 'text', text: 'next step' },
@@ -409,6 +409,41 @@ describe('KikiClient.sendAgentMessage', () => {
       { agent_id: 'child', prompt_id: 'native-key-1', content: [{ type: 'text', text: 'changed step' }] },
     ]);
   });
+
+  it.each(['GUI native text', 'GUI native attachment', 'typed facade'])(
+    'preserves the switch dependency through commands.submit for %s', async (source) => {
+      const content = source === 'GUI native attachment'
+        ? [{ type: 'text' as const, text: 'continue' }, { type: 'file' as const, file_id: 'file-1', name: 'example.txt', media_type: 'text/plain', size: 1 }]
+        : [{ type: 'text' as const, text: 'continue' }];
+      const requests: unknown[] = [];
+      vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const resumed = resumeResponse(url, init);
+        if (resumed !== undefined) return resumed;
+        if (String(url).endsWith('/api/klient/call')) return Response.json({
+          code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false,
+            agents: { child: { type: 'sub', executor: 'native' } } },
+        });
+        expect(new URL(url).pathname).toBe('/api/sessions/s1/prompts');
+        const body = JSON.parse(init?.body as string);
+        requests.push(body);
+        return Response.json({ code: 0, msg: 'success', data: {
+          prompt_id: 'child-key', user_message_id: 'child-key', status: 'queued', content,
+          created_at: '2026-01-01T00:00:00.000Z',
+        } });
+      }));
+      const client = new KikiClient({ baseUrl: 'http://example.test' });
+      try {
+        if (source === 'typed facade') await client.klient.session('s1').commands.submit({
+          agent_id: 'child', prompt_id: 'child-key', content, after_model_switch: 'tail-operation',
+        });
+        else await client.sendAgentMessage('s1', 'child', 'continue', content, 'child-key', 'tail-operation');
+        expect(requests).toEqual([{
+          agent_id: 'child', content, after_model_switch: 'tail-operation',
+          ...(source === 'GUI native attachment' ? {} : { prompt_id: 'child-key' }),
+        }]);
+      } finally { await client.klient.close(); }
+    },
+  );
 
   it('does not attach a child replay key to a main prompt', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
@@ -865,37 +900,49 @@ describe('KikiClient.readHostFileBytes', () => {
 });
 
 describe('KikiClient.readSessionMediaBytes', () => {
-  it('revalidates an 8 MiB image preview without transferring it again', async () => {
-    const image = new Uint8Array(8 * 1024 * 1024);
-    const fetchMock = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+  it('revalidates a bounded image thumbnail without downloading the original', async () => {
+    const thumbnail = new Uint8Array(64 * 1024);
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const parsed = new URL(String(url));
+      expect(parsed.pathname).toBe('/api/sessions/s1/media/image/preview');
+      expect(parsed.searchParams.get('media_type')).toBe('image/png');
+      expect(init?.method).toBe('GET');
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe('Bearer token');
       if (fetchMock.mock.calls.length > 1) {
-        expect((init?.headers as Record<string, string>)['if-none-match']).toBe('"image-v1"');
+        expect(headers.get('if-none-match')).toBe('"image-v1"');
         return new Response(null, { status: 304, headers: { etag: '"image-v1"' } });
       }
-      return new Response(image, {
+      expect(headers.has('if-none-match')).toBe(false);
+      return new Response(thumbnail, {
         status: 200, headers: { 'content-type': 'image/png', etag: '"image-v1"' },
       });
     });
     vi.stubGlobal('fetch', fetchMock);
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
     try {
-      const first = await client.readSessionMediaBytes('s1', 'image');
-      const second = await client.readSessionMediaBytes('s1', 'image');
-      expect(first.bytes.byteLength).toBe(8 * 1024 * 1024);
+      const first = await client.readSessionMediaPreviewBytes('s1', 'image', { mediaType: 'image/png' });
+      const second = await client.readSessionMediaPreviewBytes('s1', 'image', { mediaType: 'image/png' });
+      expect(first.bytes.byteLength).toBe(64 * 1024);
+      expect(first.mime).toBe('image/png');
       expect(second.bytes).toBe(first.bytes);
+      expect(second.mime).toBe(first.mime);
       expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {
+      await client.klient.close();
       vi.unstubAllGlobals();
     }
   });
 
-  it('reads canonical session media with auth, MIME, and server filename', async () => {
+  it('reads an 8 MiB canonical image with auth, MIME, and server filename', async () => {
+    const image = new Uint8Array(8 * 1024 * 1024);
+    image.set([4, 5, 6]);
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const parsed = new URL(String(url));
       expect(parsed.pathname).toBe('/api/sessions/session%20one/media/file%2Fdiagram');
       expect(init?.method).toBe('GET');
       expect((init?.headers as Record<string, string>)['authorization']).toBe('Bearer token');
-      return new Response(new Uint8Array([4, 5, 6]), {
+      return new Response(image, {
         status: 200,
         headers: {
           'content-type': 'image/png; charset=binary',
@@ -905,19 +952,22 @@ describe('KikiClient.readSessionMediaBytes', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
-
-    const result = await client.readSessionMediaBytes('session one', 'file/diagram');
-    expect(result.mime).toBe('image/png');
-    expect(result.name).toBe('diagram final.png');
-    expect([...result.bytes]).toEqual([4, 5, 6]);
-    vi.unstubAllGlobals();
+    try {
+      const result = await client.readSessionMediaBytes('session one', 'file/diagram');
+      expect(result.mime).toBe('image/png');
+      expect(result.name).toBe('diagram final.png');
+      expect(result.bytes.byteLength).toBe(8 * 1024 * 1024);
+      expect([...result.bytes.subarray(0, 3)]).toEqual([4, 5, 6]);
+      expect(result.bytes.subarray(3).every((byte) => byte === 0)).toBe(true);
+    } finally {
+      await client.klient.close();
+      vi.unstubAllGlobals();
+    }
   });
 });
 
 function envelope(data: unknown): Response {
-  return {
-    json: async () => ({ code: 0, msg: 'ok', data, request_id: 'req_test' }),
-  } as Response;
+  return Response.json({ code: 0, msg: 'ok', data, request_id: 'req_test' });
 }
 
 function captureFetch(): { calls: URL[]; restore: () => void } {
@@ -1207,7 +1257,7 @@ describe('KikiClient.getAgentTranscript', () => {
     }
   });
 
-  it('accepts a compact legacy body that only has agent_id / items / has_more', async () => {
+  it('rejects a compact legacy body that only has agent_id / items / has_more', async () => {
     const original = globalThis.fetch;
     globalThis.fetch = vi.fn(async () =>
       envelope({
@@ -1217,7 +1267,9 @@ describe('KikiClient.getAgentTranscript', () => {
       }),
     ) as typeof fetch;
     try {
-      await expect(transcriptView('sess-1', true).transcript.page({ agentId: 'main' })).rejects.toThrow();
+      await expect(transcriptView('sess-1', true).transcript.page({ agentId: 'main' })).rejects.toThrow(
+        'output validation failed for session.view.transcript.page',
+      );
     } finally {
       globalThis.fetch = original;
     }
@@ -1279,7 +1331,7 @@ describe('KikiClient.getAgentTranscript', () => {
           beforeTurn: 'turn-1',
           afterTurn: 'turn-2',
         }),
-      ).rejects.toThrow('beforeTurn and afterTurn are mutually exclusive');
+      ).rejects.toThrow('beforeTurn, beforeItem, afterTurn and afterItem are mutually exclusive');
       expect(captured.calls).toHaveLength(0);
     } finally {
       captured.restore();

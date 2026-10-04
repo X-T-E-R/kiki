@@ -8,7 +8,8 @@ import { Dialog } from '../Dialog';
 import { FilePathLink } from '../mediaPreview';
 import { SkillPreviewButton } from '../capabilities/SkillPreviewButton';
 import { CapabilityStateBadge } from './CapabilityStateBadge';
-import { ProfileDetailSections } from './ProfileDetailSections';
+import { ProfileDetailSections, type ProfileDetailSectionsProps } from './ProfileDetailSections';
+import { ToolDetailBody } from './ToolDetailBody';
 import { toolCategoryLabel } from './ToolChipList';
 import { capabilitySourceLabel, SOURCE_TONE_CLASS } from './sourceLabel';
 import {
@@ -26,6 +27,12 @@ import type {
 } from './types';
 
 export type { DetailDrawerTarget } from './types';
+
+/** The detail shell's backdrop: shared with any rail-hosted detail panel that
+ * needs the same slide-over frame instead of the rail's own column. */
+export const DETAIL_OVERLAY_CLASS = 'fixed inset-0 z-50 flex justify-end bg-shell/40 backdrop-blur-[2px]';
+/** The detail shell's panel: a right-side sheet, 420px on wide viewports. */
+export const DETAIL_PANEL_CLASS = 'anim-enter h-full w-full max-w-full sm:max-w-[420px] bg-panel border-l border-hairline shadow-2xl flex flex-col overflow-hidden outline-none font-sans text-ink';
 
 export interface AgentDetailDrawerProps {
   readonly target: DetailDrawerTarget | null;
@@ -119,6 +126,8 @@ function ProfileDraftDetail({
     <ProfileDetailSections
       profile={data.profile}
       query={query}
+      prompt={data.prompt}
+      promptUnavailable={!data.available}
       subagentTargets={mapPanelSubagentTargets(data.targets)}
       dispatchTargets={data.targets}
       skills={mapPanelSkills(data.skills)}
@@ -126,6 +135,30 @@ function ProfileDraftDetail({
       onOpenTarget={onOpenTarget}
     />
   );
+}
+
+function ProfileLiveDetail(props: ProfileDetailSectionsProps) {
+  const { t } = useI18n();
+  const connection = useOptionalConnection();
+  const klient = connection?.klient;
+  const query = props.query;
+  const result = useQuery({
+    queryKey: ['agentCapabilities', query],
+    queryFn: ({ signal }) => {
+      if (klient === undefined || query === undefined) throw new Error('Client or agent unavailable');
+      return klient.global.agentPanel.read(query, { signal });
+    },
+    enabled: klient !== undefined && query !== undefined,
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+    retry: false,
+  });
+  return <>
+    {result.isError ? <p role="alert" className="text-[12px] text-danger">{agentCapabilitiesErrorText(result.error, t)} <button type="button" className="underline" onClick={() => void result.refetch()}>{t('common.retry')}</button></p> : null}
+    <ProfileDetailSections {...props} profile={result.data?.profile ?? props.profile}
+      prompt={result.data?.prompt} promptUnavailable={result.isError || result.data?.available === false}
+      promptLoading={result.isFetching && result.data === undefined} />
+  </>;
 }
 
 export const AgentDetailDrawer = memo(function AgentDetailDrawer({
@@ -180,9 +213,6 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
     categoryLabel = currentTarget.target.executor;
   }
 
-  const toolReason = currentTarget.kind === 'tool'
-    ? capabilityReasonText(t, currentTarget.tool.unavailableReasonCode, currentTarget.tool.unavailableReason)
-    : undefined;
   const skillReason = currentTarget.kind === 'skill'
     ? capabilityReasonText(t, currentTarget.skill.unavailableReasonCode, currentTarget.skill.unavailableReason)
     : undefined;
@@ -195,8 +225,8 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
       onClose={onClose}
       ariaLabel={title}
       overlayId="agent-panel-detail-drawer"
-      overlayClassName="fixed inset-0 z-50 flex justify-end bg-shell/40 backdrop-blur-[2px]"
-      panelClassName="anim-enter h-full w-full max-w-full sm:max-w-[420px] bg-panel border-l border-hairline shadow-2xl flex flex-col overflow-hidden outline-none font-sans text-ink"
+      overlayClassName={DETAIL_OVERLAY_CLASS}
+      panelClassName={DETAIL_PANEL_CLASS}
     >
       {/* Header */}
       <div className="flex items-center justify-between border-b border-hairline px-4 py-3 bg-paper/40 shrink-0">
@@ -234,8 +264,9 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
       {/* Body content */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 text-[12px] leading-relaxed">
         {currentTarget.kind === 'profile' && (
-          <ProfileDetailSections
+          <ProfileLiveDetail
             identity={currentTarget.identity}
+            query={currentTarget.identity.sessionId === undefined ? undefined : { session_id: currentTarget.identity.sessionId, agent_id: currentTarget.identity.id }}
             subagentTargets={subagentTargets}
             toolCapabilities={toolCapabilities}
             skills={skills}
@@ -253,68 +284,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
           />
         )}
 
-        {currentTarget.kind === 'tool' && (
-          <div data-tool-detail className="space-y-3">
-            {/* Title & Badges */}
-            <div className="border-b border-hairline pb-3">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="font-mono text-[15px] font-semibold text-ink">
-                  {currentTarget.tool.name}
-                </h3>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {currentTarget.tool.readOnly ? (
-                    <span className="px-0.5 text-[11px] font-mono font-medium text-accent-ink">
-                      {t('agentPanel.readOnly')}
-                    </span>
-                  ) : null}
-                  <CapabilityStateBadge state={currentTarget.tool.state} />
-                </div>
-              </div>
-              <div className="mt-1 font-mono text-[11px] text-ink-faint">
-                {toolCategoryLabel(t, currentTarget.tool.category || t('agentPanel.generalCategory'))}
-              </div>
-            </div>
-
-            {/* Notices / Human Explanation */}
-            {currentTarget.tool.state === 'approval-required' && (
-              <div className="rounded-lg border border-amber-rule/40 bg-amber-card/50 p-2 text-[11px] text-amber-ink">
-                {t('agentPanel.approvalNotice')}
-              </div>
-            )}
-            {toolReason !== undefined && (
-              <div className="rounded-lg border border-danger/30 bg-danger/5 p-2 text-[11px] text-danger">
-                {t('agentPanel.unavailableReason', { reason: toolReason })}
-              </div>
-            )}
-            {currentTarget.tool.readOnly && (
-              <div className="rounded-lg border border-hairline bg-paper/60 p-2 text-[11px] text-ink-soft">
-                {t('agentPanel.readOnlyNotice')}
-              </div>
-            )}
-
-            {/* Description */}
-            {currentTarget.tool.description ? (
-              <div className="space-y-1">
-                <div className="font-mono text-[11px] font-semibold uppercase text-ink-faint">
-                  {t('agentPanel.profileDescription')}
-                </div>
-                <p className="text-ink leading-relaxed">{currentTarget.tool.description}</p>
-              </div>
-            ) : null}
-
-            {/* Parameters Schema */}
-            <details open className="space-y-1">
-              <summary className="font-mono text-[11px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
-                {t('agentPanel.parametersSchema')}
-              </summary>
-              <pre className="mt-1 max-h-64 overflow-y-auto rounded-lg border border-hairline bg-paper/60 p-2 font-mono text-[11px] leading-snug text-ink-soft whitespace-pre-wrap">
-                {currentTarget.tool.parametersSchema ??
-                  currentTarget.tool.parametersSummary ??
-                  t('agentPanel.noParameters')}
-              </pre>
-            </details>
-          </div>
-        )}
+        {currentTarget.kind === 'tool' && <ToolDetailBody tool={currentTarget.tool} />}
 
         {currentTarget.kind === 'skill' && (
           <div data-skill-detail className="space-y-3">

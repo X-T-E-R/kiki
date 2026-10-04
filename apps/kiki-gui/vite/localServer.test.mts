@@ -24,7 +24,7 @@ void describe('local kap-server discovery', () => {
     tempDirs.push(home);
     const instances = join(home, 'server', 'instances');
     await mkdir(instances, { recursive: true });
-    await writeFile(join(home, 'server.token'), 'local-secret\n');
+    await writeFile(join(home, 'server.local-owner'), 'local-secret\n', { mode: 0o600 });
     await writeFile(
       join(instances, 'newest-other.json'),
       JSON.stringify({
@@ -55,9 +55,10 @@ void describe('local kap-server discovery', () => {
       async (input: string | URL | Request, init?: RequestInit) => {
         assert.equal(
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
-          'http://127.0.0.1:41001/api/v1/meta',
+          'http://127.0.0.1:41001/api/meta',
         );
         assert.deepEqual(init?.headers, { authorization: 'Bearer local-secret' });
+        assert.equal(init?.redirect, 'error');
         return new Response(JSON.stringify({ data: { server_id: 'meta-may-differ', server_version: '0.40.0' } }), {
           status: 200,
           headers: { 'content-type': 'application/json' },

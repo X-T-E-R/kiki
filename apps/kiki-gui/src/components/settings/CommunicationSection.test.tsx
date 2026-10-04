@@ -84,6 +84,13 @@ async function click(element: Element): Promise<void> {
   });
 }
 
+async function setValue(input: HTMLInputElement, value: string): Promise<void> {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
 function switchIn(container: Element, which: 'thread' | 'notify'): HTMLInputElement {
   return container.querySelector<HTMLInputElement>(`[data-agent-messaging="${which}"] input[type="checkbox"]`)!;
 }
@@ -127,12 +134,31 @@ describe('Agent messaging and token counting', () => {
     const container = await renderComponent(<TokenCountingCard />);
     const card = container.querySelector('#st-card-token-counting')!;
     const trigger = card.querySelector<HTMLButtonElement>('#token-counting-strategy')!;
-    expect(trigger.textContent).toContain('measured');
+    expect(trigger.textContent).toContain('Measured only');
     await click(trigger);
-    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((row) => row.textContent === 'estimated')!;
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((row) => row.textContent?.includes('Estimated only'))!;
+    // The stored value stays visible as the option's caption, not as its name.
+    expect(option.textContent).toContain('estimated');
     await click(option);
     expect(patchConfig).toHaveBeenCalledWith({
       token_counting: { strategy: 'estimated' },
+      replace_domains: ['token_counting'],
+    });
+    expect(card.querySelector<HTMLButtonElement>('#token-counting-strategy')!.textContent).toContain('Estimated only');
+  });
+
+  it('describes the default token strategy as the live size above the last measurement', async () => {
+    getConfig.mockResolvedValue({ ...INITIAL_CONFIG, token_counting: { strategy: 'measured+estimated' } });
+    const container = await renderComponent(<TokenCountingCard />);
+    const card = container.querySelector('#st-card-token-counting')!;
+    expect(card.querySelector<HTMLButtonElement>('#token-counting-strategy')!.textContent).toContain('Measured + estimated');
+    expect(card.textContent).toContain('never below the last measured total');
+    await click(card.querySelector('#token-counting-strategy')!);
+    const [first] = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(first!.textContent).toContain('measured+estimated');
+    await click(first!);
+    expect(patchConfig).toHaveBeenCalledWith({
+      token_counting: { strategy: 'measured+estimated' },
       replace_domains: ['token_counting'],
     });
   });
@@ -142,5 +168,60 @@ describe('Agent messaging and token counting', () => {
     expect(container.querySelector('#st-card-advanced')).not.toBeNull();
     expect(container.querySelector('#st-card-agent-messaging')).toBeNull();
     expect(container.querySelector('#st-card-token-counting')).toBeNull();
+  });
+});
+
+describe('workspace and image limits', () => {
+  it('edits the idle reclamation in seconds and round-trips exact milliseconds', async () => {
+    const container = await renderComponent(<ResourceLimitsCard />);
+    const card = container.querySelector('#st-card-resource-limits')!;
+    const fields = [...card.querySelectorAll<HTMLInputElement>('input')];
+    // 300000 ms of stored idle TTL reads as 300 s; the other ceilings keep their engine units.
+    expect(fields.map((input) => input.value)).toEqual(['300', '2048', '4000000']);
+    expect(card.textContent).toContain('Workspace idle reclamation (s)');
+    // The fine print — the engine mechanism, "the directory is not deleted", 0,
+    // and the engine default — is one tap away per field, not on the first
+    // screen. A label and its current value are enough to operate these.
+    expect(card.textContent).not.toContain('The directory is not deleted.');
+    expect(card.textContent).not.toContain('Releases the resident workspace instance');
+    expect(card.textContent).not.toContain('Longest-edge limit for images');
+    expect(card.textContent).not.toContain('larger images are compressed first');
+    const openHelp = async (label: string): Promise<string> => {
+      const field = [...card.querySelectorAll('label')].find((node) => node.textContent === label)!;
+      const trigger = field.parentElement!.querySelector<HTMLButtonElement>('[data-setting-help]')!;
+      await act(async () => { trigger.click(); });
+      // Read through this trigger's own describedby target: each `i` owns its
+      // own bubble, so a page-level query would prove nothing.
+      const id = trigger.getAttribute('aria-describedby');
+      return id === null ? '' : document.querySelector(`#${id}`)?.textContent ?? '';
+    };
+    const idleHelp = await openHelp('Workspace idle reclamation (s)');
+    expect(idleHelp).toContain('The directory is not deleted.');
+    expect(idleHelp).toContain('300 s');
+    expect(await openHelp('Image maximum edge (px)')).toContain('2000 px');
+    expect(await openHelp('Image read byte budget')).toContain('262144 bytes (256 KiB)');
+    // A second tap on the same `i` puts that bubble away again.
+    const budget = [...card.querySelectorAll('label')]
+      .find((node) => node.textContent === 'Image read byte budget')!
+      .parentElement!.querySelector<HTMLButtonElement>('[data-setting-help]')!;
+    await act(async () => { budget.click(); });
+    expect(budget.getAttribute('aria-describedby')).toBeNull();
+    await setValue(fields[0]!, '2.5');
+    await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
+    expect(patchConfig).toHaveBeenCalledWith({
+      workspace_instance: { idle_ttl_ms: 2500 },
+      image: { max_edge_px: 2048, read_byte_budget: 4_000_000 },
+      replace_domains: ['workspace_instance', 'image'],
+    });
+  });
+
+  it('clears a saved ceiling instead of writing the engine default', async () => {
+    const container = await renderComponent(<ResourceLimitsCard />);
+    const card = container.querySelector('#st-card-resource-limits')!;
+    await setValue(card.querySelector<HTMLInputElement>('input')!, '');
+    await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
+    const patch = patchConfig.mock.calls.at(-1)![0] as { workspace_instance: Record<string, unknown> };
+    expect(patch.workspace_instance['idle_ttl_ms']).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(patch.workspace_instance))).not.toHaveProperty('idle_ttl_ms');
   });
 });

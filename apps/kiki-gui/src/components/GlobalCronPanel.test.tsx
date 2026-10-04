@@ -79,12 +79,18 @@ beforeEach(() => {
   for (const mock of [listCronTasks, pauseCronTask, resumeCronTask, runCronTask, deleteCronTask]) {
     mock.mockReset();
   }
-  listCronTasks.mockImplementation((query: { offset?: number; page_size?: number } = {}) => Promise.resolve({
-    items: currentTasks.slice(query.offset ?? 0, (query.offset ?? 0) + (query.page_size ?? 100)),
-    has_more: currentTasks.length > (query.offset ?? 0) + (query.page_size ?? 100),
-    next_offset: currentTasks.length > (query.offset ?? 0) + (query.page_size ?? 100)
-      ? (query.offset ?? 0) + (query.page_size ?? 100) : undefined,
-  }));
+  listCronTasks.mockImplementation((query: { session_id?: string; offset?: number; page_size?: number } = {}) => {
+    // Mirrors `GET /api/cron`: narrow to the session, then page the narrowed set.
+    const scoped = currentTasks.filter((task) => query.session_id === undefined || task.session_id === query.session_id);
+    const offset = query.offset ?? 0;
+    const size = query.page_size ?? 100;
+    const hasMore = scoped.length > offset + size;
+    return Promise.resolve({
+      items: scoped.slice(offset, offset + size),
+      has_more: hasMore,
+      next_offset: hasMore ? offset + size : undefined,
+    });
+  });
   pauseCronTask.mockImplementation((id: string) => {
     const found = currentTasks.find((task) => task.id === id);
     if (found === undefined) {
@@ -366,6 +372,43 @@ describe('CronPage', () => {
     expect(page.querySelector('[data-cron-scope-empty]')).not.toBeNull();
     const showAll = page.querySelector<HTMLButtonElement>('[data-cron-scope-empty] button')!;
     await act(async () => { showAll.click(); });
+    expect(page.querySelectorAll('[data-cron-task]')).toHaveLength(1);
+  });
+
+  it('narrows to the conversation in the URL at the server and pages that conversation', async () => {
+    seedTasks([
+      ...Array.from({ length: 101 }, (_, index) => makeCronTask({ id: `task-${index}` })),
+      makeCronTask({ id: 'other', session_id: 'sess-2', prompt_preview: 'Another conversation’s task' }),
+    ]);
+    await mount('/cron?session=sess-1');
+    const page = await openPanel();
+
+    // The scope travels to the server, so page one is page one of this
+    // conversation — not a cross-workspace page filtered after the fact.
+    expect(listCronTasks).toHaveBeenCalledWith({ session_id: 'sess-1', page_size: 100, offset: 0 });
+    expect(page.querySelector('[data-cron-session-scope]')?.getAttribute('data-cron-session-scope')).toBe('sess-1');
+    expect(page.querySelector('[data-cron-session-scope]')!.textContent).toContain('Alpha session');
+    expect(page.querySelectorAll('[data-cron-task]')).toHaveLength(100);
+    expect(page.textContent).not.toContain('Another conversation’s task');
+
+    const more = [...page.querySelectorAll('button')].find((button) => button.textContent === 'Load more scheduled tasks')!;
+    await act(async () => { more.click(); });
+    await flush();
+    expect(listCronTasks).toHaveBeenLastCalledWith({ session_id: 'sess-1', page_size: 100, offset: 100 });
+    expect(page.querySelectorAll('[data-cron-task]')).toHaveLength(101);
+  });
+
+  it('states an empty conversation and widens back to every conversation', async () => {
+    seedTasks([makeCronTask({ id: 'other', session_id: 'sess-2', workspace_id: 'ws-b' })]);
+    await mount('/cron?session=sess-1');
+    const page = await openPanel();
+
+    expect(page.querySelector('[data-cron-session-empty]')!.textContent).toContain('No scheduled tasks in this conversation.');
+    const showAll = page.querySelector<HTMLButtonElement>('[data-cron-session-empty] button')!;
+    await act(async () => { showAll.click(); });
+    await flush();
+    expect(listCronTasks).toHaveBeenLastCalledWith({ session_id: undefined, page_size: 100, offset: 0 });
+    expect(page.querySelector('[data-cron-session-scope]')).toBeNull();
     expect(page.querySelectorAll('[data-cron-task]')).toHaveLength(1);
   });
 });

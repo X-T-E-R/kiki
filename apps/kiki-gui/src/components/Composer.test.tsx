@@ -6,9 +6,10 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { pushInputHistory, readInputHistory, resetInputHistoryForTests } from '@kiki/session-core/composer';
+import { pushInputHistory, readInputHistory, resetInputHistoryForTests, type ComposerAttachment } from '@kiki/session-core/composer';
 import { translate } from '@kiki/session-core/i18n';
-import { writeSettings } from '@kiki/session-core/settings';
+import { resolveSelectedEffort, writeSettings } from '@kiki/session-core/settings';
+import { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter } from '@kiki/transcript';
 import { createViewState, projectAgentTranscriptView } from '@kiki/session-core/session';
 import { emptySnapshot, userTurnSnapshot } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
 import type { HostFileDrop } from '../host';
@@ -17,7 +18,7 @@ import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { PERMISSION_MODES } from '../lib/permissionModes';
 import { Composer } from './Composer';
-import { canAbortActiveTurn } from './SessionView';
+import { activateSkillWithConditionalClear, canAbortActiveTurn } from './SessionView';
 
 const { selectFilesNative, onFileDrop, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
   selectFilesNative: vi.fn(),
@@ -267,21 +268,21 @@ describe('continuation stop control', () => {
     expect(running.activePromptId).toBeUndefined();
     const onAbort = vi.fn();
     const { container, rerender } = await renderComposer({ busy: canAbortActiveTurn(running), onAbort });
-    const stop = container.querySelector<HTMLButtonElement>('button[aria-label="Abort the running prompt"]');
+    const stop = container.querySelector<HTMLButtonElement>('button[aria-label="Stop this turn"]');
     expect(stop?.disabled).toBe(false);
     await click(stop!);
     expect(onAbort).toHaveBeenCalledTimes(1);
 
     const idle = projectAgentTranscriptView(running, 'main', emptySnapshot());
     await rerender({ busy: canAbortActiveTurn(idle), onAbort });
-    expect(container.querySelector('button[aria-label="Abort the running prompt"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Stop this turn"]')).toBeNull();
   });
 
   it('keeps the stop control for visible user prompts', async () => {
     const running = projectAgentTranscriptView(createViewState('session-1'), 'main', userTurnSnapshot({ streaming: true }));
     const onAbort = vi.fn();
     const { container } = await renderComposer({ busy: canAbortActiveTurn(running), onAbort });
-    const stop = container.querySelector<HTMLButtonElement>('button[aria-label="Abort the running prompt"]');
+    const stop = container.querySelector<HTMLButtonElement>('button[aria-label="Stop this turn"]');
     expect(stop).not.toBeNull();
     await click(stop!);
     expect(onAbort).toHaveBeenCalledTimes(1);
@@ -446,6 +447,55 @@ describe('Composer host compatibility', () => {
       newKeyAfterSession,
       newKeyAfterSession,
     ]);
+  });
+});
+
+describe('Composer disable focus continuity', () => {
+  async function disableFocusedInput() {
+    const harness = await renderComposer();
+    const textarea = harness.container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => { textarea.focus(); });
+    await harness.rerender({ disabled: true });
+    // jsdom neither force-blurs on disable nor lets disabled inputs blur.
+    // Model Chromium's BODY fallback and its native blur with disabled=true.
+    await act(async () => {
+      textarea.disabled = false;
+      textarea.blur();
+      textarea.disabled = true;
+      textarea.dispatchEvent(new FocusEvent('blur'));
+    });
+    expect(document.activeElement).toBe(document.body);
+    return { ...harness, textarea };
+  }
+
+  it('restores the same input after a disable-caused blur', async () => {
+    const { container, rerender, textarea } = await disableFocusedInput();
+    await rerender({ disabled: false });
+    expect(container.querySelector('textarea[data-composer]')).toBe(textarea);
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it.each([false, true])('does not reclaim focus after the user focuses elsewhere (then blurs=%s)', async (blurAgain) => {
+    const { container, rerender } = await disableFocusedInput();
+    const button = document.createElement('button');
+    container.append(button);
+    await act(async () => { button.focus(); if (blurAgain) button.blur(); });
+    const active = document.activeElement;
+    await rerender({ disabled: false });
+    expect(document.activeElement).toBe(active);
+  });
+
+  it('does not autofocus a cold input or restore a deliberate enabled blur', async () => {
+    const { container, rerender } = await renderComposer();
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    expect(document.activeElement).not.toBe(textarea);
+    await rerender({ disabled: true });
+    await rerender({ disabled: false });
+    expect(document.activeElement).not.toBe(textarea);
+    await act(async () => { textarea.focus(); textarea.blur(); });
+    await rerender({ disabled: true });
+    await rerender({ disabled: false });
+    expect(document.activeElement).toBe(document.body);
   });
 });
 
@@ -1095,6 +1145,29 @@ describe('Composer model chip', () => {
     ],
   };
 
+  it('shows the durable AI-created binding rather than the model default before its first turn', async () => {
+    listModels.mockResolvedValue(catalog);
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    reducer.apply(new TranscriptWireAdapter('main').add({
+      type: 'profile.bind', modelAlias: 'fixture/kiki-pro', thinkingEffort: 'high',
+    }));
+    const state = projectAgentTranscriptView(createViewState('created-thread'), 'main', transcript.snapshot());
+    const onSend = vi.fn();
+    const { container } = await renderComposer({
+      model: state.model,
+      modelSource: 'session',
+      efforts: ['low', 'medium', 'high'],
+      effort: resolveSelectedEffort(['low', 'medium', 'high'], state.thinkingEffort, 'medium'),
+      value: 'Synthetic continuation',
+      onSend,
+    });
+    expect(container.querySelector('[data-effort-label]')?.textContent).toBe('high');
+    await click(container.querySelector('#composer-model-select')!);
+    expect(container.querySelector('[data-effort="high"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it('carries the effort segment outside the truncating model label', async () => {
     listModels.mockResolvedValue(catalog);
     const { container } = await renderComposer({
@@ -1653,7 +1726,7 @@ describe('Composer slash skill catalog', () => {
     });
     await settle();
     expect(container.querySelector('[data-slash-confirm]')).toBeNull();
-    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('kiki-ops', 'Explain profiles.', []);
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('kiki-ops', 'Explain profiles.', [], '/kiki-ops Explain profiles.');
     expect(onSend).not.toHaveBeenCalled();
   });
 
@@ -1679,7 +1752,7 @@ describe('Composer slash skill catalog', () => {
     listWorkspaceSkills.mockResolvedValue({ skills: [{ ...workspaceSkill, name: 'kiki-ops' }] });
     await click(sendButton);
     await settle();
-    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('kiki-ops', 'Help me get started.', []);
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('kiki-ops', 'Help me get started.', [], '/kiki-ops Help me get started.');
   });
 
   it('activates the built-in first-run command for a new directory without a workspace catalog', async () => {
@@ -1693,7 +1766,7 @@ describe('Composer slash skill catalog', () => {
     await click(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!);
     expect(listWorkspaceSkills).not.toHaveBeenCalled();
     expect(container.querySelector('[data-slash-confirm]')).toBeNull();
-    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('kiki-ops', 'Help me get started.', []);
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('kiki-ops', 'Help me get started.', [], '/kiki-ops Help me get started.');
     expect(onSend).not.toHaveBeenCalled();
   });
 
@@ -1722,7 +1795,7 @@ describe('Composer slash skill catalog', () => {
       rendered.container.querySelector('textarea[data-composer]')!
         .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
-    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('plan', 'menu options', attachments);
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('plan', 'menu options', attachments, '/skill:plan menu options');
     expect(onChangePlanMode).not.toHaveBeenCalled();
   });
 
@@ -1744,7 +1817,7 @@ describe('Composer slash skill catalog', () => {
     });
     await settle();
     expect(preparePrompt).toHaveBeenCalledWith('', expect.any(String), false);
-    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix', []);
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix', [], '/review --fix');
     expect(onSend).not.toHaveBeenCalled();
   });
 
@@ -1766,9 +1839,47 @@ describe('Composer slash skill catalog', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
 
-    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix', []);
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix', [], '/review --fix');
     expect(onSend).not.toHaveBeenCalled();
     expect(preparePrompt).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('clears the accepted controlled slash draft but preserves new input during preflight: %s', async (edited) => {
+    vscodeRuntime.value = true;
+    listSessionSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const preflight = deferred<string>();
+    preparePrompt.mockReturnValue(preflight.promise);
+    const activation = deferred<void>();
+    const attachments = [{ kind: 'file' as const, path: '/workspace/note.txt', name: 'note.txt', isDir: false }];
+    const submitted = '/review --fix\nKeep the second line.';
+    let currentDraft = submitted;
+    const clear = vi.fn();
+    const onChange = (text: string) => { currentDraft = text; };
+    const onActivateSkill = vi.fn((name: string, args: string, sentAttachments: readonly ComposerAttachment[], userInput: string) =>
+      activateSkillWithConditionalClear({
+        activate: () => activation.promise,
+        submitted: { draft: userInput, attachments: sentAttachments },
+        current: () => ({ draft: currentDraft, attachments }),
+        clear: () => { currentDraft = ''; clear(); },
+      }));
+    const props = { sessionId: 'session_live', value: submitted, attachments, onChange, onActivateSkill };
+    const rendered = await renderComposer(props);
+    const send = rendered.container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+    await click(send);
+    await click(send);
+    if (edited) {
+      currentDraft = 'new follow-up';
+      await rendered.rerender({ ...props, value: currentDraft });
+    }
+    await act(async () => { preflight.resolve(''); });
+    await settle();
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix\nKeep the second line.', attachments, submitted);
+    await act(async () => { activation.resolve(); });
+    await settle();
+    expect(currentDraft).toBe(edited ? 'new follow-up' : '');
+    expect(clear).toHaveBeenCalledTimes(edited ? 0 : 1);
+    await rendered.rerender({ ...props, value: currentDraft });
+    expect(rendered.container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.value).toBe(currentDraft);
   });
 
   it('still activates a bare hand-typed `/skill` command', async () => {
@@ -1786,7 +1897,7 @@ describe('Composer slash skill catalog', () => {
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
-    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '', []);
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '', [], '/review');
     expect(onSend).not.toHaveBeenCalled();
   });
 
@@ -2530,7 +2641,7 @@ describe('Composer queue edit mode', () => {
       'button[aria-label="Remove this queued message"]',
     )!;
     // The turn-abort button is parked for the duration of the edit.
-    expect(container.querySelector('button[aria-label="Abort the running prompt"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Stop this turn"]')).toBeNull();
 
     await click(removeButton);
     expect(props.onQueueEditRemove).not.toHaveBeenCalled();
@@ -2693,10 +2804,10 @@ describe('Composer send-timing menu', () => {
     expect(menu(container)).not.toBeNull();
     expect(menu(container)!.getAttribute('aria-label')).toBe('Send timing');
     expect(rowLabels(container)).toEqual([
-      'SendDefault timing: when idle',
-      'Send nowSteers into the running turn — read after the current step',
+      'SendDefault timing: after this turn',
+      'Send nowSend into the running turn — read after the current step',
       'Send after subagentsStarts once the running subagents finish',
-      'Send after tasksStarts once every running task finishes',
+      'Send after tasksStarts once every running task finishes; resident services excluded',
     ]);
   });
 
@@ -2807,8 +2918,8 @@ describe('Composer send-timing menu', () => {
   });
 });
 
-describe('SSH host scope and message snapshots', () => {
-  it('offers SSH preselection on /new without attempting a session join', async () => {
+describe('session SSH stays resident and rides no message', () => {
+  it('preselects on /new without attempting a session join, handing the host to the draft only', async () => {
     meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: 'Inspect the host', onSend });
@@ -2818,28 +2929,84 @@ describe('SSH host scope and message snapshots', () => {
     await click(container.querySelector('[data-composer-ssh-host="example-host"]')!);
     expect(sshAdd).not.toHaveBeenCalled();
     expect(sshSessionHosts).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-composer-ssh-scope]')?.textContent).toBe('Hosts to join');
+    expect(container.querySelector('[data-composer-ssh-strip]')?.textContent).toContain('SSH to join');
+    expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
     await click(container.querySelector('[data-add-menu-trigger]')!);
     await click(container.querySelector('button[aria-label="Send message"]')!);
+    // No session exists yet, so the host travels to the draft, which joins it
+    // before the first message. It is not an attachment on the draft's tray.
     expect(onSend).toHaveBeenCalledWith('Inspect the host', [{ kind: 'ssh', id: 'example-host', name: 'Example host' }]);
+    expect(container.querySelector('[data-context-tray] [data-composer-ssh-chip]')).toBeNull();
+    expect(container.querySelector('[data-attachment-chips]')?.textContent ?? '').not.toContain('Example host');
   });
 
-  it('keeps persistent joined-host status after sending and snapshots it, while X leaves the session', async () => {
+  it('keeps the joined host resident across consecutive sends and a skill, with no ref in any of them', async () => {
     meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+    listSessionSkills.mockResolvedValue({ skills: [workspaceSkill] });
     sshSessionHosts.mockResolvedValue({ hosts: [{ host: sshHost }] });
     const onSend = vi.fn().mockResolvedValue(undefined);
-    const { container } = await renderComposer({ sessionId: 'session-example', value: 'Inspect the host', onSend });
-    expect(container.querySelector('[data-composer-ssh-scope]')?.textContent).toBe('Session hosts');
+    const onActivateSkill = vi.fn().mockResolvedValue(undefined);
+    const { container, rerender } = await renderComposer({
+      sessionId: 'session-example', value: 'Inspect the host', onSend, onActivateSkill,
+    });
+    expect(container.querySelector('[data-composer-ssh-strip]')?.textContent).toContain('Session SSH');
     await click(container.querySelector('button[aria-label="Send message"]')!);
     await settle();
-    expect(onSend).toHaveBeenCalledWith('Inspect the host', [{ kind: 'ssh', id: 'example-host', name: 'Example host' }]);
+    await rerender({ sessionId: 'session-example', value: 'And now the build', onSend, onActivateSkill });
+    await click(container.querySelector('button[aria-label="Send message"]')!);
+    await settle();
+    await rerender({ sessionId: 'session-example', value: '/review --fix', onSend, onActivateSkill });
+    for (let index = 0; index < 8; index += 1) await settle();
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onSend.mock.calls.map((call) => call[1])).toEqual([[], []]);
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix', [], '/review --fix');
+    // Still there after all of it, and never removed behind the user's back.
     expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
+    expect(container.querySelector('[data-context-tray] [data-composer-ssh-chip]')).toBeNull();
     expect(sshRemove).not.toHaveBeenCalled();
+  });
+
+  it('leaves the session immediately and reads the server list back', async () => {
+    meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+    sshSessionHosts.mockResolvedValue({ hosts: [{ host: sshHost }] });
+    const { container } = await renderComposer({ sessionId: 'session-example', value: 'Inspect the host', onSend: vi.fn() });
+    expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
     sshSessionHosts.mockResolvedValue({ hosts: [] });
     await click(container.querySelector('[data-composer-ssh-chip-remove]')!);
     await settle();
     expect(sshRemove).toHaveBeenCalledWith('session-example', 'example-host');
+    // The server's read is the only thing that decides what the strip shows.
+    for (let index = 0; index < 4; index += 1) await settle();
+    expect(sshSessionHosts.mock.calls.at(-1)).toEqual(['session-example']);
     expect(container.querySelector('[data-composer-ssh-chip]')).toBeNull();
+  });
+
+  it('re-reads the joined list when another session opens', async () => {
+    meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+    sshSessionHosts.mockResolvedValue({ hosts: [{ host: sshHost }] });
+    const { container, rerender } = await renderComposer({ sessionId: 'session-example', value: 'a', onSend: vi.fn() });
+    expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
+    sshSessionHosts.mockResolvedValue({ hosts: [] });
+    await rerender({ sessionId: 'session-other', value: 'a', onSend: vi.fn() });
+    await settle();
+    expect(sshSessionHosts).toHaveBeenCalledWith('session-other');
+    expect(container.querySelector('[data-composer-ssh-chip]')).toBeNull();
+  });
+
+  it('opens its own host list from the strip, and closes on Escape', async () => {
+    meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+    sshSessionHosts.mockResolvedValue({ hosts: [{ host: sshHost }] });
+    const { container } = await renderComposer({ sessionId: 'session-example', value: 'Inspect', onSend: vi.fn() });
+    const toggle = container.querySelector('[data-composer-ssh-toggle]')!;
+    await click(toggle);
+    expect(container.querySelector('[data-composer-ssh-list] [data-composer-ssh-panel]')).not.toBeNull();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(container.querySelector('[data-composer-ssh-list]')).toBeNull();
   });
 
   it('resets /new preselection on a session transition, without deleting persistent hosts', async () => {
@@ -2848,9 +3015,46 @@ describe('SSH host scope and message snapshots', () => {
     await openAddMenu(container);
     await click(container.querySelector('[data-add-menu-ssh]')!);
     await click(container.querySelector('[data-composer-ssh-host="example-host"]')!);
+    expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
     await rerender({ sessionId: 'session-example' });
     await rerender({});
     expect(container.querySelector('[data-composer-ssh-chip]')).toBeNull();
     expect(sshRemove).not.toHaveBeenCalled();
+  });
+
+  it('names a queued switch in words above the input and keeps the row chip for wide toolbars', async () => {
+    listModels.mockResolvedValue({
+      items: [{ id: 'fixture/kiki-lite', provider_id: 'fixture', remote_id: 'kiki-lite', display_name: 'Kiki Lite', max_context_size: 131072 }],
+    });
+    const { container } = await renderComposer({ pendingModelSwitch: { to: 'fixture/kiki-lite', mode: 'fresh' } });
+    for (let index = 0; index < 5; index += 1) await settle();
+    // The wrapped line names the model the way the picker does, not by its id:
+    // at this width the id would be clipped to its vendor.
+    const line = container.querySelector<HTMLElement>('[data-model-switch-pending-line="fresh"]')!;
+    expect(line.textContent).toContain('Switching to Kiki Lite when idle · Fresh context');
+    expect(line.className).toContain('@min-[30rem]/composer:hidden');
+    // The toolbar chip owns the opposite side of the same breakpoint, so one of
+    // the two is always the thing on screen.
+    const chip = container.querySelector<HTMLElement>('[data-model-switch-pending="fresh"]')!;
+    expect(chip.textContent).toBe('Switching to fixture/kiki-lite');
+    expect(chip.className).toContain('@max-[30rem]/composer:hidden');
+  });
+
+  it('reports a failed switch-list read next to the input and retries on demand', async () => {
+    const onRetry = vi.fn();
+    const { container } = await renderComposer({ modelSwitchError: { detail: 'socket closed', onRetry } });
+    const line = container.querySelector<HTMLElement>('[data-model-switch-error]')!;
+    expect(line.textContent).toContain(translate('en', 'modelSwitch.listFailed'));
+    expect(line.querySelector('span')?.getAttribute('title')).toBe('socket closed');
+    const retry = line.querySelector<HTMLButtonElement>('button')!;
+    expect(retry.textContent).toBe(translate('en', 'common.retry'));
+    await act(async () => { retry.click(); });
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('says nothing about switches when none is queued and the list read is fine', async () => {
+    const { container } = await renderComposer();
+    expect(container.querySelector('[data-model-switch-pending-line]')).toBeNull();
+    expect(container.querySelector('[data-model-switch-error]')).toBeNull();
   });
 });

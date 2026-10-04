@@ -9,6 +9,7 @@ This static notice covers the bundled sidecar, major direct desktop runtime depe
 | Component | Use in Kiki desktop | License |
 | --- | --- | --- |
 | [Kimi Code](https://github.com/MoonshotAI/kimi-code) | Bundled `kiki-server.exe` sidecar | MIT |
+| [agent-browser 0.38.2](https://github.com/vercel-labs/agent-browser/tree/39a74c70d7759d5a6de7a22c04570bb626bbd081), Kiki `kiki-no-replay-r1` / `kiki-stdio-r1` derivative | Managed browser MCP execution resource embedded in the Windows sidecar; modified transport does not replay indeterminate operations, and Windows MCP output capture follows the CLI's exit rather than inherited background writers. LICENSE, NOTICE, build metadata and patch accompany the extracted resource. | Apache-2.0 |
 | [Tauri](https://github.com/tauri-apps/tauri), updater, dialog, filesystem, notification, and window-state plugins | Windows desktop runtime, NSIS packaging, native integration, and signed updates | Apache-2.0 OR MIT |
 | [React](https://github.com/facebook/react) and React DOM | Desktop user interface runtime | MIT |
 | [React Router](https://github.com/remix-run/react-router) | Desktop client routing | MIT |
@@ -33,5 +34,6 @@ This static notice covers the bundled sidecar, major direct desktop runtime depe
 | [deepseek-harness `47f9438`](https://github.com/deepseek-ai/deepseek-harness/commit/47f943859bef60e4160492346772ded9b24f765a) | Conversation-shell, composer, status, tool, queue, and reference-chip interaction patterns | MIT |
 | [dsh-web-ui `6265187`](https://github.com/zhu1090093659/dsh-web-ui/commit/62651870dd18ad3d9bf54a9cb934b75d0fbaf639) | Grouped collapsible capability cards | Apache-2.0 |
 | [Letta Code `c0956ed`](https://github.com/letta-ai/letta-code/commit/c0956ed3263da7f781a958ce35ff3042ef97adfa) | Partial JSON string-field scanner for streaming SendMessage drafts (`src/lib/partialJson.ts`) | Apache-2.0 |
+| [OpenCode `e00890c`](https://github.com/anomalyco/opencode/commit/e00890c67261a435cee6409366a68999a93393fd) | Account sign-in behaviour behind the device-code flows the Connections page runs: the xAI/Grok device-grant adapter attributed in full at `packages/oauth/THIRD_PARTY_NOTICES.md`, which ships with the desktop build | MIT |
 
 The Kiki repository itself is distributed under the MIT License in the repository root. Copyright and license notices supplied by third-party projects remain the property of their respective authors.

@@ -11,13 +11,13 @@ import { useQuery } from '@tanstack/react-query';
 import { MAIN_AGENT_ID, type AgentForest, type Block, type SessionViewState } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
 import { useConnection, useOptionalControllerRegistry } from '../../state/connection';
-import { AgentCapabilitiesSection, capabilityCounts, extensionOwner } from '../agent-panel/AgentCapabilitiesSection';
+import { AgentCapabilitiesSection, capabilityCounts } from '../agent-panel/AgentCapabilitiesSection';
 import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
 import { agentTrail } from '../agent-panel/agentRoster';
 import { INSPECTOR_HEAD, InspectorChevron } from '../agent-panel/InspectorSection';
 import { isCapabilityUnsupportedError, mapPanelSkills, mapPanelSubagentTargets, mapPanelTools } from '../agent-panel/mapCapabilities';
 import { capabilitySourceLabel, SOURCE_TONE_CLASS } from '../agent-panel/sourceLabel';
-import type { AgentIdentity, AgentSkillCapability, AgentSubagentTarget, AgentToolCapability, CapabilityState, DetailDrawerTarget } from '../agent-panel/types';
+import type { AgentIdentity, DetailDrawerTarget } from '../agent-panel/types';
 import { Icon } from '../icons';
 import { age, decidable, pendingId, pendingSubject, useNow, type PendingItem } from './model';
 import { FOCUS_RING, StateMark, useDecide } from './shell';
@@ -240,7 +240,7 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
     .join(' · ');
   const source = capabilitySourceLabel(t, { source: profile?.source, sourceFile: profile?.source_file });
   const identity: AgentIdentity = {
-    id: agentId, profile: profileName ?? '', label, model,
+    id: agentId, sessionId, profile: profileName ?? '', label, model,
     thinkingEffort: profile?.thinking_effort, status: 'unknown',
     summary: profile?.description, description: profile?.description,
     source: profile?.source, sourceFile: profile?.source_file,
@@ -414,59 +414,20 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
   );
 });
 
-/** The folded 能力 block previews this many names, then "+N". */
-const CAP_PREVIEW_NAMES = 4;
-
-/**
- * The folded 能力 line's names: what the agent can use, most telling first —
- * its enabled skills (the workspace's own, then global; they are what makes
- * this role different here), then the subagents it may dispatch, then the
- * extensions that answer. Disabled entries stay out: the line promises what
- * the agent can use right now. With none of those, it falls back to the
- * usable built-in tools.
- */
-function capabilityPreviewNames(
-  tools: readonly AgentToolCapability[],
-  skills: readonly AgentSkillCapability[],
-  targets: readonly AgentSubagentTarget[],
-): string[] {
-  const usable = (state: CapabilityState) => state === 'enabled' || state === 'approval-required';
-  const byName = (left: string, right: string) => left.localeCompare(right);
-  const enabled = skills.filter((skill) => skill.state === 'enabled');
-  const skillNames = [
-    ...enabled.filter((skill) => skill.scope === 'workspace').map((skill) => skill.name).sort(byName),
-    ...enabled.filter((skill) => skill.scope !== 'workspace').map((skill) => skill.name).sort(byName),
-  ];
-  const targetNames = targets
-    .filter((target) => target.launchAllowed !== false && target.defaultsAvailable)
-    .map((target) => (target.route === undefined || target.route === '' ? target.profile : `${target.profile}/${target.route}`));
-  const extensionTools = new Map<string, { owner: string; list: AgentToolCapability[] }>();
-  for (const tool of tools) {
-    const ext = extensionOwner(tool);
-    if (ext === undefined) continue;
-    const key = `${ext.kind}:${ext.owner}`;
-    const entry = extensionTools.get(key) ?? { owner: ext.owner, list: [] };
-    entry.list.push(tool);
-    extensionTools.set(key, entry);
-  }
-  const extensionNames = [...extensionTools.values()]
-    .filter((entry) => entry.list.some((tool) => usable(tool.state)))
-    .map((entry) => entry.owner);
-  const names = [...skillNames, ...targetNames, ...extensionNames];
-  if (names.length > 0) return names;
-  return tools.filter((tool) => extensionOwner(tool) === undefined && usable(tool.state)).map((tool) => tool.name);
-}
-
 /**
  * 能力: the focused agent's tools, skills, subagent targets and extensions,
  * as its own folded block. Reads the same agent-panel answer the profile
  * card reads (same query key), so opening it starts no extra request.
  *
- * Folded is two lines, not one: the head carries the per-kind counts, and a
- * quiet line under it names the first few usable entries, so the role reads
- * without opening the block. A read that fails — or answers without the
- * capability fields — keeps the block as a plain title plus one grey status
- * line with a text retry ("can't be read right now", never an alert).
+ * Folded, the head carries the per-kind counts and nothing else. The names
+ * behind those counts are slugs — `agent-core-dev · agent-core-review ·
+ * release-kit` — which read as a wall of ids rather than a summary of what
+ * the role can do, so they live in the block's own detail where each one
+ * carries its scope and state, and not in a permanent line above it.
+ *
+ * A read that fails — or answers without the capability fields — keeps the
+ * block as a plain title plus one grey status line with a text retry
+ * ("can't be read right now", never an alert).
  */
 export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { sessionId: string; agentId: string; workspaceId?: string; cwd?: string }) {
   const { t } = useI18n();
@@ -510,20 +471,12 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
   if (data === undefined) return null;
   const counts = capabilityCounts(tools, skills, targets);
   const summary = t('rail.capabilities.summary', { tools: counts.toolsOn, skills: counts.skills, subagents: counts.subagents, extensions: counts.extensions });
-  const names = capabilityPreviewNames(tools, skills, targets);
-  const shown = names.slice(0, CAP_PREVIEW_NAMES);
   return (
     <section data-rail-capabilities="">
       <FoldHead title={t('rail.capabilities.title')} summary={summary} open={open} onToggle={() => { setOpen((v) => !v); }} />
-      {!open && shown.length > 0 ? (
-        <p data-rail-capabilities-preview title={names.join(' · ')} className="mt-0.5 flex items-baseline text-[12px] leading-5 text-ink-faint">
-          <span className="min-w-0 truncate">{shown.join(' · ')}</span>
-          {names.length > shown.length ? <span className="shrink-0">· +{names.length - shown.length}</span> : null}
-        </p>
-      ) : null}
       {open ? (
         <div className="pt-1">
-          <AgentCapabilitiesSection tools={tools} skills={skills} subagentTargets={targets} draftScope={{ workspace_id: workspaceId, cwd }} callerProfile={data.profile?.name} />
+          <AgentCapabilitiesSection tools={tools} skills={skills} subagentTargets={targets} draftScope={{ workspace_id: workspaceId, cwd }} callerProfile={data.profile?.name} inlineGroupDetail />
         </div>
       ) : null}
     </section>

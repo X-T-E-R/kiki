@@ -7,8 +7,8 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { CapabilityLink } from '../capabilities/CapabilityLink';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
-import { INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
+import { NumberField } from './runtimeControls';
 import { SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -70,26 +70,20 @@ function McpTimeoutsCard() {
       <div className="space-y-3">
         <Hint>{t('st.mcp.timeoutsHint')}</Hint>
         <fieldset disabled={saving} className="grid gap-3 sm:grid-cols-2 disabled:opacity-60">
-          <label className="text-[11px] font-medium text-ink-soft">
-            {t('st.runtime.mcpStartupTimeout')}
-            <input
-              className={`${INPUT} mt-1 font-mono`}
-              inputMode="numeric"
-              value={startupTimeoutMs}
-              onChange={(event) => { setStartupTimeoutMs(event.target.value); setDirty(true); }}
-            />
-            <Hint>{t('st.mcp.startupTimeoutHint')}</Hint>
-          </label>
-          <label className="text-[11px] font-medium text-ink-soft">
-            {t('st.runtime.mcpToolTimeout')}
-            <input
-              className={`${INPUT} mt-1 font-mono`}
-              inputMode="numeric"
-              value={toolTimeoutMs}
-              onChange={(event) => { setToolTimeoutMs(event.target.value); setDirty(true); }}
-            />
-            <Hint>{t('st.mcp.toolTimeoutHint')}</Hint>
-          </label>
+          <NumberField
+            label={t('st.runtime.mcpStartupTimeout')}
+            value={startupTimeoutMs}
+            hint={t('st.mcp.startupTimeoutHint')}
+            detail={t('st.mcp.startupTimeoutDetail')}
+            onChange={(next) => { setStartupTimeoutMs(next); setDirty(true); }}
+          />
+          <NumberField
+            label={t('st.runtime.mcpToolTimeout')}
+            value={toolTimeoutMs}
+            hint={t('st.mcp.toolTimeoutHint')}
+            detail={t('st.mcp.toolTimeoutDetail')}
+            onChange={(next) => { setToolTimeoutMs(next); setDirty(true); }}
+          />
         </fieldset>
         <SettingsDraftFooter saved={justSaved} id="mcp-timeouts" dirty={dirty} saving={saving} onSave={() => void save()}
           onDiscard={() => { setStartupTimeoutMs(optionalNumberDraft(configQuery.data?.mcp?.startupTimeoutMs)); setToolTimeoutMs(optionalNumberDraft(configQuery.data?.mcp?.toolTimeoutMs)); setDirty(false); setFeedback(null); }} />

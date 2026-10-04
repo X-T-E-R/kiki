@@ -15,6 +15,10 @@
  *     materializes it next to the session as a path-referenced attachment the
  *     model opens with the Read tool. Chips carry the file id once the upload
  *     lands; sending blocks while an upload is in flight.
+ *   - SSH hosts are NOT message content. A host joined to a session lives on
+ *     the server's session host list for the whole conversation, so neither the
+ *     prompt nor a skill activation mentions it. The `ssh` attachment kind
+ *     survives only for a draft that has not created its session yet.
  */
 
 import type { FileContent, ImageContent, VideoContent, MessageContent } from '@kiki/protocol';
@@ -55,7 +59,12 @@ export interface SshHostAttachment {
 
 export type ComposerAttachment = FileMention | ImageAttachment | UploadAttachment | RetainedAttachment | SshHostAttachment;
 
-/** Display snapshot only; joining a host still uses the session SSH API. */
+/**
+ * Reads back the display block older sessions appended to a user message.
+ * Joining a host is a session fact now (the session host list is the truth), so
+ * nothing writes this block any more; it survives only so stored history keeps
+ * rendering the way the user typed it instead of leaking the raw XML.
+ */
 export function parseSshHostContext(text: string): { body: string; hosts: readonly SshHostAttachment[] } {
   const match = /(?:\n\n|^)<ssh_host_refs>\n([^\n]+)\n<\/ssh_host_refs>$/.exec(text);
   if (match === null) return { body: text, hosts: [] };
@@ -70,11 +79,6 @@ export function parseSshHostContext(text: string): { body: string; hosts: readon
   } catch {
     return { body: text, hosts: [] };
   }
-}
-
-function sshHostContext(attachments: readonly ComposerAttachment[]): string {
-  const hosts = attachments.filter((item): item is SshHostAttachment => item.kind === 'ssh');
-  return hosts.length === 0 ? '' : `<ssh_host_refs>\n${JSON.stringify(hosts.map(({ id, name }) => ({ id, name })))}\n</ssh_host_refs>`;
 }
 
 /**
@@ -285,7 +289,8 @@ export function mentionToken(mention: FileMention): string {
  * Returns null when there is nothing to send (caller keeps the composer open).
  * Upload stubs without a file id yet are skipped — the composer blocks sending
  * while any upload is in flight, so a skipped stub means the caller bypassed
- * that gate (defensive, never the intended path).
+ * that gate (defensive, never the intended path). An `ssh` item is a session
+ * resource the composer already granted; it contributes nothing here.
  */
 export function buildPromptContent(
   text: string,
@@ -298,8 +303,6 @@ export function buildPromptContent(
   if (mentions.length > 0) parts.push(mentions.map(mentionToken).join(' '));
   if (text.trim() !== '') parts.push(text.trim());
   const content: MessageContent[] = [];
-  const sshContext = sshHostContext(attachments);
-  if (sshContext !== '') parts.push(sshContext);
   if (parts.length > 0) content.push({ type: 'text', text: parts.join('\n\n') });
   for (const image of images) {
     const part: ImageContent = {
@@ -328,7 +331,8 @@ export function buildPromptContent(
 /**
  * Attachments for skill activation: the wire accepts image/video/file parts
  * (text stays in `args`), so images and uploaded files carry over and file
- * mentions fold into the args string as `@path` tokens.
+ * mentions fold into the args string as `@path` tokens. An `ssh` item is a
+ * session resource, not activation input, and stays out of `args`.
  */
 export function buildSkillActivation(
   args: string,
@@ -341,8 +345,7 @@ export function buildSkillActivation(
   const media = (buildPromptContent('', attachments) ?? []).filter(
     (part): part is ImageContent | VideoContent | FileContent => part.type === 'image' || part.type === 'video' || part.type === 'file',
   );
-  const sshContext = sshHostContext(attachments);
-  return { args: [mergedArgs, sshContext].filter((part) => part !== '').join('\n\n'), attachments: media.length > 0 ? media : undefined };
+  return { args: mergedArgs, attachments: media.length > 0 ? media : undefined };
 }
 
 /**

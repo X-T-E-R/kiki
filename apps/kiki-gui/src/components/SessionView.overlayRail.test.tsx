@@ -27,6 +27,8 @@ vi.mock('../state/connection', () => {
     sessionView: () => ({}),
     getConfig: () => Promise.resolve({}),
     listModels: () => Promise.resolve({ items: [] }),
+    listAgentModelSwitches: () => Promise.resolve([]),
+    subscribeAgentModelSwitches: () => ({ ready: Promise.resolve(), dispose: () => {} }),
   };
   const registry = {
     add: () => {},
@@ -219,36 +221,48 @@ async function mountTitleWithoutRail() {
   };
 }
 
-describe('Bot-only session controls', () => {
+describe('message-view controls and the persona menu', () => {
+  // Two independent questions, tested apart: the reply mode decides whether the
+  // message view exists at all, and the binding decides whether the conversation
+  // has a persona's surfaces to offer. The old single `isBotSession` answered
+  // both with "is this a Bot", which gave an ordinary persona session a message
+  // view it never asked for.
   const sessions = [
-    { label: 'ordinary reply', delivery: 'reply', agent_config: {}, metadata: {}, bot: false, home: false },
-    { label: 'ordinary message', delivery: 'message', agent_config: {}, metadata: {}, bot: false, home: false },
-    { label: 'invalid Bot metadata', delivery: 'reply', agent_config: {}, metadata: { bot_persona_id: 123 }, bot: false, home: false },
-    { label: 'persona in reply mode', delivery: 'reply', agent_config: { persona: { id: 'example-bot', name: 'Example Bot' } }, metadata: {}, bot: true, home: false },
-    { label: 'Bot home', delivery: 'message', agent_config: {}, metadata: { bot_persona_id: 'example-bot' }, bot: true, home: true },
+    { label: 'ordinary reply', delivery: 'reply', agent_config: {}, metadata: {}, message: false, persona: false, bound: false },
+    { label: 'ordinary message', delivery: 'message', agent_config: {}, metadata: {}, message: true, persona: false, bound: false },
+    { label: 'invalid Bot metadata', delivery: 'reply', agent_config: {}, metadata: { bot_persona_id: 123 }, message: false, persona: false, bound: false },
+    { label: 'persona in reply mode', delivery: 'reply', agent_config: { persona: { id: 'example-bot', name: 'Example Bot' } }, metadata: {}, message: false, persona: true, bound: true },
+    { label: 'message-delivering Bot home', delivery: 'message', agent_config: {}, metadata: { bot_persona_id: 'example-bot' }, message: true, persona: true, bound: false },
   ] as const;
 
   describe.each(['narrow', 'wide'] as const)('%s header', (width) => {
-    it.each(sessions)('shows Bot controls only for $label when marked as Bot', async (session) => {
+    it.each(sessions)('follows the reply mode and the persona binding: $label', async (session) => {
       fixture.session = {
-        id: 'session-a', title: 'Example session',
+        id: 'session-a', title: 'Example session', workspace_id: 'ws_a',
         agent_config: session.agent_config, metadata: session.metadata, delivery: session.delivery,
       } as Session;
       writeTimelineView('session-a', 'process');
       const view = await mountAt(width);
       try {
-        expect(view.host.querySelector('[data-timeline-view-switch]') !== null).toBe(session.bot);
+        expect(view.host.querySelector('[data-timeline-view-switch]') !== null).toBe(session.message);
+        expect(view.host.querySelector('[data-session-persona-identity]') !== null).toBe(session.bound);
         await act(async () => { view.host.querySelector<HTMLButtonElement>('[data-session-actions] > button')!.click(); });
-        expect(view.host.querySelectorAll('[data-timeline-view-menu]').length).toBe(session.bot && width === 'narrow' ? 2 : 0);
-        expect(view.host.querySelectorAll('[data-delivery-option]').length).toBe(session.bot ? 2 : 0);
-        expect(view.host.querySelector('[data-bot-settings-open]') !== null).toBe(session.home);
+        expect(view.host.querySelectorAll('[data-timeline-view-menu]').length).toBe(session.message && width === 'narrow' ? 2 : 0);
+        // The menu carries the reply-mode rows for either reason: a persona's
+        // session, or a session whose delivery is the message mode itself.
+        expect(view.host.querySelectorAll('[data-delivery-option]').length).toBe(session.persona || session.message ? 2 : 0);
+        // Three persona pages plus this conversation's binding-settings drawer.
+        expect([...view.host.querySelectorAll('[data-persona-menu]')].map((entry) => entry.getAttribute('data-persona-menu'))).toEqual(session.persona ? [
+          'persona.menu.conversations', 'persona.menu.settings', 'persona.menu.memory', 'persona.menu.binding',
+        ] : []);
+        expect(view.host.querySelector('[data-bot-settings-open]')).toBeNull();
         expect(view.host.querySelector('[data-session-rename]')).not.toBeNull();
         expect(view.host.querySelector('[data-side-question]')).not.toBeNull();
 
         const shortcut = new KeyboardEvent('keydown', { key: '.', code: 'Period', ctrlKey: true, shiftKey: true, cancelable: true });
         await act(async () => { window.dispatchEvent(shortcut); });
-        expect(shortcut.defaultPrevented).toBe(session.bot);
-        expect(readTimelineView('session-a', fixture.session)).toBe(session.bot ? 'message' : 'process');
+        expect(shortcut.defaultPrevented).toBe(session.message);
+        expect(readTimelineView('session-a', fixture.session)).toBe(session.message ? 'message' : 'process');
       } finally {
         await view.unmount();
         fixture.session = undefined;
@@ -312,6 +326,25 @@ describe('right rail responsive layout', () => {
       expect(view.toggle()?.getAttribute('aria-expanded')).toBe('true');
     } finally {
       await view.unmount();
+    }
+  });
+
+  it('keeps the conversation mounted in cockpit mode and at narrow widths', async () => {
+    localStorage.setItem('kiki.railMode', 'cockpit');
+    const view = await mountAt('wide');
+    try {
+      const transcript = view.host.querySelector('[data-transcript]');
+      expect(transcript).not.toBeNull();
+      expect(view.rail()).not.toBeNull();
+      await resizeTo('narrow');
+      expect(view.host.querySelector('[data-transcript]')).toBe(transcript);
+      expect(view.rail()).toBeNull();
+      await resizeTo('wide');
+      expect(view.host.querySelector('[data-transcript]')).toBe(transcript);
+      expect(view.rail()).not.toBeNull();
+    } finally {
+      await view.unmount();
+      localStorage.removeItem('kiki.railMode');
     }
   });
 

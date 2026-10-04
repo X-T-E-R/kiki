@@ -18,6 +18,7 @@ import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
 import { SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
 import { AppendTimingField } from './CommunicationSection';
+import { SpacePrefOrigin } from './spaces/SpacePrefOrigin';
 
 /**
  * General: preferences of this device only. Every control writes the local
@@ -105,6 +106,7 @@ export function GeneralSection() {
               onChange={(checked) => { writeSettings({ foldSteps: checked }); }}
             />
             <Hint>{t('st.transcript.foldStepsHint')}</Hint>
+            <SpacePrefOrigin item="foldSteps" label={t('st.transcript.foldSteps')} />
           </div>
           <div data-settings-field data-setting-rail-open className="space-y-0.5 py-1">
             <Toggle
@@ -124,6 +126,10 @@ export function GeneralSection() {
               onChange={(checked) => { writeSettings({ worktreeSkipConfirm: !checked }); }}
             />
             <Hint>{t('st.composer.worktreeConfirmHint')}</Hint>
+            <SpacePrefOrigin item="worktreeSkipConfirm" label={t('st.composer.worktreeConfirm')} />
+          </div>
+          <div className="space-y-0.5">
+            <SpacePrefOrigin item="defaultAppendTiming" label={t('st.communication.appendTimingTitle')} />
           </div>
           <AppendTimingField />
         </div>

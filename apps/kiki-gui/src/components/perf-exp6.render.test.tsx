@@ -7,9 +7,10 @@
  * assertions validate the fixture/measurement path rather than pinning timing
  * thresholds that would be machine-dependent.
  */
-import { Profiler, type ProfilerOnRenderCallback } from 'react';
+import { act, Profiler, type ProfilerOnRenderCallback } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 
 import {
@@ -146,17 +147,19 @@ function format(summary: Summary): string {
 
 function renderTranscript(state: SessionViewState, onRender: ProfilerOnRenderCallback) {
   return (
-    <I18nProvider>
-      <Profiler id="transcript" onRender={onRender}>
-        <Transcript
-          state={state}
-          onLoadOlder={loadOlder}
-          onResolveApproval={resolveApproval}
-          onAnswerQuestion={answerQuestion}
-          onDismissQuestion={dismissQuestion}
-        />
-      </Profiler>
-    </I18nProvider>
+    <MemoryRouter>
+      <I18nProvider>
+        <Profiler id="transcript" onRender={onRender}>
+          <Transcript
+            state={state}
+            onLoadOlder={loadOlder}
+            onResolveApproval={resolveApproval}
+            onAnswerQuestion={answerQuestion}
+            onDismissQuestion={dismissQuestion}
+          />
+        </Profiler>
+      </I18nProvider>
+    </MemoryRouter>
   );
 }
 
@@ -192,13 +195,13 @@ function measureMount(state: SessionViewState): Sample & { domBlocks: number } {
   return { wallMs, profilerMs, domBlocks };
 }
 
-function measureDeltaUpdates(
+async function measureDeltaUpdates(
   initialState: SessionViewState,
   liveTurnId: string,
   samples: number,
   warmups: number,
   deltaForIteration: (iteration: number) => string,
-): Sample[] {
+): Promise<Sample[]> {
   const { container, root } = createContainerRoot();
   let state = initialState;
   let currentProfilerMs = Number.NaN;
@@ -211,13 +214,16 @@ function measureDeltaUpdates(
   });
 
   const measured: Sample[] = [];
+  let expectedTail = 'hot tail';
   for (let iteration = 0; iteration < warmups + samples; iteration += 1) {
     const live = state.blocks.at(-1);
     if (live?.kind !== 'assistant') throw new Error('expected final live assistant block');
+    const delta = deltaForIteration(iteration);
+    expectedTail += delta;
     const nextBlocks = state.blocks.slice();
     nextBlocks[nextBlocks.length - 1] = {
       ...live,
-      text: live.text + deltaForIteration(iteration),
+      text: live.text + delta,
     };
     state = { ...state, blocks: nextBlocks };
 
@@ -232,7 +238,11 @@ function measureDeltaUpdates(
     if (iteration >= warmups) measured.push({ wallMs, profilerMs: currentProfilerMs });
   }
 
+  // Let Streamdown's scheduled prefix work settle outside the synchronous commit measurement.
+  await act(async () => {});
   expect(container.querySelectorAll('[data-block-id]').length).toBeLessThan(24);
+  const renderedLive = container.querySelector(`[data-block-id="agent-frame-live-${liveTurnId}"]`);
+  expect(renderedLive?.textContent?.replace(/\s+/g, '')).toContain(expectedTail.replace(/\s+/g, ''));
   dispose(container, root);
   return measured;
 }
@@ -296,7 +306,7 @@ afterAll(() => {
 it(
   'measures real Transcript mount and per-delta React commit scaling',
   { timeout: 240_000 },
-  () => {
+  async () => {
     console.log(
       `EXP-6 environment: node=${process.version} platform=${process.platform} ` +
         `vitest=jsdom (no layout/paint)`,
@@ -321,7 +331,7 @@ it(
     console.log('blocks | wall render+commit (reducer excluded) | React Profiler render duration');
     for (const blockCount of LEVELS) {
       const fixture = fixtures.get(blockCount)!;
-      const samples = measureDeltaUpdates(
+      const samples = await measureDeltaUpdates(
         fixture.state,
         fixture.liveTurnId,
         UPDATE_SAMPLES,
@@ -335,7 +345,7 @@ it(
     printHeader(`M3 20k markdown streaming (${LONG_MARKDOWN_SAMPLES} samples)`);
     console.log('scenario | wall render+commit | React Profiler render duration');
     const hotTail = buildLongMarkdownState();
-    const hotTailSamples = measureDeltaUpdates(
+    const hotTailSamples = await measureDeltaUpdates(
       hotTail.state,
       hotTail.liveTurnId,
       LONG_MARKDOWN_SAMPLES,
@@ -345,7 +355,7 @@ it(
     printRow('hot-tail token (stable parsed prefix)', hotTailSamples);
 
     const boundary = buildLongMarkdownState();
-    const boundarySamples = measureDeltaUpdates(
+    const boundarySamples = await measureDeltaUpdates(
       boundary.state,
       boundary.liveTurnId,
       LONG_MARKDOWN_SAMPLES,

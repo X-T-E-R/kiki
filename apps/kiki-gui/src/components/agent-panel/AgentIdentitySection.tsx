@@ -17,11 +17,7 @@ import { INSPECTOR_HEAD, INSPECTOR_LINK, InspectorRow } from './InspectorSection
 import { capabilitySourceLabel, SOURCE_TONE_CLASS } from './sourceLabel';
 
 function dispatchPolicyClass(policy: AgentCapabilityTarget['dispatch_policy']): string {
-  return policy === 'strict'
-    ? 'bg-amber-card text-amber-ink'
-    : policy === 'advisory'
-      ? 'bg-panel text-ink-soft'
-      : 'bg-panel text-ink-faint';
+  return policy === 'fixed' ? 'bg-amber-card text-amber-ink' : 'bg-panel text-ink-faint';
 }
 
 function recommendationClass(status: AgentCapabilityTarget['recommendation_status']): string {

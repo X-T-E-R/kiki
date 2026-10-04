@@ -2,7 +2,7 @@ import chalk from 'chalk';
 
 import { splitTokenFragment } from '#/cli/sub/web/access-urls';
 import { formatReadyBanner, startServerForeground } from '#/cli/sub/web/run';
-import { parseServerOptions, tryResolveServerToken } from '#/cli/sub/web/shared';
+import { parseServerOptions, tryResolveLocalOwnerToken } from '#/cli/sub/web/shared';
 import { openUrl } from '#/utils/open-url';
 import { getDataDir } from '#/utils/paths';
 
@@ -47,7 +47,7 @@ function startNewServerAfterExit(host: SlashCommandHost, sessionId: string): voi
           // server writes `server.token` on first boot, so reading it earlier
           // would miss first-time starts and the browser would hit the auth
           // gate.
-          const token = tryResolveServerToken(getDataDir());
+          const token = tryResolveLocalOwnerToken(getDataDir());
           const url = webSessionUrl(origin, sessionId, token);
           process.stdout.write(formatReadyBanner(origin, options.host, { token }));
           process.stdout.write(`\n  ${sessionLine(url)}\n`);

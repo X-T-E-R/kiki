@@ -1,6 +1,6 @@
-import { useEffect, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Navigate, useLocation, useMatch } from 'react-router-dom';
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { Navigate, useLocation, useMatch, useNavigate } from 'react-router-dom';
 import { readLastSessionId, writeLastSessionId } from '@kiki/session-core/settings';
 
 import { useHost } from '../host';
@@ -37,8 +37,14 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
   const roomId = roomMatch?.params.id ?? roomLinkMatch?.params.id;
   const targetId = sessionId ?? roomId;
   const route = `${location.pathname}${location.search}${location.hash}`;
+  const queryClient = useQueryClient();
+  const queryKey = ['space-view-target', scopeId, sessionId === undefined ? 'room' : 'session', targetId];
+  const targetKey = JSON.stringify(queryKey);
+  const admittedTarget = useRef<{ queryClient: QueryClient; key: string } | null>(null);
+  const createdSession = (location.state as { createdSession?: { id?: string; scopeId?: string } } | null)?.createdSession;
+  const createdHere = sessionId !== undefined && createdSession?.id === sessionId && createdSession.scopeId === scopeId;
   const target = useQuery({
-    queryKey: ['space-view-target', scopeId, sessionId === undefined ? 'room' : 'session', targetId],
+    queryKey,
     enabled: targetId !== undefined,
     retry: false,
     queryFn: async () => {
@@ -55,8 +61,22 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
       return (await createBotRoomApi(client).getRoom(roomId ?? '')) !== undefined;
     },
   });
-  const checking = targetId !== undefined && (target.isPending || target.isFetching);
+  // Only this visit's creation result or an already admitted target can keep
+  // its controller mounted during revalidation; an old cache entry cannot.
+  const confirmed = target.data === true && (createdHere ||
+    (admittedTarget.current?.queryClient === queryClient && admittedTarget.current.key === targetKey));
+  const checking = targetId !== undefined && (target.isPending || (target.isFetching && !confirmed));
   const missing = !checking && targetId !== undefined && target.data === false;
+  const navigate = useNavigate();
+  useLayoutEffect(() => {
+    admittedTarget.current = !checking && target.data === true ? { queryClient, key: targetKey } : null;
+    if (!createdHere || checking || missing) return;
+    // Consume only the creation fact, including empty/failed-load handoffs.
+    // The initial prompt/skill still belongs to SessionView's existing flow.
+    const nextState = { ...(location.state as Record<string, unknown>) };
+    delete nextState['createdSession'];
+    void navigate(route, { replace: true, state: nextState });
+  }, [queryClient, targetKey, checking, target.data, createdHere, missing, location.state, navigate, route]);
 
   useEffect(() => {
     if (missing && sessionId !== undefined && readLastSessionId() === sessionId) writeLastSessionId(undefined);

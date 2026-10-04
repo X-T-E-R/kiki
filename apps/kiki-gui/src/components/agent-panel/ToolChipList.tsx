@@ -19,6 +19,10 @@ const TOOL_CATEGORY_LABEL_KEYS: Readonly<Record<string, I18nKey>> = {
   todo: 'agentPanel.category.todo',
   skill: 'agentPanel.category.skill',
   edit: 'agentPanel.category.edit',
+  memory: 'agentPanel.category.memory',
+  history: 'agentPanel.category.history',
+  browser: 'agentPanel.category.browser',
+  message: 'agentPanel.category.message',
   builtin: 'agentPanel.category.builtin',
   other: 'agentPanel.category.other',
 };
