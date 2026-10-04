@@ -1,8 +1,11 @@
-import type { UsageExportConsent, UsageExportDestination, UsageExportHandoff, UsageExportHandoffArm, UsageExportItem, UsageExportPreview, UsageExportSave, UsageExportScope, UsageExportStatus } from '@kiki/protocol';
+import type { UsageExportConsent, UsageExportDestination, UsageExportHandoff, UsageExportHandoffArm, UsageExportItem, UsageExportPreview, UsageExportSave, UsageExportScope, UsageExportStatus, UsageExportVibeAuth, UsageExportVibeAuthInput } from '@kiki/protocol';
 
 export interface UsageExportFacade {
   status(): Promise<UsageExportStatus>;
   saveDraft(input: UsageExportSave): Promise<UsageExportDestination>;
+  beginVibeAuth(id: string, input: UsageExportVibeAuthInput): Promise<UsageExportVibeAuth>;
+  pollVibeAuth(flowId: string): Promise<UsageExportVibeAuth>;
+  cancelVibeAuth(flowId: string): Promise<UsageExportVibeAuth>;
   preview(id: string): Promise<UsageExportPreview>;
   testProtocol(id: string): Promise<{ outcome: 'delivered' | 'retry' | 'needs-auth' | 'too-large' | 'invalid' | 'remote-diverged'; error_category: string | null }>;
   enable(id: string, consent: UsageExportConsent): Promise<UsageExportDestination>;

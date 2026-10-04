@@ -386,6 +386,7 @@ export function UsageExportPanel() {
           entry={form.entry}
           onClose={() => { setForm(null); }}
           onSaved={() => { setForm(null); void invalidate(); }}
+          onUpdated={() => { void invalidate(); }}
         />
       ) : null}
 

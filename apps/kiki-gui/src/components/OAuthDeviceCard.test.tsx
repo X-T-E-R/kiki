@@ -127,11 +127,7 @@ describe('device sign-in open-verification action', () => {
     const { root, container } = makeRoot();
     renderCard(root, PENDING_SNAPSHOT);
     await clickOpenButton(container);
-    expect(open).toHaveBeenCalledWith(
-      PENDING_SNAPSHOT.verification_uri_complete,
-      '_blank',
-      'noopener,noreferrer',
-    );
+    expect(open).toHaveBeenCalledWith('about:blank', '_blank');
     const alert = container.querySelector('[role="alert"]');
     expect(alert?.textContent).toBe('The browser blocked the new window.');
   });

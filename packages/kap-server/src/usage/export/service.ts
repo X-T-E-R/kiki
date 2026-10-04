@@ -13,7 +13,9 @@ import { usageExportHandoffArmSchema, usageExportHandoffSchema, type UsageExport
 import { armUsageExportHandoff, confirmNativeHandoff, planUsageExportHandoff, planUsageExportRollback, recordLegacyHandoffReceipt, nativeHandoffScope } from './migration';
 import { activateCollectorHandoff, canonicalExportHome, readCollectorHandoff, resumeCollectorHandoff } from './handoffFile';
 
-export interface UsageExportServiceOptions { readonly now?: () => number; readonly random?: () => number; readonly sourceHome?: string }
+import { VibeCafeDeviceAuth, type VibeAuthRequest } from './vibeAuth';
+
+export interface UsageExportServiceOptions { readonly now?: () => number; readonly random?: () => number; readonly sourceHome?: string; readonly vibeAuthRequest?: VibeAuthRequest }
 export class UsageExportService {
   private readonly adapters = new Map<string, UsageExportAdapter>();
   private readonly flights = new Map<string, Promise<void>>();
@@ -29,8 +31,16 @@ export class UsageExportService {
   private closing = false;
   private started = false;
   private recoveryFlight: Promise<void> | undefined;
+  readonly vibeAuth: VibeCafeDeviceAuth;
   constructor(readonly store: UsageExportStore, private readonly reader: UsageAggregationService, private readonly pricing: IModelPricingService, private readonly secrets: UsageExportSecretStore, adapters: readonly UsageExportAdapter[], private readonly options: UsageExportServiceOptions = {}) {
     this.now = options.now ?? Date.now; this.random = options.random ?? Math.random;
+    this.vibeAuth = new VibeCafeDeviceAuth((id) => {
+      if (!this.store.writer) throw new Error('export-writer-unavailable');
+      return this.store.get(id);
+    }, async (input) => {
+      const destination = await this.saveDraft(input);
+      return this.store.update(destination.id, { enabled: false, consent_fingerprint: null, state: 'draft', next_at: null });
+    }, options.vibeAuthRequest, this.now);
     for (const adapter of adapters) this.registerAdapter(adapter);
   }
   registerAdapter(adapter: UsageExportAdapter): void {
@@ -320,6 +330,7 @@ export class UsageExportService {
     if (this.continuationTimer !== undefined) clearTimeout(this.continuationTimer);
     if (this.electionTimer !== undefined) clearTimeout(this.electionTimer);
     for (const controller of this.controllers.values()) controller.abort();
+    await this.vibeAuth.close();
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([Promise.allSettled([...this.flights.values(), ...this.protocolFlights, this.scanFlight, this.recoveryFlight]), new Promise<void>((resolve) => { timer = setTimeout(resolve, 3000); })]); if (timer !== undefined) clearTimeout(timer);
     this.store.close();

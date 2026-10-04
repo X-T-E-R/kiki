@@ -8,7 +8,8 @@ import { projectSource } from '../src/usage/export/projection';
 import { UsageExportStore } from '../src/usage/export/store';
 import { gunzipSync } from 'node:zlib';
 
-import { type UsageExportBatch, type UsageExportScope } from '@kiki/protocol';
+import { VIBE_CAFE_INGEST_ENDPOINT, type UsageExportBatch, type UsageExportScope, type UsageExportDestination } from '@kiki/protocol';
+import { VibeCafeDeviceAuth, type VibeAuthRequest } from '../src/usage/export/vibeAuth';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { UsageExportAdapterContext } from '../src/usage/export/adapter';
@@ -228,5 +229,94 @@ describe('native handoff state contract', () => {
     const rollback = planUsageExportRollback(arm(), cutoff + 1, cutoff + 1_800_000);
     expect(rollback.phase).toBe('rollback-prepared');
     expect(nativeHandoffScope(rollback, scope)).toEqual({ ...scope, start_at: cutoff, end_at: cutoff + 1_800_000 });
+  });
+});
+
+function authFixture() {
+  let time = cutoff;
+  const destination: UsageExportDestination = { id: '11111111-1111-4111-8111-111111111111', label: 'VibeCafe', target: { kind: 'vibe', endpoint: VIBE_CAFE_INGEST_ENDPOINT }, account_fingerprint: hash, scope: { start_at: cutoff, end_at: null, include_ephemeral: false, excluded_workspace_ids: [] }, schedule_minutes: 30, stream_id: stream, enabled: false, consent_fingerprint: null, credential_storage: 'none', state: 'draft', next_at: null, last_success_at: null, error_category: null };
+  const code = { deviceCode: 'DEVICE_SECRET', userCode: 'ABCD-EFGH', verificationUriComplete: 'https://vibecafe.ai/usage/device?user_code=ABCD-EFGH', expiresIn: 900, interval: 5 };
+  const send = vi.fn<VibeAuthRequest>().mockResolvedValueOnce(code).mockResolvedValue({ error: 'authorization_pending' });
+  const save = vi.fn(async () => destination);
+  const auth = new VibeCafeDeviceAuth(() => destination, save, send, () => time);
+  return { auth, destination, code, send, save, tick: (ms = 5000) => { time += ms; } };
+}
+
+describe('official VibeCafe device connection', () => {
+  it('keeps the device secret server-side, respects polling interval and stores only an approved key', async () => {
+    const f = authFixture();
+    try {
+      const flow = await f.auth.begin(f.destination.id, { storage: 'keyring' });
+      expect(flow).toMatchObject({ state: 'pending', user_code: 'ABCD-EFGH', poll_after_ms: 5000 });
+      expect(JSON.stringify(flow)).not.toContain('DEVICE_SECRET');
+      expect(f.send.mock.calls[0]!.slice(0, 2)).toEqual(['/api/usage/device/code', { clientName: 'Kiki', hostname: `kiki-${stream}` }]);
+      await f.auth.poll(flow.flow_id); expect(f.send).toHaveBeenCalledTimes(1);
+      f.tick(); expect((await f.auth.poll(flow.flow_id)).state).toBe('pending'); expect(f.save).not.toHaveBeenCalled();
+      f.tick(); f.send.mockResolvedValue({ apiKey: 'vbu_SYNTHETIC_APPROVED_KEY', apiUrl: 'https://vibecafe.ai' });
+      const approved = await f.auth.poll(flow.flow_id);
+      expect(approved.state).toBe('connected');
+      expect(f.save).toHaveBeenCalledWith({ draft: { id: f.destination.id, label: 'VibeCafe', target: f.destination.target, scope: f.destination.scope, schedule_minutes: 30 }, secret: { value: 'vbu_SYNTHETIC_APPROVED_KEY', storage: 'keyring' } });
+      expect(JSON.stringify(approved)).not.toMatch(/DEVICE_SECRET|vbu_/);
+      await f.auth.poll(flow.flow_id); expect(f.save).toHaveBeenCalledTimes(1);
+    } finally { await f.auth.close(); }
+  });
+
+  it('cancels a pending exchange and discards an approval arriving afterwards', async () => {
+    const f = authFixture();
+    try {
+      const flow = await f.auth.begin(f.destination.id, { storage: 'keyring' });
+      let resolve!: (value: unknown) => void;
+      f.send.mockImplementationOnce(async () => new Promise((done) => { resolve = done; }));
+      f.tick(); const pending = f.auth.poll(flow.flow_id);
+      expect((await f.auth.cancel(flow.flow_id)).state).toBe('cancelled');
+      resolve({ apiKey: 'vbu_LATE_KEY' });
+      expect((await pending).state).toBe('cancelled');
+      expect(f.save).not.toHaveBeenCalled();
+    } finally { await f.auth.close(); }
+  });
+
+  it('reports denial, expiry, malformed responses and credential storage failure without a connection', async () => {
+    for (const [response, state] of [[{ error: 'access_denied' }, 'denied'], [{ error: 'expired_token' }, 'expired'], [{ apiKey: 'bad-key' }, 'error'], [{ apiKey: 'vbu_KEY', apiUrl: 'https://other.example.test' }, 'error']] as const) {
+      const f = authFixture();
+      try {
+        const flow = await f.auth.begin(f.destination.id, { storage: 'keyring' }); f.tick(); f.send.mockResolvedValue(response);
+        expect((await f.auth.poll(flow.flow_id)).state).toBe(state); expect(f.save).not.toHaveBeenCalled();
+      } finally { await f.auth.close(); }
+    }
+    const f = authFixture();
+    try {
+      const flow = await f.auth.begin(f.destination.id, { storage: 'keyring' }); f.tick();
+      f.send.mockResolvedValue({ apiKey: 'vbu_KEY' }); f.save.mockRejectedValue(new Error('keyring-unavailable'));
+      expect(await f.auth.poll(flow.flow_id)).toMatchObject({ state: 'error', error_category: 'keyring-unavailable' });
+    } finally { await f.auth.close(); }
+  });
+
+  it('refuses custom destinations, unsafe verification URLs, private-file storage without consent and changed drafts', async () => {
+    const f = authFixture();
+    try {
+      await expect(f.auth.begin(f.destination.id, { storage: 'private-file' })).rejects.toThrow('private-file-storage-requires-consent');
+      f.destination.target = { kind: 'vibe', endpoint: 'https://custom.example.test/api/usage/ingest' };
+      await expect(f.auth.begin(f.destination.id, { storage: 'keyring' })).rejects.toThrow('vibe-auth-official-only');
+      expect(f.send).not.toHaveBeenCalled();
+      f.destination.target = { kind: 'vibe', endpoint: VIBE_CAFE_INGEST_ENDPOINT };
+      f.send.mockReset().mockResolvedValue({ ...f.code, verificationUriComplete: 'https://other.example.test/usage/device' });
+      expect((await f.auth.begin(f.destination.id, { storage: 'keyring' })).state).toBe('error');
+      f.send.mockResolvedValue(f.code); const flow = await f.auth.begin(f.destination.id, { storage: 'keyring' });
+      f.destination.label = 'changed'; f.tick(); f.send.mockResolvedValue({ apiKey: 'vbu_KEY' });
+      expect(await f.auth.poll(flow.flow_id)).toMatchObject({ state: 'error', error_category: 'vibe-auth-destination-changed' }); expect(f.save).not.toHaveBeenCalled();
+    } finally { await f.auth.close(); }
+  });
+
+  it('retries network failures, slows polling when requested, and expires without further requests', async () => {
+    const f = authFixture();
+    try {
+      const flow = await f.auth.begin(f.destination.id, { storage: 'keyring' }); f.tick();
+      f.send.mockRejectedValueOnce(new Error('network'));
+      expect(await f.auth.poll(flow.flow_id)).toMatchObject({ state: 'pending', error_category: 'vibe-auth-network' });
+      f.tick(); f.send.mockResolvedValue({ error: 'slow_down' });
+      expect((await f.auth.poll(flow.flow_id)).poll_after_ms).toBe(10000);
+      const requests = f.send.mock.calls.length; f.tick(900_000);
+      expect((await f.auth.poll(flow.flow_id)).state).toBe('expired'); expect(f.send).toHaveBeenCalledTimes(requests); expect(f.save).not.toHaveBeenCalled();
+    } finally { await f.auth.close(); }
   });
 });

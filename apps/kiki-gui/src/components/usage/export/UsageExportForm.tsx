@@ -21,7 +21,8 @@ import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
-import type { UsageExportDraft, UsageExportPreview, UsageExportSave, UsageExportScope, UsageExportTarget } from '@kiki/protocol';
+import { VIBE_CAFE_INGEST_ENDPOINT, type UsageExportDraft, type UsageExportPreview, type UsageExportSave, type UsageExportScope, type UsageExportTarget } from '@kiki/protocol';
+import { UsageExportVibeConnect } from './UsageExportVibeConnect';
 
 import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
@@ -76,6 +77,7 @@ interface FormState {
   readonly label: string;
   readonly kind: UsageExportTarget['kind'];
   readonly endpoint: string;
+  readonly manualVibe: boolean;
   readonly authentication: 'none' | 'bearer' | 'hmac';
   readonly gzip: boolean;
   /** Write-only: empty means "keep whatever the server already holds". */
@@ -100,7 +102,7 @@ interface FormState {
 function initialForm(nowMs: number, entry: UsageExportEntry | undefined): FormState {
   const start = entry === undefined ? floorToHalfHour(nowMs) : entry.destination.scope.start_at;
   const base: FormState = {
-    id: entry?.destination.id, label: '', kind: 'vibe', endpoint: '', authentication: 'bearer', gzip: true,
+    id: entry?.destination.id, label: '', kind: 'vibe', endpoint: VIBE_CAFE_INGEST_ENDPOINT, manualVibe: false, authentication: 'bearer', gzip: true,
     secret: '', storage: 'keyring', fileAck: false, command: '', timeoutSeconds: '10', outputLimitKb: '64',
     privateOpen: false, privateHost: '', privateIp: '', privatePort: '', privateProtocol: 'https:',
     scheduleMinutes: 30, historyFrom: start, historyInput: toLocalInput(start),
@@ -115,6 +117,7 @@ function initialForm(nowMs: number, entry: UsageExportEntry | undefined): FormSt
     label: destination.label,
     kind: target.kind,
     endpoint: target.kind === 'script' ? '' : target.endpoint,
+    manualVibe: target.kind === 'vibe' && (target.endpoint !== VIBE_CAFE_INGEST_ENDPOINT || target.private_grant !== undefined),
     authentication: target.kind === 'webhook' ? target.authentication : 'bearer',
     gzip: target.kind === 'webhook' ? target.gzip : true,
     storage: destination.credential_storage === 'private-file' ? 'private-file' : 'keyring',
@@ -151,7 +154,8 @@ function formSignature(built: Built): string {
  * body, so the failure is attached to the control the person has to fix.
  */
 function build(state: FormState, halfHour: number): Built | { readonly invalid: I18nKey } {
-  const label = state.label.trim();
+  const officialVibe = state.kind === 'vibe' && !state.manualVibe;
+  const label = state.label.trim() || (officialVibe ? 'VibeCafe' : '');
   if (label === '') return { invalid: 'usage.export.form.invalidName' };
   const scheduled = (EXPORT_SCHEDULES as readonly number[]).includes(state.scheduleMinutes) ? state.scheduleMinutes : 30;
   // The destination's own scope stays open-ended: a bounded range belongs to a
@@ -170,10 +174,10 @@ function build(state: FormState, halfHour: number): Built | { readonly invalid: 
     if (!Number.isFinite(kilobytes) || kilobytes < 1 || kilobytes > 1024) return { invalid: 'usage.export.form.outputLimitInvalid' };
     target = { kind: 'script', command, timeout_ms: Math.round(seconds * 1000), output_limit_bytes: Math.round(kilobytes * 1024) };
   } else {
-    const endpoint = state.endpoint.trim();
+    const endpoint = officialVibe ? VIBE_CAFE_INGEST_ENDPOINT : state.endpoint.trim();
     if (!/^https?:\/\/\S+$/i.test(endpoint)) return { invalid: 'usage.export.form.invalidEndpoint' };
     let grant: { host: string; ip: string; port: number; protocol: 'http:' | 'https:' } | undefined;
-    if (state.privateOpen) {
+    if (state.privateOpen && !officialVibe) {
       const host = state.privateHost.trim();
       if (host === '') return { invalid: 'usage.export.form.invalidPrivateHost' };
       const ip = state.privateIp.trim();
@@ -186,7 +190,7 @@ function build(state: FormState, halfHour: number): Built | { readonly invalid: 
       ? { kind: 'webhook', endpoint, gzip: state.gzip, authentication: state.authentication, private_grant: grant }
       : { kind: 'vibe', endpoint, private_grant: grant };
   }
-  const value = state.secret.trim();
+  const value = officialVibe ? '' : state.secret.trim();
   if (value !== '' && state.storage === 'private-file' && !state.fileAck) {
     return { invalid: 'usage.export.form.storage.fileAckRequired' };
   }
@@ -202,18 +206,20 @@ function build(state: FormState, halfHour: number): Built | { readonly invalid: 
   };
 }
 
-export function UsageExportForm({ entry, onClose, onSaved }: {
+export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
   /** The destination being edited, or undefined for a new one. */
   readonly entry: UsageExportEntry | undefined;
   readonly onClose: () => void;
   readonly onSaved: () => void;
+  readonly onUpdated: () => void;
 }) {
   const { t } = useI18n();
   const { client, klient } = useConnection();
   const api = usageExportApi(klient);
   const nowMs = useMemo(() => Date.now(), []);
   const [state, setState] = useState<FormState>(() => initialForm(nowMs, entry));
-  const [busy, setBusy] = useState<'save' | 'test' | 'preview' | 'enable' | null>(null);
+  const [busy, setBusy] = useState<'save' | 'test' | 'preview' | 'enable' | 'auth' | null>(null);
+  const [credentialStored, setCredentialStored] = useState(entry !== undefined && entry.destination.credential_storage !== 'none');
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [error, setError] = useState<unknown>(null);
   const [invalid, setInvalid] = useState<I18nKey | null>(null);
@@ -231,6 +237,8 @@ export function UsageExportForm({ entry, onClose, onSaved }: {
   const stale = preview !== null && preview.signature !== signature;
   const busyNow = busy !== null;
   const seamMissing = api === undefined;
+  const officialVibe = state.kind === 'vibe' && !state.manualVibe;
+  const needsVibeConnection = officialVibe && !credentialStored;
 
   const patch = (next: Partial<FormState>) => {
     setState((current) => ({ ...current, ...next }));
@@ -249,8 +257,18 @@ export function UsageExportForm({ entry, onClose, onSaved }: {
   const saveDraft = async (target: UsageExportApi): Promise<string | undefined> => {
     if ('invalid' in built) { setInvalid(built.invalid); return undefined; }
     const saved = await target.saveDraft(built);
+    onUpdated();
     setState((current) => (current.id === saved.id ? current : { ...current, id: saved.id }));
     return saved.id;
+  };
+
+  const beginVibeAuth = async () => {
+    if (api === undefined) return undefined;
+    if (state.storage === 'private-file' && !state.fileAck) { setInvalid('usage.export.form.storage.fileAckRequired'); return undefined; }
+    const id = await saveDraft(api);
+    if (id === undefined) return undefined;
+    await api.disable(id);
+    return api.beginVibeAuth(id, { storage: state.storage, acknowledge_file_storage: state.fileAck });
   };
 
   const onSave = async () => {
@@ -265,7 +283,7 @@ export function UsageExportForm({ entry, onClose, onSaved }: {
   };
 
   const onTest = async () => {
-    if (api === undefined) return;
+    if (api === undefined || needsVibeConnection || busyNow) return;
     setBusy('test');
     try {
       const id = await saveDraft(api);
@@ -278,7 +296,7 @@ export function UsageExportForm({ entry, onClose, onSaved }: {
   };
 
   const onPreview = async () => {
-    if (api === undefined) return;
+    if (api === undefined || needsVibeConnection || busyNow) return;
     setBusy('preview');
     try {
       const id = await saveDraft(api);
@@ -324,7 +342,7 @@ export function UsageExportForm({ entry, onClose, onSaved }: {
           <button type="button" data-usage-export-form-save disabled={busyNow || seamMissing} onClick={() => void onSave()} className={SECONDARY_BUTTON}>
             {t(busy === 'save' ? 'usage.export.form.saving' : 'usage.export.form.save')}
           </button>
-          <button type="button" data-usage-export-form-cancel disabled={busyNow} onClick={onClose} className="ml-auto h-8 rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50">
+          <button type="button" data-usage-export-form-cancel disabled={busyNow && busy !== 'auth'} onClick={onClose} className="ml-auto h-8 rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50">
             {t('common.close')}
           </button>
         </>
@@ -333,6 +351,7 @@ export function UsageExportForm({ entry, onClose, onSaved }: {
       <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void onPreview(); }}>
         {seamMissing ? <p role="alert" className="text-[12.5px] text-danger">{t('usage.export.noTransport')}</p> : null}
 
+        <fieldset disabled={busyNow} className="space-y-5">
         <section className="space-y-2">
           <AxisGroup
             label={t('usage.export.form.kind')}
@@ -360,6 +379,39 @@ export function UsageExportForm({ entry, onClose, onSaved }: {
           />
         </label>
 
+        </fieldset>
+        {officialVibe ? (
+          <UsageExportVibeConnect
+            api={api}
+            begin={beginVibeAuth}
+            credentialStored={credentialStored}
+            disabled={busyNow && busy !== 'auth'}
+            onActivity={(active) => { setBusy(active ? 'auth' : null); }}
+            onConnected={() => { setCredentialStored(true); setPreview(null); setState((current) => ({ ...current, secret: '' })); onUpdated(); }}
+          />
+        ) : null}
+        <fieldset disabled={busyNow} className="space-y-5">
+        {state.kind === 'vibe' ? (
+          <details open={state.manualVibe || undefined} className="[&[open]>summary]:mb-2">
+            <summary className="cursor-pointer text-[12px] text-ink-soft underline decoration-dotted underline-offset-2">{t('usage.export.vibeAuth.advanced')}</summary>
+            {!state.manualVibe ? (
+              <div className="space-y-2">
+                <label className="block space-y-1">
+                  <span className={FIELD_LABEL}>{t('usage.export.form.storage')}</span>
+                  <select data-usage-export-vibe-storage value={state.storage} onChange={(event) => { patch({ storage: event.target.value as FormState['storage'] }); }} className={SELECT}>
+                    <option value="keyring">{t('usage.export.form.storage.keyring')}</option>
+                    <option value="private-file">{t('usage.export.form.storage.file')}</option>
+                  </select>
+                </label>
+                {state.storage === 'private-file' ? <Toggle label={t('usage.export.form.storage.fileAck')} checked={state.fileAck} onChange={(fileAck) => { patch({ fileAck }); }} /> : null}
+              </div>
+            ) : null}
+            <div className="mt-3 space-y-2">
+              <Toggle label={t('usage.export.vibeAuth.manual')} checked={state.manualVibe} onChange={(manualVibe) => { patch({ manualVibe }); setCredentialStored(false); setPreview(null); }} />
+              <p className={HINT}>{t('usage.export.vibeAuth.customHint')}</p>
+            </div>
+          </details>
+        ) : null}
         {state.kind === 'script' ? (
           <section className="space-y-2">
             <label className="block space-y-1">
@@ -391,7 +443,7 @@ export function UsageExportForm({ entry, onClose, onSaved }: {
               </div>
             </details>
           </section>
-        ) : (
+        ) : !officialVibe ? (
           <section className="space-y-2">
             <label className="block space-y-1">
               <span className={FIELD_LABEL}>{t('usage.export.form.endpoint')}</span>
@@ -428,9 +480,9 @@ export function UsageExportForm({ entry, onClose, onSaved }: {
               </div>
             ) : null}
           </section>
-        )}
+        ) : null}
 
-        {state.kind !== 'script' ? (
+        {state.kind !== 'script' && !officialVibe ? (
           <section className="space-y-2">
             <label className="block space-y-1">
               <span className={FIELD_LABEL}>{t('usage.export.form.secret')}</span>
@@ -482,7 +534,7 @@ export function UsageExportForm({ entry, onClose, onSaved }: {
           </section>
         ) : null}
 
-        {state.kind !== 'script' ? (
+        {state.kind !== 'script' && !officialVibe ? (
           <details className="[&[open]>summary]:mb-2">
             <summary className="cursor-pointer text-[12px] text-ink-soft underline decoration-dotted underline-offset-2">{t('usage.export.form.privateEndpoint')}</summary>
             <div className="space-y-2">
@@ -574,10 +626,10 @@ export function UsageExportForm({ entry, onClose, onSaved }: {
 
         <section className="space-y-2 border-t border-hairline pt-4">
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" data-usage-export-form-test disabled={busyNow || seamMissing} onClick={() => void onTest()} className={SECONDARY_BUTTON}>
+            <button type="button" data-usage-export-form-test disabled={busyNow || seamMissing || needsVibeConnection} onClick={() => void onTest()} className={SECONDARY_BUTTON}>
               {t(busy === 'test' ? 'usage.export.form.testing' : 'usage.export.form.test')}
             </button>
-            <button type="submit" data-usage-export-form-preview disabled={busyNow || seamMissing} className={PRIMARY_BUTTON}>
+            <button type="submit" data-usage-export-form-preview disabled={busyNow || seamMissing || needsVibeConnection} className={PRIMARY_BUTTON}>
               {t(busy === 'preview' ? 'usage.export.form.previewing' : 'usage.export.form.preview')}
             </button>
           </div>
@@ -611,6 +663,7 @@ export function UsageExportForm({ entry, onClose, onSaved }: {
             />
           </section>
         ) : null}
+        </fieldset>
       </form>
     </SidePanel>
   );

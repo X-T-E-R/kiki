@@ -13,6 +13,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { UsageExportDestination, UsageExportItem, UsageExportPreview, UsageExportStatus } from '@kiki/protocol';
+import { translate } from '@kiki/session-core/i18n';
 
 import { I18nProvider } from '../../../i18n';
 import { UsageExportPanel } from './UsageExportPanel';
@@ -22,9 +23,13 @@ const usageExport = {
   disable: vi.fn(), remove: vi.fn(), syncNow: vi.fn(), backfill: vi.fn(), diagnostics: vi.fn(),
   exportLocal: vi.fn(), rebuild: vi.fn(), retry: vi.fn(), setQueueCapacity: vi.fn(),
   clearQueue: vi.fn(), withdraw: vi.fn(),
+  beginVibeAuth: vi.fn(), pollVibeAuth: vi.fn(), cancelVibeAuth: vi.fn(),
 };
 const meta = vi.fn();
 const listWorkspaces = vi.fn();
+const openUrl = vi.fn(async () => {});
+let browserHost = false;
+vi.mock('../../../host', () => ({ useHost: () => ({ openUrl: browserHost ? undefined : openUrl }) }));
 
 let scopeId = 'home-a';
 let currentMeta: Record<string, unknown> = { server_home_id: 'home-a' };
@@ -42,12 +47,14 @@ vi.mock('../../../state/connection', () => ({
 
 const act_ = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
 const containers: HTMLDivElement[] = [];
+const roots: ReturnType<typeof createRoot>[] = [];
 
 beforeAll(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
   act_.IS_REACT_ACT_ENVIRONMENT = true;
 });
-afterEach(() => {
+afterEach(async () => {
+  await act(async () => { for (const root of roots.splice(0)) root.unmount(); });
   for (const container of containers.splice(0)) container.remove();
   document.body.innerHTML = '';
 });
@@ -140,8 +147,9 @@ async function render() {
   document.body.append(container);
   containers.push(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const root = createRoot(container); roots.push(root);
   await act(async () => {
-    createRoot(container).render(
+    root.render(
       <QueryClientProvider client={client}>
         <I18nProvider><Harness bump={(fn) => { forceRef = fn; }} /></I18nProvider>
       </QueryClientProvider>,
@@ -174,6 +182,7 @@ const ID_A = '11111111-1111-4111-8111-111111111111';
 const ID_B = '22222222-2222-4222-8222-222222222222';
 
 beforeEach(() => {
+  browserHost = false;
   for (const mock of Object.values(usageExport)) mock.mockReset();
   meta.mockReset();
   listWorkspaces.mockReset();
@@ -233,12 +242,140 @@ describe('opening and abandoning the form', () => {
   });
 });
 
+const authPending = {
+  flow_id: '33333333-3333-4333-8333-333333333333', destination_id: ID_A,
+  state: 'pending', user_code: 'ABCD-EFGH', verification_uri: 'https://vibecafe.ai/usage/device?user_code=ABCD-EFGH',
+  expires_at: Date.now() + 900_000, poll_after_ms: 1, error_category: null,
+} as const;
+
+describe('VibeCafe connection', () => {
+  it('cleans its reserved blank tab on request failure and cancellation before the code arrives', async () => {
+    browserHost = true;
+    const tab = { opener: window, closed: false, document: document.implementation.createHTMLDocument(), location: { replace: vi.fn() }, close: vi.fn() };
+    const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
+    try {
+      usageExport.beginVibeAuth.mockRejectedValueOnce(new Error('network failed'));
+      await render(); await click(q('[data-usage-export-add]')); await click(q('[data-usage-export-vibe-login]'));
+      expect(open).toHaveBeenCalledWith('about:blank', '_blank'); expect(tab.opener).toBeNull();
+      expect(tab.close).toHaveBeenCalledOnce(); expect(tab.location.replace).not.toHaveBeenCalled();
+      let resolve!: (value: typeof authPending) => void;
+      usageExport.beginVibeAuth.mockImplementationOnce(async () => new Promise((done) => { resolve = done; }));
+      usageExport.cancelVibeAuth.mockResolvedValue({ ...authPending, state: 'cancelled' });
+      await click(q('[data-usage-export-vibe-login]'));
+      await click(q('[data-usage-export-form-cancel]'));
+      expect(tab.close).toHaveBeenCalledTimes(2);
+      await act(async () => { resolve(authPending); }); await flush();
+      expect(tab.location.replace).not.toHaveBeenCalled(); expect(usageExport.cancelVibeAuth).toHaveBeenCalledWith(authPending.flow_id);
+    } finally { open.mockRestore(); }
+  });
+
+  it('signs in without URL or key input and still requires preview and consent', async () => {
+    openUrl.mockClear();
+    usageExport.beginVibeAuth.mockResolvedValue(authPending);
+    usageExport.pollVibeAuth.mockResolvedValue({ ...authPending, state: 'connected', poll_after_ms: 0 });
+    await render();
+    await click(q('[data-usage-export-add]'));
+    expect(q('[data-usage-export-form-endpoint]')).toBeNull();
+    expect(q('[data-usage-export-form-secret]')).toBeNull();
+    expect(q<HTMLButtonElement>('[data-usage-export-form-preview]')!.disabled).toBe(true);
+    await click(q('[data-usage-export-vibe-login]'));
+    expect(usageExport.saveDraft.mock.calls[0]![0].draft).toMatchObject({ label: 'VibeCafe', target: { kind: 'vibe', endpoint: 'https://vibecafe.ai/api/usage/ingest' } });
+    expect(usageExport.saveDraft.mock.calls[0]![0].secret).toBeUndefined();
+    expect(usageExport.beginVibeAuth).toHaveBeenCalledWith(ID_A, { storage: 'keyring', acknowledge_file_storage: false });
+    expect(openUrl).toHaveBeenCalledWith(authPending.verification_uri);
+    expect(q('[data-usage-export-vibe-code]')!.textContent).toBe('ABCD-EFGH');
+    expect(usageExport.enable).not.toHaveBeenCalled();
+    expect(usageExport.syncNow).not.toHaveBeenCalled();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    await flush();
+    expect(q('[data-usage-export-vibe-connect="connected"]')).not.toBeNull();
+    expect(q<HTMLButtonElement>('[data-usage-export-form-preview]')!.disabled).toBe(false);
+    await click(q('[data-usage-export-form-preview]'));
+    expect(usageExport.enable).not.toHaveBeenCalled();
+    await click(q('[data-usage-export-form-enable]'));
+    expect(usageExport.enable).toHaveBeenCalledWith(ID_A, { preview_fingerprint: '9'.repeat(64), acknowledge: true });
+  });
+
+  it('cancels a pending connection on close and ignores a late approval', async () => {
+    usageExport.beginVibeAuth.mockResolvedValue({ ...authPending, poll_after_ms: 60_000 });
+    usageExport.cancelVibeAuth.mockResolvedValue({ ...authPending, state: 'cancelled' });
+    await render();
+    await click(q('[data-usage-export-add]'));
+    await click(q('[data-usage-export-vibe-login]'));
+    await click(q('[data-usage-export-form-cancel]'));
+    expect(usageExport.cancelVibeAuth).toHaveBeenCalledWith(authPending.flow_id);
+    expect(q('[data-usage-export-form]')).toBeNull();
+    expect(usageExport.enable).not.toHaveBeenCalled();
+  });
+
+  it('recovers a storage failure through Advanced while keeping the official device sign-in', async () => {
+    expect(translate('zh', 'usage.export.vibeAuth.hint')).toBe('在 vibecafe.ai 确认验证码，登录凭据保存在当前连接的 Kiki 服务上。');
+    expect(translate('zh', 'usage.export.vibeAuth.advanced')).toBe('高级 · 保存方式与自定义连接');
+    expect(translate('zh', 'usage.export.vibeAuth.error.storage')).toBe('无法保存凭据。请展开「高级」，更换「保存方式」后重试。');
+    usageExport.beginVibeAuth.mockResolvedValueOnce({ ...authPending, state: 'error', error_category: 'vibe-auth-storage-failed' });
+    usageExport.cancelVibeAuth.mockResolvedValue({ ...authPending, state: 'cancelled' });
+    await render();
+    await click(q('[data-usage-export-add]'));
+    await click(q('[data-usage-export-vibe-login]'));
+    const card = q('[data-usage-export-vibe-connect="error"]')!;
+    expect(card.textContent).toContain('Confirm the code on vibecafe.ai; the sign-in credential is saved on the Kiki server you are connected to.');
+    expect(card.textContent).toContain('Could not save the credential. Open Advanced, change “Store as”, then try again.');
+    expect(card.textContent).not.toContain('vibe-auth-storage-failed');
+    expect(q<HTMLButtonElement>('[data-usage-export-vibe-login]')!.disabled).toBe(false);
+    expect(q('[data-usage-export-vibe-login]')!.textContent).toContain('Try again');
+    const storage = q<HTMLSelectElement>('[data-usage-export-vibe-storage]')!;
+    const advanced = storage.closest('details')!;
+    expect(advanced.open).toBe(false);
+    expect(advanced.querySelector('summary')!.textContent).toBe('Advanced · storage and custom connection');
+    await click(advanced.querySelector('summary'));
+    expect(advanced.open).toBe(true);
+    const manual = [...advanced.querySelectorAll('label')].find((label) => label.textContent?.includes('Use a custom endpoint'))!.querySelector('input')!;
+    expect(storage.compareDocumentPosition(manual) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    await act(async () => { storage.value = 'private-file'; storage.dispatchEvent(new Event('change', { bubbles: true })); });
+    await flush();
+    const fileAck = [...advanced.querySelectorAll('label')].find((label) => label.textContent?.includes('without encryption at rest'))!.querySelector('input')!;
+    expect(fileAck.compareDocumentPosition(manual) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(fileAck.checked).toBe(false);
+    await click(fileAck);
+    expect(manual.checked).toBe(false);
+    expect(q('[data-usage-export-vibe-connect="error"]')).toBe(card);
+    expect(q('[data-usage-export-form-endpoint]')).toBeNull();
+    expect(q('[data-usage-export-form-secret]')).toBeNull();
+    usageExport.beginVibeAuth.mockResolvedValueOnce({ ...authPending, poll_after_ms: 60_000 });
+    await click(q('[data-usage-export-vibe-login]'));
+    expect(usageExport.beginVibeAuth).toHaveBeenCalledTimes(2);
+    expect(usageExport.beginVibeAuth).toHaveBeenLastCalledWith(ID_A, { storage: 'private-file', acknowledge_file_storage: true });
+    expect(q('[data-usage-export-vibe-connect="pending"]')).not.toBeNull();
+    expect(usageExport.enable).not.toHaveBeenCalled();
+    expect(usageExport.syncNow).not.toHaveBeenCalled();
+  });
+
+  it('shows denial with retry, while custom servers retain manual credentials independently', async () => {
+    usageExport.beginVibeAuth.mockResolvedValue({ ...authPending, state: 'denied' });
+    await render();
+    await click(q('[data-usage-export-add]'));
+    await click(q('[data-usage-export-vibe-login]'));
+    expect(q('[data-usage-export-vibe-connect="denied"]')!.textContent).toContain('declined');
+    expect(q('[data-usage-export-vibe-login]')!.textContent).toContain('Try again');
+    const toggle = [...document.querySelectorAll('label')].find((label) => label.textContent?.includes('Use a custom endpoint'))!.querySelector('input')!;
+    await click(toggle);
+    expect(q('[data-usage-export-vibe-connect]')).toBeNull();
+    await type(q<HTMLInputElement>('[data-usage-export-form-name]')!, 'custom receiver');
+    await type(q<HTMLInputElement>('[data-usage-export-form-endpoint]')!, 'https://usage.example.test/api/usage/ingest');
+    await type(q<HTMLInputElement>('[data-usage-export-form-secret]')!, 'EXAMPLE_KEY');
+    await click(q('[data-usage-export-form-save]'));
+    expect(usageExport.saveDraft.mock.calls.at(-1)![0]).toMatchObject({ draft: { target: { endpoint: 'https://usage.example.test/api/usage/ingest' } }, secret: { value: 'EXAMPLE_KEY' } });
+    expect(usageExport.beginVibeAuth).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('consent', () => {
   it('enables with the fingerprint the server issued for the previewed payload', async () => {
     await render();
     await click(q('[data-usage-export-add]'));
     const form = q<HTMLFormElement>('form [data-usage-export-form-preview]')!.closest('form')!;
     await type(q<HTMLInputElement>('[data-usage-export-form-name]')!, 'my receiver');
+    await click(document.querySelector('[data-axis="export-kind"] [data-axis-value="webhook"]'));
     await type(q<HTMLInputElement>('[data-usage-export-form-endpoint]')!, 'https://usage.example.test/ingest');
     await act(async () => { form.requestSubmit(); });
     await flush();
@@ -264,6 +401,7 @@ describe('consent', () => {
     await render();
     await click(q('[data-usage-export-add]'));
     await type(q<HTMLInputElement>('[data-usage-export-form-name]')!, 'my receiver');
+    await click(document.querySelector('[data-axis="export-kind"] [data-axis-value="webhook"]'));
     await type(q<HTMLInputElement>('[data-usage-export-form-endpoint]')!, 'https://usage.example.test/ingest');
     await act(async () => { q<HTMLFormElement>('form:has([data-usage-export-form-preview])')!.requestSubmit(); });
     await flush();

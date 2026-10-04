@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { usageExportConsentSchema, usageExportHandoffArmSchema, usageExportSaveSchema, usageExportScopeSchema } from '@kiki/protocol';
+import { usageExportConsentSchema, usageExportHandoffArmSchema, usageExportSaveSchema, usageExportScopeSchema, usageExportVibeAuthInputSchema } from '@kiki/protocol';
 import { okEnvelope, errEnvelope } from '../envelope';
 import type { UsageExportService } from '../usage/export/service';
 
@@ -11,7 +11,7 @@ export function registerUsageExportRoutes(app: FastifyInstance, service: UsageEx
     reply.header('cache-control', 'no-store');
     try { return reply.send(okEnvelope(await work(), requestId)); }
     catch (error) {
-      const allowed = new Set(['destination-not-found', 'consent-preview-changed', 'adapter-unavailable', 'private-file-storage-requires-consent', 'identity-change-requires-new-destination', 'destination-cannot-delete', 'clear-queue-requires-consent', 'withdraw-requires-consent', 'export-writer-unavailable', 'export-queue-full', 'invalid-queue-capacity', 'unsafe_endpoint', 'endpoint-query-not-allowed', 'bearer-requires-https', 'remove-requires-queue-consent', 'credential-unavailable', 'keyring-unavailable', 'handoff-use-arm', 'handoff-scope-crosses-cutoff', 'handoff-consent-changed', 'handoff-requires-new-vibe-draft', 'handoff-source-home-unavailable', 'handoff-not-found', 'handoff-rollback-requires-consent', 'handoff-missed-unarmed-cutoff', 'handoff-rollback-boundary-unproven', 'collector-proof-too-large', 'collector-identity-cutoff-unproven', 'collector-receipt-identity-unproven', 'handoff_future_boundary_required', 'handoff_readiness_unproven', 'handoff_legacy_cutoff_unproven', 'handoff_native_receipt_unconfirmed', 'handoff_rollback_new_boundary_required', 'handoff_scope_empty']);
+      const allowed = new Set(['vibe-auth-official-only', 'vibe-auth-disable-first', 'vibe-auth-unavailable', 'vibe-auth-flow-not-found', 'destination-not-found', 'consent-preview-changed', 'adapter-unavailable', 'private-file-storage-requires-consent', 'identity-change-requires-new-destination', 'destination-cannot-delete', 'clear-queue-requires-consent', 'withdraw-requires-consent', 'export-writer-unavailable', 'export-queue-full', 'invalid-queue-capacity', 'unsafe_endpoint', 'endpoint-query-not-allowed', 'bearer-requires-https', 'remove-requires-queue-consent', 'credential-unavailable', 'keyring-unavailable', 'handoff-use-arm', 'handoff-scope-crosses-cutoff', 'handoff-consent-changed', 'handoff-requires-new-vibe-draft', 'handoff-source-home-unavailable', 'handoff-not-found', 'handoff-rollback-requires-consent', 'handoff-missed-unarmed-cutoff', 'handoff-rollback-boundary-unproven', 'collector-proof-too-large', 'collector-identity-cutoff-unproven', 'collector-receipt-identity-unproven', 'handoff_future_boundary_required', 'handoff_readiness_unproven', 'handoff_legacy_cutoff_unproven', 'handoff_native_receipt_unconfirmed', 'handoff_rollback_new_boundary_required', 'handoff_scope_empty']);
       const category = error instanceof z.ZodError ? 'invalid-usage-export-input' : error instanceof Error && allowed.has(error.message) ? error.message : 'usage-export-operation-failed';
       reply.code(category === 'destination-not-found' ? 404 : category === 'export-writer-unavailable' ? 409 : 400); return reply.send(errEnvelope(40001, category, requestId));
     }
@@ -19,6 +19,9 @@ export function registerUsageExportRoutes(app: FastifyInstance, service: UsageEx
   app.get(prefix, (req, reply) => respond(req.id, reply, () => service.status()));
   app.get(prefix + '/diagnostics', (req, reply) => respond(req.id, reply, () => service.diagnostics()));
   app.post(prefix + '/destinations', { bodyLimit: 65536 }, (req, reply) => respond(req.id, reply, () => service.saveDraft(usageExportSaveSchema.parse(req.body))));
+  app.post(prefix + '/destinations/:id/auth/begin', { bodyLimit: 1024 }, (req, reply) => respond(req.id, reply, () => service.vibeAuth.begin(id(req.params), usageExportVibeAuthInputSchema.parse(req.body))));
+  app.post(prefix + '/auth/:id/poll', (req, reply) => respond(req.id, reply, () => service.vibeAuth.poll(id(req.params))));
+  app.post(prefix + '/auth/:id/cancel', (req, reply) => respond(req.id, reply, () => service.vibeAuth.cancel(id(req.params))));
   app.get(prefix + '/destinations/:id/preview', (req, reply) => respond(req.id, reply, () => service.preview(id(req.params))));
   app.post(prefix + '/destinations/:id/test', (req, reply) => respond(req.id, reply, () => service.testProtocol(id(req.params))));
   app.post(prefix + '/destinations/:id/enable', (req, reply) => respond(req.id, reply, () => service.enable(id(req.params), usageExportConsentSchema.parse(req.body))));

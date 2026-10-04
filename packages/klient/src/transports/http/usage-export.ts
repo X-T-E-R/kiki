@@ -1,4 +1,4 @@
-import { usageExportConsentSchema, usageExportDestinationSchema, usageExportHandoffArmSchema, usageExportHandoffSchema, usageExportPreviewSchema, usageExportSaveSchema, usageExportScopeSchema, usageExportStatusSchema } from '@kiki/protocol';
+import { usageExportConsentSchema, usageExportDestinationSchema, usageExportHandoffArmSchema, usageExportHandoffSchema, usageExportPreviewSchema, usageExportSaveSchema, usageExportScopeSchema, usageExportStatusSchema, usageExportVibeAuthInputSchema, usageExportVibeAuthSchema } from '@kiki/protocol';
 import type { UsageExportFacade } from '../../core/facade/usage-export.js';
 import type { HttpRestTransport } from './rest.js';
 
@@ -8,6 +8,9 @@ export function createUsageExportFacade(transport: HttpRestTransport): UsageExpo
   return {
     status: async () => usageExportStatusSchema.parse(await transport.json(prefix)),
     saveDraft: async (input) => usageExportDestinationSchema.parse(await transport.json(prefix + '/destinations', { method: 'POST', body: usageExportSaveSchema.parse(input) })),
+    beginVibeAuth: async (id, input) => usageExportVibeAuthSchema.parse(await transport.json(path(id, 'auth/begin'), { method: 'POST', body: usageExportVibeAuthInputSchema.parse(input) })),
+    pollVibeAuth: async (flowId) => usageExportVibeAuthSchema.parse(await transport.json(`${prefix}/auth/${encodeURIComponent(flowId)}/poll`, { method: 'POST', body: {} })),
+    cancelVibeAuth: async (flowId) => usageExportVibeAuthSchema.parse(await transport.json(`${prefix}/auth/${encodeURIComponent(flowId)}/cancel`, { method: 'POST', body: {} })),
     preview: async (id) => usageExportPreviewSchema.parse(await transport.json(path(id, 'preview'))),
     testProtocol: (id) => transport.json(path(id, 'test'), { method: 'POST', body: {} }),
     enable: async (id, input) => usageExportDestinationSchema.parse(await transport.json(path(id, 'enable'), { method: 'POST', body: usageExportConsentSchema.parse(input) })),

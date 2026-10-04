@@ -62,6 +62,17 @@ export const usageExportDraftSchema = z.object({
 export const usageExportSecretInputSchema = z.object({
   value: z.string().min(1).max(8192), storage: z.enum(['keyring', 'private-file']), acknowledge_file_storage: z.boolean().optional(),
 }).strict();
+export const VIBE_CAFE_ORIGIN = 'https://vibecafe.ai';
+export const VIBE_CAFE_INGEST_ENDPOINT = `${VIBE_CAFE_ORIGIN}/api/usage/ingest`;
+export const usageExportVibeAuthInputSchema = usageExportSecretInputSchema.omit({ value: true });
+export const usageExportVibeAuthSchema = z.object({
+  flow_id: z.string().uuid(), destination_id: z.string().uuid(),
+  state: z.enum(['pending', 'connected', 'cancelled', 'denied', 'expired', 'error']),
+  user_code: z.string().max(128), verification_uri: z.string().url(),
+  expires_at: count, poll_after_ms: count, error_category: z.string().nullable(),
+}).strict();
+export type UsageExportVibeAuthInput = z.infer<typeof usageExportVibeAuthInputSchema>;
+export type UsageExportVibeAuth = z.infer<typeof usageExportVibeAuthSchema>;
 export const usageExportSaveSchema = z.object({ draft: usageExportDraftSchema, secret: usageExportSecretInputSchema.optional() }).strict();
 export const usageExportConsentSchema = z.object({ preview_fingerprint: hash, acknowledge: z.literal(true) }).strict();
 export const usageExportDestinationSchema = z.object({
