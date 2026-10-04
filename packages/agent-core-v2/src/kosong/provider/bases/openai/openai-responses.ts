@@ -90,6 +90,7 @@ const OPENAI_RESPONSES_TOOL_CALL_ID_POLICY: ToolCallIdPolicy = {
 type ResponseOutputItemView =
   | {
       type: 'message';
+      itemId?: string;
       content: RawObject[];
     }
   | {
@@ -179,6 +180,7 @@ function readResponseOutputItem(value: unknown, context: string): ResponseOutput
   if (type === 'message') {
     return {
       type,
+      itemId: readStringField(item, 'id'),
       content: readObjectArrayField(item, 'content') ?? [],
     };
   }
@@ -793,6 +795,41 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
   private async *_convertStreamResponse(
     response: AsyncIterable<RawObject>,
   ): AsyncGenerator<StreamedMessagePart> {
+    const textByContent = new Map<string, string>();
+    let hasUnindexedText = false;
+    const textKey = (itemId: string | undefined, outputIndex: number | undefined, contentIndex: number | undefined): string =>
+      JSON.stringify([responseStreamIndex(itemId, outputIndex), contentIndex ?? 0]);
+    const yieldFinalTextSuffix = function* (
+      text: string,
+      itemId: string | undefined,
+      outputIndex: number | undefined,
+      contentIndex: number | undefined,
+    ): Generator<StreamedMessagePart> {
+      const key = textKey(itemId, outputIndex, contentIndex);
+      if (!textByContent.has(key) && hasUnindexedText) return;
+      const emitted = textByContent.get(key) ?? '';
+      if (!text.startsWith(emitted)) {
+        throw new ChatProviderError('OpenAI Responses final text does not match the streamed text deltas.');
+      }
+      textByContent.set(key, text);
+      const suffix = text.slice(emitted.length);
+      if (suffix.length > 0) yield { type: 'text', text: suffix };
+    };
+    const yieldFinalMessageText = function* (
+      item: ResponseOutputItemView,
+      outputIndex: number | undefined,
+    ): Generator<StreamedMessagePart> {
+      if (item.type !== 'message') return;
+      for (const [contentIndex, content] of item.content.entries()) {
+        if (content['type'] !== 'output_text') continue;
+        yield* yieldFinalTextSuffix(
+          requireStringField(content, 'text', 'final message output_text'),
+          item.itemId,
+          outputIndex,
+          contentIndex,
+        );
+      }
+    };
     const functionCallArgumentsByIndex = new Map<number | string, string>();
     let unindexedFunctionCallArguments: string | undefined;
 
@@ -886,8 +923,23 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
         }
 
         switch (type) {
-          case 'response.output_text.delta':
-            yield { type: 'text', text: requireStringField(chunk, 'delta', type) };
+          case 'response.output_text.delta': {
+            const text = requireStringField(chunk, 'delta', type);
+            const itemId = readStringField(chunk, 'item_id');
+            const outputIndex = readNumberField(chunk, 'output_index');
+            if (itemId === undefined && outputIndex === undefined) hasUnindexedText = true;
+            const key = textKey(itemId, outputIndex, readNumberField(chunk, 'content_index'));
+            textByContent.set(key, (textByContent.get(key) ?? '') + text);
+            yield { type: 'text', text };
+            break;
+          }
+          case 'response.output_text.done':
+            yield* yieldFinalTextSuffix(
+              requireStringField(chunk, 'text', type),
+              readStringField(chunk, 'item_id'),
+              readNumberField(chunk, 'output_index'),
+              readNumberField(chunk, 'content_index'),
+            );
             break;
           case 'response.created':
           case 'response.in_progress': {
@@ -898,9 +950,22 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             }
             break;
           }
+          case 'response.content_part.added': {
+            const part = requireObjectField(chunk, 'part', type);
+            if (part['type'] === 'output_text') {
+              yield* yieldFinalTextSuffix(
+                requireStringField(part, 'text', type),
+                readStringField(chunk, 'item_id'),
+                readNumberField(chunk, 'output_index'),
+                readNumberField(chunk, 'content_index'),
+              );
+            }
+            break;
+          }
           case 'response.output_item.added': {
             const item = readResponseOutputItem(chunk['item'], `${type}.item`);
             const outputIndex = readNumberField(chunk, 'output_index');
+            yield* yieldFinalMessageText(item, outputIndex);
             if (item.type === 'function_call') {
               const streamIndex = responseStreamIndex(item.itemId, outputIndex);
               setFunctionCallArguments(streamIndex, item.arguments ?? '');
@@ -920,6 +985,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
           case 'response.output_item.done': {
             const item = readResponseOutputItem(chunk['item'], `${type}.item`);
             const outputIndex = readNumberField(chunk, 'output_index');
+            yield* yieldFinalMessageText(item, outputIndex);
             if (item.type === 'reasoning') {
               const thinkPart: StreamedMessagePart = { type: 'think', think: '' };
               if (item.encryptedContent !== undefined) {
@@ -976,6 +1042,9 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
               this._extractUsage(usage);
             }
             this._captureFinishReasonFromResponse(responseObject);
+            for (const [outputIndex, item] of (readObjectArrayField(responseObject, 'output') ?? []).entries()) {
+              yield* yieldFinalMessageText(readResponseOutputItem(item, `${type}.output item`), outputIndex);
+            }
             break;
           }
           case 'error': {

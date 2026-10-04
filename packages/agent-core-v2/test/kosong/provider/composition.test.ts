@@ -5,6 +5,9 @@ import { nativeSearchParameters, nativeFetchParameters } from '#/app/nbSearch/na
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
+import type { Response as OpenAIResponse, ResponseOutputMessage, ResponseOutputText, ResponseStreamEvent } from 'openai/resources/responses/responses';
+import { generate } from '#/kosong/contract/generate';
 
 import { isUnknownCapability } from '#/kosong/contract/capability';
 import {
@@ -2286,5 +2289,129 @@ describe('outbound transport', () => {
     }, { auth }));
     expect(request.url).toMatch(/^https:\/\/api\.example\.test\/v1\//);
     expect(request.redirect).toBe('error');
+  });
+});
+
+
+function finalizedResponse(output: OpenAIResponse['output'], status: OpenAIResponse['status']): OpenAIResponse {
+  return {
+    id: 'resp_finalized', created_at: 1, object: 'response', model: 'gpt-5', output, output_text: '', status,
+    error: null, incomplete_details: null, instructions: null, metadata: null,
+    parallel_tool_calls: true, temperature: null, top_p: null, tool_choice: 'auto', tools: [],
+    usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } },
+  };
+}
+
+function finalizedTextEvents(texts: string[][], mode: 'prefilled' | 'delta' | 'mixed'): ResponseStreamEvent[] {
+  const events: ResponseStreamEvent[] = [{ type: 'response.created', sequence_number: 0, response: finalizedResponse([], 'in_progress') }];
+  const output: ResponseOutputMessage[] = [];
+  for (const [output_index, values] of texts.entries()) {
+    const item_id = `msg_finalized_${output_index}`;
+    const content: ResponseOutputText[] = values.map(text => ({ type: 'output_text', text, annotations: [], logprobs: [] }));
+    const item: ResponseOutputMessage = { id: item_id, type: 'message', role: 'assistant', status: 'completed', content };
+    output.push(item);
+    events.push({ type: 'response.output_item.added', sequence_number: 0, output_index, item: { ...item, status: 'in_progress', content: [] } });
+    for (const [content_index, part] of content.entries()) {
+      const initial = mode === 'prefilled' ? part.text : mode === 'mixed' ? part.text.slice(0, 2) : '';
+      events.push({ type: 'response.content_part.added', sequence_number: 0, item_id, output_index, content_index, part: { ...part, text: initial } });
+      if (mode !== 'prefilled') {
+        events.push({ type: 'response.output_text.delta', sequence_number: 0, item_id, output_index, content_index, delta: part.text.slice(initial.length), logprobs: [] });
+      }
+      events.push(
+        { type: 'response.output_text.done', sequence_number: 0, item_id, output_index, content_index, text: part.text, logprobs: [] },
+        { type: 'response.content_part.done', sequence_number: 0, item_id, output_index, content_index, part },
+      );
+    }
+    events.push({ type: 'response.output_item.done', sequence_number: 0, output_index, item });
+  }
+  events.push({ type: 'response.completed', sequence_number: 0, response: finalizedResponse(output, 'completed') });
+  return events.map((event, sequence_number) => ({ ...event, sequence_number }));
+}
+
+function finalizedFixtureClient(events: ResponseStreamEvent[]): OpenAI {
+  const body = events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event, (key, value) => key === 'output_text' ? undefined : value)}\n\n`).join('');
+  return new OpenAI({
+    apiKey: 'fixture-only', baseURL: 'https://example.test/v1', maxRetries: 0,
+    fetch: async () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  });
+}
+
+function generateFinalizedFixture(events: ResponseStreamEvent[]) {
+  const provider = new OpenAIResponsesChatProvider({
+    apiKey: 'fixture-only', model: 'gpt-5', clientFactory: () => finalizedFixtureClient(events),
+  });
+  return generate(provider, 'synthetic fixture', [], []);
+}
+
+function finalizedOutputText(response: OpenAIResponse): string {
+  return response.output.flatMap(item => item.type === 'message'
+    ? item.content.flatMap(part => part.type === 'output_text' ? [part.text] : [])
+    : []).join('');
+}
+
+describe('Responses finalized text', () => {
+  it.each(['prefilled', 'delta', 'mixed'] as const)('matches the official SDK final response for %s content', async mode => {
+    const events = finalizedTextEvents([['Contract fixture text']], mode);
+    const official = await finalizedFixtureClient(events).responses.stream({ model: 'gpt-5', input: 'synthetic fixture' }).finalResponse();
+    expect(finalizedOutputText(official)).toBe('Contract fixture text');
+    const result = await generateFinalizedFixture(events);
+    expect(result.message.content).toEqual([{ type: 'text', text: finalizedOutputText(official) }]);
+    expect(result.message.toolCalls).toEqual([]);
+    expect(result.id).toBe('resp_finalized');
+    expect(result.finishReason).toBe('completed');
+    expect(result.rawFinishReason).toBe('completed');
+    expect(result.usage).toEqual({ inputOther: 3, output: 2, inputCacheRead: 0, inputCacheCreation: 0 });
+  });
+
+  it('isolates finalized text by output item and content identity', async () => {
+    const events = finalizedTextEvents([['First', 'Second'], ['Third']], 'delta');
+    const official = await finalizedFixtureClient(events).responses.stream({ model: 'gpt-5', input: 'synthetic fixture' }).finalResponse();
+    const result = await generateFinalizedFixture(events);
+    expect(finalizedOutputText(official)).toBe('FirstSecondThird');
+    expect(result.message.content).toEqual([{ type: 'text', text: 'FirstSecondThird' }]);
+  });
+
+  it('recovers a missing text suffix from an identified final snapshot without repeating emitted text', async () => {
+    const events = finalizedTextEvents([['Hello world']], 'delta');
+    const delta = events.find(event => event.type === 'response.output_text.delta');
+    if (delta?.type !== 'response.output_text.delta') throw new Error('expected text delta fixture');
+    delta.delta = 'Hello';
+    const result = await generateFinalizedFixture(events);
+    expect(result.message.content).toEqual([{ type: 'text', text: 'Hello world' }]);
+  });
+
+  it('rejects final text inconsistent with an already emitted delta', async () => {
+    const events = finalizedTextEvents([['Hello world']], 'delta');
+    const delta = events.find(event => event.type === 'response.output_text.delta');
+    if (delta?.type !== 'response.output_text.delta') throw new Error('expected text delta fixture');
+    delta.delta = 'Conflicting';
+    await expect(generateFinalizedFixture(events)).rejects.toThrow('final text does not match the streamed text deltas');
+  });
+
+  it('preserves function-call identity and final arguments with no argument deltas', async () => {
+    const item = { id: 'fc_finalized', type: 'function_call' as const, call_id: 'call_finalized', name: 'fixture_tool', arguments: '{"value":1}', status: 'completed' as const };
+    const events: ResponseStreamEvent[] = [
+      { type: 'response.created', sequence_number: 0, response: finalizedResponse([], 'in_progress') },
+      { type: 'response.output_item.added', sequence_number: 1, output_index: 0, item: { ...item, arguments: '', status: 'in_progress' } },
+      { type: 'response.function_call_arguments.done', sequence_number: 2, output_index: 0, item_id: item.id, name: item.name, arguments: item.arguments },
+      { type: 'response.output_item.done', sequence_number: 3, output_index: 0, item },
+      { type: 'response.completed', sequence_number: 4, response: finalizedResponse([item], 'completed') },
+    ];
+    const result = await generateFinalizedFixture(events);
+    expect(result.message.toolCalls).toEqual([{ type: 'function', id: 'call_finalized', name: 'fixture_tool', arguments: '{"value":1}', extras: undefined }]);
+    expect(result.message.content).toEqual([]);
+    expect(result.finishReason).toBe('completed');
+    expect(result.usage?.output).toBe(2);
+  });
+
+  it('still rejects completed reasoning-only responses', async () => {
+    const item = { id: 'rs_finalized', type: 'reasoning' as const, summary: [] };
+    const events: ResponseStreamEvent[] = [
+      { type: 'response.created', sequence_number: 0, response: finalizedResponse([], 'in_progress') },
+      { type: 'response.output_item.added', sequence_number: 1, output_index: 0, item },
+      { type: 'response.output_item.done', sequence_number: 2, output_index: 0, item },
+      { type: 'response.completed', sequence_number: 3, response: finalizedResponse([item], 'completed') },
+    ];
+    await expect(generateFinalizedFixture(events)).rejects.toMatchObject({ name: 'APIEmptyResponseError', finishReason: 'completed' });
   });
 });
