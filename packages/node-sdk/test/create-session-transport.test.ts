@@ -69,7 +69,7 @@ async function writeReviewerAgent(workDir: string): Promise<void> {
   await mkdir(agentDir, { recursive: true });
   await writeFile(
     join(agentDir, 'reviewer.md'),
-    '---\nname: reviewer\ndescription: Reviews code.\nsubagents:\n  - explore\n---\n\nReview the requested change.\n',
+    '---\nname: reviewer\ndescription: Reviews code.\nallowed_subagents:\n  - explore\n---\n\nReview the requested change.\n',
     'utf-8',
   );
 }

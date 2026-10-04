@@ -465,6 +465,9 @@ default_model = "stub"
 [experimental]
 auto_session_title = true
 
+[session_title]
+model = "stub"
+
 [providers.stub]
 type = "openai"
 base_url = "https://model.example.test/v1"
@@ -487,11 +490,12 @@ key = "${titleOAuthRef.key}"
     );
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-      if (url === 'https://api.example.test/coding/v1/tools') {
-        return new Response(JSON.stringify({ title: 'Generated title' }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
+      if (url === 'https://model.example.test/v1/chat/completions') {
+        return new Response([
+          `data: ${JSON.stringify({ id: 'fixture-title', choices: [{ index: 0, delta: { role: 'assistant', content: 'Generated title' }, finish_reason: null }] })}\n\n`,
+          `data: ${JSON.stringify({ id: 'fixture-title', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } })}\n\n`,
+          'data: [DONE]\n\n',
+        ].join(''), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -571,6 +575,9 @@ default_model = "stub"
 [experimental]
 auto_session_title = true
 
+[session_title]
+model = "stub"
+
 [providers.stub]
 type = "openai"
 base_url = "https://model.example.test/v1"
@@ -601,7 +608,7 @@ key = "${titleOAuthRef.key}"
     });
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-      if (url === 'https://api.example.test/coding/v1/tools') {
+      if (url === 'https://model.example.test/v1/chat/completions') {
         markFetchStarted();
         return fetchResponse;
       }
@@ -641,10 +648,11 @@ key = "${titleOAuthRef.key}"
       });
 
       resolveFetch(
-        new Response(JSON.stringify({ title: 'Generated title' }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
+        new Response([
+          `data: ${JSON.stringify({ id: 'fixture-title', choices: [{ index: 0, delta: { role: 'assistant', content: 'Generated title' }, finish_reason: null }] })}\n\n`,
+          `data: ${JSON.stringify({ id: 'fixture-title', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } })}\n\n`,
+          'data: [DONE]\n\n',
+        ].join(''), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
       );
       await closeStarted;
 
@@ -720,7 +728,7 @@ key = "${titleOAuthRef.key}"
       ]);
 
       const outcomes = [first, second].map((result) => result.status);
-      expect(outcomes.sort()).toEqual(['fulfilled', 'rejected']);
+      expect(outcomes.toSorted()).toEqual(['fulfilled', 'rejected']);
       const rejection = [first, second].find((result) => result.status === 'rejected');
       expect((rejection as PromiseRejectedResult).reason).toMatchObject({
         code: 'session.already_exists',
@@ -1170,7 +1178,7 @@ max_context_size = 1000
     await mkdir(agentDir, { recursive: true });
     await writeFile(
       join(agentDir, 'reviewer.md'),
-      '---\nname: reviewer\ndescription: Reviews code.\nsubagents:\n  - explore\n---\n\nReview the requested change.\n',
+      '---\nname: reviewer\ndescription: Reviews code.\nallowed_subagents:\n  - explore\n---\n\nReview the requested change.\n',
       'utf-8',
     );
     const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });

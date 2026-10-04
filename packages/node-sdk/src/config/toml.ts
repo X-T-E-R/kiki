@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { chmod } from 'node:fs/promises';
 import { basename, dirname, join } from 'pathe';
 import { readConfigDocumentSnapshot, writeConfigDocument } from '@kiki/agent-core-v2/app/config/configDocument';
 import { CREDENTIALS_KEY, migrateCredentialsDirectory } from '@kiki/agent-core-v2/app/config/migrations';
@@ -601,6 +602,13 @@ export async function withConfigWrite<T>(
   const storage = new FileStorageService(dirname(filePath), 0o700, 0o600, false);
   const store = new TomlAtomicDocumentStore(storage);
   await migrateCredentialsDirectory(store);
+  if (process.platform !== 'win32') {
+    for (const path of [filePath, credentialsPathFor(filePath)]) {
+      try { await chmod(path, 0o600); } catch (error) {
+        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+      }
+    }
+  }
   return operation(store, basename(filePath));
 }
 

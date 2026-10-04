@@ -251,7 +251,9 @@ describe('Session.prompt events', () => {
       );
       expect(fakeProviderState.calls[0]?.systemPrompt).toContain('You are Kiki,');
       expect(fakeProviderState.calls[0]?.systemPrompt).toContain('`<home>/docs`');
-      expect(fakeProviderState.calls[0]?.systemPrompt).toContain('Available skills');
+      expect(fakeProviderState.calls[0]?.systemPrompt).not.toContain('## Available skills');
+      expect(JSON.stringify(fakeProviderState.calls[0]?.history)).toContain('## Available skills');
+      expect(JSON.stringify(fakeProviderState.calls[0]?.history)).toContain('Host runtime snapshot rev 1');
       // The engine composes the provider from the protocol adapter config: the
       // vendor is `providerType`, the wire shape it speaks is `protocol`.
       expect(fakeProviderState.providerConfigs[0]).toMatchObject({
@@ -336,16 +338,17 @@ describe('Session.prompt events', () => {
           type: 'session.meta.updated',
         }),
       );
-      expect(fakeProviderState.calls[0]?.history).toMatchObject([
-        {
+      expect(fakeProviderState.calls[0]?.history).toEqual(expect.arrayContaining([
+        expect.objectContaining({
           role: 'user',
           content: [
             expect.objectContaining({
               text: expect.stringContaining('Task requirements:'),
             }),
           ],
-        },
-      ]);
+        }),
+      ]));
+      expect(JSON.stringify(fakeProviderState.calls[0]?.history)).toContain('Host runtime snapshot rev 1');
 
       const statePath = join(session.summary!.sessionDir, 'state.json');
       const state = JSON.parse(await readFile(statePath, 'utf-8')) as Record<string, unknown>;

@@ -420,7 +420,8 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
-      await harness.installPlugin(pluginDir);
+      const plan = await harness.previewPlugin({ source: pluginDir });
+      await harness.installPlugin(pluginDir, { fingerprint: plan.fingerprint, consent: true });
       await expect(harness.inspectAppMcpServers()).resolves.toEqual([
         expect.objectContaining({
           serverId: 'global:global',
