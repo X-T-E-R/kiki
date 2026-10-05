@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
+import { WORKBENCH_LONGWORK_SHOTS } from './marketing-workbench-longwork-shots.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = resolve(ROOT, '..', '..');
@@ -127,7 +128,19 @@ function startStatic(dir) {
  */
 function buildCacheKey() {
   const parts = [];
-  for (const input of [join(ROOT, 'src'), join(ROOT, 'index.html'), join(ROOT, 'vite.config.ts'), join(ROOT, 'public')]) {
+  // The workspace packages are part of the bundle, not optional context: the
+  // GUI imports @kiki/session-core, and that package holds the i18n dictionary.
+  // Keying only on apps/kiki-gui/src let a session-core edit reuse a stale
+  // bundle, which is how a frame shipped with a string that no longer existed
+  // in the source. If the dependency graph grows, add the package here.
+  const inputs = [
+    join(ROOT, 'src'),
+    join(ROOT, 'index.html'),
+    join(ROOT, 'vite.config.ts'),
+    join(ROOT, 'public'),
+    join(REPO_ROOT, 'packages', 'session-core', 'src'),
+  ];
+  for (const input of inputs) {
     const walk = (path) => {
       let info;
       try {
@@ -139,7 +152,10 @@ function buildCacheKey() {
         for (const child of readdirSync(path).sort()) walk(join(path, child));
         return;
       }
-      parts.push(`${path.slice(ROOT.length)}:${info.size}:${info.mtimeMs}`);
+      // Labelled relative to the REPO root, because two of the inputs above
+      // live outside the GUI package and ROOT-relative slicing would mangle
+      // them into a negative offset.
+      parts.push(`${path.slice(REPO_ROOT.length)}:${info.size}:${info.mtimeMs}`);
     };
     walk(input);
   }
@@ -573,11 +589,83 @@ const SHOTS = [
     },
   },
   {
+    // A04 — the profiles roster. Settings → Agents is a single table: one row
+    // per profile with its role (main agent or subagent), its own model, its
+    // effort, and the subagents it may dispatch. That row set is the whole
+    // claim the page makes, so the frame is the populated table.
+    name: 'agents-profiles',
+    scenario: 'marketing-campaign-a04',
+    viewport: { width: 1440, height: 900 },
+    run: async ({ page, link, shot }) => {
+      await open(page, link, '/settings/agents', '[data-team-row]', 60_000);
+      // Wait for the seeded roles, not merely for the table: an empty roster
+      // renders the same wrapper, and the frame would claim a page that shows
+      // nothing.
+      await page.locator('[data-team-row="release-lead"]').waitFor({ timeout: 30_000 });
+      await page.locator('[data-team-row="implementer"]').waitFor({ timeout: 30_000 });
+      await settle(page);
+      await shot();
+    },
+  },
+  {
+    // A04's second frame: one profile opened. The page's claim is that a
+    // profile is ONE readable file — frontmatter bindings and the system
+    // prompt in the same record — so the frame is the editor sheet with the
+    // lead's own definition in it, not another list.
+    name: 'agents-profile-editor',
+    scenario: 'marketing-campaign-a04',
+    viewport: { width: 1440, height: 900 },
+    run: async ({ page, link, shot }) => {
+      await open(page, link, '/settings/agents', '[data-team-row]', 60_000);
+      const row = page.locator('[data-team-row="release-lead"] [data-team-open="release-lead"]').first();
+      await row.waitFor({ timeout: 30_000 });
+      await row.click();
+      // The editor is a sheet keyed to the profile it opened; waiting on the
+      // `main` field proves the sheet is the lead's record and not a stale
+      // sheet or the new-profile form.
+      const editor = page.locator('[data-profile-editor][data-agent-detail="release-lead"]');
+      await editor.waitFor({ timeout: 30_000 });
+      await editor.locator('[data-profile-field="main"]').waitFor({ timeout: 30_000 });
+      await settle(page);
+      await shot();
+    },
+  },
+  {
+    // A04's third frame, and the one the page most needs: the composer picker
+    // that turns a profile into the session's main agent. It is a standalone
+    // toolbar control (`#composer-agent-profile-select`) and it only exists
+    // once the profile catalog has landed, so the frame opens it and lists the
+    // candidates — the reader has to see that main-ness is a CHOICE made here.
+    name: 'agents-profile-picker',
+    scenario: 'marketing-campaign-a04',
+    viewport: { width: 1440, height: 900 },
+    run: async ({ page, link, shot }) => {
+      await open(page, link, '/new', '#composer-agent-profile-select', 60_000);
+      const trigger = page.locator('#composer-agent-profile-select').first();
+      await trigger.waitFor({ timeout: 30_000 });
+      await trigger.click();
+      // The panel is a listbox; waiting for an option that names a seeded
+      // candidate proves the catalog resolved, not merely that the control
+      // painted.
+      const option = page.locator('[role="option"]', { hasText: 'release-lead' }).first();
+      await option.waitFor({ timeout: 30_000 });
+      await settle(page);
+      await shot();
+    },
+  },
+  {
     name: 'daily-usage',
     scenario: 'marketing-campaign-a10',
     viewport: { width: 1440, height: 900 },
     run: async ({ page, link, shot }) => {
       await open(page, link, '/usage?panel=history', '[data-usage-panel="history"]');
+      // The page opens on Today, which is one bar and one row. The frame has
+      // to show what the page is FOR — a week of spend broken down by model —
+      // so it drives the same range control a reader would.
+      await page.locator('[data-axis="range"] [data-axis-value="last_7_days"]').click();
+      // Wait for a full week of bars, not merely for the click: the range
+      // change refetches, and a frame taken mid-fetch would show one day.
+      await page.locator('[data-usage-trend] [data-bucket]').nth(6).waitFor({ timeout: 30_000 });
       await settle(page);
       await shot();
     },
@@ -621,8 +709,7 @@ const SHOTS = [
   },
   {
     name: 'look-skins',
-    scenario: 'skins',
-    localeInName: false,
+    scenario: 'marketing-campaign-a08',
     viewport: { width: 1440, height: 900 },
     run: async ({ page, link, shot }) => {
       await open(page, link, '/settings/appearance', '[data-skin-settings]');
@@ -630,6 +717,10 @@ const SHOTS = [
       await shot();
     },
   },
+  // Slices that own their own scene seeds and walkers register here rather
+  // than editing the table above. The spread is the whole integration point:
+  // the module is standalone and carries its own `run` bodies.
+  ...WORKBENCH_LONGWORK_SHOTS,
 ];
 
 // ---------------------------------------------------------------------------

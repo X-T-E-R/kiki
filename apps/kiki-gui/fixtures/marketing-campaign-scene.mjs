@@ -727,23 +727,213 @@ export function buildWebAccess(locale) {
 // A10 — the usage page
 // ---------------------------------------------------------------------------
 
-const zeroTokens = { input_other: 0, output: 0, input_cache_read: 0, input_cache_creation: 0 };
+const tok = (input_other, output, input_cache_read, input_cache_creation) => ({
+  input_other, output, input_cache_read, input_cache_creation,
+});
+const sumOf = (...rows) => rows.reduce((total, row) => ({
+  input_other: total.input_other + row.input_other,
+  output: total.output + row.output,
+  input_cache_read: total.input_cache_read + row.input_cache_read,
+  input_cache_creation: total.input_cache_creation + row.input_cache_creation,
+}), tok(0, 0, 0, 0));
+/** One aggregate block over rows that each already carry a derived cost. */
+const aggregate = (rows) => ({
+  tokens: sumOf(...rows),
+  cost_usd_estimated: Number(rows.reduce((n, row) => n + row.cost_usd_estimated, 0).toFixed(4)),
+  cost_unknown: false,
+});
 
-/** A10. History with a partial-coverage note, because that is the honest state. */
+/**
+ * A day of work across three sessions and four models. The figures are
+ * internally consistent on purpose: the summary is the sum of the buckets, the
+ * buckets are the sum of the sessions, and today's slice is a subset of the
+ * range — a reader who adds up the table lands on the number above it.
+ *
+ * This is EXAMPLE data. Nothing here bills a provider, and no request is made.
+ */
+const USAGE_MODELS = [
+  { key: 'kimi-code/k3', provider: 'kimi-code', model_alias: 'Kimi K3', price: 0.0412 },
+  { key: 'anthropic/claude-fable-5', provider: 'anthropic', model_alias: 'Claude Fable', price: 0.0874 },
+  { key: 'deepseek/deepseek-v4-flash', provider: 'deepseek', model_alias: 'DeepSeek V4 Flash', price: 0.0193 },
+  { key: 'zhipu/glm-5.3-flash', provider: 'zhipu', model_alias: 'GLM 5.3 Flash', price: 0.0126 },
+];
+
+/** Per-model per-day rows. `cost_usd_estimated` is derived, never hand-typed. */
+const USAGE_DAILY = [
+  // day offset 0 = today
+  { day: 0, model: 0, input_other: 18_400, output: 6_920, input_cache_read: 61_300, input_cache_creation: 22_400, turns: 14, requests: 31 },
+  { day: 0, model: 1, input_other: 7_250, output: 3_180, input_cache_read: 24_100, input_cache_creation: 0, turns: 6, requests: 12 },
+  { day: 0, model: 2, input_other: 9_800, output: 4_420, input_cache_read: 0, input_cache_creation: 0, turns: 9, requests: 19 },
+  { day: 0, model: 3, input_other: 4_100, output: 1_960, input_cache_read: 8_400, input_cache_creation: 0, turns: 5, requests: 8 },
+  { day: 1, model: 0, input_other: 24_600, output: 9_120, input_cache_read: 88_900, input_cache_creation: 31_200, turns: 19, requests: 44 },
+  { day: 1, model: 1, input_other: 11_300, output: 5_240, input_cache_read: 41_700, input_cache_creation: 0, turns: 9, requests: 17 },
+  { day: 1, model: 2, input_other: 14_100, output: 6_050, input_cache_read: 12_800, input_cache_creation: 0, turns: 12, requests: 26 },
+  { day: 2, model: 0, input_other: 21_900, output: 8_240, input_cache_read: 74_600, input_cache_creation: 26_800, turns: 17, requests: 38 },
+  { day: 2, model: 2, input_other: 12_400, output: 5_310, input_cache_read: 0, input_cache_creation: 0, turns: 11, requests: 23 },
+  { day: 2, model: 3, input_other: 6_700, output: 2_840, input_cache_read: 15_200, input_cache_creation: 0, turns: 7, requests: 14 },
+  { day: 3, model: 0, input_other: 16_800, output: 6_400, input_cache_read: 52_100, input_cache_creation: 18_900, turns: 12, requests: 27 },
+  { day: 3, model: 1, input_other: 8_900, output: 3_960, input_cache_read: 29_400, input_cache_creation: 0, turns: 7, requests: 15 },
+  { day: 3, model: 3, input_other: 5_200, output: 2_100, input_cache_read: 11_300, input_cache_creation: 0, turns: 6, requests: 11 },
+  { day: 4, model: 0, input_other: 28_300, output: 10_600, input_cache_read: 96_200, input_cache_creation: 34_500, turns: 21, requests: 49 },
+  { day: 4, model: 2, input_other: 15_800, output: 6_940, input_cache_read: 0, input_cache_creation: 0, turns: 13, requests: 28 },
+  { day: 5, model: 0, input_other: 19_700, output: 7_380, input_cache_read: 67_400, input_cache_creation: 21_600, turns: 15, requests: 34 },
+  { day: 5, model: 1, input_other: 6_400, output: 2_720, input_cache_read: 19_800, input_cache_creation: 0, turns: 5, requests: 10 },
+  { day: 6, model: 0, input_other: 14_200, output: 5_180, input_cache_read: 45_700, input_cache_creation: 16_300, turns: 11, requests: 24 },
+  { day: 6, model: 2, input_other: 10_300, output: 4_120, input_cache_read: 8_900, input_cache_creation: 0, turns: 9, requests: 18 },
+];
+
+/** One hour in ms — the day buckets are pinned to the fixture clock's midnight. */
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+
+const dayStart = (daysAgo) => Math.floor(Date.parse(ts(0)) / DAY) * DAY - daysAgo * DAY;
+
+const usageGroup = (model, row) => ({
+  key: model.key,
+  provider: model.provider,
+  model_alias: model.model_alias,
+  agent_id: null,
+  parent_agent_id: null,
+  profile_name: null,
+  tokens: tok(row.input_other, row.output, row.input_cache_read, row.input_cache_creation),
+  cost_usd_estimated: Number(((row.input_other * 3 + row.output * 12) * model.price / 1_000_000).toFixed(6)),
+  cost_unknown: false,
+});
+
+/** A10. Seven days of a real-shaped working week, aggregated by model. */
 export function buildA10(locale) {
   const world = base(locale);
   const sid = SESSION.release;
+  const titles = LOCALIZED_SESSIONS[locale] ?? LOCALIZED_SESSIONS.en;
+
+  const trend = { day: [], week: [] };
+  for (let day = 0; day <= 6; day += 1) {
+    const rows = USAGE_DAILY.filter((row) => row.day === day);
+    const start = dayStart(day);
+    const groups = rows.map((row) => usageGroup(USAGE_MODELS[row.model], row));
+    trend.day.push({
+      key: `d${day}`,
+      start_at: start,
+      end_at: start + DAY,
+      turn_count: rows.reduce((n, row) => n + row.turns, 0),
+      request_count: rows.reduce((n, row) => n + row.requests, 0),
+      groups,
+      drilldown: { sessions: [], sessions_truncated: false },
+    });
+  }
+  for (let week = 0; week <= 1; week += 1) {
+    const rows = USAGE_DAILY.filter((row) => row.day <= week * 7);
+    const start = dayStart(week * 7);
+    trend.week.push({
+      key: `w${week}`,
+      start_at: start,
+      end_at: start + 7 * DAY,
+      turn_count: rows.reduce((n, row) => n + row.turns, 0),
+      request_count: rows.reduce((n, row) => n + row.requests, 0),
+      groups: USAGE_MODELS
+        .map((model) => ({ model, rows: rows.filter((row) => row.model === USAGE_MODELS.indexOf(model)) }))
+        .filter((entry) => entry.rows.length > 0)
+        .map((entry) => {
+          const merged = entry.rows.reduce((acc, row) => ({
+            input_other: acc.input_other + row.input_other,
+            output: acc.output + row.output,
+            input_cache_read: acc.input_cache_read + row.input_cache_read,
+            input_cache_creation: acc.input_cache_creation + row.input_cache_creation,
+            turns: acc.turns + row.turns,
+            requests: acc.requests + row.requests,
+          }), { input_other: 0, output: 0, input_cache_read: 0, input_cache_creation: 0, turns: 0, requests: 0 });
+          return usageGroup(entry.model, merged);
+        }),
+      drilldown: { sessions: [], sessions_truncated: false },
+    });
+  }
+
+  const allRows = USAGE_DAILY.map((row) => ({ row, model: USAGE_MODELS[row.model] }));
+  const todayRows = allRows.filter((entry) => entry.row.day === 0);
+
+  // A session's cost is its own weighted slice of today's rows, each priced at
+  // that row's model. The weights form a matrix whose columns sum to 1, so the
+  // three costs add up to the today total a reader sees in the header, and each
+  // session gets a genuinely different leading model — which is the thing the
+  // table is for.
+  const sessionUsage = (id, title, minutesAgo, weights) => {
+    const groups = todayRows.map((entry) => usageGroup(entry.model, entry.row));
+    const tokens = tok(
+      groups.reduce((n, g, i) => n + g.tokens.input_other * weights[i], 0),
+      groups.reduce((n, g, i) => n + g.tokens.output * weights[i], 0),
+      groups.reduce((n, g, i) => n + g.tokens.input_cache_read * weights[i], 0),
+      groups.reduce((n, g, i) => n + g.tokens.input_cache_creation * weights[i], 0),
+    );
+    const cost = Number(groups
+      .reduce((n, g, i) => n + g.cost_usd_estimated * weights[i], 0)
+      .toFixed(8));
+    const primary = groups
+      .map((g, i) => ({ g, weighted: g.cost_usd_estimated * weights[i] }))
+      .toSorted((a, b) => b.weighted - a.weighted)[0]?.g;
+    return {
+      id,
+      workspace_id: WORKSPACE_ID,
+      title,
+      created_at: Date.parse(ts(minutesAgo + 240)),
+      updated_at: Date.parse(ts(minutesAgo)),
+      archived: false,
+      deleted: false,
+      usage: { tokens, cost_usd_estimated: cost, cost_unknown: false },
+      primary_model: primary?.key ?? USAGE_MODELS[0].key,
+      profile_names: ['agent'],
+      unknown_price_models: [],
+    };
+  };
+
+  // Weight per (session, model). Each column is normalised to 1, so the three
+  // session costs sum to the same total as today's model rows — the identity a
+  // reader checks first on a page about accounting. Each session leans on a
+  // different model, which is what the table is actually for.
+  // Weight per (session, model). Each COLUMN sums to 1, so summing the three
+  // session costs reproduces the same total as today's model rows — the
+  // identity a reader checks first on a page about accounting. Each row leans
+  // on a different model, which is what the table is actually for.
+  const weights = [
+    [0.55, 0.20, 0.30, 0.25],
+    [0.25, 0.15, 0.50, 0.35],
+    [0.20, 0.65, 0.20, 0.40],
+  ];
+  const sessions = [
+    sessionUsage(SESSION.release, titles.release, 1, weights[0]),
+    sessionUsage(SESSION.accessibility, titles.accessibility, 95, weights[1]),
+    sessionUsage(SESSION.documentation, titles.documentation, 150, weights[2]),
+  ];
+
+  // The range summary is the sum of the same rows the trend buckets were built
+  // from, so a reader who adds the chart up lands on the number above it.
+  const summaryOf = (entries) => aggregate(entries.map((entry) => {
+    const { cost_usd_estimated } = usageGroup(entry.model, entry.row);
+    return { ...entry.row, cost_usd_estimated };
+  }));
+
+  // TODAY's summary comes from the session table instead, so the three row
+  // costs add up to the header's figure instead of differing from it in the
+  // last decimal — the difference a reader spots first on a spending page.
+  const todaySummary = {
+    tokens: sumOf(...sessions.map((item) => item.usage.tokens)),
+    cost_usd_estimated: Number(sessions
+      .reduce((n, item) => n + item.usage.cost_usd_estimated, 0)
+      .toFixed(6)),
+    cost_unknown: false,
+  };
+
   return {
     ...world,
     usageV2: {
-      trend: { day: [] },
-      summary: { tokens: zeroTokens, cost_usd_estimated: 0, cost_unknown: false, session_count: 0 },
-      summaryToday: { tokens: zeroTokens, cost_usd_estimated: 0, cost_unknown: false, session_count: 0 },
-      sessions: [],
-      sessionsToday: [],
+      trend,
+      summary: { ...summaryOf(allRows), session_count: sessions.length },
+      summaryToday: { ...todaySummary, session_count: sessions.length },
+      sessions,
+      sessionsToday: sessions,
       reliability: {
-        complete: false,
-        coverage: { earliest_at: ts(20_000), latest_at: ts(2) },
+        complete: true,
+        usage_coverage: { known_records: 418, missing_records: 0, legacy_zero_records: 0 },
+        coverage: { earliest_at: dayStart(6), latest_at: Date.parse(ts(1)) },
         scanned_sessions: 12,
         incomplete_sessions: 0,
         unknown_price_models: [],
@@ -988,5 +1178,179 @@ export function buildA02(locale) {
     snapshots: {
       [SESSION.release]: { messages: [], has_more: false },
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// A08 — appearance: the skins a user can actually pick
+// ---------------------------------------------------------------------------
+
+/**
+ * The appearance page. It previously reused the `skins` proof scenario, which
+ * put three things a reader can see into a public frame: a sidebar workspace
+ * named `fixture`, two user skins described as "Fixture skin: …", and a themes
+ * directory printed as a `/home/fixture/...` path.
+ *
+ * The built-in skins are already real product data (`src/lib/skins/builtin.ts`),
+ * so the honest move is to show those and seed only what a user's OWN themes
+ * directory would add: nothing. A user who has installed nothing sees exactly
+ * this list, which is the state the page is meant to be read in.
+ */
+export function buildA08(locale) {
+  const world = base(locale);
+  return {
+    ...world,
+    // No `skinFiles` and no `skinsDirectory`: the directory string is printed
+    // on the page, so a fixture path there is a visible artifact. The route
+    // answers an empty list, and the picker falls back to the built-ins.
+    skinsDirectory: 'C:/Users/you/.kiki/themes',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// A04 — agent profiles: the settings page and the new-session picker
+// ---------------------------------------------------------------------------
+
+const PROFILE_HOME = 'C:/Users/you/.kiki/agents';
+
+/**
+ * A04. Three named roles over the same neutral world the rest of the frames
+ * use, so the profiles page reads as the same install as the workbench.
+ *
+ * The shape is the one `fixtures/profile-editor.scenario.mjs` uses — the
+ * seeded rows are the real `/agents` contract, not a lookalike — but the
+ * provider ids are the campaign's, so no `fixture/` string reaches a frame.
+ */
+export function buildA04(locale) {
+  const world = base(locale);
+  const profile = (name, fields) => ({
+    name,
+    source: 'user',
+    workspace_id: WORKSPACE_ID,
+    source_file: `${PROFILE_HOME}/${name}.md`,
+    main: false,
+    disabled: false,
+    routes: [],
+    ...fields,
+  });
+
+  return {
+    ...world,
+    agentProfiles: [
+      {
+        name: 'agent',
+        source: 'builtin',
+        description: pick(locale, 'Drives a session end to end.', '端到端推进一个会话。'),
+        main: true,
+        disabled: false,
+        routes: [],
+        allowed_subagents: ['explore', 'general'],
+        preferred_subagents: ['explore'],
+      },
+      {
+        name: 'explore',
+        source: 'builtin',
+        description: pick(locale, 'Read-only explorer for unfamiliar code.', '只读探索陌生代码。'),
+        main: false,
+        disabled: false,
+        routes: [],
+        prompt: pick(locale, 'Find the facts the caller asked for and cite where they are.', '找出调用方要的事实，并指出出处。'),
+      },
+      {
+        // `agent` dispatches `general` by default, so that row is a real
+        // profile in the catalog: a dispatch naming a profile that does not
+        // exist raises a warning on the page, and a public frame shows none.
+        name: 'general',
+        source: 'builtin',
+        description: pick(locale, 'General-purpose subagent for a scoped task.', '处理明确任务的通用子智能体。'),
+        main: false,
+        disabled: false,
+        routes: [],
+        prompt: pick(
+          locale,
+          'Do the task you were given and report what you did, what you found, and what you could not verify.',
+          '把交给你的活做完，并报告你做了什么、发现了什么、哪些没能验证。',
+        ),
+      },
+      profile('release-lead', {
+        main: true,
+        description: pick(
+          locale,
+          'Frames a release, delegates the work, and accepts the result.',
+          '拆解一次发布、把活派出去、并验收结果。',
+        ),
+        when_to_use: pick(
+          locale,
+          'Open a session for multi-step work that has to ship.',
+          '为要交付的多步工作开一个会话。',
+        ),
+        prompt: pick(
+          locale,
+          'State the goal in one line, then decide what to delegate. Accept a result only against its stated acceptance.',
+          '先用一句话说清目标，再决定派什么。只有对着验收标准才接受结果。',
+        ),
+        pinned_model_alias: 'Kimi K3',
+        thinking_effort: 'max',
+        can_spawn_subagents: true,
+        allowed_subagents: [
+          'explore',
+          { name: 'implementer', model_alias: 'deepseek-v4-flash', thinking_effort: 'max' },
+          { name: 'reviewer', thinking_effort: 'high' },
+        ],
+        preferred_subagents: ['implementer', 'explore'],
+      }),
+      profile('implementer', {
+        description: pick(
+          locale,
+          'Owns one engineering objective from reading to verification.',
+          '独立负责一个工程目标，从读到验。',
+        ),
+        when_to_use: pick(
+          locale,
+          'A scoped change that needs editing and checking.',
+          '需要动手改并自查的一处明确改动。',
+        ),
+        prompt: pick(
+          locale,
+          'Do the whole objective, then show the check that proves it. Report what you could not verify.',
+          '把目标做完，并给出证明它做完了的自查。说明哪些没能验证。',
+        ),
+        pinned_model_alias: 'deepseek-v4-flash',
+        thinking_effort: 'max',
+        allowed_subagents: ['explore'],
+        model_profiles: [
+          {
+            alias: 'Kimi K3',
+            when: pick(locale, 'The change is small and fits the context.', '改动很小、放得进上下文时。'),
+            thinking_effort: 'max',
+          },
+          {
+            alias: 'glm-5.3-flash',
+            when: pick(locale, 'Many mechanical edits across files.', '跨文件的机械性改动很多时。'),
+            thinking_effort: 'high',
+          },
+        ],
+      }),
+      profile('reviewer', {
+        description: pick(
+          locale,
+          'Independent review at a candidate boundary.',
+          '在候选边界上做独立审查。',
+        ),
+        when_to_use: pick(
+          locale,
+          'A wrong call here is expensive.',
+          '这一步判断错了代价很大时。',
+        ),
+        prompt: pick(
+          locale,
+          'Review the candidate against the stated acceptance and report findings with evidence.',
+          '对着验收标准审候选，带证据报发现。',
+        ),
+        pinned_model_alias: 'claude-fable-5',
+        thinking_effort: 'high',
+        allowed_subagents: ['explore'],
+      }),
+    ],
   };
 }

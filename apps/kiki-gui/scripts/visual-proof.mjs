@@ -3576,8 +3576,30 @@ async function scenarioQueue() {
   );
   await shot('queue-edit-confirmed');
 
-  // Keyboard reorder: focus C's drag handle, ArrowUp moves it above B. The
-  // strip repaints from the server's post-move order (prompt.moved).
+  // Real mouse reorder in both directions, through the shipped move handler
+  // and fixture HTTP receipt + prompt.moved projection (no dispatched DnD).
+  const dragQueued = async (sourceText, targetText, after) => {
+    const source = await strip.locator('[data-queue-item]', { hasText: sourceText })
+      .locator(`button[aria-label="${S.queueDragHandleAria}"]`).boundingBox();
+    const target = await strip.locator('[data-queue-item]', { hasText: targetText }).boundingBox();
+    if (source === null || target === null) throw new Error('queue drag geometry missing');
+    const receipt = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith(':move'));
+    await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(target.x + target.width / 2, target.y + target.height * (after ? 0.8 : 0.2), { steps: 12 });
+    await page.mouse.up();
+    const response = await receipt;
+    if (!response.ok()) throw new Error(`queue move failed: ${response.status()}`);
+    const expectedFirst = after ? targetText : sourceText;
+    await page.waitForFunction((expected) => document.querySelector('[data-queue-item]')?.textContent?.includes(expected) === true, expectedFirst);
+    await page.waitForTimeout(300);
+  };
+  await dragQueued('C: clear me out. (edited)', 'B: steer me in.', false);
+  await shot('queue-mouse-up');
+  await dragQueued('C: clear me out. (edited)', 'B: steer me in.', true);
+  await shot('queue-mouse-down');
+
+  // Keyboard reorder still goes through the same authoritative move path.
   const rowTexts = async () =>
     page.evaluate(() =>
       Array.from(document.querySelectorAll('[data-queue-strip] ol > li:not([aria-hidden])')).map(
