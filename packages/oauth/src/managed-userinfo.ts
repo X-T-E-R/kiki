@@ -61,6 +61,7 @@ export const managedUserInfoSchema = z.object({
   userLevelName: z.string(),
   domain: z.number().int(),
   domainName: z.string(),
+  goodsVersion: z.number().int().optional(),
   globalId: z.string().optional(),
   bio: z.string().optional(),
   avatar: z.string().optional(),
@@ -108,6 +109,7 @@ export function parseManagedUserInfoPayload(payload: unknown): ManagedUserInfo |
     userLevelName: stringField(payload, 'user_level_name') ?? '',
     domain: intField(payload, 'domain') ?? 0,
     domainName: stringField(payload, 'domain_name') ?? '',
+    goodsVersion: intField(payload, 'goods_version'),
     globalId: stringField(payload, 'global_id'),
     bio: stringField(payload, 'bio'),
     avatar: stringField(payload, 'avatar'),
@@ -137,7 +139,7 @@ function intField(record: Record<string, unknown>, key: string): number | undefi
   if (typeof value === 'number') {
     return Number.isFinite(value) ? Math.trunc(value) : undefined;
   }
-  if (typeof value === 'string') {
+  if (typeof value === 'string' && value.trim().length > 0) {
     const n = Number(value);
     return Number.isFinite(n) ? Math.trunc(n) : undefined;
   }

@@ -159,6 +159,19 @@ describe('parseManagedUserInfoPayload', () => {
   });
 });
 
+describe('goods_version metadata', () => {
+  it('normalizes numeric metadata through the public schema and drops malformed values', () => {
+    for (const goods_version of [2, '2']) {
+      const parsed = parseManagedUserInfoPayload({ user_id: 'example-user', goods_version });
+      expect(parsed?.goodsVersion).toBe(2);
+      expect(managedUserInfoSchema.parse(parsed).goodsVersion).toBe(2);
+    }
+    for (const goods_version of ['', '  ', 'V2', NaN, null]) {
+      expect(parseManagedUserInfoPayload({ user_id: 'example-user', goods_version })?.goodsVersion).toBeUndefined();
+    }
+  });
+});
+
 describe('fetchManagedUserInfo', () => {
   it('sends only Authorization and Accept headers', async () => {
     const fetchMock = vi.fn(
