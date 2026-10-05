@@ -373,6 +373,40 @@ describe('DaemonTUI commands', () => {
     expect(output).not.toContain(connection.token);
   });
 
+  it('renders usage before the first message without creating a session or checking auth', async () => {
+    const { tui, internal, agentFacade } = driver();
+    (internal as unknown as { controller?: unknown }).controller = undefined;
+    const prototype = Object.getPrototypeOf(tui) as { showStatus(message: string): void };
+    internal.showStatus.mockImplementation((message: string) => prototype.showStatus.call(tui, message));
+    vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+    const auth = internal.client.klient['global'] as { auth: { ensureReady: ReturnType<typeof vi.fn> } };
+    auth.auth.ensureReady = vi.fn();
+    await internal.handleSlash('/usage');
+    const output = tui.state.activityContainer.render(80).join('\n');
+    expect(output).toContain('No token usage recorded yet.');
+    expect(output).not.toContain('/login');
+    expect(internal.client.createSession).not.toHaveBeenCalled();
+    expect(auth.auth.ensureReady).not.toHaveBeenCalled();
+    expect(agentFacade.getUsage).not.toHaveBeenCalled();
+  });
+
+  it('shows the active session usage rather than the empty hint', async () => {
+    const { internal, agentFacade } = driver();
+    agentFacade.getUsage.mockResolvedValue({ total: { inputTokens: 12 } } as never);
+    await internal.handleSlash('/usage');
+    expect(agentFacade.getUsage).toHaveBeenCalledTimes(1);
+    expect(internal.showStatus).toHaveBeenCalledWith(expect.stringContaining('12'));
+    expect(internal.showStatus.mock.calls[0]?.[0]).not.toContain('No token usage');
+    expect(internal.client.createSession).not.toHaveBeenCalled();
+  });
+
+  it('propagates active session usage failures instead of presenting an empty session', async () => {
+    const { internal, agentFacade } = driver();
+    agentFacade.getUsage.mockRejectedValue(new Error('usage unavailable'));
+    await expect(internal.handleSlash('/usage')).rejects.toThrow('usage unavailable');
+    expect(internal.showStatus).not.toHaveBeenCalled();
+  });
+
   it('marks missing connection identity unavailable instead of guessing from client home', async () => {
     const { tui, internal } = driver();
     vi.stubEnv('KIKI_HOME', 'C:/client-only-home');

@@ -1532,7 +1532,11 @@ export class DaemonTUI {
   }
 
   private async showUsage(): Promise<void> {
-    const controller = await this.ensureSession();
+    const controller = this.controller;
+    if (controller === undefined) {
+      this.showStatus('No token usage recorded yet.');
+      return;
+    }
     const usage = await this.client.klient.session(controller.sessionId).agent('main').getUsage();
     this.showStatus(JSON.stringify(usage, undefined, 2));
   }

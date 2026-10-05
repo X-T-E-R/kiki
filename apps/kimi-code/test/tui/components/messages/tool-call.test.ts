@@ -1940,6 +1940,26 @@ describe('ToolCallComponent', () => {
       );
     });
 
+    it('renders a steer-interrupted wait without claiming completion or hiding running tasks', () => {
+      const component = new ToolCallComponent(
+        { id: 'call_wait_interrupted', name: 'TaskWait', args: { task_id: 'bash-x', timeout: 60 } },
+        {
+          tool_call_id: 'call_wait_interrupted',
+          output: [
+            'wait_status: interrupted', 'reason: steer', 'task_id: bash-x',
+            'waited_ms: 4000', 'timeout_ms: 60000', '', '[still_running]',
+            'active_background_tasks: 1', 'task_id: bash-x', 'description: slow build',
+          ].join('\n'),
+          is_error: false,
+        },
+      );
+      const output = strip(component.render(100).join('\n'));
+      expect(output).toContain('Wait interrupted by new input (bash-x)');
+      expect(output).toContain('1 background task still running: slow build');
+      expect(output).toContain('4s');
+      expect(output).not.toContain('Waited for background task');
+    });
+
     it('renders errors with the failure tense', () => {
       const component = new ToolCallComponent(
         {

@@ -32,6 +32,10 @@ export function seaExecArgv(profile) {
   return profile === 'local' ? LOCAL_PROFILE_EXEC_ARGV : [];
 }
 
+export function seaCodeCacheEnabled(target, host = `${process.platform}-${process.arch}`) {
+  return target === host;
+}
+
 async function writeSeaConfig(target, profile) {
   await mkdir(nativeIntermediatesDir(), { recursive: true });
   const { manifest, manifestJson, assets } = await collectNativeAssets({
@@ -59,7 +63,7 @@ async function writeSeaConfig(target, profile) {
       Object.entries(seaAssets).sort(([a], [b]) => a.localeCompare(b)),
     ),
     disableExperimentalSEAWarning: true,
-    useCodeCache: false,
+    useCodeCache: seaCodeCacheEnabled(target),
     useSnapshot: false,
     execArgv: seaExecArgv(profile),
     execArgvExtension: profile === 'local' ? 'cli' : 'env',

@@ -92,6 +92,60 @@ describe('print session continuation identity', () => {
 });
 
 describe('applyPrintBackgroundPolicy', () => {
+  it.each(['steer', 'exit', 'drain'] as const)('waits for a fired one-shot turn under %s before teardown', async (mode) => {
+    let active = true;
+    const next = vi.fn(async () => { active = false; return ending(2); });
+    const warn = vi.fn();
+    await applyPrintBackgroundPolicy({
+      mode, ceilingS: 60, maxTurns: 5, skipTurnId: 1,
+      now: () => 0, warn, drain: async () => {}, countPending: () => 0,
+      turnActive: async () => active, cronNextFireAt: async () => null,
+      turnEndings: { next },
+    });
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(next).toHaveBeenCalledWith(60_000, 1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('does not mistake a recurring fire held by a running turn for a wedged tick', async () => {
+    let active = true;
+    let fireAt: number | null = 500;
+    const warn = vi.fn();
+    const next = vi.fn(async (remainingMs: number) => {
+      if (remainingMs <= 10_000) return null;
+      active = false;
+      fireAt = null;
+      return ending(2);
+    });
+    await applyPrintBackgroundPolicy({
+      mode: 'steer', ceilingS: 60, maxTurns: 5, skipTurnId: 1,
+      now: () => 1_000, warn, drain: async () => {}, countPending: () => 0,
+      turnActive: async () => active, cronNextFireAt: async () => fireAt,
+      turnEndings: { next },
+    });
+    expect(next).toHaveBeenCalledWith(60_000, 1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed in-flight turn instead of success when the cron schedule is empty', async () => {
+    await expect(applyPrintBackgroundPolicy({
+      mode: 'steer', ceilingS: 60, maxTurns: 5, skipTurnId: 1,
+      now: () => 0, warn: () => {}, drain: async () => {}, countPending: () => 0,
+      turnActive: async () => true, cronNextFireAt: async () => null,
+      turnEndings: scriptedTurnEndings([{ event: ending(2, 'failed') }]),
+    })).rejects.toThrow(PrintSteeredTurnFailedError);
+  });
+
+  it('bounds an in-flight turn wait with the shared wall-clock ceiling', async () => {
+    const warn = vi.fn();
+    await applyPrintBackgroundPolicy({
+      mode: 'steer', ceilingS: 60, maxTurns: 5, skipTurnId: 1,
+      now: () => 0, warn, drain: async () => {}, countPending: () => 0,
+      turnActive: async () => true, turnEndings: scriptedTurnEndings([]),
+    });
+    expect(warn).toHaveBeenCalledWith('print turn wait ceiling reached (60s), finishing');
+  });
+
   it('awaits remote resource reads in goal, cron, then background order', async () => {
     const order: string[] = [];
     let active = true;

@@ -311,6 +311,32 @@ describe('CustomEditor @ mention completion refresh', () => {
 });
 
 describe('CustomEditor Tab key handling', () => {
+  it('renders and accepts a stale mention while its refresh is still pending', async () => {
+    const editor = makeEditor();
+    const mentions = new FileMentionProvider([], process.cwd(), null);
+    const item = { value: '@target/', label: 'target/' };
+    const suggestions = vi.fn(async (): Promise<AutocompleteSuggestions | null> => ({ items: [item], prefix: '@s' }));
+    editor.setAutocompleteProvider({
+      getSuggestions: suggestions,
+      applyCompletion: mentions.applyCompletion.bind(mentions),
+    });
+    editor.handleInput('@');
+    editor.handleInput('s');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await flushAutocomplete();
+    expect(editor.isShowingAutocomplete()).toBe(true);
+    expect(editor.render(80).join('\n')).toContain('target/');
+    suggestions.mockImplementation(() => new Promise(() => {}));
+    editor.handleInput('o');
+    editor.handleInput('u');
+    editor.handleInput('r');
+    editor.handleInput('c');
+    editor.handleInput('e');
+    editor.handleInput('\t');
+    expect(editor.getText()).toBe('@target/');
+    expect(editor.render(80).join('\n')).toContain('@target/');
+  });
+
   it('does not open autocomplete when Tab is pressed with the dropdown closed', async () => {
     const editor = makeEditor();
     const provider = providerReturning([{ value: '@src/file.ts', label: 'file.ts' }]);

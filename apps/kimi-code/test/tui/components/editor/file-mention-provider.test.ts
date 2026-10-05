@@ -480,6 +480,49 @@ describe('FileMentionProvider', () => {
     expect(dir.lines[0]).toBe('hey @src/');
   });
 
+  describe('live @ mention completion', () => {
+    it.each([
+      ['see @a @source-long', '@source', '@target/', 'see @a @target/'],
+      ['@source', '@source-long', '@target/', '@target/'],
+      ['@packages/@', '@', '@target/', '@target/'],
+      ['@source ', '@source', '@target/', '@source '],
+      ['@"my folder/te', '@"my', '@"my folder/test.txt"', '@"my folder/test.txt" '],
+    ])('replaces only the live mention in %s', (line, prefix, value, expected) => {
+      const provider = new FileMentionProvider([], workDir, NO_FD);
+      const result = provider.applyCompletion([line], 0, line.length, { value, label: value }, prefix);
+      expect(result.lines[0]).toBe(expected);
+      expect(result.cursorCol).toBe(expected.length);
+    });
+
+    it.each(['@actions/', '@"actions/"'])('keeps one closing quote for %s', (value) => {
+      const provider = new FileMentionProvider([], workDir, NO_FD);
+      const result = provider.applyCompletion(['@"ac"'], 0, 4, { value, label: 'actions/' }, '@a');
+      expect(result.lines[0]).toBe('@"actions/"');
+      expect(result.cursorCol).toBe('@"actions/'.length);
+    });
+
+    it.each([
+      ['@', '', 'README.md', '@README.md'],
+      ['@', '', '@scope/', '@@scope/'],
+      ['cd ', '', '@scope/', 'cd @scope/'],
+    ])('preserves non-mention path completion for %s', (line, prefix, value, expected) => {
+      const provider = new FileMentionProvider([], workDir, NO_FD);
+      const result = provider.applyCompletion([line], 0, line.length, { value, label: value }, prefix);
+      expect(result.lines[0]).toBe(expected);
+    });
+
+    it('offers quoted filesystem suggestions while the quote is still open', async () => {
+      mkdirSync(join(workDir, 'actions'));
+      mkdirSync(join(workDir, 'activity'));
+      const provider = new FileMentionProvider([], workDir, NO_FD);
+      const result = await provider.getSuggestions(['@"ac'], 0, 4, { signal: ctrl() });
+      expect(result?.prefix).toBe('@"ac');
+      expect(result?.items.map((item) => item.value)).toEqual(
+        expect.arrayContaining(['@"actions/"', '@"activity/"']),
+      );
+    });
+  });
+
   describe('bash-mode path completion dotfile filtering', () => {
     it('hides dot-prefixed entries (matching /add-dir) in bash mode', async () => {
       mkdirSync(join(workDir, '.hidden'));

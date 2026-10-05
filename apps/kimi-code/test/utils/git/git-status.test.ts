@@ -216,6 +216,16 @@ describe('git status cache', () => {
     expect(mocks.execFile).not.toHaveBeenCalled();
   });
 
+  it('defers the repo probe until the first footer status read and caches a negative result', () => {
+    mocks.spawnSync.mockReturnValue({ status: 1, stdout: '' });
+    const cache = createGitStatusCache('/tmp/not-a-repo');
+    expect(mocks.spawnSync).not.toHaveBeenCalled();
+    expect(cache.getStatus()).toBeNull();
+    expect(mocks.spawnSync).toHaveBeenCalledTimes(1);
+    expect(cache.getStatus()).toBeNull();
+    expect(mocks.spawnSync).toHaveBeenCalledTimes(1);
+  });
+
   it('spawns git and gh through their resolved absolute paths', async () => {
     mocks.execFile.mockImplementation(
       (

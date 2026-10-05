@@ -124,7 +124,7 @@ function makeFakeHarness() {
       setThinking: vi.fn(), getModel: () => 'k2', data: () => ({ profileName: profileState.profileName }),
     }],
     [IAgentPermissionModeService, { mode: 'auto', setMode: vi.fn() }],
-    [IAgentLoopService, { cancelFromUser: vi.fn() }],
+    [IAgentLoopService, { cancelFromUser: vi.fn(), status: vi.fn(() => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false })) }],
     [IEventBus, {
       subscribe: vi.fn((handler: (event: Event2<any>) => void) => {
         eventListeners.add(handler);
@@ -169,11 +169,11 @@ function makeFakeHarness() {
     [IBootstrapService, { osHomeDir: '/home/test' }],
   ]);
   const app = fakeScope('app', appServices);
-  return { app, agent, session, agentServices, appServices, profileState };
+  return { app, agent, session, agentServices, appServices, profileState, eventListeners };
 }
 
 describe('runV2Print', () => {
-  it.each(['auth', 'prompt', 'goal', 'cron', 'drain'] as const)('times out a stalled %s and cancels, flushes and closes the host', async (stage) => {
+  it.each(['auth', 'prompt', 'loop', 'goal', 'cron', 'drain'] as const)('times out a stalled %s and cancels, flushes and closes the host', async (stage) => {
     vi.useFakeTimers();
     const { app, agent, session, agentServices, appServices } = makeFakeHarness();
     mocks.bootstrap.mockReturnValue({ app });
@@ -181,6 +181,7 @@ describe('runV2Print', () => {
     const stalled = () => new Promise<never>(() => {});
     if (stage === 'auth') (appServices.get(IAuthSummaryService) as { ensureReady: Mock }).ensureReady.mockImplementation(stalled);
     if (stage === 'prompt') (agentServices.get(IAgentPromptService) as { submitAndWait: Mock }).submitAndWait.mockImplementation(stalled);
+    if (stage === 'loop') (agentServices.get(IAgentLoopService) as { status: Mock }).status.mockImplementation(stalled);
     if (stage === 'goal') (agentServices.get(IAgentGoalService) as { getGoal: Mock }).getGoal.mockReturnValue({ goal: {
       goalId: 'example-goal', objective: 'continue', status: 'active', turnsUsed: 1, tokensUsed: 1, wallClockMs: 0,
       budget: { tokenBudget: null, turnBudget: null, wallClockBudgetMs: null, remainingTokens: null, remainingTurns: null,
@@ -199,6 +200,38 @@ describe('runV2Print', () => {
       expect((agentServices.get(IAgentLoopService) as { cancelFromUser: Mock }).cancelFromUser).toHaveBeenCalledOnce();
       expect((agentServices.get(IEventDispatcher) as { flush: Mock }).flush).toHaveBeenCalledOnce();
       expect(app.dispose).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the print host alive until a cron-fired turn finishes after its schedule disappears', async () => {
+    vi.useFakeTimers();
+    const { app, agent, agentServices, eventListeners } = makeFakeHarness();
+    mocks.bootstrap.mockReturnValue({ app });
+    mocks.ensureMainAgent.mockResolvedValue(agent);
+    let active = true;
+    const status = (agentServices.get(IAgentLoopService) as { status: Mock }).status;
+    status.mockImplementationOnce(() => {
+      setTimeout(() => {
+        active = false;
+        for (const listener of eventListeners) {
+          listener({ type: 'turn.ended', turnId: 2, reason: 'completed' } as unknown as Event2<any>);
+        }
+      }, 30);
+      return { state: 'running', activeTurnId: 2, pendingTurnIds: [], hasPendingRequests: false };
+    }).mockImplementation(() => ({ state: active ? 'running' : 'idle', pendingTurnIds: [], hasPendingRequests: false }));
+    try {
+      const run = runV2Print(opts() as never, 'test', { stdout: writer(), stderr: writer() });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(status).toHaveBeenCalledOnce();
+      expect(app.dispose).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(30);
+      await run;
+      expect(status).toHaveBeenCalledTimes(2);
+      expect(app.dispose).toHaveBeenCalledOnce();
+      expect((agentServices.get(IEventDispatcher) as { flush: Mock }).flush).toHaveBeenCalledOnce();
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -305,7 +338,7 @@ describe('runV2Print', () => {
       mocks.ensureMainAgent.mockImplementation(main.ensureMainAgent);
       mocks.resolveKikiHome.mockReturnValue(homeDir);
       const stdout = writer(); const stderr = writer();
-      await runV2Print(opts({ model: explicitModel }) as never, 'test', { stdout, stderr });
+      await runV2Print(opts({ model: explicitModel, thinking: 'off' }) as never, 'test', { stdout, stderr });
       expect(stdout.text()).toContain('LOCAL_PRINT_OK');
       expect(requests).toHaveLength(1);
       expect(JSON.parse(requests[0]!).model).toBe(expectedModel);
@@ -361,11 +394,11 @@ describe('runV2Print', () => {
       mocks.ensureMainAgent.mockImplementation(main.ensureMainAgent);
       mocks.resolveKikiHome.mockReturnValue(homeDir);
       const priorErr = writer();
-      await runV2Print(opts({ prompt: 'prior prompt', timeout: '30' }) as never, 'test', { stdout: writer(), stderr: priorErr });
+      await runV2Print(opts({ prompt: 'prior prompt', timeout: '30', thinking: 'off' }) as never, 'test', { stdout: writer(), stderr: priorErr });
       priorSessionId = /kiki -r (\S+)/.exec(priorErr.text())?.[1];
       expect(priorSessionId).toBeDefined();
       const stdout = writer();
-      await runV2Print(opts({ prompt: 'browse current history', timeout: '30' }) as never, 'test', { stdout, stderr: writer() });
+      await runV2Print(opts({ prompt: 'browse current history', timeout: '30', thinking: 'off' }) as never, 'test', { stdout, stderr: writer() });
       expect(stdout.text()).toContain('HISTORY_OK');
       expect(requests).toHaveLength(3);
       expect(requests[1]?.tools?.some((tool) => tool.function.name === 'HistoryList')).toBe(true);

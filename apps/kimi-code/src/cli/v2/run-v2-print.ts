@@ -338,6 +338,7 @@ async function runPrintTurn(
         now: () => Date.now(),
         goalActive: async () => (await waitForPrintOperation(agent.getGoal(), signal)).goal?.status === 'active',
         cronNextFireAt: () => waitForPrintOperation(session.nextCronFireAt(), signal),
+        turnActive: async () => (await waitForPrintOperation(agent.getLoopStatus(), signal)).state === 'running',
       });
     } catch (error) {
       signal.throwIfAborted();
@@ -533,6 +534,8 @@ export interface PrintBackgroundPolicyInput {
   readonly goalActive?: () => boolean | Promise<boolean>;
   /** Next cron fire (epoch ms), or null. Cron liveness applies under exit/drain too. */
   readonly cronNextFireAt?: () => number | null | Promise<number | null>;
+  /** A cron-fired turn can outlive the schedule entry that launched it. */
+  readonly turnActive?: () => boolean | Promise<boolean>;
 }
 
 /**
@@ -571,6 +574,20 @@ export async function applyPrintBackgroundPolicy(
   let lastPastFireAt: number | undefined;
   let cronWedged = false;
   for (;;) {
+    // A fired one-shot vanishes, and a recurring fire stays in the past while
+    // the loop is busy. Neither schedule signal means the turn is quiescent.
+    if (await input.turnActive?.() === true) {
+      const ended = await input.turnEndings.next(deadline - input.now(), input.skipTurnId);
+      if (ended !== null && ended.reason !== 'completed') {
+        throw new PrintSteeredTurnFailedError(formatTurnEndingFailure(ended));
+      }
+      if (ended === null) {
+        input.warn(`print turn wait ceiling reached (${input.ceilingS}s), finishing`);
+        return;
+      }
+      continue;
+    }
+
     // (a) goal: while a goal is `active`, keep waiting for its continuation
     // turns. Also wake on a short poll: a goal can leave `active` without any
     // further turn.ended (budget block at a turn boundary, or a pause after a
