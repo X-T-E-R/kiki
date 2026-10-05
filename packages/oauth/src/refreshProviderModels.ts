@@ -572,6 +572,8 @@ export async function refreshProviderModels(
         baseUrl: auth.baseUrl,
       });
       if (models.length > 0) {
+        const fresh = await host.getConfig();
+        config = { ...config, defaultModel: fresh.defaultModel, thinking: fresh.thinking };
         const next = structuredClone(config);
         applyManagedKimiCodeConfig(next, {
           models,

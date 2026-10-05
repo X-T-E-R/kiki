@@ -359,6 +359,25 @@ describe('refreshProviderModels managed Kimi Code (OAuth)', () => {
     });
   });
 
+  it('preserves a default model and thinking selection changed during the managed fetch', async () => {
+    const fixture = createHost({
+      providers: {
+        'managed:kimi-code': { type: 'kimi', oauth: { storage: 'file', key: 'oauth/example' } },
+        example: { type: 'openai', apiKey: 'example-key' },
+      },
+      models: { 'example/model': { provider: 'example', model: 'model', maxContextSize: 64000 } },
+    }, { oauthToken: 'example-token' });
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      await fixture.host.setConfig({ ...fixture.config(), defaultModel: 'example/model', thinking: { enabled: false } });
+      return jsonResponse(MANAGED_MODELS_RESPONSE);
+    }));
+
+    const result = await refreshProviderModels(fixture.host, { scope: 'oauth' });
+
+    expect(result.failed).toEqual([]);
+    expect(fixture.config()).toMatchObject({ defaultModel: 'example/model', thinking: { enabled: false } });
+  });
+
   it('keeps unchanged data on disk when the managed catalog is identical', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(MANAGED_MODELS_RESPONSE)));
     const first = createHost(
