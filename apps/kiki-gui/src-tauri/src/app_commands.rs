@@ -31,6 +31,7 @@ macro_rules! app_commands {
             open_external_url,
             read_desktop_prefs,
             write_desktop_prefs,
+            mutate_desktop_update_state,
             desktop_log_info,
             open_desktop_log_directory,
             supports_desktop_updates,

@@ -308,11 +308,11 @@ export const tauriHost: TauriHostAdapter = {
     await invoke('write_host_file_text', { path, text });
   },
   async writeDesktopPrefs(prefs) {
-    try {
-      await invoke('write_desktop_prefs', { prefs });
-    } catch {
-      return;
-    }
+    // JSON drops undefined keys; an explicitly cleared record must reach native.
+    const patch = Object.hasOwn(prefs, 'updateState') && prefs.updateState === undefined
+      ? { ...prefs, updateState: {} }
+      : prefs;
+    await invoke('write_desktop_prefs', { prefs: patch });
   },
   async readDesktopPrefs() {
     try {
@@ -331,14 +331,14 @@ export const tauriHost: TauriHostAdapter = {
   async supportsDesktopUpdates() {
     return invoke<boolean>('supports_desktop_updates');
   },
-  async checkDesktopUpdate(): Promise<DesktopUpdate | null> {
-    const update = await invoke<Omit<DesktopUpdate, 'install'> | null>('check_desktop_update');
+  mutateDesktopUpdateState: (mutation) => invoke('mutate_desktop_update_state', { mutation }),
+  async checkDesktopUpdate(channel = 'stable'): Promise<DesktopUpdate | null> {
+    const update = await invoke<Omit<DesktopUpdate, 'install'> | null>('check_desktop_update', { channel });
     if (update === null) return null;
     return {
       ...update,
       async install() {
-        await invoke('prepare_for_update');
-        await invoke('install_desktop_update');
+        await invoke('install_desktop_update', { channel, version: update.version });
       },
     };
   },

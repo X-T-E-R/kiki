@@ -48,6 +48,7 @@
     "allow-open-external-url",
     "allow-read-desktop-prefs",
     "allow-write-desktop-prefs",
+    "allow-mutate-desktop-update-state",
     "allow-desktop-log-info",
     "allow-open-desktop-log-directory",
     "allow-supports-desktop-updates",

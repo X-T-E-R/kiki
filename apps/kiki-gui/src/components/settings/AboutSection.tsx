@@ -1,19 +1,22 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
   readDesktopPrefs,
   writeDesktopPrefs,
   type AutoUpdateMode,
+  type DesktopNativePrefs,
 } from '@kiki/session-core/settings';
 import { useHost, type DesktopUpdate } from '../../host';
+import { isDesktopUpdateSelectionChanged } from '../../host/host';
 import { useI18n } from '../../i18n';
+import { checkForUpdateNow, hydrateUpdatePrefs, persistUpdatePreference, resetUpdateCheckCache } from '../../lib/desktopUpdates';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { FeedbackLine, Hint, type Feedback } from '../controls';
+import { FeedbackLine, Hint, Toggle, type Feedback } from '../controls';
 import { requestOnboardingOpen } from '../OnboardingWizard';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
-import { SettingField } from './fields';
+import { DependentField, SettingField } from './fields';
 import { SettingsSelect } from './SettingsPrimitives';
 
 export function AboutSection() {
@@ -30,7 +33,13 @@ export function AboutSection() {
   const [update, setUpdate] = useState<DesktopUpdate | null>(null);
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'installing'>('idle');
   const [updateMessage, setUpdateMessage] = useState<Feedback>(null);
+  const [persistError, setPersistError] = useState<string | null>(null);
   const [confirmInstall, setConfirmInstall] = useState(false);
+  const checkGeneration = useRef(0);
+  const installRunning = useRef(false);
+  const confirmed = useRef({ autoUpdate: initialPrefs.autoUpdate, updateChannel: initialPrefs.updateChannel });
+  const writes = useRef({ autoUpdate: 0, updateChannel: 0 });
+  useEffect(() => () => { checkGeneration.current += 1; }, []);
 
   useEffect(() => {
     if (host.kind !== 'tauri') return;
@@ -42,36 +51,91 @@ export function AboutSection() {
     return () => { active = false; };
   }, [host]);
 
+  // Checking and installing stay one control on purpose. A manual check always
+  // runs, whatever the automatic preference or a skipped version says, and it
+  // says plainly whether there was something new.
   const checkForUpdate = () => {
-    if (host.kind !== 'tauri' || updatesSupported !== true) return;
+    if (host.kind !== 'tauri' || updatesSupported !== true || installRunning.current) return;
+    const generation = ++checkGeneration.current;
     setUpdateStatus('checking');
     setUpdateMessage(null);
-    void host.checkDesktopUpdate()
-      .then((next) => {
-        setUpdate(next);
-        setUpdateMessage(next === null ? { tone: 'success', text: t('st.about.upToDate') } : null);
-      })
-      .catch((error: unknown) => {
+    void checkForUpdateNow(host, Date.now(), channel)
+      .then(({ result, persisted }) => {
+        if (generation !== checkGeneration.current || readDesktopPrefs().updateChannel !== channel) return;
+        if (!persisted) setPersistError(t('st.about.updateDialog.persistFailed'));
+        if (result.kind === 'update') {
+          setUpdate(result.update);
+          setUpdateMessage(null);
+          return;
+        }
         setUpdate(null);
-        setUpdateMessage({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+        setUpdateMessage({
+          tone: result.kind === 'failed' ? 'error' : 'success',
+          text: result.kind === 'failed' ? t('st.about.checkFailed') : t('st.about.upToDate'),
+        });
       })
-      .finally(() => { setUpdateStatus('idle'); });
+      .finally(() => { if (generation === checkGeneration.current) setUpdateStatus('idle'); });
   };
 
   const installUpdate = () => {
-    if (update === null) return;
+    if (update === null || installRunning.current) return;
+    installRunning.current = true;
     setConfirmInstall(false);
     setUpdateStatus('installing');
     setUpdateMessage(null);
-    void update.install()
+    void Promise.resolve().then(() => update.install())
       .then(() => {
         setUpdate(null);
         setUpdateMessage({ tone: 'success', text: t('st.about.installedRestart') });
       })
-      .catch((error: unknown) => {
-        setUpdateMessage({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      .catch(async (error: unknown) => {
+        if (isDesktopUpdateSelectionChanged(error)) {
+          setUpdate(null);
+          resetUpdateCheckCache();
+          await hydrateUpdatePrefs(host);
+          const current = readDesktopPrefs();
+          confirmed.current = { autoUpdate: current.autoUpdate, updateChannel: current.updateChannel };
+          checkGeneration.current += 1;
+          setChannel(current.updateChannel);
+          setAutoUpdate(current.autoUpdate);
+        }
+        setUpdateMessage({ tone: 'error', text: t('st.about.installFailed') });
       })
-      .finally(() => { setUpdateStatus('idle'); });
+      .finally(() => { installRunning.current = false; setUpdateStatus('idle'); });
+  };
+
+  /** Ordered writes advance the confirmed value; only the latest failure may restore it. */
+  const writeNative = <K extends 'autoUpdate' | 'updateChannel'>(key: K, next: DesktopNativePrefs[K]) => {
+    setPersistError(null);
+    if (host.kind !== 'tauri') return;
+    const generation = ++writes.current[key];
+    void persistUpdatePreference(host, { [key]: next } as Partial<DesktopNativePrefs>).then(
+      () => { confirmed.current[key] = next; },
+      async () => {
+        if (generation !== writes.current[key]) return;
+        // A failed write may follow a successful choice in another window.
+        const native = await host.readDesktopPrefs?.().catch(() => null);
+        if (generation !== writes.current[key]) return;
+        if (native?.[key] !== undefined) confirmed.current[key] = native[key];
+        const previous = confirmed.current[key];
+        writeDesktopPrefs({ [key]: previous });
+        if (key === 'autoUpdate') setAutoUpdate(confirmed.current.autoUpdate);
+        else {
+          checkGeneration.current += 1;
+          setChannel(confirmed.current.updateChannel);
+          setUpdate(null);
+          setConfirmInstall(false);
+          if (!installRunning.current) setUpdateStatus('idle');
+        }
+        setPersistError(t('st.about.prefsSaveFailed'));
+      },
+    );
+  };
+
+  const writeMode = (next: AutoUpdateMode) => {
+    setAutoUpdate(next);
+    writeDesktopPrefs({ autoUpdate: next });
+    writeNative('autoUpdate', next);
   };
 
   const versionRows: { label: string; value: string }[] = [
@@ -104,11 +168,14 @@ export function AboutSection() {
               value={channel}
               disabled={updatesSupported !== true}
               onChange={(next) => {
+                checkGeneration.current += 1;
                 setChannel(next);
                 setUpdate(null);
+                setConfirmInstall(false);
+                if (!installRunning.current) setUpdateStatus('idle');
                 setUpdateMessage(null);
                 writeDesktopPrefs({ updateChannel: next });
-                void host.writeDesktopPrefs({ updateChannel: next });
+                writeNative('updateChannel', next);
               }}
               choices={[
                 { value: 'stable', label: t('st.about.stable') },
@@ -116,23 +183,41 @@ export function AboutSection() {
               ]}
             />
           </SettingField>
-          <SettingField label={t('st.about.autoUpdate')}>
-            <SettingsSelect<AutoUpdateMode>
-              ariaLabel={t('st.about.autoUpdate')}
-              value={autoUpdate}
+          {/* One switch, then the one question it opens. With checking off there
+              is nothing left to choose, so the second row is not rendered. */}
+          <div data-settings-field className="space-y-0.5 py-1">
+            <Toggle
+              layout="row"
+              label={t('st.about.autoCheck')}
+              checked={autoUpdate !== 'off'}
               disabled={updatesSupported !== true}
-              onChange={(next) => {
-                setAutoUpdate(next);
-                writeDesktopPrefs({ autoUpdate: next });
-                void host.writeDesktopPrefs({ autoUpdate: next });
-              }}
-              choices={[
-                { value: 'off', label: t('st.about.autoUpdateOff') },
-                { value: 'notify', label: t('st.about.autoUpdateNotify') },
-                { value: 'install', label: t('st.about.autoUpdateInstall') },
-              ]}
+              onChange={(checked) => { writeMode(checked ? 'notify' : 'off'); }}
             />
-          </SettingField>
+            <Hint>
+              {autoUpdate === 'off'
+                ? t('st.about.autoCheckOffHint')
+                : autoUpdate === 'install'
+                  // What happens next differs by mode. This line sits directly
+                  // above the select that chooses the mode, so the clause reads
+                  // as describing that choice rather than as a safety promise
+                  // that only one of its two values keeps.
+                  ? t('st.about.autoCheckInstallHint')
+                  : t('st.about.autoCheckHint')}
+            </Hint>
+          </div>
+          <DependentField when={autoUpdate !== 'off' && updatesSupported === true}>
+            <SettingField label={t('st.about.whenFound')}>
+              <SettingsSelect<Exclude<AutoUpdateMode, 'off'>>
+                ariaLabel={t('st.about.whenFound')}
+                value={autoUpdate === 'off' ? 'notify' : autoUpdate}
+                onChange={(next) => { writeMode(next); }}
+                choices={[
+                  { value: 'notify', label: t('st.about.autoUpdateNotify') },
+                  { value: 'install', label: t('st.about.autoUpdateInstall') },
+                ]}
+              />
+            </SettingField>
+          </DependentField>
           {updatesSupported === false ? <Hint>{t('st.about.updatesUnavailable')}</Hint> : null}
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={checkForUpdate} disabled={updatesSupported !== true || updateStatus !== 'idle'} className={SECONDARY_BUTTON}>
@@ -146,6 +231,9 @@ export function AboutSection() {
           </div>
           {update?.notes !== undefined && update.notes !== '' ? <p className="whitespace-pre-wrap text-[11.5px] text-ink-soft">{update.notes}</p> : null}
           <FeedbackLine feedback={updateMessage} />
+          {persistError === null ? null : (
+            <FeedbackLine feedback={{ tone: 'error', text: persistError }} />
+          )}
         </div>
       ) : (
         <div className="mt-4 border-t border-hairline pt-3">

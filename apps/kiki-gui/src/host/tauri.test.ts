@@ -110,6 +110,67 @@ describe('native desktop bridge', () => {
     expect(invoke).toHaveBeenCalledWith('open_external_url', { url: 'https://example.test/docs' });
   });
 
+  it('round-trips the app-scope update record through the native prefs commands', async () => {
+    const updateState = {
+      skipped: { stable: ['0.3.2', '0.3.3'], beta: ['0.3.2-beta.1'] },
+      snoozedUntil: 1_791_200_000_123,
+      lastCheckedAt: 1_791_113_600_123,
+    };
+    const nativePrefs = { notifications: false, autoUpdate: 'install', updateState };
+    invoke.mockResolvedValueOnce(undefined).mockResolvedValueOnce(nativePrefs);
+    await expect(tauriHost.writeDesktopPrefs({ updateState })).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenNthCalledWith(1, 'write_desktop_prefs', { prefs: { updateState } });
+    expect(JSON.parse(JSON.stringify(invoke.mock.calls[0]![1]))).toEqual({ prefs: { updateState } });
+    await expect(tauriHost.readDesktopPrefs()).resolves.toEqual(nativePrefs);
+    expect(invoke).toHaveBeenNthCalledWith(2, 'read_desktop_prefs');
+  });
+
+  it('distinguishes an omitted update record from explicit clearing across JSON serialization', async () => {
+    await tauriHost.writeDesktopPrefs({ notifications: true });
+    await tauriHost.writeDesktopPrefs({ updateState: undefined });
+    await tauriHost.writeDesktopPrefs({ updateState: {} });
+    await tauriHost.writeDesktopPrefs({ updateState: { lastCheckedAt: 123, snoozedUntil: undefined } });
+    expect(invoke.mock.calls.map(([, args]) => JSON.parse(JSON.stringify(args)))).toEqual([
+      { prefs: { notifications: true } },
+      { prefs: { updateState: {} } },
+      { prefs: { updateState: {} } },
+      { prefs: { updateState: { lastCheckedAt: 123 } } },
+    ]);
+  });
+
+  it('reports native prefs write failures instead of claiming a successful save', async () => {
+    invoke.mockRejectedValueOnce(new Error('desktop.json is not writable'));
+    await expect(tauriHost.writeDesktopPrefs({ updateState: { lastCheckedAt: 123 } }))
+      .rejects.toThrow('desktop.json is not writable');
+    expect(invoke).toHaveBeenCalledWith('write_desktop_prefs', { prefs: { updateState: { lastCheckedAt: 123 } } });
+  });
+
+  it('passes narrow update actions and returns the native merged record, preserving replacement prefs separately', async () => {
+    const updated = { skipped: { stable: ['0.3.2'] }, snoozedUntil: 999, lastCheckedAt: 123 };
+    invoke.mockResolvedValueOnce(updated).mockRejectedValueOnce(new Error('disk refused'));
+    await expect(tauriHost.mutateDesktopUpdateState({ kind: 'checked', at: 123 })).resolves.toEqual(updated);
+    expect(invoke).toHaveBeenNthCalledWith(1, 'mutate_desktop_update_state', { mutation: { kind: 'checked', at: 123 } });
+    await expect(tauriHost.mutateDesktopUpdateState({ kind: 'skip', channel: 'beta', version: '0.4.0-beta.1' })).rejects.toThrow('disk refused');
+  });
+
+  it('rejects stale install handles without a separate premature shutdown invoke', async () => {
+    invoke.mockResolvedValueOnce({ currentVersion: '0.3.1', version: '0.3.2' });
+    const update = await checkNativeDesktopUpdate('stable');
+    invoke.mockRejectedValueOnce(new Error('selection changed'));
+    await expect(update!.install()).rejects.toThrow('selection changed');
+    expect(invoke.mock.calls).toEqual([
+      ['check_desktop_update', { channel: 'stable' }],
+      ['install_desktop_update', { channel: 'stable', version: '0.3.2' }],
+    ]);
+  });
+
+  it('reads old native prefs without inventing update state and retains the unavailable-host fallback', async () => {
+    const oldPrefs = { notifications: true, autoUpdate: 'install' };
+    invoke.mockResolvedValueOnce(oldPrefs).mockRejectedValueOnce(new Error('command unavailable'));
+    await expect(tauriHost.readDesktopPrefs()).resolves.toEqual(oldPrefs);
+    await expect(tauriHost.readDesktopPrefs()).resolves.toBeNull();
+  });
+
   it('queries whether this distribution supports desktop updates', async () => {
     invoke.mockResolvedValueOnce(true);
     await expect(supportsDesktopUpdates()).resolves.toBe(true);
@@ -124,12 +185,13 @@ describe('native desktop bridge', () => {
       notes: 'Update notes',
     });
 
-    const update = await checkNativeDesktopUpdate();
+    const update = await checkNativeDesktopUpdate('beta');
     await update?.install();
 
-    expect(invoke).toHaveBeenNthCalledWith(1, 'check_desktop_update');
-    expect(invoke).toHaveBeenNthCalledWith(2, 'prepare_for_update');
-    expect(invoke).toHaveBeenNthCalledWith(3, 'install_desktop_update');
+    expect(invoke.mock.calls).toEqual([
+      ['check_desktop_update', { channel: 'beta' }],
+      ['install_desktop_update', { channel: 'beta', version: '0.1.0-beta.2' }],
+    ]);
   });
 
   it('routes directory picks through the native dialog with the directory flags', async () => {

@@ -12,6 +12,8 @@
 mod ssh_remote;
 mod ssh_tunnel;
 mod desktop_log;
+mod desktop_update_state;
+use desktop_update_state::DesktopUpdateState;
 mod space_badge;
 mod space_shortcut;
 mod remote_space;
@@ -1428,6 +1430,8 @@ struct DesktopPrefs {
     locale: Option<String>,
     update_channel: UpdateChannel,
     auto_update: AutoUpdateMode,
+    #[serde(deserialize_with = "desktop_update_state::read_state", skip_serializing_if = "Option::is_none")]
+    update_state: Option<DesktopUpdateState>,
     log_level: DesktopLogLevel,
     compatibility: CompatibilitySettings,
     #[serde(rename = "window_mode", alias = "windowMode")]
@@ -1442,6 +1446,7 @@ impl Default for DesktopPrefs {
             locale: None,
             update_channel: UpdateChannel::build_default(option_env!("KIKI_UPDATE_CHANNEL")),
             auto_update: AutoUpdateMode::Notify,
+            update_state: None,
             log_level: DesktopLogLevel::default(),
             compatibility: CompatibilitySettings::default(),
             window_mode: WindowMode::Switch,
@@ -1475,6 +1480,8 @@ struct DesktopPrefsPatch {
     locale: Option<String>,
     update_channel: Option<UpdateChannel>,
     auto_update: Option<AutoUpdateMode>,
+    #[serde(default, deserialize_with = "desktop_update_state::patch_state")]
+    update_state: Option<Option<DesktopUpdateState>>,
     log_level: Option<DesktopLogLevel>,
     compatibility: Option<CompatibilitySettings>,
     #[serde(alias = "window_mode")]
@@ -1502,6 +1509,7 @@ fn read_main_desktop_prefs(main: &Path) -> DesktopPrefs {
 }
 
 fn read_desktop_prefs_for(home: &Path) -> DesktopPrefs {
+    let _read = DESKTOP_PREFS_WRITE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let main = match main_home_for(home) {
         Ok(main) => main,
         Err(_) => return DesktopPrefs::default(),
@@ -1537,10 +1545,28 @@ fn write_json_file(path: &Path, value: &impl Serialize) -> Result<(), String> {
     fs::write(path, raw).map_err(|error| error.to_string())
 }
 
-fn write_desktop_prefs_file(home: &Path, prefs: &DesktopPrefs, patch: &DesktopPrefsPatch) -> Result<(), String> {
+fn apply_desktop_prefs_patch(mut prefs: DesktopPrefs, patch: &DesktopPrefsPatch) -> DesktopPrefs {
+    prefs.notifications = patch.notifications.unwrap_or(prefs.notifications);
+    prefs.close_to_tray = patch.close_to_tray.unwrap_or(prefs.close_to_tray);
+    prefs.locale = patch.locale.clone().or(prefs.locale);
+    prefs.update_channel = patch.update_channel.unwrap_or(prefs.update_channel);
+    prefs.auto_update = patch.auto_update.unwrap_or(prefs.auto_update);
+    if let Some(state) = &patch.update_state { prefs.update_state = state.clone(); }
+    prefs.log_level = patch.log_level.unwrap_or(prefs.log_level);
+    prefs.compatibility = patch.compatibility.clone().unwrap_or(prefs.compatibility);
+    prefs.window_mode = patch.window_mode.unwrap_or(prefs.window_mode);
+    prefs
+}
+
+static DESKTOP_PREFS_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+fn write_desktop_prefs_file(home: &Path, patch: &DesktopPrefsPatch) -> Result<(), String> {
+    // Every window merges its narrow patch into the latest file, not a stale snapshot.
+    let _write = DESKTOP_PREFS_WRITE_LOCK.lock().map_err(|_| "Desktop preferences lock was poisoned")?;
     let main = main_home_for(home)?;
     if home == main {
-        return write_json_file(&home.join("desktop.json"), prefs);
+        let prefs = apply_desktop_prefs_patch(read_main_desktop_prefs(&main), patch);
+        return write_json_file(&main.join("desktop.json"), &prefs);
     }
     let path = home.join("desktop.json");
     let mut child = fs::read_to_string(&path).ok().and_then(|raw| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&raw).ok()).unwrap_or_default();
@@ -1552,11 +1578,12 @@ fn write_desktop_prefs_file(home: &Path, prefs: &DesktopPrefs, patch: &DesktopPr
     if patch.notifications.is_some() || patch.close_to_tray.is_some() || patch.locale.is_some() || patch.compatibility.is_some() || patch.log_level.is_some() {
         write_json_file(&path, &child)?;
     }
-    if patch.window_mode.is_some() || patch.update_channel.is_some() || patch.auto_update.is_some() {
+    if patch.window_mode.is_some() || patch.update_channel.is_some() || patch.auto_update.is_some() || patch.update_state.is_some() {
         let mut main_prefs = read_main_desktop_prefs(&main);
         main_prefs.window_mode = patch.window_mode.unwrap_or(main_prefs.window_mode);
         main_prefs.update_channel = patch.update_channel.unwrap_or(main_prefs.update_channel);
         main_prefs.auto_update = patch.auto_update.unwrap_or(main_prefs.auto_update);
+        if let Some(state) = &patch.update_state { main_prefs.update_state = state.clone(); }
         write_json_file(&main.join("desktop.json"), &main_prefs)?;
     }
     Ok(())
@@ -2289,22 +2316,13 @@ fn write_desktop_prefs(app: AppHandle, manager: State<'_, SpaceBackendManager>, 
     let home = PathBuf::from(manager.active_space()?.path);
     let current = read_desktop_prefs_for(&home);
     let locale_changed = prefs.locale.is_some() && prefs.locale != current.locale;
-    let patch = prefs.clone();
-    let next = DesktopPrefs {
-        notifications: prefs.notifications.unwrap_or(current.notifications),
-        close_to_tray: prefs.close_to_tray.unwrap_or(current.close_to_tray),
-        locale: prefs.locale.or(current.locale),
-        update_channel: prefs.update_channel.unwrap_or(current.update_channel),
-        auto_update: prefs.auto_update.unwrap_or(current.auto_update),
-        log_level: prefs.log_level.unwrap_or(current.log_level),
-        compatibility: prefs.compatibility.unwrap_or(current.compatibility),
-        window_mode: prefs.window_mode.unwrap_or(current.window_mode),
-    };
+    let patch = prefs;
+    let next = apply_desktop_prefs_patch(current, &patch);
     validate_compatibility_settings(&next.compatibility)?;
     if read_desktop_space(&home)?.is_some_and(|space| space.base_home.is_some() && !space.credentials_shared) && patch.compatibility.is_some() && next.compatibility.home_kind != CompatibilityHomeKind::Kiki {
         return Err("Isolated spaces must use their own OAuth home".to_string());
     }
-    write_desktop_prefs_file(&home, &next, &patch)?;
+    write_desktop_prefs_file(&home, &patch)?;
     // The frontend owns the UI locale; mirror it onto the tray menu live.
     if locale_changed {
         if let Some(tray) = app.tray_by_id(TRAY_ID) {
@@ -2315,7 +2333,12 @@ fn write_desktop_prefs(app: AppHandle, manager: State<'_, SpaceBackendManager>, 
     Ok(())
 }
 
-#[derive(Serialize)]
+#[tauri::command]
+fn mutate_desktop_update_state(manager: State<'_, SpaceBackendManager>, mutation: desktop_update_state::DesktopUpdateMutation) -> Result<DesktopUpdateState, String> {
+    desktop_update_state::mutate_for(Path::new(&manager.active_space()?.path), mutation)
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopUpdateInfo {
     current_version: String,
@@ -2337,13 +2360,12 @@ fn supports_desktop_updates() -> bool {
     desktop_updates_supported()
 }
 
-fn desktop_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+fn desktop_updater(app: &AppHandle, channel: UpdateChannel) -> Result<tauri_plugin_updater::Updater, String> {
     if !desktop_updates_supported() {
         return Err("Desktop updater is not available for this distribution".to_string());
     }
     let public_key = UPDATER_PUBLIC_KEY.expect("supported updater has a public key");
-    let endpoint = Url::parse(read_desktop_prefs_file().update_channel.endpoint())
-        .map_err(|error| error.to_string())?;
+    let endpoint = Url::parse(channel.endpoint()).map_err(|error| error.to_string())?;
     app.updater_builder()
         .pubkey(public_key)
         .endpoints(vec![endpoint])
@@ -2352,31 +2374,71 @@ fn desktop_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, Str
         .map_err(|error| error.to_string())
 }
 
+#[derive(Default)]
+struct DesktopUpdateChecks {
+    entries: tauri::async_runtime::Mutex<Vec<(UpdateChannel, std::time::Instant, Result<Option<DesktopUpdateInfo>, String>)>>,
+}
+
+impl DesktopUpdateChecks {
+    async fn check<F, Fut>(&self, channel: UpdateChannel, request: F) -> Result<Option<DesktopUpdateInfo>, String>
+    where F: FnOnce() -> Fut, Fut: std::future::Future<Output = Result<Option<DesktopUpdateInfo>, String>> {
+        let mut entries = self.entries.lock().await;
+        if let Some((_, at, result)) = entries.iter().find(|(key, _, _)| *key == channel) {
+            if at.elapsed() < Duration::from_secs(30) { return result.clone(); }
+        }
+        let result = request().await;
+        entries.retain(|(key, _, _)| *key != channel);
+        entries.push((channel, std::time::Instant::now(), result.clone()));
+        result
+    }
+}
+
+static CHECKS: std::sync::OnceLock<DesktopUpdateChecks> = std::sync::OnceLock::new();
+
 #[tauri::command]
-async fn check_desktop_update(app: AppHandle) -> Result<Option<DesktopUpdateInfo>, String> {
-    Ok(desktop_updater(&app)?
-        .check()
-        .await
-        .map_err(|error| error.to_string())?
-        .map(|update| DesktopUpdateInfo {
-            current_version: update.current_version,
-            version: update.version,
-            date: update.date.map(|date| date.to_string()),
-            notes: update.body,
-        }))
+async fn check_desktop_update(app: AppHandle, channel: UpdateChannel) -> Result<Option<DesktopUpdateInfo>, String> {
+    CHECKS.get_or_init(DesktopUpdateChecks::default).check(channel, || async {
+        Ok(desktop_updater(&app, channel)?.check().await.map_err(|error| error.to_string())?
+            .map(|update| DesktopUpdateInfo {
+                current_version: update.current_version,
+                version: update.version,
+                date: update.date.map(|date| date.to_string()),
+                notes: update.body,
+            }))
+    }).await
+}
+
+fn validate_desktop_update_identity(selected_channel: UpdateChannel, current_channel: UpdateChannel, selected_version: &str, available_version: &str) -> Result<(), String> {
+    if selected_channel != current_channel || selected_version != available_version {
+        return Err("Desktop update selection changed; check for updates again".to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
-async fn install_desktop_update(app: AppHandle) -> Result<(), String> {
-    let update = desktop_updater(&app)?
-        .check()
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "No desktop update is available".to_string())?;
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|error| error.to_string())
+async fn install_desktop_update(app: AppHandle, manager: State<'_, SpaceBackendManager>, channel: UpdateChannel, version: String) -> Result<(), String> {
+    static INSTALL: std::sync::OnceLock<tauri::async_runtime::Mutex<()>> = std::sync::OnceLock::new();
+    let _install = INSTALL.get_or_init(|| tauri::async_runtime::Mutex::new(())).try_lock()
+        .map_err(|_| "A desktop update is already being installed".to_string())?;
+    // A refused stale handle must allow the next GUI check to discover a fresh offer.
+    CHECKS.get_or_init(DesktopUpdateChecks::default).entries.lock().await.clear();
+    // Re-check the selected feed, then keep that exact update object through confirmation and installation.
+    let update = desktop_updater(&app, channel)?.check().await.map_err(|error| error.to_string())?
+        .ok_or_else(|| "Desktop update selection changed; check for updates again".to_string())?;
+    let home = PathBuf::from(manager.active_space()?.path);
+    validate_desktop_update_identity(channel, read_desktop_prefs_for(&home).update_channel, &version, &update.version)?;
+    let manager = manager.inner().clone();
+    let available_version = update.version.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if !confirm_backend_shutdown(&app, &manager, "Installing the update") {
+            return Err("Update cancelled; running sessions continue".to_string());
+        }
+        // A channel may have changed in another window while the confirmation was open.
+        validate_desktop_update_identity(channel, read_desktop_prefs_for(&home).update_channel, &version, &available_version)?;
+        manager.shutdown();
+        Ok(())
+    }).await.map_err(|error| error.to_string())??;
+    update.download_and_install(|_, _| {}, || {}).await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3376,6 +3438,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn desktop_update_selection_rejects_channel_and_version_drift() {
+        assert!(validate_desktop_update_identity(UpdateChannel::Stable, UpdateChannel::Stable, "0.3.2", "0.3.2").is_ok());
+        assert!(validate_desktop_update_identity(UpdateChannel::Stable, UpdateChannel::Beta, "0.3.2", "0.3.2").is_err());
+        assert!(validate_desktop_update_identity(UpdateChannel::Stable, UpdateChannel::Stable, "0.3.2", "0.3.3").is_err());
+    }
+
+    #[test]
+    fn desktop_update_native_checks_share_request_across_windows_and_keep_channels_separate() {
+        tauri::async_runtime::block_on(async {
+            let checks = std::sync::Arc::new(DesktopUpdateChecks::default());
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let (release, mut gate) = tauri::async_runtime::channel::<()>(1);
+            let first_checks = checks.clone();
+            let first_calls = calls.clone();
+            let (started, mut ready) = tauri::async_runtime::channel::<()>(1);
+            let first = tauri::async_runtime::spawn(async move {
+                first_checks.check(UpdateChannel::Stable, || async {
+                    first_calls.fetch_add(1, Ordering::SeqCst);
+                    started.send(()).await.unwrap();
+                    gate.recv().await.unwrap();
+                    Ok(None)
+                }).await
+            });
+            ready.recv().await.unwrap();
+            let second_checks = checks.clone();
+            let second_calls = calls.clone();
+            let second = tauri::async_runtime::spawn(async move {
+                second_checks.check(UpdateChannel::Stable, || async {
+                    second_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(None)
+                }).await
+            });
+            release.send(()).await.unwrap();
+            assert!(first.await.unwrap().unwrap().is_none());
+            assert!(second.await.unwrap().unwrap().is_none());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            checks.check(UpdateChannel::Beta, || async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            }).await.unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    #[test]
     fn desktop_prefs_default_and_partial_json_close_to_tray() {
         assert!(DesktopPrefs::default().close_to_tray);
 
@@ -3414,20 +3521,20 @@ mod tests {
 
     #[test]
     fn desktop_log_level_round_trips_inherited_and_space_overrides() {
-        let root = env::temp_dir().join(format!("kiki-log-prefs-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".tmp").join(format!("kiki-log-prefs-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
         let main = root.join("main");
         let child = root.join("child");
+        fs::create_dir_all(&main).unwrap();
+        fs::write(main.join("desktop.json"), "{}").unwrap();
         fs::create_dir_all(&child).unwrap();
         let main_text = main.to_string_lossy().replace('\\', "/");
         fs::write(child.join("home.toml"), format!("schema = 1\nid = \"h-test\"\nname = \"Test\"\nbase = {:?}\n", main_text)).unwrap();
-        let prefs: DesktopPrefs = serde_json::from_str(r#"{"logLevel":"info"}"#).unwrap();
         let patch: DesktopPrefsPatch = serde_json::from_str(r#"{"logLevel":"info"}"#).unwrap();
-        write_desktop_prefs_file(&main, &prefs, &patch).unwrap();
+        write_desktop_prefs_file(&main, &patch).unwrap();
         assert_eq!(read_desktop_prefs_for(&main).log_level, DesktopLogLevel::Info);
         assert_eq!(read_desktop_prefs_for(&child).log_level, DesktopLogLevel::Info);
         let patch: DesktopPrefsPatch = serde_json::from_str(r#"{"logLevel":"trace"}"#).unwrap();
-        let mut next = prefs.clone(); next.log_level = DesktopLogLevel::Trace;
-        write_desktop_prefs_file(&child, &next, &patch).unwrap();
+        write_desktop_prefs_file(&child, &patch).unwrap();
         assert_eq!(read_desktop_prefs_for(&child).log_level, DesktopLogLevel::Trace);
         assert_eq!(read_desktop_prefs_for(&main).log_level, DesktopLogLevel::Info);
         assert!(serde_json::from_str::<DesktopPrefsPatch>(r#"{"logLevel":"verbose"}"#).is_err());

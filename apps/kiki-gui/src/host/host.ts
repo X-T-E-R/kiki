@@ -1,6 +1,16 @@
-import type { DesktopLogLevel, DesktopNativePrefs } from '@kiki/session-core/settings';
+import type { DesktopLogLevel, DesktopNativePrefs, DesktopUpdateState, UpdateChannel } from '@kiki/session-core/settings';
+
 import type { ConnectionConfig, SshProfile } from '../state/connectionConfig';
 import type { ResolvedTheme } from '../lib/theme';
+
+export type DesktopUpdateMutation =
+  | { readonly kind: 'checked'; readonly at: number }
+  | { readonly kind: 'snooze'; readonly until: number }
+  | { readonly kind: 'skip'; readonly channel: UpdateChannel; readonly version: string };
+
+export function isDesktopUpdateSelectionChanged(error: unknown): boolean {
+  return String(error).includes('Desktop update selection changed; check for updates again');
+}
 
 export interface HostNotification {
   readonly title: string;
@@ -182,7 +192,8 @@ interface HostCapabilities {
   /** Open the active space's log folder in the OS file manager. */
   openDesktopLogDirectory?: () => Promise<void>;
   supportsDesktopUpdates?: () => Promise<boolean>;
-  checkDesktopUpdate?: () => Promise<DesktopUpdate | null>;
+  checkDesktopUpdate?: (channel?: UpdateChannel) => Promise<DesktopUpdate | null>;
+  mutateDesktopUpdateState?: (mutation: DesktopUpdateMutation) => Promise<DesktopUpdateState>;
   onTrayNewSession?: (callback: () => void) => () => void;
   setTheme?: (resolved: ResolvedTheme) => Promise<void>;
 }
