@@ -7,6 +7,7 @@ import type { HooksConfig } from '@kiki/protocol';
 
 import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
+import { useAskKiki, useAskKikiWorkspace, AskKikiButton } from '../../askKiki';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../../controls';
 import { Icon } from '../../icons';
 import { INPUT, SECONDARY_BUTTON } from '../../ui';
@@ -74,6 +75,10 @@ export function HooksSection() {
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [justSaved, pingSaved] = useSavedTick();
+  const { ask: askKiki, busy: askingKiki } = useAskKiki();
+  // Hooks writes global config, but the conversation still runs somewhere: the
+  // same workspace a plain New conversation here would use.
+  const kikiWorkspace = useAskKikiWorkspace();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
@@ -384,6 +389,14 @@ export function HooksSection() {
                     {t('st.hooks.flatten')}
                   </button>
                 ) : null}
+                <AskKikiButton
+                  label={t('st.hooks.askKiki')}
+                  labelAria={t('st.hooks.askKikiAria')}
+                  busy={askingKiki}
+                  disabled={!kikiWorkspace.resolved}
+                  testId="data-hooks-ask-kiki"
+                  onAsk={() => { void askKiki({ skill: 'kiki-hooks', promptKey: 'st.hooks.askKiki.prompt', location: kikiWorkspace.location }); }}
+                />
               </>
             ) : null}
             <button type="button" data-hooks-json-toggle onClick={switchMode}

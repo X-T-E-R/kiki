@@ -93,7 +93,9 @@ export function ChipSelect({
         disabled={disabled}
         placeholder={addPlaceholder}
         aria-label={ariaLabel}
-        className="w-32 rounded-full border border-dashed border-hairline bg-paper px-3 py-0.5 text-[11px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+        // Grows on a roomy row so the whole prompt reads, and still yields on a
+        // narrow one where the chips above it need the width.
+        className="w-32 min-w-24 max-w-full flex-1 basis-32 sm:basis-40 rounded-full border border-dashed border-hairline bg-paper px-3 py-0.5 text-[11px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
         onChange={(event) => { setCustom(event.target.value); }}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ',') {

@@ -683,10 +683,11 @@ describe('ModelCatalogCard list and detail hierarchy', () => {
     listModels.mockResolvedValue({ items: [{ ...MODELS[0], capabilities: ['thinking', 'image_in', 'tool_use', 'video_in', 'audio_in'] }] });
     const container = await renderCard();
     expect(container.querySelector('[data-default-model-line]')!.textContent).toContain('Kimi K2');
-    // One default statement above the list; the default model appears once in
-    // In use and once under its own connection, starred in both, with no pill.
-    expect(container.querySelectorAll('[data-list-group="in-use"] [data-model-row][data-default="true"]')).toHaveLength(1);
+    // One default statement above the list; the model appears once, under its
+    // own connection and starred there. There is no separate "In use" group.
     expect(container.querySelectorAll('[data-list-group^="provider:"] [data-model-row][data-default="true"]')).toHaveLength(1);
+    expect(container.querySelector('[data-list-group="in-use"]')).toBeNull();
+    expect(container.textContent).not.toContain('In use\n');
     const marks = container.querySelector('[data-capability-marks]')!;
     expect([...marks.querySelectorAll('[data-capability]')].map((node) => node.getAttribute('data-capability')))
       .toEqual(['thinking', 'image_in', 'tool_use']);

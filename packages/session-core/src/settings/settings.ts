@@ -116,6 +116,30 @@ function readAwayNotificationKinds(value: unknown): AwayNotificationKinds {
 
 export type UpdateChannel = 'stable' | 'beta';
 export type AutoUpdateMode = 'off' | 'notify' | 'install';
+
+/**
+ * What the updater still owes the next run. `skipped` holds the versions the
+ * user chose not to hear about again on the channel they were offered on;
+ * `snoozedUntil` is when "remind me later" runs out; `lastCheckedAt` is the
+ * scheduler's cadence anchor, not a promise that anything was found.
+ *
+ * The native side stores this record whole: a field that is absent or `null`
+ * is a field to clear, and a field that is absent from a *patch* is a field
+ * the patch says nothing about. The two are different, which is why a write
+ * builds the record field by field rather than merging into a snapshot.
+ *
+ * A skip belongs to the channel it was offered on, so a beta the user skipped
+ * does not silence the stable build of the same version.
+ */
+export interface DesktopUpdateState {
+  /** Versions the user skipped, per channel, oldest first. `null` clears. */
+  skipped?: { readonly stable?: readonly string[] | null; readonly beta?: readonly string[] | null } | null;
+  /** Epoch ms before which a known update stays quiet. `null` clears. */
+  snoozedUntil?: number | null;
+  /** Epoch ms of the last finished check, whether it found anything or not. `null` clears. */
+  lastCheckedAt?: number | null;
+}
+
 export const DESKTOP_LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
 export type DesktopLogLevel = typeof DESKTOP_LOG_LEVELS[number];
 
@@ -126,6 +150,12 @@ export interface DesktopNativePrefs {
   locale?: string;
   updateChannel: UpdateChannel;
   autoUpdate: AutoUpdateMode;
+  /**
+   * Cross-run record of what the updater already offered and what the user
+   * did about it. App scope, like the channel and the mode, because the version
+   * being skipped is a property of this install rather than of a space.
+   */
+  updateState?: DesktopUpdateState;
   /** Backend verbosity; persisted per space and applied on the next owned backend launch. */
   logLevel?: DesktopLogLevel;
   compatibility: CompatibilitySettings;
@@ -657,6 +687,7 @@ export function readDesktopPrefs(): DesktopNativePrefs {
       stored.autoUpdate === 'off' || stored.autoUpdate === 'notify' || stored.autoUpdate === 'install'
         ? stored.autoUpdate
         : DESKTOP_PREFS_DEFAULTS.autoUpdate,
+    updateState: parseDesktopUpdateState(stored.updateState),
     logLevel: DESKTOP_LOG_LEVELS.includes(stored.logLevel as DesktopLogLevel) ? stored.logLevel : 'warn',
     compatibility: {
       homeKind: homeKind === 'kimi' || homeKind === 'custom'
@@ -676,13 +707,46 @@ function parseSpaceWindowMode(value: unknown): SpaceWindowMode {
   return value === 'windows' || value === 'switch' ? value : DESKTOP_PREFS_DEFAULTS.windowMode;
 }
 
+/**
+ * Only keep the update record when it is a real record; drop it rather than
+ * trust a half-written one. `null` is the native side's "clear this field" and
+ * reads back as absent, so a null never survives into the value the rest of the
+ * app sees.
+ */
+function parseDesktopUpdateState(value: unknown): DesktopUpdateState | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as { skipped?: unknown; snoozedUntil?: unknown; lastCheckedAt?: unknown };
+  const list = (input: unknown) =>
+    Array.isArray(input) ? input.filter((entry): entry is string => typeof entry === 'string' && entry !== '') : undefined;
+  const rawSkipped = typeof record.skipped === 'object' && record.skipped !== null ? record.skipped as { stable?: unknown; beta?: unknown } : undefined;
+  const stable = rawSkipped === undefined ? undefined : list(rawSkipped.stable);
+  const beta = rawSkipped === undefined ? undefined : list(rawSkipped.beta);
+  const epoch = (input: unknown) =>
+    typeof input === 'number' && Number.isFinite(input) && input >= 0 ? input : undefined;
+  const skipped = stable === undefined && beta === undefined ? undefined : { stable, beta };
+  const snoozedUntil = epoch(record.snoozedUntil);
+  const lastCheckedAt = epoch(record.lastCheckedAt);
+  if (skipped === undefined && snoozedUntil === undefined && lastCheckedAt === undefined) return undefined;
+  return {
+    skipped,
+    snoozedUntil,
+    lastCheckedAt,
+  };
+}
+
 export function writeDesktopPrefs(prefs: Partial<DesktopNativePrefs>): void {
   const incoming = prefs as Partial<DesktopNativePrefs> & { window_mode?: unknown };
   const { window_mode: nativeWindowMode, ...rest } = incoming;
+  // A key the caller left out means "unchanged", not "clear it". The boot sync
+  // hands the native snapshot in whole, and the native side does not know every
+  // frontend-owned key; spreading it verbatim would erase the ones it omits.
+  const defined = Object.fromEntries(
+    Object.entries(rest).filter(([, entry]) => entry !== undefined),
+  ) as Partial<DesktopNativePrefs>;
   const next: DesktopNativePrefs = {
     ...readDesktopPrefs(),
-    ...rest,
-    ...(rest.windowMode === undefined && nativeWindowMode !== undefined ? { windowMode: parseSpaceWindowMode(nativeWindowMode) } : {}),
+    ...defined,
+    ...(defined.windowMode === undefined && nativeWindowMode !== undefined ? { windowMode: parseSpaceWindowMode(nativeWindowMode) } : {}),
   };
   try {
     localStorage.setItem(DESKTOP_PREFS_KEY, JSON.stringify(next));
@@ -1992,13 +2056,18 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
 // ---- grouped navigation (settings IA v2) ----
 
 /**
- * Seven intent groups in one list, ordered by what a person came to do: set
- * up the app itself, reach a server (this one, or remote hosts over SSH),
- * pick the brain (models, agents), decide how work runs and what it may touch
- * (sessions, permissions, tasks), extend what it can reach (capabilities),
- * organize where work lives (workspaces, spaces), and, last, the advanced
- * pages (developer tools, the Labs index, about). Experimental flags are
- * switched on their feature's own page; Labs only lists them.
+ * Six intent groups in one list, ordered by what a person came to do: set up
+ * the app itself, reach a server (this one, a remote host over SSH, or a
+ * space), pick the brain (models, agents), decide how work runs and where it
+ * lives (sessions, workspaces, permissions, tasks), extend what it can reach
+ * (capabilities), and, last, the advanced pages (developer tools, the Labs
+ * index, about). Experimental flags are switched on their feature's own page;
+ * Labs only lists them.
+ *
+ * A group earns its place by answering one question. "Where work happens"
+ * (workspaces) belongs beside the sessions that run in it, and "where Kiki
+ * runs" (spaces, remote connections, inbound access) belongs beside the ways
+ * of reaching a server, so neither needed a group of its own.
  */
 export interface SettingsNavGroupSpec {
   readonly kind: 'group';
@@ -2016,11 +2085,10 @@ export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
 
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts'] },
-  { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'ssh'] },
+  { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'ssh', 'spaces'] },
   { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'identity', 'agents', 'subagents'] },
-  { kind: 'group', id: 'work', labelKey: 'st.group.work', sections: ['sessions', 'notifications', 'memory', 'permissions', 'tasks'] },
+  { kind: 'group', id: 'work', labelKey: 'st.group.work', sections: ['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks'] },
   { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks'] },
-  { kind: 'group', id: 'workspace', labelKey: 'st.group.workspace', sections: ['workspaces', 'spaces'] },
   { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['developer', 'labs', 'about'] },
 ];
 
@@ -2127,10 +2195,6 @@ export const EXPERIMENTAL_FLAG_HOMES: readonly ExperimentalFlagHome[] = [
   // that could restart anything for it. The panel that would sit on the section
   // is on the Usage page and states its own outcome.
   { id: 'usage_export', section: 'developer', labelKey: 'st.exp.usageExport.name', descriptionKey: 'st.exp.usageExport.desc', effect: 'restart' },
-  // Stays on Developer for the same reason: the gate is read on every call, so
-  // the switch works the moment it is on, and the import history it opens lives
-  // under Plugins rather than on a settings page.
-  { id: 'plugin_import', section: 'developer', labelKey: 'st.exp.pluginImport.name', descriptionKey: 'st.exp.pluginImport.desc', effect: 'now' },
 ];
 
 /** Leaf that hosts flags nobody else claims (server-specific extensions). */
@@ -2262,6 +2326,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.title', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理', 'marketplace', '插件市场', '安装插件'] },
   { section: 'plugins', cardId: 'st-card-webbridge', titleKey: 'st.plugins.runtimeTitle', keywordKeys: ['st.plugins.browserExtension'], synonyms: ['webbridge', '浏览器扩展', 'browser daemon'] },
   { section: 'browser-control', cardId: 'st-card-browser-default', titleKey: 'st.browser.defaultTitle', keywordKeys: ['st.browser.defaultLabel', 'st.browser.defaultHint'], synonyms: ['默认浏览器', 'default browser', '浏览器', 'browser'] },
+  { section: 'browser-control', cardId: 'st-card-browser-setup', titleKey: 'st.browser.setup.title', keywordKeys: ['st.browser.setup.driver', 'st.browser.setup.chrome', 'st.browser.setup.host'], synonyms: ['浏览器组件', 'browser components', '安装浏览器', 'install browser', '驱动', 'driver'] },
   { section: 'browser-control', cardId: 'st-card-browser-connections', titleKey: 'st.browser.connectionsTitle', keywordKeys: ['st.browser.add', 'st.browser.fieldType', 'st.browser.fieldEndpoint', 'st.browser.disconnect'], synonyms: ['browser control', '浏览器控制', 'cdp', 'profile', 'chromium', 'chrome', 'agent-browser', '浏览器连接', '调试端口'] },
   { section: 'computer-control', cardId: 'st-card-computer-machine', titleKey: 'st.computer.title', keywordKeys: ['st.computer.machineLabel', 'st.computer.statusLabel'], synonyms: ['computer control', '电脑控制', 'desktop control', '桌面控制', 'cua', 'cua-driver', 'mouse', 'keyboard', '屏幕'] },
   { section: 'computer-control', cardId: 'st-card-computer-setup', titleKey: 'st.computer.setupTitle', keywordKeys: ['st.computer.statusLabel', 'st.computer.installButton', 'st.computer.recheckButton'], synonyms: ['executor', '执行器', '安装', 'install', '版本'] },

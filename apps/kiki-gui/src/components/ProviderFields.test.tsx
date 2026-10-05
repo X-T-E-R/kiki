@@ -30,7 +30,7 @@ import { NewProviderWizard, ProviderEditor } from './ProviderFields';
 import { DirtyGuardContext } from './dirtyGuard';
 import { ConnectionsTab } from './settings/ProvidersSection';
 import { SettingsCardMountContext } from './settings/SectionCard';
-import { optionValues, pickValue } from './settings/testControls';
+import { optionValues, openOptions, pickValue } from './settings/testControls';
 
 const listDiscoveredModels = vi.fn(async () => ({ items: [] as Array<{ provider_id: string; fetched_at: number | null; attempted_at: number; models: Array<{ remote_id: string }> }> }));
 const refreshProvider = vi.fn();
@@ -477,7 +477,9 @@ describe('ProviderEditor save channel', () => {
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
     // Stored editors scope their field ids so several can share the page.
     await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Protocol"]')!.click(); });
-    const anthropic = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+    // The panel is portaled to <body>, so the rows are read from the open
+    // panel rather than from the editor's own root.
+    const anthropic = openOptions(container)
       .find((option) => option.textContent?.includes('Anthropic Messages'))!;
     await act(async () => { anthropic.click(); });
     await typeKey(container, 'YOUR_API_KEY');

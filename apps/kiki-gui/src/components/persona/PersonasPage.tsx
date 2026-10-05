@@ -28,6 +28,7 @@ import type { PersonaSummary } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
+import { useAskKiki, useAskKikiWorkspace, AskKikiButton } from '../askKiki';
 import { Icon } from '../icons';
 import { PageHeader } from '../PageChrome';
 import { Toggle } from '../controls';
@@ -48,6 +49,10 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
   const [showArchived, setShowArchived] = useState(false);
   const [importing, setImporting] = useState(false);
   const listQuery = usePersonaList({ includeArchived: true });
+  const { ask, busy: askingKiki } = useAskKiki();
+  // Personas are server-scoped, but the conversation still runs somewhere: the
+  // same workspace a plain New conversation here would use.
+  const kikiWorkspace = useAskKikiWorkspace();
 
   const selectedId = params.get('persona') ?? undefined;
   const creating = params.get('new') === '1';
@@ -89,6 +94,16 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
         <button type="button" data-persona-import onClick={() => { setImporting(true); }} className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}>
           {t('persona.import')}
         </button>
+        <AskKikiButton
+          label={t('persona.askKiki')}
+          labelAria={t('persona.askKikiAria')}
+          busy={askingKiki}
+          // Disabled until the workspace list answers: pressing it blind would
+          // land the session in a fresh folder the user never asked for.
+          disabled={!kikiWorkspace.resolved}
+          testId="data-persona-ask-kiki"
+          onAsk={() => { void ask({ skill: 'kiki-persona', promptKey: 'persona.askKiki.prompt', location: kikiWorkspace.location }); }}
+        />
         <button type="button" data-persona-new onClick={() => { select(undefined, { creating: true }); }} className={`${PRIMARY_BUTTON} pointer-coarse:min-h-11`}>
           {t('persona.new')}
         </button>
@@ -110,6 +125,8 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
               </button>
             </div>
           ) : all.length === 0 && !creating ? (
+            /* The page header already carries the handoff, so the empty state
+               offers only the two actions that act here. */
             <PersonasEmpty onCreate={() => { select(undefined, { creating: true }); }} onImport={() => { setImporting(true); }} />
           ) : (
             <SettingsPageScopeContext.Provider value="server">
@@ -240,7 +257,10 @@ function PersonaRow({ persona, active, onOpen }: { readonly persona: PersonaSumm
   );
 }
 
-function PersonasEmpty({ onCreate, onImport }: { readonly onCreate: () => void; readonly onImport: () => void }) {
+function PersonasEmpty({ onCreate, onImport }: {
+  readonly onCreate: () => void;
+  readonly onImport: () => void;
+}) {
   const { t } = useI18n();
   return (
     <div data-persona-empty className="py-10">

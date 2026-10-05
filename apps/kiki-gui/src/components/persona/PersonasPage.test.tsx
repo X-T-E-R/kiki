@@ -16,6 +16,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PersonaDefinition, PersonaSnapshot, PersonaSummary } from '@kiki/protocol';
+import { readDraft, resetDraftMemoryForTests, writeDraft } from '@kiki/session-core/composer';
 import { clearToasts } from '../../lib/toasts';
 
 import { I18nProvider } from '../../i18n';
@@ -25,6 +26,7 @@ const navigate = vi.fn();
 const listPersonas = vi.fn();
 const getPersona = vi.fn();
 const putPersona = vi.fn();
+const createSession = vi.fn();
 const listWorkspaces = vi.fn();
 const listNamedAgentProfiles = vi.fn();
 const listModels = vi.fn();
@@ -33,6 +35,9 @@ const listSessions = vi.fn();
 const listRooms = vi.fn();
 const listAgentCapabilities = vi.fn();
 
+// No `runAction` here on purpose: this file models a page that is not dirty, so
+// the handoff creates and leaves without a prompt. The cancel-the-leave order is
+// covered against the real guard in askKiki.dirtyOrder.test.tsx.
 vi.mock('../dirtyGuard', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../dirtyGuard')>()),
   useGuardedNavigate: () => navigate,
@@ -44,6 +49,7 @@ vi.mock('../../state/connection', () => {
       listPersonas,
       getPersona,
       putPersona,
+      createSession,
       listWorkspaces,
       listNamedAgentProfiles,
       listModels,
@@ -63,8 +69,9 @@ const environment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT
 beforeAll(() => { environment.IS_REACT_ACT_ENVIRONMENT = true; });
 afterAll(() => { environment.IS_REACT_ACT_ENVIRONMENT = false; });
 beforeEach(() => {
-  for (const fn of [navigate, listPersonas, getPersona, putPersona, listWorkspaces, listNamedAgentProfiles, listModels, listCronTasks, listSessions, listRooms, listAgentCapabilities]) fn.mockReset();
+  for (const fn of [navigate, listPersonas, getPersona, putPersona, createSession, listWorkspaces, listNamedAgentProfiles, listModels, listCronTasks, listSessions, listRooms, listAgentCapabilities]) fn.mockReset();
   clearToasts();
+  resetDraftMemoryForTests();
   localStorage.setItem('kiki.locale', 'zh');
   listWorkspaces.mockResolvedValue({ items: [] });
   listNamedAgentProfiles.mockResolvedValue({ items: [] });
@@ -134,4 +141,115 @@ describe('the personas page scope', () => {
     expect(identity.querySelector('[data-settings-panel-scope="server"]')!.className).toContain('sr-only');
     expect(container.querySelector('[data-persona-editor="new"]')).not.toBeNull();
   });
+});
+
+describe('handing a new persona to Kiki', () => {
+  beforeEach(() => {
+    writeDraft('new', 'half-typed question about personas');
+    writeDraft('session-other', 'another conversation unsent');
+    // The most recent workspace is what a plain New conversation here inherits.
+    listWorkspaces.mockResolvedValue({ items: [{ id: 'wd_recent_000000000000', name: 'Recent', root: '/recent' }] });
+  });
+
+  it('sits beside New persona as a short secondary action, and carries the full intent for assistive tech', async () => {
+    listPersonas.mockResolvedValue([LIN_LAN]);
+    const container = await render('/personas');
+
+    const ask = container.querySelector<HTMLButtonElement>('[data-persona-ask-kiki]')!;
+    expect(ask.textContent).toBe('帮我创建');
+    expect(ask.getAttribute('aria-label')).toBe('让 Kiki 帮你创建角色');
+    expect(ask.getAttribute('title')).toBe('让 Kiki 帮你创建角色');
+    // It is the same second-level weight as Import, never the primary verb.
+    const primary = container.querySelector<HTMLButtonElement>('[data-persona-new]')!;
+    const importButton = container.querySelector<HTMLButtonElement>('[data-persona-import]')!;
+    // The only addition is shrink-0, so a wrapped header never squeezes the
+    // label into an ellipsis; the border, type and colour roles are identical.
+    expect([...ask.classList].filter((name) => name !== 'shrink-0').sort())
+      .toEqual([...importButton.classList].sort());
+    expect(ask.className).not.toBe(primary.className);
+    expect(ask.className).not.toContain('bg-accent');
+  });
+
+  it('opens one new session whose composer waits for an editable /kiki-persona line, and sends nothing', async () => {
+    listPersonas.mockResolvedValue([LIN_LAN]);
+    createSession.mockResolvedValue({ id: 'persona-ask-session' });
+    const container = await render('/personas');
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-ask-kiki]')!.click(); });
+    for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(createSession).toHaveBeenCalledTimes(1);
+    // Personas carry no address of their own, so the session inherits the most
+    // recent workspace — the same one a plain New conversation here would use.
+    // An empty body would make the server mint a fresh "Untitled workspace".
+    expect(createSession).toHaveBeenCalledWith({ workspace_id: 'wd_recent_000000000000' });
+    expect(navigate).toHaveBeenCalledWith('/s/persona-ask-session', { state: { createdSession: { id: 'persona-ask-session', scopeId: 'local' } } });
+    // The draft is a real slash line, so the composer chips the skill and the
+    // ordinary submit flow resolves it to kiki-persona.
+    expect(readDraft('persona-ask-session')).toMatch(/^\/kiki-persona /);
+    // The user edits before sending: nothing else on screen moved.
+    expect(readDraft('new')).toBe('half-typed question about personas');
+    expect(readDraft('session-other')).toBe('another conversation unsent');
+    expect(putPersona).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the auto-workspace mechanism only when this machine truly has none', async () => {
+    listPersonas.mockResolvedValue([LIN_LAN]);
+    listWorkspaces.mockResolvedValue({ items: [] });
+    createSession.mockResolvedValue({ id: 'persona-ask-empty' });
+    const container = await render('/personas');
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-ask-kiki]')!.click(); });
+    for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // Same body /new sends when there is nothing to inherit.
+    expect(createSession).toHaveBeenCalledWith({});
+    expect(readDraft('persona-ask-empty')).toMatch(/^\/kiki-persona /);
+  });
+
+  it('does not pretend a failed workspace list is an empty one', async () => {
+    listPersonas.mockResolvedValue([LIN_LAN]);
+    listWorkspaces.mockRejectedValue(new Error('list unavailable'));
+    createSession.mockResolvedValue({ id: 'persona-ask-unknown' });
+    const container = await render('/personas');
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-ask-kiki]')!.click(); });
+    for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // We never learned where this belongs, so the button must not have fired:
+    // silently landing in a new folder would be the F1 defect all over again.
+    expect(createSession).not.toHaveBeenCalled();
+    expect(readDraft('persona-ask-unknown')).toBe('');
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('creates one session even when the button is clicked twice', async () => {
+    listPersonas.mockResolvedValue([LIN_LAN]);
+    createSession.mockResolvedValue({ id: 'persona-ask-session' });
+    const container = await render('/personas');
+    const button = container.querySelector<HTMLButtonElement>('[data-persona-ask-kiki]')!;
+
+    await act(async () => { button.click(); button.click(); button.click(); });
+    for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the button usable after a failed create, so the press can be retried', async () => {
+    listPersonas.mockResolvedValue([LIN_LAN]);
+    createSession.mockRejectedValueOnce(new Error('server offline')).mockResolvedValueOnce({ id: 'persona-ask-retry' });
+    const container = await render('/personas');
+    const button = container.querySelector<HTMLButtonElement>('[data-persona-ask-kiki]')!;
+
+    await act(async () => { button.click(); });
+    for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(button.disabled).toBe(false);
+    expect(navigate).not.toHaveBeenCalled();
+
+    await act(async () => { button.click(); });
+    for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(createSession).toHaveBeenCalledTimes(2);
+    expect(navigate).toHaveBeenCalledWith('/s/persona-ask-retry', { state: { createdSession: { id: 'persona-ask-retry', scopeId: 'local' } } });
+  });
+
 });

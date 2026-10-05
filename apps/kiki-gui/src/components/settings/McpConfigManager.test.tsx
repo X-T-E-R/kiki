@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { McpManagedServer } from '@kiki/session-core/transport';
+import { readDraft, resetDraftMemoryForTests, writeDraft } from '@kiki/session-core/composer';
 import { I18nProvider } from '../../i18n';
 import { McpConfigManager } from './McpConfigManager';
 import { pickOption } from './testControls';
@@ -16,8 +17,18 @@ const mcp = vi.hoisted(() => ({
   resetAuth: vi.fn(), listStoredOAuthCredentials: vi.fn(), revealStoredOAuthCredential: vi.fn(), revokeStoredOAuthCredential: vi.fn(),
 }));
 const revealSecret = vi.hoisted(() => vi.fn());
+const createSession = vi.hoisted(() => vi.fn());
+const listWorkspaces = vi.hoisted(() => vi.fn(async () => ({ items: [{ id: 'wd_mcp_000000000000', name: 'MCP WS', root: '/mcp-ws' }] })));
+const navigate = vi.hoisted(() => vi.fn());
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ klient: { global: { mcp } }, client: { revealSecret }, scopeId: 'fixture-server' }),
+  useConnection: () => ({ klient: { global: { mcp } }, client: { revealSecret, createSession, listWorkspaces }, scopeId: 'fixture-server' }),
+}));
+// No `runAction` here on purpose: this file models a page that is not dirty, so
+// the handoff creates and leaves without a prompt. The cancel-the-leave order is
+// covered against the real guard in askKiki.dirtyOrder.test.tsx.
+vi.mock('../dirtyGuard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../dirtyGuard')>()),
+  useGuardedNavigate: () => navigate,
 }));
 const STORED_HEADERS: Readonly<Record<string, string>> = { Authorization: 'Bearer fixture=old', 'X-Team': 'alpha' };
 
@@ -70,6 +81,11 @@ beforeEach(() => {
   mcp.listStoredOAuthCredentials.mockResolvedValue([]);
   mcp.revealStoredOAuthCredential.mockResolvedValue({ canonicalUrl: 'https://orphan.example.test/mcp' });
   mcp.revokeStoredOAuthCredential.mockResolvedValue(undefined);
+  createSession.mockReset();
+  listWorkspaces.mockReset();
+  listWorkspaces.mockResolvedValue({ items: [{ id: 'wd_mcp_000000000000', name: 'MCP WS', root: '/mcp-ws' }] });
+  navigate.mockClear();
+  resetDraftMemoryForTests();
 });
 afterEach(async () => {
   await act(async () => {
@@ -82,7 +98,7 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-async function render(entries: readonly McpManagedServer[] = [remote, readOnly], loading = false): Promise<HTMLDivElement> {
+async function render(entries: readonly McpManagedServer[] = [remote, readOnly], loading = false, cwd = '/tmp/fixture'): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -91,7 +107,7 @@ async function render(entries: readonly McpManagedServer[] = [remote, readOnly],
   await act(async () => {
     root.render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <I18nProvider><MemoryRouter><McpConfigManager cwd="/tmp/fixture" entries={entries} loading={loading} error={null} onEcho={vi.fn()} /></MemoryRouter></I18nProvider>
+        <I18nProvider><MemoryRouter><McpConfigManager cwd={cwd} entries={entries} loading={loading} error={null} onEcho={vi.fn()} /></MemoryRouter></I18nProvider>
       </QueryClientProvider>,
     );
   });
@@ -506,5 +522,92 @@ describe('MCP OAuth credential reset', () => {
     await change(fieldset.querySelector<HTMLInputElement>('input[placeholder="https://mcp.example.com"]')!, 'https://old.example.test/mcp');
     await change(fieldset.querySelector<HTMLInputElement>('input')!, 'renamed');
     expect(fieldset.textContent).toContain('saved OAuth credentials for remote at https://old.example.test/mcp');
+  });
+});
+
+describe('handing MCP configuration to Kiki', () => {
+  it('opens one session in the same project layer, and carries the path but never a config value', async () => {
+    createSession.mockResolvedValue({ id: 'mcp-ask-session' });
+    writeDraft('new', 'half-typed mcp question');
+    const container = await render();
+
+    const ask = container.querySelector<HTMLButtonElement>('[data-mcp-ask-kiki]')!;
+    expect(ask.textContent).toBe('Ask Kiki');
+    expect(ask.getAttribute('aria-label')).toBe('Let Kiki set up the MCP server with you');
+    await click(ask);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(createSession).toHaveBeenCalledTimes(1);
+    // The management plane addresses project layers by cwd, so the session
+    // lands where the form would have written.
+    expect(createSession).toHaveBeenCalledWith({ metadata: { cwd: '/tmp/fixture' } });
+    expect(navigate).toHaveBeenCalledWith('/s/mcp-ask-session',
+      { state: { createdSession: { id: 'mcp-ask-session', scopeId: 'fixture-server' } } });
+
+    const draft = readDraft('mcp-ask-session');
+    expect(draft).toMatch(/^\/kiki-ops /);
+    expect(draft).toContain('Configuration goes to: /tmp/fixture');
+    // A redacted key name, a header value, a bearer token: none of them.
+    expect(draft).not.toContain('MCP_TOKEN');
+    expect(draft).not.toContain('fixture=old');
+    expect(draft).not.toContain('Authorization');
+    expect(readDraft('new')).toBe('half-typed mcp question');
+    expect(mcp.add).not.toHaveBeenCalled();
+    expect(mcp.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unsaved server draft on screen rather than overwriting it', async () => {
+    createSession.mockResolvedValue({ id: 'mcp-ask-dirty' });
+    const container = await render();
+    const fieldset = await openRemote(container);
+    await change(fieldset.querySelector<HTMLInputElement>('input')!, 'renamed');
+
+    await click(container.querySelector<HTMLButtonElement>('[data-mcp-ask-kiki]')!);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(fieldset.querySelector<HTMLInputElement>('input')!.value).toBe('renamed');
+    expect(mcp.update).not.toHaveBeenCalled();
+  });
+
+  it('creates one session even when the button is clicked twice', async () => {
+    createSession.mockResolvedValue({ id: 'mcp-ask-once' });
+    const container = await render();
+    const button = container.querySelector<HTMLButtonElement>('[data-mcp-ask-kiki]')!;
+
+    await act(async () => { button.click(); button.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('inherits the most recent workspace when the page was given no cwd', async () => {
+    createSession.mockResolvedValue({ id: 'mcp-ask-nocwd' });
+    const container = await render([remote, readOnly], false, '');
+    // Wait for the workspace list: the button stays disabled until it answers.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    const ask = container.querySelector<HTMLButtonElement>('[data-mcp-ask-kiki]')!;
+    expect(ask.disabled, 'button is ready once the workspace list answers').toBe(false);
+    await click(ask);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // No cwd to address, so it falls back like persona and hooks — and never
+    // invents a directory of its own.
+    expect(createSession).toHaveBeenCalledWith({ workspace_id: 'wd_mcp_000000000000' });
+    expect(readDraft('mcp-ask-nocwd')).toMatch(/^\/kiki-ops /);
+    expect(readDraft('mcp-ask-nocwd')).not.toContain('Configuration goes to');
+  });
+
+  it('refuses to press while the fallback workspace is unknown', async () => {
+    listWorkspaces.mockRejectedValue(new Error('list unavailable'));
+    createSession.mockResolvedValue({ id: 'mcp-ask-unknown' });
+    const container = await render([remote, readOnly], false, '');
+
+    const ask = container.querySelector<HTMLButtonElement>('[data-mcp-ask-kiki]')!;
+    expect(ask.disabled).toBe(true);
+    await click(ask);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(createSession).not.toHaveBeenCalled();
   });
 });

@@ -11,6 +11,7 @@ import { useI18n } from '../../i18n';
 import { agentProfileCatalogQueryKey, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
 import type { NamedAgentProfile } from '../../lib/client';
 import { useConnection } from '../../state/connection';
+import { useAskKiki, useAskKikiWorkspace, AskKikiButton } from '../askKiki';
 import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
 import { Dialog } from '../Dialog';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
@@ -54,6 +55,9 @@ export function UnifiedAgentManager() {
   const [quickSaving, setQuickSaving] = useState<string>();
   const [quickSaved, pingQuickSaved] = useSavedTick();
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const { ask: askKiki, busy: askingKiki } = useAskKiki();
+  // Only consulted when this page has no workspace of its own to address.
+  const kikiFallbackWorkspace = useAskKikiWorkspace();
   const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
   const selectedWorkspaceId = workspaceId ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;
   const profilesQuery = useQuery({
@@ -172,6 +176,17 @@ export function UnifiedAgentManager() {
   const removed = shippedEntries.filter((entry) => entry.managed && entry.status === 'removed'
     && (filter === 'all' || (filter === 'main') === entry.main));
 
+  /**
+   * Whether the handoff knows where the session should run.
+   *
+   * A workspace this page is already filtered to is enough on its own, so the
+   * unrelated fallback query cannot hold a working entry hostage. Only when
+   * there is no selection does the fallback decide — and then it must have
+   * actually answered. An unanswered or failed list is not an empty list, and
+   * guessing here is what produces a throwaway directory per press.
+   */
+  const askKikiReady = selectedWorkspaceId !== undefined || kikiFallbackWorkspace.resolved;
+
   const workspacePicker = workspaceOptions.length > 0 ? <SearchableSelect id="agents-workspace-select" options={workspaceOptions}
     value={selectedWorkspaceId ?? ''} ariaLabel={t('new.workspace')} buttonClassName={SETTINGS_SELECT_TRIGGER}
     triggerLabel={<span className="text-ink-soft">{t('st.profiles.resolveIn')} <span className="text-ink">{workspaceOptions.find((option) => option.value === selectedWorkspaceId)?.label}</span></span>}
@@ -185,6 +200,36 @@ export function UnifiedAgentManager() {
           <SaveStatus saving={quickSaving !== undefined} saved={quickSaved} />
           {workspacePicker}
         </>}
+        // Beside "New agent", because that is the verb this one stands in for —
+        // not in the filter row, where it read as another workspace control.
+        newActions={
+          <AskKikiButton
+            label={t('st.agentManager.askKiki')}
+            labelAria={t('st.agentManager.askKikiAria')}
+            busy={askingKiki}
+            // Only a page that already knows which workspace it is editing is
+            // ready. `selectedWorkspaceId` collapses to undefined when the
+            // workspace list fails or is still loading, and passing that
+            // through would ask the server for a throwaway directory.
+            disabled={!askKikiReady}
+            testId="data-agent-ask-kiki"
+            onAsk={() => {
+              void askKiki({
+                skill: 'kiki-profile',
+                promptKey: 'st.agentManager.askKiki.prompt',
+                context: selectedWorkspaceId === undefined
+                  ? undefined
+                  : t('st.agentManager.askKiki.context', {
+                    target: workspaceOptions.find((option) => option.value === selectedWorkspaceId)?.label ?? selectedWorkspaceId,
+                  }),
+                // The page is filtered to one workspace and the prompt above
+                // names it, so the session must run there. The id, never the
+                // label: a display name is not an address.
+                location: selectedWorkspaceId === undefined ? kikiFallbackWorkspace.location : { kind: 'workspace', workspaceId: selectedWorkspaceId },
+              });
+            }}
+          />
+        }
         onOpen={(row) => setSheet({ kind: 'edit', key: row.key })} onNew={() => setSheet({ kind: 'new' })}
         onQuickSave={(row, patch) => void quickSave(row, patch)} />
       {removed.length > 0 ? <div className="space-y-1" data-shipped-removed-list>
@@ -199,6 +244,9 @@ export function UnifiedAgentManager() {
       {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
       {effectiveQuery.isError ? <InlineError error={effectiveQuery.error} /> : null}
       {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
+      {/* The handoff is disabled while this is unresolved; say why rather than
+          leaving a dead button. */}
+      {!askKikiReady && workspacesQuery.isError ? <InlineError error={workspacesQuery.error} /> : null}
       <AdvancedDetails summary={t('st.agentManager.disabledByName')}>
         <p className="max-w-[72ch] text-[11.5px] leading-5 text-ink-faint">{t('st.agentManager.disabledByNameHint')}</p>
         <p className="font-mono text-[11px] leading-5 text-ink-soft">

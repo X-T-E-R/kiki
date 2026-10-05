@@ -23,26 +23,33 @@
  * (`kiki.onboarding` in localStorage), so the auto-popup fires at most once.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { AuthSummary, PermissionMode } from '@kiki/protocol';
 import { writeDraft } from '@kiki/session-core/composer';
-import { errorText, issueText, type Locale } from '@kiki/session-core/i18n';
+import { errorText, issueText, type I18nKey, type Locale } from '@kiki/session-core/i18n';
 import {
   isOnboardingCompleted,
   isProviderDraftDirty,
+  KNOWN_CAPABILITIES,
+  KNOWN_EFFORTS,
   markOnboardingCompleted,
   providerCreateBody,
   readSettings,
+  REQUEST_IDENTITY_CHOICES,
+  requestIdentityProfileChoice,
   validateNewProviderDraft,
   writeSettings,
   type ProviderDraft,
   type ProviderModelDraft,
+  type RequestIdentityChoice,
 } from '@kiki/session-core/settings';
 import type { KikiConfigResponse } from '@kiki/session-core/transport';
+import { formatTokens } from '@kiki/session-core/util';
 
 import { useI18n } from '../i18n';
+import { ChipSelect } from './ChipSelect';
 import { Icon } from './icons';
 import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE } from '../lib/permissionModes';
 import { useConnection } from '../state/connection';
@@ -51,6 +58,8 @@ import { Dialog } from './Dialog';
 import { OnboardingAppearanceStep, OnboardingRow } from './OnboardingAppearanceStep';
 import { OnboardingCapabilitiesStep } from './OnboardingCapabilitiesStep';
 import { needsProviderSetup } from './NewSessionDraft';
+import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
+import { useCustomIdentityChoices } from './settings/identityCatalog';
 import {
   API_PROTOCOLS,
   baseUrlRequired,
@@ -67,7 +76,7 @@ import { FeedbackLine, Hint, type Feedback } from './controls';
 import { useDirtyReporter, useGuardedNavigate } from './dirtyGuard';
 import { SearchableSelect } from './SearchableSelect';
 import { mergeConfigEcho } from './settings/configEcho';
-import { FieldIssue, FORM_LABEL, FORM_SELECT_TRIGGER, SettingsSegmented } from './settings/SettingsPrimitives';
+import { FieldIssue, FORM_LABEL, FORM_SELECT_TRIGGER, SettingsSegmented, SettingsSelect } from './settings/SettingsPrimitives';
 import { INPUT, PRIMARY_BUTTON as SHARED_PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 import { Wordmark } from './Wordmark';
 
@@ -76,6 +85,27 @@ const PRIMARY_BUTTON = `${SHARED_PRIMARY_BUTTON} dark:text-primary-foreground`;
 
 const STEPS = ['welcome', 'model', 'permissions', 'capabilities'] as const;
 type OnboardingStep = (typeof STEPS)[number];
+
+/**
+ * The built-in client shapes, read from the same constant the settings editor
+ * uses. `inherit`, the manual-overrides mode and `none` are the layer's own
+ * states rather than client shapes, so they are not offered as one here:
+ * inherit is the separate first row, and the other two are added by the caller
+ * below, because the advanced body can leave the layer on either of them.
+ */
+const IDENTITY_PRESET_CHOICES = REQUEST_IDENTITY_CHOICES.filter(
+  (entry): entry is Exclude<RequestIdentityChoice, 'inherit' | 'custom_overrides' | 'none'> =>
+    entry !== 'inherit' && entry !== 'custom_overrides' && entry !== 'none',
+);
+
+/**
+ * A compaction threshold is an absolute positive token count. The wizard reads
+ * the same text in two places — the field's own blur and the save that refuses
+ * on text the field never committed — so both ask this one question.
+ */
+function isTokenCount(text: string): boolean {
+  return /^\d+$/.test(text) && Number.isSafeInteger(Number(text)) && Number(text) >= 1;
+}
 
 const STEP_TITLE_KEYS = {
   welcome: 'onboarding.step.welcome',
@@ -211,9 +241,110 @@ function PermissionOption({
 }
 
 /**
+ * The request identity, as a plain choice. Which client shape the requests take
+ * is a normal part of connecting a provider, so it sits in the open form next
+ * to the key, not behind a disclosure.
+ */
+function OnboardingIdentityChoice({
+  identity,
+  onChange,
+}: {
+  identity: ProviderDraft;
+  onChange: (choice: ProviderDraft['requestIdentityChoice']) => void;
+}) {
+  const { t } = useI18n();
+  const customProfiles = useCustomIdentityChoices();
+  const choice = identity.requestIdentityChoice;
+  return (
+    <div data-onboarding-identity>
+      <div className={FORM_LABEL}>{t('onboarding.model.identity')}</div>
+      <div className="mt-1">
+        <SettingsSelect<ProviderDraft['requestIdentityChoice']>
+          variant="form"
+          dataAttr="data-request-identity-choice"
+          ariaLabel={t('onboarding.model.identityAria')}
+          value={choice}
+          onChange={onChange}
+          choices={[
+            { value: 'inherit', label: t('st.requestIdentity.inheritGlobal') },
+            ...IDENTITY_PRESET_CHOICES.map((preset) => ({
+              value: preset as ProviderDraft['requestIdentityChoice'],
+              label: t(`st.requestIdentity.option.${preset}` as I18nKey),
+            })),
+            ...customProfiles.map((profile) => ({
+              value: requestIdentityProfileChoice(profile.id) as ProviderDraft['requestIdentityChoice'],
+              label: t('st.requestIdentity.option.custom', { label: profile.label }),
+            })),
+            /* The advanced body can leave the layer on either of these, so they
+               are offered here too rather than leaving the trigger blank for a
+               state the person can actually reach. */
+            { value: 'custom_overrides' as ProviderDraft['requestIdentityChoice'],
+              label: t('st.requestIdentity.option.custom_overrides') },
+            { value: 'none' as ProviderDraft['requestIdentityChoice'],
+              label: t('st.requestIdentity.option.none') },
+          ]}
+        />
+      </div>
+      <div className="mt-1"><Hint>{t('onboarding.model.identityHint')}</Hint></div>
+    </div>
+  );
+}
+
+/**
+ * What the first run rarely changes, kept out of the first screen so the base
+ * form stays short: the hand-written override body on the request identity.
+ */
+function OnboardingAdvanced({
+  summary,
+  identity,
+  onIdentity,
+}: {
+  summary: string;
+  identity: ProviderDraft;
+  onIdentity: (choice: ProviderDraft['requestIdentityChoice'], overridesJson: string) => void;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const customProfiles = useCustomIdentityChoices();
+  return (
+    <div data-onboarding-advanced>
+      <button
+        type="button"
+        aria-expanded={open}
+        data-onboarding-advanced-toggle
+        onClick={() => { setOpen((value) => !value); }}
+        className="flex h-8 w-full items-center gap-1.5 rounded-md px-1 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+      >
+        <Icon name="chevron" size={12} className={open ? 'rotate-90' : undefined} />
+        {summary}
+      </button>
+      {open ? (
+        // The identity itself is chosen in the base form above, so this is the
+        // part that is genuinely extra: the hand-written override body, and the
+        // action that clears it back to what the identity already carries. The
+        // same component the settings editor uses, asked for the body alone.
+        <div className="mt-2 space-y-2" data-onboarding-advanced-body>
+          <RequestIdentityLayerEditor
+            value={identity}
+            onChange={(next) => { onIdentity(next.requestIdentityChoice, next.requestIdentityOverridesJson); }}
+            label={t('st.requestIdentity.overrides')}
+            inheritLabel={t('st.requestIdentity.inheritGlobal')}
+            hint={t('st.requestIdentity.overridesOptionalHint')}
+            customProfiles={customProfiles}
+            overridesOnly
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * The streamlined API-key form: template grid, then base URL + key + one
- * model. Advanced layers (request identity, image policy, extra models) stay
- * in Settings — the draft's defaults already cover them.
+ * model, the identity to send it as, and the model's own base traits. The
+ * one rarely-needed part, the hand-written override body on that identity, sits
+ * under a single Advanced disclosure rather than adding height to the first
+ * screen.
  */
 function OnboardingProviderForm({
   draft,
@@ -224,6 +355,7 @@ function OnboardingProviderForm({
   onChange,
   onTest,
   onBack,
+  modelIssueRef,
 }: {
   readonly draft: ProviderDraft;
   readonly suggestions: readonly ProviderModelDraft[];
@@ -234,6 +366,13 @@ function OnboardingProviderForm({
   readonly onChange: (draft: ProviderDraft) => void;
   readonly onTest: () => void;
   readonly onBack: () => void;
+  /**
+   * A model field the form is holding as an error. The draft cannot express it
+   * (an invalid value is not written to the draft), so the form reports it here
+   * and the save checks it: a value the person can still see must not be saved
+   * past, and must not be quietly dropped either.
+   */
+  readonly modelIssueRef: { current: string };
 }) {
   const { t, locale } = useI18n();
   const [showApiKey, setShowApiKey] = useState(false);
@@ -248,6 +387,54 @@ function OnboardingProviderForm({
 
   const updateModel = (patch: Partial<ProviderModelDraft>) => {
     onChange({ ...draft, models: [{ ...draft.models[0]!, ...patch }] });
+  };
+
+  /**
+   * The compaction threshold is an absolute token count, and absent is a real
+   * state meaning "inherit", so it cannot share the window's `0`-means-unset
+   * convention. The text is held here so a wrong value stays on screen and is
+   * reported, rather than being rounded into something plausible.
+   *
+   * The text re-reads when the stored value actually changes (a different model
+   * is picked, the field is restored) and on nothing else. It is deliberately
+   * not keyed to focus: tying the sync to an editing flag made blur overwrite
+   * what was just typed, and drop the error the blur had only just raised.
+   */
+  const autoCompact = model?.autoCompact;
+  const [autoCompactText, setAutoCompactText] = useState(autoCompact === undefined ? '' : String(autoCompact));
+  const [autoCompactIssue, setAutoCompactIssue] = useState<string | null>(null);
+  useEffect(() => {
+    setAutoCompactText(autoCompact === undefined ? '' : String(autoCompact));
+  }, [autoCompact]);
+  /**
+   * The field's own message, from either source: the blur that already ran, or
+   * the live text the save refused on. Both are the same mistake in the same
+   * field, so it is reported in the one place that owns the field — the save
+   * that refuses only focuses it, and never adds a second copy of the sentence
+   * under the form.
+   */
+  const pendingAutoCompact = modelIssueRef.current.trim();
+  const autoCompactInvalid = pendingAutoCompact !== '' && !isTokenCount(pendingAutoCompact);
+  const autoCompactMessage = autoCompactIssue
+    ?? (autoCompactInvalid ? t('onboarding.model.autoCompactInvalid') : null);
+  const commitAutoCompact = () => {
+    const text = autoCompactText.trim();
+    if (text === '') {
+      setAutoCompactIssue(null);
+      modelIssueRef.current = '';
+      updateModel({ autoCompact: undefined });
+      return;
+    }
+    if (!isTokenCount(text)) {
+      setAutoCompactIssue(t('onboarding.model.autoCompactInvalid'));
+      // Recorded here rather than read back in the event handler, so the save
+      // sees this outcome and not the value the render closed over.
+      modelIssueRef.current = text;
+      return;
+    }
+    setAutoCompactIssue(null);
+    modelIssueRef.current = '';
+    updateModel({ autoCompact: Number(text) });
   };
 
   const pickSuggestion = (suggestion: ProviderModelDraft) => {
@@ -347,46 +534,130 @@ function OnboardingProviderForm({
         <div className="mt-2"><FeedbackLine feedback={probeFeedback} /></div>
       </div>
       <div>
-        <label htmlFor="onboarding-provider-model" className={FORM_LABEL}>{t('onboarding.model.model')}</label>
-        <input
-          id="onboarding-provider-model"
-          className={`${INPUT} mt-1 font-mono`}
-          value={model?.remoteId ?? ''}
-          onChange={(event) => {
-            updateModel({
-              remoteId: event.target.value,
-              maxContextSize: model?.maxContextSize ?? defaultContextFor(draft.type),
-            });
-          }}
-          placeholder="model-id"
-        />
-        {suggestions.length > 0 ? (
-          <div className="mt-2 flex flex-wrap gap-1" role="group" aria-label={t('onboarding.model.model')}>
-            {suggestions.slice(0, 8).map((suggestion) => {
-              const picked = model?.remoteId === suggestion.remoteId;
-              return (
-                <button
-                  key={suggestion.remoteId}
-                  type="button"
-                  aria-pressed={picked}
-                  data-model-suggestion={suggestion.remoteId}
-                  onClick={() => { pickSuggestion(suggestion); }}
-                  className={`h-7 rounded-md px-3 font-mono text-[12px] transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
-                    picked
-                      ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
-                      : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
-                  }`}
-                >
-                  {suggestion.remoteId}
-                </button>
-              );
-            })}
-          </div>
-        ) : (
+        <div className={FORM_LABEL}>{t('onboarding.model.model')}</div>
+        {/*
+          One control, not three: the searchable list filters every candidate the
+          provider reported, and anything typed that is not in the list is
+          offered as its own row, so a model the provider never listed, or a
+          probe that never ran, is still enterable. No truncation, so no
+          candidate is unreachable.
+        */}
+        <div className="mt-1">
+          <SearchableSelect
+            id="onboarding-provider-model"
+            data-onboarding-model-id
+            ariaLabel={t('onboarding.model.model')}
+            value={model?.remoteId ?? ''}
+            hideFilter={false}
+            allowCustomValue
+            customValueLabel={(value) => t('onboarding.model.useCustomId', { id: value })}
+            emptyText={t('onboarding.model.noModelsYet')}
+            searchPlaceholder={t('onboarding.model.searchModels')}
+            noMatchText={(value) => t('onboarding.model.useCustomId', { id: value })}
+            options={suggestions.map((suggestion) => ({
+              value: suggestion.remoteId,
+              label: suggestion.remoteId,
+              hint: suggestion.maxContextSize > 0 ? formatTokens(suggestion.maxContextSize) : undefined,
+            }))}
+            onChange={(remoteId) => {
+              const suggestion = suggestions.find((entry) => entry.remoteId === remoteId);
+              if (suggestion !== undefined) pickSuggestion(suggestion);
+              else updateModel({ remoteId, maxContextSize: model?.maxContextSize ?? defaultContextFor(draft.type) });
+            }}
+            buttonClassName={`${FORM_SELECT_TRIGGER} font-mono`}
+          />
+        </div>
+        {suggestions.length === 0 ? (
           <div className="mt-1"><Hint>{t('onboarding.model.modelHint')}</Hint></div>
-        )}
+        ) : null}
       </div>
-      <Hint>{t('onboarding.model.advancedHint')}</Hint>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="min-w-0">
+          <label htmlFor="onboarding-model-context" className={FORM_LABEL}>
+            {t('onboarding.model.contextSize')}
+            <span className="ms-1 font-normal text-ink-faint">{t('onboarding.model.tokenUnit')}</span>
+          </label>
+          <input
+            id="onboarding-model-context"
+            data-onboarding-model-context
+            className={`${INPUT} mt-1 font-mono`}
+            inputMode="numeric"
+            value={model?.maxContextSize ? String(model.maxContextSize) : ''}
+            onChange={(event) => {
+              const text = event.target.value.trim();
+              updateModel({ maxContextSize: /^\d+$/.test(text) ? Number(text) : 0 });
+            }}
+            placeholder={String(defaultContextFor(draft.type))}
+          />
+        </div>
+        {/* The compaction threshold, in the same units as the window beside it.
+            Empty means "inherit", which is what an absent value means on the
+            wire: the field is only sent when one is typed. */}
+        <div className="min-w-0">
+          <label htmlFor="onboarding-model-auto-compact" className={FORM_LABEL}>
+            {t('onboarding.model.autoCompact')}
+            <span className="ms-1 font-normal text-ink-faint">{t('onboarding.model.tokenUnit')}</span>
+          </label>
+          <input
+            id="onboarding-model-auto-compact"
+            data-onboarding-model-auto-compact
+            className={`${INPUT} mt-1 font-mono`}
+            inputMode="numeric"
+            aria-invalid={autoCompactMessage !== null || undefined}
+            aria-describedby={autoCompactMessage !== null ? 'onboarding-model-auto-compact-issue' : undefined}
+            value={autoCompactText}
+            onChange={(event) => { setAutoCompactText(event.target.value); modelIssueRef.current = event.target.value; }}
+            onBlur={() => { commitAutoCompact(); }}
+            placeholder={t('onboarding.model.inheritAutoCompact')}
+          />
+          <FieldIssue id="onboarding-model-auto-compact-issue" text={autoCompactMessage} />
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="min-w-0">
+          <div className={FORM_LABEL}>{t('onboarding.model.efforts')}</div>
+          <div className="mt-1.5">
+            <ChipSelect
+              values={model?.supportEfforts ?? []}
+              knownOptions={KNOWN_EFFORTS}
+              onChange={(supportEfforts) => { updateModel({ supportEfforts }); }}
+              ariaLabel={t('onboarding.model.efforts')}
+              addPlaceholder={t('st.chips.addPlaceholder')}
+              removeLabel={(value) => t('st.chips.removeAria', { value })}
+            />
+          </div>
+        </div>
+      </div>
+      <div>
+        <div className={FORM_LABEL}>{t('onboarding.model.capabilities')}</div>
+        <div className="mt-1.5">
+          <ChipSelect
+            values={model?.capabilities ?? []}
+            knownOptions={KNOWN_CAPABILITIES}
+            onChange={(capabilities) => { updateModel({ capabilities }); }}
+            ariaLabel={t('onboarding.model.capabilities')}
+            addPlaceholder={t('st.chips.addPlaceholder')}
+            removeLabel={(value) => t('st.chips.removeAria', { value })}
+          />
+        </div>
+      </div>
+      {/* The identity is a base choice, not an advanced layer: connecting a
+          provider means saying which client shape its requests take. */}
+      <OnboardingIdentityChoice
+        identity={draft}
+        onChange={(requestIdentityChoice) => { onChange({ ...draft, requestIdentityChoice }); }}
+      />
+      <OnboardingAdvanced
+        summary={t('onboarding.model.advanced')}
+        onIdentity={(requestIdentityChoice, requestIdentityOverridesJson) => {
+          onChange({
+            ...draft,
+            requestIdentityChoice,
+            requestIdentityOverridesJson,
+          });
+        }}
+        identity={draft}
+      />
     </div>
   );
 }
@@ -410,6 +681,43 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   const [providerFeedback, setProviderFeedback] = useState<Feedback>(null);
   const [providerFieldIssue, setProviderFieldIssue] = useState<ConnectionFieldIssue | null>(null);
   const [savingProvider, setSavingProvider] = useState(false);
+  /**
+   * The live text of a model field the draft cannot represent: a value that did
+   * not parse is never written to the draft, so the draft alone would read as
+   * "inherit" and save a value the person never chose. The save reads this
+   * directly, so it holds whether or not the field has been left yet. A ref
+   * because it must be current inside one click, with no re-render between.
+   */
+  const modelIssueRef = useRef('');
+  // Whether the step still has content below the fold, so the edge can say so.
+  const stepScrollRef = useRef<HTMLDivElement>(null);
+  const [stepScrollsMore, setStepScrollsMore] = useState(false);
+  const noteStepScroll = useCallback(() => {
+    const node = stepScrollRef.current;
+    if (node === null) return;
+    setStepScrollsMore(node.scrollHeight - node.clientHeight - node.scrollTop > 8);
+  }, []);
+
+  /**
+   * "There is more below" is a fact about the laid-out box, not about the last
+   * scroll gesture, so it is measured whenever the step arrives, its content
+   * changes (a step swap, a disclosure opening, a probe filling the model list)
+   * or the window resizes. Measuring only on scroll would leave a tall first
+   * screen claiming there was nothing below it until the pointer moved.
+   */
+  useLayoutEffect(() => {
+    const node = stepScrollRef.current;
+    if (node === null) return;
+    noteStepScroll();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => { noteStepScroll(); });
+    observer.observe(node);
+    for (const child of Array.from(node.children)) observer.observe(child);
+    // Step content swaps wholesale on most changes, so a child-only observer
+    // would miss a taller body that replaced a short one. Any real change
+    // lands in a re-render of this panel; measure then too.
+    return () => { observer.disconnect(); };
+  }, [step, noteStepScroll, providerDraft, suggestions, providerFeedback, locale]);
 
   // A fresh run (auto-popup, onboarding never completed) defaults the
   // permission choice to auto; a replay from Settings shows the server's
@@ -533,7 +841,8 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       defaultModel: providerDraft.defaultModel || (firstModel?.remoteId ?? ''),
     };
     // Field problems (no address, no name) land on their own field; the rest
-    // (models, context size) keeps the form-level line under the form.
+    // (models, context size) keeps the form-level line under the form. A model
+    // field that owns its own inline message is the exception below.
     const fieldIssue = connectionFieldIssue(normalized, { requireBaseUrl: baseUrlRequired(normalized.type) });
     if (fieldIssue !== null) {
       setProviderFieldIssue(fieldIssue);
@@ -542,6 +851,20 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       return false;
     }
     setProviderFieldIssue(null);
+    // A model field the form is still holding as an error blocks the save. The
+    // draft cannot express it, because a value that did not parse was never
+    // written there, so it is read from the form itself: the person keeps the
+    // text they typed, sees why the save is refused, and nothing is created.
+    // The field already carries that sentence inline, and a second copy under
+    // the form read as one problem said twice — and outlived the fix, because
+    // this feedback is not cleared by correcting the field. So the save only
+    // refuses and puts the caret back where the mistake is; it does not
+    // restate it.
+    const pending = modelIssueRef.current.trim();
+    if (pending !== '' && !isTokenCount(pending)) {
+      document.getElementById('onboarding-model-auto-compact')?.focus();
+      return false;
+    }
     const validation = validateNewProviderDraft(normalized);
     if (validation !== null) {
       setProviderFeedback({ tone: 'error', text: issueText(locale, validation) });
@@ -662,9 +985,9 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       stacked
       // Same chrome as DIALOG_PANEL_BASE, minus the padding: the wizard owns
       // its header/body/footer insets so the scroll region meets the dividers.
-      panelClassName="anim-enter w-full max-w-[680px] max-h-[85vh] flex flex-col rounded-2xl border border-hairline bg-panel shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]"
+      panelClassName="anim-enter flex h-[85vh] w-full max-w-[680px] flex-col rounded-2xl border border-hairline bg-panel shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]"
     >
-      <div className="flex items-start justify-between gap-4 border-b border-hairline px-6 pb-4 pt-5">
+      <div className="flex shrink-0 items-start justify-between gap-4 border-b border-hairline px-6 pb-4 pt-5">
         <div className="min-w-0">
           <span className="inline-flex" aria-hidden>
             <Wordmark size="md" />
@@ -687,7 +1010,21 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+      {/* The step is taller than the dialog on a short window, so the edge says
+          so while there is more below: a soft fade over the panel ground, the
+          same mask the composer seat uses. No text, and it disappears the
+          moment the end is reached. */}
+      {/* `min-h-0` lets this flex child shrink so the step scrolls inside its
+          own box and the footer below keeps its row, however long the step is. */}
+      {/* A definite height, not just a cap: the scroller fills this row
+          absolutely, and an absolute child needs a sized parent to fill. */}
+      <div className="relative min-h-0 flex-1 shrink overflow-hidden">
+        <div
+          ref={stepScrollRef}
+          data-onboarding-step-scroll
+          onScroll={noteStepScroll}
+          className="h-full min-h-0 overflow-y-auto px-6 py-4"
+        >
         <h3 className="font-display text-[15px] leading-5 font-semibold text-ink">{t(STEP_TITLE_KEYS[step])}</h3>
 
         {step === 'welcome' ? (
@@ -726,6 +1063,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
                 {showProviderForm ? (
                   <OnboardingProviderForm
                     draft={providerDraft}
+                  modelIssueRef={modelIssueRef}
                     suggestions={suggestions}
                     probing={probing}
                     probeFeedback={probeFeedback}
@@ -782,9 +1120,17 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
             <FeedbackLine feedback={permissionFeedback} />
           </div>
         ) : null}
+        </div>
+        {stepScrollsMore ? (
+          <div
+            aria-hidden
+            data-onboarding-scroll-more
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-panel to-transparent"
+          />
+        ) : null}
       </div>
 
-      <div className="flex items-center justify-between gap-3 border-t border-hairline px-6 py-3">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-t border-hairline px-6 py-3">
         <button
           type="button"
           onClick={close}

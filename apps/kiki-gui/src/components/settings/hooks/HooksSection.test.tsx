@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readDraft, resetDraftMemoryForTests, writeDraft } from '@kiki/session-core/composer';
 import { I18nProvider } from '../../../i18n';
 import { commitText, pickOption } from '../testControls';
 import { HooksSection } from './HooksSection';
@@ -14,6 +15,7 @@ interface FixtureConfig {
 
 let config: FixtureConfig;
 let patchError: Error | null = null;
+const navigate = vi.fn();
 const client = {
   getConfig: vi.fn(async () => structuredClone(config)),
   patchConfig: vi.fn(async (patch: Record<string, unknown>) => {
@@ -21,8 +23,18 @@ const client = {
     config = { ...config, ...patch };
     return structuredClone(config);
   }),
+  createSession: vi.fn(async () => ({ id: 'hooks-ask-session' })),
+  listWorkspaces: vi.fn(async () => ({ items: [{ id: 'wd_hooks_000000000000', name: 'Hooks WS', root: '/hooks-ws' }] })),
 };
-vi.mock('../../../state/connection', () => ({ useConnection: () => ({ client }) }));
+vi.mock('../../../state/connection', () => ({ useConnection: () => ({ client, scopeId: 'local' }) }));
+// No `runAction` here on purpose: this file drives the guard away so the form
+// path stays simple, and models a page that is not dirty. The real leave-prompt
+// order (create only after the user agrees to leave) is covered in
+// askKiki.dirtyOrder.test.tsx against the actual guard.
+vi.mock('../../dirtyGuard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../dirtyGuard')>()),
+  useGuardedNavigate: () => navigate,
+}));
 
 const LEGACY_RULE = { event: 'PreToolUse', command: 'echo example', matcher: '^Read$', timeout: 17 };
 const V2_MIXED = {
@@ -88,6 +100,11 @@ beforeEach(() => {
   config = { hooks: [] };
   patchError = null;
   client.patchConfig.mockClear();
+  client.createSession.mockClear();
+  client.listWorkspaces.mockClear();
+  client.listWorkspaces.mockResolvedValue({ items: [{ id: 'wd_hooks_000000000000', name: 'Hooks WS', root: '/hooks-ws' }] });
+  navigate.mockClear();
+  resetDraftMemoryForTests();
   query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   container = document.createElement('div');
   document.body.append(container);
@@ -281,5 +298,88 @@ describe('hooks settings (dual shape)', () => {
     await flush();
     expect(eventTrigger().textContent).toContain('On prompt submit');
     expect(editor('declarative').querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('Remember the goal');
+  });
+});
+
+describe('handing a new hook rule to Kiki', () => {
+  it('opens one session whose composer waits for an editable /kiki-hooks line, and writes no config', async () => {
+    client.createSession.mockResolvedValue({ id: 'hooks-ask-session' });
+    writeDraft('new', 'half-typed hooks question');
+    await mount();
+
+    const ask = container.querySelector<HTMLButtonElement>('[data-hooks-ask-kiki]')!;
+    expect(ask.textContent).toBe('Ask Kiki');
+    expect(ask.getAttribute('aria-label')).toBe('Let Kiki set up the Hook rule with you');
+    await act(async () => { ask.click(); });
+    await flush(); await flush();
+
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    // Hooks writes global config, but the conversation inherits the same most
+    // recent workspace a plain New conversation here would use.
+    expect(client.createSession).toHaveBeenCalledWith({ workspace_id: 'wd_hooks_000000000000' });
+    expect(navigate).toHaveBeenCalledWith('/s/hooks-ask-session',
+      { state: { createdSession: { id: 'hooks-ask-session', scopeId: 'local' } } });
+    expect(readDraft('hooks-ask-session')).toMatch(/^\/kiki-hooks /);
+    expect(readDraft('new')).toBe('half-typed hooks question');
+    // No rule was invented, and the server config was not touched.
+    expect(config.hooks).toEqual([]);
+    expect(client.patchConfig).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unsaved rule draft on screen: the handoff leaves it to the guard, not over it', async () => {
+    client.createSession.mockResolvedValue({ id: 'hooks-ask-dirty' });
+    await mount();
+    await click('Add command rule');
+    const command = editor('legacy').querySelector<HTMLTextAreaElement>('textarea')!;
+    await change(command, 'echo half-written');
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-hooks-ask-kiki]')!.click(); });
+    await flush(); await flush();
+
+    // The rule the user is still editing is still there; the draft text and the
+    // unsaved marker survive the navigation request.
+    expect(editor('legacy').querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('echo half-written');
+    const draftBar = container.querySelector<HTMLElement>('[data-settings-draft="hooks"]')!;
+    expect(draftBar.dataset['dirty']).toBe('true');
+  });
+
+  it('creates one session even when the button is clicked twice', async () => {
+    client.createSession.mockResolvedValue({ id: 'hooks-ask-once' });
+    await mount();
+    const button = container.querySelector<HTMLButtonElement>('[data-hooks-ask-kiki]')!;
+
+    await act(async () => { button.click(); button.click(); });
+    await flush(); await flush();
+
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the auto-workspace mechanism when this machine truly has none', async () => {
+    client.listWorkspaces.mockResolvedValue({ items: [] });
+    client.createSession.mockResolvedValue({ id: 'hooks-ask-empty' });
+    await mount();
+
+    const ask = container.querySelector<HTMLButtonElement>('[data-hooks-ask-kiki]')!;
+    await act(async () => { ask.click(); });
+    await flush(); await flush();
+
+    // The same empty body /new sends, which the server answers with its own
+    // auto workspace — a real new session, not a guess about where to put it.
+    expect(client.createSession).toHaveBeenCalledWith({});
+    expect(readDraft('hooks-ask-empty')).toMatch(/^\/kiki-hooks /);
+  });
+
+  it('refuses to press while the workspace list is unknown, rather than guessing', async () => {
+    client.listWorkspaces.mockRejectedValue(new Error('list unavailable'));
+    client.createSession.mockResolvedValue({ id: 'hooks-ask-unknown' });
+    await mount();
+
+    const ask = container.querySelector<HTMLButtonElement>('[data-hooks-ask-kiki]')!;
+    expect(ask.disabled).toBe(true);
+    await act(async () => { ask.click(); });
+    await flush(); await flush();
+
+    expect(client.createSession).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
   });
 });

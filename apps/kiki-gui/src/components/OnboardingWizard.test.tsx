@@ -219,6 +219,77 @@ async function typeInto(input: HTMLInputElement, value: string): Promise<void> {
   });
 }
 
+async function typeIntoTextArea(input: HTMLTextAreaElement, value: string): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+  await act(async () => {
+    setter?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+/**
+ * A step scroller whose box can actually change, so the "there is more below"
+ * edge is exercised against a real measurement instead of a fixed constant.
+ * jsdom reports every box as zero, so both ends of the geometry are installed
+ * here and the content height is a variable the test owns.
+ */
+const stepGeometry = { contentHeight: 0 };
+const resizeCallbacks: Array<() => void> = [];
+
+function installStepScroller(): void {
+  const define = (key: string, get: () => number) => {
+    Object.defineProperty(HTMLElement.prototype, key, { configurable: true, get });
+  };
+  define('clientHeight', function (this: HTMLElement) {
+    return this.hasAttribute('data-onboarding-step-scroll') ? 300 : 0;
+  });
+  define('scrollHeight', function (this: HTMLElement) {
+    return this.hasAttribute('data-onboarding-step-scroll') ? stepGeometry.contentHeight : 0;
+  });
+  // jsdom ships no ResizeObserver. This one records the callbacks so the test
+  // can say the content changed, which is the one thing jsdom cannot decide.
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback: () => void) { resizeCallbacks.push(callback); }
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  });
+}
+
+function restoreStepScroller(): void {
+  for (const key of ['clientHeight', 'scrollHeight']) {
+    Reflect.deleteProperty(HTMLElement.prototype, key);
+  }
+  resizeCallbacks.length = 0;
+}
+
+/**
+ * Choose a model id the way the form is used: open the combobox, and commit
+ * either a listed row or, when the id is not listed, the custom row the search
+ * itself offers.
+ */
+async function pickModelId(remoteId: string): Promise<void> {
+  const trigger = dialog().querySelector<HTMLButtonElement>('#onboarding-provider-model')
+    ?? dialog().querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]');
+  if (trigger === null) throw new Error('model combobox trigger not found');
+  await act(async () => { trigger.click(); });
+  // The option panel is portalled to the body, so it is queried from the
+  // document, exactly as SearchableSelect's own tests do.
+  const panel = document.querySelector<HTMLElement>('[data-select-panel]');
+  if (panel === null) throw new Error('model combobox panel not open');
+  const filter = panel.querySelector<HTMLInputElement>('input[role="combobox"]');
+  if (filter === null) throw new Error('model combobox has no filter input');
+  await typeInto(filter, remoteId);
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  // A listed candidate is a data-option-value row; an id the provider never
+  // listed is the custom row, which is identified by its title instead.
+  const row = [...document.querySelectorAll('[data-option-value], [data-select-panel] [role="option"]')]
+    .find((node) => node.getAttribute('data-option-value') === remoteId
+      || node.getAttribute('title') === remoteId);
+  if (row === undefined) throw new Error('model option not offered: ' + remoteId);
+  await act(async () => { (row as HTMLElement).click(); });
+}
+
 /** Walk from the welcome page (language + appearance) onto the model step. */
 async function toModelStep(): Promise<void> {
   await click(buttonByText('Next'));
@@ -230,7 +301,7 @@ async function fillProviderForm(): Promise<void> {
   await typeInto(inputByPlaceholder('Search DeepSeek, Kimi, Ollama…'), 'kimi');
   await click(dialog().querySelector('[data-provider-template="moonshot"]')!);
   await typeInto(inputByPlaceholder('Paste a new key'), 'sk-test-key');
-  await typeInto(inputByPlaceholder('model-id'), 'kimi-for-coding');
+  await pickModelId('kimi-for-coding');
 }
 
 describe('shouldOfferOnboarding', () => {
@@ -370,6 +441,454 @@ describe('OnboardingWizard', () => {
     expect(createProvider).not.toHaveBeenCalled();
   });
 
+  it('saves a model id the provider never listed, and saves it without a picker', async () => {
+    // The provider reported nothing (the probe failed, or the id is private):
+    // the field is still a real text field, and the value is what gets written.
+    probeProviderDraft.mockResolvedValue([]);
+    await mount();
+    await toModelStep();
+    await typeInto(inputByPlaceholder('Search DeepSeek, Kimi, Ollama…'), 'kimi');
+    await click(dialog().querySelector('[data-provider-template="moonshot"]')!);
+    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-custom');
+    expect(dialog().querySelector('#onboarding-model-picker')).toBeNull();
+    await pickModelId('my-private-model');
+    await click(buttonByText('Save & continue'));
+    await flush();
+    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body['default_model']).toBe('my-private-model');
+    expect(body['models']).toEqual([expect.objectContaining({ remote_id: 'my-private-model' })]);
+  });
+
+  it('offers every reported model, however many the provider lists', async () => {
+    // The provider can list far more models than fit on the first screen. The
+    // list is filtered, not truncated, so a model past any page boundary is
+    // still findable by typing part of its id.
+    const many = Array.from({ length: 120 }, (_, index) => ({
+      id: '',
+      remoteId: `kimi-model-${String(index).padStart(3, '0')}`,
+      maxContextSize: 131072,
+      displayName: '',
+      capabilities: ['thinking'],
+      supportEfforts: [],
+      requestIdentityChoice: 'inherit' as const,
+      requestIdentityOverridesJson: '',
+      imageAcceptedTypes: null,
+      imageConvertUnsupported: null,
+    }));
+    probeProviderDraft.mockResolvedValue(many);
+    await mount();
+    await toModelStep();
+    await typeInto(inputByPlaceholder('Search DeepSeek, Kimi, Ollama…'), 'kimi');
+    await click(dialog().querySelector('[data-provider-template="moonshot"]')!);
+    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-many');
+    await click(buttonByText('Test connection'));
+    await flush();
+    await act(async () => { dialog().querySelector<HTMLButtonElement>('#onboarding-provider-model')!.click(); });
+    await flush();
+    const filter = document.querySelector<HTMLInputElement>('[data-select-panel] input[role="combobox"]')!;
+    // The last of 120 is reachable: nothing was cut before the search saw it.
+    await typeInto(filter, 'kimi-model-119');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect([...document.querySelectorAll('[data-option-value]')].map((n) => n.getAttribute('data-option-value')))
+      .toEqual(['kimi-model-119']);
+    await act(async () => {
+      (document.querySelector('[data-option-value="kimi-model-119"]') as HTMLElement).click();
+    });
+    expect(dialog().querySelector('#onboarding-provider-model')?.textContent).toContain('kimi-model-119');
+  });
+
+  it('saves the auto-compact threshold beside the window, and inherits when left empty', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
+    // Empty is a real state meaning "inherit", not a zero threshold.
+    expect(threshold.value).toBe('');
+    expect(threshold.placeholder).toBe('Inherit');
+    await typeInto(threshold, '90000');
+    await act(async () => { threshold.focus(); threshold.blur(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await click(buttonByText('Save & continue'));
+    await flush();
+    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body['models']).toEqual([
+      expect.objectContaining({ remote_id: 'kimi-for-coding', auto_compact: 90000 }),
+    ]);
+  });
+
+  it('refuses to save an auto-compact value the field rejected, and does not step on', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
+    // The real order a person uses: focus, then type, then leave the field.
+    await act(async () => { threshold.focus(); });
+    await typeInto(threshold, '0');
+    await act(async () => { threshold.blur(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    // Zero is not a threshold, and a share of the window is not a token count.
+    // The mistake stays on screen with its reason; it is not quietly turned into
+    // an inherited value.
+    expect(threshold.value).toBe('0');
+    expect(threshold.getAttribute('aria-invalid')).toBe('true');
+    expect(dialog().textContent).toContain('Use a whole number of tokens, 1 or more.');
+    // Save is refused: nothing is created and the wizard stays on this step.
+    await click(buttonByText('Save & continue'));
+    await flush();
+    expect(createProvider).not.toHaveBeenCalled();
+    expect(dialog().textContent).toContain('Step 2 of 4');
+    // The rejected text is still there to be corrected, not replaced.
+    expect(threshold.value).toBe('0');
+  });
+
+  it('reports a bad auto-compact once, in its own field, and only refuses the save', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
+    await act(async () => { threshold.focus(); });
+    await typeInto(threshold, '75%');
+    await act(async () => { threshold.blur(); });
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    await click(buttonByText('Save & continue'));
+    await flush();
+    // The field owns this message, and the refused save adds no second copy
+    // under the form: one mistake, one place saying it.
+    const alerts = [...dialog().querySelectorAll('[role="alert"]')];
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.textContent).toBe('Use a whole number of tokens, 1 or more.');
+    expect(alerts[0]!.hasAttribute('data-field-issue')).toBe(true);
+    // The save is refused and the caret goes back to the mistake.
+    expect(createProvider).not.toHaveBeenCalled();
+    expect(dialog().textContent).toContain('Step 2 of 4');
+    expect(document.activeElement).toBe(threshold);
+    expect(threshold.value).toBe('75%');
+    // Correcting it clears the message, and the very next save goes through
+    // once: the refused one left nothing behind to clear or re-show.
+    await typeInto(threshold, '90000');
+    await act(async () => { threshold.blur(); });
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    expect(dialog().querySelectorAll('[role="alert"]')).toHaveLength(0);
+    expect(threshold.getAttribute('aria-invalid')).toBe(null);
+    await click(buttonByText('Save & continue'));
+    await flush();
+    expect(createProvider).toHaveBeenCalledTimes(1);
+    expect(createProvider.mock.calls[0]![0]).toMatchObject({
+      models: [expect.objectContaining({ auto_compact: 90000 })],
+    });
+  });
+
+  it('reports a never-left auto-compact in its field too, without a form-level copy', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
+    // No blur ever runs, so the field's own commit never saw this text. The
+    // message still belongs to the field, and still appears exactly once.
+    await act(async () => { threshold.focus(); });
+    await typeInto(threshold, '90k');
+    await click(buttonByText('Save & continue'));
+    await flush();
+    const alerts = [...dialog().querySelectorAll('[role="alert"]')];
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.hasAttribute('data-field-issue')).toBe(true);
+    expect(createProvider).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(threshold);
+  });
+
+  it('keeps a real save failure visible, and does not let a field mistake hide it', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
+    // A failure the person must act on is not cleared by a later field edit.
+    createProvider.mockRejectedValueOnce(new Error('server offline'));
+    await click(buttonByText('Save & continue'));
+    await flush();
+    expect(createProvider).toHaveBeenCalledTimes(1);
+    expect(dialog().textContent).toContain('server offline');
+    // Typing into the threshold must not wipe that real reason.
+    await act(async () => { threshold.focus(); });
+    await typeInto(threshold, '75%');
+    await act(async () => { threshold.blur(); });
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    expect(dialog().textContent).toContain('server offline');
+    // Correcting the field and retrying reaches the create again.
+    await typeInto(threshold, '90000');
+    await act(async () => { threshold.blur(); });
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    await click(buttonByText('Save & continue'));
+    await flush();
+    expect(createProvider).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a bad auto-compact even when the field was never left', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
+    // Typed and left as-is: no blur ever runs, so nothing but the live text can
+    // tell the save that this is not a number.
+    await act(async () => { threshold.focus(); });
+    await typeInto(threshold, '90k');
+    await click(buttonByText('Save & continue'));
+    await flush();
+    expect(createProvider).not.toHaveBeenCalled();
+    expect(dialog().textContent).toContain('Step 2 of 4');
+  });
+
+  it('saves a corrected auto-compact value, and an emptied one goes back to inheriting', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
+    await act(async () => { threshold.focus(); });
+    await typeInto(threshold, '75%');
+    await act(async () => { threshold.blur(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(threshold.getAttribute('aria-invalid')).toBe('true');
+    // Correcting it in place, the way a person fixes a mistake, then saving.
+    await act(async () => { threshold.focus(); });
+    await typeInto(threshold, '90000');
+    await act(async () => { threshold.blur(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(threshold.getAttribute('aria-invalid')).toBe(null);
+    await click(buttonByText('Save & continue'));
+    await flush();
+    expect(createProvider).toHaveBeenCalledTimes(1);
+    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body['models']).toEqual([expect.objectContaining({ auto_compact: 90000 })]);
+  });
+
+  it('drops an emptied auto-compact back to inheriting, and that is what it saves', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
+    await act(async () => { threshold.focus(); });
+    await typeInto(threshold, '90000');
+    await act(async () => { threshold.blur(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(threshold.value).toBe('90000');
+    // Clearing it is a deliberate act, and it returns to the inherited default.
+    await act(async () => { threshold.focus(); });
+    await typeInto(threshold, '');
+    await act(async () => { threshold.blur(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await click(buttonByText('Save & continue'));
+    await flush();
+    expect(createProvider).toHaveBeenCalledTimes(1);
+    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
+    const models = body['models'] as Array<Record<string, unknown>>;
+    expect(models[0]!['auto_compact']).toBeUndefined();
+  });
+
+  it('draws the identity choice once, in the base form, and keeps Advanced to the override body', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    // The base form owns the only identity selector: the same one, drawn once.
+    expect(dialog().querySelectorAll('[data-request-identity-choice]')).toHaveLength(1);
+    const toggle = dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!;
+    await click(toggle);
+    const body = dialog().querySelector<HTMLElement>('[data-onboarding-advanced-body]')!;
+    // Advanced adds the hand-written override body and nothing that repeats the
+    // selector the form above already shows.
+    expect(body.querySelector('[data-request-identity-choice]')).toBeNull();
+    expect(dialog().querySelectorAll('[data-request-identity-choice]')).toHaveLength(1);
+  });
+
+  it('lets the base identity selector show the states the override body can leave behind', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    // Advanced edits can leave the layer on a manual-override or no-identity
+    // state. Both are reachable, so the base selector offers them instead of
+    // rendering blank for a value it does not have.
+    await click(dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!);
+    await act(async () => { dialog().querySelector<HTMLButtonElement>('[data-request-identity-choice] button')!.click(); });
+    await flush();
+    const offered = [...document.querySelectorAll('[data-option-value]')]
+      .map((node) => node.getAttribute('data-option-value'));
+    expect(offered).toContain('custom_overrides');
+    expect(offered).toContain('none');
+    expect(offered).toContain('opencode_compatible');
+  });
+
+  it('gives Advanced real work once an identity is set: the override body and a way back', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    // Choose an identity in the base form, so the layer is authored.
+    await act(async () => { dialog().querySelector<HTMLButtonElement>('[data-request-identity-choice] button')!.click(); });
+    await flush();
+    await act(async () => {
+      (document.querySelector('[data-option-value="codex_compatible"]') as HTMLElement).click();
+    });
+    await click(dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!);
+    // Now there is a body to edit and a control that clears it, rather than an
+    // empty disclosure.
+    const body = dialog().querySelector<HTMLElement>('[data-onboarding-advanced-body]')!;
+    expect(body.querySelector('textarea')).not.toBeNull();
+    expect(body.textContent).toContain('Clear layer');
+  });
+
+  it('opens Advanced onto a real override body even while the identity is inherited', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    // Nothing has chosen a preset, so the layer is still inherited. The
+    // disclosure still has a body, because there is a body to write exactly
+    // once and the person should not have to guess a preset first.
+    await click(dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!);
+    const body = dialog().querySelector<HTMLElement>('[data-onboarding-advanced-body]')!;
+    const area = body.querySelector<HTMLTextAreaElement>('textarea')!;
+    expect(area).not.toBeNull();
+    // Still inherited: an untouched body has nothing to clear back.
+    expect(body.textContent).not.toContain('Clear layer');
+    await typeIntoTextArea(area, '{"client":{"user_agent":"host"}}');
+    // Writing is what authors the layer, and it uses the state the contract
+    // already has for a hand-written body, not a new one.
+    const trigger = dialog().querySelector<HTMLElement>('[data-request-identity-choice] button')!;
+    expect(trigger.textContent).toContain('Custom overrides only');
+    await click(dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!);
+    await click(dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!);
+    expect(dialog().querySelector<HTMLElement>('[data-onboarding-advanced-body]')!.textContent)
+      .toContain('Clear layer');
+    // And the save carries that body rather than an empty layer.
+    await click(buttonByText('Save & continue'));
+    await flush();
+    expect(createProvider).toHaveBeenCalledTimes(1);
+    const sent = createProvider.mock.calls[0]![0] as Record<string, unknown>;
+    expect(sent['request_identity']).toMatchObject({ overrides: { client: { user_agent: 'host' } } });
+  });
+
+  it('keeps an override-only layer honest when the body is emptied, and clears it deliberately', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    await click(dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!);
+    const body = () => dialog().querySelector<HTMLElement>('[data-onboarding-advanced-body]')!;
+    await typeIntoTextArea(body().querySelector<HTMLTextAreaElement>('textarea')!, '{"cache":{"source":"session"}}');
+    // Deleting the text leaves the override-only state, which says it needs a
+    // non-empty object, and the save is refused for that reason rather than
+    // quietly dropping the layer the person was editing.
+    await typeIntoTextArea(body().querySelector<HTMLTextAreaElement>('textarea')!, '');
+    expect(dialog().querySelector<HTMLElement>('[data-request-identity-choice] button')!.textContent)
+      .toContain('Custom overrides only');
+    expect(body().textContent).toContain('non-empty object');
+    await click(buttonByText('Save & continue'));
+    await flush();
+    expect(createProvider).not.toHaveBeenCalled();
+    // Clearing is the deliberate way back, and it lands on the inherited layer
+    // that sends no identity at all.
+    const clear = [...body().querySelectorAll('button')]
+      .find((candidate) => candidate.textContent === 'Clear layer');
+    expect(clear).toBeDefined();
+    await click(clear!);
+    expect(dialog().querySelector<HTMLElement>('[data-request-identity-choice] button')!.textContent)
+      .toContain('Inherit global default');
+    await click(buttonByText('Save & continue'));
+    await flush();
+    expect(createProvider).toHaveBeenCalledTimes(1);
+    expect((createProvider.mock.calls[0]![0] as Record<string, unknown>)['request_identity']).toBeUndefined();
+  });
+
+  it('says there is more below from the first frame, and stops saying so at the end', async () => {
+    installStepScroller();
+    try {
+      // A step taller than its own box, before any pointer has touched it.
+      stepGeometry.contentHeight = 900;
+      await mount();
+      await toModelStep();
+      expect(dialog().querySelector('[data-onboarding-scroll-more]')).not.toBeNull();
+      // Content that later fits has nothing below it, and saying otherwise
+      // would point at a fold that is not there.
+      stepGeometry.contentHeight = 300;
+      await act(async () => { resizeCallbacks.forEach((notify) => { notify(); }); });
+      expect(dialog().querySelector('[data-onboarding-scroll-more]')).toBeNull();
+      // Reached the end of a tall step by scrolling: still nothing below.
+      stepGeometry.contentHeight = 900;
+      await act(async () => { resizeCallbacks.forEach((notify) => { notify(); }); });
+      expect(dialog().querySelector('[data-onboarding-scroll-more]')).not.toBeNull();
+      const scroller = dialog().querySelector<HTMLElement>('[data-onboarding-step-scroll]')!;
+      Object.defineProperty(scroller, 'scrollTop', { configurable: true, value: 600, writable: true });
+      await act(async () => { scroller.dispatchEvent(new Event('scroll', { bubbles: true })); });
+      expect(dialog().querySelector('[data-onboarding-scroll-more]')).toBeNull();
+    } finally {
+      restoreStepScroller();
+    }
+  });
+
+  it('offers the base model options and writes the chosen ones', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    // Context length, thinking levels and the model's own capabilities are
+    // first-class choices here, not settings to discover later.
+    const context = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-context]')!;
+    expect(context).not.toBeNull();
+    await typeInto(context, '200000');
+    // A thinking level and a capability are both real selections, not free text.
+    const efforts = dialog().querySelector<HTMLElement>('[aria-label="Supported thinking levels"]')!;
+    expect(efforts).not.toBeNull();
+    await click(efforts.querySelector('button[aria-pressed]')!);
+    const caps = dialog().querySelector<HTMLElement>('[aria-label="Model capabilities"]')!;
+    expect(caps.textContent).toContain('thinking');
+    expect(caps.textContent).toContain('image_in');
+    // Add image input to whatever the preset already seeded.
+    const vision = [...caps.querySelectorAll('button[aria-pressed]')]
+      .find((node) => node.textContent?.trim() === 'image_in')!;
+    expect(vision.getAttribute('aria-pressed')).toBe('false');
+    await click(vision);
+    await click(buttonByText('Save & continue'));
+    await flush();
+    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body['models']).toEqual([
+      expect.objectContaining({
+        remote_id: 'kimi-for-coding',
+        max_context_size: 200000,
+        support_efforts: ['low'],
+        capabilities: expect.arrayContaining(['image_in']),
+      }),
+    ]);
+  });
+
+  it('lets the request identity be chosen while connecting, and writes it', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    // The identity is a base choice, visible without opening anything: which
+    // client shape the requests take is part of connecting a provider.
+    expect(dialog().querySelector('[data-request-identity-choice]')).not.toBeNull();
+    // The manual override body stays under the disclosure, and is absent until
+    // an identity is actually authored.
+    expect(dialog().querySelector('[data-onboarding-advanced-toggle]')?.getAttribute('aria-expanded')).toBe('false');
+    expect(dialog().querySelector('[data-onboarding-advanced-body]')).toBeNull();
+    // Open the identity list and pick OpenCode: the same catalog the settings
+    // editor uses, not a second list maintained for the wizard.
+    await act(async () => { dialog().querySelector<HTMLButtonElement>('[data-request-identity-choice] button')!.click(); });
+    await flush();
+    await act(async () => {
+      (document.querySelector('[data-option-value="opencode_compatible"]') as HTMLElement).click();
+    });
+    await click(buttonByText('Save & continue'));
+    await flush();
+    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body['request_identity']).toEqual({ preset: 'opencode_compatible' });
+  });
+
+  it('leaves the request identity out of the body when it is left inherited', async () => {
+    await mount();
+    await toModelStep();
+    await fillProviderForm();
+    await click(buttonByText('Save & continue'));
+    await flush();
+    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
+    // "inherit" is the absence of a policy, not a policy asking for nothing.
+    expect(body['request_identity']).toBeUndefined();
+  });
+
   it('Save & continue persists the filled provider form before advancing', async () => {
     await mount();
     await toModelStep();
@@ -416,8 +935,23 @@ describe('OnboardingWizard', () => {
       apiKey: 'sk-probe-me',
     });
     expect(createProvider).not.toHaveBeenCalled();
-    await click(dialog().querySelector('[data-model-suggestion="kimi-for-coding"]')!);
-    expect(inputByPlaceholder('model-id').value).toBe('kimi-for-coding');
+    // One control: the same combobox that accepted the hand-typed id now offers
+    // what the provider reported, with no separate picker beside it.
+    const combobox = dialog().querySelector<HTMLButtonElement>('#onboarding-provider-model')!;
+    expect(combobox).not.toBeNull();
+    expect(dialog().querySelector('#onboarding-model-picker')).toBeNull();
+    await act(async () => { combobox.click(); });
+    await flush();
+    const listed = [...document.querySelectorAll('[data-option-value]')]
+      .map((node) => node.getAttribute('data-option-value'));
+    // Every reported model is reachable, and the count matches the probe, so
+    // nothing is truncated away before the search sees it.
+    expect(listed).toContain('kimi-for-coding');
+    expect(listed).toEqual(['kimi-for-coding']);
+    await act(async () => {
+      (document.querySelector('[data-option-value="kimi-for-coding"]') as HTMLElement).click();
+    });
+    expect(dialog().querySelector('#onboarding-provider-model')?.textContent).toContain('kimi-for-coding');
   });
 
   it('a started but invalid form blocks the advance with an inline error', async () => {
@@ -447,7 +981,7 @@ describe('OnboardingWizard', () => {
     expect(id.value).toBe('work');
 
     await typeInto(inputByPlaceholder('Paste a new key'), 'sk-test-key');
-    await typeInto(inputByPlaceholder('model-id'), 'mistral-large');
+    await pickModelId('mistral-large');
     await click(buttonByText('Save & continue'));
     await flush();
     const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
@@ -482,7 +1016,7 @@ describe('OnboardingWizard', () => {
     await click(dialog().querySelector('[data-provider-protocol="anthropic"]')!);
     await typeInto(dialog().querySelector<HTMLInputElement>('#onboarding-provider-base-url')!, 'https://llm.example.com/v1');
     await typeInto(dialog().querySelector<HTMLInputElement>('#onboarding-provider-id')!, '');
-    await typeInto(inputByPlaceholder('model-id'), 'claude-x');
+    await pickModelId('claude-x');
     await click(buttonByText('Save & continue'));
     await flush();
     expect(createProvider).not.toHaveBeenCalled();

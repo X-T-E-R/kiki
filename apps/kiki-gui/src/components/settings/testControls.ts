@@ -95,8 +95,10 @@ export async function commitText(input: HTMLInputElement, value: string): Promis
 export async function optionValues(target: Element): Promise<string[]> {
   const trigger = triggerOf(target);
   await act(async () => { trigger.click(); });
-  const root = trigger.closest('[data-searchable-select]') ?? document.body;
-  const values = [...root.querySelectorAll('[role="option"]')].map((row) => row.getAttribute('data-option-value') ?? '');
+  // The panel is portaled to <body>, so it is not inside the trigger's own
+  // wrapper. Scoping the query to that wrapper is what made this read an empty
+  // list; `openOptions` is the one place that knows where the panel lives.
+  const values = openOptions(trigger).map((row) => row.getAttribute('data-option-value') ?? '');
   await act(async () => { trigger.click(); });
   return values;
 }

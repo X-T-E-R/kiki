@@ -28,6 +28,7 @@ export function RequestIdentityLayerEditor({
   hint,
   issue = null,
   customProfiles = [],
+  overridesOnly = false,
 }: {
   value: RequestIdentityLayerDraft;
   onChange: (value: RequestIdentityLayerDraft) => void;
@@ -38,9 +39,26 @@ export function RequestIdentityLayerEditor({
   issue?: string | null;
   /** Custom identities from Settings → Request identity, offered after the built-ins. */
   customProfiles?: readonly { readonly id: string; readonly label: string }[];
+  /**
+   * Renders only the override body and its clear action, for a surface that
+   * already shows the identity choice above. The layer, the options and the
+   * meaning of the JSON are unchanged: this hides a selector the caller has
+   * already drawn, nothing more.
+   *
+   * An inherited layer keeps its body reachable here. There is a body to write
+   * exactly once, so an "Advanced" disclosure that opens onto nothing is not a
+   * disclosure. Typing moves the layer to the override-only state, which is the
+   * contract that layer already has; an untouched body leaves the layer
+   * inherited, so this layer contributes nothing and whatever identity is
+   * configured above still applies. Once authored, clearing the body is the
+   * deliberate way back to inherited — emptying the text alone leaves an
+   * override-only layer that its own schema will refuse to save.
+   */
+  overridesOnly?: boolean;
 }) {
   const { t } = useI18n();
-  const authored = value.requestIdentityChoice !== 'inherit';
+  const inherited = value.requestIdentityChoice === 'inherit';
+  const authored = !inherited || overridesOnly;
 
   const choose = (choice: RequestIdentityChoice) => {
     onChange({
@@ -50,8 +68,22 @@ export function RequestIdentityLayerEditor({
     });
   };
 
+  /**
+   * Writing the body on an inherited layer is what makes it authored. An
+   * already-authored layer keeps its own choice, so emptying a `custom_overrides`
+   * body still owes the non-empty object its schema asks for instead of quietly
+   * falling back to inherited and hiding the problem.
+   */
+  const writeOverrides = (json: string) => {
+    const next = inherited
+      ? (json.trim() === '' ? 'inherit' : 'custom_overrides')
+      : value.requestIdentityChoice;
+    onChange({ requestIdentityChoice: next, requestIdentityOverridesJson: json });
+  };
+
   return (
     <div className="space-y-3">
+      {overridesOnly ? null : (
       <div>
         <div className="space-y-1 text-[11px] font-medium text-ink-soft">
           <span className="block">{label}</span>
@@ -76,6 +108,7 @@ export function RequestIdentityLayerEditor({
         </div>
         <Hint>{hint}</Hint>
       </div>
+      )}
       {authored ? (
         <div>
           <label className="block text-[11px] font-medium text-ink-soft">{t('st.requestIdentity.overrides')}
@@ -84,20 +117,24 @@ export function RequestIdentityLayerEditor({
               aria-invalid={issue !== null}
               spellCheck={false}
               value={value.requestIdentityOverridesJson}
-              onChange={(event) => {
-                onChange({ ...value, requestIdentityOverridesJson: event.target.value });
-              }}
+              onChange={(event) => { writeOverrides(event.target.value); }}
               placeholder={t('st.requestIdentity.overridesPlaceholder')}
             />
           </label>
           {issue !== null ? <p role="alert" className="mt-1 text-[12px] text-danger">{issue}</p> : null}
           <div className="mt-1.5 flex flex-wrap items-start justify-between gap-2">
-            <Hint>{t(value.requestIdentityChoice === 'custom_overrides'
-              ? 'st.requestIdentity.overridesRequiredHint'
-              : 'st.requestIdentity.overridesOptionalHint')}</Hint>
-            <button type="button" className={SECONDARY_BUTTON} onClick={() => { choose('inherit'); }}>
-              {t('st.requestIdentity.clearLayer')}
-            </button>
+            <Hint>{t(inherited
+              ? 'st.requestIdentity.overridesStartHint'
+              : value.requestIdentityChoice === 'custom_overrides'
+                ? 'st.requestIdentity.overridesRequiredHint'
+                : 'st.requestIdentity.overridesOptionalHint')}</Hint>
+            {/* Nothing to clear while the layer is still inherited: the body is
+                empty by definition, so the action would have nothing to do. */}
+            {inherited ? null : (
+              <button type="button" className={SECONDARY_BUTTON} onClick={() => { choose('inherit'); }}>
+                {t('st.requestIdentity.clearLayer')}
+              </button>
+            )}
           </div>
         </div>
       ) : null}

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_DESKTOP_SETTINGS,
   EXPERIMENTAL_FLAG_HOMES,
+  EXPERIMENTAL_FALLBACK_SECTION,
   experimentalFlagHome,
   experimentalSectionForFlag,
   agentIdentityPatch,
@@ -204,6 +205,7 @@ describe('settings persistence and validation', () => {
       closeToTray: true,
       updateChannel: 'stable',
       autoUpdate: 'notify',
+      updateState: undefined,
       logLevel: 'warn',
       compatibility: {
         homeKind: 'kimi',
@@ -266,6 +268,39 @@ describe('settings persistence and validation', () => {
     }));
     expect(readDesktopPrefs().notifications).toBe(false);
     expect(readDesktopPrefs().autoUpdate).toBe('notify');
+  });
+
+  it('persists the cross-run update record per channel', () => {
+    expect(readDesktopPrefs().updateState).toBeUndefined();
+
+    writeDesktopPrefs({ updateState: { skipped: { stable: ['0.3.2'] }, snoozedUntil: 5_000, lastCheckedAt: 1_000 } });
+    expect(readDesktopPrefs().updateState).toEqual({
+      skipped: { stable: ['0.3.2'] },
+      snoozedUntil: 5_000,
+      lastCheckedAt: 1_000,
+    });
+
+    // A later skip on the beta channel leaves the stable list alone.
+    writeDesktopPrefs({ updateState: { skipped: { stable: ['0.3.2'], beta: ['0.4.0'] } } });
+    expect(readDesktopPrefs().updateState?.skipped).toEqual({ stable: ['0.3.2'], beta: ['0.4.0'] });
+  });
+
+  it('drops a malformed update record rather than trusting part of it', () => {
+    localStorage.setItem('kiki.desktopPrefs', JSON.stringify({ updateState: 'yesterday' }));
+    expect(readDesktopPrefs().updateState).toBeUndefined();
+
+    localStorage.setItem('kiki.desktopPrefs', JSON.stringify({
+      updateState: { skipped: { stable: ['0.3.2', 7] }, snoozedUntil: -1, lastCheckedAt: 'soon' },
+    }));
+    expect(readDesktopPrefs().updateState).toEqual({ skipped: { stable: ['0.3.2'] } });
+  });
+
+  it('keeps the update record when a whole native snapshot arrives without it', () => {
+    writeDesktopPrefs({ updateState: { lastCheckedAt: 1_000 } });
+    // The boot sync hands the native snapshot in whole; the native side does
+    // not know this key, so a spread would erase it on every launch.
+    writeDesktopPrefs({ notifications: true, closeToTray: true, updateChannel: 'stable', autoUpdate: 'notify', updateState: undefined, windowMode: 'switch' });
+    expect(readDesktopPrefs().updateState?.lastCheckedAt).toBe(1_000);
   });
 
   it('maps the native window_mode spelling onto windowMode and validates it', () => {
@@ -1061,23 +1096,26 @@ describe('experimental flag homes', () => {
     expect(experimentalSectionForFlag('some_vendor_flag')).toBe('developer');
   });
 
-  it('names the two feature flags the app ships and keeps the unknown fallback for the rest', () => {
-    for (const id of ['usage_export', 'plugin_import']) {
-      const home = experimentalFlagHome(id);
-      expect(home, id).toBeDefined();
-      // The switch rides the existing Developer rows; neither flag invents a page.
-      expect(home?.section, id).toBe('developer');
-      expect(home?.cardId, id).toBeUndefined();
-      expect(home?.labelKey, id).not.toBe('st.exp.unknown.name');
-      expect(home?.descriptionKey, id).not.toBe('st.exp.unknown.desc');
-      // Both strings must be real copy in both languages, not the fallback.
-      expect(translate('en', home!.labelKey), id).not.toBe(home!.labelKey);
-      expect(translate('zh', home!.labelKey), id).not.toBe(home!.labelKey);
-    }
+  it('names the one feature flag the app still ships and keeps the unknown fallback for the rest', () => {
+    // History import is a shipped capability, not an experiment: it has no
+    // switch to draw, so it must not appear in the flag list at all. A server
+    // that still reports the old id is treated as an unknown flag.
+    expect(experimentalFlagHome('plugin_import')).toBeUndefined();
+    expect(experimentalSectionForFlag('plugin_import')).toBe(EXPERIMENTAL_FALLBACK_SECTION);
+
+    const home = experimentalFlagHome('usage_export');
+    expect(home).toBeDefined();
+    // The switch rides the existing Developer rows; it does not invent a page.
+    expect(home?.section).toBe('developer');
+    expect(home?.cardId).toBeUndefined();
+    expect(home?.labelKey).not.toBe('st.exp.unknown.name');
+    expect(home?.descriptionKey).not.toBe('st.exp.unknown.desc');
+    // Both strings must be real copy in both languages, not the fallback.
+    expect(translate('en', home!.labelKey)).not.toBe(home!.labelKey);
+    expect(translate('zh', home!.labelKey)).not.toBe(home!.labelKey);
     // kap-server reads usage_export while booting, so the routes only exist
-    // after a restart; plugin_import is checked per call and applies at once.
-    expect(experimentalFlagHome('usage_export')?.effect).toBe('restart');
-    expect(experimentalFlagHome('plugin_import')?.effect).toBe('now');
+    // after a restart.
+    expect(home?.effect).toBe('restart');
     expect(experimentalFlagHome('some_vendor_flag')).toBeUndefined();
   });
 });
@@ -1162,10 +1200,10 @@ describe('settings search index', () => {
 });
 
 describe('settings nav groups (IA v2)', () => {
-  it('lists seven intent groups in one tree and knows which pages stay on this device', () => {
+  it('lists six intent groups in one tree and knows which pages stay on this device', () => {
     const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
     expect(groups.map((group) => group.id))
-      .toEqual(['device', 'connection', 'models-agents', 'work', 'capabilities', 'workspace', 'advanced']);
+      .toEqual(['device', 'connection', 'models-agents', 'work', 'capabilities', 'advanced']);
     expect(groups.every((group) => group.sections.length > 0)).toBe(true);
     expect(SETTINGS_NAV_TREE.every((node) => node.kind === 'group')).toBe(true);
     expect(settingsSectionIsDeviceOnly('appearance')).toBe(true);
@@ -1179,11 +1217,16 @@ describe('settings nav groups (IA v2)', () => {
     expect(new Set(placed).size).toBe(placed.length);
     const sectionsOf = (id: string) => (SETTINGS_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as { sections: readonly string[] }).sections;
     expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts']);
-    expect(sectionsOf('connection')).toEqual(['connection', 'ssh']);
+    // Spaces sit with the ways of reaching a server: where Kiki runs.
+    expect(sectionsOf('connection')).toEqual(['connection', 'ssh', 'spaces']);
     expect(sectionsOf('models-agents')).toEqual(['ai', 'identity', 'agents', 'subagents']);
-    expect(sectionsOf('work')).toEqual(['sessions', 'notifications', 'memory', 'permissions', 'tasks']);
+    // Workspaces sit with the sessions that run in them: where work happens.
+    expect(sectionsOf('work')).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
     expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
-    expect(sectionsOf('workspace')).toEqual(['workspaces', 'spaces']);
+    // The group that only held workspaces and spaces no longer exists: each
+    // page joined the group that answers its own question.
+    expect(settingsGroupForSection('workspaces')?.id).toBe('work');
+    expect(settingsGroupForSection('spaces')?.id).toBe('connection');
     // About closes the list.
     expect(sectionsOf('advanced')).toEqual(['developer', 'labs', 'about']);
     expect(placed.at(-1)).toBe('about');

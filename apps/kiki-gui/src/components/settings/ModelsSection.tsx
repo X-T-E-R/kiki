@@ -239,8 +239,9 @@ export function ModelCatalogCard() {
     ]);
   }, [queryClient]);
 
-  // "In use": every model a default points at, with the jobs it serves. It
-  // leads the list so the few models that matter are never scrolled for.
+  // Which defaults point at each model, and what they serve it. This marks a
+  // row in place; it is not a group or a filter, so a model in use is found
+  // where it already lives rather than in a second list of the same rows.
   const config = configQuery.data;
   const roles = useMemo(() => {
     const out = new Map<string, string[]>();
@@ -267,12 +268,13 @@ export function ModelCatalogCard() {
     accountLabels.get(providerId) ?? vendorLabelFor(providers.get(providerId)?.base_url) ?? providerId,
   [accountLabels, providers, t]);
 
+  // No "In use" filter: a model that some role points at is already marked on
+  // its own row, and a category of them repeated the list under a second name.
   const filters = useMemo<ListFilterSpec<ModelCatalogItem>[]>(() => [
-    { id: 'in-use', label: t('st.models.filter.inUse'), test: (item) => roles.has(item.id) },
     { id: 'attention', label: t('st.models.filter.attention'), test: attention, tone: 'attention' },
     { id: 'reasoning', label: t('st.models.filter.reasoning'), test: (item) => hasCapability(item, 'thinking') },
     { id: 'vision', label: t('st.models.filter.vision'), test: (item) => hasCapability(item, 'image_in') },
-  ], [t, roles, attention]);
+  ], [t, attention]);
   const sorts = useMemo<ListSortSpec<ModelCatalogItem>[]>(() => [
     { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id) },
   ], [t]);
@@ -282,22 +284,18 @@ export function ModelCatalogCard() {
   ], [groupLabel]);
   const view = useListView({ listId: 'models', items, keyOf, textOf, filters, sorts });
 
-  // Group order: In use, then the default provider, then providers by name.
+  // Group order: the default provider, then providers by name. The list is
+  // already one flat set of rows, so it is grouped by provider only.
   const groups = useMemo(() => {
     const providerIds = [...new Set(items.map((item) => item.provider_id))]
       .toSorted((a, b) => Number(b === defaultProvider) - Number(a === defaultProvider) || groupLabel(a).localeCompare(groupLabel(b)));
-    const inUseLabel = t('st.models.group.inUse');
     return groupItems(
       items,
       view.visible,
-      (item) => {
-        const own = { key: `provider:${item.provider_id}`, label: groupLabel(item.provider_id) };
-        // Under the In-use chip the extra group would only repeat the list.
-        return roles.has(item.id) && view.filter !== 'in-use' ? [{ key: 'in-use', label: inUseLabel }, own] : [own];
-      },
-      ['in-use', ...providerIds.map((id) => `provider:${id}`)],
+      (item) => [{ key: `provider:${item.provider_id}`, label: groupLabel(item.provider_id) }],
+      providerIds.map((id) => `provider:${id}`),
     ).filter((group) => group.items.length > 0);
-  }, [items, view.visible, view.filter, roles, defaultProvider, groupLabel, t]);
+  }, [items, view.visible, defaultProvider, groupLabel]);
 
   // Starring a model carries its provider along as the global default provider.
   const selectDefaultModel = async (item: ModelCatalogItem) => {

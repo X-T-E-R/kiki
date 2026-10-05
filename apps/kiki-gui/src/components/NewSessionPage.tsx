@@ -225,12 +225,12 @@ function NewSessionPageContent({
   prefillNavigationKey: string;
   dailyPersonaId?: string;
 }) {
-  const { client } = useConnection();
+  const { client, scopeId } = useConnection();
   const { t } = useI18n();
   const navigate = useNavigate();
   // Whether this server can read a history at all. A build without the import
   // routes shows no entry rather than a link that opens an empty page.
-  const canImportHistory = useImportHistoryEnabled(client).enabled === true;
+  const canImportHistory = useImportHistoryEnabled(client, scopeId).enabled === true;
   const [searchParams] = useSearchParams();
   const workspaceParam = searchParams.get('workspace') ?? undefined;
   const agentParam = searchParams.get('agent') ?? undefined;

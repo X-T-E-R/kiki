@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
 import { updateNamedAgentProfileRequestSchema, type NamedAgentProfile } from '@kiki/protocol';
+import { readDraft, resetDraftMemoryForTests, writeDraft } from '@kiki/session-core/composer';
 import { I18nProvider } from '../../i18n';
 import { UnifiedAgentManager } from './UnifiedAgentManager';
 
@@ -13,13 +14,16 @@ const { client, reportDirty, confirmDiscard, navigate } = vi.hoisted(() => ({
     listNamedAgentProfiles: vi.fn(), listShippedAgentProfiles: vi.fn(), listWorkspaces: vi.fn(), getConfig: vi.fn(),
     updateNamedAgentProfile: vi.fn(), createAgentProfile: vi.fn(), patchConfig: vi.fn(), restoreShippedAgentProfile: vi.fn(),
     readHostFile: vi.fn(), getAgentCapabilities: vi.fn(), listModels: vi.fn(), listExecutors: vi.fn(),
-    previewExecutorPrompt: vi.fn(),
+    previewExecutorPrompt: vi.fn(), createSession: vi.fn(),
     klient: { rest: { agents: { previewModelMenu: vi.fn() } } },
   },
 }));
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client }), useOptionalConnection: () => ({ client }),
+  useConnection: () => ({ client, scopeId: 'local' }), useOptionalConnection: () => ({ client, scopeId: 'local' }),
 }));
+// No `runAction` here on purpose: this file models a page that is not dirty,
+// so the handoff creates and leaves without a prompt. The cancel-the-leave order
+// is covered against the real guard in askKiki.dirtyOrder.test.tsx.
 vi.mock('../dirtyGuard', () => ({
   useDirtyGuard: () => ({ confirmDiscard }), useGuardedNavigate: () => navigate,
   useDirtyReporter: (id: string, dirty: boolean) => reportDirty(id, dirty),
@@ -72,6 +76,7 @@ async function save() {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  resetDraftMemoryForTests();
   confirmDiscard.mockImplementation((_id: string, action: () => void) => action());
   localStorage.setItem('kiki.locale', 'en');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -713,5 +718,138 @@ describe('profile prompt editing', () => {
     expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({
       allowed_subagents: [{ name: 'explore', model_alias: null, thinking_effort: null, model_prompts: 'replace', model_profiles: leaseModels }],
     }));
+  });
+});
+
+describe('handing a new agent to Kiki', () => {
+  it('opens one session whose composer waits for an editable /kiki-profile line naming the workspace', async () => {
+    client.createSession.mockResolvedValue({ id: 'agent-ask-session' });
+    writeDraft('new', 'half-typed agent question');
+    await render();
+
+    const ask = container.querySelector<HTMLButtonElement>('[data-agent-ask-kiki]')!;
+    expect(ask.textContent).toBe('Ask Kiki');
+    expect(ask.getAttribute('aria-label')).toBe('Let Kiki create the agent with you');
+    await act(async () => { ask.click(); });
+    await settle();
+
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    // The session must run in the workspace this page is filtered to, or the
+    // server mints a fresh "Untitled workspace" and the named save target lies.
+    expect(client.createSession).toHaveBeenCalledWith({ workspace_id: 'ws-one' });
+    expect(navigate).toHaveBeenCalledWith('/s/agent-ask-session',
+      { state: { createdSession: { id: 'agent-ask-session', scopeId: 'local' } } });
+    const draft = readDraft('agent-ask-session');
+    expect(draft).toMatch(/^\/kiki-profile /);
+    // The label is for the reader; the id above is the address. A display name
+    // is never used as an address, and no config value rides along.
+    expect(draft).toContain('Saved in: Fixture');
+    expect(draft).not.toContain('ws-one');
+    // /new's own draft and the editor's state are untouched.
+    expect(readDraft('new')).toBe('half-typed agent question');
+    expect(client.createAgentProfile).not.toHaveBeenCalled();
+    expect(client.updateNamedAgentProfile).not.toHaveBeenCalled();
+  });
+
+  it('asks before leaving the sheet, so an unsaved agent draft is not dropped silently', async () => {
+    client.createSession.mockResolvedValue({ id: 'agent-ask-dirty' });
+    await render(); await open('agent');
+    await typeIn(sheet().querySelector<HTMLTextAreaElement>('#profile-prompt')!, 'half-written instructions');
+    confirmDiscard.mockClear();
+
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-agent-ask-kiki]')!.click());
+    await settle();
+
+    // The sheet still owns the dirty id, so leaving is the guard's decision.
+    expect(confirmDiscard).not.toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith('/s/agent-ask-dirty', expect.anything());
+  });
+
+  it('addresses the workspace the picker actually shows, not the first one', async () => {
+    client.listWorkspaces.mockResolvedValue({ items: [
+      { id: 'ws-old', root: '/old', name: 'Older' },
+      { id: 'ws-new', root: '/new', name: 'Chosen' },
+    ] });
+    client.createSession.mockResolvedValue({ id: 'agent-ask-chosen' });
+    await render();
+
+    // Pick the second workspace through the real picker.
+    await choose(container.querySelector<HTMLElement>('#agents-workspace-select')!, 'Chosen');
+    await settle();
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-agent-ask-kiki]')!.click(); });
+    await settle();
+
+    expect(client.createSession).toHaveBeenCalledWith({ workspace_id: 'ws-new' });
+    expect(readDraft('agent-ask-chosen')).toContain('Saved in: Chosen');
+  });
+
+  it('refuses the handoff, and says why, while the workspace list has failed', async () => {
+    client.listWorkspaces.mockRejectedValue(new Error('workspace list unavailable'));
+    client.createSession.mockResolvedValue({ id: 'agent-ask-unknown' });
+    await render();
+
+    // `selectedWorkspaceId` collapses to undefined on a failed list, and an
+    // empty body here would make the server mint a throwaway directory.
+    const ask = container.querySelector<HTMLButtonElement>('[data-agent-ask-kiki]')!;
+    expect(ask.disabled).toBe(true);
+    // The reason is on screen, not just a dead button.
+    expect(container.textContent).toContain('workspace list unavailable');
+
+    await act(async () => { ask.click(); });
+    await settle();
+
+    expect(client.createSession).not.toHaveBeenCalled();
+    expect(readDraft('agent-ask-unknown')).toBe('');
+  });
+
+  it('refuses the handoff while the workspace list is still loading', async () => {
+    let release: (value: { items: unknown[] }) => void = () => {};
+    client.listWorkspaces.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    client.createSession.mockResolvedValue({ id: 'agent-ask-loading' });
+    await render();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const ask = container.querySelector<HTMLButtonElement>('[data-agent-ask-kiki]')!;
+    expect(ask.disabled).toBe(true);
+    await act(async () => { ask.click(); });
+    await settle();
+    expect(client.createSession).not.toHaveBeenCalled();
+
+    // Once the list answers, the same button works — it is not permanently off.
+    await act(async () => { release({ items: [{ id: 'ws-late', root: '/late', name: 'Late' }] }); await new Promise((resolve) => setTimeout(resolve, 5)); });
+    await settle();
+
+    expect(container.querySelector<HTMLButtonElement>('[data-agent-ask-kiki]')!.disabled).toBe(false);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-agent-ask-kiki]')!.click(); });
+    await settle();
+    expect(client.createSession).toHaveBeenCalledWith({ workspace_id: 'ws-late' });
+  });
+
+  it('keeps a working handoff when this machine truly has no workspace', async () => {
+    client.listWorkspaces.mockResolvedValue({ items: [] });
+    client.createSession.mockResolvedValue({ id: 'agent-ask-none' });
+    await render();
+
+    const ask = container.querySelector<HTMLButtonElement>('[data-agent-ask-kiki]')!;
+    expect(ask.disabled, 'an empty list is an answer, not a failure').toBe(false);
+    await act(async () => { ask.click(); });
+    await settle();
+
+    // Same body /new sends when there is nothing to inherit; the server applies
+    // its own auto workspace. The draft is still prefilled and unsent.
+    expect(client.createSession).toHaveBeenCalledWith({});
+    expect(readDraft('agent-ask-none')).toMatch(/^\/kiki-profile /);
+  });
+
+  it('creates one session even when the button is clicked twice', async () => {
+    client.createSession.mockResolvedValue({ id: 'agent-ask-once' });
+    await render();
+    const button = container.querySelector<HTMLButtonElement>('[data-agent-ask-kiki]')!;
+
+    await act(async () => { button.click(); button.click(); });
+    await settle();
+
+    expect(client.createSession).toHaveBeenCalledTimes(1);
   });
 });

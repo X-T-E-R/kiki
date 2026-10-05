@@ -15,6 +15,7 @@ import type {
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { useAskKiki, useAskKikiWorkspace, AskKikiButton } from '../askKiki';
 import { FeedbackLine, Hint, InlineError, SavedTick, type Feedback } from '../controls';
 import { SidePanel } from '../SidePanel';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
@@ -148,6 +149,10 @@ export function McpConfigManager({
   const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(mcpDraft(draft.original));
   useDirtyReporter(`mcp-editor:${scopeId}:${cwd}`, dirty);
   const guard = useDirtyGuard();
+  const { ask: askKiki, busy: askingKiki } = useAskKiki();
+  // MCP has its own cwd when the page was given one; without it the session
+  // falls back to the same workspace a plain New conversation here would use.
+  const kikiFallbackWorkspace = useAskKikiWorkspace();
   const switchDraft = (next: McpDraft | null) => {
     const apply = () => { setDraft(next); };
     if (dirty && guard?.confirmDiscard !== undefined) guard.confirmDiscard(`mcp-editor:${scopeId}:${cwd}`, apply);
@@ -526,6 +531,31 @@ export function McpConfigManager({
   const attentionFirst = [...entries.filter(needsAttention), ...entries.filter((entry) => !needsAttention(entry))];
   const view = useListView({ listId: 'mcp-servers', items: attentionFirst, keyOf, textOf, filters, sorts });
 
+  // One handoff element, rendered beside whichever add verb is on screen.
+  const askKikiButton = (
+    <AskKikiButton
+      label={t('st.mcp.askKiki')}
+      labelAria={t('st.mcp.askKikiAria')}
+      busy={askingKiki || saving || resetting}
+      // A cwd is known up front; without one the fallback must still resolve.
+      disabled={cwd === '' && !kikiFallbackWorkspace.resolved}
+      testId="data-mcp-ask-kiki"
+      onAsk={() => {
+        void askKiki({
+          skill: 'kiki-ops',
+          promptKey: 'st.mcp.askKiki.prompt',
+          // A path is not an address: the address travels in `location`, and
+          // this line is only so the user can read where Kiki will work.
+          context: cwd === '' ? undefined : t('st.mcp.askKiki.context', { target: cwd }),
+          // The management plane addresses project layers by cwd, so an MCP
+          // session must land in that directory. That path is the only
+          // identifier here; no form value ever rides along.
+          location: cwd === '' ? kikiFallbackWorkspace.location : { kind: 'cwd', cwd },
+        });
+      }}
+    />
+  );
+
   return (
     <div className="space-y-3" data-mcp-manager>
       <div className="flex min-h-8 flex-wrap items-center gap-x-3 gap-y-1 border-b border-hairline pb-1.5">
@@ -544,15 +574,20 @@ export function McpConfigManager({
         <ListToolbar view={view} total={entries.length} filters={filters} sorts={sorts}
           searchLabel={t('st.mcp.search')} searchPlaceholder={t('st.mcp.searchPlaceholder')}
           actions={
-            <button
-              type="button"
-              className={`${SECONDARY_BUTTON} shrink-0`}
-              data-mcp-add
-              disabled={saving || resetting}
-              onClick={() => { switchDraft(mcpDraft()); }}
-            >
-              {t('st.mcp.add')}
-            </button>
+            // Both verbs that add a server, with the handoff beside whichever
+            // one is on screen, so it is never a button floating on its own row.
+            <>
+              <button
+                type="button"
+                className={`${SECONDARY_BUTTON} shrink-0`}
+                data-mcp-add
+                disabled={saving || resetting}
+                onClick={() => { switchDraft(mcpDraft()); }}
+              >
+                {t('st.mcp.add')}
+              </button>
+              {askKikiButton}
+            </>
           } />
       ) : null}
       {/* Add and edit share one side panel: the list stays where it was. */}
@@ -689,15 +724,18 @@ export function McpConfigManager({
         <div data-capability-empty>
           <ListEmpty kind="none" title={t('st.mcp.empty')} body={t('st.mcp.emptyBody')}
             action={
-              <button
-                type="button"
-                className={SECONDARY_BUTTON}
-                data-mcp-add
-                disabled={saving || resetting}
-                onClick={() => { switchDraft(mcpDraft()); }}
-              >
-                {t('st.mcp.add')}
-              </button>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  data-mcp-add
+                  disabled={saving || resetting}
+                  onClick={() => { switchDraft(mcpDraft()); }}
+                >
+                  {t('st.mcp.add')}
+                </button>
+                {askKikiButton}
+              </div>
             } />
         </div>
       ) : null}

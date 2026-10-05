@@ -68,7 +68,7 @@ function dispatchCell(profile: NamedAgentProfile, t: ReturnType<typeof useI18n>[
  * not resolve or a file that does not run. This is the view the operator used
  * to keep by hand in AGENTS.md, now read from the files themselves.
  */
-export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, savingKey, onNew, toolbar }: {
+export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, savingKey, onNew, toolbar, newActions }: {
   rows: readonly TeamRow[];
   models: readonly ModelCatalogItem[];
   filter: TeamFilter;
@@ -78,6 +78,12 @@ export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, 
   savingKey?: string;
   onNew: () => void;
   toolbar?: React.ReactNode;
+  /**
+   * Secondary verbs that belong beside "New agent" rather than in the filter
+   * row: an action the user reaches for *instead of* creating one by hand reads
+   * as a peer of the button it replaces, not as another filter control.
+   */
+  newActions?: React.ReactNode;
 }) {
   const { t, tp, locale } = useI18n();
   const [layout, setLayout] = useState<TeamLayout>('list');
@@ -117,6 +123,9 @@ export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, 
       {viewSwitch}
       <div className="ml-auto flex items-center gap-2">{toolbar}</div>
     </div>
+    {/* The teams layout has no New button of its own, so the secondary verbs
+        that belong beside it have to ride this row instead. */}
+    {newActions !== undefined ? <div className="flex flex-wrap items-center justify-end gap-2">{newActions}</div> : null}
     <TeamRoster rows={rows} onOpen={onOpen} displayName={(profile) => displayName(profile, locale)} />
   </div>;
   const newButton = <button type="button" data-profile-new onClick={onNew}
@@ -131,7 +140,7 @@ export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, 
       <div className="ml-auto flex items-center gap-2">{toolbar}</div>
     </div>
     <ListToolbar view={view} total={scoped.length} searchLabel={t('st.profiles.search')} searchPlaceholder={t('st.profiles.search')}
-      sorts={sorts} actions={newButton} />
+      sorts={sorts} actions={<>{newButton}{newActions}</>} />
     {warnings > 0 ? <p data-team-warnings className="inline-flex items-center gap-1.5 text-[12px] text-amber-ink">
       <Icon name="warning" size={12} />{tp('st.profiles.teamWarnings', warnings)}
     </p> : null}
