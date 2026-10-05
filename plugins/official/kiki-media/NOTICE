@@ -1,8 +1,0 @@
-Kiki Media
-
-This package contains the Kiki media tool entry, manifest and media skills,
-licensed under the project's MIT License (see LICENSE).
-
-Vendor adapters and their third-party notices are distributed separately in
-the independently installable kiki-media-* provider packages. They are not
-bundled in this entry package.
