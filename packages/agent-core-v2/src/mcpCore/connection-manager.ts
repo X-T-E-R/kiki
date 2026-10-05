@@ -3,6 +3,7 @@ import type { McpRemoteServerConfig, McpServerConfig } from './config-schema';
 import type { ILogger as Logger } from '#/_base/log/log';
 import type { Tool } from '#/kosong/contract/tool';
 import { HostProcessError, HostProcessErrorCode } from '#/os/interface/hostProcess';
+import { McpError } from '@modelcontextprotocol/sdk/types.js';
 
 import { abortable } from '#/_base/utils/abort';
 import { HttpMcpClient } from './client-http';
@@ -33,6 +34,7 @@ interface InternalEntry {
   enabledNames?: ReadonlySet<string>;
   error?: string;
   client?: RuntimeMcpClient;
+  connectedAt?: number;
 }
 
 export type McpStatusListener = (entry: McpServerEntry) => void;
@@ -59,6 +61,7 @@ export interface McpConnectionView {
       }
     | undefined;
   getRemoteServerUrl(name: string): string | undefined;
+  markNeedsAuth(name: string, error: unknown, client?: MCPClient): Promise<boolean>;
   reconnect(name: string): Promise<void>;
   readonly connect?: (name: string, config: McpServerConfig) => Promise<void>;
   reconnectAndJoin(name: string): Promise<void>;
@@ -310,6 +313,47 @@ export class McpConnectionManager implements McpConnectionView {
     await this.reconnectAndJoin(name);
   }
 
+  async markNeedsAuth(name: string, error: unknown, client?: MCPClient): Promise<boolean> {
+    const entry = this.entries.get(name);
+    if (entry === undefined) return false;
+    if (entry.status !== 'connected' && entry.status !== 'needs-auth') return false;
+    if (!this.shouldMarkNeedsAuth(entry, error)) return false;
+    if (entry.status === 'needs-auth') return true;
+    if (client !== undefined && entry.client !== client) return false;
+    const attemptId = entry.attemptId;
+    const oauthService = this.oauthService;
+    const rejectedGrant =
+      oauthService !== undefined && isRemoteMcpConfig(entry.config)
+        ? await oauthService.peekRejectedGrant(name, entry.config.url, entry.connectedAt)
+        : undefined;
+    if (!this.isCurrent(entry, attemptId)) return false;
+    if (rejectedGrant?.concurrent === true) return false;
+    await this.closeClient(entry);
+    if (!this.isCurrent(entry, attemptId)) return false;
+    this.flipToNeedsAuth(entry);
+    if (rejectedGrant !== undefined && oauthService !== undefined && isRemoteMcpConfig(entry.config)) {
+      try {
+        await oauthService.invalidateTokensIfCurrent(name, entry.config.url, rejectedGrant.tokens);
+      } catch (invalidateError) {
+        this.log.warn('mcp oauth token invalidation failed', {
+          server: name,
+          reason: invalidateError instanceof Error ? invalidateError.message : String(invalidateError),
+        });
+      }
+    }
+    if (!this.isCurrent(entry, attemptId)) return false;
+    this.emit(entry);
+    return true;
+  }
+
+  private flipToNeedsAuth(entry: InternalEntry): void {
+    entry.status = 'needs-auth';
+    entry.error = `${entry.name} requires OAuth — run /kiki-ops help me log in to MCP ${entry.name}`;
+    entry.tools = undefined;
+    entry.enabledNames = undefined;
+    entry.rawTools = undefined;
+  }
+
   async shutdown(): Promise<void> {
     const entries = Array.from(this.entries.values());
     this.entries.clear();
@@ -343,6 +387,7 @@ export class McpConnectionManager implements McpConnectionView {
       entry.rawTools = discovered.rawTools;
       entry.enabledNames = computeEnabledNames(entry.config, discovered.tools);
       entry.status = 'connected';
+      entry.connectedAt = this.oauthService?.now() ?? Date.now();
       this.watchForUnexpectedClose(entry, startupClient, attemptId);
     } catch (error) {
       if (!this.isCurrent(entry, attemptId)) {
@@ -352,15 +397,14 @@ export class McpConnectionManager implements McpConnectionView {
         return;
       }
       if (this.shouldMarkNeedsAuth(entry, error)) {
-        entry.status = 'needs-auth';
-        entry.error = `${entry.name} requires OAuth — run /kiki-ops help me log in to MCP ${entry.name}`;
+        this.flipToNeedsAuth(entry);
       } else {
         entry.status = 'failed';
         entry.error = formatStartupError(error, client);
+        entry.tools = undefined;
+        entry.enabledNames = undefined;
+        entry.rawTools = undefined;
       }
-      entry.tools = undefined;
-      entry.enabledNames = undefined;
-      entry.rawTools = undefined;
       await this.closeClient(entry);
     }
     if (!this.isCurrent(entry, attemptId)) return;
@@ -557,6 +601,7 @@ function hasExplicitAuthorizationHeader(config: McpRemoteServerConfig): boolean 
 
 function isUnauthorizedLikeError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
+  if (error instanceof McpError) return false;
   if (error.name === 'UnauthorizedError') return true;
   const code = (error as { code?: unknown }).code;
   if (typeof code === 'number' && code === 401) return true;

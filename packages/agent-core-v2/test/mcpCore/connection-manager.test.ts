@@ -11,6 +11,7 @@ import { join } from 'pathe';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type {
   OAuthClientInformationFull,
   OAuthTokens,
@@ -37,6 +38,7 @@ import {
   slowStdioFixture,
   slowToolStdioFixture,
   stderrThenExitFixture,
+  startAnonymousDiscoveryHttpMcpServer,
   startInProcessHttpMcpServer,
   startInProcessSseMcpServer,
   stdioFixture,
@@ -1142,6 +1144,68 @@ describe('McpConnectionManager', () => {
     } finally {
       await cm.shutdown();
       await closeServer(httpServer);
+    }
+  }, 15000);
+
+  it('marks runtime 401 needs-auth, clears only the rejected grant, and ignores application errors', async () => {
+    const server = await startAnonymousDiscoveryHttpMcpServer();
+    const oauthService = new McpOAuthService({ store: createMemoryMcpOAuthStore() });
+    const cm = createManager({ oauthService });
+    const seen: McpServerEntry['status'][] = [];
+    cm.onStatusChange((entry) => seen.push(entry.status));
+    try {
+      await cm.connectAll({ example: { transport: 'http', url: server.url, startupTimeoutMs: 5_000 } });
+      const client = cm.resolved('example')?.client;
+      if (client === undefined) throw new Error('expected anonymous discovery');
+      const rejected = {
+        access_token: 'revoked-example-token', token_type: 'Bearer', obtained_at: Date.now() - 60_000,
+      };
+      await oauthService.getProvider('example', server.url).saveTokens(rejected);
+      const applicationError = new McpError(ErrorCode.InvalidRequest, 'Unauthorized to edit this project');
+      await expect(cm.markNeedsAuth('example', applicationError, client)).resolves.toBe(false);
+      expect(cm.get('example')?.status).toBe('connected');
+      expect(await oauthService.hasTokens('example', server.url)).toBe(true);
+      const error = await client.callTool('echo', { text: 'example' }).catch((failure: unknown) => failure);
+      await expect(cm.markNeedsAuth('example', error, client)).resolves.toBe(true);
+      expect(cm.get('example')).toMatchObject({ status: 'needs-auth', toolCount: 0 });
+      expect(cm.resolved('example')).toBeUndefined();
+      expect(await oauthService.hasTokens('example', server.url)).toBe(false);
+      await expect(cm.markNeedsAuth('example', error, client)).resolves.toBe(true);
+      expect(seen).toEqual(['pending', 'connected', 'needs-auth']);
+    } finally {
+      await cm.shutdown();
+      await oauthService.dispose();
+      await server.close();
+    }
+  }, 15000);
+
+  it('ignores stale clients, concurrent grants, and explicit bearer authorization during runtime 401', async () => {
+    const oldServer = await startInProcessHttpMcpServer();
+    const server = await startInProcessHttpMcpServer();
+    const staticServer = await startInProcessHttpMcpServer();
+    const oauthService = new McpOAuthService({ store: createMemoryMcpOAuthStore() });
+    const cm = createManager({ oauthService });
+    const error = new Error('HTTP 401 Unauthorized');
+    try {
+      await cm.connectAll({ example: { transport: 'http', url: oldServer.url } });
+      const staleClient = cm.resolved('example')?.client;
+      await cm.connect('example', { transport: 'http', url: server.url });
+      const client = cm.resolved('example')?.client;
+      if (client === undefined) throw new Error('expected connected client');
+      await expect(cm.markNeedsAuth('example', error, staleClient)).resolves.toBe(false);
+      const concurrentGrant = {
+        access_token: 'new-example-token', token_type: 'Bearer', obtained_at: Date.now(),
+      };
+      await oauthService.getProvider('example', server.url).saveTokens(concurrentGrant);
+      await expect(cm.markNeedsAuth('example', error, client)).resolves.toBe(false);
+      expect(await oauthService.hasTokens('example', server.url)).toBe(true);
+      await cm.connect('static', { transport: 'http', url: staticServer.url, auth: 'oauth', headers: { Authorization: 'Bearer example' } });
+      await expect(cm.markNeedsAuth('static', error, cm.resolved('static')?.client)).resolves.toBe(false);
+      expect(cm.get('static')?.status).toBe('connected');
+    } finally {
+      await cm.shutdown();
+      await oauthService.dispose();
+      await Promise.all([oldServer.close(), server.close(), staticServer.close()]);
     }
   }, 15000);
 

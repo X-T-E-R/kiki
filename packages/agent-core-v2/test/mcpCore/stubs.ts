@@ -183,6 +183,50 @@ export async function startInProcessHttpMcpServer(opts?: {
   };
 }
 
+export async function startAnonymousDiscoveryHttpMcpServer(): Promise<{
+  url: string;
+  close: () => Promise<void>;
+}> {
+  const mcpServer = new McpServer({ name: 'mock-anonymous-discovery', version: '0.0.1' });
+  mcpServer.registerTool(
+    'echo',
+    { description: 'Echoes text', inputSchema: { text: z.string() } },
+    ({ text }) => ({ content: [{ type: 'text', text }] }),
+  );
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
+  await mcpServer.connect(transport);
+  const httpServer: Server = createServer((req, res) => {
+    if (req.method !== 'POST') {
+      void transport.handleRequest(req, res);
+      return;
+    }
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      let body: unknown;
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      } catch {
+        res.writeHead(400).end();
+        return;
+      }
+      const messages = Array.isArray(body) ? body : [body];
+      if (messages.some((message) =>
+        typeof message === 'object' && message !== null &&
+        (message as { method?: unknown }).method === 'tools/call',
+      )) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+      void transport.handleRequest(req, res, body);
+    });
+  });
+  await listen(httpServer);
+  const port = (httpServer.address() as AddressInfo).port;
+  return { url: `http://127.0.0.1:${port}/mcp`, close: () => closeServer(httpServer) };
+}
+
 export async function startInProcessSseMcpServer(opts?: {
   authToken?: string;
 }): Promise<{ url: string; close: () => Promise<void> }> {

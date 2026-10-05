@@ -89,6 +89,12 @@ class FakeMcpManager {
 
   reconnectHandler: (name: string) => Promise<void> = async () => {};
 
+  markNeedsAuthHandler: (name: string, error: unknown, client?: MCPClient) => Promise<boolean> = async () => false;
+
+  async markNeedsAuth(name: string, error: unknown, client?: MCPClient): Promise<boolean> {
+    return this.markNeedsAuthHandler(name, error, client);
+  }
+
   async reconnect(name: string): Promise<void> {
     await this.reconnectHandler(name);
   }
@@ -580,6 +586,30 @@ describe('AgentMcpService', () => {
     });
     return { promise, resolve: resolvePromise };
   }
+
+  it('surfaces runtime 401 authentication instead of replaying the rejected call', async () => {
+    const manager = new FakeMcpManager();
+    const counter = { calls: 0 };
+    const unauthorized = new Error('HTTP 401 Unauthorized');
+    const client = countingClient(throwingClient(fakeMcpClient(), undefined, () => unauthorized), counter);
+    manager.markNeedsAuthHandler = async (name, error, failedClient) => {
+      expect(name).toBe('s');
+      expect(error).toBe(unauthorized);
+      expect(failedClient).toBe(client);
+      return true;
+    };
+    let reconnects = 0;
+    manager.reconnectHandler = async () => { reconnects += 1; };
+    manager.setResolved('s', client, await discoverTools(client));
+    createService(manager);
+    manager.connect('s');
+    const tool = ix.get(IAgentToolRegistryService).resolve('mcp__s__echo');
+    await expect(executeTool(tool!, {
+      turnId: 1, toolCallId: 'tc-auth', args: { text: 'example' }, signal: new AbortController().signal,
+    })).rejects.toMatchObject({ code: 'mcp.oauth_failed', message: expect.stringContaining('needs-auth') });
+    expect(counter.calls).toBe(1);
+    expect(reconnects).toBe(0);
+  });
 
   it('does not replay a computer call after transport loss', async () => {
     const manager = new FakeMcpManager();

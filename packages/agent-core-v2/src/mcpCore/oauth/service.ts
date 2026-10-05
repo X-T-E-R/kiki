@@ -1,6 +1,7 @@
 import { createHmac, randomBytes } from 'node:crypto';
 
 import { auth, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 
 import type { ILogger as Logger } from '#/_base/log/log';
 import { ErrorCodes, Error2, isError2 } from '#/errors';
@@ -640,6 +641,34 @@ export class McpOAuthService {
     scope: 'all' | 'client' | 'tokens' | 'discovery' = 'all',
   ): Promise<void> {
     return this.getProvider(serverName, serverUrl).clearCredentials(scope);
+  }
+
+  invalidateTokensIfCurrent(
+    serverName: string,
+    serverUrl: string | URL,
+    expected: OAuthTokens,
+  ): Promise<boolean> {
+    return this.getProvider(serverName, serverUrl).clearTokensIfCurrent(expected);
+  }
+
+  async peekRejectedGrant(
+    serverName: string,
+    serverUrl: string | URL,
+    connectedAt?: number,
+  ): Promise<{ readonly tokens: StoredMcpOAuthTokens; readonly concurrent: boolean } | undefined> {
+    const tokens = (await this.getProvider(serverName, serverUrl).tokens()) as
+      | StoredMcpOAuthTokens
+      | undefined;
+    if (tokens === undefined) return undefined;
+    const obtainedAt = tokens.obtained_at;
+    const age = typeof obtainedAt === 'number' ? this.scheduler.now() - obtainedAt : undefined;
+    const concurrent = typeof obtainedAt === 'number' && age !== undefined && age >= 0 && age < 10_000 &&
+      (connectedAt === undefined || obtainedAt >= connectedAt);
+    return { tokens, concurrent };
+  }
+
+  now(): number {
+    return this.scheduler.now();
   }
 
   /**

@@ -181,6 +181,22 @@ describe('OAuthTokenTransaction', () => {
   });
 });
 
+describe('OAuthTokenTransaction conditional invalidation', () => {
+  it('clears only the rejected snapshot and preserves a concurrently saved grant', async () => {
+    let stored: TestTokens | undefined = tokens('access-0', 'refresh-0');
+    const rejected = transaction('same-server', () => stored, (value) => (stored = value));
+    const peer = transaction('same-server', () => stored, (value) => (stored = value));
+    const snapshot = tokens('access-0', 'refresh-0');
+
+    await peer.save(tokens('access-1', 'refresh-1'));
+    await expect(rejected.clearIfCurrent(snapshot)).resolves.toBe(false);
+    expect(stored).toEqual(tokens('access-1', 'refresh-1'));
+
+    await expect(rejected.clearIfCurrent(tokens('access-1', 'refresh-1'))).resolves.toBe(true);
+    expect(stored).toBeUndefined();
+  });
+});
+
 function transaction(
   key: string,
   read: () => TestTokens | undefined,
