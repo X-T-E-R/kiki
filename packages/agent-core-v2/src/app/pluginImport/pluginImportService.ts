@@ -21,7 +21,6 @@ import { Service } from '#/_base/di/service';
 import { toDisposable } from '#/_base/di/lifecycle';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { IFlagService } from '#/app/flag/flag';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import { LifecycleScope } from '#/app/scopes';
@@ -29,7 +28,6 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { Error2, PluginErrors } from '#/errors';
 import { IPluginImportService } from './pluginImport';
 import { builtinHistory } from './builtinHistory';
-import './flag';
 
 const NAMESPACE = 'plugin-import-v1';
 const PAGE_BYTES = 512 * 1024;
@@ -77,7 +75,6 @@ export class PluginImportService extends Service implements IPluginImportService
     @IPluginHostService private readonly hosts: IPluginHostService,
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
-    @IFlagService private readonly flags: IFlagService,
     @IInstantiationService private readonly instantiation: IInstantiationService,
   ) {
     super();
@@ -95,7 +92,6 @@ export class PluginImportService extends Service implements IPluginImportService
   private readonly owners = new Map<string, string>();
   private key(kind: string, id: string) { return `${kind}.${validId(id)}`; }
   private check() {
-    if (!this.flags.enabled('plugin_import')) fail('Plugin history import is disabled');
     if (this.closing) fail('Import host is closing');
   }
   private ready(): Promise<void> {

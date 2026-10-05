@@ -1,188 +1,27 @@
 {
   "version": "1",
+  "revision": "af67a51d7501924003da80d089897fa287a767fd",
+  "releaseTag": "plugins-20261005.5",
   "plugins": [
-    {
-      "id": "kimi-datasource",
-      "tier": "official",
-      "displayName": "Kimi Datasource",
-      "version": "3.3.0",
-      "description": "Official datasource workflows.",
-      "keywords": ["data", "mcp"],
-      "source": "./official/kimi-datasource"
-    },
-    {
-      "id": "kimi-webbridge",
-      "tier": "official",
-      "displayName": "Kimi Browser Extension",
-      "version": "1.11.4",
-      "description": "Control your real browser from Kiki.",
-      "keywords": ["browser", "automation", "webbridge"],
-      "source": "./official/kimi-webbridge"
-    },
-    {
-      "id": "kiki-office",
-      "tier": "official",
-      "displayName": "Kiki Office Suite",
-      "version": "0.1.0",
-      "description": "Create and edit local Word, Excel and PowerPoint files.",
-      "keywords": ["office", "docx", "xlsx", "pptx"],
-      "relevance": { "fileGlobs": ["**/*.docx", "**/*.xlsx", "**/*.pptx"], "commands": ["officecli"] },
-      "source": "./official/kiki-office"
-    },
-    {
-      "id": "kiki-writing",
-      "tier": "official",
-      "displayName": "Kiki Writing",
-      "version": "0.1.0",
-      "description": "A focused manuscript panel and draft command.",
-      "keywords": ["writing", "manuscript", "fiction"],
-      "relevance": { "fileGlobs": ["**/*.md", "**/*.txt"] },
-      "source": "./official/kiki-writing"
-    },
-    {
-      "id": "kiki-documents",
-      "tier": "official",
-      "displayName": "Kiki Documents",
-      "version": "0.1.0",
-      "description": "Read local documents as Markdown",
-      "keywords": ["documents", "pdf", "markdown"],
-      "source": "./official/kiki-documents"
-    },
-    {
-      "id": "kiki-notion",
-      "tier": "official",
-      "displayName": "Kiki Notion",
-      "version": "0.1.0",
-      "description": "Search and read Notion material, produce source-backed briefs, and save to a specified page on request.",
-      "keywords": ["notion", "knowledge", "mcp"],
-      "source": "./official/kiki-notion"
-    },
-    {
-      "id": "kiki-media",
-      "tier": "official",
-      "displayName": "Media",
-      "version": "0.1.0",
-      "description": "Generate images, videos and speech through separately installed media providers. Generation requires the media_generation experimental flag.",
-      "keywords": ["media", "image", "video", "tts"],
-      "source": "./official/kiki-media"
-    },
-    {
-      "id": "kiki-media-openai",
-      "tier": "official",
-      "displayName": "OpenAI Media",
-      "version": "0.1.0",
-      "description": "OpenAI image generation/editing and file speech synthesis. Requires a media-capable API connection or key; cloud generation can incur charges.",
-      "keywords": ["media", "openai", "image", "tts"],
-      "source": "./official/kiki-media-openai"
-    },
-    {
-      "id": "kiki-media-google",
-      "tier": "official",
-      "displayName": "Google Media",
-      "version": "0.1.0",
-      "description": "Google Gemini native images and Veo asynchronous video. Requires corresponding media API access.",
-      "keywords": ["media", "google", "gemini", "veo", "image", "video"],
-      "source": "./official/kiki-media-google"
-    },
-    {
-      "id": "kiki-media-ark",
-      "tier": "official",
-      "displayName": "Ark Media",
-      "version": "0.1.0",
-      "description": "Ark Seedream images and the Seedance 2.0 video protocol. Configure an entitled endpoint/model; no implicit OSS upload or Seedance 2.5 support.",
-      "keywords": ["media", "ark", "seedream", "seedance", "image", "video"],
-      "source": "./official/kiki-media-ark"
-    },
-    {
-      "id": "kiki-media-xai",
-      "tier": "official",
-      "displayName": "xAI Media",
-      "version": "0.1.0",
-      "description": "xAI image generation/editing and asynchronous video. API media access is required; Grok web subscriptions are not assumed compatible.",
-      "keywords": ["media", "xai", "grok", "image", "video"],
-      "source": "./official/kiki-media-xai"
-    },
-    {
-      "id": "kiki-media-minimax",
-      "tier": "official",
-      "displayName": "MiniMax Media",
-      "version": "0.1.0",
-      "description": "MiniMax portrait-reference images, H3/H3-Max video and HTTP/SSE file speech with optional subtitles. Requires media API access; no automatic paid long-text splitting.",
-      "keywords": ["media", "minimax", "image", "video", "tts", "subtitles"],
-      "source": "./official/kiki-media-minimax"
-    },
-    {
-      "id": "kiki-media-stepfun",
-      "tier": "official",
-      "displayName": "StepFun Speech",
-      "version": "0.1.0",
-      "description": "StepFun HTTP binary/SSE file speech through a TTS-capable API endpoint. Not a WebSocket live-session runtime.",
-      "keywords": ["media", "stepfun", "tts", "speech"],
-      "source": "./official/kiki-media-stepfun"
-    },
-    {
-      "id": "kiki-media-novita",
-      "tier": "official",
-      "displayName": "Novita Compatible Video",
-      "version": "0.1.0",
-      "description": "Optional Novita /video/create and task-result compatibility profile. Configure your endpoint and actual model; not all Novita APIs are supported.",
-      "keywords": ["media", "novita", "video", "endpoint"],
-      "source": "./official/kiki-media-novita"
-    },
-    {
-      "id": "kiki-media-agnes",
-      "tier": "official",
-      "displayName": "Agnes Video",
-      "version": "0.1.0",
-      "description": "Optional Agnes 2.5/Flash/V2.0 video endpoint adapter with explicit frame/reference roles. Configure your compatible endpoint.",
-      "keywords": ["media", "agnes", "video", "endpoint"],
-      "source": "./official/kiki-media-agnes"
-    },
-    {
-      "id": "kiki-media-newapi",
-      "tier": "official",
-      "displayName": "NewAPI Compatible Video",
-      "version": "0.1.0",
-      "description": "Optional NewAPI /video/generations gateway profile. Model availability and audio generation depend on your configured endpoint.",
-      "keywords": ["media", "newapi", "video", "gateway"],
-      "source": "./official/kiki-media-newapi"
-    },
-    {
-      "id": "kiki-media-comfyui",
-      "tier": "official",
-      "displayName": "ComfyUI Workflow",
-      "version": "0.1.0",
-      "description": "Optional ComfyUI API-format image/video workflows using your running endpoint and installed models. No engine, GPU runtime or models are bundled.",
-      "keywords": ["media", "comfyui", "image", "video", "workflow", "local"],
-      "source": "./official/kiki-media-comfyui"
-    },
-    {
-      "id": "superpowers",
-      "tier": "curated",
-      "displayName": "Superpowers",
-      "description": "Planning, TDD, debugging, and delivery workflows for coding agents.",
-      "homepage": "https://github.com/obra/superpowers",
-      "keywords": ["skills", "planning", "tdd", "debugging", "code-review"],
-      "source": "https://github.com/obra/superpowers"
-    },
-    {
-      "id": "vercel-plugin",
-      "tier": "curated",
-      "displayName": "Vercel Plugin",
-      "description": "Comprehensive Vercel ecosystem plugin — skills, agents, and conventions for the Vercel platform.",
-      "homepage": "https://vercel.com/docs/agent-resources/vercel-plugin",
-      "keywords": ["vercel", "deployment", "nextjs", "skills", "agents"],
-      "relevance": { "dependencies": ["next", "@vercel/*"] },
-      "source": "https://github.com/vercel/vercel-plugin"
-    },
-    {
-      "id": "modern-web-guidance",
-      "tier": "curated",
-      "displayName": "Modern Web Guidance",
-      "description": "Modern web platform expertise, best practices, and browser compatibility data for coding agents, from the Google Chrome team.",
-      "homepage": "https://github.com/GoogleChrome/modern-web-guidance",
-      "keywords": ["web", "css", "browser", "frontend", "skills"],
-      "source": "https://github.com/GoogleChrome/modern-web-guidance"
-    }
+    {"id":"kiki-office","tier":"official","displayName":"Kiki Office Suite","version":"0.1.1","description":"Create and edit local Word, Excel and PowerPoint files.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-office","keywords":["office","docx","xlsx","pptx"],"author":"Kiki","license":"MIT","engines":{"kiki":"^0.4.0"},"relevance":{"fileGlobs":["**/*.docx","**/*.xlsx","**/*.pptx"],"commands":["officecli"]},"icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-office/icon-0.1.1.svg","sha256":"12189919fe7b52a6ea9f785126be72bdd6c53cdbc666e2961c9a7dfacf29c7be","localizations":{"zh":{"description":"在本机创建、读取、编辑和预览 Word、Excel 与 PowerPoint 文件。","keywords":["办公","文档","word","excel","ppt","docx","xlsx","pptx"]}},"source":"../../kiki-plugins/plugins/official/kiki-office","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-office-0.1.1.zip"},
+    {"id":"kiki-writing","tier":"official","displayName":"Kiki Writing","version":"0.1.1","description":"A focused manuscript panel and draft command.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-writing","keywords":["writing","manuscript","fiction"],"author":"Kiki","license":"MIT","engines":{"kiki":"^0.4.0"},"relevance":{"fileGlobs":["**/*.md","**/*.txt"]},"icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-writing/icon-0.1.1.svg","sha256":"8dbdd7484195357ceb168edb43256c4942c94179baf2b34ce4e6063ee2711a33","localizations":{"zh":{"description":"一个专注的手稿面板，以及一个按当前场景续写草稿的命令。","keywords":["写作","手稿","续写","草稿"]}},"source":"../../kiki-plugins/plugins/official/kiki-writing","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-writing-0.1.1.zip"},
+    {"id":"kiki-extract","tier":"official","displayName":"Kiki Extract","version":"0.1.1","description":"Turn local PDF, Office, HTML and text documents into readable Markdown with source metadata. MinerU OCR is explicit and opt-in.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-extract","keywords":["documents","extract","pdf","markdown","docx"],"author":"Kiki","license":"MIT","engines":{"kiki":"^0.4.0"},"relevance":{"fileGlobs":["**/*.pdf","**/*.docx","**/*.html"]},"icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-extract/icon-0.1.1.svg","sha256":"ac0c4177e6dd7166ffcfc727b8fa802fdec1cdbe0c64707b396d8bae7063bb64","localizations":{"zh":{"description":"把本机的 PDF、Office、HTML 与文本文档转成可读的 Markdown，并保留来源信息。MinerU OCR 需你显式指定，不作为默认回退。","keywords":["提取","文档","pdf","markdown","docx"]}},"source":"../../kiki-plugins/plugins/official/kiki-extract","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-extract-0.1.1.zip"},
+    {"id":"kiki-notion","tier":"official","displayName":"Kiki Notion","version":"0.1.1","description":"Search and read Notion material, produce source-backed briefs, and save to a specified page on request.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion","keywords":["notion","knowledge","mcp"],"author":"Kiki","license":"MIT","icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-notion/icon-0.1.1.svg","sha256":"31327ba1c62683f2738beb7abc8b602297ec69ee79a7fa3233ba3f5f1e5c04f4","localizations":{"zh":{"description":"检索并阅读 Notion 中的资料，产出带出处的简报，并可按你的要求写回指定页面。","keywords":["notion","知识库","笔记","简报"]}},"source":"../../kiki-plugins/plugins/official/kiki-notion","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-notion-0.1.1.zip"},
+    {"id":"kiki-media","tier":"official","displayName":"Kiki Media","version":"0.1.1","description":"The media surface: image, video and speech providers, their credentials, and the per-modality defaults. Install a provider package for each service you use.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media","keywords":["media","image","video","speech"],"author":"Kiki","license":"MIT","engines":{"kiki":">=0.4.0"},"group":"media","icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-media/icon-0.1.1.svg","sha256":"94cc3bb6146dd5aa6337b6dbfc9613f6d6b73f81274cc733d4d010226fa671a2","localizations":{"zh":{"description":"媒体生成入口：图像、视频与语音 provider、它们的凭据，以及各模态的默认设置。用到哪家的服务，就安装对应的 provider 包。","keywords":["媒体","图像","视频","语音","生成"]}},"source":"../../kiki-plugins/plugins/official/kiki-media","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-0.1.1.zip"},
+    {"id":"kiki-media-openai","tier":"official","displayName":"OpenAI Media","version":"0.1.1","description":"OpenAI image generation and editing, and file speech synthesis. Needs a media-capable API connection or key; cloud generation can incur charges.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-openai","keywords":["media","openai","image","tts"],"author":"Kiki","license":"MIT","engines":{"kiki":"^0.4.0"},"group":"media","icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-openai/icon-0.1.1.svg","sha256":"bdbbc8e5d6091a1c06cd9c3976f2872ad9545ce9095391c80412a224113bf7d2","localizations":{"zh":{"description":"OpenAI 图像生成与编辑，以及语音合成文件。需具备媒体权限的 API 连接或 key；云端生成可能产生费用。","keywords":["媒体","openai","图像","语音合成"]}},"source":"../../kiki-plugins/plugins/official/kiki-media-openai","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-openai-0.1.1.zip"},
+    {"id":"kiki-media-google","tier":"official","displayName":"Google Media","version":"0.1.1","description":"Google Gemini native images and Veo asynchronous video. Needs the corresponding media API access.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-google","keywords":["media","google","gemini","veo","image","video"],"author":"Kiki","license":"MIT","engines":{"kiki":"^0.4.0"},"group":"media","icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-google/icon-0.1.1.svg","sha256":"cd5fc37f6d2c2cfea3a044c89ea9f7a521dd866af98714591b1b0743fb88ecc9","localizations":{"zh":{"description":"Google Gemini 原生图像，以及异步生成的 Veo 视频。需对应的媒体 API 权限。","keywords":["媒体","google","gemini","veo","图像","视频"]}},"source":"../../kiki-plugins/plugins/official/kiki-media-google","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-google-0.1.1.zip"},
+    {"id":"kiki-media-ark","tier":"official","displayName":"Ark Media","version":"0.1.1","description":"Ark Seedream images and the Seedance 2.0 video protocol. Configure an entitled endpoint and model; no implicit OSS upload and no Seedance 2.5.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-ark","keywords":["media","ark","seedream","seedance","image","video"],"author":"Kiki","license":"MIT","engines":{"kiki":"^0.4.0"},"group":"media","icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-ark/icon-0.1.1.svg","sha256":"85d5c1cc9028f4c8b15f094b4d1fd27e9bfd010a8786ee9b0e9cd1b2db716dd7","localizations":{"zh":{"description":"Ark Seedream 图像与 Seedance 2.0 视频协议。需配置你有权使用的端点与模型；不会隐式上传素材，也不支持 Seedance 2.5。","keywords":["媒体","ark","seedream","seedance","图像","视频"]}},"source":"../../kiki-plugins/plugins/official/kiki-media-ark","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-ark-0.1.1.zip"},
+    {"id":"kiki-media-xai","tier":"official","displayName":"xAI Media","version":"0.1.1","description":"xAI image generation and editing, and asynchronous video. API media access is required; a Grok web subscription is not assumed compatible.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-xai","keywords":["media","xai","grok","image","video"],"author":"Kiki","license":"MIT","engines":{"kiki":"^0.4.0"},"group":"media","icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-xai/icon-0.1.1.svg","sha256":"8c300f6109efd5d397b33216e9d633b06fa81d53e7c4c54183380227b6b90e43","localizations":{"zh":{"description":"xAI 图像生成与编辑，以及异步视频。需 API 媒体权限；不假定 Grok 网页订阅即可使用。","keywords":["媒体","xai","grok","图像","视频"]}},"source":"../../kiki-plugins/plugins/official/kiki-media-xai","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-xai-0.1.1.zip"},
+    {"id":"kiki-media-minimax","tier":"official","displayName":"MiniMax Media","version":"0.1.1","description":"MiniMax portrait-reference images, H3 and H3-Max video, and HTTP/SSE file speech with optional subtitles. Needs media API access; long text is not split into paid jobs automatically.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-minimax","keywords":["media","minimax","image","video","tts","subtitles"],"author":"Kiki","license":"MIT","engines":{"kiki":"^0.4.0"},"group":"media","icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-minimax/icon-0.1.1.svg","sha256":"7940f96780769a67cc0845af2334182fc3c363506a286c3bd1e8900ee8985f85","localizations":{"zh":{"description":"MiniMax 人像参考图、H3 与 H3-Max 视频，以及带可选字幕的 HTTP/SSE 语音文件。需媒体 API 权限；超长文本不会自动拆分成多次付费任务。","keywords":["媒体","minimax","图像","视频","语音","字幕"]}},"source":"../../kiki-plugins/plugins/official/kiki-media-minimax","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-minimax-0.1.1.zip"},
+    {"id":"kiki-media-stepfun","tier":"official","displayName":"StepFun Speech","version":"0.1.1","description":"StepFun HTTP binary and SSE file speech through a TTS-capable API endpoint. Not a WebSocket live-session runtime.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-stepfun","keywords":["media","stepfun","tts","speech"],"author":"Kiki","license":"MIT AND Apache-2.0","engines":{"kiki":"^0.4.0"},"group":"media","icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-stepfun/icon-0.1.1.svg","sha256":"cdb3ff3b50c597511b2c52594e69af78d8e5279703ae5785cbb7cdf5acb5be9b","localizations":{"zh":{"description":"通过支持 TTS 的 API 端点，以 HTTP 二进制或 SSE 合成语音文件。不是 WebSocket 实时语音运行时。","keywords":["媒体","stepfun","语音合成","语音"]}},"source":"../../kiki-plugins/plugins/official/kiki-media-stepfun","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-stepfun-0.1.1.zip"},
+    {"id":"kiki-media-novita","tier":"official","displayName":"Novita Compatible Video","version":"0.1.1","description":"Optional Novita /video/create and task-result compatibility profile. Configure your endpoint and the actual model; not every Novita API is supported.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-novita","keywords":["media","novita","video","endpoint"],"author":"Kiki","license":"MIT","engines":{"kiki":"^0.4.0"},"group":"media","icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-novita/icon-0.1.1.svg","sha256":"09bd84d530773adb6e3bfd82c209ada40efaff459c388a614c7b952ad3c1af2a","localizations":{"zh":{"description":"可选的 Novita /video/create 与任务结果兼容配置。需配置你的端点与实际模型；并非 Novita API 的全部能力。","keywords":["媒体","novita","视频","端点"]}},"source":"../../kiki-plugins/plugins/official/kiki-media-novita","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-novita-0.1.1.zip"},
+    {"id":"kiki-media-agnes","tier":"official","displayName":"Agnes Video","version":"0.1.1","description":"Optional Agnes 2.5, Flash and V2.0 video endpoint adapter with explicit frame and reference roles. Configure a compatible endpoint.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-agnes","keywords":["media","agnes","video","endpoint"],"author":"Kiki","license":"MIT","engines":{"kiki":"^0.4.0"},"group":"media","icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-agnes/icon-0.1.1.svg","sha256":"8af06811f65c01a25e2fcc289255b82730d62d9fcf349f1b5cdb3eec7edc8ad0","localizations":{"zh":{"description":"可选的 Agnes 2.5、Flash 与 V2.0 视频端点适配，明确区分首帧与参考素材角色。需配置兼容端点。","keywords":["媒体","agnes","视频","端点"]}},"source":"../../kiki-plugins/plugins/official/kiki-media-agnes","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-agnes-0.1.1.zip"},
+    {"id":"kiki-media-newapi","tier":"official","displayName":"NewAPI Compatible Video","version":"0.1.1","description":"Optional NewAPI /video/generations gateway profile. Model availability and audio generation depend on your configured endpoint.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-newapi","keywords":["media","newapi","video","gateway"],"author":"Kiki","license":"MIT","engines":{"kiki":"^0.4.0"},"group":"media","icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-newapi/icon-0.1.1.svg","sha256":"28f0946f85512a0a9576838298bc7ade9a99e93e4dbced4efc70a4590c4c4de1","localizations":{"zh":{"description":"可选的 NewAPI /video/generations 网关配置。可用模型与是否生成音频，取决于你配置的端点。","keywords":["媒体","newapi","视频","网关"]}},"source":"../../kiki-plugins/plugins/official/kiki-media-newapi","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-newapi-0.1.1.zip"},
+    {"id":"kiki-media-comfyui","tier":"official","displayName":"ComfyUI Workflow","version":"0.1.1","description":"Optional ComfyUI API-format image and video workflows using your running endpoint and installed models. No engine, GPU runtime or models are bundled.","homepage":"https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-comfyui","keywords":["media","comfyui","image","video","workflow","local"],"author":"Kiki","license":"MIT","engines":{"kiki":"^0.4.0"},"group":"media","icon":"https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-comfyui/icon-0.1.1.svg","sha256":"0d7729146c64dc127ea7860e70fa6a7120605b60cf1488419f43e0e9f08d1dab","localizations":{"zh":{"description":"可选的 ComfyUI API 格式图像与视频工作流，使用你已运行的端点与已安装的模型。不附带引擎、GPU 运行环境或模型。","keywords":["媒体","comfyui","图像","视频","工作流","本地"]}},"source":"../../kiki-plugins/plugins/official/kiki-media-comfyui","publishedSource":"https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-comfyui-0.1.1.zip"},
+    {"id":"kimi-datasource","tier":"official","displayName":"Kimi Datasource","version":"3.4.0","description":"Official datasource workflows.","homepage":"https://github.com/MoonshotAI/kimi-code","keywords":["data","mcp"],"author":"Moonshot AI","license":"License not declared by upstream","sha256":"f395c73bc463566506fa198a590cb927a1aad093f32936f0f9809a2f30537bad","localizations":{"zh":{"description":"官方数据源工具：金融、宏观、企业、学术与法律数据，涵盖财报与行情序列。","keywords":["数据","数据源","金融","行情"]}},"source":"./official/kimi-datasource","publishedSource":"https://code.kimi.com/kimi-code/plugins/official/kimi-datasource.zip"},
+    {"id":"kimi-webbridge","tier":"official","displayName":"Kimi Browser Extension","version":"1.11.3","description":"Control your real browser from Kiki.","homepage":"https://www.kimi.com/features/webbridge","keywords":["browser","automation","webbridge"],"author":"Moonshot AI","license":"Proprietary","sha256":"1c1dc29ddcdec4c8accd44a0c9c7b3fb83b2da178fb558148a86cdbc0d9b7f56","localizations":{"zh":{"description":"在 Kiki 中操作你真实的浏览器，沿用你已登录的会话。","keywords":["浏览器","自动化","扩展"]}},"source":"./official/kimi-webbridge","publishedSource":"https://code.kimi.com/kimi-code/plugins/official/kimi-webbridge.zip"},
+    {"id":"superpowers","tier":"curated","displayName":"Superpowers","version":"6.4.2","description":"Planning, TDD, debugging, and delivery workflows for coding agents.","homepage":"https://github.com/obra/superpowers","keywords":["skills","planning","tdd","debugging","code-review"],"author":"Jesse Vincent","license":"MIT","localizations":{"zh":{"description":"面向编码 agent 的规划、测试驱动开发、调试与交付流程。","keywords":["技能","规划","测试驱动","调试","代码评审"]}},"source":"https://github.com/obra/superpowers/commit/8ca22dba9a94f28898bbce59f2537ff4d87c747d"},
+    {"id":"vercel-plugin","tier":"curated","displayName":"Vercel Plugin","version":"0.53.0","description":"Comprehensive Vercel ecosystem plugin: skills, agents, and conventions for the Vercel platform.","homepage":"https://vercel.com/docs/agent-resources/vercel-plugin","keywords":["vercel","deployment","nextjs","skills","agents"],"author":"Vercel","license":"Apache-2.0","relevance":{"dependencies":["next","@vercel/*"]},"localizations":{"zh":{"description":"面向 Vercel 平台的技能、agent 与工程约定。","keywords":["vercel","部署","nextjs","技能","agent"]}},"source":"https://github.com/vercel/vercel-plugin/commit/3b472643cbb1a42479d99b0c9a1d27b8bc84aaa7"},
+    {"id":"modern-web-guidance","tier":"curated","displayName":"Modern Web Guidance","version":"0.0.191","description":"Modern web platform expertise, best practices, and browser compatibility data for coding agents, from the Google Chrome team.","homepage":"https://github.com/GoogleChrome/modern-web-guidance","keywords":["web","css","browser","frontend","skills"],"author":"Google Chrome","license":"Apache-2.0","localizations":{"zh":{"description":"来自 Google Chrome 团队的现代 Web 平台实践、最佳做法与浏览器兼容性数据。","keywords":["web","css","浏览器","前端","技能"]}},"source":"https://github.com/GoogleChrome/modern-web-guidance/commit/84ae7251ee919239d5ea85aef25897983f26601e"}
   ]
 }

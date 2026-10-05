@@ -19,8 +19,9 @@ export type OfficialPluginFixtureId = keyof typeof checksums;
 const cacheRoot = resolve(import.meta.dirname, '../../../../.tmp/official-plugin-fixtures');
 const pending = new Map<OfficialPluginFixtureId, Promise<Buffer>>();
 
-async function archive(id: OfficialPluginFixtureId): Promise<Buffer> {
-  const checksum = checksums[id];
+export async function fixedPublishedArchive(source: string, checksum: string): Promise<Buffer> {
+  assert.match(source, /^https:\/\//);
+  assert.match(checksum, /^[0-9a-f]{64}$/);
   const path = join(cacheRoot, checksum + '.zip');
   const cached = await readFile(path).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return undefined;
@@ -30,8 +31,8 @@ async function archive(id: OfficialPluginFixtureId): Promise<Buffer> {
     assert.equal(createHash('sha256').update(cached).digest('hex'), checksum, `Corrupt fixed plugin fixture cache: ${path}`);
     return cached;
   }
-  const bytes = await downloadZip(`${release}${id}-0.1.0.zip`);
-  assert.equal(createHash('sha256').update(bytes).digest('hex'), checksum, `Fixed plugin fixture checksum mismatch: ${id}`);
+  const bytes = await downloadZip(source);
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), checksum, `Fixed plugin fixture checksum mismatch: ${source}`);
   await mkdir(cacheRoot, { recursive: true });
   const temporary = await mkdtemp(join(cacheRoot, 'download-'));
   try {
@@ -47,7 +48,7 @@ async function archive(id: OfficialPluginFixtureId): Promise<Buffer> {
 export async function fixedArchive(id: OfficialPluginFixtureId): Promise<Buffer> {
   const running = pending.get(id);
   if (running !== undefined) return running;
-  const task = archive(id);
+  const task = fixedPublishedArchive(`${release}${id}-0.1.0.zip`, checksums[id]);
   pending.set(id, task);
   try {
     return await task;

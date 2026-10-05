@@ -16,8 +16,6 @@ import { PLUGINS_SECTION, type PluginsSection } from '#/app/plugin/configSection
 import { parsePluginMarketplace, readPluginMarketplace } from '#/app/plugin/marketplace';
 import { ScopedMediaStore } from '#/agent/media/sessionMediaStoreService';
 import { IPluginMediaService, type MediaJobOwner, type StoredMediaJob } from './pluginMedia';
-import { IFlagService } from '#/app/flag/flag';
-import './flag';
 
 const prefix = '';
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -47,7 +45,6 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IConfigService private readonly configService: IConfigService,
-    @IFlagService private readonly flags: IFlagService,
     @IInstantiationService instantiation: IInstantiationService,
   ) {
     super();
@@ -119,7 +116,6 @@ export class PluginMediaService extends Service implements IPluginMediaService {
 
   async start(raw: MediaGenerateInput, owner: MediaJobOwner): Promise<MediaJob> {
     await this.ready;
-    if (!this.flags.enabled('media_generation')) throw new Error('Media generation is experimental. Enable media_generation in Experimental settings.');
     const input = mediaGenerateInputSchema.parse(raw);
     if (input.request_id === undefined) throw new Error('Media generation requires a stable request id');
     const id = `media-${hash([owner.sessionId, owner.agentId, input.request_id]).slice(0, 32)}`;

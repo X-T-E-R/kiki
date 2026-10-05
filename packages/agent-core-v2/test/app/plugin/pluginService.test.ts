@@ -13,6 +13,7 @@ import {
 import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { readDefaultPluginCatalog } from '#/app/plugin/defaultCatalog';
 import { IPluginService } from '#/app/plugin/plugin';
 import { PluginService } from '#/app/plugin/pluginService';
 import * as pluginStore from '#/app/plugin/store';
@@ -24,6 +25,7 @@ import { IProviderService, type ProviderConfig } from '#/kosong/provider/provide
 
 import { stubBootstrap } from '../bootstrap/stubs';
 import { stubProviderService } from '../provider/stubs';
+import { fixedPublishedArchive } from '../../fixtures/officialPlugins';
 
 vi.mock('#/app/plugin/store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('#/app/plugin/store')>();
@@ -37,9 +39,9 @@ vi.mock('#/app/plugin/store', async (importOriginal) => {
 const readInstalled = vi.mocked(pluginStore.readInstalled);
 const writeInstalled = vi.mocked(pluginStore.writeInstalled);
 
-async function installWithConsent(service: IPluginService, source: string): Promise<void> {
-  const plan = await service.previewPlugin({ source });
-  await service.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
+async function installWithConsent(service: IPluginService, source: string, sha256?: string): Promise<void> {
+  const plan = await service.previewPlugin({ source, sha256 });
+  await service.installPlugin({ source, sha256, fingerprint: plan.fingerprint, consent: true });
 }
 
 function makeHost(
@@ -169,6 +171,53 @@ describe('PluginService (plugin boundary)', () => {
       if (dir !== undefined) await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
+
+  it('installs every bundled official entry from fixed published ZIP responses through IPluginService', async () => {
+    const scratchRoot = path.resolve(import.meta.dirname, '../../../../../.tmp');
+    await mkdir(scratchRoot, { recursive: true });
+    const home = await mkdtemp(path.join(scratchRoot, 'official-plugin-service-'));
+    createdDirs.push(home);
+    const { marketplace } = await readDefaultPluginCatalog({ fetchImpl: async () => { throw new Error('Catalog offline'); } });
+    const installable = marketplace.plugins.filter((entry) => entry.tier === 'official' && entry.source !== '');
+    expect(installable.length).toBe(marketplace.plugins.filter((entry) => entry.tier === 'official').length);
+    const archives = new Map(await Promise.all(installable.map(async (entry) => {
+      expect(entry.source).toMatch(/^https:\/\/.+\.zip$/);
+      expect(entry.sha256).toMatch(/^[0-9a-f]{64}$/);
+      return [entry.source, await fixedPublishedArchive(entry.source, entry.sha256!)] as const;
+    })));
+    const fetchArchive: typeof fetch = async (input) => {
+      const source = input instanceof Request ? input.url : input.toString();
+      const bytes = archives.get(source);
+      if (bytes === undefined) throw new Error(`Unexpected plugin fixture URL: ${source}`);
+      return new Response(new Uint8Array(bytes), { status: 200 });
+    };
+    await expect(fetchArchive('https://example.test/unexpected.zip')).rejects.toThrow('Unexpected plugin fixture URL');
+    vi.stubGlobal('fetch', vi.fn(fetchArchive));
+    const host = makeHost(home);
+    try {
+      const svc = host.app.accessor.get(IPluginService);
+      await expect(svc.previewPlugin({ source: installable[0]!.source, sha256: '0'.repeat(64) })).rejects.toThrow('Plugin ZIP sha256 mismatch');
+      expect(await svc.listPlugins()).toEqual([]);
+      for (const entry of installable) {
+        await installWithConsent(svc, entry.source, entry.sha256);
+        const info = await svc.getPluginInfo({ id: entry.id });
+        expect(info, entry.id).toMatchObject({ id: entry.id, version: entry.version, state: 'ok', enabled: false, zipSha256: entry.sha256 });
+        expect(info.root).toBe(path.join(home, 'plugins/managed', entry.id));
+        expect(info.root).not.toBe(entry.source);
+        if (entry.id.startsWith('kiki-')) expect(await readFile(path.join(info.root, 'LICENSE'), 'utf8')).not.toBe('');
+      }
+      expect((await svc.listPlugins()).map((plugin) => plugin.id).toSorted())
+        .toEqual(installable.map((entry) => entry.id).toSorted());
+      const office = await svc.getPluginInfo({ id: 'kiki-office' });
+      expect(await readFile(path.join(office.root, 'entry.mjs'), 'utf8')).toContain('export');
+      expect(vi.mocked(fetch)).toHaveBeenCalled();
+      for (const [input] of vi.mocked(fetch).mock.calls) {
+        expect(archives.has(input instanceof Request ? input.url : input.toString())).toBe(true);
+      }
+    } finally {
+      host.dispose();
+    }
+  }, 30_000);
 
   it('degrades non-blocking consumption reads but rejects hook reads when installed.json is corrupt', async () => {
     const home = await makeHome();

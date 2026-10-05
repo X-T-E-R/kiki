@@ -23,8 +23,10 @@ import {
   withLatestVersions,
   type MarketplaceLocation,
   type PluginMarketplace,
+  type PluginMarketplaceEntry,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { readDefaultPluginCatalog } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
 import { z } from 'zod';
 import {
   pluginSettingsResponseSchema, pluginSettingsPatchSchema, pluginPrerequisiteInstallSchema,
@@ -82,8 +84,8 @@ function fetchWithTimeout(...args: Parameters<typeof fetch>): Promise<Response> 
 export interface PluginsRouteOptions {
   /**
    * Catalog URL resolver, invoked per request so a config.toml or env change is
-   * reflected without a restart. `undefined` means no marketplace is configured
-   * and the route returns `{ configured: false }` without fetching.
+   * reflected without a restart. `undefined` selects the bundled official
+   * catalog without fetching; an explicit source fully overrides that catalog.
    */
   readonly marketplaceUrl: () => string | undefined;
   readonly serverToken: () => string;
@@ -107,45 +109,36 @@ export function registerPluginsRoutes(
     },
     async (req, reply) => {
       const source = nonemptyMarketplaceSource(opts.marketplaceUrl());
-      if (source === undefined) {
-        reply.send(okEnvelope({ configured: false, entries: [] }, req.id));
-        return;
-      }
       const fetchImpl = opts.fetchImpl ?? fetchWithTimeout;
-      let read: { raw: string; location: MarketplaceLocation };
-      try {
-        read = await readPluginMarketplace({
-          source,
-          workDir: process.cwd(),
-          fetchImpl,
-        });
-      } catch (error) {
-        reply.send(
-          errEnvelope(
-            ErrorCode.INTERNAL_ERROR,
-            `Plugin marketplace is unreachable: ${error instanceof Error ? error.message : String(error)}`,
-            req.id,
-          ),
-        );
-        return;
-      }
+      let read: { raw: string; location: MarketplaceLocation } | undefined;
       let marketplace: PluginMarketplace;
-      try {
-        marketplace = parsePluginMarketplace(read.raw, read.location);
-      } catch (error) {
-        reply.send(
-          errEnvelope(
-            ErrorCode.INTERNAL_ERROR,
-            `Plugin marketplace returned an invalid catalog: ${error instanceof Error ? error.message : String(error)}`,
-            req.id,
-          ),
-        );
-        return;
+      if (source === undefined) {
+        try {
+          marketplace = (await readDefaultPluginCatalog()).marketplace;
+        } catch (error) {
+          reply.send(mapPluginError(error, req.id));
+          return;
+        }
+      } else {
+        try {
+          read = await readPluginMarketplace({ source, workDir: process.cwd(), fetchImpl });
+        } catch (error) {
+          reply.send(errEnvelope(ErrorCode.INTERNAL_ERROR,
+            `Plugin marketplace is unreachable: ${error instanceof Error ? error.message : String(error)}`, req.id));
+          return;
+        }
+        try {
+          marketplace = parsePluginMarketplace(read.raw, read.location);
+        } catch (error) {
+          reply.send(errEnvelope(ErrorCode.INTERNAL_ERROR,
+            `Plugin marketplace returned an invalid catalog: ${error instanceof Error ? error.message : String(error)}`, req.id));
+          return;
+        }
+        marketplace = await withLatestVersions(marketplace, fetchImpl);
       }
-      marketplace = await withLatestVersions(marketplace, fetchImpl);
       const installed = await core.accessor.get(IPluginService).listPlugins();
       const byId = new Map(installed.map((p) => [p.id, p]));
-      const localIcons = await localOfficialIcons(marketplace, read.location);
+      const localIcons = read === undefined ? new Map<string, string>() : await localOfficialIcons(marketplace, read.location);
       const entries: PluginMarketplaceEntryWire[] = [];
       for (const entry of marketplace.plugins) {
         const record = byId.get(entry.id);
@@ -167,11 +160,26 @@ export function registerPluginsRoutes(
           relevance: entry.relevance,
           version: entry.version,
           source: entry.source,
+          installable: installableSource(entry),
+          group: entry.group,
+          sha256: entry.sha256,
+          engines: entry.engines,
+          author: entry.author,
+          license: entry.license,
           installed: installedInfo,
           updateAvailable: updateAvailable ? true : undefined,
+          localizations: entry.localizations === undefined
+            ? undefined
+            : Object.fromEntries(
+                Object.entries(entry.localizations).map(([locale, text]) => [locale, {
+                  displayName: text.displayName,
+                  description: text.description,
+                  keywords: text.keywords === undefined ? undefined : [...text.keywords],
+                }]),
+              ),
         });
       }
-      reply.send(okEnvelope({ configured: true, source: read.location.resolved, entries }, req.id));
+      reply.send(okEnvelope({ configured: true, source: marketplace.source, entries }, req.id));
     },
   );
   app.get(
@@ -190,9 +198,13 @@ export function registerPluginsRoutes(
     async (req, reply) => {
       try {
         const source = nonemptyMarketplaceSource(opts.marketplaceUrl());
-        if (source === undefined) { reply.send(okEnvelope({ entries: [] }, req.id)); return; }
-        const { raw, location } = await readPluginMarketplace({ source, workDir: process.cwd(), fetchImpl: opts.fetchImpl ?? fetchWithTimeout });
-        const catalog = parsePluginMarketplace(raw, location);
+        let catalog: PluginMarketplace;
+        if (source === undefined) {
+          catalog = (await readDefaultPluginCatalog()).marketplace;
+        } else {
+          const { raw, location } = await readPluginMarketplace({ source, workDir: process.cwd(), fetchImpl: opts.fetchImpl ?? fetchWithTimeout });
+          catalog = parsePluginMarketplace(raw, location);
+        }
         const installed = new Set((await core.accessor.get(IPluginService).listPlugins()).map((item) => item.id));
         const dismissed = new Set((await core.accessor.get(IAtomicDocumentStore).get<readonly string[]>('plugin-relevance', 'dismissed')) ?? []);
         const entries = relevantPlugins(catalog.plugins, req.body, installed, dismissed).map((item) => ({
@@ -575,6 +587,16 @@ function mapPluginError(error: unknown, requestId: string) {
     requestId,
     error instanceof Error ? error.stack : undefined,
   );
+}
+
+function installableSource(entry: PluginMarketplaceEntry): boolean {
+  const source = entry.source.trim();
+  if (source.length === 0) return false;
+  if (source.startsWith('http://') || source.startsWith('https://')) {
+    if (source.includes('github.com')) return true;
+    return entry.sha256 !== undefined;
+  }
+  return true;
 }
 
 async function localOfficialIcons(

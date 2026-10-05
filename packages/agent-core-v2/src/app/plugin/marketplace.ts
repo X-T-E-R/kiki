@@ -57,6 +57,47 @@ export interface PluginMarketplaceEntry {
   readonly keywords?: readonly string[];
   readonly relevance?: PluginRelevance;
   readonly builtIn?: boolean;
+  /**
+   * SHA-256 of the ZIP at `source`, lower-case hex. The installer refuses a
+   * remote ZIP without one, so a catalog that publishes versioned archives
+   * carries it here and the GUI hands it straight to preview and install.
+   */
+  readonly sha256?: string;
+  /**
+   * Plugin engine range this build accepts (`x-kiki.engines.kiki` of the
+   * packaged manifest), not the product version. `undefined` means the
+   * manifest declares no engine constraint.
+   */
+  readonly engines?: { readonly kiki?: string };
+  /** Who maintains the package, as the catalog states it. Never inferred. */
+  readonly author?: string;
+  readonly license?: string;
+  /**
+   * Optional catalog-declared sub-group, so a family of related packages
+   * (the media entry and its providers) reads as one block without the client
+   * knowing any package by name. Absent means "no sub-group".
+   */
+  readonly group?: string;
+  /**
+   * Per-language catalog text, keyed by BCP-47 language tag, so a browsing
+   * GUI can show a name, a description and match searches in the reader's own
+   * language. This is catalog metadata only: it never reaches the plugin
+   * payload or the manifest.
+   *
+   * Every field is optional and falls back to the top-level value, so a
+   * catalog may translate one field, one language, or none at all — a
+   * third-party entry with no localization simply shows its original text.
+   * Brand names are not expected to be translated; leaving `displayName` out
+   * is how an entry keeps its own name.
+   */
+  readonly localizations?: Readonly<Record<string, PluginMarketplaceEntryLocalization>>;
+}
+
+/** One language's catalog text. Each field falls back to the top-level one. */
+export interface PluginMarketplaceEntryLocalization {
+  readonly displayName?: string;
+  readonly description?: string;
+  readonly keywords?: readonly string[];
 }
 
 export interface PluginMarketplace {
@@ -133,7 +174,8 @@ export async function readPluginMarketplace(
   }
 }
 
-export function parsePluginMarketplace(raw: string, location: MarketplaceLocation): PluginMarketplace {
+/** Prefer publishedSource for release consumption; explicit development catalogs retain their checkout source. */
+export function parsePluginMarketplace(raw: string, location: MarketplaceLocation, preferPublishedSource = false): PluginMarketplace {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -154,7 +196,7 @@ export function parsePluginMarketplace(raw: string, location: MarketplaceLocatio
   return {
     source: location.resolved,
     version: stringField(parsed, 'version'),
-    plugins: rawPlugins.map((entry, index) => parseMarketplaceEntry(entry, index, location)),
+    plugins: rawPlugins.map((entry, index) => parseMarketplaceEntry(entry, index, location, preferPublishedSource)),
   };
 }
 
@@ -205,13 +247,15 @@ function parseMarketplaceEntry(
   value: unknown,
   index: number,
   location: MarketplaceLocation,
+  preferPublishedSource: boolean,
 ): PluginMarketplaceEntry {
   if (!isRecord(value)) {
     throw new TypeError(`Plugin marketplace entry ${index + 1} must be an object.`);
   }
   const id = requiredString(value, 'id', index);
   validateMarketplaceEntryType(value, id);
-  const source = stringField(value, 'source') ??
+  const source = (preferPublishedSource ? stringField(value, 'publishedSource') : undefined) ??
+    stringField(value, 'source') ??
     stringField(value, 'url') ??
     stringField(value, 'downloadUrl');
   if (source === undefined) {
@@ -229,7 +273,60 @@ function parseMarketplaceEntry(
     icon: absoluteHttpUrl(value['icon']),
     keywords: stringArrayField(value, 'keywords'),
     relevance: value['relevance'] === undefined ? undefined : pluginRelevanceSchema.parse(value['relevance']),
+    sha256: sha256Field(value['sha256'], id),
+    engines: parseEngines(value['engines'], id),
+    author: stringField(value, 'author'),
+    license: stringField(value, 'license'),
+    group: stringField(value, 'group'),
+    localizations: localizationsField(value['localizations'], id),
   };
+}
+
+function sha256Field(value: unknown, id: string): string | undefined {
+  const digest = stringField({ sha256: value }, 'sha256');
+  if (digest === undefined) return undefined;
+  if (!/^[0-9a-fA-F]{64}$/.test(digest)) {
+    throw new TypeError(`Plugin marketplace entry ${id} "sha256" must be 64 hex characters.`);
+  }
+  return digest.toLowerCase();
+}
+
+function localizationsField(
+  value: unknown,
+  id: string,
+): Record<string, PluginMarketplaceEntryLocalization> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new TypeError(`Plugin marketplace entry ${id} "localizations" must be an object.`);
+  }
+  const out: Record<string, PluginMarketplaceEntryLocalization> = {};
+  for (const [locale, raw] of Object.entries(value)) {
+    if (!isRecord(raw)) {
+      throw new TypeError(
+        `Plugin marketplace entry ${id} "localizations.${locale}" must be an object.`,
+      );
+    }
+    const entry = raw;
+    const parsed: PluginMarketplaceEntryLocalization = {
+      displayName: stringField(entry, 'displayName'),
+      description: stringField(entry, 'description'),
+      keywords: stringArrayField(entry, 'keywords'),
+    };
+    if (parsed.displayName === undefined && parsed.description === undefined && parsed.keywords === undefined) {
+      continue;
+    }
+    out[locale] = parsed;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function parseEngines(value: unknown, id: string): { readonly kiki?: string } | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new TypeError(`Plugin marketplace entry ${id} "engines" must be an object.`);
+  }
+  const kiki = stringField(value, 'kiki');
+  return kiki === undefined ? undefined : { kiki };
 }
 
 function validateMarketplaceEntryType(value: Record<string, unknown>, id: string): void {

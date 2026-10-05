@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
+import { StubConfigService } from '../../kosong/stubs';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { ILogService } from '#/_base/log/log';
@@ -52,4 +53,32 @@ it('stores heterogeneous script secrets in the existing shared credential docume
     await storage.close();
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
+});
+
+it.each([false, true])('merges renamed settings with current conflicts winning in either storage order (%s)', async (legacyFirst) => {
+  const legacy = { pythonPath: 'legacy-python', retained: true, plugin_credential_secret: 'fixture-secret' };
+  const current = { pythonPath: 'current-python', added: 42 };
+  const config = new StubConfigService({ pluginSettings: Object.fromEntries(legacyFirst
+    ? [['kiki-documents', legacy], ['kiki-extract', current]]
+    : [['kiki-extract', current], ['kiki-documents', legacy]]) });
+  const ix = new TestInstantiationService();
+  ix.stub(IConfigService, config);
+  ix.stub(IPluginService, { getPluginInfo: async ({ id }: { id: string }) => {
+    expect(id).toBe('kiki-extract');
+    return { manifest: { kiki: { permissions: { secrets: true }, settings: { schema: { type: 'object', properties: {
+      pythonPath: { type: 'string' }, retained: { type: 'boolean' }, added: { type: 'number' }, credential: { type: 'string', secret: true },
+    } } } } } };
+  } } as unknown as IPluginService);
+  ix.set(IPluginSettingsService, new SyncDescriptor(PluginSettingsService));
+  try {
+    const settings = ix.get(IPluginSettingsService);
+    const expected = { pythonPath: 'current-python', retained: true, added: 42, credential: 'fixture-secret' };
+    expect(await settings.forExecution('kiki-extract')).toEqual(expected);
+    expect(await settings.inspect('kiki-documents')).toMatchObject({ values: { pythonPath: 'current-python', retained: true, added: 42 }, secretsConfigured: ['credential'] });
+    await settings.update({ pluginId: 'kiki-documents', values: { added: 43 } });
+    expect(await settings.forExecution('kiki-extract')).toEqual({ ...expected, added: 43 });
+    expect(Object.keys(config.get<Record<string, unknown>>('pluginSettings'))).toEqual(['kiki-extract']);
+    await settings.clear('kiki-documents');
+    expect(await settings.forExecution('kiki-extract')).toEqual({});
+  } finally { ix.dispose(); }
 });

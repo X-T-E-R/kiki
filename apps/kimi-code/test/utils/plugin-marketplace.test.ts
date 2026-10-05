@@ -235,8 +235,8 @@ describe('loadPluginMarketplace', () => {
         id: 'superpowers',
         displayName: 'Superpowers',
         tier: 'curated',
-        source: 'https://github.com/obra/superpowers',
-        version: '6.0.3',
+        source: 'https://github.com/obra/superpowers/commit/8ca22dba9a94f28898bbce59f2537ff4d87c747d',
+        version: '6.4.2',
       }),
     );
     expect(marketplace.plugins).toContainEqual(
@@ -246,6 +246,11 @@ describe('loadPluginMarketplace', () => {
         source: join(REPO_ROOT, 'plugins/official/kimi-datasource'),
       }),
     );
+    expect(marketplace.plugins).toContainEqual(expect.objectContaining({
+      id: 'kiki-office',
+      source: resolve(REPO_ROOT, '../kiki-plugins/plugins/official/kiki-office'),
+      engines: { kiki: '^0.4.0' },
+    }));
   });
 
   it('loads the source-checkout catalog without any network fetch when no source is configured', async () => {
@@ -267,6 +272,11 @@ describe('loadPluginMarketplace', () => {
       expect(marketplace.plugins.map((entry) => entry.id)).toEqual(
         expect.arrayContaining(['superpowers', 'kimi-datasource', 'kimi-cu', 'kimi-webbridge']),
       );
+      const office = marketplace.plugins.find((entry) => entry.id === 'kiki-office')!;
+      expect(office.source).toBe('https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-office-0.1.1.zip');
+      expect(office.sha256).toBe('12189919fe7b52a6ea9f785126be72bdd6c53cdbc666e2961c9a7dfacf29c7be');
+      expect(office.engines).toEqual({ kiki: '^0.4.0' });
+      expect(office.localizations?.['zh']?.keywords).toContain('办公');
     } finally {
       if (previous === undefined) {
         delete process.env[KIKI_PLUGIN_MARKETPLACE_URL_ENV];

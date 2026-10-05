@@ -127,7 +127,7 @@ export async function loadPluginMarketplace(
     }
     throw error;
   }
-  const parsed = parsePluginMarketplace(read.raw, read.location);
+  const parsed = parsePluginMarketplace(read.raw, read.location, configuredSource === undefined);
   const marketplace =
     configuredSource === undefined || options.skipLatestVersions === true
       ? parsed

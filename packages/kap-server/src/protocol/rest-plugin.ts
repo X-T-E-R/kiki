@@ -63,6 +63,22 @@ export const pluginMarketplaceEntrySchema = z.object({
   }).optional(),
   version: z.string().optional(),
   source: z.string(),
+  sha256: z.string().optional(),
+  engines: z.object({ kiki: z.string().optional() }).optional(),
+  author: z.string().optional(),
+  license: z.string().optional(),
+  installable: z.boolean().optional(),
+  group: z.string().optional(),
+  localizations: z
+    .record(
+      z.string(),
+      z.object({
+        displayName: z.string().optional(),
+        description: z.string().optional(),
+        keywords: z.array(z.string()).optional(),
+      }),
+    )
+    .optional(),
   installed: z
     .object({
       version: z.string().optional(),

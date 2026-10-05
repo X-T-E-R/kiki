@@ -2,11 +2,18 @@
   "name": "kimi-datasource",
   "version": "3.3.0",
   "description": "Finance, macro, enterprise, academic, and legal data tools for Kiki.",
-  "keywords": ["finance", "data-source", "mcp", "legal"],
+  "keywords": [
+    "finance",
+    "data-source",
+    "mcp",
+    "legal"
+  ],
   "mcpServers": {
     "data": {
       "command": "node",
-      "args": ["./bin/kimi-datasource.mjs"],
+      "args": [
+        "./bin/kimi-datasource.mjs"
+      ],
       "cwd": "./"
     }
   },
@@ -14,5 +21,6 @@
     "displayName": "Kimi Datasource",
     "shortDescription": "Finance, macro, enterprise, academic, and legal data tools",
     "developerName": "Moonshot AI"
-  }
+  },
+  "icon": "./icon.svg"
 }

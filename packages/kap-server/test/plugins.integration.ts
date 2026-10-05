@@ -1,10 +1,12 @@
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { IPluginHostService } from '@kiki/agent-core-v2';
+import { readDefaultPluginCatalog, OFFICIAL_PLUGIN_CATALOG_SOURCE } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fixedArchive, officialPluginFixture, officialPluginFixtureSource, prepareOfficialPluginFixtures } from '../../agent-core-v2/test/fixtures/officialPlugins';
 
 import { WebSocket } from 'ws';
 
@@ -89,8 +91,20 @@ describe('server-v2 /api plugins', () => {
   let base: string;
   const createdDirs: string[] = [];
 
+  beforeAll(() => prepareOfficialPluginFixtures('kiki-writing', 'kiki-office'), 60_000);
+
+  async function seedOfflinePricing(homeDir: string): Promise<void> {
+    await mkdir(join(homeDir, 'model-pricing'), { recursive: true });
+    const cached = join(homeDir, 'model-pricing/model_prices_and_context_window.json');
+    await cp(join(import.meta.dirname, '../vendor/litellm/model_prices_and_context_window.json'), cached);
+    const now = new Date();
+    await utimes(cached, now, now);
+  }
+
   beforeEach(async () => {
+    vi.stubEnv('KIKI_SEARCH_BACKEND', 'minidb');
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-plugins-'));
+    await seedOfflinePricing(home);
     const realFetch = globalThis.fetch;
     vi.stubGlobal(
       'fetch',
@@ -107,7 +121,8 @@ describe('server-v2 /api plugins', () => {
         if (typeof url === 'string' && url.includes('/releases/latest')) {
           return new Response(null, { status: 404 });
         }
-        return realFetch(url as never, init);
+        if (String(url).startsWith('http://127.0.0.1:')) return realFetch(url as never, init);
+        throw new Error(`Unexpected network access in plugin integration test: ${String(url)}`);
       }),
     );
     server = await startServer({
@@ -150,10 +165,10 @@ describe('server-v2 /api plugins', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
-  async function install<T>(source: string): Promise<{ status: number; body: Envelope<T> }> {
-    const preview = await call<{ fingerprint: string; consentRequired: boolean }>('POST', '/api/plugins:preview', { source });
+  async function install<T>(source: string, sha256?: string): Promise<{ status: number; body: Envelope<T> }> {
+    const preview = await call<{ fingerprint: string; consentRequired: boolean }>('POST', '/api/plugins:preview', { source, sha256 });
     expect(preview.body.code).toBe(0);
-    return call<T>('POST', '/api/plugins', { source, fingerprint: preview.body.data.fingerprint, consent: true });
+    return call<T>('POST', '/api/plugins', { source, sha256, fingerprint: preview.body.data.fingerprint, consent: true });
   }
 
   async function makePluginDir(id: string, version: string): Promise<string> {
@@ -167,7 +182,7 @@ describe('server-v2 /api plugins', () => {
   }
 
   it('serves an enabled writing panel as CSP-protected srcdoc and lists its command', async () => {
-    const source = join(import.meta.dirname, '../../../plugins/official/kiki-writing');
+    const source = await officialPluginFixture('kiki-writing', join(home!, 'writing-package'));
     expect((await install(source)).body.code).toBe(0);
     expect((await call('POST', '/api/plugins/kiki-writing:enable')).body.code).toBe(0);
     const listed = await call<{ panels: { pluginId: string; id: string }[] }>('GET', '/api/plugins/panels');
@@ -199,10 +214,10 @@ describe('server-v2 /api plugins', () => {
   });
 
   it('returns the shipped manifest icon of an installed plugin in list and detail', async () => {
-    const plugins = ['kiki-office', 'kiki-writing'];
+    const plugins = ['kiki-office', 'kiki-writing'] as const;
     const expected: Record<string, string> = {};
     for (const id of plugins) {
-      const source = join(import.meta.dirname, `../../../plugins/official/${id}`);
+      const source = await officialPluginFixture(id, join(home!, `${id}-package`));
       expected[id] = `data:image/svg+xml;base64,${(await readFile(join(source, 'icon.svg'))).toString('base64')}`;
       expect((await install(source)).body.code, id).toBe(0);
     }
@@ -351,7 +366,7 @@ describe('server-v2 /api plugins', () => {
   });
 
   it.runIf(process.env['KIKI_OFFICE_E2E'] === '1')('installs OfficeCLI with consent, creates a docx, and retires the tool host', async () => {
-    const source = join(import.meta.dirname, '../../../plugins/official/kiki-office');
+    const source = await officialPluginFixture('kiki-office', join(home!, 'office-package'));
     const installed = await install<{ id: string }>(source);
     expect(installed.body.code).toBe(0);
     expect(installed.body.data.id).toBe('kiki-office');
@@ -623,12 +638,14 @@ describe('server-v2 /api plugins', () => {
         tier: 'third-party',
         displayName: 'local-plugin',
         source: join(catalogDir, 'zips', 'local.zip'),
+        installable: true,
       },
       {
         id: 'file-url-plugin',
         tier: 'third-party',
         displayName: 'file-url-plugin',
         source: fileUrlPluginPath,
+        installable: true,
       },
     ]);
     expect(body.data.source).toBe(join(catalogDir, 'marketplace.json'));
@@ -680,32 +697,58 @@ describe('server-v2 /api plugins', () => {
     expect(icons['official-missing']).toBeUndefined();
   });
 
-  it('reports an unconfigured marketplace without fetching a remote catalog', async () => {
+  it('serves bundled official metadata when the catalog is unavailable, matches recommendations and installs a fixed archive with zero configuration', async () => {
     await server?.close();
     const realFetch = globalThis.fetch;
+    const pinnedOffice = officialPluginFixtureSource('kiki-office');
+    const officeArchive = await fixedArchive('kiki-office');
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
-      if (href.includes('/api/')) return realFetch(url as never, init);
+      if (href === pinnedOffice.source) return new Response(new Uint8Array(officeArchive));
+      if (href === 'https://x-t-e-r.github.io/kiki-plugins/marketplace.json') return new Response(null, { status: 503 });
+      if (href.startsWith('http://127.0.0.1:') && href.includes('/api/')) return realFetch(url as never, init);
       throw new Error(`unexpected fetch: ${href}`);
     });
     vi.stubGlobal('fetch', fetchMock);
     vi.stubEnv('KIKI_PLUGIN_MARKETPLACE_URL', undefined as unknown as string);
+    await rm(home!, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+    const scratchRoot = join(import.meta.dirname, '../../../.tmp');
+    await mkdir(scratchRoot, { recursive: true });
+    home = await mkdtemp(join(scratchRoot, 'zero-config-official-'));
+    await seedOfflinePricing(home);
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
-      homeDir: home!,
+      homeDir: home,
       logLevel: 'silent',
     });
     base = `http://127.0.0.1:${server.port}`;
 
-    const { body } = await call<{ configured: boolean; source?: string; entries: unknown[] }>(
-      'GET',
-      '/api/plugins/marketplace',
+    const { body } = await call<{ configured: boolean; source?: string; entries: { id: string; source: string; sha256?: string; tier: string; icon?: string; installable?: boolean }[] }>(
+      'GET', '/api/plugins/marketplace',
     );
-    expect(body.code).toBe(0);
-    expect(body.data).toEqual({ configured: false, entries: [] });
-    expect(fetchMock.mock.calls.some(([url]) => String(url) === CATALOG_URL)).toBe(false);
+    expect(body.code, body.msg).toBe(0);
+    expect(body.data.configured).toBe(true);
+    expect(body.data.source).toBe(OFFICIAL_PLUGIN_CATALOG_SOURCE);
+    const { marketplace } = await readDefaultPluginCatalog();
+    expect(body.data.entries.map((entry) => entry.id).toSorted())
+      .toEqual(marketplace.plugins.map((entry) => entry.id).toSorted());
+    expect(body.data.entries.map((entry) => entry.id)).toEqual(expect.arrayContaining(['kiki-office', 'kiki-media', 'kiki-extract', 'kiki-notion']));
+    expect(body.data.entries.filter((entry) => entry.tier === 'curated').map((entry) => entry.id))
+      .toEqual(['superpowers', 'vercel-plugin', 'modern-web-guidance']);
+    const officialEntries = body.data.entries.filter((entry) => entry.tier === 'official');
+    expect(officialEntries.every((entry) => entry.installable === true)).toBe(true);
+    const office = body.data.entries.find((entry) => entry.id === 'kiki-office')!;
+    expect(office).toMatchObject(pinnedOffice);
+    const matched = await call<{ entries: { id: string; source: string }[] }>('POST', '/api/plugins/recommendations/match', { files: ['draft.docx'] });
+    expect(matched.body.data.entries).toContainEqual(expect.objectContaining({ id: office.id, source: office.source }));
+    expect((await install<{ id: string; enabled: boolean }>(office.source, office.sha256)).body.data).toMatchObject({ id: 'kiki-office', enabled: false });
+    const installed = await call<{ root: string; state: string }>('GET', '/api/plugins/kiki-office');
+    expect(installed.body.data).toMatchObject({ root: join(home, 'plugins/managed/kiki-office'), state: 'ok' });
+    const externalRequests = fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => !url.startsWith(base));
+    expect(externalRequests).toContain(pinnedOffice.source);
+    expect(externalRequests.every((url) => url === pinnedOffice.source || url === 'https://x-t-e-r.github.io/kiki-plugins/marketplace.json')).toBe(true);
   });
 
   it('reads [plugins] marketplace_url from config.toml', async () => {

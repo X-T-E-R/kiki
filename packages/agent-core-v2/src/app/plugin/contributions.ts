@@ -113,6 +113,12 @@ export interface PluginExtension {
   readonly commands?: readonly PluginDeclarativeCommand[];
   readonly entry?: string;
   readonly settings?: PluginSettings;
+  /**
+   * An extra management surface this package owns. The host offers it on the
+   * plugin's own page, so a package with a surface is reached by installing
+   * that package rather than through a global control.
+   */
+  readonly mediaSurface?: { readonly view: 'media' };
 }
 
 export async function parsePluginExtension(
@@ -134,6 +140,7 @@ export async function parsePluginExtension(
     entry: z.string().startsWith('./').optional(),
     settings: settingsContributionSchema.optional(),
     prerequisites: z.unknown().optional(),
+    mediaSurface: z.object({ view: z.literal('media') }).strict().optional(),
   }).strict().safeParse(raw);
   if (!envelope.success) {
     diagnostics.push({ severity: 'error', message: `Invalid x-kiki extension: ${envelope.error.message}` });
@@ -217,6 +224,7 @@ export async function parsePluginExtension(
     commands: value.commands,
     entry: resolvedEntry,
     settings: value.settings,
+    mediaSurface: value.mediaSurface,
   };
 }
 

@@ -189,7 +189,7 @@ export function register(api) {
 
 ## 真实可读的例子
 
-仓内 `plugins/official/` 下可对照 kiki-office（多工具、文件准入、settings、prerequisite、image part、manifest 与定义同步脚本）和 kiki-writing（panel + 声明式命令，无 entry）。历史导入规则已原生预置，唯一实现位于 `packages/agent-core-v2/src/app/pluginImport/builtin/`；其 `entry.mjs` 演示同一 `registerSessionSource` 契约，`examples/custom-json.mjs` 则是无需安装 plugin 的独立脚本。维护与资源边界见同目录上级的 `README.md`。判断写法是否合规时读真实实现，不要照抄临时生成的 skill 文本。
+第一方插件源码在独立的 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins)，不在 Host 仓库中。可对照其中 `plugins/official/kiki-office`（多工具、文件准入、settings、prerequisite、image part、manifest 与定义同步脚本）和 `plugins/official/kiki-writing`（panel + 声明式命令，无 entry）；本地开发先克隆插件仓，再从该仓读取、修改或安装对应目录。历史导入规则仍由 Host 原生提供，唯一实现位于 `packages/agent-core-v2/src/app/pluginImport/builtin/`；其 `entry.mjs` 演示同一 `registerSessionSource` 契约，`examples/custom-json.mjs` 则是无需安装 plugin 的独立脚本。维护与资源边界见同目录上级的 `README.md`。判断写法是否合规时读真实实现，不要照抄临时生成的 skill 文本。
 
 ## 未覆盖
 
