@@ -30,9 +30,9 @@ import type { MCPToolResult } from '#/mcpCore/types';
 import { stubBootstrap } from '../bootstrap/stubs';
 import { stubProviderService } from '../provider/stubs';
 import { stubLog } from '../../_base/log/stubs';
+import { officialPluginFixture } from '../../fixtures/officialPlugins';
 
 const here = import.meta.dirname;
-const source = path.resolve(here, '../../../../../plugins/official/kiki-notion');
 const cleanups: Array<() => Promise<void> | void> = [];
 let root: string;
 
@@ -136,6 +136,7 @@ afterEach(async () => {
 
 describe('kiki-notion install and scripted MCP contract', () => {
   it('installs through consent into an isolated home and exposes the real MCP config and loadable skill', async () => {
+    const source = await officialPluginFixture('kiki-notion', path.join(root, 'notion-package'));
     _clearScopedRegistryForTests();
     registerScopedService(LifecycleScope.App, IPluginService, PluginService, ScopeActivation.OnDemand, 'notion-test');
     registerScopedService(LifecycleScope.App, ISkillDiscovery, FileSkillDiscovery, ScopeActivation.OnDemand, 'notion-test');

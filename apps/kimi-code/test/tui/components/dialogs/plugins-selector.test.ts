@@ -296,7 +296,32 @@ describe('plugins selector dialogs', () => {
     expect(out).toContain('via code.kimi.com · official');
   });
 
-  it('treats only the official Kimi CDN path as a trusted install source', () => {
+  it('recognizes the exact Kiki Release ZIP source and rejects lookalike hosts and repositories', () => {
+    const source = 'https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.3/kiki-writing-0.1.0.zip';
+    expect(isOfficialPluginSource(source)).toBe(true);
+    const plugin = { ...superpowers, id: 'kiki-writing', source: 'zip-url' as const, originalSource: source };
+    expect(pluginTrustLabel(plugin)).toBe('official');
+    expect(isOfficialPluginInstall(plugin)).toBe(true);
+    for (const invalid of [
+      source.replace('https:', 'http:'),
+      source.replace('github.com', 'github.com.example.test'),
+      source.replace('github.com', 'github.com:8443'),
+      source.replace('github.com', 'example@github.com'),
+      source.replace('/X-T-E-R/', '/another-owner/'),
+      source.replace('/kiki-plugins/', '/kiki-plugins-copy/'),
+      source.replace('/releases/download/', '/tree/'),
+      source.replace('.zip', '.zip.exe'),
+      'https://github.com/X-T-E-R/kiki-plugins/releases/download/',
+      'https://x-t-e-r.github.io/kiki-plugins/official/kiki-writing.zip',
+    ]) {
+      expect(isOfficialPluginSource(invalid), invalid).toBe(false);
+      expect(pluginTrustLabel({ ...plugin, originalSource: invalid }), invalid).toBe('third-party');
+      expect(isOfficialPluginInstall({ ...plugin, originalSource: invalid }), invalid).toBe(false);
+    }
+    expect(isOfficialPluginInstall({ ...plugin, source: 'local-path' })).toBe(false);
+  });
+
+  it('retains the official Kimi CDN paths as trusted install sources', () => {
     expect(isOfficialPluginSource('https://code.kimi.com/kimi-code/plugins/official/kimi-datasource.zip')).toBe(true);
     expect(isOfficialPluginSource('https://cdn.kimi.com/kimi-computer-use/latest/kimi-cu-plugin.zip')).toBe(true);
     expect(

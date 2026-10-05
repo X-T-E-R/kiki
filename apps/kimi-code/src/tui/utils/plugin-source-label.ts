@@ -32,8 +32,8 @@ export function formatPluginSourceLabel(plugin: PluginSummary): string {
 }
 
 /**
- * Returns one of three trust labels for a plugin. Only Kimi-hosted plugin zip
- * paths receive official or curated badges. Everything else is third-party.
+ * Labels recognized official locations: Kiki plugin Release ZIPs and the retained
+ * Kimi CDN paths. A manifest id alone does not establish provenance.
  */
 export function pluginTrustLabel(plugin: PluginSummary): PluginTrustLabel {
   if (plugin.source !== 'zip-url' || plugin.originalSource === undefined) {
@@ -58,10 +58,9 @@ export function pluginTrustLabel(plugin: PluginSummary): PluginTrustLabel {
 }
 
 /**
- * Returns true only for install sources that are unambiguously Kimi-built
- * official plugins — an https URL under the official Kimi CDN plugin path.
- * Everything else (local paths, GitHub repos, curated or third-party URLs)
- * is treated as unofficial and should be confirmed before install.
+ * Recognizes HTTPS ZIP locations in the Kiki plugin Release repository or the
+ * retained official Kimi CDN paths. Local directories and arbitrary GitHub
+ * repositories remain unofficial, regardless of manifest identity.
  */
 export function isOfficialPluginSource(source: string): boolean {
   const trimmed = source.trim();
@@ -74,10 +73,8 @@ export function isOfficialPluginSource(source: string): boolean {
 }
 
 /**
- * Returns true when an installed plugin provably came from a trusted official
- * source — a zip download under the official CDN plugin path. Local paths,
- * GitHub repos, and third-party URLs do not qualify, even when their manifest
- * id matches an official plugin.
+ * Checks the installed ZIP's original official location, not its manifest id.
+ * Local paths and generic GitHub sources do not qualify.
  */
 export function isOfficialPluginInstall(plugin: PluginSummary): boolean {
   return (
@@ -88,8 +85,10 @@ export function isOfficialPluginInstall(plugin: PluginSummary): boolean {
 }
 
 function isOfficialPluginUrl(url: URL): boolean {
-  if (url.protocol !== 'https:') return false;
+  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.port !== '') return false;
   return (
+    (url.hostname === 'github.com' &&
+      /^\/X-T-E-R\/kiki-plugins\/releases\/download\/[^/]+\/[^/]+\.zip$/.test(url.pathname)) ||
     (CODE_CDN_HOSTS.has(url.hostname) &&
       url.pathname.startsWith('/kimi-code/plugins/official/')) ||
     (CONTENT_CDN_HOSTS.has(url.hostname) &&

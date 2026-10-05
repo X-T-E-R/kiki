@@ -16,6 +16,7 @@ import { buildInstallPlan, fingerprintDirectory, type PluginInstallPlan } from '
 import { resolveGithubCommitSha, resolveGithubSource } from './github-resolver';
 import { parseManifest, type ParsedManifestResult } from './manifest';
 import { resolvePluginPrerequisites } from './prerequisites';
+import { currentPluginId, RENAMED_PLUGIN_IDS, resolveInstalledPluginId } from './renamedPlugins';
 import { resolveInstallSource } from './source';
 import { readInstalled, writeInstalled, type InstalledFile, type InstalledRecord } from './store';
 import type { PluginAgentRoot } from './types';
@@ -64,11 +65,37 @@ export class PluginManager {
   async load(): Promise<void> {
     const file = await readInstalled(this.kimiHomeDir);
     const next = new Map<string, PluginRecord>();
-    for (const entry of file.plugins) {
-      next.set(entry.id, await this.materialize(entry));
+    const renamed = file.plugins.some((entry) => currentPluginId(entry.id) !== entry.id);
+    for (const entry of preferredInstalledEntries(file.plugins)) {
+      const migrated = await this.migrateRenamedEntry(entry);
+      next.set(migrated.id, await this.materialize(migrated));
     }
     await this.mergeInheritedRecords(next);
+    if (renamed) await this.persist(next);
     this.records = next;
+  }
+
+  private async migrateRenamedEntry(entry: InstalledRecord): Promise<InstalledRecord> {
+    const id = currentPluginId(entry.id);
+    if (id === entry.id) return entry;
+    let root = entry.root;
+    const legacy = path.join(this.kimiHomeDir, 'plugins', 'managed', entry.id);
+    if (path.resolve(root) === path.resolve(legacy)) {
+      const current = path.join(this.kimiHomeDir, 'plugins', 'managed', id);
+      if (await moveRenamedDirectory(legacy, current)) root = current;
+      else if (!(await stat(legacy).then(() => true).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return false;
+        throw error;
+      }))) {
+        const parsed = await parseManifest(current);
+        if (parsed.manifest !== undefined && resolveInstalledPluginId(parsed.manifest.name) === id) root = current;
+      }
+    }
+    await moveRenamedDirectory(
+      path.join(this.kimiHomeDir, 'plugins', 'rollback', entry.id),
+      path.join(this.kimiHomeDir, 'plugins', 'rollback', id),
+    );
+    return { ...entry, id, root };
   }
 
   private async mergeInheritedRecords(records: Map<string, PluginRecord>): Promise<void> {
@@ -79,10 +106,11 @@ export class PluginManager {
     } catch {
       inherited = undefined;
     }
-    for (const entry of inherited?.plugins ?? []) {
-      if (records.has(entry.id)) continue;
+    for (const entry of preferredInstalledEntries(inherited?.plugins ?? [])) {
+      const id = currentPluginId(entry.id);
+      if (records.has(id)) continue;
       try {
-        records.set(entry.id, { ...(await this.materialize(entry)), inherited: true });
+        records.set(id, { ...(await this.materialize({ ...entry, id })), inherited: true });
       } catch {
         continue;
       }
@@ -103,7 +131,7 @@ export class PluginManager {
       const parsed = await parseManifest(candidate.root);
       assertInstallable(parsed);
       const fingerprint = await fingerprintDirectory(candidate.root);
-      return buildInstallPlan(parsed.manifest!, fingerprint, previousSourceManifest(this.records.get(normalizePluginId(parsed.manifest!.name)), candidate));
+      return buildInstallPlan(parsed.manifest!, fingerprint, previousSourceManifest(this.records.get(resolveInstalledPluginId(parsed.manifest!.name)), candidate));
     } finally {
       if (candidate.tempDir !== undefined) await rm(candidate.tempDir, { recursive: true, force: true });
     }
@@ -123,12 +151,21 @@ export class PluginManager {
         throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED,
           `Cannot install plugin ${candidate.source === 'local-path' ? `at ${candidate.root}` : `from ${candidate.originalSource}`}: ${reason}`);
       }
-      const id = normalizePluginId(parsed.manifest!.name);
+      const id = resolveInstalledPluginId(parsed.manifest!.name);
       if (options.fingerprint !== undefined) {
         const actual = await fingerprintDirectory(candidate.root);
         const plan = buildInstallPlan(parsed.manifest!, actual, previousSourceManifest(this.records.get(id), candidate));
         if (actual !== options.fingerprint) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Plugin changed since installation preview');
         if (plan.consentRequired && options.consent !== true) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Installation consent required for plugin changes');
+      }
+      const managedRoot = path.join(this.kimiHomeDir, 'plugins', 'managed', id);
+      const installedRoot = this.records.get(id)?.root;
+      if (installedRoot !== undefined && path.resolve(installedRoot) !== path.resolve(managedRoot) &&
+        await stat(managedRoot).then(() => true).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return false;
+          throw error;
+        })) {
+        throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, `Unmanaged plugin directory already exists for ${id}`);
       }
       await beforeReplace?.(id);
       managedCopy = await copyPluginToManagedRoot(this.kimiHomeDir, id, candidate.root);
@@ -257,7 +294,10 @@ export class PluginManager {
     next.delete(key);
     await this.persist(next);
     this.records = next;
-    if (deleteData) await rm(path.join(this.kimiHomeDir, 'plugins', 'data', key), { recursive: true, force: true });
+    if (deleteData) {
+      const ids = [key, ...Object.keys(RENAMED_PLUGIN_IDS).filter((legacy) => currentPluginId(legacy) === key)];
+      for (const dataId of ids) await rm(path.join(this.kimiHomeDir, 'plugins', 'data', dataId), { recursive: true, force: true });
+    }
   }
 
   async rollback(id: string): Promise<PluginRecord> {
@@ -269,7 +309,10 @@ export class PluginManager {
     const rollbackRoot = path.join(this.kimiHomeDir, 'plugins', 'rollback', key);
     const parsed = await parseManifest(rollbackRoot);
     assertInstallable(parsed);
-    if (normalizePluginId(parsed.manifest!.name) !== key) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Rollback copy has a mismatched plugin name');
+    if (resolveInstalledPluginId(parsed.manifest!.name) !== key) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Rollback copy has a mismatched plugin name');
+    if (current.rollback.version !== undefined && parsed.manifest!.version !== current.rollback.version) {
+      throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Rollback copy has a mismatched plugin version');
+    }
     await swapPluginCopies(current.root, rollbackRoot);
     try {
       const previous = await recordFrom({
@@ -315,14 +358,16 @@ export class PluginManager {
     const file = await readInstalled(this.kimiHomeDir);
     const next = new Map<string, PluginRecord>();
     const errors: Array<{ id: string; message: string }> = [];
-    for (const entry of file.plugins) {
+    for (const entry of preferredInstalledEntries(file.plugins)) {
       try {
-        next.set(entry.id, await this.materialize(entry));
+        const migrated = await this.migrateRenamedEntry(entry);
+        next.set(migrated.id, await this.materialize(migrated));
       } catch (error) {
-        errors.push({ id: entry.id, message: (error as Error).message });
+        errors.push({ id: currentPluginId(entry.id), message: (error as Error).message });
       }
     }
     await this.mergeInheritedRecords(next);
+    if (errors.length === 0 && file.plugins.some((entry) => currentPluginId(entry.id) !== entry.id)) await this.persist(next);
     const added: string[] = [];
     for (const id of next.keys()) if (!prevIds.has(id)) added.push(id);
     const removed: string[] = [];
@@ -517,6 +562,31 @@ export class PluginManager {
       parsed,
       discoverSkills: this.discoverSkills,
     });
+  }
+}
+
+function preferredInstalledEntries(entries: readonly InstalledRecord[]): readonly InstalledRecord[] {
+  const preferred = new Map<string, InstalledRecord>();
+  for (const entry of entries) {
+    const id = currentPluginId(entry.id);
+    if (!preferred.has(id) || id === entry.id) preferred.set(id, entry);
+  }
+  return [...preferred.values()];
+}
+
+async function moveRenamedDirectory(legacy: string, current: string): Promise<boolean> {
+  try {
+    await stat(current);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  try {
+    await rename(legacy, current);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return false;
   }
 }
 

@@ -5,6 +5,7 @@ import { IConfigService } from '#/app/config/config';
 import { LifecycleScope } from '#/app/scopes';
 
 import { IPluginService } from './plugin';
+import { currentPluginId } from './renamedPlugins';
 import { PLUGIN_SETTINGS_SECTION, PluginSettingsSectionSchema } from './settingsConfigSection';
 import type { PluginSettings, PluginExtension } from './contributions';
 import { builtinHistory } from '#/app/pluginImport/builtinHistory';
@@ -39,7 +40,8 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
   ) { super(); }
 
   private async extension(pluginId: string): Promise<PluginExtension | undefined> {
-    return pluginId === builtinHistory.id ? { settings: builtinHistory.settings } : (await this.plugins.getPluginInfo({ id: pluginId })).manifest?.kiki;
+    const id = currentPluginId(pluginId);
+    return id === builtinHistory.id ? { settings: builtinHistory.settings } : (await this.plugins.getPluginInfo({ id })).manifest?.kiki;
   }
 
   async inspect(pluginId: string): Promise<SettingsView> {
@@ -57,7 +59,8 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
   }
 
   async update(input: PluginSettingsUpdate): Promise<SettingsView> {
-    const { pluginId, values } = input;
+    const { values } = input;
+    const pluginId = currentPluginId(input.pluginId);
     const extension = await this.extension(pluginId);
     const schema = extension?.settings;
     if (schema === undefined) throw new Error(`Plugin ${pluginId} declares no settings`);
@@ -92,19 +95,26 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
   }
 
   async clear(pluginId: string): Promise<void> {
+    const key = currentPluginId(pluginId);
     const current = await this.all();
-    if (!(pluginId in current)) return;
-    const { [pluginId]: _removed, ...rest } = current;
+    if (!(key in current)) return;
+    const { [key]: _removed, ...rest } = current;
     await this.configService.replace(PLUGIN_SETTINGS_SECTION, rest);
   }
 
   private async stored(id: string): Promise<Record<string, string | number | boolean>> {
-    return (await this.all())[id] ?? {};
+    return (await this.all())[currentPluginId(id)] ?? {};
   }
 
   private async all(): Promise<Record<string, Record<string, string | number | boolean>>> {
     await this.configService.ready;
-    return PluginSettingsSectionSchema.parse(this.configService.get(PLUGIN_SETTINGS_SECTION));
+    const stored = PluginSettingsSectionSchema.parse(this.configService.get(PLUGIN_SETTINGS_SECTION));
+    const out: Record<string, Record<string, string | number | boolean>> = {};
+    for (const [id, values] of Object.entries(stored)) {
+      const current = currentPluginId(id);
+      out[current] = current === id ? { ...out[current], ...values } : { ...values, ...out[current] };
+    }
+    return out;
   }
 }
 

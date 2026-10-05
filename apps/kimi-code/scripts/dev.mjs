@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { startPluginMarketplaceServer } from './dev-plugin-marketplace-server.mjs';
+import { pluginMarketplaceEnvironment } from './plugin-marketplace-environment.mjs';
 
 const require = createRequire(import.meta.url);
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -12,35 +12,9 @@ const APP_ROOT = resolve(SCRIPT_DIR, '..');
 // Monorepo root. Used as the dev CLI's working directory so `make dev` opens
 // the whole repo instead of just apps/kimi-code.
 const REPO_ROOT = resolve(APP_ROOT, '../..');
-// Runtime variable the CLI reads to locate the marketplace JSON.
-const MARKETPLACE_ENV = 'KIKI_PLUGIN_MARKETPLACE_URL';
-// Opt-in for dev: point this run at an explicit marketplace source instead of the local server.
-const EXPLICIT_MARKETPLACE_ENV = 'KIKI_DEV_MARKETPLACE_URL';
-
-let marketplaceServer;
-const env = { ...process.env };
-
-const explicitSource = process.env[EXPLICIT_MARKETPLACE_ENV]?.trim();
-if (explicitSource !== undefined && explicitSource.length > 0) {
-  // Explicitly asked to use another marketplace source; don't start a local server.
-  env[MARKETPLACE_ENV] = explicitSource;
-  console.error(`Using explicit plugin marketplace: ${explicitSource}`);
-} else {
-  // Default: every `pnpm run dev:cli` runs its own isolated marketplace server on a
-  // random port, so multiple concurrent dev instances never collide. Overwrite any
-  // inherited MARKETPLACE_ENV so a stale URL from a dead instance can't break this run.
-  const inherited = process.env[MARKETPLACE_ENV]?.trim();
-  marketplaceServer = await startPluginMarketplaceServer();
-  env[MARKETPLACE_ENV] = marketplaceServer.marketplaceUrl;
-  // Marks the URL as the dev server's own (serving this repo's catalog), so
-  // the CLI can tell it apart from a user-configured marketplace override.
-  env['KIKI_PLUGIN_MARKETPLACE_FROM_DEV_SERVER'] = '1';
-  console.error(`Plugin marketplace dev server: ${marketplaceServer.marketplaceUrl}`);
-  if (inherited !== undefined && inherited.length > 0 && inherited !== marketplaceServer.marketplaceUrl) {
-    console.error(
-      `(ignored inherited ${MARKETPLACE_ENV}=${inherited}; set ${EXPLICIT_MARKETPLACE_ENV} to use an explicit marketplace)`,
-    );
-  }
+const env = pluginMarketplaceEnvironment(process.env);
+if (env.KIKI_PLUGIN_MARKETPLACE_URL?.trim()) {
+  console.error(`Using explicit plugin marketplace: ${env.KIKI_PLUGIN_MARKETPLACE_URL}`);
 }
 
 const tsxCli = require.resolve('tsx/cli');
@@ -67,14 +41,12 @@ const child = spawn(
   },
 );
 
-child.on('error', async (error) => {
+child.on('error', (error) => {
   console.error(`Failed to start Kiki dev CLI: ${error.message}`);
-  await marketplaceServer?.close();
   process.exit(1);
 });
 
-child.on('exit', async (code, signal) => {
-  await marketplaceServer?.close();
+child.on('exit', (code, signal) => {
   if (signal !== null) {
     process.exit(1);
   }

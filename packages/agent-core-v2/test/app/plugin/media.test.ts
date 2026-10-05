@@ -26,10 +26,10 @@ import { ScopedMediaStore } from '#/agent/media/sessionMediaStoreService';
 import { stubBootstrap } from '../bootstrap/stubs';
 import { stubProviderService } from '../provider/stubs';
 import type { MediaJob } from '@kiki/protocol';
+import { officialPluginFixture } from '../../fixtures/officialPlugins';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.resolve(here, '../../fixtures/plugin-media');
-const official = path.resolve(here, '../../../../../plugins/official/kiki-media');
 let root: string;
 let home: string;
 let remote: string;
@@ -231,7 +231,9 @@ describe('media provider persisted vertical slice', () => {
   });
 
   it('executes the official two tools through the actual bidirectional plugin bridge', async () => {
-    const { target, service } = await configured(); await install(target, official);
+    const { target, service } = await configured();
+    const official = await officialPluginFixture('kiki-media', path.join(root, 'official-media'));
+    await install(target, official);
     const hosts = target.app.accessor.get(IPluginHostService);
     const api = { generate: async () => service.run((await start(service, 'bridge-1', 'sync')).job_id), media: async () => service.capabilities({}) };
     const output = await hosts.execute('kiki-media', 'generate', { request: { kind: 'image', prompt: 'sync' } }, new AbortController().signal, undefined, { media: api });
