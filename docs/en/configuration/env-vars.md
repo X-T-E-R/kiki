@@ -24,9 +24,9 @@ export KIKI_HOME="/path/to/custom/kiki"
 
 > Make sure the directory is writable. Multiple `kiki` instances sharing the same `KIKI_HOME` will share config and credential files.
 
-On macOS and Linux, the shared runtime keeps its local endpoint inside this directory, and the resulting path has a length limit that varies by platform. A home directory that is still too long is reported as a configuration problem that names the actual length, the platform's limit, and the fix — use a shorter `KIKI_HOME`. This is a diagnostic, not a silent move: Kiki does not relocate your data or pick a different directory for you, and a short symlink does not shorten the real path that the limit measures.
+On macOS and Linux, the shared runtime keeps its local endpoint inside this directory, and the resulting path has a length limit that varies by platform. If the path is still too long, Kiki reports a configuration problem naming the actual length, the platform's limit, and the fix: use a shorter `KIKI_HOME`. Kiki does not move your data for you, and a short symlink does not shorten the real path the limit measures.
 
-After upgrading on macOS or Linux, quit every process still using the same `KIKI_HOME` and start the new build. Old and new builds do not share a running runtime, and Kiki does not migrate the previous one for you. Windows is unaffected — the runtime uses a named pipe there and needs no such step.
+After upgrading on macOS or Linux, quit every process still using the same `KIKI_HOME` before starting the new build — the old and new builds do not share a running runtime. Windows is unaffected: the runtime uses a named pipe there.
 
 For the complete data directory structure, see [Data locations](./data-locations.md).
 
@@ -36,9 +36,7 @@ Switch models temporarily without modifying `config.toml` — when `KIKI_MODEL_N
 
 ## Provider credential key names
 
-The key names below are not read directly from the shell — they are key names written inside the `[providers.<name>.env]` sub-table, serving as fallback values for `api_key` / `base_url`. The CLI reads only from the config files, not from `process.env`.
-
-This design lets you keep familiar key name conventions while keeping secrets out of `config.toml`: the secret keys go to the companion `credentials.toml`, and the non-secret `*_BASE_URL` keys stay in `config.toml`.
+The key names below are not read from the shell. They are keys written inside the `[providers.<name>.env]` sub-table, used as fallback values for `api_key` / `base_url`. Secret keys go in the companion `credentials.toml`; the non-secret `*_BASE_URL` keys stay in `config.toml`.
 
 ```toml
 # ~/.kiki/credentials/credentials.toml
@@ -170,7 +168,7 @@ Switches that control the behavior of subsystems such as background tasks, the b
 
 Subagent concurrency has no environment-variable override. Configure [`[subagent]`](./config-files.md#subagent) with `max_direct_children` and `max_total_subagents`; their defaults are `16` and `0` (unlimited), respectively.
 
-`[subagent].default_model` explicitly supplies a model only when dispatch parameters and effective pins do not. It does not inherit the caller or bypass hard model rules. `[subagent].default_effort` remains removed: use an effort pin or the selected model's defaults (see [`subagent`](./config-files.md#subagent)). Forced environment values likewise cannot bypass profile hard lists.
+`[subagent].default_model` supplies a model only when dispatch parameters and effective pins do not. It never inherits the caller's model, and neither it nor a forced environment value can bypass a profile's hard model rules. `[subagent].default_effort` was removed and is no longer read — startup warns about it; set an effort pin on the profile, route, or caller lease, or let the selected model use its own default.
 
 ## Diagnostic logs
 

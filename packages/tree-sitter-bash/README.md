@@ -4,6 +4,11 @@ A pure-TypeScript bash parser that produces a syntax tree whose named node
 types match [tree-sitter-bash](https://github.com/tree-sitter/tree-sitter-bash)
 0.25.0 one-to-one, built for agent-side command permission analysis.
 
+This is a workspace package. It is marked `private: true`, so it is not
+published to npm as its own release; the agent engine uses it to judge whether a
+shell command is safe to run, and the contract below assumes a repository
+checkout rather than an installed dependency.
+
 - No native addons; offsets are UTF-16 code units (`node.text` is always a
   direct `source.slice(startIndex, endIndex)`).
 - Parsing runs under a hard budget and never throws: budget exhaustion

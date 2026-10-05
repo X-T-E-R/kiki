@@ -6,7 +6,7 @@ outline: 2
 
 本页记录 Kiki 每个版本的变更内容。
 
-::: info 说明
+::: tip 说明
 本页早期版本的条目来自上游 Kimi Code 项目，其中出现的命令与变量名反映当时命名。命令的现行名是 `kiki`；环境变量以 [环境变量](../configuration/env-vars.md) 页列出的确切名称为准。
 :::
 
@@ -15,7 +15,6 @@ outline: 2
 ### 优化
 
 - web: 设置页新增 「实验室」标签页，上线「多标签侧边栏开关」功能；开启后侧边栏显示 Open / Done / Workspaces 标签页。
-- 做了若干细节优化和内部改进。更详细的变更记录见 [GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md)。
 
 ## 0.37.1（2026-08-18）
 
@@ -47,7 +46,6 @@ outline: 2
 - web: 修复 macOS 上输入框中 Ctrl+K 误打开会话搜索的问题，会话搜索现仅响应 Cmd+K。
 - web: 修复 Background Agent 面板显示数量和状态不对的问题。
 - web: 修复把复制的文件夹粘贴进输入框会导致上传报连接错误的问题，现在文件夹会被直接跳过。
-- 修复了一些已知问题，并做了若干细节优化。更详细的变更记录见 [GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md)。
 
 ## 0.36.1（2026-08-14）
 
@@ -58,10 +56,6 @@ outline: 2
 ### 优化
 
 - web: 优化输入框的 Plan、Goal、Swarm 开关，现收进了输入框旁的 + 号菜单。
-
-### 修复
-
-- 修复了一些已知问题，并做了若干细节优化。更详细的变更记录见 [GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md)。
 
 ## 0.36.0（2026-08-13）
 
@@ -93,7 +87,6 @@ outline: 2
 - 修复未信任工作区可在信任确认前植入同名 `fd`/`stty` 可执行文件的风险；信任提示现在展示项目 MCP 的启动目标，并默认拒绝信任。
 - 修复在严格的 OpenAI 兼容供应商（如 DeepSeek）下，模型思考阶段打断轮次后，后续每轮请求都报 400 错误的问题。
 - 修复 API 请求失败自动重试期间按 Ctrl+C 无反应的问题。
-- 修复了一些已知问题，并做了若干细节优化。更详细的变更记录见 [GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md)。
 
 ## 0.35.0（2026-08-12）
 
@@ -107,7 +100,6 @@ outline: 2
 - 修复 coder 子 Agent 默认可继续派生子 Agent 的问题。
 - 修复压缩后 token 数显示偏低的问题，现在与会话中看到的数字一致。
 - 修复 Windows 上的两处二进制植入风险。
-- 修复了一些已知问题，并做了若干细节优化。更详细的变更记录见 [GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md)。
 
 ## 0.34.0（2026-08-06）
 

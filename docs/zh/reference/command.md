@@ -1,13 +1,13 @@
 # kiki 命令
 
-`kiki` 是产品的统一 CLI 入口（三端产品中面向终端的一端：桌面版、CLI/TUI、服务器），提供 daemon 支持的交互式 TUI、非交互 `-p` 模式和共享 daemon 控制。无参数运行时在工作区信任后连接健康 daemon，不存在则启动；`kiki -p` 继续走独立的 SDK 非交互链路。显式管理 daemon 用 `kiki serve`，需要兼容的前台服务 / UI 时用 `kiki web`。席位和 MCP 子命令供 Cursor、Claude Code、Codex 等外部调用方调用 Kiki（inbound），不负责配置 Kiki 用于运行 subagent 的外部执行器（outbound）。
+`kiki` 是 Kiki 的命令行入口，提供交互式 TUI、非交互 `-p` 模式和共享 daemon 控制。无参数运行时在工作区信任后连接已有 daemon，不存在则启动；`kiki -p` 执行单条提示词后退出。显式管理 daemon 用 `kiki serve`，需要前台服务和浏览器界面时用 `kiki web`。席位和 MCP 子命令供 Cursor、Claude Code、Codex 等外部调用方调用 Kiki。
 
 ```sh
 kiki [options]
 kiki <subcommand> [options]
 ```
 
-交互式会话始终使用共享后台服务（daemon）。确认工作目录可信后，CLI 会连接已有服务，或自动启动服务，无需单独安装或开启实验开关。连接或启动失败时会显示错误，不会回退到独立的本地会话。请根据错误提示排除问题后重新运行命令。非交互式 `--prompt` 执行不属于这条终端启动链路。
+交互式会话始终使用共享后台服务（daemon）。确认工作目录可信后，CLI 会连接已有服务，或自动启动一个。失败时 Kiki 会直接显示错误，不会回退到另一个独立的本地会话——按错误提示排除问题后重新运行命令。
 
 交互模式要求 stdin 和 stdout 都是终端。任一端接入管道或重定向时，运行会在触及工作区信任和 daemon 之前结束，Kiki 不会自动切换到非交互模式。需要从管道传入提示词时，用 `kiki -p -`，由 Kiki 从 stdin 读取。
 
@@ -265,7 +265,11 @@ Vibe 目的端使用 `{ "kind": "vibe", "endpoint": "https://example.com/api/usa
 - `clear-queue <id> --agree` 明确丢弃待发数据并停用该目的端。`remove <id>` 清除本地配置及其凭据；只有确实要丢弃现存队列时才添加 `--discard-pending`。两者都不删除远端历史，并保留必要的交付身份/版本依据。
 - `withdraw <id> --agree` 仅向支持删除的接收端发送带版本的删除墓碑，不删除本地用量；vibe 不支持此操作。
 
-已有 vibe collector 时，先在新原生草稿上执行 `handoff plan <id>`，再按返回的 namespace 和未来 UTC 截止 **T** 准备 collector 的 `kiki-handoff.json`，并执行原生 `preview`、`test`。`handoff arm <id> --collector-file <file> --fingerprint <preview_fingerprint> --agree` 用已保存的原生凭据核对证明，激活该 home 的旧 collector 截止，并启用从固定 T 起的原生交付。它不读取旧 collector 的 key、不停止 daemon；不同 key 不会被当成同账号证明。旧端负责 `<T`，原生负责 `>=T`，离线回补仍保留 T，不按 ACK 时间移动。`handoff refresh <id>` 读取旧端安全的最后回执；同时有旧回执和真实原生 ACK 才算完成。`handoff rollback <id> --cutoff <new_future_R> --agree` 保留原生负责 `[T,R)`，旧端从 `>=R` 恢复，而不是无界重扫旧历史。
+已有 vibe collector 时，先在新原生草稿上执行 `handoff plan <id>`，再按返回的 namespace 和未来 UTC 截止 **T** 准备 collector 的 `kiki-handoff.json`，并执行原生 `preview`、`test`。
+
+`handoff arm <id> --collector-file <file> --fingerprint <preview_fingerprint> --agree` 用已保存的原生凭据核对证明，激活该 home 的旧 collector 截止，并启用从固定 T 起的原生交付。它不读取旧 collector 的 key、不停止 daemon；不同 key 不会被当成同账号证明。
+
+旧端负责 `<T`，原生负责 `>=T`，离线回补仍保留 T，不按 ACK 时间移动。`handoff refresh <id>` 读取旧端安全的最后回执；同时有旧回执和真实原生 ACK 才算完成。`handoff rollback <id> --cutoff <new_future_R> --agree` 保留原生负责 `[T,R)`，旧端从 `>=R` 恢复，而不是无界重扫旧历史。
 
 接收端开发者可在仓库中运行 `pnpm exec tsx packages/kap-server/examples/usage-export-receiver.ts`（Node 24）。示例只监听 `127.0.0.1:9080`，在 `usage-receiver.sqlite` 持久保存替换版本和删除墓碑，提供 `POST /usage`。测试时须批准准确的 loopback HTTP grant。生产接收端应提供 TLS、持久存储和鉴权；示例不是托管看板。
 

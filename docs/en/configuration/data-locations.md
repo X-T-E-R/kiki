@@ -68,7 +68,7 @@ $KIKI_HOME  (default: ~/.kiki)
 Each file under the data root serves a specific purpose; most are managed automatically by the CLI:
 
 - **`config.toml`**: the main runtime configuration file, storing user-level settings such as providers, models, and loop control. Provider API keys live in `credentials/credentials.toml`. See [Configuration files](./config-files.md).
-- **`credentials/credentials.toml`**: holds provider credentials such as each provider's `api_key`. On a shared TOML path a value here overrides `config.toml`, and credentials left in an older `config.toml` are migrated here on first load, with the previous file kept as `config.toml.bak-<date>`. An older root-level `credentials.toml` is moved here without changing its contents; a mismatch between the two files stops migration for inspection. Kiki requests owner-only permissions (`0o600`) where supported. See [Provider credentials](./config-files.md#provider-credentials).
+- **`credentials/credentials.toml`**: holds provider credentials such as each provider's `api_key`. On a shared TOML path a value here overrides `config.toml`, and credentials left in an older `config.toml` are migrated here on first load, with the previous file kept as `config.toml.bak-<date>` — that backup still contains your keys in plaintext, so delete it once you have checked the migration. Kiki requests owner-only permissions (`0o600`) where supported. See [Provider credentials](./config-files.md#provider-credentials).
 - **`tui.toml`**: terminal UI client preferences such as theme, editor, notifications, and status line.
 - **`AGENTS.md`**: user-level agent instructions. This file moves with `KIKI_HOME` and is combined with workspace-root instructions unless `.kiki/AGENTS.md` overrides it.
 - **`mcp.json`**: user-level MCP server declarations, merged with the project-local `.kiki/mcp.json` on startup. See [MCP](../server/mcp.md).
@@ -76,7 +76,7 @@ Each file under the data root serves a specific purpose; most are managed automa
 - **`cognition/`**: prompt files referenced by `[models."<alias>".cognition]`; paths are relative to the data root. See [Model cognition](./config-files.md#model-cognition).
 - **`hooks/`**: script files referenced by `[[hooks]]` command paths (for example `node ~/.kiki/hooks/check-bash.mjs`). See [Hooks](../customization/hooks.md).
 - **`plugins/installed.json`**: records installed plugins, each plugin's enabled state, and MCP server capability state changes made via `/plugins` or `/plugins mcp disable|enable`. Files installed from local paths or zip URLs are copied to `plugins/managed/<id>/`. See [Plugins](../customization/plugins.md).
-- **`credentials/`**: restricted credential directory, with requested permissions `0o700` (directory) / `0o600` (files). OAuth logins for managed providers are stored as `credentials/<name>.json`; MCP server credentials are stored under `credentials/mcp/`. OAuth credentials are written using an atomic flow (tmp → fsync → rename) to prevent corruption.
+- **`credentials/`**: restricted credential directory, with requested permissions `0o700` (directory) / `0o600` (files). OAuth logins for managed providers are stored as `credentials/<name>.json`; MCP server credentials are stored under `credentials/mcp/`. On Windows, check the file and parent-directory ACLs yourself before relying on the file to stay private.
 - **`workspaces.json` and `workspaces/`**: the registered workspace catalog and the project directories Kiki creates when a new session has no selected workspace. Each automatically created session receives a distinct directory; these are working files, separate from the session history under `sessions/`.
 
 ## Session data
@@ -99,8 +99,6 @@ Inside each session directory:
 The first time the `Grep` tool needs ripgrep, the CLI can automatically download `rg` and cache it at `bin/rg` (`bin/rg.exe` on Windows). File-reference completion in the terminal UI uses `fd`; the CLI downloads and caches it at `bin/fd` (`bin/fd.exe` on Windows) in the background when needed. Subsequent runs reuse the cached binaries. `rg` prefers the system `PATH` before the cache, while `fd` checks the managed cache before falling back to system `fd` / `fdfind`. Deleting the `bin/` directory triggers a fresh download on the next use.
 
 ## Logs
-
-The log filename `kimi-code.log` is a historical name inherited from Kiki's upstream project and is kept as is.
 
 - **`logs/kimi-code.log`** (global): records startup, login, export, and other cross-session events.
 - **`<sessionDir>/logs/kimi-code.log`** (session-level): records diagnostic events within a single session.

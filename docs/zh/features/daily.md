@@ -42,7 +42,7 @@ title: 每天用的桌面
 
 见 [Usage](/zh/guides/settings#usage)和 [`kiki usage-export`](/zh/reference/command#kiki-usage-export)。
 
-![用量页的「历史」视图：每个会话的 token 与费用，以及数据完整性的说明。](/shots/daily/daily-usage.zh.png)
+![用量页的「历史」页签：所选区间的费用、token 与缓存命中合计，七天趋势图，下方是按会话拆分的明细。](/shots/daily/daily-usage.zh.png)
 
 ## 下一步
 

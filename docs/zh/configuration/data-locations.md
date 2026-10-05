@@ -68,7 +68,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 数据根下的文件各有用途，大部分由 CLI 自动管理：
 
 - **`config.toml`**：主运行时配置，存放供应商、模型、循环控制等用户级设置。供应商 API 密钥放在 `credentials/credentials.toml`。详见[配置文件](./config-files.md)。
-- **`credentials/credentials.toml`**：存放供应商凭证，例如各供应商的 `api_key`。同一条 TOML 路径上这里的值覆盖 `config.toml`；旧版 `config.toml` 里遗留的凭证会在首次加载时迁入该文件，原文件保留为 `config.toml.bak-<date>`。旧版根目录 `credentials.toml` 会原样迁入该目录；如果两处文件内容不同，迁移会停止，等待核对。在平台支持的前提下，Kiki 以仅属主可读写的权限（`0o600`）写入该文件。详见[供应商凭证](./config-files.md#供应商凭证)。
+- **`credentials/credentials.toml`**：存放供应商凭证，例如各供应商的 `api_key`。同一条 TOML 路径上这里的值覆盖 `config.toml`；旧版 `config.toml` 里遗留的凭证会在首次加载时迁入该文件，原文件保留为 `config.toml.bak-<date>`——该备份仍是明文密钥，核对完迁移结果就删掉它。在平台支持的前提下，Kiki 以仅属主可读写的权限（`0o600`）写入该文件。详见[供应商凭证](./config-files.md#供应商凭证)。
 - **`tui.toml`**：终端界面客户端偏好，例如主题、编辑器、通知和状态栏。
 - **`AGENTS.md`**：用户级 Agent 指令。该文件会随 `KIKI_HOME` 移动，并与工作区根目录指令合并；工作区的 `.kiki/AGENTS.md` 可以覆盖它。
 - **`mcp.json`**：用户级 MCP server 声明，启动时与项目内的 `.kiki/mcp.json` 合并加载。详见 [MCP](../server/mcp.md)。
@@ -76,7 +76,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 - **`cognition/`**：`[models."<alias>".cognition]` 引用的提示词文件，路径相对于数据根目录。详见[模型认知](./config-files.md#模型认知)。
 - **`hooks/`**：`[[hooks]]` command 路径引用的脚本文件（如 `node ~/.kiki/hooks/check-bash.mjs`）。详见 [Hooks](../customization/hooks.md)。
 - **`plugins/installed.json`**：记录已安装的 plugin、每个 plugin 的启用状态，以及通过 `/plugins` 或 `/plugins mcp disable|enable` 修改的 MCP server 能力状态。本地路径和 zip URL 安装的文件会复制到 `plugins/managed/<id>/`。详见 [Plugins](../customization/plugins.md)。
-- **`credentials/`**：权限受限的凭据目录，请求权限为目录 `0o700`、文件 `0o600`。托管供应商的 OAuth 登录态存为 `credentials/<name>.json`，MCP server 凭据存在 `credentials/mcp/` 子目录下。OAuth 凭据写入使用原子流程（tmp → fsync → rename）防止写损。
+- **`credentials/`**：权限受限的凭据目录，请求权限为目录 `0o700`、文件 `0o600`。托管供应商的 OAuth 登录态存为 `credentials/<name>.json`，MCP server 凭据存在 `credentials/mcp/` 子目录下。在 Windows 上，要靠这个目录挡住其他本机用户，请自行核查文件及其父目录的 ACL。
 - **`workspaces.json` 与 `workspaces/`**：分别记录已注册工作区，以及新会话未指定工作区时 Kiki 创建的项目目录。每个自动创建的会话使用独立目录；这里是工作文件，与 `sessions/` 下的会话历史不同。
 
 ## 会话数据
@@ -99,8 +99,6 @@ $KIKI_HOME  （默认 ~/.kiki）
 `Grep` 工具第一次需要 ripgrep 时，CLI 可自动下载 `rg` 并缓存到 `bin/rg`（Windows 为 `bin/rg.exe`）。终端界面的文件引用补全使用 `fd`；需要时 CLI 会在后台自动下载并缓存到 `bin/fd`（Windows 为 `bin/fd.exe`）。之后的运行会直接复用缓存的二进制。`rg` 优先使用系统 `PATH`，再使用缓存；`fd` 优先检查托管缓存，再回退到系统 `fd` / `fdfind`。删除 `bin/` 目录会在下次需要时触发重新下载。
 
 ## 日志
-
-日志文件名 `kimi-code.log` 沿用自 Kiki 上游项目的历史命名，保持不变。
 
 - **`logs/kimi-code.log`**（全局）：记录启动、登录、导出等跨会话事件。
 - **`<sessionDir>/logs/kimi-code.log`**（会话级）：记录单个会话内的诊断事件。

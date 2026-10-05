@@ -20,19 +20,19 @@ Kiki requires VS Code 1.100.0 or later.
 3. Click the Kiki icon in the Activity Bar
 4. Sign in with the Kimi service, or use a provider already configured in the shared `config.toml`
 
-The extension loads the shared Kiki GUI and attaches to a local Kiki web server. If
-no running server is registered, it starts `kiki web`, so the `kiki` executable
-must be available on `PATH`. When the extension and terminal app resolve to the
-same `KIKI_HOME`, they share configuration, login state, and sessions. The
-system-level `KIKI_HOME` environment variable is supported; there is no
-separate VS Code setting for it.
+The extension loads the shared Kiki GUI and attaches to a local Kiki web
+server. If no server is registered, it starts one with `kiki serve --ensure`,
+so the `kiki` executable must be on your `PATH`. When the extension and your
+terminal app resolve the same `KIKI_HOME`, they share configuration, login
+state, and sessions. Set `KIKI_HOME` as a system environment variable; the
+extension has no separate setting for it.
 
 ## Configuration migration
 
-On first activation, existing `kimi.autosave` and `kimi.editorContext` settings
-are copied to their `kiki.*` counterparts only when the corresponding Kiki
-setting has not already been set. No other hidden settings or extension state is
-migrated.
+On first activation, the extension copies your `kimi.autosave` and
+`kimi.editorContext` settings to `kiki.autosave` and `kiki.editorContext`,
+preserving each one's VS Code scope, but only where you have not already set
+the `kiki.*` one. Nothing else is carried over.
 
 ## License
 

@@ -14,8 +14,8 @@ const isZh = computed(() => lang.value.startsWith('zh'))
  * thing that copies it here.
  */
 const heroShot = computed(() => withBase(isZh.value
-  ? '/shots/index/hero-workbench.zh.png'
-  : '/shots/index/hero-workbench.en.png'))
+  ? '/shots/index/wl-20261005-hero-workbench.zh.png'
+  : '/shots/index/wl-20261005-hero-workbench.en.png'))
 
 /**
  * The intrinsic size of the master frame, for the browser to reserve space
@@ -94,9 +94,6 @@ const copy = computed(() => isZh.value
           loading="eager"
           decoding="async"
         />
-        <figcaption class="KikiHero__shotCaption">
-          {{ isZh ? '真实界面渲染的示例场景，不代表模型性能实测。' : 'A rendered example scene of the real interface; it is not a model performance measurement.' }}
-        </figcaption>
       </figure>
     </div>
   </section>
@@ -232,14 +229,6 @@ const copy = computed(() => isZh.value
 
 :global(.dark) .KikiHero__shotImg {
   box-shadow: 0 28px 72px -32px rgba(0, 0, 0, 0.72), 0 2px 8px -4px rgba(0, 0, 0, 0.5);
-}
-
-.KikiHero__shotCaption {
-  margin: 14px 0 0;
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--vp-c-text-3);
-  text-align: center;
 }
 
 @media (prefers-reduced-motion: no-preference) {

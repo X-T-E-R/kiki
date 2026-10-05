@@ -22,13 +22,19 @@ The full behavior is described in [Interface overview](/en/guides/interface#inpu
 
 ![An active goal with two queued messages, each with its own send timing.](/shots/long-work/long-work-goal-queue.en.png)
 
+![The queue expanded under a running goal, with each queued message's own send timing and its edit, send-now, and remove actions.](/shots/long-work/wl-20261005-longwork-goal-queue.en.png)
+
 ## Work that outlives the session
 
 Two features carry work beyond a single conversation. Both are listed globally rather than per-session, but what they hold is scoped differently.
 
 **Scheduled tasks.** The agent can schedule a prompt to fire at a future time, either once or on a cron expression in your local timezone, and a global panel lists every schedule. A schedule is ticked by a Kiki that has its session open — the interactive daemon or server, or a print run for the sessions that run already has open. It does not scan the rest of the home or wake a closed session, so a schedule only fires while some Kiki is holding that session. Recurring tasks are shifted forward by deterministic jitter so everyone does not fire on the hour, and one that missed fire times fires once with the missed count. Schedules are bound to their session and do not carry into a brand-new session, and a session holds at most 50 active ones. See [Scheduled tasks](/en/reference/tools#scheduled-tasks).
 
+![The scheduled tasks panel, with enabled one-shot and recurring entries above a paused one, and run-now, pause, resume, and delete per entry.](/shots/long-work/wl-20261005-longwork-scheduled.en.png)
+
 **The task board.** Each workspace has a board where requirements are cards, and each card links to the sessions working on it. Cards are persistent requirements, not agent runs — reading a card does not change it, and the board does not update from todo lists. The main agent reads and writes the board itself with `BoardRead` and `BoardWrite`, under the normal approval rules. Open it from the fixed button at the bottom of the main agent's right panel. See [Task board](/en/guides/sessions#task-board).
+
+![The task board, with requirement cards in To do, In progress, Paused, and Done columns, each linked to the sessions working on it.](/shots/long-work/wl-20261005-longwork-board.en.png)
 
 ## The context window: when it fills up
 
@@ -50,11 +56,13 @@ For the manual side, `/compact` compresses on demand and accepts a hint about wh
 
 ![The context meter detail card, with the context window track and Fresh selected as the renewal strategy.](/shots/long-work/long-work-context-fresh.en.png)
 
+![The context details card opened over a running session, with Fresh start selected and this session's cumulative token counts below it.](/shots/long-work/wl-20261005-longwork-context.en.png)
+
 ## Memory keeps the facts across sessions
 
 A session ends. Memory is what does not. The agent saves user preferences, feedback, verified project facts, and reference pointers, and finds them again later. On the `/memory` page you choose which body of memory you are looking at — **Global**, one **Workspace**, or one **Persona**. Persona-specific entries are isolated from other personas; by default a persona can also read the shared global and workspace memory.
 
-Memory is on by default, and the `/memory` page in the sidebar is its permanent home either way — with memory off it is the turn-on guide, with memory on it is the management console. You can search entries, filter by type, edit, pin, and delete them, and every change can be undone one operation at a time — including a delete, which is why the confirmation says so rather than claiming anything is permanent. When memory approval is set to `review`, proposed changes wait in an Inbox tab for you to accept or discard instead of taking effect on their own.
+Memory is on by default, and the `/memory` page in the sidebar is its permanent home either way — with memory off it is the turn-on guide, with memory on it is the management console. You can search entries, filter by type, edit, pin, and delete them, and every change can be undone one operation at a time, including a delete. When memory approval is set to `review`, proposed changes wait in an Inbox tab for you to accept or discard instead of taking effect on their own.
 
 Agents write memory with `MemoryWrite` and read it with `MemorySearch` and `MemoryRead`. See [Memory](/en/guides/memory) for the full page, the review inbox, and how to turn memory off.
 
@@ -62,7 +70,7 @@ Agents write memory with `MemoryWrite` and read it with `MemorySearch` and `Memo
 
 ## Next steps
 
-- [Memory](/en/guides/memory) — the three scopes, the review inbox, and undoable history
+- [Memory](/en/guides/memory) — choosing between scopes, the review inbox, and undoable history
 - [Using goals](/en/guides/goals) — writing and managing goals
 - [Task board](/en/guides/sessions#task-board) — persistent requirement cards per workspace
 - [The daily driver](/en/features/daily) — the window you use while all of this runs

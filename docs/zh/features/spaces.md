@@ -16,7 +16,11 @@ Kiki 跑在哪儿由你决定，它能触达的东西也由你决定。这一页
 
 在**设置 → 空间**里，于子空间自己的卡片上改凭据范围。这一页其余设置见[设置页导览](/zh/guides/settings)，这些凭据能触达什么见[每一层都归你](/zh/features/freedom)。
 
-![空间列表：主空间旁边两个已登记的空间，一个共享账号，一个独立。](/shots/spaces/spaces-spaces-list.zh.png)
+![空间列表：主空间旁边两个已登记的空间，一个共享账号，一个独立。](/shots/spaces/ps-20261005-spaces-list.zh.png)
+
+![单个空间自己的设置面板：每一行都标出它是跟随主空间还是在这里单独设置，每行带一个「更改」。](/shots/spaces/ps-20261005-spaces-detail.zh.png)
+
+![选择空间的凭据范围：沿用主空间的账号和密钥，还是让这个空间自己单独一份。](/shots/spaces/ps-20261005-spaces-credentials.zh.png)
 
 ## 远端连接：一个 Kiki 指向另一个
 
@@ -28,7 +32,9 @@ Kiki 跑在哪儿由你决定，它能触达的东西也由你决定。这一页
 
 见 [`kiki connections`](/zh/reference/command#kiki-connections)。
 
-![远端连接列表：每个对端 Kiki 一行，各带自己的状态和最后一次读数的时间。](/shots/spaces/spaces-remote-connections.zh.png)
+![远端连接列表：每个对端 Kiki 一行，各带自己的状态和最后一次读数的时间。](/shots/spaces/ps-20261005-spaces-remote.zh.png)
+
+![这个 Kiki 的身份串，以及决定哪些 Kiki 可以连进来的开关——默认关闭，每个被允许的都列出来并可撤销。](/shots/spaces/ps-20261005-spaces-inbound.zh.png)
 
 ## Thread bridge：能说话，不能浏览
 
@@ -50,13 +56,15 @@ Web 访问和远端连接是两个不同的对象。远端 Kiki 是另一个 Kik
 
 见[在浏览器里使用 Kiki](/zh/server/local-server#在浏览器里使用-kiki)。
 
-![已为这个 Kiki 开启 Web 访问，下面列着已经登录的浏览器。](/shots/spaces/spaces-web-access.zh.png)
+![已为这个 Kiki 开启 Web 访问，下面列着已经登录的浏览器。](/shots/spaces/ps-20261005-spaces-web-access.zh.png)
 
 ## 会话内 SSH
 
 会话可以持有 SSH 主机。用输入框的 **+** 菜单加入，输入框上方的**本会话 SSH**控件会列出已加入的主机，点 **X** 移出，也可以从这一行重新打开同一个列表增减。已加入的主机是会话的资源，不会随每条消息重复携带——所以时间线不会堆满主机气泡，移除主机也只影响这个会话，不动你机器上的东西。
 
 加入主机只是让会话可以用它，并不会立即连接。新会话里该控件显示为**待加入 SSH**，你选的主机会在第一条消息发出前加入创建好的会话。
+
+![输入框上方的本会话 SSH 面板：列出已加入这个会话的主机，以及还可以添加的主机。](/shots/spaces/ps-20261005-spaces-session-ssh.zh.png)
 
 见[界面导览](/zh/guides/interface#输入框)。
 

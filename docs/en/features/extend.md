@@ -10,7 +10,7 @@ Beyond the model, the prompt, and the tools an agent already has, Kiki has four 
 
 A plugin is the packaging unit. One plugin can contribute skills, agents, MCP servers, hooks, commands, tools, and sandboxed panels, and you can browse, install, and configure plugins on the **Capabilities** page. Claude Code plugins with a `.claude-plugin/plugin.json` manifest install too, and you can point Kiki at your own marketplace JSON.
 
-The official marketplace is maintained by Kimi and currently has three plugins: **Kimi Datasource** (query market data, macro indicators, company registrations, academic literature, and laws in natural language), **Kimi Browser Extension** (let AI drive your own browser), and **Kimi Computer Use** (let AI operate your desktop apps). Two more capabilities are separate plugins, not part of that trio: **Kiki Documents**, which converts a local PDF, Office, HTML, or text file into Markdown that `Read` and `Grep` can use, and **Kiki Notion**, a configuration and workflow for Notion's hosted MCP service. Installing a plugin never runs its hooks by itself — they fire only when their matching event occurs while the plugin is enabled. See [Plugins](/en/customization/plugins).
+The official marketplace is maintained by Kimi and currently has three plugins: **Kimi Datasource** (query market data, macro indicators, company registrations, academic literature, and laws in natural language), **Kimi Browser Extension** (let AI drive your own browser), and **Kimi Computer Use** (let AI operate your desktop apps). Two more capabilities are separate plugins, not part of that trio: **Kiki Extract**, which converts a local PDF, Office, HTML, or text file into Markdown that `Read` and `Grep` can use, and **Kiki Notion**, a configuration and workflow for Notion's hosted MCP service. Extracting a file is a reading step — it makes an existing document searchable, and it neither creates nor edits Office documents. Installing a plugin never runs its hooks by itself — they fire only when their matching event occurs while the plugin is enabled. See [Plugins](/en/customization/plugins).
 
 Media generation is a separate, experimental capability: a media plugin contributes one or more *sources* for images, video, or speech, which you configure under **Capabilities → Plugins → Media sources**. Generation is **off by default** and has to be turned on explicitly; it is a capability to enable on purpose, not a default.
 
@@ -29,6 +29,10 @@ MCP tools reach the agent exactly like built-in tools, with the same approval mo
 ## Search and retrieval
 
 `WebSearch` and `FetchURL` are backed by an inspectable search and retrieval module. **Settings → Search & retrieval → Overview & source** shows which configuration source is in effect and whether the server reuses your local search configuration; `/mcp`-style status and the readiness of each named lane are visible there too. Search runs on named lanes you can inspect — some, like GitHub repository search, work without a key, and multiple keys for one provider rotate across calls. A fetch runs a chain with visible fallbacks, so you can see which extractor produced the text. The equivalent configuration lives in `config.toml` under `nb_search`. See [Search and retrieval](/en/guides/settings#search-retrieval) and [Config files: `nb_search`](/en/configuration/config-files#nb-search).
+
+![The search lanes tab: the default lane, the pinned ones, and every other lane with where its results and credentials come from.](/shots/extend/ce-20261005-extend-search-lanes.en.png)
+
+![The fetch chain tab, with the pipelines a web address is read through in order and what each one falls back to.](/shots/extend/ce-20261005-extend-fetch-chain.en.png)
 
 ## Next steps
 

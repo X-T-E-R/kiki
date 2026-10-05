@@ -1,8 +1,20 @@
 # `@kiki/agent-profiles`
 
-Agent profile parsing, filesystem discovery, layered catalog projection, dispatch constraints, and catalog rendering.
+Reads agent profile files: their frontmatter, the routes and subagents layered
+on top, and the model and executor constraints they declare. It then projects
+them into the catalog the GUI and CLI display.
 
-## Public contract
+This is a workspace package. It is marked `private: true`, so it is not
+published to npm as its own release; the frontmatter tables below are the
+contract this repository's engine enforces, and the guidance assumes a
+repository checkout rather than an installed dependency.
+
+If you are writing a profile rather than calling this package, the frontmatter
+tables below are the contract. For the user-facing description of profiles and
+what each field does, see the
+[documentation site](https://x-t-e-r.github.io/kiki/en/).
+
+## API surface
 
 - `SCHEMA_VERSION`: `1`
 - Filesystem port: `HostFs`
@@ -16,7 +28,10 @@ Agent profile parsing, filesystem discovery, layered catalog projection, dispatc
 - Discovery: `discoverAgentFiles`, `resolveAgentSourceGraph`, `profilesFromDiscovery`, `loadSystemMdProfile`
 - Catalog: `projectAgentProfileCatalog`, `buildProfileCatalogEntries`, `renderProfileCatalogEntries`, `buildProfileDescriptions`
 
-`realpath` supplies canonical paths for deduplication and symbolic-link escape checks. `resolveId` returns the canonical model id or `undefined` when the alias is unresolved. `validateExecutor` returns an explicit accepted binding or a diagnostic; legacy diagnostic strings are converted at this boundary.
+`realpath` supplies canonical paths for deduplication and symbolic-link escape
+checks. `resolveId` returns the canonical model id, or `undefined` when the
+alias is unresolved. `validateExecutor` returns an accepted binding or a
+diagnostic; legacy diagnostic strings are converted at this boundary.
 
 ## Agent profile frontmatter
 

@@ -77,28 +77,27 @@ CLI 从 `KIKI_HOME`（默认 `~/.kiki`）读取用户级配置，并从 `<项目
 
 ## 模型与 effort 解析
 
-在原生 executor 上，先确定本次派发使用的模型，再解析其 thinking effort。Route 与 caller lease 的 pin 提供软默认值；偏离 pin、显式 `preferred_*` 或 `discouraged_models` 建议时，仅在绑定满足硬规则且可执行的前提下产生 advisory。`allowed_models`、`deny_models`、`allowed_efforts` 在每个 profile、lease、树策略与匹配 model-profile 作用域都为硬规则。机器级 deny 与 provider / executor 能力检查也仍是硬限制。
+先确定本次派发使用的模型，再解析该模型的 thinking effort。Route 与 caller lease 上的 pin 是可以被覆盖的默认值；`allowed_models`、`deny_models`、`allowed_efforts` 在每个 profile、lease、树策略与匹配 `model_profiles` 作用域都是硬限制——对 subagent 而言，越界会拒绝绑定、人工切换与恢复；在主会话中则以你的选择为准，越界只警示。模型本身不支持的值则无论哪种情况都会报错。
 
-Thinking effort 按以下顺序解析，解析后仍须满足全部硬档位列表：
+profile 绑定时——新建主会话、新建 subagent、切换模型，或原生 `AgentRun` 派发——先从该角色自身的来源取出请求的 effort，再对照所绑定的模型解析：
 
-1. 显式 `effort` 优先于默认值，但不能覆盖硬约束。Pin 或偏好偏离产生 advisory；列表外或不支持的档位被拒绝。
-2. 未显式传入时，route 或 caller lease 默认值优先。
-3. 匹配的 `model_profiles` 条目。
-4. profile 顶层的 `thinking_effort`，但仅当所选模型匹配 profile 的默认 `model_alias`。
-5. `[models."<alias>"].overrides.default_effort`。
-6. 所选模型的 `default_effort`，包括 `[models."<alias>"].default_effort`。
-7. 全局 `[thinking].effort`。
-8. 两处均未设置默认 effort 时，回退到模型支持档位的中间值或能力默认值。
+1. 调用时显式传入的 `effort`。
+2. 主会话中取 persona 或 route 上锁定的 effort；subagent 中取 route 上锁定的 effort，route 未锁定时改用 caller lease 的。两者其后都是匹配的 `model_profiles` 条目，再后是 profile 顶层的 `thinking_effort`。
+3. 所绑定模型的首选 effort。
+4. `[models."<alias>"].overrides.default_effort`。
+5. 模型自身的 `default_effort`。
 
-`[thinking].enabled` 为 `false` 时，未固定的 effort 会解析为 Off，除非模型覆盖项另有设置。`always_thinking` 模型无法关闭；其兜底档位按模型默认值优先、全局默认值次之的顺序选择。
+如果以上都取不到值，或解析出的 effort 不被该模型支持，绑定会以配置错误失败，而不是悄悄替你挑一个。完全没有配置模型时，绑定会同时要求提供模型和 effort。只要 route、lease、profile pin 或模型默认里已经有可用值，就不必每次都传 effort；只有全都取不到时才需要，此时配置相应的 pin 或在本次调用里提供 `effort`。
 
-没有 `model_alias` 的 profile 只跳过顶层 effort 这一层，不会 fail closed；解析会继续使用下一层默认值。普通 resume 省略模型参数时保持当前绑定；alias 解析到同一规范模型时为 no-op。只修改 `effort` 时保留已保存的模型；切换到不同规范模型且省略 `effort` 时，按新模型重新解析 effort。恢复时切换到不同规范模型仍需 `allow_model_change: true`。既有参数校验以及外部 executor 自行完成的校验继续生效。
+这些规则只作用于 profile 绑定。保留既有有效绑定的普通 resume 不会重新计算，因此早先保存的 effort 继续有效。只修改 `effort` 时保留已保存的模型；resume 时切换模型仍需 `allow_model_change: true`。
+
+不经过 profile 绑定的路径保持原样：全局 `[thinking]` 仍提供兜底，`[thinking].enabled = false` 在这些路径上仍会把未固定的 effort 解析为 Off。
 
 ## 提示词字段优先级
 
-提示词文案字段使用独立的优先级链，不走普通的 CLI / 配置优先级。从低到高依次为全局 `[prompt.overrides]`、模型 `[models."<alias>".prompt_overrides]`、Agent 或 `SYSTEM.md` Frontmatter 的 `prompt_overrides`，以及匹配的 `model_profiles[].prompt_overrides`——共 4 个优先级层。Agent 文件与 `SYSTEM.md` 是共用链中同一位置的两个配置表面，因此合计 5 个受支持的表面。
+提示词文案字段使用独立的优先级链。从低到高：全局 `[prompt.overrides]`、模型 `[models."<alias>".prompt_overrides]`、Agent 或 `SYSTEM.md` Frontmatter 的 `prompt_overrides`，然后是匹配的 `model_profiles[].prompt_overrides`。Agent 文件与 `SYSTEM.md` 位于同一层，所以 4 层里一共 5 个配置表面。
 
-每个表面都接受 `files` 与 `fields`。文件从 Kiki 主目录读取，按列表顺序应用，随后由同一表面的内联字段覆盖。高层未声明的字段继承低层值，字段值绝不会拼接。外部文件 schema、常用字段示例、turn 快照，以及从已移除 `prompt.shared` / `prompt.tools` 键迁移的方法见 [`prompt`](./config-files.md#prompt)。
+每个表面都接受 `files` 与 `fields`。文件从 Kiki 主目录读取，按列表顺序应用，随后由同一表面的内联字段覆盖。高层未声明的字段继承低层值，字段值绝不会拼接。外部文件 schema、常用字段示例，以及从已移除的 `prompt.shared` / `prompt.tools` 键迁出的方法见 [`prompt`](./config-files.md#prompt)。
 
 ## 典型场景
 

@@ -1,15 +1,15 @@
 # `kiki` Command
 
-`kiki` is the product's unified CLI entry — the terminal form of the three-form product (desktop app, CLI/TUI, and server) — covering the daemon-backed interactive TUI, non-interactive `-p` mode, and shared-daemon controls. Running it without arguments attaches to an existing healthy daemon or starts one after workspace trust; `kiki -p` keeps the SDK-backed non-interactive path separate. Use `kiki serve` to control the daemon explicitly, and `kiki web` for the compatible foreground server/UI command. Its seat and MCP subcommands let external callers such as Cursor, Claude Code, and Codex call Kiki (inbound); they do not configure the external executors that Kiki uses to run subagents (outbound).
+`kiki` is the command-line entry to Kiki. It covers the interactive TUI, non-interactive `-p` mode, and shared-daemon controls. Running it with no arguments attaches to an existing healthy daemon or starts one after workspace trust; `kiki -p` runs a single prompt and exits. Use `kiki serve` to control the daemon explicitly and `kiki web` for the foreground server and browser UI. The seat and MCP subcommands let external callers such as Cursor, Claude Code, and Codex call Kiki.
 
 ```sh
 kiki [options]
 kiki <subcommand> [options]
 ```
 
-Interactive sessions always use the shared background daemon. After workspace trust is confirmed, the CLI attaches to an existing daemon or starts one automatically; no separate installation or experimental flag is required. If connection or startup fails, the error is shown instead of falling back to an independent local session. Correct the reported error and run the command again. Non-interactive `--prompt` execution is separate from this terminal startup path.
+Interactive sessions always use the shared background daemon. After workspace trust is confirmed, the CLI attaches to an existing daemon or starts one automatically. If that fails, Kiki shows the error rather than falling back to a separate local session — fix what the error names and run the command again.
 
-Interactive mode needs a terminal on both stdin and stdout. A pipe or a redirect on either one ends the run before workspace trust and the daemon are involved — Kiki does not switch to non-interactive mode for you. To supply a prompt from a pipe, run `kiki -p -` and let Kiki read the prompt from stdin.
+Interactive mode needs a terminal on both stdin and stdout. A pipe or a redirect on either one ends the run before workspace trust and the daemon are involved, and Kiki does not switch to non-interactive mode for you. To supply a prompt from a pipe, run `kiki -p -` and let Kiki read the prompt from stdin.
 
 ## Main Command Options
 
@@ -265,7 +265,11 @@ Recovery and removal have different meanings:
 - `clear-queue <id> --agree` explicitly discards pending data and disables that destination. `remove <id>` removes local configuration and its secret; add `--discard-pending` only when you want to discard an existing queue. Neither deletes remote history, and delivery identity/revision evidence is retained.
 - `withdraw <id> --agree` sends versioned deletion tombstones only where the receiver supports deletion. It does not delete local usage; vibe does not support this operation.
 
-For an existing vibe collector, use `handoff plan <id>` on a new native draft, prepare the collector's `kiki-handoff.json` for the returned namespace and future UTC cutoff **T**, then run native `preview` and `test`. `handoff arm <id> --collector-file <file> --fingerprint <preview_fingerprint> --agree` verifies the marker against the saved native credential, activates only that home's collector cutoff, and enables native delivery from the fixed T. It does not read the collector's key or stop its daemon. Different keys are not treated as proof of the same remote account. The collector remains responsible for `<T`, native for `>=T`; offline catch-up keeps T rather than using ACK time. `handoff refresh <id>` reads the collector's safe final receipt; completion requires both the old receipt and a real native ACK. `handoff rollback <id> --cutoff <new_future_R> --agree` keeps native responsible for `[T,R)` and resumes the collector at `>=R`, not an unbounded old scan.
+To hand a home over from an existing vibe collector, use `handoff plan <id>` on a new native draft, prepare the collector's `kiki-handoff.json` for the returned namespace and future UTC cutoff **T**, then run native `preview` and `test`.
+
+`handoff arm <id> --collector-file <file> --fingerprint <preview_fingerprint> --agree` verifies the marker against the saved native credential, activates only that home's collector cutoff, and enables native delivery from the fixed T. It does not read the collector's key or stop its daemon, and different keys are not treated as proof of the same remote account.
+
+The collector stays responsible for `<T` and native for `>=T`; offline catch-up keeps T rather than using ACK time. `handoff refresh <id>` reads the collector's safe final receipt, and completion requires both that receipt and a real native ACK. `handoff rollback <id> --cutoff <new_future_R> --agree` keeps native responsible for `[T,R)` and resumes the collector at `>=R`, never an unbounded old scan.
 
 Receiver developers can run the repository's local example with `pnpm exec tsx packages/kap-server/examples/usage-export-receiver.ts` (Node 24). It binds only `127.0.0.1:9080`, persists replacements and deletion tombstones in `usage-receiver.sqlite`, and exposes `POST /usage`. Approve the exact loopback HTTP grant when testing it. A production receiver needs TLS, durable storage, and authentication; the example is not a hosted dashboard.
 

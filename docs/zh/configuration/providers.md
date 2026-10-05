@@ -31,7 +31,7 @@ Kiki 可以同时连接多家模型提供商。API 密钥是适用范围最广�
 
 添加时有两条路径：
 
-- **Known third-party provider**：从 [models.dev](https://models.dev/) 拉取模型目录，选供应商 → 输入 API 密钥 → 选默认模型。目录未声明协议类型的供应商（如 xai、openrouter 这类厂商专用 SDK）会按 OpenAI 兼容协议导入并显示 "guessed" 提示；目录没有可用端点时会先弹出 base URL 输入框；Amazon Bedrock / Cohere 等专有协议和无法识别的显式协议会被拒绝导入。已下线（deprecated）和 alpha 状态的模型不会出现在导入列表中。如果公共目录不可达，CLI 会回退到内置目录快照，离线或网络受限环境下也能完成导入
+- **Known third-party provider**：从 [models.dev](https://models.dev/) 目录里选供应商 → 输入 API 密钥 → 选默认模型。目录没写明协议的供应商（xai、openrouter 这类厂商专用 SDK）会按 OpenAI 兼容协议导入，并标为 guessed；目录里没有可用端点时，会先让你填 base URL。Amazon Bedrock / Cohere 这类专有协议无法导入。已下线（deprecated）和 alpha 状态的模型不会出现在导入列表中。公共目录不可达时，Kiki 会回退到内置目录快照，离线也能完成导入。
 - **Custom registry (api.json)**：粘贴自定义 registry 地址和 Bearer token，本次显式导入会创建 `providers` / `models` 条目。后续启动不会同步上游新增、删除供应商或模型元数据变化。
 
 ### 获取模型建议
@@ -42,7 +42,7 @@ Kiki 可以同时连接多家模型提供商。API 密钥是适用范围最广�
 
 在 GUI 的 **设置 → 模型与提供商 → 连接服务** 中，**用 API 密钥连接**提供五个协议入口：`openai`、`openai_responses`、`anthropic`、`google-genai`、`vertexai`；也可以按服务名称搜索。搜索 DeepSeek、GLM、Kimi、Ollama、LM Studio 或 OpenRouter，选中结果后会自动填入协议和 base URL。没有匹配结果时，选协议后手填 base URL；之后按需填写密钥并添加模型。
 
-Ollama 和 LM Studio 与其他 OpenAI 兼容服务共用 API 密钥路径，本地服务可能无需密钥。五个快捷入口是 OpenAI、Anthropic、Google Gemini、DeepSeek 和 Moonshot（Kimi）。Kimi 快捷入口沿用下文已有的 `kimi` 通信适配器，不额外增加第六张协议卡片。
+Ollama 和 LM Studio 与其他 OpenAI 兼容服务共用 API 密钥路径，本地服务可能无需密钥。五个快捷入口是 OpenAI、Anthropic、Google Gemini、DeepSeek 和 Moonshot（Kimi）——Kimi 快捷入口配置的就是下文的 `kimi` 供应商。
 
 **可用模型**集中展示已配置的模型：按名称或 ID 搜索、查看上下文长度与能力，星标一个模型作为全局默认。提供商还保留自身的默认模型，模型也保留实际发送给上游的 ID。手动填写的 Kimi API 密钥和其他 API 密钥连接一样只获取建议；账号登录则配置其托管模型。
 
@@ -180,7 +180,7 @@ api_key = "xxxxx"
 
 - 凭证键名：`VERTEXAI_API_KEY` ——写在 `[providers.vertexai.env]` 子表里，并与其他供应商 API 密钥一样存放在 `credentials.toml`；是不走下文 ADC 流程时的 API 密钥来源
 
-认证走 Google Cloud 标准 ADC 流程（`gcloud auth application-default login` 或 `GOOGLE_APPLICATION_CREDENTIALS` 服务账号 JSON），这部分与 Kimi Code 无关。**项目 ID 和区域必须写在 `[providers.vertexai.env]` 子表里**——直接在 shell 里 `export GOOGLE_CLOUD_PROJECT` 不会被 CLI 读取。
+认证走 Google Cloud 标准 ADC 流程（`gcloud auth application-default login`，或 `GOOGLE_APPLICATION_CREDENTIALS` 指向的服务账号 JSON 文件）。**项目 ID 和区域必须写在 `[providers.vertexai.env]` 子表里**——在 shell 里 `export GOOGLE_CLOUD_PROJECT` 不起作用。
 
 ```toml
 [providers.vertexai]
@@ -206,7 +206,7 @@ GUI 的 **连接服务 → 用账号登录** 提供 Kimi Code、GitHub Copilot�
 
 上面的小节决定 Kiki 连到哪个端点、用哪把密钥；**请求身份**（request identity）决定每个请求以哪个客户端的身份发出——它写入发往 provider 端点的 `User-Agent` 和额外请求头，服务端据此把这段流量认成 Codex CLI、Claude Code、Grok Build、OpenCode 或 Kiki 自己的客户端。它与 [`[identity]`](./config-files.md#identity)（运行时显示名称和 slug）是两件不同的事。
 
-身份只提供这批客户端标识字段：`base_url`、API 密钥和认证方式仍然由你在供应商配置和 `credentials.toml` 里决定，身份既不附带也不改写它们；`Authorization`、`x-api-key`、`Cookie`、`Content-Type` 这类鉴权与传输头也不接受身份声明。
+身份只提供这批客户端标识字段。`base_url`、API 密钥和认证方式仍然由你在供应商配置和 `credentials.toml` 里决定；`Authorization`、`x-api-key`、`Cookie`、`Content-Type` 这类鉴权与传输头不接受身份声明。
 
 ### 内置身份
 
@@ -242,7 +242,7 @@ GUI 的 **设置 → 请求身份** 是集中页面：左列列出内置（只�
 | 供应商 | 设置 → 模型与提供商 → 供应商编辑器 → 「请求身份」 | `[providers.<name>.request_identity]` |
 | 模型 | 设置 → 模型与提供商 → 模型编辑器 → 「请求身份」 | `[models."<alias>".request_identity]` |
 
-后面的层覆盖前面的层（全局 → 供应商 → 模型）。一层都不设置时，普通 API key 连接沿用内置的 Kimi Code 身份，走 Codex 或 Grok Build OAuth 登录的供应商则沿用该供应商的默认身份。你显式设置的层——全局、供应商或模型——仍然覆盖这个默认。选某个兼容 preset 会先重置更低层身份，再应用该层可选的 `overrides` 稀疏调整（如 `lineage.format`、`client.user_agent`、`request.logical_id`）。让一家供应商的流量以 OpenCode 身份发出只需：
+后面的层覆盖前面的层（全局 → 供应商 → 模型）。一层都不设置时，普通 API key 连接使用内置的 Kimi Code 身份，走 Codex 或 Grok Build OAuth 登录的供应商使用该供应商的默认身份。选某个兼容 preset 会先清空更低层的身份，再应用该层可选的 `overrides` 稀疏调整（如 `lineage.format`、`client.user_agent`、`request.logical_id`）。让一家供应商的流量以 OpenCode 身份发出只需：
 
 ```toml
 [providers.my-gateway.request_identity]

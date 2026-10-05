@@ -206,7 +206,43 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 
 当一条修改或归档提议留待审阅时，原条目在决定之前保持原有内容并继续生效。接受提议才会对原条目执行相应的修改或归档；丢弃只移除这条提议，原条目不受影响。如果原条目在提议之后已经变化，该决定会被拒绝，提议仍会保留，并提示你重新读取该条目。
 
-三个范围的模型、审批收件箱、可撤销的改动历史和 `/memory` 页，见[记忆](../guides/memory.md)。
+### 写入一条条目
+
+`MemoryWrite` 每次调用只做一个 `action`：
+
+- **`create`**——真正的新主体。需要 `type`、`title`、`body` 和 `reason`，不传 `id` 与 `expected_revision`。不显式指定 `scope` 时落到当前绑定的角色，没有角色则落到工作区。
+- **`update`**——在原条目上修订，保留它的 id 和仍然成立的条件。`body` 是完整的新正文，不是补丁。
+- **`supersede`**——写出一条有自己 id 的替代条目，等替代条目生效后才让前驱退出。规则真的变了时用它，两版内容都留得住。
+- **`archive`**——让条目退出，保留已存正文。只传目标和 `reason`；`type`、`title`、`body` 会被忽略。
+
+`update`、`supersede` 和 `archive` 必须同时给 `id` **和** `expected_revision`——取自读取结果、搜索条目或此前的回执。缺它时调用会被拒绝，而不是套用到一个你没看过的版本上。同一个 id 可能同时存在于多个可见范围：显式 `scope` 会限定查找，省略时必须唯一命中，否则调用会列出候选，而不是替你挑一个。
+
+两个可选字段记录内容依据什么，两者都是「省略或保留」而不是「给默认值」：
+
+- **`basis`**——`{ kind, note, refs? }`，`kind` 为 `human`、`observed`、`derived` 或 `unknown`。它记录内容的证据，与系统自动记录的最后写入者相互独立；恰好在你的轮次里运行的写入不会自动算成你亲口说的。`update` 时省略它，只有在 type、title、body 都没变的情况下才保留原依据；改了其中任何一项却没有给出新依据，这条记忆会降为 `{ kind: 'unknown' }` 并附 `content changed without refreshed attribution` 警告，让过期的依据不会比它描述过的正文留得更久。
+- **`validity`**——`{ check, until? }`，用于会变的内容。`update` 时省略表示保留原值，显式传 `null` 才是清除。没有 `validity` 并不意味着内容永远成立。
+
+`covered_by` 只用于 `archive`，取同一范围中保留条目的 `{ id, expected_revision }`，该条目需处于生效状态且内容完整覆盖目标。真正执行归档时会在写锁内重新核验这个依赖，所以对着已经变了的替代条目归档会失败并返回 `covered_target_changed`，而不是丢掉那条规则。
+
+成功调用会连同完整条目（已存的或待审的）一起返回一个 `outcome`：
+
+| outcome | 含义 |
+| --- | --- |
+| `applied` | 写入已生效。返回的条目就是当前内容——不必为了确认再读一次。 |
+| `pending` | 写入是一条待你决定的提议。它指向的原条目未变，仍然生效。 |
+| `unchanged` | 这次提交的内容与已存下来的没有任何差异。没有产生新版本，也没有可撤销的操作。 |
+
+`unchanged` 以及重复提交的同一待审提议，`operation_id` 都为 `null`——这正是重复提议被识别出来、而不是越堆越多的原因。
+
+失败以结构化错误返回，带 `code`、说明和恢复指引：`missing_revision`、`revision_conflict`、`not_found`、`ambiguous_target`、`scope_mismatch`、`covered_target_changed`、`duplicate_title` 等。正确的应对是按 recovery 处理、必要时重新读取、然后做一次修正后的尝试；这些 code 存在的意义就是阻止「写不进去就另建一条」绕开问题。你看不到的目标会被报成不可用，而不是被别人代写。
+
+### 搜索与读取
+
+`MemorySearch` 可以用 `mode: "search"`（默认，需要 `query`）或 `mode: "list"`（不带 query，浏览清单）。`page_size` 取 1–20，search 默认 8、list 默认 20；翻页只带 `cursor`，改动任何过滤条件都会让它失效。每一项都带完整标题、type、status、revision、所属范围、可直接复制进 `MemoryWrite` 的 `target`、`basis_kind`，以及 `expired` / `recheck` / `unrecorded` 三态的 `applicability`。响应里的 `coverage` 说明实际查了哪些范围和状态、有没有跳过什么。search 额外给最多 200 字符的 `snippet` 和 `score`，list 两者都没有。片段会省略条件，所以要依赖、合并或替换一条记忆前先完整读出来。
+
+`MemoryRead` 在 `id` 和 `ids`（最多 10 个）中恰好取一个，默认读取生效、已归档和被替代的条目，只有显式传 `include_pending: true` 才包含待审提议。结果是完整条目而不是摘要，并带所属范围、target 字段和适用性，所以一次读取可以直接作为 `update` 的来源。
+
+三个范围的模型、审批收件箱、可撤销的改动历史和 `/memory` 页，见[记忆](../guides/memory.md)。同一份数据的 HTTP 入口见[服务端 API](../server/rest-api.md#记忆)。
 
 ## 协作类
 
@@ -227,7 +263,7 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 
 Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRun`、`AgentList` 和 `AgentSend`。这些工具只管理调用方的直属子 Agent——用 `AgentRun` 里可选的 `name`，或用 agent id。它们不需要实验开关。内置的 [`coder` 与 `explore` profile](../customization/agents.md) 没有这组工具。
 
-`AgentList` 返回这些直属子 Agent，不会列出孙级。`AgentSend` 的投递语义是尽早送达：子 Agent 正在运行时，消息会在下一个 step 边界被 steer 进其活跃 turn；子 Agent 空闲（或竞态恰逢 turn 结束）时保持排队，到下一步开始时才读这条消息。
+`AgentList` 返回这些直属子 Agent，不会列出孙级。`AgentSend` 把消息排进某个直属子 Agent 的邮箱，之后发生什么取决于该子 Agent 的状态——细节见本页下方 `AgentSend` 条目。
 协作类工具负责 Agent 间协作、用户交互和 Skill 调用。
 
 | 工具 | 默认审批 | 说明 |
@@ -238,7 +274,30 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 | `AskUserQuestion` | 自动放行 | 向用户提问以获取结构化输入 |
 | `Skill` | 自动放行 | 调用已注册的 inline Skill |
 
-**`AgentRun`** 将子任务委托给子 Agent。必填参数为 `prompt` 和 `description`（3–5 个词的短任务描述，用于界面展示）。可选启动参数包括 `profile`（省略时由显式配置的 `[subagent].default_profile` 选择对应 profile；该配置键不存在时使用内建通用 subagent 提示词；显式留空时必须指定目标）、`profile_file`（显式 role Markdown 文件，绝对路径或工作区相对路径；它是 role 定义而非共享提示词模板，与 `profile`、`route`、`resume` 互斥）、`background`（省略时 main 默认后台、subagent 默认前台；显式 `false` 同步等待）、`name`（会话内唯一的句柄，只含小写字母、数字和下划线，`root` 保留）、`route`、`model_alias`、`effort`，以及在 `resume` 时显式修改模型用的 `allow_model_change`。另有两个可选参数按这一次绑定覆盖子 Agent 的工具：`tools` 替换已解析出的工具选择（只写 `*`，或写 `["*", ThreadRead]`，会保留普通工具并额外加入该 opt-in；有限名单仍然有限），`disallowed_tools` 增加一层调用级 deny。两者都省略时，新建子 Agent 使用配置默认，`resume` 保留已保存的覆盖；显式传值替换该层，`disallowed_tools: []` 只清掉调用级 deny，不会清除 profile、祖先或 route 的 deny。两者都要求原生 executor：不支持的外部 executor 会在子 Agent 启动前报错。新派生项按此顺序选模型：具体 `model_alias` 参数 → 生效 profile / route / caller lease pin → 显式配置的 `[subagent].default_model`。这些来源都不存在时以 `model.not_configured` 失败，不会创建子 Agent。调用方模型与主 Agent 的 `default_model` 均不是静默回退来源。`AgentRun` 拒绝 `model_alias: "inherit"`：请写具体的已配置模型名，或省略参数以使用目标默认模型。在 subagent profile、route、caller lease 中写 `model_alias: inherit`，仍会绑定调用方当前已解析的模型与有效思考强度；工具显式 `effort`，或 profile、route、lease、匹配的 `model_profiles` 条目上适用的 effort pin 优先。其他情况下，effort 按工具 `effort` → 匹配的 `model_profiles` 档位 → 所绑定模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型自身的默认档位解析。显式传入未知的具体 `model_alias` 会报错；main agent 没有调用方，其 profile 不可使用 `inherit`。`resume` 按名称或 agent id 继续已有直属子 Agent，与 `name`、`profile`、`profile_file` 和 `route` 互斥。同时省略 `model_alias` 和 `effort` 会保留已保存的绑定，也可以传入 `effort` 让下一次空闲运行使用。`AgentRun` 恢复时同样拒绝 `model_alias: "inherit"`；显式换模请写具体模型名。省略 `model_alias` 会保留已保存的模型；切换到不同规范模型必须传 `allow_model_change: true`，而解析到同一规范模型则不产生模型变化。`preferred_models`、`discouraged_models`、`preferred_efforts` 与 route / caller lease pin，对满足硬域且可执行的绑定产生 advisory。`allowed_models`、`deny_models`、`allowed_efforts` 在 profile、lease、树策略与匹配 model-profile 中为硬规则；绑定、人工切换与恢复均拒绝违规。机器级 deny、不可用能力、换模确认与 executor / thread 限制也仍是硬错误。外部 executor 不支持修改恢复的 thread 绑定时会报错，不会重建 thread 或 executor。Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIKI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout 或任意供应商参数透传。前台模式下父 Agent 等待结果；后台模式立即返回任务 ID，结果会通过之后的合成 User 消息自动送达。TUI 会把同一步中的多个前台调用合并展示，并显示状态与耗时。完整 profile 与生命周期契约见 [Agent 与子 Agent](../customization/agents.md)。
+**`AgentRun`** 将子任务委托给子 Agent。必填参数为 `prompt` 和 `description`（3–5 个词的短任务描述，用于界面展示）。
+
+| 参数 | 作用 |
+| --- | --- |
+| `profile` | 执行子任务的 agent profile。省略时由显式配置的 `[subagent].default_profile` 选择；该配置键不存在时使用内建通用 subagent 提示词；显式留空则必须指定目标 |
+| `profile_file` | role Markdown 文件，绝对路径或工作区相对路径。它是 role 定义而不是共享提示词模板，与 `profile`、`route`、`resume` 互斥 |
+| `background` | 省略时 main 默认后台、subagent 默认前台；显式 `false` 同步等待 |
+| `name` | 会话内唯一的句柄，只含小写字母、数字和下划线，`root` 保留 |
+| `route` | 用 profile route 代替具名 profile |
+| `model_alias` | 子 Agent 使用的模型，完整解析顺序见[模型选择](./model-vocabulary.md#绑定规则) |
+| `effort` | 该子 Agent 的思考强度 |
+| `allow_model_change` | 在 `resume` 时把已有子 Agent 换到另一个模型需要显式传它 |
+| `tools` | 替换本次绑定已解析出的工具选择。只写 `*`，或写 `["*", ThreadRead]`，会保留普通工具并额外加入该 opt-in；有限名单仍然有限 |
+| `disallowed_tools` | 增加一层调用级 deny。传 `[]` 只清掉这一层，不会清除 profile、祖先或 route 的 deny |
+
+`tools` 和 `disallowed_tools` 都省略时，新建子 Agent 使用配置默认，`resume` 保留已保存的覆盖。两者都要求原生 executor；不支持它们的外部 executor 会在子 Agent 启动前报错。
+
+**模型与档位。** 新派生项按此顺序选模型：`model_alias` 参数 → 生效 profile、route 或 caller lease 上的 pin → 显式配置的 `[subagent].default_model`。这些来源都不存在时以 `model.not_configured` 失败，不会创建子 Agent——调用方模型与主 Agent 的 `default_model` 都不是静默回退来源。`AgentRun` 拒绝 `model_alias: "inherit"`，请写具体的已配置模型名或省略该参数；subagent profile、route、caller lease 里仍可写 `model_alias: inherit` 跟随调用方。其他情况下，思考强度按工具 `effort` → route 上锁定的 effort（route 未锁定时改用 caller lease 的）→ 匹配的 `model_profiles` 档位 → 所绑定模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型自身的默认档位解析；都不提供时该调用失败。
+
+`preferred_models`、`discouraged_models`、`preferred_efforts` 是建议，选到列表之外的模型仍然能跑。`allowed_models`、`deny_models`、`allowed_efforts` 是硬限制：绑定、人工切换与恢复都会拒绝违规，机器级 deny 与不可用能力同样如此。
+
+**恢复。** `resume` 按名称或 agent id 继续已有直属子 Agent，与 `name`、`profile`、`profile_file`、`route` 互斥。同时省略 `model_alias` 和 `effort` 会保留已保存的绑定，也可以传 `effort` 让下一次空闲运行使用。恢复时同样拒绝 `model_alias: "inherit"`——显式换模请写具体模型名，解析到不同模型时再加 `allow_model_change: true`。外部 executor 无法修改已恢复 thread 的绑定时会报错，不会重建 thread。
+
+**超时与模式。** Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIKI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout。前台模式下父 Agent 等待结果；后台模式立即返回任务 ID，结果会通过之后的合成 User 消息送达。TUI 会把同一步中的多个前台调用合并展示，并显示状态与耗时。完整 profile 与生命周期契约见 [Agent 与子 Agent](../customization/agents.md)。
 
 `AgentRun` 的默认值按调用方的运行时身份决定，不取决于目标 profile；每次 `resume` 重新应用同一规则，goal mode 也不改变默认值。Main 省略 `background` 或显式传 `true` 时，要求 `TaskList`、`TaskOutput`、`TaskStop` 可用；不可用则在启动前报错，提示启用这些工具或显式用 `background:false` 同步重试，不会静默回退到前台。Main 前台调用遇到 steer / Send now 时，等待会转入后台而不停止子 Agent；下一安全步骤读取新输入，子 Agent 完成后仍自动通知。普通排队消息不会触发转后台。停止当前 main 轮次不等于停止已脱离等待的子 Agent；需要停止某个跟踪任务时，显式调用 `TaskStop`。
 
@@ -248,9 +307,9 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 **`AgentList`** 列出当前 Agent 的直属子 Agent。可选参数 `include_finished` 默认为 false。实例正在启动、运行或取消时，即使之前的后台任务已完成或超时，也会以 `running` 保持可见。执行器处于故障状态时显示 `errored`；其他情况采用最近一次后台任务状态，没有任务记录则为 `untracked`。传 `true` 才会额外包含已结束或出错的子 Agent。最多返回 50 条，运行中的排在前面；装不下的数量记在 `omitted`。每条记录含 `agent_id`、可选的 `name` 与 `profile`，以及 `status`。`running` 不代表一定有跟踪中的后台任务或之后的完成通知；用 `TaskList` 查看跟踪中的工作。
 
-**`AgentSend`** 把非空的 `message` 排进直属子 Agent 的邮箱。`target` 可以是 `AgentRun` 当时传入的 `name`，也可以是 agent id。子 Agent 正在运行时，消息会在下一个 step 边界被 steer 进其活跃 turn，尽早送达；空闲且可恢复的子 Agent 会以该消息启动一次新的运行，该次运行完成时父 Agent 照常收到完成通知。匹配到多个直属子 Agent、或一个都匹配不到时调用失败——先用 `AgentList` 再换成不含糊的值重试。邮箱满了说明未读排队消息太多，等子 Agent 消化一些再发。
+**`AgentSend`** 把非空的 `message` 排进直属子 Agent 的邮箱。`target` 可以是 `AgentRun` 当时传入的 `name`，也可以是 agent id。子 Agent 以 native 方式运行时，消息会在下一个 step 边界被 steer 进其活跃 turn；跑在外部执行器上的子 Agent 无法被 steer，消息会等到它下一次运行开始时才被取走；空闲且可恢复的子 Agent 则以该消息启动一次新的运行，该次运行完成时父 Agent 照常收到完成通知。匹配到多个直属子 Agent、或一个都匹配不到时调用失败——先用 `AgentList` 再换成不含糊的值重试。邮箱满了说明未读排队消息太多，等子 Agent 消化一些再发。
 
-返回结果包含 `message_id` 和 `queued` 或 `delivered` 状态。`queued` 表示邮箱已接收，但消息尚未加入收件方上下文。收件方上下文持久化且邮箱确认投递后，发送者的 transcript 会记录投递回执，GUI 的「待送达」标记随之清除，即使没有打开子 Agent 的 transcript。回执在页面重载和历史回放后仍然有效；它只确认送达，不代表子 Agent 已按消息采取行动。
+返回结果包含 `message_id` 和 `queued` 或 `delivered` 状态。`queued` 表示邮箱已受理；投递可以并发完成，所以它并不说明这条消息此刻一定还没进上下文。`delivered` 只表示消息已送达收件方上下文，不代表子 Agent 已按它采取行动。`resumed: true` 表示确实观测到一次新运行启动；没有观测到运行启动时该字段会被省略，所以看不到它并不等于否定答案。收件方上下文持久化且邮箱确认投递后，发送者的 transcript 会记录投递回执，GUI 的「待送达」标记随之清除，即使没有打开子 Agent 的 transcript。回执在页面重载和历史回放后仍然有效。
 
 **`AskUserQuestion`** 以结构化多选题的形式向用户提问，适用于需要消歧或选择方案的场景。`questions` 参数接受 1–4 道题，每道题需提供 `question`（以 `?` 结尾）、`options`（2–4 个选项，每项含 `label` 和 `description`）以及可选的 `header`（最多 12 字符）和 `multi_select`（默认 false）。系统自动附加"其他"选项。`background` 为 true 时启动后台问题任务并立即返回任务 ID。宿主未实现交互式提问能力时返回失败提示，Agent 应改为在文本回复中直接提问。
 

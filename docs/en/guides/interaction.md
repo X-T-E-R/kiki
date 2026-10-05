@@ -1,49 +1,47 @@
 # Interaction and input
 
-The Kiki CLI and TUI run as an interactive terminal user interface built around three components: the input box, the conversation view, and the status bar. This page covers how to enter text, paste media, navigate the approval flow, and switch between modes.
+The CLI and TUI are a terminal interface built from the input box, the conversation view, and the status bar. This page covers typing and pasting, the approval flow, and the modes you can switch between.
 
 ## Input box basics
 
-The input box accepts free-form text. Press `Enter` to send, or `Shift-Enter` / `Ctrl-J` to insert a newline. When the input box is empty, press `↑` / `↓` to browse the input history for the current working directory, including previous shell commands.
+The input box accepts free-form text. `Enter` sends; `Shift-Enter` / `Ctrl-J` insert a newline. When it is empty, `↑` / `↓` browse what you have typed before in this working directory, shell commands included.
 
-**Exiting the CLI**: press `Ctrl-D` with the input box empty, press `Ctrl-C` twice while idle, or type `/exit`. All three require the agent to be idle — pressing `Ctrl-C` or `Esc` during streaming output only interrupts the current turn, it does not exit the program.
+**Leaving the CLI**: `Ctrl-D` with an empty input box, `Ctrl-C` twice while idle, or `/exit`. All three need the agent to be idle — during streaming output, `Ctrl-C` and `Esc` only interrupt the current turn.
 
 ## Pasting images and video
 
-Kiki supports pasting images and video directly into the input box, so you can discuss screenshots, UI mockups, architecture diagrams, or code demos without uploading or converting files first.
-
-**Video input is a distinctive Kiki capability** — you can paste a video clip and have the model analyze its content, UI flow, or code walkthrough.
+You can paste images and video straight into the input box, so a screenshot, UI mockup, architecture diagram or code demo can go into the conversation without uploading or converting anything first.
 
 How to paste:
 
 - **macOS / Linux**: `Ctrl-V`
 - **Windows**: `Alt-V`
 
-After pasting, the input box shows a placeholder that you can edit like normal text; on submit, the placeholder is replaced with the actual content. A plain-text clipboard falls back to ordinary paste. Media support depends on whether the current model accepts image / video input (the model capability fields `image_in` / `video_in`); it is enabled by default when you are logged in to a Kimi Code account.
+The pasted media shows up as an editable placeholder; on send, the real content replaces it. A plain-text clipboard just pastes as text. Whether media works at all depends on the current model accepting image / video input (the `image_in` / `video_in` capability fields); it is enabled by default on a Kimi Code account.
 
 ## Slash commands
 
 Anything starting with `/` is treated as a slash command. Typing `/` opens a completion menu that filters in real time as you keep typing; press `Esc` to close the menu. If nothing matches, the input is sent to the agent as a regular message.
 
-Active [Agent Skills](../customization/skills.md) (skill packages that extend what the agent can do) are automatically registered as slash commands: ordinary external Skills are invoked with `/skill:<name>`, external sub-skills appear as dotted commands such as `/parent.child`, and built-in Skills appear directly as `/<name>` in the slash command panel. If an external skill name does not conflict with a system slash command, you can also drop the `skill:` prefix and type `/<name>` directly.
+Active [Agent Skills](../customization/skills.md) (skill packages that extend what the agent can do) are registered as slash commands. Ordinary external skills are invoked with `/skill:<name>`, external sub-skills appear as dotted commands such as `/parent.child`, and built-in skills appear directly as `/<name>`. When an external skill name does not clash with a system command, you can drop the `skill:` prefix and type `/<name>`.
 
-Inside a longer prompt, typing `/` after whitespace — including at the start of a later line — opens a skill-only completion menu. You can reference several Skills in one prompt this way: Kiki activates them together and runs them with the prompt as a single turn (one `/undo`, which reverts the previous turn's output, undoes the whole submission), and the prompt text is sent unchanged. A Skill mention in a prompt never carries arguments — activation is by name only; arguments remain a standalone `/skill:<name> args` concept. Built-in and plugin commands still only work at the very start of the input.
+Inside a longer prompt, typing `/` after whitespace — including at the start of a later line — opens a skill-only completion menu. Reference several skills in one prompt that way: Kiki activates them together and runs them as a single turn, and one `/undo` reverts the whole submission. A skill mentioned inside a prompt is activated by name only and cannot carry arguments; arguments still need a standalone `/skill:<name> args`. Built-in and plugin commands only work at the very start of the input.
 
-Some commands are only available when the agent is idle — you need to press `Esc` to interrupt streaming output or context compression before using them. Mode-toggle and query commands like `/yolo`, `/plan`, `/help`, and `/btw` are always available. For the full list, see [Slash commands reference](../reference/slash-commands.md).
+Some commands need the agent to be idle — press `Esc` to interrupt streaming output or context compression first. Mode toggles and queries like `/yolo`, `/plan`, `/help` and `/btw` are always available. [Slash commands reference](../reference/slash-commands.md) has the full list.
 
 ## File references
 
-Type `@` to trigger file-path completion. Selecting a path inserts its relative form into your message; the agent loads the file content directly when it reads the message. File references work in both git and non-git directories, and folder suggestions end with `/` so you can keep completing paths inside them. While Kiki's fast file-search component is still downloading in the background, Kiki falls back to a basic filesystem scan. Hidden paths are available, but `.git` is excluded from suggestions.
+Type `@` to get file-path completion. Picking a path inserts its relative form into your message, and the agent reads the file when it picks up that message. It works in git and non-git directories alike, and folder suggestions end with `/` so you can keep completing paths inside them. While Kiki's fast file-search component is still downloading in the background, completion falls back to a plain filesystem scan. Hidden paths are suggested; `.git` is not.
 
 > `@` references and slash commands are two separate mechanisms: `@` gives the agent file context, while `/` invokes built-in features or Skills. After whitespace, `/` offers Skill completions only; use a leading `/` for built-in and plugin commands.
 
 ## Approval flow
 
-When the agent calls a tool with side effects — running commands, modifying files outside the workspace trust boundary — the TUI displays an approval panel for your confirmation. In a trusted working directory, `Write` / `Edit` inside that directory run without per-file approval; shell commands, workspace-external writes, workspace links to external targets, and sensitive-file access prompt in manual mode. Approvals are not triggered for regular tool calls in YOLO mode, nor for writes to plan files in Plan mode.
+When a tool call has side effects — running a command, writing outside the workspace trust boundary — the TUI shows an approval panel. In a trusted working directory, `Write` / `Edit` inside it run without a per-file prompt; in manual mode, shell commands, writes outside the workspace, links to external targets and sensitive files all ask first. YOLO mode does not prompt for ordinary tool calls, and neither does Plan mode for writes to plan files.
 
-Use the arrow keys to select an option and press `Enter` to confirm, or press `1` / `2` / `3` to select by number directly. `Esc`, `Ctrl-C`, and `Ctrl-D` are all equivalent to rejecting.
+Use the arrow keys and `Enter`, or press `1` / `2` / `3` to pick by number. `Esc`, `Ctrl-C`, and `Ctrl-D` all mean reject.
 
-The panel typically includes an **Approve for this session** option; selecting it auto-approves the same kind of call for the rest of the session. For permanent rules, add allow / deny entries in [Configuration files](../configuration/config-files.md#permission).
+The panel usually offers **Approve for this session**, which approves that kind of call for the rest of the session. For rules that outlive a session, add allow / deny entries in [Configuration files](../configuration/config-files.md#permission).
 
 ## Mode switching
 
@@ -54,17 +52,19 @@ In Plan mode the agent first outputs an action plan and waits for your approval 
 - Toggle: `Shift-Tab` or `/plan`
 - Clear the current plan: `/plan clear` (only while idle)
 
-After producing a plan the agent pauses for your review — you can approve it, reject it, or ask for revisions. Exiting Plan mode requires your confirmation even if YOLO mode is also active. Auto and Approve for me are the exceptions: plan exits are approved automatically and marked as "Auto-approved" in the transcript.
+After writing the plan the agent pauses for you: approve it, reject it, or ask for changes. Leaving Plan mode asks for confirmation even when YOLO mode is on — except in Auto and Approve for me, where the exit is approved for you and marked "Auto-approved" in the transcript.
 
 ### Permission modes
 
-Select among Manual, Auto, Approve for me, and YOLO with `/permission`. **YOLO mode** (`/yolo`) auto-approves agent file access, including sensitive targets such as `.env` or SSH keys; an explicit deny rule still wins. Git-control paths may still prompt. Exiting Plan mode still requires review, and the agent can still ask you questions.
+`/permission` switches between Manual, Auto, Approve for me, and YOLO.
 
-**Auto mode** (`/auto`) approves ordinary tool actions and plan exits without prompting. It asks you before accessing sensitive files or workspace links to external targets, and the agent can still ask you questions. Explicit deny rules still block matching calls; dangerous Bash commands also request approval unless that guard is disabled.
+**YOLO mode** (`/yolo`) approves agent file access without asking, including sensitive targets such as `.env` or SSH keys. An explicit deny rule still wins, and Git-control paths may still prompt. Leaving Plan mode still asks, and the agent can still put questions to you.
 
-**Approve for me** (`review`) behaves like Auto but routes policy-generated approval requests to a [configured reviewer](../configuration/config-files.md#reviewer-approval) first. An explicit `ask` rule always goes to you instead. A confident reviewer approval or denial is recorded with reviewer attribution. Uncertain or unavailable review goes to your ordinary approval panel; after three consecutive reviewer denials in a turn, later requests in that turn come directly to you. Agent questions remain separate from reviewer decisions; [the interaction setting](../configuration/config-files.md#interaction) controls whether questions block the turn.
+**Auto mode** (`/auto`) approves ordinary tool actions and plan exits without prompting, and asks before sensitive files and workspace links to external targets. Explicit deny rules still block matching calls, and dangerous Bash commands still request approval unless that guard is turned off.
 
-If no approval client is attached (for example, during an unattended scheduled run), a request needing your approval is cancelled instead of granting access. Questions without an attached client are dismissed rather than waiting indefinitely.
+**Approve for me** (`review`) works like Auto but sends policy-generated approval requests to a [configured reviewer](../configuration/config-files.md#reviewer-approval) first. An explicit `ask` rule always comes to you instead. A confident reviewer decision is recorded with the reviewer's attribution; an uncertain or unavailable one falls back to your approval panel, and after three reviewer denials in a turn the rest of that turn's requests come straight to you. Agent questions are separate from reviewer decisions, and [the interaction setting](../configuration/config-files.md#interaction) decides whether a question blocks the turn.
+
+With no approval client attached — an unattended scheduled run, for instance — a request that would need you is cancelled rather than granted, and a question is dismissed rather than left hanging.
 
 ::: warning
 YOLO mode skips confirmation for file writes and command execution. Only use it in working directories you trust.
@@ -72,13 +72,13 @@ YOLO mode skips confirmation for file writes and command execution. Only use it 
 
 ### Shell mode
 
-Shell mode lets you run terminal commands without leaving the conversation. The command output is written into the conversation context, so the agent can see the results in later turns.
+Shell mode runs terminal commands without leaving the conversation. Their output goes into the conversation context, so the agent can see the results in later turns.
 
-- Enter: type `!` in an empty input box, or paste a command that starts with `!`.
-- Exit: press `Backspace` or `Esc` in an empty input box; submitting a command also returns you to normal mode automatically.
-- Recall previous commands: with the input box empty in shell mode, press `↑` to browse earlier shell commands; recalling one keeps you in shell mode so it runs as a command again.
+- Enter: type `!` in an empty input box, or paste a command starting with `!`.
+- Exit: press `Backspace` or `Esc` in an empty input box. Submitting a command also returns you to normal mode.
+- Recall previous commands: with the input box empty in shell mode, press `↑`; recalling one keeps you in shell mode so it runs again as a command.
 
-In shell mode the input box shows a `!` prompt on the left (in the desktop GUI the border also turns violet). For example, you can run `!git status` to check the repository state without opening a new terminal — the output goes straight into the conversation context.
+The input box shows a `!` prompt on the left in shell mode (in the desktop GUI the border turns violet too). `!git status` checks the repository without opening another terminal, and its output lands in the conversation.
 
 ## During streaming output
 
@@ -90,9 +90,9 @@ The input box remains usable while the agent is thinking or calling tools, and s
 
 ## External editor
 
-Press `Ctrl-G` to send the current input content to an external editor. When you save and close, the text is written back into the input box; if you close without saving, the original content is preserved. This is handy when you need to enter large blocks of text or content with complex formatting.
+`Ctrl-G` sends the current input to an external editor. Save and close to write the text back into the input box; close without saving and the original stays. This is the easy way to enter long or heavily formatted text.
 
-Editor priority: `/editor` config → `$VISUAL` environment variable → `$EDITOR` environment variable. If none are set, run `/editor` first to choose a default.
+Kiki picks the editor in this order: the `/editor` config, then `$VISUAL`, then `$EDITOR`. With none of them set, run `/editor` to choose one.
 
 ## Next steps
 

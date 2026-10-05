@@ -29,7 +29,7 @@ During streaming, `Ctrl-C` clears a nonempty draft first. With the input box emp
 
 Press `Shift-Tab` to enable or disable Plan mode. When enabled, the Agent prioritizes read-only tools for research and planning and can write to the current plan file; `Bash` is subject to the current permission mode and regular rules, without any additional separate approval triggered by Plan mode. Simply toggling does not create an empty plan file. Press `Shift-Tab` again to exit Plan mode.
 
-Type `!` in an empty input box to enter shell mode and run terminal commands directly. The active-turn backgrounding shortcut `Ctrl-B` is disabled in the daemon TUI. See [Interaction and input](../guides/interaction.md#shell-mode).
+Type `!` in an empty input box to enter shell mode and run terminal commands directly. See [Interaction and input](../guides/interaction.md#shell-mode).
 
 ## Input & Editing
 
@@ -60,8 +60,12 @@ While streaming output is active, the input box can still receive input and supp
 | --- | --- |
 | `Esc` | Interrupt the current streaming output |
 | `Ctrl-C` | Clear a nonempty draft first; interrupt the active turn when the input is empty |
-| `Ctrl-S` | Disabled: the prompt-steering shortcut does not inject input into the active turn |
-| `Ctrl-B` | Disabled: the active turn cannot be moved to the background with this shortcut |
+| `Ctrl-S` | Steer the running turn: send the queued messages and the current draft into it now instead of waiting for the turn to end |
+| `Ctrl-B` | Move the running turn to the background, leaving you free to queue the next instruction |
+
+`Ctrl-S` steers in queue order. Shell commands (`! …`) and inline Skill invocations are never steered in — they stay queued and run after the current turn, and everything queued behind such an item waits with them.
+
+Both shortcuts are unavailable in the daemon TUI (`kiki web`), which reports them as disabled.
 
 ## Tool Output
 

@@ -2,9 +2,9 @@
 
 > A local agent workspace for Kiki
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://x-t-e-r.github.io/kiki/) [Releases](https://github.com/X-T-E-R/kiki/releases)
+[![License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/X-T-E-R/kiki/blob/kiki/LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://x-t-e-r.github.io/kiki/) [Releases](https://github.com/X-T-E-R/kiki/releases)
 
-## What is Kiki CLI
+## About
 
 Kiki is a local agent workspace with a desktop GUI, a CLI/TUI, and a browser UI available through `kiki web`. It can read and edit code, run shell commands, search files, fetch web pages, and choose the next step from the feedback it receives. It works out of the box with Moonshot AI's Kimi models and can also be configured to use other compatible providers.
 
@@ -14,19 +14,22 @@ Kiki began as a fork of Kimi Code (Moonshot AI) and is now developed independent
 
 Download the appropriate build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases).
 
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Kiki CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIKI_SHELL_PATH` to the absolute path of `bash.exe`.
+> **Windows:** install [Git for Windows](https://gitforwindows.org/) before first launch — Kiki CLI uses the bundled Git Bash as its shell environment. If Git Bash is in a custom location, set `KIKI_SHELL_PATH` to the absolute path of `bash.exe`.
 
-Then run it with a new terminal session:
+Then open a new terminal session and confirm the install:
 
 ```sh
 kiki --version
 ```
 
-### A note on npm
+### Installing from npm
 
-With Node.js 24.15.0 or later, the CLI is also published on npm as `kiki-agent` (CLI/TUI plus a checksum-verified desktop download) and `kiki-agent-lite` (CLI/TUI only). Install one, not both — they supply the same `kiki` command. GitHub Releases remain the way to fetch a standalone executable.
+With Node.js 24.15.0 or later you can also install from npm. Pick **one** of these — they both provide the same `kiki` command, and installing both leaves you with a conflict:
 
-For checksums, update channels, and uninstall steps, see the [installation guide](https://x-t-e-r.github.io/kiki/en/getting-started/installation).
+- `kiki-agent` — CLI/TUI plus a checksum-verified desktop download
+- `kiki-agent-lite` — CLI/TUI only
+
+GitHub Releases remain the way to get a standalone executable. For checksums, update channels, and uninstall steps, see the [installation guide](https://x-t-e-r.github.io/kiki/en/getting-started/installation).
 
 ## Quick Start
 
@@ -43,7 +46,7 @@ On first launch, run `/login` inside Kiki CLI and choose either Kimi Code OAuth 
 Take a look at this project and explain the main directories.
 ```
 
-To use the browser UI, run:
+To use the browser UI instead, run:
 
 ```sh
 kiki web
@@ -70,8 +73,8 @@ kiki web
 
 - Source: https://github.com/X-T-E-R/kiki
 - Issues: https://github.com/X-T-E-R/kiki/issues
-- Security: see [SECURITY.md](../../SECURITY.md) in the main repository
+- Security: report privately per https://github.com/X-T-E-R/kiki/blob/kiki/SECURITY.md
 
 ## License
 
-MIT
+[MIT](https://github.com/X-T-E-R/kiki/blob/kiki/LICENSE)

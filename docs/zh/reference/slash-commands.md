@@ -130,7 +130,7 @@ Kiki 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜杠命�
 
 已激活的外部 Skill 会自动注册为斜杠命令。普通外部 Skill 以 `skill:` 作为命名空间前缀：
 
-```
+```text
 /skill:<name> [附加文本]
 ```
 
@@ -138,7 +138,7 @@ Kiki 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜杠命�
 
 外部子 Skill 会直接以点分名称出现在斜杠命令面板中：
 
-```
+```text
 /<parent-skill>.<sub-skill> [附加文本]
 ```
 
@@ -146,7 +146,7 @@ Kiki 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜杠命�
 
 为方便输入，外部 Skill 命令同时支持省略 `skill:` 前缀的简写形式 `/<name>`，前提是该名称未被系统斜杠命令占用——即 `/code-style` 会回退匹配到 `/skill:code-style`。
 
-::: info 说明
+::: tip 说明
 所有 Skill 命令仅在空闲状态下可用。`flow` 类型的 Skill 同样通过 `/skill:<name>` 暴露，没有独立的 `/flow:` 命名空间。
 :::
 

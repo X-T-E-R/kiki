@@ -1,12 +1,10 @@
 # Agent Skills
 
-Agent Skills are a lightweight mechanism for extending model capabilities in Kiki. A Skill is a Markdown document with YAML frontmatter that describes a specialized area of knowledge or a workflow — for example, a project's code style guidelines, a PR review process, or a commit message format.
-
-Compared to pasting the same instructions into a prompt every time, Skills offer the advantage of keeping content in a file, enabling reuse across projects and teams, allowing instant loading via a slash command, and letting the model invoke them automatically when needed.
+A Skill is a Markdown document with YAML frontmatter that describes a piece of knowledge or a workflow — a project's code style, a PR review process, a commit message format. Keeping it in a file rather than pasting it into every prompt means it can be shared across projects and teams, loaded with a slash command, or picked up by the model automatically when it is relevant.
 
 ## Custom prompt commands
 
-Use a Markdown command when you want `/name arguments` to load your own prompt only after you explicitly send it. Commands reuse the Skill catalog and parameter expansion, but their descriptions are not offered to the model for automatic Skill invocation.
+A command is the same kind of file, loaded only when you explicitly send `/name arguments`. Commands reuse the Skill catalog and parameter expansion, but the model is never offered their descriptions for automatic invocation.
 
 Create `.kiki/commands/brainstorm.md` in your project root:
 
@@ -20,13 +18,13 @@ Ask about important missing requirements. Keep this a discussion; do not
 create documents or modify files unless I ask you to.
 ```
 
-In the GUI or terminal, type `/`, select `brainstorm`, add a topic, then send `/brainstorm a simpler settings menu`. Selecting the entry only fills the draft; sending loads the body once with your arguments and attachments. This is an example, not an installed or mandatory brainstorming workflow.
+In the GUI or terminal, type `/`, pick `brainstorm`, add a topic and send `/brainstorm a simpler settings menu`. Picking the entry only fills the draft; sending loads the body once with your arguments and attachments.
 
-The YAML frontmatter is optional. Without it, the filename supplies the name and the first non-empty body line supplies the menu description. Optional `name`, `description`, and `argument-hint` customize those fields; names cannot contain whitespace, `/`, `\\`, or `:`. The [body placeholders](#body-placeholders) also work in commands. If there is no argument placeholder, arguments are appended to the body. Values inserted as arguments are not expanded again.
+The frontmatter is optional. Without it, the filename supplies the name and the first non-empty body line becomes the menu description. Optional `name`, `description` and `argument-hint` override those; a name cannot contain whitespace, `/`, `\` or `:`. The [body placeholders](#body-placeholders) work here too, and if the body has no argument placeholder the arguments are appended to it. Values inserted as arguments are not expanded again.
 
-Command locations are the active application data directory's `commands/*.md` for user-wide commands and `.kiki/commands/*.md` at the project root. Only direct Markdown children are commands. Project commands take precedence over user commands of the same name. The legacy `.kimi-code/commands/` tree is not read. Explicit Skill-directory overrides retain their existing replacement behavior. Edits are watched; reopen the GUI slash menu or run `/reload` in the terminal to refresh the menu.
+Commands live in `commands/*.md` under the active application data directory (user-wide) and `.kiki/commands/*.md` at the project root. Only direct Markdown children count, and a project command wins over a user command of the same name. The legacy `.kimi-code/commands/` tree is not read. Edits are watched — reopen the GUI slash menu or run `/reload` in the terminal to see them.
 
-Built-in shortcuts keep their bare names: `/plan` still controls Plan mode. A colliding catalog entry is shown as `/skill:plan`; a command colliding with an existing Skill is shown as `/command:name`. Use the name shown in the menu. Commands are user prompts, not system prompts or executable scripts: they do not grant permissions, switch modes, or turn a flowchart into a workflow engine. Review command files from unfamiliar repositories before sending them.
+Built-in shortcuts keep their bare names, so `/plan` still controls Plan mode. A Skill that collides with one is shown as `/skill:plan`, and a command that collides with a Skill as `/command:name`; use the name the menu shows. A command is a user prompt, not a system prompt or a script: it grants no permissions, switches no modes, and cannot run anything. Review command files from an unfamiliar repository before sending them.
 
 ## Creating a Skill
 
@@ -93,7 +91,7 @@ Kiki scans four tiers by scope; more specific scopes take higher priority: **Pro
 - `$KIKI_HOME/skills/` (default: `~/.kiki/skills/`)
 - `~/.agents/skills/`
 
-The Kiki-specific user Skill directory moves with `KIKI_HOME`, so isolated data roots also get isolated Kiki-specific Skills. The generic `~/.agents/skills/` directory stays under the real OS home so it can be shared across tools.
+The Kiki-specific user Skill directory moves with `KIKI_HOME`, so a relocated data root gets its own copy; the generic `~/.agents/skills/` stays under the real OS home so other tools can share it.
 
 **Project level** (project root = the nearest directory containing `.git`, searching upward from the working directory):
 - `.kiki/skills/`
@@ -105,18 +103,18 @@ The Kiki-specific user Skill directory moves with `KIKI_HOME`, so isolated data 
 extra_skill_dirs = ["~/team-skills", ".agents/team-skills"]
 ```
 
-**Built-in Skills** are distributed with the CLI and have the lowest priority. They provide out-of-the-box workflows for common tasks — for example, configuring MCP servers, customizing the TUI theme, and editing config files. See [Built-in skill commands](../reference/slash-commands.md#built-in-skill-commands) for the full list. Every Skill Kiki ships today describes Kiki itself, so the top-level [`builtin_product_skills`](../configuration/config-files.md#top-level-fields) field turns all of them off at once — including `/kiki-ops`, the guided path for configuring and troubleshooting Kiki. Set it back to `true` to restore them.
+**Built-in Skills** ship with the CLI and have the lowest priority. They cover common setup tasks — configuring MCP servers, customizing the TUI theme, editing config files; [Built-in skill commands](../reference/slash-commands.md#built-in-skill-commands) lists them. Every Skill Kiki ships describes Kiki itself, so the top-level [`builtin_product_skills`](../configuration/config-files.md#top-level-fields) field turns all of them off at once, including `/kiki-ops`. Set it back to `true` to restore them.
 
 ## Invoking a Skill
 
 Users can invoke a Skill manually with a slash command:
 
-```
+```text
 /skill:code-style
 /skill:git-commits fix concurrency issue in login endpoint
 ```
 
-The model can also invoke a Skill automatically based on `description` and `whenToUse` (unless `disableModelInvocation` is `true` or `type` is `flow`). Skill invocations allow up to 3 levels of nesting; beyond that they are terminated.
+The model can also invoke a Skill on its own from `description` and `whenToUse`, unless `disableModelInvocation` is `true` or `type` is `flow`. A Skill can invoke another Skill, up to three levels deep.
 
 ## Complete Example
 
@@ -146,7 +144,7 @@ Please review the PR the user specified: $pr_ref
    - Noteworthy positives
 ```
 
-Save this as `$KIKI_HOME/skills/review-pr/SKILL.md` (or `~/.kiki/skills/review-pr/SKILL.md` when `KIKI_HOME` is unset), place the checklist at `references/checklist.md` in the same directory, and after starting a new session you can invoke it with `/skill:review-pr #1234`, where `#1234` is expanded into `$pr_ref`.
+Save this as `$KIKI_HOME/skills/review-pr/SKILL.md` (`~/.kiki/skills/review-pr/SKILL.md` when `KIKI_HOME` is unset), put the checklist at `references/checklist.md` in the same directory, and start a new session. `/skill:review-pr #1234` then expands `#1234` into `$pr_ref`.
 
 ## Next steps
 

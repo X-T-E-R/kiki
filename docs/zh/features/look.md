@@ -19,7 +19,7 @@ Kiki 可以长得像你的编辑器，而不是像所有人的编辑器。**皮�
 | **Iris × Starveil** | 紫罗兰白纸面和鸢尾墨色；暗色是靛紫层配银丁香控件。 |
 | **High contrast × Obsidian** | 可见边框和 AAA 正文对比度；暗色是层叠炭灰、冰青焦点和近白控件。 |
 
-完整表格和已退役的配色见[内置皮肤](/zh/customization/skins#内置皮肤)。
+完整表格见[内置皮肤](/zh/customization/skins#内置皮肤)。
 
 ![外观设置页：皮肤选择器、背景，以及微调控件。](/shots/look/look-skins.zh.png)
 

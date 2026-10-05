@@ -31,7 +31,7 @@ The manager displays providers as a list of entries grouped by source. Navigatio
 
 Two paths when adding:
 
-- **Known third-party provider**: fetches the model catalog from [models.dev](https://models.dev/), select a provider → enter an API key → select a default model. Vendors whose protocol the catalog does not declare (e.g. xai, openrouter, and other vendor-specific SDKs) are imported as OpenAI-compatible with a "guessed" note; when the catalog provides no usable endpoint, a base URL prompt appears first; proprietary protocols (Amazon Bedrock, Cohere) and unrecognized explicit protocols are refused. Deprecated and alpha-status models are excluded from the import list. If the public catalog is unreachable, the CLI falls back to a built-in snapshot of the catalog, so the import still works offline or in blocked networks
+- **Known third-party provider**: pick a provider from the [models.dev](https://models.dev/) catalog → enter an API key → pick a default model. Vendors the catalog does not describe with a protocol (xai, openrouter, and other vendor-specific SDKs) are imported as OpenAI-compatible and marked as guessed; if the catalog has no usable endpoint for them, you are asked for a base URL first. Proprietary protocols (Amazon Bedrock, Cohere) cannot be imported. Deprecated and alpha models are left out of the list. If the public catalog is unreachable, Kiki falls back to a built-in snapshot of it, so the import still works offline.
 - **Custom registry (api.json)**: paste a custom registry URL and Bearer token; this explicit import creates the `providers` / `models` entries. Later startup does not synchronize upstream additions, removals, or model metadata changes.
 
 ### Fetching model suggestions
@@ -42,7 +42,7 @@ Suggestions are kept in server memory and disappear when the server restarts. Ch
 
 In the GUI, open **Settings → Models & providers → Connections**. Under **Connect with an API key**, choose one of five protocol entries (`openai`, `openai_responses`, `anthropic`, `google-genai`, `vertexai`) or search for a service by name. A matching service, including DeepSeek, GLM, Kimi, Ollama, LM Studio, or OpenRouter, fills in its protocol and base URL. If there is no match, choose a protocol and enter the base URL yourself. Then enter the key if required and add a model.
 
-Ollama and LM Studio use the same API-key path as other OpenAI-compatible services; their local servers may not require a key. The five quick starts are OpenAI, Anthropic, Google Gemini, DeepSeek, and Moonshot (Kimi). The Kimi shortcut retains the existing `kimi` wire adapter described below, rather than adding a sixth protocol entry.
+Ollama and LM Studio use the same API-key path as other OpenAI-compatible services; their local servers may not require a key. The five quick starts are OpenAI, Anthropic, Google Gemini, DeepSeek, and Moonshot (Kimi) — the Kimi shortcut configures the `kimi` provider described below.
 
 **Available models** lists configured models across providers: search by name or ID, inspect context size and capabilities, and star a model to set the global default. The provider and model also retain their own per-provider default and remote ID. A manually entered Kimi API key uses the same suggestion-only flow as other API-key connections; account sign-in provisions its own models.
 
@@ -180,7 +180,7 @@ Shares the same implementation as `google-genai`; setting `type = "vertexai"` sw
 
 - Credential key name: `VERTEXAI_API_KEY` — written in the `[providers.vertexai.env]` sub-table, and stored in `credentials.toml` like every other provider API key; the API-key alternative to the ADC flow below
 
-Authentication follows the standard Google Cloud ADC flow (`gcloud auth application-default login` or a `GOOGLE_APPLICATION_CREDENTIALS` service account JSON) — this part is unrelated to Kimi Code. **The project ID and region must be written in the `[providers.vertexai.env]` sub-table** — simply `export GOOGLE_CLOUD_PROJECT` in the shell will not be read by the CLI.
+Authentication follows the standard Google Cloud ADC flow (`gcloud auth application-default login`, or a `GOOGLE_APPLICATION_CREDENTIALS` service account JSON file). **The project ID and region must be written in the `[providers.vertexai.env]` sub-table** — exporting `GOOGLE_CLOUD_PROJECT` in your shell has no effect.
 
 ```toml
 [providers.vertexai]
@@ -204,9 +204,9 @@ In the GUI **Connections** tab, **Sign in with an account** offers Kimi Code, Gi
 
 ## Request identity
 
-The sections above decide which endpoint Kiki connects to and with which key; **request identity** decides which client each request presents itself as. It writes the `User-Agent` and extra headers sent to the provider endpoint, so the server treats that traffic as Codex CLI, Claude Code, Grok Build, OpenCode, or Kiki's own client. It is a different setting from [`[identity]`](./config-files.md#identity), the runtime display name and slug.
+The sections above decide which endpoint Kiki connects to and with which key. **Request identity** decides which client each request claims to be: it writes the `User-Agent` and extra headers, so the provider treats the traffic as Codex CLI, Claude Code, Grok Build, OpenCode, or Kiki's own client. It is a different setting from [`[identity]`](./config-files.md#identity), the runtime display name and slug.
 
-Identity only supplies those client-identity fields: `base_url`, the API key, and the authentication method still come from your provider configuration and `credentials.toml`, and identity never carries or rewrites them. Credential and transport headers such as `Authorization`, `x-api-key`, `Cookie`, and `Content-Type` are not accepted as identity fields.
+Identity only supplies those client-identity fields. `base_url`, the API key, and the authentication method still come from your provider configuration and `credentials.toml`. Credential and transport headers such as `Authorization`, `x-api-key`, `Cookie`, and `Content-Type` are not accepted as identity fields.
 
 ### Built-in identities
 
@@ -242,7 +242,7 @@ GUI **Settings → Request identity** is the central page: the left column lists
 | Provider | Settings → Models & providers → provider editor → Request identity | `[providers.<name>.request_identity]` |
 | Model | Settings → Models & providers → model editor → Request identity | `[models."<alias>".request_identity]` |
 
-Later layers override earlier ones (global → provider → model). With no layer set, an ordinary API-key connection keeps the built-in Kimi Code identity, while a provider authenticated through the Codex or Grok Build OAuth flows keeps that provider's default identity. A layer you set explicitly — global, provider, or model — still overrides that default. Choosing a compatible preset resets the lower layers first and then applies that layer's optional sparse `overrides` (for example `lineage.format`, `client.user_agent`, `request.logical_id`). Sending one provider's traffic as OpenCode takes only:
+Later layers override earlier ones (global → provider → model). With no layer set, an ordinary API-key connection uses the built-in Kimi Code identity, and a provider authenticated through the Codex or Grok Build OAuth flows uses that provider's default identity. Choosing a compatible preset clears the lower layers first, then applies that layer's optional sparse `overrides` (for example `lineage.format`, `client.user_agent`, `request.logical_id`). Sending one provider's traffic as OpenCode takes only:
 
 ```toml
 [providers.my-gateway.request_identity]

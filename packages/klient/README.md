@@ -2,7 +2,12 @@
 
 Contract-driven client SDK for the agent-core-v2 engine. One facade, three
 transports — you pick the transport **once** at creation; everything after
-that is byte-identical:
+that is byte-identical.
+
+This is a workspace package. It is marked `private: true`, so it is not
+published to npm as its own release; the API below is the contract this
+repository's own server, GUI, and CLI program against, and the examples assume a
+repository checkout rather than an installed dependency.
 
 ```ts
 import { bootstrap, ISessionIndex, logSeed, resolveLoggingConfig } from '@kiki/agent-core-v2';
@@ -46,7 +51,6 @@ KlientChannel { call, stream, listen }   ← the only transport SPI
    ↓
 http │ ipc │ memory
 ```
-
 - **Facade** — aggregated methods, no engine service tokens, no
   `onDid*`/`onWill*` event names. There is no escape hatch to raw services:
   the facade is the public contract.
@@ -319,9 +323,9 @@ folded in here):
   and their client harness (skip unless `KIKI_SERVER_URL` is set; the v1
   surface has no in-memory equivalent, so these stay live-server-only).
 
-The docker e2e runner (`pnpm docker:e2e`) runs this whole vitest suite inside
-a container against a container-local server. See `AGENTS.md` for the testing
-rules.
+The docker e2e runner (`pnpm --filter @kiki/klient docker:e2e`) runs this whole
+vitest suite inside a container against a container-local server. See
+`AGENTS.md` for the testing rules.
 
 ## Scope
 
@@ -338,7 +342,20 @@ pnpm -C packages/klient smoke
 ```
 
 `examples/smoke.ts` boots an in-process engine (memory transport) and asserts
-the `global` facade end-to-end — no server needed. `examples/basic.ts` is a
-shorter narrated tour; `examples/context-usage.ts` traces context-size
-readings through a real prompt (requires `KIKI_EXAMPLE_MODEL` +
-`KIKI_EXAMPLE_API_KEY`).
+the `global` facade end-to-end — no server needed.
+
+Two more examples need the decorators tsconfig and raw-text loader, so they are
+run through `tsx` directly:
+
+```sh
+pnpm -C packages/klient exec tsx --tsconfig ./tsconfig.examples.json \
+  --import ../../build/register-raw-text-loader.mjs examples/basic.ts
+
+KIKI_EXAMPLE_MODEL=... KIKI_EXAMPLE_API_KEY=... \
+pnpm -C packages/klient exec tsx --tsconfig ./tsconfig.examples.json \
+  --import ../../build/register-raw-text-loader.mjs examples/context-usage.ts
+```
+
+`examples/basic.ts` is a shorter narrated tour. `examples/context-usage.ts`
+traces context-size readings through a real prompt, so it needs a model and key
+for the throwaway model it seeds into the temp home.

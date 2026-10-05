@@ -1,12 +1,13 @@
 # Contributing to Kiki
 
-Thanks for taking the time to contribute! This project moves quickly, and thoughtful contributions from the community are what keep it sharp. The guide below walks you through how we work so your PR has the best chance of landing smoothly.
+This guide covers what Kiki expects from a pull request, how to set up the
+repo, and which checks run before merge.
 
 ## Before You Start
 
 Kiki already has opinions on CLI/TUI behavior, agent workflows, and public APIs. If your change shifts that direction, open an issue first so we can align before you invest time in a PR.
 
-We hold AI-assisted contributions to the same standard as hand-written ones. **You should understand what you submit** — what changed, how it behaves at the edges, and why it fits this codebase. If you cannot explain that, the PR is not ready for review.
+**You should understand what you submit** — what changed, how it behaves at the edges, and why it fits this codebase. This applies to AI-assisted contributions too; if you cannot explain the change, the PR is not ready for review.
 
 We only merge PRs aligned with the roadmap. Drive-by refactors without context are unlikely to land.
 
@@ -27,12 +28,20 @@ We only merge PRs aligned with the roadmap. Drive-by refactors without context a
 
 This is a pnpm monorepo. The most relevant entry points are:
 
-- `apps/kimi-code` — CLI / TUI
-- `packages/node-sdk` — public TypeScript SDK (`@kiki/node-sdk`)
-- `packages/agent-core-v2`, `kaos`, `oauth`, `telemetry` — internal engine packages
-- `docs/` — VitePress bilingual docs site
+- `apps/kimi-code` — CLI / TUI, published to npm as `kiki-agent` / `kiki-agent-lite`
+- `apps/vscode` — VS Code extension
+- `apps/kiki-gui` — the GUI that `apps/kimi-code` serves from `kiki web`
+- `packages/agent-core-v2` — the agent engine
+- `packages/klient` — client SDK used by the server and GUI
+- `packages/kap-server` — the Kiki server
+- `docs/` — VitePress documentation site
 
-For the full project map, see [AGENTS.md](AGENTS.md).
+Most `packages/*` are workspace packages marked `private: true`, so they are not
+published to npm as their own releases. That flag describes distribution, not
+API design: these packages still have real, used contracts, and their READMEs
+document them. Check a package's `package.json` `private` and `publishConfig`
+fields for its current distribution state. For the full map, see
+[AGENTS.md](AGENTS.md).
 
 ## Development Setup
 
@@ -50,7 +59,7 @@ Useful scripts:
 - `pnpm test` — run tests (vitest; L0 + L1; L2 files self-skip unless env-gated)
 - `pnpm test:fast` — L0 only (`*.test.ts`, skips `*.integration.ts` / `*.e2e.ts`)
 - `pnpm test:integration` — L1 files (`*.integration.ts`)
-- `pnpm test:promote` — local promote extra gate: engine/CLI/GUI L0+L1, the kap-server L0/fast subset, plus `packages/pi-tui` (`node --test`). Run `pnpm test:kap-server:integration` for kap-server's 56 `*.integration.ts` suites
+- `pnpm test:promote` — the local promote gate: engine/CLI/GUI L0+L1, the kap-server L0/fast subset, plus `packages/pi-tui` (`node --test`). Run `pnpm test:kap-server:integration` for kap-server's full `*.integration.ts` set
 - `pnpm typecheck` — TypeScript check (note: builds packages first)
 - `pnpm lint` — oxlint
 - `pnpm lint:fix` — oxlint with auto-fix
@@ -90,9 +99,11 @@ Use the [PR template](.github/pull_request_template.md) when opening a feature p
 
 PR titles must follow [Conventional Commits](#commit-convention); CI runs `pnpm lint`, `pnpm typecheck`, and `pnpm test` on every PR.
 
-After the implementation and tests form a coherent candidate, classify its documentation impact as exclusive `none`, or select every affected category from `generated`, `maintainer`, and `user`. Record completion separately as `completed` or `deferred`; `none` pairs with `completed`. Generated impact cannot be deferred and its projections stay exact in the same candidate. Every deferred maintainer or user record keeps all applicable categories and its affected view, names an accountable owner, and targets no later than the earliest applicable boundary: maintainer documentation before stable reuse or owner handoff, and bilingual user documentation before default-on or public release. See [the documentation lifecycle](docs/AGENTS.md#documentation-lifecycle) and use the `kiki-docs-catchup` skill when working with coding agents.
-
-This declaration is designed for future PR-based work and reviewer routing; it is not currently a semantic merge gate. The repository's documentation checker verifies structure only and does not decide whether the classification or prose is correct.
+If your change alters behavior a reader can observe — a command, a setting, a
+protocol, a default — say so in the PR's documentation impact checklist so the
+matching doc lands in the same change. The PR template explains the
+categories; [the documentation lifecycle](docs/AGENTS.md#documentation-lifecycle)
+has the full rule.
 
 ## Code Style
 

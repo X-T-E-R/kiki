@@ -5,9 +5,13 @@ ideas from **Redis** (in-memory KV speed, data structures, AOF-style rewrite)
 and **SQLite** (durable single-file persistence, WAL, indexed queries).
 Written in **TypeScript**, with strict types and zero runtime dependencies.
 
-> Built by studying the real source code of Redis, SQLite, NeDB, Bitcask, and a
-> tiny SQLite clone — see [`DESIGN_NOTES.md`](./DESIGN_NOTES.md) for what each
-> one taught us.
+This is a workspace package. It is marked `private: true`, so it is not
+published to npm as its own release; the examples assume a repository checkout
+rather than an installed dependency. Within the repo, Kiki's server uses it as
+the storage engine behind search indexing.
+
+See [`DESIGN_NOTES.md`](./DESIGN_NOTES.md) for what each source project taught
+the design.
 
 ## Features
 
@@ -80,7 +84,7 @@ npm run typecheck  # tsc --noEmit (strict)
 ## Quick start (embedded)
 
 ```ts
-import { MiniDb } from 'minidb';
+import { MiniDb } from '@kiki/minidb';
 
 const db = await MiniDb.open({
   dir: './data',
@@ -97,9 +101,6 @@ db.ttl('temp');             // remaining ms (-1 none, -2 missing)
 await db.del('hello');
 await db.close();           // flush + fsync + close
 ```
-
-> Within this repo, import from `./src/index.ts` (run with `tsx`). As an installed
-> package, import from `'minidb'` (the built `dist/` output).
 
 Re-open the same `dir` and your data is recovered from the snapshot + WAL.
 
@@ -328,8 +329,7 @@ and flash wear:
 ## RESP server (redis-cli compatible)
 
 ```bash
-npm run server -- --dir ./data --port 6379
-# or: node --import tsx src/server.ts --dir ./data --port 6379
+node --import tsx src/server.ts --dir ./data --port 6379
 ```
 
 Then in another shell:
@@ -389,31 +389,31 @@ pnpm bench:cluster   # bench/cluster.ts — spawns real writer/reader processes
 
 ## Testing
 
-Three layers of tests, run with the built-in `node:test` runner (no deps):
+Tests run on the repository's vitest runner and need no extra dependencies:
 
 ```bash
-npm test            # unit tests (fast)
-npm run test:e2e    # end-to-end stability suite
-npm run test:all    # both
+pnpm test              # everything: test/*.test.ts, test/e2e/*, test/cluster/*
+pnpm test:fast         # unit tests only, skipping integration and e2e
 ```
 
-The **unit tests** (`test/*.test.js`) cover each module: frame codec/CRC, WAL
+The **unit tests** (`test/*.test.ts`) cover each module: frame codec/CRC, WAL
 group commit, store TTL, snapshot/compaction, recovery truncation, skip list,
 secondary/full-text indexes, and the RESP server.
 
-The **E2E stability suite** (`test/e2e/*.test.js`) covers crash-safety and
+The **E2E stability suite** (`test/e2e/*.test.ts`) covers crash-safety and
 long-run behavior:
 
 | File | What it verifies |
 |---|---|
-| `fuzz-model.test.js` | thousands of random ops match a reference model (seeded, reproducible) |
-| `crash-recovery.test.js` | `kill -9` mid-write and mid-compaction → recovery is always consistent |
-| `index-consistency.test.js` | key/dt/secondary/full-text indexes never drift from the store |
-| `compaction-race.test.js` | heavy concurrent writes during compaction lose nothing |
-| `recovery-matrix.test.js` | WAL corruption at head/mid/tail under `resync` vs `strict` |
-| `durability.test.js` | `always`/`everysec`/`no` close-durability + many open/close cycles |
-| `boundary.test.js` | key-length limits, large values, many keys, empty db |
-| `soak.test.js` | sustained ops + heap stability (opt-in: `SOAK=30 npm run test:e2e`) |
+| `fuzz-model.test.ts` | thousands of random ops match a reference model (seeded, reproducible) |
+| `crash-recovery.test.ts` | `kill -9` mid-write and mid-compaction → recovery is always consistent |
+| `index-consistency.test.ts` | key/dt/secondary/full-text indexes never drift from the store |
+| `compaction-race.test.ts` | heavy concurrent writes during compaction lose nothing |
+| `recovery-matrix.test.ts` | WAL corruption at head/mid/tail under `resync` vs `strict` |
+| `durability.test.ts` | `always`/`everysec`/`no` close-durability + many open/close cycles |
+| `boundary.test.ts` | key-length limits, large values, many keys, empty db |
+| `soak.test.ts` | sustained ops + heap stability — skipped unless `SOAK=<seconds>` is set |
+| `stress.test.ts` | long multi-thousand-op runs |
 
 The **cluster suite** (`test/cluster/*.test.ts`) covers the `ClusterDb`
 sharding layer: topology/routing, merged scans, lock contention and lease
@@ -511,7 +511,7 @@ const db = await MiniDb.openOrRebuild(
 );
 ```
 
-## Caveats / roadmap
+## Limitations
 
 - In the default `valueMode: 'memory'`, the dataset must fit in RAM Redis-style.
   Use `valueMode: 'disk'` for larger-than-RAM value bulk; cold reads then perform
@@ -529,8 +529,8 @@ const db = await MiniDb.openOrRebuild(
   end-of-rewrite pause Redis accepts for its AOF diff flush — so compaction
   always terminates. Mid-compaction crashes leave `db.*.tmp` files behind,
   which the next writer open removes automatically.
-- Snapshot encoding runs on the main thread (chunked + yielding); offloading to
-  a `worker_thread` is a planned optimization.
+- Snapshot encoding runs on the main thread (chunked and yielding), so a very
+  large snapshot occupies the event loop for slices of time.
 - Single minidb directory = single process / single writer. For multi-process
   access use `ClusterDb` (above): sharding scales writes, but hash routing
   means whole-range scans fan out to all shards, and uniform cross-shard write
@@ -539,6 +539,6 @@ const db = await MiniDb.openOrRebuild(
 
 ## Credits
 
-Design distilled from reading: Redis (`references/redis`), the SQLite WAL
-paper, NeDB (`references/nedb`), Bitcask (`references/bitcask`), and the
-cstack SQLite tutorial (`references/db_tutorial`).
+Design distilled from reading Redis, the SQLite WAL paper, NeDB, Bitcask, and
+the cstack SQLite tutorial. See [`DESIGN_NOTES.md`](./DESIGN_NOTES.md) for the
+rationale behind each choice.

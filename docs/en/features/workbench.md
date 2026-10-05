@@ -18,15 +18,15 @@ The desktop app, the terminal UI (`kiki`), and the browser UI (`kiki web`) are t
 
 You hand the main agent a task — a coding change, a research question, a bug to track down. It plans, calls tools, and when the work divides cleanly it dispatches subagents to handle the focused pieces: exploring an unfamiliar codebase, reviewing several implementations in parallel, or planning a large refactor without touching the main context.
 
-A subagent receives a task description, works in its own isolated context, and returns its conclusions. It does not talk to you directly, and its intermediate reasoning and tool call records stay out of the main agent's history. The lead only keeps the result. This is why you can run four or five lines at once without the main context drowning in details.
+A subagent receives a task description and works in its own isolated context, then hands back its conclusions and reports when it finishes. Its full reasoning and tool call records are not poured into the main agent's history, which is what lets you run four or five lines at once without the main context drowning in details. You can still open any of them and read every step for yourself.
 
-Fresh installs ship two subagent profiles: `general`, a general-purpose assistant, and `explore`, a read-only explorer. Dispatch is scheduled by the main agent, based on task complexity, context consumption, and whether the sub-tasks are independent — you do not have to name one. You can, though: tell the main agent directly, or approve each dispatch as it appears.
+Fresh installs ship two subagent profiles: `general`, a general-purpose assistant, and `explore`, a read-only explorer. Dispatch is scheduled by the main agent, based on task complexity, context consumption, and whether the sub-tasks are independent — you do not have to name one. You can, though: tell the main agent directly, and under the `manual` permission mode each dispatch also stops for your approval.
 
 See [Agents and Sub-Agents](/en/customization/agents) for the full dispatch contract, context isolation, and permission inheritance.
 
 ## Each role can run a different model
 
-Different lines of work do not have to share a model. Bind the main agent, each subagent, and the reviewer to different models — or different vendors — and one session runs all of them at once. A strong reasoning model can plan while cheaper models do the routine work; a different vendor can review without the review being anchored to the same blind spots as the implementation.
+Different lines of work do not have to share a model. Bind the main agent, each subagent, and the reviewer to different models — or different vendors — and one session runs all of them at once. A strong reasoning model can plan while cheaper models do the routine work, and a reviewer running on a different model family brings an outside perspective to the decision the implementer already made.
 
 The main `agent` profile always receives three child-agent tools (`AgentRun`, `AgentList`, `AgentSend`) with no experiment flag, and each can name the model its child should run. If no model is pinned anywhere, a dispatch fails with `model.not_configured` rather than silently guessing. Kimi works out of the box; Anthropic, OpenAI-compatible services, the OpenAI Responses API, Gemini, and Vertex AI can be added, and you can sign in with a GitHub Copilot or ChatGPT account.
 
@@ -34,11 +34,17 @@ Model selection, hard model boundaries, and the model menu are covered in [Provi
 
 ![The dispatch tree of one session, with each role bound to its own model.](/shots/workbench/workbench-per-role-models.en.png)
 
+![One session running several roles at once: the right rail lists the main agent's state, its todos, and each child agent with the model it is bound to.](/shots/workbench/wl-20261005-workbench-fleet.en.png)
+
 ## A subagent keeps its own record
 
 Open any dispatched subagent to read its own transcript: what it was asked, what it did, and what it concluded — next to the main session, without loading the main agent's conversation. The same right rail follows you into the subagent, so you can inspect its context and cost the same way.
 
 You can also message a running subagent from its own composer, and pick it back up later with `AgentRun` to continue the same task instead of starting over. See [Agents and Sub-Agents](/en/customization/agents#named-child-agents) and the [right rail](/en/guides/interface#right-rail).
+
+![A subagent's own session: its separate transcript, its own composer, and a composer row that shows which agent a message is replying to.](/shots/workbench/wl-20261005-workbench-subagent.en.png)
+
+![The right rail of a subagent, showing the same state, todos, working notes, and session overview the main agent gets.](/shots/workbench/wl-20261005-subagent-rail-detail.en.png)
 
 ## Background tasks report back on their own
 
@@ -47,6 +53,8 @@ Long shell commands and subagents do not have to hold the foreground. Send them 
 The main `agent` profile uses `TaskList`, `TaskOutput`, and `TaskStop` for background work. See [Background tasks](/en/reference/tools#background-tasks).
 
 ![The tasks page: one background task running with its stop control, one finished, and one failed.](/shots/workbench/workbench-background-tasks.en.png)
+
+![The tasks page filtered to all tasks, one running, one completed, and one failed, each with the command it ran and a filter row across the top.](/shots/workbench/wl-20261005-workbench-tasks.en.png)
 
 ## Next steps
 

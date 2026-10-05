@@ -22,7 +22,7 @@ You do not need a fork of a profile to change a sentence. **Prompt field overrid
 
 `kiki prompt-fields` is the read-only surface for this: `list` shows the registry, `show` the current value, `explain` where each layer's value came from. In the desktop app, **Settings → Agents → Prompt** edits the same thing in `config.toml`. See [Prompt field overrides](/en/customization/prompt-fields).
 
-![Prompt field overrides, down to one tools description, beside a live preview of the resulting prompt.](/shots/freedom/freedom-prompt-overrides.en.png)
+![Prompt field overrides, down to one tools description, beside a live preview of the resulting prompt.](/shots/freedom/ce-20261005-freedom-prompt-overrides.en.png)
 
 ## Connections: one list, one row each
 
@@ -36,11 +36,15 @@ You do not need a fork of a profile to change a sentence. **Prompt field overrid
 
 Account connections use **OAuth**. The device flow shows you a code, an **Open verification page** link, how long it stays valid, and **Cancel sign-in**, and the row's status is a word meant for a person: **Connected** (Kiki renews it on its own), **Sign-in expired** (the provider no longer accepts it), **Sign-in didn't finish** (you declined it, the code expired, or it failed), or **Waiting for you**. Signing out ends that sign-in in Kiki and removes the models it provisioned; it does not sign you out at the provider.
 
+![A device sign-in in progress: the code to enter on the verification page, how long it stays valid, and the cancel action.](/shots/freedom/ce-20261005-freedom-oauth-device.en.png)
+
 **Reusing a sign-in this machine already has** is one way to get an OAuth credential, not a rival to it. For ChatGPT (Codex) and Grok Build, a connection can use the sign-in their own app already holds on this machine. Kiki reuses it and renews it; it does not copy the credential, does not start the other app, and signing in or out here does not change anything there. The order is deliberate: **Check this machine** first reports which account is on the other side and where it is kept, and only then is **Use this sign-in** offered — carrying the account it just showed you, so a credential replaced in between is refused rather than adopted silently. When the machine cannot be used, the page says why in terms you can act on.
 
 A sign-in that completes adds that account's models to the catalog. **Available models** is the authority on what you can actually use right now. See [Connections](/en/guides/settings#connections).
 
 ![The connections list: each connection is one row, and its authentication is part of that row.](/shots/freedom/freedom-connections.en.png)
+
+![Reusing a sign-in this machine already holds: what was found and where it is kept, with the action that adopts it.](/shots/freedom/ce-20261005-freedom-oauth-reuse.en.png)
 
 ## Permission modes: how often it asks
 

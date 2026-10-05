@@ -92,7 +92,7 @@ Paseo's generic ACP adapter does not drive the login flow, so complete the termi
 
 - **Session disconnects immediately / IDE shows "agent exited"**: usually a wrong `command` path or a missing login. Run `kiki acp` in a terminal first to verify — if it blocks waiting for stdin, the CLI itself is fine and the problem is in the IDE configuration; if it exits immediately with an error, follow the error message (most commonly you need to run `/login`).
 - **IDE shows "auth required"**: the CLI has no usable authentication token. Exit the IDE, run `kiki` in a terminal to complete login, then restart the IDE.
-- **MCP tools not visible**: check the [`kiki acp` reference](./acp.md) capability table to confirm that the MCP transport type configured in your IDE is supported. The Kiki ACP adapter currently supports `http`, `stdio`, and `sse` transports; `acp` transport MCP servers are silently dropped and a warning is written to the log.
+- **MCP tools not visible**: the `kiki acp` adapter accepts `http` and `sse` transports, and `stdio` only when the IDE is started with `--allow-client-stdio-mcp`. An `acp`-transport server is discarded with a warning in the log. See [MCP Forwarding](./acp.md#mcp-forwarding).
 
 ## Next steps
 

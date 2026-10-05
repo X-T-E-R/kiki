@@ -1,6 +1,6 @@
 # Goals
 
-Goals keep Kiki working toward a defined outcome across turns (a turn is one full pass of the agent handling one message). Unlike a normal prompt that says what to do next, a goal says what must become true. Use `/goal` to enter goal mode when the task has a clear finish line, but the next useful step depends on what the agent learns while it works — for example, fixing a batch of failing tests or tracking down the root cause of a broken build.
+A goal keeps Kiki working toward an outcome across turns (one turn is a full pass of the agent handling one message). A prompt says what to do next; a goal says what must become true. Use `/goal` when there is a finish line but the next useful step depends on what the agent finds along the way — a batch of failing tests, or the root cause of a broken build.
 
 ## Start a goal
 
@@ -24,7 +24,7 @@ Avoid goals that only name a broad direction:
 /goal Find all bugs in this codebase.
 ```
 
-That goal does not say what counts as success, what to inspect, or when to stop. The agent may block immediately, or keep working far longer than you expected.
+That goal says nothing about what success looks like, what to inspect, or when to stop, so the agent may block immediately or work far longer than you expected.
 
 ### When to use goals
 
@@ -78,9 +78,9 @@ A goal can stop in three ways:
 - **paused**: you paused it, interrupted the turn, resumed a session that had an active goal, or hit a model, provider, or runtime error
 - **blocked**: Kiki needs input, cannot complete the goal as stated, or reached a budget limit. When the agent blocks a goal, it writes a short message explaining why.
 
-Write stop conditions into the objective. `/goal` does not have a separate stop-limit flag.
+Put your stop conditions in the objective itself — there is no separate stop-limit flag.
 
-A blocked goal does not freeze work it already started. When a task launched for a blocked goal finishes, its result wakes the main agent to process that one completion; the goal itself stays blocked and does not resume on its own. Pausing or cancelling the goal, and an exhausted budget, still apply as before and hold the result for your next message.
+A blocked goal does not cancel work it already started. When a task launched for it finishes, the result wakes the main agent to process that one completion; the goal itself stays blocked until you resume it. The same result is held for your next message if you pause or cancel the goal, or if the budget runs out.
 
 ## Manage goals in the web UI
 
@@ -90,13 +90,13 @@ Use the strip actions to pause an active goal, resume a paused or blocked goal, 
 
 ## Queue upcoming goals
 
-Agents sometimes complete a goal quickly while the next piece of work is already on your mind — previously you had to wait for the goal to finish, return to the TUI, and submit the next one manually. Use `/goal next` to queue upcoming goals without interrupting the current one:
+When a goal finishes quickly and you already know what comes next, queue it instead of waiting:
 
 ```sh
 /goal next Update the release notes after the tests pass
 ```
 
-Upcoming goals are not visible to the agent while the current goal is running. When the current goal completes, Kiki starts the first upcoming goal in the same way as users enter `/goal <objective>`.
+The agent does not see queued goals while the current one runs. Once the current goal completes, Kiki starts the first queued goal exactly as if you had typed `/goal <objective>`.
 
 If no goal is active, `/goal next <objective>` starts that objective immediately. It behaves like `/goal <objective>` and shows a status message before the goal starts.
 
@@ -114,7 +114,9 @@ If the current goal is paused, canceled, or blocked, Kiki does not start the nex
 
 Goal mode is useful for work that can be checked with files, tests, command output, generated artifacts, or a clear written report. It is less useful for a one-off edit or a question that only needs one answer.
 
-The permission mode decides whether tool calls need your approval. In `manual` mode, goal work may pause for tool call approval. For unattended work (no one present to approve or answer questions), use a permission mode that matches the risk of the repository and the commands the agent may run.
+Goal mode suits work you can check — files, tests, command output, generated artifacts, a written report. It is overkill for a one-off edit or a question with one answer.
+
+Your permission mode decides whether tool calls wait for you. In `manual` mode, goal work pauses for approval on tool calls; for unattended work, pick a mode that matches the risk of the repository and the commands the agent will run.
 
 In non-interactive prompt mode (`kiki -p`, which runs one prompt and exits), only goal creation is supported:
 

@@ -92,7 +92,7 @@ Paseo 的通用 ACP 适配层不会帮你走登录流程，所以请先完成终
 
 - **会话立刻被中断 / IDE 提示 "agent exited"**：通常是 `command` 路径不对或 kiki 没登录。先在终端跑一次 `kiki acp` 验证：如果阻塞等待标准输入则说明 CLI 本身没问题，问题在 IDE 配置；如果立刻报错则按报错提示处理（多数是没 `/login`）。
 - **IDE 显示 "auth required"**：表示 CLI 没有可用的鉴权令牌。退出 IDE，在终端执行 `kiki` 完成登录后再启动 IDE 即可。
-- **MCP 工具看不到**：参考 [`kiki acp`](./acp.md) 中的能力表确认 IDE 配的 MCP 传输类型是否被支持。当前 Kiki 的 ACP 适配层支持 `http`、`stdio` 与 `sse` 三种传输方式；`acp` 传输的 MCP server 会被静默丢弃并在日志中给出 warn。
+- **MCP 工具看不到**：`kiki acp` 适配层接受 `http` 与 `sse` 传输；`stdio` 只有在 IDE 用 `--allow-client-stdio-mcp` 启动时才接受。`acp` 传输的 server 会被丢弃，并在日志里给出 warn。详见 [MCP 转发](./acp.md#mcp-转发)。
 
 ## 下一步
 

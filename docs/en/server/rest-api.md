@@ -118,6 +118,13 @@ Desktop integrations can call the native `create_space_shortcut` command with `{
 | `POST /api/oauth/logout` | Log out the managed provider |
 | `GET /api/oauth/usage` | Plan usage and limits |
 | `GET /api/oauth/userinfo` | Account profile |
+| `POST /api/usage-export/destinations/{id}/auth/begin` | Start a VibeCafe sign-in for a destination |
+| `POST /api/usage-export/auth/{id}/poll` | Poll that sign-in |
+| `POST /api/usage-export/auth/{id}/cancel` | Cancel that sign-in |
+
+A `vibecafe.ai` destination signs in the way VibeCafe itself does, and the official service is the only one that offers it. `POST /api/usage-export/destinations/{id}/auth/begin` takes only the credential `storage` choice (`keyring` or `private-file`) — there is no address, client id, or key to paste, and the service is fixed to `https://vibecafe.ai`. The response carries `flow_id`, `state`, `user_code`, `verification_uri`, `expires_at`, and `poll_after_ms`; poll it with `POST /api/usage-export/auth/{id}/poll` at the interval it gives you, and cancel with `POST /api/usage-export/auth/{id}/cancel`. `state` moves from `pending` to `connected`, `cancelled`, `denied`, `expired`, or `error`, and `error_category` says why when it is not `connected`.
+
+A finished sign-in stores the credential; it does not turn sending on. The destination stays `disabled` until you preview the payload and enable it, exactly like one you set up by hand. A destination pointed at a custom address, or one you authenticate with a key you supply yourself, uses the manual path instead; `vibe-auth-official-only` reports the sign-in as unavailable there.
 
 ### Config
 
@@ -181,6 +188,18 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | `GET /api/sessions/{session_id}/snapshot` | Full snapshot for client rebuilds (with `as_of_seq` and `epoch`) |
 
 For automatic allocation, send `{}` to `POST /api/sessions`. The server creates a distinct directory under `$KIKI_HOME/workspaces/`, registers it, and returns its `workspace_id` and `metadata.cwd` in the session response. Supplying an existing `workspace_id` or `metadata.cwd` keeps the existing targeting behavior; an unknown `workspace_id` is still rejected.
+
+#### `POST /api/sessions/{session_id}:compact`
+
+The body is optional. It accepts `instruction` (what to preserve) and `strategy`, which is `summarize` or `relay` — the two renewal strategies the server implements. A session that was idle when the request arrives starts compressing immediately; one with a model call or tool result still landing in its history is queued, and Kiki processes it at the next step boundary once that work has finished, without waiting for the whole turn.
+
+```json
+{ "accepted": true, "status": "queued", "source": "manual" }
+```
+
+`accepted: true` means the request was taken, **not** that the history was compressed. `status` is `queued` or `running` at that moment; the compression is done when a terminal [`compaction.*` event](#events) arrives, not when this response does. Asking again while a manual compaction is queued or running returns `accepted: false` and does not start a second one — send the request again only after a terminal event, and then only if the first attempt failed.
+
+Accepting the request does not promise the compression succeeds. A run that reaches a point with no safe earlier history to compact against ends in `compaction.cancelled` with a `reason`, rather than quietly leaving the history alone, and a queued manual request is not cleared by a later automatic compaction finishing. An older server may return an empty `data`; treat every field in the example above as optional when it is absent.
 
 ### Messages and transcript
 
@@ -311,6 +330,39 @@ PTY terminal endpoints; mounted only on loopback binds.
 | `POST /api/workspaces/{workspace_id}/trust` | Grant trust |
 | `POST /api/workspaces/{workspace_id}/untrust` | Revoke trust |
 
+### Memory
+
+`{scope}` is one of `global`, `workspace`, `persona` or `persona_workspace`. The three non-global scopes name their owner in the query string: `workspace_id` for a workspace, `persona_id` for a persona, and both for a persona's per-workspace notes. An unknown `workspace_id` is rejected.
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/memory/settings` | Read the memory section, with `effective_enabled` |
+| `PATCH /api/memory/settings` | Change `enabled`, `approval` or `budget` |
+| `GET /api/memory/workspaces/{workspace_id}/settings` | Read one workspace's switch |
+| `PATCH /api/memory/workspaces/{workspace_id}/settings` | Set it to `true` / `false`, or `null` to follow the global setting |
+| `GET /api/memory/{scope}` | Search or list entries; see below for filters and pagination |
+| `GET /api/memory/{scope}/{id}` | Read one entry with its `target`, `applicability` and `complete` |
+| `PUT /api/memory/{scope}/{id}` | Write an entry; use `{id}` as `new` to create |
+| `DELETE /api/memory/{scope}/{id}` | Delete an entry (`expected_revision` in the query string) |
+| `GET /api/memory/{scope}/inbox` | List proposals awaiting review |
+| `GET /api/memory/{scope}/journal` | Change history, optionally narrowed to one `id` |
+| `POST /api/memory/{scope}/undo` | Undo one operation by `operation_id` |
+
+`GET /api/memory/{scope}` without pagination returns the whole namespace as `{ items, coverage }` and keeps working for existing clients. Its default statuses differ by shape: with no `query` it returns `active` and `pending`, with a `query` it searches `active` only, and `include_inactive=true` widens either to all four. `coverage` reports the statuses that were actually inspected.
+
+Passing `mode`, `page_size`, `statuses` or `cursor` switches to paged results and adds `next_cursor`. Here `mode` defaults to `list` with no `query` and to `search` with one, `page_size` is 1–20, and `statuses` is a comma-separated list of `active`, `pending`, `superseded` and `archived` defaulting to `active`. Keep the same `{scope}` path and the same `workspace_id` / `persona_id` that identify the namespace, and send `cursor` without `mode`, `query`, `type`, `page_size`, `statuses` or `include_inactive` — the cursor already carries the scopes, filters and page size it was issued for, and adding any of them back returns the `40944` code. A cursor also stops working when the underlying entries or the namespace change; start the query over and reconcile by id rather than assuming the second run covers what the first did.
+
+`PUT /api/memory/{scope}/{id}` takes the same action vocabulary as [`MemoryWrite`](../reference/tools.md#writing-an-entry): `action` (`create`, `update`, `supersede`, `archive`), `type`, `title`, `body`, `reason`, `expected_revision` and `pinned`. Writes through REST are recorded as coming from you, whatever `source` the agent would have used. The response is `{ entry, operationId, outcome, warnings? }`, where `outcome` is `applied`, `pending` or `unchanged`; `operationId` is `null` for `unchanged` and for a proposal identical to one already waiting, and those two cases have nothing to undo. For `update`, `supersede` and `archive`, `expected_revision` is required — a `PUT` built on a stale revision is refused instead of overwriting a newer one.
+
+Two metadata fields are optional and behave differently on omission:
+
+- **`basis`** — `{ kind, note, refs? }`, with `kind` one of `human`, `observed`, `derived`, `unknown`. It is an object or absent, never `null`. Omitting it on an `update` keeps the current basis only while `type`, `title` and `body` are unchanged; rewrite any of those without a new basis and the entry drops to `{ kind: 'unknown' }` with a `warnings` entry saying the attribution was not refreshed.
+- **`validity`** — `{ check, until? }`, and `null` is meaningful: it clears a recorded check. Omitting the key preserves the current value on an `update` and leaves a new entry without one. An entry with no recorded validity is not a permanently valid one.
+
+`covered_by` is accepted for `archive` only, as `{ id, expected_revision }` of the retained active entry in the same scope. The stored entry records the same dependency as `{ id, revision }` — the revision you sent — and it is re-checked when the retirement is applied, so an archive against a replacement that has since changed fails rather than dropping a rule that is still needed.
+
+`GET /api/memory/{scope}/{id}` returns the full entry plus `scope`, a `target` of `{ scope, id, expected_revision }`, an `applicability` of `expired`, `recheck` or `unrecorded`, and `complete: true`. The `target` is an addressing object, not a request body: `scope` and `id` belong in the path, the owning workspace or persona in the query string, and `expected_revision` is the one field the `PUT` body takes from it — alongside the `action`, `type`, `title`, `body` and `reason` for the change you are making. Read an entry before writing to it. A `PUT` whose `expected_revision` no longer matches returns the `40944` code, and the response's `details` carries the domain's own `code` and `recovery` while the numeric envelope code stays the one existing clients already handle.
+
 ### Session leases and peer threads
 
 A session lease is a periodically renewed "online token" a client holds: `POST /api/leases` creates or renews one (default validity 60 seconds) and responds with `lease_id` and `expires_at`. A live lease can hold resources that need cleanup (such as PTY terminals and file watches) and keeps the shared daemon from exiting as idle — see `--idle-exit` under [`kiki serve`](../reference/command.md#kiki-serve).
@@ -343,11 +395,15 @@ The peer-thread endpoints support cross-session collaboration: a thread is addre
 | `limit` | Page size, default 50, range 1–100 |
 | `cursor` | Opaque continuation; repeat the same workspace/session/pair filters |
 
-The standard envelope's `data` is `{ items, next_cursor?, incomplete?, history? }`. Each item has `message_id`, `source: { kind: "thread", thread: { ref, title?, deleted, archived } }`, `target: { ref, title?, deleted, archived }`, `content`, `accepted_at` (Unix milliseconds), `target_seq`, `delivery`, and optional `reason`. References use the host/workspace/session triple. Room wake receipts use `source: { kind: "room", room_id }`. They carry a recipient's since catch-up, not individual room log messages, and match only that recipient's session/workspace. Pair filters exclude them. Follow the room reference to `GET /api/rooms/{id}/log` for the complete discussion; room logs have a separate forward `afterId` cursor and are not merged into this recipient-owned stream. Pages are newest-first, with stable message-ID ordering for equal timestamps. A scan-budget page can contain no items and still have `next_cursor`; continue until the cursor is absent. Changed filters return `40931` (`thread.cursor_invalid`), and a missing selected session returns `40421` (`thread.not_found`).
+The standard envelope's `data` is `{ items, next_cursor?, incomplete?, history? }`. Each item has `message_id`, `source: { kind: "thread", thread: { ref, title?, deleted, archived } }`, `target: { ref, title?, deleted, archived }`, `content`, `accepted_at` (Unix milliseconds), `target_seq`, `delivery`, and optional `reason`. References use the host/workspace/session triple. Pages are newest-first, with stable message-ID ordering for equal timestamps, and a scan-budget page can be empty while still carrying `next_cursor` — continue until the cursor is absent.
+
+Room wake receipts use `source: { kind: "room", room_id }` and are per recipient: they carry that recipient's since catch-up rather than individual room log messages, match only that recipient's session and workspace, and are excluded by pair filters. Follow the room reference to `GET /api/rooms/{id}/log` for the complete discussion; room logs have their own forward `afterId` cursor and are not merged into this stream. Changed filters return `40931` (`thread.cursor_invalid`), and a missing selected session returns `40421` (`thread.not_found`).
 
 `delivery` is `pending`, `delivered`, or `undeliverable`. Delivered means the input was handed to the target prompt, not that the target finished answering. A rejected send before mailbox acceptance, such as an unknown target, creates no communication record. The contract guarantees that `message_id` equals both the recipient main-agent prompt id and its user-message id, including steered delivery and idempotent retries. Navigate only `delivered` records in the target session with `?block=user-<message_id>`; `target_seq` is a mailbox sequence, not a transcript turn number. A deleted endpoint has `deleted: true`; the record stays visible from the surviving side and disappears from this view when neither side survives.
 
-History reads use existing indexed records without waiting for a full historical repair. While coverage is unproven, `incomplete: "history_preparing"` distinguishes preparation from an empty history. Optional `history` reports `generation`, `state` (`complete`, `preparing`, or `error`), `processedMessages`, `completedShards`, `totalShards`, the pending scope (`room` or `all`), and an optional failure detail. Retry from the first page while preparing; do not treat an absent cursor as proof of completeness. Cursors pin the coverage generation: repaired older records or completion invalidate an incomplete cursor with `40931`, so refresh from the first page. Pre-upgrade cursors also require a fresh first page. The GUI displays preparation or failure instead of "no records", refreshes the first page while preparing, and restarts pagination after cursor invalidation. Caller cancellation does not stop the shared repair; a failed repair leaves existing records readable and never reports complete coverage.
+History reads serve existing indexed records without waiting for a full historical repair. While coverage is unproven, `incomplete: "history_preparing"` distinguishes preparation from an empty history; optional `history` reports `generation`, `state` (`complete`, `preparing`, or `error`), `processedMessages`, `completedShards`, `totalShards`, the pending scope (`room` or `all`), and an optional failure detail. Retry from the first page while preparing — an absent cursor is not proof of completeness.
+
+Cursors pin the coverage generation, so repaired older records or a completed repair invalidate an incomplete cursor with `40931` and you must refresh from the first page; cursors from before an upgrade need a fresh first page too. Cancelling a read does not stop the shared repair, and a failed repair leaves existing records readable and never reports complete coverage.
 
 For `undeliverable` records, `reason_code` is a stable localization key and `reason_detail` is the original diagnostic text. The legacy `reason` remains an alias of `reason_detail`. Other delivery states omit these fields. Older stored failures without a code return `delivery_failed`; clients talking to older servers should use the same fallback instead of translating diagnostic text.
 
@@ -421,7 +477,7 @@ The session `fs:{action}` workspace API accepts workspace-relative paths only an
 
 On the usage page's History tab, **Rescan all usage** scans every indexed session, including archived sessions. It runs only when requested and can take a while. `POST /api/usage/rescan` starts the task without a body; another POST while it is running returns the same task's current progress. Poll `GET /api/usage/rescan` about once per second. Both use the normal success envelope with `data` containing `state` (`idle`, `running`, `completed`, or `failed`), `scanned_sessions`, `total_sessions`, `scanned_records`, `started_at`, `finished_at`, and `error`. Times are epoch milliseconds or `null`; `error` is `null` unless the task failed. `scanned_records` counts newly read wire records, including non-usage records; unchanged checkpoints need no wire reads.
 
-The task bypasses session, record, and time scan budgets and saves incremental checkpoints. Regular queries continue serving committed checkpoints while it runs. The regular deadline is 10 seconds, with a 500-session cold-scan limit and a 200,000-record budget. Successfully rescanned sessions no longer consume the cold-session limit: their keys are saved in `cache/usage-aggregation-v1/full-scan.json`, and their usage remains in the existing per-session checkpoints. Regular queries still check source fingerprints and obey their record and time budgets. Deleted-session and temporary-usage ledgers retain their regular query budgets. A completed rescan does not supply missing provider usage or model prices. Task progress is process-local and resets to `idle` on restart; checkpoints and the completed inventory survive. Cancellation is not supported.
+The rescan bypasses session, record, and time scan budgets and saves incremental checkpoints; regular queries keep serving committed checkpoints while it runs. A regular query has a 10-second deadline, a 500-session cold-scan limit, and a 200,000-record budget. Sessions it rescans successfully stop consuming the cold-session limit: their keys are saved in `cache/usage-aggregation-v1/full-scan.json` and their usage stays in the existing per-session checkpoints. A completed rescan does not supply missing provider usage or model prices. Task progress is process-local and resets to `idle` on restart, while checkpoints and the completed inventory survive; cancellation is not supported.
 
 ### Usage pricing
 
@@ -530,6 +586,8 @@ Event frames look like `{ "type", "seq", "epoch"?, "volatile"?, "offset"?, "sess
 | Background | `task.started` / `terminated`, `shell.started` / `output` / `completed` |
 | Misc | `compaction.*`, `skill.activated`, `goal.updated`, `prompt.*`, `error`, `warning` |
 
+The `compaction.*` family separates who asked from what happened. `compaction.started` carries `trigger` as `manual` or `auto` and an optional `phase` of `queued` or `running`; an event without `phase` means running. `compaction.completed` carries the optional `trigger` and a `result`; `compaction.cancelled` carries the optional `trigger` and a `reason` when it failed rather than being cancelled. Judge completion from these events, not from the HTTP response of a [compact request](#post-api-sessions-session-id-compact) — and treat a `trigger` that is absent as unknown rather than assuming a manual run finished. A queued manual compaction is not settled by an automatic one completing.
+
 Events also split into durable and volatile: durable events carry a strictly increasing `seq`, are journaled, and can be replayed; volatile events (the `*.delta` family, `tool.progress`, `shell.*`, and similar) are marked `volatile: true` and never replayed. When consuming a volatile text stream, compare `offset` (the cumulative character offset within the turn) against your locally accumulated text: below the local length means a duplicate frame; above means a gap that needs snapshot recovery.
 
 ### Reconnect and recovery
@@ -538,7 +596,9 @@ After reconnecting, pass each session's last applied `{seq, epoch}` in `subscrib
 
 ### Transcript protocol
 
-`subscribe_v2`'s `transcript` field sets a per-agent grade: `off` / `turn` / `block` / `delta` (the `"*"` key sets the default grade), with higher grades pushing finer detail. If any grade is not `off`, send the numeric `transcript_coverage_version: 2` in the payload; the successful acknowledgement echoes it. A missing or unsupported version is rejected before transcript frames are sent; an `off`-only subscription does not need the version. An agent with a non-`off` grade receives two frame types: `transcript.reset` (a baseline snapshot; history pages in over REST) and `transcript.ops` (incremental op batches with a per-agent strictly increasing `seq`). The agent's legacy events are suppressed on that connection and carried by transcript frames instead. After a disconnect, resume with `transcript_since`; when the server's op journal cannot cover the gap (REST catch-up returns `complete: false`), do a full refresh. The REST counterparts are `GET .../transcript` (turn-paged) and `GET .../transcript/ops?since_seq=` (op-batch catch-up).
+`subscribe_v2`'s `transcript` field sets a per-agent grade: `off` / `turn` / `block` / `delta`, where the `"*"` key sets the default and a higher grade pushes finer detail. If any grade is not `off`, send the numeric `transcript_coverage_version: 2` in the payload; a missing or unsupported version is rejected before any transcript frame is sent, and an `off`-only subscription does not need it.
+
+An agent with a non-`off` grade receives `transcript.reset` (a baseline snapshot; history pages in over REST) and `transcript.ops` (incremental op batches with a per-agent strictly increasing `seq`). That agent's legacy events are suppressed on the connection and carried by transcript frames instead. After a disconnect, resume with `transcript_since`; when the server's op journal cannot cover the gap — REST catch-up returns `complete: false` — do a full refresh. The REST counterparts are `GET .../transcript` (turn-paged) and `GET .../transcript/ops?since_seq=` (op-batch catch-up).
 
 ## Binary and streaming endpoints
 

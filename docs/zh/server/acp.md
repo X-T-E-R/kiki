@@ -28,7 +28,7 @@ kiki acp
 
 ## ACP 方法覆盖
 
-规范把方法分为**稳定**面和仍在演化的**不稳定**面。两部分稳定性保证完全不同——稳定面是任何生产 ACP 客户端都会用到的方法，不稳定面覆盖实验性扩展（inline-edit 预测、document 缓冲区同步、provider 管理、elicitation 等），因此分开列出。任何正常 agent 流程所需的方法（initialize → auth → new/load/resume → prompt → cancel + 文件 I/O + 工具审批）都已实现。
+规范把方法分为**稳定**面和仍在演化的**不稳定**面，因此分开列出。任何正常 agent 流程所需的方法——initialize → auth → new/load/resume → prompt → cancel，加上文件 I/O 与工具审批——都已实现。
 
 ### 稳定面 agent-side — IDE → agent
 

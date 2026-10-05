@@ -36,7 +36,9 @@ See [Using Kiki in IDEs](/en/server/ide), [`kiki acp`](/en/server/acp), and [`ki
 
 The direction reverses: another agent harness runs *your* subagent. An agent profile can carry an `executor` and run on Claude Code, Codex, Cursor, Gemini CLI, Kimi CLI, OpenCode, or Grok Build over ACP or the Codex app-server. Settings → External engines checks whether each one is installed and shows the setup steps that remain.
 
-This is not the same as a seat. A seat is a fixed place external tools call into; an external executor is a place Kiki dispatches out to. When the external harness is the main agent instead, `allow_kiki_subagents: true` lets it dispatch Kiki subagents back, and `kiki_context` can expose Kiki's own native context — memory, board, cron, threads, history, hooks — to it over the same bridge, with child completions queued back to the main agent. The profile's tool policy, dispatch policy, model constraints, and notification policy still apply across that bridge; it is a call path, not a bypass.
+![The external engines list, with each engine's install state, what Kiki can set on it, and any check details that remain.](/shots/ecosystem/ce-20261005-ecosystem-engines.en.png)
+
+A seat is a fixed place external tools call into; an external executor is a place Kiki dispatches out to. When the external harness is the main agent instead, `allow_kiki_subagents: true` lets it dispatch Kiki subagents back, and `kiki_context` can expose Kiki's own native context — memory, board, cron, threads, history, hooks — to it over the same bridge, with child completions queued back to the main agent. The profile's tool policy, dispatch policy, model constraints, and notification policy still apply across that bridge.
 
 See [External main-agent delegation](/en/customization/agents#external-main-agent-delegation) and [Kiki context in external main agents](/en/customization/agents#kiki-context-in-external-main-agents).
 

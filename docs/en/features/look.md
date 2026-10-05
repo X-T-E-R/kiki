@@ -19,7 +19,7 @@ Each skin ships a light and a dark variant; the light / dark switch above the pi
 | **Iris × Starveil** | Violet-white paper and iris ink; indigo-violet layers and silver-lilac controls at night. |
 | **High contrast × Obsidian** | Visible borders and AAA main text; layered charcoal, ice-cyan focus and near-white controls at night. |
 
-See [Built-in skins](/en/customization/skins#built-in-skins) for the full table and the retired palettes.
+See [Built-in skins](/en/customization/skins#built-in-skins) for the full table.
 
 ![The appearance settings, with the skin picker, the background, and the fine-tuning controls.](/shots/look/look-skins.en.png)
 

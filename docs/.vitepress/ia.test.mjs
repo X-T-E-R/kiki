@@ -26,7 +26,7 @@ const moves = {
 }
 const sections = {
   'getting-started': [['installation', 'first-launch', 'desktop-app', 'use-cases']],
-  features: [['index', 'workbench', 'long-work', 'daily', 'people', 'spaces', 'freedom', 'ecosystem', 'look', 'extend']],
+  features: [['index', 'workbench', 'agents', 'freedom', 'long-work', 'people', 'daily', 'spaces', 'extend', 'ecosystem', 'look']],
   guides: [['interface', 'sessions', 'memory', 'settings'], ['interaction', 'goals']],
   customization: [['agent-profiles', 'personas', 'agents', 'skills', 'plugins', 'hooks', 'prompt-fields', 'themes', 'skins']],
   server: [['local-server', 'ide', 'acp'], ['rest-api', 'mcp', 'sdk']],

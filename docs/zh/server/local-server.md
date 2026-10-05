@@ -18,7 +18,7 @@ kiki serve --ensure --workspace . --json
 kiki serve --stop
 ```
 
-不带模式时，`serve` 在前台运行 daemon；`--query --json` 只检查当前实例；`--ensure` 连接已有健康实例或启动新实例；`--stop` 停止所选 home 下当前可达的实例。活跃实例身份无法验证时，须先停止或升级它，Kiki 才会启动其他实例。`--idle-exit` 默认是 `30m`；活跃客户端 lease（租约：定期续期，表示客户端仍在使用 daemon）和运行中的派遣会让服务保持运行。显式 `--idle-exit 0ms` 让新启动的 daemon 持续到显式停止。工作区信任后，TUI 自动执行同样的连接或启动逻辑。
+不带模式时，`serve` 在前台运行 daemon；`--query --json` 只检查当前实例；`--ensure` 连接已有健康实例或启动新实例；`--stop` 停止所选 home 下当前可达的实例。活跃实例身份无法验证时，须先停止或升级它，Kiki 才会启动其他实例。`--idle-exit` 默认是 `30m`；活跃客户端 lease（定期续期，表示客户端仍在使用 daemon）和运行中的派遣会让服务保持运行。显式 `--idle-exit 0ms` 让新启动的 daemon 一直运行到你手动停止。工作区信任后，TUI 自动执行同样的连接或启动逻辑。
 
 ## 运行兼容性的前台服务
 
@@ -50,14 +50,14 @@ Stop:    Ctrl+C
 
 - **REST**：请求头 `Authorization: Bearer <token>`。
 - **Kiki GUI**：启动横幅里的地址自带 `#token=` 片段，浏览器打开后自动完成登录；该片段不会发送到服务端。
-- **WebSocket**：能自定义请求头的客户端用 `Authorization: Bearer`；浏览器等不能自定义头的客户端改用子协议（WebSocket 握手时声明的协议名）`kimi-code.bearer.<token>`（历史协议名，沿用自上游 Kimi Code 时代，为兼容保留）。
+- **WebSocket**：能自定义请求头的客户端用 `Authorization: Bearer`；浏览器等不能自定义头的客户端，把 token 放进握手子协议 `kimi-code.bearer.<token>`。
 
-远端 owner token 泄露时运行 `kiki web rotate-token`：它替换 `server.token`，使旧远端凭据失效，并停止受影响的 peer 流，无需重启。这不会轮换 `server.local-owner`；该本地管理凭据泄露意味着本地访问已受损，不能靠远端 token 轮换补救。
+远端 owner token 泄露时运行 `kiki web rotate-token`：它替换 `server.token`，使旧远端凭据失效，并停止受影响的 peer 流，无需重启。它不会轮换 `server.local-owner`，所以该文件泄露要按本地访问已失守处理。
 
 桌面 GUI 先查实例注册表，用 local-owner 凭据连接已有服务；找不到时才启动自己的 sidecar。因此同一 home 下受支持的本地客户端共享同一批会话，与具体哪个启动器启动服务无关。
 
 ::: warning 注意
-这条警告针对彼此独立预配、互不信任的运行时（例如分属不同 host 身份、各自拥有权限域的两个服务）：不要让这样的两个运行时共享同一个可写 home 目录，不要在它们的 home 之间复制会话目录，也不要复制 `device_id` 让两个 home 冒充同一台 host——会话索引、thread 归属与权限边界都依赖 home 身份的唯一性。同一 home 下的共享 daemon、TUI、桌面 GUI 与并存的服务实例是受支持的协作方式，不在此列。
+两个彼此独立预配、互不信任的运行时——分属不同 host 身份、各自拥有权限域的两个服务——不要共享同一个可写 `KIKI_HOME`，不要在它们的 home 之间复制会话目录，也不要复制 `device_id` 让两个 home 冒充同一台 host。会话索引、thread 归属与权限边界都依赖 home 身份的唯一性。同一 home 下的共享 daemon、TUI、桌面 GUI 与并存的服务实例是受支持的协作方式，不在此列。
 :::
 
 绑定非本机地址（`--host`，包括裸 `--host`，即 `0.0.0.0`）需要服务前面有终结 TLS 的反向代理，或加 `--insecure-no-tls`；两者都没有时服务拒绝启动。服务在非本机地址上运行之后，可设置 `KIKI_PASSWORD` 作为另一种 owner 凭据；它不能替代 local-owner 或逐源 grant。服务端会对鉴权失败自动限流。
@@ -84,7 +84,7 @@ kiki web --insecure-no-tls      # 允许明文 LAN HTTP（见下方警告）
 
 TUI 里对应的是 `/web temporary|persistent|status|off|link|revoke [id]`，可搭配 `--host`、`--port`、`--public-url`、`--insecure-no-tls`、`--no-open`。
 
-每次开启会打印一个一次性链接，用于让浏览器登录。Kiki 用它换取一个由浏览器自己保管的 session cookie（HttpOnly、`SameSite=Strict`、host-only，HTTPS 下带 `Secure`）；JavaScript、`localStorage` 和 URL 查询参数里都不会留下 session 或根 token。链接只显示一次——服务端只保留摘要，丢失后需要重新生成，而不是找回同一个。已经授权的浏览器可以跨服务重启继续使用；新设备需要新链接。
+每次开启会打印一个一次性链接，用于让浏览器登录。Kiki 用它换取一个由浏览器自己保管的 session cookie（HttpOnly、`SameSite=Strict`、host-only，HTTPS 下带 `Secure`）；JavaScript、`localStorage` 和 URL 查询参数里都不会留下 session 或根 token。服务端只保留摘要，链接丢失后需要重新生成，而不是找回同一个。已经授权的浏览器可以跨服务重启继续使用；新设备需要新链接。
 
 关闭 Web 访问会撤销全部链接和浏览器会话，并关闭已打开的连接流；它不会停止 daemon、桌面应用或 TUI，也不会取消已经开始的任务。`kiki serve` 和桌面应用都不受影响。
 

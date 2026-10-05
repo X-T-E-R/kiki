@@ -1,16 +1,16 @@
 # Custom Themes
 
-Kiki can use a built-in color scheme or a custom JSON theme file. Custom files live in the themes directory and appear in `/theme` alongside the built-in choices.
+Kiki can use a built-in color scheme or your own JSON theme file. Custom files live in the themes directory and show up in `/theme` next to the built-in choices.
 
 ::: tip Terminal themes and GUI skins
-This page describes **terminal (TUI) themes**. The GUI has its own file format, called a **skin**, which covers colors, fonts and shape rather than only terminal colors — see [GUI Skins](./skins.md).
+This page covers **terminal (TUI) themes**. The GUI uses its own format called a **skin**, which covers colors, fonts and shape as well — see [GUI Skins](./skins.md).
 
-Both live in the **same directory** (`~/.kiki/themes/`) and are told apart by content: a file with `"kind": "kiki-skin"` is a GUI skin, anything else is a TUI theme. Each loader ignores the other's files, so you can keep both side by side. A TUI theme does not restyle the GUI, and a skin does not restyle the terminal.
+Both live in the **same directory** (`~/.kiki/themes/`) and are told apart by content: a file with `"kind": "kiki-skin"` is a GUI skin, anything else is a TUI theme, and each loader ignores the other's files. A TUI theme does not restyle the GUI, and a skin does not restyle the terminal.
 :::
 
 ## Built-in color tokens
 
-Custom themes can override the tokens below. The `dark` and `light` columns show the built-in values; `auto` resolves to one of those palettes at startup, and falls back to `dark` when terminal background detection is unavailable.
+A custom theme can override any token below. The `dark` and `light` columns are the built-in values; `auto` resolves to one of them at startup and falls back to `dark` when terminal background detection is unavailable.
 
 | Token | `dark` | `light` | What it controls |
 | --- | --- | --- | --- |
@@ -34,17 +34,15 @@ Custom themes can override the tokens below. The `dark` and `light` columns show
 | `roleUser` | `#FFCB6B` | `#9A4A00` | User message bullet and text, skill-activation name |
 | `shellMode` | `#BD93F9` | `#7C3AED` | Shell mode (`!`) prompt, editor border, and the echoed `$ command` line |
 
-## Use the theme skill
+## Let the skill write it
 
-You do not need to write the JSON by hand. Run the built-in `/kiki-ops [request]` skill command and describe the theme you want; the skill can choose colors, write the file under `~/.kiki/themes/`, validate the hex values, and tell you how to apply it.
-
-Example invocations:
+You do not have to write the JSON by hand. Run `/kiki-ops` and describe the theme you want — the skill picks the colors, writes the file under `~/.kiki/themes/`, checks the hex values, and tells you how to apply it.
 
 - `/kiki-ops Create a warm dark theme with amber accents.`
 - `/kiki-ops Make a light theme based on Solarized, but keep errors easy to see.`
 - `/kiki-ops Tweak my ember theme so diffs have higher contrast.`
 
-After activation, the skill usually asks whether you want a light or dark base, what mood or palette you prefer, and whether you have exact colors to include. If you use it to edit an existing theme, make sure it reads and backs up the file before overwriting it.
+It will usually ask whether you want a light or dark base, what mood or palette you prefer, and whether you have specific colors to include. When you ask it to edit an existing theme, it reads and backs the file up before overwriting.
 
 ## Create a theme
 
@@ -90,8 +88,8 @@ Use the token names from [Built-in color tokens](#built-in-color-tokens). Any to
 
 Two ways:
 
-1. **The `/theme` command** (recommended): opens the theme picker, where custom themes appear as `Custom: <filename>`. The picker **re-scans the themes directory every time it opens**, so a theme file you just added shows up **without a restart**.
-2. **`tui.toml`**: set `theme` to your theme name:
+1. **The `/theme` command** — opens the picker, where your themes appear as `Custom: <filename>`. The picker re-scans the directory each time it opens, so a file you just added shows up without a restart.
+2. **`tui.toml`** — set `theme` to the theme's name:
 
    ```toml
    # ~/.kiki/tui.toml
@@ -100,11 +98,13 @@ Two ways:
 
 ## What happens on errors
 
-Custom themes are designed to never get in your way:
+A bad value never stops the theme from loading:
 
-- **An invalid color value** (not `#` followed by 6 hex digits): that one entry is silently skipped and falls back to the selected base palette; the rest of the colors still apply.
+- **An invalid color value** (not `#` followed by 6 hex digits): that one entry is skipped and falls back to the selected base palette; the rest still apply.
 - **An unrecognized token**: ignored, with no effect on other colors.
-- **A missing custom theme file or malformed JSON**: silently falls back to the built-in `dark` palette. It does not retry `auto`.
+- **A missing theme file or malformed JSON**: falls back to the built-in `dark` palette, not to `auto`.
+
+If your changes do not appear at all, check that the filename matches `name` in the file — that mismatch is the usual cause, and it fails silently.
 
 ## Editing the active theme
 
@@ -114,5 +114,5 @@ If you edit the theme file that is **currently active**, the change is not reloa
 - switch to another theme in `/theme` and back.
 
 ::: warning Note
-Re-selecting the **same** theme in `/theme` does not reload it (you get a "Theme unchanged" message). To reload changes to the active theme, use one of the two methods above.
+Picking the **same** theme again in `/theme` does not reload it — you get "Theme unchanged". Use `/reload-tui`, or switch to another theme and back.
 :::

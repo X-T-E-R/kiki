@@ -1,13 +1,13 @@
 # Plugins
 
-Plugins package reusable Kiki capabilities into installable units — they can add [Agent Skills](./skills.md), custom [agents](./agents.md), automatically load a specified Skill at session start, contribute system-prompt instructions, declare MCP servers to provide real tool capabilities, and bring another tool's conversation history in as a [Kiki session you can keep working in](#session-history-import), or as a read-only archive. They are ideal for sharing workflows with a team, connecting to external services, or installing extensions from the [official plugins](#official-plugins).
+A plugin packages reusable Kiki capabilities into one installable unit. A plugin can add [Agent Skills](./skills.md), custom [agents](./agents.md), a Skill loaded automatically at session start, system-prompt instructions, MCP servers that provide real tool capabilities, and another tool's conversation history — as a [Kiki session you can keep working in](#session-history-import) or as a read-only archive. That makes plugins the way to share a workflow with a team, connect to an external service, or install from the [official list](#official-plugins).
 
-## Installation and Management
+## Install and manage
 
-Run `/plugins` in the TUI to open the plugin manager. It is a single panel with four tabs, switched with `Tab` / `Shift-Tab`:
+`/plugins` opens the plugin manager in the TUI: one panel with four tabs, switched with `Tab` / `Shift-Tab`:
 
 - **Installed**: Manage installed plugins
-- **Official**: Kimi-maintained marketplace plugins
+- **Official**: Marketplace plugins Kiki and Kimi maintain
 - **Curated**: Third-party plugins from Kimi partners in the default marketplace
 - **Custom**: Install from a URL
 
@@ -53,37 +53,36 @@ Network requests only go through `github.com` redirects and `codeload.github.com
 
 ### Installing a plugin that runs code
 
-Most of a plugin is declarative: Skills, agents, prompt text, themes, MCP server declarations. A plugin that needs more ships an entry file, and Kiki runs that file as Node.js code with your account's permissions — that is how a plugin reads a folder you point it at or imports a history file. It is not a sandbox: the code has the same access you do.
+Most of a plugin is declarative: Skills, agents, prompt text, themes, MCP server declarations. A plugin that needs more ships an entry file, and Kiki runs that file as Node.js code with your account's permissions — that is how a plugin reads a folder you point it at or imports a history file. That code is not sandboxed; it has the same access you do.
 
-Kiki therefore asks for consent once per source before installing such a plugin. `/plugins install <source>` reports that the plugin runs trusted code and stops; add `--trust` to give the consent:
+Kiki therefore asks once per source before installing such a plugin. `/plugins install <source>` reports that it runs trusted code and stops; add `--trust` to consent:
 
 ```sh
 /plugins install --trust ./my-plugin
 ```
 
-In the GUI, the install sheet lists what the plugin would add and what it will be able to do, and its button reads **Allow and install** instead of **Install** while this consent is needed.
+In the GUI the install sheet lists what the plugin would add and be able to do, and its button reads **Allow and install** while this consent is needed.
 
-The consent is remembered for the source, not for each file, page, or call:
+The consent is remembered per source, not per file, page or call. Reinstalling or updating from the same source does not ask again, even if its contributions, description or declared permissions changed since you approved; a different source that reuses the same plugin id asks again; and for a GitHub URL the source is `owner/repo`, so switching branch, tag or commit inside that repository does not ask. The one change that does ask is a plugin that starts shipping an entry file it did not have.
 
-- Installing or updating from the same source again does not ask — even when the plugin's contributions, description, or declared permissions have changed since you approved it.
-- A different source that reuses the same plugin id is a new source and asks again.
-- For a GitHub URL, the source is the `owner/repo`, so switching branches, tags, or commits inside that repository does not ask again.
-- One change does ask again: a plugin that had no entry file starts shipping one.
+You are approving the source, not the exact bytes: Kiki fingerprints the plugin folder at the preview and refuses an install whose files changed afterwards. That protects the preview, not later actions — the tool calls a trusted plugin makes still follow your current permission mode and tool rules.
 
-What you approve is the source rather than the exact bytes: Kiki fingerprints the plugin folder at the preview and refuses an install whose files changed after it. That fingerprint protects the preview, not each later action — once a source is trusted, reinstalling or updating it does not ask again, while the tool calls it produces still follow your current permission mode and tool rules.
+### Things worth knowing
 
-### Notes
-
-- Local plugin updates take effect in the conversation you are already in. Install a local plugin once with `/plugins install --trust <path>` and enable it with `/plugins enable <id>`; a newly installed plugin starts disabled. After editing your source directory, run `/plugins install <path>` again with the same path — the updated code and manifest replace the managed copy, the plugin stays enabled, and the tool is available to the same conversation once that command returns. No `/plugins reload`, `/reload`, or `/new` is needed. The already-consented source does not ask for `--trust` again.
-- An update waits for that plugin's in-flight work before switching: calls already running finish on the old version, and calls that arrive during the switch wait and run on the new one. Other plugins are not restarted and keep running. A call already resolved against an older tool definition asks for a retry instead of running against changed rules.
-- `/plugins reload` is the separate explicit global action. It re-reads `installed.json` and the managed copies of every plugin and never copies from your source directories, so it is not the way to pick up a source edit. System-prompt sections and plugin Skills still rebuild through their own documented timing — see [System-prompt instructions](#system-prompt-instructions) and [Plugin agents](#plugin-agents).
-- Local installations are copied to `$KIKI_HOME/plugins/managed/<id>/`, and the CLI always runs from this managed copy. Edit the source directory and reinstall; editing the managed copy by hand does not give the same update path and a later reinstall overwrites it.
-- Removing a plugin only deletes the installation record; the managed copy and original source files remain on disk.
-- Plugins are currently installed per-user and apply to all projects; project-level installation scope is not yet supported.
+- **Local edits take effect in the conversation you are already in.** Install once with `/plugins install --trust <path>`, enable with `/plugins enable <id>` (a new plugin starts disabled), then after editing your source run `/plugins install <path>` again with the same path: the managed copy is replaced, the plugin stays enabled, and the tool is available to that conversation as soon as the command returns. No `/plugins reload`, `/reload` or `/new` is needed, and the consented source does not ask for `--trust` again.
+- **An update waits for that plugin's in-flight work.** Running calls finish on the old version and calls arriving during the switch wait and run on the new one. Other plugins keep running untouched, and a call already resolved against an older tool definition asks for a retry instead of running against changed rules.
+- **`/plugins reload` is the global re-read**, of `installed.json` and every managed copy. It never copies from your source directories, so it is not how you pick up a source edit; system-prompt sections and plugin Skills rebuild on their own documented timing (see [System-prompt instructions](#system-prompt-instructions) and [Plugin agents](#plugin-agents)).
+- **Local installs are copied** to `$KIKI_HOME/plugins/managed/<id>/`, and the CLI always runs from that copy. Edit the source and reinstall — editing the managed copy by hand has no update path and a later reinstall overwrites it.
+- **Removing a plugin deletes only the installation record.** The managed copy and your source files stay on disk.
+- **Plugins are installed per user** and apply to every project.
 
 ### Custom marketplace JSON
 
-Pass a marketplace JSON path or URL to `/plugins marketplace <source>`, set [`KIKI_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md), or configure `[plugins] marketplace_url` in `config.toml`. The order is command source, environment variable, then config; without any source, Kiki does not fetch a remote catalog and still shows built-in capabilities. Each entry in the `plugins` array needs an `id` and a `source` (local path, zip URL, or GitHub URL):
+Pass a marketplace JSON path or URL to `/plugins marketplace <source>`, set [`KIKI_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md), or configure `[plugins] marketplace_url` in `config.toml`; the command wins over the environment variable, which wins over the config. With no custom source, Kiki uses the official [Kiki Plugins catalog](https://x-t-e-r.github.io/kiki-plugins/marketplace.json). If the catalog cannot be reached, the bundled metadata still lets you browse it; installing a package still needs access to its download URL.
+
+Kiki's own plugins — writing, document extraction, media sources, Notion and the rest — are built in a separate [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins), not in the Kiki source tree. That is where their source lives, where you send a change, and what a development checkout points at. Installing from the official catalog is the ordinary route: Kiki downloads the published package and checks it against the SHA256 digest recorded in the catalog, so what runs is the artifact that was released, not whatever a directory happens to contain. A checkout of that repository is only for working on the plugins themselves.
+
+Each entry in the `plugins` array needs an `id` and a `source` (local path, zip URL or GitHub URL):
 
 ```json
 {
@@ -100,7 +99,7 @@ Pass a marketplace JSON path or URL to `/plugins marketplace <source>`, set [`KI
 
 ## Local document extraction
 
-`kiki-documents` converts a local PDF, Office, HTML or text file into Markdown that `Read` and `Grep` can use. Install and enable the plugin through the existing plugin manager, then ask Kiki to extract a file into a new folder and read the result. The package bundles the official `@nb-corp/nb-extract` 0.1.1 JavaScript API and dependencies; it needs no runtime npm install or local skill checkout.
+**Kiki Extract** (`kiki-extract`, formerly `kiki-documents`) converts a local PDF, Office, HTML or text file into Markdown that `Read` and `Grep` can use. Install and enable it from the plugin manager, then ask Kiki to extract a file into a new folder and read the result. Everything it needs is bundled — no runtime npm install, no skill checkout. Installing the renamed package replaces an existing `kiki-documents` install rather than sitting beside it, so your existing settings carry over.
 
 HTML (`.html`/`.htm`), Markdown and plain text work immediately. Local PDF, DOCX, XLSX/XLS and PPTX need Python 3.10+ with MarkItDown's matching format dependencies on the machine running Kiki. Prepare a virtual environment once:
 
@@ -114,21 +113,21 @@ On Windows, install the formats you need with:
 .venv-documents/Scripts/python.exe -m pip install "markitdown[pdf,docx,xlsx,xls,pptx]"
 ```
 
-On macOS/Linux, use `.venv-documents/bin/python` instead. For PDF only, use `markitdown[pdf]`. Set the environment's absolute Python executable path in **Capabilities → Plugins → Kiki Documents → Settings → Python with MarkItDown** (`pythonPath`). The plugin does not install Python or pip dependencies automatically.
+On macOS/Linux, use `.venv-documents/bin/python` instead. For PDF only, use `markitdown[pdf]`. Point the plugin at that interpreter in **Capabilities → Plugins → Kiki Extract → Settings → Python with MarkItDown** (`pythonPath`); it installs neither Python nor the pip dependencies for you.
 
-Each extraction creates a new output directory containing `document.md`, `extraction.json` with source, engine and warnings, and any assets actually returned by the engine. The source is unchanged and existing outputs are not overwritten. The response preview may be shortened and marks `previewTruncated`; use `Read`/`Grep` on the saved Markdown for the full text. MarkItDown does not export images, and Defuddle does not download linked images.
+Each extraction writes a new output directory with `document.md`, an `extraction.json` recording source, engine and warnings, and whatever assets the engine actually returned. The source is untouched and existing output is never overwritten. The response preview may be shortened and marked `previewTruncated` — read the saved Markdown for the full text. MarkItDown does not export images, and Defuddle does not download linked ones.
 
-Auto processing stays local and never uploads or performs OCR. Empty or image-only scans fail rather than being reported as read; partly scanned documents can still omit image-only pages. For cloud OCR, explicitly authorize uploading the file to MinerU, configure its token in plugin settings and select `engine=mineru` with `allowUpload=true`. Service terms and charges apply; stopping local waiting does not cancel the remote task. Missing dependencies, unsupported formats and byte-limit failures return errors, not a complete extraction. Input is limited to 50 MiB with a 600-second deadline.
+Auto processing stays local: nothing is uploaded and no OCR runs. An empty or image-only scan fails rather than being reported as readable, and a partly scanned document can still omit its image-only pages. For cloud OCR, authorize uploading the file to MinerU, set its token in the plugin settings, and select `engine=mineru` with `allowUpload=true`; the service's terms and charges apply, and stopping local waiting does not cancel the remote task. A missing dependency, an unsupported format or a file over the limit returns an error rather than a partial extraction. Input is capped at 50 MiB with a 600-second deadline.
 
 ## Media Sources
 
-A media plugin contributes one or more *sources* — a named provider for images, video, or speech. Once a media plugin is installed, its sources appear under **Capabilities → Plugins → Media sources**, one searchable list rather than a page per vendor.
+A media plugin contributes one or more *sources* — a named provider for images, video or speech. Once installed, its sources appear together under **Capabilities → Plugins → Media sources** as one searchable list.
 
 ### Turning generation on
 
-Generating is experimental and is **off by default**. Everything else on this page — installing sources, filling in their settings, choosing defaults, and reading past generations — works whether or not it is on. Only starting a new generation needs it.
+Starting a new generation is experimental and **off by default**. Everything else here — installing sources, filling in settings, choosing defaults, reading past generations — works either way.
 
-Three ways to turn it on, in the order Kiki reads them:
+Three ways to enable it, in the order Kiki reads them:
 
 - Set `KIKI_EXPERIMENTAL_MEDIA_GENERATION=1` in the environment.
 - Put `media_generation = true` under `[experimental]` in `config.toml`.
@@ -136,70 +135,97 @@ Three ways to turn it on, in the order Kiki reads them:
 
 ### The list
 
-Every source is a single row that answers three things at once: which provider it is, which package it came from, and whether it can be used right now. The status on the right of a row is one of:
+Each row says which provider it is, which package it came from, and whether it can be used now. The status on the right is one of:
 
-- **Ready** — installed, enabled, and the host confirms its configuration.
-- **Needs setup** — the host reports a required setting is missing. Open the row to fill it in.
-- **Not checked** — the source is installed and enabled, but its configuration has not been read. Kiki does not read every source's settings to draw a list, so a row in this state is neither an assurance nor a warning. Open the row to see its settings.
-- **Unavailable** — the package did not load, or you switched it off. Nothing configured in this row will generate until that is fixed.
+- **Ready** — installed, enabled, and its configuration checks out.
+- **Needs setup** — a required setting is missing. Open the row to fill it in.
+- **Not checked** — installed and enabled, but its settings have not been read. Kiki does not read every source just to draw the list, so this is neither a green light nor a warning; open the row to see its settings.
+- **Unavailable** — the package did not load, or you switched it off. Nothing in this row generates until that is fixed.
 - **Blocked** — a job for this provider could not proceed because the package is not loaded. The job is kept, not discarded.
 
-Filter by modality (image, video, speech) or by status, or type to search. The counts beside each band are the whole list, not the filtered one, so a filter never hides how much is behind it.
+Filter by modality (image, video, speech) or status, or type to search. The count beside each band is the whole list, not the filtered one, so a filter never hides how much sits behind it.
 
 ### Configuring a source
 
-Open a row to reach its settings form. The form is the package's own settings — the same fields, the same secret handling and the same save path as the plugin's own detail page, so a provider's key is a plugin's key.
+Open a row for its settings form, which is the package's own settings page: same fields, same secret handling, same save path. A provider's key is a plugin's key.
 
 Secrets are write-only. Kiki shows whether a key is stored and never shows the value again; replacing or clearing one is an ordinary edit.
 
-A source can be configured in one of three ways, and the form says which applies rather than making you infer it:
+A source is configured one of three ways, and the form says which applies:
 
-- **Its own settings.** You supply an API key and, if the provider needs one, a base URL. These fields are required only while no connection is selected.
-- **An existing Kiki connection.** If the package declares a connection setting, the form offers the connections you already have. Selecting one is enough — the package's own key and endpoint stop being required, and are not used at all. A connection you select must resolve; Kiki does not silently fall back to a previously stored key if it cannot.
-- **Self-managed.** A script may manage its own credentials from its own settings, environment variables, or an external file. That is a supported arrangement, and Kiki does not treat the absence of a key as a broken provider. Nothing Kiki stores is displayed back to you in logs, previews, or reports.
+- **Its own settings.** You supply an API key and, if the provider needs one, a base URL. These are required only while no connection is selected.
+- **An existing Kiki connection.** If the package declares a connection setting, the form offers the connections you already have. Selecting one is enough — the package's own key and endpoint are then neither required nor used. The connection you select has to resolve; Kiki does not fall back to a previously stored key if it cannot.
+- **Self-managed.** A script manages its own credentials through its settings, environment variables or an external file. That is a supported arrangement, and the absence of a key is not a broken provider. Nothing Kiki stores is shown back to you in logs, previews or reports.
 
-A connection you already have does not promise that the account behind it can do media work. Kiki surfaces what the provider reports; it does not maintain an allowlist of which connections support which modality.
+An existing connection does not promise that the account behind it can do media work. Kiki shows what the provider reports and keeps no allowlist of which connections support which modality.
 
 ### Per-modality defaults
 
-Three settings on the media entry package pick the default source for images, video and speech. They are ordinary plugin settings, stored with the rest of that package's configuration. When a source is the default, the list says so on its row.
+Three settings on the media entry package pick the default source for images, video and speech. They are ordinary plugin settings stored with the rest of that package's configuration, and a default source says so on its row.
 
-If a modality has no default and exactly one source could serve it, Kiki uses that one. If more than one could, Kiki asks you to choose rather than picking one and charging you for it.
+When a modality has no default and exactly one source could serve it, Kiki uses that one. If several could, Kiki asks you to choose rather than picking one and charging you for it.
 
 ### Recent generations
 
-The same page lists the current session's recent media jobs, and keeps listing them when generation is off. Each one shows its state, and each file that landed is listed with a preview, a download, or an in-page player. Job states are reported as they are, including the two that are easy to get wrong:
+The same page lists this session's recent media jobs and keeps listing them when generation is off. Each shows its state, and each file that landed has a preview, a download or an in-page player. Two states are worth reading carefully:
 
-- **Outcome unknown** — Kiki cannot confirm whether the vendor accepted the submission, so it may still be generating and charging. Nothing is regenerated automatically, and no retry is offered, because a retry is a second charge.
-- **Stopped** — Kiki stopped waiting locally. Whether the vendor also stopped, and whether it is still charging, is what the vendor reports; the row says which.
+- **Outcome unknown** — Kiki cannot confirm whether the vendor accepted the submission, so it may still be generating and charging. Nothing is regenerated and no retry is offered, because a retry is a second charge.
+- **Stopped** — Kiki stopped waiting locally. Whether the vendor also stopped, and whether it is still charging, is what the vendor reports, and the row says which.
 
-A job that partly finished keeps the files that landed. **Keep fetching** continues the same job through the session and agent that owns it — not through a global shortcut — and **Stop waiting** does the same. Both act only on the session that produced the job.
+A job that partly finished keeps the files that landed. **Keep fetching** continues that same job through the session and agent that owns it, and **Stop waiting** does the same; both act only on the session that produced the job.
 
 ### Discovery sources
 
-Where new providers can be discovered from is a different question from which providers are installed, so it gets its own folded section at the bottom of the page. Adding, pausing or removing a discovery source has no effect on already-installed packages, keys or past jobs.
+Where new providers can be discovered from is a different question from which ones are installed, so it has its own folded section at the bottom. Adding, pausing or removing a discovery source changes nothing about already-installed packages, keys or past jobs.
 
 ## Official Plugins
 
-Official plugins are plugins and built-in product capabilities maintained by Kimi. There are currently three:
+The **Official** tab holds seventeen entries. Fifteen are Kiki's own, built in the [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins) and documented on this page:
 
-- **[Kimi Datasource](#kimi-datasource)**: Query financial market data, macroeconomic indicators, corporate registration records, academic literature, and Chinese laws and regulations in natural language
-- **[Kimi Browser Extension](#kimi-browser-extension)**: Let AI drive your own browser to get web tasks done
-- **[Kimi Computer Use](#kimi-computer-use)**: Let AI operate your desktop apps (macOS and Windows)
+- **[Kiki Writing](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-writing)**, **[Kiki Extract](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-extract)** and **[Kiki Office Suite](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-office)** — the document and writing tools described in [Local document extraction](#local-document-extraction) and below
+- **[Kiki Notion](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)** — connect to Notion's hosted MCP service (see [Notion material and write-back](#notion-material-and-write-back))
+- **[Kiki Media](#media-sources)** and its ten provider plugins — one per image, video and speech provider
 
-### Installation and Upgrade
+The two Kimi entries are maintained by Kimi and published on Kimi's own CDN rather than the plugin repository:
 
-All official plugins share the same installation and upgrade flow:
+- **[Kimi Datasource](#kimi-datasource)** — query market data, macro indicators, company records, academic literature and Chinese law in natural language
+- **[Kimi Browser Extension](#kimi-browser-extension)** — let AI drive the browser you already use
+
+**[Kimi Computer Use](#kimi-computer-use)** is not in the tab at all; it installs from a direct URL, in its own section below.
+
+**Curated** is separate: three third-party plugins from Kimi partners, each pinned to a specific commit.
+
+### Installing and upgrading
 
 1. Run `/plugins` and press `Tab` to select **Official**
-2. Find the plugin you want and press `Enter` to install
-3. After installation completes, run `/reload` or `/new` to activate it
+2. Find the plugin and press `Enter` to install
+3. Run `/reload` or `/new` to activate it
+
+Installing downloads the published package and verifies it against the SHA256 digest in the catalog, so a package whose bytes do not match the released artifact is refused rather than installed.
 
 ::: info Note
-Kimi Browser Extension installs in two parts: after the steps above, you also need to [install the browser extension](#install-the-browser-extension) before it works.
+Kimi Browser Extension needs a second step: after the plugin is installed, [install the browser extension](#install-the-browser-extension) too.
 :::
 
-Official plugins do not update automatically — when an update is available, you'll be prompted the next time you use the old version. To upgrade, repeat the installation steps above.
+Official plugins do not update on their own. You are prompted the next time you use an out-of-date version, and upgrading means repeating the three steps above.
+
+### Working on an official plugin
+
+The source for Kiki's own plugins is the [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins), one directory per package under `plugins/official/`. To try a change locally, clone it and install that directory from the repository root:
+
+```sh
+git clone https://github.com/X-T-E-R/kiki-plugins
+cd kiki-plugins
+```
+
+Then, from that root, in Kiki:
+
+```sh
+/plugins install --trust ./plugins/official/kiki-notion
+/plugins enable kiki-notion
+```
+
+That is an ordinary local install: the package is copied into `$KIKI_HOME/plugins/managed/`, and from then on you edit the checkout and run `/plugins install <same path>` again to push a change in. It is a different thing from installing from the **Official** tab, which downloads the published release. To go back to the released version, install it from the tab again.
 
 ### Kimi Datasource <Badge type="tip" text="v3.3.0" />
 
@@ -248,7 +274,7 @@ You must first complete OAuth login with a Kimi Code account via `/login`; data 
 
 ### Kimi Browser Extension <Badge type="tip" text="v1.11.4" />
 
-Kimi Browser Extension lets AI drive your browser directly — not an emulator, not a crawler, but the browser you use every day, with your login sessions and cookies. AI can open pages, read content, click buttons, fill in forms, and take screenshots just like you do, taking repetitive web operations off your hands. See the [Kimi Browser Extension site](https://www.kimi.com/features/webbridge) for a product overview.
+Kimi Browser Extension lets AI drive the browser you already use, with your own logins and cookies — not an emulator and not a crawler. It can open pages, read content, click, fill in forms and take screenshots, which takes repetitive web work off your hands. The [Kimi Browser Extension site](https://www.kimi.com/features/webbridge) has the product overview.
 
 #### Install the browser extension
 
@@ -285,7 +311,7 @@ Use this when you can't reach the stores:
 
 ### Kimi Computer Use <Badge type="tip" text="v0.5.4" />
 
-Kimi Computer Use lets AI operate your desktop apps directly, clicking, dragging, scrolling, and typing. The macOS version works silently in the background without taking over your mouse (a few popup actions may still bring an app to the foreground); see [the notes below](#notes-for-the-windows-version) for how the Windows version differs.
+Kimi Computer Use lets AI operate your desktop apps directly — clicking, dragging, scrolling and typing. On macOS it works in the background without taking over your mouse (a few popup actions may still bring an app forward); [the Windows version](#the-windows-version) behaves differently.
 
 #### Authorization (macOS)
 
@@ -300,14 +326,14 @@ The first time you use Kimi Computer Use after installation, it shows an authori
 
 </div>
 
-#### Notes for the Windows version
+#### The Windows version
 
-The Windows version (WinCU) installs differently from the macOS one: run `/plugins install https://cdn.kimi.com/kimi-computer-use-windows/latest/kimi-cu-win-plugin.zip` in Kiki, then restart after installation. A few things to know before using it:
+The Windows build (WinCU) installs differently: run `/plugins install https://cdn.kimi.com/kimi-computer-use-windows/latest/kimi-cu-win-plugin.zip` in Kiki and restart afterwards.
 
-- **It may briefly take over your mouse and keyboard**: Unlike the macOS version, the Windows version cannot reliably inject input in the background; it may briefly activate the target window and use your real mouse and keyboard while performing actions
-- **System requirements**: Windows 10 version 1903 (Build 18362) or later, or Windows 11, x64; a real interactive desktop session is required, and Windows Server needs Desktop Experience
-- **No extra permissions needed**: Windows does not require the Accessibility and Screen Recording grants that macOS does
-- **Matching privilege level**: If the target app runs as administrator, KimiCU must run at the same privilege level
+- **It may briefly take over your mouse and keyboard.** Windows cannot reliably inject input in the background, so it may activate the target window and use your real input while acting.
+- **Requirements:** Windows 10 version 1903 (build 18362) or later, or Windows 11, x64. It needs a real interactive desktop session, so Windows Server requires Desktop Experience.
+- **No extra permissions.** Windows does not need the Accessibility and Screen Recording grants macOS asks for.
+- **Matching privilege level.** If the target app runs as administrator, KimiCU must run at the same level.
 
 #### What you can do
 
@@ -318,19 +344,19 @@ The Windows version (WinCU) installs differently from the macOS one: run `/plugi
 - **Handle software that has no API**: Plenty of professional tools and internal systems have no CLI or API at all; what used to require your own clicking can now be handed to AI, like trimming the first three seconds off a clip in Final Cut Pro and exporting it
 
 ::: warning Note
-Don't hand it anything involving money, accounts, or publishing, such as payments and transfers, deleting important files, changing passwords, or posting content. To judge whether a task is suitable, check three things: the result is verifiable, the action is reversible, and the risk of getting it wrong is low.
+Keep payments and transfers, deleting important files, changing passwords and posting content to yourself. A task suits this tool when you can check the result, undo it if it goes wrong, and the cost of a mistake is low.
 :::
 
-## Plugin Manifest
+## Plugin manifest
 
-A plugin is a directory or zip file containing a manifest. The manifest can be placed at either of the following locations:
+A plugin is a directory or zip file containing a manifest, at either of these locations:
 
 ```text
 <plugin_root>/kimi.plugin.json
 <plugin_root>/.kimi-plugin/plugin.json
 ```
 
-When both files exist, `kimi.plugin.json` takes precedence.
+With both present, `kimi.plugin.json` wins.
 
 Example:
 
@@ -373,7 +399,7 @@ Unsupported runtime fields such as `tools`, `apps`, `inject`, and `configFile` a
 
 ### System-prompt instructions
 
-Use `systemPrompt` for a short inline instruction, or `systemPromptPath` to keep longer instructions in a file inside the plugin root. If both fields are present, the inline text appears first, followed by the file content. The file content is read when the plugin is installed or reloaded, so edits take effect only after `/plugins reload`. For example:
+`systemPrompt` holds a short inline instruction; `systemPromptPath` keeps longer text in a file inside the plugin root. With both, the inline text comes first and the file follows. The file is read at install or reload, so edits need a `/plugins reload` to apply. For example:
 
 ```json
 {
@@ -382,19 +408,17 @@ Use `systemPrompt` for a short inline instruction, or `systemPromptPath` to keep
 }
 ```
 
-System-prompt contributions take effect on every surface: the interactive TUI, `kiki -p`, and `kiki web`.
+Contributions apply on every surface: the interactive TUI, `kiki -p` and `kiki web`.
 
-Each field — the inline `systemPrompt` and the `systemPromptPath` file — is limited to 32 KB (UTF-8 bytes): oversized content is ignored and reported in the plugin diagnostics. Across all enabled plugins, one prompt build injects at most 64 KB of instructions; contributions beyond the budget are skipped with a warning, including a single plugin whose inline text and file together exceed that budget.
+Each source is capped at 32 KB (UTF-8 bytes); larger content is ignored and reported in the plugin diagnostics. One prompt build takes at most 64 KB of instructions from all enabled plugins combined, and anything past that is skipped with a warning — including a single plugin whose inline text and file together exceed it.
 
-New sessions and newly created agents read the contributions from the plugins currently enabled. An in-flight request keeps its existing system prompt. `/plugins reload` refreshes the plugin skill list and requests prompt rebuilds for live agents; use it when you need the change to converge deliberately before the next turn. Installing, enabling, disabling, or removing a plugin updates the catalog immediately, and a later prompt rebuild — for example after compaction or a tool-policy change — may pick up the new sections. A resumed session starts from its persisted prompt and uses the current plugin catalog on later rebuilds. Toggling a plugin's MCP server does not change system-prompt sections.
+A new session or agent reads the contributions of the plugins enabled at that moment, while a request already in flight keeps the system prompt it started with. `/plugins reload` refreshes the skill list and asks live agents to rebuild their prompts; installing, enabling, disabling or removing a plugin updates the catalog at once, and a later rebuild — after compaction or a tool-policy change, say — picks up the new sections. A resumed session starts from its persisted prompt and uses the current catalog on later rebuilds. Toggling a plugin's MCP server does not change prompt sections.
 
-The built-in agent prompt includes instructions from enabled plugins automatically. A custom `SYSTEM.md` or agent file owns its template, so include `${plugin_sections}` where plugin-contributed instructions should appear. If the custom template includes `${base_prompt}` and that effective default already contains the plugin block, do not add `${plugin_sections}` again. See [Custom agents and SYSTEM.md](./agents.md#overriding-the-main-agent-s-system-prompt-with-system-md) for the complete variable table.
+The built-in agent prompt includes enabled plugins' instructions automatically. A custom `SYSTEM.md` or agent file owns its own template, so put `${plugin_sections}` where those instructions belong — and if it already includes `${base_prompt}`, which expands to a prompt containing that block, do not add `${plugin_sections}` again. [Custom agents and SYSTEM.md](./agents.md#overriding-the-main-agent-s-system-prompt-with-system-md) has the full variable table.
 
-## Plugin Slash Commands
+## Plugin slash commands
 
-Slash commands save a prompt you use often as a `/command`, so you can trigger it by typing the command instead of retyping the whole thing.
-
-Here is a minimal end-to-end example. The plugin's directory structure:
+A slash command is a prompt you use often, saved so you can trigger it by name. This is a complete example. The plugin directory:
 
 ```text
 kimi-finance/
@@ -413,7 +437,7 @@ In the manifest (`kimi.plugin.json`), the `commands` field points to where the c
 }
 ```
 
-The command file `commands/report.md`. The block between the two `---` lines at the top is frontmatter (metadata describing the command); everything below is the prompt sent to the Agent:
+In `commands/report.md`, the block between the two `---` lines is frontmatter (metadata about the command) and everything below is the prompt sent to the agent:
 
 ```markdown
 ---
@@ -429,32 +453,32 @@ After installing and enabling the plugin, type this in the chat:
 /kimi-finance:report TSLA
 ```
 
-Kimi replaces `$ARGUMENTS` in the body with `TSLA`, then runs the prompt. The three details below cover each step.
+Kiki replaces `$ARGUMENTS` in the body with `TSLA` and runs the prompt.
 
-### Declaring Commands (the `commands` field)
+### Declaring commands (the `commands` field)
 
-`commands` takes a single `./` path or an array of paths, each pointing to a directory or `.md` file inside the plugin root:
+`commands` takes one `./` path or an array of them, each pointing at a directory or `.md` file inside the plugin root:
 
-- Pointing at a **directory**: collects every `.md` file under it recursively; each becomes one command.
-- Pointing at a **single `.md` file**: registers just that one.
-- Pointing at a non-`.md` file or a missing path: appears as a diagnostic (shown in the `/plugins` panel) and is ignored.
+- A **directory** contributes every `.md` file under it, recursively, one command each.
+- A **single `.md` file** registers just that one.
+- Anything else — a non-`.md` file or a missing path — is reported as a diagnostic in the `/plugins` panel and ignored.
 
-### Writing a Command File
+### Writing a command file
 
-A command file has two parts: an optional **frontmatter** (the metadata between the two `---` lines at the top, where you set `name` and `description`) and the **body** (the prompt after the `---`). When a field is omitted, it falls back as follows:
+A command file has an optional **frontmatter** (the metadata between the two `---` lines, where you set `name` and `description`) and the **body** after it. Omitted fields fall back as follows:
 
-- `name` (the command name): derived from the file's path relative to the declared `commands` path (without `.md`, using `/` separators), e.g. `commands/frontend/component.md` → `frontend/component`. A `name` set in the frontmatter takes precedence.
-- `description` (shown in the command list): the first non-empty line of the body (truncated past 240 characters); if the body is empty too, `No description provided.` is shown.
+- `name` comes from the file's path relative to the declared `commands` path, without `.md` and with `/` separators — `commands/frontend/component.md` → `frontend/component`. A `name` in the frontmatter wins.
+- `description` is the first non-empty body line, truncated past 240 characters, or `No description provided.` when the body is empty too.
 
-### Running Commands and Passing Arguments
+### Running commands and passing arguments
 
-Commands are prefixed with the plugin id (their namespace) and registered as `<plugin>:<command>`, so the command above is actually `/kimi-finance:report` — this keeps same-named commands from different plugins from colliding.
+Commands are namespaced by plugin id and registered as `<plugin>:<command>`, so the example above is really `/kimi-finance:report` — two plugins can ship the same command name without colliding.
 
-Whatever you type after the command replaces `$ARGUMENTS` in the body (above, `TSLA` replaces `$ARGUMENTS`). If the body has no `$ARGUMENTS` but you pass arguments anyway, they are not dropped — they are appended to the end of the body as `ARGUMENTS: <what you typed>`.
+Whatever you type after the command replaces `$ARGUMENTS`. If the body has no `$ARGUMENTS` and you pass arguments anyway, they are appended to the end of the body as `ARGUMENTS: <what you typed>` rather than dropped.
 
 ## Skills and Session Start
 
-Plugin Skills use the same `SKILL.md` format as ordinary [Agent Skills](./skills.md). A typical directory structure:
+Plugin Skills use the same `SKILL.md` format as ordinary [Agent Skills](./skills.md):
 
 ```text
 my-plugin/
@@ -466,13 +490,13 @@ my-plugin/
       SKILL.md
 ```
 
-`sessionStart.skill` loads a plugin Skill into the main Agent at session start, making it suitable for initialization instructions, workflow rules, or mapping terminology from other tools to Kiki. It only injects text; it does not execute code.
+`sessionStart.skill` loads a plugin Skill into the main agent when a session starts, which suits initialization instructions, workflow rules or terminology mapping from another tool to Kiki. It injects text only and runs no code.
 
-Regardless of how a Skill is loaded (`sessionStart.skill`, `/skill:<name>`, or automatic model invocation), `skillInstructions` appears alongside that plugin's Skill.
+However the Skill is loaded — `sessionStart.skill`, `/skill:<name>`, or automatic model invocation — `skillInstructions` appears alongside it.
 
-## Plugin Agents
+## Plugin agents
 
-A plugin can ship custom agents: declare one or more `./` directories in the manifest's `agents` field (or simply place an `agents/` directory under the plugin root). The agent files inside use the same format as [custom agents](./agents.md#custom-agents) and, while the plugin is enabled, are discovered automatically and can be delegated to as sub-agents by the main Agent.
+A plugin can ship agents: declare one or more `./` directories in the manifest's `agents` field, or simply have an `agents/` directory under the plugin root. The files use the same format as [custom agents](./agents.md#custom-agents) and, while the plugin is enabled, are discovered automatically and can be dispatched as sub-agents.
 
 ```text
 my-plugin/
@@ -481,13 +505,13 @@ my-plugin/
     reviewer.md
 ```
 
-Plugin agents rank below every other file source: on a name collision, user-level, extra, project-level, and `--agent-file` agents all win over the plugin-provided one, and replacing a built-in agent still requires an explicit `override: true` in the frontmatter. After installing, enabling, disabling, or removing a plugin, the agent list refreshes in a new session (or on `/reload`); the live session also refreshes after `/plugins reload`.
+Plugin agents rank below every other file source: on a name collision, user-level, extra, project-level and `--agent-file` definitions all win, and replacing a built-in agent still needs an explicit `override: true` in the frontmatter. Installing, enabling, disabling or removing a plugin refreshes the agent list in a new session (or on `/reload`); `/plugins reload` also refreshes the live session.
 
-## MCP Servers in Plugins
+## MCP servers in plugins
 
-When a plugin needs real tool capabilities, it can declare `mcpServers` in its manifest, reusing the [MCP](../server/mcp.md) schema.
+A plugin that needs real tool capabilities declares `mcpServers` in its manifest, reusing the [MCP](../server/mcp.md) schema.
 
-Stdio server (local command):
+Stdio server (a local command):
 
 ```json
 {
@@ -526,15 +550,15 @@ Plugin MCP servers start after `/reload` or in new sessions. To enable or disabl
 
 ### Notion material and write-back
 
-`kiki-notion` is a Kiki-maintained configuration and workflow for [Notion's hosted MCP service](https://developers.notion.com/guides/mcp/get-started-with-mcp), not a Notion-endorsed integration. From the repository root, install `/plugins install --trust ./plugins/official/kiki-notion`, then run `/plugins enable kiki-notion`; for an extracted package, use its directory instead. In **Capabilities → MCP**, authorize `plugin-kiki-notion:notion` through the existing browser OAuth flow, without adding a token field. Use `/reload` or a new conversation if an already-open conversation has not discovered the new MCP connection.
+`kiki-notion` is a Kiki-maintained configuration and workflow for [Notion's hosted MCP service](https://developers.notion.com/guides/mcp/get-started-with-mcp), not a Notion-endorsed integration. Install **Kiki Notion** from the **Official** tab and enable it after reviewing the preview; its source lives in the independent [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion), not the Kiki source tree, and [Working on an official plugin](#working-on-an-official-plugin) covers installing that checkout for local work. For an extracted package, use the directory containing `kimi.plugin.json`. In **Capabilities → MCP**, authorize `plugin-kiki-notion:notion` through the normal browser OAuth flow; there is no token field to fill. If an open conversation has not picked up the new MCP connection, `/reload` or start a new one.
 
-Ask `/skill:notion-workspace` to search a specified page/teamspace/workspace, read key originals, and save a brief with source links to a local path. Name the destination page URL/ID and intended addition or update when you want it saved back. Summaries alone do not change Notion; an explicit write request does not add a plugin-specific confirmation, while normal Kiki tool approvals still apply. Plan/tool restrictions, dropped filters, missing subtrees, and pending async writes are reported rather than presented as complete coverage or a successful write. Access also depends on your workspace permissions and administrator policy; installation does not authorize upgrades or paid actions.
+Ask `/skill:notion-workspace` to search a page, teamspace or workspace, read the key originals, and save a brief with source links to a local path. Name the destination page URL or ID, and whether to add or update, when you want it written back — a summary alone changes nothing in Notion. A write request adds no plugin-specific confirmation, and the normal Kiki tool approvals still apply. Plan and tool restrictions, dropped filters, missing subtrees and pending async writes are reported as such rather than presented as complete coverage or a successful write. Access also depends on your workspace permissions and administrator policy; installing the plugin authorizes no upgrades or paid actions.
 
-Notion content can reach your selected model provider, Kiki session history, and requested local files. The plugin creates no separate index or credential store. Disabling/removing it does not delete those artifacts or revoke OAuth; disconnect in MCP management and revoke service access in Notion **Settings → Connections** as needed. The package and scripted synthetic MCP chain are tested; real-account authorization/writes and autonomous model execution are not yet verified. The original package is MIT licensed; the remote service and workspace content follow the applicable [Notion agreements](https://www.notion.so/terms).
+Notion content can reach your model provider, Kiki session history and any local file you asked it to write. The plugin keeps no separate index or credential store, and disabling or removing it deletes none of that or revokes the OAuth grant — disconnect it in MCP management and revoke access in Notion **Settings → Connections** if you need to. The package is MIT licensed; the remote service and workspace content follow the applicable [Notion agreements](https://www.notion.so/terms).
 
-## Hooks in Plugins
+## Hooks in plugins
 
-A plugin can declare hook rules in its manifest that run on lifecycle events while the plugin is enabled. Each entry uses the same fields as a [`[[hooks]]` rule in `config.toml`](./hooks.md#configuration) (`event`, `matcher`, `command`, `timeout`):
+A plugin can declare hook rules in its manifest that run on lifecycle events while the plugin is enabled. Each entry uses the same fields as a [`[[hooks]]` rule in `config.toml`](./hooks.md#legacy-rule-fields) (`event`, `matcher`, `command`, `timeout`):
 
 ```json
 {
@@ -549,63 +573,63 @@ A plugin can declare hook rules in its manifest that run on lifecycle events whi
 }
 ```
 
-Plugin hooks reuse the same mechanism as global hooks — see [Hooks](./hooks.md) for the event list, the stdin JSON payload, and how exit codes and return values affect the main flow. The differences are:
+Plugin hooks work like global ones — [Hooks](./hooks.md) has the event list, the stdin JSON payload, and how exit codes affect the main flow. Three differences:
 
-- A plugin's hooks are active only while the plugin is **enabled**; disabling the plugin stops its hooks.
-- Each hook runs with its working directory set to the plugin root, so `command` can use `./` paths inside the plugin.
-- The hook process receives two extra environment variables: `KIKI_HOME` and `KIKI_PLUGIN_ROOT` (the plugin root directory).
+- They run only while the plugin is **enabled**.
+- Each hook's working directory is the plugin root, so `command` can use `./` paths inside the plugin.
+- The process gets two extra environment variables: `KIKI_HOME` and `KIKI_PLUGIN_ROOT`.
 
-Installing a plugin never runs its hooks by itself — they only fire when their matching event occurs while the plugin is enabled.
+Installing a plugin does not run its hooks; they fire when a matching event occurs while it is enabled.
 
 ## Session history import
 
-Kiki has built-in history import that turns another tool's text conversation into a **Kiki session you can keep working in**, or saves it as a read-only archive. Claude Code, Codex, Pi, Grok Build, OpenCode export files and custom JSON/scripts need no plugin installation, trust or activation. Import runs on the Kiki server without a model and leaves the source files unchanged; third-party plugins can still add formats through the same source contract.
+Kiki can import another tool's text conversation as a **Kiki session you keep working in**, or as a read-only archive. Claude Code, Codex, Pi, Grok Build, OpenCode exports and your own JSON or script need no plugin, no trust and no activation. The import runs on the Kiki server without a model and never modifies the source files.
 
-History import is on by default, but does not scan folders or import anything at startup. To turn it off, start Kiki with `KIKI_EXPERIMENTAL_PLUGIN_IMPORT=false`, or set `plugin_import = false` under [`[experimental]`](../configuration/config-files.md#experimental) in `config.toml`. The existing switch name is retained; see [Environment variables](../configuration/env-vars.md#runtime-switches).
+Import is on by default but scans nothing at startup. To turn it off, start Kiki with `KIKI_EXPERIMENTAL_PLUGIN_IMPORT=false`, or set `plugin_import = false` under [`[experimental]`](../configuration/config-files.md#experimental) in `config.toml`.
 
 ### Importing a conversation
 
-Importing needs no plugin: Kiki serves these formats itself. Open **New session** and choose **Import history** beside the starters, or go through **Capabilities** → **Plugins** → **Import history**. From there:
+Open **New session** and choose **Import history** beside the starters, or go to **Capabilities** → **Plugins** → **Import history**:
 
-1. Choose what the conversation becomes. **Kiki session** is the default: the conversation becomes a session in this Kiki, with its earlier turns as context, and you open it and carry on where the other tool left off. **Read-only archive** keeps it as a record you can read but not continue.
-2. For a session, choose the **working directory** it runs in. Your existing workspaces are one click away, and you can type or browse for a folder that is not a saved workspace — a session started in a folder you have not opened before works the same way. Browsing does not register anything: the folder is used only if an import actually lands there.
-3. Pick a format. Claude Code, Codex, Pi, Grok and OpenCode are built in, as is a custom script of your own; nothing is installed, trusted or enabled to reach this page. A third-party plugin's own source appears here too, once it is installed and enabled.
-4. Choose the **Source home** — the folder the other tool keeps its history in, on the machine running the server. Kiki reads only that folder.
-5. Pick a conversation from the list. A folder holding many histories is listed one page at a time.
-6. Read the preview. It says whether the source could read the conversation at all, what would be kept, what would not be carried over, and where the result lands. **Complete read** means the source read the whole conversation; **Sample** means it read part of it.
-7. Choose **Import as session** or **Start import**. That is the one confirmation this conversation gets: the import runs under the preview you just read.
+1. **What it becomes.** **Kiki session** (the default) turns the conversation into a session in this Kiki, its earlier turns as context, so you open it and carry on where the other tool stopped. **Read-only archive** keeps it as a record you can read but not continue.
+2. **Working directory** (for a session). Your workspaces are one click away, and you can type or browse for any folder — a session in a folder you have not opened before works the same. Browsing registers nothing; the folder is used only if an import actually lands there.
+3. **Format.** Claude Code, Codex, Pi, Grok and OpenCode are built in, as is a custom script of your own. A third-party plugin's source appears here once it is installed and enabled.
+4. **Source home** — the folder where the other tool keeps its history, on the machine running the server. Kiki reads only that folder.
+5. **Conversation.** A folder with many histories is listed one page at a time.
+6. **Preview.** It says whether the source could read the conversation at all, what is kept, what is not carried over, and where the result lands. **Complete read** means the whole conversation was read; **Sample** means part of it.
+7. **Import as session** or **Start import** — the one confirmation this flow asks for; the import runs under the preview you just read.
 
-An archive is written into the home of the Kiki server this window is connected to — **Imports into** names it. A session is created in the working directory you chose, on that same server. Neither ever lands in the source folder. A preview belongs to the server that made it, so after connecting to a different Kiki, preview the conversation again.
+An archive is written into the home of the Kiki server this window is connected to — **Imports into** names it — and a session is created in the working directory you chose on that same server. Neither ever lands in the source folder. A preview belongs to the server that produced it, so preview again after connecting to a different Kiki.
 
-Progress reports bytes read from the source, and a source the server has not measured yet shows an indeterminate line instead of a percentage. **Stop import** ends a running import, and an import that was stopped, failed, or interrupted by a restart keeps its place and offers **Continue import**. A finished import offers **Open session** when it became a session, and **Open archive** when it became an archive — never both, because it only ever writes one.
+Progress shows bytes read from the source; a source not yet measured shows an indeterminate line instead of a percentage. **Stop import** ends a running one, and an import that was stopped, failed or interrupted by a restart keeps its place and offers **Continue import**. A finished import offers **Open session** or **Open archive**, depending on what it became.
 
-### What a session keeps, and what it does not
+### What a session keeps
 
-A session import turns the conversation into context Kiki can continue from, which is what makes the migration painless, and it is not the same promise an archive makes. User and assistant text becomes the session's earlier turns. A tool call from the old conversation arrives as text saying it already happened — it is never re-run, and it grants no permission here. The other tool's system instructions, metadata, usage counts, approvals and running tasks are not installed as this Kiki's own state, and the preview lists that as a loss.
+A session import turns the conversation into context Kiki can continue from. User and assistant text becomes the session's earlier turns. A tool call from the old conversation arrives as text saying it already happened — it is never re-run and grants no permission here. The other tool's system instructions, metadata, usage counts, approvals and running tasks are not installed as this Kiki's state, and the preview lists each as a loss.
 
-Importing the same source conversation and revision into the same working directory reuses the existing session without replacing any continuation you have added in Kiki. The preview says so before you start. A changed revision imports as a new session, leaving the one you already had alone.
+Importing the same conversation and revision into the same working directory reuses the existing session without replacing anything you have added in Kiki, and the preview says so before you start. A changed revision imports as a new session, leaving the old one alone.
 
-Opening a migrated session needs a model like any other session: importing and reading do not, sending your next message does.
+A migrated session needs a model like any other: importing and reading do not, sending your next message does.
 
-### What an archive keeps, and what it does not
+### What an archive keeps
 
-An archive is history, not a live conversation: it cannot be continued, and opening it does not add its content to this session. It is also not a session of its own — it has no place in the session list and is read from the import page's own archive list, without a model. Records keep the roles they had in the other tool — user, assistant, system, tool call, metadata — but nothing is replayed. A tool call in the history stays a record, and text that was a system instruction to that tool is not executed here. Token counts the other tool recorded stay in the metadata and are not counted as usage on this machine.
+An archive is history, not a live conversation. It cannot be continued, opening it does not add its content to this session, and it is not a session of its own — it has no place in the session list and is read from the import page's archive list, without a model. Records keep the roles they had in the other tool — user, assistant, system, tool call, metadata — but nothing is replayed: a tool call stays a record, and text that was a system instruction to that other tool is not executed here. Token counts the other tool recorded stay in the metadata and are not counted as usage on this machine.
 
-The preview's loss list is the part of the feature that tells you what you are not getting, so read it before importing:
+The preview's loss list tells you what you are not getting, so read it before importing:
 
-- **Attachments are not copied.** An image, document, or other embedded file leaves a placeholder in the text and a loss entry with a count; the conversation around it stays readable.
-- **Unknown or omitted content is reported.** Claude Code and Codex can preserve unknown rows as metadata; the other rules report unsupported records or parts as counted losses. No rule turns an omitted part into a claim of complete preservation.
-- **Malformed input is not hidden.** Claude Code and Codex report unparseable rows in their losses. Pi, Grok, OpenCode and the bundled custom JSON reader reject malformed JSON or invalid required relationships rather than silently skipping them. A preview distinguishes a sample from a complete read.
+- **Attachments are not copied.** An image, document or other embedded file leaves a placeholder in the text and a counted loss entry; the conversation around it stays readable.
+- **Unknown or omitted content is reported.** Claude Code and Codex can preserve unknown rows as metadata; the other rules report unsupported records or parts as counted losses. Nothing is ever reported as preserved when it was omitted.
+- **Malformed input is not hidden.** Claude Code and Codex report unparseable rows in their losses, while Pi, Grok, OpenCode and the bundled custom JSON reader reject malformed JSON or invalid required relationships instead of skipping them silently. A preview distinguishes a sample from a complete read.
 
-Claude Code and Codex reject a source folder deeper than 20 levels and a single input line over 128 MiB. Pi, Grok, OpenCode and the bundled custom JSON reader limit each input file to 64 MiB; Grok's summary and update files each have that limit. A custom script controls its own input limits and must report them honestly.
+Claude Code and Codex reject a source folder deeper than 20 levels and a single input line over 128 MiB. Pi, Grok, OpenCode and the bundled custom JSON reader cap each input file at 64 MiB, and Grok's summary and update files have that limit each. A custom script sets its own limits and has to report them honestly.
 
-Kiki identifies a conversation by its source, source home, and the other tool's own id, and treats the revision seen in the preview as its content version. Importing the same revision again reuses the archive already there, and a changed conversation imports as a new revision of that archive. If the file changes between the preview and the import, the import fails and the existing archive is kept. Archives are found by title or source id — a lookup over what you have imported, not a full-text search.
+Kiki identifies a conversation by its source, source home and the other tool's own id, and treats the previewed revision as its content version. Importing the same revision again reuses the existing archive; a changed conversation becomes a new revision of it. If the file changes between preview and import, the import fails and the existing archive is kept. Archives are found by title or source id — a lookup over what you imported, not a full-text search.
 
-When the window is connected to a Kiki on another machine, that server's sources, imports, and archives are readable here, but starting, stopping, and continuing an import belong to the machine that owns the home.
+When this window is connected to a Kiki on another machine, that server's sources, imports and archives are readable here, but starting, stopping and continuing an import belongs to the machine that owns the home.
 
 ### Built-in formats and custom scripts
 
-Choose a folder containing the format below, not necessarily the other tool's entire home. For OpenCode, first export the session to a local JSON file.
+Choose a folder holding the format below — it need not be the other tool's whole home. For OpenCode, export the session to a local JSON file first.
 
 | Source | Supported input |
 | --- | --- |
@@ -623,13 +647,13 @@ For another format, select **Custom JSON / script** and set **Custom import scri
 customScript = "C:/imports/my-format.mjs"
 ```
 
-Leave the setting empty to use the bundled JSON reader. A script exports `discover(input, context)`, `probe(input, context)` and `parse(input, context)` using the [source method shapes below](#writing-an-import-source); it does not need a plugin manifest, `register(api)` or an SDK dependency. `context` supplies `signal` and `settings`. The standalone [custom JSON example](https://github.com/X-T-E-R/kiki/blob/main/packages/agent-core-v2/src/app/pluginImport/builtin/examples/custom-json.mjs) can be copied and adapted; it is also included with the built-in resources.
+Leave the setting empty to use the bundled JSON reader. A script exports `discover(input, context)`, `probe(input, context)` and `parse(input, context)` in the [shapes below](#writing-an-import-source); it needs no plugin manifest, `register(api)` or SDK dependency, and `context` supplies `signal` and `settings`. The standalone [custom JSON example](https://github.com/X-T-E-R/kiki/blob/main/packages/agent-core-v2/src/app/pluginImport/builtin/examples/custom-json.mjs) can be copied and adapted.
 
-Choose only code you trust: a custom script runs as Node.js with your account's permissions, not in a sandbox. Selecting the script is the explicit choice to run it; there is no additional installation or per-call approval. Changing its code or settings changes the preview revision, so preview again before importing. Kiki still checks the returned records and pages against the shared source contract.
+Choose code you trust: the script runs as Node.js with your account's permissions, not in a sandbox, and selecting it is the decision to run it — there is no further installation or per-call approval. Changing its code or settings changes the preview revision, so preview again before importing. Kiki still checks the records and pages it returns against the shared source contract.
 
 ### Writing an import source
 
-An import source is one of the contributions a plugin can declare, so it lives in the same manifest: list `x-kiki.sessionSources`, point `x-kiki.entry` at an ES module, and export `register(api)` from that module. The manifest declares what the plugin offers; the entry does the reading.
+A plugin declares an import source in its own manifest: list `x-kiki.sessionSources`, point `x-kiki.entry` at an ES module, and export `register(api)` from that module. The manifest declares what the plugin offers, the entry does the reading.
 
 ```json
 {
@@ -652,19 +676,19 @@ An import source is one of the contributions a plugin can declare, so it lives i
 }
 ```
 
-- `sessionSources` lists the sources this plugin registers. Each `id` matches `[a-z0-9][a-z0-9-]{0,63}` and must be unique within the plugin; `label` is what the source picker shows, and `formatVersion` names the format you read. A declared source the entry never registers fails when it is used instead of quietly doing nothing.
-- `entry` is required for a plugin with session sources and must resolve inside the plugin root. Kiki loads it as an ES module in its own Node.js process, so build your TypeScript down to the file you name here.
-- `permissions.fs: "outside"` is what an importer declares to read a folder outside the workspace, which is what a source home is. `engines.kiki` is required as soon as a plugin declares Kiki contributions.
+- `sessionSources` lists what the plugin registers. Each `id` matches `[a-z0-9][a-z0-9-]{0,63}` and is unique within the plugin, `label` is what the source picker shows, and `formatVersion` names the format you read. A declared source the entry never registers fails when used, rather than quietly doing nothing.
+- `entry` is required for a plugin with session sources and must resolve inside the plugin root. Kiki loads it as an ES module in its own Node.js process, so build your TypeScript down to the file you name.
+- `permissions.fs: "outside"` is how an importer declares that it reads a folder outside the workspace, which is what a source home is. `engines.kiki` is required as soon as a plugin declares Kiki contributions.
 
-The adapter offers three methods, and the definition passed to `registerSessionSource` must be the one the manifest declares:
+Register a definition that matches the manifest, and implement three methods:
 
 - `discover` lists the conversations a folder holds for one source home, paging with the `cursor` it is given.
-- `probe` reports one conversation: its content `revision`, title, `status` (`preserved`, `partial`, or `unsupported`), losses, total size, and canonical `sourceHome`. The archive identity includes that home, so return one spelling of a folder rather than a path the user could write two ways.
-- `parse` returns records in pages, with the `cursor` that continues the read. `context.signal` is aborted when the reader stops the import, when the plugin is unloaded, or when a page runs past its timeout, and `context.settings` carries the plugin's own settings.
+- `probe` reports one conversation: content `revision`, title, `status` (`preserved`, `partial` or `unsupported`), losses, total size, and canonical `sourceHome`. Archive identity includes that home, so return one spelling of the folder rather than a path a user could write two ways.
+- `parse` returns records in pages with the `cursor` that continues the read. `context.signal` aborts when the reader stops the import, the plugin unloads, or a page runs past its timeout, and `context.settings` carries the plugin's own settings.
 
-An honest source is worth more than a complete-looking one: give every loss a `code`, a `count`, and a `detail` instead of importing only the part you can read, and never treat history text as instructions to run. Each record holds at most 49,152 UTF-16 code units, so a longer message becomes several records that share an `id` and carry `part`, `textOffset`, and `textTotal`.
+Report every loss with a `code`, a `count` and a `detail` rather than importing only the part you can read, and never treat history text as instructions to run. Each record holds at most 49,152 UTF-16 code units, so a longer message becomes several records sharing an `id` and carrying `part`, `textOffset` and `textTotal`.
 
-The example below is a working source for a folder holding one `history.json`; the record, page, and probe shapes come from the public `@kiki/plugin-sdk` package, whose `session-import` entry point exports them.
+The example below is a working source for a folder holding one `history.json`; the record, page and probe shapes come from the public `@kiki/plugin-sdk` package's `session-import` entry point.
 
 ```ts
 import { createHash } from 'node:crypto';
@@ -748,12 +772,12 @@ export function register(api: PluginRegistrationApi): void {
 }
 ```
 
-## Security Model
+## What installing a plugin does and does not do
 
-Plugins have a limited loading scope. The following operations do not occur during installation or session startup:
+Installing a plugin copies its files and reads its manifest. None of these happens at install or session startup:
 
-- Unsupported runtime fields such as `tools`, `apps`, `inject`, and `configFile` are ignored rather than executed
-- All paths must remain within the plugin root directory after symbolic link resolution
-- MCP servers of enabled plugins start after `/reload` or in new sessions and can be disabled at any time from `/plugins`
-- Installing a plugin does not run its entry file: plugin code starts when you use the contribution, in a Node.js process holding your account's permissions ([not a sandbox](#installing-a-plugin-that-runs-code))
-- Broken manifests or unsafe paths appear in `/plugins info <id>` diagnostics and do not affect other sessions
+- Unsupported runtime fields such as `tools`, `apps`, `inject` and `configFile` are ignored rather than executed
+- Every path stays inside the plugin root after symbolic links are resolved
+- MCP servers start only after a `/reload` or in a new session, and can be disabled at any time from `/plugins`
+- The entry file does not run at install; plugin code starts when you use the contribution, in a Node.js process holding your account's permissions ([not a sandbox](#installing-a-plugin-that-runs-code))
+- A broken manifest or unsafe path shows up in `/plugins info <id>` diagnostics and affects no other session

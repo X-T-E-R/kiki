@@ -7,7 +7,7 @@ See https://github.com/X-T-E-R/kiki/blob/kiki/CONTRIBUTING.md for more.
 
 ## Related Issue
 
-<!-- Link the issue this feature came from. If there is no issue, explain the problem in the next section instead. -->
+<!-- Link the issue this came from. If there is no issue, explain the problem in the next section instead. -->
 
 Resolve #(issue_number)
 
@@ -21,28 +21,28 @@ Resolve #(issue_number)
 
 ## Documentation impact
 
-<!-- Select None alone, or select every affected category. This declaration routes future review; it is not a semantic CI gate. -->
+<!-- Tick None on its own, or tick every category that applies. -->
 
-- [ ] None — no generated, maintainer, or user-facing contract changed. Do not select another category.
-- [ ] Generated — one or more checked-in projections changed.
-- [ ] Maintainer — one or more owner, extension, recovery, verification, or stable internal views changed.
-- [ ] User — one or more supported behavior, configuration, command, compatibility, migration, or reader-decision views changed.
+- [ ] None — nothing a reader can observe changed.
+- [ ] Generated — a checked-in generated file (config/state/wire manifest) changed.
+- [ ] Maintainer — an owner, recovery, or internal contract doc changed.
+- [ ] User — a behavior, configuration, command, compatibility, or migration doc changed.
 
 ## Documentation completion
 
-<!-- Select exactly one. None pairs with Completed. Generated work must be completed in this candidate and cannot appear in a deferred record. Deferred requires at least one Maintainer or User category. -->
+<!-- Tick exactly one. Tick None in the section above to tick Completed. -->
 
-- [ ] Completed — all selected impact is complete for this candidate, or impact is None.
-- [ ] Deferred — generated work is complete; every remaining maintainer or user view is recorded below.
+- [ ] Completed — the docs for this change are in it, or the change is None.
+- [ ] Deferred — this PR is not the release that makes the change visible; describe what is still due.
 
-<!-- Repeat this line for every deferred view. Retain all applicable categories and use the earliest boundary: stable reuse/owner handoff for Maintainer, or default-on/public release for User. -->
+<!-- For a deferred change: what is still needed, and the release or milestone that must carry it. -->
 
-- Categories and view: <!-- Maintainer and/or User plus exact path/heading --> | Owner: <!-- accountable owner --> | Target boundary: <!-- earliest applicable no-later-than boundary -->
+- Outstanding: <!-- exact doc path/section, and the release or milestone it lands in -->
 
 ## Checklist
 
 - [ ] I have read the [CONTRIBUTING](https://github.com/X-T-E-R/kiki/blob/kiki/CONTRIBUTING.md) document.
 - [ ] I have linked a related issue, or explained the problem above.
-- [ ] I have added tests that prove my feature works.
-- [ ] Ran `gen-changesets` skill, or this PR needs no changeset.
-- [ ] I classified the documentation impact above and completed or deferred the due work for the stated boundary.
+- [ ] I have added tests that prove my change works.
+- [ ] I added a changeset, or this change needs none.
+- [ ] I have updated the docs for this change, or said below why it is not needed yet.

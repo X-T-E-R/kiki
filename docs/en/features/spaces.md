@@ -16,7 +16,11 @@ Credentials are the decision each subspace makes. **Shared** means the subspace 
 
 Change the credential scope on the subspace's own card in **Settings → Spaces**. See [Settings pages](/en/guides/settings) for the other sections of that dialog, and [Every layer is yours](/en/features/freedom) for what those credentials reach.
 
-![The spaces list: the main space beside two registered spaces, one sharing accounts and one isolated.](/shots/spaces/spaces-spaces-list.en.png)
+![The spaces list: the main space beside two registered spaces, one sharing accounts and one isolated.](/shots/spaces/ps-20261005-spaces-list.en.png)
+
+![One space's own settings sheet, where each row says whether it follows the main space or is set here, with a Change action per row.](/shots/spaces/ps-20261005-spaces-detail.en.png)
+
+![Choosing a space's credential scope: share the main space's accounts and keys, or keep this space's separate.](/shots/spaces/ps-20261005-spaces-credentials.en.png)
 
 ## Remote connections: one Kiki, pointed at another
 
@@ -28,7 +32,9 @@ The command side plans before it acts. `kiki connections ... ssh plan` only quer
 
 See [`kiki connections`](/en/reference/command#kiki-connections) and [`kiki bridges`](/en/reference/command#kiki-bridges) for the command reference behind these settings.
 
-![The remote connections list: one row per peer Kiki, each with its own state and the moment its last reading was taken.](/shots/spaces/spaces-remote-connections.en.png)
+![The remote connections list: one row per peer Kiki, each with its own state and the moment its last reading was taken.](/shots/spaces/ps-20261005-spaces-remote.en.png)
+
+![This Kiki's identity string, and the gate deciding which other Kikis may connect to it — off by default, with each allowed one listed and revocable.](/shots/spaces/ps-20261005-spaces-inbound.en.png)
 
 ## Thread bridges: talk without browsing
 
@@ -50,13 +56,15 @@ Web access and remote connections are different objects. A remote Kiki is anothe
 
 See [Use Kiki in a browser](/en/server/local-server#use-kiki-in-a-browser).
 
-![Web access turned on for this Kiki, with the browsers already signed in listed beneath it.](/shots/spaces/spaces-web-access.en.png)
+![Web access turned on for this Kiki, with the browsers already signed in listed beneath it.](/shots/spaces/ps-20261005-spaces-web-access.en.png)
 
 ## In-session SSH
 
 A session can hold SSH hosts. Use the input box's **+** menu to add one, and the **Session SSH** control above the input box lists the joined hosts, takes a host away on **X**, and reopens the same list to add more. A joined host is a resource of that session, not something each message carries — so the timeline does not fill with host bubbles, and removing a host removes it from the session rather than from your machine.
 
 Adding a host makes it available to the session; it does not connect to it. In a new session the control reads **SSH to join**, and the hosts you selected are joined to the created session before its first message is sent.
+
+![The Session SSH panel above the input box, listing the hosts joined to this session and the ones still available to add.](/shots/spaces/ps-20261005-spaces-session-ssh.en.png)
 
 See [Interface overview](/en/guides/interface#input-box) for the Session SSH control and the send-timing menu beside it.
 

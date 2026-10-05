@@ -26,7 +26,7 @@ The Kiki desktop app exposes preferences in the **Settings** dialog and activity
 
 ## Connections
 
-**Settings → Models & providers → Connections** (`/settings/ai?tab=providers`) is one list. Every way Kiki reaches a model is a **connection** — an account you sign in to, a hosted API you hold a key for, or a server on this machine — and each is one row that says how it is reached, what it carries, and whether it works. How a connection authenticates is part of the connection, not a separate list to keep in step with it.
+**Settings → Models & providers → Connections** (`/settings/ai?tab=providers`) is one list. Every way Kiki reaches a model is a **connection** — an account you sign in to, a hosted API you hold a key for, or a server on this machine — and each row says how it is reached, what it carries, and whether it works. How it authenticates is part of the connection, not a separate list to keep in step.
 
 **Add connection** is the single way in, and it asks one question — which service, by what means:
 
@@ -36,12 +36,12 @@ The Kiki desktop app exposes preferences in the **Settings** dialog and activity
 
 An account connection is written by the sign-in, so its row has no protocol, address or key to fill in. Expand it to see which account is behind it, what the vendor says it has left, and the action that changes the sign-in:
 
-- **Connected** — the credential works. Kiki renews it on its own. **Sign out** ends that sign-in in Kiki and removes the models it provisioned; it does not sign you out at the provider, and it does not touch the provider's own record of your account.
+- **Connected** — the credential works, and Kiki renews it on its own. **Sign out** ends that sign-in inside Kiki and removes the models it added; at the provider you stay signed in.
 - **Sign-in expired** — the provider no longer accepts it. **Sign in again** replaces it on this same connection; nothing is added to the list.
-- **Sign-in didn't finish** — the flow ended without a credential: you declined it, the code expired, or it failed. One line says which, and the connection is left as the server reports it rather than as a half-made one.
+- **Sign-in didn't finish** — the flow ended without a credential: you declined it, the code expired, or it failed. One line says which, and the row is left as the server reports it.
 - **Waiting for you** — a sign-in is running, with the code, **Open verification page**, how long it stays valid, and **Cancel sign-in**.
 
-A sign-in that completes adds that account's models to the catalog on the server. **Available models** is the authority on what you can use — a row here reports the connection and its sign-in, not a promise about which models are selectable right now.
+A completed sign-in adds that account's models to the catalog on the server. **Available models** is where you check what you can actually use — a row here reports the connection and its sign-in state.
 
 Signing out here affects Kiki only. The provider keeps its own record of your subscription, and signing in again reconnects the same account.
 
@@ -49,27 +49,31 @@ Signing out here affects Kiki only. The provider keeps its own record of your su
 
 For ChatGPT (Codex) and Grok Build, a connection can use the sign-in their own app already holds on this machine instead of a new one. Kiki reuses it and renews it when it runs out; it does not copy the credential, does not start the other app, and signing in or out here does not change anything there.
 
-"This machine" is the machine Kiki's **server** runs on. That is usually the one you are looking at, and when it is not, **Look somewhere else on the server** takes a directory to read from instead.
+"This machine" is the machine Kiki's **server** runs on. That is usually the one you are looking at; when it is not, **Look somewhere else on the server** takes a directory to read from instead.
 
-The order is deliberate. **Check this machine** reports which account is on the other side and where it is kept — a file, the system keyring, or an encrypted store. Only then is **Use this sign-in** offered, and it carries the account it just showed you, so a credential that was replaced in between is refused rather than adopted silently. A credential due for renewal is not a problem: it is offered, and Kiki renews it.
+**Check this machine** reports which account is on the other side and where it is kept — a file, the system keyring, or an encrypted store — and **Use this sign-in** then attaches that exact account. A credential that was replaced in between is refused rather than adopted, and one that is due for renewal is used and renewed.
 
-When the machine cannot be used, the page says why in terms you can act on — no account for that service, signed out, stored somewhere unreadable, or belonging to a different account — and offers nothing to attach.
+If the machine cannot be used, the page says why in terms you can act on — no account for that service, signed out, stored somewhere unreadable, or belonging to a different account — and offers nothing to attach.
 
 **Stop using it** lets go of the machine's sign-in for this connection. It removes Kiki's reference and the models it provisioned; the sign-in itself is still there, and the other app is unaffected.
 
 ## About
 
-**Settings → About** shows the current version and the update channel. Choose Stable or Beta and run a manual update check; when an update is available, Kiki shows its version and release notes before asking for confirmation. See [Kiki desktop](../getting-started/desktop-app.md#update).
+**Settings → About** shows the current version and owns the update settings. **Update channel** picks Stable or Beta, and every check — automatic or manual — reads the channel from here. **Check for updates automatically** turns the daily check on or off; with it off, only **Check for updates** checks. The **When an update is found** setting applies: **Notify me** shows a dialog with the version and a short summary and waits for you, while **Download and install** starts the install without that dialog. Either way, Kiki asks before closing spaces that still have running work.
+
+The dialog's three choices are saved rather than repeated each time: **Remind me tomorrow** comes back 24 hours later, **Skip this version** silences that version on that channel only, and a newer version still comes either way. Before installing, Kiki re-checks the channel and the version and refuses an offer that has changed underneath you. If a choice cannot be saved, the dialog stays open and asks you to try again. See [Kiki desktop](../getting-started/desktop-app.md#update).
 
 ## Agents
 
-**Settings → Agents** selects a workspace to inspect its default main profile (the agent's configuration file), effective source, and subagent capabilities. File-backed profiles can be edited at their displayed source. **Settings → Agents → Prompt** edits the `[prompt]` prompt-field overrides section in `config.toml`; the card is collapsed by default — expand it before editing. See [Agents and subagents](../customization/agents.md#capability-visibility) and [Prompt field overrides](../customization/prompt-fields.md).
+**Settings → Agents** picks a workspace and shows its default main profile (the agent's configuration file), the source in effect, and the subagent capabilities. File-backed profiles can be edited at the source shown. **Settings → Agents → Prompt** edits the `[prompt]` prompt-field overrides section in `config.toml`; expand the card first. See [Agents and subagents](../customization/agents.md#capability-visibility) and [Prompt field overrides](../customization/prompt-fields.md).
 
-Long-term memory maintenance reminders help retain changes useful to future tasks; no meaningful change calls for no write. To disable only the periodic reminders while keeping new standing-instruction and pre-compaction checks, set `memory_maintenance = false` in `config.toml`. This does not disable memory tools, approval, or task notes. See [Continuity reminder settings](../configuration/config-files.md#continuity-reminder-settings) for the section and prerequisites.
+The periodic long-term memory reminders run on their own schedule. To stop just those while keeping the new standing-instruction and pre-compaction checks, set `memory_maintenance = false` in `config.toml`; memory tools, approval and task notes stay available. See [Continuity reminder settings](../configuration/config-files.md#continuity-reminder-settings).
 
 ## Search & retrieval
 
 **Settings → Search & retrieval → Overview & source** inspects the built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools — showing which configuration source is in effect and whether the server reuses the local search configuration. The equivalent configuration lives in `config.toml` — see [Configuration files](../configuration/config-files.md#nb-search).
+
+The same section's **Advanced & diagnostics** tab carries a **Full-text index** card for searching your own session history. The first index is built in the background, newest sessions first, and the card counts what is done so far. If the index stops for a reason you can fix, that card is where **Restart the indexer** appears; when indexing is off or unavailable by configuration, there is nothing to restart and the reason is stated instead.
 
 ## Browser control
 
@@ -82,19 +86,21 @@ A connection has a fixed id, a display name, and one of two styles, which point 
 
 The driver, and any browser Kiki starts, run on the Kiki server — not on the device showing this window. **Check components** starts the managed driver and reads its session and tab state; **Check connection** handshakes with the CDP endpoint and lists its targets. Neither opens a page. **Start browser** and **Attach browser** are the separate actions that connect. Saving writes configuration only and ends that connection's current running session first. **Disconnect** releases the connection, and what happens to the browser depends on who started it: a borrowed CDP browser stays, an instance Kiki started is closed.
 
+**Preparing the components is a step of its own**, and it comes first. **Prepare browser components** reports the managed driver and an independent Chrome as **Ready** or **Not prepared**; **Install components** downloads and verifies the ones that are missing, and **Recheck** reads the state again. On a host that cannot install them, automatic setup is not offered and you point the connection at a driver and a browser you already have. The page keeps the order visible: prepare the components, add and save the connection below, then check it and connect. The components are stored under `<Kiki home>/browser/resources` on the machine that runs them.
+
 Agents use these connections through the [browser tools](../reference/tools.md#browser-tools), naming a connection by its id — never by display name. **Default connection** applies to sessions created afterwards; turning a connection off never swaps in another one.
 
-Running a browser is a development-candidate feature and is off by default. Turn on `native_browser` under **Settings → Developer → Experimental**, or set it under [`[experimental]`](../configuration/config-files.md#experimental), before connecting. With it off, the page still reads and edits saved connections, but connecting is refused and agents get no browser tools. The connections themselves are stored in [`[browser_control]`](../configuration/config-files.md#browser-control).
+Browser control is off by default. Turn on `native_browser` under **Settings → Developer → Experimental**, or set it under [`[experimental]`](../configuration/config-files.md#experimental), before connecting. While it is off, the page still reads and edits saved connections, but connecting is refused and agents get no browser tools. The connections themselves live in [`[browser_control]`](../configuration/config-files.md#browser-control).
 
 ## Computer control
 
 **Settings → Computer control** drives the desktop of the machine running the Kiki server, through a pinned open-source executor. Nothing is installed or configured by default, so the page starts empty.
 
-**Install executor** downloads and verifies that pinned release, then registers a global MCP connection named `kiki-computer` (the driver's path plus `mcp` arguments). **Installed** means the executor files verified — not that anything is being controlled; desktop access is a separate check that the install does not run. The page names the machine that would be driven: **Kiki server** is the connected server, so with a remote or SSH connection the desktop belongs to that host's own graphical session.
+**Install executor** downloads and verifies that release, then registers a global MCP connection named `kiki-computer` (the driver's path plus `mcp` arguments). **Installed** means the files verified — it does not check that anything can actually be controlled, and it does not touch the desktop. The page names the machine that would be driven: **Kiki server** is the connected server, so over a remote or SSH connection the desktop is that host's own graphical session.
 
-The agent drives it with the executor's own tools through the existing MCP mechanism and permissions; Kiki adds no second desktop tool set — see [MCP](../server/mcp.md). The pinned Windows executor observes the primary display and has no display selection of its own. On macOS the direct connection carries desktop permissions in the calling process, so grant them where the driver reports them missing.
+The agent drives it with the executor's own tools, through the existing MCP mechanism and permissions — see [MCP](../server/mcp.md). The pinned Windows executor watches the primary display and cannot pick a different one. On macOS the desktop permission travels in the calling process, so grant it where the driver reports it missing.
 
-**Stop control** ends the cua processes this service started, and disables an editable connection's configuration at the same time. It does not mean nobody controls that desktop: another client or another Kiki instance may still be driving it.
+**Stop control** ends the cua processes this service started and disables an editable connection's configuration. Another client or another Kiki instance may still be driving that desktop.
 
 ## Composer
 
@@ -108,15 +114,13 @@ Open **Dispatch capabilities** — next to the new-session workspace selector, o
 
 ### Effective prompts
 
-In a session, open the header's **⋯ → Effective prompts**. The drawer opens independently of the right rail, including on narrow screens. It shows the current agent identity, profile, model and executor, prompt channels and source order, field override states and reasons, file locations, and cognition-anchor scope. The latest actual request is separate evidence: before any request exists, the details do not claim that the displayed composition has been sent.
+In a session, open the header's **⋯ → Effective prompts**. The drawer opens independently of the right rail, including on narrow screens, and shows the current agent identity, profile, model and executor, the prompt channels and their source order, field overrides with the reason for each, file locations, and the cognition-anchor scope.
 
-The binding and disk revisions help identify changed source files. When you want to reload the session's prompt sources, use [Rebuild context](../customization/agents.md#rebuilding-a-session-context) after the session becomes idle. Ordinary details read the current identity; **Check all branches** is a separate, explicit action to inspect configured common, main-agent and independent-agent prompt files. It does not activate those other branches or switch the current identity.
+The binding and disk revisions help you spot which source files changed. To actually reload the session's prompt sources, use [Rebuild context](../customization/agents.md#rebuilding-a-session-context) once the session is idle. **Check all branches** is a separate action that inspects the configured common, main-agent and independent-agent prompt files without switching the current identity.
 
 ### Cockpit
 
-On desktop-width screens, use **Standard / Cockpit** in the right-panel header. Cockpit temporarily widens that panel and takes over the preview space, while the conversation and composer stay in the main column.
-
-Choose **Standard** or **Exit cockpit** to restore the previous preview content, tabs, draft and width. Exiting cockpit leaves the standard right panel open; hiding that panel is a separate action. Opening a file, agent detail or skill preview also exits cockpit and restores the preview workspace. The temporary cockpit width does not replace your saved standard-panel width.
+On desktop-width screens, **Standard / Cockpit** in the right-panel header switches the panel between its normal width and a wide one that takes over the preview space. The conversation and composer stay in the main column either way, and **Standard** or **Exit cockpit** puts the previous preview content, tabs, draft and width back. Opening a file, an agent detail or a skill preview also leaves cockpit.
 
 ## Usage
 
@@ -126,14 +130,16 @@ Open **Usage** in the sidebar (`/usage`). It has three tabs and opens **History*
 - **Live:** running and queued native-request counts across this service. Expand **Request details** for the breakdown by model, provider, and role, and waiting rows with blocking rule IDs and elapsed queue time. If the connection fails, the last counts are marked stale. On the same tab, **Concurrency limits** lets you add or edit rules, choose a model or provider target, and set a shared or per-session cap. The switch pauses a rule without deleting it. Saving applies the rule to new and queued requests without stopping active streams.
 - **External sync:** destinations that receive this server's own usage. Three kinds are available: **vibecafe.ai**, **Kiki webhook**, and **Script**. Only the model, the UTC half-hour, the four token counts, quality and cost go out — never a prompt, answer, title, workspace name or path.
 
+  A **vibecafe.ai** destination signs in from the page itself: press **Sign in to VibeCafe**, approve it in your browser with the code it shows, and the page confirms the connection on its own. There is no authorization code to copy, and no address, client id, or key to fill in — the destination is `https://vibecafe.ai`. A custom address, or a key you supply yourself, is the advanced path instead.
+
 Existing `/usage?panel=limits` links open Live and focus the concurrency-rule section; there is no separate Limits tab.
 
-External sync stays off until the server enables the `usage_export` flag. A saved destination sends nothing until you preview the exact payload and agree once; widening the range, changing the endpoint, or a credential change that cannot be shown to be the same identity asks for consent again, while shrinking the range or changing the interval does not. Pausing a destination keeps its queue; removing it is a separate action that asks whether to discard the queued buckets; asking the service to delete the usage it already holds is a third one. See [`kiki usage-export`](../reference/command.md#kiki-usage-export) for the command-side equivalent.
+External sync stays off until the server enables the `usage_export` flag. Signing in does not change that: an approved credential is stored, the destination stays **disabled**, and no consent has been given — so the order still holds, choose a destination, preview the exact payload, agree once, then enable. A destination that has not been agreed to sends nothing. Widening the range, changing the endpoint, or changing a credential to a different identity asks again, while shrinking the range or changing the interval does not. Pausing keeps the queue, removing asks whether to discard the queued batches, and asking the service to delete what it already holds is a separate action. See [`kiki usage-export`](../reference/command.md#kiki-usage-export) for the command-side equivalent.
 
-A **Script** destination runs your command as your own OS user with your ordinary permissions — it can read files and use the network on its own, and this is not a sandbox. Kiki writes only the content-free batch to its stdin and reads a receipt from its output. When a local vibecafe collector already reports this home to the same account, the destination offers a handoff: one future UTC boundary splits the timeline, the collector keeps everything before it and Kiki everything from it onward, and a single agreement covers both. Kiki does not rewrite the collector's state file, read its key, or stop its service.
+A **Script** destination runs your command as your own OS user with your ordinary permissions — it can read files and reach the network on its own, and this is not a sandbox. Kiki writes only the content-free batch to its stdin and reads a receipt from its output.
 
-For a request that appears stuck, open **Live → Request details** before changing a limit. A queued row names the local blocking rule; a provider HTTP 429 is diagnosed from the provider error instead. Local queue-full, timeout, and rejection errors need different adjustments. See [`request_governance`](../configuration/config-files.md#request-governance) for the fields, copyable examples, and error codes. External executors are unmanaged; these counts are not their activity or the provider account's total usage.
+For a request that looks stuck, open **Live → Request details** before changing a limit. A queued row names the local rule blocking it, and a provider HTTP 429 is diagnosed from the provider's own error — a full local queue, a timeout and a rejection each need a different fix. [`request_governance`](../configuration/config-files.md#request-governance) has the fields, examples and error codes. External executors are not counted here.
 
 ## CLI counterpart
 
-The TUI does not use the **Settings** dialog: client preferences in the terminal (theme, editor, and so on) are configured through `tui.toml` and the interactive commands `/config`, `/theme`, and `/editor`; see [`tui.toml`](../configuration/config-files.md#tui-toml). Agent and runtime settings live in `config.toml`.
+The TUI has no **Settings** dialog. Terminal-side preferences (theme, editor, and the rest) are configured in `tui.toml` or with the interactive `/config`, `/theme` and `/editor` commands — see [`tui.toml`](../configuration/config-files.md#tui-toml). Agent and runtime settings live in `config.toml`.

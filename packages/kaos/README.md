@@ -1,10 +1,15 @@
 # @kiki/kaos
 
-Execution environment abstraction used by Kiki.
+Execution environment abstractions — process launching, filesystem access, and
+the surrounding runtime seams that the agent engine talks to instead of Node
+built-ins.
 
-Part of the [Kiki](https://github.com/X-T-E-R/kiki) monorepo.
+This is a workspace package. It is marked `private: true`, so it is not
+published to npm as its own release; the guidance here assumes a repository
+checkout rather than an installed dependency.
 
-See the main repository for documentation, issues, and contribution guidelines.
+Its instructions for contributors live in
+[AGENTS.md](../agent-core-v2/AGENTS.md) alongside the engine that consumes it.
 
 ## License
 

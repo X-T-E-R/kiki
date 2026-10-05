@@ -1,12 +1,12 @@
 # Prompt field overrides
 
-Prompt field overrides replace named text units in the built-in prompt — the system sections, tool descriptions, and delegation notices — without forking an agent profile. Field values replace; they do not append, prepend, or wrap.
+Prompt field overrides replace named pieces of the built-in prompt — system sections, tool descriptions, delegation notices — without forking a profile. A field value replaces; it does not append, prepend or wrap.
 
-Kiki ships a read-only surface for discovering and validating these fields: `kiki prompt-fields`. The full field registry, override format, precedence, and validation rules are owned by the [Configuration files: `prompt`](../configuration/config-files.md#prompt) reference — this page shows how the pieces fit together.
+`kiki prompt-fields` is a read-only way to discover and check these fields. The registry, format, precedence and validation rules live in [Configuration files: `prompt`](../configuration/config-files.md#prompt); this page shows how the pieces fit together.
 
 ## What you can override
 
-Useful built-in field ids include `system.language`, `system.reply_style`, `system.coding`, `system.shared`, `tool.web-search.description`, `tool.web-search.guidance`, `delegation.sub.notice`, and `delegation.independent.notice`. System fields replace sections of the built-in prompt; `system.shared` is the only shared outer addition and is appended once when non-empty. A tool `description` replaces its static description; a tool `guidance` is appended under the existing `User-configured guidance:` label.
+Useful built-in field ids include `system.language`, `system.reply_style`, `system.coding`, `system.shared`, `tool.web-search.description`, `tool.web-search.guidance`, `delegation.sub.notice` and `delegation.independent.notice`. System fields replace sections of the built-in prompt, except `system.shared`, which is the one shared outer addition and is appended once when non-empty. A tool `description` replaces its static description; a tool `guidance` is appended under the existing `User-configured guidance:` label.
 
 ## Where overrides live
 
@@ -32,13 +32,13 @@ kiki prompt-fields validate --config ./candidate.toml --home ~/.kiki   # validat
 kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast --delegation-position sub
 ```
 
-`explain` prints a field's `effective`, `shadowed`, or `inactive` status, its effective value, and the complete source chain for the selected context. Select the context with `--agent`, `--model`, `--executor`, and `--delegation-position <main|sub|independent>`; `--config <path>` inspects another config file and `--home <dir>` selects the Kiki home used for `SYSTEM.md`, agent discovery, and relative override files.
+`explain` prints a field's `effective`, `shadowed` or `inactive` status, its effective value, and the whole source chain for the context you select with `--agent`, `--model`, `--executor` and `--delegation-position <main|sub|independent>`. `--config <path>` inspects another config file, and `--home <dir>` picks the Kiki home used for `SYSTEM.md`, agent discovery and relative override files.
 
-The removed `prompt.shared` and `prompt.tools` keys have moved into fields under `[prompt.overrides]`; migrate old entries instead of restoring those keys — see [prompt field precedence](../configuration/overrides.md#prompt-field-precedence).
+If your config still carries the old `prompt.shared` and `prompt.tools` keys, move those entries into fields under `[prompt.overrides]` rather than restoring the keys — see [prompt field precedence](../configuration/overrides.md#prompt-field-precedence).
 
 ## Desktop settings entry point
 
-In the desktop GUI, open **Settings → Agents → Prompt** to edit this section — see [Settings pages](../guides/settings.md#agents). The card is collapsed by default.
+In the desktop app, **Settings → Agents → Prompt** edits this section — see [Settings pages](../guides/settings.md#agents). The card starts collapsed.
 
 ## Next steps
 

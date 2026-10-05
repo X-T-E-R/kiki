@@ -1,12 +1,12 @@
 # 提示词字段与覆写
 
-提示词字段覆写（Prompt field overrides）用于替换内置提示词中的具名文本单元——系统段、工具描述和委托通知——而无需分叉 agent profile。字段值是替换，不是追加、前置或包裹。
+提示词字段覆写用于替换内置提示词中的具名片段——系统段、工具描述、委托通知——而无需分叉 profile。字段值是替换，不是追加、前置或包裹。
 
-Kiki 提供只读界面来发现和校验这些字段：`kiki prompt-fields`。完整的字段注册表、覆写格式、优先级与校验规则由[配置文件：`prompt`](../configuration/config-files.md#prompt) 一节承载——本页说明这些部分如何配合。
+`kiki prompt-fields` 是发现和检查这些字段的只读命令。注册表、格式、优先级与校验规则在[配置文件：`prompt`](../configuration/config-files.md#prompt)，本页说明各部分如何配合。
 
 ## 可以覆写什么
 
-常用的内置字段 id 包括 `system.language`、`system.reply_style`、`system.coding`、`system.shared`、`tool.web-search.description`、`tool.web-search.guidance`、`delegation.sub.notice` 和 `delegation.independent.notice`。系统字段替换内置提示词的对应段；`system.shared` 是唯一共享的外加段，非空时追加一次。工具 `description` 替换其静态描述；工具 `guidance` 追加在已有的 `User-configured guidance:` 标签之下。
+常用的内置字段 id 包括 `system.language`、`system.reply_style`、`system.coding`、`system.shared`、`tool.web-search.description`、`tool.web-search.guidance`、`delegation.sub.notice` 和 `delegation.independent.notice`。系统字段替换内置提示词的对应段，只有 `system.shared` 是共享的外加段，非空时追加一次。工具 `description` 替换其静态描述；工具 `guidance` 追加在已有的 `User-configured guidance:` 标签之下。
 
 ## 覆写写在哪里
 
@@ -34,11 +34,11 @@ kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast -
 
 `explain` 打印字段的 `effective`、`shadowed` 或 `inactive` 状态、当前生效值，以及所选上下文下的完整来源链。用 `--agent`、`--model`、`--executor` 和 `--delegation-position <main|sub|independent>` 选择上下文；`--config <path>` 检查其他配置文件，`--home <dir>` 选择用于 `SYSTEM.md`、agent 发现和相对覆写文件的 Kiki home。
 
-已移除的 `prompt.shared` 和 `prompt.tools` 键已迁入 `[prompt.overrides]` 下的字段；请迁移旧条目，不要恢复这些键——见[提示词字段优先级](../configuration/overrides.md#提示词字段优先级)。
+配置里如果还留着旧的 `prompt.shared` 和 `prompt.tools` 键，把这些条目迁到 `[prompt.overrides]` 下的字段，不要恢复旧键——见[提示词字段优先级](../configuration/overrides.md#提示词字段优先级)。
 
 ## 桌面版设置入口
 
-在桌面 GUI 中，打开**设置 → 智能体 → 提示词字段**编辑此段——见[设置页导览](../guides/settings.md#智能体)。卡片默认折叠。
+在桌面版中，**设置 → 智能体 → 提示词字段**可以编辑这一段——见[设置页导览](../guides/settings.md#智能体)。卡片默认折叠。
 
 ## 下一步
 

@@ -1,8 +1,9 @@
 # Settings controls and save conventions
 
-For anyone adding a settings card in `apps/kiki-gui`. Everything below lives in
-`src/components/controls.tsx` and `src/components/settings/{fields,SettingsPrimitives,useInstantSave,SectionCard}.tsx`.
-Do not build a parallel version of any of these.
+How a settings card should behave in `apps/kiki-gui`. These components already
+exist in `src/components/controls.tsx` and
+`src/components/settings/{fields,SettingsPrimitives,useInstantSave,SectionCard}.tsx`
+— use them rather than writing a parallel version.
 
 ## 1. One save model per card
 
@@ -13,13 +14,12 @@ Pick by what the card edits, not by taste.
 | Independent single values: switch, choice, one number | **Instant apply** (default) | `useInstantSave()` + `SaveStatus` next to the control + `FeedbackLine feedback={save.error}` |
 | A group whose values only make sense together, JSON/textarea, list editors, create forms | **Draft** | `SettingsDraftFooter` (Save · Discard · status) with `saved` from `useSavedTick()` |
 
-Rules:
-- Never add a per-field Save button ("Save budget", "Save timeout"). A number field in an instant card is `CommitInput`: saves on blur/Enter, Escape reverts, validation message under the field.
+- No per-field Save button ("Save budget", "Save timeout"). A number field in an instant card is `CommitInput`: saves on blur/Enter, Escape reverts, validation message under the field.
 - Never mix modes inside one card. If a card has one textarea plus switches, the whole card is Draft.
-- Success feedback is `SavedTick` / `SaveStatus` ("✓ Saved", fades after 2.5s). Do **not** put success text in a `FeedbackLine`; that line is for errors and for results that carry information (“Imported 3 packs”, “Removed 2 worktrees”).
+- Success feedback is `SavedTick` / `SaveStatus` ("✓ Saved", fades after 2.5s). Do **not** put success text in a `FeedbackLine`; that line is for errors and for results that carry information ("Imported 3 packs", "Removed 2 worktrees").
 - Errors: `FeedbackLine` under the control or footer, reading font, danger color. Keep server wording via `errorText(locale, error)`.
 - Toasts (`pushToast`) only for results of actions that navigate away or finish in the background. Not for settings saves.
-- Delayed effect: `SectionCard effect="restart" | "newSessions"` on the card heading, once. Do not repeat “applies immediately” — immediate is the default and is never written down.
+- Delayed effect: `SectionCard effect="restart" | "newSessions"` on the card heading, once. Don't write "applies immediately" — immediate is the default.
 
 ```tsx
 const save = useInstantSave();

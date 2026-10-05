@@ -10,7 +10,7 @@ title: 扩展
 
 插件是打包单位。一个插件可以贡献 Skill、智能体、MCP 服务器、hooks、命令、工具和沙箱面板，你可以在**能力**页浏览、安装和配置。带 `.claude-plugin/plugin.json` 清单的 Claude Code 插件也能装，还可以让 Kiki 指向你自己的市场 JSON。
 
-官方市场由 Kimi 维护，目前有三条：**Kimi Datasource**（用自然语言查市场行情、宏观指标、企业注册、学术文献和法律法规）、**Kimi Browser Extension**（让 AI 驱动你自己的浏览器）、**Kimi Computer Use**（让 AI 操作你的桌面应用）。另外两个能力是独立插件，不属于这三条：**Kiki Documents** 把本地 PDF、Office、HTML 或文本文件转成 `Read` 和 `Grep` 能用的 Markdown；**Kiki Notion** 是面向 Notion 官方托管 MCP 服务的配置和工作流。安装插件本身不会执行它的 hooks——只有匹配的事件发生、且插件处于启用状态时才会触发。见[插件](/zh/customization/plugins)。
+官方市场由 Kimi 维护，目前有三条：**Kimi Datasource**（用自然语言查市场行情、宏观指标、企业注册、学术文献和法律法规）、**Kimi Browser Extension**（让 AI 驱动你自己的浏览器）、**Kimi Computer Use**（让 AI 操作你的桌面应用）。另外两个能力是独立插件，不属于这三条：**Kiki Extract** 把本地 PDF、Office、HTML 或文本文件转成 `Read` 和 `Grep` 能用的 Markdown；**Kiki Notion** 是面向 Notion 官方托管 MCP 服务的配置和工作流。提取文件是一次读取动作——让已有文档变得可被搜索，它既不创建也不编辑 Office 文档。安装插件本身不会执行它的 hooks——只有匹配的事件发生、且插件处于启用状态时才会触发。见[插件](/zh/customization/plugins)。
 
 媒体生成是另一项独立的能力：媒体插件贡献一到多个图片、视频或语音的**来源**，在**能力 → 插件 → 媒体来源**里配置。生成功能**默认关闭**，需要显式打开；这是一项按需启用的能力，不是默认行为。
 
@@ -29,6 +29,10 @@ MCP 工具到达智能体时与内置工具完全一样，走同一套审批模�
 ## 搜索与抓取
 
 `WebSearch` 和 `FetchURL` 由一个可查看的搜索与抓取模块支撑。**设置 → 搜索与抓取 → 概览与来源**显示当前生效的是哪个配置来源、服务端是否复用了你本机的搜索配置；具名通道的就绪状态也能在那里看到。搜索跑在具名通道上——其中一些（比如 GitHub 仓库搜索）不需要密钥，同一供应商配了多个密钥时会在调用之间轮换。抓取走一条带回退的链路，你能看出是哪个提取器产出了文本。等价配置在 `config.toml` 的 `nb_search` 下。见[搜索与抓取](/zh/guides/settings#搜索与抓取)和[配置文件 `nb_search`](/zh/configuration/config-files#nb-search)。
+
+![搜索通道页签：默认通道、已固定的通道，以及其余每条通道的结果与凭据来自哪里。](/shots/extend/ce-20261005-extend-search-lanes.zh.png)
+
+![抓取链路页签：一个网址按顺序经过哪些提取器，以及每一级回退到哪里。](/shots/extend/ce-20261005-extend-fetch-chain.zh.png)
 
 ## 下一步
 

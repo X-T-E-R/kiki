@@ -28,8 +28,14 @@ const capabilities = computed<Capability[]>(() => isZh.value
         href: '/zh/features/workbench',
       },
       {
+        badge: '能复用的智能体',
+        title: 'Agent Profiles',
+        desc: '一份 Markdown 描述一类智能体：跑哪个模型、怎么指示、能用哪些工具、能派发谁，写一次到处复用。',
+        href: '/zh/features/agents',
+      },
+      {
         badge: '长时间的活',
-        title: '它替你把长活干完',
+        title: '长时间的活',
         desc: '跨轮次推进的目标、你忙时排的队、定时提示词、每工作区一块任务看板，以及比会话活得更久的记忆。',
         href: '/zh/features/long-work',
       },
@@ -48,7 +54,7 @@ const capabilities = computed<Capability[]>(() => isZh.value
       {
         badge: '掌控',
         title: '每一层都归你',
-        desc: '智能体就是你自己的 Markdown，提示词细到单个工具描述，连接和 OAuth 一张列表，hooks 跑你自己的脚本。',
+        desc: '提示词细到单个工具描述，连接和 OAuth 一张列表，权限模式你定，hooks 跑你自己的脚本。',
         href: '/zh/features/freedom',
       },
       {
@@ -64,6 +70,12 @@ const capabilities = computed<Capability[]>(() => isZh.value
         title: 'One workbench, many lines',
         desc: 'A lead session dispatches subagents, each role runs the model you picked for it, and long commands go to the background and report back.',
         href: '/en/features/workbench',
+      },
+      {
+        badge: 'Reusable agents',
+        title: 'Agent Profiles',
+        desc: 'One Markdown file describes a kind of agent: the model it runs on, how it is instructed, which tools it may call, and what it can dispatch.',
+        href: '/en/features/agents',
       },
       {
         badge: 'Long work',
@@ -86,7 +98,7 @@ const capabilities = computed<Capability[]>(() => isZh.value
       {
         badge: 'Freedom',
         title: 'Every layer is yours',
-        desc: 'An agent is your own Markdown, prompts are editable down to one tool description, connections and OAuth are one list, and hooks run your scripts.',
+        desc: 'Prompts are editable down to one tool description, connections and OAuth are one list, permission modes are yours to pick, and hooks run your scripts.',
         href: '/en/features/freedom',
       },
       {
@@ -99,8 +111,8 @@ const capabilities = computed<Capability[]>(() => isZh.value
 
 const sectionTitle = computed(() => isZh.value ? '功能介绍' : 'Features')
 const sectionLede = computed(() => isZh.value
-  ? '按你真正会遇到的顺序读：这是什么、它怎么干活、能不能一直干下去、每天怎么用、有谁可以一起干活、数据在哪、哪一层归你，以及怎么接进外面。'
-  : 'Read in the order you will actually need it: what it is, how it works, how long work keeps going, what you do every day, who you can talk to, where your data lives, which layers you control, and how it plugs into other tools.')
+  ? '每页讲清一个主题：工作台怎么分派、长活怎么持续、每天怎么用、能和谁一起干活、数据和机器在哪、哪一层归你，以及怎么接进别的工具。'
+  : 'One topic per page: how the workbench dispatches work, how long work keeps going, what the daily window looks like, who you can talk to, where your data and machines are, which layers you control, and how other tools plug in.')
 
 const ctaText = computed(() => isZh.value ? '看看它能做什么' : 'See what it does')
 const allHref = computed(() => isZh.value ? '/zh/features/index' : '/en/features/index')

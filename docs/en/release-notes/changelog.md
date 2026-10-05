@@ -6,7 +6,7 @@ outline: 2
 
 This page documents the changes in each Kiki release.
 
-::: info Note
+::: tip Note
 Early entries on this page originate from the upstream Kimi Code project and use the naming of their time. The command's current name is `kiki`; for environment variables, the exact names in [Environment variables](../configuration/env-vars.md) are authoritative.
 :::
 
@@ -15,7 +15,6 @@ Early entries on this page originate from the upstream Kimi Code project and use
 ### Polish
 
 - web: Settings gains a Lab tab with a new multi-tab sidebar toggle; when enabled, the sidebar shows the Open / Done / Workspaces tabs.
-- Make several refinements and internal improvements. See the [changelog on GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md) for more technical entries.
 
 ## 0.37.1 (2026-08-18)
 
@@ -47,7 +46,6 @@ Early entries on this page originate from the upstream Kimi Code project and use
 - web: Fix Ctrl+K in the composer opening session search on macOS — session search now only answers to Cmd+K.
 - web: Fix the Background Agent panel showing incorrect task counts and statuses.
 - web: Fix pasting a copied folder into the composer failing the upload with a connection error — folders are now skipped instead.
-- Fix several known issues and make various refinements. See the [changelog on GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md) for more technical entries.
 
 ## 0.36.1 (2026-08-14)
 
@@ -58,10 +56,6 @@ Early entries on this page originate from the upstream Kimi Code project and use
 ### Polish
 
 - web: Polish the Plan, Goal, and Swarm toggles in the composer, which now live in the + menu next to the input box.
-
-### Bug Fixes
-
-- Fix several known issues and make various refinements. See the [changelog on GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md) for more technical entries.
 
 ## 0.36.0 (2026-08-13)
 
@@ -93,7 +87,6 @@ Early entries on this page originate from the upstream Kimi Code project and use
 - Show project MCP launch targets in the workspace trust prompt, default to declining trust, and resolve `fd` and `stty` binaries to absolute paths so untrusted workspaces cannot plant bare-name executables before confirmation.
 - Fix sessions failing with a provider 400 error on every follow-up request after a turn is interrupted while the model is still thinking, on strict OpenAI-compatible providers (e.g. DeepSeek).
 - Fix Ctrl+C being ignored during automatic retries of failed API requests.
-- Fix several known issues and make various refinements. See the [changelog on GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md) for more technical entries.
 
 ## 0.35.0 (2026-08-12)
 
@@ -107,7 +100,6 @@ Early entries on this page originate from the upstream Kimi Code project and use
 - Fix coder subagents spawning further subagents by default.
 - Fix the token counts reported after compaction reading far below the real context size; they now match the numbers shown while the session runs.
 - Fix two binary-planting risks on Windows.
-- Fix several known issues and make various refinements. See the [changelog on GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md) for more technical entries.
 
 ## 0.34.0 (2026-08-06)
 

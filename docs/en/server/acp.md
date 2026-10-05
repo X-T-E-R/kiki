@@ -28,7 +28,7 @@ The table below lists the capabilities declared by the current ACP adapter layer
 
 ## ACP Method Coverage
 
-The spec divides methods into a **stable** surface and an evolving **unstable** surface. The two have entirely different stability guarantees — the stable surface covers methods every production ACP client uses, while the unstable surface covers experimental extensions (inline-edit prediction, document buffer sync, provider management, elicitation, etc.) — so they are listed separately. All methods needed for a normal agent flow (initialize → auth → new/load/resume → prompt → cancel + file I/O + tool approval) are implemented.
+The spec splits methods into a **stable** surface and an evolving **unstable** surface, so they are listed separately. Everything a normal agent flow needs — initialize → auth → new/load/resume → prompt → cancel, plus file I/O and tool approval — is implemented.
 
 ### Stable agent-side — IDE → agent
 

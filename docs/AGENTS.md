@@ -7,7 +7,8 @@ This repository uses VitePress for the documentation site. Most user-facing page
 - Locales live under `docs/en/` and `docs/zh/` with mirrored paths and filenames.
 - Main sections (nav + sidebar) are:
   - Getting Started (`getting-started/`): installation, first-launch, desktop-app, use-cases, and Migration group (migration)
-  - Guides (`guides/`): Desktop app group (interface, sessions, settings), CLI & TUI group (interaction, goals)
+  - Features (`features/`): the reader-facing tour, ordered by how soon a reader needs it — index, workbench, agents, freedom, long-work, people, daily, spaces, extend, ecosystem, look. These pages introduce a capability and link to the section that owns its full reference; they do not duplicate field-level reference from `customization/`, `reference/`, or `configuration/`.
+  - Guides (`guides/`): Desktop app group (interface, sessions, memory, settings), CLI & TUI group (interaction, goals)
   - Customization (`customization/`): agent-profiles (concepts), agents, skills, plugins, hooks, prompt-fields, themes
   - Server & Integration (`server/`): Usage group (local-server, ide, acp), Protocol & SDK group (rest-api, mcp, sdk)
   - Configuration (`configuration/`): config-files, providers, overrides, env-vars, data-locations

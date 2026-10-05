@@ -118,6 +118,13 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `POST /api/oauth/logout` | 登出托管供应商 |
 | `GET /api/oauth/usage` | 查询套餐用量与限额 |
 | `GET /api/oauth/userinfo` | 查询账号资料 |
+| `POST /api/usage-export/destinations/{id}/auth/begin` | 为某个目的地发起 VibeCafe 登录 |
+| `POST /api/usage-export/auth/{id}/poll` | 轮询该次登录 |
+| `POST /api/usage-export/auth/{id}/cancel` | 取消该次登录 |
+
+`vibecafe.ai` 目的地的登录方式与 VibeCafe 自己一致，而且只有官方服务提供这一种。`POST /api/usage-export/destinations/{id}/auth/begin` 只接收凭据的存放方式（`keyring` 或 `private-file`）——没有地址、client id 或密钥要填，服务地址固定为 `https://vibecafe.ai`。返回里带 `flow_id`、`state`、`user_code`、`verification_uri`、`expires_at` 和 `poll_after_ms`；按它给的间隔用 `POST /api/usage-export/auth/{id}/poll` 轮询，用 `POST /api/usage-export/auth/{id}/cancel` 取消。`state` 从 `pending` 变成 `connected`、`cancelled`、`denied`、`expired` 或 `error`，不是 `connected` 时由 `error_category` 说明原因。
+
+登录完成只是把凭据存下来，并不会自动开始外送。目的地仍保持 `disabled`，要等你预览过内容再启用，和手动配置的用途地一样。指向自定义地址的目的地、或者你自己提供密钥的那种，走的是手动路径；在那里发起这种登录会得到 `vibe-auth-official-only`，表示此方式不可用。
 
 ### 配置
 
@@ -181,6 +188,18 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `GET /api/sessions/{session_id}/snapshot` | 客户端重建用全量快照（含 `as_of_seq` 与 `epoch`） |
 
 要自动分配工作区，可向 `POST /api/sessions` 发送 `{}`。服务端会在 `$KIKI_HOME/workspaces/` 下为该会话新建独立目录并注册工作区；响应中的 `workspace_id` 和 `metadata.cwd` 是新工作区的信息。显式提供已有 `workspace_id` 或 `metadata.cwd` 时仍按原方式定位，未知 `workspace_id` 仍会被拒绝。
+
+#### `POST /api/sessions/{session_id}:compact`
+
+请求体可以省略。它接受 `instruction`（要保留什么）和 `strategy`，取值为服务端实现的两种续上下文策略 `summarize` 或 `relay`。请求到达时会话空闲就直接开始压缩；仍有模型响应或工具结果正在落进历史时则先排队，等那部分工作结束后的下一个 step 边界处理，不用等整个轮次。
+
+```json
+{ "accepted": true, "status": "queued", "source": "manual" }
+```
+
+`accepted: true` 表示请求已被受理，**不表示**历史已经压缩完。`status` 描述当时的阶段，取 `queued` 或 `running`；是否完成要看终态的 [`compaction.*` 事件](#事件)，而不是这个响应。已有手动压缩处于排队或执行中时再次请求会返回 `accepted: false`，不会产生第二次；只有收到终态事件、且上一次确实失败时才需要重发。
+
+受理也不保证压缩成功。执行时如果找不到可安全截取的更早历史，会以带 `reason` 的 `compaction.cancelled` 收尾，而不是悄悄放着历史不动；排队的手动请求也不会被随后完成的自动压缩清掉。旧版服务端可能返回空的 `data`，示例中的每个字段缺失都应按可选处理。
 
 ### 消息与转录
 
@@ -310,6 +329,39 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 | `GET /api/workspaces/{workspace_id}/trust` | 读取信任状态 |
 | `POST /api/workspaces/{workspace_id}/trust` | 授予信任 |
 | `POST /api/workspaces/{workspace_id}/untrust` | 撤销信任 |
+
+### 记忆
+
+`{scope}` 取 `global`、`workspace`、`persona` 或 `persona_workspace`。三个非全局范围需要在查询串里带归属：工作区带 `workspace_id`，角色带 `persona_id`，角色的单工作区笔记两个都要。未知 `workspace_id` 会被拒绝。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/memory/settings` | 读取记忆配置，含 `effective_enabled` |
+| `PATCH /api/memory/settings` | 修改 `enabled`、`approval` 或 `budget` |
+| `GET /api/memory/workspaces/{workspace_id}/settings` | 读取某个工作区的开关 |
+| `PATCH /api/memory/workspaces/{workspace_id}/settings` | 设为 `true` / `false`，或 `null` 表示跟随全局 |
+| `GET /api/memory/{scope}` | 搜索或列出条目，过滤与分页见下文 |
+| `GET /api/memory/{scope}/{id}` | 读取单条，带 `target`、`applicability` 和 `complete` |
+| `PUT /api/memory/{scope}/{id}` | 写入条目；`{id}` 传 `new` 表示新建 |
+| `DELETE /api/memory/{scope}/{id}` | 删除条目（`expected_revision` 放查询串） |
+| `GET /api/memory/{scope}/inbox` | 列出待审提议 |
+| `GET /api/memory/{scope}/journal` | 改动历史，可用 `id` 收窄到单条 |
+| `POST /api/memory/{scope}/undo` | 按 `operation_id` 撤销一次操作 |
+
+不带分页参数的 `GET /api/memory/{scope}` 返回整个命名空间的 `{ items, coverage }`，既有客户端无需改动。它的默认状态按形状不同：没有 `query` 时返回 `active` 和 `pending`，带 `query` 时只搜 `active`，`include_inactive=true` 则把两者都放宽到四种。`coverage` 会写明实际查的是哪些状态。
+
+传 `mode`、`page_size`、`statuses` 或 `cursor` 则切换为分页结果，并多出 `next_cursor`。此时没有 `query` 时 `mode` 默认 `list`，有 `query` 时默认 `search`，`page_size` 取 1–20，`statuses` 是 `active`、`pending`、`superseded`、`archived` 的逗号串，默认只查生效条目。翻页时保持同一个 `{scope}` 路径和同一组 `workspace_id` / `persona_id`，并且只带 `cursor`，不要再带 `mode`、`query`、`type`、`page_size`、`statuses` 或 `include_inactive`——范围、过滤条件和页大小都记在 cursor 里了，把其中任何一项加回去都会返回 `40944`。底下的条目或命名空间发生变化后 cursor 也会失效，这时重新发起查询并按 id 对账，不要以为第二次跑的就覆盖了第一次的范围。
+
+`PUT /api/memory/{scope}/{id}` 使用与 [`MemoryWrite`](../reference/tools.md#写入一条条目)相同的动作词表：`action`（`create`、`update`、`supersede`、`archive`）、`type`、`title`、`body`、`reason`、`expected_revision` 和 `pinned`。经 REST 的写入一律记录为来自你，无论 Agent 本会用哪个 `source`。响应是 `{ entry, operationId, outcome, warnings? }`，`outcome` 取 `applied`、`pending` 或 `unchanged`；`unchanged` 以及与已在等待的提议完全相同的重复提交，`operationId` 为 `null`，这两种情况都没有可撤销的操作。`update`、`supersede` 和 `archive` 必须带 `expected_revision`——基于过期版本的 `PUT` 会被拒绝，而不是覆盖掉更新的那一版。
+
+两个元数据字段可选，且「省略」的含义不同：
+
+- **`basis`**——`{ kind, note, refs? }`，`kind` 取 `human`、`observed`、`derived`、`unknown`。它是对象或缺省，永远不是 `null`。`update` 时省略它，只有在 `type`、`title`、`body` 都没变的情况下才保留原依据；改了其中任何一项却没给新依据，这条记忆会降为 `{ kind: 'unknown' }`，并在 `warnings` 里说明依据没有刷新。
+- **`validity`**——`{ check, until? }`，`null` 是有意义的：它清除已记录的核对项。`update` 时省略整个 key 表示保留原值，新建条目省略则表示没有记录。没有记录有效性的条目不等于永远有效。
+
+`covered_by` 只在 `archive` 时接受，填同一范围内保留的生效条目的 `{ id, expected_revision }`。存下来的条目以 `{ id, revision }` 记录同一依赖——就是你发过去的那个 revision——并且在真正执行归档时会重新核验，所以对着已经变了的替代条目归档会失败，而不是丢掉仍然需要的规则。
+
+`GET /api/memory/{scope}/{id}` 返回完整条目，外加 `scope`、取 `{ scope, id, expected_revision }` 的 `target`、取 `expired` / `recheck` / `unrecorded` 的 `applicability`，以及 `complete: true`。`target` 是用来定位的对象，不是请求体：`scope` 和 `id` 放路径上，归属的工作区或角色放查询串上，`PUT` 请求体里只有 `expected_revision` 这一个字段取自它，其余是你这次要写的 `action`、`type`、`title`、`body` 和 `reason`。写之前先读：`expected_revision` 对不上的 `PUT` 会返回 `40944`，响应的 `details` 带着 domain 自己的 `code` 与 `recovery`，而信封里的数值 code 仍是既有客户端已在处理的那一个。
 
 ### 会话租约与 peer thread
 
@@ -529,6 +581,8 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | subagent | `subagent.spawned` / `started` / `suspended` / `completed` / `failed` |
 | 后台 | `task.started` / `terminated`、`shell.started` / `output` / `completed` |
 | 其他 | `compaction.*`、`skill.activated`、`goal.updated`、`prompt.*`、`error`、`warning` |
+
+`compaction.*` 这一族把「谁发起的」和「发生了什么」分开。`compaction.started` 带 `trigger`，取 `manual` 或 `auto`，并可能带 `phase`，取 `queued` 或 `running`；没有 `phase` 即表示 running。`compaction.completed` 带可选的 `trigger` 和一个 `result`；`compaction.cancelled` 带可选的 `trigger`，失败时带 `reason`，没有 `reason` 就是被取消。请依据这些事件判断完成情况，而不是[压缩请求](#post-api-sessions-session-id-compact)的 HTTP 响应——`trigger` 缺省应视为未知，不要据此认定一次手动压缩已完成。排队中的手动请求也不会因为某次自动压缩完成而被结算。
 
 事件另分持久与易失两种：持久事件带严格递增的 `seq`，落盘并可回放；易失事件（各 `*.delta`、`tool.progress`、`shell.*` 等）标 `volatile: true`，不回放。消费易失文本流时用 `offset`（该轮次内的累计字符偏移）与本地已累积文本比对：小于本地长度说明是重复帧，大于说明有缺漏、需走快照恢复。
 

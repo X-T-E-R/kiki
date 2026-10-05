@@ -1,6 +1,6 @@
 # Node.js SDK
 
-Kiki does not currently publish an SDK to a public npm registry. To integrate Kiki into your own application, use one of these supported protocol surfaces:
+Kiki has no published SDK on npm. To integrate Kiki into your own application, use one of these protocol surfaces:
 
 | Surface | When to use | Reference |
 | --- | --- | --- |
@@ -8,4 +8,4 @@ Kiki does not currently publish an SDK to a public npm registry. To integrate Ki
 | MCP | Let external tools and agents call Kiki | [Model Context Protocol](./mcp.md) |
 | ACP | Editor and IDE clients | [ACP](./acp.md) |
 
-The Kiki repository also contains a TypeScript client (`@kiki/klient`, marked as a `private` package) for development and contributions inside the monorepo; this page will grow into full SDK documentation once it forms a public release contract.
+The repository also contains a TypeScript client (`@kiki/klient`) used by Kiki's own tests and tooling. It is not published, so do not depend on it from your own code.

@@ -1,12 +1,10 @@
 # Agent Skills
 
-Agent Skills 是 Kiki 扩展模型能力的轻量机制。一个 Skill 就是一份带 YAML frontmatter 的 Markdown 文档，描述某项专业知识或工作流程——例如项目的代码风格规范、PR review 流程、提交消息格式。
-
-相比每次把同样的指引粘到提示词里，Skill 的优势在于：内容沉淀在文件里、可以跨项目和团队复用、可以通过斜杠命令一键加载，也可以让模型在需要时自动调用。
+一个 Skill 就是一份带 YAML frontmatter 的 Markdown 文档，描述某项知识或工作流程——项目代码风格、PR review 流程、提交消息格式。写进文件而不是每次粘进提示词，意味着它可以跨项目和团队复用，可以用斜杠命令加载，也可以在相关时由模型自动调用。
 
 ## 自定义提示命令
 
-如果希望输入 `/名称 参数` 后加载自己的一段提示词，可以用 Markdown 定义提示命令。命令复用 Skill 目录与参数展开，但只在你明确发送时加载，不会根据描述进入模型的自动 Skill 调用候选。
+命令是同一种文件，只有你明确发送 `/名称 参数` 时才加载。命令复用 Skill 目录和参数展开，但模型不会看到它的描述来做自动调用。
 
 在项目根目录创建 `.kiki/commands/brainstorm.md`：
 
@@ -20,13 +18,13 @@ argument-hint: "<讨论主题>"
 不要创建文档或修改文件。
 ```
 
-在 GUI 或终端输入 `/`，选择 `brainstorm`，补充主题后发送，例如 `/brainstorm 更简单的设置菜单`。选择条目只会填入草稿，发送时才将正文连同参数和附件加载一次。这只是一个示例，不会自动安装，也不是必须遵循的头脑风暴流程。
+在 GUI 或终端输入 `/`，选择 `brainstorm`，补充主题后发送，例如 `/brainstorm 更简单的设置菜单`。选中条目只填入草稿，发送时才加载一次正文，连同你的参数和附件。
 
-Frontmatter（文件开头的 YAML 元数据）可以完全省略：名称默认取文件名，菜单描述默认取正文第一行非空内容。可选的 `name`、`description` 和 `argument-hint` 分别指定名称、描述和参数提示；名称不能包含空白、`/`、`\\` 或 `:`。[正文占位符](#正文占位符)同样适用；没有参数占位符时，参数会附在正文末尾。作为参数插入的值不会再次展开。
+Frontmatter（文件开头的 YAML 元数据）可以完全省略：名称默认取文件名，菜单描述默认取正文第一行非空内容。可选的 `name`、`description` 和 `argument-hint` 分别指定名称、描述和参数提示；名称不能包含空白、`/`、`\` 或 `:`。[正文占位符](#正文占位符)同样适用；没有参数占位符时，参数会附在正文末尾。作为参数插入的值不会再次展开。
 
-用户级命令放在当前应用数据目录的 `commands/*.md`；项目级命令放在项目根目录的 `.kiki/commands/*.md`。只读取目录下直接放置的 Markdown 文件。项目级同名命令优先于用户级。旧的 `.kimi-code/commands/` 目录不会读取。显式指定 Skill 目录仍沿用原有的替换规则。文件修改会被监听；重新打开 GUI 斜杠菜单，或在终端运行 `/reload`，即可刷新菜单。
+用户级命令放在当前应用数据目录的 `commands/*.md`，项目级命令放在项目根目录的 `.kiki/commands/*.md`，只读取目录下直接放置的 Markdown 文件；项目级同名命令优先。旧的 `.kimi-code/commands/` 不会读取。文件修改会被监听，重新打开 GUI 斜杠菜单或在终端运行 `/reload` 即可看到。
 
-内置快捷动作保留裸名称：`/plan` 仍用于控制 Plan 模式。与其重名的目录条目会显示为 `/skill:plan`；与已有 Skill 重名的提示命令会显示为 `/command:名称`。以菜单显示的名称为准。命令正文是用户提示词，不是系统提示词或可执行脚本；它不会授予权限、切换模式，也不会把流程图变成工作流引擎。发送前请检查陌生仓库中的命令文件。
+内置快捷动作保留裸名称，`/plan` 仍用于控制 Plan 模式；与它重名的 Skill 显示为 `/skill:plan`，与 Skill 重名的命令显示为 `/command:名称`，以菜单显示的名称为准。命令正文是用户提示词，不是系统提示词或脚本，不授予权限、不切换模式、也不执行任何东西。发送前先看一眼陌生仓库里的命令文件。
 
 ## 创建 Skill
 
@@ -93,7 +91,7 @@ Kiki 按作用域分四档扫描，越具体的作用域优先级越高：**Proj
 - `$KIKI_HOME/skills/`（默认：`~/.kiki/skills/`）
 - `~/.agents/skills/`
 
-Kiki 专属用户级 Skill 目录会随 `KIKI_HOME` 移动，因此隔离数据根时也会隔离 Kiki 专属 Skills。通用 `~/.agents/skills/` 目录仍放在真实 OS home 下，以便跨工具共享。
+Kiki 专属用户级 Skill 目录随 `KIKI_HOME` 移动，因此换数据根会得到自己的一份；通用 `~/.agents/skills/` 仍放在真实 OS home 下，便于跨工具共享。
 
 **项目级**（项目根 = 工作目录向上最近的含 `.git` 的目录）：
 - `.kiki/skills/`
@@ -105,18 +103,18 @@ Kiki 专属用户级 Skill 目录会随 `KIKI_HOME` 移动，因此隔离数据�
 extra_skill_dirs = ["~/team-skills", ".agents/team-skills"]
 ```
 
-**内置 Skills** 随 CLI 一起分发，优先级最低。它们为常见任务提供开箱即用的工作流，例如配置 MCP server、定制 TUI 主题和编辑配置文件。完整列表详见[内置 Skill 命令](../reference/slash-commands.md#内置-skill-命令)。Kiki 目前随包分发的 Skill 全部介绍 Kiki 自身，因此顶层 [`builtin_product_skills`](../configuration/config-files.md#顶层字段) 字段会一次性关闭它们全部——包括配置和排查 Kiki 的引导入口 `/kiki-ops`。改回 `true` 即可恢复。
+**内置 Skills** 随 CLI 一起分发，优先级最低，覆盖配置 MCP server、定制 TUI 主题、编辑配置文件这类常见任务，完整列表见[内置 Skill 命令](../reference/slash-commands.md#内置-skill-命令)。Kiki 随包分发的 Skill 全部介绍 Kiki 自身，因此顶层 [`builtin_product_skills`](../configuration/config-files.md#顶层字段) 可以一次性关掉全部，包括 `/kiki-ops`；改回 `true` 即可恢复。
 
 ## 调用 Skill
 
 用户通过斜杠命令主动调用：
 
-```
+```text
 /skill:code-style
 /skill:git-commits 修复登录接口的并发问题
 ```
 
-模型也可以根据 `description` 和 `whenToUse` 自动调用 Skill（除非 `disableModelInvocation` 设为 `true` 或 `type` 为 `flow`）。Skill 调用时最多允许嵌套 3 层，超过后会被终止。
+模型也可以根据 `description` 和 `whenToUse` 自动调用 Skill（除非 `disableModelInvocation` 为 `true` 或 `type` 为 `flow`）。Skill 之间可以嵌套调用，最多 3 层。
 
 ## 完整示例
 

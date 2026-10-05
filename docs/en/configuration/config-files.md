@@ -1,20 +1,24 @@
 # Configuration files
 
-Kiki writes all long-term preferences — which model to use, which API key to fill in, how many steps an Agent can run per turn — into TOML (a plain-text configuration format with a clear structure) files. Saved preferences persist across starts; `config.toml` and provider credentials also reload while Kiki is running. Ordinary agent and runtime settings live in `config.toml`; provider credentials live in a separate `credentials.toml`; terminal-UI and client preferences (theme, editor, notifications, auto-update) live in a companion `tui.toml`.
+Kiki keeps its long-term preferences in TOML (plain text with a clear structure) files. Settings live in three places, and the split is worth knowing before you edit anything:
 
-Default location: `~/.kiki/config.toml`, created automatically on first run. Provider credentials live in `~/.kiki/credentials/credentials.toml`; see [Provider credentials](#provider-credentials).
+| File | Holds |
+| --- | --- |
+| `~/.kiki/config.toml` | Agent and runtime settings, plus your model and provider definitions |
+| `~/.kiki/credentials/credentials.toml` | API keys, OAuth tokens and MCP credentials |
+| `~/.kiki/tui.toml` | Terminal-side preferences: theme, editor, notifications, auto-update |
+
+`config.toml` is created on first run. Saved preferences persist across starts, and both `config.toml` and the credential file are watched while Kiki runs.
 
 ## Config file location
 
-The CLI reads configuration from `~/.kiki/config.toml`. To relocate the data directory, override it with the `KIKI_HOME` environment variable:
+To move the whole data directory, set the `KIKI_HOME` environment variable:
 
 ```sh
 export KIKI_HOME=/path/to/kiki-home
 ```
 
-The config file path then becomes `$KIKI_HOME/config.toml`. Regardless of where the directory lives, the file name is always `config.toml`.
-
-Provider credentials live at `$KIKI_HOME/credentials/credentials.toml` when you override the data directory. The `credentials/` directory also holds OAuth and MCP credentials.
+The config file then lives at `$KIKI_HOME/config.toml` — the name is always `config.toml`, wherever the directory is — and credentials at `$KIKI_HOME/credentials/credentials.toml`.
 
 ::: tip
 TOML field names always use snake_case, for example `default_model` and `max_context_size`. If a key contains `.`, you must quote it — for example `[models."gpt-4.1"]` — otherwise TOML treats `.` as a nested table separator.
@@ -127,7 +131,7 @@ The field-level priority between `api_key` and the `[providers.<name>.env]` fall
 
 ### Migrating existing keys
 
-If an older root-level `credentials.toml` exists, startup moves its contents unchanged to `credentials/credentials.toml`; reads also support the old location until the move succeeds. If both locations contain different bytes, Kiki stops rather than choosing one: inspect both files before retrying. If an older `config.toml` still holds provider credentials, startup moves them into `credentials/credentials.toml` and rewrites `config.toml` without them. The previous `config.toml` is kept as a unique backup named `config.toml.bak-<YYYY-MM-DD>-<uuid>` so you can review or restore it. The backup still contains the original plaintext keys; remove it after checking the migration if you no longer need it. Repeated loads after a successful migration do not create another backup or change already-moved credentials. If the same key path exists in both files with different values, migration stops for manual review rather than choosing one; a failed or interrupted migration may leave a backup for inspection.
+An older root-level `credentials.toml` is moved unchanged into `credentials/credentials.toml` at startup, and the old location stays readable until that succeeds; if the two hold different bytes, Kiki stops rather than choosing — check both and retry. Credentials still sitting in an older `config.toml` are moved into `credentials/credentials.toml`, and the old `config.toml` is kept as a unique `config.toml.bak-<YYYY-MM-DD>-<uuid>`. That backup still holds the original plaintext keys, so delete it once you have checked the migration and no longer need it. Loading again after a successful migration creates no second backup and changes nothing already moved; the same key path holding different values in the two files stops the migration for you to resolve, and an interrupted one may leave a backup to inspect.
 
 ### File permissions
 
@@ -241,11 +245,15 @@ model = "gpt-4.1"
 max_context_size = 1048576
 ```
 
-### Explicit legacy model parameter migration
+### Legacy model parameter migration
 
-In **Settings → Models & providers → Available models → Legacy model parameter migration**, select **Preview migration** to inspect proposed copies without writing a file. The preview lists only model aliases, parameter names, review reasons, a revision, and backup identifiers; it does not return config text, credential values, or backup contents. No model-parameter migration runs automatically at startup. Where unambiguous, the operation copies older `request_params.temperature`/`top_p` and `max_completion_tokens`/`service_tier` into a model's `parameters` table. Ambiguous values and conflicts remain for manual review; existing older fields are **not removed**, so inspect the preview rather than assuming their behavior has changed.
+Older configurations put `temperature` / `top_p` and `max_completion_tokens` / `service_tier` in different places. **Settings → Models & providers → Available models → Legacy model parameter migration** can copy them into a model's `parameters` table.
 
-Choose **Apply previewed changes**, then confirm to write. The server first stores a byte-exact backup next to `config.toml` under a unique `config.toml.generation-backup-<uuid>` name, then conditionally writes the proposed config. A changed config or stale preview is rejected, not overwritten. Backups may contain the original secrets: protect them like `config.toml` and `credentials.toml`. The server config store requests owner-only file permissions where supported; do not assume identical permission guarantees on every platform. The backup identifier is listed in the same panel; **Restore backup** asks for separate confirmation and restores only if the current config still exactly matches that backup's migrated output and the preview revision remains current. Edits that leave different bytes block restoration, but the current byte-only revision cannot detect a sequence that returns the config to exactly the same bytes; an older backup may then undo a newer identical migration. Do not restore an older backup after subsequent changes. Backup and config are separate files, not one crash-atomic multi-file transaction. A config CAS that definitely rejects a stale revision deletes its new backup only if the backup still matches; if the write outcome is uncertain, the backup and observed config remain for inspection instead of automatically rolling back another writer. On Windows, the underlying atomic writer first tries to replace by rename, but under `EPERM` contention it can fall back to unlinking the destination before renaming: readers may briefly see a missing config, and a crash in that window can leave it missing. Inspect both files and the backup before retrying after any uncertain failure.
+**Preview migration** first, which lists the model aliases, parameter names, review reasons, a revision and the backup name it would use, and writes nothing. Unambiguous values are copied; ambiguous or conflicting ones are left for you to decide. Your existing fields are not removed, so read the preview instead of assuming anything changed.
+
+**Apply previewed changes** then writes a byte-exact backup next to `config.toml` as `config.toml.generation-backup-<uuid>` before touching the config, and refuses to write if the config changed since the preview. That backup contains your original secrets — protect it like `config.toml` and `credentials.toml`, and delete it once you no longer need it.
+
+**Restore backup** asks for its own confirmation, and only restores while the current config is still exactly what that backup produced. Any other edit blocks it. Restore soon after a migration: the revision is a byte comparison, so a later edit that happens to return the config to identical bytes is not detected, and an old backup can undo newer work.
 
 ### Model alias resolution
 
@@ -293,7 +301,9 @@ max_context_size = 131072
 display_name = "Kimi for Coding (custom)"
 ```
 
-`[models."<alias>".overrides]` accepts ordinary model fields such as `max_context_size`, `max_input_size`, `max_output_size`, `capabilities`, `display_name`, `reasoning_key`, `adaptive_thinking`, `support_efforts`, `default_effort`, `off_effort`, `service_tier`, `request_params`, `context_budget`, `auto_compact`, and `max_completion_tokens`. It does not accept identity / routing fields: `provider`, `model`, `protocol`, `beta_api`, and `base_url`. For these added fields, resolve the model alias configuration, including its `overrides`, first; then apply model alias → top-level profile → matching `model_profiles` entry. Merge `request_params` by key and use the last explicit `service_tier`; `context_budget` and `max_completion_tokens` are limits, so take the smallest declared value across layers within the model's capacity and output cap. Omitting a limit adds no restriction.
+`[models."<alias>".overrides]` accepts ordinary model fields such as `max_context_size`, `max_input_size`, `max_output_size`, `capabilities`, `display_name`, `reasoning_key`, `adaptive_thinking`, `support_efforts`, `default_effort`, `off_effort`, `service_tier`, `request_params`, `context_budget`, `auto_compact`, and `max_completion_tokens`. It does not accept identity or routing fields: `provider`, `model`, `protocol`, `beta_api` and `base_url`.
+
+Layering works in this order: resolve the alias configuration including its `overrides`, then apply model alias → top-level profile → matching `model_profiles` entry. `request_params` merge by key and the last explicit `service_tier` wins. `context_budget` and `max_completion_tokens` are limits, so the smallest value across layers applies, within the model's capacity and output cap; omitting one adds no restriction.
 
 You can also switch models temporarily without touching the config file — by setting `KIKI_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kiki-model).
 
@@ -341,13 +351,13 @@ steering = "cognition/flash-steering.md"
 
 `~/.kiki/cognition/flash-anchor.md`:
 
-```
+```text
 You are a helpful software engineer assistant.
 ```
 
 `~/.kiki/cognition/flash-steering.md`:
 
-```
+```text
 Router: classify this task (build or fix) now, then adopt the matching style — build: direct production; fix: inspect-first. Let's first understand the problem and devise a plan; then let's carry out the plan and act.
 ```
 
@@ -405,7 +415,7 @@ the bound model's `overrides.default_effort` → its `default_effort` → global
 | `compaction_soft_context_size` | `integer` | `0` | Legacy absolute token ceiling, used only when no `auto_compact` is set at any layer |
 | `compaction_max_attempts` | `integer` | `3` | Maximum total requests for a failing compaction, including the initial attempt; all recovery paths share this budget |
 
-A session's per-model token override takes priority over a matching `model_profiles` entry, profile top level, model alias, then this global percentage. Without any new `auto_compact`, Kiki preserves the previous threshold: `min(0.85 × usable context, usable context − 50000, positive compaction_soft_context_size)`, with an explicit legacy ratio in place of 0.85. Saving a new global value converts the current model's token point to a percentage and removes the old ratio and soft-ceiling keys; a legacy absolute ceiling cannot retain the same value across differently sized models after that conversion. Changing the threshold takes effect before the next model step, not immediately. Run `/autocompact` to inspect the current session value.
+The compaction point resolves in this order: the session's per-model token override, a matching `model_profiles` entry, the profile's top-level value, the model alias, then this global percentage. With no `auto_compact` set anywhere, the previous threshold applies: `min(0.85 × usable context, usable context − 50000, positive compaction_soft_context_size)`, using your explicit legacy ratio in place of 0.85. Saving a new global value converts the current model's token point to a percentage and drops the old ratio and soft-ceiling keys — after which a legacy absolute ceiling no longer means the same thing on models of different sizes. The change applies before the next model step, and `/autocompact` shows the current session value.
 
 `max_steps_per_turn` can be overridden by the `KIKI_LOOP_MAX_STEPS_PER_TURN` environment variable, and `max_attempts_per_step` by `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP`; both take higher priority than the config file.
 
@@ -422,7 +432,7 @@ cooldown_human_turns = 8
 long_task_steps = 24
 ```
 
-Regular progress reminders require new successful work, at least six human turns since the relevant content changed, and eight since that domain's previous reminder (or session start). After its first reminder, spacing doubles to 16 human turns; each unchanged domain receives at most two progress reminders. Todo reminders need unfinished items. Notes reminders additionally require uncovered work of at least 8,000 tokens or 10% of the compaction threshold, whichever is larger. Long-task notes checkpoints can occur without another human turn: they require 24 successful work steps since both the last notes change and last notes reminder, plus at least 16,000 uncovered tokens or 10% of the threshold, whichever is larger. Polling alone does not count as successful work.
+A regular progress reminder needs new successful work, at least six human turns since that content last changed, and eight since that domain's previous reminder or the session start. After the first one, spacing doubles to 16 human turns, and each unchanged domain gets at most two. Todo reminders require unfinished items; notes reminders also require at least 8,000 uncovered tokens or 10% of the compaction threshold, whichever is larger. A long-task notes checkpoint needs no new human turn — 24 successful work steps since both the last notes change and the last notes reminder, plus 16,000 uncovered tokens or 10% of the threshold. Polling alone is not successful work.
 
 Todos and notes keep separate ages, work watermarks, reminder clocks, and two-reminder budgets. An actual content change resets only that domain's age, work watermark, and reminder budget, returning its spacing to the base cooldown. Changing the list does not reset notes state, and changing notes does not reset the list's. Rewriting identical content resets neither.
 
@@ -435,7 +445,7 @@ memory_maintenance = false
 
 `memory_maintenance` is a boolean, defaulting to `true` when omitted. A valid configuration reload takes effect at the next reminder evaluation; it does not remove reminders already in the conversation. It controls only periodic maintenance prompts during active work (M3), at most once per context window. Setting it to `false` keeps reminders for new human standing instructions (M1) and the pre-compaction check for an identified, still-unhandled instruction (M2). It does not disable memory tools, change approval policy, or turn off TodoList notes.
 
-Memory reminders are available to the main agent in non-ephemeral sessions when memory is enabled, memory approval is not `off`, and `MemoryWrite` is registered and permitted by tool policy. Periodic reminders stay silent while idle or only polling. They ask the agent to retain instructions, stable decisions, or evidenced knowledge useful to future tasks: if nothing worth keeping has changed, it should not write. Task progress stays in working notes; pending memory proposals are not active guidance and should not be duplicated.
+Memory reminders reach the main agent in non-ephemeral sessions when memory is on, approval is not `off`, and `MemoryWrite` is registered and permitted. They stay silent while idle or merely polling, and they ask the agent to keep instructions, stable decisions or evidenced knowledge that will matter later — with nothing worth keeping changed, it should not write. Task progress belongs in working notes, and a pending memory proposal is not active guidance.
 
 Instruction and history reminders use configurable Chinese/English cues followed by a local structural gate, not a separate model call:
 
@@ -445,7 +455,7 @@ instructions = ["always", "never", "以后", "不要"]
 history = ["as I said", "earlier", "之前", "我说过"]
 ```
 
-Each supplied list replaces its defaults; an empty list disables that category. English cues match case-insensitively at word boundaries; Chinese cues use substring matching. Matching a cue alone is insufficient: quoted examples and product discussions do not establish standing rules, and a steer correction must pass the same gate. A delivered instruction/history reminder is deduplicated for that accepted input or steer revision, rather than limited to one per entire turn. Already covered references are skipped; repeated references to the same identified topic have a three-human-turn cooldown while todo and notes state is unchanged. New rule modifications and revocations bypass that history cooldown and the progress cooldown.
+Each list replaces its defaults, and an empty list disables that category. English cues match case-insensitively at word boundaries, Chinese cues by substring. A cue alone is not enough — a quoted example or a passing mention does not establish a rule, and a steer correction has to pass the same gate. A delivered reminder is deduplicated per accepted input or steer revision rather than once per turn, already-covered references are skipped, and repeated references to the same topic cool down for three human turns while todo and notes state is unchanged. Changing or revoking a rule skips both that cooldown and the progress one.
 
 Configuration decisions belong in task notes unless their broader scope is explicit; cross-session memory still requires its existing approval policy. Context-window preservation and handoff-rebuild reminders follow compaction state, not the progress cadence.
 

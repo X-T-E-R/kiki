@@ -1,10 +1,10 @@
 # Hooks
 
-Hooks subscribe to engine events. Declarative v2 rules add guidance or observe events without running a process; legacy hooks run local shell commands. Typical use cases:
+Hooks react to engine events. A declarative (v2) rule adds guidance or watches an event without running anything; a legacy hook runs a local shell command. Common uses:
 
-- **Security interception**: Before the Agent executes a shell command, check whether it contains dangerous operations (such as `rm -rf`) and block execution if so
-- **Desktop notifications**: When a background task completes, pop up a system notification to bring you back to review the results
-- **Automatic checks**: Each time the user submits a message, automatically append some background information to the context (such as the current Git branch)
+- **Blocking something risky**: check a shell command for `rm -rf` before it runs and block it
+- **Desktop notifications**: pop up a system notification when a background task finishes
+- **Adding context**: append something the model should always see, such as the current Git branch, to every submitted message
 
 ## Declarative rules (v2)
 
@@ -34,56 +34,49 @@ type = "inject"
 text = "Check the goal, existing evidence, and next action before continuing."
 ```
 
-A step is one committed model response with all its tool results settled, not one tool call or retry attempt. After five such steps, the reminder appears before the next model request. If the fifth step ends the turn, no extra turn is created: delivery waits for the next request on that model. Counts belong to each agent and canonical model configuration identity, so switching A → B → A preserves A's count. `counter_scope = "turn"` instead clears the count at the next turn. Recovery, compaction, and undo do not rewind counts or replay delivered reminders. Changing the matcher or cadence starts a new semantic revision at zero; changing only the text uses the new text at the next milestone.
+A step is one committed model response with all its tool results settled, not one tool call. After five such steps the reminder is injected before the next model request; if the fifth step ended the turn, it waits for the next request on that model rather than starting one. Counts belong to each agent and canonical model identity, so switching A → B → A keeps A's count, and `counter_scope = "turn"` clears it at the next turn instead. Recovery, compaction and undo neither rewind counts nor replay a reminder; changing the matcher or cadence starts a new count at zero, while changing only the text uses the new text at the next milestone.
 
-The current v2 implementation accepts only `inject` and `observe`. `inject` is available on `step.before` and `prompt.submit`; `observe` is available on those events plus `step.after`, `tool.before`, `tool.after`, `turn.stopping`, `turn.after`, and `session.start`. Cadence is limited to step events. An observer records metadata without changing the operation. V2 `command`, `block`, `gate`, and `continue` actions are rejected during loading; script automation remains on the legacy contract below.
+Only `inject` and `observe` exist today. `inject` works on `step.before` and `prompt.submit`; `observe` works on those plus `step.after`, `tool.before`, `tool.after`, `turn.stopping`, `turn.after` and `session.start`, and only records metadata. Cadence applies to step events. Writing `command`, `block`, `gate` or `continue` is rejected at load time — those are the legacy contract below.
 
 ### Sources and matching
 
-Rules combine across user configuration, a trusted project's `.kiki/hooks.toml`, and enabled plugin manifests. They receive distinct IDs such as `user/evidence-check`, `workspace/check`, and `plugin/example/check`. Lower `priority` runs first, with the qualified ID breaking ties. There is no model-over-profile override chain. Duplicate IDs within one namespace are errors; the same short ID in different namespaces is allowed. Untrusted project rules remain visible but inactive, including text-only rules.
+Rules combine from your user configuration, a trusted project's `.kiki/hooks.toml`, and enabled plugin manifests, and each gets a qualified id such as `user/evidence-check` or `workspace/check`. Lower `priority` runs first, with the qualified id breaking ties. A duplicate id inside one namespace is an error; the same short id in different namespaces is fine. Rules from an untrusted project stay visible but inactive, text-only ones included.
 
-`match.models`, `profiles`, `routes`, `executors`, and `agent_roles` use exact values. Different fields must all match; values within one field are alternatives; omitted fields are unrestricted. Model aliases resolve at loading, so a misspelled alias is diagnosed before the first request. Tool names use `match.tools`; tool outcomes use `match.statuses` (`success`, `error`, `cancelled`, `denied`). `prompt.submit` defaults to `source = user`; select other sources explicitly with `match.sources`. External executors without native step/tool interception are reported as unsupported by inspection rather than simulated from tool counts.
+`match.models`, `profiles`, `routes`, `executors` and `agent_roles` take exact values: every field you write must match, several values in one field are alternatives, and an omitted field is unrestricted. Model aliases resolve at load time, so a typo shows up before the first request. Tool names go in `match.tools` and outcomes in `match.statuses` (`success`, `error`, `cancelled`, `denied`). `prompt.submit` defaults to `source = user`; name other sources in `match.sources`. An external executor without native step or tool interception is reported as unsupported rather than approximated from tool counts.
 
-Long guidance can use `text_file = "reminders/check.md"` instead of `text`; the two are mutually exclusive. `[hooks] files = ["hooks.toml"]` includes other v2 documents. Paths are relative to the declaring file and must remain inside its source scope after realpath resolution. Includes cannot be URLs, cyclic, or repeated. Missing files, empty text, unsupported actions, invalid cadence, and injections exceeding the 8 KiB UTF-8 budget are load-time diagnostics. Guidance is source-labelled conversation context, not a replacement system prompt, and cannot override higher-priority instructions.
+Long guidance can point at a file with `text_file = "reminders/check.md"` instead of `text` — the two are mutually exclusive — and `[hooks] files = ["hooks.toml"]` pulls in other v2 documents. Paths are relative to the declaring file and must stay inside its source scope once resolved. Includes cannot be URLs, repeat, or form a cycle. A missing file, empty text, unsupported action, invalid cadence or an injection over 8 KiB is a load-time diagnostic. Injected guidance is labelled conversation context: it does not replace the system prompt and cannot override higher-priority instructions.
 
-Set a rule's `enabled = false` to disable it. The user section can disable qualified IDs from any source with `disabled = ["workspace/check"]`, or disable all v2 rules with `enabled = false`. Project and plugin declarations can disable only their own rules. Changes take effect at the next safe event boundary; the current event keeps its snapshot.
+Set `enabled = false` on a rule to disable it. The user section can disable qualified ids from any source with `disabled = ["workspace/check"]`, or turn off all v2 rules with `enabled = false`; project and plugin declarations can only disable their own. Changes take effect at the next safe event boundary.
 
 ### Inspecting effective rules
 
-The engine's contributed command `hooks-inspect` reports source, activation or failure reason, execution order, binding, semantic revision, completed counts, and the next due count. Invoke it through the existing client command API:
+The `hooks-inspect` command reports each rule's source, why it is active or not, execution order, binding, count so far, and the count due next:
 
 ```ts
 await klient.session(sessionId).agent("main").runCommand({ name: "hooks-inspect" });
 ```
 
-The result is a `hook.result` diagnostic event (`hookEvent = "hooks.inspect"`); it is not appended to the model's conversation. In the GUI, open **Hooks** in the session's agent panel to see effective rules, source paths, inactive reasons, and cadence counts. This view uses `GET /api/sessions/{session_id}/agents/{agent_id}/hooks`; saving a setting does not prove that its rules are active in that session.
+The result is a `hook.result` diagnostic event (`hookEvent = "hooks.inspect"`) and is not added to the model's conversation. In the GUI, **Hooks** in the session's agent panel shows the same information, reading `GET /api/sessions/{session_id}/agents/{agent_id}/hooks` — a rule that saved successfully can still be inactive in a given session, and this is where you see why.
 
-To edit the user configuration, open **Settings → Capabilities → Hooks** (`/settings/hooks`). Select a declarative or command rule to edit it, or use **Advanced: edit JSON** for the complete legacy array or v2 object. Adding the first declarative rule explicitly switches a legacy array to v2 and preserves commands in `legacy`; opening or saving the page never runs those commands. **Save actions** validates the whole hooks value and displays the server's saved values. A failed save keeps your draft. The v2 enable switch and disabled IDs affect declarative rules only, not command rules.
+**Settings → Capabilities → Hooks** (`/settings/hooks`) edits the user configuration. Pick a rule to edit it, or use **Advanced: edit JSON** for the whole legacy array or v2 object. Adding the first declarative rule switches a legacy array to v2 and keeps the commands under `legacy`; opening or saving that page never runs them. **Save actions** validates the entire hooks value and shows what the server stored, and a failed save keeps your draft. The v2 enable switch and disabled ids affect declarative rules only.
 
-TOML cannot declare both `[[hooks]]` and `[hooks]` under the same key. Existing arrays continue unchanged. To keep legacy commands in a v2 document, move those entries explicitly to `[[hooks.legacy]]`, preserving their `event`, `matcher`, `command`, and seconds-based `timeout`. They still use the legacy runner and output protocol; no automatic migration or script-protocol conversion occurs.
+TOML cannot declare both `[[hooks]]` and `[hooks]` under the same key, and an existing array keeps working as it is. To keep legacy commands inside a v2 document, move them explicitly to `[[hooks.legacy]]`, keeping their `event`, `matcher`, `command` and seconds-based `timeout`; they still run under the legacy runner and output protocol.
 
-## How Hooks Work
+## Legacy command hooks
 
-The remaining sections describe the legacy command contract, not v2 declarative rules.
+Everything below describes the legacy contract: a rule names an event, targets to match, and a shell command to run.
 
-Configuring a hook rule requires specifying three things: **which event to trigger on**, **which targets to match**, and **which script to run**.
+On a match, the CLI passes the event details as JSON on **standard input** (stdin) — the trigger reason, tool name, command text and so on — and your script decides what to do. Its **exit code** carries the decision (`0` allows) and **standard output** (stdout) can carry explanation.
 
-When triggered, the CLI packages the event's details (trigger reason, tool name, command content, etc.) into JSON and passes it to your script via **standard input** (stdin). The script reads this information and decides how to respond.
-
-The script's response is determined by two things:
-
-- **Exit code**: `0` means allow; non-zero values block a blocking event, while observation-only events continue.
-- **Standard output** (stdout): can include explanatory text.
-
-Blocking events fail closed when a script fails or times out: the pending operation stops with a reason. Observation-only events do not interrupt the main flow. The [return-value table](#return-values) explains both cases.
+A blocking event fails closed when the script fails or times out: the pending operation stops with a reason. An observation-only event never interrupts the main flow. The [return-value table](#return-values) covers both.
 
 ::: warning Note
-Hooks supplement permissions; they are not an operating-system sandbox and cannot approve a tool on the user's behalf. Keep permission checks and manual confirmation for high-risk operations.
+A hook supplements permission rules; it is not an operating-system sandbox and cannot approve a tool for you. Keep permission checks and manual confirmation in place for anything high-risk.
 :::
 
-## Quick Start: A Minimal Hook
+## A minimal hook
 
-The following hook flashes a notification in the terminal title bar each time a background task completes (macOS requires `terminal-notifier` to be installed):
+This flashes a notification in the terminal title bar when a background task completes (macOS needs `terminal-notifier` installed):
 
 ```toml
 # Written in ~/.kiki/config.toml
@@ -95,13 +88,13 @@ command = "terminal-notifier -title Kimi -message 'Task done'"
 
 Save the config, start a new session, and a notification will appear the next time a background task completes.
 
-## Configuration
+## Legacy rule fields
 
-All hook rules are written in the `[[hooks]]` array in `~/.kiki/config.toml`, where each entry is one rule:
+Each legacy rule is one entry in the `[[hooks]]` array in `~/.kiki/config.toml`:
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `event` | `string` | Yes | Trigger event name; must be one of the entries in the "Event Reference" table below |
+| `event` | `string` | Yes | Trigger event name; must be one of the entries in the event reference below |
 | `matcher` | `string` | No | A regular expression to filter event targets; if omitted, matches all |
 | `command` | `string` | Yes | The shell command to run when triggered |
 | `timeout` | `integer` | No | Timeout in seconds, range 1–600; defaults to 30 seconds |
@@ -112,9 +105,9 @@ All hook rules are written in the `[[hooks]]` array in `~/.kiki/config.toml`, wh
 
 The working directory for hook commands is the current session's project directory. On non-Windows platforms, hook processes are placed in a separate process group; on timeout, a signal is sent first to give the process a chance to clean up, then it is forcibly terminated.
 
-### Event Data Format
+### Event data format
 
-Each time a hook triggers, the CLI passes the following base information to the script via stdin:
+Each time a hook triggers, the CLI passes this base information to the script on stdin:
 
 ```json
 {
@@ -126,11 +119,11 @@ Each time a hook triggers, the CLI passes the following base information to the 
 }
 ```
 
-Specific events will also include additional fields (such as tool name and command content); see the event reference below. All field names use snake_case.
+Individual events add their own fields (tool name, command text, and so on); see the event reference below. All field names are snake_case.
 
-## Return Values
+## Return values
 
-After the script exits, the CLI determines the hook's intent based on the exit code:
+After the script exits, the CLI reads its intent from the exit code:
 
 | Exit code | Meaning | CLI behavior |
 | --- | --- | --- |
@@ -141,11 +134,11 @@ After the script exits, the CLI determines the hook's intent based on the exit c
 
 ### JSON protocol detection
 
-For exit code `0`, the CLI classifies stdout using these rules:
+For exit code `0`, the CLI classifies stdout like this:
 
-- **Valid JSON**: The CLI recursively checks objects and arrays. If an object at any depth contains its own `message` or `hookSpecificOutput` key, the output is a protocol attempt and the top-level value must match the strict hook response object. A different top-level shape or invalid protocol field blocks a blocking event. JSON with neither key remains unstructured output and is allowed.
-- **Malformed object text**: Object-shaped text is a protocol attempt only when it contains a recognizable exact `message` or `hookSpecificOutput` key. Text starting with `[` is considered array-shaped only when its first non-whitespace character is a JSON value starter, so `[INFO]` and `[DEBUG]` logs stay unstructured. The key check recognizes common errors such as single-quoted keys, missing separators, and a missing colon before a value without treating prefixes such as `messageCount` as protocol keys. A recognized malformed attempt blocks a blocking event.
-- **Residual ambiguous text**: Malformed text without a recognizable exact protocol key cannot be reliably distinguished from ordinary logs, so it remains unstructured output and is allowed. This includes logs such as `[INFO] response contains "message": metadata`.
+- **Valid JSON** is walked recursively. If any object at any depth has its own `message` or `hookSpecificOutput` key, the output counts as a protocol attempt and the top-level value must match the strict hook response object — a different top-level shape or an invalid protocol field blocks a blocking event. JSON with neither key stays unstructured and is allowed.
+- **Malformed object text** counts as a protocol attempt only when it contains a recognizable exact `message` or `hookSpecificOutput` key. Text starting with `[` is treated as array-shaped only when its first non-whitespace character could start a JSON value, so `[INFO]` and `[DEBUG]` logs stay unstructured. Single-quoted keys, missing separators and a missing colon are recognized as mistakes, while a prefix such as `messageCount` is not treated as a protocol key. A recognized malformed attempt blocks a blocking event.
+- **Everything else** — malformed text with no recognizable protocol key, such as a log line quoting the word "message" — stays unstructured and is allowed, because it cannot be told apart from an ordinary log.
 
 You can also return a JSON object via stdout to block:
 
@@ -158,11 +151,11 @@ You can also return a JSON object via stdout to block:
 }
 ```
 
-::: info Which events support blocking?
-Only **blockable events** (`PreToolUse`, `Stop`, `UserPromptSubmit`) have return values that affect the main flow. All other events are **observation-only events** — they fire and forget; the main flow is unaffected regardless of what the script returns.
+::: info Which events can block?
+Only `PreToolUse`, `Stop` and `UserPromptSubmit` have return values that affect the main flow. Every other event is observation-only — it fires and the main flow continues whatever the script returns.
 :::
 
-## Event Reference
+## Event reference
 
 | Event | Matcher matches | Supports blocking? | Description |
 | --- | --- | --- | --- |
@@ -187,7 +180,7 @@ Only **blockable events** (`PreToolUse`, `Stop`, `UserPromptSubmit`) have return
 | `PostCompact` | `manual` or `auto` | — | Triggered after context compaction completes (observation only) |
 | `Notification` | Notification type (e.g. `task.completed`) | — | Triggered when a background task status changes (observation only) |
 
-## Example: Blocking Dangerous Shell Commands
+## Example: blocking a dangerous shell command
 
 The following hook checks the command content before the Agent calls the `Bash` tool and blocks it if `rm -rf` is detected:
 
@@ -217,13 +210,13 @@ process.stdin.on('end', () => {
 });
 ```
 
-After blocking, Kiki writes the blocking reason back into the context, and the model can use this to choose a safer alternative.
+After blocking, Kiki writes the reason back into the context, so the model can pick a safer alternative.
 
 ::: warning Note
-This example only demonstrates the blocking mechanism — it is not a production-grade security parser. Real scenarios are better served by whitelists, or a dedicated shell parser to handle quoting, variable expansion, and multi-command sequences.
+This example shows how blocking works; matching on a substring is not a security parser. For real protection, allowlist the commands you permit or use a shell parser that understands quoting, variable expansion and command chaining.
 :::
 
 ## Next steps
 
-- [Configuration](#configuration) — Full field reference for `[[hooks]]` in `config.toml`
-- [Agents and sub-agents](./agents.md) — Use the `SubagentStop` event to trigger notifications after a sub-agent completes
+- [Legacy rule fields](#legacy-rule-fields) — the full `[[hooks]]` field reference
+- [Agents and sub-agents](./agents.md) — use the `SubagentStop` event to notify when a sub-agent finishes

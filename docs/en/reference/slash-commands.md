@@ -14,7 +14,7 @@ Some commands are only available in the idle state. Executing these commands whi
 | --- | --- | --- | --- |
 | `/login` | — | Select an account or platform and log in: Kimi Code uses OAuth device-code flow; Kimi Platform uses API key login | No |
 | `/logout` | — | Clear credentials for the currently selected account | No |
-| `/provider` | — | Open the interactive provider manager to view, add, and remove configured providers. See [Platforms & Models — `/provider` and provider management](../configuration/providers.md#provider-—-interactive-provider-management) | Yes |
+| `/provider` | — | Open the interactive provider manager to view, add, and remove configured providers. See [Providers and models — `/provider`](../configuration/providers.md#provider-—-interactive-provider-management) | Yes |
 | `/model` | — | Switch the LLM model used in the current session | Yes |
 | `/settings` | `/config` | Open the settings panel inside the TUI | Yes |
 | `/experiments` | `/experimental` | Open the experimental feature panel | Yes |
@@ -130,7 +130,7 @@ All built-in Skill commands are only available in the idle state.
 
 Activated external Skills are automatically registered as slash commands. Ordinary external Skills use the `skill:` namespace prefix:
 
-```
+```text
 /skill:<name> [extra text]
 ```
 
@@ -138,7 +138,7 @@ For example, `/skill:code-style` loads the Skill named `code-style` and sends it
 
 External sub-skills appear directly in the slash command panel with dotted names:
 
-```
+```text
 /<parent-skill>.<sub-skill> [extra text]
 ```
 
@@ -146,7 +146,7 @@ For example, a child Skill named `review` inside a parent Skill named `code-styl
 
 For convenience, external Skill commands also support a shorthand form that omits the `skill:` prefix — `/<name>` — as long as the name is not taken by a system slash command. That is, `/code-style` falls back to matching `/skill:code-style`.
 
-::: info
+::: tip
 All Skill commands are only available in the idle state. `flow`-type Skills are also exposed via `/skill:<name>` — there is no separate `/flow:` namespace.
 :::
 

@@ -77,28 +77,27 @@ Mutual exclusion rules (startup fails if violated):
 
 ## Model and effort resolution
 
-For native executor agents, determine the model for this dispatch first, then resolve that model's thinking effort. Route and caller-lease pins supply soft defaults; deviations and explicit `preferred_*` / `discouraged_models` advice produce binding advisories only for hard-permitted executable bindings. `allowed_models`, `deny_models`, and `allowed_efforts` are hard at every profile, lease, tree, and matching model-profile scope. Machine deny rules and provider/executor capability checks also remain hard.
+Resolve the model first, then that model's thinking effort. Route and caller-lease pins are defaults you can override; `allowed_models`, `deny_models`, and `allowed_efforts` are hard limits at every profile, lease, tree, and matching `model_profiles` scope — for a subagent they reject binding, manual changes, and resume, while in a main session your own selection wins and going outside one only warns. A value the model itself does not support is still an error either way.
 
-Thinking effort resolves in this order, then must satisfy all hard effort lists:
+When a profile binds — a new main session, a new subagent, a model switch, or a native `AgentRun` dispatch — the requested effort is collected from the role's own sources and then resolved against the bound model:
 
-1. An explicit `effort` wins over defaults, not hard constraints. Pin or preference mismatches produce advisories; an out-of-list or unsupported effort is rejected.
-2. When `effort` is omitted, route or caller-lease defaults take precedence.
-3. A matching `model_profiles` entry.
-4. The profile's top-level `thinking_effort`, only when the selected model matches the profile's default `model_alias`.
-5. `[models."<alias>"].overrides.default_effort`.
-6. The selected model's `default_effort`, including `[models."<alias>"].default_effort`.
-7. The global `[thinking].effort`.
-8. If neither default effort is set, the model's supported-effort midpoint or capability fallback.
+1. An explicit `effort` on the call.
+2. For a main session, a persona's or route's locked effort. For a subagent, the route's locked effort, or the caller lease's when the route pins none. Then, in both cases, a matching `model_profiles` entry and the profile's top-level `thinking_effort`.
+3. The bound model's preferred effort.
+4. `[models."<alias>"].overrides.default_effort`.
+5. The model's own `default_effort`.
 
-When `[thinking].enabled` is `false`, an unpinned effort resolves to Off unless a model override is set. Models with `always_thinking` cannot be turned Off; their fallback follows the model-default-then-global order.
+If none of those produces a value, or the resulting effort is not one the model supports, the bind fails as a configuration error rather than silently picking something. With no model configured at all, the bind asks for both a model and an effort. You do not have to pass an effort when a route, lease, profile pin, or model default already supplies one; you need one only when nothing else does, in which case configure that pin or pass `effort` for this call.
 
-A profile without `model_alias` skips only the top-level effort layer; it does not fail closed, and resolution continues with the next default layer. On a plain resume, omitting model parameters keeps the current binding. An alias resolving to the same canonical model is a no-op. Changing only `effort` keeps the saved model. Changing to a different canonical model without `effort` re-resolves effort for the new model; on resume, that model change still requires `allow_model_change: true`. Existing parameter validation and the external executor's own validation remain in force.
+This applies to profile binding only. A plain resume that keeps an existing valid binding is not recomputed, so an effort saved earlier keeps working. Changing only `effort` keeps the saved model, and changing model on resume still requires `allow_model_change: true`.
+
+Paths that do not bind a profile are unchanged: the global `[thinking]` section still supplies its fallback, and `[thinking].enabled = false` still resolves an unpinned effort to Off there.
 
 ## Prompt field precedence
 
-Prompt text fields use a separate chain rather than the ordinary CLI/config priority. From low to high, the order is global `[prompt.overrides]`, model `[models."<alias>".prompt_overrides]`, agent or `SYSTEM.md` frontmatter `prompt_overrides`, and the matching `model_profiles[].prompt_overrides` — four precedence levels. Agent files and `SYSTEM.md` are two separate configuration surfaces sharing the same position in that chain, which brings the total to five supported surfaces.
+Prompt text fields use a separate chain. From low to high: global `[prompt.overrides]`, model `[models."<alias>".prompt_overrides]`, agent or `SYSTEM.md` frontmatter `prompt_overrides`, then the matching `model_profiles[].prompt_overrides`. Agent files and `SYSTEM.md` sit at the same level, so there are five surfaces across four levels.
 
-Every surface accepts `files` and `fields`. Files are loaded from the Kiki home directory in listed order, then inline fields win within that surface. A field missing at a higher level inherits the lower value; values are never concatenated. See [`prompt`](./config-files.md#prompt) for the external-file schema, available field examples, turn snapshots, and migration from the removed `prompt.shared` / `prompt.tools` keys.
+Every surface accepts `files` and `fields`. Files load from the Kiki home directory in listed order, then inline fields win within that surface. A field missing at a higher level inherits the lower value; values are never concatenated. See [`prompt`](./config-files.md#prompt) for the external-file schema, field examples, and how to move off the removed `prompt.shared` / `prompt.tools` keys.
 
 ## Common scenarios
 

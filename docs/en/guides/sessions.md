@@ -1,10 +1,10 @@
 # Workspaces and sessions
 
-Kiki persists every conversation as a "session" — storing message history and metadata so you can close the terminal or the browser and pick up right where you left off. The desktop app, browser GUI, and CLI/TUI all read and write the same session data. This page covers how to manage workspaces and sessions, use the task board, resume and fork sessions, and export or compress context.
+Every conversation is saved as a session — its message history and metadata — so you can close the terminal or the browser and pick the work up later. The desktop app, the browser UI and the CLI/TUI all read and write the same sessions. This page covers workspaces, resuming and forking, the task board, compression and export.
 
 ## Session storage
 
-All sessions are saved under `$KIKI_HOME/sessions/` (default: `~/.kiki/sessions/`), grouped by working directory. You do not need to touch these files in daily use — they matter when you need to debug, troubleshoot, or back up sessions:
+Sessions are saved under `$KIKI_HOME/sessions/` (default: `~/.kiki/sessions/`), grouped by working directory. You never need to touch these files to use Kiki; they are here to read when you are debugging or backing up:
 
 ```text
 ~/.kiki/
@@ -28,27 +28,25 @@ All sessions are saved under `$KIKI_HOME/sessions/` (default: `~/.kiki/sessions/
 Do not manually edit files inside the `sessions/` directory — doing so may prevent sessions from being restored correctly.
 :::
 
-The desktop and browser GUI store new-session choices separately from this CLI directory. When draft persistence is enabled, the GUI remembers the selected model and effort, plus the workspace, working directory, and profile (the agent's configuration file), across navigation and browser refresh. A session's inherited model and a local override are distinct: changing the local effort does not silently replace the model inherited from the current session. The **Composer → Persist composer drafts** toggle in Settings controls whether these selections and the per-session draft text are written to this browser; turning it off clears the saved store. Drafts in the currently open page are unaffected by turning the toggle off; a refresh or restart starts with no restored selection.
-
-> The two GUI paragraphs above do not apply to CLI users — feel free to skip them.
+In the desktop and browser GUI, the model, effort, workspace, working directory and profile (the agent's configuration file) you pick for a new session can be remembered across navigation and refresh. Turn that on with **Composer → Persist composer drafts** in Settings; turning it off clears what was saved. Drafts in the page you currently have open survive the switch, but the next refresh starts with nothing restored. This is separate from the session files above, which is why the two behave differently.
 
 ## Task board
 
-Open the task board from the fixed button at the bottom of the main agent's right panel. The board is fully built into Kiki — no additional installation is needed. Cards organize requirements and their links to sessions, not running agents. Todo lists remain separate and local to each agent.
+The task board lives behind the fixed button at the bottom of the main agent's right panel. Cards hold requirements and the sessions linked to them; an agent's own todo list stays separate and local to that agent.
 
-Cards appear a page at a time; counts and search results cover the cards loaded so far while syncing continues. Switching workspace scope or closing the board cancels further page loading. In a new-card form, card details, or a confirmation, `Tab` stays inside the topmost dialog and `Esc` closes only that dialog, returning focus to its opener. Dialogs cannot be dismissed while their save or delete request is pending.
+Cards load a page at a time, so counts and search results cover what has loaded so far while syncing continues. Changing the workspace scope or closing the board stops further loading. In a card form, card detail, or confirmation, `Tab` stays in the topmost dialog and `Esc` closes only that dialog and returns focus to whatever opened it. A dialog cannot be dismissed while its save or delete is still in flight.
 
-Trust the workspace before creating or editing cards. Storage is controlled by the `taskBoard.storage` setting: `auto` reuses a compatible workspace store first, or uses `sessions/<workspaceId>/.board`; `global` uses the `boards` directory under the Kiki home; `fixed` uses an absolute path or a path relative to the workspace that you provide. Paths are not executed as scripts. Previewing a location does not create it or grant write access; save the configuration before creating there. Nonempty incompatible directories are rejected.
+Trust the workspace before you create or edit cards there. Where they are stored is set by `taskBoard.storage`: `auto` reuses a compatible workspace store if it finds one and otherwise uses `sessions/<workspaceId>/.board`; `global` uses the `boards` directory under the Kiki home; `fixed` uses an absolute path, or one relative to the workspace, that you provide. Previewing a path does not create it or give Kiki write access — save the setting first. A directory that exists but cannot hold a board is rejected.
 
-Changing the storage setting does not migrate cards; existing cards keep referencing their original store. If another edit wins, reload the card before retrying; failed edits retain the draft. The main agent can read and write the board with the `BoardRead` and `BoardWrite` tools under normal tool policy and approval rules. Subagents keep their own `TodoList`; board tools require [explicit permission](../configuration/config-files.md#subagent). Plan mode cannot use `BoardWrite`.
+Changing the setting does not move existing cards; they keep pointing at the store they were created in. If someone else saved a change first, reload the card and try again — a failed edit keeps your draft. The main agent reads and writes the board with `BoardRead` and `BoardWrite` under the normal tool policy and approval rules; subagents need [explicit permission](../configuration/config-files.md#subagent) for those, keep their own `TodoList`, and Plan mode cannot use `BoardWrite` at all.
 
-When context is compacted, the handoff lists up to five cards linked to the current session, with their IDs, titles, and statuses. This read-only list requires the board feature and `BoardRead` to be enabled; it is omitted if the read fails or takes longer than 500 ms. Card status never updates automatically from Todo lists or completed agent runs.
+After a compaction, the handoff can list up to five cards linked to the session, with ids, titles and statuses. That list needs the board feature and `BoardRead` enabled, and is simply absent if the read fails or takes more than 500 ms. Card status is never updated from todo lists or finished agent runs.
 
 ## Starting and resuming sessions
 
-On the desktop or browser **New session** page, you can use an existing workspace, enter an absolute project directory, or select **Automatically create a workspace**. When no workspaces are registered, the automatic option is selected by default. On your first send, Kiki creates a new directory under `$KIKI_HOME/workspaces/` (default: `~/.kiki/workspaces/`), registers it as a workspace, and opens the session there. An explicitly selected workspace that was later deleted stays invalid until you choose another workspace or the automatic option; Kiki will not silently use a different existing one. See [Data locations](../configuration/data-locations.md#directory-layout) for the directory layout and cleanup implications.
+On the **New session** page in the desktop app or browser you can pick an existing workspace, type an absolute project directory, or choose **Automatically create a workspace** (the default when nothing is registered yet). With the automatic option, your first send creates a directory under `$KIKI_HOME/workspaces/` (default: `~/.kiki/workspaces/`), registers it, and opens the session there. If you picked a workspace explicitly and it was deleted since, it stays invalid until you choose another one or switch to automatic — Kiki will not quietly open a different workspace. [Data locations](../configuration/data-locations.md#directory-layout) has the layout and what cleanup touches.
 
-Opening a saved session in the desktop or browser GUI reads its history without starting an inactive session's agents. Selecting a subagent reads that subagent's history without loading the main agent's conversation. Sending, editing or regenerating a message, answering an approval or question, or steering a prompt activates the session first. If activation fails, the action is not sent and the history remains readable. Browsing does not stop work that is already running.
+Opening a saved session reads its history without waking an inactive session's agents, and selecting a subagent reads that subagent's history without the main agent's conversation. The session activates when you send, edit or regenerate a message, answer an approval or question, or steer a prompt. If activation fails, nothing is sent and the history stays readable. Reading a session never stops work already running in it.
 
 Every time you run `kiki` directly it creates a new session. To resume a previous session, use one of the following:
 
@@ -74,7 +72,7 @@ kiki --session
 `--continue` and `--session` are mutually exclusive.
 :::
 
-In the GUI, a saved model, profile, or effort that is no longer available remains visible with a diagnostic. Select a valid value before sending; the GUI does not silently substitute another model or profile. An error shown while the list is still loading or when the catalog request fails does not mean your saved choice is invalid.
+In the GUI, a saved model, profile or effort that is no longer available stays visible with a diagnostic. Pick a valid value before sending — the GUI will not quietly swap in a different model or profile. An error while the list is still loading, or a failed catalog request, does not mean your saved choice is bad.
 
 ## Switching sessions inside the TUI
 
@@ -87,19 +85,19 @@ You can manage sessions without leaving the terminal. The following slash comman
 
 ## GUI session recovery and activity
 
-In the sidebar, a thread created by another thread normally nests under its creator. To display it as a separate top-level row, open its row menu and choose **Show at top level**; choose **Show nested** to return it. This changes only the display, not the creator relationship. The choice survives a refresh or restart in the same browser or desktop space and server connection. When sorting by recent activity, each thread uses its own activity time; activity in a child thread does not move its parent ahead of other threads.
+A thread created by another thread nests under its creator by default. **Show at top level** in the row's menu lifts it into its own top-level row, and **Show nested** puts it back. This is display only — the creator relationship stays as it is, and the choice survives a refresh or restart in the same browser or desktop space. Sorting by recent activity uses each thread's own time, so activity in a child does not pull its parent forward.
 
-When session recovery fails, the GUI keeps the history that was already loaded and shows the error together with a request ID when one is available. A **Retry now** button in the same area calls the recovery action directly.
+If session recovery fails, the GUI keeps whatever history it had already loaded and shows the error, with a request ID when there is one. **Retry now** next to it reruns the recovery.
 
-Resolved questions, approvals, markers, and background-task completion notices stay in the timeline as compact entries. Completed work can be grouped under **Worked**; expand it to see the individual entries. Expand an answered question to read the full question and its saved answer. Dismissed and expired questions also expand to show the original question and choices. Completed task output remains available in task history. File references can be previewed, opened, or shown in their containing folder from the relevant session view; a preview is generated on demand and is not the original file, which stays available to open or download.
+Resolved questions, approvals, markers and finished background tasks stay in the timeline as compact entries. Finished work can be grouped under **Worked**; expand it to see the individual entries. Expanding a question shows the full question and, for an answered one, the saved answer — dismissed and expired questions show their original choices too. Output from completed tasks stays in task history. File references can be previewed, opened or revealed in their folder; a preview is generated on demand, and the original file is still there to open or download.
 
-In the file preview, Markdown opens in the rendered view; switch to **Source** to inspect the text or edit it in the desktop app when a write channel is available. The rendered view supports tables, math, diagrams, and images linked relative to the Markdown file. For files larger than about 512 KB, the initial view shows only the beginning and is read-only. Select **Load full file** in either the rendered or Source view to display the rest; loading the full file does not enable editing.
+Markdown previews open rendered. **Source** shows the text, and in the desktop app you can edit it there when a write channel is available. The rendered view handles tables, math, diagrams and images linked relative to the Markdown file. Above roughly 512 KB the first view is the beginning of the file and read-only; **Load full file** in either view shows the rest, and still does not enable editing.
 
 ## GUI usage statistics
 
-Opening **Usage** without filters starts with today in the browser's local time. An explicit range in the URL takes precedence; a previously saved all-history view does not replace this default. The page refreshes its date boundary across midnight and when the browser's timezone offset changes.
+**Usage** opens on today in the browser's local time. A range in the URL overrides that, and a saved all-history view does not replace it. The page keeps its date boundary correct across midnight and when the browser's timezone offset changes.
 
-Token usage and estimated cost have separate completeness indicators. When a provider does not return usage, Kiki marks it as unknown rather than a real zero. Mixed results show the recorded subtotal with an incomplete-accounting notice. Older zero records without accounting provenance remain ambiguous; Kiki does not reconstruct missing tokens from them. Missing model prices affect cost estimates, not recorded token counts. The **Data reliability** section distinguishes these cases from an empty range or a failed request.
+Token usage and estimated cost each carry their own completeness marker. If a provider returned no usage, Kiki shows that as unknown rather than as a real zero, and mixed results show the recorded subtotal with an incomplete-accounting notice. A missing model price affects the cost estimate only, never the recorded token count. **Data reliability** tells these cases apart from an empty range or a failed request.
 
 ## Context compression
 
@@ -115,19 +113,19 @@ You can pass a hint to tell the model what to prioritize when compressing:
 /compact Keep the discussion about database migrations
 ```
 
-The context meter below the composer shows the same numbers and lets you set the compaction point, and its detail card also carries the renewal strategy — summarize (the default), fresh (restart from the agent's working notes), or auto. `/autocompact` shows or changes the compaction point from the terminal. Facts you want to survive compression are better kept in [memory](./memory.md), which outlives the session entirely.
+You can ask for a compaction while the agent is already working. Kiki queues the request and runs it once the current response and the tools it called have finished, without waiting for the rest of the turn. Asking again while a manual compaction is queued or running does nothing — there is only ever one. The line above the context meter says which one you are watching and how far along it is: **Manual compaction queued**, then **running**, then **complete**. A run that cannot compact ends as **failed**. The automatic one from the context limit reads the same way, with *Automatic* in place of *Manual*.
+
+The context meter under the composer shows the same numbers, lets you set the compaction point, and carries the renewal strategy: **summarize** (the default), **fresh** (restart from the agent's working notes), or **auto**. `/autocompact` shows or moves the compaction point from the terminal. Facts that must survive compression belong in [memory](./memory.md), which outlives the session.
 
 ## Forking a session
 
-To explore a new direction without disrupting the current conversation, use `/fork`:
+`/fork` copies the current session so you can try a different direction without disturbing this one:
 
 ```sh
 /fork
 ```
 
-Forking does not switch you away: you stay in the original session and the conversation continues untouched. The fork is an independent copy you can switch to at any time using `/sessions`. A saved `/goal` is not copied to the fork. Start a new goal there if you want autonomous goal work.
-
-After forking, the CLI prints a ready-to-run `kiki --resume` command (also copied to the clipboard) so you can enter the fork directly from a new terminal process.
+You stay in the original session; the fork is an independent copy you can switch to whenever you like with `/sessions`. A `/goal` you saved does not come along — set one in the fork if you want goal-driven work there. The CLI prints a ready-to-run `kiki --resume` command, also on your clipboard, so you can open the fork from a fresh terminal.
 
 ## Exporting a session
 
@@ -143,14 +141,14 @@ Omitting `sessionId` exports the most recent session in the current directory (w
 kiki export <sessionId> -o ~/Desktop/my-session.zip
 ```
 
-The export includes all files in the session directory, including diagnostic logs. The global diagnostic log (`~/.kiki/logs/kimi-code.log` — the file name follows the project's early naming; it is Kiki's global log) is also bundled by default; add `--no-include-global-log` to exclude it.
+The export includes everything in the session directory, diagnostic logs included, plus the global log at `~/.kiki/logs/kimi-code.log` (the name is inherited from the project's earlier naming). Add `--no-include-global-log` to leave that one out.
 
 You can also export from inside the TUI without leaving the interactive session:
 
 - **`/export-debug-zip`**: produces the same debug ZIP as `kiki export`.
 - **`/export-md`** (alias `/export`): exports the conversation as a human-readable Markdown file, suitable for sharing or archiving. Accepts an optional path argument; without one, it writes to `kimi-export-<short-id>-<timestamp>.md` in the current working directory.
 
-In the web UI, `/export` downloads the current session as a diagnostic ZIP. It includes the persisted session data, diagnostic logs, and a bounded metadata-only `logs/kimi-web.jsonl` record of key browser events. Prompt text, WebSocket payloads, and console arguments are not copied into this browser log. This web command differs from the TUI `/export` alias above.
+In the web UI, `/export` downloads the current session as a diagnostic ZIP: the persisted session data, diagnostic logs, and a bounded metadata-only `logs/kimi-web.jsonl` record of key browser events. Prompt text, WebSocket payloads and console arguments are not copied into that browser log. This is a different command from the TUI `/export` alias above.
 
 ::: tip
 Exported files may contain code, command output, and file paths that are sensitive. Review the content before sharing.

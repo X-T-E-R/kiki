@@ -1,14 +1,20 @@
 # `@kiki/acp-client`
 
-Outbound ACP v1 client and child-process lifecycle engine for external agent executors.
+Runs an external ACP agent as a child process and normalizes its event stream.
 
-## Boundary
+This is a workspace package. It is marked `private: true`, so it is not
+published to npm as its own release; the API below is the contract
+`packages/agent-core-v2` programs against, and the examples assume a repository
+checkout rather than an installed dependency.
 
-This package owns ACP transport, process lifecycle, remote-session opening, cancellation, session-ref validation, and the first ACP-to-executor-neutral event mapper. It does not know about Kiki turns, transcript records, interactions, profiles, or dependency injection. The agent-core adapter supplies those policies and projects the normalized events into Kiki's canonical turn and transcript contracts.
+Its job is transport and process lifecycle: spawn the external agent, speak ACP
+over stdio, open or resume its session, stream normalized events, and cancel or
+shut down cleanly. It knows nothing about Kiki turns, transcripts, or profiles —
+the agent-core adapter supplies those and projects the events into Kiki's own
+contracts. `packages/acp-server` is the mirror image: it exposes Kiki as an ACP
+Agent, where this package acts as the ACP Client.
 
-`packages/acp-server` is the opposite protocol role: it exposes Kiki as an ACP Agent. This package hosts an external ACP Agent as the ACP Client.
-
-## Main API
+## Usage
 
 ```ts
 import { AcpProcessClient } from '@kiki/acp-client';
@@ -38,34 +44,44 @@ for await (const event of turn.events) {
 const result = await turn.completion;
 ```
 
-The constructor accepts the minimal shape shared by `IHostProcessService`: `spawn(command, args, options)`, returning piped stdin/stdout/stderr plus `wait`, `kill`, and `dispose`. The package never imports or calls `child_process.spawn`; production injects the runtime lease's process service and tests may inject a fake.
+The constructor takes the shape shared by `IHostProcessService`: `spawn(command,
+args, options)` returning piped stdin/stdout/stderr plus `wait`, `kill`, and
+`dispose`. This package never calls `child_process.spawn` itself — production
+injects the runtime lease's process service, tests inject a fake.
 
-`AcpProcessClient` exports:
+`AcpProcessClient` exposes:
 
-- `status()` with the full `cold → spawning → initializing → opening_session → configuring → ready ⇄ prompting` lifecycle;
-- `openSession()` implementing live reuse, `session/resume`, `session/load`, then `session/new` fallback;
-- `startTurn()` returning an async normalized event stream and completion promise;
-- `cancel()` implementing `session/cancel`, JSON-RPC request cancellation, cancel grace, connection close, TERM, and KILL;
+- `status()` — the full `cold → spawning → initializing → opening_session → configuring → ready ⇄ prompting` lifecycle;
+- `openSession()` — live reuse, then `session/resume`, `session/load`, falling back to `session/new`;
+- `startTurn()` — an async stream of normalized events plus a completion promise;
+- `cancel()` — `session/cancel`, JSON-RPC request cancellation, a cancel grace period, connection close, TERM, then KILL;
 - `shutdown()`, `stderrTail()`, and `sessionRef()`.
 
-On Windows, process-tree termination is explicit: TERM/KILL escalation uses injected `taskkill /PID <pid> /T` and `/F` through the same host process service. stdout is reserved for ACP NDJSON; stderr is separately logged and retained in a bounded ring.
+On Windows, process-tree termination is explicit: TERM/KILL escalation shells
+out to `taskkill /PID <pid> /T` and `/F` through the same injected process
+service. stdout carries ACP NDJSON only; stderr is logged separately and kept
+in a bounded ring buffer.
 
 ## Normalized executor events
 
-`mapAcpSessionNotification()` and `mapAcpSessionUpdate()` are the first mapper required by the executor-neutral adapter boundary. They emit `NormalizedExecutorEvent`, including:
+`mapAcpSessionNotification()` and `mapAcpSessionUpdate()` produce
+`NormalizedExecutorEvent`:
 
-- `message.delta` and `thought.delta`;
-- `tool.call` and `tool.update`;
-- `plan.update` and `plan.remove`;
-- `commands.update`, `mode.update`, `config.update`, and `session.info`;
-- `usage`;
-- `unknown` for forward-compatible update discriminators.
+- `message.delta` and `thought.delta`
+- `tool.call` and `tool.update`
+- `plan.update` and `plan.remove`
+- `commands.update`, `mode.update`, `config.update`, `session.info`
+- `usage`
+- `unknown`, for update discriminators a newer agent introduces
 
-Known malformed updates are protocol errors and close the connection. Unknown update discriminators are rewritten before the SDK's closed-union parser, mapped to `unknown`, and never expose ACP schema types to downstream executor recorders.
+A malformed update is a protocol error and closes the connection. An
+unrecognized discriminator is rewritten to `unknown` before it reaches the
+SDK's closed-union parser, so ACP schema types never reach downstream recorders.
 
 ## Durable session refs
 
-`parseExecutorSessionRefEnvelope`, `serializeExecutorSessionRefEnvelope`, and `deserializeExecutorSessionRefEnvelope` validate:
+`parseExecutorSessionRefEnvelope`, `serializeExecutorSessionRefEnvelope`, and
+`deserializeExecutorSessionRefEnvelope` validate:
 
 ```ts
 {
@@ -75,8 +91,16 @@ Known malformed updates are protocol errors and close the connection. Unknown up
 }
 ```
 
-Refs must be bounded JSON, have limited nesting, contain no secret-like keys, and match the executor ID/version before reuse. Persistence remains the adapter's responsibility.
+A ref must be bounded JSON with limited nesting and no secret-like keys, and
+must match the executor ID and version before reuse. Persisting the ref is the
+adapter's job.
 
 ## Test fixtures
 
-`test/fixtures/in-process-scripted-agent.ts` uses SDK `agent()` and direct `ClientApp ↔ AgentApp` connection for protocol tests. `test/fixtures/stdio-fake-agent.mjs` is a real spawnable stdio process covering capabilities, new/resume/load fallback, config options, message/thought/tool/plan/usage/unknown updates, permission selection/cancellation, pre/post-prompt crash, initialize/prompt/cancel hangs, stderr noise, malformed NDJSON, idle exit, and Windows child-tree termination.
+`test/fixtures/in-process-scripted-agent.ts` drives protocol tests through the
+SDK `agent()` and a direct `ClientApp ↔ AgentApp` connection.
+`test/fixtures/stdio-fake-agent.mjs` is a real spawnable stdio process covering
+capabilities, new/resume/load fallback, config options,
+message/thought/tool/plan/usage/unknown updates, permission selection and
+cancellation, pre- and post-prompt crashes, initialize/prompt/cancel hangs,
+stderr noise, malformed NDJSON, idle exit, and Windows child-tree termination.

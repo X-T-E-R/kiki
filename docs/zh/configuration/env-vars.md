@@ -24,9 +24,9 @@ export KIKI_HOME="/path/to/custom/kiki"
 
 > 确保目录可写。多个 `kiki` 实例共用同一个 `KIKI_HOME` 会共享配置和凭证。
 
-在 macOS 和 Linux 上，共享运行时会在这个目录里保留本地端点，得到的路径长度有随平台变化的上限。家目录仍然过长时会报配置问题，并给出实际长度、该平台的上限和修法——换用更短的 `KIKI_HOME`。这是诊断，不是静默搬迁：Kiki 不会替你搬移数据，也不会自行改用别的目录；短 symlink 也无法缩短上限实际度量的真实路径。
+在 macOS 和 Linux 上，共享运行时会在这个目录里保留本地端点，得到的路径长度有随平台变化的上限。路径仍然过长时，Kiki 会报出配置问题，并给出实际长度、该平台的上限和修法：换用更短的 `KIKI_HOME`。Kiki 不会替你搬移数据，短 symlink 也无法缩短上限实际度量的真实路径。
 
-在 macOS 或 Linux 上升级后，请先退出所有仍在使用同一 `KIKI_HOME` 的进程，再用新版本启动。旧版本与新版本不会共用同一个运行中的运行时，Kiki 也不会替你迁移旧的那个。Windows 不受影响——那里的运行时使用命名管道，不需要这一步。
+在 macOS 或 Linux 上升级后，请先退出所有仍在使用同一 `KIKI_HOME` 的进程，再用新版本启动——新旧版本不会共用同一个运行中的运行时。Windows 不受影响：那里的运行时使用命名管道。
 
 数据目录的完整结构见[数据路径](./data-locations.md)。
 
@@ -36,9 +36,7 @@ export KIKI_HOME="/path/to/custom/kiki"
 
 ## 供应商凭证键
 
-下面这些键名不是直接从 shell 读取的——它们是写在 `[providers.<name>.env]` 子表里、作为 `api_key` / `base_url` 备用来源的键名。CLI 只从配置文件读取，不从 `process.env` 读取。
-
-这样设计是为了让你保留熟悉的键名写法，同时把密钥挡在 `config.toml` 之外：密钥键放进配套的 `credentials.toml`，非密钥的 `*_BASE_URL` 键留在 `config.toml`。
+下面这些键名不从 shell 读取。它们写在 `[providers.<name>.env]` 子表里，作为 `api_key` / `base_url` 的备用来源。密钥键放进配套的 `credentials.toml`，非密钥的 `*_BASE_URL` 键留在 `config.toml`。
 
 ```toml
 # ~/.kiki/credentials/credentials.toml
@@ -170,7 +168,7 @@ kiki
 
 subagent 并发没有环境变量覆盖。请在 [`[subagent]`](./config-files.md#subagent) 中配置 `max_direct_children` 和 `max_total_subagents`，默认值分别为 `16` 和 `0`（不限）。
 
-`[subagent].default_model` 仅在派发参数与生效 pin 都未指定模型时显式提供兜底；它不会继承调用方，也不能绕过硬模型规则。`[subagent].default_effort` 仍已移除：使用档位 pin 或所选模型的默认值（见 [`subagent`](./config-files.md#subagent)）。宿主强制环境值同样不能绕过 profile 硬列表。
+`[subagent].default_model` 只在派发参数与生效 pin 都未指定模型时提供兜底。它不会继承调用方的模型；它和宿主强制的环境值都不能绕过 profile 的硬模型规则。`[subagent].default_effort` 已移除、不再读取，启动时会给出警告——请改用 profile、route 或 caller lease 上的 effort pin，或者交给所选模型使用它自己的默认值。
 
 ## 诊断日志
 

@@ -28,6 +28,8 @@ confirmed facts from open questions.
 
 `model_alias` and `thinking_effort` are optional: they select a configured model and effort for this persona, and they do not grant permissions. A `tools` field is rejected, because tools belong to the profile.
 
+The **Personas** page is the form view of that file. One persona's settings in a single column: which profile it rides on, its model and effort, the working directory its conversations start in, whether it is pinned to the sidebar, and which memory bodies it can read.
+
 Two behaviors are worth knowing before you edit. Each session freezes its own persona snapshot, so changing the card does not silently alter a conversation already in flight — start a new session, or rebuild its context, to apply the edit. And the opening greeting is local presentation until you explicitly reply to it; simply opening the conversation does not put it into the model's history.
 
 The Personas page also imports and exports Character Card V3 in JSON, PNG, and CHARX, and the avatar picker takes PNG, JPEG, or WebP. **Remove avatar** restores the initials without deleting the persona or its memories; a duplicate creates a new identity without copying conversation state or private memory; archive hides a persona from ordinary selection without erasing it.
@@ -35,6 +37,8 @@ The Personas page also imports and exports Character Card V3 in JSON, PNG, and C
 See [Personas, Bots, and rooms](/en/customization/personas) for the full card reference.
 
 ![The persona card: name, avatar, responsibility, and the standing rules it works by.](/shots/people/people-persona-card.en.png)
+
+![One persona's settings: the profile it rides on, its model and effort, the working directory, how it is delivered, whether it is pinned or hidden from the sidebar, and which memory it can read.](/shots/people/ps-people-execution-detail.en.png)
 
 ## A fixed daily conversation
 
@@ -64,11 +68,15 @@ Members run in order, so a later speaker sees earlier speakers' results rather t
 
 The budget limits member messages after each user message — 12 by default. When it runs out the discussion pauses, and **Continue** resets the budget and resumes the retained work. **Pause** cancels queued wakes but lets the active turn finish.
 
+![A room whose member budget is spent: the discussion paused at 12 of 12 messages, with Continue and Adjust limit offered, and the member list beside it.](/shots/people/ps-20261005-people-room-paused.en.png)
+
 Renaming, changing the host, muting, and reassigning the classification workspace never rewrite a member's system prompt or permissions. A member that cannot wake shows the failure and a recovery action rather than a promise of an automatic retry: for a model login failure, sign in under **Settings → Models & providers → Connections**, or open the member's conversation and pick an available model, then send another room message and mention it if it is not the host.
 
 See [Discuss in a room](/en/customization/personas#discuss-in-a-room) and [Collaboration tools](/en/reference/tools#collaboration-tools).
 
 ![A room where three personas discuss a release, each message attributed to its speaker.](/shots/people/people-room.en.png)
+
+![A room that also holds threads, listed under their own tab when you go to add a member.](/shots/people/ps-20261005-people-room-threads.en.png)
 
 ## Next steps
 

@@ -18,7 +18,7 @@ kiki serve --ensure --workspace . --json
 kiki serve --stop
 ```
 
-With no mode, `serve` runs the daemon in the foreground. `--query --json` only inspects the current instance; `--ensure` attaches to an existing healthy instance or starts one; `--stop` shuts down the reachable instance for the selected home. A live instance with unverifiable identity must be stopped or upgraded before Kiki will start another. `--idle-exit` defaults to `30m`; active client leases (periodically renewed indications that a client is still using the daemon) and running dispatches keep it alive. Explicit `--idle-exit 0ms` keeps a newly started daemon running until explicitly stopped. The TUI performs the same attach-or-start behavior after workspace trust.
+With no mode, `serve` runs the daemon in the foreground. `--query --json` only inspects the current instance; `--ensure` attaches to an existing healthy instance or starts one; `--stop` shuts down the reachable instance for the selected home. If a live instance's identity cannot be verified, stop or upgrade it before Kiki will start another. `--idle-exit` defaults to `30m`; active client leases (periodically renewed indications that a client is still using the daemon) and running dispatches keep it alive. Explicit `--idle-exit 0ms` keeps a newly started daemon running until you stop it. The TUI attaches or starts the same way after workspace trust.
 
 ## Run the compatible foreground server
 
@@ -50,14 +50,14 @@ For a trusted local client, carry the local-owner capability as follows:
 
 - **REST**: the `Authorization: Bearer <token>` request header.
 - **Kiki GUI**: the URL in the startup banner carries a `#token=` fragment, so opening it in a browser completes sign-in automatically. The fragment is never sent to the server.
-- **WebSocket**: clients that can set headers use `Authorization: Bearer`; clients that cannot (such as browsers) pass the subprotocol (a protocol name declared during the WebSocket handshake) `kimi-code.bearer.<token>` (a historical protocol name kept from the upstream Kimi Code era for compatibility).
+- **WebSocket**: clients that can set headers use `Authorization: Bearer`; clients that cannot (such as browsers) pass the token in the handshake subprotocol as `kimi-code.bearer.<token>`.
 
-If the remote owner token leaks, run `kiki web rotate-token`: it replaces `server.token`, invalidates the old remote credential and stops affected peer streams without a restart. This does not rotate `server.local-owner`; treat exposure of that local administrative capability as a compromise of local access, not as something fixed by remote-token rotation.
+If the remote owner token leaks, run `kiki web rotate-token`: it replaces `server.token`, invalidates the old remote credential and stops affected peer streams without a restart. It does not rotate `server.local-owner`, so treat exposure of that file as a compromise of local access.
 
 The desktop GUI first checks the instance registry and attaches to an existing server with its local-owner capability; only when none is found does it start its own sidecar. Supported local clients in the same home therefore share the same sessions, regardless of which launcher started the server.
 
 ::: warning Note
-This warning targets independently provisioned, mutually untrusted runtimes (for example, two services with distinct host identities and separate authority domains): do not point such runtimes at the same writable home, do not copy session directories between their homes, and do not copy `device_id` to make two homes impersonate the same host — session indexes, thread attribution, and permission boundaries all rely on the uniqueness of a home identity. The shared daemon, TUI, desktop GUI, and coexisting server instances within one home are supported ways of collaborating and are unaffected.
+Two independently provisioned runtimes that do not trust each other — separate services with their own host identity and authority domain — must not share a writable `KIKI_HOME`, must not copy session directories between their homes, and must not copy `device_id` to impersonate the same host. Session indexes, thread attribution, and permission boundaries all depend on a home having a unique identity. The shared daemon, TUI, desktop GUI, and coexisting server instances inside one home are supported and unaffected.
 :::
 
 Binding a non-loopback address (`--host`, including bare `--host`, which targets `0.0.0.0`) requires either a TLS-terminating reverse proxy in front of the server or `--insecure-no-tls`; without one of those the server refuses to start. Once it is running on a non-loopback address, you may set `KIKI_PASSWORD` as an additional owner credential; it does not replace the local-owner capability or the per-source grant. The server rate-limits authentication failures automatically.
@@ -84,7 +84,7 @@ kiki web --insecure-no-tls      # allow plain LAN HTTP (see the warning below)
 
 In the TUI the same operations are `/web temporary|persistent|status|off|link|revoke [id]`, with `--host`, `--port`, `--public-url`, `--insecure-no-tls`, and `--no-open`.
 
-Each run prints a single-use link that signs a browser in. Kiki redeems it for a session cookie held by the browser itself (HttpOnly, `SameSite=Strict`, host-only, `Secure` over HTTPS); no session or root token is ever placed in JavaScript, `localStorage`, or a URL query string. The link is shown once — the server keeps only a digest, so a lost link is replaced by a new one rather than looked up. An already-authorized browser keeps working across service restarts; a new device needs a new link.
+Each run prints a single-use link that signs a browser in. Kiki redeems it for a session cookie held by the browser itself (HttpOnly, `SameSite=Strict`, host-only, `Secure` over HTTPS); no session or root token is ever placed in JavaScript, `localStorage`, or a URL query string. The server keeps only a digest, so a lost link is replaced by a new one rather than looked up. An already-authorized browser keeps working across service restarts; a new device needs a new link.
 
 Turning Web access off revokes every link and every browser session, and closes the open streams. It does not stop the daemon, the desktop app, or the TUI, and it does not cancel work already started. `kiki serve` and the desktop app are unaffected either way.
 

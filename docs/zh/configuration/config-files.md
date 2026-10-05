@@ -1,20 +1,24 @@
 # 配置文件
 
-Kiki 把所有长期偏好写进 `~/.kiki/` 下的 TOML（一种结构清晰的纯文本配置格式）文件——比如使用哪个模型、填哪个 API 密钥、Agent 每轮最多跑几步。保存后会保留到下次启动；`config.toml` 与供应商凭证也会在 Kiki 运行中自动重载。Agent 与运行时设置放在 `config.toml`，供应商凭证放在独立的 `credentials.toml`，终端界面与客户端偏好（主题、编辑器、通知、自动更新）放在配套的 `tui.toml`。
+Kiki 的长期偏好保存在 TOML（结构清晰的纯文本格式）文件里，分布在三处，改之前值得先分清：
 
-默认位置：`~/.kiki/config.toml`，首次运行时自动创建。供应商凭证放在 `~/.kiki/credentials/credentials.toml`，详见 [供应商凭证](#供应商凭证)。
+| 文件 | 存放内容 |
+| --- | --- |
+| `~/.kiki/config.toml` | Agent 与运行时设置，以及模型和供应商定义 |
+| `~/.kiki/credentials/credentials.toml` | API 密钥、OAuth 令牌与 MCP 凭据 |
+| `~/.kiki/tui.toml` | 终端侧偏好：主题、编辑器、通知、自动更新 |
+
+`config.toml` 在首次运行时创建。保存的偏好会保留到下次启动，运行中 Kiki 会同时监听 `config.toml` 和凭证文件。
 
 ## 配置文件位置
 
-CLI 从 `~/.kiki/config.toml` 读取配置。如需把数据目录迁移到别处，可用 `KIKI_HOME` 环境变量覆盖：
+要把整个数据目录换到别处，设置 `KIKI_HOME` 环境变量：
 
 ```sh
 export KIKI_HOME=/path/to/kiki-home
 ```
 
-此时配置文件路径变为 `$KIKI_HOME/config.toml`。无论目录在哪里，文件名固定是 `config.toml`。
-
-覆盖数据目录后，供应商凭证路径为 `$KIKI_HOME/credentials/credentials.toml`。`credentials/` 目录还存放 OAuth 与 MCP 凭据。
+配置文件随之变为 `$KIKI_HOME/config.toml`——无论目录在哪，文件名始终是 `config.toml`——凭证在 `$KIKI_HOME/credentials/credentials.toml`。
 
 ::: tip
 TOML 字段名一律用下划线（snake_case），如 `default_model`、`max_context_size`。字段名里若含 `.`，需用引号包住，例如 `[models."gpt-4.1"]`——否则 TOML 会把 `.` 解释为嵌套表分隔符。
@@ -22,7 +26,7 @@ TOML 字段名一律用下划线（snake_case），如 `default_model`、`max_co
 
 ## 配置修改如何生效
 
-Kiki 会在运行它的主机上监听 `config.toml` 和 `credentials/credentials.toml`。保存合法修改、文件内容稳定后会自动重载；修改请求并发规则不需要重启或执行 `/reload`。定期检查会补上遗漏的文件通知，尚未写完的内容会稍后重试；解析失败时保留上一份有效配置，并给出诊断。请修复诊断中指明的文件，不要从设置页覆盖它。
+Kiki 在运行时监听 `config.toml` 和 `credentials/credentials.toml`。保存合法修改后内容稳定即自动重载，改请求并发规则不需要重启或执行 `/reload`；定期检查会补上遗漏的文件通知，尚未写完的保存会被重试。解析失败时保留上一份有效配置并给出诊断，请修复诊断指名的文件，不要从设置页覆盖它。
 
 文件重载与设置生效的时机不同：
 
@@ -127,7 +131,7 @@ api_key = "YOUR_API_KEY"
 
 ### 迁移已有密钥
 
-如果根目录还留有旧版 `credentials.toml`，启动时会把其内容原样迁入 `credentials/credentials.toml`；迁移成功前仍可从旧位置读取。如果新旧两处内容不同，Kiki 会停止而不擅自选择，请核对两份文件后重试。如果旧版 `config.toml` 里仍留有供应商凭证，启动时会把它们迁入 `credentials/credentials.toml`，并重写 `config.toml`（不再包含这些凭证）。原 `config.toml` 会以唯一的 `config.toml.bak-<YYYY-MM-DD>-<uuid>` 名称保留为备份，便于查看或恢复。备份仍含原来的明文密钥；确认迁移成功后，若不再需要备份，请将其删除。成功迁移后重复加载不会另建备份，也不会改动已迁出的凭证。如果两个文件的同一密钥路径有不同的值，迁移会停止并要求人工核对，不会擅自选择其一；失败或中断的迁移也可能留下需检查的备份。
+根目录还留有旧版 `credentials.toml` 时，启动会把内容原样迁入 `credentials/credentials.toml`，迁移成功前仍可从旧位置读取；两处内容不同则停止而不擅自选择，请核对后重试。旧版 `config.toml` 里仍留有凭证的，启动会把它们迁入 `credentials/credentials.toml` 并重写 `config.toml`，原文件以唯一的 `config.toml.bak-<YYYY-MM-DD>-<uuid>` 保留为备份。备份里仍是明文密钥，核对完不再需要就删掉它。迁移成功后重复加载不会再建备份，也不会改动已迁出的凭证；同一密钥路径在两个文件里值不同时迁移会停下等你人工处理，中断或失败可能留下需要检查的备份。
 
 ### 文件权限
 
@@ -243,9 +247,13 @@ max_context_size = 1048576
 
 ### 显式迁移旧版模型参数
 
-打开**设置 → 模型与提供商 → 可用模型 → 旧版模型参数迁移**，点击**预览迁移**可只读检查拟复制的字段，不会写文件。预览仅列模型别名、参数名、需人工核对的原因、修订标识及备份标识；不返回配置原文、凭据值或备份内容。模型参数不会在启动时自动迁移。在没有歧义的情况下，迁移会把旧版 `request_params.temperature`／`top_p` 和 `max_completion_tokens`／`service_tier` 复制进模型的 `parameters` 表。歧义值及冲突项留待人工处理；**旧字段不会被删除**，请先核对预览，不要假定旧字段的行为已经改变。
+旧版配置把 `temperature` / `top_p` 和 `max_completion_tokens` / `service_tier` 放在不同位置。**设置 → 模型与提供商 → 可用模型 → 旧版模型参数迁移** 可以把它们复制到某个模型的 `parameters` 表里。
 
-点击**应用预览的改动**并再次确认后，服务器先在 `config.toml` 旁以唯一的 `config.toml.generation-backup-<uuid>` 名称逐字备份原文件，再有条件地写入新配置。如果配置已变化或预览过期，则拒绝写入，不覆盖新修改。备份可能包含原始密钥，请像保护 `config.toml` 和 `credentials.toml` 一样保护它；服务器配置存储在支持的平台上要求仅文件所有者可读写，但不要假定各平台权限完全相同。面板列出备份标识；**恢复备份**还需单独确认，且只有当前配置仍逐字匹配该备份对应的迁移结果、预览修订仍有效时才会恢复。之后的修改只在配置字节不同的情况下阻止恢复；目前仅凭配置字节计算的修订标识无法发现配置最终回到完全相同字节的修改序列，此时旧备份仍可能撤销一次更新的同内容迁移。在发生后续修改后，不要使用旧备份恢复。备份和配置是两个文件，并非一次跨文件的崩溃原子事务。配置 CAS 明确拒绝过期修订时，只有新备份仍匹配原始字节才会删除；写入结果无法确认时，系统会保留备份和当前配置供核对，而不会冒险回滚另一写者的改动。在 Windows 上，底层原子写会先尝试通过重命名覆盖；若遭遇 `EPERM` 竞争，可能退回先删除目标文件再重命名，读者会短暂看不到配置，且在该空窗崩溃可能导致目标缺失。遇到不确定的失败，请先检查两个文件及备份再重试。
+先点**预览迁移**：它只读列出模型别名、参数名、需要你人工判断的原因、一个修订标识和将使用的备份名称，不写任何文件。没有歧义的值会被复制；有歧义或冲突的值留给你决定。你原有的字段不会被删除，所以请读预览，而不是假设配置已经变了。
+
+再点**应用预览的改动**：它会先在 `config.toml` 旁以唯一的 `config.toml.generation-backup-<uuid>` 逐字备份原文件，然后才动配置；如果配置在预览之后被改过，它拒绝写入。该备份包含你的原始密钥，请像保护 `config.toml` 和 `credentials.toml` 一样保护它，不再需要时就删掉。
+
+**恢复备份**需要单独一次确认，而且只有当前配置仍与该备份产生的版本逐字一致时才会恢复；期间任何其他编辑都会挡住它。迁移后尽早恢复：修订标识用的是逐字节比较，所以之后若某次编辑恰好让配置回到完全相同的字节，系统发现不了，旧备份就可能撤销更新的工作。
 
 ### 模型别名解析
 
@@ -341,13 +349,13 @@ steering = "cognition/flash-steering.md"
 
 `~/.kiki/cognition/flash-anchor.md`：
 
-```
+```text
 You are a helpful software engineer assistant.
 ```
 
 `~/.kiki/cognition/flash-steering.md`：
 
-```
+```text
 Router: classify this task (build or fix) now, then adopt the matching style — build: direct production; fix: inspect-first. Let's first understand the problem and devise a plan; then let's carry out the plan and act.
 ```
 

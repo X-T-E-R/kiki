@@ -42,7 +42,7 @@ See [Interface overview](/en/guides/interface#right-rail) and [Session controls]
 
 See [Usage](/en/guides/settings#usage) and [`kiki usage-export`](/en/reference/command#kiki-usage-export).
 
-![The usage page in History, with token and cost per session and a note on how complete the data is.](/shots/daily/daily-usage.en.png)
+![The usage page on its History tab: cost, token, and cache-hit totals for the range, a seven-day trend, and the per-session breakdown below.](/shots/daily/daily-usage.en.png)
 
 ## Next steps
 
