@@ -621,9 +621,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     });
 
     entry.handleSubscription = {
-      dispose() {
-        outputSub.dispose();
-        stateSub.dispose();
+      async dispose() {
+        await outputSub.dispose();
+        await stateSub.dispose();
       },
     };
 

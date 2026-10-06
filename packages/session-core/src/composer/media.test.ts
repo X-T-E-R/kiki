@@ -4,6 +4,7 @@ import type { Message } from '@kiki/protocol';
 
 import {
   FILE_LINK_SENTINEL,
+  documentPreviewFormatOf,
   extOf,
   extractToolOutputMedia,
   formatBytes,
@@ -274,6 +275,19 @@ describe('previewKindOf / extOf', () => {
     expect(previewKindOf('/x/clip.mp4')).toBe('video');
     expect(previewKindOf('/x/clip.WEBM')).toBe('video');
     expect(previewKindOf('C:/x/take.mov')).toBe('video');
+    expect(previewKindOf('/x/guide.PDF')).toBe('pdf');
+    expect(previewKindOf('/x/report.docx')).toBe('office');
+    expect(previewKindOf('/x/table.xlsx')).toBe('office');
+    expect(previewKindOf('/x/slides.pptx')).toBe('office');
+  });
+
+  it('classifies only the rendered document formats as document previews', () => {
+    expect(documentPreviewFormatOf('/x/guide.PDF')).toBe('pdf');
+    expect(documentPreviewFormatOf('/x/report.docx')).toBe('docx');
+    expect(documentPreviewFormatOf('/x/table.xlsx')).toBe('xlsx');
+    expect(documentPreviewFormatOf('/x/slides.pptx')).toBe('pptx');
+    expect(documentPreviewFormatOf('/x/legacy.doc')).toBeUndefined();
+    expect(documentPreviewFormatOf('/x/notes.csv')).toBeUndefined();
   });
 
   it('extracts the basename extension case-insensitively', () => {

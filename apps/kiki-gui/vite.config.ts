@@ -5,6 +5,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 import { localServerPlugin } from './vite/localServer';
+import { pdfAssetsPlugin } from './vite/pdfAssets';
 
 const packageJson = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
   version: string;
@@ -18,7 +19,7 @@ const webPort = Number(process.env['KIKI_GUI_PORT']) || 5177;
 const serverTarget = process.env['KIKI_SERVER_URL'] || 'http://127.0.0.1:58627';
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), localServerPlugin({ proxyTarget: serverTarget })],
+  plugins: [react(), tailwindcss(), pdfAssetsPlugin(), localServerPlugin({ proxyTarget: serverTarget })],
   define: {
     __KIKI_PROXY_TARGET__: JSON.stringify(serverTarget),
     'import.meta.env.VITE_APP_VERSION': JSON.stringify(packageJson.version),

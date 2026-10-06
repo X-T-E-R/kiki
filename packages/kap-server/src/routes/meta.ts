@@ -23,6 +23,7 @@ export interface MetaRouteOptions {
   readonly buildId?: string;
   readonly buildChannel?: string;
   readonly serverId: string;
+  readonly desktopManaged?: boolean;
   readonly serverHomeId?: string;
   readonly currentSpaceId: string;
   readonly startedAt: string;
@@ -72,6 +73,7 @@ export function registerMetaRoute(app: RouteHost, opts: MetaRouteOptions): void 
     build_channel: opts.buildChannel,
     capabilities: Object.freeze(capabilities),
     server_id: opts.serverId,
+    desktop_managed: opts.desktopManaged,
     server_home_id: opts.serverHomeId,
     current_space_id: opts.currentSpaceId,
     started_at: opts.startedAt,

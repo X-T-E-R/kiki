@@ -47,6 +47,17 @@ export interface HostFileDrop {
   readonly position?: { readonly x: number; readonly y: number };
 }
 
+/**
+ * The work mode this native window was opened in (`desktop_window_mode`).
+ * `presetId` is what `--preset work` asked for, and `windowId` is this window's
+ * own identity — the two together are what let two windows on one home be in
+ * different modes without overwriting each other.
+ */
+export interface DesktopWindowMode {
+  readonly presetId: string;
+  readonly windowId: string;
+}
+
 /** One entry of `desktop_space_statuses`. */
 export interface DesktopSpaceStatus {
   readonly homeId: string;
@@ -186,6 +197,11 @@ interface HostCapabilities {
   prepareSpace?: (homeId: string) => Promise<{ readonly homeId: string }>;
   /** Windows mode: open (or focus) the space's own window (`open_space`). */
   openSpace?: (homeId: string) => Promise<void>;
+  /**
+   * The work mode this window was launched in. Absent on a build without modes,
+   * which the boot reads as "this window has no mode of its own".
+   */
+  windowMode?: () => Promise<DesktopWindowMode | null>;
   /** Windows mode: source-home broker window; only a registered connection id crosses the bridge. */
   openRemoteSpace?: (connectionId: string) => Promise<void>;
   /** Windows-only. Rejects with `{ code, message }`; never overwrites an existing shortcut. */

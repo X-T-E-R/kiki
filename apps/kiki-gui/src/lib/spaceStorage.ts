@@ -162,6 +162,9 @@ export const SPACE_SCOPED_STORAGE_KEYS = [
   'kiki.sidebar.workspaceGroups',
   'kiki.sidebar.topLevelThreads',
   'kiki.timelineView',
+  // The work mode a window opens in. Space-scoped because a home's modes are
+  // its own; the window dimension lives inside the stored value, not the key.
+  'kiki.windowMode',
 ] as const;
 
 /** Key families whose suffix varies per workspace (`kiki.draft.new.<scopeId>`). */
@@ -199,4 +202,8 @@ export const EXCLUDED_STORAGE_KEYS = [
   // Desktop connections never persist (`persist: false`), so this key only ever
   // holds a browser direct-connect choice; the desktop token stays in memory.
   'kiki.connection',
+  // This window's own id (`lib/workModes.ts`). It is neither a space's data nor
+  // shared across spaces — it is minted per window and lives in session
+  // storage, so it is outside both axes by design.
+  'kiki.windowId',
 ] as const;

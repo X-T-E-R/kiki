@@ -33,6 +33,7 @@ import {
 import { USAGE_FILTER_DEFAULTS, readStoredUsageFilters, writeStoredUsageFilters } from './usageV2';
 import { readTopLevelThreads, writeTopLevelThreads } from './threadDisplayMemory';
 import { isSpaceViewRoute, markSpaceViewRoute, readSpaceViewRoute, restoreSpaceViewAtBoot, writeSpaceViewRoute } from './spaceViewState';
+import { adoptWindowId, configureWorkModes, writeWindowModeId } from './workModes';
 
 // Matches the repo's other fs-driven GUI tests: vitest gives `import.meta.url`
 // a file URL here, while `new URL(..., import.meta.url)` does not.
@@ -149,6 +150,56 @@ describe('space view memory', () => {
     expect(() => writeSpaceViewRoute('/usage')).not.toThrow();
     expect(() => restoreSpaceViewAtBoot({ kind: 'tauri' })).not.toThrow();
     expect(window.location.pathname).toBe('/new');
+  });
+});
+
+describe('a window opened into a mode', () => {
+  afterEach(() => {
+    configureWorkModes({ homeId: 'main' });
+    adoptWindowId('w-default');
+    writeWindowModeId('kiki');
+  });
+
+  it('starts on its own mode landing page on a home and window that have no view yet', () => {
+    configureSpaceStorage({ homeId: 'space-b' });
+    configureWorkModes({ homeId: 'space-b' });
+    adoptWindowId('w-work-one');
+    writeWindowModeId('work');
+    window.history.replaceState(null, '', '/s/foreign');
+    restoreSpaceViewAtBoot({ kind: 'tauri' });
+    expect(window.location.pathname).toBe('/work');
+  });
+
+  it('keeps this window’s own saved route, and a second window of the same mode does not adopt it', () => {
+    configureSpaceStorage({ homeId: 'space-b' });
+    configureWorkModes({ homeId: 'space-b' });
+    adoptWindowId('w-work-one');
+    writeWindowModeId('work');
+    writeSpaceViewRoute('/s/session-b/tasks?filter=running');
+    window.history.replaceState(null, '', '/s/foreign');
+    restoreSpaceViewAtBoot({ kind: 'tauri' });
+    expect(`${window.location.pathname}${window.location.search}`).toBe('/s/session-b/tasks?filter=running');
+
+    // A second window on this home is a separate window, with its own session
+    // storage and none of the first one's route ownership.
+    sessionStorage.clear();
+    adoptWindowId('w-work-two');
+    writeWindowModeId('work');
+    window.history.replaceState(null, '', '/s/foreign');
+    restoreSpaceViewAtBoot({ kind: 'tauri' });
+    // It has no route of its own, so it lands on the mode rather than adopting
+    // the first window's session.
+    expect(window.location.pathname).toBe('/work');
+  });
+
+  it('still reaches the same home’s last session in a window that is not in a mode', () => {
+    configureSpaceStorage({ homeId: 'space-b' });
+    configureWorkModes({ homeId: 'space-b' });
+    adoptWindowId('w-kiki-one');
+    localStorage.setItem(spaceStorageKey('kiki.lastSessionId'), 'session-b');
+    window.history.replaceState(null, '', '/s/foreign');
+    restoreSpaceViewAtBoot({ kind: 'tauri' });
+    expect(window.location.pathname).toBe('/s/session-b');
   });
 });
 

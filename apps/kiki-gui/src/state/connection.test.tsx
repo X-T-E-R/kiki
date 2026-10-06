@@ -136,6 +136,7 @@ function ConnectedHarness() {
       void connection.activateSshProfile('host-1', 'a'.repeat(43)).catch((error: unknown) => { setSwitchError(String(error)); });
     }} />
     <button type="button" data-switch-local onClick={connection.activateLocal} />
+    <button type="button" data-switch-manual onClick={() => { connection.applyConnection({ url: 'http://peer.example.test:8080', token: 'peer-token' }); }} />
   </>;
 }
 
@@ -255,7 +256,7 @@ async function flush(): Promise<void> {
   });
 }
 
-async function mountProvider(strict = false, settings = false, switcher = false, browserReturn = false): Promise<HTMLDivElement> {
+async function mountProvider(strict = false, settings = false, switcher = false, browserReturn = false, manualScope = false): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -263,10 +264,15 @@ async function mountProvider(strict = false, settings = false, switcher = false,
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  const router = createMemoryRouter([{ path: '*', element: <NavScopeBoundary>
-    <NavigationObserver />
-    {browserReturn ? <BrowserReturnHarness /> : <><ConnectedHarness />{settings ? <ConnectionSection /> : null}{switcher ? <SwitcherHarness /> : null}</>}
-  </NavScopeBoundary> }], { initialEntries: [browserReturn ? '/s/browser-source' : '/new'] });
+  // A manual address is chosen inside the provider, so that test renders the
+  // harness without the scope boundary that would re-enter the local scope.
+  const element = manualScope
+    ? <><NavigationObserver /><ConnectedHarness /></>
+    : <NavScopeBoundary>
+      <NavigationObserver />
+      {browserReturn ? <BrowserReturnHarness /> : <><ConnectedHarness />{settings ? <ConnectionSection /> : null}{switcher ? <SwitcherHarness /> : null}</>}
+    </NavScopeBoundary>;
+  const router = createMemoryRouter([{ path: '*', element }], { initialEntries: [browserReturn ? '/s/browser-source' : '/new'] });
   const connection = <ConnectionProvider>
     {strict && !browserReturn ? <StrictLifecycleHarness /> : <RouterProvider router={router} />}
   </ConnectionProvider>;
@@ -1140,5 +1146,121 @@ describe('same direct return ownership', () => {
     expect(active.closed).toBe(false); expect(active.close).not.toHaveBeenCalled();
     expect(mocks.terminalSubscriptions).toHaveLength(terminalSubscriptions);
     expect(() => returnedConnection!.socket.onTerminalSignal(() => {})).not.toThrow();
+  });
+});
+
+describe('a closed desktop socket', () => {
+  const firstPort = { url: 'http://127.0.0.1:41001', token: 'local-token' };
+  const restartedPort = { url: 'http://127.0.0.1:41557', token: 'local-token' };
+
+  beforeEach(() => {
+    mocks.meta.mockImplementation(() => Promise.resolve({ server_id: 'local', server_version: '0.1.0', dangerous_bypass_auth: false }));
+    mocks.invoke.mockImplementation(() => Promise.resolve([]));
+  });
+
+  /**
+   * The socket the provider is actually attached to. After a manual switch the
+   * desktop client stays open as the local control connection, so the first
+   * open client is not the one whose status this window observes.
+   */
+  function statusHandler(): (status: string) => Promise<void> {
+    const open = mocks.klients.filter((entry) => !entry.closed);
+    const client = open[open.length - 1]!;
+    return (status: string) => act(async () => { client.terminal.onStatus.mock.calls.at(-1)![0](status); });
+  }
+
+  /** Past the debounce the recovery actually waits for. */
+  async function settle(): Promise<void> {
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 300); }); });
+    await flush();
+  }
+
+  /** A desktop window the user has pointed at their own server. */
+  async function onManualAddress(): Promise<HTMLDivElement> {
+    const container = await mountProvider(false, false, false, false, true);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-manual]')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(MANUAL.url);
+    return container;
+  }
+
+  const MANUAL = { url: 'http://peer.example.test:8080', token: 'peer-token' };
+
+  it('re-discovers the new random port after another window restarts this home', async () => {
+    mocks.detectLocalConnection.mockResolvedValueOnce({ config: firstPort, persist: false })
+      .mockResolvedValueOnce({ config: restartedPort, persist: false });
+    const container = await mountProvider();
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(firstPort.url);
+    expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(1);
+
+    // The backend this window was attached to is replaced: its socket closes
+    // and the new one listens elsewhere.
+    const close = statusHandler();
+    await close('closed');
+    await settle();
+
+    expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(restartedPort.url);
+  });
+
+  it('leaves a hand-entered address alone instead of dragging it back to a local port', async () => {
+    mocks.detectLocalConnection.mockResolvedValue({ config: firstPort, persist: false });
+    const container = await onManualAddress();
+    const discoverCalls = mocks.detectLocalConnection.mock.calls.length;
+
+    await statusHandler()('closed');
+    await settle();
+
+    // No re-discovery at all: an address the user typed is not one this
+    // window's shell owns and may move.
+    expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(discoverCalls);
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(MANUAL.url);
+  });
+
+  it('does not let a local backend stage clear or re-point a hand-entered address', async () => {
+    mocks.detectLocalConnection.mockResolvedValue({ config: firstPort, persist: false });
+    const container = await onManualAddress();
+
+    const stage = mocks.stageListener!;
+    // The local backend restarts underneath a window that is not using it.
+    await act(async () => { stage({ payload: 'waiting' }); });
+    await settle();
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(MANUAL.url);
+    const afterWaiting = mocks.detectLocalConnection.mock.calls.length;
+
+    await act(async () => { stage({ payload: { stage: 'failed', failure: { kind: 'unknown' } } }); });
+    await flush();
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(MANUAL.url);
+    // Neither stage re-resolved the local backend behind the user's back.
+    expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(afterWaiting);
+  });
+
+  it('does not let a discovery that is already stale replace a newer one', async () => {
+    mocks.detectLocalConnection.mockResolvedValueOnce({ config: firstPort, persist: false });
+    const container = await mountProvider(false, false, false, false, true);
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(firstPort.url);
+
+    // One re-discovery starts and is slow.
+    const slow = deferred<{ config: typeof restartedPort; persist: boolean }>();
+    mocks.detectLocalConnection.mockReturnValueOnce(slow.promise);
+    const close = statusHandler();
+    await close('closed');
+    await settle();
+    expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(2);
+
+    // Before it answers, the socket drops again and a second, faster discovery
+    // finds the port the backend is really on now.
+    const current = { url: 'http://127.0.0.1:41999', token: 'local-token' };
+    mocks.detectLocalConnection.mockResolvedValueOnce({ config: current, persist: false });
+    await close('closed');
+    await settle();
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(current.url);
+
+    // The first answer now arrives carrying the port the backend has already
+    // left behind. Adopting it would move this window onto a dead address.
+    await act(async () => { slow.resolve({ config: restartedPort, persist: false }); });
+    await flush();
+
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(current.url);
   });
 });

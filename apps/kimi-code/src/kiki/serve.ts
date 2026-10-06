@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { open, mkdir, realpath, stat, unlink } from 'node:fs/promises';
+import { open, mkdir, realpath, readFile, stat, unlink } from 'node:fs/promises';
 import { join, normalize, resolve } from 'node:path';
 import { isSea } from 'node:sea';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -112,6 +112,17 @@ export async function ensureServer(options: {
   return withEnsureLock(homeDir, async () => {
     const raced = await findReachableServer(homeDir, workspace);
     if (raced !== undefined) return raced;
+    if ((await listLiveServerInstances(homeDir)).length > 0) {
+      const drainDeadline = Date.now() + ENSURE_TIMEOUT_MS;
+      while ((await listLiveServerInstances(homeDir)).length > 0) {
+        const recovered = await findReachableServer(homeDir, workspace);
+        if (recovered !== undefined) return recovered;
+        if (Date.now() >= drainDeadline) {
+          throw new Error(`A live Kiki service in this home is still draining or unreachable. Keep its windows open and retry after it stops; no second service was started. See log: ${resolveGlobalLogPath(homeDir)}`);
+        }
+        await sleep(250);
+      }
+    }
     spawnDetachedServer({
       homeDir,
       port: options.port,
@@ -297,7 +308,9 @@ async function withEnsureLock<T>(homeDir: string, work: () => Promise<T>): Promi
   const serverDir = join(homeDir, 'server');
   const lockPath = join(serverDir, 'ensure.lock');
   await mkdir(serverDir, { recursive: true });
+  const deadline = Date.now() + 120_000;
   for (;;) {
+    if (Date.now() >= deadline) throw new Error('This space is still starting or updating. Keep its owner running and retry when it finishes; its lifecycle lock was not removed.');
     try {
       const handle = await open(lockPath, 'wx');
       await handle.writeFile(String(process.pid));
@@ -316,7 +329,13 @@ async function withEnsureLock<T>(homeDir: string, work: () => Promise<T>): Promi
         if ((statError as NodeJS.ErrnoException).code === 'ENOENT') continue;
         throw statError;
       }
-      if (Date.now() - info.mtimeMs >= ENSURE_LOCK_STALE_MS) {
+      const owner = Number(await readFile(lockPath, 'utf8').catch(() => ''));
+      let ownerAlive = Number.isInteger(owner) && owner > 0;
+      if (ownerAlive) {
+        try { process.kill(owner, 0); }
+        catch (probeError) { ownerAlive = (probeError as NodeJS.ErrnoException).code !== 'ESRCH'; }
+      }
+      if (!ownerAlive && (owner > 0 || Date.now() - info.mtimeMs >= ENSURE_LOCK_STALE_MS)) {
         await unlink(lockPath).catch(() => {});
       } else {
         await sleep(100);

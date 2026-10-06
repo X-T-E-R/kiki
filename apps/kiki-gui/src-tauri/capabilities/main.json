@@ -20,6 +20,8 @@
     "dialog:allow-save",
     "allow-desktop-connection",
     "allow-desktop-active-space",
+    "allow-desktop-window-mode",
+    "allow-open-mode-window",
     "allow-desktop-space-statuses",
     "allow-set-unread-count",
     "allow-switch-space",

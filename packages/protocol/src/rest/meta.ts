@@ -64,6 +64,8 @@ export const metaResponseSchema = z.object({
    */
   dangerous_bypass_auth: z.boolean(),
   external_delegation: externalDelegationStateSchema.optional(),
+  experimental_flags: z.record(z.string(), z.boolean()).optional(),
+  desktop_managed: z.boolean().optional(),
   /**
    * Backend engine generation serving this API. `'v2'` is the DI × Scope
    * engine (`@kiki/kap-server` / `agent-core-v2`); older servers omit

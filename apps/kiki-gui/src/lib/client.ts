@@ -4,11 +4,12 @@
  * `@kiki/klient`; this module only preserves GUI-facing wire shapes.
  */
 
-import { nbSearchCapabilitiesSchema, nbSearchKeyUsageViewSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, type NbSearchKeyUsageView, type NbSearchManagedCredentialView } from '@kiki/protocol';
+import { nbSearchCapabilitiesSchema, nbSearchKeyUsageViewSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, documentPreviewResponseSchema, workPresetMutationResponseSchema, workPresetsResponseSchema, type DocumentPreviewRequest, type DocumentPreviewResponse, type NbSearchKeyUsageView, type NbSearchManagedCredentialView, type WorkPresetMutationResponse, type WorkPresetPreference, type WorkPresetsResponse } from '@kiki/protocol';
 import { createConnectionTransport, createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
 import { translate } from '@kiki/session-core/i18n';
 import { contentOriginalFileId, type ContentRef } from '@kiki/transcript';
 import { createSessionTransport } from '@kiki/session-core/session/klientTransport';
+import { documentPreviewAssetPath } from './previewAssets';
 import type {
   ActivateSkillRequest,
   ActivateSkillResult,
@@ -2646,6 +2647,80 @@ export class KikiClient {
         request_id: 'request_id' in envelope && typeof envelope.request_id === 'string' ? envelope.request_id : undefined });
     }
     return ('data' in envelope ? envelope.data : null) as T;
+  }
+
+  /**
+   * One rendered document-preview asset, as bytes over the authenticated
+   * connection this client already holds.
+   *
+   * The asset route sits behind the same bearer gate as every other `/api`
+   * route, so a browser `<img src>` or a bare `getDocument({ url })` would be
+   * refused — and a remote scope would send the request to the wrong origin.
+   * Reading it here keeps one rule: bytes come from the connection the file
+   * lives on, never from a host path or a Tauri-relative address in the DOM.
+   *
+   * `assetUrl` is the server's own value. A root-relative URL is resolved
+   * against this client's endpoint, which is also what a remote scope needs.
+   */
+  async readDocumentPreviewAsset(assetUrl: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; mime: string }> {
+    const path = documentPreviewAssetPath(assetUrl);
+    const root = this.baseUrl.replace(/\/+$/u, '');
+    const url = root === ''
+      ? new URL(path, globalThis.location?.origin ?? 'http://localhost')
+      : new URL(`${root}${path}`);
+    const headers: Record<string, string> = { accept: '*/*' };
+    if (this.token !== undefined) headers['authorization'] = `Bearer ${this.token}`;
+    const response = await (this.transport?.fetch ?? fetch)(url, { headers, signal });
+    if (!response.ok) {
+      throw new ApiError({ code: API_CODES.INVALID_RESPONSE, msg: `Preview asset could not be read (HTTP ${response.status})`, data: null });
+    }
+    return { bytes: new Uint8Array(await response.arrayBuffer()), mime: response.headers.get('content-type') ?? 'application/octet-stream' };
+  }
+
+  /**
+   * Work modes for THIS home: `/api/work-presets` (list, explicit enable,
+   * customize, remove). The routes and schemas are the shared contract, but
+   * `klient.rest` groups no work-presets domain yet, so these ride the same
+   * authenticated `/api` path `memoryRequest` already uses. Enabling a mode is
+   * the only call that installs or turns anything on; a list, a mode switch or
+   * a route restore never revives what the user removed.
+   */
+  async listWorkPresets(): Promise<WorkPresetsResponse> {
+    return workPresetsResponseSchema.parse(await this.memoryRequest<unknown>('GET', '/work-presets'));
+  }
+
+  async enableWorkPreset(id: string, installPrerequisites: boolean): Promise<WorkPresetMutationResponse> {
+    return workPresetMutationResponseSchema.parse(await this.memoryRequest<unknown>('POST', `/work-presets/${encodeURIComponent(id)}/enable`, {
+      body: { consent: true, install_prerequisites: installPrerequisites },
+    }));
+  }
+
+  async updateWorkPreset(id: string, patch: { enabled?: boolean; preferences?: WorkPresetPreference }): Promise<WorkPresetMutationResponse> {
+    return workPresetMutationResponseSchema.parse(await this.memoryRequest<unknown>('PATCH', `/work-presets/${encodeURIComponent(id)}`, { body: patch }));
+  }
+
+  /** Removes the mode only. Plugins, sessions and documents stay in this home. */
+  async removeWorkPreset(id: string): Promise<WorkPresetMutationResponse> {
+    return workPresetMutationResponseSchema.parse(await this.memoryRequest<unknown>('DELETE', `/work-presets/${encodeURIComponent(id)}`));
+  }
+
+  /**
+   * `POST /sessions/{id}/document-preview` — one page, sheet or text window of
+   * a document, rendered by the server from the bytes it already has. The
+   * answer is a discriminated union: `ready` carries read-only rendered assets,
+   * `text` is the file's own text (labelled `source`, never a layout), and
+   * `missing_dependency` names the one thing to install. Nothing is fetched
+   * from the network and no path is handed to an external viewer.
+   */
+  async documentPreview(
+    sessionId: string,
+    request: DocumentPreviewRequest,
+  ): Promise<DocumentPreviewResponse> {
+    return documentPreviewResponseSchema.parse(await this.memoryRequest<unknown>(
+      'POST',
+      `/sessions/${encodeURIComponent(sessionId)}/document-preview`,
+      { body: request },
+    ));
   }
 
   /**

@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import { resolveGlobalLogPath } from '@kiki/node-sdk';
+import { createInstanceRegistry } from '@kiki/kap-server';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import { createProgram } from '../../src/cli/commands';
@@ -33,6 +34,7 @@ afterEach(async () => {
   process.execArgv = originalExecArgv;
   mocks.sea = false;
   vi.clearAllMocks();
+  mocks.sleep.mockImplementation(async () => {});
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
@@ -46,7 +48,9 @@ it('reports the requested home log and executable doctor commands at the startup
   const homeDir = join(root, 'custom home');
   vi.stubEnv('KIKI_HOME', join(root, 'other-home'));
   mocks.spawn.mockReturnValue({ unref: mocks.unref });
-  vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(60_000);
+  let now = 0;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  mocks.sleep.mockImplementation(async () => { now += 60_000; });
   const fetch = vi.fn(() => { throw new Error('Unexpected network request'); });
   vi.stubGlobal('fetch', fetch);
 
@@ -74,7 +78,9 @@ it.each([true, false])('routes detached startup to serve for SEA=%s without repe
   process.argv = [process.execPath, sea ? process.execPath : script];
   process.execArgv = ['--import', 'example-loader'];
   mocks.spawn.mockReturnValue({ unref: mocks.unref });
-  vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(60_000);
+  let now = 0;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  mocks.sleep.mockImplementation(async () => { now += 60_000; });
   await expect(ensureServer({ homeDir, port: 0 })).rejects.toThrow('startup deadline');
   const args = mocks.spawn.mock.calls[0]![1] as string[];
   expect(args).toEqual([
@@ -89,4 +95,49 @@ it.each([true, false])('routes detached startup to serve for SEA=%s without repe
   expect(action).toHaveBeenCalledOnce();
   expect(serve.opts()).toMatchObject({ home: homeDir, idleExit: '30m', json: true, port: 0 });
   expect(await readdir(join(homeDir, 'server'))).toEqual([]);
+});
+
+
+it('waits for a live but unreachable registered instance to finish draining before spawning', async () => {
+  const scratch = resolve(import.meta.dirname, '../../../../.tmp/cli-help-445');
+  await mkdir(scratch, { recursive: true });
+  root = await mkdtemp(join(scratch, 'serve-drain-'));
+  const homeDir = join(root, 'home');
+  const registration = await createInstanceRegistry({ instancesDir: join(homeDir, 'server', 'instances') }).register({ pid: process.pid, host: '127.0.0.1', port: 1, startedAt: Date.now() });
+  let now = 0;
+  let released = false;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  mocks.spawn.mockReturnValue({ unref: mocks.unref });
+  mocks.sleep.mockImplementation(async () => {
+    if (!released) {
+      expect(mocks.spawn).not.toHaveBeenCalled();
+      await registration.release();
+      released = true;
+    } else {
+      now = 60_000;
+    }
+  });
+  try {
+    await expect(ensureServer({ homeDir })).rejects.toThrow('startup deadline');
+    expect(released).toBe(true);
+    expect(mocks.spawn).toHaveBeenCalledOnce();
+    expect(mocks.sleep).toHaveBeenCalledTimes(2);
+  } finally { await registration.release(); }
+});
+
+it('reports an unreachable live instance without starting a second daemon at the drain deadline', async () => {
+  const scratch = resolve(import.meta.dirname, '../../../../.tmp/cli-help-445');
+  await mkdir(scratch, { recursive: true });
+  root = await mkdtemp(join(scratch, 'serve-drain-timeout-'));
+  const homeDir = join(root, 'home');
+  const registration = await createInstanceRegistry({ instancesDir: join(homeDir, 'server', 'instances') }).register({ pid: process.pid, host: '127.0.0.1', port: 1, startedAt: Date.now() });
+  let now = 0;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  mocks.sleep.mockImplementation(async () => { now = 60_000; });
+  try {
+    await expect(ensureServer({ homeDir })).rejects.toThrow('no second service was started');
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    expect(mocks.sleep).toHaveBeenCalledExactlyOnceWith(250);
+    expect(await readdir(join(homeDir, 'server', 'instances'))).toEqual([`${registration.serverId}.json`]);
+  } finally { await registration.release(); }
 });

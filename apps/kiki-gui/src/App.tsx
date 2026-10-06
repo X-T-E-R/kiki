@@ -22,7 +22,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { Workspace } from '@kiki/protocol';
+import type { WorkPresetItem, Workspace } from '@kiki/protocol';
 import {
   Navigate,
   Route,
@@ -66,6 +66,11 @@ import { isBotOrRoomSession } from './components/persona/personaSessionUtils';
 import { TasksPage } from './components/TasksPage';
 import { Toasts } from './components/Toasts';
 import { UsagePage } from './components/UsagePage';
+import { WorkPage } from './components/WorkPage';
+import { WorkSetupSheet } from './components/WorkSetupSheet';
+import { useWorkModes, workPresetsEnabled } from './lib/workModeCatalog';
+import { readWindowModeId } from './lib/workModes';
+import { landingRouteFor } from './lib/workModeStartup';
 import { useHost } from './host';
 import {
   adjacentRunningSession,
@@ -122,11 +127,19 @@ export function retryRootReadModelDelay(attempt: number): number {
 function RootRedirect() {
   const host = useHost();
   const { scopeId } = useConnection();
+  const { pathname } = useLocation();
   const target = useMemo(() => {
     const saved = host.kind === 'tauri' ? readSpaceViewRoute(scopeId) : undefined;
+    if (saved !== undefined) return saved;
+    // A window launched into a mode opens on that mode's landing page, so its
+    // first frame is the surface the user asked for. The current path is
+    // excluded: a route that landed here only because its mode is unavailable
+    // has to move on rather than redirect to itself.
+    const landing = landingRouteFor(readWindowModeId());
+    if (landing !== pathname) return landing;
     const lastSessionId = readLastSessionId();
-    return saved ?? (lastSessionId !== undefined ? `/s/${lastSessionId}` : '/new');
-  }, [host.kind, scopeId]);
+    return lastSessionId !== undefined ? `/s/${lastSessionId}` : '/new';
+  }, [host.kind, pathname, scopeId]);
   return <Navigate to={target} replace />;
 }
 
@@ -195,6 +208,14 @@ export function App() {
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  // Work setup is one sheet, reached from the mode menu on any page and from
+  // the Work surface itself, so a user who is mid-conversation can add the
+  // missing piece without losing where they were.
+  const [workSetup, setWorkSetup] = useState<WorkPresetItem | null>(null);
+  const openWorkSetup = useCallback((mode: WorkPresetItem) => { setWorkSetup(mode); }, []);
+  // One catalog read per client, shared by the Work surface and the setup
+  // sheet so a completed setup refreshes both without a second fetch.
+  const workModeCatalog = useWorkModes(client, workPresetsEnabled(meta));
   // Decided exactly once per app run, the moment both probes have answered:
   // a "configured" answer latches too, so a later catalog hiccup can never
   // pop the wizard over an established session.
@@ -605,6 +626,12 @@ export function App() {
               path="/new"
               element={<NewSessionPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
             />
+            <Route
+              path="/work"
+              element={workPresetsEnabled(meta)
+                ? <SpaceViewState><WorkPage onSetupMode={openWorkSetup} enabled /></SpaceViewState>
+                : <RootRedirect />}
+            />
             {/* The persona's stable address lives in the shell too: it hands
                 over to /s/:id on the same mount when a daily conversation
                 already exists, and renders the daily draft when it does not. */}
@@ -745,6 +772,15 @@ export function App() {
         {shortcutsOpen ? <ShortcutsOverlay onClose={() => { setShortcutsOpen(false); }} /> : null}
         {onboardingOpen ? (
           <OnboardingWizard onClose={() => { setOnboardingOpen(false); }} />
+        ) : null}
+        {workSetup !== null && client !== null ? (
+          <WorkSetupSheet
+            mode={workSetup}
+            client={client}
+            onClose={() => { setWorkSetup(null); }}
+            onEnabled={() => { workModeCatalog.reload(); }}
+            onPickFile={() => { setWorkSetup(null); }}
+          />
         ) : null}
         <Toasts />
       </div>

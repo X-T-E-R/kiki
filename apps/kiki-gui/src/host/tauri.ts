@@ -8,6 +8,7 @@ import {
 
 import type {
   DesktopLogInfo,
+  DesktopWindowMode,
   DesktopSpaceStatus,
   DesktopUpdate,
   TauriHostAdapter,
@@ -353,6 +354,17 @@ export const tauriHost: TauriHostAdapter = {
    * pre-space key names; it must not fail the launch.
    */
   activeSpace: () => invoke<unknown>('desktop_active_space'),
+  // A build without work modes has no such command; that reads as "this
+  // window has no mode of its own" rather than failing the boot.
+  async windowMode() {
+    try {
+      const mode = await invoke<{ preset_id?: unknown; window_id?: unknown }>('desktop_window_mode');
+      if (typeof mode.preset_id !== 'string' || typeof mode.window_id !== 'string') return null;
+      return { presetId: mode.preset_id, windowId: mode.window_id } satisfies DesktopWindowMode;
+    } catch {
+      return null;
+    }
+  },
   takeNavigationIntent: () => invoke('take_navigation_intent'),
   async spaceStatuses() {
     try {

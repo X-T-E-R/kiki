@@ -17,6 +17,8 @@ use desktop_update_state::DesktopUpdateState;
 mod space_badge;
 mod space_shortcut;
 mod remote_space;
+mod work_mode;
+use work_mode::WindowModeDescriptor;
 mod clipboard_files;
 use clipboard_files::read_clipboard_file_paths;
 use desktop_log::DesktopLogLevel;
@@ -88,7 +90,7 @@ const STDERR_TAIL_LINES: usize = 100;
 /// Frontend event carrying a waiting phase or structured recovery failure.
 const BACKEND_STAGE_EVENT: &str = "kiki://desktop-backend-stage";
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopConnection {
     url: String,
@@ -137,6 +139,10 @@ struct MetaEnvelope {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 struct BackendIdentity {
     server_version: String,
+    #[serde(default)]
+    server_id: String,
+    #[serde(default)]
+    desktop_managed: bool,
     #[serde(default)]
     build_id: Option<String>,
     #[serde(default)]
@@ -455,8 +461,29 @@ impl OwnedBackendOperation {
     }
 }
 
+struct SharedUpdateLock { path: PathBuf, owner: String }
+
+impl SharedUpdateLock {
+    fn acquire(home: &Path) -> Result<Self, String> {
+        let path = home.join("server").join("ensure.lock");
+        fs::create_dir_all(path.parent().ok_or("The service lock directory is unavailable")?).map_err(|error| error.to_string())?;
+        let owner = std::process::id().to_string();
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path)
+            .map_err(|error| format!("This space is already starting or updating; retry when it finishes ({error})"))?;
+        file.write_all(owner.as_bytes()).map_err(|error| error.to_string())?;
+        Ok(Self { path, owner })
+    }
+}
+
+impl Drop for SharedUpdateLock {
+    fn drop(&mut self) {
+        if fs::read_to_string(&self.path).is_ok_and(|value| value == self.owner) { let _ = fs::remove_file(&self.path); }
+    }
+}
+
 #[derive(Default)]
 struct BackendState {
+    update_lock: Option<SharedUpdateLock>,
     backend: Option<OwnedBackend>,
     attached: Option<DesktopConnection>,
     recovery: RuntimeRecoveryState,
@@ -479,6 +506,7 @@ struct BackendManager {
     inner: Arc<Mutex<BackendState>>,
     home: Option<PathBuf>,
     idle_exit: bool,
+    shared_service: bool,
 }
 
 fn desktop_backend_args(log_level: &str, idle_exit: bool) -> Vec<&str> {
@@ -487,7 +515,7 @@ fn desktop_backend_args(log_level: &str, idle_exit: bool) -> Vec<&str> {
 
 impl BackendManager {
     fn for_home(home: PathBuf, idle_exit: bool) -> Self {
-        Self { inner: Arc::new(Mutex::new(BackendState::default())), home: Some(home), idle_exit }
+        Self { inner: Arc::new(Mutex::new(BackendState::default())), home: Some(home), idle_exit, shared_service: true }
     }
 
     fn ownership(&self) -> Result<BackendOwnership, String> {
@@ -563,6 +591,31 @@ impl BackendManager {
             if let Some(connection) = self.publish_attached(connection) {
                 return Ok(connection);
             }
+        }
+
+        if self.shared_service {
+            emit_backend_waiting(app);
+            let command = app.shell().sidecar("kiki-server")
+                .map_err(|error| DesktopStartupFailure::plain(format!("Cannot resolve the packaged Kiki backend: {error}")))?
+                .args(["serve", "--ensure", "--port", "0", "--json", "--idle-exit", "0ms"])
+                .env("KIKI_HOME", &runtime.kiki_home)
+                .env("KIKI_BUILD_ID", EXPECTED_SIDECAR_BUILD_ID)
+                .env("KIKI_BUILD_CHANNEL", EXPECTED_SIDECAR_BUILD_CHANNEL)
+                .env("KIKI_DESKTOP_BUNDLED", "1")
+                .env("KIKI_DESKTOP_OAUTH_HOME", &runtime.oauth_home);
+            let output = tauri::async_runtime::block_on(command.output())
+                .map_err(|error| DesktopStartupFailure::plain(format!("Cannot ensure the shared Kiki service: {error}")))?;
+            if !output.status.success() {
+                return Err(DesktopStartupFailure::plain(format!("Cannot ensure the shared Kiki service: {}", String::from_utf8_lossy(&output.stderr))));
+            }
+            let connection: DesktopConnection = serde_json::from_slice(&output.stdout)
+                .map_err(|error| DesktopStartupFailure::plain(format!("Shared Kiki service returned an invalid connection: {error}")))?;
+            let port = connection_port(&connection)?;
+            let identity = authenticated_backend_identity(port, &connection.token)?;
+            if !backend_identity_matches(&identity) {
+                return Err(DesktopStartupFailure::plain("The running shared Kiki service belongs to another build; stop it explicitly before opening this build.".to_string()));
+            }
+            return self.publish_attached(connection).ok_or_else(|| DesktopStartupFailure::plain("Shared service connection was cancelled".to_string()));
         }
 
         let pending = {
@@ -931,7 +984,45 @@ impl BackendManager {
         force_stop(backend);
     }
 
+    fn shared_identity(&self) -> Result<Option<(DesktopConnection, BackendIdentity)>, String> {
+        if !self.shared_service { return Ok(None); }
+        let Some(connection) = self.hot_connection() else { return Ok(None); };
+        let identity = authenticated_backend_identity(connection_port(&connection)?, &connection.token)?;
+        if !backend_identity_matches(&identity) || !identity.desktop_managed || identity.server_id.is_empty() {
+            return Err("This service is externally managed or belongs to another build; stop it through its owner before restarting or updating".to_string());
+        }
+        Ok(Some((connection, identity)))
+    }
+
+    fn stop_shared(&self, app: &AppHandle, action: &str, confirmed: bool) -> Result<(), String> {
+        let Some((connection, identity)) = self.shared_identity()? else { return Ok(()); };
+        if !confirmed && !app.dialog().message("Restarting affects every window connected to this space. Unfinished sessions and tasks will be cancelled and drained before the service restarts. Other spaces keep running. Continue?")
+            .title("Kiki · Restart shared service")
+            .buttons(MessageDialogButtons::OkCancelCustom("Restart space".into(), "Keep running".into())).blocking_show() {
+            return Err("Restart cancelled; running work continues".to_string());
+        }
+        let body = serde_json::json!({"action": action, "server_id": identity.server_id, "consent": true, "interrupt_work": true}).to_string();
+        let response = http_json_body(connection_port(&connection)?, "/api/desktop-lifecycle", &connection.token, &body, 64 * 1024)?;
+        let boundary = response.windows(4).position(|part| part == b"\r\n\r\n").ok_or("The lifecycle response is incomplete")?;
+        let envelope: serde_json::Value = serde_json::from_slice(&response[boundary + 4..]).map_err(|error| error.to_string())?;
+        if envelope.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
+            return Err(envelope.get("msg").and_then(serde_json::Value::as_str).unwrap_or("The service refused the lifecycle request").to_string());
+        }
+        let home = self.home.as_ref().ok_or("The shared service home is unavailable")?;
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while read_instance_records(home)?.iter().any(|record| record.server_id.as_deref() == Some(&identity.server_id) && pid_alive(record.pid)) {
+            if Instant::now() >= deadline { return Err("The space is still draining. Keep its windows open and retry after work settles; no process was forcibly stopped".to_string()); }
+            thread::sleep(Duration::from_millis(100));
+        }
+        self.clear_attached(&connection);
+        Ok(())
+    }
+
     fn restart(&self, app: &AppHandle) -> Result<DesktopConnection, DesktopStartupFailure> {
+        if self.shared_service && self.hot_connection().is_some() {
+            self.stop_shared(app, "restart", false).map_err(DesktopStartupFailure::plain)?;
+            return self.connection(app);
+        }
         let owned = self
             .owned_backend_for(OwnedBackendOperation::Restart)
             .map_err(DesktopStartupFailure::plain)?;
@@ -1144,6 +1235,9 @@ impl SpaceBackendManager {
             }
         }
         let result = (|| {
+            if backend.shared_service && backend.hot_connection().is_some() {
+                return backend.restart(app).map(|_| ()).map_err(|error| error.message);
+            }
             if !backend.owned_backend_for(OwnedBackendOperation::Restart)? {
                 return Err("The space backend is not running".to_string());
             }
@@ -1175,6 +1269,38 @@ impl SpaceBackendManager {
         Ok(names)
     }
 
+    fn shared_space_names(&self) -> Result<Vec<String>, String> {
+        let slots = self.inner.lock().map_err(|_| "Space manager lock was poisoned")?.slots.values()
+            .map(|(space, backend)| (space.name.clone(), backend.clone())).collect::<Vec<_>>();
+        let mut names = Vec::new();
+        for (name, backend) in slots { if backend.shared_identity()?.is_some() { names.push(name); } }
+        Ok(names)
+    }
+
+    fn shutdown_for_update(&self, app: &AppHandle) -> Result<(), String> {
+        let slots = self.inner.lock().map_err(|_| "Space manager lock was poisoned")?.slots.values()
+            .map(|(_, backend)| backend.clone()).collect::<Vec<_>>();
+        let mut locks = Vec::new();
+        for backend in &slots {
+            if backend.shared_identity()?.is_some() {
+                let home = backend.home.as_ref().ok_or("The managed service home is unavailable")?;
+                locks.push((backend.clone(), SharedUpdateLock::acquire(home)?));
+            }
+        }
+        for backend in &slots {
+            if backend.shared_service { backend.stop_shared(app, "update", true)?; }
+            else { backend.shutdown(); }
+        }
+        for (backend, lock) in locks { backend.inner.lock().map_err(|_| "Service lifecycle lock was poisoned")?.update_lock = Some(lock); }
+        Ok(())
+    }
+
+    fn release_update_locks(&self) {
+        if let Ok(state) = self.inner.lock() {
+            for (_, backend) in state.slots.values() { if let Ok(mut slot) = backend.inner.lock() { slot.update_lock = None; } }
+        }
+    }
+
     fn shutdown(&self) {
         let slots = self.inner.lock().ok().map(|mut state| {
             state.stopping = true;
@@ -1194,6 +1320,15 @@ fn restart_space_readiness(busy: usize, pending: usize) -> Result<(), String> {
 
 // This is called off the UI thread: the native dialog must never block the event loop.
 fn confirm_backend_shutdown(app: &AppHandle, manager: &SpaceBackendManager, action: &str) -> bool {
+    if action == "Installing the update" {
+        match manager.shared_space_names() {
+            Ok(spaces) if !spaces.is_empty() => return app.dialog().message(format!("Updating will disconnect every window in these spaces: {}. Unfinished work will be cancelled and drained before their managed services stop. External services are never stopped. Continue?", spaces.join(", ")))
+                .title("Kiki · Update shared services")
+                .buttons(MessageDialogButtons::OkCancelCustom("Continue update".into(), "Keep running".into())).blocking_show(),
+            Err(error) => { app.dialog().message(error).title("Kiki · Cannot update this service").blocking_show(); return false; }
+            _ => {}
+        }
+    }
     let prompt = match manager.owned_spaces_with_work() {
         Ok(spaces) if spaces.is_empty() => return true,
         Ok(spaces) => format!(
@@ -1605,6 +1740,21 @@ async fn desktop_connection(
 #[tauri::command]
 fn desktop_active_space(manager: State<'_, SpaceBackendManager>) -> Result<DesktopSpace, String> {
     manager.active_space()
+}
+
+#[tauri::command]
+fn desktop_window_mode(mode: State<'_, WindowModeDescriptor>) -> WindowModeDescriptor {
+    mode.inner().clone()
+}
+
+#[tauri::command]
+fn open_mode_window(preset_id: String, home_id: Option<String>, manager: State<'_, SpaceBackendManager>) -> Result<(), String> {
+    if !work_mode::valid_preset(&preset_id) { return Err("Select a valid work mode".to_string()); }
+    let space = match home_id { Some(id) => manager.find_space(&id)?, None => manager.active_space()? };
+    let exe = env::current_exe().map_err(|error| error.to_string())?;
+    std::process::Command::new(exe).arg("--home").arg(&space.path).arg("--preset").arg(preset_id).spawn()
+        .map_err(|error| format!("Cannot open work mode window: {error}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2428,6 +2578,7 @@ async fn install_desktop_update(app: AppHandle, manager: State<'_, SpaceBackendM
     let home = PathBuf::from(manager.active_space()?.path);
     validate_desktop_update_identity(channel, read_desktop_prefs_for(&home).update_channel, &version, &update.version)?;
     let manager = manager.inner().clone();
+    let update_lock_manager = manager.clone();
     let available_version = update.version.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if !confirm_backend_shutdown(&app, &manager, "Installing the update") {
@@ -2435,10 +2586,12 @@ async fn install_desktop_update(app: AppHandle, manager: State<'_, SpaceBackendM
         }
         // A channel may have changed in another window while the confirmation was open.
         validate_desktop_update_identity(channel, read_desktop_prefs_for(&home).update_channel, &version, &available_version)?;
-        manager.shutdown();
+        manager.shutdown_for_update(&app)?;
         Ok(())
     }).await.map_err(|error| error.to_string())??;
-    update.download_and_install(|_, _| {}, || {}).await.map_err(|error| error.to_string())
+    let result = update.download_and_install(|_, _| {}, || {}).await.map_err(|error| error.to_string());
+    update_lock_manager.release_update_locks();
+    result
 }
 
 #[tauri::command]
@@ -2448,7 +2601,7 @@ async fn prepare_for_update(app: AppHandle, manager: State<'_, SpaceBackendManag
         if !confirm_backend_shutdown(&app, &manager, "Installing the update") {
             return Err("Update cancelled; running sessions continue".to_string());
         }
-        manager.shutdown();
+        manager.shutdown_for_update(&app)?;
         Ok(())
     }).await.map_err(|error| error.to_string())?
 }
@@ -2857,6 +3010,14 @@ fn authenticated_backend_identity(port: u16, token: &str) -> Result<BackendIdent
 /// Authenticated GET against the loopback backend; returns the raw response
 /// (status line through body), capped at `max_bytes`.
 fn http_get_body(port: u16, path: &str, token: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+    http_body(port, "GET", path, token, "", max_bytes)
+}
+
+fn http_json_body(port: u16, path: &str, token: &str, body: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+    http_body(port, "POST", path, token, body, max_bytes)
+}
+
+fn http_body(port: u16, method: &str, path: &str, token: &str, body: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(500))
         .map_err(|error| format!("Cannot connect to Kiki backend on port {port}: {error}"))?;
@@ -2868,7 +3029,7 @@ fn http_get_body(port: u16, path: &str, token: &str, max_bytes: usize) -> Result
         .map_err(|error| format!("Cannot configure Kiki backend request: {error}"))?;
 
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()
     );
     stream
         .write_all(request.as_bytes())
@@ -3226,7 +3387,11 @@ fn request_confirmed_exit(
 pub fn run() {
     let startup_home = kiki_home_dir().unwrap_or_else(|error| panic!("Cannot resolve Kiki home: {error}"));
     let main_home = main_home_for(&startup_home).unwrap_or_else(|error| panic!("Cannot resolve main space: {error}"));
-    let mode = read_main_desktop_prefs(&main_home).window_mode;
+    let selected_preset = work_mode::requested_preset(&env::args().collect::<Vec<_>>())
+        .unwrap_or_else(|error| panic!("Cannot select work mode: {error}"));
+    let mode = if selected_preset.is_some() { WindowMode::Windows } else { read_main_desktop_prefs(&main_home).window_mode };
+    let preset_id = selected_preset.clone().unwrap_or_else(|| "kiki".to_string());
+    let window_mode = WindowModeDescriptor { window_id: work_mode::window_identity(&startup_home, &preset_id), preset_id };
     let remote_connection = remote_space::requested_connection(&env::args().collect::<Vec<_>>())
         .unwrap_or_else(|error| panic!("Cannot select remote space: {error}"));
     if let Some(id) = &remote_connection {
@@ -3271,11 +3436,25 @@ pub fn run() {
         }
     }
 
+    if selected_preset.is_some() {
+        let identifier = format!("{}.mode.{}", context.config().identifier, window_mode.window_id);
+        context.config_mut().identifier = identifier.clone();
+        #[cfg(windows)]
+        {
+            let wide = wide_null(std::ffi::OsStr::new(&identifier));
+            let result = unsafe { windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(wide.as_ptr()) };
+            if result < 0 { eprintln!("Kiki could not set the work mode taskbar identity: 0x{:x}", result); }
+        }
+    }
+    let window_mode_script = format!("window.__KIKI_WINDOW_MODE__ = {};", serde_json::to_string(&window_mode).expect("window mode is serializable"));
+    let preset_window = selected_preset.is_some();
+
     let app = tauri::Builder::default()
+        .manage(window_mode)
         // Register first so a second launch focuses the original window
         // without starting another backend.
         .plugin(tauri_plugin_single_instance::init(move |app, args, _cwd| {
-            if let Ok(Some(home)) = requested_home(&args) {
+            if let Ok(Some(home)) = requested_home(&args).map(|home| if preset_window { None } else { home }) {
                 if let Ok(id) = read_desktop_space(&home).map(|space| space.map(|space| space.home_id)) {
                     let manager = second_launch_manager.clone();
                     let app = app.clone();
@@ -3359,6 +3538,7 @@ pub fn run() {
             let main_window = WebviewWindowBuilder::from_config(app.handle(), main_config)
                 .map_err(std::io::Error::other)?
                 .enable_clipboard_access()
+                .initialization_script(&window_mode_script)
                 .build()
                 .map_err(std::io::Error::other)?;
             #[cfg(windows)]
@@ -3436,6 +3616,22 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_update_lock_is_home_local_and_released_without_stopping_services() {
+        let root = env::temp_dir().join(format!("kiki-update-lock-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
+        let a = root.join("a");
+        let b = root.join("b");
+        let first = SharedUpdateLock::acquire(&a).unwrap();
+        assert!(SharedUpdateLock::acquire(&a).is_err());
+        let second = SharedUpdateLock::acquire(&b).unwrap();
+        assert_eq!(fs::read_to_string(a.join("server/ensure.lock")).unwrap(), std::process::id().to_string());
+        drop(first);
+        assert!(!a.join("server/ensure.lock").exists());
+        assert!(b.join("server/ensure.lock").exists());
+        drop(second);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn desktop_update_selection_rejects_channel_and_version_drift() {
@@ -4000,6 +4196,8 @@ mod tests {
         assert!(backend_identity_matches(&identity));
 
         let same_version_other_build = BackendIdentity {
+            server_id: "example-server".to_string(),
+            desktop_managed: false,
             server_version: EXPECTED_SIDECAR_SERVER_VERSION.to_string(),
             build_id: Some("different-build".to_string()),
             build_channel: Some(EXPECTED_SIDECAR_BUILD_CHANNEL.to_string()),

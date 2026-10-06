@@ -57,6 +57,7 @@ import type { ConversationShellSlots } from './ConversationShell';
 import { Markdown } from './Markdown';
 import { Icon } from './icons';
 import { ImageViewport } from './ImageViewport';
+import { DocumentTabView } from './preview/DocumentTabView';
 
 export interface PreviewWorkspaceProps {
   readonly tabs: readonly (string | PreviewTabModel)[];
@@ -420,6 +421,7 @@ export function PreviewWorkspace({
             reportDirty={reportDirty}
             position={scrollPositions?.[key]}
             onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }}
+            sessionId={sessionId}
           />
         );
       })}
@@ -1220,6 +1222,7 @@ function PreviewTabView({
   reportDirty,
   position,
   onScrollPosition,
+  sessionId,
 }: {
   readonly path: string;
   readonly visible: boolean;
@@ -1229,8 +1232,13 @@ function PreviewTabView({
   /** This tab's reading position for the current visit, when it has one. */
   readonly position?: { readonly top: number; readonly left?: number };
   readonly onScrollPosition?: (position: { top: number; left?: number }) => void;
+  /** Which session's document renderer and asset route serve this file. */
+  readonly sessionId?: string;
 }) {
   const kind = previewKindOf(path);
+  const host = useHost();
+  const connection = useOptionalConnection();
+  const openers = useFileOpeners();
   const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition);
   return (
     <div
@@ -1244,6 +1252,17 @@ function PreviewTabView({
         <ImageTabView path={path} onOpenImage={onOpenImage} />
       ) : kind === 'video' ? (
         <VideoTabView path={path} />
+      ) : kind === 'pdf' || kind === 'office' ? (
+        <DocumentTabView
+          source={{ kind: 'workspace', path }}
+          sessionId={sessionId}
+          client={connection?.client}
+          onOpenLocally={openers === null ? undefined : () => { openers.open(path); }}
+          onDownload={() => {
+            const target = connection?.client;
+            if (target !== undefined) void downloadHostFile(host, target, path, basenameOf(path));
+          }}
+        />
       ) : kind === 'binary' ? (
         <BinaryTabView path={path} />
       ) : (

@@ -16,6 +16,10 @@ Credentials are the decision each subspace makes. **Shared** means the subspace 
 
 Change the credential scope on the subspace's own card in **Settings → Spaces**. See [Settings pages](/en/guides/settings) for the other sections of that dialog, and [Every layer is yours](/en/features/freedom) for what those credentials reach.
 
+A **work mode** is a working surface inside a space, not another data boundary. The experimental mode picker offers Kiki and Work; enable it with `KIKI_EXPERIMENTAL_WORK_PRESETS=true` in the server environment, or `[experimental] work_presets = true` in `config.toml`. Each space has its own Work setup, name and preferred task. Selecting Work offers Office, writing, extraction and table-check starters; its setup shows the packages that are actually installed and asks before installing missing packages or OfficeCLI. A failed setup retains the packages that succeeded so you can retry the rest. Switching modes does not change an existing session's model, profile or permissions, and removing a mode keeps its documents, sessions and shared plugins.
+
+On desktop, **Open in new window** opens another mode in the same space. Its route and mode belong to that window, while the space's service is shared; closing one window does not stop background work. Explicit restart or update asks about the affected space's other windows and unfinished work before cancelling and draining it. A daemon managed outside the desktop app must be stopped through its own owner instead.
+
 ![The spaces list: the main space beside two registered spaces, one sharing accounts and one isolated.](/shots/spaces/ps-20261005-spaces-list.en.png)
 
 ![One space's own settings sheet, where each row says whether it follows the main space or is set here, with a Change action per row.](/shots/spaces/ps-20261005-spaces-detail.en.png)

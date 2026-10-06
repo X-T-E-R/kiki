@@ -356,10 +356,13 @@ export function resolveFileHref(href: string, cwd: string | undefined): string |
   return resolveFileReference(href, cwd)?.path;
 }
 
-export type PreviewKind = 'image' | 'markdown' | 'text' | 'video' | 'binary';
+export type PreviewKind = 'image' | 'markdown' | 'text' | 'video' | 'pdf' | 'office' | 'binary';
+export type DocumentPreviewFormat = 'pdf' | 'docx' | 'xlsx' | 'pptx';
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'ico']);
 const MARKDOWN_EXTS = new Set(['md', 'markdown', 'mdx']);
+const PDF_EXTS = new Set(['pdf']);
+const OFFICE_EXTS = new Set(['docx', 'xlsx', 'pptx']);
 // Common video containers. Playback still depends on the codecs the runtime's
 // HTML5 stack ships; an unplayable one degrades to the download fallback.
 const VIDEO_EXTS = new Set(['mp4', 'm4v', 'webm', 'mov', 'mkv', 'avi', 'mpg', 'mpeg', '3gp', 'ogv']);
@@ -399,10 +402,19 @@ export function previewKindOf(path: string): PreviewKind {
   if (MARKDOWN_EXTS.has(ext)) return 'markdown';
   if (TEXT_EXTS.has(ext)) return 'text';
   if (VIDEO_EXTS.has(ext)) return 'video';
+  if (PDF_EXTS.has(ext)) return 'pdf';
+  if (OFFICE_EXTS.has(ext)) return 'office';
   // Extension-less files are usually scripts/config; the text view degrades
   // gracefully on the rare binary one.
   if (ext === '') return 'text';
   return 'binary';
+}
+
+export function documentPreviewFormatOf(path: string): DocumentPreviewFormat | undefined {
+  const ext = extOf(path);
+  if (PDF_EXTS.has(ext)) return 'pdf';
+  if (OFFICE_EXTS.has(ext)) return ext as Exclude<DocumentPreviewFormat, 'pdf'>;
+  return undefined;
 }
 
 export function formatBytes(size: number): string {

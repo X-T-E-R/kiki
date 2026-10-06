@@ -66,6 +66,7 @@ export const metaResponseSchema = z.object({
   dangerous_bypass_auth: z.boolean(),
   external_delegation: externalDelegationStateSchema,
   experimental_flags: z.record(z.string(), z.boolean()).optional(),
+  desktop_managed: z.boolean().optional(),
   backend: z.enum(['v1', 'v2']).optional(),
   web_title: z.string().optional(),
   features: z.array(metaFeatureSchema).optional(),

@@ -38,6 +38,12 @@ The rail describes one agent at a time — whichever you last clicked into or fo
 
 On desktop-width screens the rail is open by default. **Standard / Cockpit** in its header widens it over the preview space while the conversation and composer stay in the main column; **Standard** or **Exit cockpit** puts the previous preview content, tabs, draft and width back.
 
+The file pane offers read-only document previews for workspace files and session attachments. PDF renders locally, including Chinese text and embedded fonts, without an extra renderer installation. DOCX, XLSX and PPTX use the Office plugin's OfficeCLI renderer. Use the page controls for Word and presentations, or select a worksheet for Excel.
+
+If Office is missing, review and approve its installation plan in the preview. This installs only the Office plugin and its renderer, not the Work bundle. If you previously disabled Office, **Enable Office preview** makes that change explicit; an enabled plugin missing only OfficeCLI offers its renderer installation. Text and CSV previews identify themselves as source text and offer continuation when only part is loaded. Previews never write back to the document.
+
+Older `.doc`, `.xls`, `.ppt` and OpenDocument `.odt`, `.ods`, `.odp` files do not yet have an integrated page renderer. Use **Download original** or open the original locally rather than treating extracted text as its page layout. A preview failure offers retry without changing the source file.
+
 ## Sessions and workspaces
 
 The session list groups sessions by workspace; pick one to resume, or start a new draft there. If a saved model, profile (the agent's configuration file) or effort is no longer available, the entry stays visible with a diagnostic instead of quietly switching you to a different model. [Workspace and session management](/en/guides/sessions) covers the rest.
