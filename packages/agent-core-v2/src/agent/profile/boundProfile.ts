@@ -30,8 +30,6 @@ const boundPromptInputsSchema = z.object({
     config: z.object({
       overlay: z.union([z.string(), z.array(z.string())]).optional(),
       steering: z.union([z.string(), z.array(z.string())]).optional(),
-      steeringOnTurn: z.boolean().optional(), steeringOnInput: z.boolean().optional(),
-      steeringIntervalSteps: z.number().int().nonnegative().optional(),
       anchor: z.union([z.string(), z.array(z.string())]).optional(),
       overlayMode: z.enum(['append', 'prepend', 'wrap', 'persona', 'replace']).optional(),
       anchorSteps: z.number().int().positive().optional(), anchorScope: z.enum(['session', 'turn']).optional(),

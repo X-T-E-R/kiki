@@ -301,9 +301,6 @@ const modelCognitionContentSchema = z
   .object({
     overlay: cognitionPathRefSchema.optional(),
     steering: cognitionPathRefSchema.optional(),
-    steering_on_turn: z.boolean().optional(),
-    steering_on_input: z.boolean().optional(),
-    steering_interval_steps: z.number().int().nonnegative().optional(),
     anchor: cognitionPathRefSchema.optional(),
     overlay_mode: z.enum(['append', 'prepend', 'wrap', 'persona', 'replace']).optional(),
     anchor_steps: z.number().int().min(1).optional(),

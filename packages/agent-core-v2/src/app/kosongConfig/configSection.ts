@@ -323,9 +323,6 @@ const CognitionPathRefSchema = z.union([
 const CognitionContentSchema = z.object({
   overlay: CognitionPathRefSchema.optional(),
   steering: CognitionPathRefSchema.optional(),
-  steeringOnTurn: z.boolean().optional(),
-  steeringOnInput: z.boolean().optional(),
-  steeringIntervalSteps: z.number().int().nonnegative().optional(),
   anchor: CognitionPathRefSchema.optional(),
   overlayMode: z.enum(['append', 'prepend', 'wrap', 'persona', 'replace']).optional(),
   anchorSteps: z.number().int().min(1).optional(),

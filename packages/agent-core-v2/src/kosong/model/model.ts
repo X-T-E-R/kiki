@@ -59,9 +59,6 @@ export interface CognitionContent {
   overlayMode?: 'append' | 'prepend' | 'wrap' | 'persona' | 'replace';
   anchorSteps?: number;
   anchorScope?: 'session' | 'turn';
-  steeringOnTurn?: boolean;
-  steeringOnInput?: boolean;
-  steeringIntervalSteps?: number;
 }
 
 export interface CognitionConfig extends CognitionContent {
