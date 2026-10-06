@@ -34,6 +34,7 @@ const listSessionSkills = vi.fn();
 const listWorkspaceSkills = vi.fn();
 const listNamedAgentProfiles = vi.fn();
 const listExecutors = vi.fn();
+const getConfig = vi.fn();
 const getAgentCapabilities = vi.fn();
 const uploadFile = vi.fn();
 const meta = vi.fn();
@@ -62,6 +63,7 @@ vi.mock('../state/connection', () => ({
       listWorkspaceSkills,
       listNamedAgentProfiles,
       listExecutors,
+      getConfig,
       getAgentCapabilities,
       uploadFile,
       meta,
@@ -153,6 +155,7 @@ beforeEach(() => {
     ] satisfies NamedAgentProfile[],
   });
   listExecutors.mockReset().mockResolvedValue({ items: EXECUTOR_ITEMS });
+  getConfig.mockReset().mockResolvedValue({});
 });
 
 afterEach(() => {
@@ -855,11 +858,35 @@ describe('Composer execution control', () => {
     });
     const trigger = await waitForTrigger(container);
     await click(trigger);
-    // The bare rows remain — a harness is always runnable as it is — but no
-    // profile is offered, and the invalid bound choice keeps its diagnostic.
-    expect(container.querySelectorAll('[data-execution-bare]').length).toBe(EXECUTOR_ITEMS.length);
+    // Only Kiki is offered here. Claude Code is in the catalog, but this
+    // machine has neither a profile nor an override pointing at it, so it is a
+    // product name rather than something this picker can run — and the invalid
+    // bound choice keeps its diagnostic.
+    expect([...container.querySelectorAll('[data-execution-bare]')].map((row) =>
+      (row as HTMLElement).dataset.executionBare)).toEqual(['native']);
     expect(container.querySelectorAll('[data-execution-profile]')).toHaveLength(0);
     expect(container.querySelector('[data-selection-diagnostic]')?.textContent).toContain('unavailable');
+  });
+
+  it('offers a configured external engine even with no usable profile of its own', async () => {
+    // The bare-harness row is the "run this engine as it is" choice, and it is
+    // exactly what an engine with no Kiki profile still needs. It appears once
+    // the machine is actually set up for that engine.
+    listNamedAgentProfiles.mockResolvedValue({
+      items: [{ name: 'agent', source: 'builtin', main: true, disabled: false, routes: [] }] satisfies NamedAgentProfile[],
+    });
+    getConfig.mockResolvedValue({ raw: { agent_executor_overrides: { 'claude-acp': { bin_path: '/usr/local/bin/claude' } } } });
+    const { container } = await renderComposer({
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: () => {},
+    });
+    const trigger = await waitForTrigger(container);
+    for (let index = 0; index < 3; index += 1) await settle();
+    await click(trigger);
+    expect([...container.querySelectorAll('[data-execution-bare]')].map((row) =>
+      (row as HTMLElement).dataset.executionBare)).toEqual(['native', 'claude-acp']);
   });
 
   it('loads workspace main profiles and excludes non-main profiles', async () => {

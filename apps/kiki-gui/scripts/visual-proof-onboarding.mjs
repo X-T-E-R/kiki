@@ -20,8 +20,8 @@ import { runProof } from '../proof/runner.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const TEXT = {
-  en: { next: 'Next', skipModel: 'Skip for now', start: 'Start', ask: 'Let Kiki set it up', cancel: 'Cancel' },
-  zh: { next: '下一步', skipModel: '暂时跳过', start: '开始', ask: '让 Kiki 帮你配置', cancel: '取消' },
+  en: { next: 'Next', skipModel: 'Skip for now', closeSetup: 'Close setup', ask: 'Let Kiki set it up', cancel: 'Cancel' },
+  zh: { next: '下一步', skipModel: '暂时跳过', closeSetup: '关闭引导', ask: '让 Kiki 帮你配置', cancel: '取消' },
 };
 
 function expect(condition, message) {
@@ -116,14 +116,20 @@ async function walk({ page, view, shot }) {
   await shot('onboarding-5-ask-session');
 }
 
+/**
+ * Leaving the run from its last step. The wizard has no "Start" button: the
+ * step's own finish is "Let Kiki set it up", which opens a session, and leaving
+ * without one is the close control. This walk is the second one — it must
+ * dismiss without starting anything, and without routing anywhere.
+ */
 async function skip({ page, view }) {
   const text = TEXT[view.locale];
   const wizard = await openWizard(page);
   await toCapabilities(page, wizard, text);
-  await wizard.getByRole('button', { name: text.start, exact: true }).click();
+  await wizard.getByRole('button', { name: text.closeSetup, exact: true }).first().click();
   await page.waitForSelector('[role="dialog"][aria-label]', { state: 'detached', timeout: 10_000 });
-  expect(page.url().includes('/new'), `Start lands on /new, saw ${page.url()}`);
-  expect(await page.locator('textarea').first().inputValue() === '', 'Start leaves the composer empty');
+  expect(page.url().includes('/new'), `closing returns to /new, saw ${page.url()}`);
+  expect(await page.locator('textarea').first().inputValue() === '', 'closing leaves the composer empty');
 }
 
 const scenarios = [

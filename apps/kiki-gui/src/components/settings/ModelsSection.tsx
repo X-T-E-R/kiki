@@ -12,6 +12,7 @@ import type {
 
 import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
 import {
+  DEFAULT_MODEL_CAPABILITIES,
   KNOWN_CAPABILITIES,
   KNOWN_EFFORTS,
   modelPatchBody,
@@ -763,7 +764,20 @@ function ThinkingKeepField({ stored }: { stored: string | undefined }) {
   );
 }
 
-const DEFAULT_DISCOVERED_CAPABILITIES = ['thinking', 'tool_use'] as const;
+/**
+ * What a newly added model gets when discovery did not say.
+ *
+ * Discovery often reports nothing about a model's capabilities, and a model
+ * added with an empty list is one Kiki cannot use tools with. So a *new* model
+ * starts from the default pair — and only then: whatever discovery actually
+ * reported is kept, with the defaults filling only the gaps. That is the same
+ * rule the model editor applies to a model that has nothing stored, and it is
+ * why a discovery that reports a narrower set is not silently widened.
+ */
+function defaultCapabilitiesFor(discovered: readonly string[] | undefined): string[] {
+  if (discovered === undefined) return [...DEFAULT_MODEL_CAPABILITIES];
+  return [...new Set([...discovered, ...DEFAULT_MODEL_CAPABILITIES])];
+}
 
 /** Explicit fetching and a separate, user-confirmed model creation flow. */
 export function CatalogRefreshCard() {
@@ -775,7 +789,7 @@ export function CatalogRefreshCard() {
   const [selected, setSelected] = useState('');
   const [alias, setAlias] = useState('');
   const [context, setContext] = useState(250000);
-  const [capabilities, setCapabilities] = useState<string[]>([...DEFAULT_DISCOVERED_CAPABILITIES]);
+  const [capabilities, setCapabilities] = useState<string[]>([...DEFAULT_MODEL_CAPABILITIES]);
   const discovered = useQuery({ queryKey: ['discovered-models'], queryFn: () => client.listDiscoveredModels() });
   const choices = (discovered.data?.items ?? []).flatMap((group) => group.models.map((model) => ({
     value: JSON.stringify([group.provider_id, model.remote_id]),
@@ -842,7 +856,7 @@ export function CatalogRefreshCard() {
             const item = choices.find((candidate) => candidate.value === value);
             setAlias(item === undefined ? '' : `${item.providerId}/${item.model.remote_id}`);
             setContext(item?.model.max_context_size ?? 250000);
-            setCapabilities([...new Set([...(item?.model.capabilities ?? []), ...DEFAULT_DISCOVERED_CAPABILITIES])]);
+            setCapabilities(defaultCapabilitiesFor(item?.model.capabilities));
           }}
           ariaLabel={t('st.providers.catalogGroupSuggested')}
           searchPlaceholder={t('st.providers.modelSearchPlaceholder')}
@@ -1590,6 +1604,24 @@ function ModelCatalogRowEditor({
           disabled={saving}
         />
       ) : null}
+      {/*
+        Capabilities sit on the ordinary surface of the editor, not inside the
+        advanced fold: what this model can do is one of the two or three things
+        a person opens this panel to decide, and folding it away is what let a
+        model's real submitted capabilities go unchecked.
+      */}
+      <div className="space-y-1" data-model-capabilities={entity.id}>
+        <p className={FORM_LABEL}>{t('st.chips.capabilities')}</p>
+        <ChipSelect
+          values={draft.capabilities}
+          knownOptions={KNOWN_CAPABILITIES}
+          onChange={(capabilities) => { setDraft({ ...draft, capabilities }); }}
+          ariaLabel={t('st.models.capsAria', { model: entity.id })}
+          addPlaceholder={t('st.chips.addPlaceholder')}
+          removeLabel={(value) => t('st.chips.removeAria', { value })}
+        />
+        <Hint>{t('st.models.capabilitiesHint')}</Hint>
+      </div>
       <AdvancedDisclosure id={`model-${entity.id}`} summary={t('st.models.advancedSummary')}>
         <label className={FORM_LABEL}>
           {t('st.models.remoteIdLabel')}
@@ -1602,18 +1634,6 @@ function ModelCatalogRowEditor({
           />
           <span className="mt-1 block font-mono text-[11px] font-normal text-ink-faint">{t('st.models.aliasLine', { alias: entity.id })}</span>
         </label>
-        <div className="space-y-1">
-          <p className={FORM_LABEL}>{t('st.chips.capabilities')}</p>
-          <Hint>{t('st.models.capabilitiesHint')}</Hint>
-          <ChipSelect
-            values={draft.capabilities}
-            knownOptions={KNOWN_CAPABILITIES}
-            onChange={(capabilities) => { setDraft({ ...draft, capabilities }); }}
-            ariaLabel={t('st.models.capsAria', { model: entity.id })}
-            addPlaceholder={t('st.chips.addPlaceholder')}
-            removeLabel={(value) => t('st.chips.removeAria', { value })}
-          />
-        </div>
         <ImagePolicyEditor
           value={draft}
           onChange={(images) => { setDraft({ ...draft, ...images }); }}

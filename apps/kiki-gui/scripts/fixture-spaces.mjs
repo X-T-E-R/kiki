@@ -459,7 +459,7 @@ export function spaceCurrentHome(server) {
 /** The effective config the active backend serves, with origins inside a space. */
 export function spaceConfig(server) {
   const spaces = state(server);
-  if (spaces.active === 'main') return server.config;
+  if (spaces.active === 'main') return withRaw(server.config);
   const item = spaces.items.find((entry) => entry.id === spaces.active);
   const merged = { ...server.config };
   const origins = {};
@@ -472,7 +472,22 @@ export function spaceConfig(server) {
       leafOrigins(local, '', 'home', origins[domain] ??= {});
     }
   }
-  return { ...merged, origins };
+  return withRaw({ ...merged, origins });
+}
+
+/**
+ * Sections the response types do not model are echoed under `raw`, the way the
+ * real server reports them: the GUI reads free-form config records — per-engine
+ * overrides, for one — out of that record, never off the typed top level.
+ */
+const RAW_SECTIONS = ['agent_executor_overrides'];
+
+function withRaw(config) {
+  const raw = {};
+  for (const section of RAW_SECTIONS) {
+    if (config[section] !== undefined) raw[section] = config[section];
+  }
+  return Object.keys(raw).length === 0 ? config : { ...config, raw };
 }
 
 /** A config write inside a space lands in the space's own layer (§4.4). */

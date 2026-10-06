@@ -212,7 +212,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
     | { kind: 'remove'; space: SpaceListItem } | { kind: 'delete'; space: SpaceListItem }
     | { kind: 'credentials'; space: SpaceListItem } | { kind: 'settings'; space: SpaceListItem } | null
   >(null);
-  const [menu, setMenu] = useState<{ space: SpaceListItem; anchor: DOMRect } | null>(null);
+  const [menu, setMenu] = useState<{ space: SpaceListItem; anchor: DOMRect; anchorElement: HTMLElement } | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [restartNote, setRestartNote] = useState<{ id: string; text: string } | null>(null);
   const [entering, setEntering] = useState<string | null>(null);
@@ -413,7 +413,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
             <button type="button" data-space-menu={space.id} aria-haspopup="menu" aria-label={t('st.spaces.menuAria', { name: space.name })}
               className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
               onClick={(event) => {
-                setMenu({ space, anchor: event.currentTarget.getBoundingClientRect() });
+                setMenu({ space, anchor: event.currentTarget.getBoundingClientRect(), anchorElement: event.currentTarget });
               }}>
               <Icon name="more" size={14} />
             </button>
@@ -464,7 +464,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
       </div>
 
       {menu !== null ? (
-        <SpaceRowMenu anchor={menu.anchor} items={menuItems(menu.space)} onClose={() => { setMenu(null); }}
+        <SpaceRowMenu anchor={menu.anchor} anchorElement={menu.anchorElement} items={menuItems(menu.space)} onClose={() => { setMenu(null); }}
           ariaLabel={t('st.spaces.menuAria', { name: menu.space.name })} />
       ) : null}
 

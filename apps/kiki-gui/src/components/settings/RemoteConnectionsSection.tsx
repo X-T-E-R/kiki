@@ -57,7 +57,7 @@ export function RemoteConnectionsSection() {
     staleTime: 60_000,
   });
   const [dialog, setDialog] = useState<{ kind: 'add' } | { kind: 'remove'; record: RemoteConnection } | null>(null);
-  const [menu, setMenu] = useState<{ record: RemoteConnection; anchor: DOMRect } | null>(null);
+  const [menu, setMenu] = useState<{ record: RemoteConnection; anchor: DOMRect; anchorElement: HTMLElement } | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const records = connections.data ?? [];
@@ -120,7 +120,7 @@ export function RemoteConnectionsSection() {
             {records.map((record) => (
               <RemoteConnectionRow key={record.id} record={record} busy={busyId === record.id}
                 onEnter={() => { enterRemoteSpace(record.id, record.label); }}
-                onMenu={(anchor) => { setMenu({ record, anchor }); }} />
+                onMenu={(anchor, element) => { setMenu({ record, anchor, anchorElement: element }); }} />
             ))}
           </div>
         ) : null}
@@ -139,7 +139,7 @@ export function RemoteConnectionsSection() {
       </div>
 
       {menu !== null ? (
-        <SpaceRowMenu anchor={menu.anchor} ariaLabel={t('st.remote.menuAria', { name: menu.record.label })}
+        <SpaceRowMenu anchor={menu.anchor} anchorElement={menu.anchorElement} ariaLabel={t('st.remote.menuAria', { name: menu.record.label })}
           onClose={() => { setMenu(null); }}
           items={[
             ...(hasGuiPurpose(menu.record) ? [{
@@ -199,7 +199,7 @@ function RemoteConnectionRow({ record, busy, onEnter, onMenu }: {
   record: RemoteConnection;
   busy: boolean;
   onEnter: () => void;
-  onMenu: (anchor: DOMRect) => void;
+  onMenu: (anchor: DOMRect, element: HTMLElement) => void;
 }) {
   const { t, locale } = useI18n();
   const summary = remoteSummaryView(record);
@@ -251,7 +251,7 @@ function RemoteConnectionRow({ record, busy, onEnter, onMenu }: {
         <button type="button" data-remote-menu={record.id} aria-haspopup="menu" disabled={busy}
           aria-label={t('st.remote.menuAria', { name: record.label })}
           className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-          onClick={(event) => { onMenu(event.currentTarget.getBoundingClientRect()); }}>
+          onClick={(event) => { onMenu(event.currentTarget.getBoundingClientRect(), event.currentTarget); }}>
           <Icon name="more" size={14} />
         </button>
       </div>

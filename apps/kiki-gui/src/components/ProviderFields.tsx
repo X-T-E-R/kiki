@@ -38,6 +38,7 @@ import {
   isProviderDraftDirty,
   KNOWN_CAPABILITIES,
   KNOWN_EFFORTS,
+  DEFAULT_MODEL_CAPABILITIES,
   KNOWN_IMAGE_MIME_TYPES,
   MS_UNIT_FACTORS,
   msUnitFor,
@@ -210,7 +211,7 @@ function blankModel(): ProviderModelDraft {
     remoteId: '',
     maxContextSize: 250000,
     displayName: '',
-    capabilities: ['thinking', 'tool_use'],
+    capabilities: [...DEFAULT_MODEL_CAPABILITIES],
     supportEfforts: [],
     requestIdentityChoice: 'inherit',
     requestIdentityOverridesJson: '',
@@ -723,18 +724,26 @@ function ModelDraftRow({
               removeLabel={(value) => t('st.chips.removeAria', { value })}
             />
           </div>
+          {/*
+            Capabilities are an ordinary setting, not a rarely-needed one: they
+            decide what Kiki may send to this model, and the two that make a
+            model usable at all (thinking, tool use) start checked. Behind a
+            disclosure, the value actually submitted could not be seen or
+            corrected before saving — which is exactly the part worth checking.
+          */}
+          <div className="space-y-1" data-draft-model-capabilities={model.id}>
+            <p className={FORM_LABEL}>{t('st.chips.capabilities')}</p>
+            <ChipSelect
+              values={model.capabilities}
+              knownOptions={KNOWN_CAPABILITIES}
+              onChange={(capabilities) => { onChange({ capabilities }); }}
+              ariaLabel={t('st.providers.modelCapsAria', { n })}
+              addPlaceholder={t('st.chips.addPlaceholder')}
+              removeLabel={(value) => t('st.chips.removeAria', { value })}
+            />
+            <Hint>{t('st.models.capabilitiesHint')}</Hint>
+          </div>
           <AdvancedDisclosure id={`draft-model-${index}`} summary={t('st.models.draftAdvancedSummary')}>
-            <div className="space-y-1">
-              <p className={FORM_LABEL}>{t('st.chips.capabilities')}</p>
-              <ChipSelect
-                values={model.capabilities}
-                knownOptions={KNOWN_CAPABILITIES}
-                onChange={(capabilities) => { onChange({ capabilities }); }}
-                ariaLabel={t('st.providers.modelCapsAria', { n })}
-                addPlaceholder={t('st.chips.addPlaceholder')}
-                removeLabel={(value) => t('st.chips.removeAria', { value })}
-              />
-            </div>
             <ImagePolicyEditor
               value={model}
               onChange={(images) => { onChange(images); }}

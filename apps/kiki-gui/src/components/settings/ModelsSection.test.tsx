@@ -717,7 +717,7 @@ describe('ModelCatalogCard list and detail hierarchy', () => {
     expect(container.querySelector('[data-model-row]')!.textContent).not.toContain('video_in');
   });
 
-  it('opens the detail with name, effort and context first and keeps overrides under Advanced', async () => {
+  it('opens the detail with name, effort, context and capabilities first, and keeps overrides under Advanced', async () => {
     const container = await renderCard();
     await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -725,12 +725,17 @@ describe('ModelCatalogCard list and detail hierarchy', () => {
     const advanced = editor.querySelector<HTMLElement>('[data-advanced="model-kimi-code/kimi-k2"]')!;
     const body = advanced.querySelector<HTMLElement>('[id^="advanced-"]')!;
     expect(body.hidden).toBe(true);
-    expect(body.querySelector('[role="group"][aria-label="Capabilities for kimi-code/kimi-k2"]')).not.toBeNull();
     expect(body.querySelector('input[aria-label="Remote ID for kimi-code/kimi-k2"]')).not.toBeNull();
-    // Common fields sit outside the disclosure.
+    // Common fields sit outside the disclosure — capabilities included. What a
+    // model can do is one of the things a person opens this panel to decide, so
+    // it is on the ordinary surface where the value being saved can be read.
     expect(advanced.contains(editor.querySelector('input[aria-label="Display name for kimi-code/kimi-k2"]'))).toBe(false);
     expect(advanced.contains(editor.querySelector('[data-model-context-fields]'))).toBe(false);
     expect(advanced.contains(editor.querySelector('[role="group"][aria-label="Effort levels for kimi-code/kimi-k2"]'))).toBe(false);
+    const capabilities = editor.querySelector('[data-model-capabilities="kimi-code/kimi-k2"]');
+    expect(capabilities).not.toBeNull();
+    expect(advanced.contains(capabilities!)).toBe(false);
+    expect(capabilities!.querySelector('[role="group"][aria-label="Capabilities for kimi-code/kimi-k2"]')).not.toBeNull();
   });
 });
 

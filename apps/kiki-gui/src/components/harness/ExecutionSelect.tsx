@@ -33,6 +33,7 @@ import {
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
+import { visibleEngines } from '../settings/profileEditor/engines';
 import { COMPOSER_PANEL_START, STATUS_SEGMENT_CLASS, STATUS_SEGMENT_ICON_CLASS, STATUS_SEGMENT_SET, useComposerPanelAnchor, usePopover, MENU_ROW_CLASS, MENU_ROW_SELECTED_CLASS } from '../ComposerControls';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import { Icon } from '../icons';
@@ -160,6 +161,7 @@ export function ExecutionSelect({
   onChange,
   catalog,
   profiles,
+  engineOverrides,
   pickableProfile,
   nativeLabel,
   contextGroups,
@@ -178,6 +180,14 @@ export function ExecutionSelect({
   catalog: readonly ExecutorCatalogItem[];
   /** Main profiles the workspace offers, already filtered for availability. */
   profiles: readonly NamedAgentProfile[];
+  /**
+   * The raw `agent_executor_overrides` record, which carries the display
+   * choice (see `visibleEngines`). Pass it so the panel lists engines that can
+   * actually run here rather than every engine Kiki knows about; an engine the
+   * user hid from the list stays installed and still runs whatever is bound to
+   * it.
+   */
+  engineOverrides?: Readonly<Record<string, unknown>> | undefined;
   /** Whether one profile is a conversation candidate (main, enabled, public). */
   pickableProfile: (profile: NamedAgentProfile) => boolean;
   nativeLabel: string;
@@ -233,6 +243,23 @@ export function ExecutionSelect({
   }, [profiles, pickableProfile]);
 
   /**
+   * Engines this panel may list: native, plus the external engines the machine
+   * is actually set up for and the display choice still allows.
+   *
+   * The engine the session is currently bound to is added back whatever the
+   * filter decided, because the trigger is already naming it: a panel that
+   * lists everything *except* the engine this session runs cannot say what it
+   * is showing or offer a way back. Hiding is a choice about what to be
+   * *offered* next, never about what is already in flight.
+   */
+  const listedEngines = useMemo(() => {
+    const listed = visibleEngines(catalog, profiles, engineOverrides);
+    if (listed.some((item) => item.id === choice.executor)) return listed;
+    const bound = catalog.find((item) => item.id === choice.executor);
+    return bound === undefined ? listed : [...listed, bound];
+  }, [catalog, profiles, engineOverrides, choice.executor]);
+
+  /**
    * One filter over the whole panel, matched against everything a reader can
    * see: the engine name, its id, and every profile name and description.
    * A bare engine with no profile row of its own survives on its own name
@@ -245,7 +272,7 @@ export function ExecutionSelect({
     return own.some((profile) =>
       `${profile.name} ${profile.description ?? ''} ${profile.when_to_use ?? ''}`.toLowerCase().includes(needle));
   };
-  const externalEngines = catalog.filter((item) => item.id !== NATIVE_EXECUTOR);
+  const externalEngines = listedEngines.filter((item) => item.id !== NATIVE_EXECUTOR);
   const nativeProfiles = profilesByEngine.get(NATIVE_EXECUTOR) ?? [];
   const visibleExternal = externalEngines.filter((item) => matches(item, profilesByEngine.get(item.id) ?? []));
   const nativeVisible = matches({ id: NATIVE_EXECUTOR, label: nativeLabel }, nativeProfiles);

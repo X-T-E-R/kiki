@@ -22,7 +22,7 @@ import {
 } from '@kiki/session-core/composer';
 import { useI18n } from '../i18n';
 import { clampOverlayPosition } from '../lib/overlayPosition';
-import { registerOverlay } from '../lib/uiBusy';
+import { floatingSurfaceZIndex, registerOverlay } from '../lib/uiBusy';
 import { Icon } from './icons';
 
 interface SentNote {
@@ -229,8 +229,8 @@ function SentNotesPopover({
       role="dialog"
       aria-label={t('transcript.annotation.notesAria')}
       tabIndex={-1}
-      className="anim-enter fixed z-50 w-80 max-w-[calc(100vw-1rem)] rounded-xl border border-hairline bg-panel p-1.5 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.35)]"
-      style={{ top: position.top, left: position.left }}
+      className="anim-enter fixed w-80 max-w-[calc(100vw-1rem)] rounded-xl border border-hairline bg-panel p-1.5 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.35)]"
+      style={{ top: position.top, left: position.left, zIndex: floatingSurfaceZIndex(null) }}
     >
       <ul className="max-h-[min(40vh,320px)] overflow-y-auto">
         {notes.map((note) => (

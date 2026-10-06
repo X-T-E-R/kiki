@@ -1060,7 +1060,10 @@ describe('OnboardingWizard', () => {
     await flush();
     expect(createProvider).toHaveBeenCalledTimes(1);
 
-    await click(buttonByText('Set up later'));
+    // Leaving the wizard is the header's close, not "Set up later": that one only
+    // steps past the model page and keeps walking.
+    await click(dialog().querySelector<HTMLButtonElement>('[aria-label="Close setup"]')!);
+    await flush();
     expect(onClose).toHaveBeenCalledTimes(1);
     await unmountLast();
     listProviders.mockResolvedValue({ items: [SAVED_PROVIDER] });
@@ -1111,11 +1114,42 @@ describe('OnboardingWizard', () => {
     expect(yolo?.getAttribute('aria-checked')).toBe('true');
   });
 
-  it('marks completion and closes on "Set up later"', async () => {
+  it('"Set up later" steps past the current step and keeps the run open', async () => {
     const onClose = vi.fn();
     await mount(onClose);
     await click(buttonByText('Set up later'));
+    await flush();
+    // The action is about this step's question, so it answers it and moves on:
+    // the wizard is still here, and the run is not marked complete.
+    expect(onClose).not.toHaveBeenCalled();
+    expect(dialog().querySelector('[data-connection-choice]')).not.toBeNull();
+    expect(dialog().textContent).toContain('Step 2 of 4');
+    expect(localStorage.getItem('kiki.onboarding')).toBeNull();
+  });
+
+  it('"Set up later" from the permission step saves the chosen default and moves on', async () => {
+    const onClose = vi.fn();
+    await mount(onClose);
+    await toPermissionsStep();
+    await click(buttonByText('Set up later'));
+    await flush();
+    // Skipping past the step must not silently discard the choice already made.
+    expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'auto' });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(dialog().querySelector('[data-onboarding-capabilities]')).not.toBeNull();
+  });
+
+  it('"Set up later" on the last step closes the run, keeping the original meaning', async () => {
+    const onClose = vi.fn();
+    await mount(onClose);
+    await toCapabilitiesStep();
+    // There is no next step to move to, so this one keeps its original job:
+    // end the run here, without starting a session or routing anywhere.
+    await click(buttonByText('Close setup'));
+    await flush();
     expect(onClose).toHaveBeenCalledTimes(1);
+    expect(createSession).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 
@@ -1298,11 +1332,11 @@ describe('OnboardingWizard', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('"Set up later" only closes the dialog — no session, no navigation, no draft', async () => {
+  it('closing the last step ends the run without a session, navigation or draft', async () => {
     const onClose = vi.fn();
     await mount(onClose);
     await toCapabilitiesStep();
-    await click(buttonByText('Set up later'));
+    await click(buttonByText('Close setup'));
     await flush();
     expect(createSession).not.toHaveBeenCalled();
     // It dismisses; it does not route anywhere, so whatever the user was

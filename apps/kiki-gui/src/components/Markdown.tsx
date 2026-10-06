@@ -11,10 +11,10 @@ import { Link } from 'react-router-dom';
 import { Streamdown, defaultRemarkPlugins, defaultRehypePlugins, type Components } from 'streamdown';
 
 import { useHost } from '../host';
+import { ExternalLink } from '../host/ExternalLink';
 import { openExternalUrl } from '../host/external';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { runToastAction } from '../lib/toasts';
 import { useOptionalConnection } from '../state/connection';
 import { sourceTextVersion, type TimelineAnnotation } from '@kiki/session-core/composer';
 import {
@@ -360,21 +360,15 @@ function MarkdownAnchor({ href, children, documentDirectory }: {
   ];
   return (
     <>
-      <a
-        href={href}
-        target="_blank"
-        rel="noreferrer noopener"
-        onClick={(event) => {
-          // Native hosts must bypass webview new-window handling; in a normal
-          // browser the trusted anchor click already opens the default browser.
-          if (host.openUrl === undefined) return;
-          event.preventDefault();
-          runToastAction(t('link.open'), () => openExternalUrl(host, url, t('common.popupBlocked')));
-        }}
+      {/* One rule for every outward link: the desktop webview cannot open a new
+          window, so the click is routed through the shell bridge there, while a
+          browser keeps its native handling. */}
+      <ExternalLink
+        href={href ?? ''}
         onContextMenu={openMenu}
       >
         {children}
-      </a>
+      </ExternalLink>
       {menu !== null ? (
         <MiniContextMenu
           x={menu.x}

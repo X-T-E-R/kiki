@@ -15,6 +15,8 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
+import { floatingSurfaceZIndex } from '../../lib/uiBusy';
+
 import { useI18n } from '../../i18n';
 import { clampOverlayPosition } from '../../lib/overlayPosition';
 import { toolGroupCountLine } from './toolGroupText';
@@ -117,12 +119,12 @@ export function GroupPreviewCard({
       id={id}
       role="tooltip"
       data-capability-group-preview={group.key}
-      style={{ ...place(), width }}
+      style={{ ...place(), width, zIndex: floatingSurfaceZIndex(null) }}
       // The card is information, not a control: it is wider than the chip and
       // lands over its neighbours, so it must never take a click that was
       // aimed at the cluster underneath. Entering it still cancels the
       // close timer so a reader who moves toward it keeps it open.
-      className="anim-enter pointer-events-none fixed z-50 space-y-0.5 rounded-lg border border-hairline bg-panel px-2.5 py-2 text-[11.5px] leading-4 text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
+      className="anim-enter pointer-events-none fixed space-y-0.5 rounded-lg border border-hairline bg-panel px-2.5 py-2 text-[11.5px] leading-4 text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
     >
       {lines.map((line, index) => (
         <p key={index} className="flex min-w-0 items-baseline gap-1.5">

@@ -50,6 +50,9 @@ import {
   hasMention,
   insertDroppedPaths,
   insertThreadRef,
+  isNativeExecutor,
+  NATIVE_EXECUTOR,
+  profileExecutor,
   removeThreadRef,
   subscribeComposerInserts,
   threadRefDeletionRange,
@@ -103,7 +106,7 @@ import { RoomRefChip, ThreadRefChip } from './ThreadRefChip';
 import { roomRefFetcher, useRoomRefDirectory } from '../lib/roomRefs';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { ExecutionSelect } from './harness/ExecutionSelect';
-import { useExecutorCatalog } from './settings/profileEditor/engines';
+import { engineLabel, engineOverridesOf, useExecutorCatalog } from './settings/profileEditor/engines';
 import type { ExecutionChoice, ExecutionContextGroup } from '@kiki/session-core/composer';
 import { buildCatalogModelOptions, modelFactBadges, modelTooltip, useProviderGroupLabel } from './modelSelectOptions';
 import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
@@ -199,10 +202,19 @@ export const isConversationProfile = (item: NamedAgentProfile): boolean =>
  * never offered here — dispatch them with AgentRun instead. A previously
  * selected profile that has become unavailable remains visible on the
  * trigger with a diagnostic until the user reselects.
+ *
+ * Profiles are grouped by the engine that runs them, and the group header is
+ * that engine's own name. A profile names the harness it drives, so listing
+ * them under one undifferentiated heading made a Codex profile look like a
+ * Kiki one; grouping by engine puts each one under the engine a reader already
+ * recognises from the execution picker. Native profiles keep the product name
+ * rather than the wire id, and the rows stay in the caller's order inside each
+ * group so the picker's existing sort is preserved.
  */
 export function buildAgentProfileOptions(
   items: readonly NamedAgentProfile[],
   t: (key: I18nKey, params?: I18nParams) => string,
+  nativeLabel?: string,
 ): SearchableSelectOption[] {
   const pickable = items.filter(isConversationProfile);
   const toOption = (item: NamedAgentProfile, group: string): SearchableSelectOption => ({
@@ -219,7 +231,17 @@ export function buildAgentProfileOptions(
         : []),
     ],
   });
-  return pickable.map((item) => toOption(item, t('composer.profileGroupMain')));
+  const groupOf = (item: NamedAgentProfile): string => {
+    const executor = profileExecutor(item);
+    if (isNativeExecutor(executor)) {
+      return nativeLabel !== undefined && nativeLabel !== '' ? nativeLabel : t('composer.profileGroupMain');
+    }
+    // A profile whose engine the catalog does not list still has to be
+    // findable, so it is grouped under the raw id rather than dropped or
+    // misfiled under Kiki.
+    return executor;
+  };
+  return pickable.map((item) => toOption(item, groupOf(item)));
 }
 
 /** What the composer needs to know about an external engine driving main. */
@@ -847,13 +869,21 @@ export function Composer({
     retryDelay: catalogRetryDelay,
     refetchInterval: catalogRefetchInterval,
   });
-  const agentProfileOptions: readonly SearchableSelectOption[] = useMemo(
-    () => buildAgentProfileOptions(agentProfilesQuery.data?.items ?? [], t),
-    [agentProfilesQuery.data, t],
-  );
   // The engine catalog behind the execution panel. Empty while loading or on a
   // server without the route; the native engine is always offered regardless.
   const executorCatalog = useExecutorCatalog();
+  // Which engines the panel may list: the display choice lives in the config's
+  // own record, read here so a hidden engine stops being offered as a choice.
+  const engineOverridesQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000, retry: retryCatalog });
+  const engineOverrides = engineOverridesOf(engineOverridesQuery.data);
+  const agentProfileOptions: readonly SearchableSelectOption[] = useMemo(
+    () => buildAgentProfileOptions(
+      agentProfilesQuery.data?.items ?? [],
+      t,
+      engineLabel(NATIVE_EXECUTOR, t('composer.agentDefaultName'), executorCatalog),
+    ),
+    [agentProfilesQuery.data, executorCatalog, t],
+  );
   const frozenMenuQuery = useQuery({
     queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
     queryFn: () => client.getAgentCapabilities({ session_id: sessionId!, agent_id: agentId }),
@@ -2191,6 +2221,7 @@ export function Composer({
           }}
           catalog={executorCatalog}
           profiles={agentProfilesQuery.data?.items ?? []}
+          engineOverrides={engineOverrides}
           pickableProfile={isConversationProfile}
           nativeLabel={t('composer.agentDefaultName')}
           contextGroups={executionGrants?.kikiContext}

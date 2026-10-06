@@ -18,14 +18,21 @@
  * the provider (key + chosen model) the moment the form validates, so leaving
  * the wizard after any Next loses nothing; the "Test connection" button only
  * probes the values the form currently holds (see KikiClient.probeProviderDraft)
- * and never saves. Closing without saving (X, Esc, "Set up later") discards
+ * and never saves. Closing without saving (X, Esc, backdrop) discards
  * an unsubmitted form, like any web form — everything already saved stays.
+ *
+ * "Set up later" is about the current step, not the run: it steps past that
+ * step to the next one and keeps walking, because that is what "later" says.
+ * Only on the last step, where there is no next step, does it close. Leaving
+ * the whole wizard at any point is the X, Escape or the backdrop.
  *
  * Two entries: the App shell auto-opens it when the auth/models probes report
  * a server with nothing to answer with (`shouldOfferOnboarding`), and the
  * settings About page re-opens it through `requestOnboardingOpen`. Every exit
- * path — finish, skip, Esc, backdrop — marks the run completed
+ * path — finish, X, Esc, backdrop — marks the run completed
  * (`kiki.onboarding` in localStorage), so the auto-popup fires at most once.
+ * Stepping past a step is not an exit: the run stays unfinished until one of
+ * those paths is taken, so a half-walked wizard can still be completed.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
@@ -354,6 +361,7 @@ function OnboardingAdvanced({
 function OnboardingProviderForm({
   draft,
   suggestions,
+  probed,
   probing,
   probeFeedback,
   fieldIssue,
@@ -364,6 +372,8 @@ function OnboardingProviderForm({
 }: {
   readonly draft: ProviderDraft;
   readonly suggestions: readonly ProviderModelDraft[];
+  /** Whether a fetch has completed for this form (see the wizard's `probed`). */
+  readonly probed: boolean;
   readonly probing: boolean;
   readonly probeFeedback: Feedback;
   /** The one field-level problem the last save attempt found, if any. */
@@ -546,6 +556,11 @@ function OnboardingProviderForm({
           offered as its own row, so a model the provider never listed, or a
           probe that never ran, is still enterable. No truncation, so no
           candidate is unreachable.
+
+          The empty row names which of two empty states this is. Before the
+          first fetch the list simply has not been read yet, so it names the
+          action that reads it; after a fetch that returned nothing the
+          provider's answer is the fact, and a typed id is still accepted.
         */}
         <div className="mt-1">
           <SearchableSelect
@@ -556,7 +571,7 @@ function OnboardingProviderForm({
             hideFilter={false}
             allowCustomValue
             customValueLabel={(value) => t('onboarding.model.useCustomId', { id: value })}
-            emptyText={t('onboarding.model.noModelsYet')}
+            emptyText={t(probed ? 'onboarding.model.noModelsFetched' : 'onboarding.model.noModelsYet')}
             searchPlaceholder={t('onboarding.model.searchModels')}
             noMatchText={(value) => t('onboarding.model.useCustomId', { id: value })}
             options={suggestions.map((suggestion) => ({
@@ -573,7 +588,7 @@ function OnboardingProviderForm({
           />
         </div>
         {suggestions.length === 0 ? (
-          <div className="mt-1"><Hint>{t('onboarding.model.modelHint')}</Hint></div>
+          <div className="mt-1"><Hint>{t(probed ? 'onboarding.model.modelHintFetched' : 'onboarding.model.modelHint')}</Hint></div>
         ) : null}
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -682,6 +697,10 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   const [providerBaseline, setProviderBaseline] = useState<ProviderDraft | null>(null);
   const [addingProvider, setAddingProvider] = useState(false);
   const [suggestions, setSuggestions] = useState<readonly ProviderModelDraft[]>([]);
+  // Has this form ever fetched a model list? The difference decides whether an
+  // empty dropdown is "nothing to pick yet" or "the provider reported none" —
+  // two different sentences, and only the second is a result.
+  const [probed, setProbed] = useState(false);
   const [probing, setProbing] = useState(false);
   const [probeFeedback, setProbeFeedback] = useState<Feedback>(null);
   const [providerFeedback, setProviderFeedback] = useState<Feedback>(null);
@@ -790,6 +809,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     setProviderDraft(draft);
     setProviderBaseline(draft);
     setSuggestions([]);
+    setProbed(false);
     setProbeFeedback(null);
     setProviderFeedback(null);
     setProviderFieldIssue(null);
@@ -818,6 +838,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
         apiKey: providerDraft.apiKey,
       });
       setSuggestions(models);
+      setProbed(true);
       setProbeFeedback({ tone: 'success', text: t('onboarding.model.testedOk', { count: models.length }) });
     } catch (error) {
       // A failed fetch surfaces as a bare TypeError ("Failed to fetch") —
@@ -887,6 +908,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       setProviderBaseline(null);
       setAddingProvider(false);
       setSuggestions([]);
+      setProbed(false);
       return true;
     } catch (error) {
       setProviderFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -934,6 +956,30 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     if (step === 'permissions' && await savePermissionMode()) {
       setStep('capabilities');
     }
+  };
+
+  /**
+   * "Set up later" leaves the *step*, not the run.
+   *
+   * The action is about this step's one question, so it answers that question
+   * the way "not now" does everywhere else in Kiki — step past it — and the
+   * walk continues to the finish. Closing the whole wizard here discarded the
+   * steps the user had not reached yet and left them re-running from the top,
+   * which is not what the label promises. On the last step there is no next
+   * step to move to, so it keeps the original meaning and closes.
+   *
+   * The permission step saves like any other advance: its default is a choice
+   * already made, and skipping past it must not silently discard it. A failed
+   * save keeps the step, so the choice is never lost behind the skip.
+   */
+  const skipStep = async () => {
+    const index = STEPS.indexOf(step);
+    if (index === STEPS.length - 1) {
+      close();
+      return;
+    }
+    if (step === 'permissions' && !await savePermissionMode()) return;
+    setStep(STEPS[index + 1]!);
   };
 
   // Finish: open the guided first-run conversation. The wizard has done what a
@@ -1084,6 +1130,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
                     draft={providerDraft}
                   modelIssueRef={modelIssueRef}
                     suggestions={suggestions}
+                    probed={probed}
                     probing={probing}
                     probeFeedback={probeFeedback}
                     fieldIssue={providerFieldIssue}
@@ -1093,6 +1140,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
                       setProviderDraft(null);
                       setProviderBaseline(null);
                       setSuggestions([]);
+                      setProbed(false);
                       setProbeFeedback(null);
                       setProviderFeedback(null);
                       setProviderFieldIssue(null);
@@ -1152,10 +1200,11 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-hairline px-6 py-3">
         <button
           type="button"
-          onClick={close}
-          className="shrink-0 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink"
+          onClick={() => { void skipStep(); }}
+          disabled={permissionBusy}
+          className="shrink-0 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink disabled:opacity-50"
         >
-          {t('onboarding.skip')}
+          {last ? t('onboarding.closeRun') : t('onboarding.skip')}
         </button>
         {/* A failed hand-off belongs to the button that made it: the step is
             unchanged and only the retry is missing. It sits inline on a wide

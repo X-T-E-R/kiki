@@ -11,7 +11,7 @@ import { createPortal } from 'react-dom';
 import type { TimelineAnnotation } from '@kiki/session-core/composer';
 import { useI18n } from '../i18n';
 import { clampOverlayPosition } from '../lib/overlayPosition';
-import { registerOverlay } from '../lib/uiBusy';
+import { floatingSurfaceZIndex, registerOverlay } from '../lib/uiBusy';
 
 export interface AnnotationPopoverOpen {
   readonly annotationId: string;
@@ -117,8 +117,8 @@ export function AnnotationPopover({
       role="dialog"
       aria-label={t('transcript.annotation.panelAria')}
       tabIndex={-1}
-      className="anim-enter fixed z-50 w-80 max-w-[calc(100vw-1rem)] rounded-xl border border-hairline bg-panel p-2 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.35)]"
-      style={{ top: position.top, left: position.left }}
+      className="anim-enter fixed w-80 max-w-[calc(100vw-1rem)] rounded-xl border border-hairline bg-panel p-2 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.35)]"
+      style={{ top: position.top, left: position.left, zIndex: floatingSurfaceZIndex(null) }}
     >
       <p className="mb-1.5 max-h-16 overflow-hidden border-l-2 border-accent/60 pl-1.5 text-[11px] leading-snug whitespace-pre-wrap text-ink-soft">
         {annotation.quote}

@@ -54,7 +54,7 @@ function SpacePrefOriginContext({ item, label, target }: SpacePrefOriginProps & 
   // One entry per server and home, and an unidentified connection keeps its own
   // slot rather than borrowing a confirmed server's read.
   const detailKey = [...spaceSettingsKeys.detail(spaceId), serverId ?? 'unidentified'];
-  const [menu, setMenu] = useState<DOMRect | null>(null);
+  const [menu, setMenu] = useState<{ anchor: DOMRect; anchorElement: HTMLElement } | null>(null);
   const [dialog, setDialog] = useState<SpacePlanRequest | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<unknown>(null);
@@ -180,7 +180,7 @@ function SpacePrefOriginContext({ item, label, target }: SpacePrefOriginProps & 
       <button type="button" data-pref-origin-menu={item} aria-haspopup="menu" aria-label={t('st.spaces.origin.menuAria', { name: label })}
         disabled={busy}
         className="flex h-5 w-5 items-center justify-center rounded text-ink-faint outline-none transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50"
-        onClick={(event) => { setMenu(event.currentTarget.getBoundingClientRect()); }}>
+        onClick={(event) => { setMenu({ anchor: event.currentTarget.getBoundingClientRect(), anchorElement: event.currentTarget }); }}>
         <Icon name="more" size={12} />
       </button>
       {deviceOnly ? (
@@ -197,7 +197,7 @@ function SpacePrefOriginContext({ item, label, target }: SpacePrefOriginProps & 
       )}
 
       {menu === null ? null : (
-        <SpaceRowMenu anchor={menu} items={menuItems} ariaLabel={t('st.spaces.origin.menuAria', { name: label })}
+        <SpaceRowMenu anchor={menu.anchor} anchorElement={menu.anchorElement} items={menuItems} ariaLabel={t('st.spaces.origin.menuAria', { name: label })}
           onClose={() => { setMenu(null); }} />
       )}
       {dialog === null || target === null ? null : (

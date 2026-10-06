@@ -36,6 +36,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../../i18n';
+import { ExternalLink } from '../../../host/ExternalLink';
 import { useConnection } from '../../../state/connection';
 import {
   blockingStep, browserApi, browserKeys, presetAction, presetReadiness, runningStep, warningStep, whenText,
@@ -320,17 +321,17 @@ function BrowserRoute({ preset, active, onSelect }: {
             second button and no trip to another page: the reader is told what
             is off, and the button they can already see turns it on. */}
         {offeredExtension?.url === undefined ? null : (
-          <a className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} href={offeredExtension.url} target="_blank" rel="noopener noreferrer"
+          <ExternalLink className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} href={offeredExtension.url}
             data-browser-route-extension={offeredExtension.target ?? 'chrome'}>
             <Icon name="external" size={12} />
             {t('st.browser.route.addExtension', { store: t(STORE_TARGET_KEYS[offeredExtension.target ?? ''] ?? 'st.browser.store.chrome') })}
-          </a>
+          </ExternalLink>
         )}
         {offeredInstructions === undefined ? null : (
-          <a className="inline-flex items-center gap-1 text-[12px] text-selected-ink hover:underline" href={offeredInstructions}
-            target="_blank" rel="noopener noreferrer" data-browser-route-instructions>
+          <ExternalLink className="inline-flex items-center gap-1 text-[12px] text-selected-ink hover:underline" href={offeredInstructions}
+            data-browser-route-instructions>
             {t('st.browser.route.instructions')}
-          </a>
+          </ExternalLink>
         )}
       </div>
 

@@ -22,7 +22,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-import { canRestoreModalFocus, nextModalDepth, registerModal, registerOverlay } from '../lib/uiBusy';
+import { canRestoreModalFocus, MODAL_BASE_Z_INDEX, nextModalDepth, registerModal, registerOverlay } from '../lib/uiBusy';
 
 const ModalDepth = createContext<number | undefined>(undefined);
 export function useStackedDialog(): boolean { return useContext(ModalDepth) !== undefined; }
@@ -188,7 +188,7 @@ export function Dialog({
       <div
         {...overlayData}
         className={overlayClassName ?? 'fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4'}
-        style={depth === undefined ? undefined : { zIndex: 50 + depth }}
+        style={depth === undefined ? undefined : { zIndex: MODAL_BASE_Z_INDEX + depth }}
         onPointerDown={(event) => {
           if (event.target === event.currentTarget && (depth === undefined
             ? panelRef.current && canRestoreModalFocus(panelRef.current)

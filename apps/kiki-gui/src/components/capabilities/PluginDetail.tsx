@@ -13,6 +13,7 @@ import { useQuery } from '@tanstack/react-query';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
+import { ExternalLink } from '../../host/ExternalLink';
 import { importKeys, importsApi, type ImportsFacade } from '../../lib/importHistory';
 import {
   hasAnyPermission,
@@ -298,7 +299,7 @@ export function PluginDetail({
                 { label: t('cap.detail.source'), value: installed?.originalSource ?? catalogSource ?? '—', mono: true },
                 ...(info?.root !== undefined ? [{ label: t('cap.detail.location'), value: info.root, mono: true }] : []),
                 ...(info?.installedAt !== undefined ? [{ label: t('cap.detail.installedAt'), value: new Date(info.installedAt).toLocaleString(locale === 'zh' ? 'zh-CN' : undefined) }] : []),
-                ...(subject.entry?.homepage !== undefined ? [{ label: t('cap.detail.homepage'), value: <a className="text-selected-ink hover:underline" href={subject.entry.homepage} target="_blank" rel="noopener noreferrer">{subject.entry.homepage}</a> }] : []),
+                ...(subject.entry?.homepage !== undefined ? [{ label: t('cap.detail.homepage'), value: <ExternalLink className="text-selected-ink hover:underline" href={subject.entry.homepage}>{subject.entry.homepage}</ExternalLink> }] : []),
               ]}
             />
             {installed !== undefined ? (

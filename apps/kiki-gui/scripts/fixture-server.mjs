@@ -2151,7 +2151,29 @@ class FixtureServer {
       // replace_domains is an instruction, not config; a replaced domain is
       // already the whole value the spread below stores.
       delete patch.replace_domains;
+      // `[agent_executor_overrides]` merges per engine on the real server, so a
+      // patch that sets one engine's field must not erase another's entries —
+      // nor another field of the same engine. The section is a free-form record
+      // on the wire, so it is stored exactly as it arrives.
+      const executorPatch = patch.agent_executor_overrides;
+      delete patch.agent_executor_overrides;
       this.config = { ...this.config, ...patch };
+      if (executorPatch !== null && typeof executorPatch === 'object' && !Array.isArray(executorPatch)) {
+        const previous = this.config.agent_executor_overrides;
+        const merged = {
+          ...(typeof previous === 'object' && previous !== null && !Array.isArray(previous) ? previous : {}),
+        };
+        for (const [id, entry] of Object.entries(executorPatch)) {
+          const base = merged[id];
+          merged[id] = entry !== null && typeof entry === 'object' && !Array.isArray(entry)
+            ? {
+              ...(typeof base === 'object' && base !== null && !Array.isArray(base) ? base : {}),
+              ...entry,
+            }
+            : entry;
+        }
+        this.config.agent_executor_overrides = merged;
+      }
       if (body?.request_identity === null) delete this.config.request_identity;
       if (patch.plugins !== undefined) {
         const url = patch.plugins.marketplace_url ?? patch.plugins.marketplaceUrl;

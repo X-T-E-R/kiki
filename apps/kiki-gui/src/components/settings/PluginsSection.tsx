@@ -9,6 +9,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import { useI18n } from '../../i18n';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
+import { ExternalLink } from '../../host/ExternalLink';
 import type { CapabilityStatus } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { CatalogSourceField } from '../capabilities/AddSourceDialog';
@@ -102,11 +103,11 @@ function WebBridgeReadiness() {
             {capability.install.running ? <BusyHint>{capability.install.step ?? t('st.plugins.runtimeStarted')}</BusyHint> : null}
             {capability.install.error ? <FeedbackLine feedback={{ tone: 'error', text: capability.install.error }} /> : null}
             {capability.plan?.browserExtensionUrl === 'https://chromewebstore.google.com/detail/kimi-webbridge/fldmhceldgbpfpkbgopacenieobmligc' ? (
-              <a className="inline-block text-[12px] font-medium text-selected-ink hover:underline"
-                href={capability.plan.browserExtensionUrl} target="_blank" rel="noopener noreferrer"
+              <ExternalLink className="inline-block text-[12px] font-medium text-selected-ink hover:underline"
+                href={capability.plan.browserExtensionUrl}
                 data-webbridge-extension>
                 {t('st.plugins.browserExtension')}
-              </a>
+              </ExternalLink>
             ) : null}
             <div className="flex flex-wrap gap-2">
               <button type="button" className={SECONDARY_BUTTON} onClick={() => { void query.refetch(); }} data-webbridge-check>

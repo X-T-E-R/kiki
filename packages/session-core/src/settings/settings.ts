@@ -1431,16 +1431,29 @@ export function validateImagePolicyDraft(
   return null;
 }
 
+/**
+ * The capabilities a model gets when nothing has been decided yet.
+ *
+ * `thinking` and `tool_use` are what make a model usable through Kiki at all, so
+ * a model the user has not configured about is assumed to have both. This is a
+ * default, not a correction: it fills in only where nothing was ever stored, and
+ * it never adds to or removes from a list the user (or discovery) actually set.
+ * A model whose capabilities were explicitly configured to something narrower
+ * keeps exactly that — including an empty list, which is a decision.
+ */
+export const DEFAULT_MODEL_CAPABILITIES = ['thinking', 'tool_use'] as const;
+
 export function providerModelDraftFromCatalog(
   model: ModelCatalogItem | GetModelResponse,
 ): ProviderModelDraft {
+  const configured = model.capabilities;
   return {
     id: model.id,
     remoteId: model.remote_id ?? '',
     maxContextSize: model.max_context_size ?? 0,
     autoCompact: model.auto_compact,
     displayName: model.display_name ?? '',
-    capabilities: [...(model.capabilities ?? [])],
+    capabilities: configured === undefined ? [...DEFAULT_MODEL_CAPABILITIES] : [...configured],
     supportEfforts: [...(model.support_efforts ?? [])],
     behavior: model.behavior,
     ...requestIdentityLayerDraftFromPolicy(model.request_identity),

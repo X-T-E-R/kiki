@@ -20,7 +20,7 @@ import { createPortal } from 'react-dom';
 
 import { filterSelectOptions } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
-import { owningModalId } from '../lib/uiBusy';
+import { floatingSurfaceZIndex, MODAL_BASE_Z_INDEX, owningModalId } from '../lib/uiBusy';
 import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { Icon } from './icons';
 
@@ -251,6 +251,20 @@ export function SearchableSelect({
     align,
     placement === 'above' ? 'above' : 'below',
   );
+  /**
+   * The panel renders in `<body>`, so its stacking is decided here rather than
+   * by where the trigger sits. Opening it from inside a dialog has to clear
+   * that dialog's own overlay: a first-run wizard sits one depth up, and a
+   * panel at the page-level z-index painted *under* it — present in the DOM,
+   * invisible on screen, and unclickable. Resolved from the trigger's owning
+   * modal so any nesting depth is covered, and re-read when the panel opens
+   * because that is when a dialog above it may have appeared.
+   */
+  const [panelZIndex, setPanelZIndex] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    if (!open) { setPanelZIndex(undefined); return; }
+    setPanelZIndex(floatingSurfaceZIndex(triggerRef.current));
+  }, [open]);
 
   const selected = options.find((option) => option.value === value);
   const visible = useMemo(() => filterSelectOptions(options, query), [options, query]);
@@ -587,8 +601,8 @@ export function SearchableSelect({
                 close();
                 triggerRef.current?.focus();
               }}
-              className={`anim-enter fixed z-50 flex flex-col overflow-hidden ${POPOVER_SURFACE_CLASS}`}
-              style={panelStyle}
+              className={`anim-enter fixed flex flex-col overflow-hidden ${POPOVER_SURFACE_CLASS}`}
+              style={{ ...panelStyle, zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX }}
             >
               {panel}
             </div>,

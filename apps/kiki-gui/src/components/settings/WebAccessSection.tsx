@@ -30,6 +30,7 @@ import { durationUntil, relativeTime } from '@kiki/session-core/util/time';
 import type { WebAccessLink, WebAccessStatus } from '@kiki/protocol';
 
 import { useHost } from '../../host';
+import { ExternalLink } from '../../host/ExternalLink';
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
 import {
@@ -309,6 +310,10 @@ function OpenEntry({ state, busy, onNewLink, onTurnOff, onRevoke, onRevokeAll, a
   address: React.ReactNode;
 }) {
   const { t, locale } = useI18n();
+  // The link's own failure, not the section's: the address below is the way to
+  // open it by hand, so a browser that refused must say so here — a button
+  // that does nothing is indistinguishable from a dead one.
+  const [openFailed, setOpenFailed] = useState(false);
   const expiring = state.mode === 'temporary' && state.expiresAt !== null;
   return (
     <div className="space-y-2.5" data-web-access-open>
@@ -329,11 +334,12 @@ function OpenEntry({ state, busy, onNewLink, onTurnOff, onRevoke, onRevokeAll, a
             {busy === 'link' ? t('st.web.issuing') : t('st.web.newLink')}
           </button>
           {state.url !== null ? (
-            <a data-web-access-open-link href={state.url} target="_blank" rel="noreferrer"
+            <ExternalLink data-web-access-open-link href={state.url}
+              onOpenFailed={() => { setOpenFailed(true); }}
               className={`${SECONDARY_BUTTON} no-underline`}>
               <Icon name="external" size={12} className="mr-1 inline-block align-[-1px]" />
               {t('st.web.openHere')}
-            </a>
+            </ExternalLink>
           ) : null}
           <button type="button" data-web-access-off className={SECONDARY_BUTTON}
             disabled={busy !== null} onClick={onTurnOff}>
@@ -346,6 +352,13 @@ function OpenEntry({ state, busy, onNewLink, onTurnOff, onRevoke, onRevokeAll, a
           settings: if this entry is plain HTTP on a network, say so here. */}
       {state.insecure ? (
         <p className="text-[12px] leading-snug text-amber-ink" data-web-access-insecure>{t('st.web.insecureLive')}</p>
+      ) : null}
+
+      {/* The one thing to do about a refused open: the address is right here. */}
+      {openFailed && state.url !== null ? (
+        <p role="alert" data-web-access-open-failed className="text-[12px] leading-snug text-danger">
+          {t('st.web.openFailed')} <span className="font-mono text-[11px] break-all">{state.url}</span>
+        </p>
       ) : null}
 
       {address}

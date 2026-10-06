@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { UsageExportVibeAuth } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useHost } from '../../../host';
+import { ExternalLink } from '../../../host/ExternalLink';
 import { openExternalUrl, reserveExternalBrowserTab, type ExternalBrowserTab } from '../../../host/external';
 import { useI18n } from '../../../i18n';
 import type { UsageExportApi } from '../../../lib/usageExport';
@@ -129,7 +130,8 @@ export function UsageExportVibeConnect({ api, begin, credentialStored, disabled,
             <button type="button" data-usage-export-vibe-open className={SECONDARY_BUTTON} onClick={() => void open(flow.verification_uri)}>{t('st.oauth.openPage')}</button>
             <button type="button" data-usage-export-vibe-cancel className={SECONDARY_BUTTON} disabled={cancelling} onClick={() => void cancel()}>{t(cancelling ? 'st.oauth.cancelling' : 'st.oauth.cancel')}</button>
           </div>
-          <a href={flow.verification_uri} target="_blank" rel="noopener noreferrer" className="block break-all text-[11px] text-ink-faint underline">{flow.verification_uri}</a>
+          <ExternalLink href={flow.verification_uri} onOpenFailed={() => { setError(new Error(t('common.popupBlocked'))); }}
+            className="block break-all text-[11px] text-ink-faint underline">{flow.verification_uri}</ExternalLink>
         </>
       ) : (
         <>
