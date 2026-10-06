@@ -128,7 +128,7 @@ With multiple provider keys, synchronous `WebSearch` and `FetchURL` calls on the
 
 ### `FetchURL`
 
-Fetch or extract content from a URL through Kiki's built-in search and retrieval module (`nb-search`). The minimal call is `{ "url": "https://example.com" }`, the URL shorthand for `action: "run"`; do not mix shorthand `url` with the `source` form. The keyless URL default tries `direct.fetch` first, then `jina.reader` for extraction if direct fails. A successful but unusable direct response requires explicit quality rules to trigger fallback. The chain returns Markdown; HTML responses are extracted to body text, and plain text or Markdown pages are passed through.
+Fetch or extract content from a URL through Kiki's built-in search and retrieval module (`nb-search`). `direct.fetch` retrieves a given URL; it is not a `WebSearch` search lane. The minimal call is `{ "url": "https://example.com" }`, the URL shorthand for `action: "run"`; do not mix shorthand `url` with the `source` form. The keyless URL default tries `direct.fetch` first, then `jina.reader` for extraction if direct fails. A successful but unusable direct response requires explicit quality rules to trigger fallback. The chain returns Markdown; HTML responses are extracted to body text, and plain text or Markdown pages are passed through.
 
 `run` accepts these parameter groups that actually change behavior:
 

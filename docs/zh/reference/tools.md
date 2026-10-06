@@ -116,7 +116,7 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 ### `FetchURL`
 
-通过 Kiki 内置的 `nb-search` 模块抓取或抽取内容。最小调用为 `{ "url": "https://example.com" }`，对应 `action: "run"` 的 URL 简写；不要把简写 `url` 与 `source` 形式混用。URL 的免密钥默认链先尝试 `direct.fetch`，失败时用 `jina.reader` 抽取正文；直连成功但内容无用时，需显式配置质量规则才会回退。默认链返回 Markdown；HTML 响应被抽取为正文文本，纯文本或 Markdown 页面则直接透传。
+通过 Kiki 内置的 `nb-search` 模块抓取或抽取内容。`direct.fetch` 读取给定 URL，不是 `WebSearch` 的搜索 lane。最小调用为 `{ "url": "https://example.com" }`，对应 `action: "run"` 的 URL 简写；不要把简写 `url` 与 `source` 形式混用。URL 的免密钥默认链先尝试 `direct.fetch`，失败时用 `jina.reader` 抽取正文；直连成功但内容无用时，需显式配置质量规则才会回退。默认链返回 Markdown；HTML 响应被抽取为正文文本，纯文本或 Markdown 页面则直接透传。
 
 `run` 接受以下几组真正影响行为的参数：
 

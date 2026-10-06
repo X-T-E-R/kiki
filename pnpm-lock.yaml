@@ -439,8 +439,8 @@ importers:
         specifier: 2.1.0
         version: 2.1.0
       '@nb-corp/nb-search':
-        specifier: file:../../vendor/nb-corp-nb-search-0.5.0-next.4.tgz
-        version: file:vendor/nb-corp-nb-search-0.5.0-next.4.tgz(playwright@1.60.0)
+        specifier: file:../../vendor/nb-corp-nb-search-0.5.0-next.6.tgz
+        version: file:vendor/nb-corp-nb-search-0.5.0-next.6.tgz(playwright@1.60.0)
       ajv:
         specifier: ^8.18.0
         version: 8.18.0
@@ -2443,6 +2443,17 @@ packages:
   '@nb-corp/nb-search@file:vendor/nb-corp-nb-search-0.5.0-next.4.tgz':
     resolution: {integrity: sha512-msKV8jROQkiJy5K+2Gcj+S6z+rEWJfMq9MPHpp75ttNm6eJn5XcUWCT6P5L+iQkpNoWQ1EG/11718035UWJcbw==, tarball: file:vendor/nb-corp-nb-search-0.5.0-next.4.tgz}
     version: 0.5.0-next.4
+    engines: {node: '>=24.15.0'}
+    hasBin: true
+    peerDependencies:
+      playwright: '>=1.50.0'
+    peerDependenciesMeta:
+      playwright:
+        optional: true
+
+  '@nb-corp/nb-search@file:vendor/nb-corp-nb-search-0.5.0-next.6.tgz':
+    resolution: {integrity: sha512-9WOimCSFKWJmL3iDG4h6/zvb05SohIFaFEHeO9oGLOfnedxDOqi1IwRy2Lht6bwT2Dmzau3VLSBygte95LaefQ==, tarball: file:vendor/nb-corp-nb-search-0.5.0-next.6.tgz}
+    version: 0.5.0-next.6
     engines: {node: '>=24.15.0'}
     hasBin: true
     peerDependencies:
@@ -5371,6 +5382,10 @@ packages:
     resolution: {integrity: sha512-5v6yZd4JK3eMI3FqqCouswVqwugaA9r4dNZB1wwcmrD02QkV5H0y7XBQW8QwQqEaZY1pM9aqORSORhJRdNK44Q==}
     engines: {node: '>=6.0'}
 
+  guarded-fetch@0.1.5:
+    resolution: {integrity: sha512-Bg7rC1VaYk6OhxT3/a6Uyy1lGsNVgMTVEttOaA3P0J81MQsRug4irc6MJGMmZ/nuZ0TTVfwIWjUaI6w80xrEmg==}
+    engines: {node: '>=20.19'}
+
   hachure-fill@0.5.2:
     resolution: {integrity: sha512-3GKBOn+m2LX9iq+JC1064cSFprJY4jL1jCXTcpnfER5HYE2l/4EfWSGzkPa/ZDBmYI0ZOEj5VHV/eKnPGkHuOg==}
 
@@ -5576,6 +5591,10 @@ packages:
   ipaddr.js@1.9.1:
     resolution: {integrity: sha512-0KI/607xoxSToH7GjN1FfSbLoU0+btTicjsQSWQlh/hZykN8KpmMf7uYwPW3R+akZ6R/w18ZlXSHBYXiYUPO3g==}
     engines: {node: '>= 0.10'}
+
+  ipaddr.js@2.2.0:
+    resolution: {integrity: sha512-Ag3wB2o37wslZS19hZqorUnrnzSkpOVy+IiiDEiTqNubEYpYuHWIf6K4psgN2ZWKExS4xhVCrRVfb/wfW8fWJA==}
+    engines: {node: '>= 10'}
 
   ipaddr.js@2.4.0:
     resolution: {integrity: sha512-9VGk3HGanVE6JoZXHiCpnGy5X0jYDnN4EA4lntFPj+1vIWlFhIylq2CrrCOJH9EAhc5CYhq18F2Av2tgoAPsYQ==}
@@ -7919,6 +7938,10 @@ packages:
 
   undici@7.27.1:
     resolution: {integrity: sha512-UDdpiex+mzigiyrXrGbiUaF4HzTNhKbh2vRNFaTMzcqmLIPrZxaCtwo/1TMSuWoM1Xz3WiTo9KdgI3kRqYzJGg==}
+    engines: {node: '>=20.18.1'}
+
+  undici@7.30.0:
+    resolution: {integrity: sha512-dkrQXeHSaoamnItlYbmzG0wFYrM0ZwDxCIg0A7aKjTyyhh9svRzCNFEzV+Vm05/yehjCzjDZ31KXfGEjYSztDQ==}
     engines: {node: '>=20.18.1'}
 
   unicode-emoji-modifier-base@1.0.0:
@@ -10317,6 +10340,23 @@ snapshots:
     dependencies:
       '@modelcontextprotocol/sdk': 1.29.0(zod@4.3.6)
       defuddle: 0.19.3
+      linkedom: 0.18.13
+      mathml-to-latex: 1.8.0
+      temml: 0.13.5
+      turndown: 7.2.4
+      zod: 4.3.6
+    optionalDependencies:
+      playwright: 1.60.0
+    transitivePeerDependencies:
+      - '@cfworker/json-schema'
+      - canvas
+      - supports-color
+
+  '@nb-corp/nb-search@file:vendor/nb-corp-nb-search-0.5.0-next.6.tgz(playwright@1.60.0)':
+    dependencies:
+      '@modelcontextprotocol/sdk': 1.29.0(zod@4.3.6)
+      defuddle: 0.19.3
+      guarded-fetch: 0.1.5
       linkedom: 0.18.13
       mathml-to-latex: 1.8.0
       temml: 0.13.5
@@ -13240,6 +13280,11 @@ snapshots:
       section-matter: 1.0.0
       strip-bom-string: 1.0.0
 
+  guarded-fetch@0.1.5:
+    dependencies:
+      ipaddr.js: 2.2.0
+      undici: 7.30.0
+
   hachure-fill@0.5.2: {}
 
   has-flag@4.0.0: {}
@@ -13505,6 +13550,8 @@ snapshots:
   ip-address@10.2.0: {}
 
   ipaddr.js@1.9.1: {}
+
+  ipaddr.js@2.2.0: {}
 
   ipaddr.js@2.4.0: {}
 
@@ -16261,6 +16308,8 @@ snapshots:
   undici-types@6.21.0: {}
 
   undici@7.27.1: {}
+
+  undici@7.30.0: {}
 
   unicode-emoji-modifier-base@1.0.0: {}
 
