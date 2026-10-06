@@ -222,6 +222,183 @@ async function query(service: UsageAggregationService, input: UsageQuery = {}) {
   return service.query(input);
 }
 
+describe('UsageAggregationService record-level sources', () => {
+  it('separates providers sharing an alias and profiles sharing an agent in each bucket', async () => {
+    const day = Date.UTC(2026, 9, 4);
+    const records = [
+      { ...usageRecord(day, 1), modelAlias: 'shared', provider: 'provider-a', agentId: 'same-agent', profileName: 'explore' },
+      { ...usageRecord(day + 1, 2), modelAlias: 'shared', provider: 'provider-b', agentId: 'same-agent', profileName: 'general' },
+      { ...usageRecord(day + 2, 3), modelAlias: 'shared', provider: 'provider-b', agentId: 'same-agent', profileName: 'general' },
+      { ...usageRecord(day + 3, 4), modelAlias: 'shared', agentId: 'same-agent' },
+      { ...usageRecord(day + 4, 5), modelAlias: 'shared', provider: 'unknown', agentId: 'same-agent', profileName: 'unknown' },
+      { ...usageRecord(day + 86_400_000, 6), modelAlias: 'shared', provider: 'provider-a', agentId: 'same-agent', profileName: 'general' },
+    ];
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: records }, () => day + 2 * 86_400_000);
+    const provider = await query(f.service, { dimension: 'provider' });
+    expect(provider.summary).toMatchObject({ cost_usd_estimated: 6, session_count: 1, cost_unknown: false });
+    expect(provider.trend[0]?.groups.map((group) => [group.key, group.provider, group.cost_usd_estimated])).toEqual([
+      ['provider:"provider-b"', 'provider-b', 2], ['provider:"provider-a"', 'provider-a', 1],
+      ['provider:"unknown"', 'unknown', 1], ['provider:null', null, 1],
+    ]);
+    expect(provider.trend[1]?.groups).toEqual([expect.objectContaining({ key: 'provider:"provider-a"', cost_usd_estimated: 1 })]);
+    const profile = await query(f.service, { dimension: 'profile' });
+    expect(profile.summary).toEqual(provider.summary);
+    expect(profile.trend[0]?.groups.map((group) => [group.key, group.profile_name, group.cost_usd_estimated])).toEqual([
+      ['profile:"general"', 'general', 2], ['profile:"explore"', 'explore', 1],
+      ['profile:"unknown"', 'unknown', 1], ['profile:null', null, 1],
+    ]);
+    expect(profile.trend[1]?.groups).toEqual([expect.objectContaining({ key: 'profile:"general"', cost_usd_estimated: 1 })]);
+    for (const dimension of ['agent', 'model', 'project', 'session'] as const) {
+      const old = await query(f.service, { dimension });
+      expect(old.summary).toEqual(provider.summary);
+      expect(old.sessions).toEqual(provider.sessions);
+      expect(old.trend[0]?.groups).toEqual([expect.objectContaining({
+        key: { agent: 'same-agent', model: 'shared', project: 'w', session: 's' }[dimension],
+        cost_usd_estimated: 5, provider: null, profile_name: null,
+      })]);
+    }
+  });
+
+  it('filters records, bucket drilldown and session money by exact profiles and intersects other filters', async () => {
+    const matching = { modelAlias: 'shared', provider: 'provider-a', agentId: 'same-agent', profileName: 'explore' };
+    const f = fixture([summary('s-a', 'w'), summary('s-b', 'w'), summary('s-other', 'other-w')], {
+      [scope('w', 's-a')]: [
+        { ...usageRecord(99, 0), ...matching }, { ...usageRecord(100, 1), ...matching },
+        { ...usageRecord(101, 2), ...matching, profileName: 'general' },
+        { ...usageRecord(102, 3), ...matching, provider: 'provider-b' },
+        { ...usageRecord(103, 4), ...matching, modelAlias: 'other' },
+        { ...usageRecord(104, 5), ...matching, agentId: 'other-agent' },
+        { ...usageRecord(105, 6), ...matching, profileName: undefined },
+        { ...usageRecord(106, 7), ...matching, profileName: 'Explore' },
+        { ...usageRecord(200, 8), ...matching },
+      ],
+      [scope('w', 's-b')]: [{ ...usageRecord(100, 9), ...matching }],
+      [scope('other-w', 's-other')]: [{ ...usageRecord(100, 10), ...matching }],
+    }, () => 1000);
+    const input: UsageQuery = {
+      range: 'custom', start_at: 100, end_at: 200, dimension: 'profile',
+      profile: ['explore', 'explore'], model: 'shared', provider: 'provider-a',
+      'agent.id': 'same-agent', 'workspace.id': 'w', timezone_offset_minutes: 480,
+    };
+    const result = await query(f.service, input);
+    expect(result.query).toMatchObject({ profiles: ['explore'], timezone_offset_minutes: 480 });
+    expect(result.summary).toMatchObject({ cost_usd_estimated: 2, session_count: 2 });
+    expect(result.sessions.items.map((session) => [session.id, session.usage.cost_usd_estimated, session.profile_names])).toEqual([
+      ['s-b', 1, ['explore']], ['s-a', 1, ['explore']],
+    ]);
+    expect(result.trend[0]?.groups).toEqual([expect.objectContaining({ key: 'profile:"explore"', cost_usd_estimated: 2 })]);
+    expect(result.trend[0]?.drilldown.sessions).toEqual([
+      expect.objectContaining({ session_id: 's-a', turn_ids: [1] }),
+      expect.objectContaining({ session_id: 's-b', turn_ids: [9] }),
+    ]);
+    const repeated = await query(f.service, { ...input, profile: ['general', 'explore', 'general'] });
+    expect(repeated.query.profiles).toEqual(['explore', 'general']);
+    expect(repeated.summary.cost_usd_estimated).toBe(3);
+    expect(repeated.sessions.items.find((item) => item.id === 's-a')?.usage.cost_usd_estimated).toBe(2);
+    const byProvider = await query(f.service, { ...input, dimension: 'provider' });
+    expect(byProvider.summary).toEqual(result.summary);
+    expect(byProvider.sessions).toEqual(result.sessions);
+    expect(byProvider.trend[0]?.groups).toEqual([expect.objectContaining({ key: 'provider:"provider-a"', cost_usd_estimated: 2 })]);
+  });
+
+  it('binds pagination to normalized profile filters without changing old unfiltered cursor fingerprints', async () => {
+    const f = fixture([summary('a', 'w'), summary('b', 'w')], {
+      [scope('w', 'a')]: [{ ...usageRecord(1), profileName: 'explore' }, { ...usageRecord(2), profileName: 'general' }],
+      [scope('w', 'b')]: [{ ...usageRecord(1), profileName: 'explore' }, { ...usageRecord(2), profileName: 'general' }],
+    }, () => 100);
+    const input: UsageQuery = { dimension: 'profile', profile: ['general', 'explore', 'general'], page_size: 1 };
+    const first = await query(f.service, input);
+    expect(first.sessions.items.map((item) => item.id)).toEqual(['b']);
+    const pageToken = first.sessions.next_page_token ?? '';
+    const second = await query(f.service, { ...input, profile: ['explore', 'general'], page_token: pageToken });
+    expect(second.sessions.items.map((item) => item.id)).toEqual(['a']);
+    expect(second.summary).toEqual(first.summary);
+    await expect(query(f.service, { ...input, profile: 'explore', page_token: pageToken })).rejects.toThrow('does not match the query conditions');
+    await expect(query(f.service, { page_size: 1, page_token: pageToken })).rejects.toThrow('does not match the query conditions');
+    const legacy = await query(f.service, { page_size: 1 });
+    expect(JSON.parse(Buffer.from(legacy.sessions.next_page_token ?? '', 'base64url').toString('utf8'))).toEqual({
+      v: 1, f: 'jx3eMhelCpunxj2P', k: [2, 'b'],
+    });
+  });
+
+  it('keeps unknown sources and usage knowledge across wire, deleted history, ephemeral totals and checkpoint restart', async () => {
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [
+      usageRecord(10),
+      { ...usageRecord(11), provider: 'provider-a', profileName: 'explore' },
+      { ...usageRecord(12), provider: 'provider-b', profileName: 'general', usageKnown: false },
+    ] }, () => 100, {}, {
+      items: [retainedSession('deleted', 'w', [retainedRecord(13), retainedRecord(14, { provider: 'provider-a', profileName: 'explore' })])],
+      complete: true, scannedRecords: 3,
+    }, undefined, [{ workspaceId: 'w', model: 'priced-model', time: 15, usage: { inputOther: 1, output: 1, inputCacheRead: 1, inputCacheCreation: 1 } }]);
+    for (const dimension of ['provider', 'profile'] as const) {
+      const response = await query(f.service, { dimension });
+      expect(response.summary).toMatchObject({ cost_usd_estimated: 5, cost_unknown: true, tokens_unknown: true, session_count: 2 });
+      expect(response.reliability).toMatchObject({ includes_deleted_sessions: true, usage_coverage: { known_records: 5, missing_records: 1, legacy_zero_records: 0 } });
+      expect(response.trend[0]?.groups.find((group) => group.key === `${dimension}:null`)).toMatchObject({
+        cost_usd_estimated: 3, provider: null, profile_name: null, tokens: { output: 3 },
+      });
+      const missing = response.trend[0]?.groups.find((group) => group.key === (dimension === 'provider' ? 'provider:"provider-b"' : 'profile:"general"'));
+      expect(missing).toMatchObject({ cost_usd_estimated: 0, cost_unknown: true, tokens_unknown: true });
+      expect(await query(f.restart(), { dimension })).toEqual(response);
+    }
+    const filtered = await query(f.service, { dimension: 'profile', profile: 'explore' });
+    expect(filtered.summary).toMatchObject({ cost_usd_estimated: 2, tokens_unknown: false, cost_unknown: false });
+    expect(filtered.sessions.items.map((item) => item.id)).toEqual(['s', 'deleted']);
+    expect(filtered.trend[0]?.groups).toEqual([expect.objectContaining({ key: 'profile:"explore"', cost_usd_estimated: 2 })]);
+  });
+
+  it('does not attribute anonymous totals to a known auxiliary source in an unknown group', async () => {
+    const ephemeral = [{ workspaceId: 'w', model: 'priced-model', time: 11, usage: { inputOther: 1, output: 1, inputCacheRead: 1, inputCacheCreation: 1 } }];
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [
+      { ...usageRecord(10), profileName: 'explore', agentId: 'same-agent' },
+    ] }, () => 100, {}, undefined, undefined, ephemeral);
+    const provider = await query(f.service, { dimension: 'provider' });
+    expect(provider.trend[0]?.groups).toEqual([expect.objectContaining({
+      key: 'provider:null', provider: null, profile_name: null, agent_id: null, cost_usd_estimated: 2,
+    })]);
+    const g = fixture([summary('s', 'w')], { [scope('w', 's')]: [
+      { ...usageRecord(10), provider: 'provider-a', agentId: 'same-agent' },
+    ] }, () => 100, {}, undefined, undefined, ephemeral);
+    const profile = await query(g.service, { dimension: 'profile' });
+    expect(profile.trend[0]?.groups).toEqual([expect.objectContaining({
+      key: 'profile:null', provider: null, profile_name: null, agent_id: null, cost_usd_estimated: 2,
+    })]);
+  });
+
+  it('uses exact clipped bucket and previous-period windows rather than whole five-hour buckets', async () => {
+    const day = Date.UTC(2026, 9, 4);
+    const offset = 480;
+    const fiveHours = 5 * 60 * 60 * 1000;
+    const bucketStart = Math.floor((day + offset * 60_000) / fiveHours) * fiveHours - offset * 60_000;
+    const start = bucketStart + 100;
+    const end = start + 200;
+    const previousStart = start - 86_400_000;
+    const matching = { modelAlias: 'shared', provider: 'provider-a', profileName: 'explore', agentId: 'same-agent' };
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [
+      { ...usageRecord(start - 1, 0), ...matching },
+      { ...usageRecord(start, 1), ...matching }, { ...usageRecord(end - 1, 2), ...matching },
+      { ...usageRecord(end, 3), ...matching }, { ...usageRecord(start + 1, 4), ...matching, profileName: 'general' },
+      { ...usageRecord(previousStart - 1, 5), ...matching },
+      { ...usageRecord(previousStart, 6), ...matching },
+      { ...usageRecord(previousStart + 200, 7), ...matching },
+    ] }, () => day + 86_400_000);
+    const input: UsageQuery = {
+      range: 'custom', start_at: start, end_at: end, granularity: 'five_hour', dimension: 'profile',
+      profile: 'explore', provider: 'provider-a', timezone_offset_minutes: offset,
+    };
+    const current = await query(f.service, input);
+    expect(current.summary.cost_usd_estimated).toBe(2);
+    expect(current.trend[0]).toMatchObject({ start_at: bucketStart, end_at: bucketStart + fiveHours });
+    expect(current.trend[0]?.groups[0]?.cost_usd_estimated).toBe(2);
+    expect(current.sessions.items[0]?.usage.cost_usd_estimated).toBe(2);
+    expect(current.trend[0]?.drilldown.sessions[0]?.turn_ids).toEqual([1, 2]);
+    const previous = await query(f.service, { ...input, start_at: previousStart, end_at: previousStart + 200 });
+    expect(previous.summary.cost_usd_estimated).toBe(1);
+    expect(previous.sessions.items[0]?.usage.cost_usd_estimated).toBe(1);
+    expect(previous.trend[0]?.drilldown.sessions[0]?.turn_ids).toEqual([6]);
+  });
+});
+
 describe('UsageAggregationService first load', () => {
   it('measures checkpoint validation without dropping old long sessions or filtered details', async () => {
     const now = Date.UTC(2026, 8, 2, 12);

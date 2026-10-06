@@ -2375,6 +2375,8 @@ export const zh = {
   'usage.dimension.agent': '智能体',
   'usage.dimension.project': '工作区',
   'usage.dimension.session': '会话',
+  'usage.dimension.provider': '提供商',
+  'usage.dimension.profile': '智能体档',
   'usage.allHistoryChip': '全部历史 · 未套用时间过滤',
   'usage.customRange.start': '开始日期',
   'usage.customRange.end': '结束日期',

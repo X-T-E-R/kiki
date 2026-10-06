@@ -9,7 +9,7 @@ export const usageRangePresetSchema = z.enum([
   'all',
   'custom',
 ]);
-export const usageDimensionSchema = z.enum(['agent', 'model', 'project', 'session']);
+export const usageDimensionSchema = z.enum(['agent', 'model', 'project', 'session', 'provider', 'profile']);
 
 const repeatedStringSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional();
 
@@ -20,6 +20,7 @@ export const usageQuerySchema = z
     dimension: usageDimensionSchema.optional(),
     model: repeatedStringSchema,
     provider: repeatedStringSchema,
+    profile: repeatedStringSchema,
     'agent.id': repeatedStringSchema,
     'workspace.id': repeatedStringSchema,
     include_archived: z.enum(['true', 'false']).optional(),
@@ -124,6 +125,7 @@ export const usageResponseSchema = z.object({
     dimension: usageDimensionSchema,
     models: z.array(z.string()),
     providers: z.array(z.string()),
+    profiles: z.array(z.string()).optional(),
     agent_ids: z.array(z.string()),
     workspace_ids: z.array(z.string()),
     include_archived: z.boolean(),

@@ -2400,6 +2400,8 @@ export const en = {
   'usage.dimension.agent': 'Agent',
   'usage.dimension.project': 'Workspace',
   'usage.dimension.session': 'Session',
+  'usage.dimension.provider': 'Provider',
+  'usage.dimension.profile': 'Agent profile',
   'usage.allHistoryChip': 'All history · no time filter applied',
   'usage.customRange.start': 'Start date',
   'usage.customRange.end': 'End date',

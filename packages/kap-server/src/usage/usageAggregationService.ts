@@ -134,6 +134,7 @@ interface NormalizedQuery {
   readonly dimension: UsageResponse['query']['dimension'];
   readonly models: readonly string[];
   readonly providers: readonly string[];
+  readonly profiles: readonly string[];
   readonly agentIds: readonly string[];
   readonly workspaceIds: readonly string[];
   readonly includeArchived: boolean;
@@ -922,7 +923,7 @@ export class UsageAggregationService {
       if (processedRecords % 1024 === 0) await yieldToEventLoop();
       if (!inRange(entry.time, query.range)) continue;
       if (query.workspaceIds.length > 0 && !query.workspaceIds.includes(entry.workspaceId)) continue;
-      if (query.agentIds.length > 0 || query.providers.length > 0) continue;
+      if (query.agentIds.length > 0 || query.providers.length > 0 || query.profiles.length > 0) continue;
       if (query.models.length > 0 && !query.models.includes(entry.model)) continue;
       const record: NormalizedUsageRecord = entry;
       const cost = pricing.calculate(record.model, record.usage);
@@ -946,7 +947,9 @@ export class UsageAggregationService {
       }
       bucket.requestCount += 1;
       const groupKey = query.dimension === 'project' ? entry.workspaceId
-        : query.dimension === 'model' ? entry.model : 'ephemeral';
+        : query.dimension === 'model' ? entry.model
+        : query.dimension === 'provider' || query.dimension === 'profile' ? `${query.dimension}:null`
+        : 'ephemeral';
       let group = bucket.groups.get(groupKey);
       if (group === undefined) {
         group = {
@@ -957,6 +960,12 @@ export class UsageAggregationService {
       }
       addAggregate(group, record, cost);
       group.modelAliases.add(entry.model);
+      if (query.dimension === 'provider' || query.dimension === 'profile') {
+        group.providers.add(null);
+        group.profileNames.add(null);
+        group.agentIds.add(null);
+        group.parentAgentIds.add(null);
+      }
     }
     if (budget.incompleteReason === null && this.now() >= budget.deadlineAt) {
       budget.incompleteReason = 'deadline';
@@ -980,6 +989,7 @@ export class UsageAggregationService {
         dimension: query.dimension,
         models: [...query.models],
         providers: [...query.providers],
+        profiles: [...query.profiles],
         agent_ids: [...query.agentIds],
         workspace_ids: [...query.workspaceIds],
         include_archived: query.includeArchived,
@@ -1235,6 +1245,7 @@ function normalizeQuery(raw: UsageQuery, now: number): NormalizedQuery {
     dimension: raw.dimension ?? 'model',
     models: normalizeRepeated(raw.model),
     providers: normalizeRepeated(raw.provider),
+    profiles: normalizeRepeated(raw.profile),
     agentIds: normalizeRepeated(raw['agent.id']),
     workspaceIds: normalizeRepeated(raw['workspace.id']),
     includeArchived: raw.include_archived === 'true',
@@ -1362,6 +1373,10 @@ function matchesFilters(record: NormalizedUsageRecord, query: NormalizedQuery): 
     (record.provider === undefined || !query.providers.includes(record.provider))
   ) return false;
   if (
+    query.profiles.length > 0 &&
+    (record.profileName === undefined || !query.profiles.includes(record.profileName))
+  ) return false;
+  if (
     query.agentIds.length > 0 &&
     (record.agentId === undefined || !query.agentIds.includes(record.agentId))
   ) return false;
@@ -1379,6 +1394,8 @@ function dimensionKey(
 ): string {
   if (dimension === 'agent') return record.agentId ?? 'unknown';
   if (dimension === 'model') return record.modelAlias ?? 'unknown';
+  if (dimension === 'provider') return `provider:${JSON.stringify(record.provider ?? null)}`;
+  if (dimension === 'profile') return `profile:${JSON.stringify(record.profileName ?? null)}`;
   if (dimension === 'project') return session.workspaceId;
   return session.id;
 }
@@ -1491,6 +1508,7 @@ function queryFingerprint(query: NormalizedQuery): string {
       query.includeArchived,
       query.timezoneOffsetMinutes,
       query.pageSize,
+      ...(query.profiles.length > 0 ? [query.profiles] : []),
     ]))
     .digest('base64url')
     .slice(0, 16);

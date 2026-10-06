@@ -1306,7 +1306,7 @@ export class KikiClient {
 
   /** Cross-session usage aggregation. Filter axes travel in the query. */
   getUsage(
-    query: Record<string, string | number | boolean | undefined>,
+    query: Record<string, string | readonly string[] | number | boolean | undefined>,
   ): Promise<UsageResponseWire> {
     return this.run(() => this.rest.usage(query));
   }

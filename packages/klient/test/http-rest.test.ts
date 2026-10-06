@@ -207,6 +207,28 @@ describe('HTTP REST domains', () => {
       ]);
     } finally { await channel.close(); }
   });
+  it('sends repeated usage source filters without joining or replacing their identities', async () => {
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push(url.pathname + url.search);
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      expect(url.searchParams.getAll('profile')).toEqual(['explore', 'profile/with space']);
+      expect(url.searchParams.getAll('provider')).toEqual(['provider-a', 'provider-b']);
+      expect(url.searchParams.getAll('model')).toEqual(['shared-alias', 'model-b']);
+      return envelope({ query: { profiles: ['explore', 'profile/with space'] } });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      const result = await channel.rest.usage({
+        dimension: 'profile', profile: ['explore', 'profile/with space'],
+        provider: ['provider-a', 'provider-b'], model: ['shared-alias', 'model-b'],
+        'workspace.id': 'workspace-a', range: 'custom', start_at: 100, end_at: 200,
+      });
+      expect(result.query.profiles).toEqual(['explore', 'profile/with space']);
+      expect(calls).toEqual(['/api/usage?dimension=profile&profile=explore&profile=profile%2Fwith+space&provider=provider-a&provider=provider-b&model=shared-alias&model=model-b&workspace.id=workspace-a&range=custom&start_at=100&end_at=200']);
+    } finally { await channel.close(); }
+  });
   it('reads repeated pricing model ids and writes overrides through the shared authenticated transport', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {

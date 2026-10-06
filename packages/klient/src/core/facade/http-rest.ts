@@ -316,7 +316,7 @@ export interface HttpRestFacade {
     readonly lease_id: string;
     readonly expires_at: number;
   } | undefined>;
-  usage(query: Record<string, string | number | boolean | undefined>): Promise<UsageResponse>;
+  usage(query: Record<string, string | readonly string[] | number | boolean | undefined>): Promise<UsageResponse>;
   requestGovernance(): Promise<import('@kiki/protocol').RequestGovernanceSnapshot>;
   readonly usageRescan: {
     status(): Promise<import('@kiki/protocol').UsageRescanStatus>;
