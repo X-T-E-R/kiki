@@ -28,6 +28,7 @@ export interface ModelSwitchReceipt {
 export interface ModelSwitchExecuteOptions {
   readonly binding?: PreparedModelSwitchBinding;
   readonly signal?: AbortSignal;
+  readonly boundary?: import('#/agent/loop/loop').StepBoundary;
 }
 
 export interface IAgentModelSwitchService {

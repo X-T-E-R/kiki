@@ -47,7 +47,7 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import { stripThreadRefContext } from '@kiki/session-core/composer';
 import type { QueuedPromptPreview } from '@kiki/session-core/session';
 import { isOrdinaryQueueItem } from '@kiki/session-core/session';
-import { mergeSessionQueueRows, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
+import { mergeSessionQueueRows, pendingModelSwitchChange, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
 import { useI18n } from '../i18n';
 import type { QueuedModelSwitch } from '../lib/client';
 import { Icon } from './icons';
@@ -107,6 +107,7 @@ export function QueueHeaderSummary({ count, heldCount = 0 }: { readonly count: n
 export function QueueStrip({
   items,
   modelSwitches,
+  resolveModelId,
   onSendNow,
   onRemove,
   onRemoveAttachment,
@@ -128,6 +129,7 @@ export function QueueStrip({
    * contract only a pending operation can be cancelled.
    */
   readonly modelSwitches?: readonly QueuedModelSwitch[];
+  readonly resolveModelId?: (value: string) => string;
   readonly onSendNow: (promptId: string) => Promise<void> | void;
   readonly onRemove: (promptId: string) => Promise<void> | void;
   readonly onRemoveAttachment?: (promptId: string, index: number) => Promise<void> | void;
@@ -350,6 +352,15 @@ export function QueueStrip({
       if (entry === undefined) return;
       const pending = pendingIds.includes(row.operationId);
       const waitsForEdit = editIndex >= 0 && index > editIndex;
+      const change = pendingModelSwitchChange({
+        from: resolveModelId?.(entry.receipt.fromModel) ?? entry.receipt.fromModel,
+        to: resolveModelId?.(entry.input.model) ?? entry.input.model,
+        mode: entry.input.mode,
+        originalThinking: entry.originalBinding.thinking,
+        targetThinking: entry.input.thinking,
+      });
+      const pendingLabel = t(change === 'model' ? 'modelSwitch.pendingLine' : `modelSwitch.pendingLine.${change}` as I18nKey,
+        { model: entry.receipt.toModel, effort: entry.input.thinking ?? '', mode: t(`modelSwitch.modeName.${entry.input.mode}` as I18nKey) });
       rowNodes.push(
         <li
           key={`switch-${row.operationId}`}
@@ -367,13 +378,13 @@ export function QueueStrip({
           <Icon name="arrowRight" size={12} className="shrink-0 text-ink-faint" />
           <span className="min-w-0 flex-1 truncate text-[13px] text-ink-soft" title={entry.input.model}>
             {entry.receipt.state === 'preparing'
-              ? t(
-                entry.input.mode === 'compact' ? 'transcript.modelSwitch.preparing.compact' : entry.input.mode === 'fresh'
+              ? change === 'effort' ? t('modelSwitch.preparingEffort', { effort: entry.input.thinking ?? '' }) : t(
+                change === 'binding' ? 'transcript.modelSwitch.preparing.binding' : entry.input.mode === 'compact' ? 'transcript.modelSwitch.preparing.compact' : entry.input.mode === 'fresh'
                   ? 'transcript.modelSwitch.preparing.fresh'
                   : 'transcript.modelSwitch.preparing.direct',
                 { from: entry.receipt.fromModel, to: entry.receipt.toModel },
               )
-              : `${t('transcript.modelSwitch.pending', { to: entry.receipt.toModel })} · ${t(`modelSwitch.modeName.${entry.input.mode}` as I18nKey)}`}
+              : pendingLabel}
           </span>
           {waitsForEdit ? (
             <span data-queue-waits-hint className="shrink-0 text-[12px] text-ink-faint">

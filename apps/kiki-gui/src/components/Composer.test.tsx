@@ -3551,13 +3551,24 @@ describe('session SSH stays resident and rides no message', () => {
     // The wrapped line names the model the way the picker does, not by its id:
     // at this width the id would be clipped to its vendor.
     const line = container.querySelector<HTMLElement>('[data-model-switch-pending-line="fresh"]')!;
-    expect(line.textContent).toContain('Switching to Kiki Lite when idle · Fresh context');
+    expect(line.textContent).toContain('Switching to Kiki Lite · Fresh context');
     expect(line.className).toContain('@min-[30rem]/composer:hidden');
     // The toolbar chip owns the opposite side of the same breakpoint, so one of
     // the two is always the thing on screen.
     const chip = container.querySelector<HTMLElement>('[data-model-switch-pending="fresh"]')!;
-    expect(chip.textContent).toBe('Switching to fixture/kiki-lite');
+    expect(chip.textContent).toBe('Switching to Kiki Lite');
     expect(chip.className).toContain('@max-[30rem]/composer:hidden');
+  });
+
+  it('names a canonical same-model effort change and its target on both pending surfaces', async () => {
+    listModels.mockResolvedValue({ items: [{ id: 'fixture/kiki-lite', provider_id: 'fixture', remote_id: 'kiki-lite', display_name: 'Kiki Lite', max_context_size: 131072 }] });
+    const { container } = await renderComposer({ pendingModelSwitch: { from: 'fixture/kiki-lite', to: 'kiki-lite', mode: 'direct', originalThinking: 'high', targetThinking: 'max' } });
+    for (let index = 0; index < 5; index += 1) await settle();
+    const line = container.querySelector<HTMLElement>('[data-model-switch-pending-line]')!;
+    const chip = container.querySelector<HTMLElement>('[data-model-switch-pending]')!;
+    expect(line.textContent).toContain('Reasoning change → max');
+    expect(chip.textContent).toBe('Reasoning change → max');
+    expect(line.textContent).not.toContain('Switching to');
   });
 
   it('reports a failed switch-list read next to the input and retries on demand', async () => {

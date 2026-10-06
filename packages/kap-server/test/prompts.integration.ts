@@ -28,6 +28,7 @@ import {
   IWireService,
   IFileService,
   IModelCatalogMutationService,
+  ISessionIndex,
   ISessionContext,
   ISessionMetadata,
   ISessionDispatchService,
@@ -508,6 +509,65 @@ describe('server-v2 /api prompts', () => {
     expect(modelSwitchActionSchema.parse({ action: 'cancel' })).toEqual({ action: 'cancel' });
     expect(modelSwitchActionSchema.safeParse({ action: 'keep_original', mode: 'fresh' }).success).toBe(false);
     expect(modelSwitchActionSchema.safeParse({ action: 'cancel', mode: 'fresh' }).success).toBe(false);
+  });
+
+  it.each(['model', 'effort'] as const)('GUI client Send now applies a pending %s at the first safe HTTP request boundary', async change => {
+    const bodies: Record<string, unknown>[] = [];
+    let entered!: () => void;
+    const firstRequest = new Promise<void>(resolve => { entered = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const provider = createHttpServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        bodies.push(JSON.parse(body));
+        const send = () => {
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.end(`data: ${JSON.stringify({ id: 'safe-boundary-response', choices: [{ index: 0, delta: { content: 'Done.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+        };
+        if (bodies.length === 1) { entered(); void gate.then(send); }
+        else send();
+      });
+    });
+    await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!) });
+    try {
+      const mutations = server!.core.accessor.get(IModelCatalogMutationService);
+      await mutations.updateProvider('stub', { base_url: `http://127.0.0.1:${address.port}/v1` });
+      for (const model of ['stub', 'stub-alt']) await mutations.updateModel(model, { max_context_size: 100000 });
+      await server!.core.accessor.get(ISessionIndex).prepare();
+      const id = await createSession(home as string);
+      await createMainAgent(id);
+      const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+      await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub', thinking: 'low' });
+      await client.submitPrompt(id, { prompt_id: 'safe-http-active', content: [{ type: 'text', text: 'Work already in progress.' }] });
+      await firstRequest;
+      const selected = await client.klient.session(id).agent('main').switchModel({ operationId: 'safe-http-choice', model: change === 'model' ? 'stub-alt' : 'stub', thinking: 'high', mode: 'direct' });
+      expect(selected.state).toBe('pending');
+      const dependent = await client.submitPrompt(id, { prompt_id: 'safe-http-original', after_model_switch: 'safe-http-choice', content: [{ type: 'text', text: 'Unique original GUI question after selection.' }] });
+      expect(dependent.status).toBe('queued');
+      await client.steerPrompt(id, dependent.prompt_id);
+      expect(bodies).toHaveLength(1);
+      expect(main.accessor.get(IAgentProfileService).data()).toMatchObject({ modelAlias: 'stub', thinkingLevel: 'low' });
+      release();
+      await main.accessor.get(IAgentLoopService).settled();
+      expect(bodies).toHaveLength(2);
+      expect(bodies.map(body => body.model)).toEqual(['stub', change === 'model' ? 'stub-alt' : 'stub']);
+      expect(bodies.map(body => body.reasoning_effort)).toEqual(['low', 'high']);
+      expect(JSON.stringify(bodies[1])).toContain('Unique original GUI question after selection.');
+      const journal = [];
+      for await (const record of main.accessor.get(IWireService).readJournal()) journal.push(record);
+      expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === 'safe-http-original')).toHaveLength(1);
+      expect(journal.filter(record => record.type === 'agent.model_switch')).toHaveLength(1);
+      expect(main.accessor.get(IAgentPromptService).list().pending).toEqual([]);
+    } finally {
+      release();
+      await client.klient.close();
+      await new Promise<void>((resolve, reject) => provider.close(error => error ? reject(error) : resolve()));
+    }
   });
 
   it('switches through REST and klient events at idle with dependent delivery and one live/cold timeline identity', async () => {

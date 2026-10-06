@@ -86,7 +86,8 @@ import {
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
-import { API_CODES, ApiError, type ModelSwitchMode, type NamedAgentProfile } from '../lib/client';
+import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
+import { pendingModelSwitchChange, type PendingModelSwitch } from '@kiki/session-core/session/modelSwitchQueue';
 import { registerOverlay } from '../lib/uiBusy';
 import { pastedMediaType } from '../lib/pastedFiles';
 import { pushToast } from '../lib/toasts';
@@ -391,7 +392,7 @@ export function Composer({
    * A queued model switch: shown beside the model control so the pending
    * target is visible without pretending the actual model already changed.
    */
-  pendingModelSwitch?: { readonly to: string; readonly mode: ModelSwitchMode };
+  pendingModelSwitch?: PendingModelSwitch;
   /**
    * A failed read of the queued switch list. Known operations are kept, so this
    * is reported quietly with a retry instead of pretending the queue is empty.
@@ -2120,9 +2121,18 @@ export function Composer({
   // source and provider live in the picker and the tooltip).
   const modelShortLabel = selectedModel?.display_name ?? effectiveModel;
   // The queued switch names its target the same way the picker does.
-  const pendingSwitchLabel = pendingModelSwitch === undefined
-    ? undefined
-    : resolveCatalogModel(models, pendingModelSwitch.to)?.display_name ?? pendingModelSwitch.to;
+  const pendingSwitchChange = pendingModelSwitch === undefined ? undefined : pendingModelSwitchChange({
+    ...pendingModelSwitch,
+    from: pendingModelSwitch.from === undefined ? undefined : resolveCatalogModel(models, pendingModelSwitch.from)?.id ?? pendingModelSwitch.from,
+    to: resolveCatalogModel(models, pendingModelSwitch.to)?.id ?? pendingModelSwitch.to,
+  });
+  const pendingSwitchLabel = pendingModelSwitch === undefined ? undefined
+    : pendingSwitchChange === 'effort' ? pendingModelSwitch.targetThinking
+      : resolveCatalogModel(models, pendingModelSwitch.to)?.display_name ?? pendingModelSwitch.to;
+  const pendingSwitchPrefix = pendingSwitchChange === 'model' ? 'modelSwitch.pendingChipPrefix'
+    : `modelSwitch.pendingChipPrefix.${pendingSwitchChange}` as I18nKey;
+  const pendingSwitchLine = pendingSwitchChange === 'model' ? 'modelSwitch.pendingLine'
+    : `modelSwitch.pendingLine.${pendingSwitchChange}` as I18nKey;
 
   // Focus continuity across a busy flip: becoming `disabled` force-blurs the
   // textarea (platform behavior), which used to be invisible because the
@@ -2290,7 +2300,7 @@ export function Composer({
       node: (
         <span
           data-model-switch-pending={pendingModelSwitch.mode}
-          title={`${pendingModelSwitch.to} — ${t('modelSwitch.pendingChipTitle')}`}
+          title={`${t(pendingSwitchPrefix)}${pendingSwitchLabel} — ${t('modelSwitch.pendingChipTitle')}`}
           // A narrow composer drops this chip entirely and says the same thing
           // in words above the input instead of clipping it to "fixture/…".
           className="@max-[30rem]/composer:hidden flex h-7 max-w-56 min-w-0 items-center px-1.5 text-[12px] font-medium text-accent-ink"
@@ -2298,8 +2308,8 @@ export function Composer({
           {/* The width cap matches the model chip's, so a long target id
               truncates where the model beside it would. */}
           <span className="truncate">
-            {t('modelSwitch.pendingChipPrefix')}
-            {pendingModelSwitch.to}
+            {t(pendingSwitchPrefix)}
+            {pendingSwitchLabel}
           </span>
         </span>
       ),
@@ -2368,8 +2378,9 @@ export function Composer({
           >
             <Icon name="arrowRight" size={12} className="mt-[3px]" />
             <span className="min-w-0 break-words">
-              {t('modelSwitch.pendingLine', {
+              {t(pendingSwitchLine, {
                 model: pendingSwitchLabel ?? pendingModelSwitch.to,
+                effort: pendingModelSwitch.targetThinking ?? '',
                 mode: t(`modelSwitch.modeName.${pendingModelSwitch.mode}` as I18nKey),
               })}
             </span>

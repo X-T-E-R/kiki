@@ -1271,6 +1271,38 @@ describe('AgentRun tool execution contract', () => {
     ctx = undefined;
   });
 
+  it('model-boundary Send now releases the real AgentRun foreground wait without cancelling its tracked child', async () => {
+    const childCompletion = deferred<{ readonly summary: string }>();
+    const lifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-child'], runCompletion: () => childCompletion.promise });
+    lifecycle.addHandle('main', 'agent');
+    const context = ctx = createTestAgent(sessionService(IAgentLifecycleService, lifecycle), sessionService(ISessionSubagentService, lifecycle), sessionService(ISessionCronService, cronStub));
+    await context.ready;
+    const profile = context.get(IAgentProfileService);
+    await profile.bind({ profile: 'agent', model: 'mock-model' });
+    await context.get(ISessionMetadata).registerAgent('main', { model: 'mock-model', executor: 'native' });
+    profile.update({ activeToolNames: ['AgentRun'] });
+    context.get(IAgentPermissionModeService).setMode('yolo');
+    context.mockNextResponse({ type: 'text', text: 'Delegating existing work.' }, { type: 'function', id: 'boundary-foreground-child', name: 'AgentRun', arguments: JSON.stringify({ prompt: 'Inspect', description: 'Inspect fixture', model_alias: 'mock-model', background: false }) });
+    context.mockNextResponse({ type: 'text', text: 'Answering on the selected model while the child continues.' });
+    const prompt = context.get(IAgentPromptService);
+    const active = await prompt.enqueue({ id: 'foreground-existing', message: { role: 'user', content: [{ type: 'text', text: 'Run the original child work.' }], toolCalls: [] } });
+    const tasks = context.get(IAgentTaskService);
+    await vi.waitFor(() => expect(tasks.list(false), JSON.stringify(context.get(IAgentContextMemoryService).get())).toHaveLength(1));
+    expect(await prompt.switchModel({ operationId: 'foreground-choice', model: 'mock-model', mode: 'fresh' })).toMatchObject({ state: 'pending' });
+    const original = await prompt.enqueue({ id: 'foreground-original', message: { role: 'user', content: [{ type: 'text', text: 'Use the selected model without stopping my child.' }], toolCalls: [] }, execution: { afterModelSwitch: 'foreground-choice' } });
+    expect(await prompt.steer([original.id])).toEqual([original]);
+    expect((await original.completion).state).toBe('completed');
+    await active.completion;
+    const task = tasks.list(false)[0]!;
+    expect(task).toMatchObject({ detached: true, status: 'running' });
+    expect(lifecycle.run.mock.calls[0]![2].signal.aborted).toBe(false);
+    expect(profile.getModel()).toBe('mock-model');
+    expect(prompt.getModelSwitch('foreground-choice')).toMatchObject({ state: 'completed', mode: 'fresh' });
+    expect(JSON.stringify(context.llmCalls[1])).toContain('Use the selected model without stopping my child.');
+    childCompletion.resolve({ summary: 'child finished normally' });
+    expect(await tasks.wait(task.taskId)).toMatchObject({ detached: true, status: 'completed' });
+  });
+
   function createAgentToolContext(
     lifecycle: AgentLifecycleStub = createAgentLifecycleStub(),
     ...extra: readonly (TestAgentServiceOverride | TestAgentOptions)[]

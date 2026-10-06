@@ -741,3 +741,16 @@ describe('QueueStrip model-switch control rows', () => {
     expect(container.querySelector('[data-queue-strip]')).toBeNull();
   });
 });
+
+describe('QueueStrip pending switch labels', () => {
+  it('shows the same canonical reasoning target as the composer without calling it a model switch', async () => {
+    const { container } = await renderStrip({ items: [], resolveModelId: value => value === 'model' ? 'example/model' : value,
+      modelSwitches: [{ input: { operationId: 'reasoning-choice', model: 'model', thinking: 'max', mode: 'direct' },
+        receipt: { operationId: 'reasoning-choice', agentId: 'main', state: 'pending', fromModel: 'example/model', toModel: 'model', mode: 'direct' },
+        originalBinding: { model: 'example/model', thinking: 'high' }, revision: 0, queueIndex: 0 }],
+    });
+    const row = container.querySelector('[data-queue-model-switch]')!;
+    expect(row.textContent).toContain('Reasoning change → max');
+    expect(row.textContent).not.toContain('Switching to');
+  });
+});

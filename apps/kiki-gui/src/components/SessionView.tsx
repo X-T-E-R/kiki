@@ -2619,7 +2619,7 @@ export function SessionView({
           planGate,
           goalObjective: promptGoalObjective(options),
           appendTiming: options?.appendTiming ?? liveSettings.defaultAppendTiming,
-          afterModelSwitch: options?.now === true ? undefined : modelSwitches.dependency?.input.operationId,
+          afterModelSwitch: modelSwitches.dependency?.input.operationId,
           personaGreetingReply: options?.personaGreetingReply,
         };
         let accepted = false;
@@ -3770,6 +3770,7 @@ boundExecution,
           onRemoveAttachment={handleRemoveQueuedAttachment} onEdit={handleStartQueueEdit}
           onMove={handleMoveQueued} onChangeTiming={handleQueuedTiming}
           modelSwitches={modelSwitches.switches}
+          resolveModelId={value => resolveCatalogModel(modelsQuery.data?.items ?? [], value)?.id ?? value}
           onEditModelSwitch={modelSwitchActions.edit} onCancelModelSwitch={modelSwitchActions.cancel}
           editingPromptId={queueEdit?.promptId} onClearAll={handleClearQueue}
           sendNowDisabled={state.resyncing || state.resyncFailed}
@@ -3781,7 +3782,7 @@ boundExecution,
     queuedItems, queuedItemCount, queueRowCount, heldCronItems, queueEdit, headerGoal, t, handleSendNowQueued, handleCancelQueued,
     handleRemoveQueuedAttachment, handleStartQueueEdit, handleMoveQueued, handleQueuedTiming,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady,
-    modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel,
+    modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,
   ]);
   const composerHeader = useMemo(() => headerGoalSection === undefined && headerQueueSection === undefined ? undefined : (
     <ComposerHeader goal={headerGoalSection} queue={headerQueueSection} settled={state.loaded} />
@@ -3976,8 +3977,11 @@ boundExecution,
             serverDefaultModel={inheritedDefault}
             modelSource={modelSource}
             pendingModelSwitch={modelSwitches.active === undefined ? undefined : {
+              from: modelSwitches.active.receipt.fromModel,
               to: modelSwitches.active.receipt.toModel,
               mode: modelSwitches.active.input.mode,
+              originalThinking: modelSwitches.active.originalBinding.thinking,
+              targetThinking: modelSwitches.active.input.thinking,
             }}
             modelSwitchError={modelSwitches.error === undefined ? undefined : {
               detail: modelSwitches.error.message,

@@ -156,6 +156,10 @@ export interface StepEnqueueOptions {
   readonly at?: 'head' | 'tail';
 }
 
+export interface StepBoundary {
+  readonly turnId: number;
+}
+
 export interface IAgentLoopService {
   readonly _serviceBrand: undefined;
 
@@ -177,7 +181,10 @@ export interface IAgentLoopService {
    * A new turn may preserve standalone steps for its own admission; history mutations require the default empty queue.
    * Release admits all held requests before starting a turn, so mergeable events can enter its first step.
    */
-  tryAcquireQuiescence(options?: { readonly pendingSteps: 'preserve' }): IDisposable | undefined;
+  tryAcquireQuiescence(options?: { readonly pendingSteps?: 'preserve'; readonly boundary?: StepBoundary }): IDisposable | undefined;
+
+  /** Runs a control operation after the active request and its tool results, before another request. */
+  atStepBoundary(run: (boundary: StepBoundary | undefined) => Promise<void>): Promise<void>;
 
   settled(): Promise<void>;
 
