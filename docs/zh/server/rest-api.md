@@ -133,6 +133,8 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `GET /api/config` | 读取全局配置（密钥字段脱敏） |
 | `POST /api/config` | 合并式更新配置，并广播 `event.config.changed` |
 
+会话标题提示词的读取、只读默认值，以及逐字段保存和删除方式见 [`session_title`](../configuration/config-files.md#session-title)。
+
 `hooks` 接受 legacy 命令规则数组，或 `schemaVersion: 2` 的声明式对象。读取和保存均保留完整值，包括 `rules`、`legacy`、`enabled`、`disabled` 和 `files`。嵌套 JSON 键使用 camelCase（`textFile`、`agentRoles`、`everyCompletedSteps`、`counterScope`、`partitionBy`），TOML 使用 snake_case。编辑时发送完整的 hooks 数组或对象；省略 `hooks` 不改动此配置，发送 `[]` 则清空。`null` 或不支持的规则形状返回校验错误码 `40001`，不改变已存文件。读取或保存配置不会执行 hook 命令。支持的事件和动作见 [Hooks](../customization/hooks.md)。
 
 `GET /api/sessions/{session_id}/agents/{agent_id}/hooks` 是活跃 Agent 的独立只读检查视图。返回的规则、来源状态、诊断和计步值描述实际运行状态，不用于保存配置。

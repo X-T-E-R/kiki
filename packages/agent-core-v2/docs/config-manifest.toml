@@ -830,11 +830,13 @@ max_queued_restores = 8
 # sessionTitle (config.toml: session_title)
 #   owner: src/session/sessionTitle/configSection.ts
 #   scope: core
+#   hooks: custom merge
 # ##########################################################################
 
 [session_title]
 # model: string
 # triggers: "first_user_message" | "first_turn_completed" | "context_compacted"[]
+# prompt: string
 
 # ##########################################################################
 # skipBuiltinProfileInstallation (config.toml: skip_builtin_profile_installation)

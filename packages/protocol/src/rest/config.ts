@@ -95,7 +95,15 @@ export type SessionTitleTrigger = z.infer<typeof sessionTitleTriggerSchema>;
 export const sessionTitleConfigResponseSchema = z.object({
   model: z.string().optional(),
   triggers: z.array(sessionTitleTriggerSchema).optional(),
+  prompt: z.string().optional(),
+  default_prompt: z.string().optional(),
+  prompt_source: z.enum(['default', 'custom']).optional(),
 });
+
+export const sessionTitleConfigPatchSchema = sessionTitleConfigResponseSchema
+  .omit({ default_prompt: true, prompt_source: true })
+  .extend({ model: z.string().nullable().optional(), prompt: z.string().nullable().optional() })
+  .strict();
 
 export const planConfigResponseSchema = z.object({
   gate: z.enum(['free', 'gated']),
@@ -302,7 +310,7 @@ export const patchConfigRequestSchema = z.object({
     delegation: agentsDelegationConfigSchema.optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
-  session_title: sessionTitleConfigResponseSchema.optional(),
+  session_title: sessionTitleConfigPatchSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   skip_builtin_profile_installation: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),

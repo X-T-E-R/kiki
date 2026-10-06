@@ -18,6 +18,8 @@ import { providerCredentialFields } from '@kiki/agent-core-v2/kosong/model/catal
 import type { ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
 import { TASK_BOARD_SECTION } from '@kiki/agent-core-v2/app/taskBoard/configSection';
 import { SUBAGENT_SECTION } from '@kiki/agent-core-v2/session/subagent/configSection';
+import { SESSION_TITLE_SECTION, type SessionTitleConfig } from '@kiki/agent-core-v2/session/sessionTitle/configSection';
+import { DEFAULT_SESSION_TITLE_PROMPT, sessionTitlePromptOverride } from '@kiki/agent-core-v2/session/sessionTitle/defaultPrompt';
 import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
 import {
   NB_SEARCH_SECTION,
@@ -378,6 +380,14 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
   const display = wire['agent_executor_display'];
   if (isPlainObject(display)) raw['agent_executor_display'] = display['externalsVisible'] === undefined ? {} : { externals_visible: display['externalsVisible'] };
   wire['raw'] = raw;
+  const sessionTitle = resolved[SESSION_TITLE_SECTION] as SessionTitleConfig | undefined;
+  const prompt = sessionTitlePromptOverride(sessionTitle?.prompt);
+  wire['session_title'] = {
+    ...sessionTitle,
+    prompt,
+    default_prompt: DEFAULT_SESSION_TITLE_PROMPT,
+    prompt_source: prompt === undefined ? 'default' : 'custom',
+  };
   const defaultPermissionMode = resolved['defaultPermissionMode'];
   if (typeof defaultPermissionMode === 'string') {
     wire['yolo'] = defaultPermissionMode === 'yolo';

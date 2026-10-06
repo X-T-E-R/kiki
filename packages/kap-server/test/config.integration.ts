@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { ConfigChanged, IConfigService, IEventService } from '@kiki/agent-core-v2';
 import { HooksConfigSchema } from '@kiki/agent-core-v2/features/externalHooks/configSection';
+import { DEFAULT_SESSION_TITLE_PROMPT } from '@kiki/agent-core-v2/session/sessionTitle/defaultPrompt';
 import { ExternalHooksRunnerService } from '@kiki/agent-core-v2/features/externalHooks/app/externalHooksRunnerService';
 import { configResponseSchema as sharedConfigResponseSchema, patchConfigRequestSchema as sharedPatchConfigRequestSchema, hooksConfigSchema } from '@kiki/protocol';
 import { IRequestGovernance } from '@kiki/agent-core-v2/app/requestGovernance/requestGovernance';
@@ -348,20 +349,37 @@ timeout = 600
     expect((await getConfig()).prompt).toEqual({});
   });
 
-  it('round trips the session_title model pin through its replace-domain', async () => {
-    await boot();
-    const pinned = await patchConfig({ session_title: { model: 'kimi-for-coding' }, replace_domains: ['session_title'] });
-    expect(pinned.session_title).toEqual({ model: 'kimi-for-coding' });
-    expect((await getConfig()).session_title).toEqual({ model: 'kimi-for-coding' });
-    const moments = { model: 'kimi-for-coding', triggers: ['first_user_message', 'context_compacted'] };
-    for (const schema of [sharedConfigResponseSchema, sharedPatchConfigRequestSchema]) expect(schema.parse({ session_title: moments }).session_title).toEqual(moments);
-    expect((await patchConfig({ session_title: moments, replace_domains: ['session_title'] })).session_title).toEqual(moments);
-    expect((await getConfig()).session_title).toEqual(moments);
-    expect((await patchConfig({ session_title: { model: 'kimi-for-coding', triggers: [] }, replace_domains: ['session_title'] })).session_title).toEqual({ model: 'kimi-for-coding', triggers: [] });
-    expect((await getConfig()).session_title?.triggers).toEqual([]);
-    const cleared = await patchConfig({ session_title: {}, replace_domains: ['session_title'] });
-    expect(cleared.session_title?.model).toBeUndefined();
-    expect((await getConfig()).session_title?.model).toBeUndefined();
+  it('round trips session_title prompt overrides, preserves sibling settings and reads the same default after cold reload', async () => {
+    await boot('[search]\nenabled=false\n');
+    const defaults = { default_prompt: DEFAULT_SESSION_TITLE_PROMPT, prompt_source: 'default' };
+    await patchConfig({ agent_executor_display: { externals_visible: false } });
+    expect((await getConfig()).session_title).toEqual(defaults);
+    const moments = { model: 'title-model', triggers: [] };
+    expect((await patchConfig({ session_title: moments })).session_title).toEqual({ ...moments, ...defaults });
+    const prompt = '  Name this conversation\n保留换行、{content}、${name}\n  ';
+    const custom = { ...moments, prompt, default_prompt: DEFAULT_SESSION_TITLE_PROMPT, prompt_source: 'custom' };
+    for (const schema of [sharedPatchConfigRequestSchema, patchConfigRequestSchema]) {
+      expect(schema.parse({ session_title: { prompt } }).session_title).toEqual({ prompt });
+      expect(schema.safeParse({ session_title: { default_prompt: 'not editable' } }).success).toBe(false);
+    }
+    expect((await patchConfig({ session_title: { prompt } })).session_title).toEqual(custom);
+    expect(sharedConfigResponseSchema.parse(await getConfig()).session_title).toEqual(custom);
+    expect((await patchConfig({ session_title: { model: 'another-title-model' } })).session_title).toEqual({ ...custom, model: 'another-title-model' });
+    expect((await patchConfig({ session_title: { triggers: ['context_compacted'] } })).session_title?.prompt).toBe(prompt);
+    expect((await patchConfig({ session_title: { model: null, triggers: [] } })).session_title).toEqual({ ...custom, model: undefined });
+    const text = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(text).toContain('prompt ='); expect(text).not.toContain('default_prompt'); expect(text).not.toContain('prompt_source');
+    await server!.close(); server = undefined; await boot();
+    expect((await getConfig()).session_title).toEqual({ ...custom, model: undefined });
+    expect((await patchConfig({ session_title: { prompt: null } })).session_title).toEqual({ triggers: [], ...defaults });
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('prompt =');
+    await patchConfig({ session_title: { prompt, model: 'title-model' } });
+    expect((await patchConfig({ session_title: { prompt: ' \n\t ' } })).session_title).toEqual({ model: 'title-model', triggers: [], ...defaults });
+    await server!.close(); server = undefined; await boot();
+    const restored = await getConfig();
+    expect(restored.session_title).toEqual({ model: 'title-model', triggers: [], ...defaults });
+    expect(restored.agent_executor_display).toEqual({ externalsVisible: false });
+    expect(restored.raw?.['agent_executor_display']).toEqual({ externals_visible: false });
   });
 
   it('round trips board storage modes and subagent limits without retaining a stale fixed path', async () => {

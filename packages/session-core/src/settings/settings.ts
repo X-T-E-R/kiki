@@ -1005,8 +1005,7 @@ export function marketplaceUrlPatch(url: string): KikiConfigPatch {
 export function sessionTitleModelPatch(model: string): KikiConfigPatch {
   const trimmed = model.trim();
   return {
-    session_title: { model: trimmed.length === 0 ? undefined : trimmed },
-    replace_domains: ['session_title'],
+    session_title: { model: trimmed.length === 0 ? null : trimmed },
   };
 }
 
@@ -1014,7 +1013,11 @@ export const SESSION_TITLE_TRIGGERS: readonly SessionTitleTrigger[] = [
   'first_user_message', 'first_turn_completed', 'context_compacted',
 ];
 
-/** Replaces only the title settings; an empty trigger set disables automatic generation. */
+export function sessionTitlePromptPatch(prompt: string | null): KikiConfigPatch {
+  return { session_title: { prompt: prompt?.trim() ? prompt : null } };
+}
+
+/** Updates model and moments without changing the prompt; an empty trigger set disables automation. */
 export function sessionTitleSettingsPatch(model: string, triggers: readonly SessionTitleTrigger[]): KikiConfigPatch {
   const patch = sessionTitleModelPatch(model);
   return { ...patch, session_title: { ...patch.session_title, triggers: [...new Set(triggers)] } };

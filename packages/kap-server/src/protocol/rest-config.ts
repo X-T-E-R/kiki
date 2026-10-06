@@ -1,7 +1,7 @@
 import { IdentityConfigSchema } from '@kiki/agent-core-v2/app/agentIdentity/configSection';
 import { TaskBoardConfigSchema } from '@kiki/agent-core-v2/app/taskBoard/configSection';
 import { SubagentConfigSchema } from '@kiki/agent-core-v2/session/subagent/configSection';
-import { SessionTitleConfigSchema } from '@kiki/agent-core-v2/session/sessionTitle/configSection';
+
 import { McpSectionSchema } from '@kiki/agent-core-v2/app/mcpConfig/configSection';
 import { PluginsSectionSchema } from '@kiki/agent-core-v2/app/plugin/configSection';
 import { ThreadCommunicationConfigSchema } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
@@ -23,11 +23,10 @@ import {
 } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
 import { WorkspaceInstanceConfigSchema } from '@kiki/agent-core-v2/workspace/workspaceInstance/configSection';
 import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
-import { agentExecutorDisplayConfigSchema, agentExecutorDisplayConfigPatchSchema, nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, requestGovernanceConfigPatchSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema } from '@kiki/protocol';
+import { agentExecutorDisplayConfigSchema, agentExecutorDisplayConfigPatchSchema, nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, requestGovernanceConfigPatchSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema, sessionTitleConfigResponseSchema, sessionTitleConfigPatchSchema, interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
-import { interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
 export { interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
@@ -214,7 +213,7 @@ export const configResponseSchema = z.object({
   subagent: subagentConfigResponseSchema.optional(),
   agents: agentsConfigResponseSchema.optional(),
   builtin_product_skills: z.boolean().optional(),
-  session_title: SessionTitleConfigSchema.optional(),
+  session_title: sessionTitleConfigResponseSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   cron: cronConfigResponseSchema.optional(),
   thread_communication: ThreadCommunicationConfigSchema.optional(),
@@ -278,7 +277,7 @@ export const patchConfigRequestSchema = z.object({
     delegation: agentsDelegationConfigSchema.optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
-  session_title: SessionTitleConfigSchema.optional(),
+  session_title: sessionTitleConfigPatchSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   thread_communication: ThreadCommunicationConfigSchema.optional(),
   token_counting: tokenCountingConfigSchema.optional(),

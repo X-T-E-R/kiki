@@ -710,8 +710,13 @@ Which image formats reach the model depends on the provider the request resolves
 | --- | --- | --- | --- |
 | `model` | `string` | unset | Model alias used to write session titles. While it is unset (or empty) Kiki sends no title request at all: it does not fall back to `fast_model`, and it does not use a managed `chat_title` tool, so no title generation is billed to a subscription |
 | `triggers` | `array<string>` | `["first_turn_completed"]` | The moments that write a title on their own. Any of `first_user_message`, `first_turn_completed`, `context_compacted`. An empty array turns automatic titling off; asking for a title on demand still works, and it still needs a `model` |
+| `prompt` | `string` | built-in prompt | Optional system prompt for the title model. Multiline text is sent in full, without template expansion. Remove this field or leave it blank to use the built-in prompt; the default text is not saved as an override |
 
-A model you picked is used as-is, under the same title-prompt budgets. Automatic titling never overwrites a title you typed yourself, and neither does an ordinary on-demand request. Only a forced request replaces a title you set by hand.
+The built-in prompt asks for a recognizable title based on the current purpose and concrete subject, keeping useful names and identifiers without claiming unproven success. Changing `prompt` takes effect on the next title request, including in an open session, without restarting. Saving or removing the override does not rename existing sessions or send a title request.
+
+A model you picked is used as-is, under the same excerpt budgets. Automatic titling never overwrites a title you typed yourself, and neither does an ordinary on-demand request. Only a forced request replaces a title you set by hand.
+
+`GET /api/config` and successful `POST /api/config` responses include `session_title.default_prompt` and `prompt_source` (`default` or `custom`). These are read-only fields; `prompt` is returned only for a nonblank override. Save with `{ "session_title": { "prompt": "Your title instructions" } }`, or remove the override with `{ "session_title": { "prompt": null } }`. Omitted fields stay unchanged, so these patches preserve `model` and `triggers`. Use `model: null` to remove the model without erasing the prompt or selected moments; do not use `replace_domains` for a single-field edit.
 
 On-demand generation is `POST /api/sessions/{session_id}/title/generate`, which the SDK exposes. It needs a `model`, because without one there is nothing to ask. Its `force` option is what replaces a hand-written title; leave it unset to keep that title.
 

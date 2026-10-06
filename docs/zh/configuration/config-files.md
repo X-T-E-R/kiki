@@ -696,8 +696,13 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 | --- | --- | --- | --- |
 | `model` | `string` | 未设置 | 用于写会话标题的模型别名。未设置（或留空）时 Kiki 完全不发标题请求：既不回退到 `fast_model`，也不使用托管的 `chat_title` 工具，因此标题生成不消耗任何订阅用量 |
 | `triggers` | `array<string>` | `["first_turn_completed"]` | Kiki 主动写标题的时刻，取值为 `first_user_message`、`first_turn_completed`、`context_compacted` 中的一项或多项。空数组表示关闭自动生成；按需生成标题仍然可用，且仍需配置 `model` |
+| `prompt` | `string` | 内置提示词 | 可选的标题模型系统提示词。多行正文完整发送，不展开模板。删除该字段或留空恢复内置提示词；默认全文不会另存为覆盖 |
 
-选定的模型按原有的标题提示词预算直接使用。自动生成不会覆盖你手写的标题，普通按需生成请求也不会。只有强制请求（force）才会替换你手写的标题。
+内置提示词根据当前目的和具体对象生成便于辨认的标题，保留有用的名字与标识符，不虚报尚未证实的成功。修改 `prompt` 会在下一次标题请求生效，已打开的会话也无需重启。保存或删除覆盖不改已有会话标题，也不主动发起标题请求。
+
+选定的模型按原有的会话摘录预算直接使用。自动生成不会覆盖你手写的标题，普通按需生成请求也不会。只有强制请求（force）才会替换你手写的标题。
+
+`GET /api/config` 与成功的 `POST /api/config` 响应包含 `session_title.default_prompt` 和 `prompt_source`（`default` 或 `custom`）。它们是只读字段；仅存在非空白覆盖时才返回 `prompt`。发送 `{ "session_title": { "prompt": "你的标题规则" } }` 保存，发送 `{ "session_title": { "prompt": null } }` 删除覆盖。省略的字段保持不变，因此这两种写入保留 `model` 与 `triggers`；`model: null` 只移除模型，保留提示词和生成时机。修改单个字段时不要使用 `replace_domains`。
 
 按需生成对应 `POST /api/sessions/{session_id}/title/generate`，SDK 暴露了这个调用。它同样需要 `model`，没有模型就无从发问；其中 `force` 选项才是替换手写标题的那一个，不传则保留你写的标题。
 

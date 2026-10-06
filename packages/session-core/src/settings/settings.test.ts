@@ -53,6 +53,7 @@ import {
   requestIdentityPolicyFromDraft,
   resourceLimitPatch,
   sessionTitleModelPatch,
+  sessionTitlePromptPatch,
   sessionTitleSettingsPatch,
   remoteModelsHeaders,
   remoteModelsUrl,
@@ -1647,22 +1648,23 @@ describe('hooks and MCP timeout patches (batch 3 split)', () => {
     });
   });
 
-  it('scopes the session-title model patch to the session_title replace-domain', () => {
-    expect(sessionTitleModelPatch(' kimi-for-coding ')).toEqual({
-      session_title: { model: 'kimi-for-coding' },
-      replace_domains: ['session_title'],
-    });
-    expect(sessionTitleModelPatch('   ')).toEqual({
-      session_title: { model: undefined },
-      replace_domains: ['session_title'],
-    });
+  it('merges only the title model and explicitly clears an empty model', () => {
+    expect(sessionTitleModelPatch(' kimi-for-coding ')).toEqual({ session_title: { model: 'kimi-for-coding' } });
+    expect(sessionTitleModelPatch('   ')).toEqual({ session_title: { model: null } });
+  });
+
+  it('preserves the complete title prompt and deletes the override for default or blank', () => {
+    const prompt = '  标题要求\n保留 {content} 和 ${name}\n  ';
+    expect(sessionTitlePromptPatch(prompt)).toEqual({ session_title: { prompt } });
+    expect(sessionTitlePromptPatch(null)).toEqual({ session_title: { prompt: null } });
+    expect(sessionTitlePromptPatch(' \n\t ')).toEqual({ session_title: { prompt: null } });
   });
 
   it('persists the selected title moments, including the manual-only empty set', () => {
     expect(sessionTitleSettingsPatch(' model ', ['first_user_message', 'context_compacted'])).toEqual({
-      session_title: { model: 'model', triggers: ['first_user_message', 'context_compacted'] }, replace_domains: ['session_title'],
+      session_title: { model: 'model', triggers: ['first_user_message', 'context_compacted'] },
     });
-    expect(sessionTitleSettingsPatch(' ', [])).toEqual({ session_title: { model: undefined, triggers: [] }, replace_domains: ['session_title'] });
+    expect(sessionTitleSettingsPatch(' ', [])).toEqual({ session_title: { model: null, triggers: [] } });
     expect(runtimeConfigDraftFromConfig({ session_title: { model: 'model' } }).sessionTitleTriggers).toEqual(['first_turn_completed']);
     expect(runtimeConfigDraftFromConfig({ session_title: { model: 'model', triggers: [] } }).sessionTitleTriggers).toEqual([]);
   });

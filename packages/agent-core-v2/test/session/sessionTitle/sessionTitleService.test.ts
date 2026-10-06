@@ -6,7 +6,15 @@ import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import { Emitter } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { IOAuthService } from '#/app/auth/auth';
-import { IConfigService } from '#/app/config/config';
+import { IConfigRegistry, IConfigService } from '#/app/config/config';
+import { ConfigRegistry, ConfigService } from '#/app/config/configService';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { DEFAULT_SESSION_TITLE_PROMPT } from '#/session/sessionTitle/defaultPrompt';
+import { stubBootstrap } from '../../app/bootstrap/stubs';
 import { IFlagService } from '#/app/flag/flag';
 import { IEventService } from '#/app/event/event';
 import { EventBusService } from '#/app/event/eventBusService';
@@ -72,6 +80,8 @@ describe('SessionTitleService', () => {
   let titleModelAlias: string | undefined;
   let fastModelAlias: string | undefined;
   let triggers: SessionTitleTrigger[] | undefined;
+  let titlePrompt: string | undefined;
+  let systemPrompts: string[];
   let modelRequesters: Map<string, ModelRequester>;
   let requesterLookups: string[];
   let titleRequests: { text: string; params: Parameters<ModelRequester['request']>[2] }[];
@@ -88,6 +98,7 @@ describe('SessionTitleService', () => {
     titlePrompts = ['hello']; turnExcerpt = {}; digestExcerpt = {};
     flagEnabled = true; titleModelAlias = 'title-model'; fastModelAlias = 'fast-title'; triggers = undefined;
     modelRequesters = new Map(); requesterLookups = []; titleRequests = []; published = [];
+    titlePrompt = undefined; systemPrompts = [];
     nextTurnId = 0; beforeReply = undefined;
     metadata = new FakeSessionMetadata();
     fetchMock = vi.fn(); tokenMock = vi.fn(async () => 'test-token');
@@ -119,7 +130,7 @@ describe('SessionTitleService', () => {
         reg.definePartialInstance(IOAuthService, { resolveTokenProvider: () => ({ getAccessToken: tokenMock }) });
         reg.definePartialInstance(IFlagService, { enabled: () => flagEnabled });
         reg.definePartialInstance(IConfigService, {
-          get: ((key: string) => key === SESSION_TITLE_SECTION ? { model: titleModelAlias, triggers } : key === FAST_MODEL_SECTION ? fastModelAlias : undefined) as IConfigService['get'],
+          get: ((key: string) => key === SESSION_TITLE_SECTION ? { model: titleModelAlias, triggers, prompt: titlePrompt } : key === FAST_MODEL_SECTION ? fastModelAlias : undefined) as IConfigService['get'],
         });
         reg.definePartialInstance(IModelCatalog, {
           getRequester: (alias) => {
@@ -141,6 +152,7 @@ describe('SessionTitleService', () => {
     return {
       model: { id: 'title-model' } as ModelRequester['model'],
       request: (input, _signal, params) => {
+        systemPrompts.push(input.systemPrompt);
         titleRequests.push({
           params, text: input.messages.flatMap((message) => message.content).map((part) => part.type === 'text' ? part.text : '').join(''),
         });
@@ -167,6 +179,53 @@ describe('SessionTitleService', () => {
     await vi.waitFor(() => expect(published).toHaveLength(count));
   }
   async function flush(): Promise<void> { for (let i = 0; i < 20; i++) await Promise.resolve(); }
+
+  it('hot reads default, full multiline override and deletion on the next request of the same live service', async () => {
+    const live = createServices(disposables, {
+      base: [registerLogServices],
+      additionalServices: (reg) => {
+        reg.defineInstance(IBootstrapService, stubBootstrap());
+        reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
+        reg.define(IAtomicTomlDocumentStore, TomlAtomicDocumentStore);
+        reg.define(IConfigRegistry, ConfigRegistry);
+        reg.define(IConfigService, ConfigService);
+        reg.defineInstance(ISessionContext, ix.get(ISessionContext));
+        reg.defineInstance(ISessionMetadata, metadata);
+        reg.defineInstance(IAgentLifecycleService, ix.get(IAgentLifecycleService));
+        reg.defineInstance(IEventService, ix.get(IEventService));
+        reg.defineInstance(IFlagService, ix.get(IFlagService));
+        reg.defineInstance(IModelCatalog, ix.get(IModelCatalog));
+        reg.define(ISessionTitleService, SessionTitleService);
+      },
+    });
+    const config = live.get(IConfigService);
+    await config.set(SESSION_TITLE_SECTION, { model: 'title-model', triggers: [] });
+    const title = live.get(ISessionTitleService);
+    await title.generateTitle({ force: true });
+    const prompt = '  自定义标题规则\n保留 {content} / ${name}\n' + '完整正文'.repeat(500) + '\n  ';
+    await config.set(SESSION_TITLE_SECTION, { prompt });
+    await flush();
+    expect(titleRequests).toHaveLength(1);
+    expect(metadata.meta.title).toBe('生成的标题');
+    await title.generateTitle({ force: true });
+    await config.set(SESSION_TITLE_SECTION, { prompt: null });
+    await flush(); expect(titleRequests).toHaveLength(2);
+    await title.generateTitle({ force: true });
+    await config.set(SESSION_TITLE_SECTION, { prompt: ' \n\t ' });
+    await title.generateTitle({ force: true });
+    expect(systemPrompts).toEqual([DEFAULT_SESSION_TITLE_PROMPT, prompt, DEFAULT_SESSION_TITLE_PROMPT, DEFAULT_SESSION_TITLE_PROMPT]);
+    expect(config.get(SESSION_TITLE_SECTION)).toEqual({ model: 'title-model', triggers: [], prompt: undefined });
+    await config.set(SESSION_TITLE_SECTION, { prompt, model: null });
+    await expect(title.generateTitle({ force: true })).resolves.toBeUndefined();
+    expect(titleRequests).toHaveLength(4);
+    await config.set(SESSION_TITLE_SECTION, { model: 'title-model' });
+    await metadata.setTitle('manual name');
+    await expect(title.generateTitle()).resolves.toBeUndefined();
+    expect(titleRequests).toHaveLength(4);
+    expect(metadata.meta.title).toBe('manual name');
+    await title.generateTitle({ force: true });
+    expect(systemPrompts[4]).toBe(prompt);
+  });
 
   it('requests only the explicit model and publishes persisted generated metadata', async () => {
     titlePrompts = ['先帮我搭一个 Vite 项目', '加上路由'];
@@ -243,6 +302,21 @@ describe('SessionTitleService', () => {
     triggers = ['first_user_message']; submitted(); await vi.waitFor(() => expect(titleRequests).toHaveLength(1));
     await metadata.setTitle('my name'); release(); await flush(); expect(metadata.meta.title).toBe('my name'); expect(published).toHaveLength(0);
   });
+  it.each([
+    ['\n \nTitle: "Kiki v0.3.3 session_title.prompt"\nExplanation: do not use this', 'Kiki v0.3.3 session_title.prompt'],
+    ['\r\n标题：“修复 request.invalid 配置”\r\n额外说明', '修复 request.invalid 配置'],
+    ['  `Debug long-package-name-with-important-identifier-v0.3.3`\nsecond line', 'Debug long-package-name-with-important-identifier-v0.3.3'],
+  ])('uses only the first nonempty title line and removes labels and paired quotes (%s)', async (answer, expected) => {
+    modelRequesters.set('title-model', stubTitleRequester(answer));
+    await expect(ix.get(ISessionTitleService).generateTitle()).resolves.toBe(expected);
+    expect(metadata.meta.title).toBe(expected);
+  });
+  it.each([' \n\t ', 'Title: ""\nExplanation'])('preserves a manual title when normalization yields no title (%s)', async (answer) => {
+    modelRequesters.set('title-model', stubTitleRequester(answer));
+    await metadata.setTitle('manual title');
+    await expect(ix.get(ISessionTitleService).generateTitle({ force: true })).rejects.toMatchObject({ code: 'session.title_generation_failed' });
+    expect(metadata.meta.title).toBe('manual title'); expect(published).toHaveLength(0);
+  });
   it('manual nonforce skips generated/custom; force intentionally replaces either', async () => {
     await metadata.setGeneratedTitleIfUncustomized('old generated');
     await expect(ix.get(ISessionTitleService).generateTitle()).resolves.toBeUndefined();
@@ -271,7 +345,7 @@ describe('SessionTitleService', () => {
     await expect(first).resolves.toBe('生成的标题'); await expect(second).resolves.toBe('生成的标题');
   });
   it('clamps model titles and ordered user prompt input without counting the character limit as a completion token budget', async () => {
-    titlePrompts = ['很长的输入'.repeat(400), '第二条']; modelRequesters.set('title-model', stubTitleRequester(`标题\n${'很'.repeat(500)}`));
+    titlePrompts = ['很长的输入'.repeat(400), '第二条']; modelRequesters.set('title-model', stubTitleRequester(`标题${'很'.repeat(500)}`));
     const title = await ix.get(ISessionTitleService).generateTitle(); expect(title).toHaveLength(200); expect(title).not.toContain('\n');
     expect(titleRequests[0]!.text).toHaveLength(1000); expect(titleRequests[0]!.text.startsWith('user: 很长的输入')).toBe(true);
   });

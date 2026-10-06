@@ -133,6 +133,8 @@ A finished sign-in stores the credential; it does not turn sending on. The desti
 | `GET /api/config` | Read the global config (secret fields redacted) |
 | `POST /api/config` | Merge-patch the config; broadcasts `event.config.changed` |
 
+Session-title prompt reads, read-only defaults and field-level save/delete patches are documented under [`session_title`](../configuration/config-files.md#session-title).
+
 The `hooks` value accepts a legacy command-rule array or a declarative object with `schemaVersion: 2`. Both reads and saves retain the complete value, including `rules`, `legacy`, `enabled`, `disabled`, and `files`. Nested JSON keys use camelCase (`textFile`, `agentRoles`, `everyCompletedSteps`, `counterScope`, `partitionBy`); TOML uses snake_case. Send the complete hooks array or object when editing it; omit `hooks` to leave it unchanged, or send `[]` to clear it. `null` and unsupported rule shapes return validation code `40001` without changing the saved file. Reading or saving configuration does not execute hook commands. See [Hooks](../customization/hooks.md) for supported events and actions.
 
 `GET /api/sessions/{session_id}/agents/{agent_id}/hooks` is the separate read-only inspection view for an active agent. Its rules, source statuses, diagnostics, and cadence counts describe effective runtime state; it is not a configuration-save endpoint.
