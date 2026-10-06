@@ -106,7 +106,7 @@ Position legend: **system** = inside the system-prompt string; **tools** = the r
 | 34 | `plugin_change` / `plugin_session_start` | reminder | Plugin installed/enabled/removed; plugin session-start text changed | Change-driven; supersedes the earlier reminder | Plugins | `packages/agent-core-v2/test/agent/plugin/agentPlugin.test.ts`, `packages/agent-core-v2/test/app/skillCatalog/plugin-session-start.test.ts` |
 | 35 | `background_task_status` | reminder | Compaction splice while background tasks run | Once per splice | — | `packages/agent-core-v2/test/agent/task/taskService.test.ts` |
 | 36 | `image_compression` caption | reminder | User message contained a compression caption | One per caption | `[media]` config | `packages/agent-core-v2/test/agent/prompt/promptService.test.ts` |
-| 37 | `model_steering` | message (raw `user`, not wrapped) | Every new turn when the alias declares `cognition.steering` | Every new turn | `[models.<alias>.cognition].steering` | `packages/agent-core-v2/test/features/modelSteering/modelSteering.test.ts` |
+| 37 | `model_steering` | message (raw `user`, not wrapped) | New turn, compaction re-arm, or new materialized human input when the alias declares `cognition.steering` | Once per delivered input batch; no repeat on tool-only continuation | `[models.<alias>.cognition].steering` | `packages/agent-core-v2/test/features/modelSteering/modelSteering.test.ts` |
 | 38 | `init` | reminder | Session-init subagent finished writing `AGENTS.md` | Once per init run | Init invocation | `packages/agent-core-v2/test/features/sessionInit/sessionInit.test.ts` |
 | 39 | `btw` (side question) | reminder | `/btw` fork created | Once per fork | — | `packages/agent-core-v2/test/features/btw/btw.test.ts` |
 | 40 | `room_joined` / `room_left` | reminder | Thread added to / removed from a room | Once per membership change | Room membership | `packages/agent-core-v2/test/app/room/room.test.ts` |
@@ -427,7 +427,9 @@ Captions found inside a user message (`<system>Image compressed to fit model lim
 
 ### 3.15 `model_steering`
 
-When the bound model alias declares `[models.<alias>.cognition].steering`, the file's text is appended on every new turn as a **plain `user` message, not wrapped in `<system-reminder>`** (`packages/agent-core-v2/src/features/modelSteering/modelSteeringService.ts:24-28`, `:44-57`). It is re-injected each turn so the cue stays next to the latest prompt; a read failure is skipped silently.
+When the bound model alias declares `[models.<alias>.cognition].steering`, `AgentModelSteeringService` appends its saved slot text as a **plain `user` message, not wrapped in `<system-reminder>`**, on new turns and compaction re-arm. At each safe step boundary it also checks materialized context after the provider's `lastInjectedAt`: explicit `user`, `plugin_command`, and `skill_activation` with `trigger: 'user-slash'` origins trigger one following copy. Peer, task, model-tool skill, and originless user-role messages do not trigger the extra in-turn injection.
+
+The loop materializes the entire step batch before context-injector hooks run, so accepted Send now inputs retain their order and steering follows them before the next request. A queued, rejected, or aborted input that never materializes cannot trigger it. The injection position consumes all preceding human inputs; tool-only continuation adds no copy. Neither `firstStepOfTurn` nor other providers' `isNewTurn` semantics change. Slot text remains the binding snapshot despite disk edits; only legacy bindings without saved slots read the file, and the injector logs and skips a failed read. The owning contract is `packages/agent-core-v2/src/features/modelSteering/modelSteeringService.ts`; real mock request capture, origin checks, and compaction/snapshot assertions are in `packages/agent-core-v2/test/features/modelSteering/modelSteering.test.ts`.
 
 ### 3.16 `init`
 
