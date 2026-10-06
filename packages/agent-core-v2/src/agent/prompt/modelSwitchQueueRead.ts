@@ -74,6 +74,17 @@ export class PersistedModelSwitchReader {
     return promise.then((list) => { signal?.throwIfAborted(); return list; });
   }
 
+  async readReady(scope: string, signal?: AbortSignal) {
+    for (;;) {
+      signal?.throwIfAborted();
+      try { return await this.read(scope, signal); }
+      catch (error) {
+        if (!(error instanceof ModelSwitchQueuePreparingError)) throw error;
+      }
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+    }
+  }
+
   private async checkpoint(scope: string, size: number, mtimeMs: number) {
     const checkpoint = await this.host.docs.get<Checkpoint>(`${scope}/replay-checkpoints`, 'engine-v1');
     if (checkpoint?.format !== 1 || checkpoint.replayAbi !== REPLAY_ABI_VERSION ||
@@ -170,8 +181,9 @@ export class PersistedModelSwitchReader {
         const chunk = Buffer.from(raw);
         state.offset += chunk.length;
         let start = 0;
-        for (let index = 0; index <= chunk.length; index += 1) {
-          if (index !== chunk.length && chunk[index] !== 10) continue;
+        for (;;) {
+          const newline = chunk.indexOf(10, start);
+          const index = newline < 0 ? chunk.length : newline;
           const fragment = chunk.subarray(start, index);
           if (!state.skip) state.pending = Buffer.concat([state.pending, fragment]);
           if (state.pending.length >= 256) {
@@ -182,6 +194,7 @@ export class PersistedModelSwitchReader {
             if (!state.skip) this.fold(state, state.pending);
             state.pending = Buffer.alloc(0); state.skip = false;
           }
+          if (index === chunk.length) break;
           start = index + 1;
         }
       }

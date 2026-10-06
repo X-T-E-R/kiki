@@ -104,6 +104,29 @@ it('keeps a malformed durable read failed until the source is repaired', async (
   fixture.update([queued('repaired', 0)]);
   expect((await fixture.reader.read('s'))[0]?.input.operationId).toBe('repaired');
 });
+it('returns a ready cold queue across bounded slices without exposing preparation to the consumer', async () => {
+  const fixture = host([{ type: 'llm.request', ignored: 'x'.repeat(8 * 1024 * 1024 + 512) }, queued('after-budget', 0)]);
+  const list = await fixture.reader.readReady('s');
+  expect(list).toMatchObject([{ input: { operationId: 'after-budget' }, queueIndex: 0, receipt: { state: 'pending' } }]);
+  expect(fixture.scans().map((range) => range.start)).toEqual([0, 8 * 1024 * 1024]);
+  await fixture.reader.readReady('s');
+  expect(fixture.scans()).toHaveLength(2);
+});
+it('cancels a ready read between slices and preserves its progress for the next consumer', async () => {
+  const fixture = host([{ type: 'llm.request', ignored: 'x'.repeat(8 * 1024 * 1024 + 512) }, queued('after-budget', 0)]);
+  const controller = new AbortController();
+  fixture.duringScan(() => controller.abort(new Error('cancelled read')));
+  await expect(fixture.reader.readReady('s', controller.signal)).rejects.toThrow('cancelled read');
+  expect(fixture.scans()).toHaveLength(1);
+  fixture.duringScan(() => {});
+  expect((await fixture.reader.readReady('s'))[0]?.input.operationId).toBe('after-budget');
+  expect(fixture.scans().map((range) => range.start)).toEqual([0, 8 * 1024 * 1024]);
+});
+it('returns a durable failure from a ready read rather than retrying malformed state', async () => {
+  const fixture = host([{ type: 'prompt.model_switch_queued', time: 1, entry: null }]);
+  await expect(fixture.reader.readReady('s')).rejects.toThrow();
+  expect(fixture.scans()).toHaveLength(1);
+});
 it('rejects an aborted caller without changing any queue state', async () => {
   const fixture = host([queued('one', 0)]); const controller = new AbortController(); controller.abort();
   expect(() => fixture.reader.read('s', controller.signal)).toThrow();

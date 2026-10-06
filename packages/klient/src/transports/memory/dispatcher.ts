@@ -271,7 +271,7 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
             files: root.accessor.get(IHostFileSystem),
           });
           try {
-            return wireClone(await modelSwitchReader.read(`${sessionScope}/agents/${scope.agentId}`, options?.signal));
+            return wireClone(await modelSwitchReader.readReady(`${sessionScope}/agents/${scope.agentId}`, options?.signal));
           } catch (error) {
             if (error instanceof ModelSwitchQueuePreparingError) {
               throw new RPCError(REQUEST_INVALID, error.message, { reason: 'model_switch_queue_preparing' });
