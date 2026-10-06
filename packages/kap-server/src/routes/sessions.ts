@@ -566,7 +566,8 @@ export function registerSessionsRoutes(
       const personaNames = new Map<string, Promise<string>>();
       const project = async (summary: SessionSummary, cwd: string, facts = resolveSessionFacts(core, summary.id, summary.usage)): Promise<Session> => {
         if (facts.live === false) {
-          const personaId = await core.accessor.get(IBotService).sessionPersonaId(summary);
+          const legacyPersona = summary.custom?.['bot_persona_id'] ?? summary.custom?.['room_persona_id'];
+          const personaId = summary.personaId ?? (typeof legacyPersona === 'string' && legacyPersona.length > 0 ? legacyPersona : undefined);
           if (personaId !== undefined) {
             let name = personaNames.get(personaId);
             if (name === undefined) {

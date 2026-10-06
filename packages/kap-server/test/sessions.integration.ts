@@ -831,6 +831,26 @@ describe('server-v2 /api/sessions', () => {
     expect(typeof body.data.has_more).toBe('boolean');
   });
 
+  it('projects cold sidebar personas from summaries without replaying agent wires', async () => {
+    const created = (await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } })).body.data;
+    const rows: SessionSummary[] = Array.from({ length: 50 }, (_, index) => ({
+      id: `cold-sidebar-${index}`, workspaceId: created.workspace_id, cwd: home,
+      personaId: index === 0 ? 'summary-persona' : undefined,
+      custom: index === 1 ? { bot_persona_id: 'legacy-persona' } : undefined,
+      createdAt: 1, updatedAt: 1000 - index, archived: false,
+    }));
+    vi.spyOn(server!.core.accessor.get(ISessionIndex), 'listRecent').mockResolvedValue({ items: rows, nextCursor: undefined });
+    const read = vi.spyOn(server!.core.accessor.get(IAppendLogStore), 'read').mockImplementation(() => {
+      throw new Error('Sidebar must not replay an agent wire');
+    });
+    const { body } = await getJson<PageWire>('/api/sessions?page_size=50');
+    expect(body.code).toBe(0);
+    expect(body.data.items).toHaveLength(50);
+    expect(body.data.items[0]?.agent_config).toMatchObject({ persona: { id: 'summary-persona' } });
+    expect(body.data.items[1]?.agent_config).toMatchObject({ persona: { id: 'legacy-persona' } });
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it('bounds default list bytes, drains every ID, preserves an after range, and filters busy before paging', async () => {
     const created = (await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } })).body.data;
     const handle = getLiveSessionById(server!.core.accessor, created.id)!;

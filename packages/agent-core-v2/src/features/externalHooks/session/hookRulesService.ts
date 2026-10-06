@@ -1,5 +1,3 @@
-import { parse } from 'smol-toml';
-
 import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
@@ -8,8 +6,8 @@ import { IModelService } from '#/kosong/model/model';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IHookRulesRegistry } from '../app/hookRules';
-import { loadHookRules } from '../internal/loadRules';
-import { hookHash, hookOrder, retainFailedHookSources, type HookEvent, type HookRulesSnapshot } from '../internal/rules';
+import { loadWorkspaceHookRules, projectHookRules } from '../internal/snapshot';
+import { hookHash, retainFailedHookSources, type HookEvent, type HookRulesSnapshot } from '../internal/rules';
 import { IHookRulesSession, ISessionHookWorkspace } from './hookRules';
 
 export class HookRulesSession extends Disposable implements IHookRulesSession {
@@ -57,11 +55,7 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
     const global = this.registry.snapshot();
     const disabled = this.registry.disabled();
     const trusted = this.workspace.current?.trust.isTrusted() === true;
-    const rules = [...global.rules, ...this.project.rules.map((entry) => !trusted ? { ...entry, active: false, reason: 'workspace_untrusted' } : entry)]
-      .map((entry) => disabled.includes('*') || disabled.includes(entry.id) ? { ...entry, active: false, reason: 'disabled' } : entry)
-      .map((entry) => this.usage?.enabled() && entry.namespace.startsWith('plugin/') && this.usageOverrides[entry.namespace.slice('plugin/'.length)] === false
-        ? { ...entry, active: false, reason: 'workspace_plugin_disabled' } : entry).toSorted(hookOrder);
-    return { sources: [...global.sources ?? [], ...this.project.sources ?? []], revision: hookHash([global.revision, this.project.revision, trusted, disabled, this.usage?.enabled() ? this.usageOverrides : {}]), rules, diagnostics: [...global.diagnostics, ...this.project.diagnostics] };
+    return projectHookRules(global, this.project, disabled, trusted, this.usage?.enabled() ? this.usageOverrides : undefined);
   }
 
   observe(event: HookEvent, hookId: string): void { this.observed.fire({ ...event, hookId }); }
@@ -96,15 +90,7 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
       const handle = this.subscriptions.add(runtime.watch.watch(file));
       this.subscriptions.add(handle.onDidChange(() => { this.reload().catch(onUnexpectedError); }));
     }
-    let config: unknown;
-    try { config = parse(await runtime.fs.readText(file))['hooks']; }
-    catch (error) {
-      if (typeof error === 'object' && error !== null && 'code' in error && (error.code === 'os.fs.not_found' || error.code === 'ENOENT')) config = undefined;
-      else throw error;
-    }
-    const next = config === undefined ? { revision: 'absent', rules: [], diagnostics: [], sources: [{ namespace: 'workspace', path: file, status: 'absent' as const }] } : await loadHookRules([
-      { namespace: 'workspace', path: file, root, config, trusted: workspace.trust.isTrusted(), mutable: true },
-    ], runtime.fs, runtime.path, (alias) => this.models.resolveId(alias));
+    const next = await loadWorkspaceHookRules(workspace, alias => this.models.resolveId(alias));
     this.project = retainFailedHookSources(this.project, next);
     if (runtime.watch !== undefined) {
       for (const watched of (this.project.watchPaths ?? []).filter((watched) => watched !== file)) {
