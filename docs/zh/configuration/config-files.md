@@ -129,6 +129,18 @@ allow_kiki_subagents = false
 
 通过 [REST API](../server/rest-api.md#会话) 修改时，向 `POST /api/config` 发送 `agent_executor_overrides` 对象。defaults 字段的 JSON `null` 删除该项保存值，`defaults: null` 删除整个默认设置块。TOML 不支持 `null`，直接编辑文件时删除对应键即可。`bin_path`、`home_dir`、`env`、`args` 等启动设置与 defaults 分开保存。
 
+显示偏好与执行设置分开。在 `[agent_executor_overrides.<id>]` 下设置 `show_in_profile_list = false`，可从 profile 与执行选择器中隐藏单个引擎；在 `[agent_executor_display]` 下设置 `externals_visible = false`，可隐藏全部外部引擎。省略字段表示显示，全局开关优先于逐引擎设置。隐藏不会禁用或卸载引擎、修改执行绑定，也不会取消任务。
+
+```toml
+[agent_executor_overrides."claude-acp"]
+show_in_profile_list = false
+
+[agent_executor_display]
+externals_visible = false
+```
+
+向 `POST /api/config` 发送同名 snake_case 字段；JSON `null` 删除保存的显示偏好，保留启动设置与 defaults。`GET /api/config` 和写入响应通过 `raw.agent_executor_overrides`、`raw.agent_executor_display` 返回这些字段；`raw.agent_executors` 只包含已配置的描述符，不是内置引擎目录。只有显示字段不算配置引擎，也不会让未配置的裸引擎进入选择列表。已有会话仍可辨认当前绑定的隐藏引擎。
+
 ## 连续性提醒词表
 
 Kiki 会提醒 Agent 记录持续有效的指示、查找早先决定、更新未完成待办，并在上下文压缩前后保留工作笔记。提醒追加到对话历史，不会自动保存记忆或修改系统提示词。进度提醒需要 `TodoList`；`TodoList` 不可用但记忆访问已获批准时，记录指示和回看历史提醒仍可工作。

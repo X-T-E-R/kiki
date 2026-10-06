@@ -23,7 +23,7 @@ import {
 } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
 import { WorkspaceInstanceConfigSchema } from '@kiki/agent-core-v2/workspace/workspaceInstance/configSection';
 import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
-import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, requestGovernanceConfigPatchSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema } from '@kiki/protocol';
+import { agentExecutorDisplayConfigSchema, agentExecutorDisplayConfigPatchSchema, nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, requestGovernanceConfigPatchSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema } from '@kiki/protocol';
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
@@ -189,6 +189,7 @@ export const permissionConfigPatchSchema = z.object({
 }).passthrough();
 
 export const configResponseSchema = z.object({
+  agent_executor_display: agentExecutorDisplayConfigSchema.optional(),
   space_ui: spaceUiConfigSchema.optional(),
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
   default_provider: z.string().optional(),
@@ -238,6 +239,7 @@ export const configResponseSchema = z.object({
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
 
 export const patchConfigRequestSchema = z.object({
+  agent_executor_display: agentExecutorDisplayConfigPatchSchema.optional(),
   space_ui: spaceUiConfigPatchSchema.optional(),
   providers: z.record(z.string(), z.unknown()).optional(),
   default_provider: z.string().optional(),

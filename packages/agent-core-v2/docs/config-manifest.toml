@@ -8,7 +8,8 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (48 sections · 1 overlay(s))
+# Index (49 sections · 1 overlay(s))
+#   agentExecutorDisplay            src/app/agentExecutor/executorOverrides.ts
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
@@ -60,6 +61,16 @@
 #   (overlay) kimiModelEnvOverlay  src/app/kosongConfig/envOverlay.ts
 
 # ##########################################################################
+# agentExecutorDisplay (config.toml: agent_executor_display)
+#   owner: src/app/agentExecutor/executorOverrides.ts
+#   scope: core
+#   hooks: custom merge · custom toToml
+# ##########################################################################
+
+[agent_executor_display]
+# externals_visible: boolean
+
+# ##########################################################################
 # agentExecutorOverrides (config.toml: agent_executor_overrides)
 #   owner: src/app/agentExecutor/executorOverrides.ts
 #   scope: core
@@ -86,6 +97,7 @@
   # home_dir: string
   # env: record<string, string>
   # args: string[]
+  # show_in_profile_list: boolean
 
 # ##########################################################################
 # agentExecutors (config.toml: agent_executors)

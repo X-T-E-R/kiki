@@ -1017,6 +1017,60 @@ timeout = 600
     expect((await getConfig()).retry).toEqual({ maxAttempts: 2 });
   });
 
+  it('persists display-only executor preferences through HTTP and cold restart without changing execution', async () => {
+    await boot('[search]\nenabled=false\n[agent_executors.example_custom]\nprotocol="acp-v1"\ncommand="example-custom"\n[agent_executor_overrides.claude-acp]\nbin_path="example-adapter"\nargs=["--example"]\n[agent_executor_overrides.claude-acp.defaults]\nmodel_alias="example-model"\n[unrelated]\nkeep="example-value"\n');
+    const { IAgentExecutorRegistry } = await import('@kiki/agent-core-v2/app/agentExecutor/agentExecutor');
+    const { executorProcessEnv, executorLaunchArgs } = await import('@kiki/agent-core-v2/app/agentExecutor/executorOverrides');
+    const registry = server!.core.accessor.get(IAgentExecutorRegistry);
+    const descriptor = registry.get('claude-acp')!;
+    const ids = registry.list().map((entry) => entry.id);
+    await patchConfig({ agent_executor_overrides: { 'claude-acp': { show_in_profile_list: false }, 'not-configured': { show_in_profile_list: true } } });
+    await patchConfig({ agent_executor_display: { externals_visible: false } });
+    const edited = await getConfig();
+    expect(edited.raw?.['agent_executor_overrides']).toEqual({
+      'claude-acp': { bin_path: 'example-adapter', args: ['--example'], defaults: { model_alias: 'example-model' }, show_in_profile_list: false },
+      'not-configured': { show_in_profile_list: true },
+    });
+    expect(edited.raw?.['agent_executor_display']).toEqual({ externals_visible: false });
+    expect(edited.raw?.['agent_executors']).toEqual({ example_custom: { protocol: 'acp-v1', command: 'example-custom', args: [] } });
+    expect(edited.agent_executor_display).toEqual({ externalsVisible: false });
+    expect(sharedConfigResponseSchema.parse(edited).raw).toEqual(edited.raw);
+    expect(registry.list().map((entry) => entry.id)).toEqual(ids);
+    expect(registry.get('not-configured')).toBeUndefined();
+    expect(registry.get('agent_executor_display')).toBeUndefined();
+    expect(registry.get('claude-acp')).toEqual(descriptor);
+    expect(executorProcessEnv(registry.get('claude-acp')!)).toEqual(executorProcessEnv(descriptor));
+    expect(executorLaunchArgs(registry.get('claude-acp')!, ['stdio'])).toEqual(executorLaunchArgs(descriptor, ['stdio']));
+    const path = join(home as string, 'config.toml');
+    const saved = await readFile(path, 'utf-8');
+    expect(saved).toContain('show_in_profile_list = false');
+    expect(saved).toContain('externals_visible = false');
+    expect(saved).not.toContain('showInProfileList');
+    for (const patch of [
+      { agent_executor_overrides: { 'claude-acp': { show_in_profile_list: 'no' } } },
+      { agent_executor_overrides: { _external_engines: { externals_visible: false } } },
+      { agent_executor_overrides: { 'claude-acp': { unexpected_option: true } } },
+      { agent_executor_display: { externals_visible: 'no' } },
+      { agent_executor_display: { unexpected_option: true } },
+    ]) {
+      const response = await authedFetch(server!, base, '/api/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) });
+      expect((await response.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
+      expect(await readFile(path, 'utf-8')).toBe(saved);
+    }
+    await server!.close(); server = undefined; await boot();
+    expect((await getConfig()).raw).toEqual(edited.raw);
+    expect(server!.core.accessor.get(IAgentExecutorRegistry).get('claude-acp')).toEqual(descriptor);
+    await patchConfig({ agent_executor_overrides: { 'claude-acp': { show_in_profile_list: null }, 'not-configured': { show_in_profile_list: null } }, agent_executor_display: { externals_visible: null } });
+    const cleared = await getConfig();
+    expect(cleared.raw?.['agent_executor_display']).toEqual({});
+    expect(cleared.raw?.['agent_executor_overrides']).toEqual({ 'claude-acp': { bin_path: 'example-adapter', args: ['--example'], defaults: { model_alias: 'example-model' } }, 'not-configured': {} });
+    expect(await readFile(path, 'utf-8')).toContain('keep="example-value"');
+    expect(await readFile(path, 'utf-8')).not.toContain('show_in_profile_list');
+    expect(await readFile(path, 'utf-8')).not.toContain('externals_visible');
+    await server!.close(); server = undefined; await boot();
+    expect((await getConfig()).raw).toEqual(cleared.raw);
+  });
+
   it('saves executor overrides and preserves executor ids and environment variable names', async () => {
     await boot();
     await patchConfig({ agent_executor_overrides: { example_acp: {

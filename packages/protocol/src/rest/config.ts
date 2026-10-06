@@ -207,7 +207,16 @@ export const interactionConfigPatchSchema = z.object({
   ask_user_question_guard: askUserQuestionGuardWireSchema.optional(),
 }).strict();
 
+export const agentExecutorDisplayConfigSchema = z.object({
+  externalsVisible: z.boolean().optional(),
+}).strict();
+
+export const agentExecutorDisplayConfigPatchSchema = z.object({
+  externals_visible: z.boolean().nullable().optional(),
+}).strict();
+
 export const configResponseSchema = z.object({
+  agent_executor_display: agentExecutorDisplayConfigSchema.optional(),
   model_switch: modelSwitchConfigSchema.optional(),
   space_ui: spaceUiConfigSchema.optional(),
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
@@ -249,6 +258,7 @@ export const configResponseSchema = z.object({
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
 
 export const patchConfigRequestSchema = z.object({
+  agent_executor_display: agentExecutorDisplayConfigPatchSchema.optional(),
   model_switch: modelSwitchConfigPatchSchema.optional(),
   space_ui: spaceUiConfigPatchSchema.optional(),
   providers: z.record(z.string(), z.unknown()).optional(),

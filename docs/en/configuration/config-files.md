@@ -129,6 +129,18 @@ Omit model, effort and permission fields to let the harness choose them. `kiki_c
 
 Through [the REST API](../server/rest-api.md#sessions), update these settings with `POST /api/config` and an `agent_executor_overrides` object. A defaults field set to JSON `null` removes that saved setting; `defaults: null` removes the whole defaults block. TOML has no `null`, so remove the corresponding key when editing the file. Launch settings such as `bin_path`, `home_dir`, `env` and `args` remain separate from defaults.
 
+Display preferences are separate from execution settings. Set `show_in_profile_list = false` under `[agent_executor_overrides.<id>]` to hide one engine from profile and execution pickers, or `externals_visible = false` under `[agent_executor_display]` to hide all external engines. Omitted values mean show; the global switch takes precedence over per-engine values. Hiding does not disable or uninstall an engine, change its execution binding, or cancel tasks.
+
+```toml
+[agent_executor_overrides."claude-acp"]
+show_in_profile_list = false
+
+[agent_executor_display]
+externals_visible = false
+```
+
+Send the same snake_case fields in `POST /api/config`; JSON `null` removes the saved preference without removing launch settings or defaults. `GET /api/config` and the write response expose these fields in `raw.agent_executor_overrides` and `raw.agent_executor_display`; `raw.agent_executors` contains configured descriptors, not the shipped engine catalog. A display flag alone does not configure an engine or make an unconfigured bare engine a picker choice. An existing session's bound engine remains identifiable when hidden.
+
 ## Continuity reminder cues
 
 Kiki can remind the agent to record standing instructions, find earlier decisions, update unfinished todos, and preserve working notes before or after context compaction. Reminders are appended to conversation history; they do not automatically save memories or change the system prompt. Progress reminders require `TodoList`; instruction and history reminders can also operate with approved memory access when `TodoList` is unavailable.

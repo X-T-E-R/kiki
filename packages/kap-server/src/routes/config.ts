@@ -9,7 +9,8 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
-import { agentExecutorOverridesFromToml } from '@kiki/agent-core-v2/app/agentExecutor/executorOverrides';
+import { agentExecutorOverridesFromToml, agentExecutorOverridesToToml } from '@kiki/agent-core-v2/app/agentExecutor/executorOverrides';
+import { agentExecutorsToToml } from '@kiki/agent-core-v2/app/agentExecutor/configSection';
 import { modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
 import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { IRequestIdentityCatalog } from '@kiki/agent-core-v2/app/requestIdentity/requestIdentityCatalog';
@@ -371,6 +372,12 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
       if (publicValue !== undefined) wire[camelToSnake(domain)] = publicValue;
     }
   }
+  const raw = isPlainObject(wire['raw']) ? { ...wire['raw'] } : {};
+  if (wire['agent_executor_overrides'] !== undefined) raw['agent_executor_overrides'] = agentExecutorOverridesToToml(wire['agent_executor_overrides']);
+  if (wire['agent_executors'] !== undefined) raw['agent_executors'] = agentExecutorsToToml(wire['agent_executors']);
+  const display = wire['agent_executor_display'];
+  if (isPlainObject(display)) raw['agent_executor_display'] = display['externalsVisible'] === undefined ? {} : { externals_visible: display['externalsVisible'] };
+  wire['raw'] = raw;
   const defaultPermissionMode = resolved['defaultPermissionMode'];
   if (typeof defaultPermissionMode === 'string') {
     wire['yolo'] = defaultPermissionMode === 'yolo';

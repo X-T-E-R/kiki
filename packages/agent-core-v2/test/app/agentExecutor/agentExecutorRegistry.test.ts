@@ -431,13 +431,14 @@ describe('AgentExecutorRegistryService', () => {
     } });
   });
 
-  it('validates and round-trips agent executor launch overrides', () => {
+  it('validates and round-trips agent executor launch and display overrides', () => {
     const toml = {
       'codex-acp': {
         bin_path: 'C:/tools/codex.exe',
         home_dir: 'C:/codex-home',
         env: { CODEX_TOKEN: 'fixture-token' },
         args: ['--profile', 'fixture'],
+        show_in_profile_list: false,
         defaults: { model_alias: 'vendor-model', thinking_effort: 'high', permission_mode: 'auto', kiki_context: [], allow_kiki_subagents: false },
       },
     };
@@ -449,12 +450,14 @@ describe('AgentExecutorRegistryService', () => {
         homeDir: 'C:/codex-home',
         env: { CODEX_TOKEN: 'fixture-token' },
         args: ['--profile', 'fixture'],
+        showInProfileList: false,
         defaults: { model_alias: 'vendor-model', thinking_effort: 'high', permission_mode: 'auto', kiki_context: [], allow_kiki_subagents: false },
       },
     });
     expect(agentExecutorOverridesToToml(runtime)).toEqual(toml);
     expect(AgentExecutorOverrideSchema.safeParse({ binPath: 'x', unsupported: true }).success).toBe(false);
     expect(AgentExecutorOverridesSchema.safeParse({ 'codex-acp': { env: { TOKEN: 1 } } }).success).toBe(false);
+    expect(AgentExecutorOverrideSchema.safeParse({ showInProfileList: 'false' }).success).toBe(false);
   });
 
   it('removes null harness defaults while preserving explicit empty and false settings', async () => {
