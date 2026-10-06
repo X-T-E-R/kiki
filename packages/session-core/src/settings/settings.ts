@@ -2224,11 +2224,7 @@ export const EXPERIMENTAL_FLAG_HOMES: readonly ExperimentalFlagHome[] = [
   // browser tools are registered per scope, so a running session keeps its set.
   { id: 'native_browser', section: 'developer', labelKey: 'st.exp.nativeBrowser.name', descriptionKey: 'st.exp.nativeBrowser.desc', effect: 'newSessions' },
   { id: 'persistence_minidb_readmodel', section: 'developer', labelKey: 'st.exp.readModel.name', descriptionKey: 'st.exp.readModel.desc', effect: 'now' },
-  // Stays on Developer: kap-server reads this flag once while booting and only
-  // then registers the /api/usage-export routes, so the switch has no home
-  // that could restart anything for it. The panel that would sit on the section
-  // is on the Usage page and states its own outcome.
-  { id: 'usage_export', section: 'developer', labelKey: 'st.exp.usageExport.name', descriptionKey: 'st.exp.usageExport.desc', effect: 'restart' },
+  { id: 'local_session_resume', section: 'sessions', labelKey: 'st.exp.localSessionResume.name', descriptionKey: 'st.exp.localSessionResume.desc', effect: 'now' },
 ];
 
 /** Leaf that hosts flags nobody else claims (server-specific extensions). */

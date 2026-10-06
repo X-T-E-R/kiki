@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, utimes } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
@@ -63,7 +63,7 @@ async function fixture(limits: ConstructorParameters<typeof UsageAggregationServ
   let service = new UsageExportService(store, reader, priced, secrets, [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); cleanup.push(() => service.close());
   const write = async (session: string, agent: string, records: readonly WireRecord[]) => storage.write(`sessions/work/${session}/agents/${agent}`, AGENT_WIRE_RECORD_KEY, Buffer.from(records.map((v) => JSON.stringify(v)).join('\n') + '\n'));
   const add = (id: string) => { const summary: SessionSummary = { id, workspaceId: 'work', createdAt: T, updatedAt: T, archived: false, title: SENTINEL, cwd: SENTINEL, lastPrompt: SENTINEL }; sessions.push(summary); return summary; };
-  const restart = async () => { await service.close(); store = new UsageExportStore(path); service = new UsageExportService(store, new UsageAggregationService(core, Date.now, limits), priced, secrets, [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); return service; };
+  const restart = async (legacyDisabled?: boolean) => { await service.close(); store = new UsageExportStore(path, legacyDisabled); service = new UsageExportService(store, new UsageAggregationService(core, Date.now, limits), priced, secrets, [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); return service; };
   return { home, storage, retained, sessions, reader, core, write, add, get service() { return service; }, get store() { return store; }, restart };
 }
 async function receiverFixture() {
@@ -80,6 +80,40 @@ async function destination(service: UsageExportService, endpoint = 'https://exam
 async function enable(service: UsageExportService, id: string) { const preview = await service.preview(id); await service.enable(id, { preview_fingerprint: preview.preview_fingerprint, acknowledge: true }); return preview; }
 
 describe('usage export real source → SQLite outbox → loopback receiver → durable ACK', () => {
+  it('sends nothing without destinations or from draft and disabled destinations after retirement', async () => {
+    const f = await fixture(); const r = await receiverFixture();
+    await f.restart(false); f.service.start(); await f.service.tick();
+    expect(f.service.status().destinations).toEqual([]); expect(r.requests).toBe(0);
+    f.add('synthetic'); await f.write('synthetic', 'main', [record(T + 1, 10)]);
+    const draft = await destination(f.service, r.endpoint, r.port);
+    await f.service.syncNow(draft.id); expect(r.requests).toBe(0);
+    await enable(f.service, draft.id); f.service.disable(draft.id);
+    const disabled = f.store.get(draft.id);
+    await f.restart(false); f.service.start(); await f.service.tick(); await f.service.syncNow(draft.id);
+    expect(f.store.get(draft.id)).toEqual(disabled); expect(r.requests).toBe(0);
+  });
+
+  it('converts the old explicit off choice once to paused destinations, preserving consent and queued data', async () => {
+    const f = await fixture(); const r = await receiverFixture();
+    f.add('synthetic'); await f.write('synthetic', 'main', [record(T + 1, 10)]);
+    const d = await destination(f.service, r.endpoint, r.port); await enable(f.service, d.id);
+    const consent = f.store.get(d.id).consent_fingerprint; const queue = f.store.queue(d.id);
+    f.store.setMeta(`handoff-arm:${d.id}`, 'pending-old-arm');
+    await f.restart(true); f.service.start(); await f.service.tick(); await f.service.syncNow(d.id);
+    expect(f.store.get(d.id)).toMatchObject({ enabled: false, state: 'disabled', next_at: null, consent_fingerprint: consent });
+    expect(f.store.queue(d.id)).toEqual(queue); expect(f.store.meta(`handoff-arm:${d.id}`)).toBe(''); expect(r.requests).toBe(0);
+    await f.service.enable(d.id, { preview_fingerprint: consent!, acknowledge: true });
+    await f.restart(true);
+    expect(f.store.get(d.id).enabled).toBe(true);
+    await f.service.syncNow(d.id); expect(r.requests).toBe(1);
+  });
+
+  it('retiring an enabled legacy gate does not pause an explicitly enabled destination', async () => {
+    const f = await fixture(); const d = await destination(f.service); await enable(f.service, d.id);
+    const before = f.store.get(d.id); await f.restart(false);
+    expect(f.store.get(d.id)).toEqual(before);
+  });
+
   it('preserves timestamp and safe token boundaries without per-record temporary arrays', () => {
     const usage = { inputOther: 1, inputCacheRead: 2, inputCacheCreation: 3, output: 4 };
     const projected = projectSource({ key: 'boundary', workspaceId: 'work', kind: 'session', records: [
@@ -320,17 +354,37 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     preview = await f.service.preview(d.id); expect(preview.items.every((item) => Date.parse(item.bucket!.start_at) >= plan.cutoff_at && Date.parse(item.bucket!.start_at) < R)).toBe(true);
   });
 
-  it('uses the actual default-off Runtime registration and owner gate, including dangerous auth-bypass mode', async () => {
-    for (const mode of ['off', 'on', 'dangerous'] as const) {
+  it.each([
+    { config: false, env: undefined, enabled: false },
+    { config: true, env: 'off', enabled: false },
+    { config: false, env: 'on', enabled: true },
+  ])('migrates Runtime legacy overrides with the old env precedence (%j)', async (choice) => {
+    const f = await fixture(); const r = await receiverFixture();
+    const d = await destination(f.service, r.endpoint, r.port); await enable(f.service, d.id);
+    const before = { ...f.store.get(d.id), next_at: null };
+    const home = await mkdtemp(join(tmpdir(), 'kiki-export-upgrade-')); cleanup.push(() => rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
+    const saved = new UsageExportStore(join(home, 'usage-export', 'export.sqlite')); saved.save(before); saved.close();
+    await writeFile(join(home, 'config.toml'), `[experimental]\nusage_export = ${choice.config}\n`);
+    const server = await startServer({ homeDir: home, modelAccountHomeDir: home, userAgentProfileHomeDir: join(home, 'profiles'), userSkillDir: join(home, 'skills'), hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, logLevel: 'silent', env: { KIKI_EXPERIMENTAL_USAGE_EXPORT: choice.env }, seeds: [[IModelPricingService, priced]] });
+    cleanup.push(() => server.close());
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/usage-export`, { headers: { authorization: `Bearer ${server.localOwnerToken}` } });
+    expect(response.status).toBe(200);
+    const current = (await response.json()).data.destinations[0].destination;
+    expect(current).toEqual(choice.enabled ? before : { ...before, enabled: false, state: 'disabled' });
+    expect(r.requests).toBe(0);
+  });
+
+  it('registers the Runtime without an experimental flag and keeps the owner gate, including dangerous auth-bypass mode', async () => {
+    for (const mode of ['default', 'legacy-off', 'dangerous'] as const) {
       const home = await mkdtemp(join(tmpdir(), 'kiki-export-owner-')); cleanup.push(() => rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
-      const server = await startServer({ homeDir: home, modelAccountHomeDir: home, userAgentProfileHomeDir: join(home, 'profiles'), userSkillDir: join(home, 'skills'), hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, logLevel: 'silent', disableAuth: mode === 'dangerous', env: { KIKI_EXPERIMENTAL_USAGE_EXPORT: mode === 'off' ? 'false' : 'true' }, seeds: [[IModelPricingService, priced]] });
-      cleanup.push(() => server.close()); const url = `http://127.0.0.1:${server.port}/api/usage-export`;
-      const owner = await fetch(url, { headers: { authorization: `Bearer ${server.localOwnerToken}` } }); expect(owner.status).toBe(mode === 'off' ? 404 : 200);
-      if (mode !== 'off') {
-        expect((await owner.json()).data.writer).toBe(true);
-        expect((await fetch(url, { headers: { authorization: `Bearer ${server.authTokenService.getToken()}` } })).status).toBe(403);
-        expect([401, 403]).toContain((await fetch(url)).status);
-      }
+      const server = await startServer({ homeDir: home, modelAccountHomeDir: home, userAgentProfileHomeDir: join(home, 'profiles'), userSkillDir: join(home, 'skills'), hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, logLevel: 'silent', disableAuth: mode === 'dangerous', env: mode === 'legacy-off' ? { KIKI_EXPERIMENTAL_USAGE_EXPORT: 'false' } : {}, seeds: [[IModelPricingService, priced]] });
+      cleanup.push(() => server.close()); const base = `http://127.0.0.1:${server.port}/api`;
+      const headers = { authorization: `Bearer ${server.localOwnerToken}` };
+      const owner = await fetch(`${base}/usage-export`, { headers }); expect(owner.status).toBe(200);
+      expect((await owner.json()).data).toMatchObject({ writer: true, destinations: [] });
+      expect((await (await fetch(`${base}/meta`, { headers })).json()).data.experimental_flags).not.toHaveProperty('usage_export');
+      expect((await fetch(`${base}/usage-export`, { headers: { authorization: `Bearer ${server.authTokenService.getToken()}` } })).status).toBe(403);
+      expect([401, 403]).toContain((await fetch(`${base}/usage-export`)).status);
       await server.close();
     }
   }, 30000);

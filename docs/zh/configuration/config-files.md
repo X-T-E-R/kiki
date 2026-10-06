@@ -711,7 +711,7 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 | --- | --- | --- | --- |
 | `auto_session_title` | `boolean` | `true` | 是否自动生成会话标题；见 [`session_title`](#session-title) |
 | `native_browser` | `boolean` | `false` | 经由受管浏览器后端运行已保存的浏览器连接；未开启时连接会被拒绝，Agent 也拿不到[浏览器工具](../reference/tools.md#浏览器类) |
-| `usage_export` | `boolean` | `false` | 把不含内容的用量批次发送到「用量 → 外部同步」中配置的目的地；关闭时这些路由根本不注册 |
+| `local_session_resume` | `boolean` | `true` | 接续本机已有的 Claude Code 和 Codex 会话；在「设置 → 会话」管理，每次新接续时读取 |
 
 任何已注册的 flag 都可以按 id 用布尔值在这里覆盖。带有自己控件的 flag 在对应功能页开关；没有的会出现在 **Settings → 开发者 → 实验性**，该页按 id 列出服务器上报的 flag。
 

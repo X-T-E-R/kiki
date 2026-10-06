@@ -1152,26 +1152,17 @@ describe('experimental flag homes', () => {
     expect(experimentalSectionForFlag('some_vendor_flag')).toBe('developer');
   });
 
-  it('names the one feature flag the app still ships and keeps the unknown fallback for the rest', () => {
-    // History import is a shipped capability, not an experiment: it has no
-    // switch to draw, so it must not appear in the flag list at all. A server
-    // that still reports the old id is treated as an unknown flag.
+  it('localizes local session continuation in Sessions while keeping the unknown fallback', () => {
+    expect(experimentalFlagHome('usage_export')).toBeUndefined();
     expect(experimentalFlagHome('plugin_import')).toBeUndefined();
     expect(experimentalSectionForFlag('plugin_import')).toBe(EXPERIMENTAL_FALLBACK_SECTION);
-
-    const home = experimentalFlagHome('usage_export');
-    expect(home).toBeDefined();
-    // The switch rides the existing Developer rows; it does not invent a page.
-    expect(home?.section).toBe('developer');
-    expect(home?.cardId).toBeUndefined();
-    expect(home?.labelKey).not.toBe('st.exp.unknown.name');
-    expect(home?.descriptionKey).not.toBe('st.exp.unknown.desc');
-    // Both strings must be real copy in both languages, not the fallback.
-    expect(translate('en', home!.labelKey)).not.toBe(home!.labelKey);
-    expect(translate('zh', home!.labelKey)).not.toBe(home!.labelKey);
-    // kap-server reads usage_export while booting, so the routes only exist
-    // after a restart.
-    expect(home?.effect).toBe('restart');
+    const home = experimentalFlagHome('local_session_resume')!;
+    expect(home.section).toBe('sessions');
+    expect(home.effect).toBe('now');
+    expect(translate('en', home.labelKey)).toBe('Continue local external sessions');
+    expect(translate('en', home.descriptionKey)).toBe('Continue existing Claude Code and Codex sessions on this machine.');
+    expect(translate('zh', home.labelKey)).toBe('接续本机外部会话');
+    expect(translate('zh', home.descriptionKey)).toBe('接续本机已有的 Claude Code 和 Codex 会话。');
     expect(experimentalFlagHome('some_vendor_flag')).toBeUndefined();
   });
 });
@@ -1192,6 +1183,11 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'permission mode').some((hit) => hit.section === 'permissions' && hit.cardId === 'st-card-permission-defaults')).toBe(true);
     // A flag is found on its feature page's Experimental rows, not only in Labs.
     expect(searchSettings(index, 'task_wait').some((hit) => hit.section === 'tasks' && hit.cardId === 'st-card-exp-tasks')).toBe(true);
+    expect(searchSettings(index, 'local_session_resume').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-exp-sessions')).toBe(true);
+    expect(searchSettings(index, 'Continue local external sessions').some((hit) => hit.cardId === 'st-card-exp-sessions')).toBe(true);
+    const chinese = buildSettingsSearchIndex({}, (key) => translate('zh', key));
+    expect(searchSettings(chinese, '接续本机外部会话').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-exp-sessions')).toBe(true);
+    expect(searchSettings(index, 'usage_export')).toEqual([]);
     expect(searchSettings(index, 'release idle subagents').some((hit) => hit.section === 'subagents' && hit.cardId === 'st-card-exp-subagents')).toBe(true);
     expect(searchSettings(index, 'search_worker').find((hit) => hit.cardId === 'st-card-exp-search')?.tab).toBe('advanced');
     expect(searchSettings(index, 'AgentNotify')[0]?.cardId).toBe('st-card-agent-messaging');

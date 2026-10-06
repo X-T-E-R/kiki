@@ -102,22 +102,32 @@ describe('ExperimentalRows', () => {
     expect(row.textContent).toContain('Server-specific feature');
   });
 
-  it('names the shipped feature flag and never offers a switch for history import', async () => {
-    client.meta.mockResolvedValue({
-      experimental_flags: { usage_export: false, plugin_import: false, vendor_extension: true },
-    });
+  it.each([true, false])('does not recreate a retired usage export switch from saved config (%s)', async (value) => {
+    client.getConfig.mockResolvedValue({ experimental: { usage_export: value, vendor_extension: false } });
+    client.meta.mockResolvedValue({ experimental_flags: { usage_export: value, plugin_import: false, vendor_extension: true } });
     await render('developer');
-    const exportRow = container.querySelector('[data-experimental-row="usage_export"]')!;
-    expect(exportRow.textContent).toContain('Send usage to other tools');
-    expect(exportRow.textContent).toContain('Turning it on needs a server restart.');
-    // History import is a shipped capability, so the old flag id gets no
-    // switch and no product copy here: a server still reporting it draws the
-    // fallback row instead of pretending it can be enabled.
+    expect(container.querySelector('[data-experimental-row="usage_export"]')).toBeNull();
     expect(container.querySelector('[data-experimental-row="plugin_import"]')?.textContent)
       .not.toContain('Import history from other tools');
-    // A flag nobody claims still lands on the same page under the fallback name.
     expect(container.querySelector('[data-experimental-row="vendor_extension"]')?.textContent)
       .toContain('Server-specific feature');
+  });
+
+  it('names local session continuation on Sessions and applies the choice on the next attachment', async () => {
+    client.meta.mockResolvedValue({ experimental_flags: { local_session_resume: true, vendor_extension: true } });
+    await render('sessions');
+    const row = container.querySelector('[data-experimental-row="local_session_resume"]')!;
+    expect(row.textContent).toContain('Continue local external sessions');
+    expect(row.textContent).toContain('Continue existing Claude Code and Codex sessions on this machine.');
+    expect(row.textContent).not.toContain('Server-specific feature');
+    expect(row.querySelector('[data-experimental-effect]')?.textContent).toBe('Applies right away.');
+    await act(async () => { row.querySelector<HTMLButtonElement>('[data-experimental-choice="off"]')!.click(); });
+    await flush();
+    expect(client.patchConfig).toHaveBeenCalledWith({ experimental: { task_wait: true, local_session_resume: false }, replace_domains: ['experimental'] });
+    expect(restartRequirementSnapshot().required).toBe(false);
+    await render('developer');
+    expect(container.querySelector('[data-experimental-row="local_session_resume"]')).toBeNull();
+    expect(container.querySelector('[data-experimental-row="vendor_extension"]')).not.toBeNull();
   });
 
   it('marks a restart when a restart-only flag is turned on', async () => {

@@ -395,8 +395,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       );
     }
   }
+  await core.accessor.get(IConfigService).ready;
   await core.accessor.get(IModelPricingService).ready;
-  const usageExport = core.accessor.get(IFlagService).enabled('usage_export') ? new UsageExportRuntime(core, homeDir) : undefined;
+  const usageExport = new UsageExportRuntime(core, homeDir);
   const externalClients = new ExternalClientHost(core);
   const externalClientListener = new NativeExternalClientListenerManager(externalClients);
   if (core.accessor.get(IFlagService).enabled(EXTERNAL_CLIENT_FLAG_ID)) {
@@ -874,7 +875,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   });
   const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote);
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal);
-  if (usageExport !== undefined) { registerUsageExportRoutes(app, usageExport.service); app.addHook('preClose', () => usageExport.close()); }
+  registerUsageExportRoutes(app, usageExport.service);
+  app.addHook('preClose', () => usageExport.close());
   const spaceSummary = new SpaceSummaryProjection(core);
   app.get('/api/space-summary', async (_request, reply) => reply.send({ code: 0, msg: 'OK', data: spaceSummary.read() }));
   app.addHook('onClose', async () => { spaceSummary.dispose(); await spaceSummary.disposeAsync(); });
@@ -1029,7 +1031,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   await registration.update({ port: boundPort });
   try { await web.ready(); } catch (error) { await close(); throw error; }
   remoteConnections.start();
-  usageExport?.start();
+  usageExport.start();
   try {
     core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService);
   } catch (error) {

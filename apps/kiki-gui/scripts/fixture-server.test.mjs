@@ -115,3 +115,20 @@ test('memory provenance REST loop reads automatic metadata, undoes its real jour
     assert.equal((await memoryRequest(server, 'GET', `global/${id}`)).data.body, 'A newer rule from another window.');
   } finally { await server.stop(); }
 });
+
+
+test('usage export fixture exposes an empty ordinary capability without an experimental flag', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'settings-ia' });
+  try {
+    const base = `http://127.0.0.1:${server.http.address().port}/api`;
+    const headers = { authorization: 'Bearer kiki-fixture-token' };
+    const meta = await (await fetch(`${base}/meta`, { headers })).json();
+    assert.equal(Object.hasOwn(meta.data.experimental_flags, 'usage_export'), false);
+    assert.equal(meta.data.experimental_flags.local_session_resume, true);
+    const response = await fetch(`${base}/usage-export`, { headers });
+    assert.equal(response.status, 200);
+    const status = await response.json();
+    assert.equal(status.code, 0);
+    assert.deepEqual(status.data.destinations, []);
+  } finally { await server.stop(); }
+});

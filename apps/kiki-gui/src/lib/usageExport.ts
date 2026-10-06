@@ -3,14 +3,12 @@
  *
  * The whole feature is a typed facade on the klient REST transport
  * (`klient.rest.usageExport`); this module owns the parts a view should not
- * repeat: the experimental flag read, the state/category vocabulary, the
- * payload shorthand the list rows print, and the two downloads.
+ * repeat: the state/category vocabulary, the payload shorthand the list rows
+ * print, and the two downloads.
  *
- * Honesty rules kept here: a server that never registered the routes (the
- * `usage_export` flag is off) is reported as *unavailable*, never as an empty
- * destination list; an error category the facade sends is mapped to the exact
- * recorded name, and anything else falls back to a generic sentence instead of
- * guessing a cause. Nothing here derives a number the server did not send.
+ * An error category the facade sends is mapped to the exact recorded name, and
+ * anything else falls back to a generic sentence instead of guessing a cause.
+ * Nothing here derives a number the server did not send.
  */
 
 import type { Klient } from '@kiki/klient';
@@ -24,12 +22,6 @@ import type {
 } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
-import { useQuery } from '@tanstack/react-query';
-
-import type { KikiClient } from './client';
-
-/** Server flag that registers the management routes; off by default. */
-export const USAGE_EXPORT_FLAG = 'usage_export';
 export const USAGE_EXPORT_QUERY_KEY = 'usage-export';
 export const HALF_HOUR_MS = 1_800_000;
 
@@ -229,20 +221,6 @@ export function downloadJson(fileName: string, payload: unknown): void {
   anchor.click();
   anchor.remove();
   window.setTimeout(() => { URL.revokeObjectURL(url); }, 0);
-}
-
-/**
- * Flag read from `/meta` — the same query key and shape the SSH settings use.
- * `undefined` means the flag is not known yet; `false` means the server has not
- * registered the routes, which is why the panel never treats a 404 as "no
- * destinations".
- */
-export function useUsageExportEnabled(client: KikiClient): { enabled: boolean | undefined; loading: boolean } {
-  const meta = useQuery({ queryKey: ['meta'], queryFn: () => client.meta(), staleTime: 15_000 });
-  return {
-    enabled: meta.data === undefined ? undefined : meta.data.experimental_flags?.[USAGE_EXPORT_FLAG] === true,
-    loading: meta.isLoading,
-  };
 }
 
 // ---------------------------------------------------------------------------

@@ -71,7 +71,7 @@ The **Usage** page is one page with three tabs, because those are three differen
 
 **Live** shows what this service is running and holding, and names the concurrency rule holding each waiting request, with that same rule editable right below. The cap counts requests, not money, and it governs the model requests this Kiki sends itself: hand a turn to Codex, Claude Code, or Grok Build as the engine and those requests are the engine's own, outside these rules.
 
-**External sync** sends the numbers to a webhook you control, a VibeCafe account, or a script you approve — model, UTC half-hour, four token counts, quality, and a local cost estimate, never a prompt, answer, title, or path. A script runs as your own OS user, so it is not a sandbox. This service sends no usage batches until the server enables `usage_export` and you preview the exact payload and agree once.
+**External sync** sends the numbers to a webhook you control, a VibeCafe account, or a script you approve — model, UTC half-hour, four token counts, quality, and a local cost estimate, never a prompt, answer, title, or path. A script runs as your own OS user, so it is not a sandbox. No usage batches are sent until you add a destination, preview the exact payload, agree once, and enable it.
 
 ![The usage page's Live tab: a request waiting on a named concurrency rule, with the rule list below showing one enabled and one paused.](marketing/shots/ux-usage-live.en.light.png)
 

@@ -725,7 +725,7 @@ Automatic title generation is on by default. Turn it off in the GUI, with `auto_
 | --- | --- | --- | --- |
 | `auto_session_title` | `boolean` | `true` | Whether an AI session title is generated automatically; see [`session_title`](#session-title) |
 | `native_browser` | `boolean` | `false` | Run saved browser connections through the managed browser backend; without it a connection cannot connect and agents get no [browser tools](../reference/tools.md#browser-tools) |
-| `usage_export` | `boolean` | `false` | Send content-free usage buckets to destinations configured under Usage → External sync; while it is off those routes are not mounted at all |
+| `local_session_resume` | `boolean` | `true` | Continue existing local Claude Code and Codex sessions; managed under Settings → Sessions and checked on each new attachment |
 
 Any registered flag can be overridden here by id, with a boolean value. A flag that has its own control on a feature page is switched there; a flag that does not appears under **Settings → Developer → Experimental**, which lists server-reported flags by id.
 

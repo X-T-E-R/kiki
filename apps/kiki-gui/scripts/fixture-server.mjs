@@ -2235,10 +2235,7 @@ class FixtureServer {
           'tool-select': false,
           task_wait: true,
           search_worker: true,
-          // The export routes only exist when the flag is on, so a scenario that
-          // seeds `usageExport` turns it on and everything else reports the
-          // feature as unavailable rather than as an empty list.
-          usage_export: this.usageExportEnabled,
+          local_session_resume: true,
           // The import routes only exist when the flag is on.
           plugin_import: this.importEnabled === true,
           // Scenario-specific flags (e.g. native_ssh) layer on top.
