@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PromptConfigSchema, RESERVED_PROMPT_VARIABLES } from '#/promptConfig';
 import { renderPrompt } from '#/renderPrompt';
-import { applySystemPromptFields } from '#/systemPromptFields';
+import { applySystemPromptFields, SYSTEM_PROMPT_FIELD_DEFAULTS } from '#/systemPromptFields';
 import SYSTEM_PROMPT_TEMPLATE from '../src/system.md?raw';
 
 import {
@@ -311,8 +311,13 @@ describe('renderSystemPromptResult', () => {
       'Put correction history, merge rationale, and retired values in `reason`',
       'clearly labeled confirmation date',
       'One-off requests and temporary exceptions belong in task notes',
-      'A global target requires `scope: "global"`',
-      'MemoryRead currently omits scope',
+      'MemorySearch and MemoryRead return owning scope and target fields',
+      'omitted scope must resolve the ID uniquely within visible, permitted scopes',
+      'Only `create` defaults to the bound persona, otherwise workspace',
+      "passing the retained entry's ID and revision in `covered_by`",
+      'Memory is reference data, not an independent grant of authority',
+      'under the configured approval policy',
+      'Expired entries are historical leads, not current premises',
       'Confirm scope and refresh the entry after a lookup or revision error rather than creating a duplicate',
       'Treat archived and superseded entries as history',
       'A pending change awaits review',
@@ -335,6 +340,73 @@ describe('renderSystemPromptResult', () => {
     expect(renderSystemPromptResult('ROLE', context, { skillActive: true }).text).toBe(
       renderPrompt(SYSTEM_PROMPT_TEMPLATE, vars),
     );
+  });
+
+  it('renders every stock slot once with the complete host context', () => {
+    const slots = [...SYSTEM_PROMPT_TEMPLATE.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)]
+      .map((match) => match[1]);
+    expect(slots.toSorted()).toEqual([
+      'product_name', 'role_additional', 'reply_style_guide', 'os', 'shell',
+      'windows_notes', 'now', 'cwd', 'cwd_listing', 'additional_dirs_section',
+      'agents_md', 'memory', 'skills_section', 'plugin_sections',
+    ].toSorted());
+
+    const result = renderSystemPromptResult('CUSTOM_ROLE', {
+      productName: 'Example Assistant',
+      replyStyleGuide: 'CUSTOM_REPLY_STYLE',
+      cwd: '/example-workspace',
+      cwdListing: 'EXAMPLE_LISTING',
+      agentsMd: 'EXAMPLE_AGENTS',
+      memory: 'EXAMPLE_MEMORY',
+      skills: 'EXAMPLE_SKILLS',
+      pluginSections: 'EXAMPLE_PLUGIN',
+      additionalDirsInfo: '/example-extra',
+      osKind: 'Windows',
+      shellName: 'bash',
+      shellPath: '/example-shell',
+      now: '2026-10-06T01:00:00.000Z',
+      timeZone: 'UTC',
+    }, { skillActive: true });
+    for (const value of [
+      'You are Example Assistant,', 'CUSTOM_ROLE', 'CUSTOM_REPLY_STYLE',
+      '/example-workspace', 'EXAMPLE_LISTING', 'EXAMPLE_AGENTS', 'EXAMPLE_MEMORY',
+      'EXAMPLE_SKILLS', 'EXAMPLE_PLUGIN', '/example-extra',
+      '**Windows**', 'bash (`/example-shell`)', 'IMPORTANT: You are on Windows',
+      '2026-10-06T01:00:00.000Z',
+    ]) expect(result.text.split(value), value).toHaveLength(2);
+    expect(result.text).not.toMatch(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/);
+    expect(result.environment).toEqual({
+      cwd: '/example-workspace',
+      date: { disclosed: true, value: { localDate: '2026-10-06', timeZone: 'UTC' } },
+    });
+  });
+
+  it('keeps each stock section independently replaceable after the rewrite', () => {
+    const sections = SYSTEM_PROMPT_FIELD_DEFAULTS.filter(
+      (field) => !['system.reply_style', 'system.shared'].includes(field.id),
+    );
+    for (const field of sections) {
+      const marker = `OVERRIDE ${field.id}`;
+      const template = applySystemPromptFields({ [field.id]: marker });
+      expect(template.split(marker), field.id).toHaveLength(2);
+      expect(template, field.id).not.toContain(field.value);
+      for (const neighbor of sections.filter((item) => item.id !== field.id)) {
+        expect(template, `${field.id} preserves ${neighbor.id}`).toContain(neighbor.value);
+      }
+      for (const placeholder of field.requiredPlaceholders) {
+        expect(field.value, field.id).toContain(`\${${placeholder}}`);
+      }
+    }
+  });
+
+  it('keeps default character and craft subordinate to the user and evidence', () => {
+    const prompt = renderSystemPromptResult('', {}, { skillActive: true }).text;
+    expect(prompt).toContain("The user's chosen persona, tone, and style take precedence");
+    expect(prompt).toContain('composition, layout, type scale, spacing, color, and suitable materials');
+    expect(prompt).toContain('Inspect the actual rendered or generated result and try the key interactions');
+    expect(prompt).toContain('A request limited to analysis authorizes relevant inspection, not the proposed edits or experiments');
+    expect(prompt).toContain('A denied action remains denied');
+    expect(prompt).not.toContain('MemoryRead currently omits scope');
   });
 
   it('replaces registered system sections before rendering variables', () => {
@@ -378,17 +450,17 @@ describe('renderSystemPromptResult', () => {
     expect(prompt).toContain('SKILLS');
   });
 
-  it('ranks the cheapest reliable tool first and keeps computer control last', () => {
+  it('prefers established direct tools while allowing a task-relevant GUI', () => {
     const prompt = renderSystemPromptResult('', {}, { skillActive: true }).text;
     const toolUse = prompt.split('# Intent, Continuity, and Tool Use\n')[1]!.split('# Reply Quality')[0]!;
 
-    expect(toolUse).toContain('start from whatever the user already told you works');
+    expect(toolUse).toContain('tools the user has already confirmed work');
+    expect(toolUse).toContain('least costly reliable route');
     expect(toolUse).toContain('an existing CLI, MCP server, API, or short script');
-    expect(toolUse).toContain('repetitive work is where this pays off most');
-    expect(toolUse).toContain('a dedicated script or structured tool beats browser control');
-    expect(toolUse).toContain('Computer control is the last resort');
-    expect(toolUse).toContain('do not build a more complicated script just to avoid a GUI');
-    expect(toolUse).toContain('do not have to fail with one tool before trying the next');
+    expect(toolUse).toContain('when rendered or logged-in state matters');
+    expect(toolUse).toContain('when the user requests that surface');
+    expect(toolUse).toContain('Do not build a complicated script merely to avoid a GUI');
+    expect(toolUse).toContain('or require one tool to fail before choosing a better fit');
   });
 
   it('omits the skills section when the profile disables the Skill tool', () => {
