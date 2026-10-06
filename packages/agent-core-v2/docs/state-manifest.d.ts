@@ -2024,18 +2024,21 @@ export interface AgentStateSnapshot {
       readonly contentRevision: string;
       readonly bindingRevision?: string;
       readonly config?: /* CognitionContent — packages/agent-core-v2/src/kosong/model/model.ts */ {
-        overlay?: string | readonly string[];
-        steering?: string | readonly string[];
+        overlay?: string | readonly string[] | {
+          text: string;
+        };
+        steering?: string | readonly string[] | {
+          text: string;
+        };
         steeringOnTurn?: boolean;
         steeringOnInput?: boolean;
         steeringIntervalSteps?: number;
-        anchor?: string | readonly string[];
+        anchor?: string | readonly string[] | {
+          text: string;
+        };
         overlayMode?: 'replace' | 'persona' | 'append' | 'prepend' | 'wrap';
         anchorSteps?: number;
         anchorScope?: 'session' | 'turn';
-        steeringOnTurn?: boolean;
-        steeringOnInput?: boolean;
-        steeringIntervalSteps?: number;
       };
       readonly recipe?: {
         readonly installation_id: string;
@@ -5070,18 +5073,21 @@ export interface AgentStateSnapshot {
             readonly contentRevision: string;
             readonly bindingRevision?: string;
             readonly config?: /* CognitionContent — packages/agent-core-v2/src/kosong/model/model.ts */ {
-              overlay?: string | readonly string[];
-              steering?: string | readonly string[];
+              overlay?: string | readonly string[] | {
+                text: string;
+              };
+              steering?: string | readonly string[] | {
+                text: string;
+              };
               steeringOnTurn?: boolean;
               steeringOnInput?: boolean;
               steeringIntervalSteps?: number;
-              anchor?: string | readonly string[];
+              anchor?: string | readonly string[] | {
+                text: string;
+              };
               overlayMode?: 'replace' | 'persona' | 'append' | 'prepend' | 'wrap';
               anchorSteps?: number;
               anchorScope?: 'session' | 'turn';
-              steeringOnTurn?: boolean;
-              steeringOnInput?: boolean;
-              steeringIntervalSteps?: number;
             };
             readonly recipe?: {
               readonly installation_id: string;

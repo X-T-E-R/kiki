@@ -316,6 +316,7 @@ const CognitionPathSchema = z.string().min(1).refine((ref) => {
   return true;
 }, { message: 'Cognition paths must be non-empty paths relative to and inside the Kiki home directory' });
 const CognitionPathRefSchema = z.union([
+  z.object({ text: z.string().max(2_097_152) }).strict(),
   CognitionPathSchema,
   z.array(CognitionPathSchema).min(1).readonly(),
 ]);
@@ -472,7 +473,7 @@ export const modelsToToml = (value: unknown, rawSnake: unknown): unknown => {
       } else if (key === 'overrides' && isPlainObject(field)) {
         merged['overrides'] = modelOverridesToToml(field, merged['overrides']);
       } else if (key === 'cognition' && isPlainObject(field)) {
-        merged['cognition'] = cognitionToToml(field, merged['cognition']);
+        merged['cognition'] = cognitionToToml(field);
       } else if (key === 'requestIdentity' && isPlainObject(field)) {
         merged['request_identity'] = deepCamelToSnake(field);
       } else if (key === 'images' && isPlainObject(field)) {
@@ -513,14 +514,13 @@ export function cognitionFromToml(value: Record<string, unknown>): Record<string
 
 export function cognitionToToml(
   cognition: Record<string, unknown>,
-  rawSnake?: unknown,
 ): Record<string, unknown> {
-  const out = cloneRecord(rawSnake);
+  const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(cognition)) {
     if ((key === 'overlay' || key === 'steering' || key === 'anchor') && Array.isArray(value)) {
       out[camelToSnake(key)] = [...value];
     } else if ((key === 'main' || key === 'independent') && isPlainObject(value)) {
-      out[key] = cognitionToToml(value, out[key]);
+      out[key] = cognitionToToml(value);
     } else {
       setDefined(out, camelToSnake(key), value);
     }

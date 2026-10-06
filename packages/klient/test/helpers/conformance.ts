@@ -657,6 +657,23 @@ export function defineKlientConformance(
       }
     });
 
+    it('native model prompt bodies round-trip through the public facade and reject stale or missing revisions', async () => {
+      const kosong = target.klient.global.kosong;
+      const id = '__prompt_body_conformance__';
+      await kosong.addProvider({ id, model: 'prompt-body-model', protocol: 'openai', baseUrl: 'http://127.0.0.1:1', maxContextSize: 8192, auth: { method: 'api-key', apiKey: 'test-key' } });
+      try {
+        const original = await kosong.readModel(id);
+        const text = '  multiline\n完整正文\n';
+        const saved = await kosong.updateModel(id, { base_revision: original.revision, cognition: { overlay: { text }, main: 'same', independent: 'off' }, prompt_overrides: { fields: { 'system.shared': 'shared\n正文' } } });
+        expect(saved.cognition_bodies?.revision).toBe(saved.revision);
+        expect(saved.cognition_bodies?.branches.main.slots.overlay).toMatchObject({ source: 'inline', text, writable: true });
+        expect((await kosong.readModel(id)).cognition?.overlay).toEqual({ text });
+        await expect(kosong.updateModel(id, { base_revision: original.revision, cognition: { overlay: { text: 'stale' } } })).rejects.toThrow();
+        await expect(kosong.updateModel(id, { cognition: { overlay: { text: 'missing CAS' } } })).rejects.toThrow();
+        expect((await kosong.readModel(id)).prompt_overrides?.fields?.['system.shared']).toBe('shared\n正文');
+      } finally { await kosong.removeProvider(id); }
+    });
+
     it('flags / plugins / auth read models respond', async () => {
       expect(Array.isArray(await target.klient.global.flags.list())).toBe(true);
       expect(Array.isArray(await target.klient.global.flags.enabledIds())).toBe(true);

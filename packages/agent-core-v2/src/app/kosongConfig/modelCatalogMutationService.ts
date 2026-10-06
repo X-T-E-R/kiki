@@ -61,6 +61,8 @@ import {
 } from './modelCatalogMutation';
 
 import { IRecipeService } from '#/app/recipes/recipes';
+import { IModelPromptReader } from './modelPromptReader';
+import { modelPromptBodies } from './modelPromptBodies';
 
 interface ParsedLike<T> {
   parse(value: unknown): T;
@@ -540,6 +542,7 @@ export class ModelCatalogMutationService
     @IConfigService private readonly config: IConfigService,
     @IModelOAuthTokens private readonly oauth: IModelOAuthTokens,
     @IRecipeService private readonly recipes?: IRecipeService,
+    @IModelPromptReader private readonly promptReader?: IModelPromptReader,
   ) {
     super();
   }
@@ -563,7 +566,9 @@ export class ModelCatalogMutationService
 
   async readModel(id: string): Promise<ModelEntity> {
     await this.config.ready;
-    const saved = this.currentModelEntity(id);
+    const entity = this.currentModelEntity(id);
+    const cognition = structuredClone(effectiveModelsOf(this.config)[id]?.cognition);
+    const saved = { ...entity, cognition_bodies: await modelPromptBodies(cognition, entity.revision, this.promptReader) };
     if (saved.recipe === undefined) return saved;
     try {
       if (this.recipes === undefined) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe service is unavailable');
@@ -667,12 +672,12 @@ export class ModelCatalogMutationService
       const currentRevision = revisionOf(record);
       const local = models[id] ?? {};
       const next = applyModelPatch(local, request);
-      if (deepEqual(next, local)) return this.readModel(id);
       if (request.base_revision !== undefined && request.base_revision !== currentRevision) {
         throw conflictError('model', id, request.base_revision, currentRevision, {
           ...this.currentModelEntity(id),
         });
       }
+      if (deepEqual(next, local)) return this.readModel(id);
       if (typeof request.recipe === 'string') {
         if (this.recipes === undefined) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe service is unavailable');
         await this.recipes.resolve(request.recipe);

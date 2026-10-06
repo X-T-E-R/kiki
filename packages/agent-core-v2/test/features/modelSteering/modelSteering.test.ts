@@ -65,6 +65,25 @@ describe('AgentModelSteeringService', () => {
     await agent.get(IAgentProfileService).bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
   }
 
+  it('preserves interval-only cadence when a legacy binding reads a native multiline body', async () => {
+    ctx = createTestAgent(homeDirServices(homeDir));
+    const text = 'CLASSIFY\n完整正文\n';
+    await bindModel(true, { steering: { text }, steeringOnTurn: false, steeringOnInput: false, steeringIntervalSteps: 2 });
+    const profile = ctx.get(IAgentProfileService);
+    const binding = await profile.getCognitionBinding();
+    profile.getCognitionBinding = async () => ({ ...binding, slots: undefined });
+    ctx.get(IAgentModelSteeringService);
+    const loop = ctx.get(IAgentLoopService);
+    const memory = ctx.get(IAgentContextMemoryService);
+    for (let step = 1; step <= 4; step++) {
+      await runWillBeginStepHooks(loop, step === 1);
+      expect(steeringMessages(memory)).toHaveLength(Math.floor(step / 2));
+    }
+    expect(steeringMessages(memory).map(message => message.content)).toEqual([
+      [{ type: 'text', text }], [{ type: 'text', text }],
+    ]);
+  });
+
   it.each([true, false])('consumes accepted Send now inputs once at the next request (steering=%s)', async (configured) => {
     const scripted = createScriptedGenerate();
     const started = createControlledPromise<void>();

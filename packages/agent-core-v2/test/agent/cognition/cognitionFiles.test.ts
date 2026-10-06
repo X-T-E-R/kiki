@@ -9,6 +9,8 @@ import {
   applyOverlay,
   applyOverlayAppend,
   readCognitionSlot,
+  readCognitionFiles,
+  readCognitionContent,
   resolveCognitionPath,
 } from '#/agent/cognition/cognitionFiles';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
@@ -53,6 +55,19 @@ describe('cognition file paths', () => {
     await expect(
       readCognitionSlot(fs, homeDir, 'steering', ['cognition/missing.md'], pathClass),
     ).rejects.toMatchObject({ reason: 'missing', slot: 'steering' });
+  });
+
+  it('reads complete author files without trimming and bounds the editor read', async () => {
+    const text = '  author\n完整正文\n';
+    await writeFile(join(homeDir, 'author.md'), text);
+    expect(await readCognitionFiles(fs, homeDir, 'overlay', ['author.md'], pathClass, 1024)).toEqual([{ path: 'author.md', text }]);
+    await expect(readCognitionFiles(fs, homeDir, 'overlay', ['author.md'], pathClass, 4)).rejects.toThrow('editor limit');
+    await expect(readCognitionContent(fs, homeDir, 'overlay', { text }, pathClass)).resolves.toBe(text);
+    await expect(readCognitionContent(fs, homeDir, 'overlay', { text: '' }, pathClass)).resolves.toBeUndefined();
+    class EscapingFs extends HostFileSystem {
+      override async realpath(): Promise<string> { return join(homeDir, '../outside.md'); }
+    }
+    await expect(readCognitionFiles(new EscapingFs(), homeDir, 'overlay', ['author.md'], pathClass, 1024)).rejects.toMatchObject({ reason: 'escape' });
   });
 
   it('appends overlay after the profile prompt', () => {

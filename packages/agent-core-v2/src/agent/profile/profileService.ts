@@ -121,7 +121,7 @@ import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMd
 import {
   applyOverlay,
   CognitionFileError,
-  cognitionPathRefs,
+  hasCognitionContent,
   loadCognitionSlots,
 } from '#/agent/cognition/cognitionFiles';
 import { selectCognitionConfig, type CognitionBinding } from '#/agent/cognition/cognitionConfig';
@@ -1871,7 +1871,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private declaresCognitionOverlay(modelAlias: string | undefined): boolean {
     if (modelAlias === undefined || modelAlias.length === 0) return false;
     const cognition = selectCognitionConfig(this.models.get(modelAlias)?.cognition, this.delegationPosition);
-    return [cognition?.overlay, cognition?.steering, cognition?.anchor].some((refs) => cognitionPathRefs(refs).length > 0);
+    return [cognition?.overlay, cognition?.steering, cognition?.anchor].some(hasCognitionContent);
   }
 
   private declaresModelProfilePrompt(modelAlias: string | undefined, profile: Pick<ResolvedAgentProfile, 'modelPromptLayers' | 'modelProfiles' | 'sourcePath'> | undefined = this.activeProfile): boolean {

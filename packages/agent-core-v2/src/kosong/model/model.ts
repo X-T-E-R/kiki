@@ -48,14 +48,15 @@ export interface ModelOverride extends ModelParameterDefaults {
 }
 
 export type CognitionPathRef = string | readonly string[];
+export type CognitionSlotContent = CognitionPathRef | { text: string };
 
 export interface CognitionContent {
-  overlay?: CognitionPathRef;
-  steering?: CognitionPathRef;
+  overlay?: CognitionSlotContent;
+  steering?: CognitionSlotContent;
   steeringOnTurn?: boolean;
   steeringOnInput?: boolean;
   steeringIntervalSteps?: number;
-  anchor?: CognitionPathRef;
+  anchor?: CognitionSlotContent;
   overlayMode?: 'append' | 'prepend' | 'wrap' | 'persona' | 'replace';
   anchorSteps?: number;
   anchorScope?: 'session' | 'turn';

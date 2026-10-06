@@ -137,6 +137,72 @@ describe('per-model cognition overlay', () => {
     await agent.get(IAgentLLMRequesterService).request({ tools: [] }); expect(observed?.options?.sampling?.temperature).toBe(0.1);
   });
 
+  it('freezes native multiline bodies through actual requests and cold recovery until explicit rebuild', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    let body = 'NATIVE OLD\n完整正文\n';
+    let observed = '';
+    const create = () => {
+      ctx = createTestAgent({ persistence, autoConfigure: false }, homeDirServices(homeDir), llmGenerateServices(async (_provider, system) => {
+        observed = system;
+        return { id: 'response', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
+      }));
+      ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, [MOCK_MODEL]: { ...ctx.kimiConfig.models![MOCK_MODEL]!, cognition: { overlay: { text: body }, steering: { text: `cue:${body}` }, anchor: { text: `anchor:${body}` }, anchorSteps: 1 }, promptOverrides: { fields: { 'system.shared': `shared:${body}` } } } } };
+      const role = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, systemPrompt: () => 'ROLE BODY' });
+      vi.spyOn(ctx.get(ISessionAgentProfileCatalog), 'get').mockImplementation((name) => name === role.name ? role : undefined);
+      vi.spyOn(ctx.get(ISessionAgentProfileCatalog), 'getDefault').mockReturnValue(role);
+      return ctx;
+    };
+    let agent = create(); let profile = agent.get(IAgentProfileService);
+    await profile.bind({ resolvedProfile: normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, systemPrompt: () => 'ROLE BODY' }), model: MOCK_MODEL, personaSnapshot: { revision: 'persona-r1', definition: { id: 'sample', name: 'Sample', description: 'PERSONA BODY' } }, roomPrompt: 'ROOM BODY' });
+    const old = await profile.getCognitionBinding();
+    expect(old.slots).toEqual({ overlay: body, steering: `cue:${body}`, anchor: `anchor:${body}` });
+    const prompt = profile.getSystemPrompt();
+    expect(prompt).toContain('ROLE BODY'); expect(prompt).toContain('PERSONA BODY'); expect(prompt).toContain('ROOM BODY'); expect(prompt).toContain(body);
+    await agent.get(IAgentLLMRequesterService).request({ tools: [] });
+    expect(observed).toContain(body); expect(observed).toContain(`shared:${body}`);
+    expect(await agent.get(IAgentCognitionAnchorService).project({ sourceType: 'turn', turnId: 0, step: 1, hasExplicitSystemPrompt: false })).toBe(`anchor:${body}`);
+    agent.get(IAgentModelSteeringService);
+    await runWillBeginStepHooks(agent.get(IAgentLoopService), true);
+    expect(agent.get(IAgentContextMemoryService).get().some((message) => message.content.some((part) => part.type === 'text' && part.text === `cue:${body}`))).toBe(true);
+    await agent.get(IWireService).flush(); await agent.dispose();
+    body = 'NATIVE NEW\n新的正文\n';
+    agent = create(); await agent.restorePersisted(); profile = agent.get(IAgentProfileService);
+    await profile.syncBindingMetadata();
+    expect(profile.getSystemPrompt()).toBe(prompt);
+    expect(await profile.getCognitionBinding()).toEqual(old);
+    expect(await profile.preparePromptConfiguration()).toBe(false);
+    await profile.rebuildPromptContext();
+    expect((await profile.getCognitionBinding()).slots?.overlay).toBe(body);
+    expect(profile.getSystemPrompt()).toContain('ROLE BODY'); expect(profile.getSystemPrompt()).toContain('PERSONA BODY'); expect(profile.getSystemPrompt()).toContain('ROOM BODY');
+  });
+
+  it('keeps explicit empty native slots without inheriting common or replacing the role with an empty anchor', async () => {
+    const agent = createBoundAgent({ overlay: { text: 'COMMON BODY' }, steering: { text: 'COMMON CUE' }, anchor: { text: 'COMMON ANCHOR' }, main: { overlay: { text: '' }, steering: { text: '' }, anchor: { text: '' } } });
+    const profile = agent.get(IAgentProfileService);
+    await profile.bind({ resolvedProfile: normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, systemPrompt: () => 'ROLE BODY' }), model: MOCK_MODEL });
+    const binding = await profile.getCognitionBinding();
+    expect(binding.config?.anchor).toEqual({ text: '' });
+    expect(binding.slots).toEqual({ overlay: undefined, steering: undefined, anchor: undefined });
+    expect(profile.getSystemPrompt()).toContain('ROLE BODY');
+    expect(profile.getSystemPrompt()).not.toContain('COMMON BODY');
+    expect(await agent.get(IAgentCognitionAnchorService).project({ sourceType: 'turn', turnId: 0, step: 1, hasExplicitSystemPrompt: false })).toBeUndefined();
+    agent.get(IAgentModelSteeringService);
+    await runWillBeginStepHooks(agent.get(IAgentLoopService), true);
+    expect(agent.get(IAgentContextMemoryService).get().some((message) => message.role === 'user' && message.content.some((part) => part.type === 'text' && part.text === ''))).toBe(false);
+  });
+
+  it.each(['main', 'sub', 'independent'] as const)('selects native body and provenance for %s without per-slot inheritance', async (position) => {
+    const agent = createBoundAgent({ overlay: { text: 'COMMON BODY' }, steering: { text: 'COMMON CUE' }, main: { overlay: { text: 'MAIN BODY' } }, independent: 'off' });
+    const profile = agent.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL, delegationPosition: position });
+    const binding = await profile.getCognitionBinding();
+    expect(binding.slots?.overlay).toBe(position === 'main' ? 'MAIN BODY' : position === 'sub' ? 'COMMON BODY' : undefined);
+    expect(binding.slots?.steering).toBe(position === 'sub' ? 'COMMON CUE' : undefined);
+    const diagnostics = await profile.getPromptDiagnostics();
+    expect(diagnostics.channels.find((channel) => channel.id === 'cognition.overlay')).toMatchObject({ selection: position === 'main' ? 'main' : position === 'sub' ? 'common' : 'off', state: position === 'independent' ? 'inactive' : 'effective' });
+    if (position !== 'independent') expect(diagnostics.channels.find((channel) => channel.id === 'cognition.overlay')?.sources[0]).toMatchObject({ surface: 'model-cognition', kind: 'inline' });
+  });
+
   it.each(['modified', 'deleted'] as const)('cold-recovers frozen prompt inputs after their files are %s', async (change) => {
     const persistence = new InMemoryWireRecordPersistence();
     await writeFile(join(homeDir, 'cognition/anchor.md'), 'OLD ANCHOR');

@@ -288,7 +288,7 @@ export interface GlobalKosongFacade {
   readModel(id: string): Promise<ModelEntity>;
   /** Create one local model; `id` defaults to the `provider_id/remote_id` naming suggestion. */
   createModel(input: CreateModelRequest): Promise<ModelEntity>;
-  /** Sparse local-model patch — unlisted fields, including unknown ones, are preserved. */
+  /** Sparse local-model patch; unlisted fields are preserved. Writing or clearing cognition or prompt_overrides requires base_revision from readModel. */
   updateModel(id: string, patch: PatchModelRequest): Promise<ModelEntity>;
   deleteModel(id: string, options?: { readonly baseRevision?: string }): Promise<void>;
   /** One connection plus its patch revision and stored API key; environment values are not returned. */
