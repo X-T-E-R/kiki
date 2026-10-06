@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   CONTENT_PAGE_BYTES,
   CONTENT_PREVIEW_BYTES,
@@ -9,8 +8,8 @@ import {
   type ContentSource,
   type ContentWindow,
 } from '@kiki/transcript';
-
-const revisions = new WeakMap<object, string>();
+import { projectInlineToolMedia } from '../../services/inlineMedia';
+import { contentRevision } from './contentRevision';
 const fieldRevisions = new WeakMap<object, Map<string, string>>();
 export const ENTITY_BYTES = 64 * 1024;
 export const TIMELINE_ENTITY_BYTES = 128 * 1024;
@@ -27,32 +26,7 @@ export class ContentChangedError extends Error {
   constructor() { super('Content changed; reload its preview before continuing.'); }
 }
 
-export function contentRevision(value: unknown): string {
-  const existing = value !== null && typeof value === 'object' ? revisions.get(value) : undefined;
-  if (existing !== undefined) return existing;
-  const hash = createHash('sha256');
-  if (typeof value === 'string') {
-    hash.update(`string:${value.length}:`);
-    for (let offset = 0; offset < value.length;) {
-      let end = Math.min(value.length, offset + 4096);
-      if (end < value.length && /[\uD800-\uDBFF]/u.test(value[end - 1]!)) end -= 1;
-      hash.update(value.slice(offset, end));
-      offset = end;
-    }
-  } else if (value !== null && typeof value === 'object') {
-    if (Array.isArray(value)) {
-      hash.update(`array:${value.length}:`);
-      for (const child of value) hash.update(contentRevision(child));
-    } else {
-      const entries = Object.entries(value);
-      hash.update(`object:${entries.length}:`);
-      for (const [key, child] of entries) { hash.update(contentRevision(key)); hash.update(contentRevision(child)); }
-    }
-  } else hash.update(`${typeof value}:${String(value)};`);
-  const revision = hash.digest('hex');
-  if (value !== null && typeof value === 'object') revisions.set(value, revision);
-  return revision;
-}
+export { contentRevision } from './contentRevision';
 
 function selectContent(entity: object, path: Path): unknown {
   let selected: unknown = entity;
@@ -84,9 +58,61 @@ function bindCuts(entity: object, source: ContentSource, cuts: readonly Cut[]): 
   return cuts.map((cut) => ({ ...cut, source, revision: fieldRevision(entity, cut.path) }));
 }
 
-export function boundedEntity<T extends object>(entity: T, source: ContentSource, maxBytes = source.kind === 'turn' || source.kind === 'frame' ? TIMELINE_ENTITY_BYTES : ENTITY_BYTES): T & ContentWindow {
-  const result = projectAt(entity, [], source, entity, maxBytes);
+export function boundedEntity<T extends object>(entity: T, source: ContentSource, maxBytes = source.kind === 'turn' || source.kind === 'frame' ? TIMELINE_ENTITY_BYTES : ENTITY_BYTES, agentId?: string): T & ContentWindow {
+  if (source.kind === 'todo') {
+    if ((entity as ContentWindow).contentRefs !== undefined) return entity;
+    if (maxBytes >= ENTITY_BYTES) return boundedTodo(entity, source, maxBytes);
+  }
+  const result = projectAt(entity, [], source, entity, maxBytes, agentId);
   return { ...(result.value as T), contentRefs: result.refs.length === 0 ? undefined : result.refs };
+}
+
+const NOTE_FIELDS = new Set(['goal', 'directives', 'decided', 'rejected', 'evidence', 'files', 'next', 'open']);
+
+function boundedTodo<T extends object>(entity: T, source: ContentSource, maxBytes: number): T & ContentWindow {
+  const body = { ...entity } as Record<string, unknown>;
+  const inline: Record<string, unknown> = {};
+  let available = maxBytes - 4096;
+  const notes = body['notes'];
+  if (notes !== null && typeof notes === 'object' && !Array.isArray(notes)) {
+    const entries = Object.entries(notes);
+    let characters = 0;
+    const legal = entries.length <= NOTE_FIELDS.size && entries.every(([key, value]) => {
+      if (!NOTE_FIELDS.has(key) || typeof value !== 'string' || value.length > 1500) return false;
+      characters += value.length;
+      return characters <= 7500;
+    });
+    if (legal) {
+      const bytes = jsonBytes({ notes });
+      if (bytes <= available) {
+        inline['notes'] = notes;
+        delete body['notes'];
+        available -= bytes;
+      }
+    }
+  }
+  const items = body['items'];
+  if (Array.isArray(items) && completeTodoItemsFit(items, available)) {
+    inline['items'] = items;
+    delete body['items'];
+    available -= jsonBytes({ items });
+  }
+  const result = projectAt(body, [], source, entity, available + 4096);
+  return { ...(result.value as T), ...inline, contentRefs: result.refs.length === 0 ? undefined : result.refs };
+}
+
+function completeTodoItemsFit(items: readonly unknown[], maxBytes: number): boolean {
+  let bytes = 12;
+  for (const value of items) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+    const item = value as Record<string, unknown>;
+    if (typeof item['title'] !== 'string' || item['title'].length > maxBytes - bytes ||
+      !['pending', 'in_progress', 'done'].includes(item['status'] as string) ||
+      Object.keys(item).some((key) => key !== 'title' && key !== 'status')) return false;
+    bytes += jsonBytes(item) + 1;
+    if (bytes > maxBytes) return false;
+  }
+  return true;
 }
 
 export function boundedListPreview<T extends object>(entity: T, maxBytes = 2048): T {
@@ -101,13 +127,14 @@ export function boundedListPreview<T extends object>(entity: T, maxBytes = 2048)
   }
 }
 
-function projectAt(value: unknown, path: Path, source: ContentSource, entity: object, maxBytes: number): { value: unknown; refs: ContentRef[] } {
+function projectAt(value: unknown, path: Path, source: ContentSource, entity: object, maxBytes: number, agentId?: string): { value: unknown; refs: ContentRef[] } {
+  const media = agentId === undefined ? undefined : { source, entity, agentId };
   let textBytes = source.kind === 'turn' || source.kind === 'frame' ? 16 * 1024 : CONTENT_PREVIEW_BYTES;
   let arrayWindow = ARRAY_WINDOW;
   let structureWindow = 8;
   for (;;) {
     const cuts: Cut[] = [];
-    const projected = projectValue(value, path, cuts, textBytes, arrayWindow, 0, { nodes: 128 }, structureWindow);
+    const projected = projectValue(value, path, cuts, textBytes, arrayWindow, 0, { nodes: 128 }, structureWindow, media);
     const refs = bindCuts(entity, source, cuts);
     if (jsonBytes({ value: projected, refs }) <= maxBytes) return { value: projected, refs };
     if (textBytes > CONTENT_PREVIEW_BYTES) { textBytes = Math.floor(textBytes / 2); continue; }
@@ -123,8 +150,12 @@ function isStructurePath(path: Path): boolean {
     path.length === 3 && path[0] === 'steps' && typeof path[1] === 'number' && path[2] === 'frames';
 }
 
-function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number, arrayWindow: number, depth: number, budget: Budget, structureWindow = 16): unknown {
+function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number, arrayWindow: number, depth: number, budget: Budget, structureWindow = 16, media?: { source: ContentSource; entity: object; agentId: string }): unknown {
   budget.nodes -= 1;
+  if (media !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    const projected = projectInlineToolMedia(value, path, media.source, media.entity, media.agentId);
+    if (projected !== undefined) return projected;
+  }
   if (typeof value === 'string') {
     const key = path.at(-1);
     const prose = (path.length === 1 && (key === 'prompt' || key === 'text')) ||
@@ -140,7 +171,7 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
     const structure = isStructurePath(path);
     const count = structure ? Math.min(value.length, structureWindow)
       : depth > 12 || budget.nodes < 0 ? 0 : Math.min(value.length, arrayWindow);
-    const projected = value.slice(0, count).map((child, index) => projectValue(child, [...path, index], cuts, textBytes, arrayWindow, depth + 1, structure ? { nodes: 128 } : budget, structureWindow));
+    const projected = value.slice(0, count).map((child, index) => projectValue(child, [...path, index], cuts, textBytes, arrayWindow, depth + 1, structure ? { nodes: 128 } : budget, structureWindow, media));
     if (count < value.length) cuts.push({ path, kind: 'array', offset: count, total: value.length });
     return projected;
   }
@@ -159,11 +190,11 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
         return [key, Array.isArray(child) ? [] : {}];
       }
     }
-    return [key, projectValue(child, childPath, cuts, textBytes, arrayWindow, depth + 1, OPAQUE_FIELDS.has(key) ? { nodes: 64 } : budget, structureWindow)];
+    return [key, projectValue(child, childPath, cuts, textBytes, arrayWindow, depth + 1, OPAQUE_FIELDS.has(key) ? { nodes: 64 } : budget, structureWindow, media)];
   }));
 }
 
-export function readContentSegment(entity: object, ref: ContentRef, range = false): ContentSegment {
+export function readContentSegment(entity: object, ref: ContentRef, range = false, agentId?: string, pageBytes = CONTENT_PAGE_BYTES): ContentSegment {
   const selected = selectContent(entity, ref.path);
   if (range && ref.kind === 'text' && typeof selected === 'string' && ref.offset > 0 && /[\uD800-\uDBFF]/u.test(selected[ref.offset - 1]!)) ref = { ...ref, offset: ref.offset - 1 };
   if (fieldRevision(entity, ref.path) !== ref.revision) throw new ContentChangedError();
@@ -174,15 +205,15 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
     if (typeof selected !== 'string' || selected.length !== ref.total || ref.offset >= selected.length || (ref.offset > 0 && /[\uD800-\uDBFF]/u.test(selected[ref.offset - 1]!))) throw new ContentChangedError();
     let end = Math.min(selected.length, ref.offset + 4097);
     if (end < selected.length && /[\uD800-\uDBFF]/u.test(selected[end - 1]!)) end -= 1;
-    value = range ? jsonTextPrefix(selected.slice(ref.offset, end), 0, CONTENT_PAGE_BYTES / 2) : jsonTextPrefix(selected, ref.offset, CONTENT_PAGE_BYTES / 2);
+    value = range ? jsonTextPrefix(selected.slice(ref.offset, end), 0, pageBytes / 2) : jsonTextPrefix(selected, ref.offset, pageBytes / 2);
     offset = ref.offset + (value as string).length;
   } else if (ref.kind === 'array') {
     if (!Array.isArray(selected) || selected.length !== ref.total || ref.offset >= selected.length) throw new ContentChangedError();
     const values: unknown[] = [];
     offset = ref.offset;
     while (offset < selected.length && values.length < 20) {
-      const child = projectAt(selected[offset], [...ref.path, offset], ref.source, entity, ENTITY_BYTES);
-      if (values.length > 0 && jsonBytes({ values: [...values, child.value], refs: [...refs, ...child.refs] }) > CONTENT_PAGE_BYTES / 2) break;
+      const child = projectAt(selected[offset], [...ref.path, offset], ref.source, entity, ENTITY_BYTES, agentId);
+      if (values.length > 0 && jsonBytes({ values: [...values, child.value], refs: [...refs, ...child.refs] }) > pageBytes / 2) break;
       values.push(child.value);
       refs.push(...child.refs);
       offset += 1;
@@ -196,8 +227,8 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
     offset = ref.offset;
     while (offset < entries.length && offset - ref.offset < OBJECT_WINDOW) {
       const [key, child] = entries[offset]!;
-      const projected = projectAt(child, [...ref.path, key], ref.source, entity, ENTITY_BYTES);
-      if (offset > ref.offset && jsonBytes({ values: { ...values, [key]: projected.value }, refs: [...refs, ...projected.refs] }) > CONTENT_PAGE_BYTES / 2) break;
+      const projected = projectAt(child, [...ref.path, key], ref.source, entity, ENTITY_BYTES, agentId);
+      if (offset > ref.offset && jsonBytes({ values: { ...values, [key]: projected.value }, refs: [...refs, ...projected.refs] }) > pageBytes / 2) break;
       values[key] = projected.value;
       refs.push(...projected.refs);
       offset += 1;

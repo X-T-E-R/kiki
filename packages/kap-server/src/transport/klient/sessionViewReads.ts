@@ -19,12 +19,15 @@ import { boundedEntity, readContentSegment } from './boundedContent';
 import { boundedAttachment, boundedTranscriptOps, boundedTranscriptResponse, boundedTranscriptSnapshot, boundedTranscriptPageSource, itemKey, TRANSCRIPT_WINDOW_BYTES } from './boundedTranscript';
 import { jsonBytes, type ContentRef, type ContentSegment, type TranscriptItem } from '@kiki/transcript';
 
+const DETAIL_PAGE_BYTES = 48 * 1024;
+const DETAIL_ENTITY_BYTES = 2048;
+
 export async function readSessionViewTranscriptContent(
   service: TranscriptService, sessionId: string,
   input: { readonly agentId: string; readonly ref: ContentRef; readonly range?: boolean; readonly signal?: AbortSignal },
 ): Promise<ContentSegment | undefined> {
   const entity = await readSessionViewCanonicalEntity(service, sessionId, input);
-  return entity === undefined ? undefined : readContentSegment(entity, input.ref, input.range);
+  return entity === undefined ? undefined : readContentSegment(entity, input.ref, input.range, input.agentId, DETAIL_PAGE_BYTES);
 }
 
 export async function readSessionViewCanonicalEntity(
@@ -70,7 +73,7 @@ export async function readSessionViewTranscriptPage(
   ...args: Parameters<typeof readSessionViewTranscriptPageRaw>
 ): Promise<TranscriptResponse | undefined> {
   const response = await readSessionViewTranscriptPageRaw(...args);
-  return response === undefined ? undefined : boundedTranscriptResponse(response, args[2].afterTurn !== undefined || args[2].afterItem !== undefined ? 'head' : 'tail');
+  return response === undefined ? undefined : boundedTranscriptResponse(response, args[2].afterTurn !== undefined || args[2].afterItem !== undefined ? 'head' : 'tail', 64 * 1024);
 }
 
 export async function readSessionViewTranscriptDetail(
@@ -80,7 +83,7 @@ export async function readSessionViewTranscriptDetail(
   if (detail === undefined) return undefined;
   if (detail.kind === 'tool') {
     const lookup = detail.lookup;
-    return lookup.status !== 'found' ? detail : { ...detail, lookup: { ...lookup, frame: boundedEntity(lookup.frame, { kind: 'frame', id: lookup.frame.frameId, turnId: lookup.turnId, stepId: lookup.stepId }) } };
+    return lookup.status !== 'found' ? detail : { ...detail, lookup: { ...lookup, frame: boundedEntity(lookup.frame, { kind: 'frame', id: lookup.frame.frameId, turnId: lookup.turnId, stepId: lookup.stepId }, undefined, detail.agent_id) } };
   }
   if (detail.kind === 'task') return { ...detail, task: boundedEntity(detail.task, { kind: 'task', id: detail.task.taskId }) };
   if (detail.kind === 'attachment') return { ...detail, attachment: boundedAttachment(detail.attachment, detail.agent_id) };
@@ -319,13 +322,14 @@ export async function readSessionViewTranscriptDetails(
   const start = after === undefined ? 0 : ordered.findIndex((entry) => detailEntityId(input.kind, entry) > after);
   const offset = start < 0 ? ordered.length : start;
   const items: TranscriptCollectionEntity[] = [];
+  const pageBytes = input.kind === 'todo' ? TRANSCRIPT_WINDOW_BYTES : DETAIL_PAGE_BYTES;
   let bytes = 2048;
   for (const entity of ordered.slice(offset, offset + limit)) {
     input.signal?.throwIfAborted();
-    const projected = input.kind === 'attachment' ? boundedAttachment(entity as TranscriptAttachment, input.agentId)
-      : boundedEntity(entity, { kind: input.kind, id: detailEntityId(input.kind, entity) });
+    const projected = input.kind === 'attachment' ? boundedAttachment(entity as TranscriptAttachment, input.agentId, DETAIL_ENTITY_BYTES)
+      : boundedEntity(entity, { kind: input.kind, id: detailEntityId(input.kind, entity) }, input.kind === 'todo' ? undefined : DETAIL_ENTITY_BYTES);
     const size = jsonBytes(projected) + 1;
-    if (items.length > 0 && bytes + size > TRANSCRIPT_WINDOW_BYTES) break;
+    if (items.length > 0 && bytes + size > pageBytes) break;
     items.push(projected);
     bytes += size;
   }
@@ -370,11 +374,12 @@ export async function readSessionViewTranscriptCatchUp(
   let complete = catchup.complete;
   if (transcript === undefined) complete = false;
   else for (const batch of catchup.batches) {
-    const ops = boundedTranscriptOps(filterOpsForGrade(grade, batch.ops), transcript);
+    const ops = boundedTranscriptOps(filterOpsForGrade(grade, batch.ops), transcript, DETAIL_ENTITY_BYTES);
     const bounded = { seq: batch.seq, ops };
     const size = jsonBytes(bounded) + 1;
-    if (batches.length > 0 && bytes + size > TRANSCRIPT_WINDOW_BYTES) {
-      hasMore = true;
+    if (bytes + size > DETAIL_PAGE_BYTES) {
+      if (batches.length === 0) complete = false;
+      else hasMore = true;
       break;
     }
     if (ops.length > 0) { batches.push(bounded as TranscriptOpsCatchupResponse['batches'][number]); bytes += size; }
@@ -397,10 +402,11 @@ function paginateTurns(items: readonly TranscriptItem[], query: { beforeTurn?: s
   if (cursor === undefined) return paginateCanonicalTurns(items, query);
   const index = items.findIndex((item) => itemKey(item) === cursor);
   if (index < 0) throw new TranscriptDetailCursorError();
+  const pageSize = Math.max(1, Math.min(100, Math.floor(query.pageSize)));
   if (query.afterItem !== undefined) {
-    const end = Math.min(items.length, index + 101);
+    const end = Math.min(items.length, index + pageSize + 1);
     return { items: items.slice(index + 1, end), hasMore: end < items.length };
   }
-  const start = Math.max(0, index - 100);
+  const start = Math.max(0, index - pageSize);
   return { items: items.slice(start, index), hasMore: start > 0 };
 }

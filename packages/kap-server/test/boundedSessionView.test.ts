@@ -23,6 +23,12 @@ describe('bounded session-view canonical reads', () => {
     const older: AgentTranscriptSnapshot = { ...empty(), items: [{ kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, steps: [{ kind: 'step', stepId: 's-old', turnId: 't0', ordinal: 0, state: 'completed', frames: [frame] }] }] };
     const service = canonicalService({ ...empty(), hasMoreOlder: true });
     service.readColdSnapshot = async () => older;
+    service.readCanonicalEntity = async (_sessionId, agentId, source) => {
+      if (agentId !== 'main') return undefined;
+      const turn = older.items.find((item) => item.kind === 'turn' && item.turnId === (source.kind === 'turn' ? source.id : source.turnId));
+      if (turn?.kind !== 'turn') return undefined;
+      return source.kind === 'turn' ? turn : turn.steps.find((step) => step.stepId === source.stepId)?.frames.find((item) => item.frameId === source.id);
+    };
     let preview = boundedEntity(frame, { kind: 'frame', id: 'f-old', turnId: 't0', stepId: 's-old' });
     const deep = await readSessionViewTranscriptContent(service, 'fixture-session', { agentId: 'main', ref: { ...preview.contentRefs![0]!, source: { kind: 'turn', id: 't0' }, path: ['steps', 0, 'frames', 0, 'text'] } });
     expect(deep?.value).toBe(frame.text.slice(preview.text.length, preview.text.length + (deep?.value as string).length));
@@ -39,7 +45,9 @@ describe('bounded session-view canonical reads', () => {
       { kind: 'turn', turnId: 't1', ordinal: 1, origin: { kind: 'user' }, steps: [], state: 'completed' },
       ...Array.from({ length: 220 }, (_, index) => ({ kind: 'marker' as const, markerId: `marker-${index}`, marker: 'skill' as const, payload: { text: '正文😀'.repeat(1000) } })),
     ] };
-    const service = { forSessionLive: () => undefined, readColdSnapshot: async () => snapshot, readColdRoster: async () => [], reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value } as unknown as TranscriptService;
+    const service = { forSessionLive: () => undefined, readColdSnapshot: async () => snapshot,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (source: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(snapshot),
+      readColdRoster: async () => [], reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value } as unknown as TranscriptService;
     const seen: string[] = [];
     let cursor: string | undefined;
     do {

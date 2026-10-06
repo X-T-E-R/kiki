@@ -2203,9 +2203,9 @@ export class TranscriptService {
     for (const journal of entry.opsJournals.values()) {
       this.disposeOpsJournal(entry, journal);
     }
-    entry.agentCreation.dispose();
-    entry.agentDisposal.dispose();
-    entry.binding.dispose();
+    Promise.all([entry.agentCreation.dispose(), entry.agentDisposal.dispose(), entry.binding.dispose()]).catch((error: unknown) => {
+      this.deps.logger?.warn({ sessionId, error }, 'transcript: session cleanup failed');
+    });
   }
 }
 

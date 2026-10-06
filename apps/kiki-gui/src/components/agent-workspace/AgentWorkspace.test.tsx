@@ -1389,7 +1389,7 @@ it('hosts main in the shared timeline and chrome without child commands or anoth
   expect(harness.sendAgentMessage).not.toHaveBeenCalled();
   expect(harness.mediaProviderProps).toHaveLength(0);
   expect(retainHistoryRead).not.toHaveBeenCalled();
-  expect(container.querySelector('[data-temporary-history-limit]')?.textContent).toContain('Temporary mode');
+  expect(container.querySelector('[data-temporary-history-limit]')).toBeNull();
 });
 
 

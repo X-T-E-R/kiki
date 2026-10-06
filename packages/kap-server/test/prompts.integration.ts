@@ -102,6 +102,7 @@ const PROMPT_TOML = [
   'max_context_size = 1000',
   'capabilities = ["thinking"]',
   'support_efforts = ["low", "high"]',
+  'default_effort = "high"',
   '',
   '[models.stub-alt]',
   'provider = "stub"',
@@ -109,6 +110,7 @@ const PROMPT_TOML = [
   'max_context_size = 1000',
   'capabilities = ["thinking"]',
   'support_efforts = ["low", "high"]',
+  'default_effort = "high"',
   '',
 ].join('\n');
 
@@ -908,7 +910,7 @@ describe('server-v2 /api prompts', () => {
     expect(submitted.body.data.status).toBe('blocked');
     expect(await main.accessor.get(IAgentPlanService).status()).toBeNull();
     expect(main.accessor.get(IAgentGoalService).getGoal().goal).toBeNull();
-    hook.dispose();
+    await hook.dispose();
   });
 
   it.each([false, true])('reports failed launch consistently, skills=%s', async (skills) => {
@@ -1630,7 +1632,7 @@ describe('server-v2 /api prompts', () => {
     const rejected = vi.fn();
     const rejectedTracker = watchPromptSettlements(events as never);
     rejectedTracker.settle('msg_5', rejected);
-    rejectedTracker.dispose();
+    await rejectedTracker.dispose();
     handlers[4]!({ type: 'prompt.completed', promptId: 'msg_5' });
     expect(rejected).not.toHaveBeenCalled();
   });
@@ -2756,7 +2758,7 @@ describe('server-v2 /api prompts', () => {
     await tasks.stopByUser(runTasks[1]!);
     await lifecycle.get(child.id)!.accessor.get(IAgentExecutionService).settled();
     onCreate.dispose();
-    subscription.dispose();
+    await subscription.dispose();
   });
 
   it('accepts a prompt for a live agent after its previous turn settled', async () => {
@@ -2891,7 +2893,7 @@ describe('server-v2 /api prompts', () => {
         expect(observed).toEqual(expect.arrayContaining(['task.terminated', 'subagent.failed']));
       });
       createSubscription.dispose();
-      eventSubscription.dispose();
+      await eventSubscription.dispose();
     } finally {
       await new Promise<void>((resolve, reject) => provider.close((error) => {
         if (error === undefined) resolve();

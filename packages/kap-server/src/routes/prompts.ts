@@ -611,7 +611,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
                 deferredDisabledTools,
               }, admission.reservation);
             } catch (error) {
-              settlement.dispose();
+              await settlement.dispose();
               throw error;
             }
             enqueued = true;
@@ -657,8 +657,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         if (!enqueued) await preparedMedia?.discard();
         sendMappedError(reply, req, error);
       } finally {
-        reservation?.dispose();
-        lease?.dispose();
+        await reservation?.dispose();
+        await lease?.dispose();
       }
     },
   );
@@ -836,7 +836,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         if (!replaced) await preparedMedia?.discard();
         sendMappedError(reply, req, error);
       } finally {
-        lease?.dispose();
+        await lease?.dispose();
       }
     },
   );
@@ -922,11 +922,18 @@ export function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][num
 
 export function watchPromptSettlements(events: IEventBus): {
   settle(promptId: string, discard: () => void | Promise<void>): void;
-  dispose(): void;
+  dispose(): Promise<void>;
 } {
   const settledIds = new Set<string>();
   const parentOf = new Map<string, string>();
   let armed: { id: string; discard: () => void | Promise<void> } | undefined;
+  let pending = Promise.resolve();
+  const schedule = (task: () => void | Promise<void>): void => {
+    pending = pending.then(task);
+  };
+  const stop = (): void => {
+    schedule(() => subscription.dispose());
+  };
   const subscription = events.subscribe((event) => {
     if (event.type === 'prompt.steered') {
       const steered = event as {
@@ -950,22 +957,23 @@ export function watchPromptSettlements(events: IEventBus): {
     if (armed !== undefined && armed.id === id) {
       const { discard } = armed;
       armed = undefined;
-      subscription.dispose();
-      void discard();
+      stop();
+      schedule(discard);
     }
   });
   return {
     settle(promptId: string, discard: () => void | Promise<void>): void {
       if (settledIds.has(promptId) || settledIds.has(parentOf.get(promptId) ?? '')) {
-        subscription.dispose();
-        void discard();
+        stop();
+        schedule(discard);
         return;
       }
       armed = { id: promptId, discard };
     },
-    dispose(): void {
+    async dispose(): Promise<void> {
       armed = undefined;
-      subscription.dispose();
+      stop();
+      await pending;
     },
   };
 }

@@ -858,7 +858,7 @@ describe('TranscriptService live integration', () => {
       } finally {
         clock.mockRestore();
         service.dispose();
-        ix.dispose();
+        await ix.dispose();
         await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
     },
@@ -896,7 +896,7 @@ describe('TranscriptService live integration', () => {
       expect(store.getAgent('main')?.getInteractions().get('question-race')).toMatchObject({ state, response });
     } finally {
       service.dispose();
-      ix.dispose();
+      await ix.dispose();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
@@ -928,7 +928,7 @@ describe('TranscriptService live integration', () => {
       }
     } finally {
       service.dispose();
-      ix.dispose();
+      await ix.dispose();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
@@ -954,7 +954,7 @@ describe('TranscriptService live integration', () => {
     } finally {
       cold.dispose();
       live.dispose();
-      ix.dispose();
+      await ix.dispose();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
@@ -1244,8 +1244,8 @@ describe('TranscriptService live integration', () => {
         toolCallCountKnown: false, hasMoreOlder: true,
       });
     } finally {
-      ix.dispose();
-      log.dispose();
+      await ix.dispose();
+      await log.dispose();
       service.dispose();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
@@ -1311,8 +1311,8 @@ describe('TranscriptService live integration', () => {
       }
     } finally {
       resetUnexpectedErrorHandler();
-      ix.dispose();
-      wireLog.dispose();
+      await ix.dispose();
+      await wireLog.dispose();
       service.dispose();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
@@ -1400,8 +1400,8 @@ describe('TranscriptService live integration', () => {
       }
     } finally {
       resetUnexpectedErrorHandler();
-      ix.dispose();
-      wireLog.dispose();
+      await ix.dispose();
+      await wireLog.dispose();
       service.dispose();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
@@ -2417,7 +2417,7 @@ describe('TranscriptService live integration', () => {
       const paged = await service.readFullAgentSnapshot('s1', 'main', transcript);
       expect(paged?.items.some((item) => item.kind === 'turn' || (item.kind === 'marker' && item.marker === 'message.delivery'))).toBe(false);
     } finally {
-      await service.dispose();
+      service.dispose();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });

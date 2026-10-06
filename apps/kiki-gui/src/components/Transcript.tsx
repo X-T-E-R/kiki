@@ -2456,8 +2456,10 @@ async function settleRestoredAnchor(
   offset: number,
   cancelled: () => boolean,
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>,
+  settledFrames = 1,
 ): Promise<void> {
   let requestedIndex: number | undefined;
+  let stableFrames = 0;
   for (let frame = 0; frame < 120; frame += 1) {
     await new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); });
     if (cancelled() || scroll === null || !scroll.isConnected) throw new Error('Reading restore cancelled');
@@ -2473,7 +2475,7 @@ async function settleRestoredAnchor(
     // measurement still compensates scroll and positions on the following
     // frame; drain that existing measurement path before accepting geometry.
     reconcileMountedRows(virtualizer);
-    if (needsMeasurement) continue;
+    if (needsMeasurement) { stableFrames = 0; continue; }
     const row = scroll.querySelector<HTMLElement>(`[data-transcript-virtual-item][data-index="${hit.index}"]`);
     if (row === null) {
       if (hit.index !== requestedIndex) {
@@ -2488,7 +2490,12 @@ async function settleRestoredAnchor(
     const element = block ?? row;
     // offset = scrollTop - blockStart, so the block belongs at -offset.
     const delta = element.getBoundingClientRect().top - scroll.getBoundingClientRect().top + offset;
-    if (Math.abs(delta) < 2) return;
+    if (Math.abs(delta) < 2) {
+      stableFrames += 1;
+      if (stableFrames >= settledFrames) return;
+      continue;
+    }
+    stableFrames = 0;
     // Replace the estimate-based command as well as the DOM position, so its
     // pending reconcile cannot later undo an exact fold-member correction.
     virtualizer.scrollToOffset(scroll.scrollTop + delta, { align: 'start' });
@@ -3518,6 +3525,43 @@ export function Transcript({
   const seekRequestRef = useRef<AbortController | null>(null);
   const olderRequestRef = useRef<AbortController | null>(null);
   const loadOlderRef = useRef(onLoadOlder);
+  const loadOlderAtReadingAnchor = useCallback(async (signal: AbortSignal) => {
+    const instance = virtualizerRef.current;
+    const intent = readingIntentRef.current;
+    const firstKey = instance?.options.getItemKey(0);
+    let anchor = instance === null ? undefined : captureTranscriptAnchor(instance, true);
+    const scroll = scrollRef.current;
+    const capture = () => {
+      if (instance !== null && readingIntentRef.current === intent && instance.options.getItemKey(0) === firstKey) anchor = captureTranscriptAnchor(instance, true);
+    };
+    scroll?.addEventListener('scroll', capture, { passive: true });
+    let frame: number;
+    const captureFrame = () => {
+      capture();
+      frame = requestAnimationFrame(captureFrame);
+    };
+    frame = requestAnimationFrame(captureFrame);
+    let loaded: boolean;
+    try {
+      loaded = await loadOlderRef.current(signal);
+    } finally {
+      scroll?.removeEventListener('scroll', capture);
+      cancelAnimationFrame(frame);
+    }
+    if (olderRequestRef.current?.signal === signal) olderInflightRef.current = false;
+    if (loaded && instance !== null && anchor?.key !== undefined && !anchor.atEnd) {
+      const key = anchor.key;
+      try {
+        await settleRestoredAnchor(scrollRef.current, () => {
+          const index = nodeIndexesRef.current.get(key);
+          return index === undefined ? undefined : { index, blockId: key };
+        }, anchor.offset, () => signal.aborted || readingIntentRef.current !== intent || !visibleRef.current, instance, 4);
+      } catch {
+        return loaded;
+      }
+    }
+    return loaded;
+  }, []);
   const requestOlderPage = useCallback(() => {
     readingIntentRef.current += 1;
     olderIntentRef.current = false;
@@ -3526,12 +3570,12 @@ export function Transcript({
     const request = new AbortController();
     olderRequestRef.current = request;
     olderInflightRef.current = true;
-    return loadOlderRef.current(request.signal).finally(() => {
+    return loadOlderAtReadingAnchor(request.signal).finally(() => {
       if (olderRequestRef.current !== request) return;
       olderRequestRef.current = null;
       olderInflightRef.current = false;
     });
-  }, []);
+  }, [loadOlderAtReadingAnchor]);
   useEffect(() => {
     const element = scrollRef.current;
     if (element === null) return;
@@ -3556,7 +3600,7 @@ export function Transcript({
       olderInflightRef.current = true;
       const request = new AbortController();
       olderRequestRef.current = request;
-      void loadOlderRef.current(request.signal).finally(() => {
+      void loadOlderAtReadingAnchor(request.signal).finally(() => {
         if (olderRequestRef.current !== request) return;
         olderRequestRef.current = null;
         olderInflightRef.current = false;
@@ -3609,7 +3653,7 @@ export function Transcript({
       element.removeEventListener('pointerup', onPointerUp);
       element.removeEventListener('scroll', loadAtTop);
     };
-  }, [state.loadingOlder, state.hasMoreHistory, state.olderError, loaded, loadError, visible]);
+  }, [state.loadingOlder, state.hasMoreHistory, state.olderError, loaded, loadError, visible, loadOlderAtReadingAnchor]);
   const viewportAnchorRef = useRef<TranscriptViewportAnchor>({
     atEnd: true,
     key: undefined,

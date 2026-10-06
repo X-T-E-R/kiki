@@ -25,19 +25,19 @@ import { z } from 'zod';
 import { buildContentDisposition } from '../lib/contentDisposition';
 import { parseRangeHeader, pickHeader } from '../lib/httpRange';
 import { requestLog } from '../lib/requestLog';
-import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
+import { acquireSessionOperation, createDeferredCleanup, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { openApiDocumentJsonSchema } from '../middleware/schema';
 import { ErrorCode } from '../protocol/error-codes';
 import { envelopeSchema, errEnvelope } from '../protocol/envelope';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { createMediaPreview, MediaPreviewUnavailableError } from '../services/mediaPreview';
-import { inlineMediaFile, inlineMediaId } from '../services/inlineMedia';
+import { inlineDataMediaFile, inlineMediaFile, inlineMediaId, inlineToolMedia } from '../services/inlineMedia';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { readSessionViewCanonicalEntity } from '../transport/klient/sessionViewReads';
 import type { TranscriptAttachment } from '@kiki/transcript';
 import { openContentOriginal } from '../services/contentOriginal';
-import { ContentChangedError } from '../transport/klient/boundedContent';
+import { ContentChangedError, contentRevision } from '../transport/klient/boundedContent';
 
 interface SessionMediaRouteHost {
   get(
@@ -88,6 +88,7 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       const { session_id, file_id } = req.params;
       let operation: SessionOperationLease | undefined;
       let stream: Readable | undefined;
+      let responseCleanup: ReturnType<typeof createDeferredCleanup> | undefined;
       try {
         const opened = await openSessionMedia(core, session_id, file_id, transcriptService);
         operation = opened.operation;
@@ -118,19 +119,27 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
         }
         stream = Readable.from(file.stream(range === null ? undefined : { start: range.start, end: range.end }));
         const downloadStream = stream;
+        responseCleanup = createDeferredCleanup(
+          () => operation?.dispose(),
+          (error) => {
+            requestLog(req)?.error({ session_id, file_id, err: error }, 'session media cleanup failed');
+            downloadStream.destroy(error instanceof Error ? error : new Error(String(error)));
+          },
+        );
         downloadStream.on('error', (error: unknown) => {
           requestLog(req)?.warn({ session_id, file_id, err: error }, 'session media stream error');
           downloadStream.destroy();
         });
-        r.raw.once('finish', () => operation?.dispose());
-        r.raw.once('close', () => { downloadStream.destroy(); operation?.dispose(); });
+        r.raw.once('finish', () => { responseCleanup?.release(); });
+        r.raw.once('close', () => { downloadStream.destroy(); responseCleanup?.release(); });
         return r.send(downloadStream) as void;
       } catch (error) {
         stream?.destroy();
-        operation?.dispose();
+        responseCleanup?.release();
+        await responseCleanup?.wait();
         throw error;
       } finally {
-        if (stream === undefined) operation?.dispose();
+        if (stream === undefined) await operation?.dispose();
       }
     },
   );
@@ -178,7 +187,7 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       if (!(error instanceof MediaPreviewUnavailableError)) throw error;
       return r.code(415).send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id)) as void;
     } finally {
-      opened.operation?.dispose();
+      await opened.operation?.dispose();
     }
   });
   app.get(preview.path, preview.options, preview.handler as unknown as Parameters<SessionMediaRouteHost['get']>[2]);
@@ -206,13 +215,35 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
 
 async function openSessionMedia(core: Scope, sessionId: string, fileId: string, service?: TranscriptService): Promise<{ readonly sessionExists: boolean; readonly file?: SessionMediaFile; readonly operation?: SessionOperationLease }> {
   if (fileId.startsWith('raw:')) return { sessionExists: true, file: service === undefined ? undefined : await openContentOriginal(service, sessionId, fileId) };
+  if (fileId.startsWith('inline-content:')) {
+    const parts = fileId.split(':');
+    if (service === undefined || parts.length !== 4 || !isPlainAgentId(parts[1]!) || parts[2]!.length > 8192 ||
+      !/^[A-Za-z0-9_-]+$/u.test(parts[2]!) || !/^[0-9a-f]{64}$/u.test(parts[3]!)) return { sessionExists: true };
+    let address: unknown;
+    try { address = JSON.parse(Buffer.from(parts[2]!, 'base64url').toString('utf8')); }
+    catch { return { sessionExists: true }; }
+    const parsed = z.object({
+      source: z.object({ kind: z.literal('frame'), id: z.string().min(1).max(256), turnId: z.string().min(1).max(256), stepId: z.string().min(1).max(256) }).strict(),
+      path: z.array(z.union([z.string().max(256), z.number().int().nonnegative()])).min(1).max(16),
+    }).strict().safeParse(address);
+    if (!parsed.success || parsed.data.path[0] !== 'output') return { sessionExists: true };
+    const entity = await service.readCanonicalEntity(sessionId, parts[1]!, parsed.data.source);
+    let selected: unknown = entity;
+    for (const key of parsed.data.path) {
+      if (selected === null || typeof selected !== 'object' || !Object.hasOwn(selected, key)) return { sessionExists: true };
+      selected = (selected as Record<string | number, unknown>)[key];
+    }
+    const media = inlineToolMedia(selected);
+    return { sessionExists: true, file: media === undefined || contentRevision(media.url) !== parts[3]
+      ? undefined : await inlineDataMediaFile(media.url, `${parsed.data.source.id}.${media.kind}`) };
+  }
   if (fileId.startsWith('inline:')) {
     const parts = fileId.split(':');
     if (service === undefined || parts.length !== 4 || !isPlainAgentId(parts[1]!) || !/^[A-Za-z0-9_-]+$/u.test(parts[2]!) || !/^[0-9a-f]{64}$/u.test(parts[3]!)) return { sessionExists: true };
     const attachmentId = Buffer.from(parts[2]!, 'base64url').toString('utf8');
     const entity = await readSessionViewCanonicalEntity(service, sessionId, { agentId: parts[1]!, ref: { source: { kind: 'attachment', id: attachmentId } } });
     const attachment = entity as TranscriptAttachment | undefined;
-    return { sessionExists: true, file: attachment === undefined || inlineMediaId(attachment, parts[1]!) !== fileId ? undefined : inlineMediaFile(attachment) };
+    return { sessionExists: true, file: attachment === undefined || inlineMediaId(attachment, parts[1]!) !== fileId ? undefined : await inlineMediaFile(attachment) };
   }
   if (fileId.startsWith('blobref:')) {
     const summary = await core.accessor.get(ISessionIndex).get(sessionId);
@@ -224,7 +255,7 @@ async function openSessionMedia(core: Scope, sessionId: string, fileId: string, 
     const file = await operation.handle.accessor.get(ISessionMediaStore).open(fileId) ?? await openStagedUpload(core, fileId);
     return { sessionExists: true, file, operation };
   } catch (error) {
-    operation.dispose();
+    await operation.dispose();
     throw error;
   }
 }

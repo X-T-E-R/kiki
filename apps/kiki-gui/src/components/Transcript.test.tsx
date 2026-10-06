@@ -3048,6 +3048,51 @@ describe('virtualized transcript scrolling', () => {
     expect(after.offset).toBe(before.offset);
   });
 
+  it('keeps the visible block inset when the older-page top edge moves to a prepended row', async () => {
+    let topEdgeInset = 62.59375;
+    let postPrependInset = 0;
+    let lateLayout: ReturnType<typeof setTimeout> | undefined;
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const scroll = this.closest<HTMLElement>('[data-transcript-scroll]');
+      const row = this.closest<HTMLElement>('[data-transcript-virtual-item]');
+      if (scroll === null) return original.call(this);
+      const inset = this.hasAttribute('data-block-id') ? row?.dataset['index'] === '0' ? topEdgeInset : postPrependInset : 0;
+      const top = row === null ? 0 : virtualItemStart(row) - scroll.scrollTop + inset;
+      const height = row === null ? scroll.clientHeight : row.offsetHeight;
+      return { x: 0, y: top, top, bottom: top + height, left: 0, right: 760, width: 760, height, toJSON: () => ({}) };
+    });
+    try {
+      const current = virtualBlocks(100, 'reading');
+      const state = { ...transcriptState(current), hasMoreHistory: true };
+      const pending = pendingVoid();
+      const onLoadOlder = vi.fn(async () => { await pending.promise; return true; });
+      const { root, container } = makeRoot();
+      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+      await settleVirtualizer();
+      await setTranscriptScroll(scroll, 32);
+      await settleVirtualizer();
+      await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+      await setTranscriptScroll(scroll, 0);
+      topEdgeInset += 25.59375;
+      await settleVirtualizer();
+      const block = container.querySelector<HTMLElement>('[data-block-id="reading-0"]')!;
+      const before = block.getBoundingClientRect().top;
+      await renderSettled(root, virtualTranscript({ ...state, blocks: [...virtualBlocks(20, 'older'), ...current] }, onLoadOlder));
+      await act(async () => {
+        pending.resolve();
+        lateLayout = setTimeout(() => { postPrependInset = -28; }, 32);
+      });
+      await settleReadingFrames();
+      expect(onLoadOlder).toHaveBeenCalledTimes(1);
+      expect(container.querySelector<HTMLElement>('[data-block-id="reading-0"]')!.getBoundingClientRect().top).toBeCloseTo(before, 0);
+    } finally {
+      clearTimeout(lateLayout);
+      rect.mockRestore();
+    }
+  });
+
   it('loads one older page only after an upward browsing gesture at the top edge', async () => {
     const onLoadOlder = vi.fn(async () => true);
     const current = virtualBlocks(100, 'history');

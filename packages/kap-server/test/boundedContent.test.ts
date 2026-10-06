@@ -1,10 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { applyContentSegment, jsonBytes, transcriptTurnSchema, type ContentWindow } from '@kiki/transcript';
+import { AgentTranscript, applyContentSegment, jsonBytes, transcriptTurnSchema, type ContentWindow } from '@kiki/transcript';
 import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
-import { boundedAttachment, boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
+import { boundedAttachment, boundedTranscriptOps, boundedTranscriptPageSource, boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
 import { inlineMediaFile } from '../src/services/inlineMedia';
 
 describe('bounded canonical content', () => {
+  it('bounds raw turn content even when its canonical reference list is empty', () => {
+    const turn = transcriptTurnSchema.parse({ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'raw'.repeat(10_000), steps: [], contentRefs: [] });
+    const transcript = new AgentTranscript('main');
+    transcript.apply([{ op: 'reset', agentId: 'main', snapshot: { items: [turn], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} } }]);
+    const preview = boundedTranscriptPageSource(transcript.snapshot(), 'main').items[0]!;
+    if (preview.kind !== 'turn') throw new Error('Expected canonical turn');
+    expect(jsonBytes(preview)).toBeLessThan(jsonBytes(turn));
+    expect(preview.contentRefs).toContainEqual(expect.objectContaining({ path: ['prompt'], total: 30_000 }));
+    const completed = applyContentSegment(preview, readContentSegment(turn, preview.contentRefs![0]!));
+    expect(completed).toMatchObject({ prompt: turn.prompt });
+    expect(turn.prompt).toBe('raw'.repeat(10_000));
+  });
+  it('marks the exact queued base64 preview as incomplete before an editor can rebuild a truncated image URL', () => {
+    const original = { promptId: 'queued-image', status: 'queued', content: [{ type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'A'.repeat(10_000) } }] };
+    const preview = boundedEntity(original, { kind: 'prompt', id: original.promptId });
+    const data = preview.content[0]!.source.data;
+    expect(data).toHaveLength(1022);
+    expect(`data:image/png;base64,${data}`).toHaveLength(1044);
+    expect(preview.contentRefs).toContainEqual(expect.objectContaining({ path: ['content', 0, 'source', 'data'], offset: 1022, total: 10_000 }));
+    let completed = preview;
+    while (completed.contentRefs?.length) completed = applyContentSegment(completed, readContentSegment(original, completed.contentRefs[0]!, false, 'main', 48 * 1024));
+    expect(completed.content).toEqual(original.content);
+  });
   it.each([['own prototype key', '__proto__'], ['own constructor key', 'constructor'], ['own prototype field', 'prototype'], ['257-character key', 'k'.repeat(257)]])('reads every original own JSON key through bounded object segments (%s)', (_label, key) => {
     const original = { output: JSON.parse(JSON.stringify({ [key]: { text: 'body'.repeat(1000) } })) as Record<string, unknown> };
     let current = boundedEntity(original, { kind: 'task', id: 'task-keys' });
@@ -174,13 +197,75 @@ it('keeps media locators immediately requestable rather than sending a truncated
   const remote = { attachmentId: 'remote', mediaType: 'image/png', source: { kind: 'url' as const, url } };
   expect(boundedAttachment(remote, 'main', 512).source).toEqual(remote.source);
   expect(boundedEntity(remote, { kind: 'attachment', id: remote.attachmentId }, 512).source).toEqual(remote.source);
-  const bytes = Buffer.from('image-bytes'.repeat(1000));
+  const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+  const { pictures } = await import(fixture);
+  const bytes: Buffer = pictures[0].bytes;
   const inline = { attachmentId: 'inline-image', mediaType: 'image/png', source: { kind: 'url' as const, url: `data:image/png;base64,${bytes.toString('base64')}` } };
   const projected = boundedAttachment(inline, 'main', 512);
   expect(projected.source).toMatchObject({ kind: 'session_media', fileId: expect.stringMatching(/^inline:main:/u) });
   expect(projected.contentRefs?.some((ref) => ref.path[0] === 'source')).not.toBe(true);
-  const file = inlineMediaFile(inline)!;
+  const file = (await inlineMediaFile(inline))!;
   const chunks: Uint8Array[] = [];
   for await (const chunk of file.stream()) chunks.push(chunk);
   expect(Buffer.concat(chunks)).toEqual(bytes);
+});
+
+describe('inline current-agent working state', () => {
+  const fields = ['goal', 'directives', 'decided', 'rejected', 'evidence', 'files', 'next', 'open'];
+  const meta = { rev: 7, hash: 'notes-hash', writtenTurn: 12, writtenStep: 't12.3', coveredMessageId: '', windowEpoch: 1 };
+  const notes = (character: string) => Object.fromEntries(fields.map((field, index) => [field, character.repeat([1500, 1500, 1500, 1500, 499, 499, 499, 3][index]!)]));
+  const items = Array.from({ length: 14 }, (_, index) => ({ title: `Complete task ${index + 1}`, status: index === 0 ? 'in_progress' as const : 'pending' as const }));
+
+  it.each(['字', '\u0000'])('inlines legal maximum notes and the complete checklist within a finite JSON byte budget (%j)', (character) => {
+    const todo = { todoId: 'todo', items, notes: notes(character), notesMeta: meta };
+    expect(Object.values(todo.notes).reduce((sum, value) => sum + value.length, 0)).toBe(7500);
+    const snapshot = boundedTranscriptSnapshot({ items: [], tasks: [], attachments: [], prompts: [], interactions: [], todos: [todo], meta: {} }, 'main');
+    expect(snapshot.todos).toHaveLength(1);
+    expect(snapshot.todos[0]).toMatchObject(todo);
+    expect(snapshot.todos[0]?.contentRefs).toBeUndefined();
+    expect(snapshot.globalCoverage?.todos).toEqual({ returned: 1, total: 1, hasMore: false });
+    expect(jsonBytes(snapshot.todos)).toBeLessThanOrEqual(64 * 1024);
+    const projected = boundedEntity(todo, { kind: 'todo', id: 'todo' });
+    expect(projected.notes).toEqual(todo.notes);
+    expect(projected.items).toEqual(items);
+    expect(projected.contentRefs).toBeUndefined();
+    expect(boundedTranscriptPageSource(snapshot, 'main').todos[0]).toEqual(projected);
+    expect(boundedTranscriptOps([{ op: 'todo.upsert', todo }], new AgentTranscript('main'))).toEqual([{ op: 'todo.upsert', todo: projected }]);
+  });
+
+  it('keeps legacy small-budget notes refs readable without widening unrelated collections', () => {
+    const todo = { todoId: 'todo', items, notes: notes('字'), notesMeta: meta };
+    let projected = boundedEntity(todo, { kind: 'todo', id: 'todo' }, 2048);
+    expect(projected.contentRefs?.length).toBeGreaterThan(0);
+    const snapshot = boundedTranscriptSnapshot({ items: [], tasks: [], attachments: [], prompts: [], interactions: [], todos: [projected], meta: {} }, 'main');
+    expect(snapshot.todos[0]).toEqual(projected);
+    expect(boundedTranscriptPageSource(snapshot, 'main').todos[0]).toEqual(projected);
+    expect(boundedTranscriptOps([{ op: 'todo.upsert', todo: projected }], new AgentTranscript('main'))).toEqual([{ op: 'todo.upsert', todo: projected }]);
+    while (projected.contentRefs?.length) projected = applyContentSegment(projected, readContentSegment(todo, projected.contentRefs[0]!));
+    expect(projected.notes).toEqual(todo.notes);
+    expect(projected.items).toEqual(todo.items);
+    const generic = boundedEntity(todo, { kind: 'task', id: 'example-task' }, 2048);
+    expect(generic.contentRefs?.length).toBeGreaterThan(0);
+    expect(jsonBytes(generic)).toBeLessThanOrEqual(2048);
+  });
+
+  it('keeps out-of-contract notes bounded and recoverable instead of blindly inlining them', () => {
+    const todo = { todoId: 'todo', items, notes: { goal: '字'.repeat(1501) }, notesMeta: meta };
+    let projected = boundedEntity(todo, { kind: 'todo', id: 'todo' });
+    expect(projected.contentRefs?.some((ref) => ref.path[0] === 'notes')).toBe(true);
+    while (projected.contentRefs?.length) projected = applyContentSegment(projected, readContentSegment(todo, projected.contentRefs[0]!));
+    expect(projected.notes).toEqual(todo.notes);
+  });
+
+  it('keeps legal notes inline when a much larger checklist still needs exact continuations', () => {
+    const todo = { todoId: 'todo', items: Array.from({ length: 100 }, (_, index) => ({ title: `Task ${index}: ${'字'.repeat(1500)}`, status: 'pending' as const })), notes: notes('\u0000'), notesMeta: meta };
+    let projected = boundedEntity(todo, { kind: 'todo', id: 'todo' });
+    expect(projected.notes).toEqual(todo.notes);
+    expect(projected.contentRefs?.some((ref) => ref.path[0] === 'notes')).not.toBe(true);
+    expect(projected.contentRefs?.some((ref) => ref.path[0] === 'items')).toBe(true);
+    expect(jsonBytes(projected)).toBeLessThanOrEqual(64 * 1024);
+    while (projected.contentRefs?.length) projected = applyContentSegment(projected, readContentSegment(todo, projected.contentRefs[0]!));
+    expect(projected.items).toEqual(todo.items);
+    expect(projected.notes).toEqual(todo.notes);
+  });
 });

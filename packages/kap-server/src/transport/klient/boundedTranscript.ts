@@ -7,7 +7,7 @@ import {
   type TranscriptOperation,
   type TranscriptResponse,
 } from '@kiki/transcript';
-import { boundedEntity } from './boundedContent';
+import { boundedEntity, ENTITY_BYTES } from './boundedContent';
 import { inlineMediaId } from '../../services/inlineMedia';
 import type { TranscriptAttachment } from '@kiki/transcript';
 
@@ -20,14 +20,14 @@ export function boundedAttachment(attachment: TranscriptAttachment, agentId: str
 export const TRANSCRIPT_WINDOW_BYTES = 1024 * 1024;
 const GLOBAL_COLLECTION_BYTES = 4 * 1024;
 
-export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, agentId: string, direction: 'head' | 'tail' = 'tail'): AgentTranscriptSnapshot {
+export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, agentId: string, direction: 'head' | 'tail' = 'tail', windowBytes = TRANSCRIPT_WINDOW_BYTES): AgentTranscriptSnapshot {
   const tasks = boundedCollection(snapshot.tasks, 'task', (task) => task.taskId);
   const prompts = boundedCollection(snapshot.prompts, 'prompt', (prompt) => prompt.promptId);
   const interactions = boundedCollection(snapshot.interactions, 'interaction', (interaction) => interaction.interactionId);
   const todos = boundedCollection(snapshot.todos, 'todo', (todo) => todo.todoId);
   const meta = snapshot.meta.contentRefs === undefined ? boundedEntity(snapshot.meta, { kind: 'meta', id: '' }, 4096) : snapshot.meta;
-  const budget = TRANSCRIPT_WINDOW_BYTES - 4096 - GLOBAL_COLLECTION_BYTES - jsonBytes({ tasks, prompts, interactions, todos, meta });
-  const items = boundedItems(snapshot.items, budget, direction);
+  const budget = windowBytes - 4096 - GLOBAL_COLLECTION_BYTES - jsonBytes({ tasks, prompts, interactions, todos, meta });
+  const items = boundedItems(snapshot.items, budget, direction, agentId);
   const required = new Set<string>();
   for (const item of items) {
     if (item.kind !== 'turn') continue;
@@ -57,7 +57,7 @@ export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, age
   };
 }
 
-export function boundedTranscriptResponse(response: TranscriptResponse, direction: 'head' | 'tail' = 'tail'): TranscriptResponse {
+export function boundedTranscriptResponse(response: TranscriptResponse, direction: 'head' | 'tail' = 'tail', windowBytes = TRANSCRIPT_WINDOW_BYTES): TranscriptResponse {
   const snapshot = boundedTranscriptSnapshot({
     items: response.items,
     tasks: response.tasks,
@@ -68,7 +68,7 @@ export function boundedTranscriptResponse(response: TranscriptResponse, directio
     meta: response.meta,
     hasMoreOlder: direction === 'tail' ? response.has_more : true,
     toolCallCount: response.tool_call_count,
-  }, response.agent_id, direction);
+  }, response.agent_id, direction, windowBytes);
   const agents = response.agents.slice(0, 20).map((agent) => boundedEntity(agent, { kind: 'roster', id: agent.agentId }, 1024));
   const result = {
     ...response,
@@ -88,16 +88,16 @@ export function boundedTranscriptResponse(response: TranscriptResponse, directio
 
 export function itemKey(item: AgentTranscriptSnapshot['items'][number]): string { return `${item.kind}:${itemId(item)}`; }
 
-function boundedItem(item: AgentTranscriptSnapshot['items'][number]): AgentTranscriptSnapshot['items'][number] {
-  if (item.kind === 'taskref' || item.contentRefs !== undefined) return item;
-  const preview = boundedEntity(item, { kind: item.kind, id: itemId(item) });
+function boundedItem(item: AgentTranscriptSnapshot['items'][number], agentId: string): AgentTranscriptSnapshot['items'][number] {
+  if (item.kind === 'taskref' || (item.contentRefs?.length ?? 0) > 0) return item;
+  const preview = boundedEntity(item, { kind: item.kind, id: itemId(item) }, undefined, agentId);
   return preview.kind === 'turn' ? rebindTurnContentRefs(preview) : preview;
 }
 
 export function boundedTranscriptPageSource(snapshot: AgentTranscriptSnapshot, agentId: string): AgentTranscriptSnapshot {
   return {
     ...snapshot,
-    items: snapshot.items.map(boundedItem),
+    items: snapshot.items.map((item) => boundedItem(item, agentId)),
     tasks: snapshot.tasks.map((value) => boundedEntity(value, { kind: 'task', id: value.taskId })),
     attachments: snapshot.attachments.map((value) => boundedAttachment(value, agentId)),
     prompts: snapshot.prompts.map((value) => boundedEntity(value, { kind: 'prompt', id: value.promptId })),
@@ -107,12 +107,12 @@ export function boundedTranscriptPageSource(snapshot: AgentTranscriptSnapshot, a
   };
 }
 
-function boundedItems(items: AgentTranscriptSnapshot['items'], budget: number, direction: 'head' | 'tail'): AgentTranscriptSnapshot['items'] {
+function boundedItems(items: AgentTranscriptSnapshot['items'], budget: number, direction: 'head' | 'tail', agentId: string): AgentTranscriptSnapshot['items'] {
   const selected: AgentTranscriptSnapshot['items'][number][] = [];
   let bytes = 2;
   for (let offset = 0; offset < items.length; offset += 1) {
     const item = items[direction === 'head' ? offset : items.length - 1 - offset]!;
-    const projected = boundedItem(item);
+    const projected = boundedItem(item, agentId);
     const size = jsonBytes(projected) + 1;
     if (selected.length > 0 && bytes + size > budget) break;
     selected.push(projected);
@@ -123,14 +123,16 @@ function boundedItems(items: AgentTranscriptSnapshot['items'], budget: number, d
 
 function boundedCollection<T extends object>(values: readonly T[], kind: 'task' | 'attachment' | 'prompt' | 'interaction' | 'todo', id: (value: T) => string, project?: (value: T) => T, required: ReadonlySet<string> = new Set()): T[] {
   const selected = new Map<string, T>();
+  const entityBytes = kind === 'todo' ? ENTITY_BYTES : 2048;
+  const collectionBytes = kind === 'todo' ? ENTITY_BYTES + 3 : GLOBAL_COLLECTION_BYTES;
   let bytes = 2;
   const candidates = [...values.filter((value) => required.has(id(value))), ...values.filter((value) => !required.has(id(value))).toReversed()];
   for (const value of candidates) {
     if (!required.has(id(value)) && selected.size >= 8) break;
     const projected = (value as import('@kiki/transcript').ContentWindow).contentRefs !== undefined ? value
-      : project?.(value) ?? boundedEntity(value, { kind, id: id(value) }, 2048);
+      : project?.(value) ?? boundedEntity(value, { kind, id: id(value) }, entityBytes);
     const size = jsonBytes(projected) + 1;
-    if (bytes + size > GLOBAL_COLLECTION_BYTES) continue;
+    if (bytes + size > collectionBytes) continue;
     selected.set(id(value), projected);
     bytes += size;
   }
@@ -139,13 +141,13 @@ function boundedCollection<T extends object>(values: readonly T[], kind: 'task' 
 
 function collectionCoverage(returned: number, total: number) { return { returned, total, hasMore: returned < total }; }
 
-export function boundedTranscriptOps(ops: readonly TranscriptOperation[], transcript: AgentTranscript): TranscriptOperation[] {
+export function boundedTranscriptOps(ops: readonly TranscriptOperation[], transcript: AgentTranscript, entityBytes?: number): TranscriptOperation[] {
   return ops.map((op): TranscriptOperation => {
     switch (op.op) {
       case 'reset': return { ...op, snapshot: boundedTranscriptSnapshot(op.snapshot, transcript.agentId) };
-      case 'turn.upsert': return { ...op, turn: boundedEntity(op.turn, { kind: 'turn', id: op.turn.turnId }) };
-      case 'frame.upsert': return { ...op, frame: boundedEntity(op.frame, { kind: 'frame', id: op.frame.frameId, turnId: op.turnId, stepId: op.stepId }) };
-      case 'task.upsert': return { ...op, task: boundedEntity(op.task, { kind: 'task', id: op.task.taskId }) };
+      case 'turn.upsert': return { ...op, turn: boundedEntity(op.turn, { kind: 'turn', id: op.turn.turnId }, undefined, transcript.agentId) };
+      case 'frame.upsert': return { ...op, frame: boundedEntity(op.frame, { kind: 'frame', id: op.frame.frameId, turnId: op.turnId, stepId: op.stepId }, undefined, transcript.agentId) };
+      case 'task.upsert': return { ...op, task: boundedEntity(op.task, { kind: 'task', id: op.task.taskId }, entityBytes) };
       case 'attachment.upsert': return { ...op, attachment: boundedAttachment(op.attachment, transcript.agentId) };
       case 'prompt.upsert': return { ...op, prompt: boundedEntity(op.prompt, { kind: 'prompt', id: op.prompt.promptId }) };
       case 'interaction.upsert': return { ...op, interaction: boundedEntity(op.interaction, { kind: 'interaction', id: op.interaction.interactionId }) };
@@ -159,7 +161,7 @@ export function boundedTranscriptOps(ops: readonly TranscriptOperation[], transc
         } else {
           const target = op.target;
           const frame = transcript.getTurn(target.turnId)?.steps.find((step) => step.stepId === target.stepId)?.frames.find((entry) => entry.frameId === target.frameId);
-          if (frame !== undefined && (op.offset > 1024 || op.text.length > 8192 || jsonBytes(op.text) > 8192)) return { op: 'frame.upsert', turnId: target.turnId, stepId: target.stepId, frame: boundedEntity(frame, { kind: 'frame', id: frame.frameId, turnId: target.turnId, stepId: target.stepId }) };
+          if (frame !== undefined && (op.offset > 1024 || op.text.length > 8192 || jsonBytes(op.text) > 8192)) return { op: 'frame.upsert', turnId: target.turnId, stepId: target.stepId, frame: boundedEntity(frame, { kind: 'frame', id: frame.frameId, turnId: target.turnId, stepId: target.stepId }, undefined, transcript.agentId) };
         }
         return op;
       }

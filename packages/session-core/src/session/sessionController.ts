@@ -1181,7 +1181,8 @@ export class SessionController {
 
   /** Read only the structure of the turn a viewport, expansion or seek needs. */
   retainHistoryStructure(agentId: string, turnId: string): () => void {
-    return this.beginContentRead(agentId, { kind: 'turn', id: turnId }, ['steps']).release;
+    const lease = this.beginContentRead(agentId, { kind: 'turn', id: turnId }, ['steps']);
+    return () => { lease.release(); };
   }
 
   private cancelHistoryRead(agentId: string): void {

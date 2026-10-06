@@ -1,7 +1,8 @@
 import type { SessionMediaFile } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
 import { parseImageDataUrl } from '@kiki/agent-core-v2/agent/media/image-format-policy';
-import type { TranscriptAttachment } from '@kiki/transcript';
-import { contentRevision } from '../transport/klient/boundedContent';
+import { validateImageDataUrl } from '@kiki/agent-core-v2/agent/media/image-compress';
+import type { ContentRef, ContentSource, TranscriptAttachment, TranscriptTurn } from '@kiki/transcript';
+import { contentRevision } from '../transport/klient/contentRevision';
 
 export function inlineMediaId(attachment: TranscriptAttachment, agentId: string): string | undefined {
   const source = attachment.source;
@@ -9,9 +10,51 @@ export function inlineMediaId(attachment: TranscriptAttachment, agentId: string)
   return `inline:${agentId}:${Buffer.from(attachment.attachmentId).toString('base64url')}:${contentRevision(source.url)}`;
 }
 
-export function inlineMediaFile(attachment: TranscriptAttachment): SessionMediaFile | undefined {
+export function inlineToolMedia(part: unknown): { kind: 'image' | 'video'; url: string } | undefined {
+  if (part === null || typeof part !== 'object' || Array.isArray(part)) return undefined;
+  const value = part as Record<string, unknown>;
+  for (const kind of ['image', 'video'] as const) {
+    if (value['type'] === `${kind}_url`) {
+      for (const key of [`${kind}Url`, `${kind}_url`]) {
+        const container = value[key] as { url?: unknown } | undefined;
+        if (typeof container?.url === 'string' && container.url.startsWith(`data:${kind}/`)) return { kind, url: container.url };
+      }
+    }
+    if (value['type'] === kind) {
+      const source = value['source'] as { kind?: unknown; url?: unknown; media_type?: unknown; data?: unknown } | undefined;
+      if (source?.kind === 'url' && typeof source.url === 'string' && source.url.startsWith(`data:${kind}/`)) return { kind, url: source.url };
+      if (source?.kind === 'base64' && typeof source.data === 'string' && typeof source.media_type === 'string' && source.media_type.startsWith(`${kind}/`))
+        return { kind, url: `data:${source.media_type};base64,${source.data}` };
+    }
+  }
+  return undefined;
+}
+
+export function projectInlineToolMedia(value: unknown, path: ContentRef['path'], source: ContentSource, entity: object, agentId: string): object | undefined {
+  let frameSource = source;
+  let framePath = path;
+  if (source.kind === 'turn' && path[0] === 'steps' && typeof path[1] === 'number' && path[2] === 'frames' && typeof path[3] === 'number') {
+    const turn = entity as TranscriptTurn;
+    const step = turn.steps?.[path[1]];
+    const frame = step?.frames[path[3]];
+    if (frame === undefined || step === undefined) return undefined;
+    frameSource = { kind: 'frame', id: frame.frameId, turnId: turn.turnId, stepId: step.stepId };
+    framePath = path.slice(4);
+  }
+  if (frameSource.kind !== 'frame' || frameSource.turnId === undefined || frameSource.stepId === undefined || framePath[0] !== 'output') return undefined;
+  const media = inlineToolMedia(value);
+  if (media === undefined) return undefined;
+  const address = Buffer.from(JSON.stringify({ source: frameSource, path: framePath })).toString('base64url');
+  const fileId = `inline-content:${agentId}:${address}:${contentRevision(media.url)}`;
+  return { type: media.kind, source: { kind: 'session_media', file_id: fileId } };
+}
+
+export async function inlineMediaFile(attachment: TranscriptAttachment): Promise<SessionMediaFile | undefined> {
   if (attachment.source?.kind !== 'url') return undefined;
-  const url = attachment.source.url;
+  return inlineDataMediaFile(attachment.source.url, attachment.name ?? attachment.attachmentId);
+}
+
+export async function inlineDataMediaFile(url: string, name: string): Promise<SessionMediaFile | undefined> {
   const comma = url.indexOf(',');
   if (!/^data:/iu.test(url) || comma < 0) return undefined;
   const parsed = parseImageDataUrl(url);
@@ -20,10 +63,19 @@ export function inlineMediaFile(attachment: TranscriptAttachment): SessionMediaF
   const base64 = /;base64\s*$/iu.test(header);
   const payload = url.slice(comma + 1);
   let size = 0;
-  try { for (const chunk of decodePayload(payload, base64)) size += chunk.byteLength; }
-  catch { return undefined; }
+  const imageChunks: Uint8Array[] | undefined = mime.startsWith('image/') ? [] : undefined;
+  try {
+    for (const chunk of decodePayload(payload, base64)) {
+      size += chunk.byteLength;
+      imageChunks?.push(chunk);
+    }
+  } catch { return undefined; }
+  if (imageChunks !== undefined) {
+    const bytes = Buffer.concat(imageChunks);
+    if (await validateImageDataUrl(`data:${mime};base64,${bytes.toString('base64')}`) === null) return undefined;
+  }
   return {
-    name: attachment.name ?? attachment.attachmentId, mediaType: mime, size,
+    name, mediaType: mime, size,
     stream: async function* (range) {
       let offset = 0;
       const start = range?.start ?? 0;
