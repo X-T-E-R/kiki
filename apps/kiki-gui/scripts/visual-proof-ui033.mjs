@@ -22,6 +22,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runProof } from '../proof/runner.mjs';
+import { spaceDesktopMock } from './space-desktop-mock.mjs';
+import { FIXTURE_TOKEN } from './fixture-server.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -144,10 +146,15 @@ async function modelPickerIsUsable(page, wizard) {
 }
 
 /**
- * Every link that leaves the app goes through one component now, so the check
- * is structural: nothing may hand-roll a new-tab anchor again. A desktop webview
- * cannot open one, so a bare `<a target="_blank">` is a button that silently
- * does nothing — the exact defect this replaces.
+ * Every link that leaves the app goes through one component now, so nothing may
+ * hand-roll a new-tab anchor again. A desktop webview cannot open one, so a bare
+ * `<a target="_blank">` is a button that silently does nothing — the exact defect
+ * this replaces.
+ *
+ * This is a *static* check and is deliberately not the evidence that the links
+ * work: it says every link is routed, not that any link opened. The runtime
+ * proof is `external-link-opens`, which watches the host's own opener being
+ * called with the address that was actually clicked.
  */
 function assertNoBypassedExternalLinks() {
   const surface = walkSources('src');
@@ -164,14 +171,85 @@ function assertNoBypassedExternalLinks() {
 
 const scenarios = [
   {
-    name: 'external-links-routed',
-    fixture: 'settings',
-    async run({ page, view, shot }) {
-      // Settings → Browser control, where the install and docs links live.
-      await page.goto(page.url().replace(/\/new.*$/, '/settings/browser'));
-      await page.waitForSelector('[role="dialog"][aria-label], [data-browser-route-extension]', { timeout: 15_000 }).catch(() => undefined);
-      await page.waitForTimeout(600);
-      await shot('ui033-12-browser-links');
+    /**
+     * The external-link defect, observed at runtime rather than inferred from
+     * the source.
+     *
+     * The page boots as the desktop shell — the shared desktop mock stands in
+     * for the Tauri IPC, exactly as the spaces proofs do — and then a real
+     * rendered link on a real settings page is clicked. What is asserted is the
+     * chain the defect actually broke: the click reaches `open_external_url`
+     * over the bridge, carrying the address that was on the anchor. The mock
+     * records that call rather than launching anything, so no browser opens, no
+     * account is touched and no URL is fetched.
+     *
+     * The browser host is then checked on its own, where there is no bridge at
+     * all and the anchor's real `href` is what a browser follows.
+     *
+     * The structural scan below still guards against a future hand-rolled
+     * anchor, but it is deliberately *not* the evidence that these links work:
+     * it says every link is routed, not that any link opened.
+     */
+    name: 'external-link-opens',
+    fixture: 'web-access-open',
+    async run({ page, view, shot, link }) {
+      // --- desktop: the click must cross the shell bridge ---
+      await page.context().addInitScript(spaceDesktopMock, {
+        fixtureUrl: new URL(link('/')).searchParams.get('server'),
+        token: FIXTURE_TOKEN,
+        spaces: [],
+        windowMode: 'switch',
+      });
+      // Record what the bridge was actually asked to open.
+      await page.addInitScript(() => {
+        window.__ui033OpenedUrls = [];
+        const internals = window.__TAURI_INTERNALS__;
+        const original = internals.invoke;
+        internals.invoke = async (command, args) => {
+          if (command === 'open_external_url') window.__ui033OpenedUrls.push(args?.url);
+          return original(command, args);
+        };
+      });
+
+      await page.goto(link('/settings/spaces'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-session-sidebar]', { timeout: 30_000 });
+      const anchor = page.locator('[data-web-access-open-link]').first();
+      await anchor.waitFor({ timeout: 20_000 });
+      const href = await anchor.getAttribute('href');
+      expect(href !== null && /^https?:\/\//.test(href),
+        `the web-access open link must carry a real address, saw ${href}`);
+      // Bring the card into view, so the shot shows the control that was clicked
+      // rather than the top of a long settings page.
+      await anchor.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(400);
+      await shot('ui033-12-external-links-desktop');
+
+      await anchor.click();
+      await page.waitForFunction(() => (window.__ui033OpenedUrls ?? []).length > 0, undefined, { timeout: 10_000 })
+        .catch(() => undefined);
+      const opened = await page.evaluate(() => window.__ui033OpenedUrls ?? []);
+      expect(opened.length === 1,
+        `the desktop click must reach open_external_url exactly once, saw ${JSON.stringify(opened)}`);
+      expect(opened[0] === href,
+        `the address handed to the shell must be the one on the anchor (${href}), saw ${opened[0]}`);
+
+      // --- browser: no bridge, so the anchor's own href is what a browser uses ---
+      const browserCtx = page.context().browser();
+      const browserPage = await browserCtx.newPage();
+      try {
+        await browserPage.goto(link('/settings/spaces'), { waitUntil: 'domcontentloaded' });
+        const browserAnchor = browserPage.locator('[data-web-access-open-link]').first();
+        await browserAnchor.waitFor({ timeout: 20_000 });
+        const browserHref = await browserAnchor.getAttribute('href');
+        const target = await browserAnchor.getAttribute('target');
+        const rel = await browserAnchor.getAttribute('rel');
+        expect(browserHref === href, 'the same link must carry the same address on a browser host');
+        expect(target === '_blank', `a browser link must keep its own new-tab semantics, saw ${target}`);
+        expect((rel ?? '').includes('noopener'), `the browser link must keep a closed opener, saw ${rel}`);
+      } finally {
+        await browserPage.close();
+      }
+
       assertNoBypassedExternalLinks();
     },
   },

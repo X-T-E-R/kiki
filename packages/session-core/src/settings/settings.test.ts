@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_DESKTOP_SETTINGS,
+  DEFAULT_MODEL_CAPABILITIES,
   EXPERIMENTAL_FLAG_HOMES,
   EXPERIMENTAL_FALLBACK_SECTION,
   experimentalFlagHome,
@@ -34,6 +35,7 @@ import {
   hooksConfigPatch,
   parseRemoteModels,
   providerDraftFromCatalog,
+  providerModelDraftFromCatalog,
   providerDefaultRow,
   providerCreateBody,
   providerPatchBody,
@@ -1013,6 +1015,48 @@ describe('provider templates, chips, and dirty tracking', () => {
     expect(isProviderDraftDirty(effortsReordered, initial)).toBe(true);
     const modelRemoved = providerDraft({ models: [] });
     expect(isProviderDraftDirty(modelRemoved, initial)).toBe(true);
+  });
+});
+
+describe('model capability defaults', () => {
+  /**
+   * The default exists for a model nothing has been decided about. It is not a
+   * correction: a model whose capabilities were explicitly configured to
+   * something narrower keeps exactly that, including an empty list, which is a
+   * decision and must survive a round trip rather than being re-defaulted.
+   */
+  const catalogModel = (capabilities: string[] | undefined) => ({
+    id: 'kimi-code/kimi-k2',
+    provider_id: 'kimi-code',
+    remote_id: 'kimi-k2',
+    max_context_size: 200_000,
+    support_efforts: [],
+    capabilities,
+  }) as unknown as Parameters<typeof providerModelDraftFromCatalog>[0];
+
+  it('defaults a model that carries no capabilities at all', () => {
+    expect(providerModelDraftFromCatalog(catalogModel(undefined)).capabilities)
+      .toEqual([...DEFAULT_MODEL_CAPABILITIES]);
+    expect(DEFAULT_MODEL_CAPABILITIES).toContain('thinking');
+    expect(DEFAULT_MODEL_CAPABILITIES).toContain('tool_use');
+  });
+
+  it('keeps an explicitly empty capability list, which is a decision', () => {
+    expect(providerModelDraftFromCatalog(catalogModel([])).capabilities).toEqual([]);
+  });
+
+  it('keeps a narrower explicit list without adding to it', () => {
+    expect(providerModelDraftFromCatalog(catalogModel(['image_in'])).capabilities)
+      .toEqual(['image_in']);
+  });
+
+  it('lets a saved empty list round-trip instead of being re-defaulted', () => {
+    const draft = providerModelDraftFromCatalog(catalogModel([]));
+    // Reading the model back gives an empty list, not the default; and an
+    // unchanged draft produces no patch at all, so nothing re-adds the default
+    // on save. Clearing a non-empty stored list is still an explicit `[]`.
+    const emptied = providerModelDraftFromCatalog(catalogModel(['thinking', 'tool_use']));
+    expect(modelPatchBody(draft, emptied)).toEqual({ capabilities: [] });
   });
 });
 
