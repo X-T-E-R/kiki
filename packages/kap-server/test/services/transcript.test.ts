@@ -1143,6 +1143,58 @@ describe('TranscriptService live integration', () => {
     }
   });
 
+  it('does not repeatedly replay an unverified wire for background residency maintenance', async () => {
+    const home = await seedWireHome(undefined, true);
+    const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+    await writeFixtureFile(join(dirname(path), WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({ format: 1, epoch: 'legacy-open', state: 'open', trusted: false }));
+    const verify = vi.fn(async () => false);
+    const agents = new FakeAgents();
+    const main = agents.add('main', { wire: { ...stubAgentWire(), verifyTranscriptLiveEpoch: verify, isTranscriptLiveEpochVerified: () => false } });
+    const reader = vi.fn(streamWireRecords);
+    const service = new TranscriptService({ homeDir: home, wireRecordReader: reader, residentLimits: { tailTurns: 1, maxBytes: 1024 },
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
+    try {
+      const store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      expect(reader).toHaveBeenCalledTimes(1);
+      const records = [1, 2].flatMap((turnId) => [
+        { type: 'turn.prompt', turnId, promptId: `p${turnId}`, input: [{ type: 'text', text: 'read' }], origin: { kind: 'user' }, time: turnId * 2000 },
+        { type: 'context.append_loop_event', event: { type: 'step.begin', turnId, step: 1, uuid: `s${turnId}` } },
+        { type: 'context.append_loop_event', event: { type: 'tool.call', turnId, stepUuid: `s${turnId}`, uuid: `f${turnId}`, toolCallId: `c${turnId}`, name: 'Read', args: {} } },
+        { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: `c${turnId}`, result: { output: 'x'.repeat(8192), isError: false } } },
+        { type: 'turn.ended', turnId, reason: 'completed', time: turnId * 2000 + 1000 },
+      ]);
+      await appendFixtureFile(path, records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+      for (const record of records) main.bus.emit(ev(record));
+      await vi.waitFor(() => expect(verify.mock.calls.length).toBeGreaterThan(1));
+      expect(reader).toHaveBeenCalledTimes(1);
+      expect(store.getAgent('main')?.getTurn('t1')).toBeDefined();
+      expect(store.getAgent('main')?.snapshot().toolCallCountKnown).toBe(false);
+    } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  });
+
+  it('keeps an established unverified main projection after ordinary appends without repeating its full backfill', async () => {
+    const home = await seedWireHome();
+    const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+    await writeFixtureFile(join(dirname(path), WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({ format: 1, epoch: 'legacy-open', state: 'open', trusted: false }));
+    const agents = new FakeAgents();
+    agents.add('main', { wire: { ...stubAgentWire(), verifyTranscriptLiveEpoch: async () => false, isTranscriptLiveEpochVerified: () => false } });
+    const reader = vi.fn(streamWireRecords);
+    const service = new TranscriptService({ homeDir: home, wireRecordReader: reader,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
+    try {
+      const store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      expect(reader).toHaveBeenCalledTimes(1);
+      expect(store.getAgent('main')?.snapshot()).toMatchObject({ toolCallCountKnown: false });
+      await appendFixtureFile(path, JSON.stringify({ type: 'turn.ended', turnId: 1, reason: 'completed', time: 3000 }) + '\n');
+      await service.ensureAgentHistory('s1', 'main');
+      expect(reader).toHaveBeenCalledTimes(1);
+      expect(store.getAgent('main')?.snapshot()).toMatchObject({ toolCallCountKnown: false });
+      expect(await service.verifyTranscriptLiveCoverage('s1', 'main')).toBe(false);
+    } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  });
+
   it('does not certify a same-length same-line in-place rewrite of a trusted open wire', async () => {
     const home = await seedWireHome();
     const agents = new FakeAgents();
@@ -2326,6 +2378,46 @@ describe('TranscriptService live integration', () => {
       });
       service.dropSession('s1');
     } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('hands backfill replay state to live clear and pages without resurrecting removed conversation entities', async () => {
+    const home = await seedWireHomeWithTool(false);
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const service = new TranscriptService({ homeDir: home, core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
+    try {
+      const originalRead = service.readColdSnapshot.bind(service);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      vi.spyOn(service, 'readColdSnapshot').mockImplementation(async (...args) => { await gate; return originalRead(...args); });
+      const store = service.forSessionLive('s1')!;
+      const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      const records = [
+        { type: 'context.clear', time: 6_000 },
+        { type: 'turn.prompt', turnId: 1, promptId: 'new', input: [{ type: 'text', text: 'new' }], origin: { kind: 'user' }, time: 6_000 },
+      ];
+      for (const record of records) {
+        await appendFile(path, `${JSON.stringify(record)}\n`);
+        main.bus.emit(ev(record));
+      }
+      release();
+      await service.whenReady('s1');
+      const transcript = store.getAgent('main')!;
+      expect(transcript.getItems().filter((item) => item.kind === 'turn').map((turn) => turn.turnId)).toEqual(['t1']);
+      const delivery = { type: 'context.append_message', message: { id: 'followup', role: 'user', content: [{ type: 'text', text: 'followup' }], origin: { kind: 'user' } }, delivery: { deliveryId: 'followup-delivery', messageId: 'followup', origin: 'user' }, time: 6_001 };
+      await appendFile(path, `${JSON.stringify(delivery)}\n`);
+      main.bus.emit(ev(delivery));
+      expect(transcript.getTurn('t1')?.steps.flatMap((step) => step.frames).map((frame) => frame.frameId)).toContain('followup');
+      const clear = { type: 'context.clear', time: 7_000 };
+      await appendFile(path, `${JSON.stringify(clear)}\n`);
+      main.bus.emit(ev(clear));
+      expect(transcript.getItems().some((item) => item.kind === 'turn' || (item.kind === 'marker' && item.marker === 'message.delivery'))).toBe(false);
+      const paged = await service.readFullAgentSnapshot('s1', 'main', transcript);
+      expect(paged?.items.some((item) => item.kind === 'turn' || (item.kind === 'marker' && item.marker === 'message.delivery'))).toBe(false);
+    } finally {
+      await service.dispose();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
@@ -3769,6 +3861,22 @@ it('reads three cold pages of a few-record large source once, preserving canonic
   } finally { service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 });
 
+
+it.each(['beforeItem', 'afterItem'] as const)('honors the requested page size for %s marker continuations', async (direction) => {
+  const transcript = new AgentTranscript('main');
+  transcript.apply(Array.from({ length: 80 }, (_, index) => ({ op: 'marker.upsert' as const,
+    item: { kind: 'marker' as const, markerId: `m${index}`, marker: 'compaction' as const } })));
+  const service = {
+    forSessionLive: () => ({ agents: () => [] }), ensureAgentHistory: async () => transcript,
+    verifyTranscriptLiveCoverage: async () => false, isTranscriptLiveCoverageVerified: () => false,
+    getTranscriptCursor: () => ({ epoch: 'item-page-size', seq: 0 }),
+  } as unknown as TranscriptService;
+  const response = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', [direction]: 'marker:m40', pageSize: 20 });
+  expect(response?.items.map((item) => item.kind === 'marker' ? item.markerId : '')).toEqual(
+    Array.from({ length: 20 }, (_, index) => `m${index + (direction === 'beforeItem' ? 20 : 41)}`));
+  expect(response?.has_more).toBe(true);
+  expect(response?.next_cursor).toBe(direction === 'beforeItem' ? 'marker:m20' : 'marker:m60');
+});
 
 it.each([0, 12])('continues a budget-clipped resident baseline from its tail boundary without skipping early-marker history (%i trailing headers)', async (trailingHeaders) => {
   const full = new AgentTranscript('main');

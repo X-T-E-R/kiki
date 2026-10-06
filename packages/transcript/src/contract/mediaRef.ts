@@ -82,3 +82,9 @@ export function daemonFileRefFromPairingPart(
   if (ref === undefined) return undefined;
   return { kind: part.type === 'image_url' ? 'image' : 'video', ref };
 }
+
+/** Preserve an explicitly agent-scoped durable blob URL as the existing session-media file id. */
+export function sessionMediaIdFromBlobUrl(url: string): string | undefined {
+  const match = /^blobref:([A-Za-z0-9][A-Za-z0-9_-]{0,255})[/:]([0-9a-f]{64})$/u.exec(url);
+  return match === null ? undefined : `blobref:${match[1]}:${match[2]}`;
+}

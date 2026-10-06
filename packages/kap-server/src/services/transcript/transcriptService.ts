@@ -58,6 +58,7 @@ import {
   WIRE_READ_CHUNK_BYTES,
   type TranscriptBinding,
   type TranscriptBindingLogger,
+  type TranscriptReplayState,
   type WireRecordsIncompleteReason,
   type WireRecordsStreamOptions,
   type WireRecordsStreamResult,
@@ -168,7 +169,7 @@ interface LiveEntry {
 }
 
 interface AgentHistoryState {
-  status: 'pending' | 'complete' | 'failed';
+  status: 'pending' | 'complete' | 'unverified' | 'failed';
   failureSignature?: string;
 }
 
@@ -733,12 +734,15 @@ export class TranscriptService {
     this.dispatchToolCallCount(sessionId, transcript, undefined, true);
     const initialActiveTurnId = this.liveActiveTurnId(sessionId, agentId);
     let snapshot: AgentTranscriptSnapshot | undefined;
+    let replayState: TranscriptReplayState | undefined;
     let failed = false;
     try {
       snapshot = await this.readColdSnapshot(
         sessionId,
         agentId,
         () => this.liveActiveTurnIds(sessionId, agentId, initialActiveTurnId),
+        undefined,
+        (state) => { replayState = state; },
       );
       if (snapshot === undefined) failed = true;
       if (snapshot !== undefined) {
@@ -771,7 +775,6 @@ export class TranscriptService {
         if (result.accepted.length > 0) {
           this.dispatchOps(sessionId, { agentId, ops: result.accepted });
         }
-        failed = !snapshotToolCallCountKnown(snapshot);
       }
     } catch (error) {
       failed = true;
@@ -796,7 +799,8 @@ export class TranscriptService {
       });
     }
     const materialized = transcript.snapshot();
-    entry.agentToolCallStates.set(agentId, toolCallStateFromSnapshot({ ...materialized, toolCallCountKnown: !failed }));
+    const countKnown = !failed && snapshot !== undefined && snapshotToolCallCountKnown(snapshot);
+    entry.agentToolCallStates.set(agentId, toolCallStateFromSnapshot({ ...materialized, toolCallCountKnown: countKnown }));
     const failureSignature = failed
       ? await this.historyFailureSignature(sessionId, agentId)
       : undefined;
@@ -804,10 +808,10 @@ export class TranscriptService {
       entry.agentHistory.set(agentId, { status: 'failed', failureSignature });
       this.dispatchToolCallCount(sessionId, transcript, undefined, true);
     } else {
-      entry.agentHistory.set(agentId, { status: 'complete' });
-      this.dispatchToolCallCount(sessionId, transcript, countToolCallFrames(materialized.items), true);
+      entry.agentHistory.set(agentId, { status: countKnown ? 'complete' : 'unverified' });
+      this.dispatchToolCallCount(sessionId, transcript, countKnown ? countToolCallFrames(materialized.items) : undefined, true);
     }
-    entry.binding.finishReplay(agentId);
+    entry.binding.finishReplay(agentId, failed ? undefined : replayState);
     if (snapshot !== undefined) this.releaseDurableHistory(entry, agentId, snapshot);
   }
 
@@ -833,6 +837,7 @@ export class TranscriptService {
     let maintenance!: Promise<void>;
     maintenance = Promise.resolve().then(async () => {
       await wire.flush();
+      if (!await this.verifyTranscriptLiveCoverage(sessionId, agentId)) return;
       const snapshot = await this.readColdSnapshot(sessionId, agentId, () => this.liveActiveTurnIds(sessionId, agentId, undefined));
       if (snapshot !== undefined && this.live.get(sessionId) === entry && entry.agentWires.get(agentId) === wire) this.releaseDurableHistory(entry, agentId, snapshot);
     }).catch((error: unknown) => {
@@ -1503,6 +1508,7 @@ export class TranscriptService {
     agentId: string = MAIN_AGENT_ID,
     preserveOpenTurnIds?: () => readonly string[],
     signal?: AbortSignal,
+    captureReplayState?: (state: TranscriptReplayState) => void,
   ): Promise<AgentTranscriptSnapshot | undefined> {
     signal?.throwIfAborted();
     await this.live.get(sessionId)?.pendingDisposals.get(agentId);
@@ -1514,6 +1520,9 @@ export class TranscriptService {
         agentId,
         preserveOpenTurnIds,
         signal ?? new AbortController().signal,
+        undefined,
+        undefined,
+        captureReplayState,
       );
       this.assertReadableAgent(sessionId, agentId);
       return snapshot;
@@ -1855,6 +1864,7 @@ export class TranscriptService {
     signal: AbortSignal,
     limits?: TranscriptColdReadLimits,
     stats?: ColdSnapshotStats,
+    captureReplayState?: (state: TranscriptReplayState) => void,
   ): Promise<AgentTranscriptSnapshot | undefined> {
     const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
     if (summary === undefined) return undefined;
@@ -1997,6 +2007,7 @@ export class TranscriptService {
           ).catch(() => undefined);
         }
       }
+      captureReplayState?.({ adapter: adapter.checkpoint(), acceptedDurableFacts: reducer.checkpoint() });
       reducer.apply(adapter.finish());
       for (const turn of preservedTurns) transcript.apply(snapshotTurnOps(turn));
       const snapshot = transcript.snapshot();

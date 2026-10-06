@@ -1,6 +1,7 @@
 import type { TranscriptFact } from './reducer';
 import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
 import { projectTranscriptUserOrigin } from '../contract/origin';
+import { sessionMediaIdFromBlobUrl } from '../contract/mediaRef';
 import { todoNotesUpdateSchema, transcriptTaskSchema } from '../contract/schema';
 import type { AttachmentSource } from '../model/attachment';
 import { releaseFramePayload, releaseToolFramePayload, type MessageDelivery, type ToolCallFrame } from '../model/frame';
@@ -301,7 +302,7 @@ export class TranscriptWireAdapter {
     this.rememberProjection(operations, ordinal);
     return [
       {
-        factId: factId(record, ordinal),
+        factId: transcriptWireFactId(record, ordinal),
         durability: durableRecord(record.type) ? 'durable' : 'transient',
         operations,
       },
@@ -1089,7 +1090,7 @@ export class TranscriptWireAdapter {
       op: 'marker.upsert',
       item: {
         kind: 'marker',
-        markerId: `wire:v2:${record.type}:${factId(record, ordinal)}`,
+        markerId: `wire:v2:${record.type}:${transcriptWireFactId(record, ordinal)}`,
         marker,
         payload,
         at: isoOf(record.time),
@@ -2211,7 +2212,10 @@ function durableRecord(type: string): boolean {
   );
 }
 
-function factId(record: TranscriptWireRecord, ordinal: number): string {
+/** Returns the existing durable fact identity; records without a stable identity require their wire ordinal. */
+export function transcriptWireFactId(record: TranscriptWireRecord, ordinal: number): string;
+export function transcriptWireFactId(record: TranscriptWireRecord): string | undefined;
+export function transcriptWireFactId(record: TranscriptWireRecord, ordinal?: number): string | undefined {
   const explicit =
     stringOf(record['id']) ?? stringOf(record['uuid']) ?? stringOf(record['goalId']);
   if (explicit !== undefined) return explicit;
@@ -2221,7 +2225,7 @@ function factId(record: TranscriptWireRecord, ordinal: number): string {
     return `wire:v2:${record.type}:${stringOf(event?.['type']) ?? 'event'}:${eventIdentity}`;
   }
   return record.time === undefined
-    ? `wire:v2:r${ordinal}:${record.type}`
+    ? ordinal === undefined ? undefined : `wire:v2:r${ordinal}:${record.type}`
     : `wire:v2:${record.type}:t${record.time}:h${hashText(JSON.stringify(record))}`;
 }
 
@@ -2363,7 +2367,7 @@ function mediaOf(value: Readonly<Record<string, unknown>> | undefined):
   if (fileId !== undefined) return { kind, source: { kind: 'session_media', fileId }, name, size };
   const url = stringOf(ref?.['url']);
   if (url === undefined) return { kind, source: undefined, name, size };
-  const daemonRef = /^kimi-file:\/\/([^?]+)/.exec(url)?.[1];
+  const daemonRef = sessionMediaIdFromBlobUrl(url) ?? /^kimi-file:\/\/([^?]+)/.exec(url)?.[1];
   return {
     kind,
     source:
