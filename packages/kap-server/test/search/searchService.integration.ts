@@ -68,6 +68,7 @@ function makeSessionIndex(
     status: () => status,
     listRecent: list,
     get: async () => undefined,
+    archiveFamily: async () => [],
     count: async () => 0,
     remove: async () => {},
   };
@@ -2209,6 +2210,7 @@ describe('GlobalSearchService', () => {
         }),
         listRecent: async () => ({ items: summaries, nextCursor: undefined }),
         get: async (id) => byId.get(id),
+        archiveFamily: async () => [],
         count: async () => summaries.length,
         remove: async () => {},
       };

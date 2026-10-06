@@ -18,6 +18,8 @@ import { renderRoomPrompt, RoomService } from '#/app/room/roomService';
 import { IRoomService, type RoomDocument, type RoomLogEntry, type RoomMessage } from '#/app/room/room';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { ISessionMetadata as SessionMetadataId } from '#/session/sessionMetadata/sessionMetadata';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionActivityView, type SessionActivityState } from '#/session/sessionActivity/sessionActivity';
 
 class MemoryDocuments implements IAtomicDocumentStore {
@@ -114,7 +116,7 @@ function fakeMeta(id: string): ISessionMetadata {
   };
 }
 
-function setup(enabled = true, wakeError?: Error, flatListing = false): {
+function setup(enabled = true, wakeError?: Error, flatListing = false, personaReadDelayMs = 0): {
   service: IRoomService;
   calls: Array<{ target: ThreadRef; content: string; id: string }>;
   release(messageId: string): void;
@@ -122,6 +124,12 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
   deletePointer(roomId: string, messageId: string): Promise<void>;
   closeMember(sessionId: string): void;
   setActivity(sessionId: string, state: SessionActivityState): void;
+  setActivePrompt(sessionId: string, promptId: string | undefined): void;
+  personaReads(): number;
+  sessionIndexReads(): number;
+  readonly roomDeliveryCancellations: readonly (number | undefined)[];
+  readonly archivedSessions: readonly string[];
+  readonly abortedPrompts: readonly string[];
   legacyReads(): number;
   botEnabled(): boolean;
   seedRoom(room: RoomDocument): Promise<void>;
@@ -131,6 +139,12 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
   const logs = new MemoryAppendLog();
   const sessions = new Map<string, FakeSession>();
   const activities = new Map<string, SessionActivityState>();
+  const activePrompts = new Map<string, string>();
+  const abortedPrompts: string[] = [];
+  const archivedSessions: string[] = [];
+  const roomDeliveryCancellations: Array<number | undefined> = [];
+  let personaReadCount = 0;
+  let sessionIndexReadCount = 0;
   const summaries = new Map<string, { id: string; workspaceId: string; cwd: string; createdAt: number; updatedAt: number; archived: boolean; usage: { total: { inputOther: number; inputCacheRead: number; inputCacheCreation: number; output: number } } }>();
   const calls: Array<{ target: ThreadRef; content: string; id: string }> = [];
   const waiters = new Map<string, { resolve(): void; reject(error: Error): void }>();
@@ -141,16 +155,20 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
   const personas = {
     _serviceBrand: undefined,
     onDidChange: Event.None,
-    get: async (id: string) => ({
-      definition: {
-        id,
-        name: id === 'alpha' ? 'Alpha' : id === 'bravo' ? 'Bravo' : '阿澈',
-        greeting: id === 'alpha' ? 'Alpha 原始开场白。' : id === 'charlie' ? '阿澈 原始开场白。' : undefined,
-        job: `${id} job`,
-        description: `${id} persona`,
-      },
-      revision: 'r1',
-    }),
+    get: async (id: string) => {
+      personaReadCount++;
+      if (personaReadDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, personaReadDelayMs));
+      return {
+        definition: {
+          id,
+          name: id === 'alpha' ? 'Alpha' : id === 'bravo' ? 'Bravo' : '阿澈',
+          greeting: id === 'alpha' ? 'Alpha 原始开场白。' : id === 'charlie' ? '阿澈 原始开场白。' : undefined,
+          job: `${id} job`,
+          description: `${id} persona`,
+        },
+        revision: 'r1',
+      };
+    },
     list: async () => [],
     getState: async (id: string) => personaStates.get(id) ?? { version: 1 as const, archived: false },
     updateState: async (id: string, patch: { readonly archived?: boolean }) => {
@@ -164,11 +182,27 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
     create: async (options: { sessionId?: string }): Promise<ISessionScopeHandle> => {
       const id = options.sessionId!;
       const metadata = fakeMeta(id);
+      const prompt = {
+        list: () => ({ active: activePrompts.has(id) ? { id: activePrompts.get(id)! } : undefined }),
+        abort: (promptId: string) => {
+          abortedPrompts.push(`${id}:${promptId}`);
+          activePrompts.delete(id);
+          return true;
+        },
+      } as unknown as IAgentPromptService;
+      const agent = { accessor: { get: <T>(service: unknown) => service === IAgentPromptService ? prompt as T : undefined as T } };
+      const lifecycle = { list: () => activePrompts.has(id) ? [agent] : [] } as unknown as IAgentLifecycleService;
       const session: FakeSession = {
         id,
         kind: 'session',
         metadata,
-        accessor: { get: <T>(service: unknown) => (service === SessionMetadataId ? metadata : service === ISessionActivityView ? { state: () => activities.get(id) ?? { busy: false, mainTurnActive: false, pendingInteraction: 'none' } } : undefined as T) },
+        accessor: {
+          get: <T>(service: unknown) => service === SessionMetadataId
+            ? metadata as T
+            : service === ISessionActivityView
+              ? { state: () => activities.get(id) ?? { busy: false, mainTurnActive: false, pendingInteraction: 'none' } } as T
+              : service === IAgentLifecycleService ? lifecycle as T : undefined as T,
+        },
         dispose: () => {},
       } as unknown as FakeSession;
       sessions.set(id, session);
@@ -183,7 +217,7 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
       });
       return session;
     },
-    archive: async (id: string) => { sessions.delete(id); },
+    archive: async (id: string) => { archivedSessions.push(id); sessions.delete(id); },
     close: async (id: string) => { sessions.delete(id); },
     delete: async (id: string) => { sessions.delete(id); },
     get: (id: string) => sessions.get(id),
@@ -205,7 +239,7 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
       if (released.delete(input.messageId)) return;
       await new Promise<void>((resolve, reject) => waiters.set(input.messageId, { resolve, reject }));
     },
-    cancelRoomDeliveries: async () => {},
+    cancelRoomDeliveries: async (input: { generation?: number }) => { roomDeliveryCancellations.push(input.generation); },
   } as unknown as IThreadCommunicationService;
   const config = {
     _serviceBrand: undefined,
@@ -218,13 +252,16 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
   ix.set(IPersonaStore, personas);
   ix.set(ISessionManager, sessionManager);
   ix.stub(ISessionIndex, {
-    get: async (id: string) => summaries.get(id) ?? {
-      id,
-      workspaceId: 'workspace',
-      createdAt: 1,
-      updatedAt: 1,
-      archived: false,
-      usage: { total: { inputOther: 50, inputCacheRead: 20, inputCacheCreation: 0, output: 10 } },
+    get: async (id: string) => {
+      sessionIndexReadCount++;
+      return summaries.get(id) ?? {
+        id,
+        workspaceId: 'workspace',
+        createdAt: 1,
+        updatedAt: 1,
+        archived: false,
+        usage: { total: { inputOther: 50, inputCacheRead: 20, inputCacheCreation: 0, output: 10 } },
+      };
     },
   });
   ix.set(IThreadCommunicationService, thread);
@@ -242,6 +279,15 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
     calls,
     closeMember: (sessionId) => { sessions.delete(sessionId); },
     setActivity: (sessionId, state) => { activities.set(sessionId, state); },
+    setActivePrompt: (sessionId, promptId) => {
+      if (promptId === undefined) activePrompts.delete(sessionId);
+      else activePrompts.set(sessionId, promptId);
+    },
+    personaReads: () => personaReadCount,
+    sessionIndexReads: () => sessionIndexReadCount,
+    roomDeliveryCancellations,
+    archivedSessions,
+    abortedPrompts,
     legacyReads: () => logs.reads,
     botEnabled: () => enabled,
     seedRoom: (value) => documents.set(`rooms/${value.id}`, 'room.json', value),
@@ -286,6 +332,40 @@ describe('RoomService', () => {
     await expect(service.update(created.id, { name: ' ' })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
     await expect(service.update('missing', { pinned: true })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
     expect(legacyReads()).toBe(0);
+  });
+
+  it('skips persona card loading and member materialization for metadata-only archive updates', async () => {
+    const fixture = setup(true, undefined, false, 5);
+    const created = await fixture.room;
+    const before = { personaReads: fixture.personaReads(), sessionIndexReads: fixture.sessionIndexReads() };
+    await fixture.service.update(created.id, { name: 'Archived release', pinned: true, archived: true });
+    expect({ personaReads: fixture.personaReads(), sessionIndexReads: fixture.sessionIndexReads() }).toEqual(before);
+    expect(fixture.roomDeliveryCancellations).toEqual([0]);
+    expect((await fixture.service.get(created.id))?.members).toEqual(created.members);
+  });
+
+  it('cancels and stops an archived room without archiving members, then allows a fresh wake after restore', async () => {
+    const fixture = setup();
+    const created = await fixture.room;
+    await fixture.service.postUserMessage(created.id, { text: 'Start the current turn.' });
+    await eventually(() => fixture.calls.length === 1);
+    const member = created.members[0]!;
+    fixture.setActivePrompt(member.sessionId, 'room-prompt');
+    const archived = await fixture.service.update(created.id, { archived: true });
+    expect(archived.members).toEqual(created.members);
+    expect(fixture.roomDeliveryCancellations).toEqual([0, 1]);
+    expect(fixture.abortedPrompts).toEqual([`${member.sessionId}:room-prompt`]);
+    expect(fixture.archivedSessions).toEqual([]);
+    fixture.release(fixture.calls[0]!.id);
+    await fixture.service.drain(created.id);
+    await fixture.service.update(created.id, { archived: false });
+    await fixture.service.postUserMessage(created.id, { text: 'Resume after restore.' });
+    await eventually(() => fixture.calls.length === 2);
+    fixture.release(fixture.calls[1]!.id);
+    await fixture.service.drain(created.id);
+    const independent = await fixture.service.createFromThreads({ id: 'independent-thread-room', name: 'Independent', workspace: '/workspace', sessionIds: ['thread-a', 'thread-b'] });
+    await fixture.service.update(independent.id, { archived: true });
+    expect(fixture.archivedSessions).toEqual([]);
   });
 
   it('returns only the observed page high-water and does not count metadata as new activity', async () => {

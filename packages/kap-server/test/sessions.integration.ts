@@ -190,6 +190,118 @@ describe('server-v2 /api/sessions', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
+  it('archives the authoritative attached family across cold pages and workspaces while preserving promoted subtrees', async () => {
+    const core = server!.core.accessor;
+    const manager = core.get(ISessionManager);
+    const index = core.get(ISessionIndex);
+    await index.prepare();
+    const root = await manager.create({ sessionId: 'family-root', workDir: home! });
+    const rootDir = root.accessor.get(ISessionContext).sessionDir;
+    const workspaceId = root.accessor.get(ISessionContext).workspaceId;
+    const docs = core.get(IAtomicDocumentStore);
+    const scope = (id: string, workspace = workspaceId) => `sessions/${workspace}/${id}`;
+    const put = (id: string, custom: Record<string, unknown>, workspace = workspaceId, archived = false) => docs.set(scope(id, workspace), 'state.json', {
+      version: 2, id, cwd: home, createdAt: 1, updatedAt: 1, archived, archivedAt: archived ? 7 : undefined, custom,
+      agents: { main: { model: 'fixture-model', personaId: 'fixture-persona' } },
+      worktree: { worktreeId: 'fixture-worktree', branch: 'fixture-branch', sourceRoot: home, baseRef: 'HEAD' },
+    });
+    for (let i = 0; i < 105; i++) await put(`family-child-${i}`, { created_by_session_id: root.id });
+    await put('family-deep', { child_session_kind: 'child', parent_session_id: 'family-child-104' }, 'other-workspace');
+    await put('family-promoted', { created_by_session_id: root.id });
+    await put('family-promoted-child', { created_by_session_id: 'family-promoted' });
+    await put('family-fork', { parent_session_id: root.id });
+    await put('family-sibling', { created_by_session_id: 'other-root' });
+    await put('family-historical-archived', { created_by_session_id: root.id }, workspaceId, true);
+    const events: string[] = [];
+    const subscription = core.get(IEventService).onDidPublish((event) => { if (event.type === 'event.session.archived') events.push((event as unknown as { payload: { sessionId: string } }).payload.sessionId); });
+    const body = { include_attached: true, exclude_session_ids: ['family-promoted', root.id] };
+    try {
+      const first = await postJson<{ archived: boolean; outcomes: { id: string; ok: boolean }[] }>(`/api/sessions/${root.id}:archive`, body);
+      expect(first.body.code).toBe(0);
+      expect(first.body.data.archived).toBe(true);
+      expect(first.body.data.outcomes).toHaveLength(108);
+      expect(first.body.data.outcomes.every((item) => item.ok)).toBe(true);
+      expect(JSON.parse(await readFile(join(rootDir, 'state.json'), 'utf8')).archived).toBe(true);
+      expect(await docs.get(scope('family-deep', 'other-workspace'), 'state.json')).toMatchObject({ archived: true });
+      for (const id of ['family-promoted', 'family-promoted-child', 'family-fork', 'family-sibling']) {
+        expect(await docs.get(scope(id), 'state.json')).toMatchObject({ archived: false });
+      }
+      expect(await index.get('family-child-104')).toMatchObject({ archived: true, personaId: 'fixture-persona', worktree: { worktreeId: 'fixture-worktree' } });
+      expect(events).toHaveLength(107);
+      const defaultList = await getJson<PageWire>('/api/sessions');
+      expect(defaultList.body.data.items.map((item) => item.id).toSorted()).toEqual(['family-fork', 'family-promoted', 'family-promoted-child', 'family-sibling']);
+      let archivedList = await getJson<PageWire>('/api/sessions?archived_only=true&page_size=100');
+      expect(archivedList.body.data.has_more).toBe(true);
+      const archivedIds = archivedList.body.data.items.map((item) => item.id);
+      while (archivedList.body.data.has_more) {
+        const cursor = archivedList.body.data.items.at(-1)!.id;
+        archivedList = await getJson<PageWire>(`/api/sessions?archived_only=true&page_size=100&before_id=${cursor}`);
+        archivedIds.push(...archivedList.body.data.items.map((item) => item.id));
+      }
+      expect(archivedIds.toSorted()).toEqual(first.body.data.outcomes.map((item) => item.id).toSorted());
+      const retry = await postJson<{ archived: boolean }>(`/api/sessions/${root.id}:archive`, body);
+      expect(retry.body.data.archived).toBe(true);
+      expect(events).toHaveLength(107);
+      expect(await docs.get(scope('family-historical-archived'), 'state.json')).toMatchObject({ archivedAt: 7 });
+      const promoted = await postJson<{ archived: boolean; outcomes: { id: string }[] }>('/api/sessions/family-promoted:archive', body);
+      expect(promoted.body.data.outcomes.map((item) => item.id).toSorted()).toEqual(['family-promoted', 'family-promoted-child']);
+      expect(promoted.body.data.archived).toBe(true);
+      const restored = await postJson<SessionWire>(`/api/sessions/${root.id}:restore`);
+      expect(restored.body.data.archived).toBe(false);
+      expect(await docs.get(scope('family-child-0'), 'state.json')).toMatchObject({ archived: true });
+    } finally { subscription.dispose(); }
+  });
+
+  it('reports unfinished family items, keeps fresh lists and safely retries concurrent archive requests', async () => {
+    const core = server!.core.accessor;
+    await core.get(ISessionIndex).prepare();
+    const manager = core.get(ISessionManager);
+    const root = await manager.create({ sessionId: 'retry-family-root', workDir: home! });
+    const child = await manager.create({ sessionId: 'retry-family-child', workDir: home! });
+    await child.accessor.get(ISessionMetadata).update({ custom: { created_by_session_id: root.id } });
+    const childDir = child.accessor.get(ISessionContext).sessionDir;
+    await manager.close(child.id);
+    const docs = core.get(IAtomicDocumentStore);
+    const set = docs.set.bind(docs);
+    let failed = false;
+    const writing = vi.spyOn(docs, 'set').mockImplementation(async (scope, key, value) => {
+      if (!failed && scope.endsWith(`/${child.id}`) && (value as { archived?: boolean }).archived) { failed = true; throw new Error('injected child archive write failure'); }
+      await set(scope, key, value);
+    });
+    const first = await postJson<{ archived: boolean; outcomes: unknown[] }>(`/api/sessions/${root.id}:archive`, { include_attached: true });
+    expect(first.body.code).toBe(0);
+    expect(first.body.data.archived).toBe(false);
+    expect(first.body.data.outcomes).toContainEqual({ id: child.id, ok: false, reason: 'error', message: 'injected child archive write failure' });
+    expect(JSON.parse(await readFile(join(childDir, 'state.json'), 'utf8')).archived).toBe(false);
+    const fresh = await getJson<PageWire>('/api/sessions');
+    expect(fresh.body.data.items.map((item) => item.id)).toEqual([child.id]);
+    writing.mockRestore();
+    const retries = await Promise.all([1, 2].map(() => postJson<{ archived: boolean }>(`/api/sessions/${root.id}:archive`, { include_attached: true })));
+    expect(retries.map((item) => item.body.data.archived)).toEqual([true, true]);
+    expect(JSON.parse(await readFile(join(childDir, 'state.json'), 'utf8')).archived).toBe(true);
+    expect((await getJson<PageWire>('/api/sessions')).body.data.items).toEqual([]);
+    expect(manager.residencyReport?.()).toMatchObject({ lifecycleOperations: 0 });
+  });
+
+  it('fails family discovery before mutation when authoritative metadata is unreadable', async () => {
+    const core = server!.core.accessor;
+    const manager = core.get(ISessionManager);
+    const root = await manager.create({ sessionId: 'unreadable-family-root', workDir: home! });
+    const child = await manager.create({ sessionId: 'unreadable-family-child', workDir: home! });
+    await child.accessor.get(ISessionMetadata).update({ custom: { created_by_session_id: root.id } });
+    const docs = core.get(IAtomicDocumentStore);
+    const get = docs.get.bind(docs);
+    vi.spyOn(docs, 'get').mockImplementation(async (scope, key) => {
+      if (scope.endsWith(`/${child.id}`) && key === 'state.json') throw new Error('injected unreadable metadata');
+      return get(scope, key);
+    });
+    const result = await postJson<unknown>(`/api/sessions/${root.id}:archive`, { include_attached: true });
+    expect(result.body.code).not.toBe(0);
+    expect(result.body.msg).toContain(child.id);
+    expect((await root.accessor.get(ISessionMetadata).read()).archived).toBe(false);
+    expect((await child.accessor.get(ISessionMetadata).read()).archived).toBe(false);
+  });
+
   it('downloads a ZIP with the supplied Web log and cleans up its temporary directory', async () => {
     const created = await postJson<SessionWire>('/api/sessions', {
       metadata: { cwd: home as string },

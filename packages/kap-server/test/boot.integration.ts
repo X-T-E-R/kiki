@@ -85,6 +85,7 @@ function stubSessionIndex(prepare: ISessionIndex['prepare']): ISessionIndex {
     onDidChangeStatus: Event.None as ISessionIndex['onDidChangeStatus'],
     status: () => ({ source: 'read-model', state: 'uninitialized', degradedCount: 0 }),
     get: async () => undefined,
+    archiveFamily: async () => [],
     listRecent: async () => ({ items: [] }),
     count: async () => 0,
     remove: async () => {},

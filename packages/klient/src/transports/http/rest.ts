@@ -230,8 +230,8 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       applyPersonaSettings: (sessionId: string, input = {}) => transport.json<import('@kiki/protocol').SessionPersonaSettings>(
         `/sessions/${encodeURIComponent(sessionId)}/persona-settings`, { method: 'POST', body: input },
       ),
-      archive: (sessionId: string) => transport.json('/sessions/' + encodeURIComponent(sessionId) + ':archive', {
-        method: 'POST', body: {},
+      archive: (sessionId: string, options: import('@kiki/protocol').ArchiveSessionRequest = {}) => transport.json('/sessions/' + encodeURIComponent(sessionId) + ':archive', {
+        method: 'POST', body: options,
       }),
       restore: (sessionId: string) => transport.json('/sessions/' + encodeURIComponent(sessionId) + ':restore', {
         method: 'POST', body: {},

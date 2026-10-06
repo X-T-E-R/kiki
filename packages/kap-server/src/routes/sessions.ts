@@ -50,6 +50,7 @@ import {
   getLiveSessionById,
   programForSession,
   setSessionArchivedBatch,
+  archiveSessionFamily,
   isError2,
   Error2,
   type ContextMessage,
@@ -211,6 +212,8 @@ const sessionActionRequestSchema = z.preprocess(
   z.object({
     title: z.string().min(1).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
+    include_attached: z.boolean().optional(),
+    exclude_session_ids: z.array(z.string().min(1)).max(100_000).optional(),
     instruction: z.string().optional(),
     strategy: z.enum(['summarize', 'relay']).optional(),
     count: z.number().int().positive().optional(),
@@ -1131,6 +1134,13 @@ export function registerSessionsRoutes(
           return;
         }
 
+        if (req.body.include_attached === true) {
+          const outcomes = await archiveSessionFamily(core.accessor, parsed.id, req.body.exclude_session_ids);
+          const archived = outcomes.every((outcome) => outcome.ok);
+          requestLog(req)?.info({ session_id: parsed.id, action: 'archive', archived, family_count: outcomes.length }, 'session family archive completed');
+          reply.send(okEnvelope({ archived, outcomes }, req.id));
+          return;
+        }
         const archiveOutcome = (await setSessionArchivedBatch(core.accessor, [parsed.id], true))[0]!;
         if (!archiveOutcome.ok) {
           if (archiveOutcome.reason === 'not_found') {

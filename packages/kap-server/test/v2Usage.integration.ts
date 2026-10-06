@@ -75,6 +75,7 @@ function stubSessionIndex(): ISessionIndex {
       };
     },
     get: async (id) => summaries.find((item) => item.id === id),
+    archiveFamily: async () => [],
     count: async () => summaries.length,
     remove: async () => {},
   };

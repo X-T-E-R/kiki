@@ -85,6 +85,43 @@ describe('KikiClient skill and text preview reading options', () => {
   });
 });
 
+describe('KikiClient attached archive adapter', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('sends family scope and explicit exclusions without resuming a cold session', async () => {
+    const result = { archived: true, outcomes: [{ id: 's1', ok: true }] };
+    const fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe('http://example.test/api/sessions/s1:archive');
+      expect(JSON.parse(init!.body as string)).toEqual({ include_attached: true, exclude_session_ids: ['promoted'] });
+      return Response.json({ code: 0, msg: 'success', data: result });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(client.archiveSession('s1', { exclude_session_ids: ['promoted'] })).resolves.toEqual(result);
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally { await client.klient.close(); }
+  });
+  it('rejects partial failure with the unfinished id and succeeds on retry', async () => {
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ code: 0, msg: 'success', data: ++calls === 1
+      ? { archived: false, outcomes: [{ id: 's1', ok: true }, { id: 'child', ok: false, reason: 'error', message: 'write failed' }] }
+      : { archived: true, outcomes: [{ id: 's1', ok: true }, { id: 'child', ok: true }] } })));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(client.archiveSession('s1')).rejects.toThrow('child: write failed');
+      await expect(client.archiveSession('s1')).resolves.toMatchObject({ archived: true });
+    } finally { await client.klient.close(); }
+  });
+  it('does not silently confirm a family on an old server but permits explicit single archive', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ code: 0, msg: 'success', data: { archived: true } })));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(client.archiveSession('s1')).rejects.toThrow('cannot confirm');
+      await expect(client.archiveSession('s1', { include_attached: false })).resolves.toEqual({ archived: true });
+    } finally { await client.klient.close(); }
+  });
+});
+
 describe('KikiClient cold-session actions', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
   const actions = [

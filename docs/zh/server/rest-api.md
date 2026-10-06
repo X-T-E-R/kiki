@@ -201,6 +201,12 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 
 读取会话时，已提交的 `agent_config.execution` 绑定为 `{ version: 1, selection, effective, sources, generation }`。来源取 `session`、`profile`、`harness-settings`、`harness-default`；有效模型或档位未设置表示 Kiki 没有指定，而不是 harness 没有使用模型。厂商报告的模型是观测值，不会变成新的覆盖。空闲时也可通过 `POST /api/sessions/{session_id}/profile` 的 `agent_config.execution` 修改；运行中请随下一条提示词提交选择。
 
+#### `POST /api/sessions/{session_id}:archive`
+
+空请求体保留单会话归档行为。发送 `{ "include_attached": true, "exclude_session_ids": ["independent-thread-id"] }` 可归档仍附属的整组对话。服务器跨所有工作区读取持久元数据，不依赖客户端已加载的页面。`created_by_session_id` 表示创建的线程；`parent_session_id` 只有同时带 `child_session_kind: "child"` 才算附属，普通 fork 不包含在内。排除某个线程会排除其整棵子树；排除请求中的根线程 ID 不会排除根自身。
+
+整组请求返回 `data: { archived, outcomes }`。`archived: true` 确认全部目标已归档；每项结果为 `{ id, ok: true }` 或 `{ id, ok: false, reason, message }`。部分失败时，即使信封 code 为 `0`，`archived` 仍为 `false`；保留成功项，重试完成未归档项。归属发现失败会在任何归档改动之前返回错误。无论成功或失败，都应刷新列表。旧服务器未返回 `outcomes` 时不能确认整组归档。归档不删除历史或 worktree；`:restore` 只恢复请求中的会话。既有批量归档端点仍只操作传入的 ID。
+
 #### `POST /api/sessions/{session_id}:compact`
 
 请求体可以省略。它接受 `instruction`（要保留什么）和 `strategy`，取值为服务端实现的两种续上下文策略 `summarize` 或 `relay`。请求到达时会话空闲就直接开始压缩；仍有模型响应或工具结果正在落进历史时则先排队，等那部分工作结束后的下一个 step 边界处理，不用等整个轮次。

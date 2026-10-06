@@ -397,7 +397,7 @@ export interface HttpRestFacade {
     updateProfile(sessionId: string, body: UpdateSessionProfileRequest): Promise<Session>;
     getPersonaSettings(sessionId: string): Promise<import('@kiki/protocol').SessionPersonaSettings>;
     applyPersonaSettings(sessionId: string, input?: import('@kiki/protocol').ApplyPersonaSettingsRequest): Promise<import('@kiki/protocol').SessionPersonaSettings>;
-    archive(sessionId: string): Promise<ArchiveSessionResponse>;
+    archive(sessionId: string, options?: import('@kiki/protocol').ArchiveSessionRequest): Promise<ArchiveSessionResponse>;
     restore(sessionId: string): Promise<RestoreSessionResponse>;
     goal(sessionId: string): Promise<GoalSnapshot | null>;
     listMessages(

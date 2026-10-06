@@ -123,6 +123,7 @@ function stubSessionIndex(summaries: SessionSummary[]): ISessionIndex {
       return { items, nextCursor: undefined };
     },
     get: async (id) => summaries.find((summary) => summary.id === id),
+    archiveFamily: async () => [],
     count: async () => summaries.length,
     remove: async () => {},
   };

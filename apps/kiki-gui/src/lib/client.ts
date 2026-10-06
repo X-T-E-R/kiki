@@ -1346,8 +1346,19 @@ export class KikiClient {
     return this.run(() => this.rest.sessions.applyPersonaSettings(sessionId, input));
   }
 
-  archiveSession(sessionId: string): Promise<ArchiveSessionResponse> {
-    return this.run(() => this.rest.sessions.archive(sessionId));
+  archiveSession(sessionId: string, options: import('@kiki/protocol').ArchiveSessionRequest = {}): Promise<ArchiveSessionResponse> {
+    return this.run(async () => {
+      const includeAttached = options.include_attached ?? true;
+      const result = await this.rest.sessions.archive(sessionId, { ...options, include_attached: includeAttached });
+      if (includeAttached && result.outcomes === undefined) {
+        throw new Error('The connected server cannot confirm archiving attached conversations. Refresh the list and update the server before retrying.');
+      }
+      if (!result.archived || result.outcomes?.some((outcome) => !outcome.ok)) {
+        const failed = result.outcomes?.filter((outcome) => !outcome.ok).map((outcome) => `${outcome.id}: ${outcome.message}`).join('; ');
+        throw new Error(`Some conversations could not be archived. Retry to finish archiving${failed ? `: ${failed}` : '.'}`);
+      }
+      return result;
+    });
   }
 
   restoreSession(sessionId: string): Promise<RestoreSessionResponse> {

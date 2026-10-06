@@ -201,6 +201,12 @@ The selection is `{ executor, profile?, overrides? }`. Omit `profile` for direct
 
 Session reads return the committed `agent_config.execution` binding as `{ version: 1, selection, effective, sources, generation }`. Sources are `session`, `profile`, `harness-settings` or `harness-default`; an absent effective model or effort means Kiki has not selected one, not that the harness has none. A reported vendor model is an observation, not a new override. Idle updates can also use `POST /api/sessions/{session_id}/profile` with `agent_config.execution`; while running, submit the selection with the next prompt instead.
 
+#### `POST /api/sessions/{session_id}:archive`
+
+An empty body keeps the single-session behavior. Send `{ "include_attached": true, "exclude_session_ids": ["independent-thread-id"] }` to archive the attached family. The server reads persisted metadata across all workspaces, not the client's loaded page. `created_by_session_id` records a created thread; `parent_session_id` counts only with `child_session_kind: "child"`, so ordinary forks are not included. Each excluded thread cuts its whole subtree; excluding the requested root does not exclude that root.
+
+Family requests return `data: { archived, outcomes }`. `archived: true` confirms all target sessions; each outcome is `{ id, ok: true }` or `{ id, ok: false, reason, message }`. Partial failure returns `archived: false` even when the envelope code is `0`; keep the successful items and retry the unfinished ones. Discovery failure returns an error before any archive mutation. Refresh the list after either result. Older servers without `outcomes` cannot confirm a family archive. Archive does not delete history or worktrees; `:restore` restores only the requested session. The existing batch archive endpoint still acts only on its supplied IDs.
+
 #### `POST /api/sessions/{session_id}:compact`
 
 The body is optional. It accepts `instruction` (what to preserve) and `strategy`, which is `summarize` or `relay` — the two renewal strategies the server implements. A session that was idle when the request arrives starts compressing immediately; one with a model call or tool result still landing in its history is queued, and Kiki processes it at the next step boundary once that work has finished, without waiting for the whole turn.

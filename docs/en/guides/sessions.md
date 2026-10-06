@@ -91,7 +91,9 @@ You can manage sessions without leaving the terminal. The following slash comman
 
 ## GUI session recovery and activity
 
-A thread created by another thread nests under its creator by default. **Show at top level** in the row's menu lifts it into its own top-level row, and **Show nested** puts it back. This is display only — the creator relationship stays as it is, and the choice survives a refresh or restart in the same browser or desktop space. The same menu also offers **Copy thread link** for a link to that thread, and **Add to conversation** to drop a reference to it into the conversation you currently have open.
+A thread created by another thread nests under its creator by default. **Show at top level** in the row's menu lifts it into its own top-level row, and **Show nested** puts it back. The creator relationship stays recorded, and the choice survives a refresh or restart in the same browser or desktop space. The same menu also offers **Copy thread link** for a link to that thread, and **Add to conversation** to drop a reference to it into the conversation you currently have open.
+
+Archiving a thread also archives its attached conversations, including deeper descendants and conversations not loaded in the sidebar. A thread explicitly shown at top level, together with its descendants, stays independent when its ancestor is archived; archiving that top-level thread itself still includes its attached conversations. A filter or workspace group that merely displays a child as a top-level row does not make it independent. Archive preserves history and does not remove worktrees. If only some conversations are archived, retry to finish the remaining ones. Restoring a thread restores only that thread, not every previously archived descendant.
 
 The sidebar sorts threads by their own update time. A thread shown at top level keeps its own position and time group: activity in it does not move its parent, and activity in the parent does not carry it along. Nested threads still follow their creator's row.
 

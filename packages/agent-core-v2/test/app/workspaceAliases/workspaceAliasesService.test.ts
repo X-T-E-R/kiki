@@ -45,6 +45,7 @@ function emptySessionIndex(): ISessionIndex {
     onDidChangeStatus: Event.None as ISessionIndex['onDidChangeStatus'],
     status: () => ({ source: 'authoritative', state: 'uninitialized', degradedCount: 0 }),
     get: async () => undefined,
+    archiveFamily: async () => [],
     listRecent: async () => ({ items: [] }),
     count: async () => 0,
     remove: async () => {},

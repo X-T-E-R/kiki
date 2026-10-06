@@ -884,6 +884,7 @@ function registerSessionExportServices(
     status: () => ({ source: 'authoritative' as const, state: 'uninitialized' as const, degradedCount: 0 }),
     listRecent: async () => ({ items: options.summary === undefined ? [] : [options.summary] }),
     get: async () => options.summary,
+    archiveFamily: async () => [],
     count: async () => (options.summary === undefined || options.summary.archived ? 0 : 1),
     remove: async () => {},
   });

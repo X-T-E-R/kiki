@@ -137,6 +137,7 @@ function fixture(
       };
     },
     get: async (id) => sessions.find((session) => session.id === id),
+    archiveFamily: async () => [],
     count: async () => sessions.length,
     remove: async () => {},
   };

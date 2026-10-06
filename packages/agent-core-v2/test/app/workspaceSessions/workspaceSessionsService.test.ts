@@ -51,6 +51,8 @@ class FakeSessionIndex implements ISessionIndex {
     return this.countResult;
   }
 
+  async archiveFamily(): Promise<SessionSummary[]> { return []; }
+
   async remove(_id: string): Promise<void> {}
 }
 

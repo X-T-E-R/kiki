@@ -228,8 +228,18 @@ export const undoSessionResponseSchema = z.object({
 });
 export type UndoSessionResponse = z.infer<typeof undoSessionResponseSchema>;
 
+export const archiveSessionRequestSchema = z.object({
+  include_attached: z.boolean().optional(),
+  exclude_session_ids: z.array(z.string().min(1)).max(100_000).optional(),
+});
+export type ArchiveSessionRequest = z.infer<typeof archiveSessionRequestSchema>;
+
 export const archiveSessionResponseSchema = z.object({
-  archived: z.literal(true),
+  archived: z.boolean(),
+  outcomes: z.array(z.discriminatedUnion('ok', [
+    z.object({ id: z.string(), ok: z.literal(true) }),
+    z.object({ id: z.string(), ok: z.literal(false), reason: z.enum(['not_found', 'error']), message: z.string() }),
+  ])).optional(),
 });
 export type ArchiveSessionResponse = z.infer<typeof archiveSessionResponseSchema>;
 

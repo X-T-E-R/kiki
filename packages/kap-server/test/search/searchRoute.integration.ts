@@ -59,6 +59,7 @@ function stubSessionIndex(summaries: SessionSummary[]): ISessionIndex {
     status: () => ({ source: 'authoritative', state: 'uninitialized', degradedCount: 0 }),
     listRecent: async () => ({ items: summaries, nextCursor: undefined }),
     get: async () => undefined,
+    archiveFamily: async () => [],
     count: async () => summaries.length,
     remove: async () => {},
   };

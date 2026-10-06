@@ -111,6 +111,7 @@ describe('kap-server cold start', () => {
       onDidChangeStatus: Event.None as ISessionIndex['onDidChangeStatus'],
       status: () => status,
       get: async () => undefined,
+      archiveFamily: async () => [],
       listRecent: async () => ({ items: [], nextCursor: undefined }),
       count: async () => 0,
       remove: async () => {},

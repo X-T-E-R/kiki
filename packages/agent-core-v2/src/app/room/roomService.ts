@@ -343,8 +343,16 @@ export class RoomService extends Disposable implements IRoomService {
     await this.validateMembers(addedInputs);
     const host = input.host ?? current.host;
     if (requested.length > 0 && !requested.some((member) => roomMemberId(member) === host)) invalid('Room host must be a member.');
-    const cards = await this.loadPersonaCards(requested);
-    const added = await this.materializeMembers(roomId, addedInputs, workspace, renderRoomPrompt({ name, members: requested, host, cards }));
+    const added = addedInputs.length === 0
+      ? []
+      : await this.materializeMembers(
+        roomId,
+        addedInputs,
+        workspace,
+        addedInputs.some((member) => member.kind !== 'thread')
+          ? renderRoomPrompt({ name, members: requested, host, cards: await this.loadPersonaCards(requested) })
+          : '',
+      );
     const members = requested.map((member): RoomMember => {
       const existing = current.members.find((candidate) => candidate.kind === (member.kind ?? 'persona') && roomMemberId(candidate) === roomMemberId(member));
       if (existing === undefined) return added.find((candidate) => roomMemberId(candidate) === roomMemberId(member))!;
