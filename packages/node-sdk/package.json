@@ -78,7 +78,7 @@
     "@kiki/plugin-sdk": "workspace:*",
     "@kiki/transcript": "workspace:^",
     "@kiki/transcript-live": "workspace:^",
-    "@nb-corp/nb-search": "file:../../vendor/nb-corp-nb-search-0.5.0-next.3.tgz",
+    "@nb-corp/nb-search": "file:../../vendor/nb-corp-nb-search-0.5.0-next.4.tgz",
     "own-work": "file:../../vendor/own-work-0.1.1-kiki-7a5fb754.tgz",
     "pathe": "^2.0.3",
     "smol-toml": "^1.6.1",
