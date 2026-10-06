@@ -192,6 +192,7 @@ export function rosterFromSnapshotSubagents(
         nameSource: subagent.name_source,
         refreshing: subagent.refreshing,
         refreshingUntil: subagent.refreshing_until,
+        detached: subagent.run_in_background,
         disposedAt: subagent.live === false ? startedAt : undefined,
         toolCallCount: subagent.tool_call_count,
         toolCallCountKnown: subagent.tool_call_count === undefined ? undefined : true,

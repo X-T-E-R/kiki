@@ -97,6 +97,7 @@ export interface AgentRosterDescriptor {
   readonly nameSource?: SnapshotNameSource;
   readonly refreshing?: boolean;
   readonly refreshingUntil?: string;
+  readonly detached?: boolean;
   readonly busy?: boolean;
   readonly toolCallCount?: number;
   readonly toolCallCountKnown?: boolean;
@@ -832,9 +833,12 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
     (refreshingAt === undefined ||
       ((draft.statusStartedAt === undefined || draft.statusStartedAt <= refreshingAt) &&
         (draft.statusEndedAt === undefined || draft.statusEndedAt <= refreshingAt)));
-  const status = normalizeStatus(entry.status);
+  const status = normalizeStatus(entry.status, entry.detached === true);
   const authority = entry.statusSource === undefined ? STATUS_AUTHORITY.roster : 4;
-  const inactive = entry.statusSource !== undefined && (status === 'idle' || status === 'unknown');
+  const metadataIdentityOnly = entry.statusSource === 'metadata' && status === 'unknown';
+  const inactiveAt = parseStatusTimestamp(entry.endedAt ?? entry.startedAt);
+  const inactiveIsOlder = inactiveAt !== undefined && draft.statusStartedAt !== undefined && inactiveAt < draft.statusStartedAt;
+  const inactive = entry.statusSource !== undefined && !metadataIdentityOnly && !inactiveIsOlder && (status === 'idle' || status === 'unknown');
   if (inactive) {
     draft.status = status;
     draft.statusAuthority = authority;

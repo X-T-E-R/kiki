@@ -1032,6 +1032,65 @@ describe('transcript authority projection', () => {
     });
   });
 
+  it('preserves detached snapshot activity without needing a materialized task', () => {
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([['main', emptySnapshot()]]);
+    const rows = [compactSnapshotSubagent({
+      id: CHILD_AGENT_ID,
+      agent_id: CHILD_AGENT_ID,
+      status: 'running',
+      subagent_phase: 'working',
+      live: true,
+      run_in_background: true,
+      started_at: FIXED_AT_1,
+    })];
+    expect(rosterFromSnapshotSubagents(rows)[0]?.detached).toBe(true);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, rows).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'background', busy: true,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...rows[0]!, live: false }]).byId[CHILD_AGENT_ID]).toBeUndefined();
+  });
+
+  it('keeps durable task completion over cold identity-only metadata without locking a later run', () => {
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([['main', emptySnapshot({ tasks: [{
+      taskId: 'completed-dispatch', kind: 'subagent', state: 'completed', detached: true,
+      agentId: CHILD_AGENT_ID, description: 'Inspect the protocol', outputTail: '',
+      startedAt: FIXED_AT_1, endedAt: FIXED_AT_2,
+    }] })]]);
+    const row = compactSnapshotSubagent({
+      id: CHILD_AGENT_ID, agent_id: CHILD_AGENT_ID, status: 'running',
+      activity_status: 'unknown', status_source: 'metadata', live: false,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [row]).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'completed', busy: false,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
+      activity_status: 'running', status_source: 'runtime', live: true,
+      subagent_phase: 'queued', run_in_background: true,
+      started_at: '2026-01-01T00:00:03.000Z',
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'background', busy: true });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
+      activity_status: 'idle', status_source: 'runtime', live: true,
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'idle', busy: false });
+  });
+
+  it('does not let a pre-launch runtime idle row overwrite the newer detached task', () => {
+    const startedAt = '2026-01-01T00:00:03.000Z';
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([['main', emptySnapshot({ tasks: [{
+      taskId: 'new-dispatch', kind: 'subagent', state: 'running', detached: true,
+      agentId: CHILD_AGENT_ID, description: 'Inspect the protocol', outputTail: '', startedAt,
+    }] })]]);
+    const row = compactSnapshotSubagent({
+      id: CHILD_AGENT_ID, agent_id: CHILD_AGENT_ID, status: 'running',
+      activity_status: 'idle', status_source: 'runtime', live: true, started_at: FIXED_AT_2,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [row]).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'background', busy: true,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
+      started_at: startedAt, completed_at: '2026-01-01T00:00:04.000Z',
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'idle', busy: false });
+  });
+
   it('lets a run that starts after the retained row revive the forest node', () => {
     const snapshots = new Map<string, AgentTranscriptSnapshot>([
       [
