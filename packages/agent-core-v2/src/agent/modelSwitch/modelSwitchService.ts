@@ -99,7 +99,7 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
       this.assertSameInput(completed.input, input);
       if (this.confirmedCompletions.get(input.operationId) === completed.receipt) return completed.receipt;
     }
-    const quiescence = this.compaction.isCompacting() ? undefined : this.loop.tryAcquireQuiescence();
+    const quiescence = this.compaction.isCompacting() ? undefined : this.loop.tryAcquireQuiescence({ pendingSteps: 'preserve' });
     if (quiescence === undefined) return Promise.reject(new Error2(ErrorCodes.TURN_AGENT_BUSY, 'Model switching requires an idle agent.'));
     const receipt: ModelSwitchReceipt = completed === undefined
       ? { operationId: input.operationId, agentId: this.scope.agentId, state: 'preparing', fromModel: this.profile.getModel(), toModel: input.model, mode: input.mode }
@@ -181,7 +181,7 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
       if (this.states.get(modelSwitchCompletionsKey).has(active.input.operationId)) return this.recovering(active, error);
       active.receipt = { ...active.receipt, state: signal.aborted ? 'cancelled' : 'failed', error: this.errorPayload(error) };
       this.active = undefined;
-      active.quiescence.dispose();
+      await active.quiescence.dispose();
       this.changes.fire(active.receipt);
       return active.receipt;
     }
@@ -207,7 +207,7 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
       this.confirmedCompletions.set(active.input.operationId, completed.receipt);
       this.active = undefined;
       this.changes.fire(active.receipt);
-      active.quiescence.dispose();
+      await active.quiescence.dispose();
       return active.receipt;
     } catch (error) {
       return this.recovering(active, error);

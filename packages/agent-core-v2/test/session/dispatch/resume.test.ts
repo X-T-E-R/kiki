@@ -43,6 +43,18 @@ import { IWireService } from '#/wire/wire';
 import type { WireRecord } from '#/wire/record';
 import { Error2, ErrorCodes } from '#/errors';
 import { agentServices, testAgent, type TestAgentContext } from '../../harness';
+import { Event } from '#/_base/event';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { MessageStepRequest } from '#/agent/loop/stepRequest';
+import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { IAgentTaskService } from '#/agent/task/task';
+import type { AgentTask } from '#/agent/task/types';
+import { SubagentTask } from '#/agent/tools/agent/subagent-task';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { IAgentCollaborationMessageStore, IAgentCollaborationMessagingService, type AcceptedAgentMessage } from '#/session/agentCollaboration/messageMailbox';
+import { AgentCollaborationMessagingService } from '#/session/agentCollaboration/messagingService';
+import type { ThreadDeliveryClaim } from '#/app/threadCommunication/threadMailboxStore';
 
 const OLD = 'example/old-model';
 const NEW = 'example/new-model';
@@ -54,8 +66,8 @@ async function host() {
   const ctx = testAgent({ autoConfigure: false, initialConfig: {
     providers: { example: { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' } },
     models: {
-      [OLD]: { provider: 'example', model: 'old-model', maxContextSize: 200_000, capabilities: ['thinking'], supportEfforts: ['low', 'high'] },
-      [NEW]: { provider: 'example', model: 'new-model', maxContextSize: 100_000, capabilities: ['thinking'], supportEfforts: ['low', 'high'] },
+      [OLD]: { provider: 'example', model: 'old-model', maxContextSize: 200_000, capabilities: ['thinking'], supportEfforts: ['low', 'high'], defaultEffort: 'high' },
+      [NEW]: { provider: 'example', model: 'new-model', maxContextSize: 100_000, capabilities: ['thinking'], supportEfforts: ['low', 'high'], defaultEffort: 'high' },
     },
   } }, agentServices((reg) => reg.defineInstance(IAgentScopeContext, {
     _serviceBrand: undefined, agentId: CHILD, parentAgentId: 'main',
@@ -119,8 +131,8 @@ async function complete(ctx: TestAgentContext, operationId: string, bindingOverr
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  containers.splice(0).forEach((ix) => ix.dispose());
-  await Promise.all(hosts.splice(0).map((ctx) => ctx.dispose()));
+  await Promise.all(containers.splice(0).map(async (ix) => { await ix.dispose(); }));
+  await Promise.all(hosts.splice(0).map(async (ctx) => { await ctx.dispose(); }));
 });
 
 describe('AgentRun new_window shape', () => {
@@ -502,5 +514,232 @@ describe('dispatch resume through model switch and real native run', () => {
     expect((await metadata.read()).agents![CHILD]).toMatchObject({ executor: 'example-acp', negotiated: { image: true }, model: 'external-new',
       parentAgentId: 'main', labels: { customState: 'preserved' } });
     expect(readResumeRecord((await metadata.read()).agents![CHILD], 'external-direct')).toMatchObject({ taskId: 'external-task', state: 'ready' });
+  });
+});
+
+describe('dispatch resume after cancellation with deferred task notifications', () => {
+  function pendingTask(kind: 'agent' | 'process', turnCompletion: Promise<unknown>): AgentTask {
+    return {
+      kind, idPrefix: kind === 'agent' ? 'agent' : 'bash', description: 'Pending descendant',
+      start: (sink) => new Promise<void>((resolve, reject) => {
+        const stop = async () => {
+          await turnCompletion.catch(() => {});
+          await sink.settle({ status: 'killed' });
+          resolve();
+        };
+        if (sink.signal.aborted) void stop().catch(reject);
+        else sink.signal.addEventListener('abort', () => { void stop().catch(reject); }, { once: true });
+      }),
+      toInfo: (base) => kind === 'agent'
+        ? { ...base, kind, agentId: 'descendant', profile: 'example-worker' }
+        : { ...base, kind, command: 'fixture', pid: 0, exitCode: null },
+    };
+  }
+
+  async function cancelledChild(stop: 'timeout' | 'user' = 'timeout') {
+    const ctx = await host();
+    const view = dispatchFor(ctx);
+    const execution = ctx.get(IAgentExecutionService);
+    const requester = ctx.get(IAgentLLMRequesterService);
+    const original = requester.start.bind(requester);
+    let entered!: () => void;
+    const requested = new Promise<void>((resolve) => { entered = resolve; });
+    vi.spyOn(requester, 'start').mockImplementationOnce((_options, _onPart, signal) => {
+      entered();
+      return { trace: { traceId: 'blocked-fixture' }, result: new Promise((_resolve, reject) => {
+        signal!.addEventListener('abort', () => { reject(signal!.reason); }, { once: true });
+      }) };
+    }).mockImplementation(original);
+    const controller = new AbortController();
+    const run = await execution.run({ kind: 'prompt', prompt: 'Original cancellable work' }, { signal: controller.signal });
+    void run.completion.catch(() => {});
+    await requested;
+    const tasks = ctx.get(IAgentTaskService);
+    const descendant = tasks.registerTask(pendingTask('agent', run.completion));
+    const tool = tasks.registerTask(pendingTask('process', run.completion));
+    const parent = testAgent();
+    hosts.push(parent);
+    await parent.ready;
+    vi.spyOn(parent.get(IAgentLifecycleService), 'get').mockImplementation((id) => id === CHILD ? view.child.agent : undefined);
+    const mirrored = mirrorAgentRun(view.child.agent, run, { profileName: 'example-worker', signal: controller.signal });
+    void mirrored.catch(() => {});
+    const parentTasks = parent.get(IAgentTaskService);
+    const parentTask = parentTasks.registerTask(new SubagentTask({ agentId: CHILD, profileName: 'example-worker',
+      completion: mirrored.then((result) => ({ result: result.summary })) }, 'Parent cancellation', controller),
+    { timeoutMs: stop === 'timeout' ? 10 : undefined, detached: false });
+    const cancelled = expect(run.completion).rejects.toBeDefined();
+    if (stop === 'user') await parentTasks.stopByUser(parentTask);
+    await cancelled;
+    await execution.settled();
+    await expect(mirrored).rejects.toBeDefined();
+    await parentTasks.wait(parentTask);
+    await vi.waitFor(() => {
+      expect(tasks.list(false).find((info) => info.taskId === descendant)?.status).toBe('killed');
+      expect(tasks.list(false).find((info) => info.taskId === tool)?.status).toBe('killed');
+      expect(ctx.get(IAgentLoopService).status().pendingRequestKinds).toEqual(['task_notification', 'task_notification']);
+    });
+    expect(execution.status()).toEqual({ state: 'idle' });
+    expect(ctx.get(IAgentFullCompactionService).isCompacting()).toBe(false);
+    expect(ctx.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', finalizing: false, lastTurnResult: 'cancelled', pendingTurnIds: [] });
+    expect(tasks.list(true)).toEqual([]);
+    expect((await ctx.get(ISessionMetadata).read()).agents![CHILD]).toMatchObject({ status: 'cancelled' });
+    const records = await journal(ctx);
+    const ended = records.findIndex((record) => record.type === 'turn.ended' && record['reason'] === 'cancelled');
+    expect(ended).toBeGreaterThanOrEqual(0);
+    expect(records.findIndex((record) => record.type === 'task.terminated' && (record['info'] as { taskId: string }).taskId === descendant)).toBeGreaterThan(ended);
+    expect(records.some((record) => record.type === 'prompt.outcome_committed')).toBe(true);
+    return { ctx, ...view, descendant, tool };
+  }
+
+  it.each(['timeout', 'user'] as const)('resumes the same binding once after parent %s and consumes late descendant notifications', async (stop) => {
+    const { ctx, dispatch, child, runs, descendant, tool } = await cancelledChild(stop);
+    const start = vi.spyOn(runs, 'run');
+    ctx.mockNextResponse({ type: 'text', text: 'Resumed result' });
+    const opts = options('cancelled-resume');
+    const [first, second] = await Promise.all([
+      dispatch.runOnExisting(child, 'Continue exactly once', opts),
+      dispatch.runOnExisting(child, 'Continue exactly once', opts),
+    ]);
+    expect(second).toBe(first);
+    const handle = await first.started;
+    await handle.completion;
+    await ctx.get(IAgentExecutionService).settled();
+    expect(handle.agentId).toBe(CHILD);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(await dispatch.runOnExisting(child, 'Continue exactly once', opts)).toBe(first);
+    expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+    expect(ctx.get(IAgentStateService).get(contextWindowEpochKey)).toBe(0);
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect((JSON.stringify(ctx.llmCalls[0]).match(/Continue exactly once/g) ?? [])).toHaveLength(1);
+    const messages = ctx.get(IAgentContextMemoryService).get();
+    for (const taskId of [descendant, tool]) {
+      expect(messages.filter((message) => message.origin?.kind === 'task' && message.origin.taskId === taskId)).toHaveLength(1);
+    }
+    expect(ctx.get(IAgentTaskService).list(true)).toEqual([]);
+    expect(ctx.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', hasPendingRequests: false, pendingTurnIds: [] });
+    expect(readResumeRecord((await ctx.get(ISessionMetadata).read()).agents![CHILD], opts.operationId!)).toMatchObject({ state: 'started', turnId: handle.turn.id });
+  });
+
+  function mailboxFor(ctx: TestAgentContext, child: DispatchChild, dispatch: ISessionDispatchService) {
+    let message: AcceptedAgentMessage | undefined;
+    let delivered = false;
+    const claim = {} as ThreadDeliveryClaim;
+    const store: IAgentCollaborationMessageStore = {
+      _serviceBrand: undefined,
+      accept: async (input) => {
+        const deduplicated = message !== undefined;
+        message ??= { ...input, messageId: 'queued-mailbox', acceptedAt: 1, targetSeq: 1 };
+        return { message, deduplicated, delivery: delivered ? 'delivered' : 'queued', payloadConflict: false };
+      },
+      nextQueued: async () => delivered || message === undefined ? undefined : { message, claim },
+      markDelivered: async () => { delivered = true; return true; },
+      listPendingAgents: async () => delivered || message === undefined ? [] : [CHILD],
+      discardPending: async () => ({ discarded: 0 }),
+    };
+    const ix = new TestInstantiationService();
+    containers.push(ix);
+    ix.set(IAgentCollaborationMessageStore, store);
+    ix.stub(IAgentLifecycleService, { list: () => [child.agent], get: (id) => id === CHILD ? child.agent : undefined,
+      onDidCreate: Event.None as IAgentLifecycleService['onDidCreate'],
+      onDidDispose: Event.None as IAgentLifecycleService['onDidDispose'] });
+    ix.set(ISessionContext, ctx.get(ISessionContext));
+    ix.set(ISessionMetadata, ctx.get(ISessionMetadata));
+    ix.set(ISessionDispatchService, dispatch);
+    ix.set(ILogService, ctx.get(ILogService));
+    ix.stub(ISessionManager, {});
+    ix.set(IAgentCollaborationMessagingService, new SyncDescriptor(AgentCollaborationMessagingService));
+    return { messaging: ix.get(IAgentCollaborationMessagingService), delivered: () => delivered };
+  }
+
+  it('retains queued mailbox and late timeout notifications until the resumed first step', async () => {
+    const { ctx, dispatch, child, descendant, tool } = await cancelledChild();
+    const mail = mailboxFor(ctx, child, dispatch);
+    const input = { sourceAgentId: CHILD, sourceTaskName: 'sender', targetAgentId: CHILD,
+      targetTaskName: 'saved_child', content: 'Keep this queued update', idempotencyKey: 'queued-update', waitForRunningDelivery: true };
+    expect(await mail.messaging.send(input)).toMatchObject({ delivery: 'queued' });
+    expect(mail.delivered()).toBe(false);
+    ctx.mockNextResponse({ type: 'text', text: 'Resumed with mailbox' });
+    const run = await dispatch.runOnExisting(child, 'Resume with queued mailbox', options('mailbox-resume'));
+    await (await run.started).completion;
+    expect(mail.delivered()).toBe(true);
+    expect(await mail.messaging.send(input)).toMatchObject({ delivery: 'delivered' });
+    const messages = ctx.get(IAgentContextMemoryService).get();
+    expect(messages.filter((message) => message.origin?.kind === 'agent_message' && message.origin.messageId === 'queued-mailbox')).toHaveLength(1);
+    for (const taskId of [descendant, tool]) {
+      expect(messages.filter((message) => message.origin?.kind === 'task' && message.origin.taskId === taskId)).toHaveLength(1);
+    }
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(JSON.stringify(ctx.llmCalls[0])).toContain('Keep this queued update');
+    expect(ctx.get(IAgentLoopService).status().hasPendingRequests).toBe(false);
+  });
+
+  it('rejects ordinary resume during a real active turn and model switching with queued turns', async () => {
+    const ctx = await host();
+    const { child, dispatch, runs } = dispatchFor(ctx);
+    const loop = ctx.get(IAgentLoopService);
+    let release!: () => void;
+    let enter!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const hook = loop.hooks.onWillBeginStep.register('busy-fixture', async (_context, next) => { enter(); await gate; await next(); });
+    ctx.mockNextResponse({ type: 'text', text: 'First completion' });
+    ctx.mockNextResponse({ type: 'text', text: 'Queued completion' });
+    const running = await ctx.get(IAgentExecutionService).run({ kind: 'prompt', prompt: 'Still running' }, { signal: new AbortController().signal });
+    await entered;
+    const queued = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'Queued work' }], toolCalls: [] }, { admission: 'newTurn' }));
+    const queuedTurn = (await queued.assigned).turn;
+    expect(loop.status().pendingTurnIds).toEqual([queuedTurn.id]);
+    const start = vi.spyOn(runs, 'run');
+    try {
+      await expect(dispatch.runOnExisting(child, 'Must wait', options('active-resume'))).rejects.toMatchObject({ code: ErrorCodes.AGENT_ALREADY_RUNNING });
+      await expect(ctx.get(IAgentModelSwitchService).execute({ operationId: 'queued-switch', model: OLD, mode: 'direct' })).rejects.toMatchObject({ code: ErrorCodes.TURN_AGENT_BUSY });
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await running.completion;
+      await queuedTurn.result;
+      await hook.dispose();
+    }
+  });
+
+  it('keeps quiescence and held admissions exclusive when pending steps are preserved', async () => {
+    const ctx = await host();
+    const loop = ctx.get(IAgentLoopService);
+    const hold = loop.tryAcquireQuiescence();
+    expect(hold).toBeDefined();
+    const request = new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'Held work' }], toolCalls: [] }, { admission: 'newTurn' });
+    const admission = loop.enqueue(request);
+    try {
+      expect(loop.status()).toMatchObject({ state: 'idle', pendingRequestKinds: ['message'], pendingTurnIds: [] });
+      await expect(ctx.get(IAgentModelSwitchService).execute({ operationId: 'held-switch', model: OLD, mode: 'direct' })).rejects.toMatchObject({ code: ErrorCodes.TURN_AGENT_BUSY });
+      expect(loop.tryAcquireQuiescence({ pendingSteps: 'preserve' })).toBeUndefined();
+    } finally {
+      admission.abort();
+      await hold!.dispose();
+    }
+  });
+
+  it('keeps real compaction exclusive even when the execution loop is idle', async () => {
+    const ctx = await host();
+    let entered!: () => void;
+    const requested = new Promise<void>((resolve) => { entered = resolve; });
+    vi.spyOn(ctx.get(IAgentLLMRequesterService), 'start').mockImplementation((_options, _onPart, signal) => {
+      entered();
+      return { trace: { traceId: 'compaction-fixture' }, result: new Promise((_resolve, reject) => {
+        signal!.addEventListener('abort', () => { reject(signal!.reason); }, { once: true });
+      }) };
+    });
+    const compaction = ctx.get(IAgentFullCompactionService);
+    expect(compaction.begin({ source: 'manual' })).toBe(true);
+    const task = compaction.compacting!;
+    await requested;
+    try {
+      expect(ctx.get(IAgentLoopService).status().state).toBe('idle');
+      expect(compaction.isCompacting()).toBe(true);
+      await expect(ctx.get(IAgentModelSwitchService).execute({ operationId: 'compacting-switch', model: OLD, mode: 'direct' })).rejects.toMatchObject({ code: ErrorCodes.TURN_AGENT_BUSY });
+    } finally {
+      compaction.cancel();
+      await task.promise.catch(() => {});
+    }
   });
 });
