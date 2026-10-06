@@ -1285,6 +1285,9 @@ describe('FullCompaction', () => {
         expect.objectContaining({ type: '[rpc]', event: 'error' }),
       ]),
     );
+    const cancelled = events.find((event) => event.event === 'compaction.cancelled');
+    expect(events).toContainEqual(expect.objectContaining({ type: '[wire]', event: 'full_compaction.cancel', args: expect.objectContaining({ reason: cancelled?.args?.reason }) }));
+    expect(cancelled?.args?.reason).toContain('compaction exploded');
     expect(eventIndex(events, 'compaction.cancelled')).toBeLessThan(eventIndex(events, 'error'));
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },

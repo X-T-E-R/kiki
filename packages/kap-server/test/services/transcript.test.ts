@@ -2951,7 +2951,7 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       await appendFile(wirePath, `${[
@@ -2961,6 +2961,14 @@ describe('TranscriptService live integration', () => {
         { type: 'turn.ended', turnId: 1, reason: 'cancelled', time: 12_000 },
         { type: 'profile.bind', modelAlias: 'example/old', thinkingEffort: 'high', time: 13_000 },
         { type: 'config.update', modelAlias: 'example/new', thinkingEffort: 'low', time: 14_000 },
+        { type: 'full_compaction.begin', source: 'auto', time: 15_000 },
+        { type: 'context.apply_compaction', summary: 'committed summary', time: 16_000 },
+        { type: 'full_compaction.complete', time: 16_001 },
+        { type: 'full_compaction.begin', source: 'manual', queued: true, time: 17_000 },
+        { type: 'full_compaction.cancel', queued: true, time: 18_000 },
+        { type: 'prompt.enqueued', promptId: 'scheduled-example', userMessageId: 'scheduled-example',
+          message: { origin: { kind: 'cron_job', jobId: 'job-example' }, content: [{ type: 'text', text: 'Scheduled message body' }] },
+          createdAt: new Date(19_000).toISOString(), queueIndex: 0, time: 19_000 },
       ].map((record) => JSON.stringify(record)).join('\n')}\n`);
       await appendFile(wirePath, `${Array.from({ length: 300 }, (_, index) => JSON.stringify({ type: 'executor.runtime.update', kind: 'stable', index })).join('\n')}\n`);
       const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
@@ -2989,7 +2997,13 @@ describe('TranscriptService live integration', () => {
           expect.objectContaining({ payload: { from: 'example/old', to: 'example/new' } }),
         ]);
         expect(expected?.meta.agent).toMatchObject({ model: 'example/new', thinkingEffort: 'low' });
-        expect(checkpoint?.format).toBe(5);
+        expect(expected?.items.filter((item) => item.kind === 'marker' && item.marker === 'compaction')).toEqual([
+          expect.objectContaining({ payload: expect.objectContaining({ phase: 'completed', summary: 'committed summary' }) }),
+          expect.objectContaining({ payload: expect.objectContaining({ phase: 'cancelled' }) }),
+        ]);
+        expect(expected?.prompts).toContainEqual(expect.objectContaining({ promptId: 'scheduled-example', originKind: 'cron_job',
+          content: [{ type: 'text', text: 'Scheduled message body' }] }));
+        expect(checkpoint?.format).toBe(6);
         await query.put('__transcript_projection_checkpoint__', key, {
           ...checkpoint, format,
           snapshot: { ...checkpoint!.snapshot, meta: {}, items: [{ kind: 'turn', turnId: 't999', ordinal: 999, state: 'completed', origin: { kind: 'user' }, prompt: 'stale phantom', steps: [] }] },

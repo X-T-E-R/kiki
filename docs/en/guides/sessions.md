@@ -50,6 +50,8 @@ On the **New session** page in the desktop app or browser you can pick an existi
 
 Opening a saved session reads its history without waking an inactive session's agents, and selecting a subagent reads that subagent's history without the main agent's conversation. The session activates when you send, edit or regenerate a message, answer an approval or question, or steer a prompt. If activation fails, nothing is sent and the history stays readable. Reading a session never stops work already running in it.
 
+A subagent resumed with the same model reads **Resumed · continuing with…**, not **Switched to…**. Actual model changes, thinking-effort updates and context rebuilds keep their own labels.
+
 The GUI opens with a small window of the latest messages. Scrolling up loads the next earlier page automatically; staying in the conversation does not load its entire history in the background. Visible messages and expanded entries load the details they need. Jumping to an older message or returning to a saved reading position continues loading until that place is found; scrolling yourself cancels the old jump. Older message previews may be fetched again as you scroll to keep the reading cache small. Leaving the conversation cancels its pending reads, not the agent's work. A real read failure keeps the messages already loaded and offers a retry; [Reading timeout](./settings.md#timeouts) controls how long a read may wait.
 
 Every time you run `kiki` directly it creates a new session. To resume a previous session, use one of the following:
@@ -124,6 +126,8 @@ You can pass a hint to tell the model what to prioritize when compressing:
 ```
 
 You can ask for a compaction while the agent is already working. Kiki queues the request and runs it once the current response and the tools it called have finished, without waiting for the rest of the turn. Asking again while a manual compaction is queued or running does nothing — there is only ever one. The line above the context meter says which one you are watching and how far along it is: **Manual compaction queued**, then **running**, then **complete**. A run that cannot compact ends as **failed**. The automatic one from the context limit reads the same way, with *Automatic* in place of *Manual*.
+
+The timeline distinguishes **Compaction queued** from **Generating the summary…** and shows **summary generated** only after the compacted context is committed. Failure, cancellation and an interrupted cold-session run do not count as successes. Consecutive successful commits may share one divider labelled **3 successful compactions**, for example; expand it for each commit's time and recorded reasons. This count is not the number of generation retries.
 
 The context meter under the composer shows the same numbers, lets you set the compaction point, and carries the renewal strategy: **summarize**, **fresh** (restart from the agent's working notes), or **auto** (the built-in main-agent default: restart when the notes safely cover the work, otherwise summarize). `/autocompact` shows or moves the compaction point from the terminal. Facts that must survive compression belong in [memory](./memory.md), which outlives the session.
 

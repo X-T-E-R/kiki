@@ -2,8 +2,10 @@
  * package instead of bubbling up to the root projects config. */
 
 import { defineConfig } from 'vitest/config';
+import { pdfAssetsPlugin } from './vite/pdfAssets';
 
 export default defineConfig({
+  plugins: [pdfAssetsPlugin()],
   test: {
     include: ['src/**/*.{test,integration,e2e}.ts', 'src/**/*.{test,integration,e2e}.tsx'],
   },

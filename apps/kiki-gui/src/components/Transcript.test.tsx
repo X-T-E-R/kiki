@@ -1483,6 +1483,23 @@ describe('live and event chrome', () => {
     expect(container.querySelector('[data-block-id]')?.getAttribute('data-block-id')).toBe(state.blocks[0]?.id);
   });
 
+  it('labels folded compactions as successful commits and expands every time and reason', async () => {
+    const snapshot = replayAgentWire('main', [1000, 2000, 3000].map((time, index) => ({
+      type: 'context.apply_compaction', summary: 'summary', time, reasonCodes: [index === 0 ? 'notes_missing' : 'tool_error'],
+    })));
+    const state = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    const container = await renderTranscript([...state.blocks]);
+    const toggle = container.querySelector<HTMLButtonElement>('[data-notice-reasons-toggle]')!;
+    expect(toggle.textContent).toBe('Context compacted · summary generated · 3 successful compactions');
+    expect(toggle.textContent).not.toContain('×');
+    await act(async () => { click(toggle); });
+    const entries = container.querySelectorAll('[data-compaction-history] li');
+    expect(entries).toHaveLength(3);
+    expect(entries[0]?.textContent).toContain('The agent has no working notes');
+    expect(entries[1]?.textContent).toContain('Recent tool failures need to remain in context.');
+    expect(entries[0]?.textContent).not.toBe(entries[1]?.textContent);
+  });
+
   it('says why a compaction fell back and lists the reasons on request', async () => {
     const container = await renderTranscript([
       {

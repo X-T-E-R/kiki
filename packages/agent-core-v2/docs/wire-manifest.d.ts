@@ -453,6 +453,7 @@ interface FullCompactionBeginPayload {
 interface FullCompactionCancelPayload {
   _name: 'full_compaction.cancel';
   queued?: boolean;
+  reason?: string;
 }
 
 /**

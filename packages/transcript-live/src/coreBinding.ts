@@ -276,6 +276,7 @@ export function bindSessionTranscript(
     applyFacts(agentId, wireFacts);
     if (event.type === 'prompt.moved') seedPrompts(agentId);
     if (
+      event.type.startsWith('compaction.') ||
       event.type === 'task.started' ||
       event.type === 'task.terminated' ||
       (event.type === 'task.notified' && wireAdapterFor(agentId).hasTaskNotification(event)) ||
@@ -304,6 +305,7 @@ export function bindSessionTranscript(
     if (state !== undefined) {
       wireAdapterFor(agentId).restore(state.adapter);
       reducerFor(agentId).restore(state.acceptedDurableFacts);
+      applyOps(agentId, wireAdapterFor(agentId).activeCompactionOperations());
     }
     replayingAgents.delete(agentId);
     const buffered = bufferedEvents.get(agentId) ?? [];

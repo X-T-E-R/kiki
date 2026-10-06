@@ -465,8 +465,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       await this._compacting?.promise;
     } catch (error) {
       if (!started) {
-        void this.dispatcher.dispatch(new FullCompactionCancel({ queued: true }));
-        void this.dispatcher.dispatch(new CompactionCancelled({ trigger: 'manual', reason: error instanceof Error ? error.message : String(error) }));
+        const reason = error instanceof Error ? error.message : String(error);
+        void this.dispatcher.dispatch(new FullCompactionCancel({ queued: true, reason }));
+        void this.dispatcher.dispatch(new CompactionCancelled({ trigger: 'manual', reason }));
       }
     }
   }
@@ -568,7 +569,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   private cancelActive(active: ActiveCompaction, reason?: string): boolean {
     if (this._compacting !== active) return false;
-    void this.dispatcher.dispatch(new FullCompactionCancel({}));
+    void this.dispatcher.dispatch(new FullCompactionCancel({ reason }));
     this._compacting = null;
     if (!active.abortController.signal.aborted) {
       active.abortController.abort();

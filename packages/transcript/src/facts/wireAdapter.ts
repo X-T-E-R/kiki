@@ -1,4 +1,5 @@
 import type { TranscriptFact } from './reducer';
+import { CompactionProjection, type CompactionProjectionCheckpoint } from './compactionProjection';
 import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
 import { projectTranscriptUserOrigin } from '../contract/origin';
 import { sessionMediaIdFromBlobUrl } from '../contract/mediaRef';
@@ -109,6 +110,9 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly currentTurnId?: string;
   readonly currentPromptId?: string;
   readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
+  readonly modelSwitchChanges?: readonly [string, string][];
+  readonly compaction?: CompactionProjectionCheckpoint;
   readonly queuedModelSwitchIds?: readonly string[];
   readonly prompts?: readonly [string, TranscriptPrompt][];
   readonly hiddenPromptIds?: readonly string[];
@@ -162,6 +166,13 @@ export class TranscriptWireAdapter {
   #currentTurnId: string | undefined;
   #currentPromptId: string | undefined;
   #modelAlias: string | undefined;
+  #thinkingEffort: string | undefined;
+  readonly #modelSwitchChanges = new Map<string, string>();
+  readonly #compaction = new CompactionProjection();
+
+  activeCompactionOperations(): TranscriptOperation[] {
+    return this.#compaction.activeOperations();
+  }
 
   constructor(
     readonly agentId: string,
@@ -208,6 +219,9 @@ export class TranscriptWireAdapter {
       currentTurnId: this.#currentTurnId,
       currentPromptId: this.#currentPromptId,
       modelAlias: this.#modelAlias,
+      thinkingEffort: this.#thinkingEffort,
+      modelSwitchChanges: [...this.#modelSwitchChanges],
+      compaction: this.#compaction.checkpoint(),
       queuedModelSwitchIds: [...this.#queuedModelSwitchIds],
       prompts: [...this.#prompts],
       hiddenPromptIds: [...this.#hiddenPromptIds],
@@ -286,6 +300,9 @@ export class TranscriptWireAdapter {
     this.#currentTurnId = checkpoint.currentTurnId;
     this.#currentPromptId = checkpoint.currentPromptId;
     this.#modelAlias = checkpoint.modelAlias;
+    this.#thinkingEffort = checkpoint.thinkingEffort;
+    replaceMap(this.#modelSwitchChanges, checkpoint.modelSwitchChanges ?? []);
+    this.#compaction.restore(checkpoint.compaction);
     replaceSet(this.#queuedModelSwitchIds, checkpoint.queuedModelSwitchIds ?? []);
     replaceMap(this.#prompts, checkpoint.prompts ?? []);
     replaceSet(this.#hiddenPromptIds, checkpoint.hiddenPromptIds ?? []);
@@ -332,7 +349,7 @@ export class TranscriptWireAdapter {
   }
 
   finish(): TranscriptFact[] {
-    const operations: TranscriptOperation[] = [];
+    const operations: TranscriptOperation[] = this.#compaction.finish();
     const endedAt = isoOf(this.#lastRecordTime);
     for (const [toolCallId, hit] of this.#tools) {
       if (hit.frame.state !== 'running') continue;
@@ -385,9 +402,20 @@ export class TranscriptWireAdapter {
       const from = stringOf(committed ? record['fromModel'] : receipt?.['fromModel']);
       const to = stringOf(committed ? record['toModel'] : receipt?.['toModel']);
       const state = committed ? (this.#queuedModelSwitchIds.has(operationId) ? 'preparing' : 'completed') : stringOf(receipt?.['state']);
-      if ((committed || state === 'completed') && to !== undefined) this.#modelAlias = to;
+      const mode = committed ? record['mode'] : receipt?.['mode'];
+      const thinking = stringOf(committed ? record['thinking'] : objectOf(receipt?.['binding'])?.['thinking']);
+      const change = committed && from === to && mode === 'direct' && thinking !== undefined && this.#thinkingEffort !== undefined && thinking !== this.#thinkingEffort
+        ? 'effort' : this.#modelSwitchChanges.get(operationId) ?? (from !== to ? 'model'
+        : mode !== 'direct' ? 'context'
+        : thinking !== undefined && this.#thinkingEffort !== undefined && thinking !== this.#thinkingEffort ? 'effort'
+        : operationId.startsWith('resume:') ? 'resume' : 'binding');
+      this.#modelSwitchChanges.set(operationId, change);
+      if (committed || state === 'completed') {
+        if (to !== undefined) this.#modelAlias = to;
+        if (thinking !== undefined) this.#thinkingEffort = thinking;
+      }
       return [{ op: 'marker.upsert', item: { kind: 'marker', markerId: `model-switch:${operationId}`, marker: 'model.switch', at: isoOf(record.time),
-        payload: { operationId, from, to, state, mode: committed ? record['mode'] : receipt?.['mode'],
+        payload: { operationId, from, to, state, mode, change,
           windowEpoch: committed ? record['newEpoch'] : receipt?.['windowEpoch'],
           summaryGenerated: committed ? record['summaryGenerated'] : receipt?.['summaryGenerated'], error: receipt?.['error'] } } }];
     }
@@ -396,7 +424,10 @@ export class TranscriptWireAdapter {
       const thinkingEffort = stringOf(record['thinkingEffort']) ?? stringOf(record['thinkingLevel']);
       const agent: { model?: string; thinkingEffort?: string } = {};
       if (model !== undefined && model.length > 0) agent.model = model;
-      if (thinkingEffort !== undefined) agent.thinkingEffort = thinkingEffort;
+      if (thinkingEffort !== undefined) {
+        agent.thinkingEffort = thinkingEffort;
+        this.#thinkingEffort = thinkingEffort;
+      }
       const operations: TranscriptOperation[] = Object.keys(agent).length === 0
         ? [] : [{ op: 'meta.merge', meta: { agent } }];
       if (agent.model === undefined) return operations;
@@ -419,22 +450,8 @@ export class TranscriptWireAdapter {
     if (record.type === 'turn.ended') return this.turnEnded(record);
     if (record.type === 'context.undo') return this.undo(numberOf(record['count']) ?? 1);
     if (record.type === 'context.clear') return this.removeTurns(this.#turns.length);
-    if (record.type === 'context.apply_compaction') {
-      return [
-        {
-          op: 'marker.upsert',
-          item: {
-            kind: 'marker',
-            markerId:
-              stringOf(record['id']) ??
-              (record.time === undefined ? `wire:v2:r${ordinal}:compaction` : `wire:v2:compaction:t${record.time}`),
-            marker: 'compaction',
-            payload: record,
-            at: isoOf(record.time),
-          },
-        },
-      ];
-    }
+    const compaction = this.#compaction.project(record, ordinal);
+    if (compaction !== undefined) return compaction;
     if (record.type.startsWith('prompt.')) return this.promptRecord(record);
     return this.supplemental(record, ordinal);
   }
@@ -2336,6 +2353,7 @@ function durableRecord(type: string): boolean {
     type === 'prompt.aborted' ||
     type === 'prompt.steered' ||
     type.startsWith('context.') ||
+    type.startsWith('full_compaction.') ||
     type.startsWith('executor.') ||
     type.startsWith('subagent.')
   );

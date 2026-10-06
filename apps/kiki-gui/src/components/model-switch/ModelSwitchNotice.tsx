@@ -43,18 +43,22 @@ type ModelSwitchBlock = NonNullable<NoticeBlock['modelSwitch']>;
 function primaryKey(info: ModelSwitchBlock): I18nKey {
   const sameModel = info.from === info.to;
   switch (info.state) {
-    case 'pending': return 'transcript.modelSwitch.pending';
+    case 'pending': return sameModel ? 'transcript.modelSwitch.pending.binding' : 'transcript.modelSwitch.pending';
     case 'preparing':
       return info.mode === 'compact'
         ? 'transcript.modelSwitch.preparing.compact'
         : info.mode === 'fresh'
           ? 'transcript.modelSwitch.preparing.fresh'
-          : 'transcript.modelSwitch.preparing.direct';
+          : sameModel ? 'transcript.modelSwitch.preparing.binding' : 'transcript.modelSwitch.preparing.direct';
     case 'completed':
-      return sameModel && info.mode === 'fresh' ? 'transcript.modelSwitch.done.sameModelFresh' : 'transcript.modelSwitch.done';
+      if (!sameModel) return 'transcript.modelSwitch.done';
+      if (info.mode === 'fresh') return 'transcript.modelSwitch.done.sameModelFresh';
+      if (info.mode === 'compact') return 'transcript.modelSwitch.done.sameModelCompact';
+      if (info.change === 'effort') return 'transcript.modelSwitch.done.effort';
+      return info.change === 'resume' || info.operationId.startsWith('resume:') ? 'transcript.modelSwitch.done.resume' : 'transcript.modelSwitch.done.binding';
     case 'failed':
-      return info.mode === 'compact' ? 'transcript.modelSwitch.failed.compact' : 'transcript.modelSwitch.failed';
-    case 'cancelled': return 'transcript.modelSwitch.cancelled';
+      return info.mode === 'compact' ? 'transcript.modelSwitch.failed.compact' : sameModel ? 'transcript.modelSwitch.failed.binding' : 'transcript.modelSwitch.failed';
+    case 'cancelled': return sameModel ? 'transcript.modelSwitch.cancelled.binding' : 'transcript.modelSwitch.cancelled';
   }
 }
 

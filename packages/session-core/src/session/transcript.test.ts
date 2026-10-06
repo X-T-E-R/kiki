@@ -1680,7 +1680,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     const journal = [{ type: 'prompt.model_switch_queued', entry: { receipt: pending }, queueIndex: 0, time: 1000 }];
     const queued = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', journal));
     expect(queued.blocks).toEqual([expect.objectContaining({ kind: 'notice', id: 'agent-marker-model-switch:switch-example',
-      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'pending' }, i18n: undefined })]);
+      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'pending', change: 'model' }, i18n: undefined })]);
     const committedJournal = [...journal,
       { type: 'agent.model_switch', operationId: 'switch-example', fromModel: 'example/old', toModel: 'example/new', mode: 'fresh', newEpoch: 1, summaryGenerated: false, time: 2000 },
     ];
@@ -1690,7 +1690,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       { type: 'prompt.model_switch_status', operationId: 'switch-example', receipt: { ...pending, state: 'completed', windowEpoch: 1, summaryGenerated: false }, time: 3000 },
     ]));
     expect(completed.blocks).toEqual([expect.objectContaining({ kind: 'notice', id: 'agent-marker-model-switch:switch-example',
-      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'completed', windowEpoch: 1, summaryGenerated: false },
+      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'completed', change: 'model', windowEpoch: 1, summaryGenerated: false },
       i18n: { key: 'transcript.marker.modelSwitch', params: { from: 'example/old', to: 'example/new' } } })]);
   });
 
@@ -1705,6 +1705,46 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       kind: 'notice', tone: 'neutral', text: 'model.switch', createdAt: new Date(3000).toISOString(),
       i18n: { key: 'transcript.marker.modelSwitch', params: { from: 'example/old', to: 'example/new' } },
     })]);
+  });
+
+  it('projects same-model resume and actual effort/context changes without claiming an alias switch', () => {
+    const snapshot = replayAgentWire('child', [
+      { type: 'profile.bind', modelAlias: 'example/model', thinkingEffort: 'high', time: 1000 },
+      { type: 'agent.model_switch', operationId: 'resume:parent:1', fromModel: 'example/model', toModel: 'example/model', thinking: 'high', mode: 'direct', oldEpoch: 0, newEpoch: 0, time: 2000 },
+      { type: 'agent.model_switch', operationId: 'resume:parent:2', fromModel: 'example/model', toModel: 'example/model', thinking: 'low', mode: 'direct', oldEpoch: 0, newEpoch: 0, time: 3000 },
+      { type: 'agent.model_switch', operationId: 'resume:parent:3', fromModel: 'example/model', toModel: 'example/model', thinking: 'low', mode: 'fresh', oldEpoch: 0, newEpoch: 1, time: 4000 },
+    ]);
+    const blocks = projectAgentTranscriptView(createViewState('session_test'), 'child', snapshot).blocks;
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0]).toMatchObject({ i18n: { key: 'transcript.modelSwitch.done.resume' }, modelSwitch: { change: 'resume' } });
+    expect(blocks[1]).toMatchObject({ i18n: { key: 'transcript.modelSwitch.done.effort' }, modelSwitch: { change: 'effort' } });
+    expect(blocks[2]).toMatchObject({ modelSwitch: { change: 'context', windowEpoch: 1 } });
+  });
+
+  it('counts only separate committed compactions and retains every folded time and reason', () => {
+    const records = [
+      { type: 'full_compaction.begin', source: 'auto', time: 1000 },
+      { type: 'context.apply_compaction', summary: 'same summary', reasonCodes: ['notes_missing'], time: 2000 },
+      { type: 'full_compaction.complete', time: 2001 },
+      { type: 'full_compaction.begin', source: 'auto', time: 3000 },
+      { type: 'context.apply_compaction', summary: 'same summary', reasonCodes: ['tool_error'], time: 4000 },
+      { type: 'full_compaction.complete', time: 4001 },
+      { type: 'full_compaction.begin', source: 'manual', queued: true, time: 5000 },
+      { type: 'full_compaction.cancel', queued: true, time: 6000 },
+      { type: 'full_compaction.begin', source: 'auto', time: 7000 },
+      { type: 'full_compaction.cancel', reason: 'Summary failed after retries', time: 8000 },
+    ];
+    const blocks = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', records)).blocks;
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0]).toMatchObject({ compactionPhase: 'completed', markerRepeatCount: 2,
+      compactionHistory: [{ createdAt: new Date(2000).toISOString(), reasonCodes: ['notes_missing'] }, { createdAt: new Date(4000).toISOString(), reasonCodes: ['tool_error'] }] });
+    expect(blocks[1]).toMatchObject({ compactionPhase: 'cancelled', i18n: { key: 'transcript.marker.compactionCancelled' } });
+    expect(blocks[2]).toMatchObject({ compactionPhase: 'failed', i18n: { key: 'transcript.marker.compactionFailed' }, compactionFailure: 'Summary failed after retries' });
+    expect(blocks[1]).not.toHaveProperty('markerRepeatCount');
+    const active = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', [{ type: 'full_compaction.begin', source: 'auto', time: 9000 }]));
+    expect(active.blocks[0]).toMatchObject({ compactionPhase: 'running', i18n: { key: 'transcript.marker.compactionRunning' } });
+    const queued = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', [{ type: 'full_compaction.begin', source: 'manual', queued: true, time: 9000 }]));
+    expect(queued.blocks[0]).toMatchObject({ compactionPhase: 'queued', i18n: { key: 'transcript.marker.compactionQueued' } });
   });
 
   it('folds token-accounting goal markers from cold replay without changing canonical history', () => {

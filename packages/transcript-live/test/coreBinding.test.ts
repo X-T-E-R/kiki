@@ -192,6 +192,34 @@ describe('bindSessionTranscript', () => {
     } as unknown as ISessionScopeHandle;
   }
 
+  it('hydrates running compaction from the durable checkpoint and completes the same row without live duplicates', () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('compaction-session');
+    const transcript = store.ensureAgent('main');
+    const adapter = new TranscriptWireAdapter('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const begin = { type: 'full_compaction.begin', source: 'auto', time: 1000 };
+    reducer.apply(adapter.add(begin));
+    const state = JSON.parse(JSON.stringify({ adapter: adapter.checkpoint(), acceptedDurableFacts: reducer.checkpoint() }));
+    reducer.apply(adapter.finish());
+    expect(transcript.getItems()[0]).toMatchObject({ payload: { phase: 'interrupted' } });
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents), undefined, undefined, true);
+    binding.finishReplay('main', state);
+    expect(transcript.getItems()[0]).toMatchObject({ payload: { phase: 'running' } });
+    main.bus.emit({ type: 'compaction.started', trigger: 'auto', phase: 'running', time: 1000 } as unknown as Event2<any>);
+    main.bus.emit({ type: 'compaction.blocked', time: 1500 } as unknown as Event2<any>);
+    main.bus.emit({ type: 'context.apply_compaction', summary: 'committed summary', time: 2000 } as unknown as Event2<any>);
+    main.bus.emit({ type: 'full_compaction.complete', time: 2001 } as unknown as Event2<any>);
+    main.bus.emit({ type: 'compaction.completed', result: { summary: 'committed summary' }, time: 2002 } as unknown as Event2<any>);
+    expect(transcript.getItems()).toHaveLength(1);
+    expect(transcript.getItems()[0]).toMatchObject({ markerId: 'wire:v2:compaction:t1000', payload: { phase: 'completed', summary: 'committed summary' } });
+    expect(projectAgentTranscriptView(createViewState('compaction-session'), 'main', transcript.snapshot()).blocks).toEqual([
+      expect.objectContaining({ compactionPhase: 'completed', i18n: { key: 'transcript.marker.compactionSummarize' } }),
+    ]);
+    binding.dispose();
+  });
+
   it('clears backfilled conversation entities before live paging can resurrect them', async () => {
     const agents = new FakeAgents();
     const main = agents.add('main');

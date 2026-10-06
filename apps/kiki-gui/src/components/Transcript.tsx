@@ -1583,13 +1583,18 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   const text = block.reasonCodes?.includes('notes_directives_budget') ? t('transcript.marker.reason.notes_directives_budget') : baseText;
   // Why a compaction took the path it did (e.g. summary instead of a fresh
   // window): one sentence per engine reason code; an unknown code reads as-is.
-  const reasons = (block.reasonCodes ?? []).map((code) => {
+  const reasonText = (code: string) => {
     const key = `transcript.marker.reason.${code}` as I18nKey;
     const translated = t(key);
     return translated === key ? code : translated;
-  });
+  };
+  const reasons = [...(block.reasonCodes ?? []).map(reasonText), ...(block.compactionFailure === undefined ? [] : [block.compactionFailure])];
+  const history = block.compactionHistory ?? [];
+  const expandable = reasons.length > 0 || history.length > 0;
   const title = [time.absoluteTime(block.createdAt), ...reasons].filter(Boolean).join('\n');
-  const repeatedText = (block.markerRepeatCount ?? 1) > 1 ? `${text} ×${block.markerRepeatCount}` : text;
+  const count = block.markerRepeatCount ?? 1;
+  const repeatedText = count > 1 ? history.length > 0
+    ? t('transcript.marker.compactionRepeated', { label: text, count }) : `${text} ×${count}` : text;
   const label = block.tone === 'danger' ? <span className="font-medium text-danger">{repeatedText}</span> : repeatedText;
   return (
     <div data-notice-reasons={reasons.length > 0 ? reasons.length : undefined}>
@@ -1598,7 +1603,7 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
         title={title}
         attrs={{ 'data-notice-tone': block.tone, 'data-notice-key': block.i18n?.key }}
       >
-        {reasons.length > 0 ? (
+        {expandable ? (
           <button
             type="button"
             data-notice-reasons-toggle
@@ -1614,7 +1619,16 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
       {/* The reasons are body text under the rule, not a centred aside: the
           list starts on the column's left edge with the same hanging indent
           as a list in an answer (.kiki-md ul), faint bullets like there too. */}
-      {open && reasons.length > 0 ? (
+      {open && history.length > 0 ? (
+        <ol data-compaction-history className="mt-0.5 mb-1 flex list-decimal flex-col gap-1 pl-[1.4em] text-[12px] leading-snug text-ink-soft marker:text-ink-faint">
+          {history.map((entry) => <li key={entry.id}>
+            <span>{time.absoluteTime(entry.createdAt)}</span>
+            {entry.source !== undefined ? <span> · {t(`transcript.marker.compactionSource.${entry.source}` as I18nKey)}</span> : null}
+            {entry.startedAt !== undefined ? <span className="text-ink-faint"> · {t('transcript.marker.compactionStartedAt', { time: time.absoluteTime(entry.startedAt) ?? entry.startedAt })}</span> : null}
+            {(entry.reasonCodes ?? []).map((code) => <p key={code} className="text-ink-faint">{reasonText(code)}</p>)}
+          </li>)}
+        </ol>
+      ) : open && reasons.length > 0 ? (
         <ul data-notice-reason-list className="mt-0.5 mb-1 flex list-disc flex-col gap-0.5 pl-[1.4em] text-[12px] leading-snug text-ink-soft marker:text-ink-faint">
           {reasons.map((reason, index) => <li key={`${block.id}:${index}`}>{reason}</li>)}
         </ul>
@@ -2125,6 +2139,7 @@ const MessageViewRow = memo(function MessageViewRow({
       ? <ExternalTextRow note={node.externalText} createdAt={node.createdAt} />
       : node.modelSwitch !== undefined
         ? <ModelSwitchNotice block={node} />
+        : node.compactionPhase !== undefined ? <Notice block={node} />
         : <OutcomeLine notice={node} onOpenProcess={() => { onOpenProcess(turnId, node.id); }} />;
   } else {
     body = (

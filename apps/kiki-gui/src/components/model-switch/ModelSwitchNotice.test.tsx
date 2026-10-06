@@ -158,6 +158,20 @@ describe('ModelSwitchNotice', () => {
     expect(busy.querySelector<HTMLButtonElement>('[data-model-switch-action="retry"]')!.disabled).toBe(true);
   });
 
+  it('names an unchanged resume separately from effort changes and never claims a same-model switch', async () => {
+    const resumed = await renderNotice(block({ operationId: 'resume:parent:1', change: 'resume', state: 'completed', from: 'example/same', to: 'example/same' }));
+    expect(resumed.textContent).toContain('Resumed · continuing with example/same');
+    expect(resumed.textContent).not.toContain('Switched');
+    const effort = await renderNotice(block({ operationId: 'resume:parent:2', change: 'effort', state: 'completed', from: 'example/same', to: 'example/same' }));
+    expect(effort.textContent).toContain('Thinking effort updated · example/same');
+    expect(effort.textContent).not.toContain('Resumed');
+    const queued = await renderNotice(block({ state: 'pending', from: 'example/same', to: 'example/same' }));
+    expect(queued.textContent).toContain('Will apply model settings when idle');
+    const compact = await renderNotice(block({ state: 'completed', mode: 'compact', from: 'example/same', to: 'example/same', summaryGenerated: true }));
+    expect(compact.textContent).toContain('Context rebuilt · continuing with example/same');
+    expect(compact.textContent).not.toContain('Switched');
+  });
+
   it('stays copy-only where no actions are provided', async () => {
     const container = await renderNotice(block({ state: 'pending' }));
     expect(actionNames(container)).toEqual([]);
