@@ -1019,6 +1019,7 @@ describe('SessionEventBroadcaster', () => {
     expect(envelopes.some((event) => event.type === 'turn.started')).toBe(true);
     bc.unsubscribe('s1', target);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(release).toHaveBeenCalledOnce();
   });
 
@@ -1048,6 +1049,7 @@ describe('SessionEventBroadcaster', () => {
     finishAcquire();
     expect(await pending).toBe(true);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(pins).toBe(0);
     expect(release).toHaveBeenCalledOnce();
   });
@@ -1093,6 +1095,7 @@ describe('SessionEventBroadcaster', () => {
     await bc.getCursor('s1');
     expect(envelopes.some((event) => event.type === 'turn.started')).toBe(true);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(pins.get(newHandle)).toBe(0);
     expect(release).toHaveBeenCalledTimes(2);
   });
@@ -1161,6 +1164,7 @@ describe('SessionEventBroadcaster', () => {
     expect(await bc.subscribe('s1', target, new Set(['main']))).toBe(true);
     expect(acquire).toHaveBeenCalledTimes(2);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(firstRelease).toHaveBeenCalledOnce();
     expect(secondRelease).toHaveBeenCalledOnce();
   });
@@ -1185,6 +1189,7 @@ describe('SessionEventBroadcaster', () => {
     expect(await bc.subscribe('s1', target)).toBe(false);
     expect(await bc.subscribe('s1', target)).toBe(true);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(release).toHaveBeenCalledOnce();
   });
 

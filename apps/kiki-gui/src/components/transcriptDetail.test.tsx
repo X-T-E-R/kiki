@@ -36,8 +36,21 @@ const host = vi.hoisted(() => ({
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser', openSaveSink: host.openSaveSink }) }));
 vi.mock('../state/connection', () => ({ useOptionalConnection: () => ({ client: host.client }) }));
 
+class NeverVisibleIntersectionObserver {
+  readonly root = null;
+  readonly rootMargin = '';
+  readonly thresholds: readonly number[] = [];
+
+  constructor(_callback: IntersectionObserverCallback, _options?: IntersectionObserverInit) {}
+  observe(_target: Element) {}
+  unobserve(_target: Element) {}
+  disconnect() {}
+  takeRecords(): IntersectionObserverEntry[] { return []; }
+}
+
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  vi.stubGlobal('IntersectionObserver', NeverVisibleIntersectionObserver);
   localStorage.setItem('kiki.locale', 'en');
 });
 
@@ -690,9 +703,9 @@ describe('original-file download scope', () => {
 });
 
 
-describe('real snapshot subagent remainder', () => {
-  it('offers snapshot.subagents under the existing agents row and never offers hidden metadata', async () => {
-    const ref = boundedRef({ kind: 'snapshot', id: '' }, ['subagents'], 'array', 4, 6);
+describe('real roster remainder', () => {
+  it('offers a roster entry under the existing agents row and never offers hidden metadata', async () => {
+    const ref = boundedRef({ kind: 'roster', id: 'child-1' }, ['label'], 'text', 2, 8);
     const hidden = boundedRef({ kind: 'snapshot', id: '' }, ['session', 'metadata', 'custom_hidden'], 'text', 3, 30);
     const loadContent = vi.fn(async () => true);
     const container = await render(<TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={[hidden, ref]} loadContent={loadContent}><SessionRemainder /></TranscriptDetailProvider>);

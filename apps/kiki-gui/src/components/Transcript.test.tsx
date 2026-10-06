@@ -182,11 +182,17 @@ function makeRoot(): { root: Root; container: HTMLDivElement } {
  */
 let editFixture: import('node:child_process').ChildProcess | undefined;
 let editFixturePort: number;
+let editFixtureStderr = '';
 async function renderSettled(root: Root, node: ReactNode, connected = false): Promise<void> {
   if (connected) {
     if (editFixture === undefined) {
       const { spawn } = await import('node:child_process');
       editFixture = spawn(process.execPath, ['--input-type=module', '-e', "import { startFixtureServer } from './scripts/fixture-server.mjs'; const server = await startFixtureServer({port: 0, scenario: 'queue'}); console.log('TEST_FIXTURE_PORT:' + server.http.address().port);"], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
+      editFixture.stderr!.on('data', (chunk) => {
+        const text = String(chunk);
+        editFixtureStderr += text;
+        process.stderr.write(`[Transcript fixture] ${text}`);
+      });
       await new Promise<void>((resolve, reject) => {
         let output = '';
         editFixture!.stdout!.on('data', (chunk) => {
@@ -195,7 +201,9 @@ async function renderSettled(root: Root, node: ReactNode, connected = false): Pr
           if (port !== null) { editFixturePort = Number(port[1]); resolve(); }
         });
         editFixture!.once('error', reject);
-        editFixture!.once('exit', (code) => { if (editFixturePort === undefined) reject(new Error(`fixture exited: ${code}`)); });
+        editFixture!.once('exit', (code) => {
+          if (editFixturePort === undefined) reject(new Error(`fixture exited: ${code}\n${editFixtureStderr}`));
+        });
       });
     }
     writeStoredConfig({ url: `http://127.0.0.1:${editFixturePort}`, token: 'kiki-fixture-token' });
@@ -377,10 +385,17 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (editFixture !== undefined) {
-    const exited = new Promise<void>((resolve) => { editFixture!.once('exit', () => resolve()); });
-    editFixture.kill();
-    await exited;
+  const fixture = editFixture;
+  if (fixture !== undefined && fixture.exitCode === null) {
+    await new Promise<void>((resolve) => {
+      const onExit = () => { resolve(); };
+      fixture.once('exit', onExit);
+      fixture.kill();
+      if (fixture.exitCode !== null) {
+        fixture.removeListener('exit', onExit);
+        resolve();
+      }
+    });
   }
   restoreElementProperties();
   delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
@@ -724,6 +739,7 @@ async function renderTranscript(
   rowActions?: TranscriptRowActions,
   stateOverrides?: Partial<SessionViewState>,
   transcriptProps?: Partial<ComponentProps<typeof Transcript>>,
+  connected = false,
 ): Promise<HTMLDivElement> {
   const { root, container } = makeRoot();
   await renderSettled(
@@ -737,7 +753,7 @@ async function renderTranscript(
       rowActions={rowActions}
       {...transcriptProps}
     />,
-    rowActions !== undefined,
+    connected,
   );
   return container;
 }
@@ -2085,6 +2101,9 @@ describe('message row actions', () => {
     const container = await renderTranscript(
       [userBlock({ id: 'user-m1', text: 'original text', userMessageId: 'm1' })],
       rowActions,
+      undefined,
+      undefined,
+      true,
     );
     const row = container.querySelector('[data-block-id="user-m1"]')!;
     await act(async () => {
@@ -2270,6 +2289,9 @@ describe('message row actions', () => {
       const container = await renderTranscript(
         [userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' })],
         rowActions,
+        undefined,
+        undefined,
+        true,
       );
       const row = () => container.querySelector('[data-block-id="user-m1"]')!;
       expect(row().querySelector('[data-actions-open]')).toBeNull();

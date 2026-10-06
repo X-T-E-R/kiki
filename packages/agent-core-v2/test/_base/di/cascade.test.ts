@@ -614,6 +614,7 @@ describe('cascade engine — cross-scope orchestration (D9)', () => {
     });
 
     parent.unprovide(IRoot);
+    await parent.cascade.whenIdle();
 
     expect(events).toEqual(['-mid', '-root']);
     const entry = parent.cascade.history().at(-1)!;

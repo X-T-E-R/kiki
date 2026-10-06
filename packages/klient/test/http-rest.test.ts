@@ -92,7 +92,7 @@ describe('HTTP REST domains', () => {
   it('reads and explicitly applies persona settings through typed authenticated session routes', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const projected = { personaId: 'example', boundRevision: 'old', latestRevision: 'new', hasUpdate: true, overrides: { model: 'chosen' } };
-    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       calls.push({ path: new URL(inputUrl).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });

@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 
 import { LockError, MiniDb } from '@kiki/minidb';
 import { ClusterDb } from '@kiki/minidb/cluster';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InstantiationService } from '#/_base/di/instantiationService';
 import { ServiceCollection } from '#/_base/di/serviceCollection';
@@ -522,7 +522,7 @@ describe('runtime thread mailbox', () => {
         initialization: { controller: AbortController };
       }).initialization;
       const closed = closing === 'store' ? item.store.close() : item.runtime.close();
-      expect(initializing.controller.signal.aborted).toBe(true);
+      await vi.waitFor(() => expect(initializing.controller.signal.aborted).toBe(true));
       controller.abort(cancelled);
       await expect(first).rejects.toBeInstanceOf(Error);
       gate.release();

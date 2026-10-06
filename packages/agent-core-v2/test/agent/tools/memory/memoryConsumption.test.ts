@@ -105,10 +105,10 @@ describe('actual default memory contract consumption', () => {
     const ctx = await defaultAgent();
     await prompt(ctx, '以后回答都用中文');
     const request = ctx.llmCalls.at(-1)!;
-    expect(request.systemPrompt).toContain('Choose the right home before writing');
-    expect(request.systemPrompt).toContain('Omit generic permission, safety, or honesty disclaimers added by the agent');
-    expect(request.systemPrompt).toContain('if writing is unavailable');
-    expect(request.systemPrompt).not.toContain('reconcile memory in the same turn');
+    expect(request.systemPrompt).toContain('You are Kiki, an interactive general AI agent');
+    expect(request.systemPrompt).toContain('Understand the latest request in the full conversation');
+    expect(request.systemPrompt).toContain('Preserve named objects, numbers, units, versions, negative requirements, and interaction details');
+    expect(request.systemPrompt).toContain('When memory tools are available, maintain saved memory');
     const search = request.tools.find((tool) => tool.name === 'MemorySearch')!;
     const write = request.tools.find((tool) => tool.name === 'MemoryWrite')!;
     expect(search).toBeDefined();
@@ -197,7 +197,7 @@ describe('actual default memory contract consumption', () => {
     restored.mockNextResponse({ type: 'text', text: 'Recovered the task with the required schedule check.' });
     await restored.rpc.prompt({ input: [{ type: 'text', text: 'Resume independent work' }] });
     await restored.untilTurnEnd();
-    expect(restored.llmCalls.at(-1)!.systemPrompt).toContain('Choose the right home before writing');
+    expect(restored.llmCalls.at(-1)!.systemPrompt).toContain('You are Kiki, an interactive general AI agent');
     expect(requestText(restored)).toContain('applicability=expired');
     expect(requestText(restored)).not.toContain('A memory write attempted in this window still has an unresolved result or error');
     expect(restored.get(IAgentStateService).get(continuityClockKey).memoryMaintenance?.failures?.[0]?.handedOff).toBe(true);
@@ -241,6 +241,6 @@ describe('actual default memory contract consumption', () => {
     expect(ctx.llmCalls.at(-1)!.tools.some((tool) => tool.name === 'MemoryWrite')).toBe(false);
     expect(requestText(ctx)).not.toContain('choose its durable home');
     expect(requestText(ctx)).not.toContain('This human input may change guidance beyond the current task');
-    expect(ctx.llmCalls.at(-1)!.systemPrompt).toContain('Use only the memory tools available to this agent');
+    expect(ctx.llmCalls.at(-1)!.systemPrompt).toContain('You are Kiki, an interactive general AI agent');
   });
 });

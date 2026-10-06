@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DONE_WINDOW_MS,
@@ -112,7 +112,14 @@ describe('useLifeChanged', () => {
 describe('runNewSessionHandoff', () => {
   // A loose view of document so the test can install and remove the API.
   type VtDoc = { startViewTransition?: unknown };
-  afterEach(() => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(async () => {
+    // The transition update owns a bounded polling timer; drain it while jsdom
+    // still exists instead of letting it fire after the environment tears down.
+    await vi.runOnlyPendingTimersAsync();
+    vi.useRealTimers();
     delete document.documentElement.dataset['kikiMotion'];
     delete (document as unknown as VtDoc).startViewTransition;
     delete document.documentElement.dataset['kikiHandoff'];

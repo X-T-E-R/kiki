@@ -408,6 +408,11 @@ beforeAll(async () => {
     auth: { method: 'api-key', apiKey: 'test-key' },
     maxContextSize: 262_144,
   });
+  const modelService = app!.accessor.get(IModelService);
+  for (const id of [M_OPENAI, M_OPENAI_VISION, M_KIMI, M_ANTHROPIC, M_GOOGLE]) {
+    const model = modelService.get(id);
+    if (model !== undefined) await modelService.set(id, { ...model, defaultEffort: 'off' });
+  }
 }, 60_000);
 
 afterAll(async () => {
@@ -443,6 +448,7 @@ async function newCase(modelId: string, label: string): Promise<CaseContext> {
   await mkdir(workDir, { recursive: true });
   const session = await klient.global.sessions.create({ workDir });
   const agent = klient.session(session.id).agent('main');
+  await agent.setEffort('off');
   await agent.setModel(modelId);
 
   const events: CollectedEvent[] = [];
@@ -471,6 +477,13 @@ async function newCase(modelId: string, label: string): Promise<CaseContext> {
 
 async function promptAndWait(ctx: CaseContext, input: readonly ContentPart[]): Promise<void> {
   await ctx.agent.prompt({ input }, { waitFor: 'terminal' });
+}
+
+async function expectInvalidImagePrompt(ctx: CaseContext, input: readonly ContentPart[]): Promise<void> {
+  await promptAndWait(ctx, input);
+  expect(requests).toHaveLength(0);
+  expect(ctx.payloads('prompt.completed')[0]?.['reason']).toBe('failed');
+  expect(ctx.eventNames()).not.toContain('turn.started');
 }
 
 /** Chat-completions messages array of the n-th captured request. */
@@ -617,131 +630,54 @@ describe('image blocks with invalid data', () => {
     }
   }, 60_000);
 
-  it('a malformed data URL is replaced with a notice during request preparation (l2)', async () => {
+  it('rejects a malformed data URL before any provider request (l2)', async () => {
     const ctx = await newCase(M_OPENAI, 'malformed-data-url');
     resetMock(queueScript(OK_OPENAI));
 
-    await promptAndWait(ctx, [
+    await expectInvalidImagePrompt(ctx, [
       { type: 'text', text: 'what is this?' },
       { type: 'image_url', imageUrl: { url: 'data:definitely-not-a-data-url' } },
     ]);
-
-    expect(requests).toHaveLength(1);
-    const wireText = JSON.stringify(requests[0]?.json);
-    expect(wireText).toContain('is not a valid data URL');
-    expect(ctx.payloads('prompt.completed')[0]?.['reason']).toBe('completed');
   }, 30_000);
 
-  it('openai: corrupt base64 with an accepted mime passes conversion; a 400 triggers media-stripped resend (l3 + engine fallback)', async () => {
+  it('openai: rejects corrupt base64 before any provider request (l2)', async () => {
     const ctx = await newCase(M_OPENAI, 'openai-image-base64');
     resetMock(queueScript(jsonError(400, 'Invalid image data'), OK_OPENAI));
 
-    await promptAndWait(ctx, [
+    await expectInvalidImagePrompt(ctx, [
       { type: 'text', text: 'what is this?' },
       { type: 'image_url', imageUrl: { url: IMAGE_BAD_BASE64_URL } },
     ]);
-
-    expect(requests).toHaveLength(2);
-    // Ingestion accepts the declared mime (png) without validating the
-    // payload; the OpenAI base forwards the data URL verbatim.
-    const firstContent = openAiContentParts(0);
-    expect(firstContent).toContainEqual({
-      type: 'image_url',
-      image_url: { url: IMAGE_BAD_BASE64_URL },
-    });
-    // The 400 + "invalid image" body classifies as an image-format error, so
-    // llmRequester resends with the media stripped to a placeholder — and the
-    // turn succeeds without dropping the original prompt text.
-    expectOpenAiUserContentPresent(1);
-    const secondContent = openAiContentParts(1);
-    expect(openAiUserText(1).some((text) => text.includes('what is this?'))).toBe(true);
-    expect(secondContent.some((part) => (part as { type?: string }).type === 'image_url')).toBe(
-      false,
-    );
-    expect(JSON.stringify(secondContent)).toContain('image omitted for provider compatibility');
-    expect(ctx.payloads('prompt.completed')[0]?.['reason']).toBe('completed');
   }, 30_000);
 
-  it('kimi (composed): same media-strip fallback as plain openai (l3 + engine fallback)', async () => {
+  it('kimi (composed): rejects corrupt base64 before any provider request (l2)', async () => {
     const ctx = await newCase(M_KIMI, 'kimi-image-base64');
     resetMock(queueScript(jsonError(400, 'Invalid image data'), OK_OPENAI));
 
-    await promptAndWait(ctx, [
+    await expectInvalidImagePrompt(ctx, [
       { type: 'text', text: 'what is this?' },
       { type: 'image_url', imageUrl: { url: IMAGE_BAD_BASE64_URL } },
     ]);
-
-    expect(requests).toHaveLength(2);
-    const firstContent = openAiContentParts(0);
-    expect(firstContent).toContainEqual({
-      type: 'image_url',
-      image_url: { url: IMAGE_BAD_BASE64_URL },
-    });
-    expectOpenAiUserContentPresent(1);
-    const secondContent = openAiContentParts(1);
-    expect(openAiUserText(1).some((text) => text.includes('what is this?'))).toBe(true);
-    expect(secondContent.some((part) => (part as { type?: string }).type === 'image_url')).toBe(
-      false,
-    );
-    expect(JSON.stringify(secondContent)).toContain('image omitted for provider compatibility');
-    expect(ctx.payloads('prompt.completed')[0]?.['reason']).toBe('completed');
   }, 30_000);
 
-  it('google-genai: corrupt base64 rides inlineData; a 400 triggers media-stripped resend (l3 + engine fallback)', async () => {
+  it('google-genai: rejects corrupt base64 before any provider request (l2)', async () => {
     const ctx = await newCase(M_GOOGLE, 'google-image-base64');
     resetMock(queueScript(jsonError(400, 'Invalid image data'), OK_GOOGLE));
 
-    await promptAndWait(ctx, [
+    await expectInvalidImagePrompt(ctx, [
       { type: 'text', text: 'what is this?' },
       { type: 'image_url', imageUrl: { url: IMAGE_BAD_BASE64_URL } },
     ]);
-
-    expect(requests).toHaveLength(2);
-    // convertMediaUrl parses the mime out of the data URL and never
-    // validates the payload — it lands in inlineData.
-    const firstParts = (
-      (requests[0]?.json as { contents?: { parts?: unknown[] }[] }).contents ?? []
-    ).flatMap((content) => content.parts ?? []);
-    expect(firstParts).toContainEqual({
-      inlineData: { mimeType: 'image/png', data: '%%%not-base64%%%' },
-    });
-    const secondParts = (
-      (requests[1]?.json as { contents?: { parts?: unknown[] }[] }).contents ?? []
-    ).flatMap((content) => content.parts ?? []);
-    expect(secondParts.some((part) => (part as { inlineData?: unknown }).inlineData)).toBe(false);
-    expect(ctx.payloads('prompt.completed')[0]?.['reason']).toBe('completed');
   }, 30_000);
 
-  it('anthropic: corrupt base64 with a legal mime passes conversion, then gets stripped after a 400', async () => {
+  it('anthropic: rejects corrupt base64 before any provider request (l2)', async () => {
     const ctx = await newCase(M_ANTHROPIC, 'anthropic-image-base64');
     resetMock(queueScript(jsonError(400, 'could not process the image'), OK_ANTHROPIC));
 
-    await promptAndWait(ctx, [
+    await expectInvalidImagePrompt(ctx, [
       { type: 'text', text: 'what is this?' },
       { type: 'image_url', imageUrl: { url: IMAGE_BAD_BASE64_URL } },
     ]);
-
-    expect(requests).toHaveLength(2);
-    // The base validates the mime STRING only; payload bytes go out as-is.
-    // (The last block of the last message also carries an injected
-    // cache_control marker — compare on the fields that matter.)
-    const firstBlocks = (
-      (requests[0]?.json as { messages?: { content?: unknown[] }[] }).messages ?? []
-    ).flatMap((message) => (Array.isArray(message.content) ? message.content : []));
-    const imageBlock = firstBlocks.find(
-      (block): block is { type: 'image'; source: Record<string, unknown> } =>
-        (block as { type?: string }).type === 'image',
-    );
-    expect(imageBlock?.source).toMatchObject({
-      type: 'base64',
-      data: '%%%not-base64%%%',
-      media_type: 'image/png',
-    });
-    const secondBlocks = (
-      (requests[1]?.json as { messages?: { content?: unknown[] }[] }).messages ?? []
-    ).flatMap((message) => (Array.isArray(message.content) ? message.content : []));
-    expect(secondBlocks.some((block) => (block as { type?: string }).type === 'image')).toBe(false);
-    expect(ctx.payloads('prompt.completed')[0]?.['reason']).toBe('completed');
   }, 30_000);
 });
 

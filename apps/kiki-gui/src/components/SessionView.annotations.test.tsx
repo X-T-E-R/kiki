@@ -139,6 +139,7 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     refreshSession() { return Promise.resolve(); }
     open() { return Promise.resolve(); }
     close() {}
+    contentRefsFor() { return []; }
     getForest() { return undefined; }
   }
   return { ...actual, SessionController: StubSessionController };

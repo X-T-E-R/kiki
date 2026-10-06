@@ -295,7 +295,7 @@ describe('AgentExecutionService', () => {
       const remove = vi.spyOn(controller.signal, 'removeEventListener');
       try {
         await service.run({ kind: 'prompt', prompt: 'work' }, { signal: controller.signal });
-        if (close === 'scope-close') await ix.dispose();
+        if (close === 'scope-close') void ix.dispose();
         if (close === 'shutdown') void service.shutdown('close');
         if (close === 'dispose') void service.dispose();
         const first = service.shutdown();

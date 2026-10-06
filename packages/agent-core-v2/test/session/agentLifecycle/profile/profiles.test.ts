@@ -36,7 +36,7 @@ describe('shipped agent profiles', () => {
       expect.arrayContaining(['Read', 'Edit', 'Write', 'Bash', 'Skill']),
     );
     expect(general.tools).not.toContain('AgentRun');
-    expect(general.tools).not.toContain('TaskWait');
+    expect(general.tools).toContain('TaskWait');
     expect(general.canSpawnSubagents).toBe(false);
     expect(general.main).toBeUndefined();
   });

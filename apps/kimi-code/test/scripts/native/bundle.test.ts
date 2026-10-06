@@ -57,7 +57,7 @@ describe('SEA native package imports', () => {
       mkdirSync(pluginRoot);
       writeFileSync(nativeAssets, 'export function getPluginHostRunnerFile() { return null; }\n');
       writeFileSync(plugin, "await Promise.resolve(); console.log(JSON.stringify(process.argv.slice(1)));\n");
-      writeFileSync(entry, `import { runPluginNodeEntry } from ${JSON.stringify(resolve('src/cli/sub/plugin-run-node.ts'))};\nrunPluginNodeEntry(process.argv[2], process.argv.slice(3)).catch(error => { console.error(error); process.exitCode = 1; });\n`);
+      writeFileSync(entry, `import { runPluginNodeEntry } from ${JSON.stringify(resolve(import.meta.dirname, '../../../src/cli/sub/plugin-run-node.ts'))};\nrunPluginNodeEntry(process.argv[2], process.argv.slice(3)).catch(error => { console.error(error); process.exitCode = 1; });\n`);
       await build({
         ...nativeConfig,
         config: false,

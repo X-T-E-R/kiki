@@ -152,7 +152,7 @@ describe('InstantiationService.createChild', () => {
     const child = parent.createChild(new ServiceCollection([childId, new SyncDescriptor(SlowChild)]));
     parent.invokeFunction((accessor) => accessor.get(parentId));
     child.invokeFunction((accessor) => accessor.get(childId));
-    if (alreadyDisposing) await child.dispose();
+    if (alreadyDisposing) void child.dispose();
     let settled = false;
     const pending = Promise.resolve(parent.dispose()).then(() => { settled = true; });
     await Promise.resolve();

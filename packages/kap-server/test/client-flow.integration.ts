@@ -12,6 +12,7 @@ import { applyTranscriptShell, projectAgentTranscriptView } from '../../session-
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
 import { startServer, type RunningServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
+import { paddedPng } from './helpers/png';
 
 interface ModelRequest {
   model: string;
@@ -428,9 +429,8 @@ describe('GUI shared client against an isolated KAP host', () => {
 
   it('accepts three uploaded and three inline images through the GUI adapter and downloads session media', async () => {
     const id = await session();
-    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
-    const image = Buffer.concat([png, Buffer.alloc(600 * 1024)]);
-    const uploaded = await Promise.all([0, 1, 2].map((index) => client.uploadFile(new File([image], `image-${index}.png`, { type: 'image/png' }))));
+    const image = paddedPng(600 * 1024, 1);
+    const uploaded = await Promise.all([0, 1, 2].map((index) => client.uploadFile(new File([new Uint8Array(image)], `image-${index}.png`, { type: 'image/png' }))));
     const submission = {
       model: 'first',
       content: uploaded.map((file) => ({ type: 'image' as const, source: { kind: 'file' as const, file_id: file.id } })),

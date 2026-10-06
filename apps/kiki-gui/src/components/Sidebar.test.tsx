@@ -1287,8 +1287,8 @@ describe('Sidebar session menu location & link group', () => {
     const labels = [...menu.querySelectorAll('[role="menuitem"]')].map(
       (element) => element.textContent,
     );
-    expect(labels.indexOf('Copy link')).toBeGreaterThan(labels.indexOf('Undo last turn…'));
-    expect(labels.indexOf('Copy link')).toBeLessThan(labels.indexOf('Pin to top'));
+    expect(labels.indexOf('Copy thread link')).toBeGreaterThan(labels.indexOf('Undo last turn…'));
+    expect(labels.indexOf('Copy thread link')).toBeLessThan(labels.indexOf('Pin to top'));
   });
 });
 

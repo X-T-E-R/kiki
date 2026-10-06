@@ -300,8 +300,8 @@ describe('AgentRuntimeBindingService', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
     invoke.mockClear();
 
+    const closing = ix.dispose();
     try {
-      await ix.dispose();
       expect(phases).toEqual(['closing', 'draining']);
       await localRegistration.remove();
       binding.switch('remote');
@@ -310,11 +310,11 @@ describe('AgentRuntimeBindingService', () => {
       expect(refresh).toHaveBeenCalledTimes(1);
       expect(workspaceChanges.listenerCount).toBe(0);
       for (const dispose of subscriptionDisposals) expect(dispose).toHaveBeenCalledTimes(1);
-      await ix.dispose();
+      expect(ix.dispose()).toBe(closing);
       expect(phases).toEqual(['closing', 'draining']);
     } finally {
       finishShutdown();
-      await shutdown;
+      await closing;
     }
     expect(phases).toEqual(['closing', 'draining', 'drained']);
   });

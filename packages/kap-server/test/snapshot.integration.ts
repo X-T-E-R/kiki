@@ -1062,7 +1062,7 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     expect(snap.epoch).toMatch(/^ep_/);
   });
 
-  it('omits persisted subagent relations without running or terminal evidence', async () => {
+  it('retains cold identity-only subagent relations without presenting them as active', async () => {
     const sid = await createSession();
     await ensureMainAgent(sid);
     const session = getLiveSessionById(server!.core.accessor, sid);
@@ -1117,7 +1117,10 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     expect(getLiveSessionById(server!.core.accessor, sid)).toBeUndefined();
 
     const snap = await snapshot(sid);
-    expect(snap.subagents).toEqual([]);
+    expect(snap.subagents).toEqual([expect.objectContaining({
+      id: 'agent-1', label: 'Research API limits', profile: 'explore',
+      activity_status: 'unknown', status_source: 'metadata', live: false,
+    })]);
   });
 
   it('serves a v1-layout session (ISO timestamps, no id field) without crashing', async () => {

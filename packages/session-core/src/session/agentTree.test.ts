@@ -1759,8 +1759,10 @@ describe('historical metadata roster', () => {
   });
 
   it('does not time a cold unfinished registration as running, and accepts a newer live generation', () => {
-    const cold = sessionAgentForestFromAgentSnapshots(new Map([['main', main()]]), [registered('child', 'running')]);
+    const cold = sessionAgentForestFromAgentSnapshots(new Map(), [registered('child', 'running')]);
     expect(cold.byId['child']).toMatchObject({ status: 'unknown', busy: false, label: 'Protocol investigation' });
+    const tracked = sessionAgentForestFromAgentSnapshots(new Map([['main', main()]]), [registered('child', 'running')]);
+    expect(tracked.byId['child']).toMatchObject({ status: 'running', busy: true, startedAt: at });
     const live = sessionAgentForestFromAgentSnapshots(new Map([['main', main('running', '2026-01-01T00:02:00.000Z')]]), [registered('child')]);
     expect(live.byId['child']).toMatchObject({ status: 'running', busy: true, startedAt: '2026-01-01T00:02:00.000Z' });
   });

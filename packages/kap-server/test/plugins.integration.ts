@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fixedArchive, officialPluginFixture, officialPluginFixtureSource, prepareOfficialPluginFixtures } from '../../agent-core-v2/test/fixtures/officialPlugins';
+import { fixedArchive, fixedPublishedArchive, officialPluginFixture, officialPluginFixtureSource, prepareOfficialPluginFixtures } from '../../agent-core-v2/test/fixtures/officialPlugins';
 
 import { WebSocket } from 'ws';
 
@@ -700,8 +700,11 @@ describe('server-v2 /api plugins', () => {
   it('serves bundled official metadata when the catalog is unavailable, matches recommendations and installs a fixed archive with zero configuration', async () => {
     await server?.close();
     const realFetch = globalThis.fetch;
-    const pinnedOffice = officialPluginFixtureSource('kiki-office');
-    const officeArchive = await fixedArchive('kiki-office');
+    const pinnedOffice = {
+      source: 'https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-office-0.1.1.zip',
+      sha256: '12189919fe7b52a6ea9f785126be72bdd6c53cdbc666e2961c9a7dfacf29c7be',
+    };
+    const officeArchive = await fixedPublishedArchive(pinnedOffice.source, pinnedOffice.sha256);
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
       if (href === pinnedOffice.source) return new Response(new Uint8Array(officeArchive));

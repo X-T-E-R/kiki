@@ -120,6 +120,7 @@ describe('collection tokens — visibility & record lifetime (D12)', () => {
     const first = foldIn(root);
     expect(first.view.items).toEqual([{ name: 'durable' }]);
     root.unprovide(IFold);
+    await root.cascade.whenIdle();
     const second = foldIn(root);
     expect(second.view.items).toEqual([{ name: 'durable' }]);
     await root.dispose();

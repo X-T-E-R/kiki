@@ -1552,7 +1552,7 @@ describe('bindSessionTranscript', () => {
     expect(store.getAgent('sub-1')?.getItems()).toHaveLength(1);
     const descriptor = store.agents().find((a) => a.agentId === 'sub-1');
     expect(descriptor).toBeDefined();
-    expect(typeof descriptor?.disposedAt).toBe('string');
+    await vi.waitFor(() => expect(typeof store.agents().find((a) => a.agentId === 'sub-1')?.disposedAt).toBe('string'));
     expect(store.agents().find((a) => a.agentId === 'main')?.disposedAt).toBeUndefined();
     await binding.dispose();
   });

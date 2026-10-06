@@ -436,8 +436,13 @@ const SCENARIOS = [
     async run(page, link) {
       await page.goto(link('/usage?panel=realtime'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-governance-active]', { timeout: 20_000 });
+      await page.waitForSelector('[data-governance-dimensions]', { timeout: 20_000 });
       const shots = [await shot(page, 'usage-realtime')];
-      await page.locator('[data-governance-details-toggle]').click();
+      const detailsToggle = page.locator('[data-governance-details-toggle]');
+      await detailsToggle.click();
+      await page.waitForSelector('[data-governance-dimensions]', { state: 'hidden', timeout: 20_000 });
+      shots.push(await shot(page, 'usage-live-folded'));
+      await detailsToggle.click();
       await page.waitForSelector('[data-governance-dimensions]', { timeout: 20_000 });
       shots.push(await shot(page, 'usage-live-details'));
       await page.goto(link('/usage?panel=limits'), { waitUntil: 'domcontentloaded' });

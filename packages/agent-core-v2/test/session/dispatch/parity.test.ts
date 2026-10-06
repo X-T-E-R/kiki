@@ -514,6 +514,9 @@ function createLane(
   const handles = new Map<string, IAgentScopeHandle>();
   const metadataAgents: Record<string, AgentMeta> = {};
   const completions: Deferred<{ summary: string; usage?: TokenUsage }>[] = [];
+  disposables.add({ dispose: () => {
+    for (const completion of completions) completion.resolve({ summary: 'fixture cleanup' });
+  } });
   const taskRecords = new Map<string, TaskRecord>();
   const stateByAgent = new Map<string, AgentStateService>();
   const profileByAgent = new Map<string, ProfileData>();
