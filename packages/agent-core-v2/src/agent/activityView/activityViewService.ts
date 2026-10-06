@@ -231,10 +231,10 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     return this.current;
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     this.lifecycle = 'disposed';
     this.publish();
-    super.dispose();
+    return super.dispose();
   }
 
   private seedFromLoop(): void {

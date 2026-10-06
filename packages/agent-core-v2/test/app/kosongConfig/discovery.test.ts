@@ -101,7 +101,7 @@ describe('manual provider discovery', () => {
       expect(fetchMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         headers: expect.objectContaining({ Authorization: `Bearer ${connection.apiKey}` }),
       }));
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it('uses a persisted Google key through the normal discovery probe path', async () => {
@@ -116,7 +116,7 @@ describe('manual provider discovery', () => {
     try {
       await discovery.probeProviderModels({ type: 'google-genai', base_url: provider.baseUrl, api_key: provider.apiKey });
       expect(fetchMock).toHaveBeenCalled();
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it('does not fetch on construction or read and returns a defensive copy of unconfigured suggestions', async () => {
@@ -144,7 +144,7 @@ describe('manual provider discovery', () => {
       list.items[0]!.models.length = 0;
       expect((await discovery.listDiscoveredModels()).items[0]?.models).toEqual([{ remote_id: 'remote-new' }]);
       expect(fetchMock).toHaveBeenCalledTimes(1);
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it('uses a request-only draft key for the targeted fetch without replacing the stored key', async () => {
@@ -161,7 +161,7 @@ describe('manual provider discovery', () => {
       expect(config.get('providers')).toEqual(sections.providers);
       expect(writes).not.toHaveBeenCalled();
       expect((await discovery.listDiscoveredModels()).items[0]?.models).toEqual([{ remote_id: 'remote-new' }]);
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it('redacts a failed draft-key probe and leaves the stored key untouched', async () => {
@@ -179,7 +179,7 @@ describe('manual provider discovery', () => {
       expect(fetchMock).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
         headers: expect.objectContaining({ Authorization: 'Bearer sk-draft-retry' }),
       }));
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it('filters saved remote IDs independently of aliases, and forgets suggestions on a new app instance', async () => {
@@ -191,8 +191,8 @@ describe('manual provider discovery', () => {
       expect((await first.discovery.listDiscoveredModels()).items[0]?.models).toEqual([]);
       const second = await createHost(sections);
       try { expect(await second.discovery.listDiscoveredModels()).toEqual({ items: [] }); }
-      finally { second.host.dispose(); }
-    } finally { first.host.dispose(); }
+      finally { await second.host.dispose(); }
+    } finally { await first.host.dispose(); }
   });
 
   it('keeps the last successful suggestions with a failed-attempt status then clears them on an empty success', async () => {
@@ -213,7 +213,7 @@ describe('manual provider discovery', () => {
       await discovery.refreshProviderModels({ providerId: 'gateway', apiKey: 'sk-draft-copy' });
       expect((await discovery.listDiscoveredModels()).items[0]).toMatchObject({ models: [] });
       expect((await discovery.listDiscoveredModels()).items[0]).not.toHaveProperty('failure_reason');
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it('discards stale results when the connection changes while a fetch is pending without overwriting concurrent edits', async () => {
@@ -235,7 +235,7 @@ describe('manual provider discovery', () => {
       expect(await discovery.listDiscoveredModels()).toEqual({ items: [] });
       expect(models.list()['concurrent']).toEqual({ provider: 'gateway', model: 'manual' });
       expect(config.get('providers')).toEqual({ gateway: { ...connection, apiKey: 'sk-replacement' } });
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it.each([
@@ -248,7 +248,7 @@ describe('manual provider discovery', () => {
       await discovery.refreshProviderModels({ providerId: 'gateway', apiKey: 'sk-draft-copy' });
       await config.replaceSections({ providers });
       expect(await discovery.listDiscoveredModels()).toEqual({ items: [] });
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it('records a first failure without pretending a successful fetch occurred', async () => {
@@ -263,7 +263,7 @@ describe('manual provider discovery', () => {
         failure_reason: result.failed[0]!.reason, models: [],
       }]);
       expect(fetchMock).not.toHaveBeenCalled();
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it('never fetches static providers and rejects unknown provider IDs', async () => {
@@ -278,7 +278,7 @@ describe('manual provider discovery', () => {
       );
       expect(fetchMock).not.toHaveBeenCalled();
       expect(events.published).toEqual([]);
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it('rejects a persisted sibling registry key before grouped retry candidates can fetch', async () => {
@@ -297,7 +297,7 @@ describe('manual provider discovery', () => {
       const result = await discovery.refreshProviderModels({ providerId: 'gateway' });
       expect(result.failed).toHaveLength(1);
       expect(fetchMock).toHaveBeenCalledOnce();
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it('suggests custom-registry entries without importing providers or writing config', async () => {
@@ -322,7 +322,7 @@ describe('manual provider discovery', () => {
       expect(writes).not.toHaveBeenCalled();
       expect(config.get('providers')).toEqual(providers);
       expect(fetchMock).toHaveBeenCalledWith('https://registry.example.test/api.json', expect.objectContaining({ headers: expect.objectContaining({ 'User-Agent': 'kimi-test/1.0' }) }));
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it('treats managed-endpoint API-key providers as user-owned suggestions', async () => {
@@ -342,7 +342,7 @@ describe('manual provider discovery', () => {
       expect(writes).not.toHaveBeenCalled();
       expect(config.get('defaultModel')).toBe('gateway/fast');
       expect(config.get('models')).toEqual(sections.models);
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it('retains managed OAuth write-back and serializes explicit fetches', async () => {
@@ -375,7 +375,7 @@ describe('manual provider discovery', () => {
       expect(writes).toHaveBeenCalledTimes(1);
       expect(maxInFlight).toBe(1);
       expect(fetchMock).toHaveBeenCalledTimes(2);
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 });
 

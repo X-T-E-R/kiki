@@ -6,6 +6,8 @@ import { basename, dirname, isAbsolute, join, posix, relative, win32 } from 'nod
 import { FSWatcher } from 'chokidar';
 
 import type { IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
@@ -214,7 +216,8 @@ class SignalWatchHandle implements IHostFsWatchHandle {
     }
     this.recovering = true;
     this.retryAttempts += 1;
-    this.retry?.dispose();
+    const previous = this.retry?.dispose();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     this.retry = undefined;
     if (this.retryAttempts >= NATIVE_ERROR_LIMIT) {
       this.recovering = false;
@@ -276,13 +279,13 @@ class SignalWatchHandle implements IHostFsWatchHandle {
     this.emitter.fire({ path: this.root, action: 'modified', kind: 'directory' });
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     this.readiness.resolve();
-    this.retry?.dispose();
+    await this.retry?.dispose();
     this.nativeWatcher?.close();
-    this.chokidarLeg?.dispose();
+    await this.chokidarLeg?.dispose();
     this.emitter.dispose();
   }
 }

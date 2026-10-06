@@ -178,7 +178,7 @@ describe('SSH management REST routes', () => {
     expect(JSON.stringify(secretResponse)).not.toContain(secret);
     expect(decideSsh).toHaveBeenCalledWith('ssh-approval', { decision: 'approved' }, { password: secret, save: 'session' });
     expect(release).toHaveBeenCalledTimes(8);
-    state.dispose();
+    await state.dispose();
   });
 
   it('clears temporary hosts on close, eviction, and deletion', async () => {
@@ -296,7 +296,7 @@ describe('S5 real SSH REST authority with Fastify inject', () => {
       expect(failed.json()).not.toHaveProperty('data.enabled');
     } finally {
       await app.close();
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 });

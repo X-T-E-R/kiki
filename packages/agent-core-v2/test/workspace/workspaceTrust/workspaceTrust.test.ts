@@ -41,7 +41,7 @@ describe('WorkspaceTrustService', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
     await Promise.all([
       rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),
       rm(cwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),

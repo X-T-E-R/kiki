@@ -402,7 +402,7 @@ describe('GrepTool', () => {
       expect(tool?.name).toBe('Grep');
       expect(info).toMatchObject({ source: 'user', disclosure: 'deferred' });
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
       _clearAgentToolContributionsForTests();
       for (const contribution of savedContributions) {
         overrideAgentToolService(contribution.id, contribution.ctor, contribution.options);

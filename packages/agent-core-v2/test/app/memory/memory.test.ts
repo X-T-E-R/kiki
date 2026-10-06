@@ -59,8 +59,8 @@ function start(config: Partial<MemoryConfig> = { enabled: true }): { store: IMem
   return { store: app.accessor.get(IMemoryStore), snapshot: agent.accessor.get(IAgentMemorySnapshot), storage, writeTool: agent.accessor.get(IMemoryWriteTool), searchTool: agent.accessor.get(IMemorySearchTool), readTool: agent.accessor.get(IMemoryReadTool) };
 }
 
-function reopen(): ReturnType<typeof start> {
-  app?.dispose();
+async function reopen(): Promise<ReturnType<typeof start>> {
+  await app?.dispose();
   app = undefined;
   return start();
 }
@@ -79,7 +79,7 @@ beforeEach(async () => {
   home = await fs.mkdtemp(join(process.cwd(), '.tmp', 'memory-test-'));
 });
 afterEach(async () => {
-  app?.dispose();
+  await app?.dispose();
   app = undefined;
   await fs.rm(home, { force: true, recursive: true });
 });
@@ -117,7 +117,7 @@ describe('memory persistence and snapshot', () => {
     expect(initial).not.toContain('Build preferences');
     const saved = await create(first.store);
     expect(await first.snapshot.get()).toBe(initial);
-    app?.dispose();
+    await app?.dispose();
     app = undefined;
     const second = start();
     const fresh = await second.snapshot.get();
@@ -143,7 +143,7 @@ describe('memory persistence and snapshot', () => {
     const first = start();
     first.snapshot.configurePersona({ id: 'alpha' });
     const saved = await create(first.store, personaGlobal, 'Remember the alpha persona voice.');
-    app?.dispose();
+    await app?.dispose();
     app = undefined;
     const second = start();
     second.snapshot.configurePersona({ id: 'alpha' });
@@ -381,7 +381,7 @@ describe('memory persistence and snapshot', () => {
     expect(interrupted).toBe(true);
     expect((await store.list(workspace)).filter((entry) => entry.status === 'active').map((entry) => entry.id)).toEqual([first.entry.id]);
     expect((await store.journal(workspace)).some((event) => event.action === 'supersede_rollback')).toBe(true);
-    app?.dispose();
+    await app?.dispose();
     app = undefined;
     const resumed = start();
     expect((await resumed.store.list(workspace)).filter((entry) => entry.status === 'active').map((entry) => entry.id)).toEqual([first.entry.id]);
@@ -401,7 +401,7 @@ describe('memory persistence and snapshot', () => {
       expectedRevision: first.entry.revision, title: 'Updated build', body: 'Use pnpm with frozen lockfile.',
       type: 'project', reason: 'Newer user preference', source })).rejects.toThrow('simulated interrupted');
     const operationId = (await store.journal(workspace)).find((event) => event.action === 'supersede_previous')!.operationId;
-    app?.dispose();
+    await app?.dispose();
     app = undefined;
     const resumed = start();
     expect((await resumed.store.list(workspace)).filter((entry) => entry.status === 'active')).toHaveLength(0);
@@ -431,10 +431,10 @@ describe('memory persistence and snapshot', () => {
     expect(proposal.entry.pending_action).toBe(action);
     expect(proposal.entry.supersedes).toBe(original.entry.id);
     expect(await first.store.get(workspace, original.entry.id)).toEqual(original.entry);
-    const reopened = reopen();
+    const reopened = await reopen();
     expect(await reopened.store.get(workspace, original.entry.id)).toEqual(original.entry);
     await reopened.store.delete(workspace, proposal.entry.id, proposal.entry.revision);
-    app?.dispose();
+    await app?.dispose();
     app = undefined;
     const discarded = start();
     expect(await discarded.store.get(workspace, original.entry.id)).toEqual(original.entry);
@@ -445,7 +445,7 @@ describe('memory persistence and snapshot', () => {
     const first = start();
     const original = await create(first.store);
     const proposal = await first.store.put({ action, scope: workspace, id: original.entry.id, expectedRevision: original.entry.revision, title: 'Candidate', body: 'Use yarn instead.', type: 'project', reason: 'Review requested', source: { writer: 'agent' }, pending: true });
-    const reopened = reopen();
+    const reopened = await reopen();
     const savedCandidate = (await reopened.store.get(workspace, proposal.entry.id))!;
     const candidate = (await reopened.store.put({ action: 'update', scope: workspace, id: savedCandidate.id, expectedRevision: savedCandidate.revision, title: savedCandidate.title, body: 'Use yarn offline.', type: savedCandidate.type, reason: 'Edited proposal', source, pending: true })).entry;
     expect(candidate.id).toBe(savedCandidate.id);
@@ -457,7 +457,7 @@ describe('memory persistence and snapshot', () => {
     expect(accepted.entry.status).toBe(action === 'archive' ? 'archived' : 'active');
     expect(accepted.entry.created).toBe(original.entry.created);
     expect(await reopened.store.get(workspace, candidate.id)).toBeUndefined();
-    app?.dispose();
+    await app?.dispose();
     app = undefined;
     const confirmed = start();
     expect(await confirmed.store.get(workspace, original.entry.id)).toEqual(accepted.entry);
@@ -860,7 +860,7 @@ describe('memory projection fidelity and committed refresh', () => {
     const first = start();
     await create(first.store);
     const baseline = await first.snapshot.get();
-    app?.dispose();
+    await app?.dispose();
     app = undefined;
     const restored = start();
     const list = vi.spyOn(restored.store, 'inventory').mockRejectedValue(new Error('offline'));

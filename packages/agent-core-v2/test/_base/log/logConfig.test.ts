@@ -74,12 +74,12 @@ describe('path resolution', () => {
 });
 
 describe('logSeed', () => {
-  it('seeds ILogOptions into a App scope', () => {
+  it('seeds ILogOptions into a App scope', async () => {
     const cfg = resolveLoggingConfig({ homeDir: '/h', env: { KIKI_LOG_LEVEL: 'warn' } });
     const host = createScopedTestHost(logSeed(cfg));
     const opts = host.app.accessor.get(ILogOptions);
     expect(opts.level).toBe('warn');
     expect(opts.globalLogPath).toBe('/h/logs/kimi-code.log');
-    host.dispose();
+    await host.dispose();
   });
 });

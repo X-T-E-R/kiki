@@ -95,7 +95,7 @@ describe('WorkspaceMcpService', () => {
     vi.restoreAllMocks();
     await manager?.shutdown();
     await oauthService.dispose();
-    disposables.dispose();
+    await disposables.dispose();
     await rm(cwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 

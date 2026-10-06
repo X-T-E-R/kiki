@@ -604,9 +604,9 @@ describe('Codex app-server external executor', () => {
       expect(input).toContain('ordinary Codex resume');
       expect(mailbox.delivered()).toBe(true);
     } finally {
-      mailbox.dispose();
+      await mailbox.dispose();
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1050,7 +1050,7 @@ describe('Codex app-server external executor', () => {
       expect(cold.profile.data().executorId).toBe(cold.before.executorId);
       await harness.execution.shutdown();
       await expect(run.completion).rejects.toBeDefined();
-    } finally { harness.ix.dispose(); await harness.execution.shutdown(); await cold.dispose(); }
+    } finally { await harness.ix.dispose(); await harness.execution.shutdown(); await cold.dispose(); }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each(['scope-close', 'shutdown', 'dispose', 'replacement'] as const)(
@@ -1066,7 +1066,7 @@ describe('Codex app-server external executor', () => {
         );
         expect(harness.starts[0]?.['developerInstructions']).toBe('Frozen profile instructions');
         harness.pendingTurns.add(run.turn.id);
-        if (close === 'scope-close') harness.ix.dispose();
+        if (close === 'scope-close') await harness.ix.dispose();
         if (close === 'replacement') {
           harness.ix.provide(IAgentLoopService, {} as IAgentLoopService);
           await harness.ix.cascade.whenIdle();
@@ -1092,7 +1092,7 @@ describe('Codex app-server external executor', () => {
         expect(harness.runtimeLease.dispose).toHaveBeenCalledTimes(1);
         expect(harness.execution.status()).toEqual({ state: 'idle' });
       } finally {
-        harness.ix.dispose();
+        await harness.ix.dispose();
         await harness.execution.shutdown();
         expect(errors).not.toHaveBeenCalled();
         errors.mockRestore();
@@ -1192,7 +1192,7 @@ describe('Codex native MCP elicitation', () => {
       expect(interaction.listPending()).toEqual([]);
     } finally {
       await harness.session.shutdown();
-      ix.dispose();
+      await ix.dispose();
     }
   });
   it('maps a real empty-schema MCP approval and does not require an absent itemId', async () => {
@@ -1303,7 +1303,7 @@ describe('real Codex client through execution settlement and capacity', () => {
       fixture.exit();
       fixture.releaseDispose();
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1348,7 +1348,7 @@ describe('real Codex client through execution settlement and capacity', () => {
       fixture.releaseDispose();
       await shutdown;
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1374,7 +1374,7 @@ describe('real Codex client through execution settlement and capacity', () => {
       fixture.exit();
       fixture.releaseDispose();
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 });

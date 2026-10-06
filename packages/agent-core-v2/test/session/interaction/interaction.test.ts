@@ -367,7 +367,7 @@ describe('SessionInteractionService', () => {
     const svc = ix.get(ISessionInteractionService);
     const main = svc.request<unknown, unknown>({ kind: 'approval', payload: {}, origin: { turnId: 0 } });
     const child = svc.request<unknown, unknown>({ kind: 'question', payload: {}, origin: { agentId: 'child', turnId: 0 } });
-    disposables.dispose();
+    await disposables.dispose();
     await expect(main).resolves.toEqual({ cancelled: true, reason: 'agent_closed' });
     await expect(child).resolves.toEqual({ cancelled: true, reason: 'agent_closed' });
   });

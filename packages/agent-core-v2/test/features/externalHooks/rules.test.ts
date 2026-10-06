@@ -226,7 +226,7 @@ describe('hooks v2 session workspace loading', () => {
       expect(restored.revision).toBe(before.revision);
       expect(Object.values(restored.buckets)[0]?.completed).toBe(3);
       expect(watched).toContain(file);
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 });
 
@@ -314,7 +314,7 @@ describe('hooks v2 completed-step engine contract', () => {
       await ctx.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
       expect(injections(ctx)).toHaveLength(0);
       await ctx.expectResumeMatches();
-    } finally { compact.dispose(); }
+    } finally { await compact.dispose(); }
   });
 
   it('does not credit an in-flight old step to a replacement semantic revision', async () => {
@@ -409,7 +409,7 @@ describe('hooks v2 completed-step engine contract', () => {
       expect(outputs).toHaveLength(1);
       expect(JSON.parse(outputs[0]!)).toMatchObject({ rules: [{ id: 'user/focus', completedSteps: 0, nextDue: 1 }] });
       expect(ctx.get(IAgentContextMemoryService).get()).toEqual(before);
-    } finally { subscription.dispose(); }
+    } finally { await subscription.dispose(); }
   });
 
   it('keeps prompt input intact and skips a failed prompt injection without consuming its receipt', async () => {

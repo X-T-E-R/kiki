@@ -74,7 +74,7 @@ describe('SessionSkillCatalogService (seed view)', () => {
 
     await catalog.load();
     expect(catalog.catalog.getSkill('from-workspace')).toBeDefined();
-    host.dispose();
+    await host.dispose();
   });
 
   it('re-folds and forwards the source id when the seed fires a change', async () => {
@@ -91,7 +91,7 @@ describe('SessionSkillCatalogService (seed view)', () => {
     expect(catalog.catalog.getSkill('after')).toBeDefined();
     expect(seen).toEqual(['workspace']);
     subscription.dispose();
-    host.dispose();
+    await host.dispose();
   });
 
   it('merges ad-hoc sink contributions over the seed and drops them on remove', async () => {
@@ -111,7 +111,7 @@ describe('SessionSkillCatalogService (seed view)', () => {
     sink.remove('adhoc');
     expect(catalog.catalog.getSkill('shared')?.description).toBe('from workspace');
     expect(catalog.catalog.getSkill('adhoc-only')).toBeUndefined();
-    host.dispose();
+    await host.dispose();
   });
 
   it('reload re-folds the current seed without rescanning and fires catalog', async () => {
@@ -127,7 +127,7 @@ describe('SessionSkillCatalogService (seed view)', () => {
     expect(catalog.catalog.getSkill('two')).toBeDefined();
     expect(seen).toEqual(['catalog']);
     subscription.dispose();
-    host.dispose();
+    await host.dispose();
   });
 
   it('list returns plain summaries of the merged catalog after ready', async () => {
@@ -151,6 +151,6 @@ describe('SessionSkillCatalogService (seed view)', () => {
     });
     expect(Object.keys(seeded ?? {})).not.toContain('content');
     expect(summaries.some((summary) => summary.name === 'adhoc-only')).toBe(true);
-    host.dispose();
+    await host.dispose();
   });
 });

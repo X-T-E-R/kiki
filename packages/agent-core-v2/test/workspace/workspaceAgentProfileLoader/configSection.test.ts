@@ -39,7 +39,7 @@ async function withConfig(toml: string, run: (config: IConfigService) => Promise
     await config.ready;
     await run(config);
   } finally {
-    disposables.dispose();
+    await disposables.dispose();
   }
 }
 

@@ -56,7 +56,7 @@ describe('relay-v1 same-turn request prefix', () => {
       expect(results[0]!.result.isError).toBe(true);
       expect(results[0]!.result.output).toContain(gate === 'plan' ? 'plan mode' : 'denied by permission rule');
       expect(execute).not.toHaveBeenCalled();
-    } finally { registration.dispose(); }
+    } finally { await registration.dispose(); }
   });
 
   it('consumes canonical Cron and Goal descriptions in the final requester tool table', async () => {
@@ -142,7 +142,7 @@ describe('relay-v1 same-turn request prefix', () => {
     }
     expect(appended.length).toBeGreaterThan(original.length);
     if (binding.protocol === 'openai_responses') expect(second?.['instructions']).toBe(first?.['instructions']);
-    expect(JSON.stringify(second)).toContain('may set, change, or revoke a standing rule');
+    expect(JSON.stringify(second)).toContain('Human input t1 may change a constraint or decision');
     ctx.mockNextResponse({ type: 'text', text: 'after' });
     await requester.request({ source: { type: 'turn', turnId: 1, step: 2 } });
     const requests = ctx.allEvents.filter((event) => event.type === '[wire]' && event.event === 'llm.request');

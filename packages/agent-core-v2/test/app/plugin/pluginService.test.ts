@@ -215,7 +215,7 @@ describe('PluginService (plugin boundary)', () => {
         expect(archives.has(input instanceof Request ? input.url : input.toString())).toBe(true);
       }
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   }, 30_000);
 
@@ -230,7 +230,7 @@ describe('PluginService (plugin boundary)', () => {
       await expect(svc.enabledSystemPrompts()).resolves.toEqual([]);
       await expect(svc.enabledHooks()).rejects.toMatchObject({ code: 'plugin.load_failed' });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -246,7 +246,7 @@ describe('PluginService (plugin boundary)', () => {
       const svc = host.app.accessor.get(IPluginService);
       await expect(svc.enabledHooks()).rejects.toMatchObject({ code: 'plugin.load_failed' });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -260,7 +260,7 @@ describe('PluginService (plugin boundary)', () => {
       const failure = await svc.mcpServerEntries().catch((error: unknown) => error);
       expect(failure).toMatchObject({ code: 'plugin.load_failed' });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -275,7 +275,7 @@ describe('PluginService (plugin boundary)', () => {
       expect((failure as Error).message).toContain('installed.json');
       expect((failure as Error).message).toContain('/plugins reload');
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -294,7 +294,7 @@ describe('PluginService (plugin boundary)', () => {
       await expect(svc.listPlugins()).rejects.toMatchObject({ code: 'plugin.load_failed' });
       await expect(svc.pluginSkillRoots()).resolves.toEqual([]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -322,7 +322,7 @@ describe('PluginService (plugin boundary)', () => {
       ]);
       expect(reloads).toEqual([{ added: ['recovery-demo'], removed: [], errors: [] }]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -345,7 +345,7 @@ describe('PluginService (plugin boundary)', () => {
       expect(reloads).toHaveLength(4);
       await expect(svc.listPlugins()).resolves.toEqual([]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -375,7 +375,7 @@ describe('PluginService (plugin boundary)', () => {
       await svc.reloadPlugins();
       expect(mutations).toHaveLength(4);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -417,7 +417,7 @@ describe('PluginService (plugin boundary)', () => {
         expect.objectContaining({ id: 'barrier-demo', enabled: false }),
       ]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -442,7 +442,7 @@ describe('PluginService (plugin boundary)', () => {
         expect.objectContaining({ id: 'tolerant-demo', enabled: false }),
       ]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -458,7 +458,7 @@ describe('PluginService (plugin boundary)', () => {
         { pluginId: 'prompt-demo', content: 'Always cite sources.' },
       ]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -482,7 +482,7 @@ describe('PluginService (plugin boundary)', () => {
         expect.objectContaining({ plugin: expect.objectContaining({ id: 'stable-demo' }) }),
       ]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -505,7 +505,7 @@ describe('PluginService (plugin boundary)', () => {
         }),
       ]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -541,7 +541,7 @@ describe('PluginService (plugin boundary)', () => {
       await expect(install).rejects.toThrow();
       await expect(roots).resolves.toEqual([]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -569,7 +569,7 @@ describe('PluginService (plugin boundary)', () => {
       ).resolves.toContain('"version":"1.0.0"');
       await expect(readdir(path.join(home, 'plugins', 'managed'))).resolves.toEqual(['demo']);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -614,7 +614,7 @@ describe('PluginService (plugin boundary)', () => {
         expect.objectContaining({ id: 'github-demo', updateAvailable: true }),
       ]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -646,7 +646,7 @@ describe('PluginService (plugin boundary)', () => {
       await expect(persistedPluginIds(home)).resolves.toEqual([]);
       expect(reloads).toEqual([{ added: [], removed: ['old-demo'], errors: [] }]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -679,7 +679,7 @@ describe('PluginService (plugin boundary)', () => {
       await expect(svc.listPlugins()).resolves.toEqual([]);
       await expect(persistedPluginIds(home)).resolves.toEqual([]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -693,7 +693,7 @@ describe('PluginService (plugin boundary)', () => {
         code: 'plugin.not_found',
       });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -736,7 +736,7 @@ describe('PluginService (plugin boundary)', () => {
       );
       expect(JSON.stringify(servers['plugin-demo:docs'])).not.toContain('KIKI_CODE_BASE_URL');
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -786,7 +786,7 @@ describe('PluginService (plugin boundary)', () => {
       expect(docs?.config.enabled).toBe(true);
       expect(JSON.stringify(docs?.config)).not.toContain('KIKI_CODE_BASE_URL');
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -830,7 +830,7 @@ describe('PluginService (plugin boundary)', () => {
         },
       });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -869,7 +869,7 @@ describe('PluginService (plugin boundary)', () => {
         }),
       );
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -892,7 +892,7 @@ describe('PluginService (plugin boundary)', () => {
       expect(env).not.toHaveProperty('KIKI_CODE_BASE_URL');
       expect(env).not.toHaveProperty('KIKI_CODE_OAUTH_HOST');
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 });

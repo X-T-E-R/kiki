@@ -33,8 +33,8 @@ describe('HostProcessService', () => {
     });
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('spawns a process and captures stdout + exit code', async () => {
@@ -149,8 +149,8 @@ describe('HostProcessService Windows taskkill settlement', () => {
     vi.useFakeTimers();
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
     vi.useRealTimers();
     vi.doUnmock('node:child_process');
     vi.resetModules();
@@ -169,7 +169,7 @@ describe('HostProcessService Windows taskkill settlement', () => {
     expect(killer.kill).toHaveBeenCalledOnce();
     expect(killer.unref).toHaveBeenCalledOnce();
     await pending;
-    process.dispose();
+    await process.dispose();
   });
 
   it.each(['close', 'error'])('settles an early taskkill %s without killing it or leaving a deadline', async (event) => {
@@ -181,6 +181,6 @@ describe('HostProcessService Windows taskkill settlement', () => {
     expect(killer.kill).not.toHaveBeenCalled();
     expect(killer.unref).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
-    process.dispose();
+    await process.dispose();
   });
 });

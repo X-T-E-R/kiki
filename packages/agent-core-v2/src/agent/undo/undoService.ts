@@ -131,7 +131,7 @@ export class AgentConversationUndoService
       await this.dispatcher.dispatch(new ContextUndone({ turns, fromTurnId }));
       return turns;
     } finally {
-      quiescence?.dispose();
+      await quiescence?.dispose();
     }
   }
 

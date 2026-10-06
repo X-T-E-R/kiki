@@ -639,7 +639,7 @@ describe('EventDispatcherService', () => {
     expect(agentState.get(removableKey)).toBe(2);
     expect(dispatcher.history(removableKey)).toHaveLength(1);
 
-    contribution.dispose();
+    await contribution.dispose();
 
     expect(agentState.has(removableKey)).toBe(false);
     expect(agentState.replayableKeys()).not.toContain(removableKey);

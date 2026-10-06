@@ -64,7 +64,8 @@ describe('GUI shared client against an isolated KAP host', () => {
       '[models.unavailable]', 'provider = "managed:kimi-code"', 'model = "unavailable"', 'max_context_size = 100000',
       ...['first', 'second'].flatMap((model) => [
         `[models.${model}]`, 'provider = "local"', `model = "${model}"`,
-        'max_context_size = 100000', 'capabilities = ["image_in"]',
+        'max_context_size = 100000', 'capabilities = ["image_in", "thinking"]',
+        'support_efforts = ["low", "high"]', 'default_effort = "high"',
       ]),
       '',
     ].join('\n'));
@@ -305,13 +306,24 @@ describe('GUI shared client against an isolated KAP host', () => {
       expect(cold.data.tasks.find((task) => task.agentId === child.id)?.state).toBe('completed');
       expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
     }
-    const controller = new SessionController(client.sessions, client.sessionView(id), id);
+    const view = client.sessionView(id);
+    let ready = false;
+    const subscribe = view.subscribe.bind(view);
+    const subscriptionSpy = vi.spyOn(view, 'subscribe').mockImplementation((options, callback) =>
+      subscribe(options, (signal) => {
+        if (signal.type === 'ready') ready = true;
+        callback(signal);
+      }),
+    );
+    const controller = new SessionController(client.sessions, view, id);
     const mainChanges = vi.fn();
     const childChanges = vi.fn();
     const offMain = controller.subscribe(mainChanges);
     const offChild = controller.subscribeAgent(child.id, childChanges);
     try {
       await controller.open();
+      await vi.waitFor(() => expect(ready).toBe(true), { timeout: 10000 });
+      controller.flushFrames();
       await vi.waitFor(() => {
         controller.flushFrames();
         expect(controller.getForest()?.byId[child.id]?.status).toBe('completed');
@@ -358,6 +370,7 @@ describe('GUI shared client against an isolated KAP host', () => {
     } finally {
       offMain();
       offChild();
+      subscriptionSpy.mockRestore();
       controller.close();
     }
   }, 40000);

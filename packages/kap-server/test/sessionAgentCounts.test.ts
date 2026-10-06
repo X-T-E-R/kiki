@@ -67,18 +67,21 @@ describe('lightweight metadata roster', () => {
   });
 
   it('distinguishes an idle live scope from an active turn and does not revive a missing phase or a completed old generation', () => {
-    const agents = { main: {}, idle: { displayName: 'worker' }, cold: { labels: { collaborationTaskName: 'Recovered task' } }, resumed: { status: 'completed' as const, completedAt: 10 } };
+    const agents = { main: {}, idle: { displayName: 'worker' }, cold: { labels: { collaborationTaskName: 'Recovered task' } }, resumed: { status: 'completed' as const, completedAt: 10 }, finished: {} };
     const meta = { id: 'fixture-session', createdAt: 1, updatedAt: 10, archived: false, agents };
     const turn = { turnId: 2, origin: { kind: 'user' as const }, phase: 'running' as const, step: 1, ending: false, pendingApprovals: [], activeToolCalls: [], since: 20 };
     const roster = sessionAgentRoster(meta.id, meta, [
       { ...row('resumed', 'running'), started_at: new Date(2).toISOString(), completed_at: new Date(10).toISOString(), subagent_phase: 'working' },
       { ...row('cold', 'running'), live: undefined, subagent_phase: 'working' },
+      { ...row('finished', 'running'), started_at: new Date(20).toISOString(), subagent_phase: 'working' },
     ], new Map([
       ['idle', { lifecycle: 'ready', background: [] }], ['resumed', { lifecycle: 'ready', background: [], turn }],
+      ['finished', { lifecycle: 'ready', background: [], lastTurn: { turnId: 3, reason: 'completed', at: 30 } }],
     ]));
     expect(roster.find((entry) => entry.id === 'idle')).toMatchObject({ activity_status: 'idle', status_source: 'runtime' });
     expect(roster.find((entry) => entry.id === 'cold')).toMatchObject({ label: 'Recovered task', name_source: 'collaboration_task', activity_status: 'unknown', status_source: 'metadata' });
     expect(roster.find((entry) => entry.id === 'resumed')).toMatchObject({ status: 'running', activity_status: 'running', status_source: 'runtime', started_at: new Date(20).toISOString(), completed_at: undefined });
-    expect(sessionAgentCounts(agents, roster)).toEqual({ total: 4, subagents: 3, completed: 0, failed: 0, cancelled: 0, active: 1, idle: 1, unknown: 1 });
+    expect(roster.find((entry) => entry.id === 'finished')).toMatchObject({ status: 'completed', activity_status: 'completed', completed_at: new Date(30).toISOString(), status_source: 'runtime' });
+    expect(sessionAgentCounts(agents, roster)).toEqual({ total: 5, subagents: 4, completed: 1, failed: 0, cancelled: 0, active: 1, idle: 1, unknown: 1 });
   });
 });

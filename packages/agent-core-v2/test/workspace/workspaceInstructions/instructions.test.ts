@@ -45,7 +45,7 @@ describe('WorkspaceInstructionsService', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
     await Promise.all([
       rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),
       rm(osHomeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),

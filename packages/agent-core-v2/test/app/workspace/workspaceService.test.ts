@@ -77,7 +77,7 @@ describe('WorkspaceService (file-backed)', () => {
   });
 
   afterEach(async () => {
-    currentHost?.dispose();
+    await currentHost?.dispose();
     currentHost = undefined;
     await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
@@ -100,8 +100,8 @@ describe('WorkspaceService (file-backed)', () => {
     return host.app.accessor.get(IWorkspaceService);
   }
 
-  function restart(): IWorkspaceService {
-    currentHost?.dispose();
+  async function restart(): Promise<IWorkspaceService> {
+    await currentHost?.dispose();
     currentHost = undefined;
     return build();
   }
@@ -151,7 +151,7 @@ describe('WorkspaceService (file-backed)', () => {
   it('persists the catalog across registry instances', async () => {
     const created = await build().createOrTouch(homeDir, 'proj');
 
-    const list = await restart().list();
+    const list = await (await restart()).list();
     expect(list.map((w) => w.id)).toContain(created.id);
     expect(list.find((w) => w.id === created.id)?.name).toBe('proj');
   });
@@ -185,7 +185,7 @@ describe('WorkspaceService (file-backed)', () => {
     expect(a?.root).toBe(workA);
     expect(a?.name).toBe('proj-a');
 
-    expect((await restart().list()).map((w) => w.id).toSorted()).toEqual(
+    expect((await (await restart()).list()).map((w) => w.id).toSorted()).toEqual(
       list.map((w) => w.id).toSorted(),
     );
   });
@@ -319,7 +319,7 @@ describe('WorkspaceService (file-backed)', () => {
     expect(existing?.lastOpenedAt).toBe(Date.parse('2024-01-02T00:00:00.000Z'));
     expect(list.find((w) => w.id === encodeWorkDirKey(fromIndex))?.name).toBe('from-index');
 
-    expect((await restart().list()).map((w) => w.id).toSorted()).toEqual(
+    expect((await (await restart()).list()).map((w) => w.id).toSorted()).toEqual(
       list.map((w) => w.id).toSorted(),
     );
   });
@@ -381,7 +381,7 @@ describe('WorkspaceService (file-backed)', () => {
         workDir: dirA,
       },
     ]);
-    expect((await restart().list()).map((w) => w.id)).toEqual([encodeWorkDirKey(dirB)]);
+    expect((await (await restart()).list()).map((w) => w.id)).toEqual([encodeWorkDirKey(dirB)]);
   });
 
   it('createOrTouch clears the deletion tombstone', async () => {
@@ -395,7 +395,7 @@ describe('WorkspaceService (file-backed)', () => {
     expect((await registry.list()).map((w) => w.id)).toEqual([a.id]);
     expect(await readWorkspacesJson().then((f) => f.deleted_workspace_ids)).toEqual([]);
 
-    expect((await restart().list()).map((w) => w.id)).toEqual([a.id]);
+    expect((await (await restart()).list()).map((w) => w.id)).toEqual([a.id]);
   });
 
   it('createOrTouch preserves external additions and tombstones written after load', async () => {
@@ -492,10 +492,10 @@ describe('WorkspaceService (file-backed)', () => {
     const created = await build().createOrTouch(homeDir, 'proj');
     await build().update(created.id, { name: 'renamed' });
 
-    expect((await restart().get(created.id))?.name).toBe('renamed');
+    expect((await (await restart()).get(created.id))?.name).toBe('renamed');
 
     await build().delete(created.id);
-    expect(await restart().get(created.id)).toBeUndefined();
+    expect(await (await restart()).get(created.id)).toBeUndefined();
   });
 
   it('defaults pinned to false and round-trips it through the catalog file', async () => {
@@ -507,12 +507,12 @@ describe('WorkspaceService (file-backed)', () => {
     expect(pinned?.pinned).toBe(true);
     expect(pinned?.name).toBe('proj');
     expect(await readWorkspacesJson().then((f) => f.workspaces[created.id]?.pinned)).toBe(true);
-    expect((await restart().get(created.id))?.pinned).toBe(true);
+    expect((await (await restart()).get(created.id))?.pinned).toBe(true);
 
     expect((await build().createOrTouch(homeDir)).pinned).toBe(true);
 
     await build().update(created.id, { pinned: false });
-    expect((await restart().get(created.id))?.pinned).toBe(false);
+    expect((await (await restart()).get(created.id))?.pinned).toBe(false);
   });
 
   it('leaves pinned untouched when the patch only renames', async () => {
@@ -595,7 +595,7 @@ describe('WorkspaceService (file-backed)', () => {
     expect(cased.lastOpenedAt).toBeGreaterThanOrEqual(first.lastOpenedAt);
     expect(await registry.list()).toHaveLength(1);
 
-    const reloaded = await restart().list();
+    const reloaded = await (await restart()).list();
     expect(reloaded).toHaveLength(1);
     expect(reloaded[0]?.root).toBe('C:\\Users\\Foo\\Proj');
   });
@@ -721,7 +721,7 @@ describe('WorkspaceService (file-backed)', () => {
       [typedId, encodeLegacyWorkDirKey(typedRoot), aliasId, indexOnlyId].toSorted(),
     );
 
-    const reopened = restart();
+    const reopened = await restart();
     const relisted = (await reopened.list()).filter(
       (w) => workspaceRootKey(w.root) === workspaceRootKey(typedRoot),
     );

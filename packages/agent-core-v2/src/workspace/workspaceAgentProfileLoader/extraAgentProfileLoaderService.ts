@@ -145,7 +145,7 @@ export class ExtraAgentProfileLoaderService
         );
       }
     } catch (error) {
-      this.watchResources.delete(resources);
+      await this.watchResources.delete(resources);
       throw error;
     }
 
@@ -153,6 +153,6 @@ export class ExtraAgentProfileLoaderService
     const previous = this.activeWatchResources;
     this.activeWatchResources = resources;
     this.watchSignature = signature;
-    if (previous !== undefined) this.watchResources.delete(previous);
+    if (previous !== undefined) await this.watchResources.delete(previous);
   }
 }

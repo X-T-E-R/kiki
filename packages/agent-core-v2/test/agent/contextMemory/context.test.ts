@@ -74,7 +74,7 @@ describe('Agent context', () => {
     expect(ctx.project().some((message) => 'origin' in message)).toBe(false);
   });
 
-  it('publishes the delivery-carrying append event for user-visible appends', () => {
+  it('publishes the delivery-carrying append event for user-visible appends', async () => {
     const events: unknown[] = [];
     const subscription = ctx.get(IEventBus).subscribe((event) => events.push(event));
     const appendEvents = () => events.filter((event) =>
@@ -143,7 +143,7 @@ describe('Agent context', () => {
         origin: 'user',
       }),
     }));
-    subscription.dispose();
+    await subscription.dispose();
   });
 
   it('renders tool error and empty-output status as model-visible text', () => {

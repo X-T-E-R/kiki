@@ -109,8 +109,8 @@ describe('disposed agent capability snapshots', () => {
         unavailable_reason_code: 'tool_policy_disabled',
       });
     } finally {
-      replacement?.dispose();
-      original.dispose();
+      await replacement?.dispose();
+      await original.dispose();
     }
   });
 
@@ -200,7 +200,7 @@ describe('disposed agent capability snapshots', () => {
         );
       }
     } finally {
-      registration.dispose();
+      await registration.dispose();
     }
   });
 
@@ -245,7 +245,7 @@ describe('disposed agent capability snapshots', () => {
         unavailable_reason_code: 'activation_condition_unmet',
       });
     } finally {
-      registration.dispose();
+      await registration.dispose();
     }
   });
 
@@ -256,7 +256,7 @@ describe('disposed agent capability snapshots', () => {
       '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
       'api_key = "YOUR_API_KEY"',
       '[models.always]', 'provider = "stub"', 'model = "always"', 'max_context_size = 1000',
-      'capabilities = ["thinking", "always_thinking"]', 'support_efforts = ["low", "high"]',
+      'capabilities = ["thinking", "always_thinking"]', 'support_efforts = ["low", "high"]', 'default_effort = "high"',
     ].join('\n'));
     await start();
     const sessionId = await createSession('always');
@@ -267,16 +267,16 @@ describe('disposed agent capability snapshots', () => {
       delegator: { kind: 'agent', agentId: 'main' },
       binding: { profile: 'explore', model: 'always', thinking: 'high' },
     });
-    child.accessor.get(IAgentProfileService).setThinking('off');
+    expect(() => child.accessor.get(IAgentProfileService).setThinking('off')).toThrow(/not supported/);
     const live = await readCapabilities(sessionId, 'agent-always-thinking');
     expect(live.profile).toMatchObject({
-      model: 'always', thinking_effort: 'low', effort_source: 'config',
+      model: 'always', thinking_effort: 'high', effort_source: 'config',
     });
     await lifecycle.remove('agent-always-thinking');
     const snapshot = await readCapabilities(sessionId, 'agent-always-thinking');
     expect(snapshot).toMatchObject({ live: false, available: true });
     expect(snapshot.profile).toMatchObject({
-      model: 'always', thinking_effort: 'low', effort_source: 'config',
+      model: 'always', thinking_effort: 'high', effort_source: 'config',
     });
     expect(snapshot.profile?.thinking_effort_source).toBe(live.profile?.thinking_effort_source);
   });
@@ -287,9 +287,9 @@ describe('disposed agent capability snapshots', () => {
       '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
       'api_key = "YOUR_API_KEY"',
       '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
-      'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
+      'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]', 'default_effort = "high"',
       '[models.stub-alt]', 'provider = "stub"', 'model = "stub-alt"', 'max_context_size = 1000',
-      'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
+      'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]', 'default_effort = "high"',
     ].join('\n'));
     await start();
     const sessionId = await createSession();

@@ -35,11 +35,11 @@ export interface FakeModelConfigOptions {
 
 const configToml = (options?: FakeModelConfigOptions): string => {
   const thinking = options?.thinking === true;
-  const efforts = options?.supportEfforts;
-  const defaultEffort = options?.defaultEffort;
+  const efforts = options?.supportEfforts ?? (thinking ? ['low', 'high'] : undefined);
+  const defaultEffort = options?.defaultEffort ?? (thinking ? 'high' : undefined);
   const altThinking = options?.altThinking === true;
-  const altEfforts = options?.altSupportEfforts;
-  const altDefaultEffort = options?.altDefaultEffort;
+  const altEfforts = options?.altSupportEfforts ?? (altThinking ? ['low', 'high'] : undefined);
+  const altDefaultEffort = options?.altDefaultEffort ?? (altThinking ? 'high' : undefined);
   return `defaultModel = "${FAKE_MODEL_ID}"
 
 [models.${FAKE_MODEL_ID}]

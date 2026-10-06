@@ -52,8 +52,8 @@ describe('agent blob service (offload/load of inline media)', () => {
     blobs = host.app.accessor.get(IBlobStore);
   });
 
-  afterEach(() => {
-    host.dispose();
+  afterEach(async () => {
+    await host.dispose();
   });
 
   function createService(agentId: string, agentScope: string): IAgentBlobService {

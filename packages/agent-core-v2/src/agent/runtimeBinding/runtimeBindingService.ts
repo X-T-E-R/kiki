@@ -1,4 +1,6 @@
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { defineState } from '#/state/state';
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
@@ -81,7 +83,8 @@ export class AgentRuntimeBindingService implements IAgentRuntimeBindingService {
   }
 
   dispose(): void {
-    this.restoreHook.dispose();
+    const result = this.restoreHook.dispose();
+    if (isPromiseLike(result)) result.catch(onUnexpectedError);
     this.changeEmitter.dispose();
   }
 }

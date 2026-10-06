@@ -123,7 +123,7 @@ describe('RetainedUsageService', () => {
   });
 
   afterEach(async () => {
-    for (const store of stores.toReversed()) store.dispose();
+    for (const store of stores.toReversed()) await store.dispose();
     await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 

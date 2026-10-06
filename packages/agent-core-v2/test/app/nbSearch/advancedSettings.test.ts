@@ -65,7 +65,7 @@ afterEach(async () => {
   try {
     if (blockedNetwork.mock.calls.length > 0) throw new Error('An external network request escaped the fixture boundary.');
   } finally {
-    disposables.dispose();
+    await disposables.dispose();
     vi.unstubAllGlobals();
     await rm(home, { recursive: true, force: true });
   }

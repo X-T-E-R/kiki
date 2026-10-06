@@ -322,7 +322,7 @@ describe('SessionTerminalService', () => {
     const proc = host.processes[0]!;
     expect(resolver.activeLeases).toBe(1);
 
-    disposables.dispose();
+    await disposables.dispose();
     expect(proc.killed).toBe(true);
     expect(resolver.activeLeases).toBe(0);
   });
@@ -347,7 +347,7 @@ describe('SessionTerminalService', () => {
     await svc.create({ runtime_id: 'local' });
     expect(svc.countLiveTerminals()).toBe(1);
 
-    disposables.dispose();
+    await disposables.dispose();
 
     expect(svc.countLiveTerminals()).toBe(0);
   });
@@ -418,7 +418,7 @@ describe('SessionTerminalService', () => {
     const svc = ix.get(ISessionTerminalService);
     const creating = svc.create({ runtime_id: 'local' });
 
-    disposables.dispose();
+    await disposables.dispose();
     const process = new FakeTerminalProcess();
     resolveSpawn(process);
     await expect(creating).rejects.toMatchObject({ code: ErrorCodes.TERMINAL_NOT_FOUND });
@@ -429,7 +429,7 @@ describe('SessionTerminalService', () => {
 
   it('returns a coded error when creating after the session service is disposed', async () => {
     const svc = ix.get(ISessionTerminalService);
-    disposables.dispose();
+    await disposables.dispose();
 
     await expect(svc.create({ runtime_id: 'local' })).rejects.toMatchObject({ code: ErrorCodes.TERMINAL_NOT_FOUND });
     expect(host.processes).toHaveLength(0);
@@ -458,11 +458,11 @@ describe('HostTerminalService (App scope)', () => {
     const mockPty = {
       onData: (listener: (data: string) => void) => {
         dataListeners.add(listener);
-        return toDisposable(() => dataListeners.delete(listener));
+        return toDisposable(() => { dataListeners.delete(listener); });
       },
       onExit: (listener: (event: { exitCode: number }) => void) => {
         exitListeners.add(listener);
-        return toDisposable(() => exitListeners.delete(listener));
+        return toDisposable(() => { exitListeners.delete(listener); });
       },
       write: vi.fn(),
       resize: vi.fn(),

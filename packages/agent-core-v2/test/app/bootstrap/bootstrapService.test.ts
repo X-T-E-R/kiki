@@ -35,7 +35,7 @@ describe('BootstrapService (scoped)', () => {
     );
   });
 
-  it('resolves homeDir/configPath from the seeded context token', () => {
+  it('resolves homeDir/configPath from the seeded context token', async () => {
     const host = createScopedTestHost(
       bootstrapSeed({ homeDir: '/tmp/kimi-home', clientIdentity: stubClientIdentity }),
     );
@@ -47,26 +47,26 @@ describe('BootstrapService (scoped)', () => {
     expect(svc.userAgentProfileHomeDir).toBe(homeDir);
     expect(svc.modelAccountHomeDir).toBe(homeDir);
     expect(svc.scope('sessions')).toBe('sessions');
-    host.dispose();
+    await host.dispose();
   });
 
-  it('exposes the seeded client identity', () => {
+  it('exposes the seeded client identity', async () => {
     const host = createScopedTestHost(
       bootstrapSeed({ homeDir: '/tmp/kimi-home', clientIdentity: stubClientIdentity }),
     );
     const svc = host.app.accessor.get(IBootstrapService);
     expect(svc.clientIdentity).toEqual(stubClientIdentity);
-    host.dispose();
+    await host.dispose();
   });
 
-  it('getEnv reads from the seeded env bag', () => {
+  it('getEnv reads from the seeded env bag', async () => {
     const host = createScopedTestHost(
       bootstrapSeed({ env: { FOO: 'bar' }, clientIdentity: stubClientIdentity }),
     );
     const svc = host.app.accessor.get(IBootstrapService);
     expect(svc.getEnv('FOO')).toBe('bar');
     expect(svc.getEnv('MISSING')).toBeUndefined();
-    host.dispose();
+    await host.dispose();
   });
 });
 
@@ -134,13 +134,13 @@ describe('resolveBootstrapOptions', () => {
 });
 
 describe('bootstrap() storage seeding', () => {
-  it('seeds IFileSystemStorageService as a FileStorageService instance', () => {
+  it('seeds IFileSystemStorageService as a FileStorageService instance', async () => {
     const { app } = bootstrap({ homeDir: '/tmp/kimi-home', clientIdentity: stubClientIdentity });
     try {
       const storage = app.accessor.get(IFileSystemStorageService);
       expect(storage).toBeInstanceOf(FileStorageService);
     } finally {
-      app.dispose();
+      await app.dispose();
     }
   });
 
@@ -163,7 +163,7 @@ describe('bootstrap() storage seeding', () => {
     try {
       await expect.poll(async () => (await readdir(lockDir)).includes('orphan.lock')).toBe(false);
     } finally {
-      app.dispose();
+      await app.dispose();
       await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
@@ -192,7 +192,7 @@ describe('bootstrap() storage seeding', () => {
       await expect(store.compareAndSetText('', 'active.toml', 'default_model = "grok-4.6"\n', 'default_model = "other"\n')).rejects.toMatchObject({ code: 'storage.permission_denied' });
       expect(await readFile(configPath, 'utf8')).toBe('default_model = "grok-4.6"\n');
     } finally {
-      app.dispose();
+      await app.dispose();
       await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });

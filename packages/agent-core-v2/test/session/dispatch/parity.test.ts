@@ -843,7 +843,7 @@ function createLane(
     create: lifecycleCreate,
     commitCreate: vi.fn(),
     discard: vi.fn(async (agentId: string) => {
-      handles.get(agentId)?.dispose();
+      await handles.get(agentId)?.dispose();
       handles.delete(agentId);
       delete metadataAgents[agentId];
     }),
@@ -1288,8 +1288,8 @@ describe('AgentRun and dispatch parity golden', () => {
     disposables = new DisposableStore();
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('never echoes standing directives in success/failure receipts or after epoch changes', async () => {

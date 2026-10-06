@@ -76,6 +76,7 @@ function createTestModel(
     readonly id?: string;
     readonly protocol?: Model['protocol'];
     readonly providerType?: string;
+    readonly defaultEffort?: Model['defaultEffort'];
   } = {},
 ): Model {
   const providerType = options.providerType;
@@ -96,7 +97,7 @@ function createTestModel(
     },
     maxContextSize: 1000,
     supportEfforts: providerType === 'kimi' ? ['low', 'medium', 'high', 'max'] : undefined,
-    defaultEffort: providerType === 'kimi' ? 'high' : undefined,
+    defaultEffort: options.defaultEffort ?? 'high',
     alwaysThinking: false,
     providerType,
     providerName: 'kimi',
@@ -398,7 +399,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     ]);
     replay.svc.applyBindingSnapshot({ thinkingLevel: 'off', systemPrompt: 'after resume' });
     expect(replay.svc.data().executionRestriction).toBe('research-readonly');
-    replay.ix.dispose();
+    await replay.ix.dispose();
   });
 
   it('persists parent-notify binding changes through snapshot replacement and cold replay', async () => {
@@ -427,7 +428,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       await readRecords(),
     );
     expect(replay.svc.data().allowParentNotify).toBe(false);
-    replay.ix.dispose();
+    await replay.ix.dispose();
   });
 
   it('persists and replays an allowlist reset to unrestricted', async () => {
@@ -453,7 +454,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       await readRecords(),
     );
     expect(activeToolsOf(replay.agentState)).toBeUndefined();
-    replay.ix.dispose();
+    await replay.ix.dispose();
   });
 
   it('upgrades legacy bind permissions on replay without reselecting identity, model or v1 file provenance', async () => {
@@ -480,7 +481,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     expect(evaluateSubagentDispatchDecision({ getDefault: () => data as never }, data, 'reviewer')).toMatchObject({
       version: 2, policyMode: 'fixed', recommendationStatus: 'allowed_nonpreferred', allowed: true,
     });
-    replay.ix.dispose();
+    await replay.ix.dispose();
   });
 
   it('persists the rendered prompt and disclosure snapshot in one bind record', async () => {
@@ -525,7 +526,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       environmentDisclosure: environment,
       renderGeneration: 7,
     });
-    replay.ix.dispose();
+    await replay.ix.dispose();
   });
 
   it('persists and replays the frozen persona and room binding fields', async () => {
@@ -567,7 +568,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       records,
     );
     expect(replay.svc.data()).toMatchObject({ personaId: 'lin-lan', personaRevision: 'r1', persona, roomPrompt: '<room>发布</room>' });
-    replay.ix.dispose();
+    await replay.ix.dispose();
   });
 
   it('replays a routed effective snapshot without consulting the current catalog', async () => {
@@ -620,7 +621,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     replay.svc.setThinking('low');
     expect(replay.svc.data().thinkingLevel).toBe('low');
     expect(replay.svc.data().lockedThinkingEffort).toBe('high');
-    replay.ix.dispose();
+    await replay.ix.dispose();
   });
 
   it('replays a legacy config.update record with an explicit renderGeneration verbatim', async () => {
@@ -653,7 +654,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       environmentDisclosure: environment,
       renderGeneration: 100,
     });
-    replay.ix.dispose();
+    await replay.ix.dispose();
   });
 
   it('emitStatusUpdated runs live-only and is silent during replay', async () => {
@@ -848,7 +849,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
   it('does not leak a forced Kimi effort when switching to a non-Kimi model', () => {
     modelCatalog = createModelCatalogStub({
       'kimi-code': createTestModel({ providerType: 'kimi' }),
-      'other-code': createTestModel({ id: 'other-code', protocol: 'anthropic' }),
+      'other-code': createTestModel({ id: 'other-code', protocol: 'anthropic', defaultEffort: 'on' }),
     });
     const host = buildHost('profile-thinking-effort-force-switch');
     host.svc.configure({ emitStatusUpdated: () => undefined });

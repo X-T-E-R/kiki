@@ -129,7 +129,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
     try {
       return await this.submitReserved(input, reservation);
     } finally {
-      reservation.dispose();
+      await reservation.dispose();
     }
   }
 

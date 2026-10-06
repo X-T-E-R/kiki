@@ -92,7 +92,7 @@ describe('SessionLogService', () => {
     const text = await readSessionLog();
     expect(text).toContain('session event');
     expect(text).toContain('requestId=r1');
-    host.dispose();
+    await host.dispose();
   });
 
   it('omits sessionId from per-session lines', async () => {
@@ -103,7 +103,7 @@ describe('SessionLogService', () => {
     await log.flush();
     const text = await readSessionLog();
     expect(text).not.toContain('sessionId');
-    host.dispose();
+    await host.dispose();
   });
 
   it('child logger accumulates context and writes to the same file', async () => {
@@ -115,7 +115,7 @@ describe('SessionLogService', () => {
     const text = await readSessionLog();
     expect(text).toContain('child event');
     expect(text).toContain('agentId=main');
-    host.dispose();
+    await host.dispose();
   });
 
   it('close flushes and a subsequent write is dropped', async () => {
@@ -128,15 +128,15 @@ describe('SessionLogService', () => {
     const text = await readSessionLog();
     expect(text).toContain('before-close');
     expect(text).not.toContain('after-close');
-    host.dispose();
+    await host.dispose();
   });
 
-  it('dispose flushes pending entries synchronously', () => {
+  it('dispose flushes pending entries synchronously', async () => {
     const host = buildHost();
     const session = host.child(LifecycleScope.Session, 's1', testSessionSeed());
     const log = session.accessor.get(ILogService);
     log.info('on-dispose');
-    host.dispose();
+    await host.dispose();
     return readSessionLog().then((text) => {
       expect(text).toContain('on-dispose');
     });
@@ -154,7 +154,7 @@ describe('SessionLogService', () => {
     });
     sink.close = () => originalClose().then(() => closeGate);
     log.info('drain-me');
-    host.dispose();
+    await host.dispose();
 
     let drained = false;
     const draining = drainLogCloses().then(() => {
@@ -177,7 +177,7 @@ describe('ILogService cross-scope resolution', () => {
     registerScopedService(LifecycleScope.Session, ILogService, SessionLogService, ScopeActivation.OnDemand, 'log');
   });
 
-  it('resolves the single token to the nearest scope binding', () => {
+  it('resolves the single token to the nearest scope binding', async () => {
     const host = buildHost();
     const session = host.child(LifecycleScope.Session, 's1', testSessionSeed());
     const agent = host.childOf(session, LifecycleScope.Agent, 'main');
@@ -193,6 +193,6 @@ describe('ILogService cross-scope resolution', () => {
     expect(appLog).not.toBe(sessionLog);
     expect(agentLog).toBe(sessionLog);
 
-    host.dispose();
+    await host.dispose();
   });
 });

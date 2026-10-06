@@ -68,7 +68,7 @@ async function terminal(service: IPluginMediaService, id: string) {
 async function submitted() { return (await readFile(path.join(remote, 'submitted.log'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean); }
 async function stopHost(target: ScopedTestHost, service: IPluginMediaService, job: MediaJob) {
   const promise = service.run(job.job_id);
-  target.dispose();
+  await target.dispose();
   await Promise.race([promise, new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('Media execution did not settle after scope disposal')), 1000))]);
   await stores[targets.indexOf(target)]!.flush();
 }
@@ -87,7 +87,7 @@ beforeEach(async () => {
   for (const key of Object.keys(config)) delete config[key];
 });
 afterEach(async () => {
-  for (const target of targets.splice(0)) target.dispose();
+  for (const target of targets.splice(0)) await target.dispose();
   for (const store of stores.splice(0)) await store.close();
   vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
@@ -171,7 +171,7 @@ describe('media provider persisted vertical slice', () => {
     const job = await start(service, 'unknown-1', 'unknown');
     expect(await service.run(job.job_id)).toMatchObject({ state: 'unknown', can_resume: false, error: { submission: 'unknown' } });
     await expect(service.resume(job.job_id)).rejects.toThrow('never submits');
-    target.dispose();
+    await target.dispose();
     const next = host().app.accessor.get(IPluginMediaService);
     expect(await next.job(job.job_id)).toMatchObject({ state: 'unknown' });
     expect(await submitted()).toHaveLength(1);

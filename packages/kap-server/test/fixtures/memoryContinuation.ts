@@ -33,9 +33,10 @@ export async function memoryContinuationFixture() {
   registerMemoryRoutes(app as unknown as Parameters<typeof registerMemoryRoutes>[0], { accessor: { get: (token: Parameters<typeof ix.get>[0]) => ix.get(token) } } as unknown as Scope);
   await app.ready();
   const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const url = new URL(String(input));
+    const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const url = new URL(inputUrl);
     const response = await app.inject({ method: (init?.method ?? 'GET') as 'GET' | 'PUT' | 'POST' | 'PATCH' | 'DELETE', url: `${url.pathname.replace(/^\/api/, '')}${url.search}`, headers: { 'content-type': 'application/json' }, payload: typeof init?.body === 'string' ? init.body : undefined });
     return new Response(response.body, { status: response.statusCode, headers: { 'content-type': 'application/json' } });
   };
-  return { store, fetch, close: async () => { await app.close(); ix.dispose(); await storage.close(); await rm(home, { recursive: true, force: true }); } };
+  return { store, fetch, close: async () => { await app.close(); await ix.dispose(); await storage.close(); await rm(home, { recursive: true, force: true }); } };
 }

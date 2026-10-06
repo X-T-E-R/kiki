@@ -9,6 +9,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IEventService } from '#/app/event/event';
 import { LifecycleScope } from '#/app/scopes';
 import { Error2, ErrorCodes } from '#/errors';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 
 import {
   DiUnitChanged,
@@ -102,14 +103,14 @@ export class DebugCascadeService implements IDebugCascadeService {
   }
 
   async dispose(scopePath: string, token: string): Promise<void>;
-  dispose(): void;
+  async dispose(): Promise<void>;
   async dispose(scopePath?: string, token?: string): Promise<void> {
     if (scopePath === undefined && token === undefined) {
       if (!this.tornDown) {
         this.tornDown = true;
-        this.store.dispose();
+        await this.store.dispose();
         for (const subscription of this.engineSubscriptions.values()) {
-          subscription.dispose();
+          await subscription.dispose();
         }
         this.engineSubscriptions.clear();
       }
@@ -169,7 +170,8 @@ export class DebugCascadeService implements IDebugCascadeService {
   }
 
   private _unwatchEngine(engine: CascadeEngine): void {
-    this.engineSubscriptions.get(engine)?.dispose();
+    const result = this.engineSubscriptions.get(engine)?.dispose();
+    if (result instanceof Promise) result.catch(onUnexpectedError);
     this.engineSubscriptions.delete(engine);
   }
 }

@@ -167,7 +167,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.states.set(loopDisposingKey, value);
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     if (this.disposing) return;
     this.disposing = true;
     clearTimeout(this.persistenceRecoveryTimer);
@@ -184,7 +184,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       this.rejectAssignment(request, reason);
     }
     this.maybeSettle();
-    super.dispose();
+    return super.dispose();
   }
 
   enqueue(request: StepRequest, options?: StepEnqueueOptions): EnqueueReceipt {

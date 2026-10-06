@@ -631,15 +631,15 @@ describe('GET /api/agents', () => {
     expect(first?.catalog).toBe(cached?.catalog);
     expect(info).toHaveBeenCalledWith('workspace profile catalog acquisition completed',
       expect.objectContaining({ cache_state: 'hit', outcome: 'ready', duration_ms: expect.any(Number) }));
-    first?.dispose();
-    second?.dispose();
-    cached?.dispose();
+    await first?.dispose();
+    await second?.dispose();
+    await cached?.dispose();
     const manager = server.core.accessor.get(IWorkspaceInstanceManager);
     expect(manager.referenceCount(first!.workspaceId)).toBe(0);
     await manager.close(first!.workspaceId);
     const reopened = await acquireWorkspaceProfileCatalog(server.core, { cwd: home! });
     expect(reopened?.catalog).not.toBe(first?.catalog);
-    reopened?.dispose();
+    await reopened?.dispose();
   });
 
   it.each(['---\ndescription: Custom default\npreferred_subagents: [explore]\n---\nCustom upgraded prompt.'])('keeps SYSTEM main profiles available when subagent discovery is disabled: %s', async (text) => {
@@ -727,7 +727,7 @@ describe('GET /api/agents', () => {
       'default_model = "stub"',
       '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
       'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"',
-      'max_context_size = 1000', 'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
+      'max_context_size = 1000', 'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]', 'default_effort = "high"',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
@@ -758,9 +758,9 @@ describe('GET /api/agents', () => {
       'default_model = "stub"', '[subagent]', 'subagent_dispatch_policy = "advisory"',
       '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
       'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"',
-      'max_context_size = 1000', 'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
+      'max_context_size = 1000', 'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]', 'default_effort = "high"',
       '[models.stub-alt]', 'provider = "stub"', 'model = "stub-alt"', 'max_context_size = 1000',
-      'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
+      'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]', 'default_effort = "high"',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
@@ -1102,14 +1102,14 @@ describe('GET /api/agents', () => {
       for (const name of ['hidden-helper', 'explore', 'general']) expect(description).not.toContain(`- ${name}:`);
       expect(JSON.stringify(body.data)).not.toMatch(/PRIVATE_PROMPT|_private|sourceDefinitionId|YOUR_API_KEY/);
       expect(lifecycle.list()).toHaveLength(1);
-      registration.dispose();
+      await registration.dispose();
       const after = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
       const afterBody = await after.json() as Envelope<typeof body.data>;
       expect(afterBody.code).toBe(0);
       expect(afterBody.data.targets.map((target) => target.route ?? target.profile).toSorted()).toEqual(['explore', 'general']);
       expect(tool.description).toBe(description);
     } finally {
-      registration.dispose();
+      await registration.dispose();
     }
   });
 
@@ -1208,7 +1208,7 @@ describe('GET /api/agents', () => {
       expect(lifecycle.list()).toHaveLength(1);
     } finally {
       vi.restoreAllMocks();
-      registration.dispose();
+      await registration.dispose();
     }
   });
 
@@ -1950,7 +1950,7 @@ describe('GET /api/agents', () => {
     expect(server.core.accessor.get(ISessionManager).list()).toHaveLength(0);
 
     const response = await authedFetch(server, base, '/api/agents');
-    registration.dispose();
+    await registration.dispose();
     expect(response.status).toBe(200);
     const body = (await response.json()) as Envelope<unknown>;
     const data = listNamedAgentProfilesResponseSchema.parse(body.data);
@@ -2050,7 +2050,7 @@ describe('GET /api/agents', () => {
       expect(caps.code).toBe(0);
       expect(caps.data.targets.map((target) => target.profile)).toContain('helper');
     } finally {
-      registration.dispose();
+      await registration.dispose();
     }
   });
 

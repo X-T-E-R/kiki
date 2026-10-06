@@ -227,7 +227,12 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(IExternalHooksRunnerService, { fireAndForgetTrigger: async () => [] });
     ix.stub(IModelService, { resolveId: (id: string) => id, list: () => ({ model: {}, 'alternate-model': {} }) });
     ix.stub(IModelCatalog, {
-      get: (id: string) => ({ id }) as Model,
+      get: (id: string) => ({
+        id,
+        capabilities: { thinking: true },
+        defaultEffort: 'high',
+        supportEfforts: ['low', 'medium', 'high', 'max'],
+      }) as unknown as Model,
     } as IModelCatalog);
     willClose = new Emitter<SessionWillCloseEvent & IWaitUntil>();
     disposables.add(willClose);
@@ -382,9 +387,9 @@ describe('SessionExternalDelegationService', () => {
       return {
         id,
         accessor: agent,
-        dispose: () => {
+        dispose: async () => {
           wireEvents.fire(new AgentActivityUpdated({ lifecycle: 'disposed', background: [] }));
-          agent.dispose();
+          await agent.dispose();
         },
       } as unknown as IAgentScopeHandle;
     };
@@ -394,7 +399,7 @@ describe('SessionExternalDelegationService', () => {
       get: (id) => handles.get(id),
       commitCreate: vi.fn(),
       discard: vi.fn(async (agentId: string) => {
-        handles.get(agentId)?.dispose();
+        await handles.get(agentId)?.dispose();
         handles.delete(agentId);
         delete agentMetas[agentId];
       }),
@@ -545,8 +550,8 @@ describe('SessionExternalDelegationService', () => {
     ix.set(ISessionExternalDelegationService, new SyncDescriptor(SessionExternalDelegationService));
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('owns named work under an external root and enforces one active dispatch', async () => {
@@ -646,6 +651,7 @@ describe('SessionExternalDelegationService', () => {
     expect(child.agentId).toBe('external-child');
     expect(stored.dispatches[child.latestDispatchId]?.status).toBe('queued');
     ix.set(ISessionExternalDelegationService, new SyncDescriptor(SessionExternalDelegationService));
+    await ix.cascade.whenIdle();
     const restored = ix.get(ISessionExternalDelegationService);
     expect(restored).not.toBe(service);
     expect((await restored.status({ authority, dispatchId: child.latestDispatchId })).status).toBe('interrupted');
@@ -1723,7 +1729,7 @@ describe('SessionExternalDelegationService', () => {
       detail: 'items',
     })).resolves.toMatchObject({ items: [{ kind: 'turn', turnId: 't1' }] });
 
-    oldHandle.dispose();
+    await oldHandle.dispose();
     const replacement = makeHandle('external-child', 'coder');
     handles.set('external-child', replacement);
     wireRecords.get('external-child')!.push(

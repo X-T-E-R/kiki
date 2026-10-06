@@ -425,7 +425,7 @@ describe('task notification → main agent (real Agent instance)', () => {
       const prompts = ctx.get(IAgentPromptService);
       const enqueue = vi.spyOn(loop, 'enqueue');
       const finishHook = loop.hooks.onDidFinishStep.register('test.queue-order', async (_step, next) => {
-        finishHook.dispose();
+        await finishHook.dispose();
         firstFinished.resolve();
         await finishFirst;
         if (outcome === 'cancelled') loop.cancel();
@@ -474,8 +474,8 @@ describe('task notification → main agent (real Agent instance)', () => {
         finishFirst.resolve();
         launch.resolve();
         childCompletion.resolve({ result: 'cleanup' });
-        finishHook.dispose();
-        launchHook.dispose();
+        await finishHook.dispose();
+        await launchHook.dispose();
       }
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -487,7 +487,7 @@ describe('task notification → main agent (real Agent instance)', () => {
       let taskId = '';
       const enqueue = vi.spyOn(loop, 'enqueue');
       const hook = loop.hooks.onDidFinishStep.register('test.exit-race', async (step, next) => {
-        hook.dispose();
+        await hook.dispose();
         taskId = background.registerTask(agentTask(Promise.resolve({ result: 'durable child report' }), 'exit race'));
         await background.wait(taskId);
         await vi.waitFor(() => expect(enqueue.mock.calls.some(([request]) => request.kind === 'task_notification')).toBe(true));
@@ -509,7 +509,7 @@ describe('task notification → main agent (real Agent instance)', () => {
         await ctx.untilTurnEnd();
         expect(notifiedCount(ctx)).toBe(1);
       } finally {
-        hook.dispose();
+        await hook.dispose();
       }
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 

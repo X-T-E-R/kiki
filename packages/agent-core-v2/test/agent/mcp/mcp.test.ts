@@ -249,8 +249,8 @@ describe('AgentMcpService', () => {
     });
     dispatcher = registerTestEventDispatcher(ix);
   });
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   function createService(
@@ -1412,7 +1412,7 @@ describe('AgentMcpService', () => {
       }
     };
     wireRecordListeners.add(listener);
-    return { records, off: toDisposable(() => wireRecordListeners.delete(listener)) };
+    return { records, off: toDisposable(() => { wireRecordListeners.delete(listener); }) };
   }
 
   it('records tools/list once after restore and dedups unchanged reconnects', async () => {

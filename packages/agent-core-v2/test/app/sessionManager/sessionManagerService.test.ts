@@ -129,7 +129,7 @@ describe('SessionManager', () => {
     releaseResume();
     await Promise.all([resumePromise, section, closePromise]);
     expect(order).toEqual(['resume:start', 'resume:end', 'section', 'close']);
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('holds a resume started during a lifecycle critical section', async () => {
@@ -166,7 +166,7 @@ describe('SessionManager', () => {
     releaseSection();
     await Promise.all([section, resumePromise]);
     expect(order).toEqual(['section:start', 'section:end', 'resume']);
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('serializes delete with the per-session lifecycle chain', async () => {
@@ -203,7 +203,7 @@ describe('SessionManager', () => {
     releaseSection();
     await Promise.all([section, deletePromise]);
     expect(order).toEqual(['section:start', 'section:end', 'delete']);
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('fires onDidDeleteSession when the controller reports removal before failing', async () => {
@@ -232,7 +232,7 @@ describe('SessionManager', () => {
     await expect(manager.delete('session-1')).rejects.toThrow('index removal failed');
 
     expect(deleted).toEqual(['session-1']);
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('does not fire onDidDeleteSession when the controller fails before reporting removal', async () => {
@@ -260,7 +260,7 @@ describe('SessionManager', () => {
     await expect(manager.delete('session-1')).rejects.toThrow('session directory removal failed');
 
     expect(deleted).toEqual([]);
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('serializes fork of the source session with the lifecycle chain', async () => {
@@ -298,7 +298,7 @@ describe('SessionManager', () => {
     releaseSection();
     await Promise.all([section, forkPromise]);
     expect(order).toEqual(['section:start', 'section:end', 'fork']);
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('serializes fork of an explicit target id with the lifecycle chain', async () => {
@@ -336,7 +336,7 @@ describe('SessionManager', () => {
     releaseSection();
     await Promise.all([section, forkPromise]);
     expect(order).toEqual(['section:start', 'section:end', 'fork']);
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('serializes createChild of an explicit target id with the lifecycle chain', async () => {
@@ -374,7 +374,7 @@ describe('SessionManager', () => {
     releaseSection();
     await Promise.all([section, childPromise]);
     expect(order).toEqual(['section:start', 'section:end', 'createChild']);
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('serializes create with an explicit session id with the lifecycle chain', async () => {
@@ -412,7 +412,7 @@ describe('SessionManager', () => {
     releaseSection();
     await Promise.all([section, createPromise]);
     expect(order).toEqual(['section:start', 'section:end', 'create']);
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('serializes archive with the per-session lifecycle chain', async () => {
@@ -461,7 +461,7 @@ describe('SessionManager', () => {
       await Promise.all([section, archivePromise]);
       expect(order).toEqual(['section:start', 'section:end', 'archive']);
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -491,7 +491,7 @@ describe('SessionManager', () => {
     fail = false;
     await manager.resume('session-1');
     await expect(manager.whenResumeSettled('session-1')).resolves.toBeUndefined();
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('owns one global live-session registry across workspace controllers', async () => {
@@ -513,7 +513,7 @@ describe('SessionManager', () => {
     await manager.close('session-1');
     expect(manager.get('session-1')).toBeUndefined();
     expect(manager.list()).toEqual([]);
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('closes every live session and retires its controller for a forced workspace close', async () => {
@@ -536,7 +536,7 @@ describe('SessionManager', () => {
 
     expect(manager.get(fake.handle.id)).toBeUndefined();
     expect(fake.dispose).toHaveBeenCalledTimes(1);
-    manager.dispose();
+    await manager.dispose();
     expect(fake.dispose).toHaveBeenCalledTimes(1);
   });
 
@@ -570,7 +570,7 @@ describe('SessionManager', () => {
     release();
     await expect(first).resolves.toBe(fake.handle);
     expect(resume).toHaveBeenCalledTimes(1);
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('uses the replacement Program generation for new sessions while retaining live owners', async () => {
@@ -601,7 +601,7 @@ describe('SessionManager', () => {
     await manager.close('session-1');
     expect(manager.get('session-1')).toBeUndefined();
     expect(manager.get('session-2')).toBe(second.handle);
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('retires a superseded controller that never came to own a session', async () => {
@@ -635,7 +635,7 @@ describe('SessionManager', () => {
     expect(await manager.create({ workDir: '/workspace' })).toBe(second.handle);
     expect(disposeFirst).toHaveBeenCalledTimes(1);
     expect(manager.get('session-2')).toBe(second.handle);
-    manager.dispose();
+    await manager.dispose();
     expect(disposeFirst).toHaveBeenCalledTimes(1);
   });
 
@@ -684,7 +684,7 @@ describe('SessionManager', () => {
 
     createSubscription.dispose();
     forkSubscription.dispose();
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('evicts an eligible idle session through the unload path', async () => {
@@ -718,7 +718,7 @@ describe('SessionManager', () => {
       evictionSuccesses: 1,
       evictionFailures: 0,
     });
-    manager.dispose();
+    await manager.dispose();
   });
 
   it('keeps an acquired session pinned until its lease is released', async () => {
@@ -747,9 +747,9 @@ describe('SessionManager', () => {
     expect(unload).not.toHaveBeenCalled();
     expect(manager.residencyReport().pinnedSessions).toBe(1);
 
-    lease?.dispose();
+    await lease?.dispose();
     await expect(manager.evictIfIdle('session-1')).resolves.toBe(true);
-    manager.dispose();
+    await manager.dispose();
   });
 });
 
@@ -916,7 +916,7 @@ describe('SessionManager controller retirement', () => {
     expect(first.disposed).toBe(true);
     expect(manager.get(handleTwo.id)).toBe(handleTwo);
 
-    manager.dispose();
+    await manager.dispose();
     expect(controllers[0]!.dispose).toHaveBeenCalledTimes(1);
     expect(controllers[1]!.dispose).toHaveBeenCalledTimes(1);
     program.dispose();
@@ -938,7 +938,7 @@ describe('SessionManager controller retirement', () => {
     expect(controllers).toHaveLength(2);
     expect(manager.get(second.id)).toBe(second);
 
-    manager.dispose();
+    await manager.dispose();
     expect(controllers[1]!.dispose).toHaveBeenCalledTimes(1);
     program.dispose();
     await registry.dispose();

@@ -65,7 +65,7 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
   const terminals = { live: 0 };
   const drainRetirements = { fail: false };
   const closed: SessionClosedEvent[] = [];
-  const dispose = vi.fn();
+  const dispose = vi.fn<() => Promise<void>>(() => Promise.resolve());
   let releaseMirror: () => void = () => {};
   const mirror = {
     gate: Promise.resolve(),
@@ -229,7 +229,7 @@ describe('SessionLifecycleService factory ownership', () => {
         releaseLock();
         await pending;
         childSpy.mockRestore();
-        fx.service.dispose();
+        await fx.service.dispose();
         await parent.dispose();
       }
     },
@@ -301,8 +301,8 @@ describe('SessionLifecycleService unload', () => {
       expect(kill).toHaveBeenCalledTimes(1);
       expect(fx.dispose).toHaveBeenCalledTimes(1);
     } finally {
-      disposables.dispose();
-      fx.service.dispose();
+      await disposables.dispose();
+      await fx.service.dispose();
     }
   });
 
@@ -335,7 +335,7 @@ describe('SessionLifecycleService unload', () => {
       release();
       await closing;
       await shutdown;
-      fx.service.dispose();
+      await fx.service.dispose();
     }
     expect(drained).toBe(true);
   });
@@ -344,7 +344,7 @@ describe('SessionLifecycleService unload', () => {
     const fx = fixture();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    fx.dispose.mockImplementation(() => gate);
+    fx.dispose.mockReturnValue(gate);
     let settled = false;
     const pending = fx.service[operation]('session-1').then((result) => { settled = true; return result; });
     await drainMicrotasks();
@@ -416,7 +416,7 @@ it.each(['pending', 'launching', 'recovery', 'finalizing'] as const)('blocks run
     expect(await fx.service.unload('session-1')).toBe(false);
     expect(fx.service.get('session-1')).toBe(fx.handle);
     expect(fx.dispose).not.toHaveBeenCalled();
-  } finally { fx.service.dispose(); }
+  } finally { await fx.service.dispose(); }
 });
 
 it('rechecks queued prompts after asynchronous preparation before disposing the runtime', async () => {
@@ -435,7 +435,7 @@ it('rechecks queued prompts after asynchronous preparation before disposing the 
     fx.mirror.release();
     expect(await unloading).toBe(false);
     expect(fx.dispose).not.toHaveBeenCalled();
-  } finally { fx.mirror.release(); fx.service.dispose(); }
+  } finally { fx.mirror.release(); await fx.service.dispose(); }
 });
 
 it('keeps a durable recovered prompt through an unload attempt and resumes its own message', async () => {
@@ -458,7 +458,7 @@ it('keeps a durable recovered prompt through an unload attempt and resumes its o
     await ctx.untilTurnEnd();
     expect(prompt.list().pending).toEqual([]);
     expect(JSON.stringify(ctx.lastLlmInput())).toContain('Retained task');
-  } finally { fx.service.dispose(); await ctx.dispose(); }
+  } finally { await fx.service.dispose(); await ctx.dispose(); }
 });
 
 
@@ -538,7 +538,7 @@ describe('SessionLifecycleService fork cron ownership', () => {
     } finally {
       materialize.mockRestore();
       announce.mockRestore();
-      fx.service.dispose();
+      await fx.service.dispose();
     }
   });
 });

@@ -159,7 +159,7 @@ describe('SSH host store', () => {
       expect((await service.list('C:/work/two', 'session-2')).some((entry) => entry.source === 'session')).toBe(true);
       await service.removeTransient('third@example.test:2204', 'C:/work/two', 'session-2');
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -184,7 +184,7 @@ describe('SSH host store', () => {
       await expect(service.connect('dev', undefined, undefined, true, fingerprint)).rejects.toThrow('changed after connection approval');
       expect(service.status('dev').state).toBe('idle');
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -207,7 +207,7 @@ describe('SSH host store', () => {
       expect((await service.list()).map((host) => host.id)).toEqual(['bastion', 'dev']);
       await expect(service.connect('dev')).rejects.toThrow('Native SSH is disabled');
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -252,7 +252,7 @@ describe('SSH host store', () => {
       expect(await store.read(account, 'password')).toBeUndefined();
       expect(values.size).toBe(0);
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 });
@@ -260,7 +260,7 @@ describe('SSH host store', () => {
 
 describe('S5 authoritative SSH settings reads', () => {
   const documents = new DisposableStore();
-  afterEach(() => { documents.clear(); });
+  afterEach(async () => { await documents.clear(); });
   function persistedDocuments(home: string) {
     const ix = createServices(documents, { additionalServices: (registry) => {
       registry.defineInstance(IFileSystemStorageService, new FileStorageService(home, 0o700, 0o600));
@@ -348,7 +348,7 @@ describe('S5 authoritative SSH settings reads', () => {
       expect(await readFile(path, 'utf8')).toBe(text);
     } finally {
       create.mockRestore();
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 });

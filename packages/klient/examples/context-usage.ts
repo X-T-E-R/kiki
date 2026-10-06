@@ -196,7 +196,7 @@ async function main(): Promise<void> {
     await klient.close();
     if (outcome === 'failed') process.exit(1);
   } finally {
-    app.dispose();
+    await app.dispose();
     await rm(homeDir, { recursive: true, force: true });
   }
 }

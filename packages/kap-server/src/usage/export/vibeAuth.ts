@@ -95,7 +95,10 @@ export class VibeCafeDeviceAuth {
   async close(): Promise<void> {
     this.closed = true;
     for (const flow of this.flows.values()) if (!flow.committing) { flow.controller.abort(); this.finish(flow, 'cancelled'); }
-    await Promise.allSettled([...this.flows.values()].map((flow) => flow.flight));
+    const flights = [...this.flows.values()]
+      .map((flow) => flow.flight)
+      .filter((flight): flight is Promise<UsageExportVibeAuth> => flight !== undefined);
+    await Promise.allSettled(flights);
     this.flows.clear();
   }
   private require(id: string): Flow { const flow = this.flows.get(id); if (flow === undefined) throw new Error('vibe-auth-flow-not-found'); return flow; }

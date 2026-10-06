@@ -62,6 +62,6 @@ export async function resumeLocalSession(core: Scope, executorId: string, localI
       const title = summary.title?.trim() || Array.from(summary.lastPrompt?.trim().replace(/\s+/g, ' ') ?? '').slice(0, 80).join('');
       if (title !== '') await handle.accessor.get(ISessionMetadata).setGeneratedTitleIfUncustomized(title);
       return { session_id: handle.id, executor_id: executorId, created: true };
-    } finally { workspace.dispose(); }
+    } finally { await workspace.dispose(); }
   }
 }

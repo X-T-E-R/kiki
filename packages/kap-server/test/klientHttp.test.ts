@@ -237,7 +237,7 @@ describe('klient HTTP host', () => {
           message: expect.stringContaining('session is busy'),
         });
       } finally {
-        quiescence.dispose();
+        await quiescence.dispose();
       }
     } finally {
       await klient.close();

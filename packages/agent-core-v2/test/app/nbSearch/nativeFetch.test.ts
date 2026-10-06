@@ -48,7 +48,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  disposables?.dispose();
+  await disposables?.dispose();
   await rm(fixture, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 

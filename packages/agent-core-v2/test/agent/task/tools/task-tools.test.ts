@@ -53,8 +53,8 @@ const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 const signal = new AbortController().signal;
 const waitToolDisposables = new DisposableStore();
 
-afterEach(() => {
-  waitToolDisposables.clear();
+afterEach(async () => {
+  await waitToolDisposables.clear();
 });
 
 function createWaitTool(

@@ -135,7 +135,7 @@ describe('SessionTitleService', () => {
     modelRequesters.set('title-model', stubTitleRequester('生成的标题'));
     ix.get(ISessionTitleService);
   });
-  afterEach(() => { disposables.dispose(); vi.unstubAllGlobals(); });
+  afterEach(async () => { await disposables.dispose(); vi.unstubAllGlobals(); });
 
   function stubTitleRequester(answer: string): ModelRequester {
     return {

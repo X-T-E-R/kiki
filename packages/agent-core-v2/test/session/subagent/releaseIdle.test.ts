@@ -129,8 +129,8 @@ describe('SessionSubagentService idle release', () => {
     ix.set(ISessionSubagentService, new SyncDescriptor(SessionSubagentService));
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
     vi.useRealTimers();
   });
 

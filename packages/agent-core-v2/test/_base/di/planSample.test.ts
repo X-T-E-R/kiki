@@ -118,7 +118,7 @@ describe('Plan sample (plan-domain-plugin.manifest.ts) — API acceptance', () =
     const tool = agent.instantiation.createInstance(EnterPlanModeTool);
     expect(tool.plan.marker).toBe('plan-service');
 
-    featureHandle.dispose();
+    await featureHandle.dispose();
     await app.instantiation.cascade.whenIdle();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect((agent.instantiation as InstantiationService).fiberHost.collectionView(EventStateContribution).items).toHaveLength(0);
@@ -126,11 +126,11 @@ describe('Plan sample (plan-domain-plugin.manifest.ts) — API acceptance', () =
     expect(seen).toEqual(['config:+defaultPlanMode', 'config:-defaultPlanMode']);
     expect(log).toEqual(['agent feature up']);
     expect(() => agent.accessor.get(IAgentPlanService)).toThrow();
-    agent.dispose();
-    app.dispose();
+    await agent.dispose();
+    await app.dispose();
   });
 
-  it('§0: class-recipe statics (name) and handle state are honored', () => {
+  it('§0: class-recipe statics (name) and handle state are honored', async () => {
     class Named extends Service {
       static override readonly name = 'plan';
     }
@@ -140,7 +140,7 @@ describe('Plan sample (plan-domain-plugin.manifest.ts) — API acceptance', () =
     app.accessor.get(INamed);
     expect(handle.uid).toBeTypeOf('number');
     expect(app.instantiation.cascade.stateOf(INamed)).toBe('Active');
-    app.dispose();
+    await app.dispose();
   });
 
   it('§1: FiberHandle for a unit provide is thenable and Active', async () => {
@@ -153,6 +153,6 @@ describe('Plan sample (plan-domain-plugin.manifest.ts) — API acceptance', () =
     const unit = app.accessor.get(IPlan);
     expect(unit.state).toBe(FiberState.Active);
     expect(unit.name).toBe('plan');
-    app.dispose();
+    await app.dispose();
   });
 });

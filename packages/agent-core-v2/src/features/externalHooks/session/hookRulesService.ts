@@ -2,6 +2,7 @@ import { parse } from 'smol-toml';
 
 import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Emitter } from '#/_base/event';
 import { IModelService } from '#/kosong/model/model';
 import { IHookRulesRegistry } from '../app/hookRules';
@@ -58,11 +59,11 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
   private async load(): Promise<void> {
     await this.registry.ready;
     const workspace = this.workspace.current;
-    this.subscriptions.clear();
+    await this.subscriptions.clear();
     if (workspace === undefined) return;
     await workspace.trust.ready;
     const { runtime, root } = workspace;
-    this.subscriptions.add(workspace.trust.onDidChange(() => { void this.reload(); }));
+    this.subscriptions.add(workspace.trust.onDidChange(() => { this.reload().catch(onUnexpectedError); }));
     const file = runtime.path.join(root, '.kiki', 'hooks.toml');
     if (runtime.fs === undefined) {
       this.project = retainFailedHookSources(this.project, { revision: 'unsupported', rules: [], sources: [{ namespace: 'workspace', path: file, status: 'unavailable' }], diagnostics: [{ path: file, message: 'workspace hooks unsupported: runtime has no filesystem capability' }] });
@@ -71,7 +72,7 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
     }
     if (runtime.watch !== undefined) {
       const handle = this.subscriptions.add(runtime.watch.watch(file));
-      this.subscriptions.add(handle.onDidChange(() => { void this.reload(); }));
+      this.subscriptions.add(handle.onDidChange(() => { this.reload().catch(onUnexpectedError); }));
     }
     let config: unknown;
     try { config = parse(await runtime.fs.readText(file))['hooks']; }
@@ -86,7 +87,7 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
     if (runtime.watch !== undefined) {
       for (const watched of (this.project.watchPaths ?? []).filter((watched) => watched !== file)) {
         const handle = this.subscriptions.add(runtime.watch.watch(watched));
-        this.subscriptions.add(handle.onDidChange(() => { void this.reload(); }));
+        this.subscriptions.add(handle.onDidChange(() => { this.reload().catch(onUnexpectedError); }));
       }
     }
     this.changed.fire();

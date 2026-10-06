@@ -65,6 +65,8 @@ provider = "kimi-for-coding"
 model = "kimi-for-coding"
 max_context_size = 262144
 capabilities = ["image_in", "thinking", "video_in"]
+support_efforts = ["low", "high"]
+default_effort = "high"
 display_name = "Kimi for Coding"
 
 [loop_control]
@@ -610,12 +612,10 @@ describe('KimiHarness config API', () => {
       'agent-profile-routes',
       'native_ssh',
       'session_idle_eviction',
+      'task_wait',
       'auto_session_title',
       'native_browser',
       'local_session_resume',
-      'plugin_import',
-      'media_generation',
-      'task_wait',
       'tool-select',
       'subagent_release_idle',
       'persistence_minidb_readmodel',

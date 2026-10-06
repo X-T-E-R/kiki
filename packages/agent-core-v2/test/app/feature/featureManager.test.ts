@@ -44,7 +44,7 @@ describe('FeatureManager — dynamic unit assembly at App scope (§5.10)', () =>
     expect(manager.units()).toHaveLength(0);
     expect(() => ix.invokeFunction((a) => a.get(IGizmo))).toThrow(/unknown service/);
     expect(events.length).toBe(2);
-    ix.dispose();
+    await ix.dispose();
   });
 
   it('reloads a managed unit with new config via updateUnit', async () => {
@@ -62,18 +62,18 @@ describe('FeatureManager — dynamic unit assembly at App scope (§5.10)', () =>
     await manager.updateUnit('Configured', 2);
     expect(configs).toEqual([1, 2]);
     await expect(manager.updateUnit('unknown-unit')).rejects.toThrow(/not managed/);
-    ix.dispose();
+    await ix.dispose();
   });
 
   it('retracts every managed unit when the manager dies', async () => {
     const { ix, manager } = host();
     manager.provideUnit(IGizmo, Gizmo);
     ix.invokeFunction((a) => a.get(IGizmo));
-    ix.dispose();
+    await ix.dispose();
     await expect(Promise.resolve()).resolves.toBeUndefined();
   });
 
-  it('carries a recipe-declared static meta into introspection', () => {
+  it('carries a recipe-declared static meta into introspection', async () => {
     const { ix, manager } = host();
     class Documented extends Service {
       static readonly meta = { summary: 'a documented unit' };
@@ -85,6 +85,6 @@ describe('FeatureManager — dynamic unit assembly at App scope (§5.10)', () =>
     });
     manager.provideUnit(IGizmo, Gizmo);
     expect(manager.units().find((unit) => unit.name === 'Gizmo')!.meta).toEqual({});
-    ix.dispose();
+    await ix.dispose();
   });
 });

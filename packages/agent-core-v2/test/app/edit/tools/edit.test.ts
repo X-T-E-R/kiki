@@ -126,8 +126,8 @@ describe('EditTool', () => {
   beforeEach(() => {
     disposables = new DisposableStore();
   });
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('exposes before/after on the file_io display so the approval panel can render a diff', async () => {

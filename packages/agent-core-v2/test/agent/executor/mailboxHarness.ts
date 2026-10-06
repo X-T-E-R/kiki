@@ -22,7 +22,7 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 export interface ExternalMailboxHarness {
   readonly messaging: IAgentCollaborationMessagingService;
   delivered(): boolean;
-  dispose(): void;
+  dispose(): void | Promise<void>;
 }
 
 export function attachExternalMailboxHarness(
@@ -121,8 +121,8 @@ export function attachExternalMailboxHarness(
   return {
     messaging: collaboration.get(IAgentCollaborationMessagingService),
     delivered: () => delivered,
-    dispose: () => {
-      collaboration.dispose();
+    dispose: async () => {
+      await collaboration.dispose();
     },
   };
 }

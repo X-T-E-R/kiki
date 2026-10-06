@@ -49,7 +49,7 @@ describe('FileSkillDiscovery', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
     await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 

@@ -123,7 +123,7 @@ describe('facade routing', () => {
       await expect(dedicated).resolves.toEqual({ decision: 'approved' });
     } finally {
       await klient.close();
-      ix.dispose();
+      await ix.dispose();
     }
   });
   it('admits a potentially slow resume without the generic call deadline and preserves missing-session results', async () => {

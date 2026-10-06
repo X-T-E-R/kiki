@@ -245,7 +245,7 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
         if (!enqueued) await preparedMedia?.discard();
         sendMappedError(reply, req, err);
       } finally {
-        lease?.dispose();
+        await lease?.dispose();
       }
     },
   );

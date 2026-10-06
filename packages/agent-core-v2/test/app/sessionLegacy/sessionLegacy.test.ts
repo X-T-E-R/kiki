@@ -103,8 +103,8 @@ describe('Session legacy status (best-effort runtime state)', () => {
     ix = disposables.add(new TestInstantiationService());
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('returns the persisted effort when the saved model alias no longer resolves', async () => {

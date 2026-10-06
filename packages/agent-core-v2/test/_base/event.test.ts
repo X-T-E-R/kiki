@@ -1,6 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { Disposable, DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
+import {
+  combinedDisposable,
+  Disposable,
+  DisposableStore,
+  MutableDisposable,
+  toDisposable,
+  type IDisposable,
+  type ISyncDisposable,
+} from '#/_base/di/lifecycle';
 import { Emitter, Event } from '#/_base/event';
 import {
   resetUnexpectedErrorHandler,
@@ -112,14 +120,14 @@ describe('Emitter / Event', () => {
     emitter.dispose();
   });
 
-  it('disposables DisposableStore overload collects the subscription disposable', () => {
+  it('disposables DisposableStore overload collects the subscription disposable', async () => {
     const emitter = new Emitter<number>();
     const store = new DisposableStore();
     const seen: number[] = [];
 
     emitter.event((value) => seen.push(value), undefined, store);
     emitter.fire(1);
-    store.dispose();
+    await store.dispose();
     emitter.fire(2);
 
     expect(seen).toEqual([1]);
@@ -169,18 +177,18 @@ describe('Event.None', () => {
 });
 
 describe('Emitter debug name / EventSubscription ledger labels', () => {
-  it('named emitter subscriptions land on the store ledger as on:<name>', () => {
+  it('named emitter subscriptions land on the store ledger as on:<name>', async () => {
     const emitter = new Emitter<number>('test.event');
     const store = new DisposableStore();
 
     emitter.event(() => undefined, undefined, store);
 
     expect(store.ledger.entries().map((entry) => entry.label)).toContain('on:test.event');
-    store.dispose();
+    await store.dispose();
     emitter.dispose();
   });
 
-  it('unnamed emitter subscriptions fall back to disposable:EventSubscription', () => {
+  it('unnamed emitter subscriptions fall back to disposable:EventSubscription', async () => {
     const emitter = new Emitter<number>();
     const store = new DisposableStore();
 
@@ -189,7 +197,7 @@ describe('Emitter debug name / EventSubscription ledger labels', () => {
     expect(store.ledger.entries().map((entry) => entry.label)).toContain(
       'disposable:EventSubscription',
     );
-    store.dispose();
+    await store.dispose();
     emitter.dispose();
   });
 
@@ -252,6 +260,49 @@ describe('Event.filter', () => {
   });
 });
 
+describe('lifecycle helper contracts', () => {
+  it('does not classify async callbacks as synchronous disposables', async () => {
+    const asyncFactory = async (): Promise<void> => {};
+    const asyncDisposable = toDisposable(asyncFactory);
+    const syncDisposable: ISyncDisposable = toDisposable(() => {});
+    type AsyncDisposableIsNotSync = typeof asyncDisposable extends ISyncDisposable ? false : true;
+    const compileTimeCheck: AsyncDisposableIsNotSync = true;
+    expect(compileTimeCheck).toBe(true);
+    await asyncDisposable.dispose();
+    syncDisposable.dispose();
+  });
+
+  it('combinedDisposable remains synchronous and disposes every source', () => {
+    const disposed: string[] = [];
+    const combined = combinedDisposable(
+      toDisposable(() => { disposed.push('first'); }),
+      toDisposable(() => { disposed.push('second'); }),
+    );
+    combined.dispose();
+    expect(disposed).toEqual(['first', 'second']);
+  });
+
+  it('MutableDisposable caches an in-flight close and reports tracked async errors', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const resource = { dispose: vi.fn(() => gate) };
+    const mutable = new MutableDisposable<typeof resource>();
+    mutable.value = resource;
+    const first = mutable.dispose();
+    const second = mutable.dispose();
+    expect(second).toBe(first);
+    release();
+    await Promise.all([first, second]);
+    expect(resource.dispose).toHaveBeenCalledOnce();
+
+    const failure = new Error('async-close-failed');
+    const failed = new MutableDisposable<IDisposable>();
+    failed.value = { dispose: async () => { throw failure; } };
+    failed.clear();
+    await expect(failed.dispose()).rejects.toBe(failure);
+  });
+});
+
 describe('Event.any', () => {
   it('forwards any source fire to the subscriber', () => {
     const a = new Emitter<string>();
@@ -286,17 +337,13 @@ describe('Event.any', () => {
 
   it('disposing the combined subscription disposes all source subscriptions before throwing AggregateError', () => {
     const order: string[] = [];
-    const first: Event<string> = () => ({
-      dispose: () => {
-        order.push('first');
-        throw new Error('first-dispose');
-      },
+    const first: Event<string> = () => toDisposable(() => {
+      order.push('first');
+      throw new Error('first-dispose');
     });
-    const second: Event<string> = () => ({
-      dispose: () => {
-        order.push('second');
-        throw new Error('second-dispose');
-      },
+    const second: Event<string> = () => toDisposable(() => {
+      order.push('second');
+      throw new Error('second-dispose');
     });
 
     const error = captureThrown(() => {

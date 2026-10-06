@@ -16,7 +16,7 @@ import type { BrowserConnectionRecord } from '#/app/browser/browserConfig';
 const source = 'https://code.kimi.com/kimi-code/plugins/official/kimi-webbridge.zip';
 const sha256 = 'a'.repeat(64);
 const fixtures: TestInstantiationService[] = [];
-afterEach(() => { for (const ix of fixtures.splice(0)) ix.dispose(); vi.unstubAllGlobals(); });
+afterEach(async () => { for (const ix of fixtures.splice(0)) await ix.dispose(); vi.unstubAllGlobals(); });
 function fixture() {
   const ix = new TestInstantiationService(); fixtures.push(ix);
   let installed = false;

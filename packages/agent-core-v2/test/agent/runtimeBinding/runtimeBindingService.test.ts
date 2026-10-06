@@ -118,8 +118,8 @@ beforeEach(() => {
   disposables = new DisposableStore();
 });
 
-afterEach(() => {
-  disposables.dispose();
+afterEach(async () => {
+  await disposables.dispose();
   vi.restoreAllMocks();
 });
 
@@ -301,7 +301,7 @@ describe('AgentRuntimeBindingService', () => {
     invoke.mockClear();
 
     try {
-      ix.dispose();
+      await ix.dispose();
       expect(phases).toEqual(['closing', 'draining']);
       await localRegistration.remove();
       binding.switch('remote');
@@ -310,7 +310,7 @@ describe('AgentRuntimeBindingService', () => {
       expect(refresh).toHaveBeenCalledTimes(1);
       expect(workspaceChanges.listenerCount).toBe(0);
       for (const dispose of subscriptionDisposals) expect(dispose).toHaveBeenCalledTimes(1);
-      ix.dispose();
+      await ix.dispose();
       expect(phases).toEqual(['closing', 'draining']);
     } finally {
       finishShutdown();

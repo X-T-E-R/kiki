@@ -94,13 +94,13 @@ describe('event bus (full-stream and per-type delivery, dispose and empty-publis
     expect(order).toEqual(['all', 'typed', 'string']);
   });
 
-  it('stops delivering after the subscription is disposed', () => {
+  it('stops delivering after the subscription is disposed', async () => {
     const bus = new EventBusService();
     const seen: string[] = [];
     const sub = bus.subscribe(TestA, (e) => seen.push(e.type));
 
     bus.publish(new TestA({ x: 1 }));
-    sub.dispose();
+    await sub.dispose();
     bus.publish(new TestA({ x: 2 }));
 
     expect(seen).toEqual(['test.a']);
@@ -111,7 +111,7 @@ describe('event bus (full-stream and per-type delivery, dispose and empty-publis
     expect(() => bus.publish(new TestA({ x: 1 }))).not.toThrow();
   });
 
-  it('reports listener counts for the full stream and each subscribed type', () => {
+  it('reports listener counts for the full stream and each subscribed type', async () => {
     const bus = new EventBusService();
     expect(bus.listenerCounts()).toEqual({ all: 0, perType: {} });
 
@@ -125,15 +125,15 @@ describe('event bus (full-stream and per-type delivery, dispose and empty-publis
       perType: { 'test.a': 2, 'test.b': 1 },
     });
 
-    a.dispose();
-    aString.dispose();
+    await a.dispose();
+    await aString.dispose();
     expect(bus.listenerCounts()).toEqual({
       all: 1,
       perType: { 'test.a': 0, 'test.b': 1 },
     });
 
-    all.dispose();
-    b.dispose();
+    await all.dispose();
+    await b.dispose();
     expect(bus.listenerCounts()).toEqual({
       all: 0,
       perType: { 'test.a': 0, 'test.b': 0 },
@@ -142,7 +142,7 @@ describe('event bus (full-stream and per-type delivery, dispose and empty-publis
 });
 
 describe('fiberEventResolver — string on(...) resolved against the scope IEventBus', () => {
-  it('delivers matching bus events to a unit string subscription and detaches on unload', () => {
+  it('delivers matching bus events to a unit string subscription and detaches on unload', async () => {
     const bus = new EventBusService();
     const seen: number[] = [];
     class Unit extends Service {
@@ -164,10 +164,10 @@ describe('fiberEventResolver — string on(...) resolved against the scope IEven
     ix.unprovide(IUnit);
     bus.publish(new TestA({ x: 2 }));
     expect(seen).toEqual([1]);
-    ix.dispose();
+    await ix.dispose();
   });
 
-  it('attaches when the bus arrives after the unit was constructed', () => {
+  it('attaches when the bus arrives after the unit was constructed', async () => {
     const bus = new EventBusService();
     const seen: number[] = [];
     class LateUnit extends Service {
@@ -187,6 +187,6 @@ describe('fiberEventResolver — string on(...) resolved against the scope IEven
     ix.provide(IEventBus, bus);
     bus.publish(new TestA({ x: 7 }));
     expect(seen).toEqual([7]);
-    ix.dispose();
+    await ix.dispose();
   });
 });

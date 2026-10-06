@@ -636,7 +636,7 @@ describe('ACP external executor', () => {
       expect(harness.starts[0]?.prompt).toBe('ONLY_NEW_USER');
       expect(reconcile).not.toHaveBeenCalled();
       expect(mailbox.delivered()).toBe(false);
-    } finally { mailbox.dispose(); await harness.execution.shutdown(); harness.ix.dispose(); }
+    } finally { await mailbox.dispose(); await harness.execution.shutdown(); await harness.ix.dispose(); }
   });
 
   it('keeps direct ACP factory payload bare across a durable generation boundary', async () => {
@@ -881,7 +881,7 @@ describe('ACP external executor', () => {
       await run.completion.catch(() => undefined);
     } finally {
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -920,7 +920,7 @@ describe('ACP external executor', () => {
       await run.completion.catch(() => undefined);
     } finally {
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -937,7 +937,7 @@ describe('ACP external executor', () => {
       await run.completion.catch(() => undefined);
     } finally {
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -961,7 +961,7 @@ describe('ACP external executor', () => {
       await run.completion.catch(() => undefined);
     } finally {
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -990,9 +990,9 @@ describe('ACP external executor', () => {
       expect(harness.starts[0]?.prompt).toContain('ordinary ACP resume');
       expect(mailbox.delivered()).toBe(true);
     } finally {
-      mailbox.dispose();
+      await mailbox.dispose();
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1824,7 +1824,7 @@ describe('ACP external executor', () => {
         expect(interaction.listPending()).toEqual([]);
       } finally {
         await harness.session.shutdown();
-        ix.dispose();
+        await ix.dispose();
       }
     },
   );
@@ -1956,7 +1956,7 @@ describe('ACP external executor', () => {
       expect(cold.profile.data().executorId).toBe(cold.before.executorId);
       await harness.execution.shutdown();
       await expect(run.completion).rejects.toBeDefined();
-    } finally { harness.ix.dispose(); await harness.execution.shutdown(); await cold.dispose(); }
+    } finally { await harness.ix.dispose(); await harness.execution.shutdown(); await cold.dispose(); }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each(['scope-close', 'shutdown', 'dispose', 'replacement'] as const)(
@@ -1973,7 +1973,7 @@ describe('ACP external executor', () => {
         expect(JSON.stringify(harness.starts[0])).toContain('Frozen profile');
         expect(JSON.stringify(harness.starts[0])).not.toContain('ALL_EXECUTORS_SHARED');
         harness.pendingTurns.add(run.turn.id);
-        if (close === 'scope-close') harness.ix.dispose();
+        if (close === 'scope-close') await harness.ix.dispose();
         if (close === 'replacement') {
           harness.ix.provide(IAgentLoopService, {} as IAgentLoopService);
           await harness.ix.cascade.whenIdle();
@@ -1999,7 +1999,7 @@ describe('ACP external executor', () => {
         expect(harness.runtimeLease.dispose).toHaveBeenCalledTimes(1);
         expect(harness.execution.status()).toEqual({ state: 'idle' });
       } finally {
-        harness.ix.dispose();
+        await harness.ix.dispose();
         await harness.execution.shutdown();
         expect(errors).not.toHaveBeenCalled();
         errors.mockRestore();

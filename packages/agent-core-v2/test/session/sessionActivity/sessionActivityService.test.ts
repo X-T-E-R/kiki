@@ -51,7 +51,7 @@ class FakeBus implements IEventBus {
           ? { type: (arg1 as Event2Class).type, fn: arg2 as (event: Event2) => void }
           : { fn: arg1 as (event: Event2) => void };
     this.handlers.add(entry);
-    return { dispose: () => this.handlers.delete(entry) };
+    return { dispose: () => { this.handlers.delete(entry); } };
   }
 }
 
@@ -183,9 +183,9 @@ describe('ISessionActivityView (Session scope aggregate of agent activity + inte
     lifecycle = session.accessor.get(IAgentLifecycleService) as unknown as FakeAgentLifecycle;
   });
 
-  afterEach(() => {
-    disposables.dispose();
-    host.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
+    await host.dispose();
   });
 
   function viewWithChanges(): {

@@ -1,7 +1,7 @@
 import { mediaGenerateInputSchema, mediaRequestSchema, type MediaRequest } from '@kiki/protocol';
 import { createDecorator } from '#/_base/di/instantiation';
 import { IAgentPluginMediaService, mediaInputRefs } from '#/agent/pluginMedia/pluginMedia';
-import { type IDisposable } from '#/_base/di/lifecycle';
+import { dispose, type IDisposable } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
@@ -53,7 +53,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
 
   private async refresh(): Promise<void> {
     const definitions = await this.hosts.list();
-    for (const registration of this.registrations.values()) registration.dispose();
+    await dispose(this.registrations.values());
     this.registrations.clear();
     for (const { pluginId, definition } of definitions) {
       const name = `plugin__${pluginId.replaceAll('-', '_')}__${definition.name}`;
@@ -162,10 +162,10 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
     };
   }
 
-  override dispose(): void {
-    for (const registration of this.registrations.values()) registration.dispose();
+  override async dispose(): Promise<void> {
+    await dispose(this.registrations.values());
     this.registrations.clear();
-    super.dispose();
+    await super.dispose();
   }
 }
 

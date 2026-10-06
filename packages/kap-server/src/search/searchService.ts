@@ -479,7 +479,7 @@ export class GlobalSearchService implements IGlobalSearchService {
       this.drainSettled = true;
     })();
     pendingDisposals.add(pending);
-    void pending.finally(() => pendingDisposals.delete(pending));
+    pending.finally(() => pendingDisposals.delete(pending)).catch(() => {});
   }
 
   private requestSync(): void {
@@ -508,7 +508,10 @@ export class GlobalSearchService implements IGlobalSearchService {
   private clearSessionIndexStatusWaiter(): void {
     const waiter = this.sessionIndexStatusWaiter;
     this.sessionIndexStatusWaiter = null;
-    waiter?.dispose();
+    const disposed = waiter?.dispose();
+    if (!(disposed instanceof Promise)) return;
+    pendingDisposals.add(disposed);
+    disposed.finally(() => pendingDisposals.delete(disposed)).catch(() => {});
   }
 
   private sessionIndexUsable(status: ReturnType<ISessionIndex['status']>): boolean {

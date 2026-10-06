@@ -172,7 +172,7 @@ interface ManagedTask extends BufferedTaskOutput {
   timeoutHandle?: ReturnType<typeof setTimeout>;
   timedOut: boolean;
   readonly waiters: Array<() => void>;
-  handleSubscription?: { dispose(): void };
+  handleSubscription?: { dispose(): void | Promise<void> };
   visible: boolean;
 }
 
@@ -536,7 +536,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       entry.endedAt = Date.now();
       entry.terminalFired = true;
       entry.foregroundSignalCleanup?.();
-      entry.handleSubscription?.dispose();
+      await entry.handleSubscription?.dispose();
       if (entry.timeoutHandle !== undefined) clearTimeout(entry.timeoutHandle);
       entry.abortController.abort(reason);
       entry.foregroundRelease?.resolve('terminal');
@@ -1097,7 +1097,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return this.stopAll(reason);
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     this.exitSuppressionArmed = true;
     for (const pending of this.pendingWaitDeliveries.values()) pending.cleanup();
     this.pendingWaitDeliveries.clear();
@@ -1116,7 +1116,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         this.forceStopOnDispose(entry);
       }
     }
-    super.dispose();
+    return super.dispose();
   }
 
   private forceStopOnDispose(entry: ManagedTask): void {
@@ -1476,7 +1476,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       settlement.stopReason ?? (settlement.status === 'killed' ? entry.stopReason : undefined);
     entry.foregroundSignalCleanup?.();
     entry.foregroundSignalCleanup = undefined;
-    entry.handleSubscription?.dispose();
+    await entry.handleSubscription?.dispose();
     entry.handleSubscription = undefined;
     if (entry.timeoutHandle !== undefined) {
       clearTimeout(entry.timeoutHandle);

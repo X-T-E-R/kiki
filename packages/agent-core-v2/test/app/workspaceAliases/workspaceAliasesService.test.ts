@@ -82,7 +82,7 @@ describe('WorkspaceAliasesService (file-backed)', () => {
   });
 
   afterEach(async () => {
-    currentHost?.dispose();
+    await currentHost?.dispose();
     currentHost = undefined;
     await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });

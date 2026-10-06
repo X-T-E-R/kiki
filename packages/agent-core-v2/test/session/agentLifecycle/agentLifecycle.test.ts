@@ -577,8 +577,8 @@ describe('AgentLifecycleService', () => {
   }
 
   beforeEach(createTestHost);
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
     overrideScopedService(LifecycleScope.Agent, IAgentPromptService, AgentPromptService);
     vi.restoreAllMocks();
   });
@@ -1469,7 +1469,7 @@ describe('AgentLifecycleService', () => {
     } as unknown as IAgentIdentity);
     ix.stub(IModelCatalog, {
       _serviceBrand: undefined,
-      get: () => ({ providerName: 'test-provider', capabilities: UNKNOWN_CAPABILITY }),
+      get: () => ({ providerName: 'test-provider', capabilities: { ...UNKNOWN_CAPABILITY, thinking: true }, defaultEffort: 'high' }),
     } as unknown as IModelCatalog);
     ix.stub(ISessionContext, {
       _serviceBrand: undefined,
@@ -2094,7 +2094,7 @@ describe('AgentLifecycleService', () => {
       for (const handle of lifecycle.list()) await lifecycle.remove(handle.id);
       await ix.get(IAppendLogStore).close();
       await ix.get(IFileSystemStorageService).close();
-      disposables.dispose();
+      await disposables.dispose();
     };
     const bindReadonly = async (child: IAgentScopeHandle): Promise<void> => {
       await child.accessor.get(IEventDispatcher).dispatch(new ProfileBind({

@@ -3,6 +3,8 @@ import { isAbsolute, join, relative, resolve, sep } from 'pathe';
 import ignore, { type Ignore } from 'ignore';
 
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Emitter, type Event } from '#/_base/event';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import {
@@ -90,9 +92,11 @@ export class WorkspaceFsWatchService extends Disposable implements IWorkspaceFsW
   }
 
   private teardownHandle(): void {
-    this.handleSub?.dispose();
+    const subscription = this.handleSub?.dispose();
+    if (isPromiseLike(subscription)) subscription.catch(onUnexpectedError);
     this.handleSub = undefined;
-    this.handle?.dispose();
+    const handle = this.handle?.dispose();
+    if (isPromiseLike(handle)) handle.catch(onUnexpectedError);
     this.handle = undefined;
   }
 
@@ -117,13 +121,13 @@ export class WorkspaceFsWatchService extends Disposable implements IWorkspaceFsW
     }
   }
 
-  override dispose(): void {
+  override async dispose(): Promise<void> {
     for (const sub of this.subscriptions) {
       sub.dispose();
     }
     this.subscriptions.clear();
     this.teardownHandle();
-    super.dispose();
+    await super.dispose();
   }
 
   private resolveWithin(inputPath: string): string {

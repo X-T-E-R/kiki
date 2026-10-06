@@ -41,7 +41,7 @@ import { runWillBeginStepHooks, stubLoopWithHooks } from '../loop/stubs';
 const homes: string[] = [];
 const containers: DisposableStore[] = [];
 afterEach(async () => {
-  for (const container of containers.splice(0)) container.dispose();
+  for (const container of containers.splice(0)) await container.dispose();
   vi.unstubAllEnvs();
   await Promise.all(homes.splice(0).map((home) => rm(home, { force: true, recursive: true })));
 });
@@ -175,7 +175,7 @@ describe('SSH connection gate before tool resolution', () => {
     expect(f.state.get(sessionSshHostsKey)).toEqual({});
     expect(f.runtime.approveSshTarget).not.toHaveBeenCalled();
     expect(f.approvals.request).toHaveBeenCalledTimes(1);
-    f.dispose();
+    await f.dispose();
   });
 
   it('clears approved credentials when the connection attempt aborts before consumption', async () => {
@@ -190,7 +190,7 @@ describe('SSH connection gate before tool resolution', () => {
     expect(f.approvals.takeSshCredential).not.toHaveBeenCalled();
     expect(f.approvals.clearSshCredential).toHaveBeenCalledWith(id);
     expect(f.runtime.approveSshTarget).not.toHaveBeenCalled();
-    f.dispose();
+    await f.dispose();
   });
 
   it('approves a known host once per session, but never admits unknown or hidden hosts', async () => {
@@ -206,7 +206,7 @@ describe('SSH connection gate before tool resolution', () => {
     vi.mocked(f.hosts.list).mockResolvedValue([{ id: 'dev', name: 'Retargeted', source: 'kiki' }]);
     expect(await f.call('dev')).toBeUndefined();
     expect(f.approvals.request).toHaveBeenCalledTimes(2);
-    f.dispose();
+    await f.dispose();
   });
 
   it('lists a synced alias without joining it until approval or yolo selection', async () => {
@@ -215,12 +215,12 @@ describe('SSH connection gate before tool resolution', () => {
     expect(await f.call('synced')).toContain('not approved');
     expect(f.state.get(sessionSshHostsKey)).toEqual({});
     expect(f.runtime.approveSshTarget).not.toHaveBeenCalled();
-    f.dispose();
+    await f.dispose();
     const yolo = await fixture({ mode: 'yolo' });
     expect(await yolo.call('synced')).toBeUndefined();
     expect(yolo.state.get(sessionSshHostsKey)['synced']).toBeDefined();
     expect(yolo.approvals.request).not.toHaveBeenCalled();
-    yolo.dispose();
+    await yolo.dispose();
   });
 
   it('prompts again after a session-only credential disconnects', async () => {
@@ -234,7 +234,7 @@ describe('SSH connection gate before tool resolution', () => {
     expect(f.approvals.request).toHaveBeenCalledTimes(2);
     expect(f.runtime.approveSshTarget).toHaveBeenLastCalledWith('dev', f.state.get(sessionSshHostsKey)['dev'],
       expect.any(Function), { password: 'second-secret', save: 'session' }, expect.any(Function));
-    f.dispose();
+    await f.dispose();
   });
 
   it('re-approves when ssh -G changes the destination or jump despite an unchanged host record', async () => {
@@ -252,7 +252,7 @@ describe('SSH connection gate before tool resolution', () => {
     }
     expect(f.approvals.request).toHaveBeenCalledTimes(5);
     expect(f.state.get(sessionSshHostsKey)['dev']).not.toBe(original);
-    f.dispose();
+    await f.dispose();
   });
 
   it('rejects a target redirected while an approval is pending', async () => {
@@ -266,7 +266,7 @@ describe('SSH connection gate before tool resolution', () => {
     });
     expect(await f.call('dev')).toContain('changed during connection approval');
     expect(f.state.get(sessionSshHostsKey)).toEqual({});
-    f.dispose();
+    await f.dispose();
   });
 
   it('waits for subagent metadata initialization before exposing the fixture for teardown', async () => {
@@ -296,7 +296,7 @@ describe('SSH connection gate before tool resolution', () => {
     }
     const f = await pending;
     expect((await f.documents.get<{ id: string }>('sessions/session', 'state.json'))?.id).toBe('session');
-    f.dispose();
+    await f.dispose();
   });
 
   it('allows yolo without connection approval, but requires main-session approval for subagents', async () => {
@@ -304,13 +304,13 @@ describe('SSH connection gate before tool resolution', () => {
     expect(await f.call('dev')).toBeUndefined();
     expect(f.approvals.request).not.toHaveBeenCalled();
     const approved = f.state.get(sessionSshHostsKey)['dev'];
-    f.dispose();
+    await f.dispose();
     const sub = await fixture({ agentId: 'subagent' });
     expect(await sub.call('dev')).toContain('subagent cannot connect');
     expect(sub.approvals.request).not.toHaveBeenCalled();
     sub.state.set(sessionSshHostsKey, { dev: approved! });
     expect(await sub.call('dev')).toBeUndefined();
-    sub.dispose();
+    await sub.dispose();
   });
 
   it('separates login, unknown-key confirmation, and each keyboard-interactive challenge', async () => {
@@ -329,7 +329,7 @@ describe('SSH connection gate before tool resolution', () => {
       ssh: expect.objectContaining({ kind: 'login', prompts: [{ prompt: 'Verification code:', echo: false }] }),
     }));
     expect(f.approvals.request).toHaveBeenCalledTimes(3);
-    f.dispose();
+    await f.dispose();
   });
 
   it('global connection approval off skips the prompt but still checks target fingerprint and subagent membership', async () => {
@@ -342,11 +342,11 @@ describe('SSH connection gate before tool resolution', () => {
     });
     expect(await f.call('dev')).toBeUndefined();
     expect(f.state.get(sessionSshHostsKey)['dev']).toContain('redirect.example.test');
-    f.dispose();
+    await f.dispose();
     const sub = await fixture({ agentId: 'subagent' });
     vi.mocked(sub.hosts.connectionApprovalEnabled).mockResolvedValue(false);
     expect(await sub.call('dev')).toContain('subagent cannot connect');
-    sub.dispose();
+    await sub.dispose();
   });
 
   it('announces only usable joined hosts once per new turn and emits incremental removals', async () => {
@@ -362,7 +362,7 @@ describe('SSH connection gate before tool resolution', () => {
     const removed = await f.announce(added.disclosure) as { content: string; disclosure: Readonly<Record<string, string>> };
     expect(removed.content).toBe('<ssh_hosts_removed>\ndev\n</ssh_hosts_removed>');
     expect(removed.disclosure).toEqual({});
-    f.dispose();
+    await f.dispose();
   });
 });
 
@@ -422,7 +422,7 @@ describe('persistent SSH membership and context consumers', () => {
     const saved = first.state.get(sessionSshHostsKey);
     expect((await first.documents.get<{ sshHosts: unknown }>('sessions/session', 'state.json'))?.sshHosts).toEqual(saved);
     const history = JSON.parse(JSON.stringify(first.context.get())) as ContextMessage[];
-    first.dispose();
+    await first.dispose();
     const resumed = await fixture({ home: first.home });
     expect(resumed.state.get(sessionSshHostsKey)).toEqual(saved);
     expect(resumed.runtime.approveSshTarget).not.toHaveBeenCalled();
@@ -441,7 +441,7 @@ describe('persistent SSH membership and context consumers', () => {
   it('makes restored membership visible when historical injections are absent', async () => {
     const first = await fixture();
     expect(await first.call('dev')).toBeUndefined();
-    first.dispose();
+    await first.dispose();
     const resumed = await fixture({ home: first.home });
     resumed.context.append(userMessage('Continue on the joined host.'));
     await resumed.step();
@@ -455,7 +455,7 @@ describe('persistent SSH membership and context consumers', () => {
     await first.step();
     const history = JSON.parse(JSON.stringify(first.context.get())) as ContextMessage[];
     await first.service.setSessionHosts(() => ({}));
-    first.dispose();
+    await first.dispose();
     const resumed = await fixture({ home: first.home, decision: 'rejected' });
     expect(resumed.state.get(sessionSshHostsKey)).toEqual({});
     resumed.context.append(...history, userMessage('Continue.'));
@@ -474,7 +474,7 @@ describe('persistent SSH membership and context consumers', () => {
     expect(await first.call('dev')).toBeUndefined();
     await first.step();
     const history = JSON.parse(JSON.stringify(first.context.get())) as ContextMessage[];
-    first.dispose();
+    await first.dispose();
     const resumed = await fixture({ home: first.home, decision: 'rejected', records: change.records, target: change.target });
     expect(resumed.state.get(sessionSshHostsKey)).toEqual({});
     expect((await resumed.documents.get<{ sshHosts: unknown }>('sessions/session', 'state.json'))?.sshHosts).toEqual({});
@@ -570,7 +570,7 @@ describe('restored SSH membership boundaries', () => {
     const record = (await first.hosts.list('workspace', 'session')).find((entry) => entry.id === 'hidden')!;
     const fingerprint = sshHostFingerprint(record, await first.hosts.resolveTarget('hidden', 'workspace'));
     await first.service.setSessionHosts(() => ({ hidden: fingerprint }));
-    first.dispose();
+    await first.dispose();
     const resumed = await fixture({ home: first.home });
     expect(resumed.state.get(sessionSshHostsKey)).toEqual({ hidden: fingerprint });
     await resumed.step();
@@ -583,7 +583,7 @@ describe('restored SSH membership boundaries', () => {
     const first = await fixture();
     expect(await first.call(id)).toBeUndefined();
     const saved = first.state.get(sessionSshHostsKey);
-    first.dispose();
+    await first.dispose();
     const resumed = await fixture({ home: first.home });
     expect(resumed.hosts.addTransient).toHaveBeenCalledWith(id, 'workspace', 'session');
     expect(resumed.state.get(sessionSshHostsKey)).toEqual(saved);

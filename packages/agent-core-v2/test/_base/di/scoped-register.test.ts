@@ -158,7 +158,7 @@ describe('registerScopedService / getScopedServiceDescriptors', () => {
     expect(entries[0]?.activation).toBe(ScopeActivation.OnScopeCreated);
   });
 
-  it('overrideScopedService resolves the override implementation in a live scope', () => {
+  it('overrideScopedService resolves the override implementation in a live scope', async () => {
     class OverrideAppSvc implements IApp {
       tag = 'app' as const;
     }
@@ -169,7 +169,7 @@ describe('registerScopedService / getScopedServiceDescriptors', () => {
     try {
       expect(app.accessor.get(IApp)).toBeInstanceOf(OverrideAppSvc);
     } finally {
-      app.dispose();
+      await app.dispose();
     }
   });
 

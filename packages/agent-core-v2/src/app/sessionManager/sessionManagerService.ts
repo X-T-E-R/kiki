@@ -1,5 +1,7 @@
 
 import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { setColdSessionArchived } from '#/workspace/sessionLifecycle/coldSessionArchive';
 import { Emitter, type Event, type IWaitUntil } from '#/_base/event';
@@ -461,14 +463,14 @@ export class SessionManager implements ISessionManager {
     );
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.disposed = true;
     if (this.evictionTimer !== undefined) clearInterval(this.evictionTimer);
-    for (const state of this.residency.values()) state.activitySubscription?.dispose();
+    for (const state of this.residency.values()) await state.activitySubscription?.dispose();
     this.residency.clear();
     for (const { controller, subscriptions } of [...this.controllerEntries].reverse()) {
-      subscriptions.dispose();
-      controller.dispose();
+      await subscriptions.dispose();
+      await controller.dispose();
     }
     this.controllerEntries.clear();
     this.controllers.clear();
@@ -532,7 +534,8 @@ export class SessionManager implements ISessionManager {
 
   private registerResidency(sessionId: string, handle: ISessionScopeHandle): void {
     const entry = this.ensureResidency(sessionId);
-    entry.activitySubscription?.dispose();
+    const previous = entry.activitySubscription?.dispose();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     const update = (): void => {
       try {
         const state = handle.accessor.get(ISessionActivityView).state();
@@ -569,7 +572,8 @@ export class SessionManager implements ISessionManager {
 
   private dropResidency(sessionId: string): void {
     const entry = this.residency.get(sessionId);
-    entry?.activitySubscription?.dispose();
+    const previous = entry?.activitySubscription?.dispose();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     this.residency.delete(sessionId);
   }
 
@@ -656,8 +660,10 @@ export class SessionManager implements ISessionManager {
     this.controllerEntries.delete(entry);
     this.controllerWorkspaces.delete(entry.controller);
     if (this.controllers.get(workspaceId) === entry) this.controllers.delete(workspaceId);
-    entry.subscriptions.dispose();
-    entry.controller.dispose();
+    const subscriptions = entry.subscriptions.dispose();
+    if (isPromiseLike(subscriptions)) subscriptions.catch(onUnexpectedError);
+    const controller = entry.controller.dispose();
+    if (isPromiseLike(controller)) controller.catch(onUnexpectedError);
   }
 
   private async controllerForSession(sessionId: string): Promise<{

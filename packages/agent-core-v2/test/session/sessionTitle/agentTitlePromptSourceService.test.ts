@@ -52,8 +52,8 @@ describe('AgentTitlePromptSource', () => {
     });
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('returns the first three prompts from the live context and queue in order', async () => {

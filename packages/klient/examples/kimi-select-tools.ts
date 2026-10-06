@@ -582,7 +582,7 @@ async function probeLiveKimiProviders(): Promise<void> {
     console.log('\n=== live summary (declared = config declares dynamically_loaded_tools) ===');
     for (const line of summary) console.log(line);
   } finally {
-    app.dispose();
+    await app.dispose();
   }
 }
 
@@ -725,7 +725,7 @@ async function probeTappedContext(): Promise<void> {
       }
     }
   } finally {
-    app.dispose();
+    await app.dispose();
   }
 }
 

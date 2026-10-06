@@ -1,4 +1,6 @@
 import { Disposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { LifecycleScope } from '#/app/scopes';
 import {
   ScopeActivation,
@@ -70,15 +72,16 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     );
     this._register(
       this.agents.onDidDispose((agentId) => {
-        this.agentSubscriptions.get(agentId)?.dispose();
+        const result = this.agentSubscriptions.get(agentId)?.dispose();
+        if (isPromiseLike(result)) result.catch(onUnexpectedError);
         this.agentSubscriptions.delete(agentId);
         if (this.folds.delete(agentId)) this.recompute('agent_lifecycle');
       }),
     );
     this._register(this.interactions.onDidChangePending(() => this.recompute('interaction')));
     this._register(
-      toDisposable(() => {
-        for (const subscription of this.agentSubscriptions.values()) subscription.dispose();
+      toDisposable(async () => {
+        for (const subscription of this.agentSubscriptions.values()) await subscription.dispose();
         this.agentSubscriptions.clear();
       }),
     );

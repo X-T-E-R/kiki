@@ -133,7 +133,7 @@ describe('persona backend contracts', () => {
       expect(applied.data.boundRevision).toBe(latest.revision);
       expect(validation).toHaveBeenCalledWith('fixture-external', {}, expect.objectContaining({ modelAlias: 'external-model' }));
       expect(provider.create).not.toHaveBeenCalled();
-    } finally { registration.dispose(); }
+    } finally { await registration.dispose(); }
   });
   it('records explicit equal-valued selections and changes work style without refreshing the persona', async () => {
     const registration = server.core.accessor.get(IAgentProfileRegistry).register({ sourceId: 'work-style-fixture', priority: 40,
@@ -151,7 +151,7 @@ describe('persona backend contracts', () => {
       expect(switched.code, switched.msg).toBe(0);
       expect(profile.data()).toMatchObject({ personaId: 'example', personaRevision: original.revision, profileName: 'custom', personaOverrides: { profile: 'custom', model: 'stub', thinking: 'off' } });
       expect(profile.data().systemPrompt).not.toContain('Should not implicitly apply.');
-    } finally { registration.dispose(); }
+    } finally { await registration.dispose(); }
   });
   it('preserves explicit override values and their sources through cold settings reads and clears them on restore defaults', async () => {
     const registration = server.core.accessor.get(IAgentProfileRegistry).register({ sourceId: 'persona-fixture', priority: 40,
@@ -174,7 +174,7 @@ describe('persona backend contracts', () => {
       expect(restored.code, restored.msg).toBe(0);
       expect(restored.data.overrides).toEqual({});
       expect(profile.data()).toMatchObject({ profileName: 'agent', modelAlias: 'other', personaId: 'example' });
-    } finally { registration.dispose(); }
+    } finally { await registration.dispose(); }
   });
   it('rejects busy updates and failed preparation without changing the committed binding, then applies after cancellation', async () => {
     const original = await persona();

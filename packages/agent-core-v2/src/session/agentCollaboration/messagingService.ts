@@ -1,4 +1,6 @@
 import { Disposable, DisposableMap, DisposableStore } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { abortable } from '#/_base/utils/abort';
 import { LifecycleScope } from '#/app/scopes';
 import { ILogService } from '#/_base/log/log';
@@ -70,9 +72,10 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       this.attach(handle);
     }));
     this._register(lifecycle.onDidDispose((agentId) => {
-      this.subscriptions.deleteAndDispose(agentId);
+      const result = this.subscriptions.deleteAndDispose(agentId);
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
     }));
-    void this.discardUnregisteredTargetMessages().catch(() => {});
+    this.discardUnregisteredTargetMessages().catch(onUnexpectedError);
   }
 
   async sendUserMessage(input: {
@@ -127,7 +130,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       try {
         const pinnedHandle = lease.handle.accessor.get(IAgentLifecycleService).get(input.targetAgentId);
         if (pinnedHandle === undefined) {
-          lease.dispose();
+          await lease.dispose();
           return acceptance;
         }
         const delivery = this.deliverOrWake(
@@ -137,10 +140,20 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
           input.sourceAgentId,
           child?.agent === pinnedHandle ? child : undefined,
         );
-        void delivery.finally(() => lease.dispose()).catch(() => {});
+        delivery.then(
+          () => {
+            const result = lease.dispose();
+            if (isPromiseLike(result)) result.catch(onUnexpectedError);
+          },
+          (error) => {
+            const result = lease.dispose();
+            if (isPromiseLike(result)) result.catch(onUnexpectedError);
+            onUnexpectedError(error);
+          },
+        ).catch(onUnexpectedError);
         return acceptance;
       } catch (error) {
-        lease.dispose();
+        await lease.dispose();
         throw error;
       }
     }
@@ -217,7 +230,8 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         await next();
       },
     ));
-    this.subscriptions.set(handle.id, subscriptions);
+    const result = this.subscriptions.set(handle.id, subscriptions);
+    if (isPromiseLike(result)) result.catch(onUnexpectedError);
   }
 
   private async deliverOrWake(

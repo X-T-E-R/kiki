@@ -377,7 +377,7 @@ describe('progressive tool disclosure end-to-end', () => {
       expect(historyText(ctx.llmCalls[2]!.history)).toContain('mcp__srv__beta —');
       expect(historyText(ctx.llmCalls[2]!.history).match(/<tools_added>/g)).toHaveLength(2);
       expect(ctx.llmCalls[2]!.tools).toEqual(ctx.llmCalls[0]!.tools);
-    } finally { extra.dispose(); }
+    } finally { await extra.dispose(); }
   });
 
   it.each(PREFIX_PROTOCOL_CASES)('announces one new plugin tool on $name, not an identical re-registration', async ({ provider }) => {
@@ -396,13 +396,13 @@ describe('progressive tool disclosure end-to-end', () => {
       expect(added.split('<tools_added>')[2]).toContain(`${name} —`);
       expect(added.split('<tools_added>')[2]).not.toContain(MCP_ALPHA);
       expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
-      plugin.dispose();
+      await plugin.dispose();
       plugin = ctx.get(IAgentToolRegistryService).register(new StubMcpTool(name), { source: 'plugin' });
       ctx.mockNextResponse({ type: 'text', text: 'third' });
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'third' }] });
       await ctx.untilTurnEnd();
       expect(historyText(ctx.llmCalls[2]!.history).match(/<tools_added>/g)).toHaveLength(2);
-    } finally { plugin.dispose(); }
+    } finally { await plugin.dispose(); }
   });
 
   it.each(PREFIX_PROTOCOL_CASES)('coalesces effective skill revisions on the next $name sampling boundary', async ({ provider }) => {
@@ -511,7 +511,7 @@ describe('progressive tool disclosure end-to-end', () => {
     ctx.mockNextResponse({ type: 'text', text: 'next done' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'next' }] });
     await ctx.untilTurnEnd();
-    registration.dispose();
+    await registration.dispose();
     expect(toolNames(ctx.llmCalls[2]!.tools)).toContain('ThreadList');
     expect(toolNames(ctx.llmCalls[2]!.tools)).toContain('MemorySearch');
     const notices = ctx.get(IAgentContextMemoryService).get().filter((message) =>
@@ -581,7 +581,7 @@ describe('progressive tool disclosure end-to-end', () => {
         capabilitySourceMessage(message, 'capabilities_rebuilt') !== undefined)).toHaveLength(1);
     } finally {
       release();
-      registration.dispose();
+      await registration.dispose();
       await b.dispose();
     }
   });

@@ -55,7 +55,7 @@ beforeEach(async () => {
   persona = undefined;
   approval = 'auto';
 });
-afterEach(async () => { vi.restoreAllMocks(); ix.dispose(); await rm(home, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); await ix.dispose(); await rm(home, { recursive: true, force: true }); });
 
 describe('memory attribution, validity and exact state changes', () => {
   it('loads old data without backfilling and keeps writer distinct from derived evidence', async () => {
@@ -226,7 +226,7 @@ describe('review recovery and commit boundaries (MD01–03)', () => {
     await expect(update(proposal.entry)).rejects.toMatchObject({ code: 'revision_conflict' });
     const acceptance = (await store.journal(workspace)).findLast((event) => event.action === 'accept_proposal');
     expect(acceptance).toBeDefined();
-    ix.dispose();
+    await ix.dispose();
     ix = new TestInstantiationService();
     ix.stub(IFileSystemStorageService, storage);
     ix.stub(IMemoryScopes, { resolve: async (scope) => pathFor(scope) });

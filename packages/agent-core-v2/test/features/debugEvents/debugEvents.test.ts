@@ -72,6 +72,6 @@ describe('DebugEventsFeature — App-scope introspection service', () => {
         .contributedServices()
         .some((entry) => entry.scope === LifecycleScope.App && entry.id === IDebugEventsService),
     ).toBe(false);
-    host.dispose();
+    await host.dispose();
   });
 });

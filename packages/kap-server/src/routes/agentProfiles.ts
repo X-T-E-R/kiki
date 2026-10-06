@@ -81,9 +81,9 @@ async function unscopedProfileCatalog(core: Scope) {
     preview = createUnscopedAgentProfileCatalog(instantiation);
     unscopedCatalogs.set(core, preview);
     const owned = preview;
-    instantiation.onWillDispose(() => {
+    instantiation.onWillDispose(async () => {
       unscopedCatalogs.delete(core);
-      owned.dispose();
+      await owned.dispose();
     });
   }
   await preview.catalog.ready;
@@ -420,7 +420,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
               req.query.expand === true, catalogs, executors);
         reply.send(okEnvelope({ items, complete: catalog.complete }, req.id));
       } finally {
-        workspaceCatalog.dispose();
+        await workspaceCatalog.dispose();
       }
     },
   );
@@ -479,7 +479,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       }
       reply.send(okEnvelope(await previewExecutorPrompt(core, workspace.instance, profile, executorId), req.id));
     } finally {
-      workspace.dispose();
+      await workspace.dispose();
     }
   });
   app.post(executorPromptPreviewRoute.path, executorPromptPreviewRoute.options,
@@ -526,7 +526,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
         removed_model_identities: [...oldIds].filter((id) => !newIds.has(id)),
       }, req.id));
     } finally {
-      workspace.dispose();
+      await workspace.dispose();
     }
   });
   app.post(modelMenuPreviewRoute.path, modelMenuPreviewRoute.options,

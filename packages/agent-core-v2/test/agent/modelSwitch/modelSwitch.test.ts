@@ -65,7 +65,7 @@ function createMailbox(ctx: TestAgentContext): IAgentCollaborationMessageStore {
   mailboxCleanups.push(async () => {
     await store.close();
     await runtime.close();
-    ix.dispose();
+    await ix.dispose();
     rmSync(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
   return ix.get(IAgentCollaborationMessageStore);
@@ -230,11 +230,11 @@ describe('model switch engine', () => {
     expect(flush).toHaveBeenCalledTimes(2);
     const lease = ctx.get(IAgentLoopService).tryAcquireQuiescence();
     expect(lease).toBeDefined();
-    lease?.dispose();
+    await lease?.dispose();
     expect(await svc.execute(input)).toMatchObject({ state: 'completed', windowEpoch: 1 });
     expect(ctx.get(IAgentStateService).get(contextWindowEpochKey)).toBe(1);
     expect(splices).toHaveLength(1);
-    subscription.dispose();
+    await subscription.dispose();
   });
 
   it('replays the completion as one consistent binding/context/token/window fact and deduplicates the operation', async () => {

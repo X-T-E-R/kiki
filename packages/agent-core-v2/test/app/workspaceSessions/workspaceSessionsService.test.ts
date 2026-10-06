@@ -77,8 +77,8 @@ describe('WorkspaceSessionsService', () => {
     );
   });
 
-  afterEach(() => {
-    currentHost?.dispose();
+  afterEach(async () => {
+    await currentHost?.dispose();
     currentHost = undefined;
   });
 

@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { ILogService } from '#/_base/log/log';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
@@ -154,7 +156,8 @@ export class AgentHookRules extends Service implements IAgentHookRules {
       }));
     }
     if (this.providerRevision !== snapshot.revision) {
-      this.providers.clear();
+      const previous = this.providers.clear();
+      if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
       for (const rule of snapshot.rules.filter((entry) => entry.rule.event === 'step.before' && entry.rule.action.type === 'inject')) {
         this.providers.add(this.injector.register(`hook_rule/${rule.id}`, () => {
           const current = this.stepEvent;

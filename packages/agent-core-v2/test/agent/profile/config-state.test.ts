@@ -390,18 +390,12 @@ describe('ConfigState thinking clamp for always-thinking models', () => {
     }
   });
 
-  it('clamps thinkingLevel off to the configured effort', () => {
-    profile.update({ modelAlias: 'kimi-code/deep', thinkingLevel: 'off' });
-
-    expect(profile.data().thinkingLevel).toBe('high');
+  it('rejects thinkingLevel off for an always-thinking model', () => {
+    expect(() => profile.update({ modelAlias: 'kimi-code/deep', thinkingLevel: 'off' })).toThrow(/not supported/);
   });
 
-  it('sends the clamped thinking effort in the per-turn intent after thinking was set off', async () => {
-    profile.update({ modelAlias: 'kimi-code/deep', thinkingLevel: 'off' });
-
-    await requester.request({}, undefined, new AbortController().signal);
-
-    expect(capturedThinking).toMatchObject({ effort: 'high' });
+  it('rejects an off per-turn intent for an always-thinking model', () => {
+    expect(() => profile.update({ modelAlias: 'kimi-code/deep', thinkingLevel: 'off' })).toThrow(/not supported/);
   });
 
   it('keeps thinking off working for toggleable models', () => {
@@ -410,10 +404,8 @@ describe('ConfigState thinking clamp for always-thinking models', () => {
     expect(profile.data().thinkingLevel).toBe('off');
   });
 
-  it('resolves an explicit on request to the model default effort', () => {
-    profile.update({ modelAlias: 'kimi-code/custom', thinkingLevel: 'on' });
-
-    expect(profile.data().thinkingLevel).toBe('max');
+  it('rejects an unsupported on request for a model with named efforts', () => {
+    expect(() => profile.update({ modelAlias: 'kimi-code/custom', thinkingLevel: 'on' })).toThrow(/not supported/);
   });
 
   it('re-clamps when switching to an always-on model after thinking was off', () => {
@@ -480,13 +472,10 @@ describe('ConfigState thinking clamp for always-thinking models', () => {
     expect(profile.data().thinkingLevel).toBe('max');
   });
 
-  it('clamps off to the model default for always-on models, on any transport', () => {
+  it('rejects off for an always-on model, on any transport', () => {
     profile.update({ modelAlias: 'kimi-code/compatible', thinkingLevel: 'max' });
 
-    expect(() => {
-      profile.setThinking('off');
-    }).not.toThrow();
-    expect(profile.data().thinkingLevel).toBe('max');
+    expect(() => profile.setThinking('off')).toThrow(/not supported/);
   });
 });
 
@@ -507,6 +496,8 @@ describe('ConfigState.provider applies global KIKI_MODEL_* request config', () =
           model: 'kimi-code',
           maxContextSize: 128_000,
           capabilities: ['thinking'],
+          supportEfforts: ['low', 'high'],
+          defaultEffort: 'high',
         },
         'kimi-code-anthropic': {
           provider: 'kimi',
@@ -569,7 +560,7 @@ describe('ConfigState.provider applies global KIKI_MODEL_* request config', () =
     profile.update({ modelAlias: 'kimi-code', thinkingLevel: 'high' });
     await requester.request({}, undefined, new AbortController().signal);
 
-    expect(capturedOptions?.thinking).toMatchObject({ effort: 'on', keep: 'all' });
+    expect(capturedOptions?.thinking).toMatchObject({ effort: 'high', keep: 'all' });
   });
 
   it('does NOT inject thinking.keep into the per-turn intent when thinking is off', async () => {

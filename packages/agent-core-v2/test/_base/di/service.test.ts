@@ -82,7 +82,7 @@ describe('Service — kernel construction protocol (L3)', () => {
     expect(events).toEqual(['start', 'end']);
   });
 
-  it('flushes buffered capability calls in writing order', () => {
+  it('flushes buffered capability calls in writing order', async () => {
     const order: string[] = [];
     class Unit extends Service {
       constructor() {
@@ -103,10 +103,10 @@ describe('Service — kernel construction protocol (L3)', () => {
     ix.invokeFunction((a) => a.get(IBar));
     expect(order).toEqual(['effect-a', 'effect-b']);
     expect(ix.invokeFunction((a) => a.get(IFoo)).tag).toBe('foo');
-    ix.dispose();
+    await ix.dispose();
   });
 
-  it('throws when get/ref are called during construction', () => {
+  it('throws when get/ref are called during construction', async () => {
     class GetInCtor extends Service {
       constructor() {
         super();
@@ -116,7 +116,7 @@ describe('Service — kernel construction protocol (L3)', () => {
     const ix = new InstantiationService(new ServiceCollection(), true);
     ix.provide(IBar, new SyncDescriptor(GetInCtor));
     expect(() => ix.invokeFunction((a) => a.get(IBar))).toThrow(FiberProtocolError);
-    ix.dispose();
+    await ix.dispose();
 
     class RefInCtor extends Service {
       constructor() {
@@ -127,7 +127,7 @@ describe('Service — kernel construction protocol (L3)', () => {
     const ix2 = new InstantiationService(new ServiceCollection(), true);
     ix2.provide(IBar, new SyncDescriptor(RefInCtor));
     expect(() => ix2.invokeFunction((a) => a.get(IBar))).toThrow(FiberProtocolError);
-    ix2.dispose();
+    await ix2.dispose();
   });
 
   it('throws on every capability call of a manually newed instance', () => {
@@ -140,7 +140,7 @@ describe('Service — kernel construction protocol (L3)', () => {
     expect(() => unit.ref(IFoo)).toThrow(/no unit runtime/);
   });
 
-  it('rejects a manual new nested inside another unit’s ctor', () => {
+  it('rejects a manual new nested inside another unit’s ctor', async () => {
     class Inner extends Service {}
     class Outer extends Service {
       readonly inner = new Inner();
@@ -149,7 +149,7 @@ describe('Service — kernel construction protocol (L3)', () => {
     ix.provide(IBar, new SyncDescriptor(Outer));
     const outer = ix.invokeFunction((a) => a.get(IBar)) as unknown as Outer;
     expect(() => outer.inner.effect(() => undefined)).toThrow(/no unit runtime/);
-    ix.dispose();
+    await ix.dispose();
   });
 
   it('attaches pending handles handed out during buffering at flush', async () => {
@@ -167,10 +167,10 @@ describe('Service — kernel construction protocol (L3)', () => {
     expect(captured!.state).toBe(FiberState.Active);
     expect(typeof captured!.uid).toBe('number');
     await expect(captured!).resolves.toMatchObject({ state: FiberState.Active });
-    ix.dispose();
+    await ix.dispose();
   });
 
-  it('withdraws a unit-provided token when the provider is retired (连坐)', () => {
+  it('withdraws a unit-provided token when the provider is retired (连坐)', async () => {
     class Provider extends Service {
       constructor() {
         super();
@@ -183,10 +183,10 @@ describe('Service — kernel construction protocol (L3)', () => {
     expect(ix.invokeFunction((a) => a.get(IFoo)).tag).toBe('foo');
     ix.unprovide(IBar);
     expect(() => ix.invokeFunction((a) => a.get(IFoo))).toThrow(/unknown service/);
-    ix.dispose();
+    await ix.dispose();
   });
 
-  it('auto-activates a pending dependent once a unit provides its dependency', () => {
+  it('auto-activates a pending dependent once a unit provides its dependency', async () => {
     class Provider extends Service {
       constructor() {
         super();
@@ -201,10 +201,10 @@ describe('Service — kernel construction protocol (L3)', () => {
     ix.invokeFunction((a) => a.get(IProvider));
     const bar = ix.invokeFunction((a) => a.get(IBar));
     expect(bar.tag).toBe('bar');
-    ix.dispose();
+    await ix.dispose();
   });
 
-  it('checks get against the declared constructor dependencies', () => {
+  it('checks get against the declared constructor dependencies', async () => {
     class Unit extends Service {
       constructor(@IFoo public readonly foo: IFoo) {
         super();
@@ -220,18 +220,18 @@ describe('Service — kernel construction protocol (L3)', () => {
     const [foo, undeclared] = unit.probe();
     expect(foo.tag).toBe('foo');
     expect(undeclared).toThrow(/undeclared dependency/);
-    ix.dispose();
+    await ix.dispose();
   });
 
-  it('injects a live @ref observation without a lifecycle binding', () => {
+  it('injects a live @ref observation without a lifecycle binding', async () => {
     class Consumer extends Service {
       disposed = false;
       constructor(@ref(IFoo) public readonly fooRef: LiveRef<IFoo>) {
         super();
       }
-      override dispose(): void {
+      override async dispose(): Promise<void> {
         this.disposed = true;
-        super.dispose();
+        await super.dispose();
       }
     }
     const ix = new InstantiationService(new ServiceCollection(), true);
@@ -240,9 +240,9 @@ describe('Service — kernel construction protocol (L3)', () => {
     expect(consumer.fooRef.current).toBeUndefined();
     const provideHandle = ix.provide(IFoo, new SyncDescriptor(Foo));
     expect(consumer.fooRef.current?.tag).toBe('foo');
-    provideHandle.dispose();
+    await provideHandle.dispose();
     expect(consumer.disposed).toBe(false);
-    ix.dispose();
+    await ix.dispose();
   });
 
   it('awaits asynchronous cleanup from anonymous class contributions', async () => {
@@ -271,7 +271,7 @@ describe('Service — kernel construction protocol (L3)', () => {
     expect(events).toEqual(['started', 'ended']);
   });
 
-  it('runs function recipes against a checked facade and anchors the return disposer', () => {
+  it('runs function recipes against a checked facade and anchors the return disposer', async () => {
     const log: string[] = [];
     class Provider extends Service {
       constructor() {
@@ -296,10 +296,10 @@ describe('Service — kernel construction protocol (L3)', () => {
     expect(log).toEqual(['run:foo']);
     ix.unprovide(IBar);
     expect(log).toEqual(['run:foo', 'cleanup']);
-    ix.dispose();
+    await ix.dispose();
   });
 
-  it('rejects a facade get of an undeclared dependency in a function recipe', () => {
+  it('rejects a facade get of an undeclared dependency in a function recipe', async () => {
     class Provider extends Service {
       constructor() {
         super();
@@ -312,7 +312,7 @@ describe('Service — kernel construction protocol (L3)', () => {
     ix.provide(IFoo, new SyncDescriptor(Foo));
     ix.provide(IBar, new SyncDescriptor(Provider));
     expect(() => ix.invokeFunction((a) => a.get(IBar))).toThrow(/undeclared dependency/);
-    ix.dispose();
+    await ix.dispose();
   });
 
   it('rebuilds a token unit with new config on update(config)', async () => {
@@ -338,10 +338,10 @@ describe('Service — kernel construction protocol (L3)', () => {
     expect(configs).toEqual([{ v: 1 }]);
     await handle!.update({ v: 2 });
     expect(configs).toEqual([{ v: 1 }, { v: 2 }]);
-    ix.dispose();
+    await ix.dispose();
   });
 
-  it('exposes config already inside the constructor (frame-carried)', () => {
+  it('exposes config already inside the constructor (frame-carried)', async () => {
     let seen: unknown;
     class Unit extends Service {
       constructor() {
@@ -360,10 +360,10 @@ describe('Service — kernel construction protocol (L3)', () => {
     ix.invokeFunction((a) => a.get(IBar));
     ix.invokeFunction((a) => a.get(IFoo));
     expect(seen).toBe(42);
-    ix.dispose();
+    await ix.dispose();
   });
 
-  it('supports on() over a direct Emitter and over the event resolver', () => {
+  it('supports on() over a direct Emitter and over the event resolver', async () => {
     const seen: string[] = [];
     const emitter = new Emitter<string>();
     class Unit extends Service {
@@ -376,7 +376,7 @@ describe('Service — kernel construction protocol (L3)', () => {
     setFiberEventResolver((_host, event, handler) => {
       seen.push(`resolver:subscribed:${event}`);
       handler('payload');
-      return { dispose: () => seen.push('resolver:disposed') };
+      return { dispose: () => { seen.push('resolver:disposed'); } };
     });
     const ix = new InstantiationService(new ServiceCollection(), true);
     ix.provide(IBar, new SyncDescriptor(Unit));
@@ -388,10 +388,10 @@ describe('Service — kernel construction protocol (L3)', () => {
     ix.unprovide(IBar);
     expect(seen).toContain('resolver:disposed');
     emitter.dispose();
-    ix.dispose();
+    await ix.dispose();
   });
 
-  it('provides a pre-materialized instance for a token, anchored to the unit', () => {
+  it('provides a pre-materialized instance for a token, anchored to the unit', async () => {
     const foo = new Foo();
     class Provider extends Service {
       constructor() {
@@ -406,7 +406,7 @@ describe('Service — kernel construction protocol (L3)', () => {
     expect(ix.invokeFunction((a) => a.get(IFoo))).toBe(foo);
     ix.unprovide(IProvider);
     expect(() => ix.invokeFunction((a) => a.get(IFoo))).toThrow(/unknown service/);
-    ix.dispose();
+    await ix.dispose();
   });
 
   it('mints one ScopeUnits token per scope kind', () => {

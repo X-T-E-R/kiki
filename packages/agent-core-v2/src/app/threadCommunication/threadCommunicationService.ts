@@ -1,6 +1,8 @@
 import { createKimiDeviceId } from '@kiki/oauth';
 
 import { Disposable, DisposableStore, toDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ILogService } from '#/_base/log/log';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type ISessionScopeHandle } from '#/_base/di/scope';
@@ -226,8 +228,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     this.shutdownSignal = new Promise((resolve) => {
       this.resolveShutdown = resolve;
     });
-    this._register(toDisposable(() => {
-      for (const store of this.observedSessions.values()) store.dispose();
+    this._register(toDisposable(async () => {
+      for (const store of this.observedSessions.values()) await store.dispose();
       this.observedSessions.clear();
     }));
     this._register(this.followLifecycle(this.sessionManager));
@@ -248,7 +250,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     this.roomDeliveryTargets.clear();
     this.mailboxController.abort(new Error('Thread communication is shutting down.'));
     this.resolveShutdown();
-    this.dispose();
+    await this.dispose();
     await this.recovery?.catch(() => {});
     while (this.detached.size > 0) {
       await Promise.all(this.detached);
@@ -1230,7 +1232,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     if (key === undefined) return undefined;
     const store = this.observedSessions.get(key);
     this.observedSessions.delete(key);
-    store?.dispose();
+    const result = store?.dispose();
+    if (isPromiseLike(result)) result.catch(onUnexpectedError);
     return parseThreadIdentity(key);
   }
 

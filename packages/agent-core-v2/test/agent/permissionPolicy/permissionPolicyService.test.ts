@@ -127,8 +127,8 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   function service(): IAgentPermissionPolicyService {
@@ -684,7 +684,7 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
     await Promise.all(cleanupDirs.map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })));
   });
 

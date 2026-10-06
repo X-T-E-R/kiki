@@ -81,7 +81,7 @@ describe('AgentPluginCommandService', () => {
     await ctx
       .get(IAgentPluginCommandService)
       .activate({ pluginId: 'demo', commandName: 'deploy', args: 'prod' });
-    sub.dispose();
+    await sub.dispose();
 
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({

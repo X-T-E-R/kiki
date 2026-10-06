@@ -50,10 +50,10 @@ describe('FlagRegistryService', () => {
     expect(() => reg.register(exampleFlag)).toThrow();
   });
 
-  it('unregisters when the returned disposable is disposed', () => {
+  it('unregisters when the returned disposable is disposed', async () => {
     const reg = new FlagRegistryService();
     const handle = reg.register(exampleFlag);
-    handle.dispose();
+    await handle.dispose();
     expect(reg.get('example_flag')).toBeUndefined();
   });
 });

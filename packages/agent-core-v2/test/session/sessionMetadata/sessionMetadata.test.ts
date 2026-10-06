@@ -67,8 +67,8 @@ describe('SessionMetadata', () => {
     ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
     vi.restoreAllMocks();
   });
 

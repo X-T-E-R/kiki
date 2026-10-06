@@ -165,7 +165,7 @@ beforeEach(async () => {
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
   vi.restoreAllMocks();
-  host?.dispose();
+  await host?.dispose();
   await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
 });
 

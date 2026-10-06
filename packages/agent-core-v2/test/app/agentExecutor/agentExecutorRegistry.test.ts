@@ -79,10 +79,10 @@ describe('AgentExecutorRegistryService', () => {
       get: async () => undefined } as unknown as IAtomicTomlDocumentStore);
   });
 
-  afterEach(() => {
-    provider?.dispose();
+  afterEach(async () => {
+    await provider?.dispose();
     provider = undefined;
-    services.dispose();
+    await services.dispose();
   });
 
   it('normalizes the native executor when no descriptor is configured', () => {
@@ -468,7 +468,7 @@ describe('AgentExecutorRegistryService', () => {
       expect(merged).toEqual({ 'example-acp': { binPath: 'fixture', defaults: { kiki_context: [], allow_kiki_subagents: false } } });
       expect(registry.validate(AGENT_EXECUTOR_OVERRIDES_SECTION, registry.merge(AGENT_EXECUTOR_OVERRIDES_SECTION, merged,
         { 'example-acp': { defaults: null } }))).toEqual({ 'example-acp': { binPath: 'fixture' } });
-    } finally { registry.dispose(); }
+    } finally { await registry.dispose(); }
   });
 
   it('maps an override home and environment into the executor process environment', () => {

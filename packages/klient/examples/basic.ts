@@ -63,7 +63,7 @@ async function main(): Promise<void> {
 
     await klient.close();
   } finally {
-    app.dispose();
+    await app.dispose();
     await rm(homeDir, { recursive: true, force: true });
   }
 }

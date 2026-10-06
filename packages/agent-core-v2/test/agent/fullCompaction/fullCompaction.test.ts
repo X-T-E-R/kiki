@@ -397,8 +397,8 @@ describe('FullCompaction', () => {
     await ctx.get(IAgentFullCompactionService).compacting?.promise;
     const lease = ctx.get(IAgentLoopService).tryAcquireQuiescence();
     expect(lease).toBeDefined();
-    lease?.dispose();
-    hook.dispose();
+    await lease?.dispose();
+    await hook.dispose();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('refreshes the active profile system prompt after compaction without resetting active tools', async () => {
@@ -480,6 +480,46 @@ describe('FullCompaction', () => {
     expect(eventIndex(events, 'compaction.completed')).toBeLessThan(eventIndex(events, 'turn.ended'));
     expect(ctx.llmCalls).toHaveLength(3);
     expect(ctx.llmCalls[2]?.history.some((message) => message.content.some((part) => part.type === 'text' && part.text.includes('Manual summary.')))).toBe(true);
+    expect(ctx.get(IAgentLoopService).status().activeTurnId).toBeUndefined();
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('queues explicit manual relay during tools and applies fresh context before the next model request', async () => {
+    const ctx = testAgent(
+      execEnvServices({ processRunner: createCommandRunner('should-not-run') }),
+      permissionModeServices('manual'),
+    );
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+      tools: ['Bash'],
+    });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.mockNextResponse({ type: 'text', text: 'I will wait for approval.' }, bashCall());
+
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Start the active turn' }] });
+    const approval = await ctx.takeApprovalRequest();
+    expect(ctx.get(IAgentLoopService).status().activeTurnId).toBeDefined();
+
+    const compactor = ctx.get(IAgentFullCompactionService);
+    expect(compactor.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
+    expect(compactor.begin({ source: 'manual', strategy: 'relay' })).toBe(false);
+    expect(ctx.newEvents()).toContainEqual(expect.objectContaining({
+      event: 'compaction.started', args: expect.objectContaining({ trigger: 'manual', phase: 'queued' }),
+    }));
+    expect(ctx.llmCalls).toHaveLength(1);
+
+    ctx.mockNextResponse({ type: 'text', text: 'Turn done.' });
+    approval.respond({ decision: 'rejected', selectedLabel: 'reject' });
+    await ctx.untilTurnEnd();
+    await ctx.get(IAgentLoopService).settled();
+    const events = ctx.allEvents;
+    const firstStep = eventIndex(events, 'turn.step.started');
+    const secondStep = events.findIndex((event, index) => index > firstStep && typeof event === 'object' && event !== null && (event as { readonly event?: unknown }).event === 'turn.step.started');
+    expect(eventIndex(events, 'tool.result')).toBeLessThan(eventIndex(events, 'context.apply_compaction'));
+    expect(eventIndex(events, 'context.apply_compaction')).toBeLessThan(secondStep);
+    expect(eventIndex(events, 'compaction.completed')).toBeLessThan(eventIndex(events, 'turn.ended'));
+    expect(ctx.llmCalls).toHaveLength(2);
+    expect(ctx.llmCalls[1]?.history.some((message) => message.content.some((part) => part.type === 'text' && part.text.includes('I will wait for approval.')))).toBe(false);
     expect(ctx.get(IAgentLoopService).status().activeTurnId).toBeUndefined();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -2359,8 +2399,8 @@ describe('FullCompaction', () => {
       expect(ctx.compactHistory().some((message) => message.text === 'short new request')).toBe(true);
       await ctx.expectResumeMatches();
     } finally {
-      read.dispose();
-      search.dispose();
+      await read.dispose();
+      await search.dispose();
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -2422,7 +2462,7 @@ describe('FullCompaction', () => {
       expect(ctx.llmCalls).toHaveLength(1);
       expect(messageText(ctx.llmCalls[0]?.history.at(-1))).toBe('small prompt');
     } finally {
-      registration.dispose();
+      await registration.dispose();
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -3607,8 +3647,8 @@ describe('FullCompaction', () => {
       if (strategy === 'relay') expect(ctx.llmCalls).toHaveLength(0);
       await ctx.expectResumeMatches();
     } finally {
-      read.dispose();
-      search.dispose();
+      await read.dispose();
+      await search.dispose();
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -4217,8 +4257,8 @@ function boardCompactionFixture(strategy: 'summarize' | 'relay', options: { enab
       expect(ctx.llmCalls).toHaveLength(strategy === 'relay' ? 0 : 1);
       return messageText(ctx.context.get().find((message) => message.origin?.kind === 'compaction_summary'));
     } finally {
-      historyRead.dispose();
-      historySearch.dispose();
+      await historyRead.dispose();
+      await historySearch.dispose();
     }
   } };
 }
@@ -4348,7 +4388,7 @@ describe('queued manual compaction failures', () => {
     expect(compactor.begin({ source: 'manual' })).toBe(true);
     expect(calls).toBe(0);
     ctx.context.clear();
-    lease?.dispose();
+    await lease?.dispose();
     await failed;
     await ctx.get(IAgentLoopService).settled();
     expect(calls).toBe(0);

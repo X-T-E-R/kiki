@@ -1,4 +1,6 @@
 import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IEventBus } from '#/app/event/eventBus';
@@ -44,12 +46,13 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
     }));
     this._register(this.agents.onDidDispose((agentId) => {
       if (agentId !== MAIN_AGENT_ID) return;
-      this.mainSubscription?.dispose();
+      const result = this.mainSubscription?.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
       this.mainSubscription = undefined;
     }));
     this._register({
-      dispose: () => {
-        this.mainSubscription?.dispose();
+      dispose: async () => {
+        await this.mainSubscription?.dispose();
         this.mainSubscription = undefined;
       },
     });

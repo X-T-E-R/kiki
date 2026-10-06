@@ -154,8 +154,8 @@ describe('AgentToolApprovalService', () => {
       strict: true,
     });
   });
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   function make(): IAgentToolApprovalService {

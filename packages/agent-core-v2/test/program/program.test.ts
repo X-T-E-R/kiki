@@ -231,7 +231,7 @@ describe('Program', () => {
     await Promise.resolve();
     expect(program.sessionControllerGeneration).toBe('two');
     expect(first.disposed).toBe(false);
-    controller.dispose();
+    await controller.dispose();
     await replacement;
     expect(first.disposed).toBe(true);
     program.dispose();

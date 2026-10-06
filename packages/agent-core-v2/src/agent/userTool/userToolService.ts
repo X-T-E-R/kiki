@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
 import { type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -108,7 +110,8 @@ export class AgentUserToolService extends Service implements IAgentUserToolServi
   private applyUnregister(name: string): void {
     const registration = this.registrations.get(name);
     if (registration === undefined) return;
-    registration.dispose();
+    const result = registration.dispose();
+    if (isPromiseLike(result)) result.catch(onUnexpectedError);
     this.registrations.delete(name);
     this.profile.removeActiveTool(name);
   }

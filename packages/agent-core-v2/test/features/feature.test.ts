@@ -139,7 +139,7 @@ describe('Feature — built-in capability assembly (src/features)', () => {
     expect(() => agentOne.accessor.get(IGreeter)).toThrow();
     expect(() => agentOne.accessor.get(ITestTool)).toThrow();
 
-    host.dispose();
+    await host.dispose();
   });
 
   it('rejects duplicate service contributions until the provider unloads', async () => {
@@ -183,7 +183,7 @@ describe('Feature — built-in capability assembly (src/features)', () => {
     expect(manager.units().map((unit) => unit.name)).toEqual(['second-feature']);
     expect(agent.accessor.get(IGreeter).greet()).toBe('hi');
 
-    host.dispose();
+    await host.dispose();
   });
 
   it('isolates equal service contributions between App roots', async () => {
@@ -214,11 +214,11 @@ describe('Feature — built-in capability assembly (src/features)', () => {
     expect(() => firstAgent.accessor.get(IGreeter)).toThrow();
     expect(secondAgent.accessor.get(IGreeter).greet()).toBe('hi');
 
-    first.dispose();
-    second.dispose();
+    await first.dispose();
+    await second.dispose();
   });
 
-  it('materializes a per-scope class recipe contributed through contribute()', () => {
+  it('materializes a per-scope class recipe contributed through contribute()', async () => {
     class SoloAgentUnit extends Service {
       static override readonly name = 'solo-feature/agent';
 
@@ -240,6 +240,6 @@ describe('Feature — built-in capability assembly (src/features)', () => {
     const host = createScopedTestHost();
     const agent = host.child(LifecycleScope.Agent, 'agent-1');
     expect(agent.accessor.get(IGreeter).greet()).toBe('hi');
-    host.dispose();
+    await host.dispose();
   });
 });

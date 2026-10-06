@@ -41,7 +41,7 @@ describe('channelRegistry', () => {
 
     await secondManager.unprovideUnit('TestFeature');
     expect(resolveAnyScopedServiceId(second, String(id))).toBeUndefined();
-    first.dispose();
-    second.dispose();
+    await first.dispose();
+    await second.dispose();
   });
 });

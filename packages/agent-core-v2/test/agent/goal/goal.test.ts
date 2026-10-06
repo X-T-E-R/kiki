@@ -2140,7 +2140,7 @@ describe('GoalDeadlineSchedulerService', () => {
     vi.useRealTimers();
   });
 
-  it('keeps a delay beyond the host timer ceiling from firing immediately', () => {
+  it('keeps a delay beyond the host timer ceiling from firing immediately', async () => {
     vi.useFakeTimers();
     const scheduler = new GoalDeadlineSchedulerService();
     let fired = 0;
@@ -2153,7 +2153,7 @@ describe('GoalDeadlineSchedulerService', () => {
 
     vi.advanceTimersByTime(MAX_TIMER_DELAY_MS);
     expect(fired).toBe(1);
-    scheduled.dispose();
+    await scheduled.dispose();
   });
 });
 

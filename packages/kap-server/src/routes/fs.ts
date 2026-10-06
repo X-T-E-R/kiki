@@ -51,7 +51,7 @@ import {
 } from '../lib/fileLaunch';
 import { parseRangeHeader, pickHeader } from '../lib/httpRange';
 import { requestLog } from '../lib/requestLog';
-import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
+import { acquireSessionOperation, createDeferredCleanup, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import {
@@ -384,7 +384,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         sendMappedError(reply, req, err);
       } finally {
         await runtimeFs?.lease.dispose();
-        operation?.dispose();
+        await operation?.dispose();
       }
     },
   );
@@ -523,6 +523,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       let operation: SessionOperationLease | undefined;
       let runtimeFs: RuntimeFsScope | undefined;
       let stream: Readable | undefined;
+      let responseCleanup: ReturnType<typeof createDeferredCleanup> | undefined;
       try {
         operation = await acquireSessionOperation(core, session_id, 'operation');
         if (operation.handle === undefined) {
@@ -552,8 +553,15 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         }
         stream = createRuntimeReadStream(runtimeFs, resolved.absolute, range?.start ?? 0, range?.length ?? resolved.size);
         const downloadStream = stream;
-        r.raw.once('finish', () => operation?.dispose());
-        r.raw.once('close', () => { downloadStream.destroy(); operation?.dispose(); });
+        responseCleanup = createDeferredCleanup(
+          () => operation?.dispose(),
+          (error) => {
+            requestLog(req)?.error({ session_id, path: relPath, err: error }, 'fs download cleanup failed');
+            downloadStream.destroy(error instanceof Error ? error : new Error(String(error)));
+          },
+        );
+        r.raw.once('finish', () => { responseCleanup?.release(); });
+        r.raw.once('close', () => { downloadStream.destroy(); responseCleanup?.release(); });
         downloadStream.on('error', (error: unknown) => {
           requestLog(req)?.warn({ session_id, path: relPath, err: error }, 'fs download stream error');
           downloadStream.destroy();
@@ -562,13 +570,18 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       } catch (err) {
         if (stream !== undefined) {
           stream.destroy();
-          operation?.dispose();
+          responseCleanup?.release();
+          try {
+            await responseCleanup?.wait();
+          } catch (cleanupError) {
+            requestLog(req)?.error({ session_id, path: relPath, err: cleanupError }, 'fs download cleanup failed before response');
+          }
         }
         sendMappedError(reply, req, err);
       } finally {
         if (stream === undefined) {
           await runtimeFs?.lease.dispose();
-          operation?.dispose();
+          await operation?.dispose();
         }
       }
     },
@@ -599,14 +612,16 @@ function createRuntimeReadStream(
   }
   const stream = Readable.from(chunks());
   const tracked = runtimeFs.lease.track({ dispose: () => { stream.destroy(); } });
+  const leaseCleanup = createDeferredCleanup(
+    () => runtimeFs.lease.dispose(),
+    (error) => { stream.destroy(error instanceof Error ? error : new Error(String(error))); },
+  );
   let released = false;
   const release = (): void => {
     if (released) return;
     released = true;
     tracked.dispose();
-    void Promise.resolve(runtimeFs.lease.dispose()).catch((error: unknown) => {
-      stream.destroy(error instanceof Error ? error : new Error(String(error)));
-    });
+    leaseCleanup.release();
   };
   stream.once('end', release);
   stream.once('close', release);

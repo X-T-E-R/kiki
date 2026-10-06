@@ -77,7 +77,7 @@ export class AgentContextRebuildService implements IAgentContextRebuildService {
         changes,
       };
     } finally {
-      quiescence.dispose();
+      await quiescence.dispose();
     }
   }
 }

@@ -93,7 +93,8 @@ describe('HTTP REST domains', () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const projected = { personaId: 'example', boundRevision: 'old', latestRevision: 'new', hasUpdate: true, overrides: { model: 'chosen' } };
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
-      calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      calls.push({ path: new URL(inputUrl).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
       return envelope(projected);
     });
@@ -1109,7 +1110,8 @@ describe('guided browser setup HTTP facade', () => {
     const calls: Array<{ path: string; method: string; body: unknown }> = [];
     const status = { preset: 'kimi-webbridge', state: 'needs_user_action' };
     const fetchMock: typeof fetch = async (input, init) => {
-      calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      calls.push({ path: new URL(inputUrl).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       return envelope(status);
     };
     const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture', fetch: fetchMock });

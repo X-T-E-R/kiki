@@ -243,7 +243,7 @@ describe('SessionTodoService', () => {
     await main.dispatcher.dispatch(new TurnPrompt({ turnId: 1, promptId: 'p1', origin: { kind: 'user' }, input: [{ type: 'text', text: '以后回答都用中文' }] }));
     const provider = reminders.get(TODO_LIST_REMINDER_VARIANT)!;
     if (condition !== 'available') { expect(provider()).toBeUndefined(); return; }
-    expect(provider()).toContain('MemoryWrite');
+    expect(provider()).toContain('authoritative record');
     expect(provider()).toBeUndefined();
     for (let step = 0; step < 64; step++) {
       for (const event of [
@@ -253,7 +253,7 @@ describe('SessionTodoService', () => {
         { type: 'step.end' as const, uuid: `s${step}`, turnId: '1', step },
       ]) await main.dispatcher.dispatch(new ContextAppendLoopEvent({ event }));
     }
-    expect(provider()).toContain('durable-memory check');
+    expect(provider()).toContain('Consider only the new material');
     expect(provider()).toBeUndefined();
     const persisted = main.journal.findLast((record) => record.type === ContextAppendMessage.type);
     expect(persisted).toMatchObject({ message: { origin: { disclosure: { memory: { reason: 'M3' } } } } });

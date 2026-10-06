@@ -57,9 +57,9 @@ describe('ISessionQuestionService (Session scope facade over the interaction ker
     session.accessor.get(ISessionInteractionService).acquireConsumer('test-consumer');
   });
 
-  afterEach(() => {
-    disposables.dispose();
-    host.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
+    await host.dispose();
   });
 
   it('dismisses immediately when no interactive consumer is attached', async () => {

@@ -604,7 +604,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       await core.accessor.get(IMcpOAuthService).shutdown();
       fsWatchBridge.dispose();
       const appendLogStore = core.accessor.get(IAppendLogStore);
-      core.dispose();
+      await core.dispose();
       await appendLogStore.drainRetirements();
       await drainSessionIndexMirror();
       await drainModelPricingDisposals();
@@ -848,7 +848,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   if (usageExport !== undefined) { registerUsageExportRoutes(app, usageExport.service); app.addHook('preClose', () => usageExport.close()); }
   const spaceSummary = new SpaceSummaryProjection(core);
   app.get('/api/space-summary', async (_request, reply) => reply.send({ code: 0, msg: 'OK', data: spaceSummary.read() }));
-  app.addHook('onClose', () => spaceSummary.dispose());
+  app.addHook('onClose', async () => { spaceSummary.dispose(); await spaceSummary.disposeAsync(); });
   const wssV1 = registerWsV1(core, {
     validateCredential: (token) => audience.authorizeSocket(token, { url: WS_PATH_V1, headers: {} } as IncomingMessage).then(() => true, () => false),
     registry: connectionRegistry,

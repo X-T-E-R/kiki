@@ -149,7 +149,7 @@ describe('host filesystem change notifications', () => {
   });
 
   afterEach(async () => {
-    handle?.dispose();
+    await handle?.dispose();
     handle = undefined;
     if (root) await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     root = '';
@@ -275,7 +275,7 @@ describe('host filesystem change notifications', () => {
     expect(events).toEqual([{ path: '/repo', action: 'modified', kind: 'directory' }]);
   });
 
-  it('opens the native circuit after five errors and deduplicates the warning', () => {
+  it('opens the native circuit after five errors and deduplicates the warning', async () => {
     const unexpected: unknown[] = [];
     setUnexpectedErrorHandler((error) => unexpected.push(error));
     const rig = signalRig();
@@ -305,7 +305,7 @@ describe('host filesystem change notifications', () => {
     ]);
     expect(unexpected).toEqual([]);
 
-    handle.dispose();
+    await handle.dispose();
     handle = rig.service.watch('/repo', { signal: true });
     for (let index = 5; index < 9; index += 1) {
       rig.attempt(index).watcher.fail('EPERM');
@@ -318,14 +318,14 @@ describe('host filesystem change notifications', () => {
     expect(rig.warnings).toHaveLength(1);
   });
 
-  it('uses the filtered fallback watcher for an OS home directory or filesystem root', () => {
+  it('uses the filtered fallback watcher for an OS home directory or filesystem root', async () => {
     const rig = signalRig({ platform: 'win32', homeDir: 'C:\\Users\\Example' });
 
     handle = rig.service.watch('c:\\users\\example\\', { signal: true, recursive: true });
     expect(rig.fallbackRoots).toEqual(['c:\\users\\example\\']);
     expect(rig.attempts).toEqual([]);
 
-    handle.dispose();
+    await handle.dispose();
     handle = rig.service.watch('D:\\', { signal: true, recursive: true });
     expect(rig.fallbackRoots).toEqual(['c:\\users\\example\\', 'D:\\']);
     expect(rig.attempts).toEqual([]);
@@ -355,12 +355,12 @@ describe('host filesystem change notifications', () => {
     expect(rig.retries.map((retry) => retry.delayMs)).toEqual([1000, 1000]);
   });
 
-  it('cancels a pending native retry when the watch handle is disposed', () => {
+  it('cancels a pending native retry when the watch handle is disposed', async () => {
     const rig = signalRig();
     handle = rig.service.watch('/repo', { signal: true });
     rig.attempt(0).watcher.fail();
 
-    handle.dispose();
+    await handle.dispose();
     handle = undefined;
     rig.retry(0).run();
 
@@ -414,7 +414,7 @@ describe('host filesystem change notifications', () => {
     root = await mkdtemp(join(tmpdir(), 'hostfswatch-'));
     const events = await start();
 
-    handle?.dispose();
+    await handle?.dispose();
     handle = undefined;
 
     await writeFile(join(root, 'after-dispose.txt'), 'x');

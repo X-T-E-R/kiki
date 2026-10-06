@@ -60,7 +60,7 @@ function contribute(
 }
 
 describe('AgentProfileRegistryService (collection fold)', () => {
-  it('lets a later record for the same pair shadow the earlier one', () => {
+  it('lets a later record for the same pair shadow the earlier one', async () => {
     const { container, registry } = makeFold();
     contribute(container, record('user', 'v1'));
     contribute(container, record('user', 'v2'));
@@ -68,15 +68,15 @@ describe('AgentProfileRegistryService (collection fold)', () => {
     const entries = registry.entries();
     expect(entries).toHaveLength(1);
     expect(entries[0]?.contribution.profiles[0]?.name).toBe('v2');
-    container.dispose();
+    await container.dispose();
   });
 
-  it('keeps same-sourceId records with different workspaceKeys coexisting', () => {
+  it('keeps same-sourceId records with different workspaceKeys coexisting', async () => {
     const { container, registry } = makeFold();
     contribute(container, record('workspace', 'global'));
     const wdA = contribute(container, record('workspace', 'wd_a', { workspaceKey: 'wd_a' }));
     contribute(container, record('workspace', 'wd_b', { workspaceKey: 'wd_b' }));
-    wdA.dispose();
+    await wdA.dispose();
     contribute(container, record('workspace', 'wd_a-v2', { workspaceKey: 'wd_a' }));
 
     const entries = registry.entries();
@@ -85,44 +85,44 @@ describe('AgentProfileRegistryService (collection fold)', () => {
     expect(byKey.get(undefined)?.contribution.profiles[0]?.name).toBe('global');
     expect(byKey.get('wd_a')?.contribution.profiles[0]?.name).toBe('wd_a-v2');
     expect(byKey.get('wd_b')?.contribution.profiles[0]?.name).toBe('wd_b');
-    container.dispose();
+    await container.dispose();
   });
 
-  it('withdraws only the dead provider’s record', () => {
+  it('withdraws only the dead provider’s record', async () => {
     const { container, registry } = makeFold();
     const wdA = contribute(container, record('workspace', 'wd_a', { workspaceKey: 'wd_a' }));
     const wdB = contribute(container, record('workspace', 'wd_b', { workspaceKey: 'wd_b' }));
     const global = contribute(container, record('user', 'global'));
 
-    wdA.dispose();
+    await wdA.dispose();
     expect(registry.entries().map((entry) => entry.workspaceKey)).toEqual(['wd_b', undefined]);
 
-    wdB.dispose();
+    await wdB.dispose();
     expect(registry.entries().map((entry) => entry.sourceId)).toEqual(['user']);
 
-    global.dispose();
+    await global.dispose();
     expect(registry.entries()).toHaveLength(0);
-    container.dispose();
+    await container.dispose();
   });
 
-  it('withdrawing a shadowed record keeps the winning entry and stays silent', () => {
+  it('withdrawing a shadowed record keeps the winning entry and stays silent', async () => {
     const { container, registry } = makeFold();
     const stale = contribute(container, record('workspace', 'old', { workspaceKey: 'wd_a' }));
     contribute(container, record('workspace', 'new', { workspaceKey: 'wd_a' }));
 
     const seen: unknown[] = [];
     const subscription = registry.onDidChange((change) => seen.push(change));
-    stale.dispose();
+    await stale.dispose();
 
     const entries = registry.entries();
     expect(entries).toHaveLength(1);
     expect(entries[0]?.contribution.profiles[0]?.name).toBe('new');
     expect(seen).toEqual([]);
     subscription.dispose();
-    container.dispose();
+    await container.dispose();
   });
 
-  it('exposes sourceId, priority, workspaceKey, and contribution through entries()', () => {
+  it('exposes sourceId, priority, workspaceKey, and contribution through entries()', async () => {
     const { container, registry } = makeFold();
     const pluginRecord = record('plugin', 'plugin-p', { priority: 5 });
     const workspaceRecord = record('workspace', 'ws-p', { priority: 30, workspaceKey: 'wd_a' });
@@ -145,17 +145,17 @@ describe('AgentProfileRegistryService (collection fold)', () => {
     });
     contribute(container, record('user', 'user-p'));
     expect(registry.entries()[2]?.priority).toBe(0);
-    container.dispose();
+    await container.dispose();
   });
 
-  it('fires onDidChange with the decoded { sourceId, workspaceKey } payload', () => {
+  it('fires onDidChange with the decoded { sourceId, workspaceKey } payload', async () => {
     const { container, registry } = makeFold();
     const seen: { readonly sourceId: string; readonly workspaceKey?: string }[] = [];
     const subscription = registry.onDidChange((change) => seen.push(change));
 
     contribute(container, record('user', 'global'));
     const wdA = contribute(container, record('workspace', 'wd_a', { workspaceKey: 'wd_a' }));
-    wdA.dispose();
+    await wdA.dispose();
 
     expect(seen).toStrictEqual([
       { sourceId: 'user', workspaceKey: undefined },
@@ -163,22 +163,22 @@ describe('AgentProfileRegistryService (collection fold)', () => {
       { sourceId: 'workspace', workspaceKey: 'wd_a' },
     ]);
     subscription.dispose();
-    container.dispose();
+    await container.dispose();
   });
 
-  it('fires once when a record swap lands before the displaced one is withdrawn (the reload shape)', () => {
+  it('fires once when a record swap lands before the displaced one is withdrawn (the reload shape)', async () => {
     const { container, registry } = makeFold();
     const stale = contribute(container, record('user', 'v1'));
 
     const seen: { readonly sourceId: string; readonly workspaceKey?: string }[] = [];
     const subscription = registry.onDidChange((change) => seen.push(change));
     contribute(container, record('user', 'v2'));
-    stale.dispose();
+    await stale.dispose();
 
     expect(registry.entries()[0]?.contribution.profiles[0]?.name).toBe('v2');
     expect(seen).toStrictEqual([{ sourceId: 'user', workspaceKey: undefined }]);
     subscription.dispose();
-    container.dispose();
+    await container.dispose();
   });
 
   it('switches readiness waits to the replacement generation when a source retires', async () => {
@@ -191,11 +191,11 @@ describe('AgentProfileRegistryService (collection fold)', () => {
     await Promise.resolve();
     expect(settled).toBe(false);
     const replacement = registry.registerSourceReadiness('user', 'wd_a', Promise.resolve());
-    stale.dispose();
+    await stale.dispose();
     await ready;
 
     expect(settled).toBe(true);
-    replacement.dispose();
-    container.dispose();
+    await replacement.dispose();
+    await container.dispose();
   });
 });

@@ -1,5 +1,7 @@
 import { createDecorator, IInstantiationService, ref, type LiveRef, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Emitter, Event } from '#/_base/event';
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
@@ -156,10 +158,15 @@ export class AgentRuntimeService implements IAgentRuntimeService {
   dispose(): void {
     if (this.changeEmitter.isDisposed) return;
     this.changeEmitter.dispose();
-    this.scopeSubscription.dispose();
-    this.registrySubscription?.dispose();
-    this.workspaceSubscription.dispose();
-    this.bindingSubscription.dispose();
+    for (const subscription of [
+      this.scopeSubscription,
+      this.registrySubscription,
+      this.workspaceSubscription,
+      this.bindingSubscription,
+    ]) {
+      const result = subscription?.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
+    }
   }
 
   private rebind(): void {
@@ -169,7 +176,8 @@ export class AgentRuntimeService implements IAgentRuntimeService {
   }
 
   private bindRegistry(): void {
-    this.registrySubscription?.dispose();
+    const previous = this.registrySubscription?.dispose();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     const binding = this.binding.current;
     const workspace = this.workspaces.get(binding.workspaceId);
     this.registrySubscription = workspace?.runtimes.onDidChange((change) => {

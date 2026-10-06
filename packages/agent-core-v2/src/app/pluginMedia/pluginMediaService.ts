@@ -326,10 +326,10 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     }
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     this.shuttingDown = true;
     for (const execution of this.active.values()) execution.controller.abort(new Error('Host shutdown'));
-    super.dispose();
+    return super.dispose();
   }
 }
 

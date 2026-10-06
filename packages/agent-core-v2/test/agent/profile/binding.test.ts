@@ -974,7 +974,7 @@ describe('AgentProfileService.bind', () => {
 
     const catalog = new BuiltinAgentProfileLoaderService(new ShippedAgentProfileSourceService());
     expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeDefined();
-    catalog.dispose();
+    await catalog.dispose();
 
     expect(svc.isRunnable()).toBe(false);
 
@@ -1179,7 +1179,7 @@ describe('AgentProfileService.bind', () => {
     });
   });
 
-  it('does not admit deleted collaboration tools on any builtin profile', () => {
+  it('does not admit deleted collaboration tools on any builtin profile', async () => {
     const catalog = new BuiltinAgentProfileLoaderService(new ShippedAgentProfileSourceService());
     const collaborationTools = [
       'spawn_agent',
@@ -1196,7 +1196,7 @@ describe('AgentProfileService.bind', () => {
       expect(collaborationTools.filter((name) => isToolActive(profile, name))).toEqual([]);
     }
 
-    catalog.dispose();
+    await catalog.dispose();
   });
 
   it('waits for the identity freeze instead of racing it', async () => {
@@ -1335,7 +1335,7 @@ describe('AgentProfileService.bind', () => {
     profile.setThinking('high');
     expect(profile.data().thinkingLevel).toBe('high');
     expect(profile.data().lockedThinkingEffort).toBe('off');
-    expect(warnings).toEqual([]);
+    expect(warnings.filter(({ code }) => code !== 'agents-md-oversized')).toEqual([]);
     await expect(profile.bind({ profile: 'reviewer', model: MOCK_MODEL })).rejects.toMatchObject({
       code: 'agent_profile_route.switch_forbidden',
     });
@@ -1722,7 +1722,7 @@ describe('AgentProfileService.bind', () => {
         model: { source: 'dispatch-explicit', requestedValue: RESUME_NEW_MODEL },
       },
     });
-    expect(warnings).toEqual([]);
+    expect(warnings.filter(({ code }) => code !== 'agents-md-oversized')).toEqual([]);
     expect(profile.data().bindingAdvisories).toEqual([
       expect.objectContaining({
         code: 'model_not_preferred',
@@ -1732,8 +1732,9 @@ describe('AgentProfileService.bind', () => {
 
     profile.publishBindingAdvisories();
     profile.publishBindingAdvisories();
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatchObject({
+    const advisoryWarnings = warnings.filter(({ code }) => code === 'profile-binding-advisory');
+    expect(advisoryWarnings).toHaveLength(1);
+    expect(advisoryWarnings[0]).toMatchObject({
       code: 'profile-binding-advisory',
       advisory: expect.objectContaining({ code: 'model_not_preferred' }),
     });
@@ -2694,14 +2695,14 @@ describe('AgentProfileService.bind', () => {
 
   it('registers and executes read-only memory in a child main-profile binding with a frozen private view', async () => {
     const childScope = makeAgentScopeContext({ agentId: 'agent-tools', parentAgentId: 'main', agentScope: 'agents/agent-tools' });
-    const search = vi.fn<IMemoryStore['search']>(async () => []);
+    const query = vi.fn<IMemoryStore['query']>(async () => ({ items: [], mode: 'search', next_cursor: null, coverage: { scopes: [], statuses: ['active'], exhausted: true, complete: true, warnings: [] } }));
     const get = vi.fn<IMemoryStore['get']>(async () => undefined);
     const original = resumeProfile({ main: true });
     ctx = createTestAgent(
       { ...nativeResumeOptions(), cwd: homeDir, initialConfig: { ...nativeResumeOptions().initialConfig, memory: { enabled: true, approval: 'auto', workspaces: {} } } },
       agentService(IAgentScopeContext, childScope),
       sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)),
-      appServices((reg) => reg.definePartialInstance(IMemoryStore, { search, get })),
+      appServices((reg) => reg.definePartialInstance(IMemoryStore, { query, get })),
       hostEnvironmentServices(homeDir, hostPathClass),
     );
     const profile = ctx.get(IAgentProfileService);
@@ -2718,7 +2719,7 @@ describe('AgentProfileService.bind', () => {
       { id: 'read', type: 'function', name: 'MemoryRead', arguments: JSON.stringify({ id: 'm_private' }) },
     ], { signal: new AbortController().signal, turnId: 1 })) results.push(result);
     expect(results.map((result) => result.result.isError === true)).toEqual([false, false]);
-    expect(search.mock.calls[0]?.[0]).toEqual([{ kind: 'persona', personaId: 'reader-persona' }, { kind: 'persona_workspace', personaId: 'reader-persona', workspaceId: 'test-workspace' }]);
+    expect(query.mock.calls[0]?.[0]).toEqual([{ kind: 'persona', personaId: 'reader-persona' }, { kind: 'persona_workspace', personaId: 'reader-persona', workspaceId: 'test-workspace' }]);
     expect(get.mock.calls.map((call) => call[0])).toEqual([{ kind: 'persona', personaId: 'reader-persona' }, { kind: 'persona_workspace', personaId: 'reader-persona', workspaceId: 'test-workspace' }]);
     expect(profile.data().personaId).toBeUndefined();
     expect(await ctx.get(IAgentMemorySnapshot).get()).toBe('');

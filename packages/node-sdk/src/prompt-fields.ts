@@ -231,7 +231,7 @@ export async function inspectPromptFields(
       },
     };
   } finally {
-    promptFields.dispose();
+    await promptFields.dispose();
   }
 }
 
@@ -276,7 +276,7 @@ async function readInspectionConfig(
   } catch (error) {
     throw new Error(`Invalid configuration in ${configPath}: ${errorMessage(error)}`, { cause: error });
   } finally {
-    registry.dispose();
+    await registry.dispose();
   }
 }
 

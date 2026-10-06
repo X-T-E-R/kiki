@@ -1,5 +1,6 @@
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { Emitter } from '#/_base/event';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Error2, ErrorCodes, isError2 } from '#/errors';
@@ -108,7 +109,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           this.interaction.respond(interaction.id, { cancelled: true, reason: 'agent_closed' });
         }
         for (const disposables of [this.interactionBusDisposables, this.usageDisposables]) {
-          disposables.get(agentId)?.dispose();
+          const result = disposables.get(agentId)?.dispose();
+          if (isPromiseLike(result)) result.catch(onUnexpectedError);
           disposables.delete(agentId);
         }
       }),
@@ -116,7 +118,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     this._register({
       dispose: () => {
         for (const disposables of [this.interactionBusDisposables, this.usageDisposables]) {
-          for (const d of disposables.values()) d.dispose();
+          for (const d of disposables.values()) {
+            const result = d.dispose();
+            if (isPromiseLike(result)) result.catch(onUnexpectedError);
+          }
           disposables.clear();
         }
       },

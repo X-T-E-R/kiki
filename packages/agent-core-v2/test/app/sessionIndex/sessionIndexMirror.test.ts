@@ -48,7 +48,7 @@ function summary(id: string, overrides: Record<string, unknown> = {}) {
 
 describe('SessionIndexMirror', () => {
   let homeDir: string;
-  let disposeHost: (() => void) | undefined;
+  let disposeHost: (() => void | Promise<void>) | undefined;
   let queryStore: IQueryStore;
   let mirror: ISessionIndexMirror;
 
@@ -72,7 +72,7 @@ describe('SessionIndexMirror', () => {
   });
 
   afterEach(async () => {
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
@@ -89,8 +89,8 @@ describe('SessionIndexMirror', () => {
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(flagEnabled)),
     ]);
-    disposeHost = () => {
-      host.dispose();
+    disposeHost = async () => {
+      await host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     mirror = host.app.accessor.get(ISessionIndexMirror);
@@ -176,8 +176,8 @@ describe('SessionIndexMirror', () => {
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(true)),
     ]);
-    disposeHost = () => {
-      host.dispose();
+    disposeHost = async () => {
+      await host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     const real = queryStore.getCheckpoint.bind(queryStore);

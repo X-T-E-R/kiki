@@ -1,4 +1,5 @@
 import { onUnexpectedError } from '../errors/unexpectedError';
+import { isPromiseLike } from '../lifecycle/disposer';
 import { Ledger, type LedgerEntry } from '../lifecycle/ledger';
 
 export interface IDisposableDebugLabel {
@@ -125,6 +126,15 @@ export function markAsSingleton<T extends IDisposable>(singleton: T): T {
 }
 
 export interface IDisposable {
+  dispose(): void | Promise<void>;
+}
+
+declare const asyncDisposableBrand: unique symbol;
+
+type IAsyncDisposable = IDisposable & { readonly [asyncDisposableBrand]: true };
+
+export interface ISyncDisposable extends IDisposable {
+  readonly [asyncDisposableBrand]?: never;
   dispose(): void;
 }
 
@@ -137,47 +147,55 @@ export function isDisposable<E>(thing: E): thing is E & IDisposable {
   );
 }
 
-export function dispose<T extends IDisposable>(disposable: T): T;
+export function dispose<T extends IDisposable>(disposable: T): T | Promise<T>;
 export function dispose<T extends IDisposable>(
   disposable: T | undefined,
-): T | undefined;
+): T | Promise<T> | undefined;
 export function dispose<T extends IDisposable, A extends Iterable<T> = Iterable<T>>(
   disposables: A,
-): A;
-export function dispose<T extends IDisposable>(disposables: Array<T>): Array<T>;
+): A | Promise<A>;
+export function dispose<T extends IDisposable>(disposables: Array<T>): Array<T> | Promise<Array<T>>;
 export function dispose<T extends IDisposable>(
   disposables: ReadonlyArray<T>,
-): ReadonlyArray<T>;
+): ReadonlyArray<T> | Promise<ReadonlyArray<T>>;
 export function dispose<T extends IDisposable>(
   arg: T | Iterable<T> | undefined,
 ): unknown {
   if (arg === undefined || arg === null) return arg;
-  if (isIterable<T>(arg)) {
-    const errors: unknown[] = [];
-    for (const d of arg) {
-      if (d) {
-        try {
-          d.dispose();
-        } catch (error) {
-          errors.push(error);
-        }
-      }
-    }
+  if (!isIterable<T>(arg)) {
+    const result = arg.dispose();
+    return isPromiseLike(result) ? Promise.resolve(result).then(() => arg) : arg;
+  }
 
-    if (errors.length === 1) {
-      throw errors[0];
+  const errors: unknown[] = [];
+  const pending: Promise<void>[] = [];
+  for (const d of arg) {
+    if (!d) continue;
+    try {
+      const result = d.dispose();
+      if (isPromiseLike(result)) pending.push(Promise.resolve(result));
+    } catch (error) {
+      errors.push(error);
     }
-    if (errors.length > 1) {
-      throw new AggregateError(
-        errors,
-        'Encountered errors while disposing of store',
-      );
-    }
-
+  }
+  if (pending.length === 0) {
+    throwDisposalErrors(errors);
     return Array.isArray(arg) ? [] : arg;
   }
-  (arg).dispose();
-  return arg;
+  return Promise.allSettled(pending).then((results) => {
+    for (const result of results) {
+      if (result.status === 'rejected') errors.push(result.reason);
+    }
+    throwDisposalErrors(errors);
+    return Array.isArray(arg) ? [] : arg;
+  });
+}
+
+function throwDisposalErrors(errors: readonly unknown[]): void {
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, 'Encountered errors while disposing of store');
+  }
 }
 
 function isIterable<T>(arg: unknown): arg is Iterable<T> {
@@ -190,40 +208,53 @@ function isIterable<T>(arg: unknown): arg is Iterable<T> {
 
 export function disposeIfDisposable<T extends IDisposable | object>(
   disposables: Array<T>,
-): Array<T> {
+): Array<T> | Promise<Array<T>> {
   const disposableValues: IDisposable[] = [];
   for (const d of disposables) {
-    if (isDisposable(d)) {
-      disposableValues.push(d);
-    }
+    if (isDisposable(d)) disposableValues.push(d);
   }
-  dispose(disposableValues);
-  return [];
+  const result = dispose(disposableValues);
+  return isPromiseLike(result) ? result.then(() => []) : [];
 }
 
 class FunctionDisposable implements IDisposable {
   private _isDisposed = false;
-  private readonly _fn: () => void;
+  private _disposeResult: void | Promise<void> = undefined;
+  private readonly _fn: () => void | Promise<void>;
 
-  constructor(fn: () => void) {
+  constructor(fn: () => void | Promise<void>) {
     this._fn = fn;
     trackDisposable(this);
   }
 
-  dispose(): void {
-    if (this._isDisposed) return;
+  dispose(): void | Promise<void> {
+    if (this._isDisposed) return this._disposeResult;
     this._isDisposed = true;
     markAsDisposed(this);
-    this._fn();
+    this._disposeResult = this._fn();
+    return this._disposeResult;
   }
 }
 
-export function toDisposable(fn: () => void): IDisposable {
+export function toDisposable<T extends () => void | Promise<void>>(
+  fn: T,
+): ReturnType<T> extends void ? ISyncDisposable : IAsyncDisposable;
+export function toDisposable(fn: () => void | Promise<void>): IDisposable {
   return new FunctionDisposable(fn);
 }
 
-export function combinedDisposable(...disposables: IDisposable[]): IDisposable {
-  const parent = toDisposable(() => dispose(disposables));
+export function combinedDisposable(...disposables: ISyncDisposable[]): ISyncDisposable {
+  const parent = toDisposable(() => {
+    const errors: unknown[] = [];
+    for (const disposable of disposables) {
+      try {
+        disposable.dispose();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    throwDisposalErrors(errors);
+  });
   setParentOfDisposables(disposables, parent);
   return parent;
 }
@@ -247,7 +278,8 @@ export class DisposableStore implements IDisposable {
     }
     setParentOfDisposable(d, this);
     if (this._isDisposed) {
-      d.dispose();
+      const result = d.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
       return d;
     }
     if (!this._entries.has(d)) {
@@ -259,7 +291,7 @@ export class DisposableStore implements IDisposable {
     return d;
   }
 
-  delete<T extends IDisposable>(d: T): void {
+  delete<T extends IDisposable>(d: T): void | Promise<void> {
     if (this._isDisposed) return;
     if ((d as unknown as DisposableStore) === this) {
       throw new Error('Cannot dispose a disposable on itself!');
@@ -269,7 +301,7 @@ export class DisposableStore implements IDisposable {
       this._entries.delete(d);
       entry.release();
     }
-    d.dispose();
+    return d.dispose();
   }
 
   deleteAndLeak<T extends IDisposable>(d: T): void {
@@ -282,10 +314,10 @@ export class DisposableStore implements IDisposable {
     }
   }
 
-  clear(): void {
+  clear(): void | Promise<void> {
     if (this._entries.size === 0) return;
     try {
-      void this._ledger.clear('scope-close');
+      return this._ledger.clear('scope-close');
     } finally {
       this._entries.clear();
     }
@@ -335,13 +367,15 @@ export abstract class Disposable implements IDisposable {
 }
 
 export namespace Disposable {
-  export const None: IDisposable = Object.freeze({
+  export const None: ISyncDisposable = Object.freeze({
     dispose(): void {},
   });
 }
 
 export class MutableDisposable<T extends IDisposable> implements IDisposable {
   private readonly _ledger = new Ledger('MutableDisposable');
+  private readonly _pending: Promise<void>[] = [];
+  private _pendingWait: Promise<void> | undefined;
   private _entry: LedgerEntry | undefined;
   private _value: T | undefined;
   private _isDisposed = false;
@@ -356,26 +390,22 @@ export class MutableDisposable<T extends IDisposable> implements IDisposable {
 
   set value(value: T | undefined) {
     if (this._isDisposed) {
-      if (value !== undefined) {
-        value.dispose();
-      }
+      if (value !== undefined) this.track(value.dispose());
       return;
     }
     if (this._value === value) return;
     this._entry?.release();
     this._entry = undefined;
-    this._value?.dispose();
+    if (this._value !== undefined) this.track(this._value.dispose());
     if (value) setParentOfDisposable(value, this);
     this._value = value;
     if (value) {
-      this._entry = this._ledger.register(() => {
-        value.dispose();
-      }, disposableLabel(value));
+      this._entry = this._ledger.register(() => value.dispose(), disposableLabel(value));
     }
   }
 
-  dispose(): void {
-    if (this._isDisposed) return;
+  dispose(): void | Promise<void> {
+    if (this._isDisposed) return this.waitForPending();
     this._isDisposed = true;
     markAsDisposed(this);
     const entry = this._entry;
@@ -383,10 +413,11 @@ export class MutableDisposable<T extends IDisposable> implements IDisposable {
     this._entry = undefined;
     this._value = undefined;
     entry?.release();
-    void this._ledger.teardown('scope-close');
-    if (prev !== undefined) {
-      prev.dispose();
-    }
+    const teardown = this._ledger.teardown('scope-close');
+    if (prev !== undefined) this.track(prev.dispose());
+    const pending = this.waitForPending();
+    if (!isPromiseLike(teardown)) return pending;
+    return Promise.resolve(teardown).then(() => pending).then(() => undefined);
   }
 
   clear(): void {
@@ -403,10 +434,36 @@ export class MutableDisposable<T extends IDisposable> implements IDisposable {
     if (prev !== undefined) setParentOfDisposable(prev, null);
     return prev;
   }
+
+  private track(result: void | Promise<void>): void {
+    if (!isPromiseLike(result)) return;
+    const pending = Promise.resolve(result);
+    void pending.catch(() => undefined);
+    this._pending.push(pending);
+  }
+
+  private waitForPending(): void | Promise<void> {
+    if (this._pendingWait !== undefined) return this._pendingWait;
+    if (this._pending.length === 0) return;
+    const pending = this._pending.splice(0);
+    const wait = Promise.allSettled(pending).then(async (results) => {
+      this._pendingWait = undefined;
+      const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+      try {
+        await this.waitForPending();
+      } catch (error) {
+        errors.push(error);
+      }
+      throwDisposalErrors(errors);
+    });
+    this._pendingWait = wait;
+    return wait;
+  }
 }
 
 export class MandatoryMutableDisposable<T extends IDisposable> implements IDisposable {
   private readonly _disposable = new MutableDisposable<T>();
+  private _disposeResult: void | Promise<void> = undefined;
   private _isDisposed = false;
 
   constructor(initialValue: T) {
@@ -422,10 +479,11 @@ export class MandatoryMutableDisposable<T extends IDisposable> implements IDispo
     this._disposable.value = value;
   }
 
-  dispose(): void {
-    if (this._isDisposed) return;
+  dispose(): void | Promise<void> {
+    if (this._isDisposed) return this._disposeResult;
     this._isDisposed = true;
-    this._disposable.dispose();
+    this._disposeResult = this._disposable.dispose();
+    return this._disposeResult;
   }
 }
 
@@ -439,12 +497,11 @@ export class RefCountedDisposable {
     return this;
   }
 
-  release(): this {
+  release(): this | Promise<this> {
     this._counter -= 1;
-    if (this._counter === 0) {
-      this._disposable.dispose();
-    }
-    return this;
+    if (this._counter !== 0) return this;
+    const result = this._disposable.dispose();
+    return isPromiseLike(result) ? Promise.resolve(result).then(() => this) : this;
   }
 }
 
@@ -498,10 +555,10 @@ export class AsyncReferenceCollection<T> {
       const object = await ref.object;
       return {
         object,
-        dispose: () => { ref.dispose(); },
+        dispose: () => ref.dispose(),
       };
     } catch (error) {
-      ref.dispose();
+      await ref.dispose();
       throw error;
     }
   }
@@ -523,17 +580,18 @@ export class DisposableMap<K, V extends IDisposable = IDisposable>
     trackDisposable(this);
   }
 
-  dispose(): void {
+  dispose(): void | Promise<void> {
     if (this._isDisposed) return;
     this._isDisposed = true;
     markAsDisposed(this);
-    this.clearAndDisposeAll();
+    return this.clearAndDisposeAll();
   }
 
-  clearAndDisposeAll(): void {
+  clearAndDisposeAll(): void | Promise<void> {
     if (this._store.size === 0) return;
     try {
-      dispose(this._store.values());
+      const result = dispose(this._store.values());
+      return isPromiseLike(result) ? result.then(() => undefined) : undefined;
     } finally {
       this._store.clear();
     }
@@ -551,31 +609,34 @@ export class DisposableMap<K, V extends IDisposable = IDisposable>
     return this._store.get(key);
   }
 
-  set(key: K, value: V, skipDisposeOnOverwrite = false): void {
+  set(key: K, value: V, skipDisposeOnOverwrite = false): void | Promise<void> {
     if (this._isDisposed) {
-      console.warn(
-        new Error(
-          'Trying to add a disposable to a DisposableMap that has already been disposed of. The added object will be leaked!',
-        ).stack,
+      throw new Error(
+        'Trying to add a disposable to a DisposableMap that has already been disposed of. The added object will be leaked!',
       );
-      return;
     }
     if (!skipDisposeOnOverwrite) {
       const prev = this._store.get(key);
       if (prev !== undefined && prev !== value) {
-        prev.dispose();
+        const result = prev.dispose();
+        if (isPromiseLike(result)) {
+          return Promise.resolve(result).then(() => {
+            this._store.set(key, value);
+            setParentOfDisposable(value, this);
+          });
+        }
       }
     }
     this._store.set(key, value);
     setParentOfDisposable(value, this);
   }
 
-  deleteAndDispose(key: K): void {
+  deleteAndDispose(key: K): void | Promise<void> {
     const value = this._store.get(key);
-    if (value !== undefined) {
-      value.dispose();
-    }
+    if (value === undefined) return;
+    const result = value.dispose();
     this._store.delete(key);
+    return result;
   }
 
   deleteAndLeak(key: K): V | undefined {
@@ -609,17 +670,18 @@ export class DisposableSet<V extends IDisposable = IDisposable>
     trackDisposable(this);
   }
 
-  dispose(): void {
+  dispose(): void | Promise<void> {
     if (this._isDisposed) return;
     this._isDisposed = true;
     markAsDisposed(this);
-    this.clearAndDisposeAll();
+    return this.clearAndDisposeAll();
   }
 
-  clearAndDisposeAll(): void {
+  clearAndDisposeAll(): void | Promise<void> {
     if (this._store.size === 0) return;
     try {
-      dispose(this._store.values());
+      const result = dispose(this._store.values());
+      return isPromiseLike(result) ? result.then(() => undefined) : undefined;
     } finally {
       this._store.clear();
     }
@@ -635,21 +697,17 @@ export class DisposableSet<V extends IDisposable = IDisposable>
 
   add(value: V): void {
     if (this._isDisposed) {
-      console.warn(
-        new Error(
-          'Trying to add a disposable to a DisposableSet that has already been disposed of. The added object will be leaked!',
-        ).stack,
+      throw new Error(
+        'Trying to add a disposable to a DisposableSet that has already been disposed of. The added object will be leaked!',
       );
-      return;
     }
     this._store.add(value);
     setParentOfDisposable(value, this);
   }
 
-  deleteAndDispose(value: V): void {
-    if (this._store.delete(value)) {
-      value.dispose();
-    }
+  deleteAndDispose(value: V): void | Promise<void> {
+    if (!this._store.delete(value)) return;
+    return value.dispose();
   }
 
   deleteAndLeak(value: V): V | undefined {
@@ -669,13 +727,16 @@ export class DisposableSet<V extends IDisposable = IDisposable>
   }
 }
 
-export function disposeOnReturn(fn: (store: DisposableStore) => void): void {
+export function disposeOnReturn(fn: (store: DisposableStore) => void): void | Promise<void> {
   const store = new DisposableStore();
   try {
     fn(store);
-  } finally {
-    store.dispose();
+  } catch (error) {
+    const result = store.dispose();
+    if (isPromiseLike(result)) return result.then(() => { throw error; });
+    throw error;
   }
+  return store.dispose();
 }
 
 export function thenIfNotDisposed<T>(
@@ -696,9 +757,9 @@ export function thenRegisterOrDispose<T extends IDisposable>(
   promise: Promise<T>,
   store: DisposableStore,
 ): Promise<T> {
-  return promise.then((disposable) => {
+  return promise.then(async (disposable) => {
     if (store.isDisposed) {
-      disposable.dispose();
+      await disposable.dispose();
     } else {
       store.add(disposable);
     }

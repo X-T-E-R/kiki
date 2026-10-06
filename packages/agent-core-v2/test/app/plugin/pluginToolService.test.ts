@@ -66,7 +66,7 @@ describe('plugin file target admission', () => {
       const scope = vi.mocked(hosts.execute).mock.lastCall?.[5];
       expect(scope?.approvedPaths).toEqual([outside.replaceAll('\\', '/')]);
       expect(vi.mocked(hosts.execute).mock.lastCall?.[2]).toEqual({ file: external.replaceAll('\\', '/') });
-    } finally { service.dispose(); }
+    } finally { await service.dispose(); }
   });
 
   it('rejects target replacement between approval and execution', async () => {
@@ -82,6 +82,6 @@ describe('plugin file target admission', () => {
           ? Promise.resolve(path.join(workspace, 'replaced.docx').replaceAll('\\', '/')) : realpath(candidate));
       await expect(execution.execute(context)).resolves.toMatchObject({ isError: true, output: expect.stringContaining('changed') });
       expect(hosts.execute).not.toHaveBeenCalled();
-    } finally { service.dispose(); }
+    } finally { await service.dispose(); }
   });
 });

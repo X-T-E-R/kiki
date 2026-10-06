@@ -1,4 +1,6 @@
 import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { ILogService } from '#/_base/log/log';
@@ -33,11 +35,12 @@ export class SessionRecencyService extends Disposable implements ISessionRecency
     for (const handle of agents.list()) this.attach(handle);
     this._register(agents.onDidCreate((handle) => this.attach(handle)));
     this._register(agents.onDidDispose((id) => {
-      this.subscriptions.get(id)?.dispose();
+      const result = this.subscriptions.get(id)?.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
       this.subscriptions.delete(id);
     }));
-    this._register({ dispose: () => {
-      for (const subscription of this.subscriptions.values()) subscription.dispose();
+    this._register({ dispose: async () => {
+      for (const subscription of this.subscriptions.values()) await subscription.dispose();
       this.subscriptions.clear();
     } });
   }

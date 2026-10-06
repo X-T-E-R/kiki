@@ -1,5 +1,7 @@
 import { setFiberEventResolver } from '#/_base/di/fiber';
 import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 
 import type { Event2 } from './event2';
 import { IEventBus } from './eventBus';
@@ -17,6 +19,7 @@ setFiberEventResolver((host, event, handler) => {
   const onChange = busRef.onDidChange(attach);
   return toDisposable(() => {
     onChange.dispose();
-    subscription?.dispose();
+    const subscriptionResult = subscription?.dispose();
+    if (isPromiseLike(subscriptionResult)) subscriptionResult.catch(onUnexpectedError);
   });
 });

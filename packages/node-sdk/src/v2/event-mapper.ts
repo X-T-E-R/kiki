@@ -93,7 +93,11 @@ export function translateDomainEvent(
  */
 export function translateGlobalEvent(event: Event2<any>): Event | undefined {
   const payload = (event as { readonly payload?: unknown }).payload;
-  if (event.type !== 'session.meta.updated' || typeof payload !== 'object') {
+  if (event.type !== 'session.meta.updated' || payload === null || typeof payload !== 'object') {
+    return undefined;
+  }
+  const meta = payload as { readonly title?: unknown; readonly patch?: unknown };
+  if (meta.title === undefined && meta.patch !== undefined && typeof meta.patch === 'object' && meta.patch !== null && Object.keys(meta.patch).length === 0) {
     return undefined;
   }
   return { type: event.type, ...payload } as unknown as Event;

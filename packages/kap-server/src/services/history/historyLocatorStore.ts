@@ -487,11 +487,14 @@ export class HistoryLocatorStore {
           const legacyCallId = typeof message?.['toolCallId'] === 'string' ? message['toolCallId'] : undefined;
           const stepId = typeof event?.['stepUuid'] === 'string' ? event['stepUuid'] : undefined;
           const explicitTurn = record['turnId'] ?? event?.['turnId'];
+          const explicitTurnText = typeof explicitTurn === 'number' || typeof explicitTurn === 'string'
+            ? String(explicitTurn)
+            : undefined;
           const effect = projected.find((op) => op.op === 'turn.upsert' || op.op === 'step.upsert' || op.op === 'frame.upsert');
           const turnId = callId !== undefined || legacyCallId !== undefined
             ? scalar.tools.get(callId ?? legacyCallId!)?.turnId ??
               (stepId === undefined ? undefined : scalar.steps.get(stepId)?.turnId) ?? scanner.adapter.checkpoint().currentTurn
-            : explicitTurn !== undefined && /^\d+$/u.test(String(explicitTurn)) ? `t${explicitTurn}`
+            : explicitTurnText !== undefined && /^\d+$/u.test(explicitTurnText) ? `t${explicitTurnText}`
               : effect?.op === 'turn.upsert' ? effect.turn.turnId
                 : effect?.op === 'step.upsert' || effect?.op === 'frame.upsert' ? effect.turnId
                   : (stepId === undefined ? undefined : scalar.steps.get(stepId)?.turnId) ?? scanner.adapter.checkpoint().currentTurn;

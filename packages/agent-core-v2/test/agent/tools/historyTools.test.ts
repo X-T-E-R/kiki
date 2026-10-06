@@ -98,7 +98,7 @@ describe('history tools', () => {
       expect(conflicting.result.isError).toBe(true);
       await expect(tool.resolveExecution({ query: 'handoff', scope: 'peer', include_subagents: true })).rejects.toThrow('peer searches');
       await expect(tool.resolveExecution({ query: 'handoff', scope: 'peer', sort: 'oldest' })).rejects.toThrow('peer searches');
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
   it('uses the existing profile tool-group gate', () => {
     expect(toolGroupForName('HistorySearch')).toBe('history');
@@ -279,6 +279,6 @@ describe('history tools', () => {
         next_call: { tool: 'HistoryList', arguments: { session_id: 'current', agent_id: 'main' } } } });
       expect(stale.data.error.next_call.arguments).not.toHaveProperty('ref');
       expect(source.readTurn).not.toHaveBeenCalled();
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 });

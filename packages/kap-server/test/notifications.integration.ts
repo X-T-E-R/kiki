@@ -112,7 +112,7 @@ describe('notification coordinator', () => {
       const saved = await app.inject({ method: 'PUT', url: '/notifications/settings', payload: { ...global, enabled: false } });
       expect(saved.json().code).toBe(0);
       await service.close();
-      stored.ix.dispose();
+      await stored.ix.dispose();
       stored = await makeConfig();
       service = new NotificationService(core, home, () => false, () => { throw new Error('unexpected_notification_error'); });
       await service.start();
@@ -195,7 +195,7 @@ describe('notification coordinator', () => {
       vi.useRealTimers();
       await app.close();
       await service.close();
-      stored.ix.dispose();
+      await stored.ix.dispose();
     }
   });
 

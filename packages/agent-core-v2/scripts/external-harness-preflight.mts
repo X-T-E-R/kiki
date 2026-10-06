@@ -46,7 +46,7 @@ try {
   }
   if (strict && results.some((result) => result.status === 'unavailable')) process.exitCode = 1;
 } finally {
-  app.dispose();
+  await app.dispose();
 }
 
 process.exit(process.exitCode ?? 0);

@@ -19,13 +19,13 @@ interface OtherAppEvent {
 }
 
 describe('EventService', () => {
-  it('publish delivers Event2 instances to subscribers; unsubscribe stops delivery', () => {
+  it('publish delivers Event2 instances to subscribers; unsubscribe stops delivery', async () => {
     const svc = new EventService();
     const received: Event2[] = [];
     const sub = svc.subscribe((e) => received.push(e));
     svc.publish(new TestAppEvent({ payload: { v: 1 } }));
     svc.publish(new OtherAppEvent({ payload: null }));
-    sub.dispose();
+    await sub.dispose();
     svc.publish(new TestAppEvent({ payload: { v: 2 } }));
     expect(received).toHaveLength(2);
     expect(received[0]).toBeInstanceOf(TestAppEvent);

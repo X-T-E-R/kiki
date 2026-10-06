@@ -70,7 +70,7 @@ describe('WorkspaceMcpConfigService', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    disposables.dispose();
+    await disposables.dispose();
     await Promise.all([
       rm(cwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),
       rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),

@@ -103,7 +103,7 @@ async function resolveActivatedSession(
 ): Promise<ResolvedSession> {
   const lease = await acquireSessionOperation(core, sessionId, 'operation');
   if (lease.handle !== undefined) return { handle: lease.handle, lease };
-  lease.dispose();
+  await lease.dispose();
 
   const summary = await core.accessor.get(ISessionIndex).get(sessionId);
   const msg =
@@ -226,7 +226,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
           reply.send(okEnvelope({ skills }, req.id));
           return;
         } finally {
-          operation.dispose();
+          await operation.dispose();
         }
       }
       const summary = await core.accessor.get(ISessionIndex).get(session_id);
@@ -383,7 +383,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
         await preparedMedia?.discard();
         sendMappedError(reply, req.id, err);
       } finally {
-        resolved.lease.dispose();
+        await resolved.lease.dispose();
       }
     },
   );

@@ -159,7 +159,7 @@ export async function listMessages(
       : projected;
     return { items: filtered, has_more: hasMore };
   } finally {
-    lease.dispose();
+    await lease.dispose();
   }
 }
 
@@ -192,7 +192,7 @@ export async function getMessage(
       history.createdAtMs[index],
     );
   } finally {
-    lease.dispose();
+    await lease.dispose();
   }
 }
 
@@ -223,7 +223,7 @@ export async function loadMessageHistoryEntries(
       };
     });
   } finally {
-    lease.dispose();
+    await lease.dispose();
   }
 }
 

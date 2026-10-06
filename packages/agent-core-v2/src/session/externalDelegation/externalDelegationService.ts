@@ -2,6 +2,8 @@ import type { ExecutorBinding } from '@kiki/agent-profiles/ports';
 import { ulid } from 'ulid';
 
 import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Emitter, Event } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
@@ -241,13 +243,13 @@ export class SessionExternalDelegationService
       );
     }
     this._register({
-      dispose: () => {
+      dispose: async () => {
         for (const controller of this.controllers.values()) controller.abort(new Error('Session closed'));
         this.controllers.clear();
-        for (const entry of this.projectionCache.values()) entry.subscriptions.dispose();
+        for (const entry of this.projectionCache.values()) await entry.subscriptions.dispose();
         this.projectionCache.clear();
         this.releaseInteractionConsumer();
-        void this.interruptActive('Session closed');
+        await this.interruptActive('Session closed');
       },
     });
   }
@@ -910,7 +912,8 @@ export class SessionExternalDelegationService
   private projectionEntry(handle: IAgentScopeHandle): ProjectionCacheEntry {
     const existing = this.projectionCache.get(handle.id);
     if (existing?.handle === handle) return existing;
-    existing?.subscriptions.dispose();
+    const previous = existing?.subscriptions.dispose();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     const subscriptions = new DisposableStore();
     const entry: ProjectionCacheEntry = {
       handle,
@@ -926,7 +929,8 @@ export class SessionExternalDelegationService
     subscriptions.add(eventBus.subscribe(AgentActivityUpdated, (activity) => {
       if (activity.lifecycle !== 'disposed' || this.projectionCache.get(handle.id) !== entry) return;
       this.projectionCache.delete(handle.id);
-      subscriptions.dispose();
+      const result = subscriptions.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
     }));
     return entry;
   }

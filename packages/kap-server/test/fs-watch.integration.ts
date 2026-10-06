@@ -268,7 +268,7 @@ describe('WS fs watch (kap-server)', () => {
       expect(await manager.evictIfIdle!(sid)).toBe(true);
       const warm = await manager.acquire!(sid, 'test-setup');
       expect(warm).toBeDefined();
-      warm!.dispose();
+      await warm!.dispose();
 
       conn = await connectUnsubscribed(r, 'unsubscribed-two');
       conn.ws.send(JSON.stringify({ type: 'watch_fs_add', id: 'pending-two', payload: { session_id: sid, runtime_id: 'watch-pin', paths: ['src'] } }));
@@ -318,7 +318,7 @@ describe('WS fs watch (kap-server)', () => {
       pins++;
       return {
         handle: lease.handle,
-        dispose: () => { releases++; pins--; lease.dispose(); },
+        dispose: async () => { releases++; pins--; await lease.dispose(); },
       };
     });
     const conn = await connectUnsubscribed(r, `${lifecycle}-${phase}`);
@@ -392,7 +392,7 @@ describe('WS fs watch (kap-server)', () => {
       expect(manager.get(sid)).toBeUndefined();
       const warm = await manager.acquire!(sid, 'test-setup');
       expect(warm).toBeDefined();
-      warm!.dispose();
+      await warm!.dispose();
       acquire.mockClear();
 
       conn.ws.send(JSON.stringify({ type: 'watch_fs_add', id: 'nonempty', payload: { session_id: sid, runtime_id: 'empty-watch', paths: ['src'] } }));

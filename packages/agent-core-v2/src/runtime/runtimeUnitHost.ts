@@ -390,7 +390,7 @@ class SharedRuntimeUnitHost implements RuntimeUnitHost {
           }
         }
         try {
-          child.dispose();
+          await child.dispose();
         } catch (error) {
           if (!failed) failure = error;
           failed = true;

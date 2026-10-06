@@ -480,9 +480,9 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       ]);
       await catalog.ready;
     },
-    dispose(): void {
-      catalog.dispose();
-      container.dispose();
+    async dispose(): Promise<void> {
+      await catalog.dispose();
+      await container.dispose();
     },
   };
 }
@@ -498,7 +498,7 @@ async function withStack(
   try {
     await run(stack);
   } finally {
-    stack.dispose();
+    await stack.dispose();
   }
 }
 
@@ -596,7 +596,7 @@ describe('agent profile loaders + session catalog', () => {
           expect(deletes).not.toHaveBeenCalled();
           if (legacyKey !== canonicalKey) expect(await documents.get('workspace-trust', canonicalKey)).toBeUndefined();
         } finally {
-          draft.dispose();
+          await draft.dispose();
         }
       });
     });
@@ -2248,7 +2248,7 @@ describe('agent profile loaders + session catalog', () => {
         expect(watch.handles.length).toBeGreaterThanOrEqual(4);
         expect(watch.handles.some((handle) => handle.disposed)).toBe(false);
       } finally {
-        stack.dispose();
+        await stack.dispose();
       }
 
       expect(watch.handles.every((handle) => handle.disposed)).toBe(true);

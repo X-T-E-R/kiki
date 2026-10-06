@@ -85,8 +85,8 @@ describe('sessionExport', () => {
     disposables = new DisposableStore();
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('exports a v2 session directory with per-agent wire activity and optional global log', async () => {

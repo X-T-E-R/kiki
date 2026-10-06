@@ -351,7 +351,7 @@ describe('server-v2 /api/sessions', () => {
       eventBus,
       events,
       cancel: async () => {
-        subscription.dispose();
+        await subscription.dispose();
         await postJson<SessionWire>(`/api/sessions/${id}/profile`, {
           agent_config: { goal_control: 'cancel' },
         });
@@ -481,7 +481,8 @@ describe('server-v2 /api/sessions', () => {
         'max_context_size = 1000',
         'capabilities = ["thinking"]',
         'support_efforts = ["low", "medium", "high"]',
-        '',
+        'default_effort = "high"',
+        ''
       ].join('\n'),
       'utf8',
     );
@@ -699,7 +700,7 @@ describe('server-v2 /api/sessions', () => {
     } finally {
       await rename(backupDir, instancesDir);
       onCreated?.dispose();
-      onEvent.dispose();
+      await onEvent.dispose();
     }
 
     expect(failed.status).toBe(200);
@@ -2303,7 +2304,8 @@ describe('server-v2 /api/sessions', () => {
         'max_context_size = 1000',
         'capabilities = ["thinking"]',
         'support_efforts = ["low", "medium", "high"]',
-        '',
+        'default_effort = "high"',
+        ''
       ].join('\n'),
       'utf8',
     );
@@ -2411,7 +2413,7 @@ describe('server-v2 /api/sessions', () => {
       title: 'renamed-via-profile',
     });
     expect(updated.body.code).toBe(0);
-    sub.dispose();
+    await sub.dispose();
 
     const meta = events.find((e) => e.type === 'session.meta.updated');
     expect(meta).toBeDefined();
@@ -2597,7 +2599,7 @@ describe('server-v2 /api/sessions', () => {
       { content: [{ type: 'text', text: 'hello web title' }] },
     );
     expect(submitted.body.code).toBe(0);
-    sub.dispose();
+    await sub.dispose();
 
     const got = await getJson<SessionWire>(`/api/sessions/${id}`);
     expect(got.body.code).toBe(0);

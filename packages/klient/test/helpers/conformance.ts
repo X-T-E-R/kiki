@@ -1100,7 +1100,7 @@ export function defineKlientConformance(
         expect(receipt.turnId).toBeUndefined();
         await waitFor(() => seen.includes('terminal-wire'), 2_000);
       } finally {
-        sub.dispose(); hook.dispose();
+        sub.dispose(); await hook.dispose();
         await target.klient.session(created.id).close();
       }
     });
@@ -1120,7 +1120,7 @@ export function defineKlientConformance(
           message: 'launch failed', cause: { message: 'underlying cause' },
         } } });
       } finally {
-        hook.dispose(); await target.klient.session(created.id).close();
+        await hook.dispose(); await target.klient.session(created.id).close();
       }
     });
 
@@ -1239,7 +1239,7 @@ export function defineKlientConformance(
           }),
         ).rejects.toMatchObject({ name: 'RPCError', code: 40938 });
       } finally {
-        reservation.dispose();
+        await reservation.dispose();
         await target.klient.session(created.id).close();
       }
     });

@@ -539,8 +539,8 @@ describe('NbSearchSourceStore', () => {
     });
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
     vi.unstubAllEnvs();
   });
 
@@ -845,8 +845,8 @@ describe('NbSearchService', () => {
     });
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it.each(['exa.search', null])('executes the native GMA lane through the real donor SSE transport with default=%s', async (defaultLane) => {
@@ -1212,8 +1212,8 @@ describe('nb-search tool adapters', () => {
     });
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('exposes an optional lane and forwards an explicit GMA selection', async () => {
@@ -1534,7 +1534,7 @@ describe('NbSearch local CLI credential lane safety', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
     vi.unstubAllEnvs();
     await rm(fixture, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });

@@ -1,3 +1,4 @@
+import { onUnexpectedError } from '../errors/unexpectedError';
 import { BugIndicatingError } from '../errors/errors';
 import { SyncDescriptor } from './descriptors';
 import { ScopeActivation, type ProvideAllEntry } from './instantiation';
@@ -166,7 +167,8 @@ export function createScopedChildHandle(
     watchScopeUnits(child as InstantiationService, kind);
     provideScopeServices(child, kind, collection);
   } catch (error) {
-    child.dispose();
+    const result = child.dispose();
+    if (isPromiseLike(result)) result.catch(onUnexpectedError);
     throw error;
   }
   const accessor: ServicesAccessor = {
@@ -214,7 +216,8 @@ export class Scope implements IDisposable {
       watchScopeUnits(instantiation, kind);
       provideScopeServices(instantiation, kind, collection);
     } catch (error) {
-      instantiation.dispose();
+      const result = instantiation.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
       throw error;
     }
     return new Scope(options.id ?? 'app', kind, instantiation);
@@ -248,7 +251,8 @@ export class Scope implements IDisposable {
       watchScopeUnits(childInstantiation as InstantiationService, kind);
       provideScopeServices(childInstantiation, kind, collection);
     } catch (error) {
-      childInstantiation.dispose();
+      const result = childInstantiation.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
       throw error;
     }
     const child = new Scope(id, kind, childInstantiation, this);

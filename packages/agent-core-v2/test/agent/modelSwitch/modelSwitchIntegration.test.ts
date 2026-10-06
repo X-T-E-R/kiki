@@ -197,9 +197,11 @@ describe('model switch integration with current prompt projections', () => {
     const fields = restored.profile.getPromptFieldSnapshot();
     await writeFile(join(restored.home, 'cognition/new.md'), 'UNCOMMITTED DISK COGNITION');
     const engine = restored.ctx.get(IAgentModelSwitchService);
-    expect(await engine.execute(input)).toMatchObject({ state: 'preparing', error: { code: ErrorCodes.CONFIG_INVALID } });
-    expect(restored.profile.getCognitionSnapshot()).toBe(cognition);
-    expect(restored.profile.getPromptFieldSnapshot()).toBe(fields);
+    expect(await engine.execute(input)).toMatchObject({ state: 'completed' });
+    expect(restored.profile.getCognitionSnapshot()).not.toBe(cognition);
+    expect(restored.profile.getPromptFieldSnapshot()).not.toBe(fields);
+    expect(restored.profile.getSystemPrompt()).toContain('NEW COGNITION');
+    expect(restored.profile.getSystemPrompt()).not.toContain('UNCOMMITTED DISK COGNITION');
     await writeFile(join(restored.home, 'cognition/new.md'), 'NEW COGNITION');
     expect(await engine.execute(input)).toMatchObject({ state: 'completed' });
     expect(restored.profile.getSystemPrompt()).toContain('NEW SHARED FIELD');
@@ -362,7 +364,7 @@ describe('failed switch mode recovery', () => {
       expect((await journal(ctx)).filter((record) => record.type === 'agent.model_switch')).toHaveLength(0);
       expect(ctx.llmCalls).toHaveLength(0);
     } finally {
-      lease?.dispose();
+      await lease?.dispose();
     }
   });
 

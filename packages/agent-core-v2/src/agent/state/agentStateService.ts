@@ -2,6 +2,8 @@ import { LifecycleScope } from '#/app/scopes';
 
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { type IDisposable, toDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { StateRegistry, type StateKey } from '#/_base/state/stateRegistry';
 import { ISessionStateService } from '#/session/state/sessionState';
 import type { ReplayableStateKey } from '#/state/state';
@@ -34,7 +36,8 @@ export class AgentStateService extends StateRegistry implements IAgentStateServi
         listener(replayableKey);
       }
     } catch (error) {
-      registration.dispose();
+      const result = registration.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
       const index = this.replayables.indexOf(replayableKey);
       if (index !== -1) this.replayables.splice(index, 1);
       for (const listener of this.withdrawListeners) {
@@ -42,8 +45,8 @@ export class AgentStateService extends StateRegistry implements IAgentStateServi
       }
       throw error;
     }
-    return toDisposable(() => {
-      registration.dispose();
+    return toDisposable(async () => {
+      await registration.dispose();
       const index = this.replayables.indexOf(replayableKey);
       if (index !== -1) this.replayables.splice(index, 1);
       for (const listener of this.withdrawListeners) {

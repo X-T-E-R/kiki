@@ -104,6 +104,7 @@ export class FsWatchBridge {
   private readonly detached = new WeakSet<FsWatchConnection>();
   private readonly tornDown = new WeakSet<SessionWatch>();
   private readonly registrySubscriptions = new Map<string, IDisposable>();
+  private readonly pendingDisposals = new Set<Promise<void>>();
   private readonly sessionLifecycles: IDisposable[];
   private disposed = false;
 
@@ -115,6 +116,12 @@ export class FsWatchBridge {
       manager.onDidCloseSession?.(({ sessionId }) => this.teardownSessionWatches(sessionId)),
       manager.onDidArchiveSession?.(({ sessionId }) => this.teardownSessionWatches(sessionId)),
     ].filter((subscription): subscription is IDisposable => subscription !== undefined);
+  }
+
+  private collect(result: void | Promise<void>): void {
+    if (!(result instanceof Promise)) return;
+    this.pendingDisposals.add(result);
+    result.finally(() => this.pendingDisposals.delete(result)).catch(() => {});
   }
 
   async addWatch(
@@ -232,9 +239,9 @@ export class FsWatchBridge {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    for (const subscription of this.sessionLifecycles) subscription.dispose();
+    for (const subscription of this.sessionLifecycles) this.collect(subscription.dispose());
     for (const pending of this.rebuilding.values()) pending.abort.abort();
-    for (const subscription of this.registrySubscriptions.values()) subscription.dispose();
+    for (const subscription of this.registrySubscriptions.values()) this.collect(subscription.dispose());
     this.registrySubscriptions.clear();
     for (const sw of this.bySession.values()) this.teardownSession(sw);
     this.connPathCount.clear();
@@ -349,19 +356,10 @@ export class FsWatchBridge {
       return undefined;
     } finally {
       if (sw === undefined || this.bySession.get(key) !== sw) {
-        try {
-          sw?.sub?.dispose();
-        } finally {
-          try {
-            handle?.dispose();
-          } finally {
-            try {
-              lease?.dispose();
-            } finally {
-              sessionLease.dispose();
-            }
-          }
-        }
+        this.collect(sw?.sub?.dispose());
+        this.collect(handle?.dispose());
+        this.collect(lease?.dispose());
+        this.collect(sessionLease.dispose());
       }
     }
   }
@@ -432,20 +430,11 @@ export class FsWatchBridge {
     if (this.bySession.get(key) === sw) this.bySession.delete(key);
     if (sw.debounceTimer !== undefined) clearTimeout(sw.debounceTimer);
     sw.debounceTimer = undefined;
-    try {
-      sw.sub?.dispose();
-    } finally {
-      sw.sub = undefined;
-      try {
-        sw.handle.dispose();
-      } finally {
-        try {
-          sw.lease.dispose();
-        } finally {
-          sw.sessionLease.dispose();
-        }
-      }
-    }
+    this.collect(sw.sub?.dispose());
+    sw.sub = undefined;
+    this.collect(sw.handle.dispose());
+    this.collect(sw.lease.dispose());
+    this.collect(sw.sessionLease.dispose());
   }
 
   private cleanupOrphan(sw: SessionWatch): void {

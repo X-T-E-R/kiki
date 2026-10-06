@@ -109,8 +109,8 @@ beforeEach(() => {
   registry = ix.get(IAgentToolRegistryService);
 });
 
-afterEach(() => {
-  disposables.dispose();
+afterEach(async () => {
+  await disposables.dispose();
 });
 
 describe('AgentToolExecutorService', () => {
@@ -207,7 +207,7 @@ describe('AgentToolExecutorService', () => {
       expect(tool.calls).toEqual([]);
       expect(policy.isToolActiveForDisclosure(name, source)).toBe(false);
       expect(policy.isToolActiveForProfile({}, name, source)).toBe(false);
-      registration.dispose();
+      await registration.dispose();
     }
     expect(approval).not.toHaveBeenCalled();
     for (const name of ['Read', 'ReadMediaFile', 'Glob', 'Grep', 'WebSearch', 'FetchURL']) {

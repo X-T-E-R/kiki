@@ -49,7 +49,7 @@ describe('Antigravity managed login service', () => {
       expect(await context.service.beginLogin('oauth-business')).toEqual({ alreadySignedIn: true });
       expect(JSON.parse(await readFile(join(context.root, 'custom-gemini/antigravity-acp/settings.json'), 'utf8'))).toMatchObject({ auth: { type: 'oauth-business' } });
       expect(close).toHaveBeenCalledOnce();
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 
   it('closes an in-flight helper and never publishes a login handle after disposal', async () => {
@@ -67,7 +67,7 @@ describe('Antigravity managed login service', () => {
       resolve({ alreadySignedIn: false, authUrl: 'https://accounts.google.com/', redirectUri: 'http://127.0.0.1:48123/' });
       await rejected;
       await expect(context.service.beginLogin('oauth-personal')).rejects.toThrow('closed');
-    } finally { context.services.dispose(); }
+    } finally { await context.services.dispose(); }
   });
 });
 
@@ -99,7 +99,7 @@ describe('Antigravity install progress', () => {
       expect(context.published.map((event) => event.stage)).toEqual(['download', 'download', 'extract', 'activate', 'done']);
       expect(new Set(context.published.map((event) => event.installId)).size).toBe(1);
       expect(context.published.every((event) => event.version === '1.2.1')).toBe(true);
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 
   it('ends a timed-out download with one failed event and no activate', async () => {
@@ -113,7 +113,7 @@ describe('Antigravity install progress', () => {
       expect(context.published.map((event) => event.stage)).toEqual(['download', 'failed']);
       expect(context.published.at(-1)).toMatchObject({ stage: 'failed', timedOut: true });
       expect((await context.service.status()).phase).toBe('failed');
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 
   it('marks an ordinary failure as not timed out', async () => {
@@ -122,7 +122,7 @@ describe('Antigravity install progress', () => {
     try {
       await expect(context.service.install('1.9.9')).rejects.toThrow('HTTP 404');
       expect(context.published).toEqual([expect.objectContaining({ stage: 'failed', timedOut: false, version: '1.9.9', error: 'Binary download failed (HTTP 404)' })]);
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 });
 
@@ -142,7 +142,7 @@ describe('Antigravity sign-in completion codes', () => {
     try {
       expect(await context.service.completeLogin(context.handle, 'http://127.0.0.1:48123/?state=other&code=x'))
         .toMatchObject({ signedIn: false, retryable: true, messageCode: 'callback_mismatch' });
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 
   it('codes a vendor rejection as a final sign-in failure and keeps the vendor words in message', async () => {
@@ -151,7 +151,7 @@ describe('Antigravity sign-in completion codes', () => {
     try {
       expect(await context.service.completeLogin(context.handle, 'http://127.0.0.1:48123/?state=fixture-state&code=x'))
         .toEqual({ signedIn: false, retryable: false, messageCode: 'signin_failed', message: 'Antigravity sign-in failed: invalid_grant' });
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 
   it('carries no code on success', async () => {
@@ -160,6 +160,6 @@ describe('Antigravity sign-in completion codes', () => {
     try {
       expect(await context.service.completeLogin(context.handle, 'http://127.0.0.1:48123/?state=fixture-state&code=x'))
         .toEqual({ signedIn: true, retryable: false });
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 });

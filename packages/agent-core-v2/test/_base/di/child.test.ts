@@ -152,7 +152,7 @@ describe('InstantiationService.createChild', () => {
     const child = parent.createChild(new ServiceCollection([childId, new SyncDescriptor(SlowChild)]));
     parent.invokeFunction((accessor) => accessor.get(parentId));
     child.invokeFunction((accessor) => accessor.get(childId));
-    if (alreadyDisposing) child.dispose();
+    if (alreadyDisposing) await child.dispose();
     let settled = false;
     const pending = Promise.resolve(parent.dispose()).then(() => { settled = true; });
     await Promise.resolve();
@@ -165,7 +165,7 @@ describe('InstantiationService.createChild', () => {
     expect(events).toHaveLength(3);
   });
 
-  it('dispose order: A→B→C construction yields C→B→A teardown', () => {
+  it('dispose order: A→B→C construction yields C→B→A teardown', async () => {
     const events: string[] = [];
     interface ITagged {
       tag: string;
@@ -203,11 +203,11 @@ describe('InstantiationService.createChild', () => {
       a.get(IB);
       a.get(IC);
     });
-    ix.dispose();
+    await ix.dispose();
     expect(events).toEqual(['disposed C', 'disposed B', 'disposed A']);
   });
 
-  it('does not dispose pre-built service instances from the ServiceCollection', () => {
+  it('does not dispose pre-built service instances from the ServiceCollection', async () => {
     const events: string[] = [];
     interface IFoo {
       tag: string;
@@ -222,11 +222,11 @@ describe('InstantiationService.createChild', () => {
     const instance = new Foo();
     const ix = new InstantiationService(new ServiceCollection([IFoo, instance]));
     expect(ix.invokeFunction((a) => a.get(IFoo))).toBe(instance);
-    ix.dispose();
+    await ix.dispose();
     expect(events).toEqual([]);
   });
 
-  it('idempotent dispose: second call is a no-op', () => {
+  it('idempotent dispose: second call is a no-op', async () => {
     const events: string[] = [];
     interface IFoo {
       tag: string;
@@ -242,12 +242,12 @@ describe('InstantiationService.createChild', () => {
       new ServiceCollection([IFoo, new SyncDescriptor(Foo)]),
     );
     ix.invokeFunction((a) => a.get(IFoo));
-    ix.dispose();
-    ix.dispose();
+    await ix.dispose();
+    await ix.dispose();
     expect(events).toEqual(['disposed']);
   });
 
-  it('parent dispose propagates to children', () => {
+  it('parent dispose propagates to children', async () => {
     const events: string[] = [];
     interface IParentSvc {
       tag: string;
@@ -280,12 +280,12 @@ describe('InstantiationService.createChild', () => {
     parent.invokeFunction((a) => a.get(IParentSvc));
     child.invokeFunction((a) => a.get(IChildSvc));
 
-    parent.dispose();
+    await parent.dispose();
 
     expect(events).toEqual(['disposed child svc', 'disposed parent svc']);
   });
 
-  it('disposing a child clears it from parent so parent.dispose does not double-dispose', () => {
+  it('disposing a child clears it from parent so parent.dispose does not double-dispose', async () => {
     const events: string[] = [];
     interface ISvc {
       tag: string;
@@ -303,14 +303,14 @@ describe('InstantiationService.createChild', () => {
       new ServiceCollection([ISvc, new SyncDescriptor(Svc)]),
     );
     child.invokeFunction((a) => a.get(ISvc));
-    child.dispose();
-    parent.dispose();
+    await child.dispose();
+    await parent.dispose();
     expect(events).toEqual(['disposed']);
   });
 
-  it('use-after-dispose: invokeFunction / createInstance / createChild throw', () => {
+  it('use-after-dispose: invokeFunction / createInstance / createChild throw', async () => {
     const ix = new InstantiationService();
-    ix.dispose();
+    await ix.dispose();
     expect(() => {
       ix.invokeFunction((_a) => undefined);
     }).toThrowError(/disposed/);
@@ -324,7 +324,7 @@ describe('InstantiationService.createChild', () => {
     }).toThrowError(/disposed/);
   });
 
-  it('parent singleton is created once regardless of parent/child resolution order', () => {
+  it('parent singleton is created once regardless of parent/child resolution order', async () => {
     interface ISvc {
       tag: string;
     }
@@ -344,7 +344,7 @@ describe('InstantiationService.createChild', () => {
     let child = parent.createChild(new ServiceCollection());
     child.invokeFunction((a) => a.get(ISvc));
     expect(count).toBe(1);
-    parent.dispose();
+    await parent.dispose();
 
     count = 0;
     class CtorCounter2 implements ISvc {
@@ -360,10 +360,10 @@ describe('InstantiationService.createChild', () => {
     parent.invokeFunction((a) => a.get(ISvc));
     child.invokeFunction((a) => a.get(ISvc));
     expect(count).toBe(1);
-    parent.dispose();
+    await parent.dispose();
   });
 
-  it('disposing a child leaves the parent usable', () => {
+  it('disposing a child leaves the parent usable', async () => {
     interface IB {
       value: number;
     }
@@ -378,12 +378,12 @@ describe('InstantiationService.createChild', () => {
     expect(parent.invokeFunction((a) => a.get(IB).value)).toBe(1);
     expect(child.invokeFunction((a) => a.get(IB).value)).toBe(1);
 
-    child.dispose();
+    await child.dispose();
 
     expect(parent.invokeFunction((a) => a.get(IB).value)).toBe(1);
     expect(() => child.invokeFunction((a) => a.get(IB))).toThrow(/disposed/);
 
-    parent.dispose();
+    await parent.dispose();
   });
 });
 
@@ -422,7 +422,7 @@ describe('child scope detach on dispose', () => {
     return seen;
   }
 
-  it('retiring a service-backed unit drops its edge node from the tracked set and the graph', () => {
+  it('retiring a service-backed unit drops its edge node from the tracked set and the graph', async () => {
     interface IParentSvc {
       tag: string;
     }
@@ -456,10 +456,10 @@ describe('child scope detach on dispose', () => {
 
     expect(graph.edges().some((edge) => edge.consumer.token === IChildSvc)).toBe(false);
     expect(collectReachable(parent).has(childInstance)).toBe(false);
-    parent.dispose();
+    await parent.dispose();
   });
 
-  it('disposing a child detaches it from the shared dependency graph and the parent', () => {
+  it('disposing a child detaches it from the shared dependency graph and the parent', async () => {
     interface IParentSvc {
       tag: string;
     }
@@ -512,7 +512,7 @@ describe('child scope detach on dispose', () => {
     const graph = parent.cascadeTree.graph;
     expect(graph.edges().length).toBeGreaterThan(0);
 
-    child.dispose();
+    await child.dispose();
 
     for (const edge of graph.edges()) {
       expect(edge.consumer.scope).not.toBe(child);
@@ -521,7 +521,7 @@ describe('child scope detach on dispose', () => {
     const reachable = collectReachable(parent);
     expect(reachable.has(child)).toBe(false);
     expect(reachable.has(anonymousUnitNode)).toBe(false);
-    parent.dispose();
+    await parent.dispose();
   });
 
   it('detaches a child that is disposed while a parent cascade touching it is in flight', async () => {
@@ -558,13 +558,13 @@ describe('child scope detach on dispose', () => {
         }),
     });
     parent.provide(IParentSvc, new SyncDescriptor(ParentSvc));
-    child.dispose();
+    await child.dispose();
     releaseGate();
     await parent.cascade.whenIdle();
 
     expect(parent.invokeFunction((a) => a.get(IParentSvc)).tag).toBe('parent');
     expect(collectReachable(parent).has(child)).toBe(false);
-    parent.dispose();
+    await parent.dispose();
   });
 
   it('parent cascades still settle after a child scope is detached', async () => {
@@ -598,18 +598,18 @@ describe('child scope detach on dispose', () => {
       new ServiceCollection([IChildSvc, new SyncDescriptor(ChildSvc)]),
     ) as InstantiationService;
     child.invokeFunction((a) => a.get(IChildSvc));
-    child.dispose();
+    await child.dispose();
 
     parent.provide(ILateSvc, new SyncDescriptor(LateSvc));
     expect(parent.invokeFunction((a) => a.get(ILateSvc)).tag).toBe('late');
     await parent.cascade.update(IParentSvc, 'post-detach update');
     expect(parent.invokeFunction((a) => a.get(IParentSvc)).tag).toBe('parent');
-    parent.dispose();
+    await parent.dispose();
   });
 });
 
 describe('Disposable base class', () => {
-  it('reverse registration order on dispose (ledger teardown)', () => {
+  it('reverse registration order on dispose (ledger teardown)', async () => {
     const events: string[] = [];
     class Child implements IDisposable {
       constructor(public readonly label: string) {}
@@ -626,11 +626,11 @@ describe('Disposable base class', () => {
       }
     }
     const o = new Owner();
-    o.dispose();
+    await o.dispose();
     expect(events).toEqual(['disposed third', 'disposed second', 'disposed first']);
   });
 
-  it('idempotent dispose on the base class', () => {
+  it('idempotent dispose on the base class', async () => {
     const events: string[] = [];
     class Child implements IDisposable {
       dispose(): void {
@@ -644,12 +644,12 @@ describe('Disposable base class', () => {
       }
     }
     const o = new Owner();
-    o.dispose();
-    o.dispose();
+    await o.dispose();
+    await o.dispose();
     expect(events).toEqual(['disposed']);
   });
 
-  it('register-after-dispose: child is torn down immediately, not leaked', () => {
+  it('register-after-dispose: child is torn down immediately, not leaked', async () => {
     const events: string[] = [];
     class Child implements IDisposable {
       dispose(): void {
@@ -662,7 +662,7 @@ describe('Disposable base class', () => {
       }
     }
     const o = new Owner();
-    o.dispose();
+    await o.dispose();
     o.addLate();
     expect(events).toEqual(['disposed']);
   });
@@ -701,7 +701,7 @@ describe('Disposable base class', () => {
       }
     }
     const o = new Owner();
-    expect(() => { o.dispose(); }).not.toThrow();
+    expect(async () => { await o.dispose(); }).not.toThrow();
     expect(events).toEqual(['tail', 'bad-attempted', 'good']);
     expect(reported).toHaveLength(1);
     expect((reported[0] as Error).message).toContain('boom');

@@ -1,3 +1,4 @@
+import { onUnexpectedError } from '../errors/unexpectedError';
 import type { IDisposable } from './lifecycle';
 import type { Emitter } from '../event';
 import { isPromiseLike, type EffectBody } from '../lifecycle/disposer';
@@ -217,7 +218,8 @@ export function bindServiceUnit(instance: UnitInternals & IDisposable, frame: Co
       op(runtime);
     }
   } catch (error) {
-    instance.dispose();
+    const result = instance.dispose();
+    if (isPromiseLike(result)) result.catch(onUnexpectedError);
     throw error;
   }
 }
@@ -350,7 +352,8 @@ export class FiberRuntime implements Fiber {
     }
     const label = typeof event === 'string' ? `on:${event}` : `on:${event.constructor?.name ?? 'emitter'}`;
     const entry = this._book.register(() => {
-      subscription.dispose();
+      const result = subscription.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
     }, label);
     return new BasicFiberHandle({
       name: label,

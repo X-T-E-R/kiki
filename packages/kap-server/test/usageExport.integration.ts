@@ -49,9 +49,9 @@ function record(time: number, inputOther: number, other = { output: 3, inputCach
 }
 async function fixture(limits: ConstructorParameters<typeof UsageAggregationService>[2] = {}, now?: () => number, keyring?: ExportKeyring, vibeAuthRequest?: VibeAuthRequest) {
   const home = await mkdtemp(join(tmpdir(), 'kiki-usage-export-')); cleanup.push(() => rm(home, { recursive: true, force: true }));
-  const storage = new FileStorageService(home, 0o700, 0o600); const append = new AppendLogStore(storage); cleanup.push(async () => { await append.flush(); append.dispose(); });
+  const storage = new FileStorageService(home, 0o700, 0o600); const append = new AppendLogStore(storage); cleanup.push(async () => { await append.flush(); await append.dispose(); });
   const bootstrap = { scope: (name: string) => name, credentialsHomeDir: home } as Bootstrap;
-  const ix = new TestInstantiationService(); cleanup.push(async () => { ix.dispose(); });
+  const ix = new TestInstantiationService(); cleanup.push(async () => { await ix.dispose(); });
   ix.stub(IBootstrapService, bootstrap); ix.stub(IFileSystemStorageService, storage); ix.stub(IAppendLogStore, append);
   ix.set(IEventService, new SyncDescriptor(EventService)); ix.set(IRetainedUsageService, new SyncDescriptor(RetainedUsageService));
   const retained = ix.get(IRetainedUsageService); const sessions: SessionSummary[] = [];
@@ -375,16 +375,19 @@ describe('VibeCafe sign-in → consent → export using a synthetic destination 
     let approved = false;
     const key = 'vbu_SYNTHETIC_FIXTURE_KEY';
     const requests: { path: string; body: unknown; authorization?: string }[] = [];
-    const server = createServer(async (req, res) => {
-      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
-      const raw = Buffer.concat(chunks);
-      const body = JSON.parse((req.headers['content-encoding'] === 'gzip' ? gunzipSync(raw) : raw).toString('utf8')) as { buckets?: unknown[] };
-      const path = req.url ?? ''; requests.push({ path, body, authorization: req.headers.authorization });
-      res.setHeader('content-type', 'application/json');
-      if (path.endsWith('/code')) res.end(JSON.stringify({ deviceCode: 'SYNTHETIC_DEVICE_SECRET', userCode: 'ABCD-EFGH', verificationUriComplete: 'https://vibecafe.ai/usage/device?user_code=ABCD-EFGH', expiresIn: 900, interval: 1 }));
-      else if (path.endsWith('/poll')) res.end(JSON.stringify(approved ? { apiKey: key, apiUrl: 'https://vibecafe.ai' } : { error: 'authorization_pending' }));
-      else if (path.endsWith('/ingest') && req.headers.authorization === `Bearer ${key}`) res.end(JSON.stringify({ ingested: body.buckets?.length ?? 0, sessions: 0 }));
-      else { res.statusCode = 401; res.end('{}'); }
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer | string) => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => {
+        const raw = Buffer.concat(chunks);
+        const body = JSON.parse((req.headers['content-encoding'] === 'gzip' ? gunzipSync(raw) : raw).toString('utf8')) as { buckets?: unknown[] };
+        const path = req.url ?? ''; requests.push({ path, body, authorization: req.headers.authorization });
+        res.setHeader('content-type', 'application/json');
+        if (path.endsWith('/code')) res.end(JSON.stringify({ deviceCode: 'SYNTHETIC_DEVICE_SECRET', userCode: 'ABCD-EFGH', verificationUriComplete: 'https://vibecafe.ai/usage/device?user_code=ABCD-EFGH', expiresIn: 900, interval: 1 }));
+        else if (path.endsWith('/poll')) res.end(JSON.stringify(approved ? { apiKey: key, apiUrl: 'https://vibecafe.ai' } : { error: 'authorization_pending' }));
+        else if (path.endsWith('/ingest') && req.headers.authorization === `Bearer ${key}`) res.end(JSON.stringify({ ingested: body.buckets?.length ?? 0, sessions: 0 }));
+        else { res.statusCode = 401; res.end('{}'); }
+      });
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));

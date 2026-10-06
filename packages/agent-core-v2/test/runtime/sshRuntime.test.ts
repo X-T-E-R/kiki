@@ -263,7 +263,7 @@ async function approvedPreparationFixture() {
       lease.dispose();
       return selected;
     },
-    dispose: async () => { disposables.dispose(); await attachment.dispose(); await registry.dispose(); },
+    dispose: async () => { await disposables.dispose(); await attachment.dispose(); await registry.dispose(); },
   };
 }
 

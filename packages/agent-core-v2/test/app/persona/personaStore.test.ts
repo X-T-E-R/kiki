@@ -156,8 +156,8 @@ describe('PersonaStore', () => {
     store = ix.get(IPersonaStore);
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('serializes deletion against edits and honors flat create-only writes', async () => {

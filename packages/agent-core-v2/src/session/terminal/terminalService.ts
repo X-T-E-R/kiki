@@ -15,6 +15,7 @@ import type {
   TerminalProcess,
 } from '#/os/interface/terminal';
 import { ErrorCodes, Error2 } from '#/errors';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
@@ -133,18 +134,14 @@ export class SessionTerminalService extends Disposable implements ISessionTermin
         this.records.set(terminal.id, record);
         return { ...terminal };
       } catch (error) {
-        for (const disposable of record?.disposables ?? []) {
-          try {
-            disposable.dispose();
-          } catch {
-          }
-        }
         try {
+          await disposeAll(record?.disposables ?? []);
           if (trackedProcess !== undefined) trackedProcess.dispose();
           else process?.kill();
-        } catch {
+          lease.dispose();
+        } catch (cleanupError) {
+          throw new AggregateError([error, cleanupError], 'terminal creation cleanup failed', { cause: error });
         }
-        lease.dispose();
         throw error;
       }
     } finally {
@@ -221,9 +218,9 @@ export class SessionTerminalService extends Disposable implements ISessionTermin
     return { closed: true };
   }
 
-  override dispose(): void {
+  override async dispose(): Promise<void> {
     for (const record of this.records.values()) {
-      disposeAll(record.disposables);
+      await disposeAll(record.disposables);
       record.lease.dispose();
       try {
         record.process.kill();
@@ -231,7 +228,7 @@ export class SessionTerminalService extends Disposable implements ISessionTermin
       }
     }
     this.records.clear();
-    super.dispose();
+    await super.dispose();
   }
 
   private requireRecord(terminalId: string): TerminalRecord {
@@ -278,7 +275,7 @@ export class SessionTerminalService extends Disposable implements ISessionTermin
       payload: { exit_code: exitCode },
     };
     this.pushFrame(record, frame);
-    disposeAll(record.disposables);
+    disposeAll(record.disposables).catch(onUnexpectedError);
     record.disposables = [];
     record.lease.dispose();
   }
@@ -294,9 +291,9 @@ export class SessionTerminalService extends Disposable implements ISessionTermin
   }
 }
 
-function disposeAll(items: Iterable<IDisposable>): void {
+async function disposeAll(items: Iterable<IDisposable>): Promise<void> {
   for (const item of items) {
-    item.dispose();
+    await item.dispose();
   }
 }
 

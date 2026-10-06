@@ -33,7 +33,7 @@ describe('temporary session memory tools', () => {
     const result = await execution.execute({ turnId: 1, toolCallId: 'call', signal: new AbortController().signal });
     expect(result.isError).toBe(true);
     expect(put).not.toHaveBeenCalled();
-    ix.dispose();
+    await ix.dispose();
   });
 });
 

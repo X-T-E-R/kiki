@@ -97,7 +97,7 @@ function makeTree(): { app: InstantiationService; ws: InstantiationService } {
 
 
 describe('debug domain — IDebugLedgerService', () => {
-  it('tree() exposes units, ledger entries, and children recursively', () => {
+  it('tree() exposes units, ledger entries, and children recursively', async () => {
     const { app, ws } = makeTree();
     app.provide(IRoot, new SyncDescriptor(Root));
     ws.provide(IMid, new SyncDescriptor(Mid));
@@ -124,12 +124,12 @@ describe('debug domain — IDebugLedgerService', () => {
       state: 'Active',
     });
     expect(() => JSON.stringify(tree)).not.toThrow();
-    app.dispose();
+    await app.dispose();
   });
 });
 
 describe('debug domain — IDebugGraphService', () => {
-  it('graph() renders instance edges (cross-tree) and collection edges', () => {
+  it('graph() renders instance edges (cross-tree) and collection edges', async () => {
     const { app, ws } = makeTree();
     app.provide(IRoot, new SyncDescriptor(Root));
     ws.provide(IMid, new SyncDescriptor(Mid));
@@ -162,12 +162,12 @@ describe('debug domain — IDebugGraphService', () => {
     });
     expect(nodeIds.has('app::collection:debug-tool-contribution')).toBe(true);
     expect(() => JSON.stringify(graph)).not.toThrow();
-    app.dispose();
+    await app.dispose();
   });
 });
 
 describe('debug domain — IDebugCascadeService', () => {
-  it('history() folds every scope and pending() reports waiting + failed units', () => {
+  it('history() folds every scope and pending() reports waiting + failed units', async () => {
     const { app, ws } = makeTree();
     const events = new FakeEventService();
     const service = new DebugCascadeService(app, events);
@@ -189,17 +189,17 @@ describe('debug domain — IDebugCascadeService', () => {
     expect(appGroup?.failed).toEqual([
       { token: 'debug-boom', error: 'boom construction failed' },
     ]);
-    app.dispose();
+    await app.dispose();
   });
 
-  it('pending() reports a waiting unit with its missing dependencies', () => {
+  it('pending() reports a waiting unit with its missing dependencies', async () => {
     const { app, ws } = makeTree();
     const service = new DebugCascadeService(app, new FakeEventService());
     ws.provide(IMid, new SyncDescriptor(Mid));
 
     const wsGroup = service.pending().find((group) => group.scopePath === 'app/workspace:ws1');
     expect(wsGroup?.waiting).toEqual([{ token: 'debug-mid', missing: ['debug-root'] }]);
-    app.dispose();
+    await app.dispose();
   });
 
   it('unprovide/update/dispose triggers drive the public cascade entries', async () => {
@@ -223,7 +223,7 @@ describe('debug domain — IDebugCascadeService', () => {
     await service.dispose('app', 'debug-root');
     expect(app.cascade.stateOf(IRoot)).toBeUndefined();
     expect(ws.cascade.stateOf(IMid)).toBe('Pending');
-    app.dispose();
+    await app.dispose();
   });
 
   it('update with a config routes through the fiber host', async () => {
@@ -232,7 +232,7 @@ describe('debug domain — IDebugCascadeService', () => {
     app.provide(IRoot, new SyncDescriptor(Root));
     await service.update('app', 'debug-root', { tag: 1 });
     expect(app.cascade.stateOf(IRoot)).toBe('Active');
-    app.dispose();
+    await app.dispose();
   });
 
   it('rejects unknown scope paths and tokens with coded errors', async () => {
@@ -251,10 +251,10 @@ describe('debug domain — IDebugCascadeService', () => {
     ).rejects.toMatchObject({
       code: 'debug.token_not_found',
     });
-    app.dispose();
+    await app.dispose();
   });
 
-  it('publishes event.di.unit_changed for live and late-joined engines until teardown', () => {
+  it('publishes event.di.unit_changed for live and late-joined engines until teardown', async () => {
     const { app } = makeTree();
     const events = new FakeEventService();
     const service = new DebugCascadeService(app, events);
@@ -281,15 +281,15 @@ describe('debug domain — IDebugCascadeService', () => {
     expect(wsEvents.length).toBeGreaterThan(0);
 
     const publishedBefore = events.published.length;
-    service.dispose();
+    await service.dispose();
     app.provide(IBoom, new SyncDescriptor(Boom));
     expect(events.published.length).toBe(publishedBefore);
-    app.dispose();
+    await app.dispose();
   });
 });
 
 describe('debug domain — IDebugEventsService', () => {
-  it('subscriptions() merges unit-book labels and bus listener counts, deduped across containers', () => {
+  it('subscriptions() merges unit-book labels and bus listener counts, deduped across containers', async () => {
     const { app } = makeTree();
     app.provide(IEventBus, new SyncDescriptor(EventBusService));
     app.provide(IBusSubscriber, new SyncDescriptor(BusSubscriber));
@@ -311,10 +311,10 @@ describe('debug domain — IDebugEventsService', () => {
       { scopePath: 'app', all: 1, perType: { 'debug.test': 2 } },
     ]);
     expect(() => JSON.stringify(result)).not.toThrow();
-    app.dispose();
+    await app.dispose();
   });
 
-  it('skips unmaterialized units and reports the global event service listener count', () => {
+  it('skips unmaterialized units and reports the global event service listener count', async () => {
     const { app } = makeTree();
     app.provide(IBusSubscriber, new SyncDescriptor(BusSubscriber));
     app.provide(IEventService, new SyncDescriptor(EventService));
@@ -325,6 +325,6 @@ describe('debug domain — IDebugEventsService', () => {
 
     expect(result.subscriptions.find((s) => s.unit === 'debug-bus-subscriber')).toBeUndefined();
     expect(result.globalListeners).toBe(1);
-    app.dispose();
+    await app.dispose();
   });
 });

@@ -50,7 +50,8 @@ export function watchScopeUnits(container: InstantiationService, kind: ScopeKind
         unitLedger.effect((() => out) as EffectBody, `effect:${name}`);
       }
     } catch (error) {
-      void unitLedger.teardown('unload');
+      const teardown = unitLedger.teardown('unload');
+      if (isPromiseLike(teardown)) teardown.catch(onUnexpectedError);
       onUnexpectedError(error);
       return;
     }
@@ -78,7 +79,8 @@ export function watchScopeUnits(container: InstantiationService, kind: ScopeKind
       return retractResult;
     };
     if (!record.providerBook.isActive || !foldLedger.isActive) {
-      retract();
+      const result = retract();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
       return;
     }
     providerEntry = record.providerBook.register(retract, `scope-units:${kind}`);
@@ -100,7 +102,8 @@ export function watchScopeUnits(container: InstantiationService, kind: ScopeKind
     }
     for (const [id, retract] of Array.from(materialized)) {
       if (!seen.has(id)) {
-        retract();
+        const result = retract();
+        if (isPromiseLike(result)) result.catch(onUnexpectedError);
       }
     }
   };

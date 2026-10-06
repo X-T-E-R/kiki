@@ -120,7 +120,7 @@ async function main(): Promise<void> {
     await klient.close();
     console.log('smoke: OK');
   } finally {
-    app.dispose();
+    await app.dispose();
     await rm(homeDir, { recursive: true, force: true });
   }
 }

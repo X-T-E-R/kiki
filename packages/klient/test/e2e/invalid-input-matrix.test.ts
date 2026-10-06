@@ -412,7 +412,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await klient.close();
-  app?.dispose();
+  await app?.dispose();
   for (const socket of sockets) socket.destroy();
   await new Promise<void>((resolve) => {
     server.close(() => resolve());

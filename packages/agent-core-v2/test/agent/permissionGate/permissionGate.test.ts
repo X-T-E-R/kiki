@@ -99,8 +99,8 @@ describe('AgentPermissionGate', () => {
       strict: true,
     });
   });
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   function make(): IAgentPermissionGate {

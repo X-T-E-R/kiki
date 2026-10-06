@@ -13,6 +13,7 @@ export async function runPluginNodeEntry(entry: string, args: readonly string[])
   const { entryReal, argsReal } = await validatePluginNodeEntry(entry, args, pluginRoot);
   process.argv = [process.argv[0] ?? process.execPath, entryReal, ...argsReal];
   // Keep disk ESM/TLA loading outside the native bundle's dynamic-import-to-require transform.
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const importModule = new Function('specifier', 'return import(specifier)') as (
     specifier: string,
   ) => Promise<unknown>;

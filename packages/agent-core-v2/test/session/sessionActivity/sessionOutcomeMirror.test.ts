@@ -176,9 +176,9 @@ describe('SessionOutcomeMirror (Session scope)', () => {
     session.accessor.get(ISessionOutcomeMirror);
   });
 
-  afterEach(() => {
-    disposables.dispose();
-    host.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
+    await host.dispose();
   });
 
   const started = (turnId = 1) =>

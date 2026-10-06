@@ -7,11 +7,13 @@ import { createServices, createScopedTestHost, stubPair } from '#/_base/di/test'
 import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IFlagService } from '#/app/flag/flag';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { LocalRuntime } from '#/runtime/localRuntime';
 import type { Runtime } from '#/runtime/runtime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { stubPermissionModeService } from '../../../../agent/permissionMode/stubs';
+import { stubFlag } from '../../../../app/flag/stubs';
 
 import {
   IAgentTaskService,
@@ -38,7 +40,7 @@ import { BashTool } from '#/agent/tools/os/bash/bashTool';
 import type { ExecutableToolContext, ExecutableToolResult, ToolExecution } from '#/tool/toolContract';
 
 const disposables = new DisposableStore();
-afterEach(() => { disposables.clear(); });
+afterEach(async () => { await disposables.clear(); });
 
 const posixEnv: IHostEnvironment = {
   _serviceBrand: undefined,
@@ -770,6 +772,7 @@ function bashTool(
       reg.defineInstance(IAgentTaskService, background);
       reg.defineInstance(IAgentToolPolicyService, toolPolicy);
       reg.defineInstance(IConfigService, config);
+      reg.defineInstance(IFlagService, stubFlag());
       reg.defineInstance(IAgentPermissionModeService, options.permissionMode ?? stubPermissionModeService(() => 'manual'));
     },
   });
@@ -851,6 +854,7 @@ describe('BashTool', () => {
     };
     const host = disposables.add(createScopedTestHost([
       stubPair(IConfigService, stubConfig()),
+      stubPair(IFlagService, stubFlag()),
       stubPair(IAgentRuntimeService, runtime),
       stubPair(IAgentToolPolicyService, stubToolPolicy()),
     ]));

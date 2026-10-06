@@ -169,7 +169,8 @@ describe.skipIf(process.env['KIKI_BROWSER_TEST_DRIVER'] === undefined || process
       expect((await control.check('managed')).failure?.code).toBe('browser.version');
       const { installBrowserDriver, BROWSER_DRIVER_FILES } = await import('@kiki/agent-core-v2/app/capability/entries/browserResourceStore');
       const source: typeof fetch = async (input) => {
-        const name = Object.entries(BROWSER_DRIVER_FILES).find(([, artifact]) => artifact.url === String(input))?.[0];
+        const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        const name = Object.entries(BROWSER_DRIVER_FILES).find(([, artifact]) => artifact.url === inputUrl)?.[0];
         if (name === undefined) throw new Error('Unexpected fixture resource');
         const bytes = await readFile(name === 'agent-browser.exe' ? process.env['KIKI_BROWSER_TEST_DRIVER']! : fileURLToPath(new URL(`../../agent-core-v2/src/app/browser/donor/${name}`, import.meta.url)));
         return new Response(new Uint8Array(bytes), { headers: { 'content-length': String(bytes.length) } });

@@ -350,6 +350,15 @@ describe('BuiltinSkillSource product-skill switch', () => {
     }
   });
 
+  it('guides first-run web search without a credential gate or silent fallback', () => {
+    const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops')!.content;
+    expect(ops).toContain('keyless general-web `duckduckgo.search`');
+    expect(ops).toContain('no registration, API key or lane selection is needed');
+    expect(ops).toContain('check it directly when requested instead of asking for a key');
+    expect(ops).toContain('failures never silently switch providers');
+    expect(ops).not.toContain('General web search needs a provider lane, its credential');
+  });
+
   it('routes request-limit operations through installed docs and keeps reload timing specific', () => {
     const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops')!;
     expect(ops.path).toBe('builtin://kiki-ops');
@@ -421,7 +430,7 @@ describe('BuiltinSkillSource product-skill switch', () => {
     });
   });
 
-  it.each(['en', 'zh'])('loads the %s continuity examples through the real TOML adapter and round-trips the memory switch', (locale) => {
+  it.each(['en', 'zh'])('loads the %s continuity examples through the real TOML adapter and round-trips the memory switch', async (locale) => {
     const registry = new ConfigRegistry();
     try {
       const text = readFileSync(new URL(`../../../../../docs/${locale}/configuration/config-files.md`, import.meta.url), 'utf8');
@@ -435,7 +444,7 @@ describe('BuiltinSkillSource product-skill switch', () => {
       expect(raw).toEqual({ loop_control: { continuity_cadence: { memory_maintenance: false } } });
       expect(LoopControlSchema.parse(transformTomlData(raw, registry)[LOOP_CONTROL_SECTION])).toEqual(values[1]);
     } finally {
-      registry.dispose();
+      await registry.dispose();
     }
   });
 

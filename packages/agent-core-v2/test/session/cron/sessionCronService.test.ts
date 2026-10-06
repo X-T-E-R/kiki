@@ -60,7 +60,7 @@ describe('Cron durable mutation acknowledgements', () => {
       const task = await f.cron.addTask({ cron: '* * * * *', prompt: 'saved reminder' });
       expect(f.tasks.get(task.id)).toEqual(task);
       expect(f.cron.getTask(task.id)).toEqual(task);
-    } finally { release(); f.disposables.dispose(); }
+    } finally { release(); await f.disposables.dispose(); }
   });
 
   it('preserves the saved state on pause/delete failure and lets later writes on the ID proceed in order', async () => {
@@ -89,6 +89,6 @@ describe('Cron durable mutation acknowledgements', () => {
       expect(await f.cron.removeTasks([task.id])).toEqual([task.id]);
       expect(f.cron.getTask(task.id)).toBeUndefined();
       expect(f.tasks.get(task.id)).toBeUndefined();
-    } finally { release?.(); f.disposables.dispose(); }
+    } finally { release?.(); await f.disposables.dispose(); }
   });
 });

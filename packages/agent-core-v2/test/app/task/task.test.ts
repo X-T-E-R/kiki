@@ -125,13 +125,13 @@ describe('TaskService', () => {
           signal.addEventListener('abort', () => resolve());
         });
       });
-      handle.dispose();
+      await handle.dispose();
       expect(handle.state).toBe('cancelled');
     });
 
-    it('dispose cancels a pending deferred', () => {
+    it('dispose cancels a pending deferred', async () => {
       const handle = svc.defer<number>();
-      handle.dispose();
+      await handle.dispose();
       expect(handle.state).toBe('cancelled');
     });
 

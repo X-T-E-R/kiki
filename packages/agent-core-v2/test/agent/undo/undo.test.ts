@@ -138,7 +138,7 @@ describe('AgentConversationUndoService', () => {
     expect(loop.status().state).toBe('running');
     expect(ctx.context.get()).toBe(history);
 
-    hook.dispose();
+    await hook.dispose();
     release();
     await expect(turn.result).resolves.toMatchObject({ type: 'completed' });
   });
@@ -231,7 +231,7 @@ describe('AgentConversationUndoService', () => {
         },
       });
     } finally {
-      registration.dispose();
+      await registration.dispose();
     }
     expect(ctx.context.get().map((m) => m.role)).toEqual(['user', 'assistant']);
   });
@@ -273,7 +273,7 @@ describe('AgentConversationUndoService', () => {
       expect(ctx.get(IAgentTelemetryContextService).get().mode).toBe('agent');
       expect(restoredModes).toEqual([false]);
     } finally {
-      subscription.dispose();
+      await subscription.dispose();
     }
   });
 
@@ -343,7 +343,7 @@ describe('AgentConversationUndoService', () => {
       expect(ctx.agentState.get(turnKey).anchorTurnIds).toEqual([]);
       expect(ctx.context.get()).toHaveLength(0);
     } finally {
-      subscription.dispose();
+      await subscription.dispose();
     }
   });
 
@@ -373,7 +373,7 @@ describe('AgentConversationUndoService', () => {
       await undo.undo(1);
       expect(fromTurnId).toBeUndefined();
     } finally {
-      subscription.dispose();
+      await subscription.dispose();
     }
   });
 
@@ -404,7 +404,7 @@ describe('AgentConversationUndoService', () => {
 
       expect(order).toEqual(['flush', 'state', 'flush', 'context.undone']);
     } finally {
-      subscription.dispose();
+      await subscription.dispose();
       flush.mockRestore();
     }
   });
@@ -446,7 +446,7 @@ describe('AgentConversationUndoService', () => {
         expect(undone).toEqual([]);
         expect(records.filter((record) => record.event === 'conversation_undo')).toEqual([]);
       } finally {
-        subscription.dispose();
+        await subscription.dispose();
         flush.mockRestore();
       }
     },
@@ -577,7 +577,7 @@ describe('AgentConversationUndoService', () => {
         properties: { agent_id: 'main', count: 1 },
       });
     } finally {
-      subscription.dispose();
+      await subscription.dispose();
       update.mockRestore();
     }
   });
@@ -673,7 +673,7 @@ describe('AgentConversationUndoService', () => {
       expect(ctx.context.get().filter((message) => (message.origin as TaskOrigin | undefined)?.taskId === taskId)).toHaveLength(1);
     } finally {
       release.resolve();
-      subscription.dispose();
+      await subscription.dispose();
       outputSnapshot.mockRestore();
     }
   });
@@ -716,7 +716,7 @@ describe('AgentConversationUndoService', () => {
       expect(ctx.context.get().some((message) => (message.origin as TaskOrigin | undefined)?.taskId === taskId)).toBe(false);
     } finally {
       release.resolve();
-      subscription.dispose();
+      await subscription.dispose();
       snapshot.mockRestore();
     }
   });

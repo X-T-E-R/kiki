@@ -20,7 +20,7 @@ import { stubLog } from '../../_base/log/stubs';
 
 const disposables = new DisposableStore();
 const directories: string[] = [];
-afterEach(async () => { disposables.clear(); await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
+afterEach(async () => { await disposables.clear(); await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
 function open(home: string): IBrowserConnectionStore {
   const ix = disposables.add(new TestInstantiationService());

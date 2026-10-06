@@ -323,9 +323,9 @@ describe('acp-server config surface', () => {
       await boot({ fakeModel: true, thinking: true });
       const { configOptions } = await newSession();
       const thinking = configOptions.find((o) => o.id === 'thinking');
-      // A thinking-capable model defaults to thinking on (the engine resolves
-      // the model's default effort when nothing is configured).
-      expect(thinking?.currentValue).toBe('on');
+      // A thinking-capable model resolves its declared default effort when
+      // nothing is configured.
+      expect(thinking?.currentValue).toBe('high');
     },
     30_000,
   );

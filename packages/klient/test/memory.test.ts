@@ -31,7 +31,7 @@ defineKlientConformance('memory', async () => {
     app,
     cleanup: async () => {
       await klient.close();
-      app.dispose();
+      await app.dispose();
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     },
   };
@@ -62,7 +62,7 @@ describe('memory dispatcher specifics', () => {
       expect(manager.get(created.id)).toBeUndefined();
       expect(resume).not.toHaveBeenCalled();
     } finally {
-      await klient.close(); app.dispose();
+      await klient.close(); await app.dispose();
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     }
   });
@@ -91,7 +91,7 @@ describe('memory dispatcher specifics', () => {
       expect(resume).not.toHaveBeenCalled();
     } finally {
       await klient.close();
-      app.dispose();
+      await app.dispose();
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     }
   });
@@ -120,7 +120,7 @@ describe('memory dispatcher specifics', () => {
       expect(resume).not.toHaveBeenCalled();
     } finally {
       await klient.close();
-      app.dispose();
+      await app.dispose();
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     }
   });
@@ -182,7 +182,7 @@ describe('memory dispatcher specifics', () => {
     await expect(
       dispatcher.call({}, 'threadCommunicationService', 'sendPeerThreadMessage', []),
     ).rejects.toMatchObject({ name: 'RPCError', code: 40001 });
-    app.dispose();
+    await app.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   });
 
@@ -192,7 +192,7 @@ describe('memory dispatcher specifics', () => {
     await expect(dispatcher.call({}, 'bootstrapService', 'platform', [])).resolves.toBe(
       process.platform,
     );
-    app.dispose();
+    await app.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   });
 
@@ -202,7 +202,7 @@ describe('memory dispatcher specifics', () => {
     await expect(
       dispatcher.call({ sessionId: 's1' }, 'sessionIndex', 'list', [{}]),
     ).rejects.toBeInstanceOf(RPCError);
-    app.dispose();
+    await app.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   });
 
@@ -214,7 +214,7 @@ describe('memory dispatcher specifics', () => {
     (list as unknown[]).push({ id: 'polluted' });
     const again = await klient.global.workspaces.list();
     expect(again.some((w) => w.id === 'polluted')).toBe(false);
-    app.dispose();
+    await app.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   });
 });

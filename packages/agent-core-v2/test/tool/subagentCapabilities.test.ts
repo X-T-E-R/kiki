@@ -47,9 +47,9 @@ describe('subagent capability final bindings', () => {
     };
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (externalStart.mock.calls.length > 0) throw new Error('External execution was attempted');
-    ix.dispose();
+    await ix.dispose();
     vi.clearAllMocks();
   });
 

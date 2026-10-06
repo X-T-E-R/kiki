@@ -107,7 +107,7 @@ describe('CronSchedulerService wakeups', () => {
       await vi.advanceTimersByTimeAsync(250);
       expect(reads).toBeGreaterThan(afterFire);
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
       changed.dispose();
       files.dispose();
     }
@@ -186,12 +186,12 @@ describe('print bootstrap scoped Cron scheduling', () => {
         expect(await store.get('workspace', task.id)).toBeUndefined();
         await cron.addTask({ cron: '* * * * *', prompt: 'remains saved after print exit', recurring: false });
       }
-      app.dispose();
+      await app.dispose();
       expect(vi.getTimerCount()).toBe(0);
       await vi.advanceTimersByTimeAsync(120_000);
       expect(enqueue).toHaveBeenCalledTimes(fires);
     } finally {
-      app.dispose(); created.dispose(); vi.useRealTimers();
+      await app.dispose(); created.dispose(); vi.useRealTimers();
       await rm(home, { force: true, recursive: true, maxRetries: 3 });
     }
   });

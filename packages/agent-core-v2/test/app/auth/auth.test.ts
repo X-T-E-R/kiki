@@ -189,8 +189,8 @@ describe('OAuthService', () => {
       },
     });
   });
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });

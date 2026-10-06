@@ -235,7 +235,7 @@ export class RemoteConnectionManager {
       ...input.headers?.range === undefined ? {} : { range: input.headers.range } };
     try {
       const response = await fetch(url, { method, headers, body: rawBody ?? (input.body === undefined ? undefined : JSON.stringify(input.body)), redirect: 'error', signal, duplex: rawBody === undefined ? undefined : 'half' } as RequestInit);
-      if (response.status === 401 || response.status === 403) { await response.body?.cancel(); throw new AdmissionError(response.status, 'connection_not_approved'); }
+      if (response.status === 401) { await response.body?.cancel(); throw new AdmissionError(401, 'connection_not_approved'); }
       return response;
     } catch (error) { this.failed(id, error); throw error; }
   }

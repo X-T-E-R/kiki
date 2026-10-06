@@ -199,7 +199,7 @@ describe('Agent config', () => {
 
     await expect(ctx.rpc.getConfig({})).resolves.toMatchObject({
       systemPrompt: 'Changed profile prompt.',
-      thinkingLevel: 'on',
+      thinkingLevel: 'high',
       modelCapabilities: nextCapability,
     });
   });
@@ -530,7 +530,7 @@ describe('ConfigService env overlay (live)', () => {
     env['KIKI_DISABLE_CRON'] = '0';
     expect(config.get<CronConfig>('cron').disabled).toBe(false);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('reuses the effective config across get() calls until an observed env var changes', async () => {
@@ -560,7 +560,7 @@ describe('ConfigService env overlay (live)', () => {
     delete env['KIKI_DISABLE_CRON'];
     expect(config.get<CronConfig>('cron').disabled).toBe(false);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('applies a scalar section env binding and keeps it out of the file', async () => {
@@ -585,7 +585,7 @@ describe('ConfigService env overlay (live)', () => {
     delete env['KIKI_BUILTIN_PRODUCT_SKILLS'];
     expect(config.get(BUILTIN_PRODUCT_SKILLS_SECTION)).toBe(true);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('keeps the file value when a scalar section env value fails to parse', async () => {
@@ -610,7 +610,7 @@ describe('ConfigService env overlay (live)', () => {
     env['KIKI_BUILTIN_PRODUCT_SKILLS'] = 'on';
     expect(config.get(BUILTIN_PRODUCT_SKILLS_SECTION)).toBe(true);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('keeps the Kimi effort force separate from the configured effort', async () => {
@@ -632,7 +632,7 @@ describe('ConfigService env overlay (live)', () => {
       forcedEffort: 'max',
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('strips the Kimi effort force before persisting thinking config', async () => {
@@ -653,7 +653,7 @@ describe('ConfigService env overlay (live)', () => {
       effort: 'low',
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('deletes a scalar section on replace(undefined) — set(undefined) cannot', async () => {
@@ -677,7 +677,7 @@ describe('ConfigService env overlay (live)', () => {
     await config.replace('defaultModel', undefined);
     expect(config.get<string>('defaultModel')).toBeUndefined();
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -723,7 +723,7 @@ describe('nb_search config section', () => {
 
     expect(config.get<NbSearchConfig>(NB_SEARCH_SECTION)).toEqual(value);
     expect(config.inspect<NbSearchConfig>(NB_SEARCH_SECTION).userValue).toEqual(value);
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('applies canonical null deletion without persisting secret values', async () => {
@@ -740,7 +740,7 @@ describe('nb_search config section', () => {
       defaults: {},
     });
     expect(JSON.stringify(config.get(NB_SEARCH_SECTION))).not.toContain('secret-value');
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('rejects credential values in the config domain', async () => {
@@ -752,7 +752,7 @@ describe('nb_search config section', () => {
         credential_slots: { team: { provider_id: 'exa', env: 'TEAM_EXA_API_KEY', value: 'secret-value' } },
       }),
     ).rejects.toThrow('Invalid nb_search configuration');
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('accepts descriptor options and atomically rejects inline secret options', async () => {
@@ -784,7 +784,7 @@ describe('nb_search config section', () => {
       },
     });
     expect(JSON.stringify(config.get(NB_SEARCH_SECTION))).not.toContain('secret-value');
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -870,7 +870,7 @@ describe('image config section', () => {
     env['KIKI_IMAGE_MAX_EDGE_PX'] = '2500';
     expect(config.get<ImageConfig>(IMAGE_SECTION).maxEdgePx).toBe(2500);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('restores env-owned fields to the raw value on set() while the env var is set', async () => {
@@ -902,7 +902,7 @@ describe('image config section', () => {
       readByteBudget: 262144,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -956,7 +956,7 @@ describe('tokenCounting config section', () => {
       strategy: 'estimated',
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -1033,7 +1033,7 @@ describe('loopControl config section', () => {
       compactionSoftContextSize: 0,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('restores env-owned fields to the raw value on set() while the env var is set', async () => {
@@ -1082,7 +1082,7 @@ describe('loopControl config section', () => {
     expect(onDisk).not.toContain('max_attempts_per_step');
     expect(onDisk).not.toContain('compaction_soft_context_size');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('persists env-bound fields normally when no env var is set', async () => {
@@ -1104,7 +1104,7 @@ describe('loopControl config section', () => {
       maxStepsPerTurn: 50,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('does not strip a field whose env value fails to parse', async () => {
@@ -1127,7 +1127,7 @@ describe('loopControl config section', () => {
       maxStepsPerTurn: 50,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('recomputes env bindings from the env-free base when the env value degrades or is unset', async () => {
@@ -1166,7 +1166,7 @@ describe('loopControl config section', () => {
     delete env[LOOP_MAX_STEPS_PER_TURN_ENV];
     expect(config.getAll()[LOOP_CONTROL_SECTION]).toEqual({ maxStepsPerTurn: 100 });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('ignores the removed max_steps_per_run key without warning or rewriting the file', async () => {
@@ -1198,7 +1198,7 @@ describe('loopControl config section', () => {
     const onDisk = new TextDecoder().decode(await storage.read('', 'config.toml'));
     expect(onDisk).toContain('max_steps_per_run = 100');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('preserves unknown on-disk fields across repeated stripped writes', async () => {
@@ -1230,7 +1230,7 @@ describe('loopControl config section', () => {
       futureField: 1,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('rejects the write when the env-masked on-disk value is invalid', async () => {
@@ -1260,7 +1260,7 @@ describe('loopControl config section', () => {
     expect(onDisk).toContain('max_steps_per_turn = -1');
     expect(onDisk).not.toContain('reserved_context_size');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -1297,7 +1297,7 @@ describe('config behavior', () => {
       expect(persisted).toContain('temperature = 0');
       expect(persisted).toContain('model = "vendor/model:v1"');
       expect(persisted).toContain('max_completion_tokens = 8192');
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 
   it('parses and writes model service_tier while rejecting unknown tier values', async () => {
@@ -1308,7 +1308,7 @@ describe('config behavior', () => {
       expect(new TextDecoder().decode(await storage.read('', 'config.toml'))).toContain('service_tier = "default"');
       await expect(config.set(MODELS_SECTION, { 'example/fast': { serviceTier: 'invalid' } })).rejects.toThrow();
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -1345,7 +1345,7 @@ describe('malformed models config entries', () => {
         'if the alias contains dots, quote the table name (e.g. [models."kimi-k2.7-code"]).',
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('stays silent for quoted dotted aliases and entries with a wire-facing name', async () => {
@@ -1355,7 +1355,7 @@ describe('malformed models config entries', () => {
 
     expect(config.diagnostics()).toEqual([]);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('warns without the dotted-alias hint when the entry has no nested table', async () => {
@@ -1370,7 +1370,7 @@ describe('malformed models config entries', () => {
         "[models] entry 'partial' is missing the 'model' field and cannot be used as a model.",
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('does not mistake schema object fields for a dotted alias', async () => {
@@ -1385,7 +1385,7 @@ describe('malformed models config entries', () => {
         "[models] entry 'partial' is missing the 'model' field and cannot be used as a model.",
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('clears the warning on reload once the entry is fixed', async () => {
@@ -1403,7 +1403,7 @@ describe('malformed models config entries', () => {
 
     expect(config.diagnostics()).toEqual([]);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -1455,7 +1455,7 @@ describe('entry-keyed section salvage', () => {
       acme: { type: 'openai', apiKey: 'sk-acme' },
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('keeps the usable models entries on reload and clears the warning once the entry is fixed', async () => {
@@ -1493,7 +1493,7 @@ describe('entry-keyed section salvage', () => {
       bad: { model: 'm1', maxContextSize: 2000 },
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('retains each last-good provider and model entry while applying valid sibling updates', async () => {
@@ -1538,7 +1538,7 @@ describe('entry-keyed section salvage', () => {
       ]),
     );
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('falls back to the section-level diagnostic when the section value is not a keyed record', async () => {
@@ -1551,7 +1551,7 @@ describe('entry-keyed section salvage', () => {
       message: expect.stringContaining("Ignored invalid config section 'providers'"),
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('still rejects writes that carry an invalid entry', async () => {
@@ -1572,7 +1572,7 @@ describe('entry-keyed section salvage', () => {
       acme: { type: 'openai', apiKey: 'sk-acme' },
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('keeps a salvaged-out entry on disk when another section is written', async () => {
@@ -1586,7 +1586,7 @@ describe('entry-keyed section salvage', () => {
     expect(config.get<ThinkingConfig>(THINKING_SECTION)).toEqual({ enabled: false });
     expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({});
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -1624,7 +1624,7 @@ describe('retry config section', () => {
     });
     expect(config.diagnostics()).toEqual([]);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it.each([
@@ -1645,7 +1645,7 @@ describe('retry config section', () => {
       }),
     );
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('defaults a policy without an explicit retry flag to retrying', async () => {
@@ -1657,7 +1657,7 @@ describe('retry config section', () => {
       policies: [{ match: 'APIConnectionError', retry: true }],
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('accepts a single [retry.policies] table as one policy', async () => {
@@ -1669,7 +1669,7 @@ describe('retry config section', () => {
       policies: [{ match: 'APIConnectionError', maxAttempts: 2, retry: true }],
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('warns at load time about a policy with an invalid match and keeps the other entries', async () => {
@@ -1688,7 +1688,7 @@ describe('retry config section', () => {
       policies: [{ match: '(', retry: false }, { match: 'APIConnectionError', retry: true }],
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('writes policy entries back to config.toml in snake_case', async () => {
@@ -1705,7 +1705,7 @@ describe('retry config section', () => {
     expect(onDisk).toContain('backoff = 200');
     expect(onDisk).not.toContain('maxAttempts');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -1741,7 +1741,7 @@ describe('removed config sections and keys', () => {
       message: `[secondary_model] was removed and is no longer read. ${bindingReplacement}`,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('accepts the default subagent model while warning about removed default_effort', async () => {
@@ -1757,7 +1757,7 @@ describe('removed config sections and keys', () => {
       message: `[subagent] 'default_effort' was removed and is no longer read. ${bindingReplacement}`,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('warns about removed agents keys', async () => {
@@ -1771,7 +1771,7 @@ describe('removed config sections and keys', () => {
       message: `[agents] 'default_subagent_model' was removed and is no longer read. ${bindingReplacement}`,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('stays silent when no removed key is present', async () => {
@@ -1781,7 +1781,7 @@ describe('removed config sections and keys', () => {
 
     expect(config.diagnostics()).toEqual([]);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -1809,7 +1809,7 @@ describe('task config section', () => {
     env[KEEP_ALIVE_ON_EXIT_ENV] = 'true';
     expect(config.get<AgentTaskConfig>('background')?.keepAliveOnExit).toBe(true);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('preserves legacy task limits when the env binding creates a task overlay', async () => {
@@ -1839,7 +1839,7 @@ describe('task config section', () => {
       keepAliveOnExit: true,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('re-applies the maxRunningTasks env binding on every get() and ignores invalid env', async () => {
@@ -1860,7 +1860,7 @@ describe('task config section', () => {
     env[MAX_RUNNING_TASKS_ENV] = '2';
     expect(config.get<AgentTaskConfig>('task')?.maxRunningTasks).toBe(2);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('lets the maxRunningTasks env binding override the config value', async () => {
@@ -1872,7 +1872,7 @@ describe('task config section', () => {
 
     expect(resolveAgentTaskConfig(config)?.maxRunningTasks).toBe(8);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('restores env-owned fields to the raw value on set() while the env var is set', async () => {
@@ -1901,7 +1901,7 @@ describe('task config section', () => {
       killGracePeriodMs: 25,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('does not strip a field whose env value fails to parse', async () => {
@@ -1915,7 +1915,7 @@ describe('task config section', () => {
       keepAliveOnExit: true,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   async function createTaskConfig(env: Record<string, string>, toml?: string) {
@@ -1949,7 +1949,7 @@ describe('task config section', () => {
       printMaxTurns: 5,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('drops the task section with a warning when a print policy value is invalid', async () => {
@@ -1963,7 +1963,7 @@ describe('task config section', () => {
         .diagnostics()
         .some((d) => d.message.includes("Ignored invalid config section 'task'")),
     ).toBe(true);
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('resolvePrintBackgroundMode prefers the explicit mode over keepAliveOnExit', async () => {
@@ -1972,7 +1972,7 @@ describe('task config section', () => {
       '[task]\nprint_background_mode = "exit"\nkeep_alive_on_exit = true\n',
     );
     expect(resolvePrintBackgroundMode(config)).toBe('exit');
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('resolvePrintBackgroundMode falls back to keepAliveOnExit then steer', async () => {
@@ -1984,7 +1984,7 @@ describe('task config section', () => {
     env[KEEP_ALIVE_ON_EXIT_ENV] = 'true';
     expect(resolvePrintBackgroundMode(config)).toBe('drain');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -2032,7 +2032,7 @@ describe('applyPrintModeConfigDefaults', () => {
     expect(PRINT_MAX_STEPS_PER_TURN_DEFAULT).toBeGreaterThan(0);
     expect(PRINT_SUBAGENT_TIMEOUT_MS_DEFAULT).toBeGreaterThan(0);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('does not override keys the user set explicitly', async () => {
@@ -2052,7 +2052,7 @@ describe('applyPrintModeConfigDefaults', () => {
     expect(config.inspect(LOOP_CONTROL_SECTION).memoryValue).toBeUndefined();
     expect(config.inspect('subagent').memoryValue).toBeUndefined();
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('treats a legacy [background] bash_task_timeout_s as user-set', async () => {
@@ -2065,7 +2065,7 @@ describe('applyPrintModeConfigDefaults', () => {
 
     expect(resolveAgentTaskConfig(config)?.bashTaskTimeoutS).toBe(15);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('keeps sibling user keys of a filled section visible', async () => {
@@ -2085,7 +2085,7 @@ describe('applyPrintModeConfigDefaults', () => {
       maxStepsPerTurn: PRINT_MAX_STEPS_PER_TURN_DEFAULT,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('does not override the subagent timeout env override', async () => {
@@ -2096,7 +2096,7 @@ describe('applyPrintModeConfigDefaults', () => {
 
     expect(resolveSubagentTimeoutMs(config)).toBe(3000);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -2149,7 +2149,7 @@ describe('subagent config section', () => {
     env[SUBAGENT_TIMEOUT_ENV] = '3000';
     expect(resolveSubagentTimeoutMs(config)).toBe(3000);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('accepts zero and surrounding whitespace while rejecting empty, negative, and non-integer env values', async () => {
@@ -2164,7 +2164,7 @@ describe('subagent config section', () => {
       expect(resolveSubagentTimeoutMs(config)).toBe(DEFAULT_SUBAGENT_TIMEOUT_MS);
     }
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('formats bounded and disabled timeout values for user-facing descriptions', () => {
@@ -2181,7 +2181,7 @@ describe('subagent config section', () => {
     env[SUBAGENT_TIMEOUT_ENV] = '7000';
     expect(resolveSubagentTimeoutMs(config)).toBe(7000);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('accepts a disabled timeout_ms from config.toml', async () => {
@@ -2192,7 +2192,7 @@ describe('subagent config section', () => {
 
     expect(resolveSubagentTimeoutMs(config)).toBe(0);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('restores the env-owned timeout to the raw value on set() while the env var is set', async () => {
@@ -2206,7 +2206,7 @@ describe('subagent config section', () => {
       timeoutMs: 5000,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('clears the raw section when stripping removes the last persisted field', async () => {
@@ -2227,7 +2227,7 @@ describe('subagent config section', () => {
       allowedTools: [],
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('reads subagent deny_models from config.toml', async () => {
@@ -2240,7 +2240,7 @@ describe('subagent config section', () => {
       denyModels: ['provider/blocked'],
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('binds the dispatched model_alias ahead of the profile pin', async () => {
@@ -2258,7 +2258,7 @@ describe('subagent config section', () => {
     });
     expect(subagentModelSource(binding)).toBe('tool');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('binds the profile pin when the dispatch names no model', async () => {
@@ -2276,7 +2276,7 @@ describe('subagent config section', () => {
     });
     expect(subagentModelSource(binding)).toBe('profile');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('fails closed with MODEL_NOT_CONFIGURED when neither source names a model', async () => {
@@ -2295,7 +2295,7 @@ describe('subagent config section', () => {
     expect(error.message).toContain(SUBAGENT_MODEL_UNBOUND_HINT);
     expect(error.details?.['profile']).toBe('explore');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('names the route in the unbound error when the dispatch targeted one', async () => {
@@ -2313,7 +2313,7 @@ describe('subagent config section', () => {
     expect(error.message).toContain('No model is bound for route "fast-explore"');
     expect(error.details?.['route']).toBe('fast-explore');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('canonicalizes the bound alias through ModelService', async () => {
@@ -2330,7 +2330,7 @@ describe('subagent config section', () => {
       thinking: undefined,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('rejects a dispatched model_alias denied by canonical model identity', async () => {
@@ -2349,7 +2349,7 @@ describe('subagent config section', () => {
 
     expect(error.message).toContain('provider/blocked');
     expect(error.details?.['deniedModels']).toEqual(['provider/blocked']);
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('rejects a profile model_alias listed in deny_models', async () => {
@@ -2362,7 +2362,7 @@ describe('subagent config section', () => {
     );
 
     expect(error.message).toContain('provider/blocked');
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -2403,7 +2403,7 @@ describe('mcp config section', () => {
     env[MCP_STARTUP_TIMEOUT_ENV] = '60000';
     expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBe(60000);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('accepts the Node.js timer upper boundary', () => {
@@ -2439,7 +2439,7 @@ describe('mcp config section', () => {
         toolTimeoutMs: 60000,
       });
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -2451,7 +2451,7 @@ describe('mcp config section', () => {
     env[MCP_STARTUP_TIMEOUT_ENV] = '7000';
     expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBe(7000);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('reads tool_timeout_ms from config.toml and lets the env var win', async () => {
@@ -2465,7 +2465,7 @@ describe('mcp config section', () => {
     env[MCP_TOOL_TIMEOUT_ENV] = '90000';
     expect(config.get<McpSection | undefined>(MCP_SECTION)?.toolTimeoutMs).toBe(90000);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('restores the env-owned timeout to the raw value on set() while the env var is set', async () => {
@@ -2479,7 +2479,7 @@ describe('mcp config section', () => {
       startupTimeoutMs: 5000,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -2511,7 +2511,7 @@ describe('get() freshness for overlay-written domains', () => {
     delete env['SMOKE_OVERLAY_FLAG'];
     expect(config.get('overlayDomain')).toBeUndefined();
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -2550,7 +2550,7 @@ describe('nested env bindings', () => {
       inner: { value: 'file' },
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -2677,7 +2677,7 @@ describe('config section collection fold (D12)', () => {
       config.set(RUNTIME_SECTION, { enabled: 'nope' }, ConfigTarget.Memory),
     ).rejects.toThrow('enabled');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('runs contributed semantic validators before every persisted write path', async () => {
@@ -2703,7 +2703,7 @@ describe('config section collection fold (D12)', () => {
       note: 'accepted',
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('withdraws the section when the provider dies; TOML values survive, builtins untouched', async () => {
@@ -2726,7 +2726,7 @@ describe('config section collection fold (D12)', () => {
       note: 'kept',
     });
 
-    handle.dispose();
+    await handle.dispose();
     await ix.cascade.whenIdle();
 
     expect(registry.getSection(RUNTIME_SECTION)).toBeUndefined();
@@ -2739,7 +2739,7 @@ describe('config section collection fold (D12)', () => {
     expect(registry.getSection(DEFAULT_PERMISSION_MODE_SECTION)).toBe(builtinSection);
     expect(registry.validate(DEFAULT_PERMISSION_MODE_SECTION, 'auto')).toBe('auto');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('logs — never throws — a record colliding with a builtin section, and the builtin survives', async () => {
@@ -2762,13 +2762,13 @@ describe('config section collection fold (D12)', () => {
       expect(registry.getSection(DEFAULT_PERMISSION_MODE_SECTION)).toBe(builtinSection);
       expect(registry.validate(DEFAULT_PERMISSION_MODE_SECTION, 'auto')).toBe('auto');
 
-      handle.dispose();
+      await handle.dispose();
       await ix.cascade.whenIdle();
 
       expect(registry.getSection(DEFAULT_PERMISSION_MODE_SECTION)).toBe(builtinSection);
     } finally {
       resetUnexpectedErrorHandler();
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 });
@@ -2829,7 +2829,7 @@ describe('ConfigService thinking effort max migration', () => {
     });
     expect(readMarkers()['thinking-effort-max-to-high']).toBeDefined();
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('rewrites the first thinking table when a BOM immediately precedes its header', async () => {
@@ -2844,7 +2844,7 @@ describe('ConfigService thinking effort max migration', () => {
       await migrateThinkingEffortMaxToHigh(store, 'fixture.toml', homeDir);
       expect(await store.getText('', 'fixture.toml')).toBe('\uFEFF[thinking]\neffort = "high"\n');
       expect(readMarkers()['thinking-effort-max-to-high']).toBeDefined();
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it('honors a hand-set max once the marker exists', async () => {
@@ -2856,7 +2856,7 @@ describe('ConfigService thinking effort max migration', () => {
 
     expect(config.get<ThinkingConfig>(THINKING_SECTION)).toEqual({ effort: 'max' });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('records the marker even when nothing needs migrating', async () => {
@@ -2865,7 +2865,7 @@ describe('ConfigService thinking effort max migration', () => {
     expect(config.get<ThinkingConfig>(THINKING_SECTION)).toEqual({ effort: 'low' });
     expect(readMarkers()['thinking-effort-max-to-high']).toBeDefined();
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('does not replace another writer during the old thinking migration or mark it complete', async () => {
@@ -2897,7 +2897,7 @@ describe('ConfigService thinking effort max migration', () => {
       expect(injected).toBe(true);
       expect(await other.getText('', 'fixture.toml')).toBe(changed);
       expect(() => readMarkers()).toThrow();
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 });
 
@@ -2962,7 +2962,7 @@ describe('ConfigService replaceSections', () => {
     expect(config.inspect(DEFAULT_MODEL_SECTION).userValue).toBeUndefined();
     expect(config.inspect(THINKING_SECTION).userValue).toEqual({});
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('treats null as clear — the wire encoding JSON transports use for undefined', async () => {
@@ -2985,7 +2985,7 @@ describe('ConfigService replaceSections', () => {
     await config.replace(DEFAULT_MODEL_SECTION, null);
     expect(config.inspect(DEFAULT_MODEL_SECTION).userValue).toBeUndefined();
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('rolls back the credential write when the config CAS rejects a concurrent change', async () => {
@@ -3001,7 +3001,7 @@ describe('ConfigService replaceSections', () => {
       expect(await store.getText('', 'credentials/credentials.toml')).toBe(credentialBefore);
       expect(await store.getText('', 'config.toml')).toBe(configBefore);
       expect(config.inspect(PROVIDERS_SECTION).userValue).toMatchObject({ acme: { apiKey: 'sk-acme' } });
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 
   it('does not use a rejected new key with a concurrently changed provider endpoint after restart', async () => {
@@ -3042,7 +3042,7 @@ describe('ConfigService replaceSections', () => {
         apiKey: 'sk-acme', baseUrl: 'https://other.example.test/v1',
       });
       expect(loaded.get<Record<string, { apiKey?: string }>>(PROVIDERS_SECTION)['acme']?.apiKey).not.toBe('sk-next');
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 
   it('fails closed on restart when credential rollback loses a race with a third writer', async () => {
@@ -3087,7 +3087,7 @@ describe('ConfigService replaceSections', () => {
       expect(provider).toMatchObject({ apiKey: 'sk-third', baseUrl: 'https://other.example.test/v1' });
       expect(resolveModelAuthMaterial({ modelId: 'acme/m1', model: { provider: 'acme', model: 'm1' }, provider, providerName: 'acme' }))
         .toMatchObject({ apiKey: 'sk-third' });
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 
   it('uses an existing provider key across models and endpoint edits without confirmation', async () => {
@@ -3110,7 +3110,7 @@ describe('ConfigService replaceSections', () => {
       expect(resolveModelAuthMaterial({ modelId: 'acme/m2', model: { provider: 'acme', model: 'm2' }, provider: changed, providerName: 'acme' }))
         .toMatchObject({ apiKey: 'sk-acme' });
       expect(await store.getText('', 'credentials/credentials.toml')).toContain('sk-acme');
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 
   it('publishes a rotated provider key on hot reload without disabling model requests', async () => {
@@ -3131,7 +3131,7 @@ describe('ConfigService replaceSections', () => {
         const auth = resolveModelAuthMaterial({ modelId: 'acme/m1', model: { provider: 'acme', model: 'm1' }, provider, providerName: 'acme' });
         expect(auth).toMatchObject({ apiKey: 'sk-rotated' });
       } finally { listener.dispose(); }
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 
   it('keeps a stored provider env-bag API key available without endpoint confirmation', async () => {
@@ -3145,7 +3145,7 @@ describe('ConfigService replaceSections', () => {
         .toMatchObject({ apiKey: 'sk-in-env' });
       expect(await store.getText('', 'config.toml')).not.toContain('sk-in-env');
       expect(await store.getText('', 'credentials/credentials.toml')).toContain('sk-in-env');
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 
   it('restores both files when the config write reports failure after publishing bytes', async () => {
@@ -3168,7 +3168,7 @@ describe('ConfigService replaceSections', () => {
       expect(await store.getText('', 'credentials/credentials.toml')).toBe(credentialBefore);
       expect(await store.getText('', 'config.toml')).toBe(configBefore);
       expect(config.inspect(PROVIDERS_SECTION).userValue).toMatchObject({ acme: { apiKey: 'sk-acme' } });
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 
   it('rebases credential edits from the exact CAS bytes when a second store updates a secret between reads', async () => {
@@ -3198,7 +3198,7 @@ describe('ConfigService replaceSections', () => {
       expect(current).toContain('sk-other');
       expect(current).not.toContain('sk-acme');
       expect(config.get<Record<string, { apiKey: string }>>(PROVIDERS_SECTION)['acme']?.apiKey).toBe('sk-external');
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 
   it('fires change events only after all domains have taken effect', async () => {
@@ -3234,7 +3234,7 @@ describe('ConfigService replaceSections', () => {
       [PROVIDERS_SECTION, MODELS_SECTION, DEFAULT_MODEL_SECTION, THINKING_SECTION].sort(),
     );
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('supports the memory target without touching the persisted user layer', async () => {
@@ -3253,7 +3253,7 @@ describe('ConfigService replaceSections', () => {
     });
     expect(config.inspect<ThinkingConfig>(THINKING_SECTION).userValue).toEqual({ enabled: true });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('leaves the user layer untouched when a later domain fails validation', async () => {
@@ -3276,7 +3276,7 @@ describe('ConfigService replaceSections', () => {
     });
     expect(config.inspect<ThinkingConfig>(THINKING_SECTION).userValue).toEqual({ enabled: true });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -3333,13 +3333,13 @@ describe('ConfigService persistence guards', () => {
       await overwrite(storage, '[thinking]\nenabled = false\n');
       await vi.advanceTimersByTimeAsync(600);
       expect(config.get<ThinkingConfig>(THINKING_SECTION).enabled).toBe(false);
-      disposables.dispose();
+      await disposables.dispose();
       const reads = read.mock.calls.length;
       await overwrite(storage, '[thinking]\nenabled = true\n');
       await vi.advanceTimersByTimeAsync(20_000);
       expect(read).toHaveBeenCalledTimes(reads);
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
       vi.useRealTimers();
     }
   });
@@ -3361,7 +3361,7 @@ describe('ConfigService persistence guards', () => {
       expect(await stored(storage)).toBe(external);
       expect(config.get<ThinkingConfig>(THINKING_SECTION)).toEqual({ enabled: false, effort: 'high' });
       expect(warn).toHaveBeenCalledWith('config write conflicted with an external edit; using latest disk values', { domains: [THINKING_SECTION] });
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 
   it('refuses to persist when the initial load fails and keeps the file untouched', async () => {
@@ -3381,7 +3381,7 @@ describe('ConfigService persistence guards', () => {
     await config.set(THINKING_SECTION, { enabled: true }, ConfigTarget.Memory);
     expect(config.get<ThinkingConfig>(THINKING_SECTION)).toEqual({ enabled: true });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('keeps last-known-good values when a reload hits a broken file, and recovers after the file is fixed', async () => {
@@ -3411,7 +3411,7 @@ describe('ConfigService persistence guards', () => {
     await config.set(THINKING_SECTION, { enabled: true });
     expect(config.get<ThinkingConfig>(THINKING_SECTION)).toEqual({ enabled: true });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('merges external edits observed at persist time instead of clobbering them', async () => {
@@ -3446,7 +3446,7 @@ describe('ConfigService persistence guards', () => {
     expect(changed).toContain(PROVIDERS_SECTION);
     expect(changed).toContain(THINKING_SECTION);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('honors external deletion of both config and credentials instead of resurrecting the in-memory copy', async () => {
@@ -3463,7 +3463,7 @@ describe('ConfigService persistence guards', () => {
     expect(doc).not.toContain('[providers.acme]');
     expect(config.inspect(PROVIDERS_SECTION).userValue).toBeUndefined();
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('rebases a set() merge onto external edits of the same section', async () => {
@@ -3486,7 +3486,7 @@ describe('ConfigService persistence guards', () => {
       gamma: { type: 'openai', apiKey: 'sk-gamma' },
     });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('restores env-masked values from the freshly re-read file instead of the stale snapshot', async () => {
@@ -3506,7 +3506,7 @@ describe('ConfigService persistence guards', () => {
     expect(doc).toContain('default_model = "acme/m2"');
     expect(doc).not.toContain('default_model = "acme/m1"');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('keeps the in-memory snapshots untouched when a write fails validation', async () => {
@@ -3520,7 +3520,7 @@ describe('ConfigService persistence guards', () => {
     expect(config.inspect(THINKING_SECTION).userValue).toEqual({ enabled: true });
     expect(await stored(storage)).toBe('[thinking]\nenabled = false\n');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });
 
@@ -3550,7 +3550,7 @@ describe('credential directory migration', () => {
       expect(await other.getText('', newKey)).toBe(text);
       await migrateCredentialsDirectory(store);
       expect(await other.getText('', newKey)).toBe(text);
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 
   it('rejects divergent destinations without changing either file', async () => {
@@ -3561,7 +3561,7 @@ describe('credential directory migration', () => {
       await expect(migrateCredentialsDirectory(store)).rejects.toThrow('differ');
       expect(await other.getText('', oldKey)).toBe(text);
       expect(await other.getText('', newKey)).toContain('"other"');
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 
   it('preserves a concurrent edit of the old file for manual recovery', async () => {
@@ -3576,7 +3576,7 @@ describe('credential directory migration', () => {
       await expect(migrateCredentialsDirectory(store)).rejects.toThrow('changed during migration');
       expect(await other.getText('', oldKey)).toBe('updated');
       expect(await other.getText('', newKey)).toBe(text);
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 });
 
@@ -3607,7 +3607,7 @@ describe('legacy credential migration failure recovery', () => {
       expect(await other.getText('', backups[0]!)).toBe(legacy);
       await migrateConfigCredentials(store, 'fixture.toml', stubLog());
       expect(await other.list('', 'fixture.toml.bak-')).toEqual(backups);
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 
   it('resumes a crash between the two file writes without replacing the already moved secret', async () => {
@@ -3618,7 +3618,7 @@ describe('legacy credential migration failure recovery', () => {
       await migrateConfigCredentials(store, 'fixture.toml', stubLog());
       expect(await other.getText('', 'credentials/credentials.toml')).toBe(moved);
       expect(await other.getText('', 'fixture.toml')).not.toContain('sk-legacy');
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 
   it('does not leave moved secrets after a concurrent config change rejects the second CAS', async () => {
@@ -3639,7 +3639,7 @@ describe('legacy credential migration failure recovery', () => {
       const backups = await other.list('', 'fixture.toml.bak-');
       expect(backups).toHaveLength(1);
       expect(await other.getText('', backups[0]!)).toBe(legacy);
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 
   it('preserves a concurrently rotated inline key and migrates it on the next attempt', async () => {
@@ -3664,7 +3664,7 @@ describe('legacy credential migration failure recovery', () => {
       expect(await other.getText('', 'credentials/credentials.toml')).toContain('sk-rotated');
       expect(await other.getText('', 'credentials/credentials.toml')).not.toContain('sk-legacy');
       expect(await other.getText('', 'fixture.toml')).not.toContain('sk-rotated');
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 
   it('refuses to overwrite a concurrent credentials update during rollback or on the next migration', async () => {
@@ -3696,7 +3696,7 @@ describe('legacy credential migration failure recovery', () => {
       expect(await other.list('', 'fixture.toml.bak-')).toEqual(backups);
       expect(await other.getText('', 'fixture.toml')).toBe(rotated);
       expect(await other.getText('', 'credentials/credentials.toml')).toBe(externalCredentials);
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 
   it('merges credentials at distinct secret paths without treating them as conflicts', async () => {
@@ -3708,7 +3708,7 @@ describe('legacy credential migration failure recovery', () => {
       expect(migrated).toContain('sk-other');
       expect(migrated).toContain('sk-legacy');
       expect(await other.getText('', 'fixture.toml')).not.toContain('sk-legacy');
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 
   it('retains migrated credentials when another writer removes the legacy inline key before config CAS', async () => {
@@ -3726,7 +3726,7 @@ describe('legacy credential migration failure recovery', () => {
       await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('credentials retained');
       expect(await other.getText('', 'fixture.toml')).toBe(external);
       expect(await other.getText('', 'credentials/credentials.toml')).toContain('sk-legacy');
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 
   it('refuses to replace credentials changed by another store after the migration snapshot', async () => {
@@ -3746,7 +3746,7 @@ describe('legacy credential migration failure recovery', () => {
       expect(interleaved).toBe(true);
       expect(await other.getText('', 'fixture.toml')).toBe(legacy);
       expect(await other.getText('', 'credentials/credentials.toml')).toBe(external);
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 
   it('rolls back both files when the config write fails after publishing the migrated bytes', async () => {
@@ -3764,7 +3764,7 @@ describe('legacy credential migration failure recovery', () => {
       await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('config failed after publish');
       expect(await other.getText('', 'fixture.toml')).toBe(legacy);
       expect(await other.getText('', 'credentials/credentials.toml')).toBeUndefined();
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 
   it('does not change config if writing credentials fails after publishing', async () => {
@@ -3782,7 +3782,7 @@ describe('legacy credential migration failure recovery', () => {
       await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('credentials failed after publish');
       expect(await other.getText('', 'fixture.toml')).toBe(legacy);
       expect(await other.getText('', 'credentials/credentials.toml')).toBeUndefined();
-    } finally { first.dispose(); second.dispose(); }
+    } finally { await first.dispose(); await second.dispose(); }
   });
 });
 
@@ -3829,7 +3829,7 @@ describe('explicit model generation migration', () => {
       expect((await storage.read('', 'fixture.toml'))?.slice(0, 3)).toEqual(new Uint8Array([0xEF, 0xBB, 0xBF]));
       await restoreModelGenerationMigration(store, 'fixture.toml', prepared, backupKey!);
       expect(await storage.read('', 'fixture.toml')).toEqual(raw);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it('migrates a BOM immediately followed by the first models table without moving its byte offsets', async () => {
@@ -3845,7 +3845,7 @@ describe('explicit model generation migration', () => {
       expect(await store.getText('', backupKey!)).toBe(original);
       await restoreModelGenerationMigration(store, 'fixture.toml', prepared, backupKey!);
       expect(await storage.read('', 'fixture.toml')).toEqual(new TextEncoder().encode(original));
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it('keeps the first BOM-prefixed scalar byte offset while migrating a later models table', async () => {
@@ -3856,7 +3856,7 @@ describe('explicit model generation migration', () => {
       const prepared = await previewModelGenerationMigration(store, 'fixture.toml');
       expect(prepared.preview.changes).toEqual([{ modelId: 'short.alias', fields: ['temperature'] }]);
       expect(prepared.nextText.startsWith('\uFEFFtitle = "keep"\n')).toBe(true);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it('previews without writing, adds only unambiguous copies and restores from a byte-exact backup', async () => {
@@ -3875,7 +3875,7 @@ describe('explicit model generation migration', () => {
       expect(await store.getText('', 'fixture.toml')).toContain('max_completion_tokens = 8192');
       await restoreModelGenerationMigration(store, 'fixture.toml', prepared, applied.backupKey!);
       expect(await store.getText('', 'fixture.toml')).toBe(text);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it('detects stale previews and refuses recovery after another writer changes the target', async () => {
@@ -3889,7 +3889,7 @@ describe('explicit model generation migration', () => {
       const { backupKey } = await applyModelGenerationMigration(store, 'fixture.toml', prepared);
       await store.setText('', 'fixture.toml', `${prepared.nextText}\n[unrelated]\nvalue = 2\n`);
       await expect(restoreModelGenerationMigration(store, 'fixture.toml', prepared, backupKey!)).rejects.toThrow('refusing to overwrite');
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it('removes the sensitive orphan backup when config CAS definitively refuses publication', async () => {
@@ -3911,8 +3911,8 @@ describe('explicit model generation migration', () => {
         await expect(applyModelGenerationMigration(store, 'fixture.toml', prepared)).rejects.toThrow('changed during migration');
         expect(await secondStore.getText('', 'fixture.toml')).toBe(external);
         expect(await secondStore.list('', 'fixture.toml.generation-backup-')).toEqual([]);
-      } finally { other.dispose(); }
-    } finally { ix.dispose(); }
+      } finally { await other.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it('does not roll back another writer that published identical migrated bytes before our rejected CAS', async () => {
@@ -3937,7 +3937,7 @@ describe('explicit model generation migration', () => {
       expect(interleaved).toBe(true);
       expect(await second.getText('', 'fixture.toml')).toBe(prepared.nextText);
       expect(await second.list('', 'fixture.toml.generation-backup-')).toEqual([]);
-    } finally { ix.dispose(); other.dispose(); }
+    } finally { await ix.dispose(); await other.dispose(); }
   });
 
   it('keeps config and backup intact for inspection after an ambiguous post-publish error', async () => {
@@ -3959,7 +3959,7 @@ describe('explicit model generation migration', () => {
       const backups = await store.list('', 'fixture.toml.generation-backup-');
       expect(backups).toHaveLength(1);
       expect(await store.getText('', backups[0]!)).toBe(text);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it('accepts a config without a models table as a read-only no-op preview', () => {
@@ -4023,7 +4023,7 @@ describe('space config layers', () => {
       await f.config.reload();
       expect(f.config.get('spaceUi')).toMatchObject({ defaultSkin: 'paper', landingPage: '/bots' });
       expect(f.config.origins('spaceUi')['defaultSkin']).toBe('preset');
-    } finally { f.disposables.dispose(); }
+    } finally { await f.disposables.dispose(); }
   });
 
   it('loads unknown preset spaces safely with a diagnostic and baseline defaults', async () => {
@@ -4032,7 +4032,7 @@ describe('space config layers', () => {
       expect(f.config.get('spaceUi')).toMatchObject({ defaultSkin: 'paper', landingPage: '/new' });
       expect(f.config.get('raw')).toEqual({ local: true });
       expect(f.config.diagnostics().some((item) => item.message.includes('Unknown space preset future'))).toBe(true);
-    } finally { f.disposables.dispose(); }
+    } finally { await f.disposables.dispose(); }
   });
 
   it('merges scalar, table and named entries; replaces ordered arrays and keeps disabled entries', async () => {
@@ -4043,7 +4043,7 @@ describe('space config layers', () => {
       expect(f.config.origins('raw')).toMatchObject({ 'flags.a': 'base', 'flags.b': 'home', 'items.alpha.enabled': 'home', 'items.alpha.label': 'base', hooks: 'home' });
       expect(f.config.origins('defaultModel')).toEqual({ '': 'home' });
       expect(await f.homeStore.getText('', 'config.toml')).not.toContain('label = "base"');
-    } finally { f.disposables.dispose(); }
+    } finally { await f.disposables.dispose(); }
   });
 
   it('masks inherited named providers and models with enabled=false without modifying base', async () => {
@@ -4057,7 +4057,7 @@ describe('space config layers', () => {
       expect(f.config.get<Record<string, unknown>>('providers')).toHaveProperty('acme');
       expect(f.config.get<Record<string, unknown>>('models')).toHaveProperty('acme/fast');
       expect(await f.baseStore.getText('', 'config.toml')).toContain('type = "openai"');
-    } finally { f.disposables.dispose(); }
+    } finally { await f.disposables.dispose(); }
   });
 
   it('merges named providers and model aliases without requiring complete home records', async () => {
@@ -4070,7 +4070,7 @@ describe('space config layers', () => {
       expect(f.config.get<Record<string, unknown>>('providers')).toMatchObject({ acme: { type: 'openai', defaultModel: 'fast' } });
       expect(await f.baseStore.getText('', 'config.toml')).toContain('base_url = "https://example.com/v1"');
       expect(await f.homeStore.getText('', 'config.toml')).not.toContain('base_url');
-    } finally { f.disposables.dispose(); }
+    } finally { await f.disposables.dispose(); }
   });
 
   it('inherits shared credentials and restores a credential override without changing base', async () => {
@@ -4085,7 +4085,7 @@ describe('space config layers', () => {
       expect(f.config.get<Record<string, ProviderConfig>>('providers')['acme']?.apiKey).toBe('sk-base');
       expect(f.config.origins('providers')['acme.apiKey']).toBe('base');
       expect(await f.baseStore.getText('', 'credentials/credentials.toml')).toContain('sk-base');
-    } finally { f.disposables.dispose(); }
+    } finally { await f.disposables.dispose(); }
   });
 
   it('strips base inline and migrated secrets when the child isolates credentials', async () => {
@@ -4100,7 +4100,7 @@ describe('space config layers', () => {
       await f.config.reload();
       expect(f.config.get<Record<string, ProviderConfig>>('providers')['acme']?.apiKey).toBe('sk-home');
       expect(await f.baseStore.getText('', 'config.toml')).toContain('sk-inline-base');
-    } finally { f.disposables.dispose(); }
+    } finally { await f.disposables.dispose(); }
   });
 
   it('unions only opted-in path sets and replaces other arrays', async () => {
@@ -4108,7 +4108,7 @@ describe('space config layers', () => {
     try {
       expect(f.config.get('extraSkillDirs')).toEqual(['/base', '/same', '/home']);
       expect(f.config.get<Record<string, unknown>>('raw')['hooks']).toEqual(['home']);
-    } finally { f.disposables.dispose(); }
+    } finally { await f.disposables.dispose(); }
   });
 
   it('writes home-only partial tables and restores inheritance by removing one key', async () => {
@@ -4122,7 +4122,7 @@ describe('space config layers', () => {
       expect(f.config.get('raw')).toMatchObject({ flags: { a: 1, b: 4 } });
       expect(await f.baseStore.getText('', 'config.toml')).toContain('b = 2');
       expect(await f.homeStore.getText('', 'config.toml')).toContain('b = 4');
-    } finally { f.disposables.dispose(); }
+    } finally { await f.disposables.dispose(); }
   });
 
   it('gives environment precedence and tracks changing env origins', async () => {
@@ -4133,7 +4133,7 @@ describe('space config layers', () => {
       env['KIKI_BUILTIN_PRODUCT_SKILLS'] = 'on';
       expect(f.config.get(BUILTIN_PRODUCT_SKILLS_SECTION)).toBe(true);
       expect(f.config.origins(BUILTIN_PRODUCT_SKILLS_SECTION)).toEqual({ '': 'env' });
-    } finally { f.disposables.dispose(); }
+    } finally { await f.disposables.dispose(); }
   });
 
   it('retains the previous base on parse failure without blocking home writes, then reloads external changes', async () => {
@@ -4148,7 +4148,7 @@ describe('space config layers', () => {
       await f.baseStore.setText('', 'config.toml', 'default_model = "second"\n');
       await expect.poll(() => f.config.get('defaultModel')).toBe('second');
       expect(f.config.diagnostics().some((item) => item.message.includes('Base configuration unavailable'))).toBe(false);
-    } finally { f.disposables.dispose(); }
+    } finally { await f.disposables.dispose(); }
   });
 
   it('serializes rapid writes with watcher reloads so acknowledged values remain current', async () => {
@@ -4159,6 +4159,6 @@ describe('space config layers', () => {
       await f.config.reload();
       expect(f.config.get('defaultModel')).toBe('local-11');
       expect(await f.homeStore.getText('', 'config.toml')).toContain('local-11');
-    } finally { f.disposables.dispose(); }
+    } finally { await f.disposables.dispose(); }
   });
 });

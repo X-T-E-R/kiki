@@ -1,4 +1,6 @@
 import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
 import { ILogService } from '#/_base/log/log';
@@ -59,12 +61,15 @@ export class SessionTitleService extends Disposable implements ISessionTitleServ
       if (handle.id === MAIN_AGENT_ID) this.attachMain(handle);
     }));
     this._register(this.agentLifecycle.onDidDispose((id) => {
-      if (id === MAIN_AGENT_ID) this.mainSubscriptions.clear();
+      if (id !== MAIN_AGENT_ID) return;
+      const result = this.mainSubscriptions.clear();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
     }));
   }
 
   private attachMain(handle: IAgentScopeHandle): void {
-    this.mainSubscriptions.clear();
+    const previous = this.mainSubscriptions.clear();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     const bus = handle.accessor.get(IEventBus);
     const queue = handle.accessor.get(IAgentPromptService).list();
     let firstUserSeen = handle.accessor.get(IAgentStateService).get(turnKey).nextTurnId > 0 ||

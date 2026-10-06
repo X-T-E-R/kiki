@@ -778,7 +778,7 @@ describe('history navigation source rows', () => {
       expect(pendingSearch.warning).toContain('unfinished record');
       await appendFile(wirePath, '"metadata"}\n');
       expect((await run({ step_id: 't782.14' })).data.status).toBe('no_match');
-    } finally { ix.dispose(); await db.close(); await rm(dir, { recursive: true, force: true }); }
+    } finally { await ix.dispose(); await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 
   it('continues newest List preparation instead of returning a prefix as the newest directory', async () => {

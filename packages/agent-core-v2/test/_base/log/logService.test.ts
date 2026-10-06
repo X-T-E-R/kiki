@@ -175,7 +175,7 @@ describe('AppLogService (scoped)', () => {
     const text = await readFile(resolveGlobalLogPath(homeDir), 'utf-8');
     expect(text).toContain('global event');
     expect(text).toContain('requestId=g1');
-    host.dispose();
+    await host.dispose();
   });
 
   it('reads its level from ILogOptions', async () => {
@@ -185,7 +185,7 @@ describe('AppLogService (scoped)', () => {
     await log.flush();
     const text = await readFile(resolveGlobalLogPath(homeDir), 'utf-8');
     expect(text).toContain('debug-shown');
-    host.dispose();
+    await host.dispose();
   });
 
   it('setLevel changes filtering at runtime', async () => {
@@ -199,6 +199,6 @@ describe('AppLogService (scoped)', () => {
     const text = await readFile(resolveGlobalLogPath(homeDir), 'utf-8');
     expect(text).toContain('shown');
     expect(text).not.toContain('hidden');
-    host.dispose();
+    await host.dispose();
   });
 });

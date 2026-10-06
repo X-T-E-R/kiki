@@ -317,7 +317,7 @@ describe('ThreadCommunicationService', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
@@ -384,7 +384,7 @@ describe('ThreadCommunicationService', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = loop.hooks.onWillBeginStep.register('hold-room-test-turn', async (_event, next) => {
-      hook.dispose();
+      await hook.dispose();
       await held;
       await next();
     }, { before: 'context-injector' });

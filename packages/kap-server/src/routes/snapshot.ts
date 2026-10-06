@@ -164,7 +164,7 @@ async function assembleSnapshotSource(
   try {
     return await assembleSnapshotFromLease(core, broadcaster, sessionId, mode, lease);
   } finally {
-    lease.dispose();
+    await lease.dispose();
   }
 }
 

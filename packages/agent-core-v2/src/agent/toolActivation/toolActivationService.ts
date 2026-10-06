@@ -1,6 +1,8 @@
 import { type CollectionView } from '#/_base/di/collection';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -165,7 +167,8 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
     const registration = this.registrations.get(record);
     if (registration === undefined) return;
     this.registrations.delete(record);
-    registration.dispose();
+    const result = registration.dispose();
+    if (isPromiseLike(result)) result.catch(onUnexpectedError);
   }
 }
 

@@ -63,10 +63,10 @@ export class SessionLogService extends BoundLogger implements ILogService {
     return this.sink.close();
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     this.sink.flushSync();
     trackLogClose(this.sink.close());
-    super.dispose();
+    return super.dispose();
   }
 }
 

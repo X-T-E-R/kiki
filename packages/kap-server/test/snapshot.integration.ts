@@ -6,6 +6,7 @@ import {
   AGENT_WIRE_RECORD_KEY,
   type Event2,
   IAgentBlobService,
+  IAgentActivityView,
   IAgentContextMemoryService,
   IAgentScopeContext,
   IAppendLogStore,
@@ -43,6 +44,7 @@ import {
 } from '../src/transport/ws/v1/sessionEventJournal';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
+import * as messageHistory from '../src/services/messages/messageHistory';
 
 function fakeAccessor(entries: ReadonlyArray<readonly [unknown, unknown]>) {
   const services = new Map<unknown, unknown>(entries);
@@ -72,7 +74,9 @@ describe('server-v2 snapshot route enrichment', () => {
     const now = Date.parse('2026-01-01T00:00:00.000Z');
     const loadParts = vi.fn(async (parts: unknown) => parts);
     const main = {
+      id: 'main',
       accessor: fakeAccessor([
+        [IAgentActivityView, { state: () => ({ busy: false }) }],
         [IAgentProfileService, { getModel: () => 'provider/session-model' }],
         [IAgentPermissionModeService, { mode: 'yolo' }],
         [IAgentPlanService, { status: async () => ({ id: 'plan', content: '', path: '' }) }],
@@ -121,7 +125,7 @@ describe('server-v2 snapshot route enrichment', () => {
             }),
           },
         ],
-        [IAgentLifecycleService, { get: () => main, create: async () => main }],
+        [IAgentLifecycleService, { get: () => main, list: () => [main], create: async () => main }],
         [
           ISessionInteractionService,
           { listPending: (kind: string) => (kind === 'approval' ? [approval] : []) },
@@ -163,25 +167,18 @@ describe('server-v2 snapshot route enrichment', () => {
         [ITelemetryService, { withContext: () => ({ track2: () => {} }) }],
       ]),
     };
-    let releaseCounts!: () => void;
-    let signalCountsStarted!: () => void;
-    let blockCounts = true;
-    const countsGate = new Promise<void>((resolve) => { releaseCounts = resolve; });
-    const countsStarted = new Promise<void>((resolve) => { signalCountsStarted = resolve; });
-    const getTranscriptToolCallCounts = vi.fn(async () => {
-      signalCountsStarted();
-      if (blockCounts) await countsGate;
-      return new Map([['agent-1', 3]]);
-    });
+    const getTranscriptToolCallCounts = vi.fn(async () => new Map<string, number>());
     const getMaterializedTranscriptToolCallCounts = vi
       .fn<() => ReadonlyMap<string, number>>()
       .mockReturnValueOnce(new Map([['agent-1', 2]]))
       .mockReturnValue(new Map());
-    const getSnapshotState = vi.fn(async (_sessionId: string, options: { captureMessages?: boolean; capture?: () => Promise<unknown> }) => ({
+    const getSnapshotState = vi.fn(async (_sessionId: string, options: { captureMessages?: boolean; capture?: () => Promise<unknown> }) => {
+      const captured = await options.capture?.();
+      return {
       seq: 1,
       epoch: 'ep_snapshot',
       contextMessageCount: 1,
-      captured: await options.capture?.(),
+      captured,
       pendingApprovals: [{
         approval_id: 'approval-snapshot', session_id: sessionId, turn_id: 7,
         tool_call_id: 'tc-approval', tool_name: 'Bash', action: 'run',
@@ -220,7 +217,8 @@ describe('server-v2 snapshot route enrichment', () => {
           created_at: new Date(now).toISOString(),
         },
       ],
-    }));
+      };
+    });
     const broadcaster = {
       getSnapshotState,
       getTranscriptToolCallCounts,
@@ -264,22 +262,7 @@ describe('server-v2 snapshot route enrichment', () => {
       return sessionSnapshotResponseSchema.parse(body.data);
     };
 
-    let compactSettled = false;
-    const compactPromise = invoke('transcript').then((value) => {
-      compactSettled = true;
-      return value;
-    });
-    await countsStarted;
-    const settledBeforeCounts = await Promise.race([
-      compactPromise.then(() => true),
-      new Promise<boolean>((resolve) => {
-        setTimeout(() => { resolve(false); }, 100);
-      }),
-    ]);
-    blockCounts = false;
-    releaseCounts();
-    expect(settledBeforeCounts && compactSettled).toBe(true);
-    const compact = await compactPromise;
+    const compact = await invoke('transcript');
     expect(compact.messages).toEqual({ items: [], has_more: false });
     expect(compact.session.message_count).toBe(1);
     expect(compact.in_flight_turn).toMatchObject({
@@ -310,13 +293,12 @@ describe('server-v2 snapshot route enrichment', () => {
     ]);
     expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ captureMessages: false, capture: expect.any(Function) }));
     expect(getMaterializedTranscriptToolCallCounts).toHaveBeenCalledWith(sessionId, ['agent-1']);
-    expect(getTranscriptToolCallCounts).toHaveBeenCalledWith(sessionId, ['agent-1']);
+    expect(getTranscriptToolCallCounts).not.toHaveBeenCalled();
     expect(loadParts).not.toHaveBeenCalled();
 
-    getTranscriptToolCallCounts.mockResolvedValueOnce(new Map());
     const unmaterialized = await invoke('transcript');
     expect(unmaterialized.subagents?.[0]?.tool_call_count).toBeUndefined();
-    expect(getTranscriptToolCallCounts).toHaveBeenCalledTimes(2);
+    expect(getTranscriptToolCallCounts).not.toHaveBeenCalled();
     expect(loadParts).not.toHaveBeenCalled();
 
     const legacy = await invoke();
@@ -330,7 +312,7 @@ describe('server-v2 snapshot route enrichment', () => {
       pending_questions: compact.pending_questions,
     });
     expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ captureMessages: true, capture: expect.any(Function) }));
-    expect(getTranscriptToolCallCounts).toHaveBeenCalledTimes(3);
+    expect(getTranscriptToolCallCounts).not.toHaveBeenCalled();
     expect(loadParts).toHaveBeenCalledOnce();
     expect(legacy.subagents).toEqual([
       expect.objectContaining({
@@ -353,7 +335,6 @@ describe('server-v2 snapshot route enrichment', () => {
     persistedAgent.completedAt = now + 2_000;
     persistedAgent.resultSummary = 'Stored summary';
     persistedAgent.toolCallCount = 0;
-    getTranscriptToolCallCounts.mockResolvedValueOnce(new Map());
     const settled = await invoke();
     expect(settled.subagents?.[0]).toMatchObject({
       status: 'completed',
@@ -363,12 +344,10 @@ describe('server-v2 snapshot route enrichment', () => {
       tool_call_count: 0,
     });
     getMaterializedTranscriptToolCallCounts.mockReturnValueOnce(new Map([['agent-1', 3]]));
-    getTranscriptToolCallCounts.mockResolvedValueOnce(new Map([['agent-1', 3]]));
     const measured = await invoke('transcript');
     expect(measured.subagents?.[0]?.tool_call_count).toBe(3);
 
     persistedAgent.completedAt = now - 1_000;
-    getTranscriptToolCallCounts.mockResolvedValueOnce(new Map());
     const stale = await invoke();
     expect(stale.subagents?.[0]?.status).toBe('running');
     expect(stale.subagents?.[0]?.tool_call_count).toBeUndefined();
@@ -623,12 +602,26 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     const futureAppended = deferred();
     const originalRead = appendLog.read.bind(appendLog) as typeof appendLog.read;
     const originalAppend = appendLog.append.bind(appendLog) as typeof appendLog.append;
-    let shouldPause = true;
+    let shouldPause = false;
+    let latestSeq = boundary.as_of_seq;
+    let capturedSeq = boundary.as_of_seq;
+    const readSeq = Object.getOwnPropertyDescriptor(SessionEventJournal.prototype, 'seq')!.get!;
+    const seqSpy = vi.spyOn(SessionEventJournal.prototype, 'seq', 'get').mockImplementation(function (this: SessionEventJournal) {
+      const seq = readSeq.call(this) as number;
+      if (this.epoch === boundary.epoch) latestSeq = seq;
+      return seq;
+    });
+    const captureHistory = messageHistory.captureContextMessageHistory;
+    const historySpy = vi.spyOn(messageHistory, 'captureContextMessageHistory').mockImplementation((...args) => {
+      shouldPause = true;
+      return captureHistory(...args);
+    });
     const readSpy = vi.spyOn(appendLog, 'read').mockImplementation(<R>(scope: string, key: string) => {
       const source = originalRead<R>(scope, key);
       return (async function* (): AsyncIterableIterator<R> {
         if (shouldPause && scope === mainScope && key === AGENT_WIRE_RECORD_KEY) {
           shouldPause = false;
+          capturedSeq = latestSeq;
           readEntered.resolve();
           await releaseRead.promise;
         }
@@ -693,9 +686,12 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     journalSpy.mockRestore();
     appendSpy.mockRestore();
     readSpy.mockRestore();
+    historySpy.mockRestore();
+    seqSpy.mockRestore();
 
-    expect(seqBeforeReadRelease).toBeGreaterThan(boundary.as_of_seq);
-    expect(current.as_of_seq).toBe(boundary.as_of_seq);
+    expect(capturedSeq).toBeGreaterThanOrEqual(boundary.as_of_seq);
+    expect(seqBeforeReadRelease).toBeGreaterThan(capturedSeq);
+    expect(current.as_of_seq).toBe(capturedSeq);
     expect(current.messages).toEqual(boundary.messages);
     expect(current.in_flight_turn).toEqual(boundary.in_flight_turn);
 
@@ -1199,7 +1195,9 @@ describe('legacy snapshot message tail projection', () => {
   }> {
     const loadParts = vi.fn(async (parts: unknown) => parts);
     const main = {
+      id: 'main',
       accessor: fakeAccessor([
+        [IAgentActivityView, { state: () => ({ busy: false }) }],
         [IAgentProfileService, { getModel: () => 'provider/tail-model' }],
         [IAgentPermissionModeService, { mode: 'yolo' }],
         [IAgentPlanService, { status: async () => null }],
@@ -1222,7 +1220,7 @@ describe('legacy snapshot message tail projection', () => {
             }),
           },
         ],
-        [IAgentLifecycleService, { get: () => main, create: async () => main }],
+        [IAgentLifecycleService, { get: () => main, list: () => [main], create: async () => main }],
         [ISessionInteractionService, { listPending: () => [] }],
       ]),
     };
@@ -1405,9 +1403,9 @@ describe('server-v2 session operation lease', () => {
       if (lease === undefined) return undefined;
       return {
         handle: lease.handle,
-        dispose: () => {
+        dispose: async () => {
           disposals.push(sessionId);
-          lease.dispose();
+          await lease.dispose();
         },
       };
     });

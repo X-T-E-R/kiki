@@ -71,7 +71,7 @@ describe('Agent loop', () => {
     const waiting = loop.settled().then(() => { settled = true; });
     await Promise.resolve();
     expect(settled).toBe(false);
-    admission!.dispose();
+    await admission!.dispose();
     await waiting;
     expect(settled).toBe(true);
   });
@@ -85,7 +85,7 @@ describe('Agent loop', () => {
     expect(admission).toBeDefined();
     const prepared = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'prepared' }], toolCalls: [] }, { admission: 'newTurn' }), { at: 'head' });
     expect(loop.status().state).toBe('idle');
-    admission!.dispose();
+    await admission!.dispose();
     const turn = (await prepared.assigned).turn;
     expect((await standalone.assigned).turn.id).toBe(turn.id);
     expect((await turn.result).type).toBe('completed');
@@ -162,7 +162,7 @@ describe('Agent loop', () => {
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
       await ctx.untilTurnEnd();
     } finally {
-      for (const subscription of subscriptions) subscription.dispose();
+      for (const subscription of subscriptions) await subscription.dispose();
     }
 
     expect(assistantDeltas.map((event) => event.delta)).toEqual(['Hello, ', 'world']);
@@ -258,7 +258,7 @@ describe('Agent loop', () => {
     expect(next.id).not.toBe(turn.id);
     expect((await next.result).type).toBe('completed');
     expect(events.map((event) => event.turnId)).toEqual([turn.id, next.id]);
-    subscription.dispose();
+    await subscription.dispose();
   });
 
   it('automatically recovers a transient final flush without replaying execution', async () => {
@@ -305,7 +305,7 @@ describe('Agent loop', () => {
     expect(prompts.list().active).toBeUndefined();
     expect(ended).toHaveLength(1);
     expect((await ctx.persistedWireRecords()).filter((entry) => entry.type === 'llm.request')).toHaveLength(1);
-    subscription.dispose();
+    await subscription.dispose();
     ctx.wire.flush = originalFlush;
   });
 
@@ -332,7 +332,7 @@ describe('Agent loop', () => {
     expect(ended).toHaveLength(1);
     expect(ctx.llmCalls).toHaveLength(1);
     expect((await ctx.persistedWireRecords()).filter((entry) => entry.type === 'turn.ended')).toHaveLength(1);
-    subscription.dispose();
+    await subscription.dispose();
     ctx.wire.flush = originalFlush;
   });
 
@@ -565,7 +565,7 @@ describe('Agent loop', () => {
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
     expect(loop.status().lastTurnResult).toBe('cancelled');
-    subscription.dispose();
+    await subscription.dispose();
 
     const begins = wireLoopEvents(ctx, 'step.begin');
     const ends = wireLoopEvents(ctx, 'step.end');
@@ -972,7 +972,7 @@ describe('Agent loop', () => {
 
     expect([first.state, second.state, third.state]).toEqual(['running', 'queued', 'queued']);
     await Promise.all([first.result, second.result, third.result]);
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(events).toEqual([
       'turn.started:0',
@@ -1006,7 +1006,7 @@ describe('Agent loop', () => {
     expect(loop.tryAcquireQuiescence()).toBeUndefined();
     expect(active.signal.aborted).toBe(false);
 
-    hook.dispose();
+    await hook.dispose();
     ctx.mockNextResponse({ type: 'text', text: 'completed normally' });
     release();
     await expect(active.result).resolves.toMatchObject({ type: 'completed' });
@@ -1027,7 +1027,7 @@ describe('Agent loop', () => {
     expect(loop.status()).toMatchObject({ state: 'idle', hasPendingRequests: true });
 
     ctx.mockNextResponse({ type: 'text', text: 'after undo' });
-    lease?.dispose();
+    await lease?.dispose();
     const resumed = (await held.assigned).turn;
     await expect(resumed.result).resolves.toMatchObject({ type: 'completed' });
   });
@@ -1041,7 +1041,7 @@ describe('Agent loop', () => {
     await expect(held.assigned).rejects.toBeDefined();
     expect(loop.hasPendingRequests()).toBe(false);
 
-    lease?.dispose();
+    await lease?.dispose();
     expect(loop.status().state).toBe('idle');
   });
 
@@ -1131,7 +1131,7 @@ describe('Agent loop', () => {
     expect(cancelledReceipt.abort()).toBe(true);
     await expect(cancelledTurn.result).resolves.toMatchObject({ type: 'cancelled', steps: 0 });
     await Promise.all([first.result, third.result]);
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(started).toEqual([0, 2]);
     expect(ctx.contextData().history).not.toContainEqual(
@@ -1178,7 +1178,7 @@ describe('Agent loop', () => {
     await subagent.result;
     const user = (await loop.enqueue(nextTurnMessage('hi')).assigned).turn;
     await user.result;
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(prompts).toEqual([undefined, 'scan the repo', 'hi']);
   });
@@ -1210,7 +1210,7 @@ describe('Agent loop', () => {
       ).assigned
     ).turn;
     await turn.result;
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(payloads).toEqual([
       [
@@ -1249,7 +1249,7 @@ describe('Agent loop', () => {
       ).assigned
     ).turn;
     await turn.result;
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(payloads).toEqual([
       [
@@ -1535,7 +1535,7 @@ describe('interruption reminder', () => {
     const subscription = cancelOnFirstDelta();
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(ctx.contextData().history.slice(0, 2)).toEqual([
       expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'Hello' }] }),
@@ -1591,7 +1591,7 @@ describe('interruption reminder', () => {
     });
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
-    subscription.dispose();
+    await subscription.dispose();
     expect(results).toEqual([true, true]);
     expect(
       ctx.allEvents.filter(
@@ -1611,7 +1611,7 @@ describe('interruption reminder', () => {
     });
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(ctx.contextData().history).toContainEqual({
       role: 'assistant',
@@ -1637,7 +1637,7 @@ describe('interruption reminder', () => {
     const subscription = cancelOnFirstDelta();
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
-    subscription.dispose();
+    await subscription.dispose();
     expect(interruptionReminders()).toHaveLength(1);
 
     ctx.get(IEventBus).publish(
@@ -1702,7 +1702,7 @@ describe('interruption reminder', () => {
     const subscription = cancelOnFirstDelta();
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
     await ctx.untilTurnEnd();
-    subscription.dispose();
+    await subscription.dispose();
     ctx.llmInputs();
 
     ctx.mockNextResponse({ type: 'text', text: 'second answer' });
@@ -1723,7 +1723,7 @@ describe('interruption reminder', () => {
     const subscription = cancelOnFirstDelta();
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
     await ctx.untilTurnEnd();
-    subscription.dispose();
+    await subscription.dispose();
     expect(interruptionReminders()).toHaveLength(1);
     await loop.settled();
 
@@ -1744,7 +1744,7 @@ describe('interruption reminder', () => {
     });
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(ctx.contextData().history).toContainEqual({
       role: 'assistant',
@@ -1761,7 +1761,7 @@ describe('interruption reminder', () => {
     const subscription = cancelOnFirstDelta();
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(contentPartRecordsIn(ctx)).toBe(0);
     expect(ctx.contextData().history.slice(0, 2)).toEqual([
@@ -1776,7 +1776,7 @@ describe('interruption reminder', () => {
     const first = cancelOnFirstDelta();
     const firstTurn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(firstTurn.result).resolves.toMatchObject({ type: 'cancelled' });
-    first.dispose();
+    await first.dispose();
     expect(interruptionReminders()).toHaveLength(1);
 
     ctx.mockNextResponse({ type: 'text', text: 'retried answer' });
@@ -1785,7 +1785,7 @@ describe('interruption reminder', () => {
     });
     const retryTurn = (await loop.enqueue(new RetryStepRequest()).assigned).turn;
     await expect(retryTurn.result).resolves.toMatchObject({ type: 'cancelled' });
-    onStepStarted.dispose();
+    await onStepStarted.dispose();
     expect(interruptionReminders()).toHaveLength(1);
 
     ctx.mockNextResponse({ type: 'text', text: 'third answer' });
@@ -1799,7 +1799,7 @@ describe('interruption reminder', () => {
     const first = cancelOnFirstDelta();
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first prompt' }] });
     await ctx.untilTurnEnd();
-    first.dispose();
+    await first.dispose();
 
     ctx.mockNextResponse({ type: 'text', text: 'completed answer' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'completed prompt' }] });
@@ -1810,7 +1810,7 @@ describe('interruption reminder', () => {
     const second = cancelOnFirstDelta();
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'second prompt' }] });
     await ctx.untilTurnEnd();
-    second.dispose();
+    await second.dispose();
 
     ctx.mockNextResponse({ type: 'text', text: 'final answer' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'final prompt' }] });
@@ -1871,7 +1871,7 @@ describe('llm requester attempt retry', () => {
         await ctx.rpc.prompt({ input: [{ type: 'text', text: 'hello' }] });
         await ctx.untilTurnEnd();
       } finally {
-        subscription.dispose();
+        await subscription.dispose();
       }
 
       expect(assistantDeltas.map((event) => event.delta)).toEqual(['Hello', 'World']);
@@ -1990,7 +1990,7 @@ describe('aborted step tool execution', () => {
         message: 'Tool execution timed out',
       });
     } finally {
-      subscription.dispose();
+      await subscription.dispose();
       await ctx.dispose();
     }
   });

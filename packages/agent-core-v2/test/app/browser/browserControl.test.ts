@@ -67,7 +67,7 @@ describe('browser connection execution ownership', () => {
       expect((await f.control.check('a')).state).toBe('failed');
       expect(await f.control.check('a')).toMatchObject({ state: 'idle', driverVersion: '0.38.2', error: undefined, failure: undefined });
       expect(f.calls.map((call) => call.name)).toEqual(['agent_browser_session_info']);
-    } finally { f.ix.dispose(); }
+    } finally { await f.ix.dispose(); }
   });
   it('retains failure when the prepared driver rejects its session probe', async () => {
     const f = fixture();
@@ -77,7 +77,7 @@ describe('browser connection execution ownership', () => {
       f.handlers.set('a:agent_browser_session_info', async () => ({ isError: true, content: [], structuredContent: { exitCode: 1, response: { success: false, error: 'session probe refused' } } }));
       expect(await f.control.check('a')).toMatchObject({ state: 'failed', error: expect.stringContaining('session probe refused') });
       expect(f.calls.map((call) => call.name)).toEqual(['agent_browser_session_info']);
-    } finally { f.ix.dispose(); }
+    } finally { await f.ix.dispose(); }
   });
   it('keeps saved management readable but prevents experimental execution while disabled', async () => {
     const f = fixture(); f.flags.enabled = () => false;
@@ -85,7 +85,7 @@ describe('browser connection execution ownership', () => {
       expect((await f.control.list()).connections).toHaveLength(2);
       await expect(f.control.connect('a')).rejects.toMatchObject({ code: 'browser.disabled', details: { reason: 'feature_disabled' } });
       expect(f.factory.open).not.toHaveBeenCalled();
-    } finally { f.ix.dispose(); }
+    } finally { await f.ix.dispose(); }
   });
   it('distinguishes connection disabled from the feature gate without starting a driver', async () => {
     const f = fixture();
@@ -94,7 +94,7 @@ describe('browser connection execution ownership', () => {
       await expect(f.control.connect('a')).rejects.toMatchObject({ code: 'browser.disabled', details: { reason: 'connection_disabled' } });
       await expect(f.control.tabs('a')).rejects.toMatchObject({ code: 'browser.disabled', details: { reason: 'connection_disabled' } });
       expect(f.factory.open).not.toHaveBeenCalled();
-    } finally { f.ix.dispose(); }
+    } finally { await f.ix.dispose(); }
   });
   it('lists configuration without starting a driver and checks without launching a browser', async () => {
     const f = fixture();
@@ -103,7 +103,7 @@ describe('browser connection execution ownership', () => {
       expect(f.factory.open).not.toHaveBeenCalled();
       expect((await f.control.check('a')).state).toBe('idle');
       expect(f.calls.map((call) => call.name)).toEqual(['agent_browser_session_info']);
-    } finally { f.ix.dispose(); }
+    } finally { await f.ix.dispose(); }
   });
 
   it('drains a queued connect before deciding whether disconnect must close its daemon', async () => {
@@ -121,7 +121,7 @@ describe('browser connection execution ownership', () => {
       expect((await disconnecting).state).toBe('disconnected');
       expect(f.calls.filter((call) => call.name === 'agent_browser_close')).toHaveLength(1);
       await expect(f.control.invoke({ browser: 'a', caller, tool: 'agent_browser_click', args: {}, tab: 'a-tab' })).rejects.toMatchObject({ code: 'browser.disconnected' });
-    } finally { f.ix.dispose(); }
+    } finally { await f.ix.dispose(); }
   });
 
   it('rejects queued cancelled operations and lifecycle work without disconnecting the active owner', async () => {
@@ -150,7 +150,7 @@ describe('browser connection execution ownership', () => {
       expect((await f.control.status('a')).state).toBe('ready');
       await f.control.invoke({ browser: 'a', caller, tool: 'agent_browser_click', args: {} });
       expect(f.calls.filter((call) => call.name === 'agent_browser_click')).toHaveLength(1);
-    } finally { await f.control.disconnect('a'); f.ix.dispose(); }
+    } finally { await f.control.disconnect('a'); await f.ix.dispose(); }
   });
 
   it('checks cancellation after target discovery and drains already-sent work without replay', async () => {
@@ -168,7 +168,7 @@ describe('browser connection execution ownership', () => {
       await f.control.invoke({ browser: 'a', caller, tool: 'agent_browser_click', args: {} }, sent.signal);
       expect(f.calls.filter((call) => call.name === 'agent_browser_click')).toHaveLength(1);
       expect((await f.control.status('a')).state).toBe('ready');
-    } finally { await f.control.disconnect('a'); f.ix.dispose(); }
+    } finally { await f.control.disconnect('a'); await f.ix.dispose(); }
   });
 
   it('binds two same-tab-counter browsers to distinct session/target/frame/file provenance', async () => {
@@ -186,7 +186,7 @@ describe('browser connection execution ownership', () => {
       await expect(f.control.invoke({ browser: 'b', caller, tool: 'agent_browser_click', args: {}, tab: 'a-tab' })).rejects.toMatchObject({ code: 'browser.target' });
       f.tabs.set('a', []);
       await expect(f.control.invoke({ browser: 'a', caller, tool: 'agent_browser_click', args: {}, tab: 'a-tab' })).rejects.toMatchObject({ code: 'browser.target' });
-    } finally { f.ix.dispose(); }
+    } finally { await f.ix.dispose(); }
   });
 
   it('never replays an indeterminate operation and requires a confirmed daemon terminal state', async () => {
@@ -202,7 +202,7 @@ describe('browser connection execution ownership', () => {
       const fresh = await f.control.connect('a');
       expect(fresh.state).toBe('ready');
       await expect(f.control.invoke({ browser: 'a', caller, tool: 'agent_browser_snapshot', args: {}, tab: 'a-tab', generation: 1 })).rejects.toMatchObject({ code: 'browser.target' });
-    } finally { f.ix.dispose(); }
+    } finally { await f.ix.dispose(); }
   });
 
   it('rejects references from another agent, frame, or an overwritten snapshot before dispatch', async () => {
@@ -222,7 +222,7 @@ describe('browser connection execution ownership', () => {
       await expect(f.control.invoke({ ...snapshot, tool: 'agent_browser_click', args: { selector: '@e1' } })).rejects.toMatchObject({ code: 'browser.target' });
       expect(f.calls.filter((call) => call.name === 'agent_browser_click')).toHaveLength(1);
       expect(f.calls.filter((call) => call.name === 'agent_browser_tab_switch')).toHaveLength(1);
-    } finally { f.ix.dispose(); }
+    } finally { await f.ix.dispose(); }
   });
 
   it('retains capture ownership until its creating agent and frame finish it', async () => {
@@ -235,14 +235,14 @@ describe('browser connection execution ownership', () => {
       expect(f.calls.filter((call) => call.name === 'agent_browser_trace_stop')).toHaveLength(0);
       await f.control.invoke({ ...input, tool: 'agent_browser_trace_stop', args: { path: '/fixture/main.json' } });
       await f.control.invoke({ ...input, caller: { ...caller, agentId: 'child' } });
-    } finally { f.ix.dispose(); }
+    } finally { await f.ix.dispose(); }
   });
 
   it('does not classify a missing backend as an in-flight unknown execution', async () => {
     const f = fixture();
     f.factory.open.mockRejectedValueOnce(new Error('driver unavailable'));
     try { expect((await f.control.connect('a')).state).toBe('failed'); }
-    finally { f.ix.dispose(); }
+    finally { await f.ix.dispose(); }
   });
 
   it('serializes tab+frame selection and the operation together on each connection', async () => {
@@ -259,7 +259,7 @@ describe('browser connection execution ownership', () => {
       release();
       await Promise.all([first, next]);
       expect(f.calls.filter((call) => ['agent_browser_click', 'agent_browser_snapshot'].includes(call.name)).map((call) => call.name)).toEqual(['agent_browser_click', 'agent_browser_snapshot']);
-    } finally { f.ix.dispose(); }
+    } finally { await f.ix.dispose(); }
   });
 });
 

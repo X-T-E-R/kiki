@@ -362,7 +362,8 @@ export class InstantiationService implements IInstantiationService {
       }
     });
     const release = (): void => {
-      availability.dispose();
+      const result = availability.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
     };
     const change: CascadeChange =
       instanceOrDescriptor instanceof SyncDescriptor
@@ -577,7 +578,8 @@ export class InstantiationService implements IInstantiationService {
     );
     this._ledger.register(() => {
       for (const subscription of subscriptions) {
-        subscription.dispose();
+        const result = subscription.dispose();
+        if (isPromiseLike(result)) result.catch(onUnexpectedError);
       }
       change.dispose();
     }, `ref:${String(id)}`);

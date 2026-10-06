@@ -101,14 +101,14 @@ export class WorkspaceRootSkillSource extends Disposable implements IWorkspaceRo
     try {
       await handle.ready;
     } catch (error) {
-      this.watchResources.delete(resources);
+      await this.watchResources.delete(resources);
       throw error;
     }
     if (this.watchResources.isDisposed) return false;
     const previous = this.activeWatchResources;
     this.activeWatchResources = resources;
     this.watchSignature = signature;
-    if (previous !== undefined) this.watchResources.delete(previous);
+    if (previous !== undefined) await this.watchResources.delete(previous);
     return true;
   }
 }

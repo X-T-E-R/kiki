@@ -53,7 +53,7 @@ describe('session activity recency', () => {
     ix.stub(ISessionIndex, { get: (id) => readSessionSummary(docs, 'sessions', 'ws', id) });
     ix.set(ISessionRecencyStore, new SyncDescriptor(SessionRecencyStore));
   });
-  afterEach(async () => { await drainSessionMetadataWrites(); ix.dispose(); vi.restoreAllMocks(); });
+  afterEach(async () => { await drainSessionMetadataWrites(); await ix.dispose(); vi.restoreAllMocks(); });
   async function seed(id: string, custom = {}, activityUpdatedAt?: number) {
     await docs.set(`sessions/ws/${id}`, 'state.json', { id, version: 2, createdAt: 1, updatedAt: 10, activityUpdatedAt, archived: false, title: 'Explicit title', titleKind: 'custom', lastPrompt: 'Main prompt', agents: {}, custom } satisfies SessionMeta);
   }

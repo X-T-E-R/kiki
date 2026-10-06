@@ -167,7 +167,10 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
     await new Promise<void>((resolve) => setTimeout(resolve, 30));
     expect(client.readyState).toBe(WebSocket.OPEN);
     const messages: string[] = [];
-    client.on('message', (body) => messages.push(String(body)));
+    client.on('message', (body) => {
+      const bytes = Array.isArray(body) ? Buffer.concat(body) : Buffer.from(body as Uint8Array);
+      messages.push(bytes.toString('utf8'));
+    });
     client.resume();
     await expect.poll(() => messages.length, { timeout: 3000 }).toBe(1);
     expect(messages[0]).toBe(reset);

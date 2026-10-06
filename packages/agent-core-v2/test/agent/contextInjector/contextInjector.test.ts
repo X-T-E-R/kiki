@@ -81,8 +81,8 @@ describe('AgentContextInjectorService', () => {
     context = ix.get(IAgentContextMemoryService);
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   async function runInjectionStep(firstStepOfTurn = false): Promise<void> {

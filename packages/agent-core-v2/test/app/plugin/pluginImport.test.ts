@@ -101,7 +101,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   vi.restoreAllMocks();
-  for (const target of hosts.splice(0)) target.dispose();
+  for (const target of hosts.splice(0)) await target.dispose();
   for (const storage of storages.splice(0)) await storage.close();
   await rm(root, { recursive: true, force: true });
 });
@@ -257,7 +257,7 @@ describe('native finite session-source import', () => {
     const docs = target.app.accessor.get(IAtomicDocumentStore);
     const current = await service.job(id);
     await docs.set(namespace, `jobs.${id}`, { ...current, status: 'running', archiveId: null });
-    target.dispose();
+    await target.dispose();
     const restarted = host().app.accessor.get(IPluginImportService);
     expect((await restarted.job(id)).status).toBe('completed');
     expect((await restarted.archives()).items).toHaveLength(1);
@@ -275,7 +275,7 @@ describe('native finite session-source import', () => {
     expect((await service.job(started.id)).status).toBe('interrupted');
     expect((await service.archives()).items).toHaveLength(0);
     await target.app.accessor.get(IPluginService).setPluginEnabled({ id: 'example-session-source', enabled: true });
-    target.dispose();
+    await target.dispose();
     await rm(path.join(input, 'delay'));
     const next = host().app.accessor.get(IPluginImportService);
     await next.resume(started.id);

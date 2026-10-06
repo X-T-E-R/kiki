@@ -505,7 +505,7 @@ describe('PluginManager renamed installations', () => {
       expect(manager.get(id)).toMatchObject({ enabled: true, state: 'ok', skillCount: 1 });
       expect(await readFile(join(home, 'plugins', 'data', legacyId, 'user.txt'), 'utf8')).toBe('user-owned data');
       expect(await readFile(join(source, 'kimi.plugin.json'), 'utf8')).toContain('2.0.0');
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it('keeps installed prerequisite absolute paths usable through load, execution, upgrade and rollback', async () => {
@@ -555,7 +555,7 @@ describe('PluginManager renamed installations', () => {
       await execute();
       await manager.load();
       await execute();
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it.each([false, true])('only deletes both renamed data locations when explicitly requested (%s)', async (deleteData) => {

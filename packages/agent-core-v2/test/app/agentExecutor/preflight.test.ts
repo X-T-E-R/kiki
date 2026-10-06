@@ -152,7 +152,7 @@ describe('AgentExecutorPreflightService', () => {
     );
   });
 
-  afterEach(() => { vi.restoreAllMocks(); services.dispose(); });
+  afterEach(async () => { vi.restoreAllMocks(); await services.dispose(); });
 
   it('reports just the IDE/ACP distinction when only Antigravity IDE is installed', async () => {
     services.set(IHostFileSystem, fsWith(['C:/tools/antigravity.EXE']));

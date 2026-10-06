@@ -760,9 +760,10 @@ describe('Plan service', () => {
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Inspect without mutating files' }] });
 
       const events = await ctx.untilTurnEnd();
-      expectFirstPlanRequest(ctx, 'Inspect without mutating files', 693);
+      expectFirstPlanRequest(ctx, 'Inspect without mutating files', 554);
       expect(events).toMatchInlineSnapshot(`
         [wire] permission.set_mode         { "mode": "yolo", "time": "<time>" }
+        [emit] agent.status.updated        { "time": "<time>", "permission": "yolo" }
         [wire] plan_mode.enter             { "id": "test-plan", "time": "<time>" }
         [emit] agent.status.updated        { "time": "<time>", "planMode": true }
         [wire] prompt.accepted             { "promptId": "<msg-1>", "time": "<time>" }
@@ -857,9 +858,10 @@ describe('Plan service', () => {
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Remove forbidden.txt' }] });
 
       const events = await ctx.untilTurnEnd();
-      expectFirstPlanRequest(ctx, 'Remove forbidden.txt', 690);
+      expectFirstPlanRequest(ctx, 'Remove forbidden.txt', 551);
       expect(events).toMatchInlineSnapshot(`
         [wire] permission.set_mode         { "mode": "yolo", "time": "<time>" }
+        [emit] agent.status.updated        { "time": "<time>", "permission": "yolo" }
         [wire] plan_mode.enter             { "id": "test-plan", "time": "<time>" }
         [emit] agent.status.updated        { "time": "<time>", "planMode": true }
         [wire] prompt.accepted             { "promptId": "<msg-1>", "time": "<time>" }
@@ -963,7 +965,7 @@ describe('Plan service', () => {
       await injectDynamic();
 
       expect(lastUserText(context.get())).toContain('Re-entering Plan Mode');
-      expect(lastUserText(context.get())).toContain('Read the existing plan file');
+      expect(lastUserText(context.get())).toContain('Plan file:');
     });
 
     it('emits one exit reminder after leaving plan mode', async () => {

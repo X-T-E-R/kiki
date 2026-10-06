@@ -75,8 +75,8 @@ describe('GitService', () => {
     service = ix.get(IGitService);
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
     rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 

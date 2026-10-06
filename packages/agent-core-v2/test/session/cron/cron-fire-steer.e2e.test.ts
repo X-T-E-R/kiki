@@ -37,7 +37,7 @@ function createAppScheduler(
   initiallyLive = false,
 ): {
   readonly scheduler: ICronScheduler;
-  readonly dispose: () => void;
+  readonly dispose: () => void | Promise<void>;
   readonly acquireCount: () => number;
   readonly leaseActive: () => boolean;
   readonly evictIfIdle: () => Promise<boolean>;
@@ -123,7 +123,7 @@ function createAppScheduler(
   });
   return {
     scheduler: services.get(ICronScheduler),
-    dispose: () => disposables.dispose(),
+    dispose: async () => { await disposables.dispose(); },
     acquireCount: () => acquisitions,
     leaseActive: () => activeLeases > 0,
     evictIfIdle: () => manager.evictIfIdle!(sessionId),
@@ -346,7 +346,7 @@ describe('cron-fired prompt admission', () => {
       const session = ctx.get(ISessionContext);
       await expect(ctx.get(ICronTaskPersistence).get(session.workspaceId, task.id)).resolves.toBeUndefined();
     } finally {
-      appScheduler.dispose();
+      await appScheduler.dispose();
     }
   });
 
@@ -370,7 +370,7 @@ describe('cron-fired prompt admission', () => {
     } finally {
       await cron.removeTasks([task.id]);
       await cron.flushPersist();
-      appScheduler.dispose();
+      await appScheduler.dispose();
     }
   });
 
@@ -402,7 +402,7 @@ describe('cron-fired prompt admission', () => {
     } finally {
       await cron.removeTasks([task.id]);
       await cron.flushPersist();
-      appScheduler.dispose();
+      await appScheduler.dispose();
     }
   });
 
@@ -423,7 +423,7 @@ describe('cron-fired prompt admission', () => {
     } finally {
       await cron.removeTasks([task.id]);
       await cron.flushPersist();
-      appScheduler.dispose();
+      await appScheduler.dispose();
     }
   });
 
@@ -453,7 +453,7 @@ describe('cron-fired prompt admission', () => {
       expect(cron.getTask(task.id)).toBeUndefined();
       await expect(ctx.get(ICronTaskPersistence).get(session.workspaceId, task.id)).resolves.toBeUndefined();
     } finally {
-      appScheduler.dispose();
+      await appScheduler.dispose();
     }
   });
 

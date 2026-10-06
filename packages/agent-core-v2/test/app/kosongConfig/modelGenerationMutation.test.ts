@@ -37,7 +37,7 @@ describe('generation parameter entity mutations', () => {
       expect(edited.behavior).toEqual({ ask_user_question_guard: { enabled: false, max_per_window: 5 } });
       expect(edited.parameters).toEqual({ thinking_effort: 'medium' }); expect(edited.usage_effective?.main.thinking_effort).toBe('high');
       const text = await store.getText('', 'config.toml'); expect(text).toContain('[models.fast.behavior.ask_user_question_guard]'); expect(text).toContain('enabled = false');
-    } finally { first.dispose(); }
+    } finally { await first.dispose(); }
     const cold = host();
     try {
       const catalog = cold.get(IModelCatalogMutationService);
@@ -50,7 +50,7 @@ describe('generation parameter entity mutations', () => {
       expect(created.behavior?.ask_user_question_guard?.enabled).toBe(true);
       await catalog.createProvider({ id: 'new-edge', type: 'openai', models: [{ remote_id: 'nested', behavior: { ask_user_question_guard: { enabled: false } } }] });
       expect((await catalog.readModel('new-edge/nested')).behavior?.ask_user_question_guard?.enabled).toBe(false);
-    } finally { cold.dispose(); }
+    } finally { await cold.dispose(); }
   });
   it('persists identity parameter differences sparsely and previews the same inherited defaults', async () => {
     const ix = new TestInstantiationService();
@@ -106,7 +106,7 @@ describe('generation parameter entity mutations', () => {
       await config.reload();
       expect(config.inspect<Record<string, Record<string, unknown>>>('models').userValue?.['fast']?.['usage']).toBeUndefined();
       expect(await baseStore.getText('', 'config.toml')).toBe(baseText);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
   it('reads inherited models and edits sparse home overrides without copying the base', async () => {
     const ix = new TestInstantiationService();
@@ -146,7 +146,7 @@ describe('generation parameter entity mutations', () => {
       await config.reload();
       expect((await catalog.readModel('second')).remote_id).toBe('remote-second');
       expect(config.inspect<Record<string, Record<string, unknown>>>('models').userValue?.['fast']).toEqual({});
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
   it('patches only the selected provider/model fields and rejects stale revisions', async () => {
     const config = new StubConfigService({
@@ -176,6 +176,6 @@ describe('generation parameter entity mutations', () => {
       expect(updated.defaults).toMatchObject({ temperature: 0.3, max_completion_tokens: 16384 });
       expect((await catalog.readModel('fast')).effective_parameters?.max_completion_tokens).toBe(16384);
       expect((await catalog.readModel('sibling')).effective_parameters?.max_completion_tokens).toBe(16384);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 });

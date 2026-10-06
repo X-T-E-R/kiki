@@ -673,7 +673,7 @@ it('limits actual native provider streams from two sessions to two, and never se
     expect(peak).toBe(2);
     expect(liveStreams).toBe(0);
     expect(governor.snapshot()).toMatchObject({ active: 0, queued: 0 });
-  } finally { ix.dispose(); }
+  } finally { await ix.dispose(); }
 });
 
 it('requires an explicit requester owner at runtime instead of inferring system ownership', () => {
@@ -706,5 +706,5 @@ it('queues a session-owned auxiliary model request behind that session main slot
     await Promise.all([main, auxiliary]);
     expect(provider.calls).toHaveLength(2);
     expect(governor.snapshot()).toMatchObject({ active: 0, queued: 0 });
-  } finally { release(); ix.dispose(); }
+  } finally { release(); await ix.dispose(); }
 });

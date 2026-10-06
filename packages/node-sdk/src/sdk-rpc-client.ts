@@ -494,8 +494,8 @@ export class SDKRpcClient extends SDKRpcClientBase {
       // fire per workspace handler, so follow every handler — present and
       // future — through the App-scope registry.
       followSessionLifecycles(this.app.accessor, (service) =>
-        service.onDidCloseSession((closed) => {
-          this.unwireSession(closed.sessionId);
+        service.onDidCloseSession(async (closed) => {
+          await this.unwireSession(closed.sessionId);
         }),
       ),
     );
@@ -514,11 +514,11 @@ export class SDKRpcClient extends SDKRpcClientBase {
 
   async close(): Promise<void> {
     for (const wiring of this.sessionWirings.values()) {
-      wiring.dispose();
+      await wiring.disposeAsync();
     }
     this.sessionWirings.clear();
     for (const subscription of this.appSubscriptions) {
-      subscription.dispose();
+      await subscription.dispose();
     }
     await this.klient.close();
     await this.configReady.catch(() => undefined);
@@ -536,7 +536,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
     // Past this point the accessor throws, so the facade must stop resolving
     // this client's log services. Disposal itself flushes them synchronously.
     getRootLogger().unbind(this.logHost);
-    this.app.dispose();
+    await this.app.dispose();
     await appendLogStore.drainRetirements();
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
@@ -999,14 +999,14 @@ export class SDKRpcClient extends SDKRpcClientBase {
     this.sessionWirings.set(handle.id, new SessionEventWiring(handle, this));
   }
 
-  private unwireSession(sessionId: string): void {
+  private async unwireSession(sessionId: string): Promise<void> {
     // v1's print-steer counters die with the Session object; drop ours with
     // every close path (ours, the engine's, or a delete).
     this.printSteerStates.delete(sessionId);
     const wiring = this.sessionWirings.get(sessionId);
     if (wiring === undefined) return;
     this.sessionWirings.delete(sessionId);
-    wiring.dispose();
+    await wiring.disposeAsync();
   }
 
   /**

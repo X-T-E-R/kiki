@@ -135,8 +135,8 @@ describe('AgentActivityView', () => {
     disposables = new DisposableStore();
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('starts with an empty, not-busy snapshot', () => {

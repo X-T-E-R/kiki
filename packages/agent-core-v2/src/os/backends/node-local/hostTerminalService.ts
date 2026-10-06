@@ -31,7 +31,7 @@ export class HostTerminalService extends Service implements IHostTerminalService
     return terminalProcess;
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     for (const process of this.processes) {
       try {
         process.kill();
@@ -39,7 +39,7 @@ export class HostTerminalService extends Service implements IHostTerminalService
       }
     }
     this.processes.clear();
-    super.dispose();
+    return super.dispose();
   }
 }
 

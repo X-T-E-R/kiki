@@ -1,4 +1,6 @@
 import type { IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { timeoutOutcome } from '#/_base/utils/promise';
 import { IFlagService } from '#/app/flag/flag';
@@ -447,7 +449,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     try {
       await this.runPendingManual();
     } finally {
-      quiescence.dispose();
+      await quiescence.dispose();
     }
   }
 
@@ -473,7 +475,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     try {
       const tokenCount = this.validateCompactionStart(data.source);
       if (!this.reserveCompactionSlot(data.source)) {
-        quiescence?.dispose();
+        const cleanup = quiescence?.dispose();
+        if (isPromiseLike(cleanup)) cleanup.catch(onUnexpectedError);
         return false;
       }
       void this.dispatcher.dispatch(new FullCompactionBegin(data));
@@ -494,7 +497,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       void active.task.promise.catch(() => undefined);
       return true;
     } catch (error) {
-      quiescence?.dispose();
+      const cleanup = quiescence?.dispose();
+      if (isPromiseLike(cleanup)) cleanup.catch(onUnexpectedError);
       throw error;
     }
   }
@@ -554,12 +558,12 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     };
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     this.pendingManual = null;
     if (this._compacting !== null && !this._compacting.abortController.signal.aborted) {
       this._compacting.abortController.abort();
     }
-    super.dispose();
+    return super.dispose();
   }
 
   private cancelActive(active: ActiveCompaction, reason?: string): boolean {
@@ -758,7 +762,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       try {
         this._onDidFinishCompaction.fire(active);
       } finally {
-        active.quiescence?.dispose();
+        await active.quiescence?.dispose();
       }
     }
   }
@@ -870,14 +874,39 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         estimateText: (text) => this.tokenCounting.estimateText(text), memoryEntries, memoryReferences, linkedBoardCards,
       };
       let relaySummary: string | undefined;
+      let relayError: unknown;
       let renderFailed = false;
       if (choice.strategy !== 'summarize' || choice.shadow) {
         try {
           relaySummary = renderRelay(relayInput);
         } catch (error) {
+          relayError = error;
+          if (data.strategy === 'relay') throw error;
           this.log.warn('relay render failed; summarizing', { error });
           renderFailed = true;
         }
+      }
+      if (data.strategy === 'relay') {
+        if (relaySummary === undefined) {
+          if (relayError instanceof Error) throw relayError;
+          throw relayError === undefined
+            ? new Error2(ErrorCodes.COMPACTION_UNABLE, 'Relay compaction did not produce a fresh context.')
+            : new Error('Relay compaction failed.', { cause: relayError });
+        }
+        if (!historySafeToCompact(this.context.get(), originalHistory)) throw compactionCancelledReason(active);
+        attemptedStrategy = 'relay';
+        const result = this.context.applyCompaction({
+          summary: relaySummary, contextSummary: relaySummary, compactedCount: compactCount, tokensBefore,
+          requestOverheadTokens: this.requestTokens([]), strategy: 'relay', shapeVersion: 1,
+          reasonCodes: [],
+        });
+        this.telemetry.track2('compaction_finished', {
+          source: data.source, turn_id: active.originTurnId, tokens_before: result.tokensBefore,
+          tokens_after: result.tokensAfter, duration_ms: Date.now() - startedAt,
+          compacted_count: result.compactedCount, retry_count: 0, round: 1,
+          thinking_effort: thinkingEffort, strategy: 'relay', reason_codes: [],
+        });
+        return result;
       }
       const projected = relaySummary === undefined ? 0 : buildContextCompactionShape(originalHistory, {
         summary: relaySummary, compactedCount: compactCount, tokensBefore,

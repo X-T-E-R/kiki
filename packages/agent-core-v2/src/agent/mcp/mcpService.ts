@@ -5,6 +5,8 @@ import { defineState } from '#/state/state';
 import type { Tool as KosongTool } from '#/kosong/contract/tool';
 
 import { type IDisposable } from "#/_base/di/lifecycle";
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { Service } from "#/_base/di/service";
 import { ErrorCodes, Error2, makeErrorPayload } from "#/errors";
@@ -324,7 +326,8 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     if (names === undefined) return false;
     for (const name of names) {
       const entry = this.mcpTools.get(name);
-      entry?.disposable.dispose();
+      const result = entry?.disposable.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
       this.mcpTools.delete(name);
     }
     this.mcpToolsByServer.delete(serverName);

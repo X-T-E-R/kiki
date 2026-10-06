@@ -276,8 +276,8 @@ describe('AgentToolActivationService', () => {
     publishStatusUpdated = () => {};
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
     _clearScopedRegistryForTests();
     _clearAgentToolContributionsForTests();
     for (const contribution of savedContributions) {
@@ -285,7 +285,7 @@ describe('AgentToolActivationService', () => {
     }
   });
 
-  it('keeps an AgentTool unconstructed during scope creation and resolves a real instance', () => {
+  it('keeps an AgentTool unconstructed during scope creation and resolves a real instance', async () => {
     _clearScopedRegistryForTests();
     registerAgentToolService(IAlphaTool, AlphaTool, { name: 'Alpha' });
 
@@ -297,7 +297,7 @@ describe('AgentToolActivationService', () => {
     const tool = agent.accessor.get(IAlphaTool);
     expect(tool).toBeInstanceOf(AlphaTool);
     expect(alphaConstructions).toBe(1);
-    app.dispose();
+    await app.dispose();
   });
 
   it('activates every contribution when the profile has no allowlist', async () => {
@@ -825,7 +825,7 @@ describe('AgentToolActivationService', () => {
       expect(agent2.accessor.get(IAgentToolRegistryService).resolve('Alpha')).toBeInstanceOf(
         AlphaTool,
       );
-      app.dispose();
+      await app.dispose();
     });
 
     it('folds a unit-provided record incrementally and withdraws it when the provider dies', async () => {
@@ -841,11 +841,11 @@ describe('AgentToolActivationService', () => {
       expect(registry.resolve('Gamma')).toBeInstanceOf(GammaTool);
       expect(gammaConstructions).toBe(1);
 
-      provider.dispose();
+      await provider.dispose();
       expect(registry.resolve('Gamma')).toBeUndefined();
       await activation.activate();
       expect(registry.resolve('Gamma')).toBeUndefined();
-      app.dispose();
+      await app.dispose();
     });
 
     it('withholds the AskUserQuestion contribution from subagent scopes', async () => {
@@ -868,7 +868,7 @@ describe('AgentToolActivationService', () => {
       await agent.accessor.get(IAgentToolActivationService).activate();
 
       expect(agent.accessor.get(IAgentToolRegistryService).resolve('AskUserQuestion')).toBeUndefined();
-      app.dispose();
+      await app.dispose();
     });
 
     it('feeds every built-in contribution through the App-scope assembly unchanged', async () => {
@@ -893,7 +893,7 @@ describe('AgentToolActivationService', () => {
       expect(agent.accessor.get(IAgentToolRegistryService).list().map((tool) => tool.name)).toEqual([
         SELECT_TOOLS_TOOL_NAME,
       ]);
-      app.dispose();
+      await app.dispose();
     });
   });
 });

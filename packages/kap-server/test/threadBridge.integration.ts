@@ -104,7 +104,8 @@ describe.each(['local', 'network'] as const)('directed space thread bridge (%s, 
     expect(activity.threads[0]!.activities.some((entry) => entry.kind === 'terminal')).toBe(true);
     const read = await execute<ReadThreadResult>(f.main.accessor.get(IReadThreadTool), { thread: input.thread });
     const transcript = read.view!.transcript!;
-    const refs = transcript.items.flatMap((item) => item.kind === 'turn' ? item.contentRefs ?? [] : []);
+    const refs = transcript.items.flatMap((item) => item.kind === 'turn'
+      ? [...(item.contentRefs ?? []), ...item.steps.flatMap((step) => step.frames.flatMap((frame) => frame.contentRefs ?? []))] : []);
     const contents = await Promise.all(refs.map((ref) => execute<ReadThreadResult>(f.main.accessor.get(IReadThreadTool), { thread: input.thread, content_ref: ref })));
     expect(JSON.stringify([transcript, ...contents.map((result) => result.view?.segment)])).toContain('Verified bridge reply.');
     const blocks = agentTranscriptToBlocks(transcript);

@@ -1322,7 +1322,7 @@ describe('AgentTaskService', () => {
       timeoutMs: 60_000,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
     await Promise.resolve();
 
     expect(abortReason).toBe('Session closed');
@@ -1355,7 +1355,7 @@ describe('AgentTaskService', () => {
     svc.registerTask(new ProcessTask(proc, 'ignore-term', 'long-running process'));
     await Promise.resolve();
 
-    disposables.dispose();
+    await disposables.dispose();
     await Promise.resolve();
 
     expect(kill).toHaveBeenNthCalledWith(1, 'SIGTERM');
@@ -1373,7 +1373,7 @@ describe('AgentTaskService', () => {
     });
     await Promise.resolve();
 
-    disposables.dispose();
+    await disposables.dispose();
 
     expect(aborted).toBe(false);
     expect(forceStop).not.toHaveBeenCalled();
@@ -1401,7 +1401,7 @@ describe('AgentTaskService', () => {
     svc.registerTask(new ProcessTask(proc, 'keep-running', 'long-running process'));
     await Promise.resolve();
 
-    disposables.dispose();
+    await disposables.dispose();
     await Promise.resolve();
 
     expect(proc.kill).not.toHaveBeenCalled();
@@ -2127,7 +2127,7 @@ describe('Agent task notification XML', () => {
 });
 
 describe('running subagent status', () => {
-  it('counts live direct children and running task fallback, not idle, broken, or grandchildren', () => {
+  it('counts live direct children and running task fallback, not idle, broken, or grandchildren', async () => {
     const disposables = new DisposableStore();
     const child = (id: string, parentAgentId: string, state: 'running' | 'idle' | 'broken') => {
       const accessor = disposables.add(new TestInstantiationService());
@@ -2160,7 +2160,7 @@ describe('running subagent status', () => {
       .toBe('2 subagents still running: agent-live, named');
     expect(runningSubagentStatus(tasks, lifecycle, 'main', 'agent-live', 'en'))
       .toBe('1 subagent still running: named');
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('truncates long name lists in both English and Chinese', () => {

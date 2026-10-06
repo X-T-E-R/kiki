@@ -25,7 +25,7 @@ const SEP = String.fromCodePoint(0);
 
 describe('MiniDbQueryStore', () => {
   let homeDir: string;
-  let disposeHost: (() => void) | undefined;
+  let disposeHost: (() => void | Promise<void>) | undefined;
 
   beforeEach(async () => {
     _clearScopedRegistryForTests();
@@ -40,7 +40,7 @@ describe('MiniDbQueryStore', () => {
   });
 
   afterEach(async () => {
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
     await drainQueryStoreDisposals();
     await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
@@ -51,7 +51,7 @@ describe('MiniDbQueryStore', () => {
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
     ]);
-    disposeHost = () => { host.dispose(); };
+    disposeHost = async () => { await host.dispose(); };
     return host.app.accessor.get(IQueryStore);
   }
 
@@ -206,7 +206,7 @@ describe('MiniDbQueryStore', () => {
     await first.put(COLLECTION, 'a', { id: 'a', v: 1 });
     await first.ensureIndex(COLLECTION, { kind: 'value', name: 'byV', field: 'v' });
     await first.close();
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
 
     const registryFile = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR, 'cluster.indexes.json');
@@ -225,7 +225,7 @@ describe('MiniDbQueryStore', () => {
     await first.put(COLLECTION, 'a', { id: 'a', v: 1 });
     await first.ensureIndex(COLLECTION, { kind: 'value', name: 'byV', field: 'v' });
     await first.close();
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
 
     const storeDir = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR);

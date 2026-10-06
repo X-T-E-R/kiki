@@ -98,7 +98,7 @@ describe('ScopeUnits — kernel materialization fold (D11/G2)', () => {
     return app;
   }
 
-  it('materializes a contributed recipe inside every new scope of the kind', () => {
+  it('materializes a contributed recipe inside every new scope of the kind', async () => {
     const app = appWithPack();
     const a1 = app.createChild('agent', 'a1');
     expect(a1.accessor.get(IFoo).tag).toBe('foo');
@@ -106,30 +106,30 @@ describe('ScopeUnits — kernel materialization fold (D11/G2)', () => {
     const a2 = app.createChild('agent', 'a2');
     expect(a2.accessor.get(IFoo).tag).toBe('foo');
     expect(log).toEqual(['feature up', 'feature up']);
-    app.dispose();
+    await app.dispose();
   });
 
-  it('tears the materialized unit down when the provider dies (连坐)', () => {
+  it('tears the materialized unit down when the provider dies (连坐)', async () => {
     const app = appWithPack();
     const a1 = app.createChild('agent', 'a1');
     expect(a1.accessor.get(IFoo).tag).toBe('foo');
     app.instantiation.unprovide(IPack);
     expect(log).toEqual(['feature up', 'feature down']);
     expect(() => a1.accessor.get(IFoo)).toThrow();
-    app.dispose();
+    await app.dispose();
   });
 
-  it('tears the materialized unit down with the target scope (idempotent with 连坐)', () => {
+  it('tears the materialized unit down with the target scope (idempotent with 连坐)', async () => {
     const app = appWithPack();
     const a1 = app.createChild('agent', 'a1');
     expect(a1.accessor.get(IFoo).tag).toBe('foo');
-    a1.dispose();
+    await a1.dispose();
     expect(log).toEqual(['feature up', 'feature down']);
-    app.dispose();
+    await app.dispose();
     expect(log).toEqual(['feature up', 'feature down']);
   });
 
-  it('materializes records that arrive after the scope exists, and retracts them on withdrawal', () => {
+  it('materializes records that arrive after the scope exists, and retracts them on withdrawal', async () => {
     log.length = 0;
     const app = Scope.createApp({ id: 'app' });
     const a1 = app.createChild('agent', 'a1');
@@ -139,10 +139,10 @@ describe('ScopeUnits — kernel materialization fold (D11/G2)', () => {
     expect(a1.accessor.get(IFoo).tag).toBe('foo');
     app.instantiation.unprovide(IPack);
     expect(log).toEqual(['feature up', 'feature down']);
-    app.dispose();
+    await app.dispose();
   });
 
-  it('finishes provider teardown after withdrawing a late contribution from two live scopes', () => {
+  it('finishes provider teardown after withdrawing a late contribution from two live scopes', async () => {
     const cleanup: string[] = [];
     const unexpected: unknown[] = [];
     let nextUnit = 0;
@@ -185,13 +185,13 @@ describe('ScopeUnits — kernel materialization fold (D11/G2)', () => {
         'provider:second', 'provider:first',
       ]);
       void book.teardown();
-      first.dispose();
-      second.dispose();
-      app.dispose();
+      await first.dispose();
+      await second.dispose();
+      await app.dispose();
       expect(cleanup).toHaveLength(6);
       expect(unexpected).toEqual([]);
     } finally {
-      app.dispose();
+      await app.dispose();
       resetUnexpectedErrorHandler();
     }
   });
@@ -280,7 +280,7 @@ describe('ScopeUnits — kernel materialization fold (D11/G2)', () => {
     }
   });
 
-  it('releases provider entries across repeated target scope lifetimes', () => {
+  it('releases provider entries across repeated target scope lifetimes', async () => {
     const app = appWithPack();
     try {
       const [record] = (app.instantiation as InstantiationService).collectionStore.storedRecordsFor(
@@ -291,18 +291,18 @@ describe('ScopeUnits — kernel materialization fold (D11/G2)', () => {
       for (let index = 0; index < 100; index++) {
         const agent = app.createChild('agent', `agent-${index}`);
         expect(book.size).toBe(baseline + 1);
-        agent.dispose();
+        await agent.dispose();
         expect(book.size).toBe(baseline);
       }
       expect(log.filter((entry) => entry === 'feature down')).toHaveLength(100);
       app.instantiation.unprovide(IPack);
       expect(book.size).toBe(0);
     } finally {
-      app.dispose();
+      await app.dispose();
     }
   });
 
-  it('releases both registrations when a live contribution is withdrawn repeatedly', () => {
+  it('releases both registrations when a live contribution is withdrawn repeatedly', async () => {
     const registrations = vi.spyOn(Ledger.prototype, 'register');
     const app = appWithPack();
     const agent = app.createChild('agent', 'agent');
@@ -332,22 +332,22 @@ describe('ScopeUnits — kernel materialization fold (D11/G2)', () => {
       expect(book.size).toBe(0);
       expect(fold.size).toBe(1);
       expect(log).toEqual(['feature up', 'feature down']);
-      agent.dispose();
+      await agent.dispose();
       expect(fold.size).toBe(0);
       expect(log).toEqual(['feature up', 'feature down']);
     } finally {
-      app.dispose();
+      await app.dispose();
       registrations.mockRestore();
     }
   });
 
-  it('does not materialize records of a different kind', () => {
+  it('does not materialize records of a different kind', async () => {
     log.length = 0;
     const app = Scope.createApp({ id: 'app' });
     app.instantiation.provide(IPack, new SyncDescriptor(FeaturePack));
     app.accessor.get(IPack);
     app.createChild('session', 's1');
     expect(log).toEqual([]);
-    app.dispose();
+    await app.dispose();
   });
 });

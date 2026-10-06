@@ -110,7 +110,7 @@ describe('AgentExecutionService', () => {
     try {
       await expect(service.run({ kind: 'prompt', prompt: 'Continue' }, { signal: new AbortController().signal })).rejects.toThrow(/fingerprint or source home changed/);
       expect(resolveExecutable).not.toHaveBeenCalled();
-    } finally { await service.dispose(); ix.dispose(); }
+    } finally { await service.dispose(); await ix.dispose(); }
   });
   it.each(['child', 'main'] as const)('starts and completes an external %s agent with only main goal state', async (agentId) => {
     const ix = new TestInstantiationService();
@@ -162,7 +162,7 @@ describe('AgentExecutionService', () => {
       }
     } finally {
       await service.dispose();
-      ix.dispose();
+      await ix.dispose();
     }
   });
 
@@ -195,7 +195,7 @@ describe('AgentExecutionService', () => {
     await service.settled();
     expect(release).toHaveBeenCalledTimes(2);
     expect(service.status()).toEqual({ state: 'idle' });
-    ix.dispose();
+    await ix.dispose();
   });
 
   it.each([undefined, 42])('reports caller-driven cancellation while turn %s is still settling', async (turnId) => {
@@ -216,7 +216,7 @@ describe('AgentExecutionService', () => {
       await service.settled();
       expect(release).toHaveBeenCalledOnce();
       expect(service.status()).toEqual({ state: 'idle' });
-      ix.dispose();
+      await ix.dispose();
     }
   });
 
@@ -261,7 +261,7 @@ describe('AgentExecutionService', () => {
     } finally {
       finish({ summary: 'cleanup' });
       await service.dispose();
-      ix.dispose();
+      await ix.dispose();
     }
   });
 
@@ -295,7 +295,7 @@ describe('AgentExecutionService', () => {
       const remove = vi.spyOn(controller.signal, 'removeEventListener');
       try {
         await service.run({ kind: 'prompt', prompt: 'work' }, { signal: controller.signal });
-        if (close === 'scope-close') ix.dispose();
+        if (close === 'scope-close') await ix.dispose();
         if (close === 'shutdown') void service.shutdown('close');
         if (close === 'dispose') void service.dispose();
         const first = service.shutdown();
@@ -314,7 +314,7 @@ describe('AgentExecutionService', () => {
         expect(service.status()).toEqual({ state: 'idle' });
       } finally {
         release();
-        ix.dispose();
+        await ix.dispose();
       }
     },
   );
@@ -345,7 +345,7 @@ describe('AgentExecutionService', () => {
     await rejected;
     await closing;
     expect(create).not.toHaveBeenCalled();
-    ix.dispose();
+    await ix.dispose();
   });
 
   it.each(['scope-close', 'shutdown', 'dispose', 'replacement'] as const)(
@@ -384,7 +384,7 @@ describe('AgentExecutionService', () => {
       try {
         const handle = await service.run({ kind: 'prompt', prompt: 'work' }, { signal: controller.signal });
         const completion = expect(handle.completion).rejects.toBeDefined();
-        if (close === 'scope-close') child.dispose();
+        if (close === 'scope-close') await child.dispose();
         if (close === 'shutdown') await service.shutdown('close');
         if (close === 'dispose') await service.dispose();
         if (close === 'replacement') {
@@ -404,7 +404,7 @@ describe('AgentExecutionService', () => {
           await vi.waitFor(() => expect(child.invokeFunction((a) => a.get(IAgentExecutionService))).not.toBe(service));
         }
       } finally {
-        parent.dispose();
+        await parent.dispose();
         await new Promise((resolve) => setTimeout(resolve, 0));
         expect(errors).not.toHaveBeenCalled();
         errors.mockRestore();
@@ -443,7 +443,7 @@ describe('AgentExecutionService', () => {
     expect(create).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
     expect(service.status()).toEqual({ state: 'idle' });
-    ix.dispose();
+    await ix.dispose();
   });
 
   it('forwards a hook-replaced request and waits for post-start delivery after provider start', async () => {
@@ -543,7 +543,7 @@ describe('AgentExecutionService', () => {
     await service.shutdown('close');
     expect(shutdown).toHaveBeenCalledWith('close');
     void service.dispose();
-    ix.dispose();
+    await ix.dispose();
   });
 
   it.each([
@@ -643,7 +643,7 @@ describe('AgentExecutionService', () => {
     expect(shutdowns[0]).toHaveBeenCalledTimes(1);
     expect(shutdowns[1]).not.toHaveBeenCalled();
     void service.dispose();
-    ix.dispose();
+    await ix.dispose();
   });
 
   it.each([
@@ -697,7 +697,7 @@ describe('AgentExecutionService', () => {
     )).rejects.toThrow(message);
     expect(create).not.toHaveBeenCalled();
     void service.dispose();
-    ix.dispose();
+    await ix.dispose();
   });
 
   it('fails external execution closed when its protocol has no provider', async () => {
@@ -733,7 +733,7 @@ describe('AgentExecutionService', () => {
     )).rejects.toThrow(/has no registered provider/);
     expect(service.status()).toEqual({ state: 'broken' });
     void service.dispose();
-    ix.dispose();
+    await ix.dispose();
   });
 });
 
@@ -799,7 +799,7 @@ describe('NativeAgentExecutorSession', () => {
       summary: 'native summary',
       usage: undefined,
     });
-    ix.dispose();
+    await ix.dispose();
   });
 
   it('materializes a running native steer at the next loop step boundary and rejects idle steering', async () => {

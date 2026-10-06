@@ -1746,7 +1746,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     const errors: unknown[] = [];
     for (const registration of this.registrations.splice(0)) {
       try {
-        registration.dispose();
+        await registration.dispose();
       } catch (error) {
         errors.push(error);
       }
