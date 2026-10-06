@@ -1083,8 +1083,15 @@ body[data-pane-resizing='true'] {
 .composer-header-goal:not(:only-child) {
   margin-inline: 28px;
 }
+/* The goal sheet is tinted with ink, not accent.
+   Accent-soft is the palette's alert wash — the family the "everything is
+   permitted" warning and a blocked goal use — so an ordinary running goal read
+   as something needing attention, which it is not. A goal is work in progress
+   and says so through its mark and its status word; the sheet itself only has
+   to read as the sheet tucked above the queue. Blocked and failed keep their own
+   semantics in the word and the mark, which is where a reader looks for them. */
 .composer-header-goal {
-  background-color: color-mix(in srgb, var(--color-accent-soft) 60%, var(--color-panel));
+  background-color: color-mix(in srgb, var(--color-ink) 5%, var(--color-panel));
 }
 /* Slivers: the queued prompts after the first, as thin edges behind it. */
 .composer-header-queue[data-slivers]::before,

@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -266,6 +270,19 @@ describe('GoalHeaderSummary', () => {
     expect(goalShowsInHeader(goalFixture({ status: 'complete' }))).toBe(false);
     expect(goalShowsInHeader(null)).toBe(false);
     expect(goalShowsInHeader(goalFixture())).toBe(true);
+  });
+
+  it('keeps an ordinary goal off the alert wash, and only the exception states on it', () => {
+    // The complaint was that a merely-running goal read like the "everything is
+    // permitted" warning. Its sheet is painted once, in CSS, so the rule itself
+    // is what has to stay off `accent-soft` — the wash that warning and a blocked
+    // goal share. The exception states are named in the status word instead.
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../index.css'), 'utf8');
+    const rule = /\.composer-header-goal\s*\{([^}]*)\}/.exec(css);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain('var(--color-panel)');
+    expect(rule![1]).not.toContain('--color-accent-soft');
+    expect(rule![1]).not.toContain('--color-danger');
   });
 });
 
