@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-route
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { clearComposerState, clearStoredDrafts, readComposerState, resetComposerMemoryForTests, resetDraftMemoryForTests, readDraft, writeDraft, parseSelectionCarryovers, type ComposerAttachment, type SelectionAnnotation, type SelectionSourceAnchor } from '@kiki/session-core/composer';
+import { clearComposerState, clearStoredDrafts, readComposerState, resetComposerMemoryForTests, resetDraftMemoryForTests, readDraft, writeDraft, writeComposerState, parseSelectionCarryovers, type ComposerAttachment, type SelectionAnnotation, type SelectionSourceAnchor } from '@kiki/session-core/composer';
 import { SendNowError } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { SessionRouteView } from './SessionView';
@@ -14,7 +14,7 @@ import { clearToasts, getToasts } from '../lib/toasts';
 import type { QueuedModelSwitch } from '../lib/client';
 
 const { seat, submit, queueStub, fixture } = vi.hoisted(() => ({
-  fixture: { external: false, records: [] as { sessionId: string; record: unknown }[] },
+  fixture: { external: false, binding: undefined as { model: string; thinking: string } | undefined, records: [] as { sessionId: string; record: unknown }[] },
   seat: { composer: null as unknown },
   submit: {
     // Each send hands the test a deferred result so it can inspect the
@@ -74,6 +74,10 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     constructor(_sessions: unknown, _view: unknown, sessionId: string) {
       this.sessionId = sessionId;
       const base = actual.createViewState(sessionId);
+      if (fixture.binding !== undefined) {
+        Object.assign(base, { loaded: true, model: fixture.binding.model, thinkingEffort: fixture.binding.thinking,
+          blocks: [{ kind: 'user', id: 'saved-human', text: 'Saved task.', createdAt: '2026-01-01T00:00:00.000Z', promptStatus: 'completed' }] });
+      }
       const state = fixture.external
         ? { ...base, session: { id: sessionId, executor_id: 'claude-acp', metadata: {}, agent_config: {} } as NonNullable<typeof base.session> }
         : base;
@@ -210,6 +214,9 @@ type ComposerProps = {
   ) => Promise<unknown> | undefined;
   onSendNow: (text: string, attachments: readonly ComposerAttachment[]) => Promise<unknown> | undefined;
   onChangeModel: (model: string | undefined) => void;
+  onChangeEffort: (thinking: string | undefined) => void;
+  model?: string;
+  effort?: string;
   onChangePermissionMode: (mode: 'manual' | 'auto' | 'yolo') => void;
   serverDefaultModel?: string;
   onQueueEditConfirm?: (text: string, attachments: readonly ComposerAttachment[]) => Promise<void>;
@@ -237,6 +244,45 @@ afterAll(() => {
 });
 
 describe('session selection annotations', () => {
+  it.each(['legacy', 'explicit'] as const)('reconciles %s model chrome with the restored binding before submitting', async (source) => {
+    resetComposerMemoryForTests();
+    clearComposerState('session-a');
+    fixture.binding = { model: 'example/new-model', thinking: 'max' };
+    fixture.external = false;
+    queueStub.items = [];
+    queueStub.switches = [];
+    submit.calls.length = 0;
+    writeComposerState('session-a', { attachments: [], annotations: [], permissionMode: undefined, planMode: undefined,
+      planGate: undefined, goalObjective: undefined, modelOverride: 'example/old-model', effortOverride: 'high',
+      modelChoice: source === 'explicit' ? fixture.binding : undefined, effortChoice: undefined });
+    resetComposerMemoryForTests();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={queries}><I18nProvider><MemoryRouter initialEntries={['/s/session-a']}><RoutesWithNavigation /></MemoryRouter></I18nProvider></QueryClientProvider>);
+      });
+      expect(composerProps().model).toBe(source === 'explicit' ? 'example/old-model' : undefined);
+      expect(readComposerState('session-a').effortOverride).toBeUndefined();
+      let sent: Promise<unknown> | undefined;
+      await act(async () => { sent = composerProps().onSend('Continue saved work.', []); });
+      expect(submit.calls.at(-1)?.input).toMatchObject({ model: source === 'explicit' ? 'example/old-model' : 'example/new-model' });
+      expect(submit.calls.at(-1)?.input?.thinking).not.toBe('high');
+      await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'restored' }); await sent; });
+      await act(async () => { composerProps().onChangeEffort('high'); });
+      await act(async () => { sent = composerProps().onSend('Use my new effort choice.', []); });
+      expect(submit.calls.at(-1)?.input).toMatchObject({ thinking: 'high' });
+      await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'explicit-effort' }); await sent; });
+    } finally {
+      fixture.binding = undefined;
+      await act(async () => { root.unmount(); });
+      queries.clear();
+      clearComposerState('session-a');
+      container.remove();
+    }
+  });
   it('merges the selected temporary session from later shared pages without another session record', async () => {
     fixture.records.length = 0;
     fixture.external = false;

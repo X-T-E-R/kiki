@@ -684,7 +684,7 @@ export class AgentPromptService implements IAgentPromptService {
     const entry = this.states.get(modelSwitchQueueKey).get(operationId);
     if (entry === undefined) return undefined;
     if (this.switchFlight?.operationId === operationId) return this.switchFlight.receipt;
-    if (entry.receipt.state === 'preparing') return entry.receipt;
+    if (entry.receipt.state === 'preparing' || entry.receipt.state === 'completed') return entry.receipt;
     return this.switchEngine.get(operationId) ?? entry.receipt;
   }
 

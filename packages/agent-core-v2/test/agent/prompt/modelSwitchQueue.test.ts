@@ -16,6 +16,7 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { deferred } from '../../deferred';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { ContinuationStepRequest, MessageStepRequest } from '#/agent/loop/stepRequest';
 
 const OLD = 'example/old-model';
 const NEW = 'example/new-model';
@@ -77,9 +78,65 @@ describe('model switch control queue with real engine', () => {
     expect(journal.some((record) => record.type === 'turn.started')).toBe(false);
     const cold = await host();
     await cold.restore(journal);
-    expect(cold.get(IAgentPromptService).getModelSwitch(input.operationId)).toMatchObject({ ...receipt, state: 'preparing' });
+    expect(cold.get(IAgentPromptService).getModelSwitch(input.operationId)).toEqual(receipt);
+    expect(cold.get(IAgentPromptService).listModelSwitches()).toMatchObject([{ receipt, queueIndex: -1 }]);
+    expect(cold.get(IAgentPromptService).list().hold).toBeUndefined();
     expect(await cold.get(IAgentPromptService).switchModel(input)).toEqual(receipt);
     expect(cold.get(IAgentProfileService).getModel()).toBe(NEW);
+  });
+
+  it('keeps completed recovery terminal during autonomous and peer requests without reverting a later effort', async () => {
+    const ctx = await host();
+    const cold = await host();
+    for (const current of [ctx, cold]) {
+      current.kimiConfig = { ...current.kimiConfig, models: { ...current.kimiConfig.models,
+        [NEW]: { ...current.kimiConfig.models![NEW]!, capabilities: ['thinking'], supportEfforts: ['high', 'max'], defaultEffort: 'high' },
+      } };
+    }
+    const input = { operationId: 'completed-before-restart', model: NEW, thinking: 'high', mode: 'direct' as const };
+    const receipt = await ctx.get(IAgentPromptService).switchModel(input);
+    expect(receipt).toMatchObject({ state: 'completed', binding: { model: NEW, thinking: 'high' } });
+    ctx.get(IAgentProfileService).setThinking('max');
+    await cold.restore(await records(ctx));
+    const svc = cold.get(IAgentPromptService);
+    const loop = cold.get(IAgentLoopService);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const hook = loop.hooks.onWillBeginStep.register('completed-switch-recovery', async (_step, next) => {
+      entered.resolve();
+      await release.promise;
+      await next();
+    });
+    for (let index = 0; index < 3; index++) cold.mockNextResponse({ type: 'text', text: 'Continue saved work.' });
+    const autonomous = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'Resume the saved goal.' }], toolCalls: [],
+      origin: { kind: 'system_trigger', name: 'goal_continuation' } }, { admission: 'newTurn' }));
+    await entered.promise;
+    try {
+      expect(loop.status().state).toBe('running');
+      expect(loop.tryAcquireQuiescence()).toBeUndefined();
+      expect(svc.getModelSwitch(input.operationId)).toEqual(receipt);
+      expect(svc.listModelSwitches()).toMatchObject([{ receipt, queueIndex: -1 }]);
+      expect(await svc.recoverModelSwitch(input.operationId, 'retry')).toEqual(receipt);
+      expect(await svc.switchModel(input)).toEqual(receipt);
+      expect(svc.hasReadyPending()).toBe(false);
+      loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'Peer result is ready.' }], toolCalls: [],
+        origin: { kind: 'agent_message', messageId: 'peer-result', senderAgentId: 'peer', senderTaskName: 'example' } }, { admission: 'activeOrNewTurn' }));
+      loop.enqueue(new ContinuationStepRequest());
+    } finally {
+      release.resolve();
+      await hook.dispose();
+    }
+    const turn = (await autonomous.assigned).turn;
+    expect(await turn!.result).toMatchObject({ type: 'completed' });
+    const journal = await records(cold);
+    const requests = journal.filter((record) => record.type === 'llm.request');
+    expect(requests).toHaveLength(3);
+    for (const request of requests) expect(request).toMatchObject({ modelAlias: NEW, thinkingEffort: 'max' });
+    expect(cold.get(IAgentProfileService).data()).toMatchObject({ modelAlias: NEW, thinkingLevel: 'max' });
+    expect(svc.getModelSwitch(input.operationId)).toEqual(receipt);
+    expect(svc.list().hold).toBeUndefined();
+    expect(journal.filter((record) => record.type === 'agent.model_switch')).toHaveLength(1);
+    expect(journal.filter((record) => record.type === 'prompt.model_switch_queued')).toHaveLength(2);
   });
 
   it('keeps control items behind edit holds, edits and cancels pending choices, and preserves recovery holds', async () => {
