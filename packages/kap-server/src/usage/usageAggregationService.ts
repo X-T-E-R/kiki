@@ -90,6 +90,19 @@ interface SessionCacheEntry {
   readonly persisted: PersistentSessionRecords;
   readonly complete: boolean;
   readonly bytes: number;
+  readonly view?: SessionCacheView;
+}
+
+interface SessionCacheView {
+  readonly startAt: number;
+  readonly endAt: number;
+  readonly parts: readonly string[];
+}
+
+interface PreparedSession {
+  readonly persisted: PersistentSessionRecords;
+  readonly current: boolean;
+  readonly view: boolean;
 }
 
 interface WireCheckpoint {
@@ -192,7 +205,7 @@ interface SessionAccumulator extends AggregateAccumulator {
 
 export class UsagePageTokenMismatchError extends Error {}
 
-/** Incremental usage projection for wire files produced through the managed append/rewrite stores. External in-place rewrites that preserve the checkpoint boundary are outside this cache's consistency contract. */
+/** Incremental usage projection for wire files produced through the managed append/rewrite stores. Bounded query views are read-only and never replace full incremental checkpoints. External in-place rewrites that preserve the checkpoint boundary are outside this cache's consistency contract. */
 export class UsageAggregationService {
   private readonly cache = new Map<string, SessionCacheEntry>();
   private readonly sessionFlights = new Map<string, Promise<SessionLoadResult>>();
@@ -396,22 +409,29 @@ export class UsageAggregationService {
       const batch = listed.items.slice(offset, offset + CHECKPOINT_READ_CONCURRENCY);
       const prepared = await Promise.all(batch.map(async (summary) => {
         const key = sessionKey(summary);
-        const cached = this.cache.get(key);
+        const cached = this.readCachedSession(key, query.range);
         const persisted = cached?.persisted ?? await this.readPersistentSession(
           this.core.accessor.get(IFileSystemStorageService), key,
         );
         const current = await this.cacheIsCurrent(summary, persisted);
-        if (current && cached?.persisted !== persisted && this.rescan.state !== 'running') {
-          this.cacheSession(key, persisted, true);
+        if (current && !cached?.view && this.rescan.state !== 'running') {
+          this.cacheSessionRange(key, persisted, true, query.range);
         }
-        return { persisted, current };
+        if (current && !cached?.view && (query.range.startAt !== undefined || query.range.endAt !== undefined)) {
+          return {
+            persisted: { ...persisted, records: persisted.records.filter((record) => record.invalid || inRange(record.time, query.range)) },
+            current,
+            view: true,
+          };
+        }
+        return { persisted, current, view: cached?.view ?? false };
       }));
       for (const [index, summary] of batch.entries()) {
         if (index > 0 && this.now() >= budget.deadlineAt) {
           budget.incompleteReason = 'deadline';
           break sessionLoop;
         }
-        const session = await this.readSession(summary, budget, false, prepared[index]);
+        const session = await this.readSession(summary, budget, false, prepared[index], query.range);
         if (session !== undefined) sessions.push(session);
         if (budget.incompleteReason === 'record_budget' || budget.incompleteReason === 'deadline') break sessionLoop;
       }
@@ -483,10 +503,11 @@ export class UsageAggregationService {
     summary: SessionSummary,
     budget: ScanBudget,
     preserveMissingSources = false,
-    prepared?: { persisted: PersistentSessionRecords; current: boolean },
+    prepared?: PreparedSession,
+    range?: RangeBounds,
   ): Promise<SessionRecords | undefined> {
     const cacheKey = sessionKey(summary);
-    const cached = this.cache.get(cacheKey);
+    const cached = prepared === undefined ? this.readCachedSession(cacheKey, range) : undefined;
     if (this.rescan.state === 'running') {
       const persisted = prepared?.persisted ?? cached?.persisted ?? await this.readPersistentSession(
         this.core.accessor.get(IFileSystemStorageService), cacheKey,
@@ -496,22 +517,14 @@ export class UsageAggregationService {
       return { summary, records: persisted.records, complete, deleted: false };
     }
     if (prepared?.current) {
-      if (cached?.complete && cached.persisted === prepared.persisted) {
-        this.cache.delete(cacheKey);
-        this.cache.set(cacheKey, cached);
-      } else {
-        this.cacheSession(cacheKey, prepared.persisted, true);
-      }
       return { summary, records: prepared.persisted.records, complete: true, deleted: false };
     }
     if (prepared === undefined && cached?.complete && await this.cacheIsCurrent(summary, cached.persisted)) {
-      this.cache.delete(cacheKey);
-      this.cache.set(cacheKey, cached);
       return { summary, records: cached.persisted.records, complete: true, deleted: false };
     }
     let flight = this.sessionFlights.get(cacheKey);
     if (flight === undefined) {
-      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources, prepared?.persisted);
+      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources, prepared?.view ? undefined : prepared?.persisted);
       this.sessionFlights.set(cacheKey, flight);
       const clearFlight = (): void => {
         if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
@@ -525,7 +538,10 @@ export class UsageAggregationService {
     }
     budget.remainingRecords -= result.scannedRecordCount;
     if (result.incompleteReason !== null) budget.incompleteReason = result.incompleteReason;
-    this.cacheSession(cacheKey, result.persisted, result.session.complete);
+    this.cacheSessionRange(cacheKey, result.persisted, result.session.complete, range);
+    if (range !== undefined && (range.startAt !== undefined || range.endAt !== undefined)) {
+      return { ...result.session, records: result.session.records.filter((record) => record.invalid || inRange(record.time, range)) };
+    }
     return result.session;
   }
 
@@ -560,7 +576,7 @@ export class UsageAggregationService {
   ): Promise<SessionLoadResult> {
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const cacheKey = sessionKey(summary);
-    const persisted = this.cache.get(cacheKey)?.persisted ?? prepared ?? await this.readPersistentSession(storage, cacheKey);
+    const persisted = this.readCachedSession(cacheKey)?.persisted ?? prepared ?? await this.readPersistentSession(storage, cacheKey);
     const workspaceScope = workspacePersistenceScope('sessions', summary.workspaceId);
     const sessionScope = sessionScopeOf(workspaceScope, summary.id);
     const agentIds = await storage.list(`${sessionScope}/agents`);
@@ -759,7 +775,63 @@ export class UsageAggregationService {
     }
   }
 
-  private cacheSession(key: string, persisted: PersistentSessionRecords, complete: boolean): void {
+  private readCachedSession(key: string, range?: RangeBounds): {
+    persisted: PersistentSessionRecords; complete: boolean; view: boolean;
+  } | undefined {
+    const entry = this.cache.get(key);
+    if (entry === undefined) return undefined;
+    if (entry.view === undefined) {
+      this.cache.delete(key);
+      this.cache.set(key, entry);
+      return { persisted: entry.persisted, complete: entry.complete, view: false };
+    }
+    if (range?.startAt === undefined || range.endAt === undefined ||
+      range.startAt < entry.view.startAt || range.endAt > entry.view.endAt) return undefined;
+    const parts: SessionCacheEntry[] = [];
+    for (const partKey of entry.view.parts) {
+      const part = this.cache.get(partKey);
+      if (part === undefined) return undefined;
+      parts.push(part);
+    }
+    const records: NormalizedUsageRecord[] = [];
+    for (const [index, part] of parts.entries()) {
+      for (const record of part.persisted.records) records.push(record);
+      const partKey = entry.view.parts[index] as string;
+      this.cache.delete(partKey);
+      this.cache.set(partKey, part);
+    }
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+    return { persisted: { ...entry.persisted, records }, complete: entry.complete, view: true };
+  }
+
+  private cacheSessionRange(
+    key: string, persisted: PersistentSessionRecords, complete: boolean, range?: RangeBounds,
+  ): void {
+    if (range?.startAt === undefined || range.endAt === undefined) {
+      this.cacheSession(key, persisted, complete);
+      return;
+    }
+    const existing = this.cache.get(key);
+    if (existing !== undefined) this.deleteCacheEntry(key, existing);
+    const records = persisted.records.filter((record) => record.invalid || inRange(record.time, range));
+    if (records.length > this.limits.cacheMaxRecords || this.limits.cacheMaxEntryRecords <= 0) return;
+    const parts: string[] = [];
+    for (let offset = 0; offset < records.length; offset += this.limits.cacheMaxEntryRecords) {
+      const partKey = `${key}\0view:${range.startAt}:${range.endAt}:${offset}`;
+      this.cacheSession(partKey, {
+        ...persisted, records: records.slice(offset, offset + this.limits.cacheMaxEntryRecords), agents: {},
+      }, complete);
+      parts.push(partKey);
+    }
+    this.cacheSession(key, { ...persisted, records: [] }, complete, {
+      startAt: range.startAt, endAt: range.endAt, parts,
+    });
+  }
+
+  private cacheSession(
+    key: string, persisted: PersistentSessionRecords, complete: boolean, view?: SessionCacheView,
+  ): void {
     const existing = this.cache.get(key);
     if (existing !== undefined) this.deleteCacheEntry(key, existing);
     const records = persisted.records;
@@ -769,7 +841,8 @@ export class UsageAggregationService {
       (record.agentId?.length ?? 0) + (record.parentAgentId?.length ?? 0) +
       (record.provider?.length ?? 0) + (record.modelAlias?.length ?? 0) +
       (record.profileName?.length ?? 0)
-    ), 256 + Object.keys(persisted.agents).length * 256);
+    ), 256 + Object.keys(persisted.agents).length * 256 +
+      (view?.parts.reduce((total, part) => total + 32 + part.length * 2, 0) ?? 0));
     if (bytes > this.limits.cacheMaxBytes) return;
     while (
       this.cache.size >= this.limits.cacheMaxEntries ||
@@ -785,6 +858,7 @@ export class UsageAggregationService {
       persisted,
       complete,
       bytes,
+      view,
     });
     this.cachedRecordCount += records.length;
     this.cachedBytes += bytes;
@@ -794,6 +868,10 @@ export class UsageAggregationService {
     this.cache.delete(key);
     this.cachedRecordCount -= entry.persisted.records.length;
     this.cachedBytes -= entry.bytes;
+    for (const partKey of entry.view?.parts ?? []) {
+      const part = this.cache.get(partKey);
+      if (part !== undefined) this.deleteCacheEntry(partKey, part);
+    }
   }
 
   private async aggregate(

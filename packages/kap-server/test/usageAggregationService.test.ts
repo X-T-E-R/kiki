@@ -28,6 +28,8 @@ interface Fixture {
   setWire(scope: string, records: readonly WireRecord[]): void;
   restart(): UsageAggregationService;
   setAgentIds(ids: string[]): void;
+  setPrice(price: number | undefined): void;
+  persistedRecordCounts(): number[];
 }
 
 function summary(id: string, workspaceId: string): SessionSummary {
@@ -181,13 +183,14 @@ function fixture(
       scannedRecords: ephemeral.length,
     }),
   };
+  let price: number | undefined = 1;
   const pricing: IModelPricingService = {
     _serviceBrand: undefined,
     ready: Promise.resolve(),
     getPricing: async () => ({ items: [], overrides: {} }),
     setPricing: async () => ({ items: [], overrides: {} }),
     resolve: () => undefined,
-    calculate: () => 1,
+    calculate: () => price,
     refreshNow: async () => false,
     status: () => ({ source: 'empty', keys: 0 }),
   };
@@ -211,6 +214,11 @@ function fixture(
     setWire,
     restart: () => new UsageAggregationService(core, now, limits),
     setAgentIds: (ids) => { agentIds = ids; },
+    setPrice: (value) => { price = value; },
+    persistedRecordCounts: () => [...persisted.values()].flatMap((bytes) => {
+      const document = JSON.parse(Buffer.from(bytes).toString('utf8')) as { records?: unknown[] };
+      return document.records === undefined ? [] : [document.records.length];
+    }),
   };
 }
 
@@ -561,6 +569,88 @@ describe('UsageAggregationService accounting evidence', () => {
 });
 
 describe('UsageAggregationService cache budgets', () => {
+  it('retains bounded fleet views above the per-entry cap while validating every source', async () => {
+    const day = Date.UTC(2026, 9, 6);
+    let metadataReads = 0;
+    const records = [usageRecord(day - 8 * 86_400_000), ...Array.from({ length: 5 }, (_, index) => ({
+      ...usageRecord(day - index * 86_400_000, index), provider: index % 2 ? 'b' : 'a', profileName: index % 2 ? 'explore' : 'general',
+    }))];
+    const f = fixture([summary('s', 'w'), summary('empty-a', 'w'), summary('empty-b', 'w')], {
+      [scope('w', 's')]: records,
+    }, () => day, { cacheMaxEntryRecords: 2, cacheMaxRecords: 5, cacheMaxEntries: 6 }, undefined, undefined, undefined, undefined, async () => { metadataReads++; });
+    const input: UsageQuery = { range: 'last_7_days' };
+    const cold = await query(f.service, input);
+    const checkpoints = [...f.checkpointReads.values()].reduce((sum, value) => sum + value, 0);
+    const wireReads = [...f.reads.values()].reduce((sum, value) => sum + value, 0);
+    const metadata = metadataReads;
+    const warm = await query(f.service, input);
+    expect(warm).toEqual(cold);
+    expect(warm.reliability.complete).toBe(true);
+    expect(warm.summary.tokens.output).toBe(5);
+    expect(f.service.cacheStatus()).toEqual({ entries: 6, records: 5 });
+    expect([...f.checkpointReads.values()].reduce((sum, value) => sum + value, 0)).toBe(checkpoints);
+    expect([...f.reads.values()].reduce((sum, value) => sum + value, 0)).toBe(wireReads);
+    expect(metadataReads - metadata).toBe(9);
+    expect((await query(f.service, { range: 'today' })).summary.tokens.output).toBe(1);
+    expect((await query(f.service, { ...input, provider: 'a', profile: 'general' })).summary.tokens.output).toBe(3);
+    f.setPrice(2);
+    expect((await query(f.service, input)).summary.cost_usd_estimated).toBe(10);
+    f.setPrice(undefined);
+    expect((await query(f.service, input)).reliability.unknown_price_models).toEqual(['priced-model']);
+    expect(f.persistedRecordCounts()).toEqual([6, 0, 0]);
+  });
+
+  it('does not persist a range view when appending, rewriting or changing the agent inventory', async () => {
+    const day = Date.UTC(2026, 9, 6);
+    const old = usageRecord(day - 10 * 86_400_000);
+    const current = usageRecord(day);
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [old, current] }, () => day);
+    await query(f.service, { range: 'today' });
+    f.setWire(scope('w', 's'), [old, current, usageRecord(day + 1)]);
+    expect((await query(f.service, { range: 'today' })).summary.tokens.output).toBe(2);
+    expect(f.persistedRecordCounts()).toEqual([3]);
+    expect((await query(f.restart())).summary.tokens.output).toBe(3);
+    const rewritten = { ...usageRecord(day + 2), usage: { inputOther: 2, output: 2, inputCacheRead: 2, inputCacheCreation: 2 } };
+    f.setWire(scope('w', 's'), [old, current, rewritten]);
+    expect((await query(f.service, { range: 'today' })).summary.tokens.output).toBe(3);
+    f.setAgentIds(['main', 'child']);
+    f.setWire('sessions/w/s/agents/child', [usageRecord(day + 3)]);
+    expect((await query(f.service, { range: 'today' })).summary.tokens.output).toBe(4);
+    expect(f.persistedRecordCounts()).toEqual([4]);
+    const exported: number[] = [];
+    expect((await f.service.readExportSources(async (source) => { exported.push(source.records.length); })).complete).toBe(true);
+    expect(exported).toEqual([4]);
+    f.service.startFullRescan();
+    expect((await finishRescan(f.service)).state).toBe('completed');
+    expect(f.persistedRecordCounts()).toEqual([4]);
+    expect((await query(f.restart())).summary.tokens.output).toBe(5);
+  });
+
+  it('reloads complete checkpoints on uncovered ranges and after range parts are evicted', async () => {
+    const day = Date.UTC(2026, 9, 6);
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(day), usageRecord(day - 86_400_000), usageRecord(day - 9 * 86_400_000)] }, () => day, { cacheMaxEntryRecords: 1, cacheMaxEntries: 2 });
+    await query(f.service, { range: 'today' });
+    expect((await query(f.service, { range: 'last_7_days' })).summary.tokens.output).toBe(2);
+    const before = [...f.checkpointReads.values()].reduce((sum, value) => sum + value, 0);
+    const warm = await query(f.service, { range: 'last_7_days' });
+    expect(warm.reliability.complete).toBe(true);
+    expect(warm.summary.tokens.output).toBe(2);
+    expect([...f.checkpointReads.values()].reduce((sum, value) => sum + value, 0)).toBeGreaterThan(before);
+    expect((await query(f.service)).summary.tokens.output).toBe(3);
+    expect(f.persistedRecordCounts()).toEqual([3]);
+    expect(f.service.cacheStatus().entries).toBeLessThanOrEqual(2);
+  });
+
+  it('preserves invalid historical records in otherwise empty warm range views', async () => {
+    const day = Date.UTC(2026, 9, 6);
+    const invalid = { ...usageRecord(day - 9 * 86_400_000), usage: { inputOther: -1, output: 0, inputCacheRead: 0, inputCacheCreation: 0 } };
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [invalid] }, () => day);
+    const cold = await query(f.service, { range: 'today' });
+    expect(cold.reliability).toMatchObject({ complete: false, incomplete_sessions: 1 });
+    expect(await query(f.service, { range: 'today' })).toEqual(cold);
+    expect(f.persistedRecordCounts()).toEqual([1]);
+  });
+
   it('serves warmed cache entries without spending the wire-read budget', async () => {
     const sessionA = summary('session-a', 'workspace-a');
     const sessionB = summary('session-b', 'workspace-b');
