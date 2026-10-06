@@ -1,4 +1,6 @@
 import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -79,7 +81,8 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
       ].join('|');
       if (key === this.registeredKey) return;
       this.registeredKey = key;
-      this.registration?.dispose();
+      const previous = this.registration?.dispose();
+      if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
       this.registration = undefined;
       return;
     }
@@ -113,7 +116,8 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     ].join('|');
     if (key === this.registeredKey) return;
     this.registeredKey = key;
-    this.registration?.dispose();
+    const previous = this.registration?.dispose();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     const workspaceCtx = this.workspaceCtx;
     const skillCatalog = this.skillCatalog;
     const runtime = this.runtime;

@@ -1,6 +1,6 @@
 import type { ContentPart } from '#/kosong/contract/message';
 
-import { sniffImageDimensions } from './file-type';
+import { sniffImageDimensions, sniffMediaFromMagic } from './file-type';
 import {
   buildMalformedImageNotice,
   buildUnsupportedImageNotice,
@@ -8,6 +8,7 @@ import {
   isDataUrl,
   isModelAcceptedImageMime,
   normalizeImageMime,
+  parseCompleteImageDataUrl,
   parseImageDataUrl,
   resolveEffectiveImageMime,
   unsupportedImageMimeFromUrl,
@@ -288,6 +289,38 @@ export async function compressBase64ForModel(
     originalByteLength: result.originalByteLength,
     finalByteLength: result.finalByteLength,
   };
+}
+
+export interface ValidatedImageDataUrl {
+  readonly mimeType: string;
+  readonly base64: string;
+  readonly bytes: Buffer;
+}
+
+const DECODABLE_IMAGE_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/bmp',
+]);
+
+export async function validateImageDataUrl(url: string): Promise<ValidatedImageDataUrl | null> {
+  const parsed = parseCompleteImageDataUrl(url);
+  if (parsed === null) return null;
+  const bytes = Buffer.from(parsed.base64, 'base64');
+  if (bytes.length === 0) return null;
+  const mimeType = normalizeImageMime(parsed.mimeType);
+  if (DECODABLE_IMAGE_MIMES.has(mimeType)) {
+    try {
+      await decodeToJimp(bytes, mimeType);
+    } catch {
+      return null;
+    }
+  } else if (sniffMediaFromMagic(bytes)?.kind !== 'image') {
+    return null;
+  }
+  return { mimeType, base64: parsed.base64, bytes };
 }
 
 export interface CompressedContentParts {

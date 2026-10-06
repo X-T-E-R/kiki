@@ -1,3 +1,4 @@
+import { Jimp } from 'jimp';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { deferred } from '../../deferred';
 import { runAgentTurn } from '#/session/subagent/runAgentTurn';
@@ -62,6 +63,7 @@ import { EventDispatcherService } from '#/state/eventDispatcherService';
 import { IWireService } from '#/wire/wire';
 import { IFileService } from '#/app/file/fileService';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
+import { IBlobStore } from '#/persistence/interface/blobStore';
 
 import { stubContextMemory } from '../contextMemory/stubs';
 import { stubLoopWithHooks, stubToolExecutor, stubWire, type StubLoopOptions } from '../loop/stubs';
@@ -177,6 +179,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
   };
   let profileState = boundProfileData('initial');
   let providerTypeOverride: string | undefined;
+  let blobBytes: Uint8Array | undefined;
   const profile = {
     data: vi.fn(() => profileState),
     bind: vi.fn(async (input: BindAgentInput) => {
@@ -277,6 +280,15 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
       reg.defineInstance(IAgentScopeContext, makeAgentScopeContext({ agentId: 'main', agentScope: '' }));
       reg.definePartialInstance(IFileService, { get: intake.get });
       reg.definePartialInstance(ISessionMediaStore, { materialize: intake.materialize });
+      reg.definePartialInstance(IBlobStore, {
+        get: async () => blobBytes,
+        put: async () => {},
+        putStream: async () => {},
+        getStream: async function* () {},
+        has: async () => false,
+        delete: async () => {},
+        list: async () => [],
+      });
     }
   });
   return {
@@ -302,6 +314,9 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     },
     setProviderType: (value: string | undefined) => {
       providerTypeOverride = value;
+    },
+    setBlob: (value: Uint8Array | undefined) => {
+      blobBytes = value;
     },
     setExecutor: (executorId: string | undefined) => {
       profileState = { ...profileState, executorId };
@@ -623,7 +638,7 @@ describe('AgentPromptService', () => {
     expect(toolPolicy.setSessionDisabledTools).not.toHaveBeenCalled();
     expect(plan.enter).not.toHaveBeenCalled();
     const reservation = reservePrompt(prompt, 'retryable');
-    reservation.dispose();
+    await reservation.dispose();
   });
 
   it.each([false, true])('steers GUI plan echoes without rebinding the active turn: %s', async (enabled) => {
@@ -1010,6 +1025,131 @@ describe('AgentPromptService', () => {
       { type: 'text', text: 'new text' },
       attachment,
     ]);
+  });
+
+  it('repairs a known bounded projection from the same prompt blob before launch', async () => {
+    const { prompt, loop, setBlob } = harness({ manualTurnResult: true });
+    const image = new Jimp({ width: 256, height: 256, color: 0x000000ff });
+    let random = 0x9e3779b9;
+    for (let i = 0; i < image.bitmap.data.length; i += 4) {
+      random ^= (random << 13) >>> 0;
+      random ^= random >>> 17;
+      random ^= (random << 5) >>> 0;
+      image.bitmap.data[i] = random & 0xff;
+      image.bitmap.data[i + 1] = (random >>> 8) & 0xff;
+      image.bitmap.data[i + 2] = (random >>> 16) & 0xff;
+    }
+    const bytes = Buffer.from(await image.getBuffer('image/png'));
+    expect(bytes.length).toBeGreaterThan(1022);
+    setBlob(bytes);
+    const full = `data:image/png;base64,${bytes.toString('base64')}`;
+    const hash = 'a'.repeat(64);
+    const active = await prompt.enqueue({ id: 'active-image', message: message('active') });
+    const queued = await prompt.enqueue({
+      id: 'queued-bad-image',
+      message: {
+        role: 'user',
+        content: [{ type: 'image_url', imageUrl: { url: `blobref:main/${hash}` } }],
+        toolCalls: [],
+      },
+    });
+    const bad = `data:image/png;base64,${bytes.toString('base64').slice(0, 1022)}`;
+    prompt.replace('queued-bad-image', [{ type: 'image_url', imageUrl: { url: bad } }], true);
+
+    expect(prompt.list().pending[0]?.message.content).toEqual([
+      { type: 'image_url', imageUrl: { url: full } },
+    ]);
+    loop.settleActive();
+    await queued.launched;
+  });
+
+  it('restores an old prompt.enqueued blob before retrying a replaced bad projection', async () => {
+    const { prompt, dispatcher, loop, setBlob, states } = harness({ manualTurnResult: true });
+    const image = new Jimp({ width: 256, height: 256, color: 0x000000ff });
+    let random = 0xabcdef01;
+    for (let i = 0; i < image.bitmap.data.length; i += 4) {
+      random ^= (random << 13) >>> 0;
+      random ^= random >>> 17;
+      random ^= (random << 5) >>> 0;
+      image.bitmap.data[i] = random & 0xff;
+      image.bitmap.data[i + 1] = (random >>> 8) & 0xff;
+      image.bitmap.data[i + 2] = (random >>> 16) & 0xff;
+    }
+    const bytes = Buffer.from(await image.getBuffer('image/png'));
+    setBlob(bytes);
+    const hash = 'd'.repeat(64);
+    const full = `data:image/png;base64,${bytes.toString('base64')}`;
+    const bad = `data:image/png;base64,${bytes.toString('base64').slice(0, 1022)}`;
+    await dispatcher.dispatch(new PromptEnqueued({
+      schemaVersion: 1,
+      promptId: 'restored-bad',
+      userMessageId: 'restored-bad',
+      createdAt: new Date(0).toISOString(),
+      message: { role: 'user', content: [{ type: 'image_url', imageUrl: { url: `blobref:main/${hash}` } }], toolCalls: [] },
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 0,
+      queueIndex: 0,
+    }));
+    await dispatcher.dispatch(new PromptReplaced({
+      promptId: 'restored-bad',
+      content: [{ type: 'image_url', imageUrl: { url: bad } }],
+      message: { role: 'user', content: [{ type: 'image_url', imageUrl: { url: bad } }], toolCalls: [] },
+      revision: 1,
+      replacedAt: new Date(0).toISOString(),
+    }));
+    expect((states.get(promptQueueKey).entries.get('restored-bad') as { originalMessage: ContextMessage }).originalMessage.content[0]).toMatchObject({ type: 'image_url', imageUrl: { url: `blobref:main/${hash}` } });
+    await (prompt as unknown as { restorePendingQueue(): Promise<void> }).restorePendingQueue();
+    const restored = (prompt as unknown as { pending: Array<{ message: ContextMessage; launched: Promise<unknown> }> }).pending[0]!;
+    prompt.resumeRecoveredQueue();
+    await restored.launched;
+    expect(restored.message.content).toEqual([{ type: 'image_url', imageUrl: { url: full } }]);
+    loop.settleActive();
+  });
+
+  it('rejects an ambiguous original attachment match without changing the queue', async () => {
+    const { prompt, setBlob } = harness({ manualTurnResult: true });
+    const image = new Jimp({ width: 256, height: 256, color: 0x000000ff });
+    let random = 0x12345678;
+    for (let i = 0; i < image.bitmap.data.length; i += 4) {
+      random ^= (random << 13) >>> 0;
+      random ^= random >>> 17;
+      random ^= (random << 5) >>> 0;
+      image.bitmap.data[i] = random & 0xff;
+      image.bitmap.data[i + 1] = (random >>> 8) & 0xff;
+      image.bitmap.data[i + 2] = (random >>> 16) & 0xff;
+    }
+    const bytes = Buffer.from(await image.getBuffer('image/png'));
+    expect(bytes.length).toBeGreaterThan(1022);
+    setBlob(bytes);
+    const hash = 'c'.repeat(64);
+    const active = await prompt.enqueue({ id: 'active-ambiguous', message: message('active') });
+    const queued = await prompt.enqueue({
+      id: 'ambiguous-image',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'image_url', imageUrl: { url: `blobref:main/${hash}` } },
+          { type: 'image_url', imageUrl: { url: `blobref:main/${hash}` } },
+        ],
+        toolCalls: [],
+      },
+    });
+    const before = prompt.list().pending[0]!.message;
+    const bad = `data:image/png;base64,${bytes.toString('base64').slice(0, 1022)}`;
+    await expect(Promise.resolve().then(() => prompt.replace('ambiguous-image', [{ type: 'image_url', imageUrl: { url: bad } }], true))).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    expect(prompt.list().pending[0]!.message).toBe(before);
+    expect(active.id).toBe('active-ambiguous');
+    expect(queued.id).toBe('ambiguous-image');
+  });
+
+  it('rejects a stable blob reference when the original bytes are unavailable', async () => {
+    const { prompt, setBlob } = harness({ manualTurnResult: true });
+    setBlob(undefined);
+    await expect(prompt.enqueue({
+      id: 'missing-image',
+      message: { role: 'user', content: [{ type: 'image_url', imageUrl: { url: `blobref:main:${'b'.repeat(64)}` } }], toolCalls: [] },
+    })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
   });
 
   it('can explicitly remove every queued attachment while retaining bundled skill blocks', async () => {

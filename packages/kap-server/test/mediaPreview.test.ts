@@ -71,7 +71,7 @@ describe('source-generated media preview', () => {
 
   it.skipIf(process.env['KIKI_SENT_IMAGE_PROOF'] !== '1')('decodes sent images through real HTTP routes in the full GUI and cold-reloads them', async () => {
     const proof = new URL('../../../apps/kiki-gui/scripts/sent-image-proof.mts', import.meta.url).href;
-    await import(proof);
+    await expect(import(proof)).resolves.toBeDefined();
   }, 180_000);
 
   it('aborts the source iterator while a preview body is being read', async () => {
