@@ -71,6 +71,13 @@ describe('sessionSchema', () => {
     expect(sessionSchema.parse(fullSession)).toEqual(fullSession);
   });
 
+  it('accepts an independent metadata timestamp and remains compatible with older servers', () => {
+    const wire = { ...fullSession, own_updated_at: fullSession.created_at };
+    expect(sessionSchema.parse(wire).own_updated_at).toBe(fullSession.created_at);
+    expect(sessionSchema.parse(fullSession).own_updated_at).toBeUndefined();
+    expect(sessionSchema.safeParse({ ...wire, own_updated_at: 'not-a-date' }).success).toBe(false);
+  });
+
   it('accepts arbitrary metadata extensions via catchall', () => {
     const withExtras = {
       ...fullSession,
@@ -180,6 +187,7 @@ describe('agent_config read and write shapes', () => {
 
   it('echoes only the fields the server projects', () => {
     expect(Object.keys(sessionAgentConfigSchema.shape).sort()).toEqual([
+      'execution',
       'model',
       'permission_mode',
       'persona',
