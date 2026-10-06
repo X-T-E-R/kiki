@@ -137,7 +137,7 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 
 `hooks` 接受 legacy 命令规则数组，或 `schemaVersion: 2` 的声明式对象。读取和保存均保留完整值，包括 `rules`、`legacy`、`enabled`、`disabled` 和 `files`。嵌套 JSON 键使用 camelCase（`textFile`、`agentRoles`、`everyCompletedSteps`、`counterScope`、`partitionBy`），TOML 使用 snake_case。编辑时发送完整的 hooks 数组或对象；省略 `hooks` 不改动此配置，发送 `[]` 则清空。`null` 或不支持的规则形状返回校验错误码 `40001`，不改变已存文件。读取或保存配置不会执行 hook 命令。支持的事件和动作见 [Hooks](../customization/hooks.md)。
 
-`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` 是活跃 Agent 的独立只读检查视图。返回的规则、来源状态、诊断和计步值描述实际运行状态，不用于保存配置。
+`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` 是独立的只读检查视图。活跃 Agent 返回实际生效的规则、来源状态、诊断和计步值；已关闭的会话则按保存的智能体绑定、计步记录和当前规则来源读取，不恢复 Agent，也不执行 hooks。工作区来源无效时，诊断保留该错误，有效的全局规则仍可查看。此接口不保存配置。
 
 ### 模型与供应商
 
@@ -491,6 +491,16 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | `POST /api/sessions:archive` | 批量归档会话，见下节 |
 | `POST /api/sessions:restore` | 批量恢复已归档会话，见下节 |
 | `/api/debug/*` | 反射式调试 RPC，仅 `--debug-endpoints` 且 loopback 时挂载，不属于稳定协议 |
+
+### 用量来源分组
+
+`GET /api/usage` 支持 `dimension=agent|model|project|session|provider|profile`。原生 `provider` 与 `profile` 维度按每条记录保存的来源分组，包括同一个 Agent 切换智能体档、同一个模型别名切换供应商的情况。智能体档（Profile）指执行档，不是 persona，也不是 main/subagent 身份。
+
+重复 `model`、`provider`、`profile`、`agent.id` 或 `workspace.id` 可选择多个值，例如 `?dimension=profile&profile=explore&profile=general`。同一个筛选字段内取 OR，不同字段间取 AND。`profile` 区分大小写、精确匹配记录的 `profileName`，不读取 Agent 当前档。响应在 `query.profiles` 中返回规范化的筛选值；旧服务器可能省略这个新增字段。
+
+来源组使用不透明键，例如 `provider:"example-provider"` 或 `profile:"explore"`；缺失来源单独使用 `provider:null` 或 `profile:null`，对应归因字段为 `null`。这些记录保留已记录用量，不从模型或 Agent ID 猜来源。筛选值取 `group.provider` 或 `group.profile_name`，不要发送分组键。缺失来源没有筛选哨兵值；字面值 `unknown` 只匹配真实携带这个名称的记录。
+
+查询所选时段或比较窗口时，发送 `range=custom&start_at=A&end_at=B`，边界为 epoch 毫秒的 `[A,B)`。概要、趋势分组与各会话的 `usage` 使用相同的记录筛选和精确窗口；会话金额不混入其他智能体档或时间桶余下部分。费用与 Token 的未知标记仍与已记录数字小计分别表达。保留现有归档、时区和分页参数；修改筛选或窗口后丢弃 `page_token`。
 
 ### 全量重扫用量统计
 

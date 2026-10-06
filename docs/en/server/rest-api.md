@@ -137,7 +137,7 @@ Session-title prompt reads, read-only defaults and field-level save/delete patch
 
 The `hooks` value accepts a legacy command-rule array or a declarative object with `schemaVersion: 2`. Both reads and saves retain the complete value, including `rules`, `legacy`, `enabled`, `disabled`, and `files`. Nested JSON keys use camelCase (`textFile`, `agentRoles`, `everyCompletedSteps`, `counterScope`, `partitionBy`); TOML uses snake_case. Send the complete hooks array or object when editing it; omit `hooks` to leave it unchanged, or send `[]` to clear it. `null` and unsupported rule shapes return validation code `40001` without changing the saved file. Reading or saving configuration does not execute hook commands. See [Hooks](../customization/hooks.md) for supported events and actions.
 
-`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` is the separate read-only inspection view for an active agent. Its rules, source statuses, diagnostics, and cadence counts describe effective runtime state; it is not a configuration-save endpoint.
+`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` is a separate read-only inspection view. Active agents return their effective rules, source statuses, diagnostics, and cadence counts. Closed sessions use the saved agent binding and cadence records with the current rule sources, without resuming the agent or executing hooks. Invalid workspace sources remain visible in diagnostics while valid global rules are retained. This endpoint does not save configuration.
 
 ### Models and providers
 
@@ -495,6 +495,16 @@ The session `fs:{action}` workspace API accepts workspace-relative paths only an
 | `POST /api/sessions:archive` | Batch-archive sessions, see below |
 | `POST /api/sessions:restore` | Batch-restore archived sessions, see below |
 | `/api/debug/*` | Reflection debug RPC; mounted only with `--debug-endpoints` on loopback, not a stable protocol |
+
+### Usage source grouping
+
+`GET /api/usage` supports `dimension=agent|model|project|session|provider|profile`. The native `provider` and `profile` dimensions group each record by its recorded source, including profile changes within one agent and provider changes behind one model alias. Profile means the execution profile, not a persona or a main/subagent role.
+
+Repeat `model`, `provider`, `profile`, `agent.id`, or `workspace.id` to select multiple values: `?dimension=profile&profile=explore&profile=general`. Values within a filter are ORed; different filters are ANDed. Profile matching is exact and case-sensitive against the record's `profileName`, not the agent's current profile. The response echoes normalized values in `query.profiles`; older servers may omit this additive field.
+
+Source groups use opaque keys such as `provider:"example-provider"` or `profile:"explore"`; missing sources have distinct `provider:null` or `profile:null` keys and a `null` attribution field. They retain their recorded usage and are never inferred from a model or agent ID. Use `group.provider` or `group.profile_name`, not the group key, as a filter value. There is no filter sentinel for missing sources; the literal value `unknown` selects only records that actually carry that name.
+
+For a selected period or comparison, send `range=custom&start_at=A&end_at=B` with epoch-millisecond bounds `[A,B)`. Summary, trend groups, and each session's `usage` apply the same record filters and exact window; session totals do not include unrelated profiles or the rest of a time bucket. Cost and token unknown flags remain separate from their recorded numeric subtotals. Keep the existing archive, timezone, and pagination parameters; discard `page_token` when changing filters or the window.
 
 ### Full usage rescan
 
