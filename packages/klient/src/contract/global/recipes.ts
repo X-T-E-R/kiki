@@ -1,11 +1,12 @@
 import { z } from 'zod';
-import { recipeSummarySchema, recipeDetailSchema, recipePreviewSchema, recipeMarketSchema, recipePreviewInputSchema, recipeInstallInputSchema, recipeUpdateInputSchema, recipeForkInputSchema, recipeSaveLocalInputSchema, recipeRemoveInputSchema, recipeMarketInputSchema } from '@kiki/protocol';
+import { recipeExportSchema, recipeSummarySchema, recipeDetailSchema, recipePreviewSchema, recipeMarketSchema, recipePreviewInputSchema, recipeInstallInputSchema, recipeUpdateInputSchema, recipeForkInputSchema, recipeSaveLocalInputSchema, recipeRemoveInputSchema, recipeMarketInputSchema } from '@kiki/protocol';
 import { maybe, noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
 
 export const recipesContract = {
   list: { input: z.tuple([]), output: z.array(recipeSummarySchema) },
   get: { input: z.tuple([z.string()]), output: maybe(recipeDetailSchema) },
+  export: { input: z.tuple([z.string()]), output: recipeExportSchema },
   preview: { input: z.tuple([recipePreviewInputSchema]), output: recipePreviewSchema },
   install: { input: z.tuple([recipeInstallInputSchema]), output: recipeSummarySchema },
   checkUpdates: { input: z.tuple([]), output: z.array(recipeSummarySchema) },

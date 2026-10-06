@@ -1,12 +1,13 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event } from '#/_base/event';
-import type { RecipeDetail, RecipeForkInput, RecipeInstallInput, RecipeMarket, RecipeMarketInput, RecipePreview, RecipePreviewInput, RecipeRemoveInput, RecipeSaveLocalInput, RecipeSource, RecipeSummary, RecipeUpdateInput, ResolvedRecipe } from '@kiki/protocol';
+import type { RecipeExport, RecipeDetail, RecipeForkInput, RecipeInstallInput, RecipeMarket, RecipeMarketInput, RecipePreview, RecipePreviewInput, RecipeRemoveInput, RecipeSaveLocalInput, RecipeSource, RecipeSummary, RecipeUpdateInput, ResolvedRecipe } from '@kiki/protocol';
 
 export interface IRecipeService {
   readonly _serviceBrand: undefined;
   readonly onDidChange: Event<void>;
   list(): Promise<RecipeSummary[]>;
   get(id: string): Promise<RecipeDetail | undefined>;
+  export(id: string): Promise<RecipeExport>;
   resolve(id: string): Promise<ResolvedRecipe>;
   preview(input: RecipePreviewInput): Promise<RecipePreview>;
   install(input: RecipeInstallInput): Promise<RecipeSummary>;
