@@ -304,6 +304,7 @@ async function mountMedia(slot: BackgroundSlot, index: number, run: number): Pro
     video.setAttribute('playsinline', '');
     if (poster !== null) video.poster = poster;
     video.addEventListener('loadeddata', () => {
+      if (current.element !== video) return;
       measure(video, ref.id);
       setStatus({ heavyVideo: video.videoWidth * video.videoHeight > 2560 * 1440 });
       if (activeSlot !== null) applySurfaceVars(activeSlot);
@@ -322,6 +323,9 @@ async function mountMedia(slot: BackgroundSlot, index: number, run: number): Pro
     }
     void sampleImage(ref).then(() => { if (activeSlot !== null && current.key === key) applySurfaceVars(activeSlot); });
   }
+  element.addEventListener('error', () => {
+    if (current.element === element) setStatus({ missing: true, heavyVideo: false });
+  }, { once: true });
   element.dataset['kikiBackdropItem'] = ref.kind;
   styleMedia(element, latest, element instanceof HTMLDivElement ? url : null);
   host.replaceChildren(element);

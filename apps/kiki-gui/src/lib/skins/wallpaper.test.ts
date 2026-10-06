@@ -19,7 +19,7 @@ import { DEFAULT_BACKGROUND_LOOK } from '@kiki/protocol';
 import { applyBackdrop, setBackdropMediaResolver, type MediaResolver } from './backdrop';
 import type { BackgroundMediaRef, BackgroundSlot } from './background';
 import { displayBlob, downscaleImage, resetDisplayMedia } from './displayMedia';
-import { getMedia } from './mediaStore';
+import { getMedia, isPersistent, putMedia, resetMediaStore } from './mediaStore';
 import { PACK_MEDIA_CACHE_BYTES, mediaResolverFor, resetPackMediaResolver } from './useAppearancePacks';
 
 const image = (id: string): BackgroundMediaRef => ({ id, kind: 'image', mime: 'image/jpeg', name: `${id}.jpg`, bytes: 30_000_000 });
@@ -53,6 +53,12 @@ describe('wallpaper material', () => {
     expect(start, selector).toBeGreaterThanOrEqual(0);
     return css.slice(start, css.indexOf('\n}', start));
   };
+
+  it('makes the application shell transparent even inside root wrappers', () => {
+    const shell = rule(':root[data-kiki-bg] #root .bg-canvas:has(> .app-stage)');
+    expect(shell).toContain('background-color: transparent;');
+    expect(css).toContain(':root[data-kiki-bg] #root > .bg-canvas,');
+  });
 
   it('frosts the entire scoped backdrop, including the gaps outside sheets', () => {
     const frost = rule(':root[data-kiki-bg] [data-kiki-backdrop]::after');
@@ -251,5 +257,37 @@ describe('pack media resolver', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     await resolve({ id: 'pack:a/drift.mp4' });
     expect(fetch).toHaveBeenCalledTimes(3);
+  });
+});
+
+
+describe('media durability', () => {
+  afterEach(resetMediaStore);
+
+  it('waits for transaction commit and reports memory-only bytes after an abort', async () => {
+    resetMediaStore();
+    const request = { result: 'local-aborted-1' };
+    const transaction = {
+      objectStore: () => ({ put: () => request }),
+      error: null,
+      oncomplete: undefined as (() => void) | undefined,
+      onabort: undefined as (() => void) | undefined,
+    };
+    vi.stubGlobal('indexedDB', {
+      open: () => {
+        const opening = { result: { transaction: () => transaction }, onsuccess: undefined as (() => void) | undefined };
+        queueMicrotask(() => opening.onsuccess?.());
+        return opening;
+      },
+    });
+    const blob = new Blob(['bytes'], { type: 'video/mp4' });
+    let finished = false;
+    const write = putMedia('local-aborted-1', blob).then(() => { finished = true; });
+    await flush();
+    expect(finished).toBe(false);
+    transaction.onabort?.();
+    await write;
+    expect(await isPersistent()).toBe(false);
+    expect(await getMedia('local-aborted-1')).toBe(blob);
   });
 });

@@ -5,7 +5,7 @@
  * writes the real prefs; the app behind is the preview.
  */
 
-import { useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 
 import {
   APPEARANCE_LIMITS,
@@ -23,9 +23,10 @@ import {
   backgroundPrefsServerSnapshot,
   backgroundPrefsSnapshot,
   checkBackgroundFile,
+  canLoadBackgroundMedia,
+  deleteMedia,
   editKeyForTheme,
   isPersistent,
-  pruneMedia,
   storeBackgroundFile,
   subscribeBackdropStatus,
   subscribeBackgroundPrefs,
@@ -79,7 +80,8 @@ function writeSlot(prefs: BackgroundPrefs, theme: ResolvedTheme, slot: Backgroun
   const before = mediaIds(prefs);
   const after = mediaIds(next);
   writeBackgroundPrefs(next);
-  if (before.size !== after.size || [...before].some((id) => !after.has(id))) void pruneMedia(after);
+  // The database is shared by spaces; only retire this selection's old bytes.
+  for (const id of before) if (!after.has(id) && id.startsWith('local-')) void deleteMedia(id);
 }
 
 function Slider({ id, value, min, max, step, onChange, format }: {
@@ -183,8 +185,10 @@ function MediaPicker({ theme, slot, compact, onFeedback }: {
   const input = useRef<HTMLInputElement>(null);
   const [url, setUrl] = useState('');
   const [busy, setBusy] = useState(false);
+  const operation = useRef(0);
+  useEffect(() => () => { operation.current += 1; }, [theme, endpoint]);
 
-  const adopt = async (file: Blob, name: string) => {
+  const adopt = async (file: Blob, name: string, ticket: number) => {
     // A File's name is a read-only getter; pass it alongside instead of on it.
     const check = await checkBackgroundFile(file, name);
     if (!check.ok) {
@@ -196,34 +200,53 @@ function MediaPicker({ theme, slot, compact, onFeedback }: {
       });
       return;
     }
+    if (operation.current !== ticket) return false;
+    if (!(await canLoadBackgroundMedia(file, check))) {
+      if (operation.current === ticket) onFeedback({ tone: 'error', text: t('st.bg.loadFailed') });
+      return false;
+    }
+    if (operation.current !== ticket) return false;
     const ref = await storeBackgroundFile(file, check, name);
-    // A new picture keeps the dials the user already set, but not a pack's.
-    const look = slot !== null && slot.packId === undefined ? slot.look : DEFAULT_BACKGROUND_LOOK;
-    writeSlot(prefs, theme, { media: [ref], interval: 0, look });
+    if (operation.current !== ticket) { await deleteMedia(ref.id); return false; }
+    // Read the latest dials after decoding, rather than the file-picker closure.
+    const latest = backgroundPrefsSnapshot();
+    const current = latest[editKeyForTheme(latest, theme)];
+    const look = current !== null && current.packId === undefined ? current.look : DEFAULT_BACKGROUND_LOOK;
+    writeSlot(latest, theme, { media: [ref], interval: 0, look });
     const notes: string[] = [];
     if (!(await isPersistent())) notes.push(t('st.bg.notPersistent'));
     if (check.kind === 'video' && file.size > APPEARANCE_LIMITS.videoWarnBytes) notes.push(t('st.bg.largeVideo', { size: formatBytes(file.size) }));
-    onFeedback(notes.length > 0 ? { tone: 'info', text: notes.join(' ') } : null);
+    if (operation.current === ticket) onFeedback(notes.length > 0 ? { tone: 'info', text: notes.join(' ') } : null);
+    return true;
+  };
+
+  const importFile = async (file: File) => {
+    const ticket = ++operation.current;
+    setBusy(true);
+    onFeedback(null);
+    try { await adopt(file, file.name, ticket); }
+    catch { if (operation.current === ticket) onFeedback({ tone: 'error', text: t('st.bg.loadFailed') }); }
+    finally { if (operation.current === ticket) setBusy(false); }
   };
 
   const importUrl = async () => {
     const target = url.trim();
-    if (target === '') return;
+    if (target === '' || busy) return;
+    const ticket = ++operation.current;
     setBusy(true);
     onFeedback(null);
     try {
       const { blob, name } = await importBackgroundUrl(endpoint, target);
-      await adopt(blob, name);
-      setUrl('');
+      if (await adopt(blob, name, ticket)) setUrl('');
     } catch (error) {
-      onFeedback({
+      if (operation.current === ticket) onFeedback({
         tone: 'error',
         text: error instanceof AppearanceApiError && error.message === 'unsupported'
           ? t('st.bg.urlUnsupported')
           : t('st.bg.urlFailed', { reason: error instanceof Error ? error.message : String(error) }),
       });
     } finally {
-      setBusy(false);
+      if (operation.current === ticket) setBusy(false);
     }
   };
 
@@ -249,16 +272,16 @@ function MediaPicker({ theme, slot, compact, onFeedback }: {
           onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = '';
-            if (file !== undefined) void adopt(file, file.name);
+            if (file !== undefined) void importFile(file);
           }}
         />
         {/* The actions wrap as one group, so on a phone the file name keeps the row. */}
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={SECONDARY_BUTTON} data-bg-choose onClick={() => { input.current?.click(); }}>
+          <button type="button" className={SECONDARY_BUTTON} disabled={busy} data-bg-choose onClick={() => { input.current?.click(); }}>
             {slot === null ? t('st.bg.chooseFile') : t('st.bg.replaceFile')}
           </button>
           {slot !== null ? (
-            <button type="button" className={SECONDARY_BUTTON} data-bg-remove onClick={() => { writeSlot(prefs, theme, null); onFeedback(null); }}>
+            <button type="button" className={SECONDARY_BUTTON} data-bg-remove onClick={() => { operation.current += 1; setBusy(false); writeSlot(prefs, theme, null); onFeedback(null); }}>
               {t('st.bg.remove')}
             </button>
           ) : null}

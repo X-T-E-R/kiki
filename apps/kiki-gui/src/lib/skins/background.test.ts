@@ -2,7 +2,9 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { DEFAULT_BACKGROUND_LOOK, parseAppearancePack } from '@kiki/protocol';
+import { DEFAULT_BACKGROUND_LOOK, DEFAULT_SPACE_PREFERENCES, parseAppearancePack, type SpaceDetail } from '@kiki/protocol';
+import { clearSpaceAuthority, configureSpaceAuthority } from '../spaceAuthority';
+import { backgroundIsDeviceOnly } from './background';
 
 import {
   TEXT_CONTRAST_TARGET,
@@ -47,6 +49,7 @@ function worstContrast(colors: typeof LIGHT, alpha: number, look = DEFAULT_BACKG
 }
 
 afterEach(() => {
+  clearSpaceAuthority();
   localStorage.clear();
   resetBackgroundPrefsCache();
 });
@@ -84,6 +87,24 @@ describe('readableSurfaceAlpha', () => {
 
 describe('background prefs', () => {
   const ref = { id: 'local-abc-1', kind: 'image', mime: 'image/webp', name: 'sky.webp', bytes: 10 } as const;
+
+  it.each(['image', 'video'] as const)('keeps a device %s over the space background through refresh and cold restore', (kind) => {
+    const detail: SpaceDetail = {
+      schema: 2, id: 'main', name: 'Main', primary: true, revision: 'r1',
+      inherit: { config: true, agents: true, instructions: true, skills: true, mcp: true, appearance: true, plugins: false, credentials: 'shared', generic_roots: true },
+      groups: [], items: [], preferences: DEFAULT_SPACE_PREFERENCES,
+      preference_authority: true, restart_required: false,
+    };
+    const identity = { serverId: 'example-server', homeId: 'main' };
+    configureSpaceAuthority(identity, detail);
+    const slot = { media: [{ ...ref, kind, mime: kind === 'video' ? 'video/mp4' : ref.mime }], interval: 0, look: { ...DEFAULT_BACKGROUND_LOOK, blur: 4, surfaceOpacity: 0.72 } };
+    writeBackgroundPrefs({ light: slot, dark: slot, linked: false, assist: false });
+    expect(backgroundPrefsSnapshot()).toMatchObject({ light: slot, dark: slot, linked: false, assist: false });
+    configureSpaceAuthority(identity, { ...detail, revision: 'r2' });
+    resetBackgroundPrefsCache();
+    expect(backgroundPrefsSnapshot()).toMatchObject({ light: slot, dark: slot, linked: false, assist: false });
+    expect(backgroundIsDeviceOnly()).toBe(true);
+  });
 
   it('clamps stored dials and drops media refs that could point anywhere', () => {
     const prefs = normalizeBackgroundPrefs({

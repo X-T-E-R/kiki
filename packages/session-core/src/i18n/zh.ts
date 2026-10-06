@@ -2678,7 +2678,8 @@ export const zh = {
   'st.bg.rejectSize': '文件太大。图片最大 {image}，视频最大 {video}。',
   'st.bg.urlFailed': '无法获取该链接：{reason}',
   'st.bg.urlUnsupported': '当前连接的服务器无法获取链接。请先下载文件，再选择它。',
-  'st.bg.missing': '这台设备上找不到背景文件。请重新选择。',
+  'st.bg.loadFailed': '无法加载这个文件，当前背景未改变。请选择支持的图片或可播放的 MP4/WebM 后重试。',
+  'st.bg.missing': '无法加载所选背景，已保留你的选择。请重新选择该文件以恢复显示。',
   'st.bg.notPersistent': '这个浏览器不保存文件，背景图刷新后就会消失。',
   'st.bg.heavyVideo':
     '这个视频超过 1440p，会占用大量显存。作为窗口背景，1080p 版本看起来没有区别。',

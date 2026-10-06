@@ -110,7 +110,8 @@
 :root[data-kiki-bg] body {
   background: var(--color-canvas);
 }
-:root[data-kiki-bg] #root > .bg-canvas {
+:root[data-kiki-bg] #root > .bg-canvas,
+:root[data-kiki-bg] #root .bg-canvas:has(> .app-stage) {
   background-color: transparent;
 }
 

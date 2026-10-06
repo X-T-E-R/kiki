@@ -41,19 +41,26 @@ function openDb(): Promise<IDBDatabase | null> {
 function run<T>(mode: IDBTransactionMode, body: (store: IDBObjectStore) => IDBRequest<T>): Promise<T | undefined> {
   return openDb().then((db) => new Promise((resolve, reject) => {
     if (db === null) { resolve(undefined); return; }
-    const request = body(db.transaction(STORE, mode).objectStore(STORE));
-    request.onsuccess = () => { resolve(request.result); };
+    const transaction = db.transaction(STORE, mode);
+    const request = body(transaction.objectStore(STORE));
+    transaction.oncomplete = () => { resolve(request.result); };
+    transaction.onabort = () => { reject(transaction.error ?? new Error('media store aborted')); };
+    transaction.onerror = () => { reject(transaction.error ?? new Error('media store failed')); };
     request.onerror = () => { reject(request.error ?? new Error('media store failed')); };
   }));
 }
 
+const volatile = new Set<string>();
+
 export async function isPersistent(): Promise<boolean> {
-  return (await openDb()) !== null;
+  return (await openDb()) !== null && volatile.size === 0;
 }
 
 export async function putMedia(id: string, blob: Blob): Promise<void> {
   memory.set(id, blob);
-  await run('readwrite', (store) => store.put(blob, id)).catch(() => undefined);
+  const saved = await run('readwrite', (store) => store.put(blob, id)).catch(() => undefined);
+  if (saved === undefined) volatile.add(id);
+  else volatile.delete(id);
 }
 
 export async function getMedia(id: string): Promise<Blob | null> {
@@ -67,6 +74,7 @@ export async function getMedia(id: string): Promise<Blob | null> {
 
 export async function deleteMedia(id: string): Promise<void> {
   memory.delete(id);
+  volatile.delete(id);
   await run('readwrite', (store) => store.delete(id)).catch(() => undefined);
 }
 
@@ -105,6 +113,35 @@ function readHead(file: Blob): Promise<Uint8Array> {
   });
 }
 
+/** Decode before adopting: a valid container signature need not be playable. */
+export function canLoadBackgroundMedia(file: Blob, check: MediaCheck): Promise<boolean> {
+  const blob = file.type === check.mime ? file : new Blob([file], { type: check.mime });
+  const url = URL.createObjectURL(blob);
+  const element = document.createElement(check.kind === 'video' ? 'video' : 'img');
+  return new Promise((resolve) => {
+    const finish = (ok: boolean) => {
+      clearTimeout(timeout);
+      element.onload = null;
+      element.onerror = null;
+      if (element instanceof HTMLVideoElement) {
+        element.onloadeddata = null;
+        element.removeAttribute('src');
+        element.load();
+      } else element.removeAttribute('src');
+      URL.revokeObjectURL(url);
+      resolve(ok);
+    };
+    const timeout = setTimeout(() => { finish(false); }, 15_000);
+    element.onerror = () => { finish(false); };
+    if (element instanceof HTMLVideoElement) {
+      element.muted = true;
+      element.preload = 'auto';
+      element.onloadeddata = () => { finish(element.videoWidth > 0 && element.videoHeight > 0); };
+    } else element.onload = () => { finish(element.naturalWidth > 0); };
+    element.src = url;
+  });
+}
+
 let counter = 0;
 
 /** Store a checked file and return the ref prefs can point at. */
@@ -127,5 +164,6 @@ export async function pruneMedia(keep: ReadonlySet<string>): Promise<void> {
 /** Forget the in-memory cache (tests). */
 export function resetMediaStore(): void {
   memory.clear();
+  volatile.clear();
   dbPromise = null;
 }
