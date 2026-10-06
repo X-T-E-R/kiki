@@ -23,14 +23,18 @@ export const recipeBranchSchema = z.object({
 export type ResolvedRecipeBranch = z.infer<typeof recipeBranchSchema>;
 export const recipeLockEntrySchema = z.object({ source: recipeSourceSchema, manifest_id: z.string(), version: z.string(), revision: z.string() });
 export type RecipeLockEntry = z.infer<typeof recipeLockEntrySchema>;
-export const resolvedRecipeSchema = z.object({
+const resolvedRecipeContentSchema = z.object({
   revision: z.string(), branches: z.object({ main: recipeBranchSchema, sub: recipeBranchSchema, independent: recipeBranchSchema }),
   dependencies: z.array(recipeLockEntrySchema), origins: z.array(recipeValueOriginSchema),
   model: z.record(z.string(), z.unknown()).default({}),
   model_origins: z.record(z.string(), recipeValueOriginSchema.omit({ position: true, slot: true })).default({}),
 });
+export const recipeReferenceSchema = z.object({ surface: z.enum(['model', 'profile']), installation_id: z.string(), revision: z.string() });
+export const recipeResolvedLayerSchema = recipeReferenceSchema.omit({ revision: true }).extend({ resolved: resolvedRecipeContentSchema });
+export const resolvedRecipeSchema = resolvedRecipeContentSchema.extend({ layers: z.array(recipeResolvedLayerSchema).optional() });
+export type RecipeResolvedLayer = z.infer<typeof recipeResolvedLayerSchema>;
 export type ResolvedRecipe = z.infer<typeof resolvedRecipeSchema>;
-export const recipeModelBindingSchema = resolvedRecipeSchema.pick({ revision: true, model: true, model_origins: true }).extend({ installation_id: z.string() });
+export const recipeModelBindingSchema = resolvedRecipeSchema.pick({ revision: true, model: true, model_origins: true }).extend({ installation_id: z.string(), references: z.array(recipeReferenceSchema).readonly().optional() });
 export type RecipeModelBinding = z.infer<typeof recipeModelBindingSchema>;
 export const recipeSummarySchema = z.object({
   installation_id: z.string(), manifest_id: z.string(), name: z.string(), version: z.string(), description: z.string().optional(),

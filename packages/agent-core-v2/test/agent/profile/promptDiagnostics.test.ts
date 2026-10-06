@@ -61,6 +61,25 @@ describe('prompt source diagnostics', () => {
     } finally { await agent.dispose(); }
   });
 
+  it('keeps native replacement shadowing and per-layer Recipe field provenance without hiding model-profile prompts', async () => {
+    const agent = createTestAgent();
+    try {
+      agent.kimiConfig = { ...agent.kimiConfig, models: { ...agent.kimiConfig.models, 'mock-model': { ...agent.kimiConfig.models!['mock-model']!, cognition: { overlayMode: 'replace', overlay: 'cognition/overlay.md' } } } };
+      agent.get(IModelService).loadAll({ 'mock-model': { ...agent.get(IModelService).get('mock-model'), cognition: agent.kimiConfig.models!['mock-model']!.cognition } }, 'mock-model');
+      expect(agent.get(IModelService).get('mock-model')?.cognition?.overlayMode).toBe('replace');
+      const resolved = { revision: 'package-revision', model: {}, model_origins: {}, dependencies: [], origins: [], branches: { main: { fields: { 'system.language': 'RECIPE LANGUAGE', 'system.shared': 'RECIPE SHARED' } }, sub: { fields: {} }, independent: { fields: {} } } };
+      const recipe = { ...resolved, layers: [{ surface: 'profile' as const, installation_id: 'profile-package', resolved }] };
+      const profile = normalizeAgentProfile({ ...role, modelProfiles: [{ alias: 'mock-model', promptMode: 'append', prompt: 'MODEL PROFILE BODY' }] });
+      const fields = await resolveProfilePromptFields(profile, 'mock-model', 'main', agent.get(IConfigService), agent.get(IModelService), agent.get(IPromptFieldRegistry), recipe);
+      expect(fields.fields.find((field) => field.id === 'system.language')).toMatchObject({ status: 'shadowed', sources: [{ surface: 'recipe', path: 'profile:profile-package@package-revision' }] });
+      expect(fields.values['system.shared']).toBe('RECIPE SHARED');
+      const diagnostics = promptConfigurationChannels({ profile, alias: 'mock-model', position: 'main', cognition: agent.kimiConfig.models!['mock-model']!.cognition, recipe: { installation_id: 'profile-package', resolved: recipe }, fields, resolveId: (id) => id, overrideDeclarations: [] });
+      expect(diagnostics.find((channel) => channel.id === 'cognition.overlay')?.state).toBe('effective');
+      expect(diagnostics.find((channel) => channel.channel === 'model_profile')?.reason).toContain('cognition overlay');
+      expect(diagnostics.some((channel) => channel.reason_code === 'recipe-selected')).toBe(false);
+    } finally { await agent.dispose(); }
+  });
+
   it('does not attribute legacy inherited inline declarations to one unproven profile path', async () => {
     const agent = createTestAgent();
     try {

@@ -27,6 +27,7 @@ const boundPromptInputsSchema = z.object({
   cognition: z.object({
     position: z.enum(['main', 'sub', 'independent']), modelAlias: z.string(), revision: z.number().int(),
     contentRevision: z.string(), bindingRevision: z.string().optional(),
+    modelSettings: z.record(z.string(), z.unknown()).optional(),
     config: z.object({
       overlay: z.union([z.object({ text: z.string() }).strict(), z.string(), z.array(z.string())]).optional(),
       steering: z.union([z.object({ text: z.string() }).strict(), z.string(), z.array(z.string())]).optional(),

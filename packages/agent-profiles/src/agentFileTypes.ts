@@ -27,6 +27,7 @@ export interface AgentFileRoot {
 }
 
 export interface AgentFileDefinition {
+  readonly recipe?: string;
   readonly autoCompact?: number;
   readonly contextStrategy?: ContextStrategy;
   readonly contextBudget?: number;

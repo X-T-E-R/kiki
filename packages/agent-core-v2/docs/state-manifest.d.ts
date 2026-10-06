@@ -2040,6 +2040,7 @@ export interface AgentStateSnapshot {
         anchorSteps?: number;
         anchorScope?: 'session' | 'turn';
       };
+      readonly modelSettings?: Readonly<Record<string, unknown>>;
       readonly recipe?: {
         readonly installation_id: string;
         readonly resolved: {
@@ -2119,6 +2120,88 @@ export interface AgentStateSnapshot {
             file?: string;
           };
           };
+          layers?: readonly {
+            surface: 'profile' | 'model';
+            installation_id: string;
+            resolved: {
+              revision: string;
+              branches: {
+                main: {
+                  fields: {
+                    [key: string]: string;
+                  };
+                  anchor?: {
+                    content: string;
+                    steps: number;
+                    scope: 'session' | 'turn';
+                  };
+                  steering_on_turn?: boolean;
+                  steering_on_input?: boolean;
+                  steering_interval_steps?: number;
+                  system?: string;
+                  steering?: string;
+                };
+                sub: {
+                  fields: {
+                    [key: string]: string;
+                  };
+                  anchor?: {
+                    content: string;
+                    steps: number;
+                    scope: 'session' | 'turn';
+                  };
+                  steering_on_turn?: boolean;
+                  steering_on_input?: boolean;
+                  steering_interval_steps?: number;
+                  system?: string;
+                  steering?: string;
+                };
+                independent: {
+                  fields: {
+                    [key: string]: string;
+                  };
+                  anchor?: {
+                    content: string;
+                    steps: number;
+                    scope: 'session' | 'turn';
+                  };
+                  steering_on_turn?: boolean;
+                  steering_on_input?: boolean;
+                  steering_interval_steps?: number;
+                  system?: string;
+                  steering?: string;
+                };
+              };
+              dependencies: readonly {
+                source: {
+                  locator: string;
+                  sha256?: string;
+                };
+                manifest_id: string;
+                version: string;
+                revision: string;
+              }[];
+              origins: readonly {
+                position: 'main' | 'sub' | 'independent';
+                slot: string;
+                source: string;
+                manifest_id: string;
+                version: string;
+                file?: string;
+              }[];
+              model: {
+                [key: string]: unknown;
+              };
+              model_origins: {
+                [key: string]: {
+                version: string;
+                source: string;
+                manifest_id: string;
+                file?: string;
+              };
+              };
+            };
+          }[];
         };
         readonly anchorSystem?: string;
       };
@@ -2892,6 +2975,7 @@ export interface AgentStateSnapshot {
           }) => /* ILogger — recursive (packages/agent-core-v2/src/_base/log/log.ts) */ unknown;
         };
       }) => Promise<string>;
+      readonly recipe?: string;
       readonly restrictModelsToMenu?: boolean;
       readonly modelMenuConstraint?: /* ProfileModelMenuConstraint — packages/agent-profiles/src/agentProfile.ts */ {
         readonly source: string;
@@ -2943,6 +3027,7 @@ export interface AgentStateSnapshot {
       }[];
       readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
       readonly fileDefinition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+        readonly recipe?: string;
         readonly autoCompact?: number;
         readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly contextBudget?: number;
@@ -3633,6 +3718,7 @@ export interface AgentStateSnapshot {
     }, 'systemPrompt' | 'renderSystemPrompt' | 'promptPrefix'> & {
       readonly fileSources?: /* FrozenProfileFileSources — packages/agent-core-v2/src/session/dispatch/profileFile.ts */ {
         readonly root: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+          readonly recipe?: string;
           readonly autoCompact?: number;
           readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly contextBudget?: number;
@@ -4419,6 +4505,7 @@ export interface AgentStateSnapshot {
           readonly status: 'ready' | 'unavailable';
           readonly sourceDefinitionId?: string;
           readonly definition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+            readonly recipe?: string;
             readonly autoCompact?: number;
             readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
             readonly contextBudget?: number;
@@ -4685,6 +4772,7 @@ export interface AgentStateSnapshot {
           };
         }>>>>;
         readonly sourceDefinitions: Readonly<Record<string, /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+          readonly recipe?: string;
           readonly autoCompact?: number;
           readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly contextBudget?: number;
@@ -5018,6 +5106,11 @@ export interface AgentStateSnapshot {
               file?: string;
             }>;
             installation_id: string;
+            references?: readonly {
+              surface: 'profile' | 'model';
+              installation_id: string;
+              revision: string;
+            }[];
           };
           request?: {
             system_prompt_hash: string;
@@ -5089,6 +5182,7 @@ export interface AgentStateSnapshot {
               anchorSteps?: number;
               anchorScope?: 'session' | 'turn';
             };
+            readonly modelSettings?: Readonly<Record<string, unknown>>;
             readonly recipe?: {
               readonly installation_id: string;
               readonly resolved: {
@@ -5168,6 +5262,88 @@ export interface AgentStateSnapshot {
                   file?: string;
                 };
                 };
+                layers?: readonly {
+                  surface: 'profile' | 'model';
+                  installation_id: string;
+                  resolved: {
+                    revision: string;
+                    branches: {
+                      main: {
+                        fields: {
+                          [key: string]: string;
+                        };
+                        anchor?: {
+                          content: string;
+                          steps: number;
+                          scope: 'session' | 'turn';
+                        };
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        system?: string;
+                        steering?: string;
+                      };
+                      sub: {
+                        fields: {
+                          [key: string]: string;
+                        };
+                        anchor?: {
+                          content: string;
+                          steps: number;
+                          scope: 'session' | 'turn';
+                        };
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        system?: string;
+                        steering?: string;
+                      };
+                      independent: {
+                        fields: {
+                          [key: string]: string;
+                        };
+                        anchor?: {
+                          content: string;
+                          steps: number;
+                          scope: 'session' | 'turn';
+                        };
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        system?: string;
+                        steering?: string;
+                      };
+                    };
+                    dependencies: readonly {
+                      source: {
+                        locator: string;
+                        sha256?: string;
+                      };
+                      manifest_id: string;
+                      version: string;
+                      revision: string;
+                    }[];
+                    origins: readonly {
+                      position: 'main' | 'sub' | 'independent';
+                      slot: string;
+                      source: string;
+                      manifest_id: string;
+                      version: string;
+                      file?: string;
+                    }[];
+                    model: {
+                      [key: string]: unknown;
+                    };
+                    model_origins: {
+                      [key: string]: {
+                      version: string;
+                      source: string;
+                      manifest_id: string;
+                      file?: string;
+                    };
+                    };
+                  };
+                }[];
               };
               readonly anchorSystem?: string;
             };

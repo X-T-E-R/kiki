@@ -16,6 +16,8 @@
 | --- | --- |
 | 全局 | `config.toml` 的 `[prompt.overrides]` |
 | 按模型 | `config.toml` 的 `[models."<alias>".prompt_overrides]` |
+| 模型 Recipe | 模型所选 Recipe 中的 `prompts.fields` |
+| Profile Recipe | profile 所选 Recipe 中的 `prompts.fields` |
 | Agent 或 `SYSTEM.md` frontmatter | frontmatter 中的 `prompt_overrides:` |
 | 模型 profile 条目 | agent 文件中的 `model_profiles[].prompt_overrides` |
 
@@ -79,15 +81,31 @@ await klient.global.kosong.updateModel("example-model", {
 });
 ```
 
-选择 Recipe 接管模型提示调教，不替换 Agent 的角色、persona、工作区指令或宿主上下文。原先保存的模型提示仍保留，但在选中 Recipe 时忽略；Recipe 声明的模型设置叶项覆盖手调值，未声明项维持普通解析。用当前 `base_revision` 写入 `recipe: null` 停用，恢复保存的手调设置。新绑定采用当前选择；已有会话保留冻结的 Recipe revision，直到重建上下文或显式换模。
+Profile 可引用同一已安装包，不改变全局模型。在 Markdown Frontmatter 中写 `recipe: installation:<已安装 id>`（也可直接写安装 id）；id 来自 `install` 返回值。沿现有 profile Markdown 编辑入口保存，或编辑 profile 文件。URL 和本地路径是先预览、安装的包来源，不会在绑定时隐式下载。
+
+```markdown
+---
+name: reviewer
+description: 审查变更
+model_alias: example-model
+recipe: installation:YOUR_INSTALLED_ID
+request_params:
+  temperature: 0.2
+---
+审查变更并报告可执行的发现。
+```
+
+Recipe 只贡献自己声明的值。模型设置依次采用保存模型、模型 Recipe、模型 `overrides` 本地差异、profile Recipe、profile 显式参数、匹配的 `model_profiles` 参数；上下文和输出上限仍取各适用限制的最小值。提示字段依次采用全局、保存模型字段、模型 Recipe 字段、profile Recipe 字段、profile 字段、匹配的 profile-model 或 caller-lease 字段。未覆盖的 cognition 槽和普通模型 profile 正文继续生效；角色、persona、工作区指令、宿主上下文与权限保留原有权威。
+
+用当前 `base_revision` 写模型 `recipe: null`，或在 profile 中写 `recipe: off`，只撤回对应层的配方贡献。手动值和另一层 Recipe 都保留。新绑定冻结每个引用包的 revision、展开正文与有效模型设置，包括继承来的参数。已有会话和冷恢复保留该快照，直到重建上下文或显式换模；订阅更新与 profile 编辑不会暗中换绑。
 
 ### 继承或自定义
 
-包可在各表之前用 `extends = { source = "https://example.com/presets/recipe.toml" }` 声明一个父配方。缺失 slot 继承；每个正文来源或来源数组整体替换父值。模型设置按已声明叶项合并，数组整体替换。根级 `model = "off"` 清除继承的 Recipe 设置，恢复保存的模型设置。`steering = "off"` 等正文 slot 禁用该项，不恢复旧手调模型提示；字段值 `false` 删除继承的 Recipe 字段。
+包可在各表之前用 `extends = { source = "https://example.com/presets/recipe.toml" }` 声明一个父配方。缺失 slot 继承；每个正文来源或来源数组整体替换父值。模型设置按已声明叶项合并，数组整体替换。根级 `model = "off"` 清除继承的 Recipe 设置，恢复保存的模型设置。`steering = "off"` 等正文 slot 删除本包继承的该项；字段值 `false` 删除继承的 Recipe 字段。其他模型或 profile 层仍可提供值。
 
 `prompts` 是 subagent 使用的 common 分支。`[prompts.main]` 或 `[prompts.independent]` 选择一个完整的位置分支，不会自动用 common 填补缺失 slot。在 `[prompts]` 内写 `main = "same"` 或 `independent = "same"` 可显式采用 common，写 `"off"` 则禁用整个分支。正文 slot 接受 `{ text = "..." }`、`{ file = "prompt.md" }` 或这些来源的数组。anchor 使用 `{ content = { text = "..." }, steps = 1, scope = "session" }`；`scope` 也接受 `"turn"`。
 
-Steering 节奏属于所选分支：`steering_on_turn` 默认 `true`，用于新轮次及压缩后的重新注入；`steering_on_input` 默认 `true`，用于已物化的明确用户输入；`steering_interval_steps` 默认 `0`，不额外周期注入。正整数间隔统计本 Agent 距最近注入的实际模型 loop step，不是秒数或工具调用次数。
+Steering 节奏属于所选分支；未声明项沿用下层值。所有层均未声明时，`steering_on_turn` 默认 `true`，用于新轮次及压缩后的重新注入；`steering_on_input` 默认 `true`，用于已物化的明确用户输入；`steering_interval_steps` 默认 `0`，不额外周期注入。正整数间隔统计本 Agent 距最近注入的实际模型 loop step，不是秒数或工具调用次数。
 
 `global.recipes.fork` 可生成独立的 `copy` 或继承父源的 `extend` 子配方；用 `saveLocal` 和 `expected_revision` 校验编辑生成的本地包。已安装包锁定完整依赖链，可离线使用。`follow` 每日检查更新；`pinned` 保留已接受版本。无效更新保留整个上次接受的 revision。HTTPS ZIP 源必须提供 `sha256`，继承的 ZIP 源也可在 `extends` 中携带。预览与安装接受同一份已检查快照，安装时不再次下载来源。
 

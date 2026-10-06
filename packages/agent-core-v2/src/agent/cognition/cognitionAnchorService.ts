@@ -32,8 +32,8 @@ export class AgentCognitionAnchorService implements IAgentCognitionAnchorService
     ) {
       return undefined;
     }
-    return binding.recipe === undefined ? binding.anchor
-      : binding.recipe.anchorSystem === undefined ? undefined : this.profile.getSystemPrompt({ recipeAnchor: binding.recipe.anchorSystem });
+    return binding.recipe?.anchorSystem === undefined ? binding.anchor
+      : this.profile.getSystemPrompt({ recipeAnchor: binding.recipe.anchorSystem });
   }
 }
 

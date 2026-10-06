@@ -1,4 +1,6 @@
 import { captureProfileModelMenu } from '@kiki/agent-profiles/agentProfile';
+import { composeRecipeLayers, recipeReferences } from '#/app/recipes/recipeOverlay';
+import { snapshotRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
 import type { AgentPromptDiagnostics, ExecutionSelection } from '@kiki/protocol';
 import { AGENT_EXECUTOR_OVERRIDES_SECTION, type AgentExecutorOverridesConfig } from '#/app/agentExecutor/executorOverrides';
 import { resolveExecutionBinding } from './executionBinding';
@@ -676,7 +678,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const alias = this.resolveModelId(requestedAlias);
     this.delegationPosition = input.delegationPosition ?? await this.resolveCurrentDelegationPosition();
     this.delegationPositionResolved = true;
-    const recipe = await this.selectedRecipe(alias, (profile.executor ?? 'native') !== 'native');
+    const recipe = await this.selectedRecipe(alias, (profile.executor ?? 'native') !== 'native', profile);
     let model: Model;
     try {
       model = this.resolveUsageModel(alias, recipe ?? null);
@@ -2086,21 +2088,28 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     });
   }
 
-  private async selectedRecipe(alias: string, external = this.isExternalExecutor): Promise<import('@kiki/protocol').ResolvedRecipe | undefined> {
-    const id = external ? undefined : this.models.get(alias)?.recipe;
-    if (id === undefined) return undefined;
+  private async selectedRecipe(alias: string, external = this.isExternalExecutor, profile = this.profileState.boundProfile ?? this.resolveActiveProfile()): Promise<import('@kiki/protocol').ResolvedRecipe | undefined> {
+    if (external) return undefined;
+    const model = this.models.get(alias);
+    const references = [{ surface: 'model' as const, id: model?.recipe }, { surface: 'profile' as const, id: profile?.recipe }].filter((entry) => entry.id !== undefined && entry.id !== 'off');
+    if (references.length === 0) return undefined;
     if (this.recipes === undefined) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'Recipe service is unavailable');
-    return this.recipes.resolve(id);
+    const layers: import('@kiki/protocol').RecipeResolvedLayer[] = [];
+    for (const reference of references) {
+      const installation_id = reference.id!.replace(/^installation:/u, '');
+      layers.push({ surface: reference.surface, installation_id, resolved: await this.recipes.resolve(installation_id) });
+    }
+    return composeRecipeLayers(layers, model?.overrides);
   }
 
   private async resolvePromptFieldSnapshot(
     profile: BoundProfile,
     alias: string,
-    recipe?: import('@kiki/protocol').ResolvedRecipe,
+    recipe?: import('@kiki/protocol').ResolvedRecipe | null,
   ): Promise<ResolvedPromptFieldOverrides> {
     await this.ensureDelegationPosition();
     return resolveProfilePromptFields(profile, alias, this.delegationPosition,
-      this.config, this.models, this.promptFields, recipe ?? await this.selectedRecipe(alias, (profile.executor ?? 'native') !== 'native'));
+      this.config, this.models, this.promptFields, recipe === undefined ? await this.selectedRecipe(alias, (profile.executor ?? 'native') !== 'native', profile) : recipe ?? undefined);
   }
 
   private async assembleModelSwitchPrompt(alias: string, base: import('./boundProfile').BoundPromptBase, recipe?: import('@kiki/protocol').ResolvedRecipe) {
@@ -2125,9 +2134,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     selected?: import('@kiki/protocol').ResolvedRecipe | null,
   ): Promise<{ readonly text: string; readonly environment: EnvironmentDisclosureSnapshot; readonly promptBase: import('./boundProfile').BoundPromptBase; readonly promptFields: ResolvedPromptFieldOverrides; readonly personaPositionExplicit: boolean; readonly personaBaseHasIdentity: boolean }> {
     const frozen = savedBase?.inputs;
-    const recipe = frozen === undefined ? selected === undefined ? await this.selectedRecipe(alias, (profile.executor ?? 'native') !== 'native') : selected ?? undefined : structuredClone(frozen.cognition.recipe?.resolved) as import('@kiki/protocol').ResolvedRecipe | undefined;
+    const recipe = frozen === undefined ? selected === undefined ? await this.selectedRecipe(alias, (profile.executor ?? 'native') !== 'native', profile) : selected ?? undefined : structuredClone(frozen.cognition.recipe?.resolved) as import('@kiki/protocol').ResolvedRecipe | undefined;
     const promptVariables = frozen?.variables ?? this.config.get<PromptConfig>(PROMPT_SECTION)?.variables;
-    const promptFields = frozen?.fields ?? await this.resolvePromptFieldSnapshot(profile, alias, recipe);
+    const promptFields = frozen?.fields ?? await this.resolvePromptFieldSnapshot(profile, alias, recipe ?? null);
     const rendered = profile.renderSystemPrompt({
       ...context,
       persona: persona === undefined ? '' : PERSONA_PROMPT_MARKER,
@@ -2138,7 +2147,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const environment = dynamic?.enabled === true
       ? profile.renderSystemPrompt({ ...dynamic.context, promptVariables, promptFields: promptFields.values }).environment
       : rendered.environment;
-    const withModel = recipe === undefined ? modelPromptLayers(profile).reduce((text, layer) => applyMatchedModelProfilePrompt(
+    const withModel = modelPromptLayers(profile).reduce((text, layer) => applyMatchedModelProfilePrompt(
       text,
       layer.entries,
       alias,
@@ -2146,7 +2155,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         ? (id) => this.models.resolveId(id)
         : (id) => id,
       this.delegationPosition,
-    ), rendered.text) : rendered.text;
+    ), rendered.text);
     const snippetTemplate = savedBase !== undefined
       ? savedBase.delegationSnippet
       : resolveDelegationSnippet({
@@ -2166,8 +2175,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           promptFields,
           withModel,
         )
-      : frozen === undefined ? await this.applyCognitionOverlay(withModel, alias, false, recipe)
-        : applyOverlay(withModel, frozen.cognition.slots?.overlay, frozen.cognition.config?.overlayMode);
+      : frozen === undefined ? await this.applyCognitionOverlay(withModel, alias, false, recipe ?? null)
+        : applyOverlay(applyOverlay(withModel, frozen.cognition.slots?.overlay, frozen.cognition.config?.overlayMode),
+          frozen.cognition.recipe?.resolved.layers === undefined ? undefined : frozen.cognition.recipe.resolved.branches[this.delegationPosition].system, 'append');
     if (frozen !== undefined) this.cognitionBinding = structuredClone(frozen.cognition);
     else if (external) await this.applyCognitionOverlay('', alias, true);
     const personaPositionExplicit = body.includes(PERSONA_PROMPT_MARKER);
@@ -2177,9 +2187,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     };
     const finalBody = compose(body);
     if (this.cognitionBinding?.recipe !== undefined) {
-      const anchor = this.cognitionBinding.recipe.resolved.branches[this.delegationPosition].anchor;
-      this.cognitionBinding = { ...this.cognitionBinding, recipe: { ...this.cognitionBinding.recipe,
-        anchorSystem: anchor === undefined ? undefined : compose(applyOverlay(rendered.text, anchor.content, 'append')) } };
+      const binding = this.cognitionBinding;
+      const anchor = binding.recipe!.resolved.branches[this.delegationPosition].anchor;
+      const anchorBase = binding.recipe!.resolved.layers === undefined ? rendered.text : applyOverlay(withModel, binding.slots?.overlay, binding.config?.overlayMode);
+      this.cognitionBinding = { ...binding, recipe: { ...binding.recipe!,
+        anchorSystem: anchor === undefined ? undefined : compose(applyOverlay(anchorBase, anchor.content, 'append')) } };
     }
     const promptDiagnostics = frozen === undefined ? this.buildPromptDiagnostics(profile, alias, promptFields) : savedBase!.promptDiagnostics!;
     this.boundPromptDiagnostics = promptDiagnostics;
@@ -2273,6 +2285,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       recipe_model_binding: this.cognitionBinding?.recipe === undefined ? undefined : {
         installation_id: this.cognitionBinding.recipe.installation_id, revision: this.cognitionBinding.recipe.resolved.revision,
         model: this.cognitionBinding.recipe.resolved.model, model_origins: this.cognitionBinding.recipe.resolved.model_origins,
+        references: recipeReferences(this.cognitionBinding.recipe.resolved),
       },
       channels: promptConfigurationChannels({
         profile, alias, position: this.delegationPosition, cognition: model?.cognition, recipe: this.cognitionBinding?.recipe, fields, resolveId, leaseMode,
@@ -2308,12 +2321,18 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }) : undefined;
     try {
       if (diskProfile !== undefined) {
-        const recipe = await this.selectedRecipe(alias, (diskProfile.executor ?? 'native') !== 'native');
-        const fields = await this.resolvePromptFieldSnapshot(diskProfile, alias, recipe);
-        const config = recipe === undefined && (diskProfile.executor ?? 'native') === 'native' ? selectCognitionConfig(this.models.get(alias)?.cognition, this.delegationPosition) : undefined;
-        const slots = await loadCognitionSlots(this.hostFs, this.bootstrap.homeDir, config, this.hostEnv.pathClass);
-        const contentRevision = recipe?.revision ?? createHash('sha256').update(JSON.stringify({ alias: this.models.resolveId(alias) ?? alias, position: this.delegationPosition, config, slots })).digest('hex');
-        diskRevision = this.promptBindingRevision(diskProfile, alias, fields, contentRevision);
+        const external = (diskProfile.executor ?? 'native') !== 'native';
+        const recipe = await this.selectedRecipe(alias, external, diskProfile);
+        const fields = await this.resolvePromptFieldSnapshot(diskProfile, alias, recipe ?? null);
+        const previous = this.cognitionBinding;
+        const previousRevision = this.cognitionRevision;
+        try {
+          await this.applyCognitionOverlay('', alias, external, recipe ?? null);
+          diskRevision = this.promptBindingRevision(diskProfile, alias, fields, this.cognitionBinding?.contentRevision);
+        } finally {
+          this.cognitionBinding = previous;
+          this.cognitionRevision = previousRevision;
+        }
       }
     } catch (error) {
       diskError = error instanceof Error ? error.message : String(error);
@@ -2335,7 +2354,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   getRecipeModelSettings(alias = this.modelAlias): Record<string, unknown> | undefined {
     const binding = this.cognitionBinding ?? this.profileState.boundProfile?.promptBase?.inputs?.cognition;
-    return binding !== undefined && binding.modelAlias === alias ? binding.recipe?.resolved.model : undefined;
+    return binding !== undefined && binding.modelAlias === alias ? binding.modelSettings ?? binding.recipe?.resolved.model : undefined;
   }
 
   async getCognitionBinding(): Promise<CognitionBinding> {
@@ -2347,35 +2366,34 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return this.cognitionBinding!;
   }
 
-  private async applyCognitionOverlay(base: string, modelAlias: string, external = this.isExternalExecutor, selected?: import('@kiki/protocol').ResolvedRecipe): Promise<string> {
-    const recipe = selected ?? await this.selectedRecipe(modelAlias, external);
-    if (recipe !== undefined) {
-      const branch = recipe.branches[this.delegationPosition];
-      this.cognitionBinding = { position: this.delegationPosition, modelAlias, revision: ++this.cognitionRevision, contentRevision: recipe.revision,
-        recipe: { installation_id: this.models.get(modelAlias)!.recipe!, resolved: recipe },
-        config: { overlayMode: 'append', anchorSteps: branch.anchor?.steps, anchorScope: branch.anchor?.scope,
-          steeringOnTurn: branch.steering_on_turn ?? true, steeringOnInput: branch.steering_on_input ?? true, steeringIntervalSteps: branch.steering_interval_steps ?? 0 },
-        anchor: branch.anchor?.content, slots: { overlay: branch.system, steering: branch.steering, anchor: branch.anchor?.content } };
-      return applyOverlay(base, branch.system, 'append');
-    }
-    const config = external ? undefined : selectCognitionConfig(this.models.get(modelAlias)?.cognition, this.delegationPosition);
+  private async applyCognitionOverlay(base: string, modelAlias: string, external = this.isExternalExecutor, selected?: import('@kiki/protocol').ResolvedRecipe | null): Promise<string> {
+    const recipe = selected === undefined ? await this.selectedRecipe(modelAlias, external) : selected ?? undefined;
+    const branch = recipe?.branches[this.delegationPosition];
+    const manual = external ? undefined : selectCognitionConfig(this.models.get(modelAlias)?.cognition, this.delegationPosition);
+    const config = branch === undefined ? manual : { ...manual,
+      steering: branch.steering === undefined ? manual?.steering : undefined,
+      anchor: branch.anchor === undefined ? manual?.anchor : undefined,
+      anchorSteps: branch.anchor?.steps ?? manual?.anchorSteps, anchorScope: branch.anchor?.scope ?? manual?.anchorScope,
+      steeringOnTurn: branch.steering_on_turn ?? manual?.steeringOnTurn,
+      steeringOnInput: branch.steering_on_input ?? manual?.steeringOnInput,
+      steeringIntervalSteps: branch.steering_interval_steps ?? manual?.steeringIntervalSteps };
     try {
-      const slots = await loadCognitionSlots(
-        this.hostFs,
-        this.bootstrap.homeDir,
-        config,
-        this.hostEnv.pathClass,
-      );
+      const nativeSlots = await loadCognitionSlots(this.hostFs, this.bootstrap.homeDir, config, this.hostEnv.pathClass);
+      const slots = { ...nativeSlots, steering: branch?.steering ?? nativeSlots.steering, anchor: branch?.anchor?.content ?? nativeSlots.anchor };
+      const modelSettings = recipe === undefined ? undefined : snapshotRecipeModelSettings(this.models.get(modelAlias)!, recipe.model);
       this.cognitionBinding = {
         position: this.delegationPosition,
         modelAlias,
         revision: ++this.cognitionRevision,
-        contentRevision: createHash('sha256').update(JSON.stringify({ alias: this.models.resolveId(modelAlias) ?? modelAlias, position: this.delegationPosition, config, slots })).digest('hex'),
+        contentRevision: createHash('sha256').update(JSON.stringify({ alias: this.models.resolveId(modelAlias) ?? modelAlias, position: this.delegationPosition, config, slots, recipe, modelSettings })).digest('hex'),
         config: config === undefined ? undefined : structuredClone(config),
+        modelSettings,
+        recipe: recipe === undefined ? undefined : { installation_id: recipe.layers?.at(-1)?.installation_id ?? this.models.get(modelAlias)?.recipe ?? '', resolved: recipe },
         anchor: slots.anchor,
         slots,
       };
-      return applyOverlay(base, slots.overlay, config?.overlayMode ?? 'append');
+      const withNative = applyOverlay(base, slots.overlay, config?.overlayMode ?? 'append');
+      return applyOverlay(withNative, branch?.system, 'append');
     } catch (error) {
       if (error instanceof CognitionFileError) {
         throw new ProfileError(
@@ -2574,7 +2592,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private resolveProfileParameters(model: Model | undefined) {
     const profile = this.profileState.boundProfile ?? this.activeProfile;
-    const entry = this.getRecipeModelSettings(model?.id) === undefined ? resolveModelProfileEntry(profile?.modelProfiles, model?.id ?? '', (id) => this.models.resolveId(id)) : undefined;
+    const entry = resolveModelProfileEntry(profile?.modelProfiles, model?.id ?? '', (id) => this.models.resolveId(id));
     return mergeModelParameters(profile ?? { serviceTier: this.serviceTier, requestParams: this.requestParams }, entry);
   }
 
@@ -2631,7 +2649,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   getPromptFieldSnapshot(options?: { readonly anchor?: boolean }): ResolvedPromptFieldOverrides {
-    if (options?.anchor !== true || this.cognitionBinding?.recipe !== undefined) return this.promptFieldSnapshot;
+    if (options?.anchor !== true || this.cognitionBinding?.recipe?.resolved.branches[this.delegationPosition].anchor !== undefined) return this.promptFieldSnapshot;
     const fields = this.promptFieldSnapshot.fields.map((field) =>
       field.id.startsWith('system.') || field.id.startsWith('delegation.')
         ? { ...field, status: 'inactive' as const }
