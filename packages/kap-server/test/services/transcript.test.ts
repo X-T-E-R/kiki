@@ -1824,8 +1824,8 @@ describe('TranscriptService live integration', () => {
             new FakeAgents(),
           ),
         });
-        if (scenario.name === 'missing' || scenario.name === 'corrupt') {
-          await expect(service.readColdSnapshot('s1', 'main')).rejects.toThrow(scenario.name === 'missing' ? 'ENOENT' : 'corrupted line');
+        if (scenario.name === 'corrupt') {
+          await expect(service.readColdSnapshot('s1', 'main')).rejects.toThrow('corrupted line');
           expect((await service.getAgentToolCallCounts('s1', ['main'])).has('main')).toBe(false);
           service.dispose();
           continue;
@@ -1842,6 +1842,23 @@ describe('TranscriptService live integration', () => {
       } finally {
         await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
+    }
+  });
+
+  it.each(['EACCES', 'EIO', 'ENOENT'])('preserves %s errors when an existing cold wire cannot be read', async (code) => {
+    const home = await seedWireHomeWithTool();
+    const failure = Object.assign(new Error(`synthetic wire read ${code}`), { code });
+    const service = new TranscriptService({
+      homeDir: home,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+      wireRecordReader: async () => { throw failure; },
+    });
+    try {
+      await expect(service.readColdSnapshot('s1', 'main')).rejects.toBe(failure);
+      await expect(service.readColdPageSnapshot('s1', 'main', (snapshot) => snapshot)).rejects.toBe(failure);
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

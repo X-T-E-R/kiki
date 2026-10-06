@@ -744,7 +744,7 @@ export class TranscriptService {
         undefined,
         (state) => { replayState = state; },
       );
-      if (snapshot === undefined) failed = true;
+      if (snapshot === undefined || replayState === undefined) failed = true;
       if (snapshot !== undefined) {
         const liveMeta = transcript.snapshot().meta;
         const livePhase = liveMeta.agent?.phase;
@@ -1556,7 +1556,12 @@ export class TranscriptService {
     const location = await this.historyWireLocation(sessionId, agentId);
     if (location === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
     const { wirePath } = location;
-    const info = await stat(wirePath);
+    const info = await stat(wirePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    signal?.throwIfAborted();
+    if (info === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
     const cached = this.coldSnapshotCache.get(wirePath);
     if (cached !== undefined) {
@@ -1878,8 +1883,12 @@ export class TranscriptService {
       agentId,
       WIRE_FILE,
     );
-    let info = await stat(wirePath).catch(() => undefined);
+    let info = await stat(wirePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
     signal.throwIfAborted();
+    const missingWire = info === undefined;
     const bounded = limits !== undefined;
     const sealed = !bounded && info !== undefined && await this.hasVerifiedWireReceipt(wirePath, info, signal);
     const liveVerified = !bounded && !sealed && info !== undefined && await this.hasVerifiedLiveEpoch(sessionId, agentId);
@@ -1972,6 +1981,7 @@ export class TranscriptService {
       if (signal.aborted) {
         throw signal.reason ?? new DOMException('The cold transcript read was aborted', 'AbortError');
       }
+      if (missingWire && (error as NodeJS.ErrnoException).code === 'ENOENT') return unknownSnapshot();
       this.logTranscriptFailure(sessionId, agentId, error);
       throw error;
     }

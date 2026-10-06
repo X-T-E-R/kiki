@@ -84,4 +84,15 @@ describe('lightweight metadata roster', () => {
     expect(roster.find((entry) => entry.id === 'finished')).toMatchObject({ status: 'completed', activity_status: 'completed', completed_at: new Date(30).toISOString(), status_source: 'runtime' });
     expect(sessionAgentCounts(agents, roster)).toEqual({ total: 5, subagents: 4, completed: 1, failed: 0, cancelled: 0, active: 1, idle: 1, unknown: 1 });
   });
+
+  it.each(['queued', 'working'] as const)('keeps a newer live %s generation active after an older terminal turn', (phase) => {
+    const agents = { main: {}, child: { status: 'completed' as const, completedAt: 10 } };
+    const meta = { id: 'fixture-session', createdAt: 1, updatedAt: 10, archived: false, agents };
+    const roster = sessionAgentRoster(meta.id, meta, [{
+      ...row('child', 'running'), started_at: new Date(40).toISOString(), subagent_phase: phase,
+    }], new Map([['child', { lifecycle: 'ready', background: [], lastTurn: { turnId: 1, reason: 'completed', at: 30 } }]]));
+    expect(roster[0]).toMatchObject({ status: 'running', activity_status: 'running', live: true,
+      status_source: 'runtime', started_at: new Date(40).toISOString(), completed_at: undefined });
+    expect(sessionAgentCounts(agents, roster).active).toBe(1);
+  });
 });

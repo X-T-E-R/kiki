@@ -48,12 +48,12 @@ export function sessionAgentRoster(
     const activityTerminalAt = activityOutcome === undefined ? undefined : activity?.lastTurn?.at;
     const terminalOutcome = outcome ?? trackedOutcome ?? activityOutcome;
     const current = activity?.lifecycle === 'ready';
-    const trackedActive = row?.live !== false && row?.refreshing !== true &&
+    const trackedActive = row?.live === true && row?.refreshing !== true &&
       (row?.subagent_phase === 'working' || row?.subagent_phase === 'queued' || row?.subagent_phase === 'suspended');
     const status = terminalOutcome ?? row?.status ?? 'running';
     const activityStatus: SnapshotSubagent['activity_status'] = current
       ? activity.turn === undefined
-        ? trackedActive || activity.background.length > 0 ? 'running' : terminalOutcome ?? 'idle'
+        ? activity.background.length > 0 ? 'running' : terminalOutcome ?? (trackedActive ? 'running' : 'idle')
         : activity.turn.pendingApprovals.length > 0 ? 'suspended' : 'running'
       : terminalOutcome ?? (trackedActive ? row?.subagent_phase === 'suspended' ? 'suspended' : 'running' : 'unknown');
     const terminal = activityStatus === 'completed' || activityStatus === 'failed' || activityStatus === 'cancelled';

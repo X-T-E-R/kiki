@@ -176,6 +176,8 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     const snapshot = await renderMemorySnapshot(settings, this.session.workspaceId, store, this.session.sessionId, this.persona);
     this.frozenRelated = snapshot.related;
     this.nextUntil = snapshot.nextUntil;
+    const projection = (text: string) => text.replace(/^as-of=\S+ /m, '');
+    if (projection(snapshot.text) === projection(this.lastKnown)) return this.lastKnown;
     this.lastKnown = snapshot.text;
     return snapshot.text;
   }

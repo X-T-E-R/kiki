@@ -197,7 +197,7 @@ describe('AgentProfileService.applyProfile', () => {
     const created = await store.put(mutation);
     const edited = await store.put({ ...mutation, action: 'update', id: created.entry.id, expectedRevision: created.entry.revision, body: 'Use the checked-in lockfile.' });
     expect(context.get()).toEqual(original);
-    const scans = vi.spyOn(store, 'list');
+    const scans = vi.spyOn(store, 'inventory');
     await injector.reconcileAllAtSafeBoundary();
     expect(scans).toHaveBeenCalledTimes(2);
     expect(states.get(dynamicPromptKey)?.context.memory).toContain(edited.entry.body);
@@ -221,9 +221,15 @@ describe('AgentProfileService.applyProfile', () => {
     expect(snapshots()).toHaveLength(2);
     expect(scans).toHaveBeenCalledTimes(2);
     scans.mockRestore();
-    const transient = await store.put({ ...mutation, title: 'Transient rule' });
-    await store.delete(mutation.scope, transient.entry.id, transient.entry.revision);
-    await injector.reconcileAllAtSafeBoundary();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      const transient = await store.put({ ...mutation, title: 'Transient rule' });
+      await store.delete(mutation.scope, transient.entry.id, transient.entry.revision);
+      clock.mockReturnValue(2_000);
+      await injector.reconcileAllAtSafeBoundary();
+    } finally {
+      clock.mockRestore();
+    }
     expect(snapshots()).toHaveLength(2);
     await store.put({ ...mutation, scope: { kind: 'persona', personaId: 'other' } });
     await injector.reconcileAllAtSafeBoundary();
@@ -247,11 +253,26 @@ describe('AgentProfileService.applyProfile', () => {
     expect(textOf(snapshots().at(-1)!)).toContain('Full snapshot; all sections replace earlier values.');
     const last = await host.get(IAgentMemorySnapshot).get();
     await store.put({ ...mutation, title: 'Post-compaction rule' });
-    vi.spyOn(store, 'list').mockRejectedValue(new Error('render unavailable'));
+    const unavailableInventory = vi.spyOn(store, 'inventory').mockRejectedValue(new Error('render unavailable'));
     await injector.reconcileAllAtSafeBoundary();
     expect(textOf(snapshots().at(-1)!)).toContain('status=stale/degraded');
     expect(last).toContain('status=empty');
     expect(svc.getSystemPrompt()).toBe(system);
+    unavailableInventory.mockRestore();
+
+    const expiryClock = vi.spyOn(Date, 'now').mockReturnValue(3_000);
+    try {
+      await store.put({ ...mutation, title: 'Expiring rule', validity: { check: 'Check this rule before relying on it.', until: new Date(4_000).toISOString() } });
+      await injector.reconcileAllAtSafeBoundary();
+      const beforeExpiry = snapshots().length;
+      expect(textOf(snapshots().at(-1)!)).toContain('Expiring rule');
+      expiryClock.mockReturnValue(5_000);
+      await injector.reconcileAllAtSafeBoundary();
+      expect(snapshots()).toHaveLength(beforeExpiry + 1);
+      expect(textOf(snapshots().at(-1)!)).toContain('[index; expired]');
+    } finally {
+      expiryClock.mockRestore();
+    }
   });
 
   it('leaves legacy memory frozen on commits and explicit memory refresh until its migration boundary', async () => {
@@ -271,7 +292,7 @@ describe('AgentProfileService.applyProfile', () => {
     const before = svc.getSystemPrompt();
     const store = host.get(IMemoryStore);
     await store.put({ action: 'create', scope: { kind: 'global' }, type: 'feedback', title: 'Legacy new rule', body: 'New saved rule.', reason: 'user instruction', source: { writer: 'user' } });
-    const scans = vi.spyOn(store, 'list');
+    const scans = vi.spyOn(store, 'inventory');
     await svc.refreshMemorySnapshot();
     await host.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
     await svc.refreshSystemPrompt();
