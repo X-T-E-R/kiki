@@ -243,7 +243,7 @@ export function createAgentLifecycleStub(
     }) as never,
     commitCreate: () => {},
     discard: async (agentId: string) => {
-      handles.get(agentId)?.dispose();
+      await handles.get(agentId)?.dispose();
       handles.delete(agentId);
       stateByAgentId.delete(agentId);
       profileByAgentId.delete(agentId);
