@@ -11,9 +11,11 @@ export type NavigationEffect =
   | { readonly op: 'step.upsert'; readonly turnId: string; readonly step: { readonly stepId: string;
       readonly ordinal: number; readonly state: 'running' | 'completed'; readonly startedAt?: string } }
   | { readonly op: 'frame.upsert'; readonly turnId: string; readonly stepId: string; readonly stepOrdinal: number;
-      readonly frame: { readonly kind: 'text' | 'tool'; readonly frameId: string;
+      readonly frame: { readonly kind: 'text' | 'tool' | 'record'; readonly frameId: string;
         readonly role?: 'assistant'; readonly text?: string; readonly input?: unknown;
-        readonly output?: unknown; readonly name?: string; readonly selector?: string } }
+        readonly output?: unknown; readonly name?: string; readonly selector?: string;
+        readonly recordId?: string; readonly recordKind?: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+        readonly title?: string; readonly relatedOperationIds?: readonly string[] } }
   | { readonly op: 'visibility.reset'; readonly turns: readonly number[];
       readonly sequenceRange?: readonly [number, number];
       readonly retain?: { readonly turn: number; readonly beforeOrdinal: number } };
@@ -119,6 +121,61 @@ export class NavigationWireAdapter {
 
   add(record: TranscriptWireRecord): NavigationEffect[] {
     const ordinal = this.ordinal++;
+    if (record.type === 'external.activity') {
+      const turnNumber = numberOf(record['turnId']);
+      const phase = stringOf(record['phase']);
+      if (turnNumber === undefined || (phase !== 'started' && phase !== 'completed' && phase !== 'failed' && phase !== 'cancelled')) return [];
+      const turnId = `t${turnNumber}`;
+      this.track(turnId, ordinal);
+      this.canonicalTurns.add(turnId);
+      this.currentTurn = turnId;
+      this.currentPrompt = undefined;
+      this.turnStates.set(turnId, phase === 'started' ? 'running' : 'completed');
+      return [{ op: 'turn.upsert', turn: {
+        turnId,
+        ordinal: turnNumber,
+        state: phase === 'started' ? 'running' : 'completed',
+        startedAt: stamp(record.time),
+      } }];
+    }
+    if (record.type === 'external.text') {
+      const turnNumber = numberOf(record['turnId']);
+      const recordId = stringOf(record['recordId']);
+      const text = stringOf(record['text']);
+      const kind = record['kind'];
+      if (turnNumber === undefined || recordId === undefined || text === undefined ||
+          (kind !== 'note' && kind !== 'user_excerpt' && kind !== 'assistant_excerpt' && kind !== 'handoff')) return [];
+      const turnId = `t${turnNumber}`;
+      this.track(turnId, ordinal);
+      this.canonicalTurns.add(turnId);
+      this.currentTurn = turnId;
+      this.turnStates.set(turnId, this.turnStates.get(turnId) ?? 'running');
+      const stepId = this.currentStep.get(turnId) ?? `${turnId}.external-record`;
+      const step = this.steps.get(stepId);
+      const stepOrdinal = step?.ordinal ?? 1;
+      const effects: NavigationEffect[] = [];
+      if (step === undefined) {
+        this.steps.set(stepId, { turnId, ordinal: stepOrdinal, sourceOrdinal: ordinal });
+        this.currentStep.set(turnId, stepId);
+        effects.push({ op: 'step.upsert', turnId, step: {
+          stepId, ordinal: stepOrdinal, state: 'completed', startedAt: stamp(record.time),
+        } });
+      }
+      effects.push({ op: 'frame.upsert', turnId, stepId, stepOrdinal,
+        frame: {
+          kind: 'record',
+          frameId: `external-text:${recordId}`,
+          text,
+          selector: 'external.text',
+          recordId,
+          recordKind: kind,
+          title: stringOf(record['title']),
+          relatedOperationIds: Array.isArray(record['relatedOperationIds'])
+            ? record['relatedOperationIds'].filter((value): value is string => typeof value === 'string')
+            : undefined,
+        } });
+      return effects;
+    }
     if (record.type === 'turn.prompt') {
       const n = numberOf(record['turnId']) ?? this.legacyTurn++;
       this.legacyTurn = Math.max(this.legacyTurn, n + 1);

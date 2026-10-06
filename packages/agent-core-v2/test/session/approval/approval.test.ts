@@ -8,6 +8,7 @@ import { IEventBus } from '#/app/event/eventBus';
 import { type IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { type ApprovalRequest, ISessionApprovalService } from '#/session/approval/approval';
 import { SessionApprovalService } from '#/session/approval/approvalService';
@@ -134,6 +135,29 @@ describe('SessionApprovalService', () => {
       cancellationReason: 'no_consumer',
     });
     expect(interaction.listPending()).toEqual([]);
+  });
+
+  it('keeps external-driver approval detached after the consumer disconnects', async () => {
+    const interaction = ix.get(ISessionInteractionService);
+    const lifecycle = {
+      get: (agentId: string) => agentId === 'main' ? {
+        id: 'main',
+        kind: 'agent',
+        dispose: () => {},
+        accessor: {
+          get: (token: unknown) => {
+            if (token !== IAgentProfileService) throw new Error('unexpected service');
+            return { data: () => ({ driver: 'external' as const }) };
+          },
+        },
+      } : undefined,
+    } as unknown as IAgentLifecycleService;
+    ix.stub(IAgentLifecycleService, lifecycle);
+    const pending = ix.get(ISessionApprovalService).request(makeRequest('external-detached'));
+    interaction.releaseConsumer('test-consumer');
+    expect(interaction.listPending('approval')).toHaveLength(1);
+    ix.get(ISessionApprovalService).decide('external-detached', { decision: 'approved' });
+    await expect(pending).resolves.toEqual({ decision: 'approved' });
   });
 
   it('cancels pending approvals when the last consumer disconnects', async () => {

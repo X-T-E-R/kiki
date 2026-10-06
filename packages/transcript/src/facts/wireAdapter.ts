@@ -9,6 +9,8 @@ import { projectInteractionEndState, type TranscriptInteraction } from '../model
 import type { GoalMeta, GoalStatus } from '../model/meta';
 import type { TranscriptPrompt, TranscriptPromptAppendTiming } from '../model/prompt';
 import type { TranscriptTask } from '../model/task';
+import type { ExternalActivityRecord, ExternalTextRecord } from '../model/external';
+import type { TranscriptMarker } from '../model/item';
 import type { TodoItem, TranscriptTodo } from '../model/todo';
 import type { StepHeader, TurnHeader, TranscriptOperation } from '../ops/operation';
 import type { StepUsage, TranscriptTurnExecution, TurnCancellation, TurnOrigin } from '../model/turn';
@@ -405,6 +407,8 @@ export class TranscriptWireAdapter {
       }
       return operations;
     }
+    if (record.type === 'external.activity') return this.externalActivity(record);
+    if (record.type === 'external.text') return this.externalText(record);
     if (record.type === 'turn.prompt') return this.turnPrompt(record, ordinal);
     if (record.type === 'turn.steer') return this.turnSteer(record, ordinal);
     if (record.type === 'context.append_message') return this.legacyMessage(record, ordinal);
@@ -1098,6 +1102,49 @@ export class TranscriptWireAdapter {
     };
   }
 
+  private externalActivity(record: TranscriptWireRecord): TranscriptOperation[] {
+    const activity = externalActivityOf(record);
+    if (activity === undefined) return [];
+    const turnId = `t${activity.turnId}`;
+    const previous = this.#turnHeaders.get(turnId) ?? this.lookups?.turn?.(turnId);
+    const terminal = activity.phase !== 'started';
+    const state = activity.phase === 'failed'
+      ? 'failed'
+      : activity.phase === 'cancelled'
+        ? 'cancelled'
+        : terminal
+          ? 'completed'
+          : 'running';
+    const turn: TurnHeader = {
+      kind: 'turn',
+      turnId,
+      ordinal: activity.turnId,
+      state,
+      origin: { kind: 'external', payload: { ...activity, turnId } },
+      startedAt: previous?.startedAt ?? isoOf(record.time),
+      endedAt: terminal ? isoOf(record.time) : previous?.endedAt,
+      error: activity.error ?? previous?.error,
+    };
+    this.#canonicalTurns.add(turnId);
+    this.trackTurn(turnId);
+    this.#turnHeaders.set(turnId, turn);
+    this.#currentTurnId = turnId;
+    return [{ op: 'turn.upsert', turn }];
+  }
+
+  private externalText(record: TranscriptWireRecord): TranscriptOperation[] {
+    const text = externalTextOf(record);
+    if (text === undefined) return [];
+    const marker: TranscriptMarker = {
+      kind: 'marker',
+      markerId: `external-text:${text.recordId}`,
+      marker: 'external.text',
+      payload: text,
+      at: isoOf(record.time),
+    };
+    return [{ op: 'marker.upsert', item: marker }];
+  }
+
   private turnPrompt(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
     const rawTurnId = numberOf(record['turnId']);
     const turnOrdinal = rawTurnId ?? this.#legacyTurnOrdinal++;
@@ -1300,6 +1347,8 @@ export class TranscriptWireAdapter {
   private legacyMessage(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
     const message = objectOf(record['message']);
     const role = stringOf(message?.['role']);
+    const origin = objectOf(message?.['origin']);
+    if (origin?.['kind'] === 'external_record') return [];
     if (message === undefined || role === undefined || role === 'system') return [];
     const messageId = stringOf(message['id']) ?? `legacy:v1:r${ordinal}:message`;
     const content = arrayOf(message['content']);
@@ -2188,8 +2237,86 @@ export function transcriptFactsFromWire(
   return facts;
 }
 
+function externalSourceOf(value: unknown): ExternalActivityRecord['source'] | undefined {
+  const source = objectOf(value);
+  if (
+    source === undefined ||
+    stringOf(source['connectionId']) === undefined ||
+    stringOf(source['clientName']) === undefined ||
+    stringOf(source['sessionRef']) === undefined ||
+    source['driver'] !== 'external'
+  ) return undefined;
+  return {
+    connectionId: source['connectionId'] as string,
+    clientName: source['clientName'] as string,
+    sessionRef: source['sessionRef'] as string,
+    driver: 'external',
+  };
+}
+
+function externalActivityOf(record: TranscriptWireRecord): ExternalActivityRecord | undefined {
+  const activityId = stringOf(record['activityId']);
+  const phase = record['phase'];
+  const operationId = stringOf(record['operationId']);
+  const toolCallId = stringOf(record['toolCallId']);
+  const toolName = stringOf(record['toolName']);
+  const turnId = numberOf(record['turnId']);
+  const source = externalSourceOf(record['source']);
+  if (
+    activityId === undefined ||
+    (phase !== 'started' && phase !== 'completed' && phase !== 'failed' && phase !== 'cancelled') ||
+    operationId === undefined ||
+    toolCallId === undefined ||
+    toolName === undefined ||
+    turnId === undefined ||
+    source === undefined
+  ) return undefined;
+  return {
+    activityId,
+    phase,
+    operationId,
+    toolCallId,
+    toolName,
+    source,
+    input: record['input'],
+    error: stringOf(record['error']),
+    turnId,
+  };
+}
+
+function externalTextOf(record: TranscriptWireRecord): ExternalTextRecord | undefined {
+  const recordId = stringOf(record['recordId']);
+  const text = stringOf(record['text']);
+  const kind = record['kind'];
+  const turnId = numberOf(record['turnId']);
+  const source = externalSourceOf(record['source']);
+  if (
+    recordId === undefined ||
+    turnId === undefined ||
+    text === undefined ||
+    (kind !== 'note' && kind !== 'user_excerpt' && kind !== 'assistant_excerpt' && kind !== 'handoff') ||
+    source === undefined
+  ) return undefined;
+  const related = record['relatedOperationIds'];
+  return {
+    recordId,
+    turnId,
+    text,
+    kind,
+    title: stringOf(record['title']),
+    relatedOperationIds: Array.isArray(related)
+      ? related.filter((value): value is string => typeof value === 'string')
+      : undefined,
+    sourceUrl: stringOf(record['sourceUrl']) ?? stringOf(record['source_url']),
+    clientTime: stringOf(record['clientTime']) ?? stringOf(record['client_time']),
+    source,
+  };
+}
+
 function durableRecord(type: string): boolean {
   return (
+    type === 'external.activity' ||
+    type === 'external.text' ||
     type === 'agent.model_switch' ||
     type === 'prompt.model_switch_queued' ||
     type === 'prompt.model_switch_status' ||
@@ -2216,6 +2343,15 @@ function durableRecord(type: string): boolean {
 export function transcriptWireFactId(record: TranscriptWireRecord, ordinal: number): string;
 export function transcriptWireFactId(record: TranscriptWireRecord): string | undefined;
 export function transcriptWireFactId(record: TranscriptWireRecord, ordinal?: number): string | undefined {
+  if (record.type === 'external.activity') {
+    const activityId = stringOf(record['activityId']);
+    const phase = stringOf(record['phase']);
+    if (activityId !== undefined && phase !== undefined) return `external.activity:${activityId}:${phase}`;
+  }
+  if (record.type === 'external.text') {
+    const recordId = stringOf(record['recordId']);
+    if (recordId !== undefined) return `external.text:${recordId}`;
+  }
   const explicit =
     stringOf(record['id']) ?? stringOf(record['uuid']) ?? stringOf(record['goalId']);
   if (explicit !== undefined) return explicit;

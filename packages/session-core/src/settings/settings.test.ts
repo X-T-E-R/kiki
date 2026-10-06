@@ -1278,7 +1278,9 @@ describe('settings nav groups (IA v2)', () => {
     expect(sectionsOf('models-agents')).toEqual(['ai', 'identity', 'agents', 'subagents']);
     // Workspaces sit with the sessions that run in them: where work happens.
     expect(sectionsOf('work')).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
-    expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
+    // External clients sit with MCP: both answer "what else can reach this
+    // server", in opposite directions, so they are neighbours.
+    expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'external-clients', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
     // The group that only held workspaces and spaces no longer exists: each
     // page joined the group that answers its own question.
     expect(settingsGroupForSection('workspaces')?.id).toBe('work');

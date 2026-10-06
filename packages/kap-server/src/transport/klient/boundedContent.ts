@@ -150,6 +150,26 @@ function isStructurePath(path: Path): boolean {
     path.length === 3 && path[0] === 'steps' && typeof path[1] === 'number' && path[2] === 'frames';
 }
 
+const EXTERNAL_TEXT_FIELDS = new Set<string>(['recordId', 'turnId', 'text', 'kind', 'title', 'relatedOperationIds', 'sourceUrl', 'clientTime', 'source'] satisfies readonly (keyof import('@kiki/transcript').ExternalTextRecord)[]);
+
+function isExternalTextMarker(value: object, path: Path): boolean {
+  if (path.length > 0) return false;
+  const marker = value as Record<string, unknown>;
+  if (marker['kind'] !== 'marker' || marker['marker'] !== 'external.text') return false;
+  const payload = marker['payload'];
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const record = payload as Record<string, unknown>;
+  if (!Object.keys(record).every((key) => EXTERNAL_TEXT_FIELDS.has(key)) ||
+    typeof record['recordId'] !== 'string' || typeof record['turnId'] !== 'number' ||
+    typeof record['text'] !== 'string' || typeof record['kind'] !== 'string' ||
+    !['note', 'user_excerpt', 'assistant_excerpt', 'handoff'].includes(record['kind'])) return false;
+  const source = record['source'];
+  if (source === null || typeof source !== 'object' || Array.isArray(source)) return false;
+  const identity = source as Record<string, unknown>;
+  return identity['driver'] === 'external' && typeof identity['connectionId'] === 'string' &&
+    typeof identity['clientName'] === 'string' && typeof identity['sessionRef'] === 'string';
+}
+
 function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number, arrayWindow: number, depth: number, budget: Budget, structureWindow = 16, media?: { source: ContentSource; entity: object; agentId: string }): unknown {
   budget.nodes -= 1;
   if (media !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value)) {
@@ -181,9 +201,10 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
     cuts.push({ path, kind: 'object', offset: 0, total: entries.length });
     return {};
   }
+  const externalText = isExternalTextMarker(value, path);
   return Object.fromEntries(entries.map(([key, child]) => {
     const childPath = [...path, key];
-    if (OPAQUE_FIELDS.has(key) && textBytes <= CONTENT_PREVIEW_BYTES && child !== null && typeof child === 'object') {
+    if (OPAQUE_FIELDS.has(key) && !(externalText && key === 'payload') && textBytes <= CONTENT_PREVIEW_BYTES && child !== null && typeof child === 'object') {
       const total = Array.isArray(child) ? child.length : Object.keys(child).length;
       if (total > 8) {
         cuts.push({ path: childPath, kind: Array.isArray(child) ? 'array' : 'object', offset: 0, total });

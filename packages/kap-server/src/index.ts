@@ -34,3 +34,4 @@ export type {
   InstanceRegistryOptions,
   ServerInstanceInfo,
 } from './instanceRegistry';
+export * from './mcp/externalClientTransport';

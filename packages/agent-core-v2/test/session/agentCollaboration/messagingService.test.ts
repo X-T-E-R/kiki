@@ -643,6 +643,41 @@ describe('agent collaboration safe-boundary delivery', () => {
     } finally { release(); await service.dispose(); }
   });
 
+  it('does not wake an external-client main agent from mailbox idle-wake', async () => {
+    const target = agentHandle('main');
+    const dispatch = dispatchHarness();
+    const service = messagingService(
+      mailboxStore(tempDir()),
+      lifecycleHarness([target.handle]).service,
+      sessionContext(),
+      metadataHarness({
+        main: {
+          type: 'main',
+          ...({ custom: { externalClient: {
+            connectionId: 'conn-1', clientName: 'Example Client', sessionRef: 'session-1', driver: 'external',
+          } } } as unknown as AgentMeta),
+        },
+      }),
+      dispatch,
+    );
+    try {
+      const accepted = await service.send({
+        sourceAgentId: 'agent-child',
+        sourceTaskName: 'worker',
+        targetAgentId: 'main',
+        targetTaskName: 'root',
+        content: 'external completion',
+        idempotencyKey: 'external-main-idle-wake',
+        idleWake: 'parent',
+      });
+      expect(accepted.delivery).toBe('queued');
+      expect(dispatch.runOnExisting).not.toHaveBeenCalled();
+      expect(target.remoteRequests).toEqual([]);
+    } finally {
+      await service.dispose();
+    }
+  });
+
   it('wakes an idle main agent and starts a real mailbox-triggered run', async () => {
     const ctx = createTestAgent();
     const main: IAgentScopeHandle = {

@@ -12,6 +12,7 @@ import { createConnectionsFacade } from './connections.js';
 import { createWebAccessFacade } from './web-access.js';
 import { createThreadBridgesFacade } from './thread-bridges.js';
 import { createUsageExportFacade } from './usage-export.js';
+import { createExternalClientsFacade } from './external-clients.js';
 import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '../../contract/session/agent-tasks.js';
 import type {
   ActivateSkillRequest,
@@ -71,6 +72,7 @@ export interface HttpRestTransport {
 
 export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFacade {
   return {
+    externalClients: createExternalClientsFacade(transport),
     webAccess: createWebAccessFacade(transport),
     connections: createConnectionsFacade(transport),
     threadBridges: createThreadBridgesFacade(transport),

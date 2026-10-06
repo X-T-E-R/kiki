@@ -34,6 +34,7 @@ export class ProfileError extends Error2 {
 }
 
 export interface AgentConfigData {
+  driver?: 'external';
   modelAlias?: string;
   modelCapabilities: ModelCapability;
   profileName?: string;
@@ -142,6 +143,7 @@ export type ProfileUpdateData = Partial<{
 }>;
 
 export interface ProfileBindingSnapshot {
+  readonly driver?: 'external';
   readonly toolOverride?: ToolBindingOverride;
   readonly toolPolicyBase?: ProfileToolPolicyBase;
   readonly memoryReadContext?: import('#/app/memory/memorySnapshot').MemoryPersonaContext;
@@ -252,6 +254,7 @@ export interface BindingConstraintInput {
 }
 
 export interface BindAgentInput {
+  readonly driver?: 'external' | 'local';
   readonly execution?: import('@kiki/protocol').ExecutionSelection;
   readonly toolOverride?: ToolBindingOverride;
   readonly memoryReadContext?: import('#/app/memory/memorySnapshot').MemoryPersonaContext;

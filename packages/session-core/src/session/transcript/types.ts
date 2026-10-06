@@ -388,6 +388,12 @@ export interface NoticeBlock {
   /** External-engine runtime fact the GUI renders as a quiet in-turn note, not a divider. */
   readonly executor?: ExecutorNote;
   /**
+   * Text an external client saved into this session (`external.text`). It is
+   * the client's own record, never a `user`/`assistant` turn, so it keeps its
+   * kind and source instead of borrowing the role it is not.
+   */
+  readonly externalText?: ExternalTextNote;
+  /**
    * Set on the single `notice-prompt-outcomes-earlier` row: settled prompts
    * whose messages sit in history pages that are not loaded yet.
    */
@@ -409,6 +415,36 @@ export type ExecutorNote =
   | { readonly kind: 'compaction' }
   | { readonly kind: 'diff'; readonly diff: string }
   | { readonly kind: 'unknown'; readonly updateType?: string };
+
+/**
+ * A text record an external client saved on purpose. `kind` is the client's
+ * own claim about what the text is — a `user_excerpt` is the client handing
+ * over what the user said there, never the user speaking in this session —
+ * and `source` keeps the record attributable when the session outlives the
+ * connection.
+ */
+export type ExternalTextNote = {
+  readonly recordId: string;
+  /**
+   * The transcript marker's own id, exactly as the store holds it — not the
+   * `agent-marker-…` display id derived from it. A long body is read back
+   * through a content ref addressed to this id, and the server rejects
+   * anything that is not the real marker.
+   */
+  readonly markerId: string;
+  readonly kind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+  readonly text: string;
+  readonly title?: string;
+  readonly sourceUrl?: string;
+  readonly clientTime?: string;
+  readonly source: {
+    readonly driver: 'external';
+    readonly connectionId: string;
+    readonly clientName: string;
+    readonly sessionRef: string;
+  };
+  readonly turn?: number;
+};
 
 export interface ApprovalResolution {
   readonly decision: ApprovalDecision | 'expired' | 'resolved_elsewhere';

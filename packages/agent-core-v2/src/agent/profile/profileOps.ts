@@ -27,6 +27,7 @@ const ExecutorOptionsSchema = z.record(
 );
 
 export interface ProfileModelState {
+  readonly driver?: 'external';
   readonly toolOverride?: import('./profile').ToolBindingOverride;
   readonly memoryReadContext?: import('#/app/memory/memorySnapshot').MemoryPersonaContext;
   readonly personaId?: string;
@@ -82,6 +83,7 @@ const toolOverrideSchema = z.object({ tools: z.array(z.string()).readonly().opti
 const memoryReadContextSchema = z.object({ id: z.string(), shared: z.array(z.enum(['global', 'workspace'])).readonly().optional() }).readonly();
 
 const profileBindSchema = z.object({
+  driver: z.literal('external').optional(),
   execution: executionBindingSchema.optional(),
   toolOverride: toolOverrideSchema.optional(),
   memoryReadContext: memoryReadContextSchema.optional(),
@@ -208,6 +210,7 @@ export const profileKey = defineState(
   }),
 ).replayable({ schema: z.custom<ProfileModelState>() })
   .on(ProfileBind, (s, e) => ({
+    driver: e.driver,
     toolOverride: e.toolOverride,
     memoryReadContext: e.memoryReadContext,
     personaId: e.personaId,
@@ -216,7 +219,7 @@ export const profileKey = defineState(
     persona: e.persona,
     roomPrompt: e.roomPrompt,
     execution: e.execution,
-    modelAlias: e.execution === undefined ? e.modelAlias ?? s.modelAlias : e.modelAlias,
+    modelAlias: e.driver === 'external' ? undefined : e.execution === undefined ? e.modelAlias ?? s.modelAlias : e.modelAlias,
     profileName: e.execution === undefined ? e.profileName ?? s.profileName : e.profileName,
     profileDefinitionId: e.profileDefinitionId,
     routeId: e.routeId,

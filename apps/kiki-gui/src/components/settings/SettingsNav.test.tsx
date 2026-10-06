@@ -86,7 +86,9 @@ describe('SettingsNav grouped tree', () => {
     expect(leaves(1)).toEqual(['connection', 'ssh', 'spaces']);
     expect(leaves(2)).toEqual(['ai', 'identity', 'agents', 'subagents']);
     expect(leaves(3)).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
-    expect(leaves(4)).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
+    // External clients sit with MCP: both answer "what else can reach this
+    // server", in opposite directions.
+    expect(leaves(4)).toEqual(['skills', 'mcp', 'external-clients', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
     expect(leaves(5)).toEqual(['developer', 'labs', 'about']);
   });
 

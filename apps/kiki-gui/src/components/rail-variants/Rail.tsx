@@ -56,6 +56,7 @@ import { useInspectorPeek } from '../inspectorFocus';
 import { RelativeTime } from '../RelativeTime';
 import { TaskDetailModal } from '../TaskDetailModal';
 import { useMediaPreview } from '../mediaPreviewContext';
+import { readExternalClientMark } from '../../lib/externalClients';
 import { descendantIds, railVisibility, waitingAgentIds as pendingOrigins } from './model';
 import { FOCUS_RING, ModeSwitch, useRailMode, type RailMode } from './shell';
 import type { RailProps } from './types';
@@ -380,6 +381,11 @@ export function Rail({
   const panelSlot = useLazyPanelSlot();
   const peekAgentId = useInspectorPeek();
   const focusedAgentId = selectedAgentId ?? MAIN_AGENT_ID;
+  // A session driven from outside Kiki names that client instead of a model.
+  const externalDriver = useMemo(
+    () => readExternalClientMark(session?.metadata)?.clientName,
+    [session?.metadata],
+  );
   const focusedNode = forest.byId[focusedAgentId];
   // The routed agent page (no onInspectMain) is already this agent's timeline.
   const show = railVisibility(focusedAgentId, onInspectMain === undefined ? focusedAgentId : MAIN_AGENT_ID);
@@ -757,6 +763,8 @@ export function Rail({
         fallbackModel={state.model}
         workspaceId={session?.workspace_id}
         cwd={session?.metadata.cwd}
+        // Only the main is driven; a sub agent under it runs a real model.
+        externalDriver={focusedAgentId === MAIN_AGENT_ID ? externalDriver : undefined}
       />
       <InspectorNow
         blocks={state.blocks}

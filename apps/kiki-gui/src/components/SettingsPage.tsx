@@ -24,6 +24,7 @@ import { HooksSection } from './settings/hooks/HooksSection';
 import { ConnectionSection } from './settings/ConnectionSection';
 import { DeveloperSection } from './settings/DeveloperSection';
 import { ExperimentalRows } from './settings/ExperimentalRows';
+import { ExternalClientsSection } from './settings/ExternalClientsSection';
 import { GeneralSection } from './settings/GeneralSection';
 import { LabsSection } from './settings/LabsSection';
 import { McpSection } from './settings/McpSection';
@@ -352,6 +353,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'tasks' ? <TasksSection />
     : active === 'skills' ? <SkillsSection />
     : active === 'mcp' ? <McpSection />
+    : active === 'external-clients' ? <ExternalClientsSection />
     : active === 'plugins' ? <PluginsSection />
     : active === 'browser-control' ? <BrowserControlSection />
     : active === 'computer-control' ? <ComputerControlSection />

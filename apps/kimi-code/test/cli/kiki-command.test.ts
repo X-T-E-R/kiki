@@ -22,7 +22,7 @@ import { doctor, registerDoctorCommand } from '../../src/kiki/doctor';
 import { resolveKikiHome } from '../../src/kiki/home';
 import { mcpCommandConfig, upsertMcpServer } from '../../src/kiki/install';
 import { createSeatOnConnection } from '../../src/kiki/seat';
-import { mcpPrincipal } from '../../src/kiki/mcp';
+import { mcpPrincipal, registerMcpCommand } from '../../src/kiki/mcp';
 import { registerKikiCommands } from '../../src/kiki/register';
 import { parseDuration, startServeServer, registerServeCommand, findReachableServer, ensureServer } from '../../src/kiki/serve';
 
@@ -172,6 +172,60 @@ describe('kiki command helpers', () => {
   it('derives a stable MCP principal from the workspace', () => {
     expect(mcpPrincipal('C:\\workspace')).toBe(mcpPrincipal('C:\\workspace'));
     expect(mcpPrincipal('C:\\workspace')).toMatch(/^mcp:[a-f0-9]{16}$/);
+  });
+
+  it('uses the owner POST credential seam for external-client tools mode', async () => {
+    const home = String.raw`C:\\fixture-home`;
+    const connection = { url: 'http://127.0.0.1:43123', token: 'owner-token', serverId: 'server-fixture' };
+    const credential = { mcpUrl: 'http://127.0.0.1:43123/mcp', token: 'connection-token' };
+    let ensureOptions: { readonly homeDir: string; readonly workspace?: string } | undefined;
+    let request: { readonly method: string; readonly path: string; readonly body: unknown } | undefined;
+    type BridgeOptions = { readonly connectionId: string; readonly resolveCredential: (id: string) => Promise<typeof credential> };
+    let bridgeOptions: BridgeOptions | undefined;
+    const ensure = vi.fn(async (options: { readonly homeDir: string; readonly workspace?: string }) => {
+      ensureOptions = options;
+      return connection;
+    });
+    const daemon = vi.fn(async (_connection: typeof connection, method: string, path: string, body: unknown) => {
+      request = { method, path, body };
+      return credential;
+    });
+    const bridge = vi.fn(async (options: BridgeOptions) => {
+      bridgeOptions = options;
+    });
+    const dependencies = {
+      ensureServer: ensure,
+      daemonRequest: daemon,
+      createExternalClientStdioBridge: bridge,
+    } as never;
+    const program = new Command().exitOverride();
+    registerMcpCommand(program, dependencies);
+
+    await program.parseAsync(['node', 'kiki', 'mcp', '--client', 'fixture', '--tools', '--home', home]);
+
+    expect(ensureOptions).toEqual({ homeDir: resolveKikiHome(home) });
+    expect(request).toEqual({
+      method: 'POST',
+      path: '/api/external-clients/fixture/credential',
+      body: {},
+    });
+    expect(bridge).toHaveBeenCalledOnce();
+    expect(bridgeOptions).toBeDefined();
+    const capturedBridge = bridgeOptions!;
+    expect(capturedBridge).not.toHaveProperty('token');
+    expect(capturedBridge.connectionId).toBe('fixture');
+    await expect(capturedBridge.resolveCredential('unrelated-id')).resolves.toEqual(credential);
+
+    const invalid = async (...args: string[]) => {
+      const command = new Command().exitOverride();
+      registerMcpCommand(command, dependencies);
+      return command.parseAsync(['node', 'kiki', 'mcp', '--client', 'fixture', '--tools', ...args]);
+    };
+    await expect(invalid('--workspace', 'C:\\workspace')).rejects.toThrow('--client cannot be combined');
+    await expect(invalid('--attached')).rejects.toThrow('--client cannot be combined');
+    const missingTools = new Command().exitOverride();
+    registerMcpCommand(missingTools, dependencies);
+    await expect(missingTools.parseAsync(['node', 'kiki', 'mcp', '--client', 'fixture'])).rejects.toThrow('--tools is required');
   });
 
   it('sends only the seat API contract fields', async () => {

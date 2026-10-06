@@ -287,11 +287,11 @@ export class HistoryNavigationDb implements NavigationStore {
   }
 
   searchRows(input: { workspace: string; session: string; agent: string; direction: 'asc' | 'desc';
-    after?: { time: number; key: string }; role?: 'user' | 'assistant' | 'tool';
+    after?: { time: number; key: string }; role?: 'user' | 'assistant' | 'tool' | 'record';
     startTime?: number; endTime?: number; limit: number }): Array<{ key: string; time: number; row: HistoryNavRow }> {
     if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 64) throw new Error('invalid history navigation page');
     const where = ["r.workspace=? AND r.session=? AND r.agent=? AND r.active=1",
-      "json_extract(r.value,'$.part') IN ('prompt','text','output')",
+      "json_extract(r.value,'$.part') IN ('prompt','text','output','record')",
       "EXISTS (SELECT 1 FROM rows p WHERE p.workspace=r.workspace AND p.session=r.session AND p.agent=r.agent AND p.kind='turn' AND p.turn=r.turn AND p.active=1)"];
     const values: Array<string | number> = [input.workspace, input.session, input.agent];
     if (input.role !== undefined) {

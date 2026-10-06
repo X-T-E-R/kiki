@@ -969,6 +969,31 @@ describe('AgentProfileService.bind', () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
+  it('binds an external driver without a local model and exposes image media capability', async () => {
+    const { profile: svc } = buildContext();
+
+    await svc.bind({ driver: 'external' });
+
+    expect(svc.data().driver).toBe('external');
+    expect(svc.data().modelAlias).toBeUndefined();
+    expect(svc.isRunnable()).toBe(false);
+    expect(svc.getModelCapabilities()).toMatchObject({ image_in: true, video_in: false });
+    expect(svc.getActiveToolNames()?.length).toBeGreaterThan(0);
+  });
+
+  it('clears the external driver only when a local model binding is explicit', async () => {
+    const { profile: svc } = buildContext();
+
+    await svc.bind({ driver: 'external' });
+    expect(svc.isRunnable()).toBe(false);
+
+    await svc.bind({ model: MOCK_MODEL });
+
+    expect(svc.data().driver).toBeUndefined();
+    expect(svc.data().modelAlias).toBe(MOCK_MODEL);
+    expect(svc.isRunnable()).toBe(true);
+  });
+
   it('binds a profile + model atomically and becomes runnable', async () => {
     const { profile: svc } = buildContext();
 

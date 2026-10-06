@@ -28,6 +28,37 @@ describe('bounded canonical content', () => {
     while (completed.contentRefs?.length) completed = applyContentSegment(completed, readContentSegment(original, completed.contentRefs[0]!, false, 'main', 48 * 1024));
     expect(completed.content).toEqual(original.content);
   });
+  it('projects the real external text marker shape and reads its exact saved body through marker content refs', () => {
+    const text = 'START saved material\n' + '汉😀 native body\n'.repeat(4000) + 'END saved material';
+    const original = { kind: 'marker' as const, markerId: 'external-text:record-1', marker: 'external.text', payload: {
+      recordId: 'record-1', turnId: 0, text, kind: 'handoff' as const,
+      title: undefined, relatedOperationIds: undefined, sourceUrl: undefined, clientTime: undefined,
+      source: { connectionId: 'conn-1', clientName: 'Example Client', sessionRef: 'ref-1', driver: 'external' as const },
+    } };
+    expect(Object.keys(original.payload)).toHaveLength(9);
+    const snapshot = { items: [original], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} };
+    const item = boundedTranscriptSnapshot(snapshot, 'main').items[0]!;
+    if (item.kind !== 'marker') throw new Error('Expected external marker');
+    let preview = item;
+    expect(preview).toMatchObject({ marker: 'external.text', payload: { recordId: 'record-1', kind: 'handoff', source: original.payload.source } });
+    expect(jsonBytes(preview)).toBeLessThan(4096);
+    expect(preview.contentRefs?.[0]).toMatchObject({ source: { kind: 'marker', id: original.markerId }, path: ['payload', 'text'], kind: 'text', total: text.length });
+    let pages = 0;
+    while (preview.contentRefs?.length) {
+      const segment = readContentSegment(original, preview.contentRefs[0]!);
+      expect(jsonBytes(segment)).toBeLessThan(256 * 1024);
+      preview = applyContentSegment(preview, segment);
+      pages += 1;
+    }
+    expect(pages).toBeGreaterThan(0);
+    expect(preview).toMatchObject({ payload: { text } });
+    const opaque = boundedEntity({ kind: 'marker', markerId: 'opaque', marker: 'other', payload: original.payload }, { kind: 'marker', id: 'opaque' });
+    expect(opaque.payload).toEqual({});
+    expect(opaque.contentRefs?.[0]?.path).toEqual(['payload']);
+    const complete = boundedEntity({ ...original, payload: { ...original.payload, text: 'Ordinary saved record' } }, { kind: 'marker', id: original.markerId });
+    expect(complete.payload.text).toBe('Ordinary saved record');
+    expect(complete.contentRefs).toBeUndefined();
+  });
   it.each([['own prototype key', '__proto__'], ['own constructor key', 'constructor'], ['own prototype field', 'prototype'], ['257-character key', 'k'.repeat(257)]])('reads every original own JSON key through bounded object segments (%s)', (_label, key) => {
     const original = { output: JSON.parse(JSON.stringify({ [key]: { text: 'body'.repeat(1000) } })) as Record<string, unknown> };
     let current = boundedEntity(original, { kind: 'task', id: 'task-keys' });

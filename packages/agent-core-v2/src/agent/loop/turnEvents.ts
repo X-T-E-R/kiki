@@ -21,6 +21,7 @@ export type TurnInterruptReason =
 export interface TurnStartedPayload {
   readonly turnId: number;
   readonly origin: PromptOrigin;
+  readonly source?: 'native' | 'external';
   readonly prompt?: string;
   readonly promptId?: string;
   readonly promptAttachments?: readonly {

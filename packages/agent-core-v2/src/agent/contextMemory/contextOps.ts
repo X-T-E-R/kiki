@@ -5,8 +5,8 @@ import type { ContentPart } from '#/kosong/contract/message';
 import { estimateTokensForMessages } from '#/kosong/contract/tokens';
 import { defineState } from '#/state/state';
 import { AgentModelSwitch } from '#/agent/modelSwitch/modelSwitchEvent';
-import type { PartsTransformer } from '#/wire/record';
-import type { WireRecord } from '#/wire/record';
+import { ExternalText } from '#/agent/execution/externalClientEvents';
+import type { PartsTransformer, WireRecord } from '#/wire/record';
 
 import {
   buildContextCompactionShape,
@@ -105,6 +105,19 @@ export const contextMemoryKey = defineState('contextMemory', (): ContextMessage[
     },
   })
   .on(ContextAppendMessage, (s, e) => foldAppendMessage(s, e.message) as ContextMessage[])
+  .on(ExternalText, (s, e) => [...s, {
+    role: 'user',
+    content: [{ type: 'text', text: e.text }],
+    toolCalls: [],
+    origin: {
+      kind: 'external_record',
+      recordId: e.recordId,
+      recordKind: e.kind,
+      title: e.title,
+      ...e.source,
+    },
+    source: { ref: `external.text:${e.recordId}` },
+  } as ContextMessage])
   .on(ContextAppendLoopEvent, (s, e) => foldLoopEvent(s, e.event) as ContextMessage[])
   .on(ContextClear, (s) => (s.length === 0 ? undefined : (resetFold([]) as ContextMessage[])))
   .on(ContextApplyCompaction, (s, e) => {
@@ -119,6 +132,7 @@ export const contextMemoryKey = defineState('contextMemory', (): ContextMessage[
 export const contextRevisionKey = defineState('contextMemory.revision', () => 0)
   .replayable({ schema: z.number().int().nonnegative() })
   .on(ContextAppendMessage, (revision) => revision + 1)
+  .on(ExternalText, (revision) => revision + 1)
   .on(ContextAppendLoopEvent, (revision) => revision + 1)
   .on(ContextClear, (revision) => revision + 1)
   .on(ContextApplyCompaction, (revision) => revision + 1)

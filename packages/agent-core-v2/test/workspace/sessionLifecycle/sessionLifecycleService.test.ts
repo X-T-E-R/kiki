@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createDecorator, type IInstantiationService, type ServiceIdentifier, type ServicesAccessor } from '#/_base/di/instantiation';
 import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
-import { getScopedServiceDescriptors, type ISessionScopeHandle } from '#/_base/di/scope';
+import { getScopedServiceDescriptors, type IAgentScopeHandle, type ISessionScopeHandle } from '#/_base/di/scope';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { InstantiationService } from '#/_base/di/instantiationService';
 import { ScopeUnits } from '#/_base/di/fiber';
@@ -13,6 +13,7 @@ import type { TerminalProcess } from '#/os/interface/terminal';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
+import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { drainSessionMetadataWrites, trackSessionMetadataWork } from '#/session/sessionMetadata/sessionMetadataService';
@@ -463,6 +464,91 @@ it('keeps a durable recovered prompt through an unload attempt and resumes its o
 
 
 describe('SessionLifecycleService fork cron ownership', () => {
+  it('supports an external-material-only fork without cloning child agents or main task state', async () => {
+    const fx = fixture();
+    const sourceRecords = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+      {
+        type: 'external.activity', activityId: 'op-1', phase: 'started', operationId: 'op-1',
+        toolCallId: 'call-1', toolName: 'Read', turnId: 0,
+        source: { connectionId: 'conn-1', clientName: 'Example Client', sessionRef: 'session-1', driver: 'external' },
+        time: 2,
+      },
+      {
+        type: 'external.text', recordId: 'text-1', turnId: 0, text: 'saved material', kind: 'handoff',
+        source: { connectionId: 'conn-1', clientName: 'Example Client', sessionRef: 'session-1', driver: 'external' },
+        time: 3,
+      },
+      { type: 'task.started', info: { taskId: 'task-1', status: 'running' }, time: 4 },
+      { type: 'subagent.spawned', subagentId: 'child', parentToolCallId: 'call-1', runInBackground: true, time: 5 },
+      {
+        type: 'context.append_message', time: 6,
+        message: { role: 'user', content: [{ type: 'text', text: 'task notification' }], toolCalls: [], origin: { kind: 'task', taskId: 'task-1' } },
+      },
+    ];
+    const rewrite = vi.fn();
+    const createAgent = vi.fn(async () => {});
+    const update = vi.fn(async () => {});
+    const target = {
+      id: 'external-fork',
+      dispose: vi.fn(),
+      accessor: accessor([
+        [ISessionContext, { sessionId: 'external-fork' }],
+        [ISessionMetadata, { update }],
+        [IAgentLifecycleService, { list: () => [], create: createAgent }],
+      ]),
+    } as unknown as ISessionScopeHandle;
+    const child = {
+      id: 'child',
+      accessor: accessor([[IAgentActivityView, { state: () => ({ turn: { id: 1 } }) }]]),
+    } as unknown as IAgentScopeHandle;
+    const source = {
+      ...fx.handle,
+      accessor: accessor([
+        [ISessionMetadata, {
+          read: async () => ({
+            title: 'External source',
+            agents: { main: { type: 'main' }, child: { type: 'sub', parentAgentId: 'main' } },
+            custom: { externalClient: {
+              connectionId: 'conn-1', clientName: 'Example Client', sessionRef: 'session-1', driver: 'external',
+            } },
+          }),
+        }],
+        [IAgentLifecycleService, { list: () => [child], get: () => undefined }],
+      ]),
+    };
+    const internals = fx.service as unknown as {
+      sessions: Map<string, ISessionScopeHandle>;
+      materializeSession(opts: { sessionId: string; workDir: string }): Promise<ISessionScopeHandle>;
+      announceCreated(event: unknown): Promise<void>;
+    };
+    internals.sessions.set('session-1', source);
+    const materialize = vi.spyOn(internals, 'materializeSession').mockResolvedValue(target);
+    const announce = vi.spyOn(internals, 'announceCreated').mockResolvedValue();
+    Object.assign(fx.service, {
+      appendLogStore: { append: vi.fn(), flush: async () => {}, read: async function* () { yield* sourceRecords; }, rewrite },
+    });
+    try {
+      await fx.service.fork({
+        sourceSessionId: 'session-1',
+        newSessionId: target.id,
+        externalMaterialOnly: true,
+      });
+      expect(createAgent).toHaveBeenCalledOnce();
+      expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'main' }));
+      const copied = rewrite.mock.calls[0]![2] as typeof sourceRecords;
+      expect(copied).toContainEqual(sourceRecords[1]);
+      expect(copied).toContainEqual(sourceRecords[2]);
+      expect(copied.some((record) => record.type === 'task.started' || record.type === 'subagent.spawned')).toBe(false);
+      expect(copied.some((record) => record.type === 'context.append_message' && record.message?.origin?.kind === 'task')).toBe(false);
+      expect(update).toHaveBeenCalledWith(expect.objectContaining({ custom: undefined }));
+    } finally {
+      materialize.mockRestore();
+      announce.mockRestore();
+      await fx.service.dispose();
+    }
+  });
+
   it.each(['full', 'turn-boundary', 'child'] as const)('does not inherit schedules during a %s fork or change existing tasks', async (kind) => {
     const fx = fixture();
     const original = { id: '1234abcd', cron: '0 9 * * *', prompt: 'Original reminder', createdAt: 1, recurring: true, paused: false, lastFiredAt: 2, tags: { sessionId: 'session-1' } };

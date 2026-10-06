@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ProviderCatalogItem } from '@kiki/protocol';
@@ -175,7 +175,26 @@ export function ConnectionsTab() {
         </div>
       </SectionCard>
 
-      <SectionCard id="st-card-engines" title={t('st.engines.title')}><ExternalEnginesList /></SectionCard>
+      <SectionCard id="st-card-engines" title={t('st.engines.title')}>
+        <ExternalEnginesList />
+        {/* The other direction, one line away. The engines above are agents
+            Kiki drives; this is who drives Kiki, and it lives on its own page.
+            A link is enough — the form is not repeated here. */}
+        <div className="mt-4 border-t border-hairline pt-3">
+          <Link
+            to="/settings/external-clients"
+            data-external-clients-entry
+            className="-ml-1.5 flex min-h-8 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+          >
+            <Icon name="external" size={12} className="shrink-0 text-ink-faint" />
+            <span className="min-w-0 truncate">{t('st.engines.externalClientsEntry')}</span>
+            <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
+          </Link>
+          <p className="mt-0.5 max-w-[62ch] pl-1.5 text-[12px] leading-4 text-ink-faint">
+            {t('st.engines.externalClientsEntryHint')}
+          </p>
+        </div>
+      </SectionCard>
 
       {/* With no connection yet the add flow is the page itself; otherwise it
           opens beside the list in a side panel, so the list stays in view. */}

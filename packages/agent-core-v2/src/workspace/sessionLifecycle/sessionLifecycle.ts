@@ -39,6 +39,7 @@ export interface ForkSessionOptions {
    */
   readonly turnIndex?: number;
   readonly throughUserMessage?: boolean;
+  readonly externalMaterialOnly?: boolean;
 }
 
 export interface ResumeSessionOptions {

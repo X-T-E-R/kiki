@@ -107,6 +107,43 @@ When connecting to external MCP servers, be aware of:
 In YOLO mode, MCP tool calls are automatically approved. Only use this mode when you fully trust the MCP servers you have connected.
 :::
 
+## Let an external client use Kiki tools
+
+External clients reverse the direction described above: an MCP-capable model calls Kiki's native file, media, agent, task, History and authorized Memory tools. Kiki keeps the tool activity in a normal session without binding a local model to its main agent. This does not automatically import the external chat, its thinking, or its usage.
+
+This capability is experimental. Enable `KIKI_EXPERIMENTAL_EXTERNAL_CLIENTS=true` when starting the Kiki host, then open **Settings → External clients**. Create a named connection, select the shared workspace and tools, and choose a permission mode. Leave local commands off unless the client needs them. A connection is a permission grant, not a chat: initialization and tool discovery do not create business sessions.
+
+### Connect a local client
+
+Copy the connection's stdio configuration into your MCP client. Its shape is:
+
+```json
+{
+  "command": "kiki",
+  "args": ["mcp", "--client", "client_YOUR_CONNECTION_ID", "--tools"]
+}
+```
+
+The bridge obtains a separate short-lived credential through the local owner channel. It renews an expired local credential without resubmitting a business error. If the MCP address changes or the host restarts on another port, restart the client's MCP connection; then resume the saved business session instead of recreating its work. Do not place your Kiki owner token in this configuration. The older `kiki mcp --workspace <dir>` delegation mode remains separate.
+
+### Connect over HTTPS
+
+Enable the external MCP listener and configure a stable public HTTPS origin in the same settings page. Add its displayed `/mcp` URL to a client that supports Streamable HTTP and OAuth authorization-code flow with PKCE. Confirm the client's pending authorization in Kiki and select the connection it may use; the external model cannot approve itself. Public HTTPS hosting or a tunnel is a separate service, and a listening port does not prove that discovery is reachable from the client.
+
+This listener serves only MCP, OAuth and health routes, not the GUI, owner API or debug API. Client support and account eligibility depend on the external product; do not assume that every ChatGPT account accepts custom connectors. Kiki uses the installed MCP SDK's protocol negotiation rather than requiring an unpublished protocol version.
+
+### Sessions, retries and recovery
+
+ChatGPT conversation metadata, when supplied by the client as `_meta["openai/session"]`, maps each conversation to its own session under the connection. Other clients call `kiki_session` with `action: "new"` once, retain the returned `session_ref`, and put it in `_kiki.session_ref` on subsequent calls. `resume` is explicit; a copied reference cannot silently attach a new conversation to an old one.
+
+Side effects require a stable `_kiki.idempotency_key`. Retry the same call with the same key; different arguments under that key are rejected. Long operations and approvals return an `operation_id`: query `kiki_operation` instead of resubmitting. If the host stopped before committing an outcome, `outcome_unknown` means inspect the target before an explicit recovery, not that the operation is safe to repeat.
+
+Manual approval requires a real local approval consumer. Without one, the tool is refused. Once an external operation has reached approval, disconnecting the consumer does not resubmit or execute it; it remains pending until approved or cancelled. Revoking a connection stops its unfinished work and children while retaining the records. Changing its access policy cancels unfinished work so an old approval cannot authorize the new policy.
+
+Use `kiki_save_text` or the session's note editor to save supplied text with its source kind. These are external records, not verified user messages or an automatically synchronized chat. **Continue locally** previews saved text and native tool records, then creates a separate local branch; select a local model and send a goal explicitly. The preview reads a bounded subset without calling a model: partial or unavailable material is not an empty report. Large results can be paged with `kiki_operation` and `action: "read"`; follow its `next` request. Text ranges use UTF-16 offsets, media ranges use byte offsets, and media chunks are base64 resources from the saved result rather than the current host file.
+
+Only grant access to clients you trust. Native permissions and workspace file checks remain in force, but local command access can run processes with the host user's privileges; it is not an operating-system sandbox. If the shared folder contains Kiki's private home, give `Glob`/`Grep` a narrower search folder outside that home. Workspace Memory is the default, global Memory requires explicit sharing, and persona administration is not exposed.
+
 ## Next steps
 
 - [Plugins](../customization/plugins.md) — Declare MCP servers in a plugin manifest to package and distribute them together

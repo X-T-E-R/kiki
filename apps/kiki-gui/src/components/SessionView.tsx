@@ -145,6 +145,8 @@ import { useNavVisitId } from '../lib/useNavSnapshot';
 import { useTimelineNavigation } from '../lib/useTimelineNavigation';
 import { EphemeralBar, TemporaryMark } from './EphemeralBar';
 import { InteractionPlacementContext, type InteractionPlacement, type PlanReviewResponse } from './Interactions';
+import { externalClientsFacade } from '../lib/externalClients';
+import { ExternalClientMark, ExternalSessionComposer, useExternalClientMark } from './externalClients/ExternalClientSession';
 import { HarnessMark } from './harness/HarnessMark';
 import { harnessDenies, useSessionHarness, type SessionHarness } from './harness/sessionHarness';
 import { useExecutorCatalog } from './settings/profileEditor/engines';
@@ -286,6 +288,9 @@ function Header({
     controller?.getState ?? emptyState,
   );
   const session = state.session;
+  // A session driven by an outside client carries that fact in its own
+  // metadata; an ordinary session has none and renders exactly as before.
+  const externalClient = useExternalClientMark(session?.metadata);
   // Two different questions the old single `isBotSession` answered at once:
   // whose conversation this is (persona), and whether the reply mode makes
   // 消息|过程 meaningful (a message-delivering session). An ordinary persona
@@ -348,6 +353,9 @@ function Header({
           )}
           {session.ephemeral === true ? <TemporaryMark className="self-center" /> : null}
           {harness !== undefined ? <HarnessMark harness={harness} /> : null}
+          {/* An externally driven session says which client drives it instead
+              of naming a model, because no Kiki model runs it. */}
+          {externalClient !== undefined ? <ExternalClientMark mark={externalClient} /> : null}
           {/* What is waiting on you — the count and the batch decisions —
               lives in the tray above the composer, which lists the items
               themselves. The header keeps one quiet state word and ONE
@@ -2048,6 +2056,22 @@ export function SessionView({
     ...Object.fromEntries(executorCatalog.map((item) => [item.id, item.label])),
   }), [executorCatalog, t]);
   const harness = useSessionHarness(boundProfile, agentProfilesQuery.data?.items ?? [], state.session);
+  // A session driven by a client outside Kiki carries that fact in its own
+  // metadata. It changes the composer and the header, so it is read once here
+  // and passed down rather than re-derived in each of them.
+  const externalClient = useExternalClientMark(state.session?.metadata);
+  // What a local branch would carry, read by the server through its bounded
+  // transcript read. It is asked only when the session is externally driven,
+  // and only after it has loaded; the preview is not a second history chain
+  // and never invents an empty state from an unread one.
+  const externalClients = useMemo(() => externalClientsFacade(client.klient), [client]);
+  const externalMaterials = useQuery({
+    queryKey: ['external-clients', 'materials', sessionId],
+    queryFn: () => externalClients!.materials(sessionId),
+    staleTime: 30_000,
+    retry: false,
+    enabled: externalClient !== undefined && externalClients !== undefined && state.loaded,
+  });
   const sessionModel = state.model;
   const inheritedDefault = harness === undefined ? serverDefaultModel ?? liveSettings.defaultModel : undefined;
   const effectiveModel = resolveEffectiveModel(modelOverride, sessionModel, inheritedDefault);
@@ -3867,7 +3891,19 @@ boundExecution,
           })
         : 'active',
     composer:
-      selectedAgentId !== undefined ? null : (
+      selectedAgentId !== undefined ? null : externalClient !== undefined ? (
+        // An externally driven session has no Kiki model behind it, so it gets
+        // the note composer and the one action that moves the work into Kiki.
+        // The ordinary prompt composer would offer a model that cannot answer
+        // and would send whatever was typed to a session that cannot run it.
+        <ExternalSessionComposer
+          sessionId={sessionId}
+          mark={externalClient}
+          materialsPreview={externalMaterials.data}
+          busy={composerBusy}
+          disabled={composerDisabled}
+        />
+      ) : (
         <ContextBreakdownProvider value={state.contextBreakdown} compaction={compactionProgress}>
           <Composer
             busy={composerBusy}

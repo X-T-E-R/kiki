@@ -1778,6 +1778,68 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(blocks.at(-1)).toMatchObject({ id: 'agent-marker-c2', createdAt: FIXED_AT_2, reasonCodes: ['tool_error'], markerRepeatCount: 2 });
   });
 
+  it('carries an external client saved record as a note with its body, kind and source', () => {
+    const source = {
+      driver: 'external',
+      connectionId: 'xc-1',
+      clientName: 'Example local client',
+      sessionRef: 'ref-1',
+    };
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'marker',
+            markerId: 'external-text:native-ui-save',
+            marker: 'external.text',
+            at: FIXED_AT,
+            payload: {
+              recordId: 'native-ui-save',
+              turnId: 1,
+              text: 'Saved handoff from the real native host.',
+              kind: 'handoff',
+              title: 'Handoff',
+              source,
+            },
+          },
+        ],
+      }),
+    );
+    expect(projected.blocks).toEqual([
+      expect.objectContaining({
+        kind: 'notice',
+        id: 'agent-marker-external-text:native-ui-save',
+        text: 'Saved handoff from the real native host.',
+        externalText: {
+          recordId: 'native-ui-save',
+          // The marker's own id, not the `agent-marker-…` display id above it: a
+          // cut body is read back through an address the server will reject
+          // unless it names the real marker.
+          markerId: 'external-text:native-ui-save',
+          kind: 'handoff',
+          text: 'Saved handoff from the real native host.',
+          title: 'Handoff',
+          source,
+          turn: 1,
+        },
+      }),
+    ]);
+  });
+
+  it('falls back to the marker name for an external record with no usable payload', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [{ kind: 'marker', markerId: 'external-text:broken', marker: 'external.text', payload: { recordId: 'broken' } }],
+      }),
+    );
+    expect(projected.blocks).toEqual([expect.objectContaining({ kind: 'notice', text: 'external.text' })]);
+    expect(projected.blocks[0]).not.toHaveProperty('externalText');
+  });
+
   it('summarizes skill markers even when their payload contains the full loaded document', () => {
     const projected = projectAgentTranscriptView(
       createViewState('session_test'),

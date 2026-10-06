@@ -61,6 +61,35 @@ export interface SessionMeta {
   readonly usage?: SessionUsageSummary;
 }
 
+export interface ExternalClientSessionMeta {
+  readonly connectionId: string;
+  readonly clientName: string;
+  readonly sessionRef: string;
+  readonly driver: 'external';
+}
+
+export function externalClientMetaOf(meta: Pick<SessionMeta, 'custom'>): ExternalClientSessionMeta | undefined {
+  const value = meta.custom?.['externalClient'];
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate['connectionId'] !== 'string' ||
+    typeof candidate['clientName'] !== 'string' ||
+    typeof candidate['sessionRef'] !== 'string' ||
+    candidate['driver'] !== 'external'
+  ) return undefined;
+  return {
+    connectionId: candidate['connectionId'],
+    clientName: candidate['clientName'],
+    sessionRef: candidate['sessionRef'],
+    driver: 'external',
+  };
+}
+
+export function isExternalClientMain(meta: Pick<SessionMeta, 'custom'>, agentId: string): boolean {
+  return agentId === 'main' && externalClientMetaOf(meta) !== undefined;
+}
+
 export type SessionMetaPatch = Partial<Omit<SessionMeta, 'id' | 'createdAt'>>;
 
 export interface SessionMetadataChangedEvent {

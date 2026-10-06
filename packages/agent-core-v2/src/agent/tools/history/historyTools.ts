@@ -20,7 +20,7 @@ export const HistorySearchInputSchema = z.object({
   workspace_id: z.string().min(1).max(512).optional().describe('Defaults to this workspace; another workspace requires access approval.'),
   agent_id: AgentIdSchema.optional().describe('Exact agent ID; defaults to this agent in the current session, or main in another session/workspace.'),
   include_subagents: z.boolean().optional().describe('Search all readable agents in the selected scope; mutually exclusive with agent_id.'),
-  role: z.enum(['user', 'assistant', 'tool']).optional().describe('Optional exact source role; by default search all three.'),
+  role: z.enum(['user', 'assistant', 'tool', 'record']).optional().describe('Optional exact source role. record means explicitly saved external material, not a synchronized user or assistant turn. Omit to search all visible source types.'),
   after: z.iso.datetime({ offset: true }).optional().describe('Include matches at or after this RFC3339 timestamp with timezone.'),
   before: z.iso.datetime({ offset: true }).optional().describe('Exclude matches at or after this RFC3339 timestamp with timezone.'),
   sort: z.enum(['relevance', 'newest', 'oldest']).optional().describe('Defaults to relevance. Transcript fallback ranks lexical match scores only within each bounded page and scans newest-first across pages; later pages may have stronger matches. newest/oldest order matched text by time with stable ID ties. A cold navigation projection may need preparation pages before hits. Peer scope always uses newest-first.'),
@@ -48,7 +48,7 @@ export const HistoryReadInputSchema = z.object({
 export interface HistoryHit {
   readonly sessionId: string;
   readonly agentId: string;
-  readonly role: 'user' | 'assistant' | 'tool' | 'title';
+  readonly role: 'user' | 'assistant' | 'tool' | 'record' | 'title';
   readonly turn?: number;
   readonly stepId?: string;
   readonly snippet: string;
@@ -83,7 +83,7 @@ export interface HistoryReadBlock {
   readonly ref: string;
   readonly turn: number;
   readonly stepId?: string;
-  readonly role?: 'user' | 'assistant' | 'tool';
+  readonly role?: 'user' | 'assistant' | 'tool' | 'record';
   readonly toolName?: string;
   readonly part?: string;
   readonly text: string;
@@ -118,7 +118,7 @@ export interface IHistoryArchive {
     sessionId?: string;
     agentId?: string;
     includeSubagents?: boolean;
-    role?: 'user' | 'assistant' | 'tool';
+    role?: 'user' | 'assistant' | 'tool' | 'record';
     after?: number;
     before?: number;
     sort?: 'relevance' | 'newest' | 'oldest';
@@ -131,7 +131,7 @@ export interface IHistoryArchive {
   }): Promise<HistorySearchPage>;
   readTurn(sessionId: string, agentId: string, turn: number, stepId?: string): Promise<string | undefined>;
   readRef?(ref: string): Promise<{ status: 'ok'; text?: string; turn: number; stepId?: string;
-    role?: 'user' | 'assistant' | 'tool'; toolName?: string; part?: string; ref: string } |
+    role?: 'user' | 'assistant' | 'tool' | 'record'; toolName?: string; part?: string; ref: string } |
     { status: 'stale_ref' | 'source_missing' | 'invalid_ref' }>;
   lookupDirectory?(workspace: string, session: string, agent: string, turn: number, step?: string,
     preparation?: HistoryPreparation, signal?: AbortSignal): Promise<HistoryDirectoryLookup>;

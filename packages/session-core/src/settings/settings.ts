@@ -2063,6 +2063,11 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'tasks', labelKey: 'st.section.tasks' },
   { id: 'skills', labelKey: 'st.section.skills' },
   { id: 'mcp', labelKey: 'st.section.mcp' },
+  // The reverse of the external engines card inside Connections: those are
+  // agents Kiki drives, this is a client driving Kiki. It sits beside MCP
+  // because both answer "what can reach this server", not beside Connections,
+  // which is about how Kiki reaches a model.
+  { id: 'external-clients', labelKey: 'st.section.externalClients' },
   { id: 'plugins', labelKey: 'st.section.plugins' },
   { id: 'search', labelKey: 'st.section.search' },
   { id: 'browser-control', labelKey: 'st.section.browserControl' },
@@ -2110,7 +2115,11 @@ export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'ssh', 'spaces'] },
   { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'identity', 'agents', 'subagents'] },
   { kind: 'group', id: 'work', labelKey: 'st.group.work', sections: ['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks'] },
-  { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks'] },
+  // `external-clients` sits right after MCP: both answer "what else can
+  // reach this server", in opposite directions. It is a peer section rather
+  // than a tab of Connections, because the external engines card there is
+  // about how Kiki reaches a model, and this one is about who calls Kiki.
+  { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'external-clients', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks'] },
   { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['developer', 'labs', 'about'] },
 ];
 
@@ -2155,6 +2164,9 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   tasks: { scopes: ['server'] },
   skills: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.skills' },
   mcp: { scopes: ['server', 'workspace'] },
+  // Server-owned, and workspace-scoped because each connection names one
+  // workspace rather than the server.
+  'external-clients': { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.externalClients' },
   plugins: { scopes: ['server'], purposeKey: 'st.purpose.plugins' },
   search: { scopes: ['server'], purposeKey: 'st.purpose.search' },
   'browser-control': { scopes: ['server'], purposeKey: 'st.purpose.browserControl' },
@@ -2344,6 +2356,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'search', tab: 'advanced', cardId: 'st-card-search-index', titleKey: 'st.searchIndex.title', keywordKeys: ['st.searchIndex.retry'], synonyms: ['full-text index', '全文索引', 'history search', '历史搜索', 'indexer', '索引'] },
   { section: 'search', tab: 'advanced', cardId: 'st-card-search-diagnostics', titleKey: 'st.nbSearch.diagnosticsTitle', keywordKeys: ['st.nbSearch.diagnosticsHint'], synonyms: ['搜索诊断', 'search diagnostics', 'test'] },
   { section: 'mcp', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.configTitle', 'st.mcp.workspace', 'st.mcp.restart', 'st.mcp.toolsCount'], synonyms: ['能力', 'mcp 服务器', 'mcp server', 'mcp 状态', 'mcp status'] },
+  { section: 'external-clients', cardId: 'st-card-external-clients', titleKey: 'st.section.externalClients', keywordKeys: ['st.xc.intro', 'st.xc.workspace', 'st.xc.tools', 'st.xc.listenerTitle'], synonyms: ['外部客户端', 'ChatGPT', 'chatgpt', 'mcp client', '客户端', 'client', '连接客户端', 'stdio', '反向', 'reverse mcp', '外部调用'] },
   { section: 'mcp', cardId: 'st-card-mcp-timeouts', titleKey: 'st.mcp.timeoutsTitle', keywordKeys: ['st.runtime.mcpStartupTimeout', 'st.runtime.mcpToolTimeout'], synonyms: ['mcp 超时', 'mcp timeout'] },
   { section: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.title', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理', 'marketplace', '插件市场', '安装插件'] },
   { section: 'plugins', cardId: 'st-card-webbridge', titleKey: 'st.plugins.runtimeTitle', keywordKeys: ['st.plugins.browserExtension'], synonyms: ['webbridge', '浏览器扩展', 'browser daemon'] },

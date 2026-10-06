@@ -1017,6 +1017,21 @@ export interface AgentStateSnapshot {
       } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'system_trigger';
         readonly name: string;
+      } | /* ExternalClientOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'external_client';
+        readonly connectionId: string;
+        readonly clientName: string;
+        readonly sessionRef: string;
+        readonly driver: 'external';
+      } | /* ExternalRecordOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'external_record';
+        readonly recordId: string;
+        readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+        readonly title?: string;
+        readonly connectionId: string;
+        readonly clientName: string;
+        readonly sessionRef: string;
+        readonly driver: 'external';
       } | /* TaskOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'task';
         readonly taskId: string;
@@ -1229,6 +1244,21 @@ export interface AgentStateSnapshot {
     } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'system_trigger';
       readonly name: string;
+    } | /* ExternalClientOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'external_client';
+      readonly connectionId: string;
+      readonly clientName: string;
+      readonly sessionRef: string;
+      readonly driver: 'external';
+    } | /* ExternalRecordOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'external_record';
+      readonly recordId: string;
+      readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+      readonly title?: string;
+      readonly connectionId: string;
+      readonly clientName: string;
+      readonly sessionRef: string;
+      readonly driver: 'external';
     } | /* TaskOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'task';
       readonly taskId: string;
@@ -1373,6 +1403,21 @@ export interface AgentStateSnapshot {
       } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'system_trigger';
         readonly name: string;
+      } | /* ExternalClientOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'external_client';
+        readonly connectionId: string;
+        readonly clientName: string;
+        readonly sessionRef: string;
+        readonly driver: 'external';
+      } | /* ExternalRecordOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'external_record';
+        readonly recordId: string;
+        readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+        readonly title?: string;
+        readonly connectionId: string;
+        readonly clientName: string;
+        readonly sessionRef: string;
+        readonly driver: 'external';
       } | /* TaskOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'task';
         readonly taskId: string;
@@ -1477,7 +1522,7 @@ export interface AgentStateSnapshot {
   'agentsMdReminder.known': Set<string>;
   'agentsMdReminder.seeded': boolean;
   // src/agent/contextMemory/contextOps.ts
-  // replayable · durable · undoable — folds: ContextAppendMessage, ContextAppendLoopEvent, ContextClear, ContextApplyCompaction, AgentModelSwitch
+  // replayable · durable · undoable — folds: ContextAppendMessage, ExternalText, ContextAppendLoopEvent, ContextClear, ContextApplyCompaction, AgentModelSwitch
   'contextMemory': (/* ContextMessage — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* Message — packages/agent-core-v2/src/kosong/contract/message.ts */ {
     readonly role: /* Role — packages/agent-core-v2/src/kosong/contract/message.ts */ 'user' | 'assistant' | 'system' | 'tool';
     readonly name?: string;
@@ -1597,6 +1642,21 @@ export interface AgentStateSnapshot {
     } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'system_trigger';
       readonly name: string;
+    } | /* ExternalClientOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'external_client';
+      readonly connectionId: string;
+      readonly clientName: string;
+      readonly sessionRef: string;
+      readonly driver: 'external';
+    } | /* ExternalRecordOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'external_record';
+      readonly recordId: string;
+      readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+      readonly title?: string;
+      readonly connectionId: string;
+      readonly clientName: string;
+      readonly sessionRef: string;
+      readonly driver: 'external';
     } | /* TaskOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'task';
       readonly taskId: string;
@@ -1732,7 +1792,7 @@ export interface AgentStateSnapshot {
       readonly toolCallId?: string;
     }>>;
   })[];
-  // replayable · durable — folds: ContextAppendMessage, ContextAppendLoopEvent, ContextClear, ContextApplyCompaction, ContextUndo, AgentModelSwitch
+  // replayable · durable — folds: ContextAppendMessage, ExternalText, ContextAppendLoopEvent, ContextClear, ContextApplyCompaction, ContextUndo, AgentModelSwitch
   'contextMemory.revision': number;
   // src/agent/contextProjector/contextProjectorService.ts
   'contextProjector.lastRepairSignature': string | null;
@@ -2091,7 +2151,7 @@ export interface AgentStateSnapshot {
   'loop.lastRequestTraceId': string | undefined;
   'loop.nextReservedTurnId': number | undefined;
   // src/agent/loop/turnOps.ts
-  // replayable · durable — folds: ContextAppendLoopEvent, TurnPrompt, TurnSteer, ContextUndo, ContextApplyCompaction, ContextClear, TurnCancel, TurnEnded
+  // replayable · durable — folds: ContextAppendLoopEvent, TurnPrompt, ExternalActivity, ExternalText, TurnSteer, ContextUndo, ContextApplyCompaction, ContextClear, TurnCancel, TurnEnded
   'turn': /* TurnModelState — packages/agent-core-v2/src/agent/loop/turnOps.ts */ {
     readonly nextTurnId: number;
     readonly cancelledTurnIds: readonly number[];
@@ -2266,6 +2326,7 @@ export interface AgentStateSnapshot {
   // src/agent/profile/profileOps.ts
   // replayable · durable — folds: ProfileBind, ConfigUpdate, AgentModelSwitch
   'profile': /* ProfileModelState — packages/agent-core-v2/src/agent/profile/profileOps.ts */ {
+    readonly driver?: 'external';
     readonly toolOverride?: /* ToolBindingOverride — packages/agent-core-v2/src/agent/profile/profile.ts */ {
       readonly tools?: readonly string[];
       readonly disallowedTools?: readonly string[];
@@ -4169,6 +4230,7 @@ export interface AgentStateSnapshot {
             };
           };
           readonly renderGeneration?: number;
+          driver?: 'external';
           modelAlias?: string;
           modelCapabilities: /* ModelCapability — packages/agent-core-v2/src/kosong/contract/capability.ts */ {
             readonly image_in: boolean;
@@ -5283,7 +5345,7 @@ export interface AgentStateSnapshot {
     };
     readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
   }>;
-  // replayable · durable · undoable — folds: ContextAppendMessage, TaskWaitDelivered
+  // replayable · durable · undoable — folds: ContextAppendMessage, TaskWaitDelivered, TaskNotified
   'task.notificationDelivery': readonly string[];
   'task.scheduledNotificationKeys': Set<string>;
   // src/agent/tokenCounting/tokenCountingOps.ts

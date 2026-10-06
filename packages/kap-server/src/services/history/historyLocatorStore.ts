@@ -38,8 +38,8 @@ export interface HistoryNavRow {
   readonly ended?: boolean;
   readonly step?: string;
   readonly frame?: string;
-  readonly part?: 'prompt' | 'text' | 'input' | 'output';
-  readonly role?: 'user' | 'assistant' | 'tool';
+  readonly part?: 'prompt' | 'text' | 'input' | 'output' | 'record';
+  readonly role?: 'user' | 'assistant' | 'tool' | 'record';
   readonly toolName?: string;
   readonly time?: number;
   readonly excerpt?: string;
@@ -73,7 +73,7 @@ export interface HistoryNavScan {
 export interface HistoryNavSearch {
   readonly query: string;
   readonly mode: HistoryMode;
-  readonly role?: 'user' | 'assistant' | 'tool';
+  readonly role?: 'user' | 'assistant' | 'tool' | 'record';
   readonly after?: number;
   readonly before?: number;
   readonly pageSize: number;
@@ -152,6 +152,7 @@ function detachedExcerpt(text: string): string {
 }
 
 function originalText(record: Record<string, unknown>, part: HistoryNavRow['part'], selector?: string): string | undefined {
+  if(part==='record' && record['type']==='external.text') return typeof record['text']==='string'?record['text']:undefined;
   const message = record['message'];
   const legacy = message !== null && typeof message === 'object' ? message as Record<string, unknown> : undefined;
   if (selector === 'message.content' && part === 'prompt') return openingText(legacy?.['content'], legacy?.['origin']);
@@ -292,7 +293,7 @@ export class HistoryLocatorStore {
     try {
       return await (signal === undefined ? flight.promise : Promise.race([flight.promise,
         new Promise<never>((_, reject) => {
-          abort = () => reject(signal.reason ?? new DOMException('Navigation read aborted', 'AbortError'));
+          abort = () => { reject(signal.reason ?? new DOMException('Navigation read aborted', 'AbortError')); };
           signal.addEventListener('abort', abort, { once: true });
           if (signal.aborted) abort();
         })]));
@@ -357,7 +358,7 @@ export class HistoryLocatorStore {
         const event = record['event'];
         const eventType = event !== null && typeof event === 'object'
           ? (event as Record<string, unknown>)['type'] : undefined;
-        const canonicalPart = record['type'] === 'turn.prompt' ? 'prompt' :
+        const canonicalPart = record['type'] === 'turn.prompt' ? 'prompt' : record['type']==='external.text'?'record':
           eventType === 'content.part' ? 'text' : eventType === 'tool.result' ? 'output' : undefined;
         if (canonicalPart !== undefined) {
           const candidate = originalText(record, canonicalPart);
@@ -525,6 +526,7 @@ export class HistoryLocatorStore {
             if (frame.kind === 'tool' && (input.search?.role === undefined || input.search.role === 'tool')) {
               return frame.output !== undefined && matchHistoryText(outputText(frame.output), plan) !== undefined;
             }
+            if(frame.kind==='record' && (input.search?.role===undefined||input.search.role==='record')) return frame.text!==undefined && matchHistoryText(frame.text,plan)!==undefined;
             return false;
           });
           if (hasMatch) matchedRecords += 1;
@@ -613,11 +615,13 @@ export class HistoryLocatorStore {
           const turn = Number(operation.turnId.slice(1));
           const step = `t${turn}.${operation.stepOrdinal}`;
           const frame = operation.frame;
-          if (frame.kind !== 'text' && frame.kind !== 'tool') continue;
-          const parts: Array<{ part: 'text' | 'input' | 'output'; text: string;
+          if (frame.kind !== 'text' && frame.kind !== 'tool' && frame.kind !== 'record') continue;
+          const parts: Array<{ part: 'text' | 'input' | 'output' | 'record'; text: string;
             role: HistoryNavRow['role']; selector?: string }> = [];
           if (frame.kind === 'text' && frame.role === 'assistant' && frame.text !== undefined) {
             parts.push({ part: 'text', text: frame.text, role: 'assistant', selector: frame.selector });
+          } else if(frame.kind==='record' && frame.text!==undefined) {
+            parts.push({part:'record',text:frame.text,role:'record',selector:frame.selector});
           } else if (frame.kind === 'tool') {
             if (frame.input !== undefined) parts.push({ part: 'input', text: JSON.stringify(frame.input),
               role: 'tool', selector: frame.selector });

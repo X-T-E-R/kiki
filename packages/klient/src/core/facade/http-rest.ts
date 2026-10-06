@@ -303,6 +303,7 @@ export type HttpRestConfigPatch = PatchConfigRequest & {
  * arbitrary URL or untyped request escape hatch.
  */
 export interface HttpRestFacade {
+  readonly externalClients: import('./external-clients.js').ExternalClientsFacade;
   readonly webAccess: import('./web-access.js').WebAccessFacade;
   readonly connections: import('./connections.js').ConnectionsFacade;
   readonly threadBridges: import('./thread-bridges.js').ThreadBridgesFacade;

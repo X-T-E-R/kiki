@@ -35,6 +35,7 @@ import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -920,6 +921,31 @@ describe('AgentTaskService', () => {
     await waitForCondition(() => loop.hasPendingRequests());
 
     expect(loop.hasPendingRequests()).toBe(true);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('records external-main task notifications without enqueueing a model step', async () => {
+    ix.stub(ISessionMetadata, {
+      read: async () => ({
+        id: 'test-session',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+        custom: { externalClient: {
+          connectionId: 'conn-1', clientName: 'Example Client', sessionRef: 'session-1', driver: 'external' as const,
+        } },
+      }),
+    });
+    const notified: string[] = [];
+    disposables.add(eventBus.subscribe(TaskNotified, (event) => notified.push(event.sourceId)));
+    const svc = ix.get(IAgentTaskService);
+    const taskId = svc.registerTask(outputtingTask('done\n'));
+
+    await svc.wait(taskId, 1000);
+    await waitForCondition(() => notified.includes(taskId));
+
+    expect(notified).toEqual([taskId]);
+    expect(stubLoop().hasPendingRequests()).toBe(false);
+    expect((ix.get(IAgentContextMemoryService) as StubContextMemory).messages).toEqual([]);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('injects and records only one terminal notification when the same task changes from failed to lost', async () => {

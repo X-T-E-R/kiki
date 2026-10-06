@@ -1168,6 +1168,127 @@ class FixtureServer {
     });
   }
 
+  /**
+   * 0.3.3 external clients. The scenario owns the state; this route applies
+   * the one write the GUI can make from the settings page (create, update,
+   * revoke, respond) to that state, so a screenshot walk exercises the real
+   * request shape rather than a frozen list. Timestamps are epoch
+   * milliseconds, as the facade reports them.
+   */
+  externalClientsRoute(res, path, method, body) {
+    const data = this.scenario?.data.externalClients ?? {};
+    const errors = data.errors ?? {};
+    const failure = errors[`${method} ${path}`];
+    if (failure !== undefined) return this.envelope(res, null, failure.code ?? 50000, failure.msg ?? 'Fixture failure');
+    const connections = structuredClone(data.connections ?? []);
+    const listener = structuredClone(data.listener ?? { enabled: false, state: 'stopped' });
+    const now = Date.now();
+    const rest = path.slice('/external-clients'.length) || '/';
+
+    if (rest === '/' && method === 'GET') {
+      return this.envelope(res, { connections, listener });
+    }
+    if (rest === '/' && method === 'POST') {
+      const created = {
+        id: `conn_${(data.nextConnectionNumber ?? connections.length + 1)}`,
+        name: body?.name ?? 'Client',
+        workspace: body?.workspace ?? '',
+        mode: body?.mode ?? 'auto',
+        tools: body?.tools ?? data.defaultTools ?? [],
+        allowCommands: body?.allowCommands === true,
+        memoryScopes: body?.memoryScopes ?? ['workspace'],
+        historyScope: body?.historyScope ?? 'current',
+        status: 'active',
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.externalClientState = { connections: [...(this.externalClientState?.connections ?? connections), created], listener };
+      return this.envelope(res, { connection: created, stdio: structuredClone(data.stdio ?? { command: 'kiki', args: ['mcp', '--client', created.id, '--tools'] }) });
+    }
+    if (rest === '/authorizations' && method === 'GET') {
+      return this.envelope(res, { authorizations: structuredClone(data.authorizations ?? []) });
+    }
+    const authorizationMatch = /^\/authorizations\/([^/]+)\/respond$/.exec(rest);
+    if (authorizationMatch !== null && method === 'POST') {
+      const id = decodeURIComponent(authorizationMatch[1]);
+      const pending = structuredClone(data.authorizations ?? []).filter((entry) => entry.id !== id);
+      this.externalClientState = { ...(this.externalClientState ?? { connections, listener }), authorizations: pending };
+      return this.envelope(res, { approved: body?.approved === true });
+    }
+    if (rest === '/listener' && method === 'GET') return this.envelope(res, listener);
+    if (rest === '/listener' && method === 'PUT') {
+      const enabled = body?.enabled === true;
+      const next = {
+        ...listener,
+        enabled,
+        state: enabled ? 'listening' : 'stopped',
+        origin: enabled ? (listener.origin ?? '127.0.0.1:59412') : undefined,
+        publicUrl: body?.publicUrl ?? listener.publicUrl,
+        discovery: enabled ? (listener.discovery ?? 'unchecked') : 'unchecked',
+      };
+      this.externalClientState = { connections: this.currentExternalConnections(connections), listener: next };
+      return this.envelope(res, next);
+    }
+    const stdioMatch = /^\/([^/]+)\/stdio$/.exec(rest);
+    if (stdioMatch !== null && method === 'POST') {
+      const id = decodeURIComponent(stdioMatch[1]);
+      return this.envelope(res, structuredClone(data.stdio ?? { command: 'kiki', args: ['mcp', '--client', id, '--tools'] }));
+    }
+    const materialsMatch = /^\/sessions\/([^/]+)\/materials$/.exec(rest);
+    if (materialsMatch !== null && method === 'GET') {
+      const id = decodeURIComponent(materialsMatch[1]);
+      const seed = (data.materials ?? {})[id];
+      if (seed === undefined) {
+        return this.envelope(res, {
+          state: 'unloaded', sessionId: id, items: [],
+          coverage: { complete: false, bytesRead: 0, recordsRead: 0, reason: 'no fixture seed' },
+        });
+      }
+      return this.envelope(res, structuredClone(seed));
+    }
+    const sessionsMatch = /^\/([^/]+)\/sessions$/.exec(rest);
+    if (sessionsMatch !== null && method === 'GET') {
+      const id = decodeURIComponent(sessionsMatch[1]);
+      return this.envelope(res, { sessions: structuredClone((data.sessions ?? {})[id] ?? []) });
+    }
+    const idMatch = /^\/([^/]+)$/.exec(rest);
+    if (idMatch !== null) {
+      const id = decodeURIComponent(idMatch[1]);
+      const current = this.currentExternalConnections(connections);
+      const found = current.find((entry) => entry.id === id);
+      if (found === undefined) return this.envelope(res, null, 40404, 'External client connection not found');
+      if (method === 'DELETE') {
+        const revoked = { ...found, status: 'revoked', updatedAt: now };
+        this.externalClientState = { ...(this.externalClientState ?? { listener }), connections: current.map((entry) => (entry.id === id ? revoked : entry)) };
+        return this.envelope(res, { connection: revoked });
+      }
+      if (method === 'PATCH') {
+        const updated = {
+          ...found,
+          ...(body?.name === undefined ? {} : { name: body.name }),
+          ...(body?.workspace === undefined ? {} : { workspace: body.workspace }),
+          ...(body?.mode === undefined ? {} : { mode: body.mode }),
+          ...(body?.tools === undefined ? {} : { tools: body.tools }),
+          ...(body?.allowCommands === undefined ? {} : { allowCommands: body.allowCommands === true }),
+          ...(body?.memoryScopes === undefined ? {} : { memoryScopes: body.memoryScopes }),
+          ...(body?.historyScope === undefined ? {} : { historyScope: body.historyScope }),
+          // `enabled` is the pause switch: false keeps the grant, and only a
+          // revoke ends it.
+          ...(body?.enabled === undefined ? {} : { status: body.enabled ? 'active' : 'paused' }),
+          updatedAt: now,
+        };
+        this.externalClientState = { ...(this.externalClientState ?? { listener }), connections: current.map((entry) => (entry.id === id ? updated : entry)) };
+        return this.envelope(res, { connection: updated });
+      }
+    }
+    return this.envelope(res, null, 40404, 'External client route not found');
+  }
+
+  /** Connections as the last write left them, so a walk can mutate and reread. */
+  currentExternalConnections(fallback) {
+    return this.externalClientState?.connections ?? structuredClone(fallback);
+  }
+
   agentProfilesWithDisabled(workspaceId) {
     const disabledNamed = new Set(this.config.disabled_named_profiles ?? []);
     return this.agentProfiles
@@ -2657,6 +2778,14 @@ class FixtureServer {
     }
     if (path === '/executors' && method === 'GET') {
       return this.envelope(res, { items: this.executorItems() });
+    }
+    // 0.3.3 external clients: the one connection authorization and the
+    // restricted listener. Scenario `externalClients` seeds
+    // { connections, listener, authorizations, sessions, stdio, errors };
+    // `errors` maps a method+path fragment to an envelope code so a failure
+    // state is reachable without inventing a second scenario.
+    if (path.startsWith('/external-clients')) {
+      return this.externalClientsRoute(res, path, method, body);
     }
     // kap-server local executor sessions: scenario `localSessions[executorId]`
     // = { root, exists, truncated, unreadable_files, resume_enabled, items,
