@@ -113,6 +113,7 @@ import {
 } from '../lib/timelineLocate';
 import { timelineSnapshotKey, type TimelineReadingSnapshot } from '../lib/navViewState';
 import { restoreTimelineReading, type TimelineReadingAdapter } from '../lib/timelineReading';
+import { openingReadingSnapshot, TEMPORARY_MANUAL_HISTORY_ONLY } from '../lib/temporaryHistoryLimit';
 import { useNavSnapshotAdapter } from '../lib/useNavSnapshot';
 import { useTimelineVisitLocator } from '../lib/useTimelineNavigation';
 import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
@@ -3492,6 +3493,7 @@ export function Transcript({
   const olderInflightRef = useRef(false);
   const loadOlderRef = useRef(onLoadOlder);
   useEffect(() => {
+    if (TEMPORARY_MANUAL_HISTORY_ONLY) return;
     const element = scrollRef.current;
     if (element === null) return;
     let touchY: number | undefined;
@@ -3816,7 +3818,7 @@ export function Transcript({
     let hit = resolve();
     // Not on the page: page older history in until it shows up or the
     // beginning is reached. Each page re-renders before the next lookup.
-    for (let page = 0; hit === undefined && page < 40; page += 1) {
+    for (let page = 0; hit === undefined && page < (TEMPORARY_MANUAL_HISTORY_ONLY ? 1 : 40); page += 1) {
       if (!liveRef.current.hasMore) break;
       const loadedMore = await loadOlderRef.current();
       for (let frame = 0; frame < 4; frame += 1) await nextFrame();
@@ -3956,7 +3958,7 @@ export function Transcript({
       },
       isCancelled: () => signal.aborted || (scrollRef.current !== null && !scrollRef.current.isConnected),
     };
-    const outcome = await restoreTimelineReading(snapshot, adapter);
+    const outcome = await restoreTimelineReading(openingReadingSnapshot(snapshot), adapter);
     if (signal.aborted) return;
     if (outcome.status === 'found') {
       // Focus returns to the reading surface when the control that started the

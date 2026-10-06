@@ -1287,6 +1287,7 @@ export const zh = {
   'transcript.bridgedOpen': '打开 {label}',
   'transcript.you': '你',
   'transcript.loadEarlier': '加载更早的消息',
+  'transcript.temporaryHistoryLimit': '临时模式：仅显示已加载消息，旧历史请点击“加载更早的消息”逐页读取；打开对话不恢复旧阅读位置。',
   'transcript.historyUnverified': '历史完整性尚未验证',
   'transcript.historyUnverifiedHint': '较早消息可能缺失，当前视图不代表完整记录。',
   'transcript.copyTitle': '复制 Markdown',

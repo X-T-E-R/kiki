@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { canGoBack, canGoForward, clearNavHistory, getCurrentVisit, getVisitForLocation, recordNavigation } from './navHistory';
 import { getReadingSnapshot, previewSnapshotKey, readPreviewSnapshot, readTimelineSnapshot, saveReadingSnapshot, timelineSnapshotKey, type TimelineReadingSnapshot } from './navViewState';
 import { restoreTimelineReading, type TimelineReadingAdapter } from './timelineReading';
+import { openingReadingSnapshot } from './temporaryHistoryLimit';
 import { locateInTimeline, locateSpawnTarget, registerTimelineLocator, resetTimelineLocatorsForTests, timelineTargetKey, type TimelineTarget } from './timelineLocate';
 import { useNavSnapshotAdapter } from './useNavSnapshot';
 import { useTimelineNavigation, useTimelineVisitLocator } from './useTimelineNavigation';
@@ -87,6 +88,15 @@ describe('N2 reading snapshots', () => {
     expect(await restoreTimelineReading(reading('old', true), a)).toEqual({ status: 'found' });
     expect(a.loadOlder).not.toHaveBeenCalled();
     expect(a.restoreAnchor).toHaveBeenCalledWith(reading('old', true).anchor);
+  });
+
+  it('temporarily opens an old reading position at latest without paging or changing its saved snapshot', async () => {
+    const saved = reading('far-history');
+    const a = adapter({ hasAnchor: () => false, hasMore: () => true, loadOlder: vi.fn(async () => true) });
+    expect(await restoreTimelineReading(openingReadingSnapshot(saved), a)).toEqual({ status: 'found' });
+    expect(a.loadOlder).not.toHaveBeenCalled();
+    expect(a.restoreAnchor).toHaveBeenCalledWith({ atEnd: true, offset: 0 });
+    expect(saved.anchor).toEqual({ key: 'far-history', atEnd: false, offset: 17 });
   });
 
   it('separates deletion from temporary page failure, and permits retry', async () => {

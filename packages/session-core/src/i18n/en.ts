@@ -1301,6 +1301,7 @@ export const en = {
   'transcript.bridgedOpen': 'Open {label}',
   'transcript.you': 'You',
   'transcript.loadEarlier': 'Load earlier messages',
+  'transcript.temporaryHistoryLimit': 'Temporary mode: earlier history loads one page per click on “Load earlier messages”. Conversations open at the latest messages.',
   'transcript.historyUnverified': 'History completeness is unverified',
   'transcript.historyUnverifiedHint': 'Earlier messages may be missing. This view is not a complete record.',
   'transcript.copyTitle': 'Copy markdown',

@@ -73,6 +73,7 @@ import { Transcript } from '../Transcript';
 import { TranscriptDetailProvider, type TranscriptEntityKind } from '../transcriptDetail';
 import { ResyncStatusBanner } from './ResyncStatusBanner';
 import { registerOverlay } from '../../lib/uiBusy';
+import { TEMPORARY_MANUAL_HISTORY_ONLY } from '../../lib/temporaryHistoryLimit';
 
 /** Inspector toggle mark, drawn from the shared icon family at header size. */
 export function PanelIcon({ className = '' }: { className?: string }) {
@@ -200,7 +201,7 @@ function WorkspaceSurface({
 }) {
   const { t } = useI18n();
   useEffect(() => {
-    if (timeline.visible === false) return;
+    if (TEMPORARY_MANUAL_HISTORY_ONLY || timeline.visible === false) return;
     return controller?.retainHistoryRead(target.agentId);
   }, [controller, target.agentId, timeline.visible]);
   const loadDetail = useCallback(
@@ -235,6 +236,11 @@ function WorkspaceSurface({
     >
       {slots.header !== null ? createPortal(header, slots.header) : null}
       <div ref={timelineRef} className="contents" data-agent-workspace-target={target.agentId}>
+        {TEMPORARY_MANUAL_HISTORY_ONLY ? (
+          <div role="status" data-temporary-history-limit className="shrink-0 px-4 py-1 text-[11px] text-ink-faint">
+            {t('transcript.temporaryHistoryLimit')}
+          </div>
+        ) : null}
         {/* One list instance per agent. Child row ids are turn-scoped
             (`agent-turn-t1-prompt`), so two agents share row keys; a reused
             virtualizer would carry one agent's measured sizes, scroll anchor
