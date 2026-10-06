@@ -5,8 +5,13 @@
  * form), and how much it may do on its own (default permission mode). There is no workspace question: /new already defaults to
  * the most recent workspace, else a fresh folder in Kiki Home.
  *
- * Finish lands on the /new hero with an empty composer; the hero's starter
- * chips offer first prompts, nothing is prefilled or sent for the user.
+ * Finish is the one step a form cannot finish: it opens a new conversation with
+ * a short `/kiki-ops` request in its composer, the same hand-off the optional
+ * capability rows use, and Kiki then asks what the user is here for, offers a
+ * first agent, and helps choose Explore's model and effort (or leaves it alone,
+ * or turns that role off). Nothing is sent — the user reads it and presses
+ * send. "Set up later" changes nothing at all and just closes the dialog;
+ * whatever the user is looking at stays exactly as it was.
  *
  * Save semantics are explicit: every primary advance button persists the
  * current step before moving on. On the model step "Save & continue" creates
@@ -669,6 +674,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   const queryClient = useQueryClient();
   const [step, setStep] = useState<OnboardingStep>('welcome');
   const [finishing, setFinishing] = useState(false);
+  const [finishFeedback, setFinishFeedback] = useState<Feedback>(null);
 
   // Model step: the draft lives at wizard level, so Back/Next never loses it.
   // It is only persisted by the step's own "Save & continue" (saveProvider).
@@ -930,15 +936,28 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     }
   };
 
-  // Finish: land on the /new hero with an empty composer. The /new draft is
-  // left alone, so its own target default applies (most recent workspace,
-  // else a new folder in Kiki Home). Nothing is sent or prefilled.
-  const finish = () => {
+  // Finish: open the guided first-run conversation. The wizard has done what a
+  // form can — look, a model connection, the permission default — and the rest
+  // (what you use Kiki for, your first agent, Explore's model and effort) needs
+  // real answers, so the same hand-off the capability rows use carries the
+  // request into a new session. Nothing is sent: the user reads it and presses
+  // send.
+  //
+  // A rejected create leaves the wizard open with the reason, and since
+  // `askKiki` marks completion only after the session exists, the run is still
+  // unmarked and the same button retries. That is the whole guarantee, and it
+  // covers a create that fails and nothing after it: once the session is
+  // written, this hand-off has the ordinary exposure — the session and its
+  // draft exist, and a later failure leaves the wizard still showing.
+  const finish = async () => {
     if (finishing) return;
     setFinishing(true);
-    markOnboardingCompleted();
-    onClose();
-    navigate('/new');
+    try {
+      await askKiki(t('onboarding.caps.firstRun.prompt'));
+    } catch (error) {
+      setFinishing(false);
+      setFinishFeedback({ tone: 'error', text: t('onboarding.caps.askFailed', { detail: errorText(locale, error) }) });
+    }
   };
 
   // A capability's settings card: the wizard is done once the user leaves for it.
@@ -1130,15 +1149,25 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
         ) : null}
       </div>
 
-      <div className="flex shrink-0 items-center justify-between gap-3 border-t border-hairline px-6 py-3">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-hairline px-6 py-3">
         <button
           type="button"
           onClick={close}
-          className="text-[12px] font-medium text-ink-faint transition-colors hover:text-ink"
+          className="shrink-0 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink"
         >
           {t('onboarding.skip')}
         </button>
-        <div className="flex items-center gap-2">
+        {/* A failed hand-off belongs to the button that made it: the step is
+            unchanged and only the retry is missing. It sits inline on a wide
+            footer, and wraps onto its own full-width row on a narrow one —
+            squeezed between two buttons it broke "Set up later" and the error
+            text mid-word. */}
+        {last && finishFeedback !== null ? (
+          <div className="order-last w-full min-w-0 sm:order-none sm:w-auto sm:flex-1">
+            <FeedbackLine feedback={finishFeedback} />
+          </div>
+        ) : null}
+        <div className="flex shrink-0 items-center gap-2">
           {stepIndex > 0 ? (
             <button
               type="button"
@@ -1153,10 +1182,10 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
               type="button"
               data-autofocus
               disabled={finishing}
-              onClick={finish}
+              onClick={() => { void finish(); }}
               className={PRIMARY_BUTTON}
             >
-              {finishing ? t('st.auth.working') : t('onboarding.finish')}
+              {finishing ? t('st.auth.working') : t('onboarding.finishFirstRun')}
             </button>
           ) : (
             <button

@@ -1119,31 +1119,60 @@ describe('OnboardingWizard', () => {
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 
-  it('finishes on the /new hero without touching the /new target or draft', async () => {
+  it('"Set up with Kiki" opens the guided setup session with a short request waiting, and sends nothing', async () => {
     const onClose = vi.fn();
     await mount(onClose);
     await toCapabilitiesStep();
     expect(dialog().querySelector('[data-workspace-choice]')).toBeNull();
-    await click(buttonByText('Start'));
+    await click(buttonByText('Set up with Kiki'));
     await flush();
-    expect(createSession).not.toHaveBeenCalled();
-    expect(navigate).toHaveBeenCalledWith('/new');
-    expect(readDraft('new')).toBe('');
-    // No workspace step: /new keeps its own default (recent workspace, else Kiki Home).
-    expect(readNewSessionDraft().workspaceId).toBeUndefined();
-    expect(readNewSessionDraft().cwd).toBeUndefined();
+    // No workspace address: the server gives the session a new folder in Kiki Home.
+    expect(createSession).toHaveBeenCalledWith({});
+    expect(createSession).toHaveBeenCalledTimes(1);
+    const draft = readDraft('s_onboarding_1');
+    // The composer is what the user reads before sending, so it names the skill
+    // and the three asks; the details live in the skill, not in the draft.
+    expect(draft).toMatch(/^\/kiki-ops /);
+    expect(draft).toMatch(/one question at a time/i);
+    expect(draft).toMatch(/keep things as they are or turn Explore off/i);
+    expect(draft.length).toBeLessThan(260);
+    expect(navigate).toHaveBeenCalledWith('/s/s_onboarding_1');
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 
-  it('never overwrites a /new draft the user already typed', async () => {
+  it('never overwrites a draft the user already typed elsewhere', async () => {
     const { writeDraft } = await import('@kiki/session-core/composer');
     writeDraft('new', 'half-typed thought');
+    writeDraft('s_other', 'another session in progress');
     await mount();
     await toCapabilitiesStep();
-    await click(buttonByText('Start'));
+    await click(buttonByText('Set up with Kiki'));
     await flush();
     expect(readDraft('new')).toBe('half-typed thought');
+    expect(readDraft('s_other')).toBe('another session in progress');
+  });
+
+  it('a rejected create leaves the wizard open, unmarked, and the same button retries', async () => {
+    createSession.mockRejectedValueOnce(new Error('server offline'));
+    const onClose = vi.fn();
+    await mount(onClose);
+    await toCapabilitiesStep();
+    await click(buttonByText('Set up with Kiki'));
+    await flush();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+    // Not marked complete: the auto-popup must still be able to fire for a run
+    // that never reached its own hand-off.
+    expect(localStorage.getItem('kiki.onboarding')).toBeNull();
+    expect(dialog().textContent).toContain('server offline');
+    // The same button retries, and one success is one session.
+    await click(buttonByText('Set up with Kiki'));
+    await flush();
+    expect(createSession).toHaveBeenCalledTimes(2);
+    expect(readDraft('s_onboarding_1')).toMatch(/^\/kiki-ops /);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 
   // ── capabilities page ──────────────────────────────────────────────────
@@ -1255,16 +1284,36 @@ describe('OnboardingWizard', () => {
     expect(document.querySelector('[data-host-skill-dialog]')).toBeNull();
   });
 
-  it('Start skips the capabilities page without using any of it', async () => {
+  it('the hand-off uses none of the optional rows on the capabilities page', async () => {
     const onClose = vi.fn();
     await mount(onClose);
     await toCapabilitiesStep();
-    await click(buttonByText('Start'));
+    await click(buttonByText('Set up with Kiki'));
+    await flush();
+    expect(previewHostSkillInstall).not.toHaveBeenCalled();
+    expect(installHostSkill).not.toHaveBeenCalled();
+    // One session for the hand-off, not one per optional row.
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('"Set up later" only closes the dialog — no session, no navigation, no draft', async () => {
+    const onClose = vi.fn();
+    await mount(onClose);
+    await toCapabilitiesStep();
+    await click(buttonByText('Set up later'));
     await flush();
     expect(createSession).not.toHaveBeenCalled();
-    expect(previewHostSkillInstall).not.toHaveBeenCalled();
-    expect(navigate).toHaveBeenCalledTimes(1);
-    expect(navigate).toHaveBeenCalledWith('/new');
+    // It dismisses; it does not route anywhere, so whatever the user was
+    // looking at when the wizard opened is what they return to.
+    expect(navigate).not.toHaveBeenCalled();
+    expect(readDraft('new')).toBe('');
+    // The /new draft is untouched and keeps its own default (recent workspace,
+    // else a new folder in Kiki Home) for whenever they open a session there.
+    expect(readNewSessionDraft().workspaceId).toBeUndefined();
+    expect(readNewSessionDraft().cwd).toBeUndefined();
     expect(onClose).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 });

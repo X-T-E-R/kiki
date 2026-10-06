@@ -5455,7 +5455,6 @@ export const zh = {
   'onboarding.back': '上一步',
   'onboarding.next': '下一步',
   'onboarding.saveNext': '保存并继续',
-  'onboarding.finish': '开始',
   'onboarding.close': '关闭引导',
   'onboarding.welcome.body': '选好语言和外观，后面的窗口会随你的选择实时变化。',
   'onboarding.model.body':
@@ -5499,8 +5498,8 @@ export const zh = {
   'onboarding.caps.group.reach': '连接更多',
   'onboarding.caps.group.run': '让工作持续',
   'onboarding.caps.search.name': '联网搜索与历史检索',
-  'onboarding.caps.search.line': '搜索网页、读取页面，并通过全文索引检索过去的会话。通用网页搜索需要搜索提供商的密钥。',
-  'onboarding.caps.search.prompt': '/kiki-ops 帮我配置联网搜索：先检查现在的配置，再一步步带我添加搜索提供商和它的密钥。',
+  'onboarding.caps.search.line': '默认免密钥搜索网页、读取页面，并通过全文索引检索过去的会话。其他搜索来源可按需配置。',
+  'onboarding.caps.search.prompt': '/kiki-ops 帮我使用联网搜索：先检查默认免密钥搜索是否可用，需要时再带我添加其他来源。',
   'onboarding.caps.memory.name': '记忆',
   'onboarding.caps.memory.line': '跨会话记住你的偏好和项目事实，只保存在这台机器上。',
   'onboarding.caps.ssh.name': 'SSH 远程主机',
@@ -5530,6 +5529,9 @@ export const zh = {
   'onboarding.caps.openCron': '查看定时任务',
   'onboarding.caps.openPersonas': '角色',
   'onboarding.caps.bots.prompt': '/kiki-ops 帮我设置一个 Bot：先说明开启 Bot 模式会做什么，再帮我挑选或新建一个角色，并把它设为 Bot。',
+  'onboarding.caps.firstRun.prompt':
+    '/kiki-ops 用简短问答帮我完善配置：先了解我主要用它做什么，再按需创建第一份智能体配置，然后选 Explore 的低成本模型和思考强度。也可以保持原样，或把 Explore 关掉。一次只问一个问题。',
+  'onboarding.finishFirstRun': '让 Kiki 帮我配置',
   // 排队条与输入框的排队消息编辑往返（拖拽调序、二次确认移除）。
   'queue.editTitle': '放回输入框编辑 — 确认后回到原排队位置',
   'queue.editingBadge': '正在输入框中编辑',

@@ -5523,7 +5523,6 @@ export const en = {
   'onboarding.back': 'Back',
   'onboarding.next': 'Next',
   'onboarding.saveNext': 'Save & continue',
-  'onboarding.finish': 'Start',
   'onboarding.close': 'Close setup',
   'onboarding.welcome.body': 'Pick a language and a look. The window behind this dialog changes as you choose.',
   'onboarding.model.body':
@@ -5569,8 +5568,8 @@ export const en = {
   'onboarding.caps.group.reach': 'Reach further',
   'onboarding.caps.group.run': 'Keep work going',
   'onboarding.caps.search.name': 'Web search and history',
-  'onboarding.caps.search.line': 'Search the web, read pages, and search past sessions through the full-text index. General web search needs a search provider key.',
-  'onboarding.caps.search.prompt': '/kiki-ops Help me set up web search: check what is configured, then walk me through adding a search provider and its key.',
+  'onboarding.caps.search.line': 'Search the web and read pages without a key by default, and search past sessions through the full-text index. Other search sources are optional.',
+  'onboarding.caps.search.prompt': '/kiki-ops Help me use web search: check whether the default keyless search works, then help me add other sources only if needed.',
   'onboarding.caps.memory.name': 'Memory',
   'onboarding.caps.memory.line': 'Keeps your preferences and project facts across sessions, on this machine.',
   'onboarding.caps.ssh.name': 'SSH remote hosts',
@@ -5600,6 +5599,9 @@ export const en = {
   'onboarding.caps.openCron': 'Open schedule',
   'onboarding.caps.openPersonas': 'Personas',
   'onboarding.caps.bots.prompt': '/kiki-ops Help me set up a bot: explain what bot mode turns on, help me pick or create a persona, and make it a bot.',
+  'onboarding.caps.firstRun.prompt':
+    '/kiki-ops Help me finish setting up with a few short questions: what I use Kiki for, my first agent if I want one, then a low-cost model and effort for Explore. I can also keep things as they are or turn Explore off. One question at a time.',
+  'onboarding.finishFirstRun': 'Set up with Kiki',
   // Queue strip + composer queue-edit round-trip (drag reorder, armed remove).
   'queue.editTitle': 'Edit in the composer — confirming puts it back at the same queue position',
   'queue.editingBadge': 'Editing in the composer',
