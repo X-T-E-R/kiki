@@ -6,7 +6,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ErrorCode } from '@kiki/protocol';
 import { ApiError } from '@kiki/session-core/transport';
-import { createViewState, type AgentForest, type AgentTreeNode, type SessionViewState } from '@kiki/session-core/session';
+import { createViewState, SessionController, type AgentForest, type AgentTreeNode, type SessionViewState } from '@kiki/session-core/session';
+import type { SessionTransport } from '@kiki/session-core/transport';
+import type { SessionViewFacade } from '@kiki/klient/session-view';
+import { AgentTranscript, type AgentTranscriptSnapshot, type ContentRef, type ContentSegment, type TranscriptOperation, type TranscriptTodo } from '@kiki/transcript';
+import { boundedTranscriptSnapshot, boundedTranscriptOps } from '../../../../packages/kap-server/src/transport/klient/boundedTranscript';
+import { boundedEntity, readContentSegment } from '../../../../packages/kap-server/src/transport/klient/boundedContent';
 import { UNKNOWN_AGENT_PANEL_METRICS } from '@kiki/session-core/session/agentPanel';
 import { I18nProvider } from '../i18n';
 import { AgentPanelContainer } from './AgentPanelContainer';
@@ -24,7 +29,13 @@ import { AgentPanelContainer } from './AgentPanelContainer';
 const harness = vi.hoisted(() => {
   const listeners = new Set<() => void>();
   const agents: Record<string, unknown> = {};
+  const releaseTodoRead = vi.fn();
+  const retryTodoRead = vi.fn();
+  const beginContentRead = vi.fn(() => ({ release: releaseTodoRead, retry: retryTodoRead }));
+  const loadTranscriptEntities = vi.fn();
   const controller = {
+    beginContentRead,
+    loadTranscriptEntities,
     sessionId: 'session',
     getState: () => agents['main'],
     getAgentState: (agentId: string) => agents[agentId],
@@ -41,6 +52,10 @@ const harness = vi.hoisted(() => {
   return {
     agents,
     registry,
+    beginContentRead,
+    releaseTodoRead,
+    retryTodoRead,
+    loadTranscriptEntities,
     /** What the mocked `useOptionalControllerRegistry` hands back per render. */
     holder: { value: registry as unknown },
     emit: () => { for (const listener of listeners) listener(); },
@@ -90,6 +105,10 @@ beforeEach(() => {
   getAgentCapabilities.mockReset();
   getAgentPlan.mockReset();
   getAgentPlan.mockResolvedValue(null);
+  harness.beginContentRead.mockClear();
+  harness.releaseTodoRead.mockClear();
+  harness.retryTodoRead.mockClear();
+  harness.loadTranscriptEntities.mockReset();
   for (const agentId of Object.keys(harness.agents)) delete harness.agents[agentId];
   harness.agents['main'] = viewState();
   harness.holder.value = harness.registry;
@@ -652,4 +671,268 @@ it('keeps the permission mode out of the overview; the composer and profile own 
   expect(element.querySelector('[data-overview-setup]')).toBeNull();
   expect(element.textContent).not.toContain('完全放行');
   expect(element.textContent).not.toContain('权限');
+});
+
+const todoItemsRef: NonNullable<SessionViewState['contentRefs']>[number] = {
+  source: { kind: 'todo', id: 'todo' }, path: ['items'], kind: 'array', offset: 0, total: 14, revision: 'todo-revision',
+};
+
+it('reads only the selected todo items and renders the complete list without waiting for history', async () => {
+  harness.agents['main'] = viewState({ todos: [], contentRefs: [todoItemsRef], hasMoreHistory: true });
+  await render('main', { part: 'work' });
+  expect(todosStatus()).toBe('loading');
+  expect(element.textContent).toContain('正在读取待办');
+  expect(element.querySelector('[data-agent-todos-status]')?.classList.contains('sr-only')).toBe(false);
+  expect(harness.beginContentRead).toHaveBeenCalledExactlyOnceWith('main', { kind: 'todo', id: 'todo' }, ['items']);
+  expect(harness.loadTranscriptEntities).not.toHaveBeenCalled();
+  const items = Array.from({ length: 14 }, (_, index) => todo(`Main task ${index + 1}`, index === 0 ? 'in_progress' : 'pending'));
+  await act(async () => {
+    harness.agents['main'] = viewState({ todos: items, contentRefs: [], hasMoreHistory: true });
+    harness.emit();
+  });
+  expect(todosStatus()).toBeUndefined();
+  expect(element.querySelectorAll('[data-agent-todo-section] li')).toHaveLength(14);
+  expect(element.textContent).toContain('Main task 14');
+  expect(harness.beginContentRead).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    harness.agents['main'] = viewState({ todos: [todo('Updated task', 'done')], contentRefs: [] });
+    harness.emit();
+  });
+  expect(element.textContent).toContain('Updated task');
+  expect(element.textContent).not.toContain('Main task 14');
+  expect(element.textContent).toContain('1/1');
+  await render('child', { part: 'work' });
+  expect(harness.releaseTodoRead).toHaveBeenCalledTimes(1);
+  expect(harness.beginContentRead).toHaveBeenLastCalledWith('child', { kind: 'todo', id: 'todo' }, ['items']);
+  expect(element.textContent).not.toContain('Updated task');
+  await render('main', { part: 'work', visible: false });
+  expect(harness.releaseTodoRead).toHaveBeenCalledTimes(2);
+  expect(harness.beginContentRead).toHaveBeenCalledTimes(2);
+});
+
+it('keeps an unread todo distinct from empty on a failed item read and offers retry', async () => {
+  harness.agents['main'] = viewState({ todos: [], contentRefs: [todoItemsRef],
+    detailLoads: { [`content:${JSON.stringify(todoItemsRef)}`]: { status: 'error', message: 'Read failed' } } });
+  await render('main', { part: 'work' });
+  expect(todosStatus()).toBe('error');
+  expect(element.textContent).toContain('待办读取失败');
+  expect(element.textContent).not.toContain('暂无待办');
+  const retry = element.querySelector<HTMLElement>('[data-agent-todos-status] button');
+  expect(retry?.textContent).toBe('重试');
+  await act(async () => retry?.click());
+  expect(harness.retryTodoRead).toHaveBeenCalledTimes(1);
+});
+
+it('reads omitted todo entities only, while a complete empty todo stays hidden', async () => {
+  harness.agents['main'] = viewState({ todos: [], globalCoverage: {
+    version: 1, tasks: { returned: 0, total: 0, hasMore: false },
+    attachments: { returned: 0, total: 0, hasMore: false }, prompts: { returned: 0, total: 0, hasMore: false },
+    todos: { returned: 0, total: 1, hasMore: true },
+  } });
+  await render('main', { part: 'work' });
+  expect(todosStatus()).toBe('loading');
+  expect(harness.loadTranscriptEntities).toHaveBeenCalledExactlyOnceWith('main', 'todo');
+  await act(async () => {
+    harness.agents['main'] = viewState({ todos: [] });
+    harness.emit();
+  });
+  expect(todosStatus()).toBeUndefined();
+  expect(element.querySelector('[data-agent-todo-section]')).toBeNull();
+  expect(element.textContent).not.toContain('正在读取待办');
+});
+
+it('continues todo refs from a delayed baseline and live updates through the canonical controller without history reads', async () => {
+  const page = vi.fn();
+  const firstItems = Array.from({ length: 14 }, (_, index) => todo(`Task ${index + 1}`, index === 0 ? 'in_progress' : 'pending'));
+  const content = vi.fn(async ({ ref }: { ref: ContentRef }) => ({ ref,
+    value: ref.revision === 'updated' ? [todo('Live updated task', 'done')] : firstItems, contentRefs: [] }));
+  const view = {
+    snapshot: async () => ({ as_of_seq: 1, epoch: 'e', session: { id: 'session', workspace_id: 'workspace_example',
+      metadata: { cwd: 'C:/example' }, agent_config: {}, usage: { turn_count: 0 } }, in_flight_turn: null }),
+    transcript: { page, content },
+    subscribe: () => ({ close() {}, updateTranscriptCursor() {}, updateSessionCursor() {}, setTranscriptGrades() {} }),
+  } as unknown as SessionViewFacade;
+  const controller = new SessionController({} as SessionTransport, view, 'session', {
+    scheduler: { schedule: (fn) => { fn(); return 0; }, cancel() {} },
+  });
+  await controller.open();
+  harness.holder.value = { subscribe: harness.registry.subscribe, snapshot: harness.registry.snapshot,
+    [Symbol.iterator]: () => [controller][Symbol.iterator]() };
+  try {
+    await render('main', { part: 'work' });
+    expect(content).not.toHaveBeenCalled();
+    const snapshot: AgentTranscriptSnapshot = { items: [], tasks: [], interactions: [], attachments: [], prompts: [], meta: {},
+      todos: [{ todoId: 'todo', items: [], contentRefs: [todoItemsRef] }], hasMoreOlder: true };
+    await act(async () => { controller.handleTranscript({ type: 'transcript.reset', session_id: 'session', agent_id: 'main', snapshot,
+      grade: 'delta', coverage: { kind: 'tail', hasMoreOlder: true }, cursor: { seq: 1, epoch: 'e' } }); });
+    await act(async () => { await vi.waitFor(() => { expect(controller.getState().todos).toHaveLength(14); }); });
+    expect(element.querySelectorAll('[data-agent-todo-section] li')).toHaveLength(14);
+    const updatedRef = { ...todoItemsRef, total: 1, revision: 'updated' };
+    const ops: TranscriptOperation[] = [{ op: 'todo.upsert', todo: { todoId: 'todo', items: [], contentRefs: [updatedRef] } }];
+    await act(async () => { controller.handleTranscript({ type: 'transcript.ops', session_id: 'session', agent_id: 'main', ops,
+      cursor: { seq: 2, epoch: 'e' }, through_seq: 2 }); });
+    await act(async () => { await vi.waitFor(() => { expect(controller.getState().todos[0]?.title).toBe('Live updated task'); }); });
+    expect(element.textContent).toContain('Live updated task');
+    expect(element.textContent).not.toContain('Task 14');
+    expect(element.textContent).toContain('1/1');
+    expect(content).toHaveBeenCalledTimes(2);
+    for (const [input] of content.mock.calls) expect(input).toMatchObject({ agentId: 'main', ref: { source: { kind: 'todo', id: 'todo' }, path: ['items'] } });
+    expect(page).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => { root.render(null); });
+    controller.close();
+  }
+});
+
+it('restores bounded notes on first open and keeps the latest revision through a delayed old reply without history or scroll resets', async () => {
+  const fields = ['goal', 'directives', 'decided', 'rejected', 'evidence', 'files', 'next', 'open'];
+  const makeTodo = (rev: number): TranscriptTodo => ({ todoId: 'todo', items: [],
+    notes: Object.fromEntries(fields.map((field) => [field, Array.from({ length: ['goal', 'directives', 'evidence', 'files'].includes(field) ? 18 : 4 }, (_, index) => `Revision ${rev} ${field} line ${index}: complete evidence and next action.`).join('\n')])),
+    notesMeta: { ...notesMeta, rev },
+  });
+  let canonical = makeTodo(4);
+  const page = vi.fn();
+  let delayed: (() => void) | undefined;
+  let delayNext = false;
+  const content = vi.fn(({ ref }: { agentId: string; ref: ContentRef }): Promise<ContentSegment> => {
+    const segment = readContentSegment(canonical, ref);
+    if (!delayNext) return Promise.resolve(segment);
+    delayNext = false;
+    return new Promise((resolve) => { delayed = () => { resolve(segment); }; });
+  });
+  const view = {
+    snapshot: async () => ({ as_of_seq: 1, epoch: 'e', session: { id: 'session', workspace_id: 'workspace_example',
+      metadata: { cwd: 'C:/example' }, agent_config: {}, usage: { turn_count: 0 } }, in_flight_turn: null }),
+    transcript: { page, content },
+    subscribe: () => ({ close() {}, updateTranscriptCursor() {}, updateSessionCursor() {}, setTranscriptGrades() {} }),
+  } as unknown as SessionViewFacade;
+  const controller = new SessionController({} as SessionTransport, view, 'session', {
+    scheduler: { schedule: (fn) => { fn(); return 0; }, cancel() {} },
+  });
+  await controller.open();
+  harness.holder.value = { subscribe: harness.registry.subscribe, snapshot: harness.registry.snapshot,
+    [Symbol.iterator]: () => [controller][Symbol.iterator]() };
+  const snapshot: AgentTranscriptSnapshot = { items: [], tasks: [], interactions: [], attachments: [], prompts: [], meta: {},
+    todos: [boundedEntity(canonical, { kind: 'todo', id: 'todo' }, 2048)] };
+  expect(snapshot.todos[0]?.notes?.evidence?.length).toBeLessThan(canonical.notes!.evidence!.length);
+  const serverStore = new AgentTranscript('main');
+  const publish = (rev: number, seq: number) => {
+    canonical = makeTodo(rev);
+    const ops: TranscriptOperation[] = rev === 5
+      ? [{ op: 'todo.upsert', todo: boundedEntity(canonical, { kind: 'todo', id: 'todo' }, 2048) }]
+      : boundedTranscriptOps([{ op: 'todo.upsert', todo: canonical }], serverStore);
+    controller.handleTranscript({ type: 'transcript.ops', session_id: 'session', agent_id: 'main', ops, cursor: { seq, epoch: 'e' }, through_seq: seq });
+  };
+  try {
+    controller.handleTranscript({ type: 'transcript.reset', session_id: 'session', agent_id: 'main', snapshot,
+      grade: 'delta', coverage: { kind: 'tail', hasMoreOlder: true }, cursor: { seq: 1, epoch: 'e' } });
+    await render('main', { part: 'work' });
+    expect(content).not.toHaveBeenCalled();
+    const toggle = element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!;
+    await act(async () => { toggle.click(); });
+    await act(async () => { await vi.waitFor(() => { expect(controller.getState().todoNotes).toEqual(canonical.notes); }); });
+    for (const field of fields) expect(element.querySelector(`[data-agent-notes-part="${field}"] dd`)?.textContent).toBe(canonical.notes![field]);
+    expect(element.querySelector('[data-agent-notes-meta]')?.textContent).toContain('第 4 版');
+    const list = element.querySelector<HTMLElement>('[data-agent-notes-section] dl')!;
+    list.scrollTop = 77;
+    delayNext = true;
+    await act(async () => { publish(5, 2); });
+    await vi.waitFor(() => { expect(delayed).toBeDefined(); });
+    await act(async () => { publish(6, 3); delayed!(); });
+    await act(async () => { await vi.waitFor(() => { expect(controller.getState().todoNotes).toEqual(canonical.notes); }); });
+    expect(controller.getState().todoNotesMeta?.rev).toBe(6);
+    expect(element.querySelector('[data-agent-notes-meta]')?.textContent).toContain('第 6 版');
+    expect(element.textContent).not.toContain('Revision 5');
+    expect(element.querySelector('[data-agent-notes-section] dl')).toBe(list);
+    expect(list.scrollTop).toBe(77);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const reads = content.mock.calls.length;
+    await act(async () => { toggle.click(); publish(7, 4); });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(content).toHaveBeenCalledTimes(reads);
+    for (const [input] of content.mock.calls) expect(input).toMatchObject({ agentId: 'main', ref: { source: { kind: 'todo', id: 'todo' }, path: ['notes', expect.any(String)] } });
+    expect(page).not.toHaveBeenCalled();
+  } finally {
+    delayed?.();
+    await act(async () => { root.render(null); });
+    controller.close();
+  }
+});
+
+it('scopes expanded notes reads to the selected agent and releases them on hide or navigation', async () => {
+  const ref = { ...todoItemsRef, path: ['notes', 'goal'], kind: 'text' as const, offset: 4, total: 40 };
+  harness.agents['main'] = viewState({ todoNotes: { goal: 'Main' }, todoNotesMeta: notesMeta, contentRefs: [ref] });
+  harness.agents['child'] = viewState({ todoNotes: { goal: 'Child' }, todoNotesMeta: { ...notesMeta, rev: 1 }, contentRefs: [ref] });
+  await render('main', { part: 'work' });
+  expect(harness.beginContentRead.mock.calls.map((call) => call)).not.toContainEqual(['main', { kind: 'todo', id: 'todo' }, ['notes', 'notesMeta']]);
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!.click(); });
+  expect(harness.beginContentRead).toHaveBeenLastCalledWith('main', { kind: 'todo', id: 'todo' }, ['notes', 'notesMeta']);
+  const released = harness.releaseTodoRead.mock.calls.length;
+  await render('child', { part: 'work' });
+  expect(harness.releaseTodoRead.mock.calls.length).toBe(released + 2);
+  expect(element.querySelector('[data-agent-notes-section] button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
+  expect(element.textContent).not.toContain('Main');
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!.click(); });
+  expect(harness.beginContentRead).toHaveBeenLastCalledWith('child', { kind: 'todo', id: 'todo' }, ['notes', 'notesMeta']);
+  const calls = harness.beginContentRead.mock.calls.length;
+  const releasedChild = harness.releaseTodoRead.mock.calls.length;
+  await render('child', { part: 'work', visible: false });
+  expect(harness.releaseTodoRead.mock.calls.length).toBe(releasedChild + 2);
+  expect(harness.beginContentRead).toHaveBeenCalledTimes(calls);
+});
+
+it('shows legal complete inline working notes and all 14 todos on first open and hot update without content or history reads', async () => {
+  const fields = ['goal', 'directives', 'decided', 'rejected', 'evidence', 'files', 'next', 'open'];
+  const makeTodo = (rev: number): TranscriptTodo => ({ todoId: 'todo',
+    items: Array.from({ length: 14 }, (_, index): TranscriptTodo['items'][number] => ({ title: `Revision ${rev} task ${index + 1}`, status: index === 0 ? 'in_progress' : 'pending' })),
+    notes: Object.fromEntries(fields.map((field, index) => [field, `Revision ${rev} ${field}: `.padEnd([1500, 1500, 1500, 1500, 499, 499, 499, 3][index]!, '字').slice(0, [1500, 1500, 1500, 1500, 499, 499, 499, 3][index]!)])),
+    notesMeta: { ...notesMeta, rev },
+  });
+  let canonical = makeTodo(4);
+  expect(Object.values(canonical.notes!).every((text) => text!.length <= 1500)).toBe(true);
+  expect(Object.values(canonical.notes!).reduce((sum, text) => sum + text!.length, 0)).toBeLessThanOrEqual(7500);
+  const page = vi.fn();
+  const content = vi.fn();
+  const view = {
+    snapshot: async () => ({ as_of_seq: 1, epoch: 'e', session: { id: 'session', workspace_id: 'workspace_example',
+      metadata: { cwd: 'C:/example' }, agent_config: {}, usage: { turn_count: 0 } }, in_flight_turn: null }),
+    transcript: { page, content },
+    subscribe: () => ({ close() {}, updateTranscriptCursor() {}, updateSessionCursor() {}, setTranscriptGrades() {} }),
+  } as unknown as SessionViewFacade;
+  const controller = new SessionController({} as SessionTransport, view, 'session', {
+    scheduler: { schedule: (fn) => { fn(); return 0; }, cancel() {} },
+  });
+  await controller.open();
+  harness.holder.value = { subscribe: harness.registry.subscribe, snapshot: harness.registry.snapshot,
+    [Symbol.iterator]: () => [controller][Symbol.iterator]() };
+  const snapshot = boundedTranscriptSnapshot({ items: [], tasks: [], interactions: [], attachments: [], prompts: [], meta: {}, todos: [canonical] }, 'main');
+  const serverStore = new AgentTranscript('main');
+  try {
+    controller.handleTranscript({ type: 'transcript.reset', session_id: 'session', agent_id: 'main', snapshot,
+      grade: 'turn', coverage: { kind: 'tail', hasMoreOlder: true }, cursor: { seq: 1, epoch: 'e' } });
+    await render('main', { part: 'work' });
+    expect(controller.getState().todoNotes).toEqual(canonical.notes);
+    expect(element.querySelectorAll('[data-agent-todo-section] li')).toHaveLength(14);
+    const toggle = element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!;
+    await act(async () => { toggle.click(); });
+    for (const field of fields) expect(element.querySelector(`[data-agent-notes-part="${field}"] dd`)?.textContent).toBe(canonical.notes![field]);
+    const list = element.querySelector<HTMLElement>('[data-agent-notes-section] dl')!;
+    list.scrollTop = 77;
+    canonical = makeTodo(5);
+    await act(async () => {
+      controller.handleTranscript({ type: 'transcript.ops', session_id: 'session', agent_id: 'main',
+        ops: boundedTranscriptOps([{ op: 'todo.upsert', todo: canonical }], serverStore), cursor: { seq: 2, epoch: 'e' }, through_seq: 2 });
+    });
+    for (const field of fields) expect(element.querySelector(`[data-agent-notes-part="${field}"] dd`)?.textContent).toBe(canonical.notes![field]);
+    expect(element.textContent).toContain('Revision 5 task 14');
+    expect(element.querySelectorAll('[data-agent-todo-section] li')).toHaveLength(14);
+    expect(element.querySelector('[data-agent-notes-meta]')?.textContent).toContain('第 5 版');
+    expect(element.querySelector('[data-agent-notes-section] dl')).toBe(list);
+    expect(list.scrollTop).toBe(77);
+    expect(content).not.toHaveBeenCalled();
+    expect(page).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => { root.render(null); });
+    controller.close();
+  }
 });
