@@ -82,7 +82,7 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 ## 网络类
 
-两个工具都由 Kiki 内置的搜索与抓取模块支撑，随产品一起安装，不需要额外的安装步骤。免密钥的仓库搜索 lane 和 URL 抓取链无需配置即可使用；通用网页搜索需选择其他 lane。配置入口见 [`nb_search`](../configuration/config-files.md#nb-search)。
+两个工具都由 Kiki 内置的搜索与抓取模块支撑，随产品一起安装，不需要额外的安装步骤。通用网页搜索和 URL 抓取无需配置或 API 密钥即可使用。配置入口见 [`nb_search`](../configuration/config-files.md#nb-search)。
 
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
@@ -93,7 +93,7 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 通过 Kiki 内置的 `nb-search` 模块进行搜索。最小调用为 `{ "query": "搜索词" }`，对应 `action: "run"`，其余字段沿用 `[nb_search]` 默认值。`query` 可以是单个字符串或字符串数组。
 
-零配置下，默认使用 `github.repositories`，只检索 GitHub 仓库，而非全网。查阅库文档请显式选择 `context7.docs`（返回 typed 结果）；免密钥通用网页检索可显式选择 `duckduckgo.search`，但公共 HTML 端点可能触发 CAPTCHA。需要可靠的通用检索时，建议配置 `exa.search` 等提供商。若显式删除默认 lane，且调用时未指定 `lane`、`lanes` 或 `preset`，工具仍会拒绝运行；显式选择会覆盖默认值，选择无效或不可用时也不会悄悄换成其他 provider。
+零配置下，默认使用 `duckduckgo.search` 检索通用网页，无需注册、API 密钥或手选 lane。公共 HTML 端点可能触发验证或限流；等待后再试，或显式选择其他已配置的来源。这些失败会报告错误，不会伪装为空结果。仓库检索和库文档可显式选择 `github.repositories`、`context7.docs`（后者返回 typed 结果）。若显式删除默认 lane，且调用时未指定 `lane`、`lanes` 或 `preset`，工具仍会拒绝运行；显式选择会覆盖默认值，选择无效或不可用时也不会悄悄换成其他 provider。
 
 `run` 接受以下几组真正影响行为的参数：
 

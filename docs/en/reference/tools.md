@@ -94,7 +94,7 @@ In non-interactive prompt runs (`kiki -p`), `HistoryList` reads a bounded prefix
 
 ## Web Tools
 
-Both web tools are backed by Kiki's built-in search and retrieval module, which ships with the product — there is nothing to install. A keyless repository-search lane and the URL fetch chain work without configuration; for broader web search, choose another lane. See [`nb_search`](../configuration/config-files.md#nb-search) for configuration.
+Both web tools are backed by Kiki's built-in search and retrieval module, which ships with the product — there is nothing to install. General-web search and URL fetching work without configuration or an API key. See [`nb_search`](../configuration/config-files.md#nb-search) for configuration.
 
 | Tool | Default Approval | Description |
 | --- | --- | --- |
@@ -105,7 +105,7 @@ Both web tools are backed by Kiki's built-in search and retrieval module, which 
 
 Search the web through Kiki's built-in search and retrieval module (`nb-search`). The minimal call is `{ "query": "search terms" }`, which selects `action: "run"` and lets everything else fall back to your `[nb_search]` defaults. `query` may be a single string or an array of strings.
 
-Without configuration, this call uses `github.repositories`: results cover GitHub repositories, not the general web. Choose `context7.docs` for library documentation (a typed result), or explicitly select `duckduckgo.search` for keyless general-web results; the public HTML endpoint may issue a CAPTCHA. A configured provider such as `exa.search` is preferable when reliable broad coverage matters. If the default lane is explicitly removed, the tool still fails closed unless a `lane`, `lanes`, or `preset` is named. Explicit selections override the default and never silently switch providers when invalid or unavailable.
+Without configuration, this call uses `duckduckgo.search` for general-web results, with no registration, API key or lane selection. The public HTML endpoint may issue a challenge or rate limit; wait before retrying, or explicitly choose another configured source. These failures are errors, not empty results. Choose `github.repositories` for repository search or `context7.docs` for library documentation (a typed result). If the default lane is explicitly removed, the tool still fails closed unless a `lane`, `lanes`, or `preset` is named. Explicit selections override the default and never silently switch providers when invalid or unavailable.
 
 `run` accepts these parameter groups that actually change behavior:
 

@@ -723,14 +723,14 @@ Each entry describes one connection through its `type` (`agent-browser-profile` 
 
 `nb_search` configures Kiki's built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools. The module is part of the product: it ships with Kiki and needs no separate installation, and its provider instances, credential slots, lanes, and default fetch chain are built in.
 
-No credentials or configuration are required for the default `WebSearch` lane, `github.repositories`, but it searches GitHub repositories only. For library documentation, choose `context7.docs` explicitly; it returns typed context and cannot be combined with result lanes. `duckduckgo.search` is an optional keyless general-web lane, but its public HTML endpoint may return a CAPTCHA; for reliable broader coverage, configure a provider credential and override `defaults.search_lane`. Field names and merge behavior follow the module's canonical configuration contract, shared with the standalone nb-search CLI, so an existing nb-search configuration file applies without translation.
+The default `WebSearch` lane is `duckduckgo.search`, which searches the general web without registration, credentials or configuration. Its public HTML endpoint may issue a challenge or rate limit; wait before retrying, or explicitly choose another configured source. These failures are errors, not empty results, and never trigger a silent switch to a paid provider. Configured defaults and explicit lane selections take precedence. For repository search or library documentation, choose `github.repositories` or `context7.docs` explicitly; the latter returns typed context and cannot be combined with result lanes. Field names and merge behavior follow the module's canonical configuration contract, shared with the standalone nb-search CLI, so an existing nb-search configuration file applies without translation.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `provider_instances` | `table` | No | Named provider instances with `provider_id`, `enabled`, optional `credential_slot_id` / `base_url`, `key_strategy` (`round-robin` or `priority`), `balance_ttl_ms` (60,000–86,400,000), and provider-specific `options` |
 | `credential_slots` | `table` | No | Named credential slots containing only `provider_id` and the environment-variable name in `env` |
 | `lanes` | `table` | No | Named operation lanes with `provider_instance_id`, `operation_id`, `latency`, `cost`, and optional `evidence_groups` |
-| `defaults.search_lane` | `string` | No | Built-in default is `github.repositories` (repositories only); override for general-web search. Explicitly removing the default without selecting a lane makes `WebSearch` fail closed |
+| `defaults.search_lane` | `string` | No | Built-in default is keyless `duckduckgo.search` (general web); configured defaults take precedence. Explicitly removing the default without selecting a lane makes `WebSearch` fail closed |
 | `defaults.fetch_chain` | `array<table>` | No | URL default tries `direct.fetch` first and keyless `jina.reader` on failure; a successful but unusable direct response needs explicit `execution.fetch.quality` rules to trigger fallback |
 | `execution` | `table` | No | Provider-call, concurrency, retry, timeout, inline-output, response-size, redirect, content-size, and quality budgets |
 

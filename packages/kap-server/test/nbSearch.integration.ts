@@ -431,7 +431,7 @@ describe('server-v2 /api/nb-search', () => {
     expect(lane('exa.search')?.issues.map((issue) => issue.code)).toContain('LANE_NOT_CONFIGURED');
     expect(invalid.data.providers.instances.find((entry) => entry.id === 'exa.default')?.credential.configured).toBe(false);
     const readiness = await get<{ search: { available: boolean; selection?: string; issues: string[] } }>('/nb-search/test');
-    expect(readiness.data.search).toMatchObject({ available: true, selection: 'github.repositories' });
+    expect(readiness.data.search).toMatchObject({ available: true, selection: 'duckduckgo.search' });
     expect((await saveSource(false)).code).toBe(0);
     expect((await get<NbSearchCapabilities>('/nb-search/capabilities')).data.config_source).toMatchObject({ availability: 'ready', local_credentials: 'ignored' });
     await writeFile(join(localHome, 'secrets.json'), JSON.stringify({ schema_version: '1', values: {} }));
@@ -476,7 +476,7 @@ describe('server-v2 /api/nb-search', () => {
     expect(original.data.providers.instances.find((entry) => entry.id === 'exa.default')?.credential.configured).toBe(true);
     expect((await saveSource(false)).code).toBe(0);
     const isolated = await get<NbSearchCapabilities>('/nb-search/capabilities');
-    expect(isolated.data.search.default_lane).toBe('github.repositories');
+    expect(isolated.data.search.default_lane).toBe('duckduckgo.search');
     expect(isolated.data.providers.instances.find((entry) => entry.id === 'exa.default')?.credential.configured).toBe(false);
     expect((await get<Record<string, unknown>>('/config')).data['nb_search_source']).toEqual({ reuse_local_config: false });
     expect((await saveSource(true)).code).toBe(0);
@@ -625,8 +625,8 @@ env = "KIKI_EXA_KEY"
     expect(response.data.search).toEqual({
       configured: true,
       available: true,
-      selection: 'github.repositories',
-      issues: ['RATE_LIMIT_UNAUTHENTICATED'],
+      selection: 'duckduckgo.search',
+      issues: [],
     });
     expect(response.data.fetch.configured).toBe(true);
     expect(response.data.fetch.available).toBe(true);

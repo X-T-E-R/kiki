@@ -709,14 +709,14 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 `nb_search` 配置 Kiki 内置的搜索与抓取模块，也就是 `WebSearch` 和 `FetchURL` 工具背后的能力。该模块是 Kiki 的一部分：随产品一起安装，不需要额外的安装步骤；其中的 provider 实例、凭证槽、lane 和默认 fetch chain 都已经内置。
 
-默认的 `WebSearch` lane 是 `github.repositories`，不需要凭证或配置，但只检索 GitHub 仓库。查阅代码库文档时可显式选择 `context7.docs`；它返回 typed 文档上下文，不能与结果型 lane 组合。`duckduckgo.search` 是可选的免密钥通用网页 lane，但其公共 HTML 端点可能返回 CAPTCHA；如需更稳定的通用检索，请配置其他 provider 的凭证并覆盖 `defaults.search_lane`。字段名与合并行为遵循该模块的规范配置约定，与独立的 nb-search CLI 共用同一份 schema，因此已有的 nb-search 配置文件可以直接沿用。
+默认的 `WebSearch` lane 是 `duckduckgo.search`，无需注册、凭证或配置即可检索通用网页。公共 HTML 端点可能触发验证或限流；等待后再试，或显式选择其他已配置的来源。这些失败会报告错误，不会伪装为空结果，也不会静默切换到收费 provider。已配置的默认值和显式 lane 选择优先。仓库检索或代码库文档可显式选择 `github.repositories`、`context7.docs`；后者返回 typed 文档上下文，不能与结果型 lane 组合。字段名与合并行为遵循该模块的规范配置约定，与独立的 nb-search CLI 共用同一份 schema，因此已有的 nb-search 配置文件可以直接沿用。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `provider_instances` | `table` | 否 | 命名 provider 实例，包含 `provider_id`、`enabled`、可选的 `credential_slot_id` / `base_url`、`key_strategy`（`round-robin` 或 `priority`）、`balance_ttl_ms`（60,000–86,400,000 毫秒）及 provider 专属 `options` |
 | `credential_slots` | `table` | 否 | 命名凭据槽，只包含 `provider_id` 和 `env` 中的环境变量名 |
 | `lanes` | `table` | 否 | 命名 operation lane，包含 `provider_instance_id`、`operation_id`、`latency`、`cost` 和可选 `evidence_groups` |
-| `defaults.search_lane` | `string` | 否 | 内置默认值为 `github.repositories`（仅仓库）；通用网页检索需要覆盖。显式删除默认值且不指定 lane 时，`WebSearch` 仍会拒绝运行 |
+| `defaults.search_lane` | `string` | 否 | 内置默认值为免密钥的 `duckduckgo.search`（通用网页）；已配置的默认值优先。显式删除默认值且不指定 lane 时，`WebSearch` 仍会拒绝运行 |
 | `defaults.fetch_chain` | `array<table>` | 否 | URL 默认先用 `direct.fetch`，失败时尝试免密钥的 `jina.reader`；直连成功但内容无用时，需显式配置 `execution.fetch.quality` 规则才能触发回退 |
 | `execution` | `table` | 否 | provider 调用数、并发、重试、超时、内联输出、响应大小、重定向、内容长度和质量预算 |
 
