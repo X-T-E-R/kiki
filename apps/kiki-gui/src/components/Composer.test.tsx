@@ -863,7 +863,7 @@ describe('Composer execution control', () => {
     // product name rather than something this picker can run — and the invalid
     // bound choice keeps its diagnostic.
     expect([...container.querySelectorAll('[data-execution-bare]')].map((row) =>
-      (row as HTMLElement).dataset.executionBare)).toEqual(['native']);
+      (row as HTMLElement).dataset['executionBare'])).toEqual(['native']);
     expect(container.querySelectorAll('[data-execution-profile]')).toHaveLength(0);
     expect(container.querySelector('[data-selection-diagnostic]')?.textContent).toContain('unavailable');
   });
@@ -886,7 +886,7 @@ describe('Composer execution control', () => {
     for (let index = 0; index < 3; index += 1) await settle();
     await click(trigger);
     expect([...container.querySelectorAll('[data-execution-bare]')].map((row) =>
-      (row as HTMLElement).dataset.executionBare)).toEqual(['native', 'claude-acp']);
+      (row as HTMLElement).dataset['executionBare'])).toEqual(['native', 'claude-acp']);
   });
 
   it('loads workspace main profiles and excludes non-main profiles', async () => {
