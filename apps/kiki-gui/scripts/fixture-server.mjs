@@ -2274,6 +2274,11 @@ class FixtureServer {
       // serves them.
       const interactionPatch = patch.interaction;
       delete patch.interaction;
+      // `session_title` merges the same way on the real route: one field per
+      // write, `null` clears that field, and the two metadata fields are
+      // derived on every response rather than stored.
+      const sessionTitlePatch = patch.session_title;
+      delete patch.session_title;
       // replace_domains is an instruction, not config; a replaced domain is
       // already the whole value the spread below stores.
       delete patch.replace_domains;
@@ -2350,6 +2355,22 @@ class FixtureServer {
           } else interaction[camel] = value;
         }
         this.config.interaction = interaction;
+      }
+      if (sessionTitlePatch !== undefined) {
+        const title = { ...(this.config.session_title ?? {}) };
+        for (const [key, value] of Object.entries(sessionTitlePatch)) {
+          if (value === null || value === undefined) delete title[key];
+          else title[key] = value;
+        }
+        this.config.session_title = title;
+      }
+      // The built-in body and the source are answered facts, never stored
+      // config: what is in force follows from whether an override is there.
+      if (this.config.session_title !== undefined) {
+        const title = this.config.session_title;
+        title.default_prompt = title.default_prompt
+          ?? 'You name conversations. Answer with the title only: one line, at most 8 words, no quotes, no trailing punctuation, in the language of the conversation.';
+        title.prompt_source = typeof title.prompt === 'string' && title.prompt !== '' ? 'custom' : 'default';
       }
       return this.envelope(res, this.config);
     }

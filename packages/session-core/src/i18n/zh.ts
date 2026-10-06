@@ -3817,6 +3817,26 @@ export const zh = {
     '由该模型写标题，每个勾选的时机各发一次请求。自动生成的标题不会覆盖你手写的标题。',
   'st.sessionTitleModel.saved': '标题模型已保存。',
   'st.sessionTitleModel.unconfigured': '没有选模型，Kiki 不发写标题的请求。',
+  // 提示是给模型看的指令正文，不是设置值：它按散文被读、被写，关键在于读者
+  // 能看到引擎真正收到的那句话。
+  'st.sessionTitlePrompt.source': '提示正文',
+  'st.sessionTitlePrompt.sourceDefault': '内置默认',
+  'st.sessionTitlePrompt.sourceCustom': '自定义',
+  'st.sessionTitlePrompt.defaultTitle': '内置默认稿',
+  'st.sessionTitlePrompt.expand': '展开',
+  'st.sessionTitlePrompt.collapse': '收起',
+  'st.sessionTitlePrompt.defaultUnavailable':
+    '服务器未返回内置默认提示。你仍可编辑自定义提示。',
+  'st.sessionTitlePrompt.customLabel': '自定义提示',
+  'st.sessionTitlePrompt.customPlaceholder': '告诉模型该怎么给一段对话起名。',
+  'st.sessionTitlePrompt.customHelp':
+    '只影响下一次 Kiki 写标题时用的提示；已经写出的标题保持不变。',
+  'st.sessionTitlePrompt.save': '保存提示',
+  'st.sessionTitlePrompt.restore': '恢复默认',
+  'st.sessionTitlePrompt.restoreConfirm': '恢复内置默认稿？你的自定义版本会被删除。',
+  'st.sessionTitlePrompt.restored': '已恢复内置默认稿。',
+  'st.sessionTitlePrompt.saved': '提示已保存。',
+  'st.sessionTitlePrompt.blank': '留空即回默认稿，保存即可切回。',
   'st.advanced.title': '原始引擎配置',
   'st.advanced.hint': '权限、循环控制与后台任务的高级配置。保存时会自动校验格式。',
   'st.advanced.performanceTitle': '性能、存储与扩展设置',

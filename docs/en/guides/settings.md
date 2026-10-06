@@ -137,6 +137,8 @@ Open **Dispatch capabilities** — next to the new-session workspace selector, o
 
 ## Session controls
 
+**Settings → Sessions → Session titles** also edits the instruction used to write automatic titles. The card names whether the built-in or custom instruction is active; **Show** reveals the server's built-in text as a read-only reference. Edit **Your instruction** and save, or choose **Restore the built-in default** to remove your override. Saving an empty instruction also restores the default. A failed save keeps your draft. These actions preserve the title model, selected moments and automatic-title switch, affect the next title request, and leave existing titles unchanged. See [`session_title`](../configuration/config-files.md#session-title).
+
 ### Effective prompts
 
 In a session, open the header's **⋯ → Effective prompts**. The drawer opens independently of the right rail, including on narrow screens, and shows the current agent identity, profile, model and executor, the prompt channels and their source order, field overrides with the reason for each, file locations, and the cognition-anchor scope.

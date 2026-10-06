@@ -6,7 +6,6 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import {
   SESSION_TITLE_TRIGGERS,
   sessionTitleModelPatch,
-  sessionTitleSettingsPatch,
 } from '@kiki/session-core/settings';
 import type { KikiConfigResponse } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
@@ -22,6 +21,7 @@ import { DependentField, SettingField, SettingsGroup } from './fields';
 import { PlanSettings } from './PlanSettings';
 import { QuestionGuardFields, rangeTextFor } from './QuestionGuardFields';
 import { SectionCard } from './SectionCard';
+import { SessionTitlePromptField } from './SessionTitlePromptField';
 import { SettingHelp } from './SettingHelp';
 import { SETTINGS_SELECT_TRIGGER, SettingsSegmented } from './SettingsPrimitives';
 import {
@@ -194,11 +194,12 @@ function storedTitleTriggers(stored: readonly string[] | undefined): readonly Se
  * and it is never hidden behind the switch: an empty model is a real state
  * that turns automatic titling off, and a user who cannot reach the picker
  * cannot turn it back on. The switch then only governs whether Kiki writes
- * titles by itself, and the moments under it say when. Every control applies
- * on change through one narrow write, so changing a moment cannot drop the
- * model and picking a model cannot reset the moments. When an environment
- * variable forces the flag off, the card says so instead of pretending the
- * switch worked.
+ * titles by itself, and the moments under it say when. Below those sits the
+ * instruction the title model is given, which only changes what a title reads
+ * like — never whether one is written. Every control applies on change through
+ * one narrow write, so changing a moment cannot drop the model and picking a
+ * model cannot reset the moments. When an environment variable forces the flag
+ * off, the card says so instead of pretending the switch worked.
  */
 function SessionTitlesCard() {
   const { client } = useConnection();
@@ -256,25 +257,26 @@ function SessionTitlesCard() {
     replace_domains: ['experimental'],
   }), { enabled: next });
 
-  // Both writes replace the whole `session_title` domain, so each carries the
-  // other field as it is actually stored. Picking a model must not clear the
-  // chosen moments (an explicit `[]` is a choice, not an absence), and changing
-  // a moment must not clear the model. `latest` is the fresh server state, so a
-  // concurrent edit elsewhere in the same domain is preserved rather than
-  // overwritten with a value this card never read. An absent list stays absent:
-  // writing the engine default out would record a choice the user never made.
-  const setModel = (next: string) => write((latest) => {
-    const stored = latest.session_title?.triggers;
-    return stored === undefined
-      ? sessionTitleModelPatch(next)
-      : sessionTitleSettingsPatch(next, storedTitleTriggers(stored));
-  }, { model: next });
+  // Each write carries only the field that moved, and the route merges a
+  // `session_title` patch field by field, so a write here never decides
+  // anything it did not set: picking a model cannot clear the chosen moments
+  // (an explicit `[]` is a choice, not an absence), changing a moment cannot
+  // clear the model or the prompt, and editing the prompt cannot move either.
+  // `latest` is read fresh inside the write, so the card always sends what the
+  // user acted on rather than a value captured when the page was rendered.
+  const setModel = (next: string) => write(() => sessionTitleModelPatch(next), { model: next });
 
   const setTrigger = (moment: SessionTitleTrigger, on: boolean) => {
     const next = on
       ? TITLE_MOMENTS.filter((item) => item === moment || triggers.includes(item))
       : triggers.filter((item) => item !== moment);
-    return write((latest) => sessionTitleSettingsPatch(latest.session_title?.model ?? model, next), { triggers: next });
+    // The moments travel alone. The route merges a `session_title` patch
+    // field by field and keeps an absent key as it is, so writing only
+    // `triggers` leaves whatever model the server holds — including one this
+    // card has not read yet. Carrying the model here would write back the
+    // value on screen, which goes stale the moment it is changed elsewhere,
+    // and with no model chosen it would turn that change into a deletion.
+    return write(() => ({ session_title: { triggers: next } }), { triggers: next });
   };
 
   const loading = configQuery.data === undefined;
@@ -342,6 +344,13 @@ function SessionTitlesCard() {
                 </div>
               </fieldset>
             </DependentField>
+            {/* Its own step under a rule: the rows above decide whether and
+                when a title is written, this one decides what it says. The
+                field reads the same config the rows above do, so it sits
+                inside the loaded branch rather than gating itself twice. */}
+            <div className="mt-2 border-t border-hairline pt-4">
+              <SessionTitlePromptField disabled={saving} />
+            </div>
             <SavedTick show={saved} />
           </>
         )}

@@ -37,6 +37,12 @@ const CONFIG: KikiConfigResponse = {
   plan: { gate: 'gated', enterApprovalTimeoutMs: 15_000 },
 } as KikiConfigResponse;
 
+// Stand-ins for the server's two bodies. The built-in one is only ever read
+// back from the fixture, never written by the component, so these stand in
+// for two different sentences rather than a literal copy of the real default.
+const DEFAULT_TITLE_PROMPT = 'Name the conversation in one line, at most 8 words.';
+const CUSTOM_TITLE_PROMPT = 'Summarise what this thread is actually for.\nUse the words the user used.';
+
 const containers: HTMLDivElement[] = [];
 const roots: Root[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -73,16 +79,32 @@ beforeEach(() => {
     if (typeof patch['plan'] === 'object' && patch['plan'] !== null) {
       stored = { ...stored, plan: { ...CONFIG.plan, ...(patch['plan'] as Record<string, unknown>) } as KikiConfigResponse['plan'] };
     }
-    const sessionTitle = patch['session_title'] as NonNullable<typeof stored.session_title> | undefined;
+    const sessionTitle = patch['session_title'] as Record<string, unknown> | undefined;
     if (sessionTitle !== undefined) {
-      // An omitted key is a cleared value on the real server, so whatever the
-      // patch carried is what the server stores: a patch that carries both the
-      // model and the moments replaces the whole domain, exactly as the real
-      // route does.
-      const next: NonNullable<typeof stored.session_title> = {};
-      if (sessionTitle.model !== undefined) next.model = sessionTitle.model;
-      if (sessionTitle.triggers !== undefined) next.triggers = sessionTitle.triggers;
-      stored = { ...stored, session_title: { ...stored.session_title, ...next } };
+      // The real route merges one field at a time and never replaces the
+      // domain: `null` clears that field, an absent key leaves it alone, and
+      // anything else stores it. A patch that carried the whole domain would
+      // silently drop the fields it did not mention, which is exactly the
+      // failure this mock is here to catch.
+      const next = { ...stored.session_title } as Record<string, unknown>;
+      for (const [key, value] of Object.entries(sessionTitle)) {
+        if (value === null) delete next[key];
+        else next[key] = value;
+      }
+      stored = { ...stored, session_title: next as NonNullable<typeof stored.session_title> };
+    }
+    // The route derives the two metadata fields on every response rather than
+    // storing them: the built-in body is always reported, and the source
+    // follows whether an override is actually there.
+    if (stored.session_title !== undefined) {
+      stored = {
+        ...stored,
+        session_title: {
+          ...stored.session_title,
+          default_prompt: DEFAULT_TITLE_PROMPT,
+          prompt_source: stored.session_title['prompt'] === undefined ? 'default' : 'custom',
+        },
+      };
     }
     const experimental = patch['experimental'] as Record<string, boolean> | undefined;
     if (experimental !== undefined) stored = { ...stored, experimental };
@@ -137,6 +159,23 @@ async function setInputValue(input: HTMLInputElement, value: string): Promise<vo
     setter.call(input, value);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
+}
+
+async function type(area: HTMLTextAreaElement, value: string): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(area, value);
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+function promptField(container: HTMLElement): HTMLElement {
+  return container.querySelector<HTMLElement>('[data-session-title-prompt]')!;
+}
+
+/** The editor inside an already-located prompt field. */
+function promptBox(field: HTMLElement): HTMLTextAreaElement {
+  return field.querySelector<HTMLTextAreaElement>('[data-session-title-prompt-input]')!;
 }
 
 async function commitInput(input: HTMLInputElement): Promise<void> {
@@ -288,7 +327,7 @@ describe('PlanSettings plan gate defaults', () => {
     const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((row) => row.textContent?.includes('custom-model'))!;
     await click(option);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(patchConfig).toHaveBeenCalledWith({ session_title: { model: 'custom-model' }, replace_domains: ['session_title'] });
+    expect(patchConfig).toHaveBeenCalledWith({ session_title: { model: 'custom-model' } });
     // Stored, not just sent: the next GET returns the picked model.
     expect(stored.session_title?.model).toBe('custom-model');
     expect(card.querySelector("#session-title-model")!.textContent).toContain("custom-model");
@@ -340,8 +379,8 @@ describe('PlanSettings plan gate defaults', () => {
     expect(box('context_compacted').checked).toBe(true);
   });
 
-  // Picking a model replaces the whole `session_title` domain, so it has to
-  // carry the moments with it.
+  // Each title write touches one field, so the moments survive because they
+  // were never part of the write.
   it('keeps every chosen moment when a model is picked', async () => {
     stored = {
       ...CONFIG,
@@ -356,10 +395,7 @@ describe('PlanSettings plan gate defaults', () => {
       .find((row) => row.textContent?.includes('custom-model'))!;
     await click(option);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(patchConfig).toHaveBeenCalledWith({
-      session_title: { model: 'custom-model', triggers: ['first_user_message', 'context_compacted'] },
-      replace_domains: ['session_title'],
-    });
+    expect(patchConfig).toHaveBeenCalledWith({ session_title: { model: 'custom-model' } });
     expect(stored.session_title?.triggers).toEqual(['first_user_message', 'context_compacted']);
   });
 
@@ -380,10 +416,7 @@ describe('PlanSettings plan gate defaults', () => {
       .find((row) => row.textContent?.includes('kimi-for-coding'))!;
     await click(option);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(patchConfig).toHaveBeenCalledWith({
-      session_title: { model: 'kimi-for-coding', triggers: [] },
-      replace_domains: ['session_title'],
-    });
+    expect(patchConfig).toHaveBeenCalledWith({ session_title: { model: 'kimi-for-coding' } });
     expect(stored.session_title?.triggers).toEqual([]);
   });
 
@@ -400,10 +433,9 @@ describe('PlanSettings plan gate defaults', () => {
     await click(box('first_user_message'));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(patchConfig).toHaveBeenCalledWith({
-      session_title: { model: 'custom-model', triggers: ['first_user_message', 'first_turn_completed'] },
-      replace_domains: ['session_title'],
+      session_title: { triggers: ['first_user_message', 'first_turn_completed'] },
     });
-    // The moment write carries the model, so it survives the domain replace.
+    // Only the moments were written, so the model is untouched on the server.
     expect(stored.session_title?.model).toBe('custom-model');
     expect(stored.session_title?.triggers).toEqual(['first_user_message', 'first_turn_completed']);
     expect(box('first_user_message').checked).toBe(true);
@@ -412,6 +444,45 @@ describe('PlanSettings plan gate defaults', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(stored.session_title?.triggers).toEqual(['first_user_message']);
     expect(stored.session_title?.model).toBe('custom-model');
+  });
+
+  // The card renders from a config read at mount, and a moment can be toggled
+  // long after some other surface — another window, the models page, a REST
+  // call — has changed the model the server actually holds. The write goes out
+  // after a fresh read, so the honest thing it can send is the moment alone:
+  // anything else is this page's now-stale copy of a field it was not asked to
+  // change. This asserts the outgoing shape, so a version that carried the
+  // model fails here rather than quietly reverting someone else's choice.
+  it('writes only the moments when the model changed after this card rendered', async () => {
+    stored = {
+      ...CONFIG,
+      session_title: { model: 'old-model', triggers: ['first_turn_completed'], prompt_source: 'default' },
+      experimental: { auto_session_title: true },
+    };
+    const container = await renderSection('sessions');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const card = container.querySelector('#st-card-session-title')!;
+    // What the screen is showing right now, before anything else moves.
+    expect(card.querySelector('#session-title-model')!.textContent).toContain('old-model');
+
+    // Somewhere else, the model is re-chosen and the instruction is saved.
+    stored = {
+      ...stored,
+      session_title: { model: 'new-model', triggers: ['first_turn_completed'], prompt: CUSTOM_TITLE_PROMPT },
+    };
+
+    await click(card.querySelector<HTMLInputElement>('[data-title-moment="first_user_message"] input')!);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // Exactly one field went out. A body carrying `model` here is the defect:
+    // it would land `old-model` over the choice actually stored.
+    expect(patchConfig).toHaveBeenLastCalledWith({
+      session_title: { triggers: ['first_user_message', 'first_turn_completed'] },
+    });
+    // The server keeps the new model and the saved instruction, byte for byte.
+    expect(stored.session_title?.model).toBe('new-model');
+    expect(stored.session_title?.['prompt']).toBe(CUSTOM_TITLE_PROMPT);
+    expect(stored.session_title?.triggers).toEqual(['first_user_message', 'first_turn_completed']);
   });
 
   it('reads back an empty trigger list as manual-only, not as the engine default', async () => {
@@ -467,5 +538,176 @@ describe('PlanSettings plan gate defaults', () => {
     await click([...questions.querySelectorAll('button')].find((button) => button.textContent === 'Block')!);
     expect(patchConfig).toHaveBeenCalledWith({ interaction: { ask_user_question: 'blocking' } });
     expect(questions.querySelector('[data-saved-tick]')).not.toBeNull();
+  });
+
+  // The prompt body is a piece of prose the reader has to be able to see, so
+  // the default is read from the server and shown as text rather than
+  // paraphrased or hidden behind an action.
+  it('says which body is in force and shows the built-in one on request', async () => {
+    stored = {
+      ...CONFIG,
+      session_title: {
+        model: 'custom-model',
+        default_prompt: DEFAULT_TITLE_PROMPT,
+        prompt_source: 'default',
+      },
+      experimental: { auto_session_title: true },
+    };
+    const container = await renderSection('sessions');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const field = promptField(container);
+    expect(field.dataset['promptSource']).toBe('default');
+    expect(field.textContent).toContain('Built-in default');
+    // The editor holds the custom body only. Opening it on a copy of the
+    // default would show one text twice and invite saving it back as an
+    // override that changes nothing.
+    expect(promptBox(field).value).toBe('');
+    // The built-in body is the server's, shown read-only and collapsed until
+    // it is asked for.
+    expect(container.textContent).not.toContain(DEFAULT_TITLE_PROMPT);
+    await click(field.querySelector('[data-session-title-prompt-toggle-default]')!);
+    expect(container.textContent).toContain(DEFAULT_TITLE_PROMPT);
+    // It is still not editable: the preview is a reference, not a second box.
+    expect(field.querySelectorAll('textarea')).toHaveLength(1);
+  });
+
+  // The full vertical path: default → custom → saved → read back, with the
+  // model and the moments untouched, and no request for a title anywhere.
+  it('saves a custom body, reads it back after a reload, and leaves the model and moments alone', async () => {
+    stored = {
+      ...CONFIG,
+      session_title: {
+        model: 'custom-model',
+        triggers: ['first_user_message', 'context_compacted'],
+        default_prompt: DEFAULT_TITLE_PROMPT,
+        prompt_source: 'default',
+      },
+      experimental: { auto_session_title: true },
+    };
+    const container = await renderSection('sessions');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const field = promptField(container);
+    const box = promptBox(field);
+    await type(box, CUSTOM_TITLE_PROMPT);
+    await click(field.querySelector('[data-session-title-prompt-save]')!);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // The body is stored verbatim: newlines and all, no trim, no expansion.
+    expect(patchConfig).toHaveBeenCalledWith({ session_title: { prompt: CUSTOM_TITLE_PROMPT } });
+    expect(stored.session_title?.['prompt']).toBe(CUSTOM_TITLE_PROMPT);
+    // One field in the write, so the rest of the domain is not at risk.
+    expect(stored.session_title?.model).toBe('custom-model');
+    expect(stored.session_title?.triggers).toEqual(['first_user_message', 'context_compacted']);
+
+    // A fresh read reports the custom body as the one in force, and the next
+    // mount comes back with the reader's text in the box.
+    const reloaded = await renderSection('sessions');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const next = promptField(reloaded);
+    expect(next.dataset['promptSource']).toBe('custom');
+    expect(next.textContent).toContain('Your version');
+    expect(promptBox(next).value).toBe(CUSTOM_TITLE_PROMPT);
+  });
+
+  // Restoring is a deletion, not a copy: the built-in body must come back from
+  // the server's authority rather than being written into the config as an
+  // override that merely looks like it.
+  it('removes the override on restore and falls back to the built-in body', async () => {
+    stored = {
+      ...CONFIG,
+      session_title: {
+        model: 'custom-model',
+        prompt: CUSTOM_TITLE_PROMPT,
+        default_prompt: DEFAULT_TITLE_PROMPT,
+        prompt_source: 'custom',
+      },
+      experimental: { auto_session_title: true },
+    };
+    const container = await renderSection('sessions');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const field = promptField(container);
+    // Deleting a body is irreversible, so it says so before it does.
+    await click(field.querySelector('[data-session-title-prompt-restore]')!);
+    const dialog = document.querySelector('[role="alertdialog"]')!;
+    expect(dialog.textContent).toContain('Your version is removed.');
+    await click([...dialog.querySelectorAll('button')].find((button) => button.textContent?.includes('Restore'))!);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(patchConfig).toHaveBeenCalledWith({ session_title: { prompt: null } });
+    // `null` deletes; the default body is never stored as an override.
+    expect(stored.session_title?.['prompt']).toBeUndefined();
+    expect(stored.session_title?.model).toBe('custom-model');
+    expect(promptField(container).dataset['promptSource']).toBe('default');
+  });
+
+  // A blank box is the same request as restore, so it must reach the server as
+  // one rather than storing an empty override that reads as "custom, but empty".
+  it('treats a blanked body as a restore', async () => {
+    stored = {
+      ...CONFIG,
+      session_title: {
+        model: 'custom-model',
+        prompt: CUSTOM_TITLE_PROMPT,
+        default_prompt: DEFAULT_TITLE_PROMPT,
+        prompt_source: 'custom',
+      },
+      experimental: { auto_session_title: true },
+    };
+    const container = await renderSection('sessions');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const field = promptField(container);
+    await type(promptBox(field), '   ');
+    expect(field.textContent).toContain('Empty means the built-in default');
+    await click(field.querySelector('[data-session-title-prompt-save]')!);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(patchConfig).toHaveBeenCalledWith({ session_title: { prompt: null } });
+  });
+
+  // The one moment the draft must not be taken away is a write that did not
+  // land: retyping the whole body because the server said no is worse than the
+  // failure itself.
+  it('keeps the draft and the stored value when the save fails', async () => {
+    stored = {
+      ...CONFIG,
+      session_title: {
+        model: 'custom-model',
+        default_prompt: DEFAULT_TITLE_PROMPT,
+        prompt_source: 'default',
+      },
+      experimental: { auto_session_title: true },
+    };
+    patchConfig.mockRejectedValueOnce(new Error('server said no'));
+    const container = await renderSection('sessions');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const field = promptField(container);
+    await type(promptBox(field), CUSTOM_TITLE_PROMPT);
+    await click(field.querySelector('[data-session-title-prompt-save]')!);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(field.querySelector('[data-field-issue]')?.textContent).toContain('server said no');
+    expect(promptBox(field).value).toBe(CUSTOM_TITLE_PROMPT);
+    // Nothing was stored, so the card still reports the default as in force.
+    expect(stored.session_title?.['prompt']).toBeUndefined();
+    expect(field.dataset['promptSource']).toBe('default');
+  });
+
+  // An older server sends neither metadata field. The card still names the body
+  // in force and the editor still works; only the preview is missing, because
+  // a second copy of the default would be a second authority for it.
+  it('stays usable on a server that sends no default body', async () => {
+    stored = { ...CONFIG, session_title: { model: 'custom-model' }, experimental: { auto_session_title: true } };
+    const container = await renderSection('sessions');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const field = promptField(container);
+    expect(field.dataset['promptSource']).toBe('default');
+    expect(field.textContent).toContain('did not return a built-in default instruction');
+    expect(field.querySelector('[data-session-title-prompt-toggle-default]')).toBeNull();
+
+    const box = promptBox(field);
+    expect(box).not.toBeNull();
+    await type(box, CUSTOM_TITLE_PROMPT);
+    await click(field.querySelector('[data-session-title-prompt-save]')!);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(patchConfig).toHaveBeenCalledWith({ session_title: { prompt: CUSTOM_TITLE_PROMPT } });
   });
 });

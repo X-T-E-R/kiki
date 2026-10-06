@@ -7,7 +7,6 @@ import type {
   ModelCatalogItem,
   ModelEntity,
   ModelGenerationMigrationPreviewResponse,
-  SessionTitleTrigger,
 } from '@kiki/protocol';
 
 import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
@@ -21,7 +20,6 @@ import {
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
   sessionTitleModelPatch,
-  sessionTitleSettingsPatch,
   sortThinkingEffortsForDisplay,
   validateImagePolicyDraft,
   validateRequestIdentityLayerDraft,
@@ -492,15 +490,9 @@ export function GlobalDefaultsCard() {
     setBusy('title');
     setFeedback(null);
     try {
-      // The patch replaces the whole `session_title` domain, so it carries the
-      // stored moments: picking a model here must not clear them. An absent
-      // list is the engine default, so the model-only patch is left alone.
-      const stored = (await client.getConfig()).session_title?.triggers;
-      queryClient.setQueryData(['config'], await client.patchConfig(
-        stored === undefined
-          ? sessionTitleModelPatch(modelId)
-          : sessionTitleSettingsPatch(modelId, stored as readonly SessionTitleTrigger[]),
-      ));
+      // The patch writes only the model, so the moments and the title
+      // instruction configured elsewhere are left exactly as they are.
+      queryClient.setQueryData(['config'], await client.patchConfig(sessionTitleModelPatch(modelId)));
       ping();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
