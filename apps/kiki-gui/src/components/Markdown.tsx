@@ -234,11 +234,6 @@ function leadingMarker(text: string, marker: string): number {
   return text.startsWith(marker) ? marker.length : 0;
 }
 
-function textOfProbe(node: MdastLike): string {
-  if (node.type === 'text') return typeof node.value === 'string' ? node.value : '';
-  return (node.children ?? []).map(textOfProbe).join('');
-}
-
 function parsesAsUrl(url: string): boolean {
   try {
     new URL(url);

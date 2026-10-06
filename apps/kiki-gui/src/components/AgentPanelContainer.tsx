@@ -44,7 +44,6 @@ import {
 } from './agent-panel/mapCapabilities';
 
 const noopSubscribe = (): (() => void) => () => {};
-const NO_WAITING: ReadonlySet<string> = new Set();
 const NO_BRANCHES: ReadonlySet<string> = new Set();
 const NO_PENDING_BLOCKS: readonly (ApprovalBlock | QuestionBlock)[] = [];
 const noopToggleBranch = () => {};

@@ -7,7 +7,7 @@ import { ReadableToolText } from './LoadedToolText';
 
 import { useI18n } from '../../i18n';
 import { CopyButton } from './ContentCopyButton';
-import { DisclosureChevron, Icon } from '../icons';
+import { DisclosureChevron } from '../icons';
 
 type JsonObject = Record<string, unknown>;
 const isObject = (value: unknown): value is JsonObject => typeof value === 'object' && value !== null && !Array.isArray(value);
