@@ -113,7 +113,6 @@ import {
 } from '../lib/timelineLocate';
 import { timelineSnapshotKey, type TimelineReadingSnapshot } from '../lib/navViewState';
 import { restoreTimelineReading, type TimelineReadingAdapter } from '../lib/timelineReading';
-import { openingReadingSnapshot, TEMPORARY_MANUAL_HISTORY_ONLY } from '../lib/temporaryHistoryLimit';
 import { useNavSnapshotAdapter } from '../lib/useNavSnapshot';
 import { useTimelineVisitLocator } from '../lib/useTimelineNavigation';
 import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
@@ -2445,11 +2444,6 @@ type PendingResetRestore = {
   frame: number | null;
 };
 
-/** A superseded request must stop before it pages history nobody is waiting for. */
-function signalAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
-}
-
 /**
  * Converge on the reader's row after an offset restore. A freshly mounted
  * timeline resolves the row's start from estimates until the rows are
@@ -2458,16 +2452,17 @@ function signalAborted(signal: AbortSignal | undefined): boolean {
  */
 async function settleRestoredAnchor(
   scroll: HTMLDivElement | null,
-  index: number,
+  resolveAnchor: () => { index: number; blockId?: string } | undefined,
   offset: number,
-  blockId: string | undefined,
-  signal: AbortSignal,
-  requireBlock: boolean,
+  cancelled: () => boolean,
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>,
 ): Promise<void> {
-  for (let frame = 0; frame < 12; frame += 1) {
+  let requestedIndex: number | undefined;
+  for (let frame = 0; frame < 120; frame += 1) {
     await new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); });
-    if (signal.aborted || scroll === null || !scroll.isConnected) throw new Error('Reading restore cancelled');
+    if (cancelled() || scroll === null || !scroll.isConnected) throw new Error('Reading restore cancelled');
+    const hit = resolveAnchor();
+    if (hit === undefined) continue;
     const needsMeasurement = [...virtualizer.elementsCache].some(([key, element]) => {
       const rowIndex = virtualizer.indexFromElement(element);
       return element.isConnected && rowIndex >= 0 && rowIndex < virtualizer.options.count
@@ -2479,11 +2474,17 @@ async function settleRestoredAnchor(
     // frame; drain that existing measurement path before accepting geometry.
     reconcileMountedRows(virtualizer);
     if (needsMeasurement) continue;
-    const row = scroll.querySelector<HTMLElement>(`[data-transcript-virtual-item][data-index="${index}"]`);
-    if (row === null) continue;
+    const row = scroll.querySelector<HTMLElement>(`[data-transcript-virtual-item][data-index="${hit.index}"]`);
+    if (row === null) {
+      if (hit.index !== requestedIndex) {
+        requestedIndex = hit.index;
+        virtualizer.scrollToIndex(requestedIndex, { align: 'start' });
+      }
+      continue;
+    }
     const block = [...row.querySelectorAll<HTMLElement>('[data-block-id]')]
-      .find((candidate) => candidate.dataset['blockId'] === blockId);
-    if (block === undefined && requireBlock) continue;
+      .find((candidate) => candidate.dataset['blockId'] === hit.blockId);
+    if (block === undefined && hit.blockId !== undefined) continue;
     const element = block ?? row;
     // offset = scrollTop - blockStart, so the block belongs at -offset.
     const delta = element.getBoundingClientRect().top - scroll.getBoundingClientRect().top + offset;
@@ -2715,9 +2716,10 @@ const TranscriptRow = memo(
 
 /** Jump-to-bottom pill driven by the virtualizer's end state. */
 function JumpToBottom({
-  virtualizer,
+  virtualizer, onJump,
 }: {
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
+  onJump: () => void;
 }) {
   const { t } = useI18n();
   if (virtualizer.isAtEnd(TRANSCRIPT_END_THRESHOLD)) return null;
@@ -2725,7 +2727,7 @@ function JumpToBottom({
     <button
       type="button"
       data-jump-to-latest
-      onClick={() => { virtualizer.scrollToEnd(); }}
+      onClick={onJump}
       className="anim-enter absolute bottom-4 left-1/2 z-10 flex min-h-8 -translate-x-1/2 items-center gap-1.5 rounded-full bg-panel px-3 text-[12px] font-medium text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
     >
       <Icon name="arrowDown" size={12} /> {t('transcript.jumpToLatest')}
@@ -2736,7 +2738,11 @@ function JumpToBottom({
 function HistoryPreviewReader({ agentId, turnId, state }: { agentId: string; turnId: string; state: SessionViewState }) {
   const controller = useTranscriptController();
   const { t } = useI18n();
-  useEffect(() => controller?.retainHistoryPreview(agentId, turnId), [controller, agentId, turnId]);
+  useEffect(() => {
+    const releasePreview = controller?.retainHistoryPreview(agentId, turnId);
+    const releaseStructure = controller?.retainHistoryStructure(agentId, turnId);
+    return () => { releaseStructure?.(); releasePreview?.(); };
+  }, [controller, agentId, turnId]);
   if (!controller?.historyPreviewPending(agentId, turnId)) return null;
   const status = state.detailLoads[`history:${turnId}`];
   return <div role="status" data-history-preview className="flex items-center gap-2 text-[12px] text-ink-faint">
@@ -2747,7 +2753,7 @@ function HistoryPreviewReader({ agentId, turnId, state }: { agentId: string; tur
 
 function TopEdge({ state, onLoadOlder }: {
   state: SessionViewState;
-  onLoadOlder: () => Promise<boolean>;
+  onLoadOlder: (signal?: AbortSignal) => Promise<boolean>;
 }) {
   const { t } = useI18n();
   // Unverified coverage says one thing: the top of what loaded cannot be
@@ -3062,7 +3068,7 @@ export function Transcript({
    * place (or the latest message) instead of whatever the hidden box kept.
    */
   visible?: boolean;
-  onLoadOlder: () => Promise<boolean>;
+  onLoadOlder: (signal?: AbortSignal) => Promise<boolean>;
   onResolveApproval: (
     approvalId: string,
     decision: ApprovalDecision,
@@ -3088,6 +3094,23 @@ export function Transcript({
 }) {
   const { t } = useI18n();
   const { blocks } = state;
+  const controller = useTranscriptController();
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const readSeekStructure = useCallback(async (signal: AbortSignal): Promise<boolean | undefined> => {
+    const ref = stateRef.current.contentRefs?.findLast((candidate) => candidate.source.kind === 'turn' &&
+      candidate.path[0] === 'steps' && (candidate.path.length === 1 || candidate.path.length === 3 && candidate.path[2] === 'frames'));
+    if (ref === undefined || controller === undefined) return undefined;
+    const key = JSON.stringify(ref);
+    const lease = controller.beginContentRead(agentId, ref.source, ['steps']);
+    try {
+      while (stateRef.current.contentRefs?.some((candidate) => JSON.stringify(candidate) === key)) {
+        if (signal.aborted || stateRef.current.detailLoads[`content:${key}`]?.status === 'error') return false;
+        await new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); });
+      }
+      return !signal.aborted;
+    } finally { lease.release(); }
+  }, [controller, agentId]);
   const loaded = state.loaded && state.transcriptReady;
   const loadError = state.loadError ?? (!loaded && state.resyncFailed ? state.resyncError?.message : undefined);
   const sessionIdForLocate = state.sessionId === '' ? undefined : state.sessionId;
@@ -3491,28 +3514,53 @@ export function Transcript({
   const olderIntentRef = useRef(false);
   const olderIntentAtRef = useRef(0);
   const olderInflightRef = useRef(false);
+  const readingIntentRef = useRef(0);
+  const seekRequestRef = useRef<AbortController | null>(null);
+  const olderRequestRef = useRef<AbortController | null>(null);
   const loadOlderRef = useRef(onLoadOlder);
+  const requestOlderPage = useCallback(() => {
+    readingIntentRef.current += 1;
+    olderIntentRef.current = false;
+    seekRequestRef.current?.abort();
+    olderRequestRef.current?.abort();
+    const request = new AbortController();
+    olderRequestRef.current = request;
+    olderInflightRef.current = true;
+    return loadOlderRef.current(request.signal).finally(() => {
+      if (olderRequestRef.current !== request) return;
+      olderRequestRef.current = null;
+      olderInflightRef.current = false;
+    });
+  }, []);
   useEffect(() => {
-    if (TEMPORARY_MANUAL_HISTORY_ONLY) return;
     const element = scrollRef.current;
     if (element === null) return;
     let touchY: number | undefined;
     let pointerY: number | undefined;
     const recordIntent = (upward: boolean) => {
+      readingIntentRef.current += 1;
+      seekRequestRef.current?.abort();
+      if (!upward) olderRequestRef.current?.abort();
       olderIntentRef.current = upward;
       if (upward) olderIntentAtRef.current = Date.now();
     };
     const loadAtTop = () => {
-      if (!olderIntentRef.current) return;
+      if (!visible || element.clientHeight === 0 || !olderIntentRef.current) return;
       if (Date.now() - olderIntentAtRef.current > TRANSCRIPT_OLDER_INTENT_MS) {
         olderIntentRef.current = false;
         return;
       }
       if (olderInflightRef.current || state.loadingOlder || state.olderError !== undefined ||
-          !state.hasMoreHistory || element.scrollTop > 48) return;
+          !state.hasMoreHistory || element.scrollTop > Math.min(192, element.clientHeight / 3)) return;
       olderIntentRef.current = false;
       olderInflightRef.current = true;
-      void loadOlderRef.current().finally(() => { olderInflightRef.current = false; });
+      const request = new AbortController();
+      olderRequestRef.current = request;
+      void loadOlderRef.current(request.signal).finally(() => {
+        if (olderRequestRef.current !== request) return;
+        olderRequestRef.current = null;
+        olderInflightRef.current = false;
+      });
     };
     const onWheel = (event: WheelEvent) => {
       recordIntent(event.deltaY < 0);
@@ -3549,7 +3597,9 @@ export function Transcript({
     element.addEventListener('pointermove', onPointerMove);
     element.addEventListener('pointerup', onPointerUp);
     element.addEventListener('scroll', loadAtTop, { passive: true });
+    const frame = requestAnimationFrame(loadAtTop);
     return () => {
+      cancelAnimationFrame(frame);
       element.removeEventListener('wheel', onWheel);
       element.removeEventListener('keydown', onKeyDown);
       element.removeEventListener('touchstart', onTouchStart);
@@ -3559,7 +3609,7 @@ export function Transcript({
       element.removeEventListener('pointerup', onPointerUp);
       element.removeEventListener('scroll', loadAtTop);
     };
-  }, [state.loadingOlder, state.hasMoreHistory, state.olderError]);
+  }, [state.loadingOlder, state.hasMoreHistory, state.olderError, loaded, loadError, visible]);
   const viewportAnchorRef = useRef<TranscriptViewportAnchor>({
     atEnd: true,
     key: undefined,
@@ -3775,18 +3825,25 @@ export function Transcript({
     target: TimelineTarget,
     options?: { quiet?: boolean; signal?: AbortSignal },
   ): Promise<LocateOutcome> => {
+    const intent = ++readingIntentRef.current;
+    olderIntentRef.current = false;
+    seekRequestRef.current?.abort();
+    olderRequestRef.current?.abort();
+    const request = new AbortController();
+    seekRequestRef.current = request;
+    const signal = options?.signal === undefined ? request.signal : AbortSignal.any([request.signal, options.signal]);
+    const cancelled = () => signal.aborted || intent !== readingIntentRef.current || !visibleRef.current;
     for (let wait = 0; !liveRef.current.loaded || !initialScrollDoneRef.current; wait += 1) {
-      if (wait > 120) return { status: 'no-timeline' };
+      if (cancelled() || wait > 120) return { status: 'no-timeline' };
       await nextFrame();
     }
-    // A superseded request (the reader already moved to another visit) stops
-    // here, before it pages history for a position nobody is waiting on.
-    if (signalAborted(options?.signal)) return { status: 'no-timeline' };
+    if (cancelled()) return { status: 'no-timeline' };
     if (target.kind === 'latest') {
       if (target.respectReader === true && !viewportAnchorRef.current.atEnd) return { status: 'kept' };
       landAtEnd(virtualizer);
       viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
       await nextFrame();
+      if (cancelled()) return { status: 'no-timeline' };
       landAtEnd(virtualizer);
       locateTargetRef.current = { key: timelineTargetKey(target), anchor: { ...viewportAnchorRef.current } };
       return { status: 'found' };
@@ -3816,23 +3873,22 @@ export function Transcript({
       }
     };
     let hit = resolve();
-    // Not on the page: page older history in until it shows up or the
-    // beginning is reached. Each page re-renders before the next lookup.
-    for (let page = 0; hit === undefined && page < (TEMPORARY_MANUAL_HISTORY_ONLY ? 1 : 40); page += 1) {
-      if (!liveRef.current.hasMore) break;
-      const loadedMore = await loadOlderRef.current();
-      for (let frame = 0; frame < 4; frame += 1) await nextFrame();
+    while (hit === undefined) {
+      if (cancelled()) return { status: 'no-timeline' };
+      const structure = await readSeekStructure(signal);
+      if (cancelled()) return { status: 'no-timeline' };
+      if (structure === undefined && !liveRef.current.hasMore) {
+        return { status: liveRef.current.coverage === 'unknown' ? 'load-failed' : 'not-found' };
+      }
+      const loadedMore = structure ?? await loadOlderRef.current(signal);
+      for (let frame = 0; frame < 4; frame += 1) {
+        await nextFrame();
+        if (cancelled()) return { status: 'no-timeline' };
+      }
       if (liveRef.current.olderError !== undefined) return { status: 'load-failed' };
       hit = resolve();
-      if (!loadedMore && hit === undefined && liveRef.current.hasMore) {
-        for (let frame = 0; frame < 20 && hit === undefined; frame += 1) {
-          await nextFrame();
-          hit = resolve();
-        }
-        if (hit === undefined) return { status: 'load-failed' };
-      }
+      if (!loadedMore && hit === undefined) return { status: 'load-failed' };
     }
-    if (hit === undefined) return { status: 'not-found' };
     if (hit.foldId !== undefined) {
       const foldId = hit.foldId;
       setOpenFolds((previous) => (previous.has(foldId) ? previous : new Set(previous).add(foldId)));
@@ -3840,28 +3896,41 @@ export function Transcript({
     }
     // Row first (virtualized: it may not be mounted), then the exact element
     // (a fold member or an annotation mark inside a tall row).
-    virtualizer.scrollToIndex(hit.index, { align: 'center' });
+    if (cancelled()) return { status: 'no-timeline' };
+    hit = resolve();
+    if (hit === undefined) return { status: 'load-failed' };
+    let requestedIndex = hit.index;
+    virtualizer.scrollToIndex(requestedIndex, { align: 'center' });
     let element: HTMLElement | null = null;
-    for (let frame = 0; frame < 12 && element === null; frame += 1) {
+    for (let frame = 0; frame < 120 && element === null; frame += 1) {
       await nextFrame();
+      if (cancelled()) return { status: 'no-timeline' };
+      hit = resolve();
       const scroll = scrollRef.current;
-      if (scroll === null) break;
+      if (scroll === null || hit === undefined) return { status: 'load-failed' };
+      // Let the virtualizer settle its existing scroll; only a changed row
+      // index needs a new request, not a reset of its reconciliation each frame.
+      if (hit.index !== requestedIndex) {
+        requestedIndex = hit.index;
+        virtualizer.scrollToIndex(requestedIndex, { align: 'center' });
+      }
       const row = scroll.querySelector<HTMLElement>(`[data-transcript-virtual-item][data-index="${hit.index}"]`);
       if (row === null) continue;
+      const blockId = hit.blockId;
       element =
         target.kind === 'annotation'
           ? ([...row.querySelectorAll<HTMLElement>('[data-annotation-ref]')].find(
             (mark) => mark.dataset['annotationRef'] === target.annotationId && mark.tagName === 'MARK',
           ) ?? null)
-          : hit.blockId === undefined
+          : blockId === undefined
             ? row
             : ([...row.querySelectorAll<HTMLElement>('[data-block-id]')].find(
-              (candidate) => candidate.dataset['blockId'] === hit.blockId,
+              (candidate) => candidate.dataset['blockId'] === blockId,
             ) ?? row);
     }
-    if (element === null) return { status: 'not-found' };
+    if (element === null) return { status: 'load-failed' };
+    if (cancelled()) return { status: 'no-timeline' };
     if (options?.quiet === true) return { status: 'found' };
-    if (options?.signal !== undefined && signalAborted(options.signal)) return { status: 'no-timeline' };
     element.scrollIntoView?.({ block: 'center' });
     viewportAnchorRef.current = captureTranscriptAnchor(virtualizer);
     if (target.kind === 'annotation') element.focus({ preventScroll: true });
@@ -3870,7 +3939,7 @@ export function Transcript({
     flashed.classList.add('settings-card-flash');
     window.setTimeout(() => { flashed.classList.remove('settings-card-flash'); }, 1800);
     return { status: 'found' };
-  }, [virtualizer]);
+  }, [virtualizer, readSeekStructure]);
   useEffect(() => {
     if (sessionIdForLocate === undefined) return undefined;
     return registerTimelineLocator(sessionIdForLocate, agentId, {
@@ -3910,8 +3979,17 @@ export function Transcript({
     const hit = locateIndexRef.current.blocks.get(key);
     return hit === undefined ? undefined : { ...hit, blockId: key };
   }, []);
-  const restoreReading = useCallback(async (snapshot: TimelineReadingSnapshot, signal: AbortSignal): Promise<void> => {
+  const restoreReading = useCallback(async (snapshot: TimelineReadingSnapshot, restoreSignal: AbortSignal): Promise<void> => {
     setReadingRestoreFailed(null);
+    const intent = ++readingIntentRef.current;
+    olderIntentRef.current = false;
+    seekRequestRef.current?.abort();
+    olderRequestRef.current?.abort();
+    const request = new AbortController();
+    seekRequestRef.current = request;
+    const signal = AbortSignal.any([request.signal, restoreSignal]);
+    const cancelled = () => signal.aborted || intent !== readingIntentRef.current || !visibleRef.current ||
+      (scrollRef.current !== null && !scrollRef.current.isConnected);
     const adapter: TimelineReadingAdapter = {
       applyFolds: async (value) => {
         setOpenFolds(new Set(value.openFolds));
@@ -3922,8 +4000,13 @@ export function Transcript({
         await nextFrame();
       },
       hasAnchor: (key) => resolveAnchorRow(key) !== undefined,
-      hasMore: () => liveRef.current.hasMore || liveRef.current.coverage === 'unknown' || liveRef.current.olderError !== undefined,
-      loadOlder: () => loadOlderRef.current(),
+      hasMore: () => liveRef.current.hasMore || liveRef.current.coverage === 'unknown' || liveRef.current.olderError !== undefined ||
+        stateRef.current.contentRefs?.some((ref) => ref.source.kind === 'turn' && ref.path[0] === 'steps') === true,
+      loadOlder: async () => {
+        const structure = await readSeekStructure(signal);
+        if (cancelled()) return false;
+        return structure ?? loadOlderRef.current(signal);
+      },
       hasLoadError: () => liveRef.current.olderError !== undefined,
       nextFrame,
       restoreAnchor: async (anchor) => {
@@ -3944,22 +4027,25 @@ export function Transcript({
           setOpenFolds((previous) => (previous.has(foldId) ? previous : new Set(previous).add(foldId)));
           await nextFrame();
         }
-        const offset = virtualizer.getOffsetForIndex(hit.index, 'start')?.[0];
+        if (cancelled()) return;
+        const resolve = () => anchor.key === undefined ? undefined : resolveAnchorRow(anchor.key);
+        const current = resolve();
+        const offset = current === undefined ? undefined : virtualizer.getOffsetForIndex(current.index, 'start')?.[0];
         if (offset !== undefined) virtualizer.scrollToOffset(offset + anchor.offset, { align: 'start' });
-        await settleRestoredAnchor(scrollRef.current, hit.index, anchor.offset, anchor.key, signal, hit.blockId !== undefined, virtualizer);
+        await settleRestoredAnchor(scrollRef.current, resolve, anchor.offset, cancelled, virtualizer);
       },
       beginRestore: () => { navRestorePendingRef.current = true; },
       endRestore: (outcome) => {
-        if (signal.aborted || outcome.status !== 'found') return;
+        if (restoreSignal.aborted || (outcome.status !== 'found' && intent === readingIntentRef.current)) return;
         navRestorePendingRef.current = false;
         navRestoredVisitRef.current = navVisitRef.current;
         initialScrollDoneRef.current = true;
         measuredResetRef.current = state.transcriptResetVersion;
       },
-      isCancelled: () => signal.aborted || (scrollRef.current !== null && !scrollRef.current.isConnected),
+      isCancelled: cancelled,
     };
-    const outcome = await restoreTimelineReading(openingReadingSnapshot(snapshot), adapter);
-    if (signal.aborted) return;
+    const outcome = await restoreTimelineReading(snapshot, adapter);
+    if (cancelled()) return;
     if (outcome.status === 'found') {
       // Focus returns to the reading surface when the control that started the
       // jump is gone (a removed trigger leaves focus on <body>).
@@ -3976,7 +4062,7 @@ export function Transcript({
       setReadingRestoreFailed(failure ?? t('locate.failedLoad'));
       throw new Error(failure ?? 'Reading restore is not ready');
     }
-  }, [nextFrame, resolveAnchorRow, state.transcriptResetVersion, t, virtualizer]);
+  }, [nextFrame, resolveAnchorRow, state.transcriptResetVersion, t, virtualizer, readSeekStructure]);
   const reading = useNavSnapshotAdapter<TimelineReadingSnapshot>(readingKey, {
     // Reading a place back only makes sense once this transcript has rows: a
     // not-yet-loaded timeline would page history for an anchor it cannot see.
@@ -3995,11 +4081,17 @@ export function Transcript({
   // Freeze source geometry before the virtualizer's layout cleanup detaches
   // its scroll element and publishes a temporary end anchor.
   useInsertionEffect(() => () => {
+    readingIntentRef.current += 1;
+    olderIntentRef.current = false;
     departingReadingAnchorRef.current = visibleRef.current && scrollRef.current?.isConnected === true && virtualizer.scrollElement === scrollRef.current
       ? captureTranscriptAnchor(virtualizer, true) : navViewportAnchorRef.current;
   }, [reading.visitId, virtualizer]);
   useLayoutEffect(() => { departingReadingAnchorRef.current = null; }, [reading.visitId]);
   useEffect(() => { setReadingRestoreFailed(null); }, [reading.visitId]);
+  useEffect(() => () => {
+    seekRequestRef.current?.abort();
+    olderRequestRef.current?.abort();
+  }, [reading.visitId, visible]);
   useTimelineVisitLocator(sessionIdForLocate, agentId);
 
   // ---- find in this conversation (Ctrl/⌘+F; lib/timelineFind.ts) ----
@@ -4331,7 +4423,7 @@ export function Transcript({
                 className="absolute left-0 w-full"
               >
                 <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
-                  {first ? <TopEdge state={state} onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : onLoadOlder} /> : null}
+                  {first ? <TopEdge state={state} onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : requestOlderPage} /> : null}
                   {visible && turnTailId !== undefined ? <HistoryPreviewReader agentId={agentId} turnId={turnTailId} state={state} /> : null}
                   {node === undefined ? null : view === 'message' && isMessageViewOwnRow(node) ? (
                     <div data-transcript-lane="agent" className={AGENT_LANE}>
@@ -4448,7 +4540,7 @@ export function Transcript({
         scrollRef={scrollRef}
         virtualizer={virtualizer}
       />
-      <JumpToBottom virtualizer={virtualizer} />
+      <JumpToBottom virtualizer={virtualizer} onJump={() => { void locate({ kind: 'latest' }); }} />
       {findRequest !== null ? (
         <FindBar
           items={findItems}

@@ -63,7 +63,22 @@ function taskDetail(outputTail: string): SessionViewTranscriptDetail {
 }
 
 describe('SessionController transcript detail', () => {
-  it.each(['main', 'child'] as const)('reads the latest opened %s structure before continuing older structures', async (agentId) => {
+  it('loads the complete queued edit content instead of submitting its truncated media preview', async () => {
+    const source = { kind: 'prompt' as const, id: 'queued-original' };
+    const ref: import('@kiki/transcript').ContentRef = { source, revision: 'original', path: ['content', 1, 'source', 'data'], kind: 'text', offset: 4, total: 8 };
+    const content = vi.fn(async () => ({ ref, value: 'BBBB', contentRefs: [] }));
+    const { controller, deliver } = harness(undefined, content);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ prompts: [{ promptId: source.id, status: 'queued', createdAt: FIXED_AT,
+      content: [{ type: 'text', text: 'full text' }, { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'AAAA' } }], contentRefs: [ref] }] }), 2));
+    try {
+      const original = await controller.readQueuedPromptContent(source.id);
+      expect(original).toEqual([{ type: 'text', text: 'full text' }, { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'AAAABBBB' } }]);
+      expect(content).toHaveBeenCalledTimes(1);
+      expect(controller.contentRefsFor('main', source)).toEqual([]);
+    } finally { controller.close(); }
+  });
+  it.each(['main', 'child'] as const)('reads only the requested %s turn structure and leaves other cold turns unread', async (agentId) => {
     const turns = [3, 1].map((total, ordinal) => {
       const source = { kind: 'turn' as const, id: `turn-${ordinal}` };
       const ref: import('@kiki/transcript').ContentRef = { source, revision: 'latest-first', path: ['steps'], kind: 'array', offset: 0, total };
@@ -81,14 +96,37 @@ describe('SessionController transcript detail', () => {
     await controller.open();
     if (agentId !== 'main') controller.retainAgentView('child-view', agentId, 'delta');
     deliver(resetEvent(agentId, emptySnapshot({ items: turns.map((turn) => turn.preview) }), 2));
-    const release = controller.retainHistoryRead(agentId);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(content).not.toHaveBeenCalled();
+    const release = controller.retainHistoryStructure(agentId, turns[1]!.source.id);
     try {
       await vi.waitFor(() => {
         const state = agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
-        expect(state.blocks.filter((block) => block.kind === 'tool')).toHaveLength(4);
-        expect(state.contentRefs?.some((ref) => ref.path[0] === 'steps')).toBe(false);
+        expect(state.blocks.filter((block) => block.kind === 'tool')).toHaveLength(1);
+        expect(state.contentRefs?.some((ref) => ref.source.id === 'turn-1' && ref.path[0] === 'steps')).toBe(false);
       });
-      expect(content.mock.calls.map(([input]) => input.ref.source.id)).toEqual(['turn-1', 'turn-0', 'turn-0', 'turn-0']);
+      expect(content.mock.calls.map(([input]) => input.ref.source.id)).toEqual(['turn-1']);
+      expect((agentId === 'main' ? controller.getState() : controller.getAgentState(agentId)).contentRefs).toContainEqual(turns[0]!.ref);
+      expect(view.transcript.page).not.toHaveBeenCalled();
+    } finally { release(); controller.close(); }
+  });
+  it('continues a retained turn structure when its references arrive after the reader', async () => {
+    const source = { kind: 'turn' as const, id: 'late-structure' };
+    const ref: import('@kiki/transcript').ContentRef = { source, revision: 'late', path: ['steps'], kind: 'array', offset: 0, total: 1 };
+    const turn = { kind: 'turn' as const, turnId: source.id, ordinal: 0, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'Visible turn', steps: [] };
+    const content = vi.fn(async () => ({ ref, value: [{ stepId: 'step', ordinal: 0, state: 'completed' as const,
+      frames: [{ kind: 'tool' as const, frameId: 'frame', toolCallId: 'call', toolName: 'Example', state: 'completed' as const, output: 'loaded' }] }], contentRefs: [] }));
+    const { controller, deliver, view } = harness(undefined, content);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [turn] }), 2));
+    const release = controller.retainHistoryStructure('main', source.id);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(content).not.toHaveBeenCalled();
+      deliver(opsEvent('main', [{ op: 'turn.upsert', turn: { ...turn, contentRefs: [ref] } }], 3));
+      await vi.waitFor(() => expect(controller.getState().blocks.filter((block) => block.kind === 'tool')).toHaveLength(1));
+      expect(content).toHaveBeenCalledTimes(1);
       expect(view.transcript.page).not.toHaveBeenCalled();
     } finally { release(); controller.close(); }
   });
@@ -118,7 +156,7 @@ describe('SessionController transcript detail', () => {
     await controller.open();
     if (agentId !== 'main') controller.retainAgentView('child-view', agentId, 'delta');
     deliver(resetEvent(agentId, emptySnapshot({ items: [preview] }), 2));
-    const release = controller.retainHistoryRead(agentId);
+    const release = controller.retainHistoryStructure(agentId, source.id);
     try {
       await vi.waitFor(() => {
         const state = agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
@@ -136,7 +174,7 @@ describe('SessionController transcript detail', () => {
     const { controller, deliver } = harness(undefined, content);
     await controller.open();
     deliver(resetEvent('main', emptySnapshot({ items: [{ kind: 'turn', turnId: 'stalled', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'retained prompt', steps: [], contentRefs: [ref] }] }), 2));
-    const release = controller.retainHistoryRead('main');
+    const release = controller.retainHistoryStructure('main', 'stalled');
     try {
       await vi.waitFor(() => expect(Object.values(controller.getState().detailLoads)).toContainEqual({ status: 'error', message: 'Content segment did not advance its reference' }));
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -236,7 +274,7 @@ describe('SessionController transcript detail', () => {
     deliver(resetEvent('main', emptySnapshot({ items: [{ kind: 'marker', markerId: 'm1', marker: 'clear' }], hasMoreOlder: true, olderCursor: 'marker:m1' }), 2, true));
     vi.mocked(view.transcript.page).mockResolvedValue({ tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, session_id: 'session_test', agent_id: 'main', items: [{ kind: 'marker', markerId: 'm0', marker: 'clear' }], has_more: false, agents: [], pending_interactions: [], cursor: { seq: 2, epoch: 'e' }, coverage: { kind: 'full', hasMoreOlder: false } });
     await expect(controller.loadOlderMessages()).resolves.toBe(true);
-    expect(view.transcript.page).toHaveBeenCalledWith({ agentId: 'main', beforeTurn: undefined, beforeItem: 'marker:m1', pageSize: 100 }, { signal: expect.any(AbortSignal) });
+    expect(view.transcript.page).toHaveBeenCalledWith({ agentId: 'main', beforeTurn: undefined, beforeItem: 'marker:m1', pageSize: 20 }, { signal: expect.any(AbortSignal) });
     expect(controller.getState().loadingOlder).toBe(false);
     controller.close();
   });
@@ -417,6 +455,52 @@ describe('visible snapshot and attachment continuation', () => {
 });
 
 describe('automatic target reading', () => {
+  it('bounds independent field reads and admits the next field when a slot finishes', async () => {
+    const sources = Array.from({ length: 5 }, (_, index) => ({ kind: 'task' as const, id: `bounded-${index}` }));
+    const refs = sources.map((source) => ({ source, revision: 'bounded', path: ['outputTail'], kind: 'text' as const, offset: 3, total: 6 }));
+    const held = new Map<string, () => void>();
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>((input) => new Promise((resolve) => {
+      held.set(input.ref.source.id, () => { resolve({ ref: input.ref, value: 'def', contentRefs: [] }); });
+    }));
+    const { controller, deliver } = harness(undefined, content);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ tasks: sources.map((source, index) => ({ ...shellTask('abc', false), taskId: source.id, contentRefs: [refs[index]!] })), items: windowed().items }), 2));
+    const leases = sources.map((source) => controller.beginContentRead('main', source, ['outputTail']));
+    try {
+      await vi.waitFor(() => expect(content).toHaveBeenCalledTimes(4));
+      expect(held.has('bounded-4')).toBe(false);
+      held.get('bounded-0')!();
+      await vi.waitFor(() => expect(content).toHaveBeenCalledTimes(5));
+      expect(held.has('bounded-4')).toBe(true);
+    } finally {
+      for (const lease of leases) lease.release();
+      for (const settle of held.values()) settle();
+      controller.close();
+    }
+  });
+
+  it('keeps another expanded field progressing while an unrelated field waits for its response', async () => {
+    const sources = ['task-shell', 'task-second'].map((id) => ({ kind: 'task' as const, id }));
+    const refs = sources.map((source) => ({ source, revision: 'independent', path: ['outputTail'], kind: 'text' as const, offset: 3, total: 6 }));
+    let settle!: (segment: import('@kiki/transcript').ContentSegment) => void;
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>((input) => input.ref.source.id === 'task-shell'
+      ? new Promise((resolve) => { settle = resolve; })
+      : Promise.resolve({ ref: refs[1]!, value: 'def', contentRefs: [] }));
+    const { controller, deliver } = harness(undefined, content);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ tasks: sources.map((source, index) => ({ ...shellTask('abc', false), taskId: source.id, contentRefs: [refs[index]!] })), items: windowed().items }), 2));
+    const first = controller.beginContentRead('main', sources[0]!, ['outputTail']);
+    const second = controller.beginContentRead('main', sources[1]!, ['outputTail']);
+    try {
+      await vi.waitFor(() => expect(content.mock.calls.some(([input]) => input.ref.source.id === 'task-second')).toBe(true));
+      expect(controller.getState().contentRefs).toContainEqual(refs[0]);
+      expect(controller.getState().contentRefs).not.toContainEqual(refs[1]);
+      expect(content.mock.calls.filter(([input]) => input.ref.source.id === 'task-shell')).toHaveLength(1);
+    } finally {
+      first.release(); second.release(); settle?.({ ref: refs[0]!, value: 'def', contentRefs: [] }); controller.close();
+    }
+  });
+
   it('paints the preview first then automatically follows newly discovered child refs; failure resumes with one retry and reopens from cache', async () => {
     const source = { kind: 'task' as const, id: 'task-shell' };
     const root = { source, revision: 'r1', path: ['outputTail'], kind: 'text' as const, offset: 3, total: 9 };
@@ -855,7 +939,9 @@ describe('automatic lightweight roster', () => {
     expect(content).toHaveBeenCalledTimes(4);
     expect(controller.getState().snapshotSubagents).toHaveLength(4);
     changed = false;
-    const retryRef = controller.getState().contentRefs?.find((entry) => entry.kind === 'array' && entry.path[0] === 'subagents')!;
+    const retryRef = controller.getState().contentRefs?.find((entry) => entry.kind === 'array' && entry.path[0] === 'subagents');
+    expect(retryRef).toBeDefined();
+    if (retryRef === undefined) throw new Error('Missing roster retry reference');
     await controller.loadContentSegment('main', retryRef);
     await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(706));
     expect(view.snapshot).toHaveBeenCalledTimes(4);

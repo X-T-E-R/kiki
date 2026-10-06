@@ -31,11 +31,9 @@ export async function restoreTimelineReading(
     const key = snapshot.anchor.key;
     if (!snapshot.anchor.atEnd) {
       if (key === undefined) return outcome = { status: 'not-found' };
-      let pages = 0;
       while (!adapter.hasAnchor(key)) {
         if (adapter.isCancelled?.()) return outcome = { status: 'no-timeline' };
         if (!adapter.hasMore()) return outcome = { status: 'not-found' };
-        if (pages++ >= 40) return outcome;
         // Deliberately try again despite a previous error; the existing paging owner resets it.
         const loaded = await adapter.loadOlder();
         for (let frame = 0; frame < 4; frame += 1) await adapter.nextFrame();

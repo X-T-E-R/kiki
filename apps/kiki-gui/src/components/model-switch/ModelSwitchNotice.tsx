@@ -51,7 +51,7 @@ function primaryKey(info: ModelSwitchBlock): I18nKey {
           ? 'transcript.modelSwitch.preparing.fresh'
           : 'transcript.modelSwitch.preparing.direct';
     case 'completed':
-      return sameModel ? 'transcript.modelSwitch.done.sameModelFresh' : 'transcript.modelSwitch.done';
+      return sameModel && info.mode === 'fresh' ? 'transcript.modelSwitch.done.sameModelFresh' : 'transcript.modelSwitch.done';
     case 'failed':
       return info.mode === 'compact' ? 'transcript.modelSwitch.failed.compact' : 'transcript.modelSwitch.failed';
     case 'cancelled': return 'transcript.modelSwitch.cancelled';
@@ -60,7 +60,7 @@ function primaryKey(info: ModelSwitchBlock): I18nKey {
 
 function detailKey(info: ModelSwitchBlock): I18nKey | undefined {
   if (info.state !== 'completed') return undefined;
-  if (info.from === info.to) return 'transcript.modelSwitch.done.sameModelFreshHint';
+  if (info.from === info.to && info.mode === 'fresh') return 'transcript.modelSwitch.done.sameModelFreshHint';
   if (info.mode === 'direct') return 'transcript.modelSwitch.done.direct';
   if (info.mode === 'fresh') return 'transcript.modelSwitch.done.fresh';
   return info.summaryGenerated === false

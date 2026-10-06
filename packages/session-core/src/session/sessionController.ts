@@ -265,12 +265,9 @@ export class SessionController {
   private readonly forestDirtyAgents = new Set<string>();
   private readonly historyGeneration = new Map<string, number>();
   private readonly inFlightOlder = new Map<string, string>();
-  private readonly olderReads = new Map<string, { promise: Promise<boolean>; controller: AbortController }>();
-  private readonly historyReaders = new Map<string, number>();
-  private readonly historyReadTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly olderReads = new Map<string, { promise: Promise<boolean>; controller: AbortController; consumers: Set<symbol> }>();
   private readonly historyReadFailures = new Map<string, number>();
   private readonly historyReadBlocked = new Set<string>();
-  private readonly historyStructureReads = new Map<string, { agentId: string; release(): void }>();
   private readonly emptyAgentState: SessionViewState;
   /** "Send now" echoes per agent, laid over each published view (transcript/steer.ts). */
   private readonly pendingSteers = new Map<string, readonly PendingSteer[]>();
@@ -292,6 +289,7 @@ export class SessionController {
   private readonly contentControllers = new Map<string, AbortController>();
   private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; roots: readonly string[]; readers: number; blocked: boolean; ref?: ContentRef }>();
   private contentPumpRunning = false;
+  private readonly contentPumpReads = new Set<string>();
   private readonly contentRanges = new Map<string, string>();
   private readonly rangeControllers = new Map<AbortController, string>();
   private contentRangeBytes = 0;
@@ -587,7 +585,7 @@ export class SessionController {
     }
     this.transcriptGrades = this.requestedTranscriptGrades();
     this.attachView(this.state.cursor);
-    for (const agentId of this.historyReaders.keys()) this.scheduleHistoryRead(agentId);
+    void this.pumpContentReads();
     void this.refreshShell();
   }
 
@@ -1181,46 +1179,12 @@ export class SessionController {
     }
   }
 
-  /** Keep one opened timeline progressing without making transport pages user actions. */
-  retainHistoryRead(agentId: string): () => void {
-    this.historyReaders.set(agentId, (this.historyReaders.get(agentId) ?? 0) + 1);
-    this.refreshHistoryStructureReads(agentId);
-    this.scheduleHistoryRead(agentId);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      const readers = (this.historyReaders.get(agentId) ?? 1) - 1;
-      if (readers > 0) this.historyReaders.set(agentId, readers);
-      else {
-        this.historyReaders.delete(agentId);
-        this.cancelHistoryRead(agentId);
-      }
-    };
-  }
-
-  private refreshHistoryStructureReads(agentId: string): void {
-    if (this.closed || this.isSuspended || !this.historyReaders.has(agentId)) return;
-    const needed = new Map<string, string>(this.composeAgentSnapshot(agentId).items.toReversed().flatMap((item) => item.kind === 'turn' &&
-      item.contentRefs?.some((ref) => ref.path[0] === 'steps' && (ref.path.length === 1 || ref.path.length === 3 && ref.path[2] === 'frames'))
-      ? [[`${agentId}/${item.turnId}`, item.turnId] as const] : []));
-    for (const [key, lease] of this.historyStructureReads) {
-      if (lease.agentId === agentId && !needed.has(key)) { this.historyStructureReads.delete(key); lease.release(); }
-    }
-    for (const [key, id] of needed) if (!this.historyStructureReads.has(key)) {
-      const lease = this.beginContentRead(agentId, { kind: 'turn', id }, ['steps']);
-      this.historyStructureReads.set(key, { agentId, release: lease.release });
-    }
-    void this.pumpContentReads();
+  /** Read only the structure of the turn a viewport, expansion or seek needs. */
+  retainHistoryStructure(agentId: string, turnId: string): () => void {
+    return this.beginContentRead(agentId, { kind: 'turn', id: turnId }, ['steps']).release;
   }
 
   private cancelHistoryRead(agentId: string): void {
-    for (const [key, lease] of this.historyStructureReads) if (lease.agentId === agentId) {
-      this.historyStructureReads.delete(key); lease.release();
-    }
-    const timer = this.historyReadTimers.get(agentId);
-    if (timer !== undefined) clearTimeout(timer);
-    this.historyReadTimers.delete(agentId);
     const flight = this.olderReads.get(agentId);
     this.olderReads.delete(agentId);
     this.inFlightOlder.delete(agentId);
@@ -1230,21 +1194,6 @@ export class SessionController {
     }
     const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
     if (current?.loadingOlder) this.publishAgentView(agentId, setLoadingOlder(current, false));
-  }
-
-  private scheduleHistoryRead(agentId: string): void {
-    if (this.closed || this.isSuspended || !this.historyReaders.has(agentId) ||
-        this.historyReadTimers.has(agentId) || this.olderReads.has(agentId) || this.historyReadBlocked.has(agentId)) return;
-    const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
-    if (!current?.transcriptReady || !current.hasMoreHistory || current.loadingOlder) return;
-    const failures = this.historyReadFailures.get(agentId) ?? 0;
-    if (failures > RESYNC_BACKOFF_MS.length) return;
-    const timer = setTimeout(() => {
-      this.historyReadTimers.delete(agentId);
-      if (this.closed || this.isSuspended || !this.historyReaders.has(agentId)) return;
-      void this.readOlderTranscript(agentId);
-    }, failures === 0 ? 24 : RESYNC_BACKOFF_MS[failures - 1]);
-    this.historyReadTimers.set(agentId, timer);
   }
 
   historyPreviewPending(agentId: string, turnId: string): boolean {
@@ -1277,7 +1226,8 @@ export class SessionController {
       if (bytes <= this.historyPreviewBytes || item.kind !== 'turn' || liveIds.has(item.turnId)) return item;
       const key = `${agentId}/${item.turnId}`;
       const page = this.historyPreviewPages.get(key);
-      if (page === undefined || page.unloaded || this.historyPreviewReaders.has(key) || this.historyStructureReads.has(key) ||
+      if (page === undefined || page.unloaded || this.historyPreviewReaders.has(key) ||
+          [...this.contentReaders.values()].some((reader) => reader.agentId === agentId && reader.source.kind === 'turn' && reader.source.id === item.turnId) ||
           item.contentRefs?.some((ref) => ref.path[0] === 'steps' && (ref.path.length === 1 || ref.path.length === 3 && ref.path[2] === 'frames'))) return item;
       const header = { ...item, prompt: item.prompt?.slice(0, 256), contentRefs: undefined,
         steps: item.steps.map((step) => ({ ...step, frames: step.frames.map((frame) => {
@@ -1310,7 +1260,7 @@ export class SessionController {
     const promise = (async () => {
       try {
         const result = await this.readPreparedContent(() => this.view.transcript.page({ agentId,
-          beforeItem: page.beforeItem, beforeTurn: page.beforeTurn, pageSize: 100 }, { signal: controller.signal }), controller.signal);
+          beforeItem: page.beforeItem, beforeTurn: page.beforeTurn, pageSize: 20 }, { signal: controller.signal }), controller.signal);
         if (this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
         const older = this.olderPages.get(agentId);
         if (older === undefined) return false;
@@ -1343,24 +1293,43 @@ export class SessionController {
     return promise;
   }
 
-  async loadOlderMessages(agentId: string = MAIN_AGENT_ID): Promise<boolean> {
+  loadOlderMessages(agentId: string = MAIN_AGENT_ID, signal?: AbortSignal): Promise<boolean> {
+    if (this.closed || this.isSuspended || signal?.aborted) return Promise.resolve(false);
     this.historyReadFailures.delete(agentId);
     this.historyReadBlocked.delete(agentId);
-    return this.readOlderTranscript(agentId);
-  }
-
-  private readOlderTranscript(agentId: string): Promise<boolean> {
-    const existing = this.olderReads.get(agentId);
-    if (existing !== undefined) return existing.promise;
-    if (this.closed || this.isSuspended) return Promise.resolve(false);
-    const controller = new AbortController();
-    const promise = this.loadOlderTranscript(agentId, controller.signal).finally(() => {
-      if (this.olderReads.get(agentId)?.controller !== controller) return;
-      this.olderReads.delete(agentId);
-      this.scheduleHistoryRead(agentId);
+    let flight = this.olderReads.get(agentId);
+    if (flight === undefined) {
+      const controller = new AbortController();
+      const promise = this.loadOlderTranscript(agentId, controller.signal).finally(() => {
+        if (this.olderReads.get(agentId)?.controller === controller) this.olderReads.delete(agentId);
+      });
+      flight = { promise, controller, consumers: new Set() };
+      this.olderReads.set(agentId, flight);
+    }
+    const shared = flight;
+    const consumer = Symbol();
+    shared.consumers.add(consumer);
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (result: boolean) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', abort);
+        shared.consumers.delete(consumer);
+        if (shared.consumers.size === 0 && this.olderReads.get(agentId) === shared) {
+          this.olderReads.delete(agentId);
+          this.inFlightOlder.delete(agentId);
+          shared.controller.abort();
+          const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
+          if (current?.loadingOlder) this.publishAgentView(agentId, setLoadingOlder(current, false));
+        }
+        resolve(result);
+      };
+      const abort = () => { finish(false); };
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+      void shared.promise.then(finish, () => { finish(false); });
     });
-    this.olderReads.set(agentId, { promise, controller });
-    return promise;
   }
 
   private async loadOlderTranscript(agentId: string, signal: AbortSignal): Promise<boolean> {
@@ -1385,12 +1354,12 @@ export class SessionController {
     const loadingView = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
     this.publishAgentView(agentId, setLoadingOlder(loadingView, true));
     try {
-      const page = await this.view.transcript.page({
+      const page = await this.readPreparedContent(() => this.view.transcript.page({
         agentId,
         beforeTurn,
         beforeItem,
-        pageSize: 100,
-      }, { signal });
+        pageSize: 20,
+      }, { signal }), signal);
       if (
         this.closed || signal.aborted ||
         this.agentTranscripts.get(agentId) !== store ||
@@ -1880,25 +1849,29 @@ export class SessionController {
     this.contentPumpRunning = true;
     try {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      while (!this.closed && !this.isSuspended) {
-        let didRead = false;
-        const targets = [...this.contentReaders.values()];
-        for (const target of targets) {
-          if (target.readers === 0 || target.blocked) continue;
-          const ref = this.contentEntity(target.agentId, target.source)?.contentRefs?.find((candidate) => {
-            if (!target.roots.includes(String(candidate.path[0])) || this.isContentRange(target.agentId, candidate)) return false;
-            return candidate.path[0] !== 'steps' || candidate.path.length === 1 || candidate.path.length === 3 && candidate.path[2] === 'frames';
-          });
-          if (ref === undefined) continue;
-          target.ref = ref;
-          const applied = await this.loadContentSegment(target.agentId, ref);
+      if (this.closed || this.isSuspended) return;
+      for (const [key, target] of this.contentReaders) {
+        if (this.contentPumpReads.size >= 4) break;
+        if (target.readers === 0 || target.blocked || this.contentPumpReads.has(key)) continue;
+        const ref = this.contentEntity(target.agentId, target.source)?.contentRefs?.find((candidate) => {
+          if (!target.roots.includes(String(candidate.path[0])) || this.isContentRange(target.agentId, candidate)) return false;
+          return candidate.path[0] !== 'steps' || candidate.path.length === 1 || candidate.path.length === 3 && candidate.path[2] === 'frames';
+        });
+        if (ref === undefined) continue;
+        target.ref = ref;
+        this.contentPumpReads.add(key);
+        void this.loadContentSegment(target.agentId, ref).then((applied) => {
           target.ref = applied ? undefined : ref;
           if (!applied && target.readers > 0) target.blocked =
             this.contentRefsFor(target.agentId, target.source).some((current) => sameContentRef(current, ref));
-          didRead = true;
-          await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        }
-        if (!didRead) break;
+        }).finally(() => {
+          this.contentPumpReads.delete(key);
+          if (this.contentReaders.get(key) === target) {
+            this.contentReaders.delete(key);
+            this.contentReaders.set(key, target);
+          }
+          void this.pumpContentReads();
+        });
       }
     } finally { this.contentPumpRunning = false; }
   }
@@ -2424,7 +2397,7 @@ export class SessionController {
     const cursor = this.transcriptCursors.get(agentId);
     if (cursor !== undefined) this.publishedTranscriptCursors.set(agentId, cursor);
     this.publishAgentView(agentId, withCoverage);
-    this.refreshHistoryStructureReads(agentId);
+    if (this.contentReaders.size > 0) void this.pumpContentReads();
     if (forestChanged && agentId !== MAIN_AGENT_ID) {
       this.setState({ ...this.state, version: this.state.version + 1 });
     }
@@ -2438,7 +2411,6 @@ export class SessionController {
       this.dirtyAgents.add(agentId);
       this.publishAgents();
     }
-    this.scheduleHistoryRead(agentId);
   }
 
   forestPublishCount = 0;
@@ -2687,6 +2659,24 @@ export class SessionController {
     await this.client.abortPrompt(this.sessionId, promptId);
     this.unprojectedQueueReceipts.delete(promptId);
     await this.refreshPrompts();
+  }
+
+  async readQueuedPromptContent(promptId: string, signal?: AbortSignal): Promise<readonly MessageContent[] | undefined> {
+    const source = { kind: 'prompt' as const, id: promptId };
+    const lease = this.beginContentRead(MAIN_AGENT_ID, source, ['content']);
+    try {
+      for (;;) {
+        signal?.throwIfAborted();
+        const ref = this.contentRefsFor(MAIN_AGENT_ID, source).find((candidate) => candidate.path[0] === 'content');
+        if (ref === undefined) break;
+        if (!await this.loadContentSegment(MAIN_AGENT_ID, ref)) throw new Error('Could not read the complete queued prompt');
+      }
+      const prompt = this.agentTranscripts.get(MAIN_AGENT_ID)?.getPrompt(promptId);
+      if (prompt?.status !== 'queued' && prompt?.status !== 'blocked') return undefined;
+      const parsed = messageContentSchema.array().safeParse(prompt.content);
+      if (!parsed.success) throw new Error('Could not read the original queued prompt attachments');
+      return parsed.data;
+    } finally { lease.release(); }
   }
 
   async replaceQueued(promptId: string, text: string, retainedAttachments?: readonly MessageContent[]): Promise<void> {

@@ -119,6 +119,12 @@ describe('ModelSwitchNotice', () => {
     const sameModel = await renderNotice(block({ state: 'completed', mode: 'fresh', from: 'k', to: 'k' }));
     expect(sameModel.textContent).toContain('Started a new context');
     expect(sameModel.textContent).toContain('Task progress is preserved');
+    const sameDirect = await renderNotice(block({ state: 'completed', mode: 'direct', from: 'example/same', to: 'example/same' }));
+    expect(sameDirect.textContent).toContain('Kept the current context');
+    expect(sameDirect.textContent).not.toContain('Started a new context');
+    const sameCompact = await renderNotice(block({ state: 'completed', mode: 'compact', from: 'example/same', to: 'example/same', summaryGenerated: true }));
+    expect(sameCompact.textContent).toContain('example/same summarized the conversation');
+    expect(sameCompact.textContent).not.toContain('Started a new context');
   });
 
   it('reports the failure, its reason, and the three recovery paths', async () => {

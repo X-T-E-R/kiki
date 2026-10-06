@@ -5110,6 +5110,65 @@ describe('settled history folds and the unified locate entry', () => {
     expect(outcome).toEqual({ status: 'not-found' });
   });
 
+  it('locates an older target beyond forty pages with one intent and stops at the target', async () => {
+    resetTimelineLocatorsForTests();
+    const { root, container } = makeRoot();
+    let pages = 0;
+    let state = transcriptState(virtualBlocks(3, 'tail'), { sessionId: 'session_far', hasMoreHistory: true });
+    const onLoadOlder = vi.fn(async () => {
+      pages += 1;
+      state = { ...state, blocks: [assistantBlock(pages === 43 ? 'far-target' : `page-${pages}`, `Older page ${pages}`), ...state.blocks] };
+      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      return true;
+    });
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await settleVirtualizer();
+    let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+    await act(async () => {
+      void locateInTimeline({ kind: 'block', blockId: 'far-target' }, { sessionId: 'session_far', notify: false }).then((value) => { outcome = value; });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    for (let frame = 0; frame < 450; frame += 1) {
+      if (outcome !== undefined) break;
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 16)); });
+    }
+    expect(onLoadOlder).toHaveBeenCalledTimes(43);
+    expect(outcome).toEqual({ status: 'found' });
+    expect(container.querySelector('[data-block-id="far-target"]')).not.toBeNull();
+    await settleVirtualizer();
+    expect(onLoadOlder).toHaveBeenCalledTimes(43);
+  }, 10_000);
+
+  it('cancels an older locate on a user scroll before a late page can move the viewport', async () => {
+    resetTimelineLocatorsForTests();
+    const { root, container } = makeRoot();
+    let resolvePage!: (loaded: boolean) => void;
+    let signal: AbortSignal | undefined;
+    const onLoadOlder = vi.fn((consumerSignal?: AbortSignal) => {
+      signal = consumerSignal;
+      return new Promise<boolean>((resolve) => { resolvePage = resolve; });
+    });
+    await renderSettled(root, virtualTranscript(transcriptState(virtualBlocks(100, 'tail'), {
+      sessionId: 'session_cancel_seek', hasMoreHistory: true,
+    }), onLoadOlder));
+    await settleVirtualizer();
+    let pending!: Promise<Awaited<ReturnType<typeof locateInTimeline>>>;
+    await act(async () => {
+      pending = locateInTimeline({ kind: 'block', blockId: 'old-target' }, { sessionId: 'session_cancel_seek', notify: false });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true })); });
+    expect(signal?.aborted).toBe(true);
+    const top = scroll.scrollTop;
+    let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+    await act(async () => { resolvePage(true); outcome = await pending; });
+    expect(outcome).toEqual({ status: 'no-timeline' });
+    expect(scroll.scrollTop).toBe(top);
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
   it('re-lands a shown agent tab on its latest message unless the reader scrolled up', async () => {
     resetTimelineLocatorsForTests();
     const { root, container } = makeRoot();

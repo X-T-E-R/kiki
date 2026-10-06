@@ -74,13 +74,13 @@ export const API_CODES = {
 } as const;
 
 export const DEFAULT_TRANSCRIPT_GRADES: TranscriptGradeSpec = {
-  '*': 'turn',
+  '*': 'off',
   main: 'delta',
 };
 
 export function transcriptGradesForFocus(focusedAgentId: string | undefined): TranscriptGradeSpec {
   if (focusedAgentId === undefined || focusedAgentId === 'main') return DEFAULT_TRANSCRIPT_GRADES;
-  return { '*': 'turn', main: 'off', [focusedAgentId]: 'delta' };
+  return { '*': 'off', main: 'off', [focusedAgentId]: 'delta' };
 }
 
 export interface SearchMessageHit {
