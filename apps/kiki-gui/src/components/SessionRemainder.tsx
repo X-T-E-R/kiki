@@ -18,7 +18,7 @@ import type { ContentRef } from '@kiki/transcript';
 import { DisclosureChevron } from './icons';
 import { useI18n } from '../i18n';
 import { ContinuationRow, contentRefProgress } from './ContentContinuation';
-import { useSessionRemainderRefs } from './transcriptDetail';
+import { useSessionRemainderRefs, type ContentContinuationHandle } from './transcriptDetail';
 
 /** One structure's unread refs, in the same row shape as a body's continuation. */
 function StructuralRow({
@@ -57,27 +57,44 @@ function StructuralRow({
   );
 }
 
-export function SessionRemainder({ className = '' }: { readonly className?: string }): ReactNode {
+export function SessionRemainder({ className = '', handle }: {
+  readonly className?: string;
+  /**
+   * The refs to offer, read outside a `TranscriptDetailProvider` — the
+   * composer's footer, which is a sibling of the workspace rather than a
+   * descendant of it. The provider-path reader is the default; passing this
+   * must carry the *same* controller state, so both outlets are one source and
+   * not two copies of it.
+   */
+  readonly handle?: ContentContinuationHandle | undefined;
+}): ReactNode {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
-  const { pending, statusOf, request } = useSessionRemainderRefs();
+  const contextHandle = useSessionRemainderRefs();
+  const { pending, statusOf, request } = handle ?? contextHandle;
   const sessionRefs = pending.filter((ref) => ref.source.kind === 'snapshot' && ref.path[0] !== 'subagents');
   const rosterRefs = pending.filter((ref) => ref.source.kind === 'roster' || (ref.source.kind === 'snapshot' && ref.path[0] === 'subagents'));
   if (sessionRefs.length === 0 && rosterRefs.length === 0) return null;
   return (
-    <section data-session-remainder className={`flex flex-col ${className}`.trimEnd()}>
+    <section data-session-remainder className={`relative flex flex-col ${className}`.trimEnd()}>
       <button
         type="button"
         data-session-remainder-toggle
         aria-expanded={open}
         onClick={() => { setOpen((value) => !value); }}
-        className="inline-flex w-fit items-center gap-1.5 text-[12px] leading-5 text-ink-faint transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink motion-reduce:transition-none"
+        // `leading-4` to match the footer row's own line height: this toggle can
+        // now sit in a fixed-height row, and a taller one made the whole footer
+        // grow a line instead of staying the height it was.
+        className="inline-flex w-fit items-center gap-1.5 text-[12px] leading-4 text-ink-faint transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink motion-reduce:transition-none"
       >
         <DisclosureChevron open={open} />
         {t('transcript.content.remainder.summary')}
       </button>
       {open ? (
-        <div data-session-remainder-rows className="mt-1.5 space-y-1">
+        // Anchored to the toggle and absolute, so opening this inside the
+        // composer's one-line footer does not grow the row and push the card up.
+        // The panel opens upward, over the transcript it belongs to.
+        <div data-session-remainder-rows className="absolute bottom-full right-0 z-30 mb-1.5 w-72 space-y-1 rounded-lg border border-hairline bg-paper p-2 shadow-lg">
           <StructuralRow
             kind="session"
             label={t('transcript.content.remainder.session')}

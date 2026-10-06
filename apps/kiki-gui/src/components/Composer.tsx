@@ -110,6 +110,8 @@ import { configuredEngineDescriptors, engineDisplayOf, engineLabel, engineOverri
 import type { ExecutionChoice, ExecutionContextGroup } from '@kiki/session-core/composer';
 import { buildCatalogModelOptions, modelFactBadges, modelTooltip, useProviderGroupLabel } from './modelSelectOptions';
 import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
+import { SessionRemainder } from './SessionRemainder';
+import type { ContentContinuationHandle } from './transcriptDetail';
 import { PersonaAvatar, type PersonaAvatarData } from './persona/PersonaAvatar';
 import {
   AddMenu,
@@ -336,6 +338,7 @@ export function Composer({
   onSendNow,
   busySendsNow = false,
   working,
+  sessionRemainder,
   onAbort,
   abortPending = false,
   queueEditing = false,
@@ -561,18 +564,27 @@ export function Composer({
    * The agent is working on this conversation: the row under the card shows
    * a quiet working line with the age of its latest output. Omit when idle
    * or while the session waits on the user (the tray says that instead).
-   * `continuingCount` names the background work a stop will NOT end;
    * `queued` holds details if a model request is waiting on governance admission.
    */
   working?: {
     readonly lastResponseAt: number | undefined;
-    readonly continuingCount?: number;
     readonly queued?: {
       readonly waitedMs: number;
       readonly modelId?: string;
       readonly blockingRules?: readonly string[];
     };
   };
+  /**
+   * Session structures this window did not carry — the snapshot fields the
+   * header shows and the agent roster. Rendered as one quiet entry at the right
+   * end of the footer row, on the same line as the working sentence, so a reader
+   * at the input can see what is missing without scrolling back through the
+   * transcript. Omitted when nothing is missing.
+   *
+   * Read from the same controller state as the reading column's own outlet, so
+   * both offer the same refs and the same recovery.
+   */
+  sessionRemainder?: ContentContinuationHandle | undefined;
   /** Omit when there is nothing to abort (e.g. /new session creation). */
   onAbort?: () => void;
   /**
@@ -3133,12 +3145,11 @@ export function Composer({
             (right). Key hints teach an empty draft only while the composer
             holds focus. The row never changes height, so the card never hops. */}
         <div data-composer-status-line className="mt-1.5 flex h-4 min-w-0 items-center gap-3 px-1">
-          {working !== undefined || statusNotice !== undefined || (takenOver && busy && onAbort !== undefined) ? (
+          {working !== undefined || statusNotice !== undefined || sessionRemainder !== undefined || (takenOver && busy && onAbort !== undefined) ? (
             <>
               {working !== undefined ? (
                 <ComposerWorkingLine
                   lastResponseAt={working.lastResponseAt}
-                  continuingCount={working.continuingCount}
                   queued={working.queued}
                   sendNowHint={text.trim() !== '' && onSendNow !== undefined && !busySendsNow && !queueEditing && !takenOver
                     ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowHintCmdEnter' : 'composer.sendNowHint')
@@ -3146,6 +3157,14 @@ export function Composer({
                 />
               ) : null}
               <span className="flex-1" />
+              {/* The right end of the footer: one quiet entry, on the working
+                  line's own row, that says the session is not fully here yet and
+                  opens the same per-structure reading and recovery the
+                  transcript outlet offers. It sits before the notice and Stop so
+                  neither of them is pushed off a narrow row. */}
+              {sessionRemainder === undefined ? null : (
+                <SessionRemainder className="shrink" handle={sessionRemainder} />
+              )}
               {statusNotice === undefined ? null : (
                 <span data-composer-status-notice className="flex min-w-0 shrink items-center gap-1.5 text-[12px] font-medium text-amber-ink">
                   {statusNotice}
@@ -3605,12 +3624,10 @@ function EffortGauge({
  */
 function ComposerWorkingLine({
   lastResponseAt,
-  continuingCount,
   queued,
   sendNowHint,
 }: {
   readonly lastResponseAt: number | undefined;
-  readonly continuingCount: number | undefined;
   readonly queued?: {
     readonly waitedMs: number;
     readonly modelId?: string;
@@ -3681,9 +3698,6 @@ function ComposerWorkingLine({
         ) : (
           <span className="min-w-0 truncate tabular-nums">{status}</span>
         )}
-        {continuingCount !== undefined && continuingCount > 0 ? (
-          <span data-composer-continuing className="hidden shrink-0 sm:inline">· {t('composer.continuing', { count: continuingCount })}</span>
-        ) : null}
         {sendNowHint !== undefined ? (
           <span data-composer-send-now-hint className="hidden shrink-0 sm:inline">· {sendNowHint}</span>
         ) : null}

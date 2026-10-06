@@ -182,7 +182,7 @@ import { DisclosureChevron, Icon, OutcomeMark } from './icons';
 import { Wordmark } from './Wordmark';
 import { useContentContinuation, useTranscriptDetail, useTranscriptController } from './transcriptDetail';
 import { ContentContinuation, frameContentSource, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
-import { SessionRemainder, useSessionRemainderPending } from './SessionRemainder';
+import { useSessionRemainderPending } from './SessionRemainder';
 import { BridgedOriginRow } from './message/BridgedOriginLine';
 import { MessageRow, SpeakerHead, speakerOf } from './message/MessageRow';
 import { ActivitySummaryRow, HandoffRow, isSilentActivity, OutcomeLine, PresenceLine } from './message/MessageTimelineRows';
@@ -4411,7 +4411,11 @@ export function Transcript({
             {t(state.historyCoverageKind === 'unknown' ? 'transcript.historyPartial' : 'transcript.blank')}
           </p>
         )}
-        <SessionRemainder />
+        {/* The session's own remainder is offered from the composer's footer
+            now, so the reader sees what is missing from where they are typing
+            rather than having to scroll back through a transcript that is not
+            there. The blank-state sentence above still yields to it, so an
+            unread session is never announced as an empty one. */}
         {state.historyCoverageKind === 'unknown' || readingRestoreFailed !== null ? (
           <button type="button" data-reading-restore-retry={readingRestoreFailed !== null || undefined}
             onClick={() => { if (readingRestoreFailed !== null) reading.retryRestore(); else if (onRetryLoad !== undefined) onRetryLoad(); else void onLoadOlder(); }}
@@ -4561,10 +4565,11 @@ export function Transcript({
                       />
                     </div>
                   ) : null}
-                  {/* The session's own remainder belongs after the last row the
-                      reader has: it is not a virtual row of its own, so the
-                      existing measurement of this cell carries it. */}
-                  {last ? <SessionRemainder /> : null}
+                  {/* The session's own remainder moved to the composer's footer,
+                      which is where a reader looking at the input sees it and
+                      where it does not perturb this cell's measurement: it used
+                      to be rendered here, after the last row, and that is no
+                      longer part of what this cell measures. */}
                 </div>
               </div>
             );

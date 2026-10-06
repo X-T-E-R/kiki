@@ -214,6 +214,18 @@ function showsSnapshotField(ref: ContentRef): boolean {
 }
 
 /**
+ * True for a ref that belongs in the session-remainder outlet: the agent roster
+ * the list is built from, or a snapshot field some screen shows.
+ *
+ * Exported so the composer's footer outlet reads the same rule as the one in
+ * the reading column. Two outlets that disagreed about what is missing would
+ * each look right and contradict each other.
+ */
+export function isSessionRemainderRef(ref: ContentRef): boolean {
+  return ref.source.kind === 'roster' || (ref.source.kind === 'snapshot' && showsSnapshotField(ref));
+}
+
+/**
  * Unread refs of whole structures: the session snapshot's visible fields, and
  * the agent roster the list is built from. Selected by what the ref would change
  * on screen — never by source kind alone, and never by position.

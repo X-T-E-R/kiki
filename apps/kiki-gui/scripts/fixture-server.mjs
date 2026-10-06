@@ -461,6 +461,11 @@ class FixtureSession {
     this.pendingQuestions = [...(scenarioData.pending_questions ?? [])];
     this.inFlightTurn = scenarioData.in_flight_turn ?? null;
     this.subagents = [...(scenarioData.subagents ?? [])];
+    // Bounded structures the window did not carry: the snapshot's own fields
+    // (a cut title) and roster entries. Served on `/snapshot` exactly as the real
+    // route does, so the remainder outlet reads real refs, not fixture-shaped
+    // stand-ins.
+    this.contentRefs = [...(scenarioData.content_refs ?? scenarioData.contentRefs ?? [])];
     this.agentTranscripts = scenarioData.agent_transcripts ?? {};
     // Bounded-content scenarios: which entities the fixture cuts with the
     // production `boundedEntity` when it serves this session's transcript.
@@ -3443,6 +3448,7 @@ class FixtureServer {
         messages: { items: session.messages.slice(-50), has_more: session.hasMore || session.messages.length > 50 },
         in_flight_turn: session.inFlightTurn,
         subagents: session.subagents,
+        ...(session.contentRefs.length > 0 ? { contentRefs: session.contentRefs } : {}),
         pending_approvals: session.pendingApprovals,
         pending_questions: session.pendingQuestions,
       });

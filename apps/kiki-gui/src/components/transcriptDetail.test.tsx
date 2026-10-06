@@ -715,6 +715,53 @@ describe('real roster remainder', () => {
     await click(container.querySelector('[data-content-continuation-action]'));
     expect(loadContent).toHaveBeenCalledWith(ref);
   });
+
+  /**
+   * The composer's footer outlet. The composer renders outside
+   * `TranscriptDetailProvider`, so it is handed the refs instead — and the point
+   * of these is that a supplied handle is the *same* source, not a second copy:
+   * the same refs, the same per-ref load states, and the same loader.
+   */
+  it('reads a supplied handle when there is no provider, offering the same rows', async () => {
+    const title = boundedRef({ kind: 'snapshot', id: '' }, ['session', 'title'], 'text', 12, 40);
+    const request = vi.fn();
+    const container = await render(
+      <SessionRemainder handle={{
+        pending: [title],
+        statusOf: () => undefined,
+        request,
+      }} />,
+    );
+    await click(container.querySelector('[data-session-remainder-toggle]'));
+    const row = container.querySelector('[data-continuation-kind="session"]');
+    expect(row?.textContent).toContain('Session info');
+    await click(row?.querySelector('[data-content-continuation-action]'));
+    expect(request).toHaveBeenCalledWith(title);
+  });
+
+  it('renders nothing from a supplied handle when nothing is remaining', async () => {
+    const container = await render(
+      <SessionRemainder handle={{ pending: [], statusOf: () => undefined, request: vi.fn() }} />,
+    );
+    expect(container.querySelector('[data-session-remainder]')).toBeNull();
+  });
+
+  it('carries a per-ref load state into the supplied outlet, so recovery is the same', async () => {
+    const title = boundedRef({ kind: 'snapshot', id: '' }, ['session', 'title'], 'text', 12, 40);
+    const container = await render(
+      <SessionRemainder handle={{
+        pending: [title],
+        statusOf: () => ({ status: 'error', message: 'refused' }),
+        request: vi.fn(),
+      }} />,
+    );
+    await click(container.querySelector('[data-session-remainder-toggle]'));
+    const row = container.querySelector('[data-continuation-kind="session"]');
+    // A failed read offers the retry rather than a silent dead row, exactly as
+    // it does inside the provider.
+    expect(row?.textContent).toContain('Could not load the rest of this content');
+    expect(row?.querySelector('[data-content-continuation-action]')).not.toBeNull();
+  });
 });
 
 it('a real controller-backed open tool automatically finishes both fields without a continuation click', async () => {

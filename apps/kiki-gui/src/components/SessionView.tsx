@@ -51,6 +51,12 @@ import { PersonaSessionIdentity } from './persona/PersonaSessionIdentity';
 import { PersonaSettingsDialog } from './persona/PersonaSettingsUpdate';
 import { sessionPersonaId } from './persona/personaSessionUtils';
 import { WorktreeMark } from './WorktreeMark';
+import {
+  contentSegmentKey,
+  isSessionRemainderRef,
+  type ContentContinuationHandle,
+} from './transcriptDetail';
+import type { ContentRef } from '@kiki/transcript';
 import { MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import type { MediaPreviewApi } from './mediaPreviewContext';
 import {
@@ -3878,6 +3884,29 @@ boundExecution,
     () => state.tasks.filter((task) => task.status === 'running').length,
     [state.tasks],
   );
+  // The session's own remainder, offered from the composer's footer rather than
+  // only from the reading column: the reader is most often at the input, and a
+  // footer that does not say what is missing makes the input look like the whole
+  // conversation.
+  //
+  // This reads the same controller state the workspace's own outlet reads — the
+  // one published `contentRefs` and `detailLoads`, and the same
+  // `loadContentSegment` that fills them — so the two outlets are two views of
+  // one source, not two copies. A session whose structure the window carried in
+  // full reports nothing here and the entry disappears, rather than claiming to
+  // have read everything.
+  const sessionRemainder = useMemo(() => {
+    if (controller === null) return undefined;
+    const refs = (state.contentRefs ?? []).filter(isSessionRemainderRef);
+    if (refs.length === 0) return undefined;
+    const loads = state.detailLoads;
+    const loadContent = (ref: ContentRef) => controller.loadContentSegment(MAIN_AGENT_ID, ref);
+    return {
+      pending: refs,
+      statusOf: (ref: ContentRef) => loads[contentSegmentKey(ref)],
+      request: (ref: ContentRef) => { void loadContent(ref); },
+    } satisfies ContentContinuationHandle;
+  }, [controller, state.contentRefs, state.detailLoads]);
   // A model request parked on a governance permit shows a quiet "Queued" status
   // with an inline detail popover — the rules themselves stay in /usage.
   // The poll mounts only while the line can be visible.
@@ -4001,6 +4030,7 @@ boundExecution,
             onSendNow={handleComposerSendNow}
             sendTimingDefault={liveSettings.defaultAppendTiming}
             working={composerWorkingInfo}
+            sessionRemainder={sessionRemainder}
             onAbort={handleComposerAbort}
             queueEditing={queueEdit !== null}
             onQueueEditConfirm={handleQueueEditConfirm}
