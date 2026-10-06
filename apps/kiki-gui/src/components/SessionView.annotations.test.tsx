@@ -19,7 +19,8 @@ const { seat, submit, queueStub, fixture } = vi.hoisted(() => ({
   submit: {
     // Each send hands the test a deferred result so it can inspect the
     // composer mid-flight, then settle it (accepted / queued / rejected).
-    calls: [] as { text: string; input?: { promptId?: string; content?: unknown; model?: string; thinking?: string; permissionMode?: string; appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done' }; now?: true; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
+    calls: [] as { text: string; input?: { promptId?: string; content?: unknown; model?: string; thinking?: string; permissionMode?: string; appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done'; onPreservation?: (persisted: boolean) => void; onAcknowledged?: () => void }; now?: true; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
+    persisted: true,
     steered: [] as string[],
   },
   queueStub: {
@@ -36,6 +37,7 @@ const { seat, submit, queueStub, fixture } = vi.hoisted(() => ({
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../state/connection', () => {
   const client = {
+    klient: { session: () => ({ agent: () => ({ events: { on: () => ({ ready: Promise.resolve(), dispose: () => {} }) } }) }) },
     sessionView: () => ({}),
     getConfig: () => Promise.resolve({ default_model: 'provider/native-model' }),
     listModels: () => Promise.resolve({ items: [] }),
@@ -107,12 +109,14 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
 
     setFocusedAgent() {}
     handleSessionRecord(record: unknown) { fixture.records.push({ sessionId: this.sessionId, record }); }
-    sendPrompt(input: { text: string; model?: string; thinking?: string; permissionMode?: string; appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done' }) {
-      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, input, resolve, reject }); });
+    sendPrompt(input: NonNullable<(typeof submit.calls)[number]['input']> & { text: string }) {
+      input.onPreservation?.(submit.persisted);
+      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, input, resolve: (value) => { input.onAcknowledged?.(); resolve(value); }, reject }); });
     }
     // Send now goes through the controller's steer ledger, never a queue-then-steer pair.
-    sendPromptNow(input: { text: string; model?: string; thinking?: string; permissionMode?: string }) {
-      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, input, now: true, resolve, reject }); });
+    sendPromptNow(input: NonNullable<(typeof submit.calls)[number]['input']> & { text: string }) {
+      input.onPreservation?.(submit.persisted);
+      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, input, now: true, resolve: (value) => { input.onAcknowledged?.(); resolve(value); }, reject }); });
     }
     steerQueued(promptId: string) { submit.steered.push(promptId); return Promise.resolve(); }
     replaceQueued(promptId: string, text: string) {
@@ -203,11 +207,11 @@ type ComposerProps = {
     attachments: readonly ComposerAttachment[],
     options?: { readonly goalObjective?: string; readonly appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done' },
   ) => Promise<unknown> | undefined;
-  onSendNow: (text: string, attachments: readonly never[]) => Promise<unknown> | undefined;
+  onSendNow: (text: string, attachments: readonly ComposerAttachment[]) => Promise<unknown> | undefined;
   onChangeModel: (model: string | undefined) => void;
   onChangePermissionMode: (mode: 'manual' | 'auto' | 'yolo') => void;
   serverDefaultModel?: string;
-  onQueueEditConfirm?: (text: string) => Promise<void>;
+  onQueueEditConfirm?: (text: string, attachments: readonly ComposerAttachment[]) => Promise<void>;
   onQueueEditCancel?: () => void;
   onUpdateAnnotation?: (id: string, comment: string) => void;
 };
@@ -390,7 +394,7 @@ describe('session selection annotations', () => {
     ['a plain send', 'running', false],
     ['a send that parks in the queue', 'queued', false],
     ['send now (steered into the running turn)', 'queued', true],
-  ] as const)('takes the notes off the composer the moment %s goes out', async (_label, status, now) => {
+  ] as const)('takes the notes off the composer once %s is durably preserved', async (_label, status, now) => {
     await withSession(async () => {
       let sent: Promise<unknown> | undefined;
       await act(async () => {
@@ -410,6 +414,28 @@ describe('session selection annotations', () => {
       // The ledger steers by itself; the view never issues a follow-up steer.
       expect(submit.steered).toEqual([]);
     });
+  });
+
+  it.each([false, true])('retains the composition until ACK when durable preservation fails (sendNow=%s)', async (now) => {
+    submit.persisted = false;
+    try {
+      await withSession(async () => {
+        const savedNotes = currentAnnotations();
+        const attachment: ComposerAttachment = { kind: 'retained', name: 'saved.png', content: { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'AAAA' } } };
+        await act(async () => { composerProps().onChange('UNCONFIRMED'); composerProps().onChangeAttachments([attachment]); });
+        let sent: Promise<unknown> | undefined;
+        await act(async () => { sent = now ? composerProps().onSendNow('UNCONFIRMED', [attachment]) : composerProps().onSend('UNCONFIRMED', [attachment]); });
+        expect(composerProps().value).toBe('UNCONFIRMED');
+        expect(composerProps().attachments).toEqual([attachment]);
+        expect(currentAnnotations()).toEqual(savedNotes);
+        await act(async () => { submit.calls[0]!.resolve(now ? { promptId: 'prompt-1', outcome: 'steered' } : accepted('running')); await sent; });
+        expect(composerProps().value).toBe('');
+        expect(composerProps().attachments).toEqual([]);
+        expect(currentAnnotations()).toEqual([]);
+      });
+    } finally {
+      submit.persisted = true;
+    }
   });
 
   it.each([
@@ -505,7 +531,7 @@ describe('session selection annotations', () => {
       // Editing the note rides the confirm back into the queued text's prefix.
       const noteId = currentAnnotations()[0]!.id;
       await act(async () => { composerProps().onUpdateAnnotation!(noteId, 'noted harder'); });
-      await act(async () => { await composerProps().onQueueEditConfirm!('edited body'); });
+      await act(async () => { await composerProps().onQueueEditConfirm!('edited body', composerProps().attachments); });
       expect(queueStub.replaced).toEqual([
         { promptId: 'p-queued', text: '> quoted passage\n\nComment: noted harder\n\nedited body' },
       ]);
@@ -571,7 +597,13 @@ describe('session selection annotations', () => {
       const retry = getToasts().at(-1)!.retry!;
       await act(async () => { retry.run(); retry.run(); });
       expect(submit.calls).toHaveLength(2);
-      expect(submit.calls[1]!.input).toEqual(captured);
+      const { onPreservation: firstPreservation, onAcknowledged: firstAcknowledged, ...capturedPayload } = captured!;
+      const { onPreservation: retryPreservation, onAcknowledged: retryAcknowledged, ...retriedPayload } = submit.calls[1]!.input!;
+      expect(retriedPayload).toEqual(capturedPayload);
+      expect(firstPreservation).toBeTypeOf('function');
+      expect(firstAcknowledged).toBeTypeOf('function');
+      expect(retryPreservation).toBeTypeOf('function');
+      expect(retryAcknowledged).toBeTypeOf('function');
       expect(composerProps().value).toBe('NEW Y');
       if (retryFails) {
         await act(async () => { submit.calls[1]!.reject(new Error('prompt_id already in use')); });

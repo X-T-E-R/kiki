@@ -18,6 +18,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@kiki/protocol';
+import { clearComposerState, clearStoredDrafts, resetComposerMemoryForTests, resetDraftMemoryForTests } from '@kiki/session-core/composer';
 import { I18nProvider } from '../i18n';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { ConversationShell } from './ConversationShell';
@@ -109,10 +110,13 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
       // The engine binds the profile carried by the message it accepts, so the
       // session record reports it from then on. This is the observable end of
       // the switch, and it is what the chip reflects.
-      const carried = (input as { profile?: string }).profile;
+      const carried = (input as { execution?: { profile?: string } }).execution?.profile;
       if (carried !== undefined) {
         fixture.profile = carried;
         this.state.profile = carried;
+        if (this.state.session !== undefined) {
+          this.state.session = { ...this.state.session, agent_config: { ...this.state.session.agent_config, profile: carried } };
+        }
       }
       return result;
     }
@@ -202,7 +206,7 @@ async function mount() {
     );
   });
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    if (container.querySelector('#composer-agent-profile-select') !== null) break;
+    if (container.querySelector('#composer-execution-select') !== null) break;
     await settle();
   }
   return { container };
@@ -221,11 +225,11 @@ async function click(element: Element | null | undefined): Promise<void> {
 }
 
 const profileTrigger = (container: HTMLElement) =>
-  ui(container).querySelector<HTMLButtonElement>('#composer-agent-profile-select');
+  ui(container).querySelector<HTMLButtonElement>('#composer-execution-select');
 
 const profileRow = (container: HTMLElement, name: string) =>
-  [...ui(container).querySelectorAll<HTMLElement>('#composer-agent-profile-select-list [role="option"]')]
-    .find((row) => row.textContent?.includes(name));
+  [...ui(container).querySelectorAll<HTMLElement>('[data-execution-profile]')]
+    .find((row) => row.dataset['executionProfile'] === name);
 
 const dialogButton = (container: HTMLElement, label: string) =>
   [...ui(container).querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')]
@@ -257,6 +261,10 @@ async function sendNextMessage(container: HTMLElement): Promise<void> {
 }
 
 beforeEach(() => {
+  clearComposerState('session-a');
+  clearStoredDrafts();
+  resetComposerMemoryForTests();
+  resetDraftMemoryForTests();
   clearToasts();
   sendPrompt.mockReset().mockImplementation(async () => promptResult.current);
   steerQueued.mockReset().mockResolvedValue(undefined);
@@ -270,7 +278,7 @@ beforeEach(() => {
   fixture.session = {
     workspace_id: 'wd_alpha',
     title: 'Release prep',
-    agent_config: {},
+    agent_config: { profile: 'agent' },
     metadata: {},
   } as unknown as Session;
   promptResult.current = { status: 'started', prompt_id: 'prompt-1' };
@@ -290,7 +298,8 @@ describe('switching profile while a turn is running', () => {
 
     // One confirmation, naming the profile and when it lands.
     const dialog = ui(container).querySelector('[role="alertdialog"]');
-    expect(dialog?.textContent).toContain('Switch to reviewer?');
+    expect(dialog?.textContent).toContain('Switch to Kiki?');
+    expect(dialog?.textContent).toContain('The reviewer profile supplies Kiki’s prompt, tools and context');
     expect(dialog?.textContent).toContain('next message');
     // Mid-run, the dialog also answers the question a running user has.
     expect(dialog?.textContent).toContain('running now');
@@ -299,7 +308,7 @@ describe('switching profile while a turn is running', () => {
     expect(abort).not.toHaveBeenCalled();
     expect(profileTrigger(container)?.textContent).toContain('Kiki');
 
-    await click(dialogButton(container, 'Switch profile'));
+    await click(dialogButton(container, 'Switch engine'));
     // Pending is shown as pending, in words, not as already-applied.
     expect(profileTrigger(container)?.textContent).toContain('next message');
     expect(sendPrompt).not.toHaveBeenCalled();
@@ -329,15 +338,15 @@ describe('switching profile while a turn is running', () => {
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'reviewer'));
-    await click(dialogButton(container, 'Switch profile'));
+    await click(dialogButton(container, 'Switch engine'));
 
     await sendNextMessage(container);
 
     // The next user message carries the new profile, with model/thinking
     // withheld so the new profile's own pins apply.
     expect(sendPrompt).toHaveBeenCalledTimes(1);
-    const submission = sendPrompt.mock.calls[0]?.[0] as { profile?: string; model?: string; thinking?: string };
-    expect(submission.profile).toBe('reviewer');
+    const submission = sendPrompt.mock.calls[0]?.[0] as { execution?: { executor: string; profile?: string }; model?: string; thinking?: string };
+    expect(submission.execution).toEqual({ executor: 'native', profile: 'reviewer' });
     expect(submission.model).toBeUndefined();
     expect(submission.thinking).toBeUndefined();
     // It opened its own turn instead of steering into the live one, and the
@@ -357,7 +366,7 @@ describe('switching profile while a turn is running', () => {
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'reviewer'));
-    await click(dialogButton(container, 'Switch profile'));
+    await click(dialogButton(container, 'Switch engine'));
 
     await sendNextMessage(container);
 
@@ -373,7 +382,7 @@ describe('switching profile while a turn is running', () => {
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'reviewer'));
-    await click(dialogButton(container, 'Switch profile'));
+    await click(dialogButton(container, 'Switch engine'));
 
     await sendNextMessage(container);
 
@@ -388,13 +397,13 @@ describe('switching profile while a turn is running', () => {
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'reviewer'));
-    await click(dialogButton(container, 'Switch profile'));
+    await click(dialogButton(container, 'Switch engine'));
     expect(profileTrigger(container)?.textContent).toContain('next message');
 
     await click(profileTrigger(container));
     await settle();
-    // The default profile's row carries the product name, not its raw id.
-    await click(profileRow(container, 'Kiki'));
+    // The profile row keeps its stable identity under the engine control.
+    await click(profileRow(container, 'agent'));
 
     // No confirmation for a revert, and no pending state left behind.
     expect(container.querySelector('[role="alertdialog"]')).toBeNull();

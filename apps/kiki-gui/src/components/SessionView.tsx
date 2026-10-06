@@ -2983,7 +2983,7 @@ boundExecution,
   // publish, re-registering TopEdge's scroll listener and defeating the
   // memoized block components.
   const handleLoadOlder = useCallback(
-    () => controller?.loadOlderMessages(MAIN_AGENT_ID) ?? Promise.resolve(false),
+    (signal?: AbortSignal) => controller?.loadOlderMessages(MAIN_AGENT_ID, signal) ?? Promise.resolve(false),
     [controller],
   );
 
@@ -3336,8 +3336,13 @@ boundExecution,
   const handleRemoveQueuedAttachment = useCallback((promptId: string, attachmentIndex: number) => {
     const item = queuedItems.find((entry) => entry.promptId === promptId);
     if (controller === null || item?.content === undefined) return Promise.resolve();
-    return controller.replaceQueued(promptId, item.text, withoutQueuedAttachment(item.content, attachmentIndex))
-      .catch((error: unknown) => {
+    const incomplete = controller.contentRefsFor(MAIN_AGENT_ID, { kind: 'prompt', id: promptId }).some((ref) => ref.path[0] === 'content');
+    const original = incomplete ? controller.readQueuedPromptContent(promptId) : Promise.resolve(item.content);
+    return original.then((content) => {
+      if (content === undefined) return;
+      const text = incomplete ? content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n') : item.text;
+      return controller.replaceQueued(promptId, text, withoutQueuedAttachment(content, attachmentIndex));
+    }).catch((error: unknown) => {
         pushToast({
           tone: 'error',
           text: t('sv.editQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }),
@@ -3352,31 +3357,35 @@ boundExecution,
       if (queueEdit !== null) return;
       const item = queuedItems.find((entry) => entry.promptId === promptId);
       if (item === undefined || (item.text === '' && (item.media?.length ?? 0) === 0)) return;
-      setQueueEdit({
-        promptId,
-        owner: crypto.randomUUID(),
-        attachments: retainedAttachmentsFromContent(item.content ?? []),
-        savedDraft: draftRef.current,
-        savedQuote: quote,
-        savedQuoteSource: quoteSource,
-        savedAnnotations: annotations,
+      const open = (content: readonly MessageContent[], text: string) => {
+        if (!composerOwnerActive.current || queueEditRef.current !== null) return;
+        setQueueEdit({
+          promptId,
+          owner: crypto.randomUUID(),
+          attachments: retainedAttachmentsFromContent(content),
+          savedDraft: draftRef.current,
+          savedQuote: quote,
+          savedQuoteSource: quoteSource,
+          savedAnnotations: annotations,
+        });
+        const carryovers = parseSelectionCarryovers(stripThreadRefContext(text));
+        updateDraft(carryovers.body);
+        setQuote(carryovers.quote);
+        setQuoteSource(carryovers.quoteSource);
+        setAnnotations(carryovers.annotations.reduce<readonly SelectionAnnotation[]>(
+          (current, note) => addAnnotation(current, note.quote, note.comment, note.source), [],
+        ));
+      };
+      const incomplete = controller?.contentRefsFor(MAIN_AGENT_ID, { kind: 'prompt', id: promptId }).some((ref) => ref.path[0] === 'content') === true;
+      if (!incomplete) { open(item.content ?? [], item.text); return; }
+      const parkedDraft = draftRef.current;
+      void controller?.readQueuedPromptContent(promptId).then((content) => {
+        if (content !== undefined && draftRef.current === parkedDraft) open(content, content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n'));
+      }).catch((error: unknown) => {
+        pushToast({ tone: 'error', text: t('sv.editQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
       });
-      // The composer re-attaches the thread context on confirm. The parked
-      // text's selection carry-overs come back as composer chips, so notes and
-      // the plain quote stay editable (and keep marking the timeline) instead
-      // of flattening into plain text.
-      const carryovers = parseSelectionCarryovers(stripThreadRefContext(item.text));
-      updateDraft(carryovers.body);
-      setQuote(carryovers.quote);
-      setQuoteSource(carryovers.quoteSource);
-      setAnnotations(
-        carryovers.annotations.reduce<readonly SelectionAnnotation[]>(
-          (current, note) => addAnnotation(current, note.quote, note.comment, note.source),
-          [],
-        ),
-      );
     },
-    [queueEdit, queuedItems, quote, quoteSource, annotations, updateDraft],
+    [queueEdit, queuedItems, quote, quoteSource, annotations, updateDraft, controller, t],
   );
   const updateQueueEditAttachments = useCallback((next: readonly ComposerAttachment[] | ((previous: readonly ComposerAttachment[]) => readonly ComposerAttachment[])) => {
     const owner = queueEdit?.owner;
