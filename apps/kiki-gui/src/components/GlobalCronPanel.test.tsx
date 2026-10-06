@@ -11,6 +11,7 @@ import { I18nProvider } from '../i18n';
 import { ApiError, type CronTask } from '../lib/client';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { MemoryRouter } from 'react-router-dom';
+import { en as EN_DICTIONARY } from '@kiki/session-core/i18n/en';
 import { CronPage, filterCronTasks } from './GlobalCronPanel';
 
 const listCronTasks = vi.fn();
@@ -464,6 +465,8 @@ describe('CronPage', () => {
       cron: '0 9 * * *',
       prompt: 'Summarize the overnight logs.',
       recurring: true,
+      // A new task states the default rather than relying on the host's.
+      delivery_mode: 'idle',
     });
     expect(getToasts().some((toast) => toast.text === 'Scheduled task created')).toBe(true);
     expect(document.querySelector('[data-cron-editor-title]')).toBeNull();
@@ -724,5 +727,137 @@ describe('filterCronTasks', () => {
     const tasks = [{ workspace_id: 'a' }, { workspace_id: 'b' }];
     expect(filterCronTasks(tasks, undefined)).toEqual(tasks);
     expect(filterCronTasks(tasks, 'b')).toEqual([{ workspace_id: 'b' }]);
+  });
+});
+
+describe('scheduled-task delivery timing', () => {
+  // The panel renders in whichever locale jsdom resolves; the row chips are
+  // matched by their stable data attribute, so only the detail's two
+  // sentences need to be read out of the live dictionary.
+  const dictionary = EN_DICTIONARY;
+  const detailLabel = dictionary['cron.detail.delivery']!;
+  const queueHint = dictionary['cron.delivery.hint.queue']!;
+
+  const openEditor = async (page: HTMLElement, id: string): Promise<void> => {
+    await act(async () => { page.querySelector<HTMLButtonElement>(`[data-cron-task="${id}"] [data-cron-action="edit"]`)!.click(); });
+    await flush();
+  };
+  const pick = async (mode: 'queue' | 'steer' | 'idle'): Promise<void> => {
+    await act(async () => { document.querySelector<HTMLButtonElement>(`[data-cron-delivery-mode="${mode}"]`)!.click(); });
+    await flush();
+  };
+
+  it('labels each row with its effective mode and explains it in the detail', async () => {
+    seedTasks([
+      makeCronTask({ id: 'idle-task', delivery_mode: 'idle' }),
+      makeCronTask({ id: 'queue-task', delivery_mode: 'queue' }),
+      makeCronTask({ id: 'steer-task', delivery_mode: 'steer' }),
+      // A task from before modes existed: no field, so it reads as the default
+      // the host will apply on its next fire.
+      makeCronTask({ id: 'legacy-task' }),
+    ]);
+    await mount();
+    const page = await openPanel();
+
+    const modeOf = (id: string) => page.querySelector(`[data-cron-task="${id}"] [data-cron-delivery]`)?.getAttribute('data-cron-delivery');
+    expect(modeOf('idle-task')).toBe('idle');
+    expect(modeOf('queue-task')).toBe('queue');
+    expect(modeOf('steer-task')).toBe('steer');
+    // A task from before modes existed: no field, so it reads as the default
+    // the host will apply on its next fire — and never as a mode it lacks.
+    expect(modeOf('legacy-task')).toBe('idle');
+    expect(page.querySelectorAll('[data-cron-task] [data-cron-delivery]')).toHaveLength(4);
+
+    await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-task="queue-task"] [data-cron-action="expand"]')!.click(); });
+    await flush();
+    // The detail states the timing in words, so the row chip is not the only
+    // place a person can find out what firing this does.
+    const detail = page.querySelector('[data-cron-task="queue-task"] [data-cron-detail]')!;
+    expect(detail.querySelectorAll('[data-cron-detail] dt').length).toBeGreaterThan(0);
+    expect(detail.textContent).toContain(detailLabel);
+    expect(detail.textContent).toContain(queueHint);
+  });
+
+  it('creates with the default and each chosen mode reaches the server', async () => {
+    createCronTask.mockImplementation((input: { session_id: string; cron: string; prompt: string; recurring: boolean; delivery_mode?: 'queue' | 'steer' | 'idle' }) => {
+      const created = makeCronTask({ id: 'created-1', session_id: input.session_id, cron: input.cron, prompt_preview: input.prompt, delivery_mode: input.delivery_mode });
+      currentTasks = [...currentTasks, created];
+      return Promise.resolve({ task: { ...created, prompt: input.prompt } });
+    });
+    await mount();
+    const page = await openPanel();
+
+    await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-create]')!.click(); });
+    await flush();
+    // A new task is idle unless the person says otherwise, and the form says
+    // so by selecting it.
+    expect(document.querySelector<HTMLButtonElement>('[data-cron-delivery-mode="idle"]')!.getAttribute('aria-checked')).toBe('true');
+    await typeInto(document.querySelector<HTMLTextAreaElement>('[data-cron-prompt]')!, 'Check the overnight logs.');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-save]')!.click(); });
+    await flush();
+    expect(createCronTask).toHaveBeenLastCalledWith(expect.objectContaining({ delivery_mode: 'idle' }));
+
+    await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-create]')!.click(); });
+    await flush();
+    await pick('steer');
+    expect(document.querySelector<HTMLButtonElement>('[data-cron-delivery-mode="steer"]')!.getAttribute('aria-checked')).toBe('true');
+    // The hint under the choice is what tells the three apart.
+    expect(document.querySelector('[data-cron-delivery-hint]')!.textContent).toBe(dictionary['cron.form.delivery.hint.steer']);
+    await typeInto(document.querySelector<HTMLTextAreaElement>('[data-cron-prompt]')!, 'Read the release runbook.');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-save]')!.click(); });
+    await flush();
+    expect(createCronTask).toHaveBeenLastCalledWith(expect.objectContaining({ delivery_mode: 'steer' }));
+  });
+
+  it('keeps an explicit mode through an unrelated edit, and sends one when it is changed', async () => {
+    // The server keeps its own value when the request omits the field, so the
+    // mock drops the key rather than storing `undefined` under it — that is
+    // what the wire does, and it is the case this test is about.
+    updateCronTask.mockImplementation((id: string, patch: { cron?: string; prompt?: string; session_id?: string; recurring?: boolean; delivery_mode?: 'queue' | 'steer' | 'idle' }) => {
+      const found = currentTasks.find((task) => task.id === id);
+      if (found === undefined) {
+        return Promise.reject(new ApiError({ code: 40406, msg: `cron task ${id} does not exist`, data: null }));
+      }
+      const applied = { ...patch, delivery_mode: patch.delivery_mode ?? found.delivery_mode };
+      const updated: CronTask = { ...found, ...applied };
+      currentTasks = currentTasks.map((task) => (task.id === id ? updated : task));
+      return Promise.resolve({ task: { ...updated, prompt: patch.prompt ?? found.prompt_preview } });
+    });
+    seedTasks([makeCronTask({ id: 'task-1', cron: '0 9 * * *', delivery_mode: 'queue' })]);
+    await mount();
+    const page = await openPanel();
+
+    await openEditor(page, 'task-1');
+    expect(document.querySelector<HTMLButtonElement>('[data-cron-delivery-mode="queue"]')!.getAttribute('aria-checked')).toBe('true');
+    // Nothing about the timing was touched, so the save carries no mode and
+    // the host keeps the one the task already had.
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-cadence="hourly"]')!.click(); });
+    await flush();
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-save]')!.click(); });
+    await flush();
+    expect(updateCronTask.mock.calls[0]?.[1]).toMatchObject({ cron: '0 * * * *' });
+    expect(updateCronTask.mock.calls[0]?.[1]?.delivery_mode).toBeUndefined();
+    expect(currentTasks.find((task) => task.id === 'task-1')?.delivery_mode).toBe('queue');
+
+    await openEditor(page, 'task-1');
+    await pick('idle');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-save]')!.click(); });
+    await flush();
+    expect(updateCronTask.mock.calls[1]?.[1]).toMatchObject({ delivery_mode: 'idle' });
+    expect(currentTasks.find((task) => task.id === 'task-1')?.delivery_mode).toBe('idle');
+  });
+
+  it('shows an editor as unsupported when the host reports no mode at all', async () => {
+    seedTasks([makeCronTask({ id: 'task-1' })]);
+    await mount();
+    const page = await openPanel();
+
+    await openEditor(page, 'task-1');
+    expect(document.querySelector('[data-cron-delivery-unsupported]')).not.toBeNull();
+    // Still no mode on an untouched save: the field is never handed to a host
+    // that has not shown it understands one.
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-save]')!.click(); });
+    await flush();
+    expect(updateCronTask.mock.calls[0]?.[1]?.delivery_mode).toBeUndefined();
   });
 });

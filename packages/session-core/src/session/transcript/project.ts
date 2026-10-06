@@ -3070,7 +3070,7 @@ export function projectAgentTranscriptView(
     const revision = prompt.revision ?? existing?.revision;
     const queuePosition = prompt.queuePosition ?? existing?.queuePosition;
     if (prompt.originKind === 'cron_job') {
-      queuedPromptMeta[prompt.promptId] = { appendTiming, revision, queuePosition, originKind: prompt.originKind, content: promptContentParts(prompt.content) };
+      queuedPromptMeta[prompt.promptId] = { appendTiming, revision, queuePosition, originKind: prompt.originKind, content: promptContentParts(prompt.content), cronDeliveryMode: prompt.originDeliveryMode ?? existing?.cronDeliveryMode };
     } else {
       queuedPromptMeta[prompt.promptId] =
         existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision && existing.queuePosition === queuePosition

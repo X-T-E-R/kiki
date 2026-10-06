@@ -148,6 +148,7 @@ export const cronDeliveryModeSchema = z.enum(['queue', 'steer', 'idle']);
 
 export interface CronJobOrigin {
   readonly kind: 'cron_job';
+  /** Absent on records admitted before delivery modes existed; those stay FIFO. */
   readonly deliveryMode?: CronDeliveryMode;
   readonly jobId: string;
   readonly cron: string;

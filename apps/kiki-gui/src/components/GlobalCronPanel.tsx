@@ -27,7 +27,7 @@
 
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
-import type { Session, Workspace } from '@kiki/protocol';
+import type { CronDeliveryMode, Session, Workspace } from '@kiki/protocol';
 import { ErrorCode } from '@kiki/protocol';
 import { useSearchParams } from 'react-router-dom';
 import type { To } from 'react-router-dom';
@@ -123,6 +123,15 @@ function LastFire({ at }: { readonly at: string | null }) {
 const CHIP_BASE =
   'shrink-0 rounded-sm border border-transparent px-1.5 py-px text-[12px] font-medium';
 
+/**
+ * The delivery mode a row advertises. Absent on an older host, and on a task
+ * that predates modes: both read as the default the host will apply on the
+ * next fire, so the label never claims a distinction the server is not making.
+ */
+export function cronDeliveryMode(task: CronTask): CronDeliveryMode {
+  return task.delivery_mode ?? 'idle';
+}
+
 function StatusChip({ task }: { readonly task: CronTask }) {
   const { t } = useI18n();
   if (task.paused) {
@@ -178,6 +187,14 @@ function CronDetail({ task, sessionTitle, workspaceName, onOpenSession }: CronDe
           {task.next_fire_at === null
             ? <span className="text-ink-faint">{t('cron.status.paused')}</span>
             : <span className="tabular-nums">{time.absoluteTime(task.next_fire_at)}</span>}
+        </Fact>
+        {/* The detail says what firing the prompt does to a busy conversation,
+            because that is the one fact the schedule itself cannot carry. */}
+        <Fact label={t('cron.detail.delivery')}>
+          {t(`cron.delivery.${cronDeliveryMode(task)}`)}
+          <span className="mt-0.5 block text-[11.5px] leading-relaxed text-ink-faint">
+            {t(`cron.delivery.hint.${cronDeliveryMode(task)}`)}
+          </span>
         </Fact>
         <Fact label={t('cron.detail.expression')}>
           <span className="font-mono text-[12px] text-ink">{task.cron}</span>
@@ -280,6 +297,12 @@ function CronTaskRow({
             {task.next_fire_at !== null ? <StatusChip task={task} /> : null}
             <span className={`${CHIP_BASE} border-hairline bg-paper text-ink-faint`}>
               {task.recurring ? t('cron.kind.recurring') : t('cron.kind.oneShot')}
+            </span>
+            <span
+              data-cron-delivery={cronDeliveryMode(task)}
+              className={`${CHIP_BASE} border-hairline bg-paper text-ink-soft`}
+            >
+              {t(`cron.delivery.${cronDeliveryMode(task)}`)}
             </span>
             {task.stale ? (
               <span data-cron-status="stale" className={`${CHIP_BASE} bg-amber-card text-amber-ink`}>
@@ -556,7 +579,16 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
       readonly cron: string;
       readonly prompt: string;
       readonly recurring: boolean;
-    }) => client.createCronTask(input),
+      readonly delivery_mode: CronDeliveryMode;
+      /** Whether the form states the mode; a create always sends it. */
+      readonly sendDeliveryMode: boolean;
+    }): Promise<{ readonly task: CronTaskDetail }> => client.createCronTask({
+      session_id: input.session_id,
+      cron: input.cron,
+      prompt: input.prompt,
+      recurring: input.recurring,
+      delivery_mode: input.delivery_mode,
+    }),
     onSuccess: () => {
       pushToast({ tone: 'success', text: t('cron.toast.created') });
       setEditing(null);
@@ -789,6 +821,7 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
             // seeds it from its own detail read. Handing the preview down
             // would let a save write the truncation over the real prompt.
             recurring: editorTask.recurring,
+            delivery_mode: editorTask.delivery_mode,
           }}
           sessions={sessions}
           workspaceOptions={workspaceOptions}
@@ -805,6 +838,10 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
               prompt: input.prompt,
               recurring: input.recurring,
               session_id: input.session_id,
+              // An untouched control sends no field, so the host keeps the
+              // mode the task already has. Sending a value the form merely
+              // displayed would rewrite a `queue` task the user never touched.
+              delivery_mode: input.sendDeliveryMode ? input.delivery_mode : undefined,
             };
             updateMutation.mutate({ task: editorTask, patch });
           }}

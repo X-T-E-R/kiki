@@ -259,6 +259,156 @@ describe('QueueStrip edit round-trip', () => {
   });
 });
 
+describe('QueueStrip scheduled delivery modes', () => {
+  const cron = (promptId: string, cronDeliveryMode: 'queue' | 'steer' | 'idle' | undefined, text = 'Controller self-check.') => ({
+    promptId,
+    text,
+    originKind: 'cron_job' as const,
+    cronDeliveryMode,
+    content: [{ type: 'text' as const, text }],
+    media: [],
+  });
+
+  it('keeps a queue-mode job an ordinary queued message, controls and all', async () => {
+    const onEdit = vi.fn();
+    const onSendNow = vi.fn();
+    const onMove = vi.fn();
+    const onChangeTiming = vi.fn();
+    const { container } = await renderStrip({
+      items: [cron('q1', 'queue'), { promptId: 'user-1', text: 'my own message' }],
+      onEdit, onSendNow, onMove, onChangeTiming,
+    });
+    const row = rows(container)[0]!;
+    // In the user's send order, so nothing is withheld: the row is not marked
+    // held and it carries the same controls as the message beside it.
+    expect(row.getAttribute('data-queue-held')).toBeNull();
+    expect(row.querySelector('button[aria-label="Reorder this queued prompt"]')).not.toBeNull();
+    expect(row.querySelector('select[data-timing-picker]')).not.toBeNull();
+    const sendNow = row.querySelector<HTMLButtonElement>('button[aria-label="Send now"]')!;
+    expect(sendNow.disabled).toBe(false);
+    await click(sendNow);
+    expect(onSendNow).toHaveBeenCalledWith('q1');
+  });
+
+  it('treats a legacy scheduled record with no mode as the FIFO it still is', async () => {
+    const { container } = await renderStrip({
+      items: [cron('legacy', undefined), { promptId: 'user-1', text: 'my own message' }],
+      onMove: vi.fn(),
+      onChangeTiming: vi.fn(),
+    });
+    const row = rows(container)[0]!;
+    expect(row.getAttribute('data-queue-held')).toBeNull();
+    expect(row.querySelector('button[aria-label="Reorder this queued prompt"]')).not.toBeNull();
+    expect(row.querySelector('select[data-timing-picker]')).not.toBeNull();
+  });
+
+  it.each(['idle', 'steer'] as const)('keeps a %s job readable and removable but out of the send order', async (mode) => {
+    const onSendNow = vi.fn();
+    const onEdit = vi.fn();
+    const onRemove = vi.fn();
+    const { container } = await renderStrip({
+      items: [cron('held-1', mode, 'Read the runbook before the next release.'), { promptId: 'user-1', text: 'my own message' }],
+      onSendNow, onEdit, onRemove, onMove: vi.fn(), onChangeTiming: vi.fn(),
+    });
+    const row = rows(container)[0]!;
+    expect(row.getAttribute('data-queue-held')).toBe(mode);
+    // It names the timing that holds it instead of pretending to be pending.
+    // The mode chip carries only the mode — the row's badge beside it already
+    // says "scheduled", so repeating the word would stutter.
+    expect(row.querySelector('[data-queue-held-mode]')?.textContent).toBe(
+      mode === 'idle' ? 'Insert when idle' : 'Insert immediately',
+    );
+    expect(row.textContent).toContain('Read the runbook before the next release.');
+    // The controls that would re-order or rush it are absent, not greyed out:
+    // a dead Send now beside a live one reads as a broken row, and a note
+    // saying the row is read-only costs the preview the width it needs.
+    expect(row.querySelector('button[aria-label="Reorder this queued prompt"]')).toBeNull();
+    expect(row.querySelector('select[data-timing-picker]')).toBeNull();
+    expect(row.querySelector('button[aria-label="Send now"]')).toBeNull();
+    expect(row.querySelector('[data-queue-read-only]')).toBeNull();
+    // Remove stays: the record is real work, and withdrawing it is a real
+    // action. Two-step like any other row: arm, then remove.
+    const disclosure = row.querySelector('details')!;
+    expect(disclosure.querySelector('p')?.textContent).toBe('Read the runbook before the next release.');
+    await click(rows(container)[0]!.querySelector<HTMLButtonElement>('button[aria-label="Remove"]')!);
+    await click(rows(container)[0]!.querySelector<HTMLButtonElement>('button[aria-label="Remove?"]')!);
+    expect(onRemove).toHaveBeenCalledWith('held-1');
+    expect(onSendNow).not.toHaveBeenCalled();
+  });
+
+  it('gives a held job the same shape whether or not user messages are queued', async () => {
+    // Held alone, the row must not acquire controls just because there is
+    // nothing beside it to compare against.
+    const { container } = await renderStrip({
+      items: [cron('held-1', 'idle')],
+      onEdit: vi.fn(),
+      onMove: vi.fn(),
+      onChangeTiming: vi.fn(),
+    });
+    const row = rows(container)[0]!;
+    expect(row.getAttribute('data-queue-held')).toBe('idle');
+    expect(row.querySelector('button[aria-label="Send now"]')).toBeNull();
+    expect(row.querySelector('button[aria-label="Reorder this queued prompt"]')).toBeNull();
+    expect(row.querySelector('select[data-timing-picker]')).toBeNull();
+    expect(row.querySelector('button[aria-label="Remove"]')).not.toBeNull();
+  });
+
+  it('keeps user messages and attachment-only rows out of the mode rule entirely', async () => {
+    const { container } = await renderStrip({
+      items: [
+        { promptId: 'user-1', text: 'my own message' },
+        { promptId: 'user-2', text: '', media: [{ kind: 'image', url: 'https://example.test/a.png' }] as never },
+        cron('held-1', 'idle'),
+      ],
+      onMove: vi.fn(),
+      onChangeTiming: vi.fn(),
+    });
+    const [first, second, third] = rows(container);
+    expect(first!.getAttribute('data-queue-held')).toBeNull();
+    expect(second!.getAttribute('data-queue-held')).toBeNull();
+    expect(first!.querySelector('select[data-timing-picker]')).not.toBeNull();
+    expect(second!.querySelector('select[data-timing-picker]')).not.toBeNull();
+    expect(third!.getAttribute('data-queue-held')).toBe('idle');
+  });
+
+  async function renderSummary(count: number, heldCount: number): Promise<HTMLDivElement> {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <QueueHeaderSummary count={count} heldCount={heldCount} />
+        </I18nProvider>,
+      );
+    });
+    return container;
+  }
+
+  it('names held scheduled jobs beside the ordinary count instead of counting them as queued', async () => {
+    const container = await renderSummary(2, 1);
+    expect(container.querySelector('[data-queue-count]')?.textContent).toBe('2 queued');
+    // Neutral about when they go: the count says they are waiting, and each
+    // row says its own timing. "Earlier" would claim an order the modes do
+    // not share.
+    expect(container.querySelector('[data-queue-held-count]')?.textContent).toContain('1 scheduled waiting');
+  });
+
+  it('shows only the scheduled jobs when nothing of your own is queued', async () => {
+    const container = await renderSummary(0, 2);
+    // "0 queued" beside real work reads as nothing to send.
+    expect(container.querySelector('[data-queue-count]')).toBeNull();
+    expect(container.querySelector('[data-queue-held-count]')?.textContent).toBe('2 scheduled waiting');
+  });
+
+  it('shows the ordinary count alone when nothing scheduled is held', async () => {
+    const container = await renderSummary(3, 0);
+    expect(container.querySelector('[data-queue-count]')?.textContent).toBe('3 queued');
+    expect(container.querySelector('[data-queue-held-count]')).toBeNull();
+  });
+});
+
 describe('QueueStrip drawer body', () => {
   it('identifies scheduled text and discloses its body without making it an editable attachment row', async () => {
     const text = 'Controller self-check: keep existing work running.';

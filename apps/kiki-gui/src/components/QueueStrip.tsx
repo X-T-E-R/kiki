@@ -27,6 +27,15 @@
  *     repaints from the server's authoritative order;
  *   - a header with the count plus Clear all.
  *
+ * A scheduled prompt appears in this list too, but only as something to read.
+ * A `queue` cron record really is in the person's send order, so it keeps the
+ * same drag handle, timing picker and Send now a typed message has. An `idle`
+ * or `steer` record is held by the engine outside that order: its row names the
+ * timing that holds it, and the re-order / rush-it-now controls are simply
+ * absent — not present and greyed out, which reads as a broken row. A message
+ * the user never queued cannot be re-timed like one they did, and Remove stays
+ * on every row because the record is real work that can be withdrawn.
+ *
  * The parent renders nothing for an empty queue; rows leave by reconcile
  * (promotion, steer, abort) — never by local removal.
  */
@@ -37,6 +46,7 @@ import type { DeferredAppendTiming } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { stripThreadRefContext } from '@kiki/session-core/composer';
 import type { QueuedPromptPreview } from '@kiki/session-core/session';
+import { isOrdinaryQueueItem } from '@kiki/session-core/session';
 import { mergeSessionQueueRows, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
 import { useI18n } from '../i18n';
 import type { QueuedModelSwitch } from '../lib/client';
@@ -63,14 +73,32 @@ export const TIMING_HINT_KEY = {
  * The queue sheet's label behind the composer card: "N 条待发送" on the left,
  * the disclosure chevron on the right. The first prompt's preview and quick
  * actions live in the detail, not on the strip.
+ *
+ * `count` is the ordinary send-order count. A scheduled record the engine
+ * holds outside that order still gets a row in the opened detail, so it is
+ * named here rather than inflating a count of messages waiting to go — and
+ * when it is the only thing waiting, it stands alone rather than sitting
+ * behind a "0 queued" that reads as nothing to send.
  */
-export function QueueHeaderSummary({ count }: { readonly count: number }) {
-  const { tp } = useI18n();
+export function QueueHeaderSummary({ count, heldCount = 0 }: { readonly count: number; readonly heldCount?: number }) {
+  const { t, tp } = useI18n();
   return (
     <span className="flex min-w-0 flex-1 items-center gap-2">
-      <span data-queue-count className="shrink-0 font-medium text-section-ink tabular-nums">
-        {tp('composer.queueStack.count', count)}
-      </span>
+      {count > 0 ? (
+        <span data-queue-count className="shrink-0 font-medium text-section-ink tabular-nums">
+          {tp('composer.queueStack.count', count)}
+        </span>
+      ) : null}
+      {heldCount > 0 ? (
+        <span
+          data-queue-held-count
+          className={count > 0 ? 'min-w-0 truncate text-[12px] text-ink-faint' : 'shrink-0 font-medium text-section-ink'}
+        >
+          {count > 0
+            ? t('queue.heldSummary', { count: heldCount })
+            : t('queue.heldOnlySummary', { count: heldCount })}
+        </span>
+      ) : null}
       <Icon name="chevron" size={12} className="ml-auto -rotate-90 text-ink-faint" />
     </span>
   );
@@ -389,16 +417,30 @@ export function QueueStrip({
     // Queued behind the prompt being edited: holds its place until the edit ends.
     const waitsForEdit = editIndex >= 0 && index > editIndex;
     const timing = item.appendTiming ?? 'agent_idle';
+    // A scheduled prompt the engine holds outside the ordinary send order:
+    // `idle` and `steer`. Its row is here so its text is readable, not because
+    // it is one of the messages the user is waiting to send — so it carries
+    // the timing that holds it instead of the per-message timing picker, and
+    // none of the controls that would re-order or rush it. The same predicate
+    // the composer header counts with, so a row and the count cannot disagree.
+    const held = !isOrdinaryQueueItem(item);
+    // A held record always carries the mode that holds it; `undefined` here
+    // means the row is in the ordinary order and needs no timing chip.
+    const heldMode = held ? item.cronDeliveryMode : undefined;
+    // A `queue` cron record really is in the user's send order, so it keeps
+    // the same drag handle, timing picker and Send now as a typed message.
+    const reordering = draggable && !held;
     rowNodes.push(
       <li
         key={item.promptId}
         data-queue-item={item.promptId}
+        data-queue-held={held ? item.cronDeliveryMode : undefined}
         data-queue-waits-edit={waitsForEdit ? '' : undefined}
         className={`anim-enter group flex min-h-8 flex-wrap items-center gap-2 rounded-md px-1.5 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
           isEditing ? 'bg-ink/[0.05]' : 'hover:bg-ink/[0.04] focus-within:bg-ink/[0.04]'
         } ${dragId === item.promptId ? 'opacity-50' : ''}`}
       >
-        {draggable ? (
+        {reordering ? (
           <button
             type="button"
             onPointerDown={(event) => { handlePointerDown(event, item.promptId); }}
@@ -423,6 +465,14 @@ export function QueueStrip({
           <details className="group/cron min-w-0 flex-1 basis-36 text-[13px] text-ink">
             <summary className="flex cursor-pointer items-center gap-2 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
               <span className="shrink-0 rounded bg-ink/[0.05] px-1.5 py-0.5 text-[11px] text-ink-soft">{t('transcript.marker.cron')}</span>
+              {/* Only a held row is marked, and held means the record carries a
+                  mode; a legacy or `queue` record is in the ordinary FIFO and is
+                  shown as one, because that is still where it is. */}
+              {heldMode === undefined
+                ? null
+                : <span data-queue-held-mode className="shrink-0 text-[11px] text-ink-faint">
+                  {t('queue.scheduledMode', { mode: t(`cron.delivery.${heldMode}`) })}
+                </span>}
               <span className="min-w-0 truncate">{item.text}</span>
               <Icon name="chevron" size={12} className="shrink-0 transition-transform group-open/cron:rotate-90" />
             </summary>
@@ -485,7 +535,7 @@ export function QueueStrip({
             data-shown={armed || touchOpenId === item.promptId ? '' : undefined}
             className="dock-reveal ml-auto flex shrink-0 items-center gap-0.5"
           >
-            {onChangeTiming !== undefined ? (
+            {onChangeTiming !== undefined && !held ? (
               <select
                 aria-label={t('queue.timingAria')}
                 data-timing-picker={item.promptId}
@@ -506,7 +556,7 @@ export function QueueStrip({
                 ))}
               </select>
             ) : null}
-            {onEdit !== undefined && item.originKind !== 'cron_job' && (item.text !== '' || (item.media?.length ?? 0) > 0) ? (
+            {onEdit !== undefined && !held && item.originKind !== 'cron_job' && (item.text !== '' || (item.media?.length ?? 0) > 0) ? (
               <button
                 type="button"
                 disabled={pending || editLocked}
@@ -518,16 +568,23 @@ export function QueueStrip({
                 {t('sv.queueEdit')}
               </button>
             ) : null}
-            <button
-              type="button"
-              disabled={pending || sendNowDisabled}
-              onClick={() => { run(item.promptId, onSendNow); }}
-              title={sendNowDisabled ? t('sv.sendPaused') : t('sv.queueSendNowTitle')}
-              aria-label={t('sv.queueSendNow')}
-              className="h-7 rounded-md px-2 text-[12px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-            >
-              {t('sv.queueSendNow')}
-            </button>
+            {/* A held job gets no send now and no note saying why. Its badge
+                and its timing chip already say what it is, and a greyed-out
+                control beside a real one reads as a broken row rather than as
+                a deliberate one. Remove stays: the record is real work that
+                can be withdrawn. */}
+            {held ? null : (
+              <button
+                type="button"
+                disabled={pending || sendNowDisabled}
+                onClick={() => { run(item.promptId, onSendNow); }}
+                title={sendNowDisabled ? t('sv.sendPaused') : t('sv.queueSendNowTitle')}
+                aria-label={t('sv.queueSendNow')}
+                className="h-7 rounded-md px-2 text-[12px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+              >
+                {t('sv.queueSendNow')}
+              </button>
+            )}
             <button
               type="button"
               disabled={pending}

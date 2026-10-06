@@ -106,6 +106,7 @@ import {
   assistantMessageIdFromBlock,
   createViewState,
   filterBlocksToDirectChildren,
+  isOrdinaryQueueItem,
   pendingQuestionCount,
   queuedPromptPreviews,
   sessionAgentForest,
@@ -3383,7 +3384,14 @@ boundExecution,
     setConfirmClearQueue(true);
   }, [actions]);
   const queuedItems = useMemo(() => queuedPromptPreviews(state), [state]);
-  const queuedItemCount = queuedItems.length + modelSwitches.switches.filter((entry) => entry.queueIndex >= 0).length;
+  // The composer header counts what the user is waiting to send. A scheduled
+  // prompt held ahead of that order (`idle`/`steer`) is named separately so it
+  // cannot read as one more of their own messages, but it keeps a row in the
+  // opened detail — its text is real work waiting to be read.
+  const ordinaryQueuedItems = useMemo(() => queuedItems.filter(isOrdinaryQueueItem), [queuedItems]);
+  const heldCronItems = useMemo(() => queuedItems.filter((item) => !isOrdinaryQueueItem(item)), [queuedItems]);
+  const queuedItemCount = ordinaryQueuedItems.length + modelSwitches.switches.filter((entry) => entry.queueIndex >= 0).length;
+  const queueRowCount = queuedItems.length + modelSwitches.switches.filter((entry) => entry.queueIndex >= 0).length;
   const handleRemoveQueuedAttachment = useCallback((promptId: string, attachmentIndex: number) => {
     const item = queuedItems.find((entry) => entry.promptId === promptId);
     if (controller === null || item?.content === undefined) return Promise.resolve();
@@ -3743,12 +3751,14 @@ boundExecution,
   ), [headerGoal, t, handleGoalRefresh, handleGoalUpdate, handleGoalPause, handleGoalResume, handleGoalCancel]);
   const headerQueueSection = useMemo<ComposerHeaderSection | undefined>(() => {
     // A queued switch is a queue item too: the strip stays visible so its
-    // control row can be changed or cancelled before it runs.
-    if (queuedItemCount === 0) return undefined;
-    const total = queuedItemCount;
+    // control row can be changed or cancelled before it runs. A scheduled
+    // prompt held ahead of the send order counts too — otherwise a session
+    // waiting only on one would show nothing at all.
+    if (queueRowCount === 0) return undefined;
+    const total = queueRowCount;
     return {
       summary: (
-        <QueueHeaderSummary count={total} />
+        <QueueHeaderSummary count={queuedItemCount} heldCount={heldCronItems.length} />
       ),
       ariaLabel: t('composer.queueStack.openAria'),
       count: total,
@@ -3768,7 +3778,7 @@ boundExecution,
       ),
     };
   }, [
-    queuedItems, queuedItemCount, queueEdit, headerGoal, t, handleSendNowQueued, handleCancelQueued,
+    queuedItems, queuedItemCount, queueRowCount, heldCronItems, queueEdit, headerGoal, t, handleSendNowQueued, handleCancelQueued,
     handleRemoveQueuedAttachment, handleStartQueueEdit, handleMoveQueued, handleQueuedTiming,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady,
     modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel,
@@ -4179,7 +4189,7 @@ boundExecution,
         <ConfirmDialog
           open={confirmClearQueue}
           overlayId="confirm-clear-queue"
-          title={t('sv.queueClearTitle', { count: queuedItemCount })}
+          title={t('sv.queueClearTitle', { count: queueRowCount })}
           body={t('sv.queueClearBody')}
           confirmLabel={t('sv.queueClearAll')}
           onConfirm={confirmClearQueueRun}
@@ -4367,7 +4377,7 @@ boundExecution,
       <ConfirmDialog
         open={confirmClearQueue}
         overlayId="confirm-clear-queue"
-        title={t('sv.queueClearTitle', { count: queuedItemCount })}
+        title={t('sv.queueClearTitle', { count: queueRowCount })}
         body={t('sv.queueClearBody')}
         confirmLabel={t('sv.queueClearAll')}
         onConfirm={confirmClearQueueRun}

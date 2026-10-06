@@ -3,6 +3,7 @@ import type {
   ApprovalResolveResult,
   CancelTaskQuery,
   ConfigResponse,
+  CronDeliveryMode,
   DeferredAppendTiming,
   MessageContent,
   PageResponse,
@@ -424,6 +425,7 @@ export interface AgentTranscriptPrompt {
   readonly userMessageId?: string;
   readonly content?: unknown;
   readonly originKind?: 'cron_job';
+  readonly originDeliveryMode?: CronDeliveryMode;
   readonly createdAt: string;
   readonly finishedAt?: string;
   readonly queuePosition?: number;

@@ -128,7 +128,7 @@ const FIXTURE_CRON_PROMPT_PREVIEW = 120;
  * engine's own `human_schedule` is reproduced here only so the list has a
  * plausible fallback; the GUI prefers its localized reading of `cron`.
  */
-function fixtureCronTask({ id, session_id: sessionId, cron, prompt, recurring, paused, workspace_id: workspaceId }) {
+function fixtureCronTask({ id, session_id: sessionId, cron, prompt, recurring, paused, workspace_id: workspaceId, delivery_mode: deliveryMode }) {
   const now = Date.now();
   return {
     id,
@@ -142,6 +142,9 @@ function fixtureCronTask({ id, session_id: sessionId, cron, prompt, recurring, p
       : prompt,
     next_fire_at: paused === true ? null : new Date(now + 42 * 60_000).toISOString(),
     recurring,
+    // kap-server always emits the effective mode, and a create without one is
+    // stored as the default, exactly as the route does.
+    delivery_mode: deliveryMode ?? 'idle',
     paused: paused === true,
     age_days: 3,
     stale: false,
@@ -2403,6 +2406,7 @@ class FixtureServer {
         prompt: body.prompt,
         recurring: body.recurring !== false,
         paused: body.paused === true,
+        delivery_mode: body.delivery_mode,
       }));
       const created = rows[rows.length - 1];
       return this.envelope(res, { task: structuredClone(created) });
@@ -2444,6 +2448,9 @@ class FixtureServer {
           task.prompt_preview = body.prompt.length > 120 ? `${body.prompt.slice(0, 120)}…(truncated)` : body.prompt;
         }
         if (typeof body.recurring === 'boolean') task.recurring = body.recurring;
+        // Absent means "keep what the task has", the same as the real route's
+        // `deliveryMode: delivery_mode ?? current.deliveryMode`.
+        if (['queue', 'steer', 'idle'].includes(body.delivery_mode)) task.delivery_mode = body.delivery_mode;
         return this.envelope(res, { task: structuredClone(task) });
       }
       if (action === 'pause') {

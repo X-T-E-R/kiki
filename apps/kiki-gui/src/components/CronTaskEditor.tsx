@@ -26,7 +26,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import type { Session, Workspace } from '@kiki/protocol';
+import type { CronDeliveryMode, Session, Workspace } from '@kiki/protocol';
 import {
   DEFAULT_CRON_FORM,
   isValidCron,
@@ -52,6 +52,15 @@ const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const CADENCES: readonly CronCadence[] = ['hourly', 'daily', 'weekly', 'monthly'];
 const DAYS = Array.from({ length: 31 }, (_, index) => index + 1);
 const MINUTES = Array.from({ length: 60 }, (_, index) => index);
+/**
+ * Delivery modes, in the order a person reads the question "how soon?":
+ * queue is the plain FIFO everyone already knows, steer and idle are the
+ * departures from it. `idle` is last because it is the default a new task
+ * gets, not the loudest option.
+ */
+const DELIVERY_MODES: readonly CronDeliveryMode[] = ['queue', 'steer', 'idle'];
+/** What the host does to a task with no recorded mode on its next fire. */
+export const DEFAULT_DELIVERY_MODE: CronDeliveryMode = 'idle';
 
 export type CronEditorMode = 'create' | 'edit';
 
@@ -70,6 +79,12 @@ export interface CronTaskEditorProps {
      * write the truncation over the task.
      */
     readonly recurring: boolean;
+    /**
+     * Effective delivery mode as the host reported it. Absent on an older
+     * host, or on a task that predates modes: the form then shows the default
+     * and leaves the choice alone unless the person makes one.
+     */
+    readonly delivery_mode?: CronDeliveryMode;
   } | undefined;
   readonly sessions: readonly Session[];
   readonly workspaceOptions: readonly Workspace[];
@@ -85,6 +100,12 @@ export interface CronTaskEditorProps {
     readonly cron: string;
     readonly prompt: string;
     readonly recurring: boolean;
+    readonly delivery_mode: CronDeliveryMode;
+    /**
+     * Whether to put `delivery_mode` on the wire at all. False means the form
+     * was left as it found the task, so the host must keep its own value.
+     */
+    readonly sendDeliveryMode: boolean;
   }) => void;
   readonly onClose: () => void;
 }
@@ -132,6 +153,14 @@ interface Draft {
   readonly form: CronForm;
   readonly prompt: string;
   readonly sessionId: string;
+  readonly deliveryMode: CronDeliveryMode;
+  /**
+   * True only once the person picked a mode themselves. A save that leaves it
+   * false sends no mode at all, so the host keeps whatever it already had:
+   * an explicit `queue` or `steer` survives an unrelated edit, and a host too
+   * old to know the field is not handed one it would reject.
+   */
+  readonly deliveryModeChosen: boolean;
   /** `undefined` until the user opens the expression editor. */
   readonly advancedCron: string | undefined;
   readonly oneShotDate: string;
@@ -173,12 +202,18 @@ export function CronTaskEditor({
   const initial = useMemo((): Draft => {
     const now = new Date();
     const defaultSession = task?.session_id ?? preferredSessionId ?? sessions[0]?.id ?? '';
+    // A task the host reports with no mode reads as the default, which is
+    // exactly what it will do on its next fire — so the form never invents a
+    // choice the server has not recorded.
+    const deliveryMode = task?.delivery_mode ?? DEFAULT_DELIVERY_MODE;
     if (task === undefined) {
       return {
         recurring: true,
         form: DEFAULT_CRON_FORM,
         prompt: '',
         sessionId: defaultSession,
+        deliveryMode: DEFAULT_DELIVERY_MODE,
+        deliveryModeChosen: false,
         advancedCron: undefined,
         // A new task is almost always "later today" rather than "some day".
         oneShotDate: toLocalDateInput(now),
@@ -195,6 +230,8 @@ export function CronTaskEditor({
         // detail read, and nothing derived from a preview is ever submitted.
         prompt: '',
         sessionId: task.session_id ?? defaultSession,
+        deliveryMode,
+        deliveryModeChosen: false,
         advancedCron: undefined,
         oneShotDate: toLocalDateInput(now),
         oneShotTime: toLocalTimeInput(now),
@@ -207,6 +244,8 @@ export function CronTaskEditor({
       form: read.kind === 'friendly' ? read.form : DEFAULT_CRON_FORM,
       prompt: '',
       sessionId: task.session_id ?? defaultSession,
+      deliveryMode,
+      deliveryModeChosen: false,
       advancedCron: task.cron,
       oneShotDate: toLocalDateInput(now),
       oneShotTime: toLocalTimeInput(now),
@@ -346,6 +385,12 @@ export function CronTaskEditor({
       cron: expression,
       prompt: draft.prompt,
       recurring: draft.recurring,
+      delivery_mode: draft.deliveryMode,
+      // Untouched means "whatever the task already is": an existing mode
+      // survives, and a host without the field never sees a value it would
+      // refuse. A new task is the one case that has nothing to keep, so it
+      // always states the default rather than relying on the host's default.
+      sendDeliveryMode: draft.deliveryModeChosen || task === undefined,
     });
   };
 
@@ -596,6 +641,39 @@ export function CronTaskEditor({
             </button>
           )}
 
+          {/* How the prompt gets in when the moment arrives. A one-line
+              question with three answers, each carrying its own consequence:
+              the consequence is the whole point, so it sits under the choice
+              rather than behind a help icon. */}
+          <fieldset data-cron-delivery className={SECTION}>
+            <legend className={LABEL}>{t('cron.form.delivery')}</legend>
+            <div role="radiogroup" aria-label={t('cron.form.delivery')} className="flex flex-wrap gap-1.5">
+              {DELIVERY_MODES.map((mode) => (
+                <Choice
+                  key={mode}
+                  role="radio"
+                  data-cron-delivery-mode={mode}
+                  aria-checked={draft.deliveryMode === mode}
+                  onSelect={() => { patch({ deliveryMode: mode, deliveryModeChosen: true }); }}
+                  active={draft.deliveryMode === mode}
+                >
+                  {t(`cron.form.delivery.${mode}`)}
+                </Choice>
+              ))}
+            </div>
+            <p data-cron-delivery-hint className="text-[12px] leading-relaxed text-ink-soft">
+              {t(`cron.form.delivery.hint.${draft.deliveryMode}`)}
+            </p>
+            {/* A host that never answers with a mode cannot honour one. Saying
+                so is the difference between "your choice was dropped" and
+                "this server has never heard of it". */}
+            {task !== undefined && task.delivery_mode === undefined ? (
+              <p data-cron-delivery-unsupported className="text-[12px] leading-relaxed text-ink-faint">
+                {t('cron.form.delivery.unsupported')}
+              </p>
+            ) : null}
+          </fieldset>
+
           {/* Where it runs. Above the prompt, so the picker's own panel
               opens downward over empty space rather than over the field the
               user is about to type into. */}
@@ -727,6 +805,7 @@ function Choice({
   readonly role?: 'radio';
   readonly 'aria-checked'?: boolean;
   readonly 'data-cron-cadence'?: CronCadence;
+  readonly 'data-cron-delivery-mode'?: CronDeliveryMode;
 }) {
   return (
     <button

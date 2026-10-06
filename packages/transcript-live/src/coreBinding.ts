@@ -506,6 +506,9 @@ function promptFromSnapshot(
     promptId: snapshot.id,
     status,
     originKind: snapshot.message.origin?.kind === 'cron_job' ? 'cron_job' : undefined,
+    originDeliveryMode: snapshot.message.origin?.kind === 'cron_job'
+      ? snapshot.message.origin.deliveryMode
+      : undefined,
     userMessageId: snapshot.userMessageId,
     content: projectPromptContentParts(snapshot.message.content),
     createdAt: snapshot.createdAt,

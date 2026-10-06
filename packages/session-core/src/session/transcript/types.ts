@@ -1,6 +1,7 @@
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  CronDeliveryMode,
   DeferredAppendTiming,
   GoalSnapshot,
   Message,
@@ -735,6 +736,11 @@ export interface QueuedPromptMeta {
   readonly originKind?: 'cron_job';
   readonly content?: Message['content'];
   /**
+   * The scheduled origin's delivery mode. Absent on records the server
+   * admitted before modes existed; those stay ordinary FIFO.
+   */
+  readonly cronDeliveryMode?: CronDeliveryMode;
+  /**
    * The engine's shared queue-order slot (model-switch control items occupy
    * slots in the same sequence). Absent for locally echoed prompts that the
    * server has not parked yet.
@@ -746,6 +752,8 @@ export interface QueuedPromptPreview {
   readonly promptId: string;
   readonly text: string;
   readonly originKind?: 'cron_job';
+  /** Scheduled delivery mode; absent on a legacy cron record, which reads FIFO. */
+  readonly cronDeliveryMode?: CronDeliveryMode;
   readonly media?: readonly MediaRef[];
   readonly content?: Message['content'];
   /** Effective append timing; absent on older servers, displays as agent_idle. */

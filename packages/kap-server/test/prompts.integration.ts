@@ -50,7 +50,7 @@ import { applyCompactionProgress, type CompactionProgress } from '../../../apps/
 import { compactSessionContext } from '../../session-core/src/commands/sessionActions';
 import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '@kiki/agent-core-v2/agent/llmRequester/llmRequester';
 import { IAgentFullCompactionService } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
-import { agentTranscriptToBlocks } from '../../session-core/src/session/transcript';
+import { agentTranscriptToBlocks, createViewState, isOrdinaryQueueItem, projectAgentTranscriptView, queuedPromptPreviews } from '../../session-core/src/session/transcript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -64,6 +64,7 @@ import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders, bearerToken } from './helpers/auth';
 
 vi.mock('../../../apps/kiki-gui/src/components/TerminalPanel', () => ({ TerminalPanel: () => null }));
+vi.mock('../../../apps/kiki-gui/src/components/preview/DocumentTabView', () => ({ DocumentTabView: () => null }));
 
 interface Envelope<T> {
   code: number;
@@ -111,6 +112,12 @@ const PROMPT_TOML = [
   'capabilities = ["thinking"]',
   'support_efforts = ["low", "high"]',
   'default_effort = "high"',
+  '',
+  '[search]',
+  'enabled = false',
+  '',
+  '[cron]',
+  'manualTick = true',
   '',
 ].join('\n');
 
@@ -178,7 +185,7 @@ describe('server-v2 /api prompts', () => {
   });
 
   async function call<T>(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PATCH',
     path: string,
     arg?: unknown,
   ): Promise<{ status: number; body: Envelope<T> }> {
@@ -420,6 +427,66 @@ describe('server-v2 /api prompts', () => {
       ctx.signal.throwIfAborted();
     }, { before: 'context-injector' });
   }
+
+  it('round-trips scheduled delivery modes over HTTP and projects fired queue text with its origin', async () => {
+    const sessionId = await createSession(home!);
+    await createHeldMainAgent(sessionId);
+    const main = getLiveSessionById(server!.core.accessor, sessionId)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const provider = vi.spyOn(main.accessor.get(IAgentLLMRequesterService), 'request');
+    const client = createHttpKlient({ endpoint: base, token: bearerToken(server!) });
+    type Task = { id: string; prompt: string; delivery_mode: 'queue' | 'steer' | 'idle'; paused: boolean };
+    const tasks: Task[] = [];
+    try {
+      for (const deliveryMode of ['queue', 'steer', 'idle', undefined] as const) {
+        const response = await call<{ task: Task }>('POST', '/api/cron', {
+          session_id: sessionId, cron: '0 9 * * *', paused: true,
+          prompt: `Read the release checklist\nKeep existing work running: ${deliveryMode ?? 'default'}`,
+          delivery_mode: deliveryMode,
+        });
+        expect(response.body.code, response.body.msg).toBe(0);
+        expect(response.body.data.task).toMatchObject({ delivery_mode: deliveryMode ?? 'idle', paused: true });
+        tasks.push(response.body.data.task);
+      }
+      for (const task of tasks) {
+        const response = await call<{ task: Task }>('PATCH', `/api/cron/${task.id}?session_id=${sessionId}`, {
+          cron: '15 9 * * *', prompt: `${task.prompt}\nUpdated schedule without changing timing.`,
+        });
+        expect(response.body.code, response.body.msg).toBe(0);
+        expect(response.body.data.task.delivery_mode).toBe(task.delivery_mode);
+        task.prompt = response.body.data.task.prompt;
+      }
+      for (const deliveryMode of ['steer', 'idle', 'queue'] as const) {
+        const response = await call<{ task: Task }>('PATCH', `/api/cron/${tasks[0]!.id}?session_id=${sessionId}`, { delivery_mode: deliveryMode });
+        expect(response.body.code, response.body.msg).toBe(0);
+        expect(response.body.data.task.delivery_mode).toBe(deliveryMode);
+      }
+      const listed = await call<{ items: Task[] }>('GET', `/api/cron?session_id=${sessionId}`);
+      expect(listed.body.code).toBe(0);
+      expect(new Map(listed.body.data.items.map((task) => [task.id, task.delivery_mode]))).toEqual(new Map(tasks.map((task) => [task.id, task.delivery_mode])));
+      const busy = await call<PromptItemWire>('POST', `/api/sessions/${sessionId}/prompts`, { content: [{ type: 'text', text: 'Synthetic held turn.' }] });
+      expect(busy.body.code, busy.body.msg).toBe(0);
+      expect(busy.body.data.status).toBe('running');
+      for (const task of [tasks[0]!, tasks[2]!]) {
+        const fired = await call<{ triggered: true }>('POST', `/api/cron/${task.id}:run?session_id=${sessionId}`);
+        expect(fired.body.code, fired.body.msg).toBe(0);
+        expect(fired.body.data.triggered).toBe(true);
+      }
+      const page = await client.session(sessionId).view.transcript.page({ agentId: 'main' });
+      const state = projectAgentTranscriptView(createViewState(sessionId), 'main', page);
+      const previews = queuedPromptPreviews(state);
+      expect(previews).toHaveLength(2);
+      const ordinary = previews.find(isOrdinaryQueueItem)!;
+      expect(ordinary).toMatchObject({ originKind: 'cron_job', cronDeliveryMode: 'queue', text: tasks[0]!.prompt, media: [] });
+      expect(ordinary.content).toEqual([expect.objectContaining({ type: 'text', text: expect.stringContaining(tasks[0]!.prompt) })]);
+      expect(previews.find((item) => item.cronDeliveryMode === 'idle')).toMatchObject({ originKind: 'cron_job', text: tasks[2]!.prompt });
+      expect(state.blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
+      expect(provider).not.toHaveBeenCalled();
+    } finally {
+      await main.accessor.get(IAgentPromptService).drain();
+      provider.mockRestore();
+      await client.close();
+    }
+  });
 
   async function createHeldChild(sessionId: string) {
     await createMainAgent(sessionId);

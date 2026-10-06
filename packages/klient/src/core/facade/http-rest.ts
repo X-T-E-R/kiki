@@ -265,6 +265,10 @@ export interface HttpRestCronTask {
   readonly prompt_preview: string;
   readonly next_fire_at: string | null;
   readonly recurring: boolean;
+  /**
+   * Effective delivery mode. Older hosts omit the field; absent then reads as
+   * `idle`, the default a host applies on the task's next fire.
+   */
   readonly delivery_mode?: import('@kiki/protocol').CronDeliveryMode;
   readonly paused: boolean;
   readonly age_days: number;

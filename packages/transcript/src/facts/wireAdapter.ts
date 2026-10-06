@@ -467,9 +467,11 @@ export class TranscriptWireAdapter {
         return [];
       }
       this.#hiddenPromptIds.delete(promptId);
+      const origin = objectOf(message?.['origin']);
       const prompt: TranscriptPrompt = {
         promptId,
         originKind: originKind === 'cron_job' ? originKind : undefined,
+        originDeliveryMode: originKind === 'cron_job' ? cronDeliveryModeOf(origin?.['deliveryMode']) : undefined,
         status: 'queued',
         userMessageId: stringOf(record['userMessageId']) ?? stringOf(message?.['id']),
         content: projectPromptContent(message?.['content']),
@@ -2741,6 +2743,10 @@ function promptAppendTimingOf(value: unknown): TranscriptPromptAppendTiming | un
   return value === 'agent_idle' || value === 'subagents_done' || value === 'tasks_done'
     ? value
     : undefined;
+}
+
+function cronDeliveryModeOf(value: unknown): TranscriptPrompt['originDeliveryMode'] {
+  return value === 'queue' || value === 'steer' || value === 'idle' ? value : undefined;
 }
 
 function promptRecordTime(record: TranscriptWireRecord, keys: readonly string[]): string | undefined {

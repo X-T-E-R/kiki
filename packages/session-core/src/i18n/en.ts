@@ -2107,7 +2107,7 @@ export const en = {
   'sv.queueClearAll': 'Clear all',
   'sv.queueClearAllTitle': 'Remove every queued item — messages and model switches',
   'sv.queueClearTitle': 'Clear {count} queued items?',
-  'sv.queueClearBody': 'Each queued message and model switch will be removed. Items that fail stay in the queue so you can retry.',
+  'sv.queueClearBody': 'Each queued message, scheduled job and model switch will be removed. Items that fail stay in the queue so you can retry. The schedules themselves are not deleted.',
   'sv.queueClearFailed': '{failed} of {total} queued items could not be cleared — they remain in the queue.',
   'sv.queueNoText': '(attachment only)',
   'sv.queueEdit': 'Edit',
@@ -5733,6 +5733,14 @@ export const en = {
   'queue.waitsForEdit': 'waits for your edit',
   'queue.holdNotice': 'Paused while you edit — the queue resumes in order when you finish.',
   'queue.holdNoticeAhead': 'Paused while you edit — the {count} ahead still send; the rest resume when you finish.',
+  // A scheduled prompt in the queue: `queue` mode joins the user's own send
+  // order, so it shows as one more queued message. The other two modes are
+  // held by the engine outside that order; each row names its own timing, and
+  // the header only says that scheduled prompts are waiting.
+  'queue.scheduledBadge': 'Scheduled job',
+  'queue.scheduledMode': '{mode}',
+  'queue.heldSummary': '· {count} scheduled waiting',
+  'queue.heldOnlySummary': '{count} scheduled waiting',
   'goal.doneWhen': 'done when · {criterion}',
   'queue.removeConfirm': 'Remove?',
   'queue.removeConfirmTitle': 'Click again to remove this queued prompt',
@@ -5819,6 +5827,24 @@ export const en = {
   'cron.detail.unbound': 'No conversation',
   'cron.detail.unboundHint': 'This task belongs to the workspace and runs in no conversation.',
   'cron.detail.nextFireHint': 'The server decides when this runs next; this panel shows the time it computed.',
+  // Delivery timing. The label is what the row advertises; the hint is the
+  // consequence, and it is also the only place the difference between the
+  // three is stated in full.
+  'cron.delivery.queue': 'Queue',
+  'cron.delivery.steer': 'Insert immediately',
+  'cron.delivery.idle': 'Insert when idle',
+  'cron.delivery.hint.queue': 'Waits its turn with your queued messages, in the order they were sent.',
+  'cron.delivery.hint.steer': 'The conversation reads this at its next safe step, without stopping the request in flight.',
+  'cron.delivery.hint.idle': 'Waits for the current work to finish, then goes before the messages waiting in the queue.',
+  'cron.form.delivery': 'Delivery timing',
+  'cron.form.delivery.queue': 'Queue',
+  'cron.form.delivery.steer': 'Insert immediately',
+  'cron.form.delivery.idle': 'Insert when idle',
+  'cron.form.delivery.hint.queue': 'Waits its turn with your queued messages, in the order they were sent.',
+  'cron.form.delivery.hint.steer': 'The conversation reads this at its next safe step, without stopping the request in flight.',
+  'cron.form.delivery.hint.idle': 'Waits for the current work to finish, then goes before the messages waiting in the queue.',
+  'cron.form.delivery.unsupported': 'This server does not report a delivery timing for existing tasks. It keeps the current setting; a task with none runs as “insert when idle” from its next run.',
+  'cron.detail.delivery': 'Delivery timing',
   'cron.form.createTitle': 'New scheduled task',
   'cron.form.editTitle': 'Edit scheduled task',
   'cron.form.kind': 'Repeats',

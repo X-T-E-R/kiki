@@ -39,6 +39,7 @@ import {
   EARLIER_PROMPT_OUTCOMES_ID,
   filterBlocksToDirectChildren,
   floorPreview,
+  isOrdinaryQueueItem,
   latestFinalAssistantBlockId,
   liveSourcesFromAgentSnapshots,
   overlayLiveSourcesWithSnapshotSubagents,
@@ -5701,5 +5702,38 @@ describe('question history answers', () => {
     const state = projectAgentTranscriptView(createViewState('session_test'), 'main', transcript.snapshot());
     const block = state.blocks.find((entry) => entry.kind === 'question');
     expect(block?.kind === 'question' && block.outcome?.kind === 'answered' ? block.outcome.answers : 'wrong state').toBeUndefined();
+  });
+});
+
+describe('scheduled delivery modes in the queue projection', () => {
+  const content = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+  const previewOf = (promptId: string, originDeliveryMode: 'queue' | 'steer' | 'idle' | undefined) => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({ prompts: [{ promptId, userMessageId: promptId, originKind: 'cron_job' as const, originDeliveryMode, content, status: 'queued' as const, createdAt: FIXED_AT, queuePosition: 0 }] }),
+    );
+    return queuedPromptPreviews(projected)[0]!;
+  };
+
+  it('carries the origin mode onto the preview so consumers can tell the three apart', () => {
+    expect(previewOf('idle-1', 'idle')).toMatchObject({ cronDeliveryMode: 'idle', originKind: 'cron_job' });
+    expect(previewOf('steer-1', 'steer')).toMatchObject({ cronDeliveryMode: 'steer' });
+    expect(previewOf('queue-1', 'queue')).toMatchObject({ cronDeliveryMode: 'queue' });
+    // A record admitted before modes existed carries none, and must not be
+    // given one by projection.
+    expect(previewOf('legacy-1', undefined).cronDeliveryMode).toBeUndefined();
+  });
+
+  it('counts only user messages and queue-mode jobs as ordinary pending messages', () => {
+    // A `queue` job really is in the person's send order, and so is a legacy
+    // record that was admitted into it.
+    expect(isOrdinaryQueueItem({ promptId: 'user-1', text: 'mine' })).toBe(true);
+    expect(isOrdinaryQueueItem(previewOf('queue-1', 'queue'))).toBe(true);
+    expect(isOrdinaryQueueItem(previewOf('legacy-1', undefined))).toBe(true);
+    // `idle` and `steer` are held ahead of that order and were never queued
+    // by the person, so they are not one of their waiting messages.
+    expect(isOrdinaryQueueItem(previewOf('idle-1', 'idle'))).toBe(false);
+    expect(isOrdinaryQueueItem(previewOf('steer-1', 'steer'))).toBe(false);
   });
 });

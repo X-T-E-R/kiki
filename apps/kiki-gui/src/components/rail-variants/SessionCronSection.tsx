@@ -150,6 +150,11 @@ function CronRow({
                 <NextFire at={next} />
               </>
             )}
+            {/* What firing this does to a busy conversation. It is one word
+                here and the full sentence on the page, so the rail can say
+                which of the three without opening anything. */}
+            <span aria-hidden>·</span>
+            <span data-rail-cron-delivery className="shrink-0">{t(`cron.delivery.${task.delivery_mode ?? 'idle'}`)}</span>
           </span>
         </span>
       </button>

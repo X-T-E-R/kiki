@@ -1738,7 +1738,11 @@ export class AgentTranscriptLiveAdapter {
   ): TranscriptPrompt {
     const previous = this.prompts.get(promptId);
     const next = build(previous);
-    const prompt = previous?.originKind === undefined ? next : { ...next, originKind: previous.originKind };
+    const prompt = previous?.originKind === undefined ? next : {
+      ...next,
+      originKind: previous.originKind,
+      originDeliveryMode: previous.originDeliveryMode,
+    };
     this.prompts.set(promptId, prompt);
     return prompt;
   }

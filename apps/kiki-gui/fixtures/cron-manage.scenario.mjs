@@ -40,6 +40,7 @@ function cronTask(overrides) {
     prompt_preview: 'Summarize the overnight logs and post the digest to the release room.',
     next_fire_at: inMinutes(32),
     recurring: true,
+    delivery_mode: 'idle',
     paused: false,
     age_days: 3,
     stale: false,
@@ -87,6 +88,7 @@ export default {
       prompt_preview: 'Check whether the nightly self-check found anything the owner has not answered yet.',
       session_id: REVIEW,
       next_fire_at: inMinutes(320),
+      delivery_mode: 'queue',
     }),
     cronTask({
       id: 'cron_fixture_weekly',
@@ -108,6 +110,7 @@ export default {
       next_fire_at: inMinutes(95),
       age_days: 61,
       stale: true,
+      delivery_mode: 'steer',
     }),
     cronTask({
       // A minute frequency: fire-able several times an hour, which the
@@ -142,6 +145,9 @@ export default {
       next_fire_at: inMinutes(900),
       age_days: 40,
       stale: true,
+      // `undefined` on purpose: a task from before delivery modes existed.
+      // The list must show it as the default rather than inventing one.
+      delivery_mode: undefined,
     }),
   ],
   workspaces: [

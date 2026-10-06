@@ -83,6 +83,7 @@ export {
   floorPreview,
   markApprovalResolved,
   markQuestionOutcome,
+  isOrdinaryQueueItem,
   nodeForAgent,
   oldestTurnIdFromResponse,
   pendingApprovalCount,

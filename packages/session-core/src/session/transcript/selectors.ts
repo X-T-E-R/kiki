@@ -21,6 +21,7 @@ export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPr
     return {
       promptId,
       originKind: meta?.originKind,
+      cronDeliveryMode: meta?.cronDeliveryMode,
       text: scheduled === undefined ? block?.text ?? '' : classifyTranscriptText({ text: scheduled.text, origin: { kind: 'cron_job' } }).text,
       media: scheduled?.media ?? block?.media,
       content: meta?.content ?? block?.queuedContent,
@@ -29,6 +30,23 @@ export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPr
       queuePosition: meta?.queuePosition,
     };
   });
+}
+
+/**
+ * Whether a queued prompt is one of the ordinary messages the queue strip
+ * speaks for: something the person typed, or a scheduled prompt set to queue
+ * (`queue`), which joins their send order. A cron record with no mode is a
+ * legacy admission that already sits in that order, so it counts too.
+ *
+ * `idle` and `steer` records are not: the engine holds them ahead of ordinary
+ * pending messages and the user never queued them here, so showing them among
+ * the user's own messages — in the pending count, in a drag handle, or behind
+ * Send now — would describe a send order they are not part of.
+ */
+export function isOrdinaryQueueItem(item: QueuedPromptPreview): boolean {
+  return item.originKind !== 'cron_job'
+    || item.cronDeliveryMode === undefined
+    || item.cronDeliveryMode === 'queue';
 }
 
 export function pendingApprovalCount(state: SessionViewState): number {

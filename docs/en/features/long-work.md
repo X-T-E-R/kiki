@@ -20,6 +20,8 @@ Hovering the send button (or focusing it and pressing `↓`) opens the same choi
 
 The full behavior is described in [Interface overview](/en/guides/interface#input-box).
 
+A scheduled task set to **Queue** joins this queue alongside your own messages, labelled **Scheduled job**. A task set to **Insert when idle** or **Insert immediately** appears here too, with the timing that holds it named on its row, but it is not one of your waiting messages: its text stays readable and removable while the reorder and send-now controls are absent.
+
 ![An active goal with two queued messages, each with its own send timing.](/shots/long-work/long-work-goal-queue.en.png)
 
 ![The queue expanded under a running goal, with each queued message's own send timing and its edit, send-now, and remove actions.](/shots/long-work/wl-20261005-longwork-goal-queue.en.png)
@@ -38,7 +40,9 @@ The scheduled-tasks page is also where you change a schedule yourself. Every ent
 
 **New scheduled task** creates one, and **Edit** changes one. The form asks whether the task runs once or on a schedule, then for the repeat: every N hours, a time each day, days of the week, or a day of the month. You pick the conversation it belongs to, searchable by title and grouped by workspace, because that is where its output arrives.
 
-A schedule more specific than those controls — several times a day, a day of the month pinned to a weekday — opens on the cron expression itself and is saved exactly as written. Editing such a task never quietly turns it into a simpler rule. A save the server refuses leaves everything you typed in the form, so a rejected change costs you nothing to retry.
+**Delivery timing** says what firing the prompt does to that conversation, because the schedule alone cannot. **Insert when idle** (the default) waits for the current work to finish, then goes ahead of the messages already waiting in the queue. **Queue** waits its turn alongside those messages, in the order you sent them. **Insert immediately** has the conversation read the prompt at its next safe step, without stopping the request already in flight. Only **Queue** produces an ordinary queued message: a task set to **Insert when idle** or **Insert immediately** is held outside that send order, so it is not counted with your waiting messages and offers neither the reorder handle nor send-now — it keeps its text readable and its timing named on its row, and you change that timing on this page.
+
+A schedule more specific than those controls — several times a day, a day of the month pinned to a weekday — opens on the cron expression itself and is saved exactly as written. Editing such a task never quietly turns it into a simpler rule. A save the server refuses leaves everything you typed in the form, so a rejected change costs you nothing to retry. Changing the schedule, the prompt or the conversation leaves the delivery timing exactly as it was.
 
 **Run now** sits on its own line at the bottom left of an entry, away from pause and delete: it runs the prompt once without touching the schedule. Rebinding an existing task to another conversation stays inside the task's own workspace.
 

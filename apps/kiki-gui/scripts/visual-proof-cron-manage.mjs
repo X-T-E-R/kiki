@@ -177,6 +177,9 @@ async function walk(page, tag) {
   // Create: pick a conversation, set a schedule, save, and the server holds it.
   await page.locator('[data-cron-create]').click();
   await page.waitForSelector('[data-cron-editor-title]', { timeout: 15_000 });
+  // A new task opens on the default timing, and says what it means.
+  const defaultMode = await page.locator('[data-cron-delivery] [role="radio"][aria-checked="true"]').getAttribute('data-cron-delivery-mode');
+  if (defaultMode !== 'idle') errors.push(`${tag}: a new task opens on "${defaultMode}", expected idle`);
   await page.locator('[data-cron-prompt]').fill('把昨夜的设计与验证增量汇总给我，只回新增项。');
   await page.locator('[data-cron-cadence="hourly"]').click();
   await page.locator('#cron-bind-session').click();
@@ -192,6 +195,7 @@ async function walk(page, tag) {
   if (created === undefined) errors.push(`${tag}: the server did not keep the created task`);
   else if (created.session_id !== 'session_fixture_cron_review') errors.push(`${tag}: the task bound to ${created.session_id}, not the chosen conversation`);
   else if (created.cron !== '0 * * * *') errors.push(`${tag}: the created rule is "${created.cron}", not 0 * * * *`);
+  else if (created.delivery_mode !== 'idle') errors.push(`${tag}: the created task stored "${created.delivery_mode}", not the default idle`);
   await page.waitForFunction((text) => {
     const list = document.querySelector('[data-cron-list]');
     return list !== null && list.textContent.includes(text);
@@ -241,6 +245,58 @@ async function walk(page, tag) {
   if (!savedHourly.prompt.includes('本轮无新增')) {
     errors.push(`${tag}: a schedule-only save wrote the preview over the prompt`);
   }
+  // That save changed only the cadence, so the timing the task already had
+  // must be exactly what it was — the form displayed it, it did not claim it.
+  if (savedHourly.delivery_mode !== 'idle') {
+    errors.push(`${tag}: a schedule-only save changed the timing to "${savedHourly.delivery_mode}"`);
+  }
+
+  // Delivery timing: each of the three is selectable, explained, and reaches
+  // the server; an untouched save leaves an explicit timing alone.
+  await clickRow(page, DAILY, 'edit');
+  await page.waitForSelector('[data-cron-prompt]', { timeout: 30_000 });
+  await page.waitForFunction(() => {
+    const field = document.querySelector('[data-cron-prompt]');
+    return field instanceof HTMLTextAreaElement && field.disabled === false;
+  }, null, { timeout: 30_000 }).catch(() => { errors.push(`${tag}: the prompt box never became editable`); });
+  const openedMode = await page.locator('[data-cron-delivery] [role="radio"][aria-checked="true"]').getAttribute('data-cron-delivery-mode');
+  if (openedMode !== 'queue') errors.push(`${tag}: the editor opened on "${openedMode}", expected the task's own queue`);
+  await page.locator('[data-cron-delivery-mode="steer"]').click();
+  const hint = await page.locator('[data-cron-delivery-hint]').innerText();
+  if (hint.trim() === '') errors.push(`${tag}: the delivery timing carries no explanation`);
+  await shot(page, `editor-delivery-${tag}`);
+  await page.locator('[data-cron-save]').click();
+  await page.waitForSelector('[data-cron-editor-title]', { state: 'detached', timeout: 20_000 })
+    .catch(() => { errors.push(`${tag}: saving a timing change did not close the editor`); });
+  const steered = (await (await api(`/cron/${DAILY}`)).json()).data.task;
+  if (steered.delivery_mode !== 'steer') errors.push(`${tag}: the chosen timing was stored as "${steered.delivery_mode}"`);
+  const steeredRow = page.locator(`[data-cron-task="${DAILY}"] [data-cron-delivery]`);
+  if (await steeredRow.getAttribute('data-cron-delivery') !== 'steer') {
+    errors.push(`${tag}: the row still reads "${await steeredRow.getAttribute('data-cron-delivery')}" after the change`);
+  }
+  await page.waitForFunction((id) => {
+    const chip = document.querySelector(`[data-cron-task="${id}"] [data-cron-delivery]`);
+    return chip?.getAttribute('data-cron-delivery') === 'steer';
+  }, DAILY, { timeout: 20_000 }).catch(() => { errors.push(`${tag}: the list never settled on the new timing`); });
+  await shot(page, `delivery-changed-${tag}`);
+
+  // A task from before timing existed reports no mode. It must read as the
+  // default rather than as a mode the server never claimed, and the editor
+  // must say the server has none to keep.
+  const legacyRow = page.locator(`[data-cron-task="${WORKSPACE_TASK}"] [data-cron-delivery]`);
+  if (await legacyRow.getAttribute('data-cron-delivery') !== 'idle') {
+    errors.push(`${tag}: a task with no recorded timing reads "${await legacyRow.getAttribute('data-cron-delivery')}"`);
+  }
+  await clickRow(page, WORKSPACE_TASK, 'edit');
+  await page.waitForSelector('[data-cron-delivery]', { timeout: 30_000 })
+    .catch(() => { errors.push(`${tag}: the editor has no delivery timing control`); });
+  if (await page.locator('[data-cron-delivery-unsupported]').count() !== 1) {
+    errors.push(`${tag}: a host reporting no timing did not say so in the editor`);
+  }
+  await shot(page, `editor-legacy-${tag}`);
+  await page.locator('[data-cron-cancel]').click();
+  await page.waitForSelector('[data-cron-editor-title]', { state: 'detached', timeout: 20_000 })
+    .catch(() => { errors.push(`${tag}: cancelling the legacy editor did not close it`); });
 
   // Edit: a complex rule opens on its own text and survives a save.
   // The row is scrolled into view first: an HMR reload from a concurrent

@@ -1885,6 +1885,31 @@ describe('bindSessionTranscript', () => {
     await binding.dispose();
   });
 
+  it.each(['queue', 'steer', 'idle'] as const)('carries a scheduled %s mode through enqueue, move and completion', async (deliveryMode) => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
+    const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+    main.bus.emit(ev({
+      type: 'prompt.enqueued',
+      promptId: 'scheduled-1',
+      userMessageId: 'scheduled-1',
+      message: { origin: { kind: 'cron_job', deliveryMode }, content },
+      queueIndex: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }));
+    expect(store.getAgent('main')?.getPrompt('scheduled-1')).toMatchObject({ originKind: 'cron_job', originDeliveryMode: deliveryMode });
+    // Neither of these records carries an origin, so the mode has to ride on
+    // the stored prompt rather than be re-read from them.
+    main.bus.emit(ev({ type: 'prompt.moved', promptId: 'scheduled-1', queuedPromptIds: ['scheduled-1'], movedAt: '2026-01-01T00:00:01.000Z' }));
+    expect(store.getAgent('main')?.getPrompt('scheduled-1')).toMatchObject({ originDeliveryMode: deliveryMode });
+    main.bus.emit(ev({ type: 'prompt.launch_committed', promptId: 'scheduled-1' }));
+    main.bus.emit(ev({ type: 'prompt.completed', promptId: 'scheduled-1', reason: 'completed', finishedAt: '2026-01-01T00:00:02.000Z' }));
+    expect(store.getAgent('main')?.getPrompt('scheduled-1')).toMatchObject({ originDeliveryMode: deliveryMode, status: 'completed' });
+    await binding.dispose();
+  });
+
   it('projects live prompt queue timing through the live adapter', async () => {
     const agents = new FakeAgents();
     const main = agents.add('main');

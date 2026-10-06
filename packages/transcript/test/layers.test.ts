@@ -3154,6 +3154,45 @@ describe('TranscriptWireAdapter', () => {
     expect(resumed.snapshot().prompts.find((p) => p.promptId === 'scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'completed' });
   });
 
+  it.each(['queue', 'steer', 'idle'] as const)('carries a %s delivery mode off the enqueue record and keeps it through moves', (deliveryMode) => {
+    const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscriptDraft('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    reducer.apply(adapter.add({
+      type: 'prompt.enqueued',
+      promptId: 'scheduled-1',
+      userMessageId: 'scheduled-1',
+      message: { origin: { kind: 'cron_job', deliveryMode }, content },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      queueIndex: 0,
+    }));
+    reducer.apply(adapter.add({ type: 'prompt.moved', promptId: 'scheduled-1', queuedPromptIds: ['user-1', 'scheduled-1'] }));
+    expect(transcript.snapshot().prompts.find((p) => p.promptId === 'scheduled-1')).toMatchObject({
+      originKind: 'cron_job',
+      originDeliveryMode: deliveryMode,
+      status: 'queued',
+      queuePosition: 1,
+    });
+  });
+
+  it('leaves a scheduled record with no delivery mode undefined rather than defaulting it', () => {
+    const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscriptDraft('main');
+    new TranscriptFactReducer(transcript).apply(adapter.add({
+      type: 'prompt.enqueued',
+      promptId: 'scheduled-legacy',
+      userMessageId: 'scheduled-legacy',
+      message: { origin: { kind: 'cron_job' }, content },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      queueIndex: 0,
+    }));
+    const prompt = transcript.snapshot().prompts.find((p) => p.promptId === 'scheduled-legacy');
+    expect(prompt?.originKind).toBe('cron_job');
+    expect(prompt?.originDeliveryMode).toBeUndefined();
+  });
+
   it('hides other non-user-origin prompts from replay, tail records and checkpoint restore', () => {
     const records: TranscriptWireRecord[] = [
       {
