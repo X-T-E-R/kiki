@@ -215,9 +215,9 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     retryRef.current = () => { void Promise.resolve(guard.value.runAction?.(execute, next.route)).catch(() => {}); };
     await guard.value.runAction?.(execute, next.route);
   }), [active, guard.value.runAction, guard.navigate, prepare]);
-  useEffect(() => host.onNotificationClick?.((route, homeId) => {
+  useEffect(() => host.onNotificationClick?.((route, homeId, scopeId) => {
     if (homeId === undefined) return;
-    void requestScopeNavigation({ homeId, scopeId: 'local', route }).catch(() => {});
+    void requestScopeNavigation({ homeId, scopeId: scopeId ?? 'local', route }).catch(() => {});
   }), [host]);
 
   const cancel = useCallback(() => {

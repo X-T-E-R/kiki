@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { configureSpaceStorage } from '../storage/spaceStorage';
 
 import {
   markSessionSeen,
@@ -33,5 +34,21 @@ describe('markSessionsSeen', () => {
     const before = sessionSeenSnapshot();
     markSessionsSeen([{ sessionId: 'a', lastSeq: 5 }, { sessionId: '', lastSeq: 9 }]);
     expect(sessionSeenSnapshot()).toBe(before);
+  });
+
+  it('does not reuse or overwrite another home/scope cached marks for the same session id', () => {
+    try {
+      configureSpaceStorage({ homeId: 'home-a' }); resetSessionSeen();
+      markSessionSeen('example', 10);
+      configureSpaceStorage({ homeId: 'home-b' }); resetSessionSeen();
+      expect(sessionSeenSnapshot()).toEqual({});
+      markSessionSeen('example', 3);
+      configureSpaceStorage({ homeId: 'home-a' });
+      expect(sessionSeenSnapshot()).toEqual({ example: 10 });
+      configureSpaceStorage({ homeId: 'home-b' });
+      expect(sessionSeenSnapshot()).toEqual({ example: 3 });
+    } finally {
+      configureSpaceStorage(null);
+    }
   });
 });

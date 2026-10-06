@@ -10,6 +10,12 @@ import {
 import { Emitter, type Event } from '#/_base/event';
 import { defineState } from '#/state/state';
 import { IEventBus } from '#/app/event/eventBus';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentTaskService } from '#/agent/task/task';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { goalKey } from '#/agent/goal/goalOps';
 import {
   AgentActivityUpdated,
   IAgentActivityView,
@@ -111,7 +117,20 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     if (bus === undefined) return;
     this.agentSubscriptions.set(
       handle.id,
-      bus.subscribe(AgentActivityUpdated, (event) => this.onActivity(handle.id, event)),
+      bus.subscribe((event) => {
+        if (event.type === AgentActivityUpdated.type) this.onActivity(handle.id, event as AgentActivityUpdated);
+        if (!/^(turn\.|task\.|prompt\.|goal\.|compaction\.)/u.test(event.type)) return;
+        queueMicrotask(() => {
+          if (this.agentSubscriptions.has(handle.id)) this.recompute('background');
+        });
+        if (event.type === 'turn.ended') {
+          const loop = handle.accessor.get(IAgentLoopService);
+          const execution = handle.accessor.get(IAgentExecutionService);
+          void Promise.all([loop?.settled(), execution?.settled()]).then(() => {
+            if (this.agentSubscriptions.has(handle.id)) this.recompute('background');
+          }, onUnexpectedError);
+        }
+      }),
     );
   }
 
@@ -142,8 +161,22 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
 
   private aggregate(): SessionActivityState {
     let busy = false;
-    for (const fold of this.folds.values()) {
-      if (fold.turnActive || fold.background > 0) {
+    for (const handle of this.agents.list()) {
+      const fold = this.folds.get(handle.id);
+      const tasks = handle.accessor.get(IAgentTaskService);
+      const activity = handle.accessor.get(IAgentActivityView)?.state();
+      const background = tasks === undefined ? (fold?.background ?? 0) > 0 :
+        activity?.background.some((item) => item.kind === 'compaction') === true;
+      const loop = handle.accessor.get(IAgentLoopService)?.status();
+      const prompt = handle.accessor.get(IAgentPromptService)?.list();
+      const execution = handle.accessor.get(IAgentExecutionService)?.status();
+      const state = handle.accessor.get(IAgentStateService);
+      const goalActive = state?.has(goalKey) === true && state.get(goalKey)?.status === 'active';
+      if (fold?.turnActive || background || tasks?.hasUnfinishedWork() || goalActive ||
+        loop?.state === 'running' || loop?.finalizing || loop?.persistenceFailure || loop?.hasPendingRequests ||
+        (loop?.pendingTurnIds.length ?? 0) > 0 || prompt?.active !== undefined || prompt?.launching !== undefined ||
+        (prompt?.pending.length ?? 0) > 0 || execution?.state === 'starting' ||
+        execution?.state === 'running' || execution?.state === 'cancelling') {
         busy = true;
         break;
       }

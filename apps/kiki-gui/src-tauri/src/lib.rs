@@ -1057,7 +1057,8 @@ struct SpaceBackendState {
     attention: HashMap<String, HashSet<String>>,
     busy_counts: HashMap<String, usize>,
     restarting: HashSet<String>,
-    unread_count: usize,
+    unread_counts: HashMap<(String, String), (usize, HashSet<String>)>,
+    unread_scope: Option<(String, String)>,
     stopping: bool,
 }
 
@@ -1081,7 +1082,7 @@ impl SpaceBackendManager {
         } else { "main".to_string() };
         Ok(Self { inner: Arc::new(Mutex::new(SpaceBackendState {
             main, mode, active, epoch: 0, slots,
-            attention: HashMap::new(), busy_counts: HashMap::new(), restarting: HashSet::new(), unread_count: 0, stopping: false,
+            attention: HashMap::new(), busy_counts: HashMap::new(), restarting: HashSet::new(), unread_counts: HashMap::new(), unread_scope: None, stopping: false,
         })) })
     }
 
@@ -1179,7 +1180,7 @@ impl SpaceBackendManager {
         if state.epoch != epoch {
             return Err(DesktopStartupFailure::plain("A newer space switch replaced this request".to_string()));
         }
-        if state.active != id { state.unread_count = 0; }
+        if state.active != id { state.unread_scope = None; }
         state.active = id.to_string();
         Ok(space)
     }
@@ -1216,7 +1217,7 @@ impl SpaceBackendManager {
             if mode == WindowMode::Switch && newly_pending > 0 && read_main_desktop_prefs(&main_home_for(Path::new(&space.path)).unwrap_or_else(|_| PathBuf::from(&space.path))).notifications {
                 let _ = show_native_notification(app.clone(), format!("Kiki · {}", space.name),
                     Some(format!("{newly_pending} session(s) need your input")),
-                    Some("/activity".to_string()), Some(id.clone()));
+                    Some("/activity".to_string()), Some(id.clone()), None);
             }
         }
         true
@@ -1763,11 +1764,13 @@ fn desktop_space_statuses(manager: State<'_, SpaceBackendManager>) -> Result<Vec
 }
 
 #[tauri::command]
-fn set_unread_count(app: AppHandle, manager: State<'_, SpaceBackendManager>, n: u32) -> Result<(), String> {
+fn set_unread_count(app: AppHandle, manager: State<'_, SpaceBackendManager>, n: u32, home_id: Option<String>, scope_id: Option<String>, session_ids: Option<Vec<String>>) -> Result<(), String> {
     let total = {
         let mut state = manager.inner.lock().map_err(|_| "Space manager lock was poisoned")?;
-        state.unread_count = n as usize;
-        combined_space_attention(state.unread_count, &state.active, &state.attention)
+        let key = (home_id.unwrap_or_else(|| state.active.clone()), scope_id.unwrap_or_else(|| "local".to_string()));
+        state.unread_scope = Some(key.clone());
+        state.unread_counts.insert(key, (n as usize, session_ids.unwrap_or_default().into_iter().collect()));
+        combined_space_attention(&state.unread_counts, state.unread_scope.as_ref(), &state.active, &state.attention)
     };
     set_unread_overlay(&app, total);
     Ok(())
@@ -1779,9 +1782,15 @@ fn unread_overlay_icon(pending: usize) -> Option<Image<'static>> {
     Some(Image::new_owned(rgba, space_badge::OVERLAY_SIZE, space_badge::OVERLAY_SIZE))
 }
 
-fn combined_space_attention(current: usize, active: &str, attention: &HashMap<String, HashSet<String>>) -> usize {
-    attention.iter().filter(|(id, _)| id.as_str() != active)
-        .fold(current, |sum, (_, sessions)| sum.saturating_add(sessions.len()))
+fn combined_space_attention(unread: &HashMap<(String, String), (usize, HashSet<String>)>, current: Option<&(String, String)>, active: &str, attention: &HashMap<String, HashSet<String>>) -> usize {
+    let total = unread.iter().fold(0usize, |sum, (scope, (count, sessions))| {
+        sum.saturating_add(if current == Some(scope) { *count } else { sessions.len() })
+    });
+    attention.iter().filter(|(id, _)| id.as_str() != active).fold(total, |sum, (home, sessions)| {
+        let observed = unread.get(&(home.clone(), "local".to_string()));
+        let additional = sessions.iter().filter(|id| !observed.is_some_and(|(_, seen)| seen.contains(*id))).count();
+        sum.saturating_add(additional)
+    })
 }
 
 fn set_unread_overlay(app: &AppHandle, total: usize) {
@@ -1799,7 +1808,7 @@ fn set_space_identity(app: &AppHandle, space: &DesktopSpace) {
         let _ = window.set_title(&title);
         if let Some(manager) = app.try_state::<SpaceBackendManager>() {
             if let Ok(state) = manager.inner.lock() {
-                let total = combined_space_attention(state.unread_count, &state.active, &state.attention);
+                let total = combined_space_attention(&state.unread_counts, state.unread_scope.as_ref(), &state.active, &state.attention);
                 set_unread_overlay(app, total);
             }
         }
@@ -1851,12 +1860,12 @@ fn take_navigation_intent() -> Option<serde_json::Value> {
     PENDING_NAVIGATION_INTENT.lock().ok()?.take()
 }
 
-fn notification_navigation_intent(route: &str, home_id: Option<&str>) -> serde_json::Value {
-    serde_json::json!({ "route": route, "homeId": home_id })
+fn notification_navigation_intent(route: &str, home_id: Option<&str>, scope_id: Option<&str>) -> serde_json::Value {
+    serde_json::json!({ "route": route, "homeId": home_id, "scopeId": scope_id })
 }
 
-fn deliver_notification_click(app: &AppHandle, route: &str, home_id: Option<&str>) {
-    let intent = notification_navigation_intent(route, home_id);
+fn deliver_notification_click(app: &AppHandle, route: &str, home_id: Option<&str>, scope_id: Option<&str>) {
+    let intent = notification_navigation_intent(route, home_id, scope_id);
     if let Ok(mut pending) = PENDING_NAVIGATION_INTENT.lock() { *pending = Some(intent.clone()); }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -1868,7 +1877,7 @@ fn deliver_notification_click(app: &AppHandle, route: &str, home_id: Option<&str
     let _ = app.emit("kiki://notification-click", intent);
 }
 
-fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, home_id: Option<String>) -> Result<(), String> {
+fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, home_id: Option<String>, scope_id: Option<String>) -> Result<(), String> {
     let mut notification = notify_rust::Notification::new();
     notification.summary(&title).body(body.as_deref().unwrap_or(""));
     if route.is_some() { notification.action("open", "Open Kiki"); }
@@ -1885,7 +1894,7 @@ fn show_native_notification(app: AppHandle, title: String, body: Option<String>,
         if let Some(route) = route {
             let handle = notify_rust::NotificationHandle::new(notification.finalize());
             thread::spawn(move || handle.wait_for_action(|action| {
-                if notification_action_opens(action) { deliver_notification_click(&app, &route, home_id.as_deref()); }
+                if notification_action_opens(action) { deliver_notification_click(&app, &route, home_id.as_deref(), scope_id.as_deref()); }
             }));
             return Ok(());
         }
@@ -1894,7 +1903,7 @@ fn show_native_notification(app: AppHandle, title: String, body: Option<String>,
     #[cfg(not(target_os = "macos"))]
     if let Some(route) = route {
         thread::spawn(move || handle.wait_for_action(|action| {
-            if notification_action_opens(action) { deliver_notification_click(&app, &route, home_id.as_deref()); }
+            if notification_action_opens(action) { deliver_notification_click(&app, &route, home_id.as_deref(), scope_id.as_deref()); }
         }));
     }
     #[cfg(target_os = "macos")]
@@ -1903,8 +1912,8 @@ fn show_native_notification(app: AppHandle, title: String, body: Option<String>,
 }
 
 #[tauri::command]
-async fn send_desktop_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || show_native_notification(app, title, body, route, None))
+async fn send_desktop_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, home_id: Option<String>, scope_id: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || show_native_notification(app, title, body, route, home_id, scope_id))
         .await.map_err(|error| format!("Notification task failed: {error}"))?
 }
 
@@ -3785,9 +3794,9 @@ mod tests {
 
     #[test]
     fn cross_space_notification_preserves_the_scope_intent_for_router_guarding() {
-        let intent = notification_navigation_intent("/activity", Some("home-b"));
-        assert_eq!(intent, serde_json::json!({ "route": "/activity", "homeId": "home-b" }));
-        assert_eq!(notification_navigation_intent("/s/example", None), serde_json::json!({ "route": "/s/example", "homeId": null }));
+        let intent = notification_navigation_intent("/activity", Some("home-b"), Some("ssh:example"));
+        assert_eq!(intent, serde_json::json!({ "route": "/activity", "homeId": "home-b", "scopeId": "ssh:example" }));
+        assert_eq!(notification_navigation_intent("/s/example", None, None), serde_json::json!({ "route": "/s/example", "homeId": null, "scopeId": null }));
         *PENDING_NAVIGATION_INTENT.lock().unwrap() = Some(intent.clone());
         assert_eq!(take_navigation_intent(), Some(intent));
         assert_eq!(take_navigation_intent(), None);
@@ -3802,15 +3811,28 @@ mod tests {
     }
 
     #[test]
-    fn unread_overlay_adds_only_other_spaces_and_clears_at_zero() {
+    fn unread_overlay_retains_other_homes_and_scopes_and_deduplicates_pending_sessions() {
         let attention = HashMap::from([
             ("main".to_string(), HashSet::from(["a".to_string()])),
             ("child".to_string(), HashSet::from(["b".to_string(), "c".to_string()])),
         ]);
-        assert_eq!(combined_space_attention(3, "main", &attention), 5);
-        assert_eq!(combined_space_attention(0, "child", &attention), 1);
-        assert_eq!(combined_space_attention(0, "main", &HashMap::new()), 0);
-        assert_eq!(combined_space_attention(usize::MAX, "main", &attention), usize::MAX);
+        let mut unread = HashMap::from([
+            (("main".to_string(), "local".to_string()), (1usize, HashSet::from(["a".to_string()]))),
+            (("child".to_string(), "local".to_string()), (1usize, HashSet::from(["b".to_string()]))),
+            (("main".to_string(), "ssh:example".to_string()), (1usize, HashSet::from(["a".to_string()]))),
+        ]);
+        assert_eq!(combined_space_attention(&unread, None, "main", &attention), 4);
+        assert_eq!(combined_space_attention(&unread, None, "child", &attention), 3);
+        let child = ("child".to_string(), "local".to_string());
+        unread.insert(child.clone(), (2, HashSet::from(["b".to_string()])));
+        assert_eq!(combined_space_attention(&unread, Some(&child), "child", &HashMap::new()), 4);
+        assert_eq!(combined_space_attention(&unread, None, "main", &HashMap::new()), 3);
+        unread.insert(child, (0, HashSet::new()));
+        assert_eq!(combined_space_attention(&unread, None, "child", &HashMap::new()), 2);
+        assert_eq!(combined_space_attention(&HashMap::new(), None, "main", &HashMap::new()), 0);
+        let main = ("main".to_string(), "local".to_string());
+        unread.insert(main.clone(), (usize::MAX, HashSet::new()));
+        assert_eq!(combined_space_attention(&unread, Some(&main), "main", &attention), usize::MAX);
     }
 
     #[test]

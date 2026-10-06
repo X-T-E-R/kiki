@@ -20,6 +20,8 @@ export interface HostNotification {
    * a native click can be routed back through `onNotificationClick`.
    */
   readonly route?: string;
+  readonly homeId?: string;
+  readonly scopeId?: string;
   /** Same tag replaces the previous notification where the platform supports it. */
   readonly tag?: string;
 }
@@ -135,13 +137,13 @@ interface HostCapabilities {
    * Present where the shell reports clicks back to the page; the returned
    * function unsubscribes.
    */
-  onNotificationClick?: (callback: (route: string, homeId?: string) => void) => () => void;
-  takeNavigationIntent?: () => Promise<{ readonly route: string; readonly homeId?: string } | { readonly connectionId: string } | null>;
+  onNotificationClick?: (callback: (route: string, homeId?: string, scopeId?: string) => void) => () => void;
+  takeNavigationIntent?: () => Promise<{ readonly route: string; readonly homeId?: string; readonly scopeId?: string } | { readonly connectionId: string } | null>;
   /**
    * The unread count for the taskbar / dock icon (0 clears it). Best effort:
    * a platform without badges ignores it.
    */
-  setUnreadBadge?: (count: number) => Promise<void>;
+  setUnreadBadge?: (count: number, homeId?: string, scopeId?: string, sessionIds?: readonly string[]) => Promise<void>;
   /**
    * Open an http(s) URL in the system browser. Present where `window.open`
    * cannot be trusted (desktop webviews reject pop-ups, VS Code webviews have

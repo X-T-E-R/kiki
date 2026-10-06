@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import {
   ConfigTarget, IConfigService, ISessionManager, ISessionActivityView,
   ISessionInteractionService, IAgentLifecycleService, IAgentPromptService,
-  IInstantiationService, IAgentTaskService, IAgentLoopService, IAgentActivityView, IEventBus, IAgentExecutionService,
+  IInstantiationService, IAgentTaskService, IAgentLoopService, IAgentActivityView, IEventBus, IAgentExecutionService, IAgentGoalService,
   type Scope, type ISessionScopeHandle, type IAgentScopeHandle,
 } from '@kiki/agent-core-v2';
 import {
@@ -361,7 +361,7 @@ export class NotificationService {
       if (state.agents.has(agent.id)) return;
       state.agents.add(agent.id);
       state.subscriptions.push(agent.accessor.get(IEventBus).subscribe((event) => {
-        if (!/^(turn\.|task\.|prompt\.|compaction\.)/u.test(event.type)) return;
+        if (!/^(turn\.|task\.|prompt\.|compaction\.|goal\.)/u.test(event.type)) return;
         this.queueReconcile(state);
         if (event.type === 'turn.ended') void Promise.all([
           agent.accessor.get(IAgentLoopService).settled(),
@@ -397,7 +397,8 @@ export class NotificationService {
         loop.pendingTurnIds.length > 0 || prompt.hasReadyPending() || queue.active !== undefined ||
         queue.launching !== undefined || queue.pending.length > 0 ||
         activity.turn !== undefined || activity.background.some((item) => item.kind === 'compaction') ||
-        agent.accessor.get(IAgentTaskService).hasUnfinishedWork()) return true;
+        agent.accessor.get(IAgentTaskService).hasUnfinishedWork() ||
+        agent.accessor.get(IAgentGoalService).getGoal().goal?.status === 'active') return true;
     }
     return false;
   }

@@ -40,6 +40,7 @@ export interface AttentionEvent {
   readonly sessionId: string;
   readonly kind: AttentionKind;
   readonly title: string;
+  readonly episodeId?: string;
 }
 
 export function attentionSnapshotOf(session: Session): AttentionSnapshot {
@@ -110,8 +111,13 @@ export class CompletionObserver {
   private initialized = false;
   private readonly seen = new Map<string, StableCompletion>();
 
-  disconnected(): void {
-    this.initialized = false;
+  constructor(checkpoint?: readonly StableCompletion[]) {
+    this.initialized = checkpoint !== undefined;
+    for (const completion of checkpoint ?? []) this.seen.set(completion.session_id, completion);
+  }
+
+  checkpoint(): readonly StableCompletion[] {
+    return [...this.seen.values()];
   }
 
   observe(completions: readonly StableCompletion[], sessions: readonly Session[]): readonly AttentionEvent[] {
@@ -124,7 +130,7 @@ export class CompletionObserver {
       if (baseline || previous?.episode_id === completion.episode_id) continue;
       const session = sessions.find((item) => item.id === completion.session_id);
       if (session?.archived) continue;
-      events.push({ sessionId: completion.session_id, kind: 'completed', title: session?.title ?? '' });
+      events.push({ sessionId: completion.session_id, kind: 'completed', title: session?.title ?? '', episodeId: completion.episode_id });
     }
     const watermark = completions.reduce((max, item) => Math.max(max, item.completed_at), 0);
     for (const [id, completion] of this.seen) {
@@ -144,7 +150,7 @@ export interface AwayNotificationPrefs {
 
 export interface AttentionRateState {
   /** sessionId → last delivery. */
-  readonly last: ReadonlyMap<string, { readonly at: number; readonly kind: AttentionKind }>;
+  readonly last: ReadonlyMap<string, { readonly at: number; readonly kind: AttentionKind; readonly episodeId?: string }>;
 }
 
 export const EMPTY_ATTENTION_RATE: AttentionRateState = { last: new Map() };
@@ -195,12 +201,13 @@ export function planAttentionNotifications(
   }
   const survivors = [...bySession.values()].filter((event) => {
     const last = state.last.get(event.sessionId);
+    if (event.kind === 'completed' && event.episodeId !== undefined) return event.episodeId !== last?.episodeId;
     if (last === undefined || nowMs - last.at >= cooldownMs) return true;
     return PRIORITY[event.kind] > PRIORITY[last.kind];
   });
   if (survivors.length === 0) return { notification: undefined, state };
   const last = new Map(state.last);
-  for (const event of survivors) last.set(event.sessionId, { at: nowMs, kind: event.kind });
+  for (const event of survivors) last.set(event.sessionId, { at: nowMs, kind: event.kind, episodeId: event.episodeId });
   // Forget sessions whose cooldown has long passed so the map stays small.
   for (const [sessionId, entry] of last) if (nowMs - entry.at > cooldownMs * 10) last.delete(sessionId);
   const notification: AttentionNotification = survivors.length === 1

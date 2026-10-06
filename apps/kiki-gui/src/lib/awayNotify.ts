@@ -23,6 +23,8 @@ import type { HostNotification } from '../host';
 export interface AwayNotifierDeps {
   /** True when the window is hidden, minimized or not focused. */
   readonly isAway: () => Promise<boolean>;
+  readonly isViewingSession?: (sessionId: string) => boolean;
+  readonly scopeKey?: string;
   readonly notify: (notification: HostNotification) => Promise<void>;
   /** Builds the text for a plan; locale-bound, so the App supplies it. */
   readonly format: (notification: AttentionNotification) => HostNotification;
@@ -49,8 +51,13 @@ export function notificationRoute(notification: AttentionNotification): string {
 export class AwayNotifier {
   private rate: AttentionRateState = EMPTY_ATTENTION_RATE;
   private deps: AwayNotifierDeps | undefined;
+  private scopeKey: string | undefined;
 
   configure(deps: AwayNotifierDeps | undefined): void {
+    if (deps !== undefined && deps.scopeKey !== this.scopeKey) {
+      this.rate = EMPTY_ATTENTION_RATE;
+      this.scopeKey = deps.scopeKey;
+    }
     this.deps = deps;
   }
 
@@ -70,15 +77,17 @@ export class AwayNotifier {
     } catch {
       away = false;
     }
-    // The user is looking at the window: the inbox and the row states carry
-    // it, and nothing is spent from the rate limit.
-    if (!away) return undefined;
-    const now = (deps.now ?? Date.now)();
-    const plan = planAttentionNotifications(wanted, prefs, this.rate, now);
+    const current = this.deps;
+    if (current === undefined || current.scopeKey !== deps.scopeKey) return undefined;
+    const deliverable = wanted.filter((event) => away ||
+      (event.kind === 'completed' && current.isViewingSession !== undefined && !current.isViewingSession(event.sessionId)));
+    if (deliverable.length === 0) return undefined;
+    const now = (current.now ?? Date.now)();
+    const plan = planAttentionNotifications(deliverable, prefs, this.rate, now);
     this.rate = plan.state;
     if (plan.notification === undefined) return undefined;
     try {
-      await deps.notify(deps.format(plan.notification));
+      await current.notify(current.format(plan.notification));
     } catch {
       // A denied permission or a closed host: the inbox still has the item.
     }

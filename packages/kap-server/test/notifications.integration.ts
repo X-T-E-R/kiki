@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Fastify from 'fastify';
-import { IConfigService, ISessionManager, ISessionActivityView, ISessionInteractionService, IAgentLifecycleService, IInstantiationService, IAgentLoopService, IAgentTaskService, IAgentPromptService, IAgentActivityView, IEventBus, IAgentExecutionService, type Scope } from '@kiki/agent-core-v2';
+import { IConfigService, ISessionManager, ISessionActivityView, ISessionInteractionService, IAgentLifecycleService, IInstantiationService, IAgentLoopService, IAgentTaskService, IAgentPromptService, IAgentActivityView, IEventBus, IAgentExecutionService, IAgentGoalService, type Scope } from '@kiki/agent-core-v2';
 import { DEFAULT_NOTIFICATIONS_CONFIG, NotificationsConfigSchema } from '@kiki/agent-core-v2/app/notifications/configSection';
 import type { NotificationChannel, NotificationSettings } from '@kiki/klient';
 import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
@@ -73,12 +73,14 @@ describe('notification coordinator', () => {
     let readyPrompt = false;
     let heldPrompt = false;
     let executionState = 'idle';
+    let goalActive = false;
     const main = { id: 'main', accessor: { get: (key: unknown) => {
       if (key === IEventBus) return { subscribe: events.on };
       if (key === IAgentLoopService) return { status: () => loop, settled: async () => {} };
       if (key === IAgentExecutionService) return { status: () => ({ state: executionState }), settled: async () => {} };
       if (key === IAgentPromptService) return { hasReadyPending: () => readyPrompt, list: () => ({ pending: heldPrompt ? [{}] : [] }) };
       if (key === IAgentTaskService) return { hasUnfinishedWork: () => unfinished };
+      if (key === IAgentGoalService) return { getGoal: () => ({ goal: goalActive ? { status: 'active' } : null }) };
       if (key === IAgentActivityView) return { state: () => ({ background: [] }) };
       throw new Error('unexpected_agent_service');
     } } };
@@ -160,7 +162,16 @@ describe('notification coordinator', () => {
       await vi.advanceTimersByTimeAsync(400);
       expect(service.listCompletions()).toEqual([]);
       executionState = 'idle';
+      goalActive = true;
       events.fire({ type: 'turn.ended' });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(service.listCompletions()).toEqual([]);
+      expect(service.listDeliveries()).toEqual([]);
+      begin(); end();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(service.listCompletions()).toEqual([]);
+      goalActive = false;
+      events.fire({ type: 'goal.updated' });
       activity.busy = true;
       await vi.advanceTimersByTimeAsync(120);
       expect(service.listCompletions()).toHaveLength(1);
@@ -225,6 +236,7 @@ describe('notification coordinator', () => {
       if (key === IAgentExecutionService) return { status: () => ({ state: 'idle' }), settled: async () => {} };
       if (key === IAgentPromptService) return { hasReadyPending: () => false, list: () => ({ pending: [] }) };
       if (key === IAgentTaskService) return { hasUnfinishedWork: () => activity.busy && !activity.mainTurnActive };
+      if (key === IAgentGoalService) return { getGoal: () => ({ goal: null }) };
       if (key === IAgentActivityView) return { state: () => ({ background: [] }) };
       throw new Error('unexpected_agent_service');
     } } };

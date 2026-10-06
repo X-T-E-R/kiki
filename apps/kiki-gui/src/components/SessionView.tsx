@@ -124,7 +124,6 @@ import {
   readModelSwitchPreferences,
   readSettings,
   readTerminalPanelPrefs,
-  markSessionSeen,
   rememberModelSwitchChoice,
   resolveCatalogModel,
   resolveEffectiveModel,
@@ -159,6 +158,7 @@ import { harnessDenies, useSessionHarness, type SessionHarness } from './harness
 import { useExecutorCatalog } from './settings/profileEditor/engines';
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { reportAttention } from '../lib/awayNotify';
+import { useViewedSession } from '../lib/useAwayNotifications';
 import { pushToast } from '../lib/toasts';
 import { useThreadTitle } from '../lib/threadTitles';
 import { actionChordText, matchesShortcutAction, useShortcutState } from '../lib/shortcuts';
@@ -1944,15 +1944,9 @@ export function SessionView({
     onOpenSession: (target) => { void navigate(`/s/${target}`); },
   }), [state.session?.agent_config.persona, state.session?.delivery, sessionId, navigate]);
 
-  // Read state: while a session is on screen, keep its seen-mark at the newest
-  // event the user has therefore looked at. This clears the session from the
-  // activity inbox and from the sidebar's unread state, and re-arms both the
-  // moment a later turn pushes `last_seq` past the mark.
-  const seenSeq = state.session?.last_seq;
-  useEffect(() => {
-    if (seenSeq === undefined) return;
-    markSessionSeen(sessionId, seenSeq);
-  }, [sessionId, seenSeq]);
+  // Advance this conversation's seen-mark only while its route is visible
+  // and focused. Other conversations and hidden mounted views stay unread.
+  useViewedSession(host, sessionId, state.session?.last_seq);
 
   // Store-controlled pills: the server-reported value wins unless a local
   // click is still waiting to be committed with the next prompt.

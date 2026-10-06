@@ -124,11 +124,11 @@ export function consumeScopeReload(homeId: string): boolean {
 export function beginNavWindow(controlledReload: boolean, documentReload: boolean): void {
   if (!controlledReload && !documentReload) clearNavHistory();
 }
-export function applyColdNavigationIntent(intent: { route: string; homeId?: string }, homeId: string): boolean {
+export function applyColdNavigationIntent(intent: { route: string; homeId?: string; scopeId?: string }, homeId: string): boolean {
   if (!isSpaceViewRoute(intent.route)) return false;
   clearNavHistory();
   const state = window.history.state as Record<string, unknown> | null;
-  const scope = { homeId: intent.homeId ?? homeId, scopeId: 'local' };
+  const scope = { homeId: intent.homeId ?? homeId, scopeId: intent.scopeId ?? 'local' };
   window.history.replaceState({ ...state, idx: state?.['idx'] ?? 0, key: state?.['key'] ?? `cold_${createVisitId()}`,
     usr: { kikiNav: { visitId: createVisitId(), scope } } }, '', intent.route);
   return true;

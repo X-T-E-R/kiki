@@ -45,14 +45,15 @@ async function ensureNotificationPermission(): Promise<boolean> {
 }
 
 /** Native notification clicks forwarded by the desktop shell with `{ route }`. */
-function onNotificationClick(callback: (route: string, homeId?: string) => void): () => void {
+function onNotificationClick(callback: (route: string, homeId?: string, scopeId?: string) => void): () => void {
   let unsubscribed = false;
   let unlisten: (() => void) | undefined;
   void listen<unknown>('kiki://notification-click', (event) => {
-    const payload = event.payload as { route?: unknown; homeId?: unknown } | null;
+    const payload = event.payload as { route?: unknown; homeId?: unknown; scopeId?: unknown } | null;
     if (!unsubscribed && typeof payload?.route === 'string') {
       void invoke('take_navigation_intent');
-      callback(payload.route, typeof payload.homeId === 'string' ? payload.homeId : undefined);
+      callback(payload.route, typeof payload.homeId === 'string' ? payload.homeId : undefined,
+        typeof payload.scopeId === 'string' ? payload.scopeId : undefined);
     }
   }).then((fn) => {
     if (unsubscribed) fn();
@@ -145,12 +146,13 @@ export const tauriHost: TauriHostAdapter = {
   },
   async notify(options) {
     if (!(await ensureNotificationPermission())) return;
-    await invoke('send_desktop_notification', { title: options.title, body: options.body, route: options.route });
+    await invoke('send_desktop_notification', { title: options.title, body: options.body, route: options.route,
+      homeId: options.homeId, scopeId: options.scopeId });
   },
   onNotificationClick,
-  async setUnreadBadge(count) {
+  async setUnreadBadge(count, homeId, scopeId, sessionIds) {
     try {
-      await invoke('set_unread_count', { n: Math.max(0, Math.min(0xffffffff, Math.trunc(count))) });
+      await invoke('set_unread_count', { n: Math.max(0, Math.min(0xffffffff, Math.trunc(count))), homeId, scopeId, sessionIds });
     } catch {
       return;
     }
