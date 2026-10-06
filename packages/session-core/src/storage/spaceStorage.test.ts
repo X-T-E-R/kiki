@@ -71,6 +71,18 @@ describe('space storage namespacing', () => {
     expect(spaceStorageKey('kiki.skin')).toBe('kiki.skin');
   });
 
+  it('captures a namespace without changing the dynamic wrapper', () => {
+    configureSpaceStorage({ homeId: 'acme' });
+    const captured = spaceStorage.capture();
+    captured.setItem('kiki.drafts', 'a');
+    configureSpaceStorage({ homeId: 'beta' });
+    spaceStorage.setItem('kiki.drafts', 'b');
+    expect(captured.getItem('kiki.drafts')).toBe('a');
+    captured.removeItem('kiki.drafts');
+    expect(spaceStorage.getItem('kiki.drafts')).toBe('b');
+    expect(localStorage.getItem(namespaced('acme', 'kiki.drafts'))).toBeNull();
+  });
+
   it('namespaces every space independently', () => {
     configureSpaceStorage({ homeId: 'acme' });
     spaceStorage.setItem('kiki.lastSessionId', 'a-1');

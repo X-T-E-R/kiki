@@ -237,7 +237,7 @@ describe('WorkspacePickerFields first-run affordances', () => {
       selectWorkspace,
     }));
     await act(async () => { container.querySelector<HTMLButtonElement>('#new-workspace-select')?.click(); });
-    const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+    const option = [...document.querySelectorAll<HTMLButtonElement>('#new-workspace-select-list [role="option"]')]
       .find((button) => button.textContent?.includes('Automatically create a workspace'));
     expect(option?.textContent).toContain('create a new folder in Kiki Home');
     await act(async () => { option?.click(); });

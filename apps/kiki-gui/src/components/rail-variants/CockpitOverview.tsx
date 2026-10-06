@@ -83,7 +83,7 @@ const AGENT_TASK_MAX_RESTARTS = 2;
 function isStalePageToken(error: unknown): boolean {
   const code = (error as { readonly code?: unknown } | null)?.code;
   if (code === 40001) return true;
-  const message = error instanceof Error ? error.message : String(error ?? '');
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
   return /restart pagination|page_token/i.test(message);
 }
 

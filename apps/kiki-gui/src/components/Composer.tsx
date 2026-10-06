@@ -1027,7 +1027,7 @@ export function Composer({
 
   // Edits bypass send-only model selection, but still wait for all media.
   const canSend = queueEditing || messageEditing
-    ? (text.trim() !== '' || attachments.length > 0 || (annotations?.length ?? 0) > 0 || quote != null) &&
+    ? (text.trim() !== '' || attachments.length > 0 || (annotations?.length ?? 0) > 0 || (quote !== null && quote !== undefined)) &&
       !disabled && !sendDisabled && !turnInFlight && !pendingAttachments
     : (text.trim() !== '' ||
         attachments.length > 0 ||
@@ -1501,7 +1501,7 @@ export function Composer({
     const selection = { start: node?.selectionStart ?? lastCursorRef.current, end: node?.selectionEnd ?? lastCursorRef.current };
     try {
       const native = await host.readClipboardFiles?.();
-      const browser = native == null ? await read() : null;
+      const browser = native === null || native === undefined ? await read() : null;
       const latest = pasteDraftRef.current;
       if (!ownsAttachmentResult() || textareaRef.current !== node || node.disabled || latest.sessionId !== draft.sessionId || latest.connectionId !== draft.connectionId || latest.scopeId !== draft.scopeId) return;
       if (latest.text !== draft.text) {

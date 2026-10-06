@@ -27,8 +27,8 @@ import { UPDATE_DIALOG_OVERLAY } from '../lib/useDesktopUpdateScheduler';
 export interface UpdateAvailableDialogProps {
   readonly offer: UpdateOffer | null;
   readonly onUpdate: (offer: UpdateOffer) => void;
-  readonly onRemindLater: (offer: UpdateOffer) => void;
-  readonly onSkip: (offer: UpdateOffer) => void;
+  readonly onRemindLater: (offer: UpdateOffer) => void | Promise<void>;
+  readonly onSkip: (offer: UpdateOffer) => void | Promise<void>;
   readonly onDismiss: () => void;
   /**
    * The owner's install state. A manual check that is already installing keeps
@@ -84,7 +84,7 @@ export function UpdateAvailableDialog({
     if (working || actionRunning.current) return;
     actionRunning.current = true;
     setAttempted(true);
-    void onUpdate(offer);
+    onUpdate(offer);
   };
 
   /**
