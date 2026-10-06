@@ -109,7 +109,11 @@ Markdown previews open rendered. **Source** shows the text, and in the desktop a
 
 ## GUI usage statistics
 
-**Usage** opens on today in the browser's local time. A range in the URL overrides that, and a saved all-history view does not replace it. The page keeps its date boundary correct across midnight and when the browser's timezone offset changes.
+**Usage → History** opens on today in the browser's local time. A range in the URL overrides that, and a saved all-history view does not replace it. The page keeps its date boundary correct across midnight and when the browser's timezone offset changes.
+
+Start with the cost trend, then select a bar to see the consumption sources for that interval. Group sources by model, provider, agent profile, or workspace; selecting a source narrows that dimension while keeping the date range and other filters. Open its session records on demand and use the recorded turn's link to jump to the original conversation. Returning keeps your usage view. Records without turn attribution say so instead of offering a guessed location.
+
+For a bounded date range, request the previous-period comparison when you need it. Missing prior data is shown as unavailable, not zero; a failed comparison leaves the current period readable. The collapsed live reference remains separate from the selected history.
 
 Token usage and estimated cost each carry their own completeness marker. If a provider returned no usage, Kiki shows that as unknown rather than as a real zero, and mixed results show the recorded subtotal with an incomplete-accounting notice. A missing model price affects the cost estimate only, never the recorded token count. **Data reliability** tells these cases apart from an empty range or a failed request.
 
