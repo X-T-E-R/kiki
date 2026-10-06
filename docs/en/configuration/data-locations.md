@@ -54,6 +54,8 @@ $KIKI_HOME  (default: ~/.kiki)
 │       └── <key>-<suffix>.json
 ├── sessions/               # Session data (see below)
 │   └── <workDirKey>/<sessionId>/
+├── server/
+│   └── events/             # Bounded client event replay journals
 ├── bin/
 │   ├── rg                  # managed ripgrep binary for Grep (rg.exe on Windows)
 │   └── fd                  # managed fd binary for file references (fd.exe on Windows)
@@ -93,6 +95,14 @@ Inside each session directory:
 - **`logs/kimi-code.log`**: diagnostic log for this session; only present when a diagnostic event occurs.
 - **`tasks/`**: background task persistence — `tasks/<task_id>.json` stores status/pid/exit code; `tasks/<task_id>/output.log` stores output.
 - **`cron/`**: scheduled task persistence; reloaded into the scheduler when the session is resumed with `kiki --session`. See [Scheduled tasks](../reference/tools.md#scheduled-tasks).
+
+## Server event replay
+
+`server/events/<sessionId>.jsonl` stores durable events for reconnecting clients, not the complete conversation history. Kiki automatically retains the session's replay window (1000 events by default). Active writers compact after growing beyond two windows and retain one window when closing; this limits event count, not bytes, and keeps oversized events intact.
+
+Older journals shrink when the new writer first appends to them. Browsing a cold session only reads its watermark and does not rewrite the journal; journals for inactive or deleted sessions therefore remain until written again or explicitly cleared. Failed replacement leaves the durable source intact and logs a warning, with reclamation retried on later writes or writer close.
+
+This retention does not remove `sessions/`, agent `wire.jsonl` files, or saved media. Clients whose cursor is no longer covered recover through a snapshot/reset rather than replaying the old event sequence; see [Reconnect and recovery](../server/rest-api.md#reconnect-and-recovery). If you need to clear old journals manually, first stop every Kiki server using this data root, then clear only `server/events/` and restart. Never delete or truncate these journals while a writer is running.
 
 ## Built-in tool cache
 

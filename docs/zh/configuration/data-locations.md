@@ -54,6 +54,8 @@ $KIKI_HOME  （默认 ~/.kiki）
 │       └── <key>-<suffix>.json
 ├── sessions/               # 会话数据（详见下文）
 │   └── <workDirKey>/<sessionId>/
+├── server/
+│   └── events/             # 有界的客户端事件重放日志
 ├── bin/
 │   ├── rg                  # Grep 使用的托管 ripgrep 二进制（Windows 为 rg.exe）
 │   └── fd                  # 文件引用使用的托管 fd 二进制（Windows 为 fd.exe）
@@ -93,6 +95,14 @@ $KIKI_HOME  （默认 ~/.kiki）
 - **`logs/kimi-code.log`**：该会话的诊断日志，只有发生诊断事件时才存在。
 - **`tasks/`**：后台任务持久化——`tasks/<task_id>.json` 保存状态/pid/退出码，`tasks/<task_id>/output.log` 保存输出。
 - **`cron/`**：定时任务持久化，用 `kiki --session` 恢复会话时重新加载到调度器。详见[定时任务](../reference/tools.md#定时任务)。
+
+## 服务端事件重放
+
+`server/events/<sessionId>.jsonl` 保存客户端重连时使用的持久事件，不是完整会话历史。Kiki 自动保留会话的重放窗口（默认 1000 条）。活跃 writer 的日志超过两个窗口时会收缩为一个窗口，关闭时也收缩为一个窗口；这里限制的是事件条数，不是字节数，超大事件仍会完整保存。
+
+旧日志在新 writer 首次追加事件时收缩。浏览未激活的会话只读取水位，不会改写日志；因此，未再次写入的旧日志和已删除会话的遗留日志仍需显式清理。替换失败时会保留原持久日志并记录警告，后续写入或 writer 关闭时重试空间回收。
+
+这项保留策略不会删除 `sessions/`、Agent 的 `wire.jsonl` 或媒体原件。游标超出保留窗口的客户端会通过快照/reset 恢复，而不是补播旧事件序列，见 [断线恢复](../server/rest-api.md#断线恢复)。如需手动清理旧日志，先停止所有使用该数据根目录的 Kiki 服务，再仅清理 `server/events/` 并重启。不要在 writer 运行时删除或截断这些日志。
 
 ## 内置工具缓存
 

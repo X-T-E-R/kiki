@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { mkdir, open, writeFile } from 'node:fs/promises';
+import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { ulid } from 'ulid';
 
@@ -27,6 +27,7 @@ interface JournalHeaderLine {
   version: number;
   epoch: string;
   created_at: number;
+  last_seq?: number;
 }
 
 interface JournalEventLine {
@@ -54,6 +55,14 @@ export class SessionEventJournal {
   private flushPromise: Promise<void> | undefined;
   private headerPending: boolean;
   private writeFailed = false;
+  private compactFailed = false;
+  private appendSeparator = false;
+  private retainedLines: string[] | undefined;
+  private diskEventCount = 0;
+  private compactPending = false;
+  private closing = false;
+  private durableSeq: number;
+  private createdAt = Date.now();
 
   private constructor(
     private readonly filePath: string,
@@ -61,9 +70,12 @@ export class SessionEventJournal {
     public readonly epoch: string,
     lastSeq: number,
     isFresh: boolean,
+    private readonly capacity: number,
   ) {
     this._seq = lastSeq;
+    this.durableSeq = lastSeq;
     this.headerPending = isFresh;
+    if (isFresh) this.retainedLines = [];
   }
 
   /** Highest durable seq appended (0 if none). */
@@ -72,11 +84,15 @@ export class SessionEventJournal {
   }
 
   /**
-   * Open (or create) the journal for `filePath`. Recovers the header and the
-   * latest durable seq from bounded reads, scanning in full if either edge is
-   * damaged. A missing file or unreadable header starts a fresh epoch.
+   * Recover the watermark without loading the replay window. Retention starts
+   * on the first append, so cold watermark queries do not compact the journal.
    */
-  static async open(filePath: string, logger: JournalLogger = noopLogger): Promise<SessionEventJournal> {
+  static async open(
+    filePath: string,
+    logger: JournalLogger = noopLogger,
+    capacity = 1000,
+  ): Promise<SessionEventJournal> {
+    if (!Number.isSafeInteger(capacity) || capacity < 0) throw new RangeError('journal capacity must be a nonnegative integer');
     let epoch: string | undefined;
     let lastSeq = 0;
     let sawAnyLine = false;
@@ -108,9 +124,9 @@ export class SessionEventJournal {
         }
       };
       await truncateStaleTailBeforeFreshHeader();
-      return new SessionEventJournal(filePath, logger, `ep_${ulid()}`, 0, true);
+      return new SessionEventJournal(filePath, logger, `ep_${ulid()}`, 0, true, capacity);
     }
-    return new SessionEventJournal(filePath, logger, epoch, lastSeq, false);
+    return new SessionEventJournal(filePath, logger, epoch, lastSeq, false, capacity);
   }
 
   /** Reserve the next durable seq. The caller must follow with `append()`. */
@@ -146,19 +162,16 @@ export class SessionEventJournal {
   }
 
   async flush(): Promise<void> {
-    while (this.flushPromise !== undefined || this.pendingLines.length > 0) {
-      if (this.flushPromise === undefined) {
-        this.flushPromise = this.flushOnce().finally(() => {
-          this.flushPromise = undefined;
-        });
-      }
+    while (this.flushPromise !== undefined || this.pendingLines.length > 0 ||
+      (this.closing && this.retainedLines !== undefined && (this.compactPending || this.diskEventCount > this.capacity))) {
+      this.scheduleFlush();
       await this.flushPromise;
-      const retainedLinesRetryOnNextAppend = this.writeFailed;
-      if (retainedLinesRetryOnNextAppend) return;
+      if (this.writeFailed || (this.compactFailed && this.pendingLines.length === 0 && this.flushPromise === undefined)) return;
     }
   }
 
   async close(): Promise<void> {
+    this.closing = true;
     await this.flush();
   }
 
@@ -166,46 +179,107 @@ export class SessionEventJournal {
     if (this.flushPromise !== undefined) return;
     this.flushPromise = this.flushOnce().finally(() => {
       this.flushPromise = undefined;
-      const noAutomaticRetryAfterWriteFailure = !this.writeFailed;
-      if (noAutomaticRetryAfterWriteFailure && this.pendingLines.length > 0) this.scheduleFlush();
+      if (!this.writeFailed && this.pendingLines.length > 0) this.scheduleFlush();
     });
   }
 
-  private async flushOnce(): Promise<void> {
-    const lines: string[] = [];
-    if (this.headerPending) {
-      const header: JournalHeaderLine = {
-        kind: 'journal_header',
-        version: JOURNAL_VERSION,
-        epoch: this.epoch,
-        created_at: Date.now(),
-      };
-      lines.push(JSON.stringify(header));
-      this.headerPending = false;
-    }
-    lines.push(...this.pendingLines);
-    this.pendingLines = [];
-    if (lines.length === 0) return;
+  private header(): JournalHeaderLine {
+    return {
+      kind: 'journal_header', version: JOURNAL_VERSION, epoch: this.epoch,
+      created_at: this.createdAt, last_seq: this.durableSeq,
+    };
+  }
+
+  private async loadRetention(): Promise<void> {
+    if (this.retainedLines !== undefined) return;
+    const retained: string[] = [];
     try {
-      await mkdir(dirname(this.filePath), { recursive: true });
-      const file = await open(this.filePath, 'a');
+      const file = await open(this.filePath, 'r');
       try {
-          await file.appendFile(lines.join('\n') + '\n', 'utf8');
-        await file.sync();
+        const head = Buffer.alloc(WATERMARK_READ_BYTES);
+        const { bytesRead } = await file.read(head, 0, head.length, 0);
+        const end = head.subarray(0, bytesRead).indexOf(10);
+        const header = parseJournalLine(head.subarray(0, end < 0 ? bytesRead : end).toString('utf8'));
+        if (header?.kind === 'journal_header') this.createdAt = header.created_at;
+        const size = (await file.stat()).size;
+        if (size > 0) {
+          const lastByte = Buffer.allocUnsafe(1);
+          await file.read(lastByte, 0, 1, size - 1);
+          this.appendSeparator = lastByte[0] !== 10;
+          this.compactPending ||= this.appendSeparator;
+        }
       } finally {
         await file.close();
       }
+      for await (const raw of readLinesReverse(this.filePath)) {
+        const parsed = parseJournalLine(raw);
+        if (parsed?.kind === 'journal_header') break;
+        if (parsed?.kind !== 'event') {
+          this.compactPending = true;
+          continue;
+        }
+        if (retained.length === this.capacity) {
+          this.compactPending = true;
+          break;
+        }
+        retained.push(raw);
+      }
     } catch (error) {
-      this.pendingLines = lines.concat(this.pendingLines);
-      this.headerPending ||= lines.length === this.pendingLines.length;
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    this.retainedLines = retained.toReversed();
+    this.diskEventCount = this.retainedLines.length;
+  }
+
+  private async flushOnce(): Promise<void> {
+    this.compactFailed = false;
+    try {
+      await this.loadRetention();
+    } catch (error) {
       this.writeFailed = true;
-      this.logger.warn(
-        { filePath: this.filePath, err: String(error) },
-        'event journal write failed; lines requeued for the next flush',
-      );
+      this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal retention read failed; append retained for retry');
       return;
     }
+    const events = this.pendingLines;
+    this.pendingLines = [];
+    const lines = this.headerPending ? [JSON.stringify(this.header()), ...events] : events;
+    if (lines.length > 0) {
+      try {
+        await mkdir(dirname(this.filePath), { recursive: true });
+        const file = await open(this.filePath, 'a');
+        try {
+          await file.appendFile((this.appendSeparator ? '\n' : '') + lines.join('\n') + '\n', 'utf8');
+          await file.sync();
+        } finally {
+          await file.close();
+        }
+      } catch (error) {
+        this.pendingLines = events.concat(this.pendingLines);
+        this.writeFailed = true;
+        this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal write failed; lines requeued for the next flush');
+        return;
+      }
+      this.headerPending = false;
+      this.appendSeparator = false;
+      const retained = this.retainedLines!;
+      this.diskEventCount += events.length;
+      for (const raw of events) {
+        const parsed = parseJournalLine(raw);
+        if (parsed?.kind === 'event') this.durableSeq = Math.max(this.durableSeq, parsed.seq);
+      }
+      this.retainedLines = this.capacity === 0 ? [] : retained.concat(events).slice(-this.capacity);
+    }
     this.writeFailed = false;
+    if (!this.compactPending && this.diskEventCount <= this.capacity * (this.closing ? 1 : 2)) return;
+    try {
+      await replaceJournal(this.filePath, [JSON.stringify(this.header()), ...this.retainedLines!].join('\n') + '\n');
+      this.diskEventCount = this.retainedLines!.length;
+      this.compactPending = false;
+    } catch (error) {
+      this.compactPending = true;
+      this.compactFailed = true;
+      this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal compaction failed; durable source retained for retry');
+    }
   }
 }
 
@@ -258,8 +332,17 @@ async function readWatermark(filePath: string): Promise<{
         if (!valid) break;
         end = separator + 1;
       }
+      if (valid && lastSeq === 0 && tailStart > 0) {
+        for await (const raw of readLinesReverse(filePath)) {
+          const parsed = parseJournalLine(raw);
+          if (parsed?.kind === 'event') lastSeq = parsed.seq;
+          else valid = false;
+          break;
+        }
+      }
       if (valid && (lastSeq > 0 || tailStart === 0)) {
-        fast = { epoch: header.epoch, lastSeq, sawAnyLine: true };
+        const savedSeq = Number.isSafeInteger(header.last_seq) && header.last_seq! >= 0 ? header.last_seq! : 0;
+        fast = { epoch: header.epoch, lastSeq: Math.max(lastSeq, savedSeq), sawAnyLine: true };
       }
     }
   } finally {
@@ -272,7 +355,10 @@ async function readWatermark(filePath: string): Promise<{
   for await (const raw of readLines(filePath)) {
     sawAnyLine = true;
     const parsed = parseJournalLine(raw);
-    if (parsed?.kind === 'journal_header' && epoch === undefined) epoch = parsed.epoch;
+    if (parsed?.kind === 'journal_header' && epoch === undefined) {
+      epoch = parsed.epoch;
+      if (Number.isSafeInteger(parsed.last_seq) && parsed.last_seq! >= 0) lastSeq = parsed.last_seq!;
+    }
     if (parsed?.kind === 'event') lastSeq = Math.max(lastSeq, parsed.seq);
   }
   return { epoch, lastSeq, sawAnyLine };
@@ -317,4 +403,51 @@ async function* readLines(filePath: string): AsyncIterable<string> {
     }
   }
   if (buffered.length > 0) yield buffered;
+}
+
+async function* readLinesReverse(filePath: string): AsyncIterable<string> {
+  const file = await open(filePath, 'r');
+  try {
+    let position = (await file.stat()).size;
+    let buffered = Buffer.alloc(0);
+    let blockSize = WATERMARK_READ_BYTES;
+    while (position > 0) {
+      const length = Math.min(position, blockSize);
+      position -= length;
+      const chunk = Buffer.allocUnsafe(length);
+      let read = 0;
+      while (read < length) {
+        const result = await file.read(chunk, read, length - read, position + read);
+        if (result.bytesRead === 0) throw new Error('event journal changed during retention read');
+        read += result.bytesRead;
+      }
+      buffered = Buffer.concat([chunk, buffered]);
+      while (buffered.length > 0) {
+        const end = buffered.length - (buffered.at(-1) === 10 ? 1 : 0);
+        const separator = end === 0 ? -1 : buffered.lastIndexOf(10, end - 1);
+        if (separator < 0 && position > 0) break;
+        yield buffered.subarray(separator + 1, end).toString('utf8');
+        buffered = buffered.subarray(0, separator + 1);
+      }
+      blockSize = buffered.length > 0 ? Math.min(blockSize * 2, 4 * 1024 * 1024) : WATERMARK_READ_BYTES;
+    }
+  } finally {
+    await file.close();
+  }
+}
+
+async function replaceJournal(filePath: string, content: string): Promise<void> {
+  const temporary = `${filePath}.tmp.${ulid()}`;
+  try {
+    const file = await open(temporary, 'wx');
+    try {
+      await file.writeFile(content, 'utf8');
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename(temporary, filePath);
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
+  }
 }
