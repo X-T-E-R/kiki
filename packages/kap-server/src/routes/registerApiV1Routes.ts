@@ -23,6 +23,7 @@ import { registerConnectionsRoutes } from './connections';
 import { registerCronRoutes } from './cron';
 import { registerFilesRoutes } from './files';
 import { registerPersonasRoutes } from './personas';
+import { registerRecipesRoutes } from './recipes';
 import { registerBotRoomRoutes } from './botRooms';
 import { registerFsRoutes } from './fs';
 import { registerGuiStoreRoutes } from './guiStore';
@@ -268,6 +269,7 @@ export async function registerApiV1Routes(
       );
       registerFilesRoutes(apiV1 as unknown as Parameters<typeof registerFilesRoutes>[0], core);
       registerPersonasRoutes(apiV1 as unknown as Parameters<typeof registerPersonasRoutes>[0], core);
+      registerRecipesRoutes(apiV1 as unknown as Parameters<typeof registerRecipesRoutes>[0], core);
       registerBotRoomRoutes(apiV1 as unknown as Parameters<typeof registerBotRoomRoutes>[0], core);
       registerSessionMediaRoutes(
         apiV1 as unknown as Parameters<typeof registerSessionMediaRoutes>[0],

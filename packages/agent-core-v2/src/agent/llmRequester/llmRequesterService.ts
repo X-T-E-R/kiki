@@ -820,7 +820,8 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     const resolved = turnConfig?.resolved ?? this.profile.resolveModelContext();
     const baseParams = turnConfig?.params ?? this.profile.resolveRequestParams();
     const agentMeta = (await this.sessionMetadata.read()).agents?.[this.agentContext.agentId];
-    const requester = this.modelCatalog.getRequester(resolved.modelAlias);
+    const requester = this.modelCatalog.getRequester(resolved.modelAlias,
+      turnConfig?.cognition?.recipe?.resolved.model ?? this.profile.getRecipeModelSettings(resolved.modelAlias));
     const useServerOutputDefault = (requester.model.protocol === 'openai' || requester.model.protocol === 'openai_responses') &&
       !isKimiProviderFamily(requester.model.providerType);
     const usedContextTokens = overrides.messages === undefined ? this.tokenCounting.get().measured : undefined;
@@ -975,7 +976,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     }
     if (snapshot === undefined) {
       const resolved = this.profile.resolveModelContext();
-      const requester = this.modelCatalog.getRequester(resolved.modelAlias);
+      const requester = this.modelCatalog.getRequester(resolved.modelAlias, this.profile.getRecipeModelSettings(resolved.modelAlias));
       const providerConfig =
         this.config.get<ProvidersSection>(PROVIDERS_SECTION)?.[requester.model.providerName];
       snapshot = {

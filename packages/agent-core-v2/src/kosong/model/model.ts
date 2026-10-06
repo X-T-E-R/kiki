@@ -59,6 +59,9 @@ export interface CognitionContent {
   overlayMode?: 'append' | 'prepend' | 'wrap' | 'persona' | 'replace';
   anchorSteps?: number;
   anchorScope?: 'session' | 'turn';
+  steeringOnTurn?: boolean;
+  steeringOnInput?: boolean;
+  steeringIntervalSteps?: number;
 }
 
 export interface CognitionConfig extends CognitionContent {
@@ -97,6 +100,7 @@ export interface ModelRecord extends ModelParameterDefaults {
   parameters?: GenerationParameters;
   usage?: ModelUsagePolicy;
   behavior?: ModelBehaviorConfig;
+  recipe?: string;
   cognition?: CognitionConfig;
   promptOverrides?: PromptOverrides;
   requestIdentity?: RequestIdentityPolicy;

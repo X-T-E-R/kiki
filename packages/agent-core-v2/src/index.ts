@@ -1,3 +1,7 @@
+export * from './app/recipes/recipes';
+import './app/recipes/recipeService';
+import './app/recipes/configSection';
+import './os/backends/node-fs/recipeSourceReader';
 export * from '#/app/requestGovernance/requestGovernance';
 export * from '#/app/requestGovernance/configSection';
 export * from '#/app/requestGovernance/requestGovernanceService';

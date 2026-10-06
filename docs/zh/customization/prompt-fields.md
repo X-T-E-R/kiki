@@ -40,6 +40,57 @@ kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast -
 
 配置里如果还留着旧的 `prompt.shared` 和 `prompt.tools` 键，把这些条目迁到 `[prompt.overrides]` 下的字段，不要恢复旧键——见[提示词字段优先级](../configuration/overrides.md#提示词字段优先级)。
 
+## Recipe 模型配方
+
+Recipe 把模型调教打包成可复用配方：提示词字段、system/steering/anchor 正文，以及模型设置。Recipe 是默认关闭的实验能力；先在服务端环境启用 `KIKI_EXPERIMENTAL_RECIPES=true`，再通过 [客户端 SDK](../server/sdk.md) 的 `global.recipes` 使用。
+
+用绝对路径创建包目录，其中放入 `recipe.toml`。提示词文件必须是该目录内的 Markdown 相对路径：
+
+```toml
+schema_version = 1
+id = "example"
+name = "Example"
+version = "1.0.0"
+
+[model.parameters]
+temperature = 0.35
+
+[prompts]
+steering = { text = "围绕当前目标推进。" }
+steering_on_turn = true
+steering_on_input = true
+steering_interval_steps = 0
+
+[prompts.fields]
+"system.reply_style" = "直接、简洁地回答。"
+```
+
+`prompts.fields` 接受所有已注册且可写的提示词字段，复用原有变量与空值校验。`model` 复用 [逐模型配置](../configuration/config-files.md#models) 的语法与校验，承载参数、usage 预算和 behavior 等调教设置；不能更改供应商路由、凭据、请求身份或权限。参数和 behavior 仍跨 Agent 位置共享；原有 main/independent usage 预算保留各自含义。
+
+已有客户端连接时，安装并选择本地包：
+
+```ts
+const preview = await klient.global.recipes.preview({ source: { locator: "/absolute/path/to/example" } });
+const installed = await klient.global.recipes.install({ preview_id: preview.preview_id });
+const model = await klient.global.kosong.readModel("example-model");
+await klient.global.kosong.updateModel("example-model", {
+  recipe: installed.installation_id,
+  base_revision: model.revision,
+});
+```
+
+选择 Recipe 接管模型提示调教，不替换 Agent 的角色、persona、工作区指令或宿主上下文。原先保存的模型提示仍保留，但在选中 Recipe 时忽略；Recipe 声明的模型设置叶项覆盖手调值，未声明项维持普通解析。用当前 `base_revision` 写入 `recipe: null` 停用，恢复保存的手调设置。新绑定采用当前选择；已有会话保留冻结的 Recipe revision，直到重建上下文或显式换模。
+
+### 继承或自定义
+
+包可在各表之前用 `extends = { source = "https://example.com/presets/recipe.toml" }` 声明一个父配方。缺失 slot 继承；每个正文来源或来源数组整体替换父值。模型设置按已声明叶项合并，数组整体替换。根级 `model = "off"` 清除继承的 Recipe 设置，恢复保存的模型设置。`steering = "off"` 等正文 slot 禁用该项，不恢复旧手调模型提示；字段值 `false` 删除继承的 Recipe 字段。
+
+`prompts` 是 subagent 使用的 common 分支。`[prompts.main]` 或 `[prompts.independent]` 选择一个完整的位置分支，不会自动用 common 填补缺失 slot。在 `[prompts]` 内写 `main = "same"` 或 `independent = "same"` 可显式采用 common，写 `"off"` 则禁用整个分支。正文 slot 接受 `{ text = "..." }`、`{ file = "prompt.md" }` 或这些来源的数组。anchor 使用 `{ content = { text = "..." }, steps = 1, scope = "session" }`；`scope` 也接受 `"turn"`。
+
+Steering 节奏属于所选分支：`steering_on_turn` 默认 `true`，用于新轮次及压缩后的重新注入；`steering_on_input` 默认 `true`，用于已物化的明确用户输入；`steering_interval_steps` 默认 `0`，不额外周期注入。正整数间隔统计本 Agent 距最近注入的实际模型 loop step，不是秒数或工具调用次数。
+
+`global.recipes.fork` 可生成独立的 `copy` 或继承父源的 `extend` 子配方；用 `saveLocal` 和 `expected_revision` 校验编辑生成的本地包。已安装包锁定完整依赖链，可离线使用。`follow` 每日检查更新；`pinned` 保留已接受版本。无效更新保留整个上次接受的 revision。HTTPS ZIP 源必须提供 `sha256`，继承的 ZIP 源也可在 `extends` 中携带。预览与安装接受同一份已检查快照，安装时不再次下载来源。
+
 ## 桌面版设置入口
 
 在桌面版中，**设置 → 智能体 → 提示词字段**可以编辑这一段——见[设置页导览](../guides/settings.md#智能体)。卡片默认折叠。

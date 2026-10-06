@@ -40,6 +40,57 @@ kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast -
 
 If your config still carries the old `prompt.shared` and `prompt.tools` keys, move those entries into fields under `[prompt.overrides]` rather than restoring the keys — see [prompt field precedence](../configuration/overrides.md#prompt-field-precedence).
 
+## Recipe model presets
+
+A Recipe packages model tuning into one reusable preset: prompt fields, system/steering/anchor text, and model settings. Recipes are experimental and default off; enable `KIKI_EXPERIMENTAL_RECIPES=true` in the server environment before using `global.recipes` in the [client SDK](../server/sdk.md).
+
+Create an absolute-path package directory containing `recipe.toml`. Prompt files must be Markdown paths inside that directory:
+
+```toml
+schema_version = 1
+id = "example"
+name = "Example"
+version = "1.0.0"
+
+[model.parameters]
+temperature = 0.35
+
+[prompts]
+steering = { text = "Keep the current goal in focus." }
+steering_on_turn = true
+steering_on_input = true
+steering_interval_steps = 0
+
+[prompts.fields]
+"system.reply_style" = "Answer concisely and directly."
+```
+
+`prompts.fields` accepts every registered, writable prompt field and uses its normal variable and empty-value validation. `model` uses the existing [per-model configuration](../configuration/config-files.md#models) syntax and validation for tuning settings, including parameters, usage budgets and behavior. It cannot change provider routing, credentials, request identity or permissions. Parameters and behavior remain shared across agent positions; existing main/independent usage budgets retain their separate meanings.
+
+To install and select a local package with an already connected client:
+
+```ts
+const preview = await klient.global.recipes.preview({ source: { locator: "/absolute/path/to/example" } });
+const installed = await klient.global.recipes.install({ preview_id: preview.preview_id });
+const model = await klient.global.kosong.readModel("example-model");
+await klient.global.kosong.updateModel("example-model", {
+  recipe: installed.installation_id,
+  base_revision: model.revision,
+});
+```
+
+Selecting a Recipe replaces the model prompt-tuning surface, not the agent's role, persona, workspace instructions or host context. Previously saved model prompts are retained but ignored while the Recipe is selected. Declared model setting leaves override saved tuning values; undeclared settings retain ordinary resolution. Set `recipe: null` with the current `base_revision` to stop using it and restore saved manual settings. New bindings adopt the selection; existing sessions keep their frozen Recipe revision until a context rebuild or explicit model change.
+
+### Inherit or customize
+
+A package can declare one parent with `extends = { source = "https://example.com/presets/recipe.toml" }` before its tables. Missing slots inherit; each text source or source array replaces its parent atomically. Model settings merge by declared leaf, and arrays replace as a whole. Root `model = "off"` clears inherited Recipe settings and returns to saved model settings. A prompt slot such as `steering = "off"` disables it without restoring the old manual model prompt; a field value of `false` removes that inherited Recipe field.
+
+`prompts` is the common branch used by subagents. A `[prompts.main]` or `[prompts.independent]` table selects a whole position-specific branch; it does not implicitly fill missing slots from common. Set `main = "same"` or `independent = "same"` inside `[prompts]` to explicitly use common, or use `"off"` to disable the whole branch. Text slots accept `{ text = "..." }`, `{ file = "prompt.md" }`, or an array of those sources. An anchor uses `{ content = { text = "..." }, steps = 1, scope = "session" }`; `scope` also accepts `"turn"`.
+
+Steering cadence belongs to the selected branch: `steering_on_turn` defaults to `true` for new turns and rearming after compaction, `steering_on_input` defaults to `true` for materialized human input, and `steering_interval_steps` defaults to `0` (no additional periodic injection). A positive interval counts this agent's actual model loop steps since the last injection, not seconds or tool calls.
+
+`global.recipes.fork` creates either an independent `copy` or an `extend` child; `saveLocal` edits the resulting local package with an `expected_revision` guard. Installed packages lock the complete dependency chain and work offline. `follow` checks updates daily; `pinned` keeps the accepted revision. Invalid updates leave the whole last accepted revision active. HTTPS ZIP sources require `sha256`; an inherited ZIP source can supply it in `extends`. Preview and install accept the same inspected snapshot, with no second source download at install time.
+
 ## Desktop settings entry point
 
 In the desktop app, **Settings → Agents → Prompt** edits this section — see [Settings pages](../guides/settings.md#agents). The card starts collapsed.

@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (49 sections · 1 overlay(s))
+# Index (50 sections · 1 overlay(s))
 #   agentExecutorDisplay            src/app/agentExecutor/executorOverrides.ts
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
@@ -43,6 +43,7 @@
 #   pluginSettings                  src/app/plugin/settingsConfigSection.ts
 #   prompt                          src/app/prompt/configSection.ts
 #   providers                       src/app/kosongConfig/configSection.ts
+#   recipes                         src/app/recipes/configSection.ts
 #   requestGovernance               src/app/requestGovernance/configSection.ts
 #   requestIdentity                 src/app/kosongConfig/configSection.ts
 #   retry                           src/agent/stepRetry/configSection.ts
@@ -521,6 +522,7 @@ merge_all_available_skills = true
       # max_per_user_round: integer
       # max_per_window: integer
       # window_ms: integer
+  # recipe: string
   # cognition: object
     # overlay: string | string[]
     # steering: string | string[]
@@ -740,6 +742,15 @@ enter_approval_timeout_ms = 60000
       # scope: string
   # env: record<string, string>
   # source: record<string, any>
+
+# ##########################################################################
+# recipes
+#   owner: src/app/recipes/configSection.ts
+#   scope: core
+# ##########################################################################
+
+[recipes]
+markets = []
 
 # ##########################################################################
 # requestGovernance (config.toml: request_governance)

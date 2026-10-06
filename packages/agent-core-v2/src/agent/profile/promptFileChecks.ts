@@ -22,6 +22,7 @@ export async function checkPromptFiles(input: {
 }): Promise<readonly FileCheck[]> {
   const checks: FileCheck[] = [];
   async function check(declaration: Omit<FileCheck, 'status' | 'reason'>, read: () => Promise<unknown>): Promise<void> {
+    if (input.model?.recipe !== undefined && ['model', 'profile-model', 'caller-lease-model', 'model-cognition'].includes(declaration.surface)) return;
     try {
       await read();
       checks.push({ ...declaration, status: 'ok' });

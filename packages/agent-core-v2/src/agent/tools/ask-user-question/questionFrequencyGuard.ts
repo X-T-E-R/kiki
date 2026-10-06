@@ -6,6 +6,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { IEventBus } from '#/app/event/eventBus';
 import { IConfigService } from '#/app/config/config';
 import { IModelService } from '#/kosong/model/model';
+import { applyRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import type { PromptOrigin } from '#/agent/contextMemory/types';
@@ -57,7 +58,8 @@ export class QuestionFrequencyGuard extends Disposable implements IQuestionFrequ
   admit(attempt: Attempt): QuestionAdmission | undefined {
     const modelId = this.profile?.current?.getModel();
     const resolvedId = modelId === undefined ? undefined : this.models.resolveId(modelId);
-    const model = resolvedId === undefined ? undefined : this.models.get(resolvedId);
+    const saved = resolvedId === undefined ? undefined : this.models.get(resolvedId);
+    const model = saved === undefined ? undefined : applyRecipeModelSettings(saved, this.profile?.current?.getRecipeModelSettings(modelId));
     const settings = resolveAskUserQuestionGuard(
       this.config.get<InteractionConfig | undefined>(INTERACTION_SECTION)?.askUserQuestionGuard,
       model?.behavior,

@@ -1996,7 +1996,7 @@ export interface AgentStateSnapshot {
         readonly value: string;
         readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'effective' | 'deferred' | 'shadowed' | 'inactive' | 'unsupported';
         readonly sources: readonly /* PromptOverrideSource — packages/agent-profiles/src/promptOverrides.ts */ {
-          readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'profile' | 'model' | 'system' | 'global' | 'profile-model' | 'caller-lease-model';
+          readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'profile' | 'model' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
           readonly kind: 'file' | 'inline';
           readonly path?: string;
           readonly fileIndex?: number;
@@ -2028,6 +2028,91 @@ export interface AgentStateSnapshot {
         overlayMode?: 'replace' | 'persona' | 'append' | 'prepend' | 'wrap';
         anchorSteps?: number;
         anchorScope?: 'session' | 'turn';
+        steeringOnTurn?: boolean;
+        steeringOnInput?: boolean;
+        steeringIntervalSteps?: number;
+      };
+      readonly recipe?: {
+        readonly installation_id: string;
+        readonly resolved: {
+          revision: string;
+          branches: {
+            main: {
+              fields: {
+                [key: string]: string;
+              };
+              anchor?: {
+                content: string;
+                steps: number;
+                scope: 'session' | 'turn';
+              };
+              steering_on_turn?: boolean;
+              steering_on_input?: boolean;
+              steering_interval_steps?: number;
+              system?: string;
+              steering?: string;
+            };
+            sub: {
+              fields: {
+                [key: string]: string;
+              };
+              anchor?: {
+                content: string;
+                steps: number;
+                scope: 'session' | 'turn';
+              };
+              steering_on_turn?: boolean;
+              steering_on_input?: boolean;
+              steering_interval_steps?: number;
+              system?: string;
+              steering?: string;
+            };
+            independent: {
+              fields: {
+                [key: string]: string;
+              };
+              anchor?: {
+                content: string;
+                steps: number;
+                scope: 'session' | 'turn';
+              };
+              steering_on_turn?: boolean;
+              steering_on_input?: boolean;
+              steering_interval_steps?: number;
+              system?: string;
+              steering?: string;
+            };
+          };
+          dependencies: readonly {
+            source: {
+              locator: string;
+              sha256?: string;
+            };
+            manifest_id: string;
+            version: string;
+            revision: string;
+          }[];
+          origins: readonly {
+            position: 'main' | 'sub' | 'independent';
+            slot: string;
+            source: string;
+            manifest_id: string;
+            version: string;
+            file?: string;
+          }[];
+          model: {
+            [key: string]: unknown;
+          };
+          model_origins: {
+            [key: string]: {
+            version: string;
+            source: string;
+            manifest_id: string;
+            file?: string;
+          };
+          };
+        };
+        readonly anchorSystem?: string;
       };
       readonly anchor?: string;
       readonly slots?: {
@@ -4895,6 +4980,18 @@ export interface AgentStateSnapshot {
             }[];
             selection?: 'off' | 'main' | 'independent' | 'common';
             reason?: string;
+            reason_code?: string;
+            recipe?: {
+              installation_id: string;
+              revision: string;
+              slot: string;
+              origins: readonly {
+                source: string;
+                manifest_id: string;
+                version: string;
+                file?: string;
+              }[];
+            };
             anchor_steps?: number;
             anchor_scope?: 'session' | 'turn';
           }[];
@@ -4903,6 +5000,17 @@ export interface AgentStateSnapshot {
           disk_changed?: boolean;
           disk_error?: string;
           lease_model_prompts?: 'replace' | 'preserve';
+          recipe_model_binding?: {
+            model: Record<string, unknown>;
+            revision: string;
+            model_origins: Record<string, {
+              version: string;
+              source: string;
+              manifest_id: string;
+              file?: string;
+            }>;
+            installation_id: string;
+          };
           request?: {
             system_prompt_hash: string;
             tools_hash: string;
@@ -4935,7 +5043,7 @@ export interface AgentStateSnapshot {
               readonly value: string;
               readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'effective' | 'deferred' | 'shadowed' | 'inactive' | 'unsupported';
               readonly sources: readonly /* PromptOverrideSource — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'profile' | 'model' | 'system' | 'global' | 'profile-model' | 'caller-lease-model';
+                readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'profile' | 'model' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
                 readonly kind: 'file' | 'inline';
                 readonly path?: string;
                 readonly fileIndex?: number;
@@ -4966,6 +5074,91 @@ export interface AgentStateSnapshot {
               overlayMode?: 'replace' | 'persona' | 'append' | 'prepend' | 'wrap';
               anchorSteps?: number;
               anchorScope?: 'session' | 'turn';
+              steeringOnTurn?: boolean;
+              steeringOnInput?: boolean;
+              steeringIntervalSteps?: number;
+            };
+            readonly recipe?: {
+              readonly installation_id: string;
+              readonly resolved: {
+                revision: string;
+                branches: {
+                  main: {
+                    fields: {
+                      [key: string]: string;
+                    };
+                    anchor?: {
+                      content: string;
+                      steps: number;
+                      scope: 'session' | 'turn';
+                    };
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    system?: string;
+                    steering?: string;
+                  };
+                  sub: {
+                    fields: {
+                      [key: string]: string;
+                    };
+                    anchor?: {
+                      content: string;
+                      steps: number;
+                      scope: 'session' | 'turn';
+                    };
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    system?: string;
+                    steering?: string;
+                  };
+                  independent: {
+                    fields: {
+                      [key: string]: string;
+                    };
+                    anchor?: {
+                      content: string;
+                      steps: number;
+                      scope: 'session' | 'turn';
+                    };
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    system?: string;
+                    steering?: string;
+                  };
+                };
+                dependencies: readonly {
+                  source: {
+                    locator: string;
+                    sha256?: string;
+                  };
+                  manifest_id: string;
+                  version: string;
+                  revision: string;
+                }[];
+                origins: readonly {
+                  position: 'main' | 'sub' | 'independent';
+                  slot: string;
+                  source: string;
+                  manifest_id: string;
+                  version: string;
+                  file?: string;
+                }[];
+                model: {
+                  [key: string]: unknown;
+                };
+                model_origins: {
+                  [key: string]: {
+                  version: string;
+                  source: string;
+                  manifest_id: string;
+                  file?: string;
+                };
+                };
+              };
+              readonly anchorSystem?: string;
             };
             readonly anchor?: string;
             readonly slots?: {

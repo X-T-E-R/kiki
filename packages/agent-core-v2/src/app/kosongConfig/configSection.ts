@@ -1,5 +1,5 @@
 import { PromptOverridesSchema } from '@kiki/agent-profiles/promptOverrides';
-import { modelBehaviorConfigSchema } from '@kiki/protocol';
+import { modelBehaviorConfigSchema, modelSteeringCadenceSchema } from '@kiki/protocol';
 import { OAuthRefSchema } from '#/kosong/provider/oauthRef';
 import { z } from 'zod';
 
@@ -330,6 +330,9 @@ const CognitionContentSchema = z.object({
   overlayMode: z.enum(['append', 'prepend', 'wrap', 'persona', 'replace']).optional(),
   anchorSteps: z.number().int().min(1).optional(),
   anchorScope: z.enum(['session', 'turn']).optional(),
+  steeringOnTurn: modelSteeringCadenceSchema.shape.steering_on_turn,
+  steeringOnInput: modelSteeringCadenceSchema.shape.steering_on_input,
+  steeringIntervalSteps: modelSteeringCadenceSchema.shape.steering_interval_steps,
 }).strict();
 const CognitionBranchSchema = z.union([
   z.enum(['same', 'off']),
@@ -355,6 +358,7 @@ export const ModelRecordSchema = ModelBaseSchema.extend({
   overrides: ModelOverrideSchema.optional(),
   usage: ModelUsagePolicySchema.optional(),
   behavior: modelBehaviorConfigSchema.optional(),
+  recipe: z.string().min(1).optional(),
   cognition: CognitionConfigSchema.optional(),
   promptOverrides: PromptOverridesSchema.optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),

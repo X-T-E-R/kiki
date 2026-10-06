@@ -17,6 +17,7 @@ export function promptConfigurationChannels(input: {
   readonly alias: string;
   readonly position: DelegationPosition;
   readonly cognition?: CognitionConfig;
+  readonly recipe?: import('#/agent/cognition/cognitionConfig').CognitionBinding['recipe'];
   readonly fields: ResolvedPromptFieldOverrides;
   readonly resolveId: (id: string) => string | undefined;
   readonly overrideDeclarations: readonly { readonly surface: string; readonly overrides?: PromptOverrides | readonly PromptOverrides[]; readonly path?: string }[];
@@ -103,7 +104,30 @@ export function promptConfigurationChannels(input: {
       sources: cognitionPathRefs(input.cognition?.[slot]).map((path, order) => ({ surface: 'model-cognition', kind: 'file', path, order })),
     });
   }
-  return channels;
+  const recipe = input.recipe;
+  if (recipe === undefined) return channels;
+  const ignored = new Set(['model', 'profile-model', 'caller-lease-model', 'model-cognition']);
+  for (const declaration of input.overrideDeclarations.filter((entry) => ignored.has(entry.surface))) {
+    const layers = declaration.overrides === undefined ? [] : Array.isArray(declaration.overrides) ? declaration.overrides : [declaration.overrides as PromptOverrides];
+    for (const [index, layer] of layers.entries()) {
+      const branch = position === 'sub' ? undefined : layer[position];
+      const selected = typeof branch === 'object' ? branch : layer;
+      for (const id of Object.keys(selected.fields ?? {})) channels.push({ id: `${declaration.surface}:${index}:${id}:ignored`, channel: promptChannelForField(id), state: 'shadowed', sources: [{ surface: declaration.surface, kind: 'inline', path: declaration.path }] });
+      for (const path of selected.files ?? []) channels.push({ id: `${declaration.surface}:${index}:${path}:ignored`, channel: 'system', state: 'shadowed', sources: [{ surface: declaration.surface, kind: 'file', path }] });
+    }
+  }
+  const result = channels.map((channel) => channel.sources.some((source) => ignored.has(source.surface))
+    ? { ...channel, state: 'shadowed' as const, reason_code: 'recipe-selected', reason: 'Recipe selected; this saved model prompt is retained but was not read or applied.' } : channel);
+  const branch = recipe.resolved.branches[position];
+  for (const slot of ['system', 'steering', 'anchor'] as const) {
+    const origins = recipe.resolved.origins.filter((origin) => origin.position === position && origin.slot === slot);
+    result.push({ id: `recipe.${slot}`, channel: slot === 'system' ? 'system' : `cognition_${slot}`, state: branch[slot] === undefined ? 'inactive' : 'effective',
+      reason: slot === 'anchor' ? 'Replaces only the Recipe system segment within its request window; role, persona, delegation and shared instructions remain active.' : undefined,
+      recipe: { installation_id: recipe.installation_id, revision: recipe.resolved.revision, slot, origins: origins.map((origin) => ({ ...origin })) },
+      sources: origins.map((origin) => ({ surface: 'recipe', kind: origin.file === undefined ? 'inline' as const : 'file' as const, path: origin.file ?? origin.source })),
+      anchor_steps: slot === 'anchor' ? branch.anchor?.steps : undefined, anchor_scope: slot === 'anchor' ? branch.anchor?.scope : undefined });
+  }
+  return result;
 }
 
 export function promptSourceSelection(source: PromptOverrideSource): 'common' | 'main' | 'independent' | undefined {

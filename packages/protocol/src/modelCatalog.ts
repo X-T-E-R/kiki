@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { recipeModelBindingSchema } from './recipe';
+import { modelSteeringCadenceSchema } from './modelSteering';
 import { modelBehaviorWireSchema, modelBehaviorPatchSchema } from './questionGuard';
 export * from './questionGuard';
 
@@ -306,6 +308,7 @@ const modelCognitionContentSchema = z
     overlay_mode: z.enum(['append', 'prepend', 'wrap', 'persona', 'replace']).optional(),
     anchor_steps: z.number().int().min(1).optional(),
     anchor_scope: z.enum(['session', 'turn']).optional(),
+    ...modelSteeringCadenceSchema.shape,
   })
   .strict();
 const modelCognitionBranchSchema = z.union([
@@ -384,6 +387,8 @@ export const modelEntitySchema = z.object({
   off_effort: z.string().optional(),
   context_budget: z.number().int().min(1).optional(),
   request_params: modelRequestParamsSchema.optional(),
+  recipe: z.string().min(1).optional(),
+  recipe_model_binding: recipeModelBindingSchema.optional(),
   cognition: modelCognitionSchema.optional(),
   prompt_overrides: modelPromptOverridesSchema.optional(),
   overrides: modelOverridesSchema.optional(),
@@ -426,6 +431,7 @@ export const patchModelRequestSchema = z
     off_effort: z.string().min(1).nullable().optional(),
     context_budget: z.number().int().min(1).nullable().optional(),
     request_params: modelRequestParamsSchema.nullable().optional(),
+    recipe: z.string().min(1).nullable().optional(),
     cognition: modelCognitionSchema.nullable().optional(),
     prompt_overrides: modelPromptOverridesSchema.nullable().optional(),
     overrides: modelOverridesSchema.nullable().optional(),

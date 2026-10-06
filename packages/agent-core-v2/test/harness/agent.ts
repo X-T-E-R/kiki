@@ -274,6 +274,7 @@ interface ModelConfigForConfig {
   readonly parameters?: GenerationParameters;
   readonly usage?: ModelUsagePolicy;
   readonly cognition?: CognitionConfig;
+  readonly recipe?: string;
   readonly promptOverrides?: PromptOverrides;
 }
 
@@ -1029,14 +1030,14 @@ class ConfigBackedModelCatalog extends ModelCatalog {
     );
   }
 
-  override get(id: string): Model {
+  override get(id: string, recipeSettings?: Record<string, unknown>): Model {
     this.syncRegistriesFromConfig();
-    return super.get(id);
+    return super.get(id, recipeSettings);
   }
 
-  override getRequester(id: string): ModelRequester {
+  override getRequester(id: string, recipeSettings?: Record<string, unknown>): ModelRequester {
     this.syncRegistriesFromConfig();
-    const requester = super.getRequester(id);
+    const requester = super.getRequester(id, recipeSettings);
     const cacheKey = this.options.promptCacheKey;
     if (cacheKey === undefined) return requester;
     return {
@@ -2872,6 +2873,8 @@ async function generateBackedResponse(
         signal: options?.signal,
         auth: options?.auth,
         cacheKey: options?.cacheKey,
+        serviceTier: options?.serviceTier,
+        requestParams: options?.requestParams,
         sampling: options?.sampling,
         thinking: options?.thinking,
         maxCompletionTokens: options?.maxCompletionTokens,

@@ -315,6 +315,7 @@ export interface IAgentProfileService {
   preparePromptConfiguration(): Promise<boolean>;
   getCognitionBinding(): Promise<import('#/agent/cognition/cognitionConfig').CognitionBinding>;
   getCognitionSnapshot(): import('#/agent/cognition/cognitionConfig').CognitionBinding | undefined;
+  getRecipeModelSettings(alias?: string): Record<string, unknown> | undefined;
   getPromptDiagnostics(options?: { readonly checkAllPromptFiles?: boolean }): Promise<import('@kiki/protocol').AgentPromptDiagnostics>;
   getAgentsMdWarning(): string | undefined;
   data(): ProfileData;
@@ -333,7 +334,7 @@ export interface IAgentProfileService {
   hasModel(): boolean;
   isRunnable(): boolean;
   hasProvider(): boolean;
-  getSystemPrompt(): string;
+  getSystemPrompt(options?: { readonly recipeAnchor?: string }): string;
   getPromptFieldSnapshot(options?: { readonly anchor?: boolean }): import('#/app/promptField/promptFieldRegistry').ResolvedPromptFieldOverrides;
   getActiveToolNames(): readonly string[] | undefined;
   addActiveTool(name: string): void;
