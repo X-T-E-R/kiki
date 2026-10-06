@@ -37,15 +37,18 @@ function selectContent(entity: object, path: Path): unknown {
   return selected;
 }
 
-function fieldRevision(entity: object, path: Path): string {
+function fieldRevision(entity: object, path: Path, through?: number): string {
   let fields = fieldRevisions.get(entity);
   if (fields === undefined) { fields = new Map(); fieldRevisions.set(entity, fields); }
-  const key = JSON.stringify(path);
+  const selected = selectContent(entity, path);
+  const structure = isStructurePath(path) && Array.isArray(selected);
+  const count = structure ? through ?? selected.length : undefined;
+  if (structure && count! > selected.length) throw new ContentChangedError();
+  const key = JSON.stringify([path, count]);
   const existing = fields.get(key);
   if (existing !== undefined) return existing;
-  const selected = selectContent(entity, path);
-  const revision = isStructurePath(path) && Array.isArray(selected)
-    ? contentRevision(selected.map((child) => {
+  const revision = structure
+    ? contentRevision(selected.slice(0, count).map((child) => {
       const header = child as Record<string, unknown>;
       return [header['kind'], header['stepId'] ?? header['frameId'], header['ordinal']];
     }))
@@ -218,7 +221,8 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
 export function readContentSegment(entity: object, ref: ContentRef, range = false, agentId?: string, pageBytes = CONTENT_PAGE_BYTES): ContentSegment {
   const selected = selectContent(entity, ref.path);
   if (range && ref.kind === 'text' && typeof selected === 'string' && ref.offset > 0 && /[\uD800-\uDBFF]/u.test(selected[ref.offset - 1]!)) ref = { ...ref, offset: ref.offset - 1 };
-  if (fieldRevision(entity, ref.path) !== ref.revision) throw new ContentChangedError();
+  const structure = ref.kind === 'array' && isStructurePath(ref.path);
+  if (fieldRevision(entity, ref.path, structure ? ref.total : undefined) !== ref.revision) throw new ContentChangedError();
   const refs: ContentRef[] = [];
   let value: unknown;
   let offset: number;
@@ -229,10 +233,10 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
     value = range ? jsonTextPrefix(selected.slice(ref.offset, end), 0, pageBytes / 2) : jsonTextPrefix(selected, ref.offset, pageBytes / 2);
     offset = ref.offset + (value as string).length;
   } else if (ref.kind === 'array') {
-    if (!Array.isArray(selected) || selected.length !== ref.total || ref.offset >= selected.length) throw new ContentChangedError();
+    if (!Array.isArray(selected) || (structure ? selected.length < ref.total : selected.length !== ref.total) || ref.offset >= ref.total) throw new ContentChangedError();
     const values: unknown[] = [];
     offset = ref.offset;
-    while (offset < selected.length && values.length < 20) {
+    while (offset < ref.total && values.length < 20) {
       const child = projectAt(selected[offset], [...ref.path, offset], ref.source, entity, ENTITY_BYTES, agentId);
       if (values.length > 0 && jsonBytes({ values: [...values, child.value], refs: [...refs, ...child.refs] }) > pageBytes / 2) break;
       values.push(child.value);

@@ -172,6 +172,62 @@ describe('header-first projection', () => {
     expect(preview.contentRefs?.some((ref) => ref.path.length === 1 && ref.path[0] === 'steps')).not.toBe(true);
   });
 
+  it('fills omitted steps around a live tail without discarding its newer streamed frames', () => {
+    const original = transcriptTurnSchema.parse({ kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin: { kind: 'user' }, steps: Array.from({ length: 14 }, (_, ordinal) => ({ kind: 'step', stepId: `s${ordinal}`, turnId: 't1', ordinal, state: 'running', frames: [{ kind: 'text', frameId: `f${ordinal}`, role: 'assistant', text: 'older response' }] })) });
+    const preview = boundedEntity(original, { kind: 'turn', id: 't1' });
+    const ref = preview.contentRefs!.find((ref) => ref.path.length === 1 && ref.path[0] === 'steps')!;
+    expect(ref).toMatchObject({ offset: 8, total: 14 });
+    const tail = { ...original.steps[13]!, frames: [{ ...original.steps[13]!.frames[0]!, text: 'newer streamed response' }] };
+    const live = { ...preview, steps: [...preview.steps, tail] };
+    const completed = applyContentSegment(live, readContentSegment(original, ref));
+    expect(completed.steps.map(step => step.stepId)).toEqual(original.steps.map(step => step.stepId));
+    expect(completed.steps[13]!.frames[0]).toMatchObject({ text: 'newer streamed response' });
+    expect(completed.contentRefs?.some(ref => ref.path.length === 1 && ref.path[0] === 'steps')).not.toBe(true);
+  });
+
+  it('does not attach an older nested text continuation to an already streamed replacement', () => {
+    const frames = Array.from({ length: 14 }, (_, index) => ({ kind: 'text', frameId: `f${index}`, role: 'assistant', text: 'older saved response '.repeat(4000) }));
+    const original = { steps: [{ kind: 'step', stepId: 's1', ordinal: 0, frames }] };
+    const preview = boundedEntity(original, { kind: 'turn', id: 't1' });
+    let ref = preview.contentRefs!.find(ref => ref.path.length === 3 && ref.path[2] === 'frames');
+    const tail = { ...frames[13]!, text: 'new live response' };
+    let completed = { ...preview, steps: [{ ...preview.steps[0]!, frames: [...preview.steps[0]!.frames, tail] }] };
+    while (ref !== undefined) {
+      const segment = readContentSegment(original, ref);
+      completed = applyContentSegment(completed, segment);
+      ref = segment.next;
+    }
+    expect(completed.steps[0]!.frames[13]!.text).toBe('new live response');
+    expect(completed.contentRefs?.some(ref => ref.path[3] === 13)).toBe(false);
+    expect(completed.contentRefs?.some(ref => ref.path[3] === 8 && ref.path[4] === 'text')).toBe(true);
+  });
+
+  it('continues the fixed structure prefix when a later live step arrives without claiming that step was in the old watermark', () => {
+    const steps = Array.from({ length: 14 }, (_, ordinal) => ({ kind: 'step', stepId: `s${ordinal}`, ordinal, frames: [] }));
+    const original = { steps };
+    const preview = boundedEntity(original, { kind: 'turn', id: 't1' });
+    const ref = preview.contentRefs!.find(ref => ref.path.length === 1 && ref.path[0] === 'steps')!;
+    const appended = { steps: [...steps, { kind: 'step', stepId: 's14', ordinal: 14, frames: [] }] };
+    const segment = readContentSegment(appended, ref);
+    expect(segment.next).toBeUndefined();
+    expect((segment.value as { stepId: string }[]).map(step => step.stepId)).toEqual(steps.slice(8).map(step => step.stepId));
+    const completed = applyContentSegment({ ...preview, steps: [...preview.steps, appended.steps[14]!] }, segment);
+    expect(completed.steps.map(step => step.stepId)).toEqual(appended.steps.map(step => step.stepId));
+    expect(() => readContentSegment({ steps: [steps[1]!, steps[0]!, ...appended.steps.slice(2)] }, ref)).toThrow('Content changed');
+  });
+
+  it('merges omitted frame prefixes in source order while preserving an already streamed tail', () => {
+    const frames = Array.from({ length: 14 }, (_, index) => ({ kind: 'text', frameId: `f${index}`, role: 'assistant', text: `saved ${index}` }));
+    const original = { steps: [{ kind: 'step', stepId: 's1', ordinal: 0, frames }] };
+    const preview = boundedEntity(original, { kind: 'turn', id: 't1' });
+    const ref = preview.contentRefs!.find(ref => ref.path.length === 3 && ref.path[2] === 'frames')!;
+    const tail = { ...frames[13]!, text: 'streamed tail' };
+    const live = { ...preview, steps: [{ ...preview.steps[0]!, frames: [...preview.steps[0]!.frames, tail] }] };
+    const completed = applyContentSegment(live, readContentSegment(original, ref));
+    expect(completed.steps[0]!.frames.map(frame => frame.frameId)).toEqual(frames.map(frame => frame.frameId));
+    expect(completed.steps[0]!.frames[13]!.text).toBe('streamed tail');
+  });
+
   it('structural continuation revision ignores body changes but detects reordered identities', () => {
     const turn = (output: string, reverse = false) => ({ steps: Array.from({ length: 20 }, (_, ordinal) => ({ kind: 'step', stepId: `s${reverse ? 19 - ordinal : ordinal}`, ordinal, frames: [{ frameId: 'f', output }] })) });
     const original = turn('old');

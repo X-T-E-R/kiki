@@ -1,9 +1,9 @@
-import { open } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 
 import { AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter,
   type ContentSource, type ToolCallFrame, type TranscriptFrame, type TranscriptTurn } from '@kiki/transcript';
 import type { HistoryNavManifest, HistoryNavigationDb, LazyHistoryNavigationDb } from './historyNavigationDb';
-import { historyNavigationProof, matchesNavigationProof } from './historyNavigationProof';
+import { historyNavigationProof, matchesNavigationProof, type HistoryNavigationProof } from './historyNavigationProof';
 import { hashHistoryRecord } from './historySource';
 import type { HistoryNavScan } from './historyLocatorStore';
 import type { TranscriptService } from '../transcript/transcriptService';
@@ -31,11 +31,28 @@ interface Prepared {
   readonly wirePath: string;
   readonly manifest: HistoryNavManifest;
 }
+interface SourceContext {
+  readonly scope: string;
+  readonly wirePath: string;
+}
 interface CacheEntry { readonly fingerprint: string; readonly entity: TranscriptTurn | TranscriptFrame; readonly bytes: number }
+interface PreparationFlight {
+  readonly controller: AbortController;
+  readonly promise: Promise<void>;
+}
 
 function sourceFingerprint(manifest: HistoryNavManifest): string {
   return JSON.stringify([manifest.generation, manifest.incarnation, manifest.offset, manifest.source]);
 }
+
+function directSourceFingerprint(proof: HistoryNavigationProof): string {
+  return JSON.stringify(['wire', proof.identity, proof.size, proof.mtimeNs, proof.ctimeNs, proof.head, proof.tail]);
+}
+
+function directCacheKey(scope: string, turnId: string): string {
+  return `${scope}\0direct\0${turnId}`;
+}
+
 interface Flight {
   readonly controller: AbortController;
   readonly promise: Promise<TranscriptTurn | undefined>;
@@ -47,6 +64,7 @@ interface Flight {
 export class HistoryCanonicalReader {
   private readonly cache = new Map<string, CacheEntry>();
   private readonly flights = new Map<string, Flight>();
+  private readonly preparationFlights = new Map<string, PreparationFlight>();
   private cacheBytes = 0;
   private oversizedCacheKey?: string;
   private oversizedExpiresAt = 0;
@@ -57,6 +75,9 @@ export class HistoryCanonicalReader {
   private cacheHits = 0;
   private projectionBytes = 0;
   private projectionRecords = 0;
+  private preparationsCompleted = 0;
+  private preparationsFailed = 0;
+  private preparationsCancelled = 0;
   private readonly projectedScans = new WeakSet<HistoryNavScan>();
 
   constructor(private readonly database: LazyHistoryNavigationDb, private readonly transcript: TranscriptService,
@@ -68,6 +89,8 @@ export class HistoryCanonicalReader {
     this.generation += 1;
     for (const flight of this.flights.values()) flight.controller.abort();
     this.flights.clear();
+    for (const flight of this.preparationFlights.values()) flight.controller.abort();
+    this.preparationFlights.clear();
     if (this.oversizedCacheKey !== undefined) this.deleteCached(this.oversizedCacheKey);
     this.cache.clear();
     this.cacheBytes = 0;
@@ -80,7 +103,9 @@ export class HistoryCanonicalReader {
       oversizedCacheEntries: oversizedCacheBytes === 0 ? 0 : 1,
       cacheBudgetBytes: CACHE_BYTES + this.transcript.detailCacheBudgetBytes(), replayBytes: this.replayBytes,
       replayRecords: this.replayRecords, replays: this.replays, cacheHits: this.cacheHits,
-      projectionBytes: this.projectionBytes, projectionRecords: this.projectionRecords };
+      projectionBytes: this.projectionBytes, projectionRecords: this.projectionRecords,
+      preparationsActive: this.preparationFlights.size, preparationsCompleted: this.preparationsCompleted,
+      preparationsFailed: this.preparationsFailed, preparationsCancelled: this.preparationsCancelled };
   }
 
   async lookupToolCall(session: string, agent: string, callId: string, signal?: AbortSignal): Promise<CanonicalToolLookup> {
@@ -100,8 +125,17 @@ export class HistoryCanonicalReader {
     if (source.kind !== 'turn' && source.kind !== 'frame') throw new Error('history_canonical_unsupported_source');
     const turnId = source.kind === 'turn' ? source.id : source.turnId;
     if (turnId === undefined) throw new Error('history_canonical_turn_required');
+    if (signal !== undefined) {
+      const cached = await this.readDirectCached(session, agent, source, signal);
+      if (cached !== undefined) return { status: 'found', entity: cached };
+    }
     const prepared = await this.prepare(session, agent, signal);
-    if (prepared === undefined) return { status: 'preparing' };
+    if (prepared === undefined) {
+      if (signal === undefined) return { status: 'preparing' };
+      this.startPreparation(session, agent);
+      const entity = await this.readColdEntity(session, agent, source, signal);
+      return entity === undefined ? { status: 'not_found' } : { status: 'found', entity };
+    }
     const entity = source.kind === 'turn' ? await this.readTurn(prepared, agent, turnId, signal, true) :
       await this.readFrame(prepared, agent, turnId, source.stepId, source.id, signal);
     return entity === undefined ? { status: 'not_found' } : { status: 'found', entity };
@@ -134,11 +168,7 @@ export class HistoryCanonicalReader {
     signal?.throwIfAborted();
     if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
     if (scan === undefined) throw new Error('history_canonical_source_missing');
-    if (!this.projectedScans.has(scan)) {
-      this.projectedScans.add(scan);
-      this.projectionBytes += scan.bytesRead;
-      this.projectionRecords += scan.recordsRead;
-    }
+    this.recordProjection(scan);
     if (!scan.complete) {
       if (scan.recordsRead === 0) throw new Error(`history_canonical_source_no_progress:${scan.incompleteReason ?? 'unknown'}`);
       if (scan.incompleteReason !== 'byte_budget' && scan.incompleteReason !== 'record_budget') {
@@ -155,6 +185,104 @@ export class HistoryCanonicalReader {
     }
     if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
     return { db, scope, wirePath: location.wirePath, manifest };
+  }
+
+  private recordProjection(scan: HistoryNavScan): void {
+    if (this.projectedScans.has(scan)) return;
+    this.projectedScans.add(scan);
+    this.projectionBytes += scan.bytesRead;
+    this.projectionRecords += scan.recordsRead;
+  }
+
+  private async sourceContext(session: string, agent: string, signal?: AbortSignal): Promise<SourceContext> {
+    signal?.throwIfAborted();
+    const location = await this.transcript.historyWireLocation(session, agent);
+    if (location === undefined) throw new Error('history_canonical_source_missing');
+    return { scope: `${location.workspaceId}\0${session}\0${agent}`, wirePath: location.wirePath };
+  }
+
+  private async fullWireProof(wirePath: string, signal?: AbortSignal): Promise<HistoryNavigationProof> {
+    const info = await stat(wirePath).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('history_canonical_source_missing');
+      throw error;
+    });
+    if (!Number.isSafeInteger(info.size) || info.size < 0) throw new Error('history_source_changed');
+    const proof = await historyNavigationProof(wirePath, info.size);
+    signal?.throwIfAborted();
+    return proof;
+  }
+
+  private async readDirectCached(session: string, agent: string, source: ContentSource,
+    signal: AbortSignal): Promise<TranscriptTurn | TranscriptFrame | undefined> {
+    const turnId = source.kind === 'turn' ? source.id : source.turnId;
+    if (turnId === undefined) return undefined;
+    const context = await this.sourceContext(session, agent, signal);
+    const key = directCacheKey(context.scope, turnId);
+    if (!this.cache.has(key)) return undefined;
+    let proof: HistoryNavigationProof;
+    try { proof = await this.fullWireProof(context.wirePath, signal); }
+    catch (error) {
+      if (error instanceof Error && error.message === 'history_source_changed') {
+        this.deleteCached(key);
+        return undefined;
+      }
+      throw error;
+    }
+    const cached = this.getCached(key, directSourceFingerprint(proof));
+    if (cached?.entity.kind !== 'turn') return undefined;
+    if (source.kind === 'turn') return cached.entity;
+    return cached.entity.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
+  }
+
+  private startPreparation(session: string, agent: string): void {
+    const key = `${session}\0${agent}`;
+    if (this.preparationFlights.has(key)) return;
+    const generation = this.generation;
+    const controller = new AbortController();
+    const promise = (async (): Promise<void> => {
+      for (;;) {
+        controller.signal.throwIfAborted();
+        if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
+        const scan = await this.scan(session, agent, controller.signal);
+        if (scan === undefined) throw new Error('history_canonical_source_missing');
+        this.recordProjection(scan);
+        if (scan.complete) return;
+        if (scan.recordsRead === 0) throw new Error(`history_canonical_source_no_progress:${scan.incompleteReason ?? 'unknown'}`);
+        if (scan.incompleteReason !== 'byte_budget' && scan.incompleteReason !== 'record_budget') {
+          throw new Error(`history_canonical_source_incomplete:${scan.incompleteReason ?? 'unknown'}`);
+        }
+      }
+    })();
+    const flight = { controller, promise };
+    this.preparationFlights.set(key, flight);
+    void promise.then(() => { this.preparationsCompleted += 1; }, () => {
+      if (controller.signal.aborted) this.preparationsCancelled += 1;
+      else this.preparationsFailed += 1;
+    }).finally(() => {
+      if (this.preparationFlights.get(key) === flight) this.preparationFlights.delete(key);
+    });
+  }
+
+  private async readColdEntity(session: string, agent: string, source: ContentSource,
+    signal: AbortSignal): Promise<TranscriptTurn | TranscriptFrame | undefined> {
+    const turnId = source.kind === 'turn' ? source.id : source.turnId;
+    if (turnId === undefined) return undefined;
+    const generation = this.generation;
+    const context = await this.sourceContext(session, agent, signal);
+    const before = await this.fullWireProof(context.wirePath, signal);
+    const snapshot = await this.transcript.readColdSnapshot(session, agent, undefined, signal);
+    if (snapshot === undefined) return undefined;
+    signal.throwIfAborted();
+    const turn = snapshot.items.find((item) => item.kind === 'turn' && item.turnId === turnId);
+    if (turn?.kind !== 'turn') return undefined;
+    const entity = source.kind === 'turn' ? turn : turn.steps.find((step) => step.stepId === source.stepId)
+      ?.frames.find((frame) => frame.frameId === source.id);
+    const proof = await historyNavigationProof(context.wirePath, before.size);
+    signal.throwIfAborted();
+    if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
+    if (!matchesNavigationProof(before, proof)) throw new Error('history_source_changed');
+    this.admit(directCacheKey(context.scope, turnId), directSourceFingerprint(before), turn, true);
+    return entity;
   }
 
   private async readFrame(input: Prepared, agent: string, turnId: string, stepId: string | undefined,

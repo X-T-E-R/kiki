@@ -66,7 +66,14 @@ export function applyContentSegment<T extends ContentWindow>(entity: T, segment:
       return current + segment.value;
     }
     if (segment.ref.kind === 'array') {
-      if (!Array.isArray(current) || current.length !== segment.ref.offset || !Array.isArray(segment.value)) throw new Error('content segment offset mismatch');
+      if (!Array.isArray(current) || !Array.isArray(segment.value)) throw new Error('content segment offset mismatch');
+      const path = segment.ref.path;
+      const structure = isCanonicalStructure(segment.ref);
+      if (structure) {
+        if (current.length < segment.ref.offset) throw new Error('content segment offset mismatch');
+        return mergeCanonicalArray(current, segment.value, path.length === 1 ? 'stepId' : 'frameId', segment.ref.offset);
+      }
+      if (current.length !== segment.ref.offset) throw new Error('content segment offset mismatch');
       return [...current, ...segment.value];
     }
     if (current === null || typeof current !== 'object' || Array.isArray(current) || segment.value === null || typeof segment.value !== 'object' || Array.isArray(segment.value)) throw new Error('invalid object content segment');
@@ -76,7 +83,7 @@ export function applyContentSegment<T extends ContentWindow>(entity: T, segment:
     ...root,
     contentRefs: [
       ...(entity.contentRefs ?? []).filter((ref) => !sameContentRef(ref, segment.ref)),
-      ...segment.contentRefs,
+      ...segment.contentRefs.filter(ref => segment.ref.kind !== 'array' || !isCanonicalStructure(segment.ref) || matchesSegmentPreview(root, segment, ref)),
       ...(segment.next === undefined ? [] : [segment.next]),
     ],
   };
@@ -84,6 +91,65 @@ export function applyContentSegment<T extends ContentWindow>(entity: T, segment:
   versions.set(JSON.stringify(segment.ref.path), segment.ref.revision);
   hydratedVersions.set(result, versions);
   return result;
+}
+
+function isCanonicalStructure(ref: ContentRef): boolean {
+  const path = ref.path;
+  return ref.source.kind === 'turn' && path[0] === 'steps' &&
+    (path.length === 1 || path.length === 3 && typeof path[1] === 'number' && path[2] === 'frames');
+}
+
+function matchesSegmentPreview(root: unknown, segment: ContentSegment, ref: ContentRef): boolean {
+  const base = segment.ref.path;
+  if (!base.every((part, index) => ref.path[index] === part)) return false;
+  const index = ref.path[base.length];
+  if (typeof index !== 'number') return false;
+  let saved: unknown = segment.value;
+  let merged: unknown = root;
+  for (const part of base) {
+    if (merged === null || typeof merged !== 'object') return false;
+    merged = (merged as Record<string | number, unknown>)[part];
+  }
+  const path = ref.path.slice(base.length);
+  for (let position = 0; position < path.length; position += 1) {
+    const part = path[position]!;
+    if (saved === null || typeof saved !== 'object' || merged === null || typeof merged !== 'object') return false;
+    saved = (saved as Record<string | number, unknown>)[position === 0 ? index - segment.ref.offset : part];
+    merged = (merged as Record<string | number, unknown>)[part];
+    if (saved !== null && typeof saved === 'object' && merged !== null && typeof merged === 'object') {
+      for (const key of ['stepId', 'frameId']) {
+        if ((saved as Record<string, unknown>)[key] !== (merged as Record<string, unknown>)[key]) return false;
+      }
+    }
+  }
+  return saved !== undefined && JSON.stringify(saved) === JSON.stringify(merged);
+}
+
+function mergeCanonicalArray(current: readonly unknown[], incoming: readonly unknown[], identity: 'stepId' | 'frameId', prefixCount = 0): unknown[] {
+  const entries = new Map<string, Record<string, unknown>>();
+  const record = (value: unknown): Record<string, unknown> => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value) || typeof (value as Record<string, unknown>)[identity] !== 'string') throw new Error('invalid canonical structure segment');
+    return value as Record<string, unknown>;
+  };
+  for (const value of current.slice(0, prefixCount)) {
+    const child = record(value);
+    entries.set(child[identity] as string, child);
+  }
+  for (const value of incoming) {
+    const child = record(value);
+    entries.set(child[identity] as string, child);
+  }
+  for (const value of current) {
+    const child = record(value);
+    const previous = entries.get(child[identity] as string);
+    const merged = previous === undefined ? child : { ...previous, ...child };
+    if (identity === 'stepId' && previous !== undefined && Array.isArray(child['frames']) && Array.isArray(previous['frames'])) {
+      merged['frames'] = mergeCanonicalArray(child['frames'], previous['frames'], 'frameId');
+    }
+    entries.set(child[identity] as string, merged);
+  }
+  const values = [...entries.values()];
+  return identity === 'stepId' ? values.toSorted((a, b) => Number(a['ordinal']) - Number(b['ordinal'])) : values;
 }
 
 const hydratedVersions = new WeakMap<object, ReadonlyMap<string, string>>();

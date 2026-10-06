@@ -37,7 +37,7 @@ function windowed(overrides: Partial<AgentTranscriptSnapshot> = {}): AgentTransc
   });
 }
 
-function harness(detail: SessionViewFacade['transcript']['detail'], content?: SessionViewFacade['transcript']['content'], entities?: SessionViewFacade['transcript']['entities']) {
+function harness(detail: SessionViewFacade['transcript']['detail'], content?: SessionViewFacade['transcript']['content'], entities?: SessionViewFacade['transcript']['entities'], publicationScheduler?: import('./sessionController').PublicationScheduler) {
   let signal: ((value: SessionViewSignal) => void) | undefined;
   const view = {
     snapshot: vi.fn(async () => ({ as_of_seq: 1, epoch: 'e', session, in_flight_turn: null }) as unknown as SessionSnapshotResponse),
@@ -48,7 +48,7 @@ function harness(detail: SessionViewFacade['transcript']['detail'], content?: Se
     },
   } as unknown as SessionViewFacade;
   const scheduler = { schedule: (callback: () => void) => { callback(); return 0; }, cancel: () => {} };
-  const controller = new SessionController({} as SessionTransport, view, 'session_test', { scheduler });
+  const controller = new SessionController({} as SessionTransport, view, 'session_test', { scheduler: publicationScheduler ?? scheduler });
   const deliver = (event: Parameters<SessionController['handleTranscript']>[0]) => {
     signal!({ type: 'transcript', event, generation: 1 });
   };
@@ -78,6 +78,35 @@ describe('SessionController transcript detail', () => {
       expect(controller.contentRefsFor('main', source)).toEqual([]);
     } finally { controller.close(); }
   });
+  it('finishes a visible 8/14 structure during live tail updates and keeps later output streaming without retry', async () => {
+    const source = { kind: 'turn' as const, id: 'live-turn' };
+    const ref: import('@kiki/transcript').ContentRef = { source, revision: 'fixed-14', path: ['steps'], kind: 'array', offset: 8, total: 14 };
+    const steps = Array.from({ length: 14 }, (_, ordinal) => ({ kind: 'step' as const, stepId: `s${ordinal}`, turnId: source.id, ordinal, state: 'running' as const,
+      frames: [{ kind: 'text' as const, frameId: `f${ordinal}`, role: 'assistant' as const, text: 'saved' }] }));
+    let complete!: (value: import('@kiki/transcript').ContentSegment) => void;
+    const content = vi.fn(() => new Promise<import('@kiki/transcript').ContentSegment>(resolve => { complete = resolve; }));
+    const { controller, deliver } = harness(undefined, content, undefined, { schedule: callback => setTimeout(callback, 0), cancel: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) });
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [{ kind: 'turn', turnId: source.id, ordinal: 0, state: 'running', origin: { kind: 'user' }, prompt: 'Visible live turn', steps: steps.slice(0, 8), contentRefs: [ref] }] }), 2));
+    const release = controller.retainHistoryStructure('main', source.id);
+    try {
+      await vi.waitFor(() => expect(content).toHaveBeenCalledTimes(1));
+      deliver(opsEvent('main', [
+        { op: 'step.upsert', turnId: source.id, step: { kind: 'step', stepId: 's13', turnId: source.id, ordinal: 13, state: 'running' } },
+        { op: 'frame.upsert', turnId: source.id, stepId: 's13', frame: { kind: 'text', frameId: 'f13', role: 'assistant', text: 'live' } },
+        { op: 'append', target: { type: 'frame', turnId: source.id, stepId: 's13', frameId: 'f13' }, offset: 4, text: ' response' },
+      ], 3));
+      complete({ ref, value: steps.slice(8), contentRefs: [] });
+      await vi.waitFor(() => expect(controller.contentRefsFor('main', source)).toEqual([]));
+      expect(controller.getState().blocks.filter(block => block.kind === 'assistant')).toHaveLength(14);
+      expect(controller.getState().blocks.at(-1)).toMatchObject({ kind: 'assistant', text: 'live response' });
+      deliver(opsEvent('main', [{ op: 'append', target: { type: 'frame', turnId: source.id, stepId: 's13', frameId: 'f13' }, offset: 13, text: ' continues' }], 4));
+      await vi.waitFor(() => expect(controller.getState().blocks.at(-1)).toMatchObject({ kind: 'assistant', text: 'live response continues' }));
+      expect(content).toHaveBeenCalledTimes(1);
+      expect(Object.values(controller.getState().detailLoads).some(load => load.status === 'error')).toBe(false);
+    } finally { release(); controller.close(); }
+  });
+
   it.each(['main', 'child'] as const)('reads only the requested %s turn structure and leaves other cold turns unread', async (agentId) => {
     const turns = [3, 1].map((total, ordinal) => {
       const source = { kind: 'turn' as const, id: `turn-${ordinal}` };

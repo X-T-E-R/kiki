@@ -12,10 +12,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb';
 import { HistoryLocatorStore } from '../src/services/history/historyLocatorStore';
-import { CanonicalEntityPreparingError } from '../src/services/history/historyCanonicalReader';
+import { CanonicalEntityPreparingError, HistoryCanonicalReader } from '../src/services/history/historyCanonicalReader';
 import { TranscriptService } from '../src/services/transcript/transcriptService';
 import { boundedEntity } from '../src/transport/klient/boundedContent';
-import { readSessionViewTranscriptContent } from '../src/transport/klient/sessionViewReads';
+import { readSessionViewTranscriptContent, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
 
 vi.mock('node:fs/promises', { spy: true });
 
@@ -210,6 +210,73 @@ describe('source-backed canonical detail', () => {
       await writeFile(f.wirePath, turnRecords(100, 'error output').map(line).join(''));
       expect(await f.service.lookupToolCall('s', 'main', 'call-100')).toMatchObject({ status: 'found', frame: { state: 'error', error: 'error output' } });
     } finally { await f.close(); }
+  });
+
+  it('reads segmented refs from a cold page while canonical navigation prepares in the background', async () => {
+    const records = [...Array.from({ length: 32 }, (_, id) => turnRecords(id, 'x'.repeat(350000))).flat(),
+      ...turnRecords(100, 'target '.repeat(100000))];
+    expect(Buffer.byteLength(records.map(line).join(''))).toBeGreaterThan(8 << 20);
+    const f = await fixture(records);
+    const controller = new AbortController();
+    const coldRead = vi.spyOn(f.service, 'readColdSnapshot');
+    try {
+      const page = await readSessionViewTranscriptPage(f.service, 's', { agentId: 'main', pageSize: 1, signal: controller.signal });
+      const turn = page?.items.find((item) => item.kind === 'turn' && item.turnId === 't100');
+      if (turn?.kind !== 'turn') throw new Error('missing cold page turn');
+      const ref = turn.steps.flatMap((step) => step.frames).flatMap((frame) => frame.contentRefs ?? [])
+        .find((value) => value.source.kind === 'frame' && value.path[0] === 'output');
+      if (ref === undefined) throw new Error('missing cold page content ref');
+      const before = coldRead.mock.calls.length;
+      const first = await readSessionViewTranscriptContent(f.service, 's', { agentId: 'main', ref, signal: controller.signal });
+      expect(first).toBeDefined();
+      expect(first?.ref).toEqual(ref);
+      expect(coldRead.mock.calls.length).toBe(before + 1);
+      const next = first?.next;
+      expect(next).toBeDefined();
+      expect(await readSessionViewTranscriptContent(f.service, 's', { agentId: 'main', ref: next!, signal: controller.signal })).toBeDefined();
+      expect(coldRead.mock.calls.length).toBe(before + 1);
+      await vi.waitFor(() => expect(f.nav.canonicalReadReport().projectionRecords).toBe(records.length), { timeout: 30_000 });
+    } finally { coldRead.mockRestore(); controller.abort(); await f.close(); }
+  }, 60_000);
+
+  it('keeps a cold detail prefix valid during a live append without caching it as the newer source', async () => {
+    const f = await fixture(turnRecords(100, 'saved response'));
+    const read = f.service.readColdSnapshot.bind(f.service);
+    const cold = vi.spyOn(f.service, 'readColdSnapshot').mockImplementationOnce(async (...args) => {
+      const snapshot = await read(...args);
+      await appendFile(f.wirePath, turnRecords(101, 'live appended response').map(line).join(''));
+      return snapshot;
+    });
+    let scans = 0;
+    const reader = new HistoryCanonicalReader(f.db, f.service, async () => {
+      if (++scans % 2 === 0) throw new Error('background unavailable');
+      return { complete: false, nextByteOffset: 1, ordinal: 1, bytesRead: 1, recordsRead: 1, incarnation: 'test', incompleteReason: 'byte_budget' };
+    });
+    try {
+      const source = { kind: 'turn' as const, id: 't100' };
+      expect(await reader.readEntity('s', 'main', source, new AbortController().signal)).toMatchObject({ status: 'found' });
+      expect(cold).toHaveBeenCalledTimes(1);
+      expect(await reader.readEntity('s', 'main', source, new AbortController().signal)).toMatchObject({ status: 'found' });
+      expect(cold).toHaveBeenCalledTimes(2);
+    } finally { reader.invalidate(); cold.mockRestore(); await f.close(); }
+  });
+
+  it.each(['failure', 'cancel'] as const)('settles background preparation %s without certifying its incomplete projection', async mode => {
+    const f = await fixture(turnRecords(100, 'target response'));
+    let scans = 0;
+    const reader = new HistoryCanonicalReader(f.db, f.service, async (_session, _agent, signal) => {
+      scans += 1;
+      if (scans === 1) return { complete: false, nextByteOffset: 1, ordinal: 1, bytesRead: 1, recordsRead: 1, incarnation: 'test', incompleteReason: 'byte_budget' };
+      if (mode === 'failure') throw new Error('source read failed');
+      return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    });
+    try {
+      expect(await reader.readEntity('s', 'main', { kind: 'turn', id: 't100' }, new AbortController().signal)).toMatchObject({ status: 'found' });
+      if (mode === 'cancel') reader.invalidate();
+      await vi.waitFor(() => expect(reader.report()).toMatchObject({ preparationsActive: 0, preparationsCompleted: 0, preparationsFailed: mode === 'failure' ? 1 : 0, preparationsCancelled: mode === 'cancel' ? 1 : 0 }));
+      expect(reader.report().projectionRecords).toBe(1);
+      expect(scans).toBe(2);
+    } finally { reader.invalidate(); await f.close(); }
   });
 
   it.each([9, 31])('advances a supported %i MiB record and locates the following small call without replaying the large turn', async (mib) => {
