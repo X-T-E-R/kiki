@@ -183,29 +183,35 @@ function makeRoot(): { root: Root; container: HTMLDivElement } {
 let editFixture: import('node:child_process').ChildProcess | undefined;
 let editFixturePort: number;
 let editFixtureStderr = '';
+let editFixtureReady: Promise<void> | undefined;
+function startEditFixture(): Promise<void> {
+  editFixtureReady ??= (async () => {
+    const { spawn } = await import('node:child_process');
+    const { resolve } = await import('node:path');
+    editFixture = spawn(process.execPath, ['--input-type=module', '-e', "import { startFixtureServer } from './scripts/fixture-server.mjs'; const server = await startFixtureServer({port: 0, scenario: 'queue'}); console.log('TEST_FIXTURE_PORT:' + server.http.address().port);"], { cwd: resolve(import.meta.dirname, '../..'), stdio: ['ignore', 'pipe', 'pipe'] });
+    editFixture.stderr!.on('data', (chunk) => {
+      const text = String(chunk);
+      editFixtureStderr += text;
+      process.stderr.write(`[Transcript fixture] ${text}`);
+    });
+    await new Promise<void>((resolve, reject) => {
+      let output = '';
+      editFixture!.stdout!.on('data', (chunk) => {
+        output += String(chunk);
+        const port = /TEST_FIXTURE_PORT:(\d+)/.exec(output);
+        if (port !== null) { editFixturePort = Number(port[1]); resolve(); }
+      });
+      editFixture!.once('error', reject);
+      editFixture!.once('exit', (code) => {
+        if (editFixturePort === undefined) reject(new Error(`fixture exited: ${code}\n${editFixtureStderr}`));
+      });
+    });
+  })();
+  return editFixtureReady;
+}
 async function renderSettled(root: Root, node: ReactNode, connected = false): Promise<void> {
   if (connected) {
-    if (editFixture === undefined) {
-      const { spawn } = await import('node:child_process');
-      editFixture = spawn(process.execPath, ['--input-type=module', '-e', "import { startFixtureServer } from './scripts/fixture-server.mjs'; const server = await startFixtureServer({port: 0, scenario: 'queue'}); console.log('TEST_FIXTURE_PORT:' + server.http.address().port);"], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
-      editFixture.stderr!.on('data', (chunk) => {
-        const text = String(chunk);
-        editFixtureStderr += text;
-        process.stderr.write(`[Transcript fixture] ${text}`);
-      });
-      await new Promise<void>((resolve, reject) => {
-        let output = '';
-        editFixture!.stdout!.on('data', (chunk) => {
-          output += String(chunk);
-          const port = /TEST_FIXTURE_PORT:(\d+)/.exec(output);
-          if (port !== null) { editFixturePort = Number(port[1]); resolve(); }
-        });
-        editFixture!.once('error', reject);
-        editFixture!.once('exit', (code) => {
-          if (editFixturePort === undefined) reject(new Error(`fixture exited: ${code}\n${editFixtureStderr}`));
-        });
-      });
-    }
+    await startEditFixture();
     writeStoredConfig({ url: `http://127.0.0.1:${editFixturePort}`, token: 'kiki-fixture-token' });
   }
   let ready = false;
@@ -1923,6 +1929,7 @@ describe('explicit unknown timing', () => {
 });
 
 describe('message row actions', () => {
+  beforeAll(startEditFixture);
   it('shows edit/fork on settled user rows and regenerate/fork on the latest final reply only', async () => {
     const rowActions: TranscriptRowActions = {
       disabled: false,
@@ -2751,6 +2758,7 @@ function transcriptDistanceFromEnd(scroll: HTMLElement): number {
 }
 
 describe('virtualized transcript scrolling', () => {
+  beforeAll(startEditFixture);
   it('keeps unverified coverage quiet while older pages remain to load', async () => {
     const container = await renderTranscript([userBlock({ id: 'known-turn', text: 'known message' })], undefined, {
       historyCoverageKind: 'unknown', hasMoreHistory: true, oldestMessageId: 'known-turn', fetchedOlder: false,
@@ -6028,6 +6036,7 @@ it('strips a stored SSH host block from an old message and draws no per-message 
 
 
 describe('ordinary bounded message reading', () => {
+  beforeAll(startEditFixture);
   it('continues prompt, assistant and thinking from their exact sources, then restores full copy/edit targets', async () => {
     const { TranscriptDetailProvider } = await import('./transcriptDetail');
     const source: import('@kiki/transcript').ContentSource = { kind: 'turn', id: 't0' };

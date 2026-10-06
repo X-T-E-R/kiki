@@ -14,6 +14,7 @@ import type {
   SessionSummary,
 } from '@kiki/agent-core-v2';
 import { Emitter, Event } from '@kiki/agent-core-v2/_base/event';
+import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
 import { MiniDb } from '@kiki/minidb';
 import { TranscriptStore, type TranscriptOperation } from '@kiki/transcript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -141,7 +142,7 @@ async function writeTitle(
 ): Promise<void> {
   const dir = join(home, 'sessions', workspaceId, sessionId);
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, 'state.json'), JSON.stringify({ title }), 'utf8');
+  await atomicWrite(join(dir, 'state.json'), JSON.stringify({ title }));
 }
 
 const noopLog = {

@@ -57,7 +57,7 @@ const V2_MIXED = {
 let root: Root;
 let container: HTMLDivElement;
 let query: QueryClient;
-const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); }); };
+const flush = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(5); }); };
 async function change(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => {
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')!.set!.call(element, value);
@@ -96,6 +96,7 @@ const editor = (kind: 'legacy' | 'declarative') => container.querySelector(`[dat
 const saveActions = () => click('Save actions');
 
 beforeEach(() => {
+  vi.useFakeTimers();
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   config = { hooks: [] };
   patchError = null;
@@ -110,7 +111,16 @@ beforeEach(() => {
   document.body.append(container);
   root = createRoot(container);
 });
-afterEach(async () => { await act(async () => root.unmount()); container.remove(); query.clear(); });
+afterEach(async () => {
+  try {
+    await act(async () => { root.unmount(); });
+    container.remove();
+    query.clear();
+    await vi.runAllTimersAsync();
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 describe('hooks settings (dual shape)', () => {
   it('reads, edits, saves and re-reads a legacy rule without losing fields', async () => {
@@ -324,6 +334,8 @@ describe('handing a new hook rule to Kiki', () => {
     // No rule was invented, and the server config was not touched.
     expect(config.hooks).toEqual([]);
     expect(client.patchConfig).not.toHaveBeenCalled();
+    await act(async () => { await vi.runAllTimersAsync(); });
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('keeps an unsaved rule draft on screen: the handoff leaves it to the guard, not over it', async () => {
