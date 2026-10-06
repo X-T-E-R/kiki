@@ -1285,7 +1285,11 @@ describe('FullCompaction', () => {
         expect.objectContaining({ type: '[rpc]', event: 'error' }),
       ]),
     );
-    const cancelled = events.find((event) => event.event === 'compaction.cancelled');
+    const cancelled = events.find((event): event is { event: 'compaction.cancelled'; args: { reason: string } } => {
+      if (event === null || typeof event !== 'object') return false;
+      const candidate = event as { event?: unknown; args?: { reason?: unknown } };
+      return candidate.event === 'compaction.cancelled' && typeof candidate.args?.reason === 'string';
+    });
     expect(events).toContainEqual(expect.objectContaining({ type: '[wire]', event: 'full_compaction.cancel', args: expect.objectContaining({ reason: cancelled?.args?.reason }) }));
     expect(cancelled?.args?.reason).toContain('compaction exploded');
     expect(eventIndex(events, 'compaction.cancelled')).toBeLessThan(eventIndex(events, 'error'));
