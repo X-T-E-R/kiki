@@ -2,19 +2,21 @@
  * Media sources — the Plugins tab's media sub-view.
  *
  * This is the mount point, and the only place the two halves meet: the list
- * (a hundred rows, searchable, one click to open) and the detail (one
- * provider's settings, defaults, capabilities). Both read the same query, so
- * configuring a provider and seeing its status change in the list are one fact
- * rendered twice, not two caches that can disagree.
+ * (a thousand rows, searchable, one click to open) and the detail (one source's
+ * settings, defaults, capabilities). Both read the same query, so configuring a
+ * source and seeing its status change in the list are one fact rendered twice,
+ * not two caches that can disagree.
  *
  * The data it composes, all of it the host's:
  *
- *  - `providers()` for which adapters exist, the plugin list for whether their
- *    packages are installed and healthy, the entry package's settings for the
- *    per-modality defaults, and a package's own settings (only for the one
- *    provider being configured) for its keys.
- *  - `sources()` for the subscription roster — where new providers are
- *    discovered from, which is a different question from which are installed,
+ *  - `managedSources()` for every source in every package, already carrying
+ *    each one's settings, stored values, stored secrets and missing-required
+ *    list, so the whole page costs one call whatever the list's length.
+ *  - the plugin list for whether the package behind a source is installed and
+ *    healthy, and the media package's own settings for the per-modality
+ *    defaults.
+ *  - `sources()` for the subscription roster — where new packages are
+ *    discovered from, which is a different question from which sources exist,
  *    and gets its own folded section rather than its own page.
  *
  * Two states are first-class and neither is an empty list: a server without
@@ -24,22 +26,27 @@
  */
 
 import { useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { useInstalledPlugins } from '../capabilities/usePlugins';
 import {
+  MEDIA_DEFAULTS_PLUGIN_ID,
   composeMediaSources,
+  mediaDefaultsKey,
+  defaultsFromSettings,
   mediaApi,
   outcomeIsFor,
   useMediaJobAction,
   useMediaJobs,
-  useMediaProviders,
+  useMediaManagedSources,
   useMediaSubscriptions,
   type MediaJob,
   type MediaSourceEntry,
 } from '../../lib/mediaSources';
+import type { KikiClient } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { InlineError, type Feedback } from '../controls';
 import { Spinner } from '../icons';
@@ -48,10 +55,43 @@ import { CapabilitySection, EmptyNote, QUIET_BUTTON } from '../capabilities/prim
 import { MediaJobView } from './MediaJobView';
 import { MediaSourceDetail } from './MediaSourceDetail';
 import { MediaSourceList } from './MediaSourceList';
+import { MediaScriptSourceDialog } from './MediaScriptSourceDialog';
 import { MediaSubscriptions } from './MediaSubscriptions';
 
 /** How many recent jobs the list shows; enough to see the last one you made. */
 const JOBS_LIMIT = 20;
+
+/** The media package, which is also where the per-modality defaults live. */
+const MEDIA_PACKAGE_ID = MEDIA_DEFAULTS_PLUGIN_ID;
+
+/**
+ * The media package's own settings, for the three per-modality defaults.
+ *
+ * One read of the package the whole page is about, through the same route
+ * every other plugin setting uses — so the list and the detail answer "which
+ * source is the default for images" from one place, and a write lands where the
+ * host reads it. It is deliberately not per-source: one request for the list
+ * beats one per modality, and a default is not any one source's property.
+ *
+ * The key is this module's own `mediaDefaultsKey` rather than a literal, and
+ * the cached value is the WHOLE `PluginSettingsResponse` rather than a per-key
+ * fragment: this is the same cache entry PluginSettingsForm uses, and it reads
+ * `schema` and `secretsConfigured` off it, so storing only the three defaults
+ * here would make that form lose its fields. The view below takes `.values`
+ * out of the shared entry instead of reshaping what is stored.
+ */
+function useMediaPackageDefaults(client: KikiClient, enabled: boolean) {
+  const query = useQuery({
+    queryKey: mediaDefaultsKey(MEDIA_PACKAGE_ID),
+    queryFn: () => client.getPluginSettings(MEDIA_PACKAGE_ID),
+    enabled,
+    staleTime: 15_000,
+    retry: false,
+  });
+  // The defaults are a view over the shared entry, not a store of their own.
+  const values = query.data?.values;
+  return { ...query, data: values === undefined ? undefined : { ...values } };
+}
 
 export function MediaSourcesView({
   sessionId,
@@ -61,34 +101,58 @@ export function MediaSourcesView({
   /** Session whose jobs this view shows; no session, no job list. */
   readonly sessionId?: string;
   readonly onBack: () => void;
-  /** Open a provider's package on the ordinary plugin detail. */
+  /** Open a source's package on the ordinary plugin detail. */
   readonly onOpenPlugin?: (pluginId: string) => void;
 }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const api = mediaApi(client);
-  const providers = useMediaProviders(client, api !== undefined);
+  const managed = useMediaManagedSources(client, api !== undefined);
   const subscriptions = useMediaSubscriptions(client, api !== undefined);
   const plugins = useInstalledPlugins();
+  // The three defaults are the media package's own non-secret settings, so they
+  // are read and written through the same per-key route as everything else that
+  // package configures. They are deliberately not a source's fields: a default
+  // is a statement about the choice *between* sources, and a choice cannot
+  // belong to one of the things being chosen.
+  const mediaSettings = useMediaPackageDefaults(client, api !== undefined);
   const jobs = useMediaJobs(client, sessionId ?? '', JOBS_LIMIT);
   const actions = useMediaJobAction(client, sessionId ?? '', JOBS_LIMIT);
   const [open, setOpen] = useState<string | null>(null);
+  const [addingScript, setAddingScript] = useState(false);
 
   /**
-   * The defaults come from the media entry package's own settings, so they
-   * live in the same store as everything else a plugin configures. They are
-   * read from the providers themselves (each row says which modalities it is
-   * the default for) rather than from a separate document, which is why the
-   * list and the detail can never disagree about who the default is.
+   * The defaults come from the media package's own settings, so they live in
+   * the same store as everything else a plugin configures. They are read from
+   * the sources themselves (each row says which modalities it is the default
+   * for) rather than from a separate document, which is why the list and the
+   * detail can never disagree about who the default is.
+   *
+   * The package health lookup is the only join left: `managedSources()` says
+   * which sources exist and how they are configured, and the plugin list says
+   * whether the package that carries them is installed and loaded.
    */
-  const entries = useMemo(
-    () => composeMediaSources(providers.data ?? [], plugins.data?.plugins ?? [], { image: undefined, video: undefined, tts: undefined }),
-    [providers.data, plugins.data],
-  );
+  const entries = useMemo(() => {
+    const summaries = plugins.data?.plugins ?? [];
+    const healthOf = (pluginId: string) => {
+      const plugin = summaries.find((summary) => summary.id === pluginId);
+      if (plugin === undefined) return { enabled: false, broken: true };
+      return {
+        enabled: plugin.enabled,
+        broken: plugin.state === 'error' || plugin.hasErrors,
+        ...(plugin.state === 'error' ? { problem: t('cap.media.row.packageFailed', { plugin: plugin.displayName }) } : {}),
+      };
+    };
+    return composeMediaSources(
+      managed.data ?? [],
+      healthOf,
+      defaultsFromSettings(mediaSettings.data),
+    );
+  }, [managed.data, mediaSettings.data, plugins.data, t]);
 
-  // A job that cannot proceed names the provider that is missing. That is a
-  // fact about the job, not a probe of the provider, so it is derived from
-  // jobs the view already has.
+  // A job that cannot proceed names the source that is missing. That is a fact
+  // about the job, not a probe of the source, so it is derived from jobs the
+  // view already has.
   const blockedProviders = useMemo(
     () => new Set((jobs.data ?? []).filter((job) => job.blocked_reason === 'needs_provider').map((job) => job.provider)),
     [jobs.data],
@@ -116,7 +180,7 @@ export function MediaSourcesView({
     );
   }
 
-  if (providers.isPending) {
+  if (managed.isPending) {
     return (
       <div className="min-w-0 space-y-4" data-media-sources-view="loading">
         <BackLink onBack={onBack} />
@@ -125,13 +189,13 @@ export function MediaSourcesView({
     );
   }
 
-  if (providers.isError) {
+  if (managed.isError) {
     return (
       <div className="min-w-0 space-y-4" data-media-sources-view="error">
         <BackLink onBack={onBack} />
         <div className="space-y-2">
-          <InlineError error={providers.error} />
-          <button type="button" className={SECONDARY_BUTTON} onClick={() => { void providers.refetch(); }} data-media-sources-retry>
+          <InlineError error={managed.error} />
+          <button type="button" className={SECONDARY_BUTTON} onClick={() => { void managed.refetch(); }} data-media-sources-retry>
             {t('common.retry')}
           </button>
         </div>
@@ -147,7 +211,6 @@ export function MediaSourcesView({
         <MediaSourceDetail
           entry={selected}
           providers={entries}
-          onReloadProviders={() => { void providers.refetch(); }}
           onBack={() => { setOpen(null); }}
           {...(onOpenPlugin === undefined ? {} : { onOpenPlugin })}
         />
@@ -159,7 +222,22 @@ export function MediaSourcesView({
     <div className="min-w-0 space-y-6" data-media-sources-view="list">
       <BackLink onBack={onBack} />
 
-      <CapabilitySection id="media-sources" title={t('cap.media.title')}>
+      <CapabilitySection
+        id="media-sources"
+        title={t('cap.media.title')}
+        // Adding a script is a source, so the verb sits on the section it
+        // adds to rather than in the folded discovery area below.
+        aside={(
+          <button
+            type="button"
+            className={`${SECONDARY_BUTTON} h-7`}
+            data-media-add-script
+            onClick={() => { setAddingScript(true); }}
+          >
+            {t('cap.media.addScript')}
+          </button>
+        )}
+      >
         <MediaSourceList
           sources={entries}
           blockedProviders={blockedProviders}
@@ -168,7 +246,14 @@ export function MediaSourcesView({
         />
       </CapabilitySection>
 
-      {/* Where new providers are discovered from. Folded, because it is a
+      {addingScript ? (
+        <MediaScriptSourceDialog
+          onClose={() => { setAddingScript(false); }}
+          onAdded={(provider) => { setAddingScript(false); setOpen(provider); }}
+        />
+      ) : null}
+
+      {/* Where new packages are discovered from. Folded, because it is a
           place to look occasionally, not the thing a reader came to do. */}
       <MediaSubscriptions
         sources={subscriptions.data ?? []}

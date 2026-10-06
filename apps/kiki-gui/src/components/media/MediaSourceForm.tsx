@@ -12,10 +12,15 @@
  *    only when the whole form is saved, and its value is never read back,
  *    echoed into a log, or shown in a preview.
  *  - Only changed keys are sent. A value set to the empty string is sent as
- *    `null` (remove it); an unsent key is kept by the host.
- *  - The save is per-package, and the read-back is the host's echo. A draft
- *    that fails to save keeps everything the reader typed; the error appears
- *    under the form, not in place of it.
+ *    `null` (remove it); an unsent key is kept by the host. A secret the
+ *    reader opened the field on and left blank is *not* a removal: sending
+ *    `null` for a field nobody touched is how a working key disappears because
+ *    someone scrolled past it, so an untouched or blanked-but-unconfirmed
+ *    secret is simply not sent.
+ *  - The save is per-source, addressed by the provider id the row carried, and
+ *    the read-back is the host's echo. A draft that fails to save keeps
+ *    everything the reader typed; the error appears under the form, not in
+ *    place of it.
  *
  * A provider may declare that one of its plain string settings names a
  * *connection* rather than a value of its own (`connectionSetting` on the
@@ -141,9 +146,11 @@ export function MediaSourceForm({
    * manages its own credentials, which is a normal way to write one.
    */
   readonly connectionSetting?: string;
-  /** The host's per-key write. The form then reads back through `onReload`
-      rather than trusting the write's return value. */
-  readonly onSave: (values: Record<string, string | number | boolean | null>) => Promise<void>;
+  /** The host's per-key write. It is AWAITED and it REJECTS when the host
+      refuses, because the form's three decisions — clear the draft, show
+      "saved", read the values back — all depend on the write having actually
+      happened. */
+  readonly onSave: (values: Record<string, string | number | boolean | null>) => Promise<unknown>;
   /** Read the stored values back — the honest check that a save landed. */
   readonly onReload: () => Promise<MediaSourceSettings>;
   readonly saving?: boolean;
@@ -184,18 +191,28 @@ export function MediaSourceForm({
     setBusy(true);
     setFeedback(null);
     try {
+      // The write is awaited and is the only thing that decides whether this
+      // was a save. A read-back afterwards is a SECOND question — "does the
+      // host now hold what I sent?" — and it is asked only once the write has
+      // already succeeded. Asking it instead of the write made a refused save
+      // look like a good one, because a plain GET still answers.
       await onSave(built.values);
       // Read back rather than trusting the write: a host that accepted a key
-      // and stored a different value must be visible, not papered over.
+      // and stored a different value must be visible, not papered over. This
+      // can still fail on its own, and it is treated as what it is — a failed
+      // read, with the draft kept so the reader does not retype a command.
       const echoed = await onReload();
       const next = draftOf(echoed);
       setDraft(next);
       setBaseline(next);
-      setFeedback({ tone: 'success', text: t('cap.media.setting.saved') });
+      // The tick IS the confirmation, and it is reached only here: after the
+      // write succeeded AND the host's own values came back. A form that
+      // greets a refused save is a form whose silence reads as a failure.
       pingSaved();
     } catch (failure) {
-      // The draft stays exactly as typed. A failed save must not cost the
-      // reader the values they just entered.
+      // The draft stays exactly as typed, secret included. A failed save must
+      // not cost the reader the values they just entered, and must not clear a
+      // key they have not managed to store anywhere else.
       setFeedback({ tone: 'error', text: errorText(locale, failure) });
     } finally {
       setBusy(false);

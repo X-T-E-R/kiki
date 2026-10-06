@@ -176,6 +176,15 @@ export function handlePlugins(server, res, path, method, body) {
     server.pluginSettings ??= structuredClone(server.scenario?.data.pluginSettings ?? {});
     const view = server.pluginSettings[pluginId] ?? { values: {}, secretsConfigured: [] };
     if (method === 'POST') {
+      // A scenario can make one package's settings refuse, so a save that did
+      // not land is observable rather than assumed impossible. The GET keeps
+      // answering normally either way — which is exactly why a refused write
+      // cannot be told from a good one by reading values back.
+      const refusal = server.scenario?.data.pluginSettingsRefusals?.[pluginId];
+      if (refusal !== undefined) {
+        server.envelope(res, null, refusal.code ?? 40001, refusal.message ?? 'the host refused this write');
+        return true;
+      }
       const properties = view.schema?.schema?.properties ?? {};
       const values = { ...view.values };
       const secrets = new Set(view.secretsConfigured);

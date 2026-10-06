@@ -4,11 +4,15 @@
  * These are the decisions a reader can be wrong about, so each one gets a case
  * that would fail if the rule were relaxed:
  *
- *  - A broken package and a switched-off one read the same, because from the
- *    outside they are the same thing: nothing you can do here will generate.
- *  - "Needs setup" is exactly the rows that will fail without a key — not a
- *    guess from an empty-looking form, and not every row that happens to have
- *    no stored value.
+ *  - A source the reader switched off and one they removed are neither of them
+ *    a fault, and neither borrows the danger tone a package that failed to load
+ *    uses — because a red row is a claim about the machine, and these two are
+ *    claims about the reader's own choice.
+ *  - "Needs setup" is exactly the rows the host says are missing a required
+ *    setting — not a guess from an empty-looking form, and not every row that
+ *    happens to have no stored value.
+ *  - One package holding many sources must compose to many rows, and a switch
+ *    on one must not be readable as a switch on the package.
  *  - A job whose submission is unknown is never resumable-looking as a retry,
  *    and a job that failed *after* the provider accepted it is not a "you
  *    were charged nothing" case.
@@ -17,7 +21,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { MediaJob, MediaKind } from '@kiki/protocol';
+import type { MediaJob, MediaKind, MediaManagedSource } from '@kiki/protocol';
 
 import {
   canResume,
@@ -46,16 +50,29 @@ import {
 } from './mediaSources';
 import { artifactFacts } from '../components/media/MediaArtifactList';
 
-function provider(id: string, label: string, kinds: MediaKind[], extra: Partial<MediaSourceEntry> = {}): MediaSourceEntry {
+const HEALTHY = { enabled: true, broken: false };
+
+/** A host answer, shaped as the media package's own source groups report one. */
+function managed(id: string, label: string, kinds: MediaKind[], over: Partial<MediaManagedSource> = {}): MediaManagedSource {
   return {
-    provider: `vendor-${id}/${id}`,
-    pluginId: `vendor-${id}`,
-    definition: { schemaVersion: 1, id, kinds, label, resumeVersion: 1 },
-    displayName: label,
+    provider: `kiki-media/${id}`,
+    sourceId: id,
+    pluginId: 'kiki-media',
+    label,
+    custom: false,
     enabled: true,
-    broken: false,
-    ...extra,
+    removed: false,
+    definitions: [{ schemaVersion: 1, id, kinds, label, resumeVersion: 1 }],
+    schema: { schemaVersion: 1, schema: { type: 'object', properties: {} } },
+    values: {},
+    secretsConfigured: [],
+    missing: [],
+    ...over,
   };
+}
+
+function source(id: string, label: string, kinds: MediaKind[], over: Partial<MediaManagedSource> = {}): MediaSourceEntry {
+  return composeMediaSources([managed(id, label, kinds, over)], () => HEALTHY, { image: undefined, video: undefined, tts: undefined })[0]!;
 }
 
 function settings(
@@ -91,108 +108,103 @@ function job(over: Partial<MediaJob> = {}): MediaJob {
 }
 
 describe('mediaSourceStatus', () => {
-  it('reads a package that failed to load and one that is switched off the same way', () => {
-    // From the reader's side these are the same situation: nothing they can
-    // do on this row will produce anything.
-    expect(mediaSourceStatus(provider('a', 'A', ['image'], { broken: true }))).toBe('broken');
-    expect(mediaSourceStatus(provider('a', 'A', ['image'], { enabled: false }))).toBe('broken');
+  it('reads a package that failed to load as the one fault it is', () => {
+    // The package behind the source is the only thing on this row the reader
+    // cannot fix from here, so it is the only thing drawn as a failure.
+    const broken = composeMediaSources(
+      [managed('a', 'A', ['image'])],
+      () => ({ enabled: false, broken: true, problem: 'the plugin did not load' }),
+      { image: undefined, video: undefined, tts: undefined },
+    )[0]!;
+    expect(mediaSourceStatus(broken)).toBe('broken');
+    expect(broken.problem).toBe('the plugin did not load');
   });
 
-  it('reports a package that is merely not installed as unusable rather than pretending it is ready', () => {
-    expect(mediaSourceStatus(provider('a', 'A', ['image'], { broken: true, problem: 'the plugin did not load' }))).toBe('broken');
+  it('reads a switched-off source and a removed one as the reader own choices, not faults', () => {
+    // Both keep everything; neither is the machine misbehaving, and a red row
+    // is a claim about the machine. This is why `off` and `removed` exist as
+    // their own statuses instead of being folded into `broken`.
+    expect(mediaSourceStatus(source('a', 'A', ['image'], { enabled: false }))).toBe('off');
+    expect(mediaSourceStatus(source('a', 'A', ['image'], { removed: true }))).toBe('removed');
+    // Removed outranks disabled in the copy: it is the stronger, reversible
+    // choice, and the configuration and history are still there.
+    expect(mediaSourceStatus(source('a', 'A', ['image'], { removed: true, enabled: false }))).toBe('removed');
   });
 
-  it('separates "needs setup" from "ready" by the host missing list, not by an empty form', () => {
-    const declared = settings({ apiKey: { type: 'string', secret: true } }, {}, { missing: ['apiKey'] });
-    expect(mediaSourceStatus(provider('a', 'A', ['image'], { settings: declared }))).toBe('needs-config');
-    const complete = settings({ apiKey: { type: 'string', secret: true } }, {}, { missing: [] });
-    expect(mediaSourceStatus(provider('a', 'A', ['image'], { settings: complete }))).toBe('ready');
+  it('separates "needs setup" from "ready" by the host own missing list, not by an empty form', () => {
+    expect(mediaSourceStatus(source('a', 'A', ['image'], { missing: ['apiKey'] }))).toBe('needs-config');
+    expect(mediaSourceStatus(source('a', 'A', ['image'], { missing: [] }))).toBe('ready');
   });
 
-  it('does not call a provider unconfigured because it has no settings at all', () => {
+  it('does not call a source unconfigured because it declares no settings at all', () => {
     // A script that brings its own environment has no key to be missing. An
-    // empty apiKey is not a verdict on the author — and "no settings" is not
-    // evidence of readiness either, so the row says it was not checked.
-    expect(mediaSourceStatus(provider('a', 'A', ['image']))).toBe('unchecked');
+    // empty apiKey is not a verdict on the author — and with the whole list in
+    // one host answer, "never checked" is no longer a state the list reaches.
+    const scripted = source('mine', 'Mine', ['image'], {
+      custom: true,
+      definitions: [{ schemaVersion: 1, id: 'script-mine', kinds: ['image'], label: 'Mine', resumeVersion: 1 }],
+    });
+    expect(mediaSourceStatus(scripted)).toBe('ready');
   });
 
   it('never infers configuration from the form, only from the host missing list', () => {
     // The form declares one required field and it has no value. Reading that as
     // "needs setup" is the guess this slice removed: a secret never comes back
-    // in `values`, so a stored key reads as absent; a provider may borrow a
+    // in `values`, so a stored key reads as absent; a source may borrow a
     // connection; a script may manage its own environment. All three are states
     // where an empty key is correct.
-    const form = settings(
-      { apiKey: { type: 'string', secret: true }, baseUrl: { type: 'string' } },
-      { baseUrl: 'https://x' },
-      {},
-      ['apiKey'],
-    );
-    expect(needsConfig(provider('a', 'A', ['image'], { settings: form }))).toBeUndefined();
-    expect(mediaSourceStatus(provider('a', 'A', ['image'], { settings: form }))).toBe('unchecked');
+    const declaredRequired = source('a', 'A', ['image'], {
+      schema: { schemaVersion: 1, schema: { type: 'object', properties: { apiKey: { type: 'string', secret: true } }, required: ['apiKey'] } },
+      missing: [],
+    });
+    expect(declaredRequired.settings?.schema.schema.required).toEqual(['apiKey']);
+    expect(mediaSourceStatus(declaredRequired)).toBe('ready');
   });
 
-  it('does not call a provider ready just because a required field has a value', () => {
-    // Same rule from the other side: a value is not a readiness proof either.
-    const filled = settings({ apiKey: { type: 'string', secret: true } }, { apiKey: 'x' }, {}, ['apiKey']);
-    expect(mediaSourceStatus(provider('a', 'A', ['image'], { settings: filled }))).toBe('unchecked');
+  it('marks a blocked source as blocked, not as failed', () => {
+    expect(mediaSourceStatus(source('a', 'A', ['image']), true)).toBe('blocked');
   });
 
-  it('reports readiness and need only when the host says so', () => {
-    const need = settings({ apiKey: { type: 'string', secret: true } }, {}, { missing: ['apiKey'] });
-    expect(mediaSourceStatus(provider('a', 'A', ['image'], { settings: need }))).toBe('needs-config');
-    const ready = settings({ apiKey: { type: 'string', secret: true } }, {}, { missing: [] });
-    expect(mediaSourceStatus(provider('a', 'A', ['image'], { settings: ready }))).toBe('ready');
-  });
-
-  it('marks a blocked provider as blocked, not as failed', () => {
-    expect(mediaSourceStatus(provider('a', 'A', ['image']), true)).toBe('blocked');
-  });
-
-  it('keeps a saved default visible even when its configuration is unchecked', () => {
+  it('keeps a saved default visible even when its configuration is not met', () => {
     // The default is a choice the reader already saved, which is a different
-    // fact from whether the source is configured. Hiding it because the list
-    // has not read its settings would quietly undo that choice, and treating
-    // "not checked" as a gate would stop the reader making it at all.
-    expect(mediaSourceStatus(provider('a', 'A', ['image'], { defaultFor: ['image'] }))).toBe('default');
-    const checked = settings({ apiKey: { type: 'string', secret: true } }, {}, { missing: [] });
-    expect(mediaSourceStatus(provider('a', 'A', ['image'], { defaultFor: ['image'], settings: checked }))).toBe('default');
-  });
-
-  it('does not let a default badge stand in for a readiness claim', () => {
-    // The badge says which one the reader picked. It is not, and must not be
-    // read as, an assurance that the source works — that is still `unchecked`
-    // in the row's own fact line, which is where the unknown lives.
-    const entry = provider('a', 'A', ['image'], { defaultFor: ['image'] });
-    expect(mediaSourceStatus(entry)).toBe('default');
-    expect(needsConfig(entry)).toBeUndefined();
+    // fact from whether the source is configured. Hiding it would quietly undo
+    // that choice, and treating an unmet source as a gate would stop the reader
+    // making it at all.
+    const unmet = source('a', 'A', ['image'], { missing: ['apiKey'] });
+    const asDefault = composeMediaSources(
+      [managed('a', 'A', ['image'], { missing: ['apiKey'] })],
+      () => HEALTHY,
+      { image: 'kiki-media/a', video: undefined, tts: undefined },
+    )[0]!;
+    expect(mediaSourceStatus(asDefault)).toBe('default');
+    expect(mediaSourceStatus(unmet)).toBe('needs-config');
   });
 });
 
 describe('search and filter', () => {
   const many = [
-    provider('openai', 'OpenAI', ['image', 'tts']),
-    provider('minimax', 'MiniMax', ['image', 'video', 'tts']),
-    provider('ark', 'Volcengine Ark', ['image', 'video']),
-    provider('local', 'My Own Script', ['image'], { settings: settings({ apiKey: { type: 'string', secret: true } }, {}, { missing: ['apiKey'] }) }),
+    source('openai', 'OpenAI', ['image', 'tts']),
+    source('minimax', 'MiniMax', ['image', 'video', 'tts']),
+    source('ark', 'Volcengine Ark', ['image', 'video']),
+    source('local', 'My Own Script', ['image'], { missing: ['apiKey'] }),
   ];
 
-  it('searches label, provider id, package id and modality', () => {
+  it('searches label, source id, package id and modality', () => {
     expect(mediaSourceMatches(many[0]!, 'openai')).toBe(true);
-    expect(mediaSourceMatches(many[1]!, 'vendor-minimax')).toBe(true);
+    expect(mediaSourceMatches(many[1]!, 'kiki-media/minimax')).toBe(true);
     expect(mediaSourceMatches(many[2]!, 'volcengine')).toBe(true);
     expect(mediaSourceMatches(many[3]!, 'image')).toBe(true);
     expect(mediaSourceMatches(many[0]!, 'comfy')).toBe(false);
   });
 
-  it('does not search a provider own settings values', () => {
-    // A hundred API keys is not a search index, and searching them would put
+  it('does not search a source own settings values', () => {
+    // A thousand API keys is not a search index, and searching them would put
     // a secret fragment in a filter box.
-    const withSecret = provider('a', 'A', ['image'], { settings: settings({ apiKey: { type: 'string', secret: true } }, { apiKey: 'sk-live-abcdef' }) });
+    const withSecret = source('a', 'A', ['image'], { values: { apiKey: 'sk-live-abcdef' } });
     expect(mediaSourceMatches(withSecret, 'sk-live')).toBe(false);
   });
 
-  it('counts a multi-modality provider in each band it belongs to', () => {
+  it('counts a multi-modality source in each band it belongs to', () => {
     expect(matchesFilter(many[1]!, 'video', false)).toBe(true);
     expect(matchesFilter(many[1]!, 'tts', false)).toBe(true);
     const bands = filterBands(many);
@@ -201,7 +213,7 @@ describe('search and filter', () => {
   });
 
   it('omits an empty band rather than offering a filter that leads nowhere', () => {
-    const onlyImages = [provider('a', 'A', ['image'])];
+    const onlyImages = [source('a', 'A', ['image'])];
     const ids = filterBands(onlyImages).map((band) => band.id);
     expect(ids).toContain('all');
     expect(ids).toContain('image');
@@ -211,90 +223,163 @@ describe('search and filter', () => {
 
   it('shows only the rows that will actually fail in the needs-setup band', () => {
     const visible = visibleMediaSources(many, '', 'needs-config', new Set());
-    expect(visible.map((entry) => entry.provider)).toEqual(['vendor-local/local']);
+    expect(visible.map((entry) => entry.provider)).toEqual(['kiki-media/local']);
   });
 
   it('keeps a stable order as the query changes, putting rows that need action first', () => {
-    const withBroken = [...many, provider('dead', 'Dead', ['image'], { broken: true })];
-    const all = visibleMediaSources(withBroken, '', 'all', new Set()).map((entry) => entry.provider);
-    expect(all[0]).toBe('vendor-dead/dead');
+    const brokenRows = composeMediaSources(
+      [managed('dead', 'Dead', ['image'])],
+      () => ({ enabled: false, broken: true }),
+      { image: undefined, video: undefined, tts: undefined },
+    );
+    const base = [...brokenRows, ...many];
+    expect(visibleMediaSources(base, '', 'all', new Set())[0]?.provider).toBe('kiki-media/dead');
     // A different query must not reshuffle the surviving rows.
-    const narrowed = visibleMediaSources(withBroken, 'a', 'all', new Set()).map((entry) => entry.provider);
-    expect(narrowed).toEqual(visibleMediaSources(withBroken, 'a', 'all', new Set()).map((entry) => entry.provider));
+    const narrowed = visibleMediaSources(base, 'a', 'all', new Set()).map((entry) => entry.provider);
+    expect(narrowed).toEqual(visibleMediaSources(base, 'a', 'all', new Set()).map((entry) => entry.provider));
+  });
+
+  it('sinks a source the reader took out of use below the working ones', () => {
+    // Kept, not urgent. A list where every removal outranks every working
+    // source cannot be scanned.
+    const mixed = [source('off', 'Off', ['image'], { enabled: false }), source('ok', 'Ok', ['image'])];
+    const order = visibleMediaSources(mixed, '', 'all', new Set()).map((entry) => entry.sourceId);
+    expect(order).toEqual(['ok', 'off']);
+  });
+
+  it('finds one source inside a thousand, and one that needs setup, from a single array', () => {
+    // The scale this list has to survive: one host answer, a search over it,
+    // a narrow result. Nothing here is per-row work.
+    const thousand = Array.from({ length: 1000 }, (_, index) =>
+      source(`s${index}`, `Source ${index}`, ['image'], index === 617 ? { missing: ['apiKey'] } : {}));
+    expect(visibleMediaSources(thousand, 'Source 617', 'all', new Set()).map((entry) => entry.sourceId)).toEqual(['s617']);
+    expect(visibleMediaSources(thousand, '', 'needs-config', new Set()).map((entry) => entry.sourceId)).toEqual(['s617']);
+    expect(filterBands(thousand).find((band) => band.id === 'ready')?.count).toBe(999);
   });
 });
 
 describe('per-modality defaults', () => {
   /**
-   * The default is one pointer in the entry package's settings, so the host
+   * The default is one pointer in the media package's settings, so the host
    * owns the handover. What the GUI must get right is reading it back the way
    * the host stored it, and writing exactly one key — because a write that
    * touched two keys could leave a modality with no default at all.
    */
   it('reads the current holder back off the list the host returned', () => {
-    const sources = [provider('a', 'A', ['image']), provider('b', 'B', ['image'], { defaultFor: ['image'] })];
-    expect(currentDefault(sources, 'image')).toBe('vendor-b/b');
+    const sources = composeMediaSources(
+      [managed('a', 'A', ['image']), managed('b', 'B', ['image'])],
+      () => HEALTHY,
+      { image: 'kiki-media/b', video: undefined, tts: undefined },
+    );
+    expect(currentDefault(sources, 'image')).toBe('kiki-media/b');
     expect(defaultProviderFor(sources, 'video')).toBeUndefined();
   });
 
-  it('treats a blank default setting as unset rather than as a provider named ""', () => {
+  it('treats a blank default setting as unset rather than as a source named ""', () => {
     expect(defaultsFromSettings({ defaultImageProvider: '   ' })).toEqual({ image: undefined, video: undefined, tts: undefined });
-    expect(defaultsFromSettings({ defaultImageProvider: 'vendor-a/a' }).image).toBe('vendor-a/a');
+    expect(defaultsFromSettings({ defaultImageProvider: 'kiki-media/a' }).image).toBe('kiki-media/a');
   });
 
   it('writes exactly one key per modality, and clears it with null', () => {
     expect(defaultSettingKey('image')).toBe('defaultImageProvider');
     expect(defaultSettingKey('tts')).toBe('defaultTtsProvider');
-    expect(defaultPatch('video', 'vendor-a/a')).toEqual({ defaultVideoProvider: 'vendor-a/a' });
+    expect(defaultPatch('video', 'kiki-media/a')).toEqual({ defaultVideoProvider: 'kiki-media/a' });
     expect(defaultPatch('video', undefined)).toEqual({ defaultVideoProvider: null });
   });
 });
 
 describe('composeMediaSources', () => {
-  const plugins = [
-    { id: 'vendor-a', displayName: 'Vendor A', enabled: true, state: 'ok' as const, hasErrors: false, version: '1.2.0' },
-    { id: 'vendor-b', displayName: 'Vendor B', enabled: false, state: 'ok' as const, hasErrors: false },
-  ];
-
-  it('joins a provider with the package it came from', () => {
+  it('turns one package holding many sources into many rows', () => {
+    // The whole point of the change: the package is not the row. One answer
+    // carries every vendor, and the list draws one line for each.
     const rows = composeMediaSources(
-      [{ provider: 'vendor-a/a', definition: { schemaVersion: 1, id: 'a', kinds: ['image'], label: 'A image', resumeVersion: 1 } }],
-      plugins as never,
+      [
+        managed('openai', 'OpenAI Media', ['image'], {
+          definitions: [
+            { schemaVersion: 1, id: 'openai-image', kinds: ['image'], label: 'OpenAI images', resumeVersion: 1 },
+            { schemaVersion: 1, id: 'openai-speech', kinds: ['tts'], label: 'OpenAI speech', resumeVersion: 1, connectionSetting: 'connectionId' },
+          ],
+        }),
+        managed('comfyui', 'ComfyUI Workflow', ['image']),
+      ],
+      () => HEALTHY,
       { image: undefined, video: undefined, tts: undefined },
     );
-    expect(rows[0]?.displayName).toBe('Vendor A');
-    expect(rows[0]?.version).toBe('1.2.0');
-    expect(rows[0]?.broken).toBe(false);
+    expect(rows.map((entry) => entry.displayName)).toEqual(['OpenAI Media', 'ComfyUI Workflow']);
+    // One row, both modalities, both adapters — drawn from one package.
+    expect(rows[0]!.kinds).toEqual(['image', 'tts']);
+    expect(rows[0]!.definitions.map((definition) => definition.id)).toEqual(['openai-image', 'openai-speech']);
+    expect(rows[0]!.pluginId).toBe('kiki-media');
   });
 
-  it('marks a switched-off package unusable, because nothing on the row will generate', () => {
+  it('keys a row by its own provider id, never by its package', () => {
+    // A write is addressed by `provider`. If a row were keyed by `pluginId`,
+    // two rows from one package would be the same row.
     const rows = composeMediaSources(
-      [{ provider: 'vendor-b/b', definition: { schemaVersion: 1, id: 'b', kinds: ['image'], label: 'B', resumeVersion: 1 } }],
-      plugins as never,
+      [managed('openai', 'OpenAI Media', ['image']), managed('comfyui', 'ComfyUI Workflow', ['image'])],
+      () => HEALTHY,
       { image: undefined, video: undefined, tts: undefined },
     );
-    // `broken` stays the load fact; the reader sees the combined status.
-    expect(rows[0]?.broken).toBe(false);
+    expect(rows.map((entry) => entry.provider)).toEqual(['kiki-media/openai', 'kiki-media/comfyui']);
+    expect(new Set(rows.map((entry) => entry.pluginId)).size).toBe(1);
+    expect(new Set(rows.map((entry) => entry.provider)).size).toBe(2);
+  });
+
+  it('carries the host own secrets and missing lists without ever seeing a value', () => {
+    const rows = composeMediaSources(
+      [managed('openai', 'OpenAI Media', ['image'], {
+        values: { baseUrl: 'https://api.example.com/v1' },
+        secretsConfigured: ['apiKey'],
+        missing: ['apiKey'],
+      })],
+      () => HEALTHY,
+      { image: undefined, video: undefined, tts: undefined },
+    );
+    expect(rows[0]!.settings?.secretsConfigured).toEqual(['apiKey']);
+    expect(rows[0]!.settings?.missing).toEqual(['apiKey']);
+    // The value itself is not in the answer, so it cannot be in the row.
+    expect(Object.values(rows[0]!.source.values)).not.toContain('apiKey');
+  });
+
+  it('reports a source whose package never installed as unusable rather than ready', () => {
+    const rows = composeMediaSources(
+      [managed('gone', 'Gone', ['image'])],
+      () => undefined,
+      { image: undefined, video: undefined, tts: undefined },
+    );
+    expect(rows[0]!.broken).toBe(true);
     expect(mediaSourceStatus(rows[0]!)).toBe('broken');
   });
 
-  it('marks a provider whose package never installed as unusable rather than ready', () => {
+  it('marks a source switched off at the package level as broken, because nothing will generate', () => {
     const rows = composeMediaSources(
-      [{ provider: 'vendor-gone/g', definition: { schemaVersion: 1, id: 'g', kinds: ['image'], label: 'Gone', resumeVersion: 1 } }],
-      plugins as never,
+      [managed('a', 'A', ['image'])],
+      () => ({ enabled: false, broken: false }),
       { image: undefined, video: undefined, tts: undefined },
     );
-    expect(rows[0]?.broken).toBe(true);
-    expect(rows[0]?.displayName).toBe('Gone');
+    expect(mediaSourceStatus(rows[0]!)).toBe('broken');
   });
 
   it('reads the default off the host list rather than keeping a second copy', () => {
     const rows = composeMediaSources(
-      [{ provider: 'vendor-a/a', definition: { schemaVersion: 1, id: 'a', kinds: ['image'], label: 'A', resumeVersion: 1 } }],
-      plugins as never,
-      { image: 'vendor-a/a', video: undefined, tts: undefined },
+      [managed('a', 'A', ['image'])],
+      () => HEALTHY,
+      { image: 'kiki-media/a', video: undefined, tts: undefined },
     );
-    expect(defaultsOf(rows)).toEqual({ 'vendor-a/a': ['image'] });
+    expect(defaultsOf(rows)).toEqual({ 'kiki-media/a': ['image'] });
+  });
+
+  it('keeps a reader own script marked as one, whatever it runs', () => {
+    const rows = composeMediaSources(
+      [managed('mine', 'My renderer', ['image'], {
+        custom: true,
+        values: { command: 'python', args: '["render.py"]', cwd: '', protocol: 'file', format: 'png', mime: '' },
+      })],
+      () => HEALTHY,
+      { image: undefined, video: undefined, tts: undefined },
+    );
+    expect(rows[0]!.custom).toBe(true);
+    expect(rows[0]!.source.values['command']).toBe('python');
   });
 });
 

@@ -343,6 +343,16 @@ export class FixtureKlient {
         }
         const input = parse(contract.input, params);
         const result = this.callGlobal(procedure, input);
+        // A fixture that wants a call to arrive late says so by returning a
+        // marker: the response is written when the timer fires, so the browser
+        // genuinely has an open request. That is the only way a synchronous
+        // fixture can show an in-flight write — and it is the situation a
+        // read-back-as-proof cannot survive.
+        if (result !== null && typeof result === 'object' && result.__deferred === true) {
+          const settled = parse(contract.output, result.settled);
+          setTimeout(() => { server.envelope(res, settled); }, result.delayMs);
+          return true;
+        }
         return server.envelope(res, parse(contract.output, result));
       }
       const contentMatch = /^\/api\/klient\/session-view\/([^/]+)\/transcript\/content$/.exec(url.pathname);
@@ -1207,14 +1217,19 @@ export class FixtureKlient {
         // in one place rather than ten switch arms.
         return callImportService(server, procedure.method, args).data;
       }
-      // Media: the installed provider list, the discovery roster, and the
-      // on-demand capability/voice reads. The agent-scoped pair is answered
-      // through the job's own session and agent, so the fixture can prove the
-      // GUI reaches them the way the contract requires.
+      // Media: the whole source list and the four writes that change it, the
+      // installed provider list, the discovery roster, and the on-demand
+      // capability/voice reads. The agent-scoped pair is answered through the
+      // job's own session and agent, so the fixture can prove the GUI reaches
+      // them the way the contract requires.
       case 'pluginMediaService.sources':
       case 'pluginMediaService.setSources':
       case 'pluginMediaService.catalog':
       case 'pluginMediaService.providers':
+      case 'pluginMediaService.managedSources':
+      case 'pluginMediaService.sourceSettings':
+      case 'pluginMediaService.updateSource':
+      case 'pluginMediaService.addScriptSource':
       case 'pluginMediaService.capabilities':
       case 'pluginMediaService.voices':
       case 'pluginMediaService.jobs':

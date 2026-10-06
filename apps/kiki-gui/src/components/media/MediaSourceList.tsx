@@ -1,18 +1,20 @@
 /**
  * Media sources — the list a reader actually uses.
  *
- * One object per row, whatever is behind it. A row is a *provider* the tools
- * can call, and the four facts it carries (which package it came from, whether
- * that package is healthy, whether this provider is configured, and which
- * modalities it is the default for) are four fields on that one row — not four
+ * One object per row, whatever is behind it. A row is a *source* the tools
+ * can call, and the facts it carries (which package it came from, whether that
+ * package is healthy, whether this source is configured, whether it is on,
+ * and which modalities it is the default for) are fields on that one row — not
  * parallel lists the reader has to reconcile.
  *
  * What this list is built to survive:
  *
- *  - A hundred sources. They are rows, not cards: one line each, no frame, no
+ *  - A thousand sources. They are rows, not cards: one line each, no frame, no
  *    per-row expand, no per-row form. Detail is a sub-view, opened only for
- *    the one source being configured. A hundred expanded forms is a hundred
- *    dirty drafts and a page that cannot be scanned.
+ *    the one source being configured. A thousand expanded forms is a thousand
+ *    dirty drafts and a page that cannot be scanned. Past a hundred rows the
+ *    body windows — the same `@tanstack/react-virtual` the settings lists use,
+ *    with a 44px row that doubles as a thumb-sized target.
  *  - Search and filter over the whole set, with the count behind each filter
  *    shown before the reader commits to it. Both are computed from one array
  *    in memory — no request per row, no refetch as the reader types.
@@ -25,7 +27,8 @@
  * field, not this page's guess from having tried to generate.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { useI18n } from '../../i18n';
 import {
@@ -43,14 +46,22 @@ import { MediaKindGlyph } from './MediaKindGlyph';
 /** The band's own wording; a modality filter and a state filter read differently. */
 const MODALITY_FILTERS: ReadonlySet<MediaSourceFilter> = new Set(['image', 'video', 'tts']);
 
+/** One row's height, and the reason the list can window at all. */
+const ROW_HEIGHT = 44;
+
+/** Above this many rows the body windows; below it every row stays mounted. */
+const WINDOW_AFTER = 100;
+
 const STATUS_DOT: Record<MediaSourceStatus, 'ok' | 'busy' | 'error' | 'off' | 'waiting'> = {
   broken: 'error',
   'needs-config': 'waiting',
   blocked: 'waiting',
   default: 'ok',
   ready: 'ok',
-  // Not a fault and not an assurance. A hollow dot, so it never reads as either.
-  unchecked: 'off',
+  // The reader's own two choices, not faults. A hollow dot, so a source they
+  // switched off never reads as a failure and never competes with a red one.
+  off: 'off',
+  removed: 'off',
 };
 
 export function MediaSourceList({
@@ -106,23 +117,131 @@ export function MediaSourceList({
             {tp('cap.media.shown', visible.length)}
             {filtering && visible.length !== sources.length ? t('cap.media.ofTotal', { total: sources.length }) : null}
           </p>
-          {/* A list, not a grid: at a hundred rows a single column with a
+          {/* A list, not a grid: at a thousand rows a single column with a
               stable left edge is the only shape a reader can scan. Each row is
               44px at rest, which is also a thumb-sized target on touch. */}
-          <ul className="min-w-0" data-media-source-list>
-            {visible.map((entry) => (
-              <MediaSourceRow
-                key={entry.provider}
-                entry={entry}
-                blocked={blocked.has(entry.provider)}
-                selected={selected === entry.provider}
-                onOpen={onOpen}
-              />
-            ))}
-          </ul>
+          <MediaSourceBody
+            visible={visible}
+            blocked={blocked}
+            selected={selected}
+            onOpen={onOpen}
+          />
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * The rows, windowed once there are enough of them to matter.
+ *
+ * A thousand rows mounted at once is a thousand buttons in the accessibility
+ * tree and a janky page; the same thousand rows in a 44px virtual list scroll
+ * like ten. Below the threshold every row stays mounted, because a window
+ * that only ever shows eleven rows is worse to use than a short list. The
+ * scroller is the capability page's own scroll pane, so the window tracks the
+ * reader's thumb rather than a nested box they have to discover.
+ */
+function MediaSourceBody({
+  visible,
+  blocked,
+  selected,
+  onOpen,
+}: {
+  readonly visible: readonly MediaSourceEntry[];
+  readonly blocked: ReadonlySet<string>;
+  readonly selected?: string;
+  readonly onOpen: (provider: string) => void;
+}) {
+  if (visible.length <= WINDOW_AFTER) {
+    return (
+      <ul className="min-w-0" data-media-source-list={visible.length}>
+        {visible.map((entry) => (
+          <MediaSourceRow
+            key={entry.provider}
+            entry={entry}
+            blocked={blocked.has(entry.provider)}
+            selected={selected === entry.provider}
+            onOpen={onOpen}
+          />
+        ))}
+      </ul>
+    );
+  }
+  return <WindowedSourceRows visible={visible} blocked={blocked} selected={selected} onOpen={onOpen} />;
+}
+
+function WindowedSourceRows({
+  visible,
+  blocked,
+  selected,
+  onOpen,
+}: {
+  readonly visible: readonly MediaSourceEntry[];
+  readonly blocked: ReadonlySet<string>;
+  readonly selected?: string;
+  readonly onOpen: (provider: string) => void;
+}) {
+  const anchorRef = useRef<HTMLUListElement>(null);
+  const [scroller, setScroller] = useState<HTMLElement | null>(null);
+  const [offset, setOffset] = useState(0);
+
+  useEffect(() => {
+    const anchor = anchorRef.current;
+    // The capability page's own scroll pane. Falls back to the document's
+    // scrolling element when the list is mounted somewhere without one, so a
+    // windowed list is never a list that cannot scroll.
+    const pane = anchor?.closest<HTMLElement>('[data-capabilities-scroll]')
+      ?? (document.scrollingElement instanceof HTMLElement ? document.scrollingElement : null);
+    setScroller(pane ?? null);
+    if (anchor === null || pane === null) return;
+    const measure = () => {
+      setOffset(anchor.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(pane.firstElementChild ?? pane);
+    return () => { observer.disconnect(); };
+  }, []);
+
+  const virtualizer = useVirtualizer({
+    count: visible.length,
+    getScrollElement: () => scroller,
+    estimateSize: () => ROW_HEIGHT,
+    getItemKey: (index) => visible[index]!.provider,
+    overscan: 12,
+    scrollMargin: offset,
+    initialRect: { width: 720, height: 900 },
+    useFlushSync: false,
+  });
+
+  return (
+    <ul
+      ref={anchorRef}
+      className="min-w-0"
+      data-media-source-list={visible.length}
+      data-media-source-windowed=""
+      style={{ height: virtualizer.getTotalSize(), position: 'relative' }}
+    >
+      {virtualizer.getVirtualItems().map((row) => {
+        const entry = visible[row.index]!;
+        return (
+          <li
+            key={row.key}
+            data-index={row.index}
+            className="absolute inset-x-0"
+            style={{ top: row.start - offset, height: row.size }}
+          >
+            <MediaSourceRow
+              entry={entry}
+              blocked={blocked.has(entry.provider)}
+              selected={selected === entry.provider}
+              onOpen={onOpen}
+            />
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -187,7 +306,6 @@ function MediaSourceRow({
 }) {
   const { t } = useI18n();
   const status = mediaSourceStatus(entry, blocked);
-  const kinds = entry.definition.kinds;
   return (
     <li data-media-source={entry.provider} data-media-source-status={status}>
       <button
@@ -199,19 +317,24 @@ function MediaSourceRow({
         }`}
       >
         {/* Which modality it makes, drawn — the fastest thing to scan in a
-            list of a hundred, and it costs no text. */}
+            list of a thousand, and it costs no text. */}
         <span className="flex shrink-0 items-center gap-1">
-          {kinds.map((kind) => (
+          {entry.kinds.map((kind) => (
             <MediaKindGlyph key={kind} kind={kind} className="h-4 w-4 text-ink-faint" />
           ))}
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className={`truncate text-[13px] ${status === 'broken' ? 'text-ink-faint line-through decoration-ink-faint/60' : 'font-medium text-ink'}`}>
+            <span className={`truncate text-[13px] ${status === 'broken' ? 'text-ink-faint line-through decoration-ink-faint/60' : status === 'off' || status === 'removed' ? 'text-ink-soft' : 'font-medium text-ink'}`}>
               {entry.displayName}
             </span>
+            {/* A reader's own script is marked by what it is, not by the
+                package it lives in — which is the whole point of one package
+                carrying many sources. */}
+            {entry.custom ? <Tag tone="faint">{t('cap.media.row.script')}</Tag> : null}
             {status === 'default' ? <Tag tone="accent">{t(statusKey(status))}</Tag> : null}
             {status === 'needs-config' || status === 'blocked' ? <Tag tone="warn">{t(statusKey(status))}</Tag> : null}
+            {status === 'off' || status === 'removed' ? <Tag tone="faint">{t(statusKey(status))}</Tag> : null}
             {status === 'broken' ? <Tag tone="danger">{t(statusKey(status))}</Tag> : null}
           </span>
           <span className="mt-0.5 block truncate text-[12px] leading-4 text-ink-faint">
@@ -226,9 +349,10 @@ function MediaSourceRow({
 
 /**
  * The one fact line. It answers "what would I have to do to use this" before
- * the reader clicks: an unconfigured package says which setting is missing, a
- * healthy one says what it makes and which package it came from. It never
- * shows a key, a URL with a token in it, or a settings dump.
+ * the reader clicks: an unconfigured source says which setting is missing, a
+ * ready one says what it makes and which package it came from, and a reader's
+ * own script says what it runs. It never shows a key, a URL with a token in
+ * it, or a settings dump.
  */
 function rowMeta(entry: MediaSourceEntry, status: MediaSourceStatus, t: ReturnType<typeof useI18n>['t']): string {
   if (status === 'broken') {
@@ -241,9 +365,31 @@ function rowMeta(entry: MediaSourceEntry, status: MediaSourceStatus, t: ReturnTy
       : t('cap.media.row.needsKey');
   }
   if (status === 'blocked') return t('cap.media.row.blocked');
-  if (status === 'unchecked') return t('cap.media.row.unchecked', { plugin: entry.pluginId });
+  if (status === 'removed') return t('cap.media.row.removed');
+  if (status === 'off') return t('cap.media.row.off');
+  // A script row says what it runs, because that is the one thing a reader
+  // cannot guess about a source they typed themselves.
+  if (entry.custom) {
+    const command = readScriptCommand(entry);
+    return command === undefined
+      ? t('cap.media.row.selfManaged')
+      : t('cap.media.row.scriptRuns', { command });
+  }
   return [
-    t(`cap.media.kind.${entry.definition.kinds[0]}` as Parameters<typeof t>[0]),
+    t(`cap.media.kind.${entry.kinds[0]}` as Parameters<typeof t>[0]),
     entry.pluginId,
   ].filter((part) => part !== undefined).join(' · ');
+}
+
+/**
+ * The command a script source runs, as one line.
+ *
+ * The host stores it under a reserved key in the source's own values because
+ * that is where the runtime reads it from — so the row shows the same string
+ * the tools will run, not a reconstruction. A malformed value reads as
+ * "unknown" rather than throwing inside a list of a thousand.
+ */
+function readScriptCommand(entry: MediaSourceEntry): string | undefined {
+  const command = entry.source.values['command'];
+  return typeof command === 'string' && command.trim() !== '' ? command.trim() : undefined;
 }
