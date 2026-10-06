@@ -139,7 +139,7 @@ show_in_profile_list = false
 externals_visible = false
 ```
 
-Send the same snake_case fields in `POST /api/config`; JSON `null` removes the saved preference without removing launch settings or defaults. `GET /api/config` and the write response expose these fields in `raw.agent_executor_overrides` and `raw.agent_executor_display`; `raw.agent_executors` contains configured descriptors, not the shipped engine catalog. A display flag alone does not configure an engine or make an unconfigured bare engine a picker choice. An existing session's bound engine remains identifiable when hidden.
+Send the same snake_case fields in `POST /api/config`; JSON `null` removes the saved preference without removing launch settings or defaults. `GET /api/config` and the write response expose these fields in `raw.agent_executor_overrides` and `raw.agent_executor_display`; `raw.agent_executors` contains configured descriptors, not the shipped engine catalog. The picker includes detected ready engines as well as engines named by a profile, launch override or configured descriptor; explicit hide settings take precedence. A display flag alone does not install or configure an engine. An existing session's bound engine remains identifiable when hidden.
 
 ## Continuity reminder cues
 

@@ -25,6 +25,7 @@ export class WorkspaceService implements IWorkspaceService {
   declare readonly _serviceBrand: undefined;
 
   private merged = false;
+  private merging: Promise<void> | undefined;
   private opQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -34,21 +35,17 @@ export class WorkspaceService implements IWorkspaceService {
     @ISessionIndex private readonly sessionIndex: ISessionIndex,
   ) {}
 
-  list(): Promise<readonly Workspace[]> {
-    return this.runExclusive(async () => {
-      await this.ensureMerged();
-      const catalog = await this.loadCatalog();
-      const byId = new Map(catalog.workspaces.map((ws) => [ws.id, ws]));
-      return dedupeByRoot(byId);
-    });
+  async list(): Promise<readonly Workspace[]> {
+    await this.ensureMerged();
+    const catalog = await this.loadCatalog();
+    return dedupeByRoot(new Map(catalog.workspaces.map((ws) => [ws.id, ws])));
   }
 
-  get(id: string): Promise<Workspace | undefined> {
-    return this.runExclusive(async () => {
-      await this.ensureMerged();
-      const catalog = await this.loadCatalog();
-      return catalog.workspaces.find((ws) => ws.id === id);
-    });
+  async get(id: string): Promise<Workspace | undefined> {
+    const stored = (await this.loadCatalog()).workspaces.find((ws) => ws.id === id);
+    if (stored !== undefined) return stored;
+    await this.ensureMerged();
+    return (await this.loadCatalog()).workspaces.find((ws) => ws.id === id);
   }
 
   createOrTouch(root: string, name?: string): Promise<Workspace> {
@@ -72,7 +69,6 @@ export class WorkspaceService implements IWorkspaceService {
       if (!stat.isDirectory) {
         throw new Error2(ErrorCodes.FS_PATH_NOT_FOUND, `workspace root ${root} is not a directory`);
       }
-      await this.ensureMerged();
       const catalog = await this.loadCatalog();
       const byId = new Map(catalog.workspaces.map((ws) => [ws.id, ws]));
       const deletedIds = new Set(catalog.deletedIds);
@@ -113,9 +109,9 @@ export class WorkspaceService implements IWorkspaceService {
     });
   }
 
-  update(id: string, patch: WorkspaceUpdate): Promise<Workspace | undefined> {
+  async update(id: string, patch: WorkspaceUpdate): Promise<Workspace | undefined> {
+    await this.ensureMerged();
     return this.runExclusive(async () => {
-      await this.ensureMerged();
       const catalog = await this.loadCatalog();
       const existing = catalog.workspaces.find((ws) => ws.id === id);
       if (existing === undefined) return undefined;
@@ -132,9 +128,9 @@ export class WorkspaceService implements IWorkspaceService {
     });
   }
 
-  delete(id: string): Promise<void> {
+  async delete(id: string): Promise<void> {
+    await this.ensureMerged();
     return this.runExclusive(async () => {
-      await this.ensureMerged();
       const catalog = await this.loadCatalog();
       let root = catalog.workspaces.find((ws) => ws.id === id)?.root;
       if (root === undefined) {
@@ -163,26 +159,35 @@ export class WorkspaceService implements IWorkspaceService {
     });
   }
 
-  private async ensureMerged(): Promise<void> {
-    if (this.merged) return;
-    const loaded = await this.store.load();
-    if (loaded === undefined) {
-      const rebuilt = await this.rebuildFromSessionIndex();
-      if (rebuilt.size === 0) await this.mergeFromSessions(rebuilt, new Set());
-      await this.store.save({ workspaces: [...rebuilt.values()], deletedIds: [] });
-      this.merged = true;
-      return;
-    }
-    const byId = new Map(loaded.workspaces.map((ws) => [ws.id, ws]));
+  private ensureMerged(): Promise<void> {
+    if (this.merged) return Promise.resolve();
+    if (this.merging !== undefined) return this.merging;
+    this.merging = this.mergeCatalog().finally(() => { this.merging = undefined; });
+    return this.merging;
+  }
+
+  private async mergeCatalog(): Promise<void> {
+    const loaded = await this.loadCatalog();
+    const discovered = new Map<string, Workspace>();
     const deletedIds = new Set(loaded.deletedIds);
-    let changed = await this.mergeFromSessionIndex(byId, deletedIds);
-    if (loaded.workspaces.length === 0 && byId.size === 0) {
-      changed = (await this.mergeFromSessions(byId, deletedIds)) || changed;
-    }
-    if (changed) {
-      await this.store.save({ workspaces: [...byId.values()], deletedIds: [...deletedIds] });
-    }
-    this.merged = true;
+    await this.mergeFromSessionIndex(discovered, deletedIds);
+    if (loaded.workspaces.length === 0 && discovered.size === 0) await this.mergeFromSessions(discovered, deletedIds);
+    await this.runExclusive(async () => {
+      const current = await this.loadCatalog();
+      const byId = new Map(current.workspaces.map((ws) => [ws.id, ws]));
+      const deleted = new Set(current.deletedIds);
+      const roots = new Set(current.workspaces.map((ws) => workspaceRootKey(ws.root)));
+      let changed = false;
+      for (const [id, workspace] of discovered) {
+        if (byId.has(id) || roots.has(workspaceRootKey(workspace.root)) || deleted.has(id)
+          || workDirKeyAliases(workspace.root).some((alias) => deleted.has(alias))) continue;
+        byId.set(id, workspace);
+        roots.add(workspaceRootKey(workspace.root));
+        changed = true;
+      }
+      if (changed) await this.store.save({ workspaces: [...byId.values()], deletedIds: current.deletedIds });
+      this.merged = true;
+    });
   }
 
   private async loadCatalog(): Promise<WorkspaceCatalog> {
@@ -215,29 +220,6 @@ export class WorkspaceService implements IWorkspaceService {
       changed = true;
     }
     return changed;
-  }
-
-  private async rebuildFromSessionIndex(): Promise<Map<string, Workspace>> {
-    const result = new Map<string, Workspace>();
-    const now = Date.now();
-    const seenRootKeys = new Set<string>();
-    for (const entry of await readSessionIndexEntries(this.storage)) {
-      const root = entry.sourceRoot ?? entry.workDir;
-      if (!isAbsolute(root)) continue;
-      const rootKey = workspaceRootKey(root);
-      if (seenRootKeys.has(rootKey)) continue;
-      seenRootKeys.add(rootKey);
-      const id = workspaceIdForRoot(root, workspaceIdFromSessionDir(entry.sessionDir));
-      result.set(id, {
-        id,
-        root,
-        name: basename(root),
-        createdAt: now,
-        lastOpenedAt: now,
-        pinned: false,
-      });
-    }
-    return result;
   }
 
   private async mergeFromSessions(

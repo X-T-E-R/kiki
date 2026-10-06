@@ -2,7 +2,7 @@
 
 import type { PermissionMode, PromptPlanGate } from '@kiki/protocol';
 
-import type { ExecutionChoice } from './executionSelection';
+import { readExecutionChoice, type ExecutionChoice } from './executionSelection';
 import type { ComposerAttachment } from './attachments';
 import type { SelectionAnnotation } from './selectionQuote';
 import { readSettings } from '../settings/settings';
@@ -199,6 +199,7 @@ function readModelChoice(value: unknown): ComposerModelChoice | undefined {
 }
 
 export interface PersistedNewSessionDraft {
+  readonly execution?: ExecutionChoice;
   readonly workspaceId?: string;
   readonly cwd?: string;
   readonly profile?: string;
@@ -266,6 +267,7 @@ export function readNewSessionDraft(): PersistedNewSessionDraft {
     if (typeof parsed !== 'object' || parsed === null) return {};
     const record = parsed as Record<string, unknown>;
     return {
+      execution: readExecutionChoice(record['execution']),
       workspaceId: typeof record['workspaceId'] === 'string' ? record['workspaceId'] : undefined,
       cwd: typeof record['cwd'] === 'string' ? record['cwd'] : undefined,
       profile: typeof record['profile'] === 'string' ? record['profile'] : undefined,
@@ -283,7 +285,7 @@ export function readNewSessionDraft(): PersistedNewSessionDraft {
 export function writeNewSessionDraft(draft: PersistedNewSessionDraft): void {
   if (!draftsEnabled()) return;
   try {
-    const hasValues =
+    const hasValues = draft.execution !== undefined ||
       (draft.workspaceId !== undefined && draft.workspaceId !== '') ||
       (draft.cwd !== undefined && draft.cwd !== '') ||
       (draft.profile !== undefined && draft.profile !== '') ||
@@ -293,6 +295,7 @@ export function writeNewSessionDraft(draft: PersistedNewSessionDraft): void {
       spaceStorage.removeItem(PERSISTED_NEW_SESSION_DRAFT_KEY);
     } else {
       spaceStorage.setItem(PERSISTED_NEW_SESSION_DRAFT_KEY, JSON.stringify({
+        execution: draft.execution,
         workspaceId: draft.workspaceId,
         cwd: draft.cwd,
         profile: draft.profile,

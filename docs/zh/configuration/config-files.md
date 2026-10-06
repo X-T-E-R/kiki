@@ -139,7 +139,7 @@ show_in_profile_list = false
 externals_visible = false
 ```
 
-向 `POST /api/config` 发送同名 snake_case 字段；JSON `null` 删除保存的显示偏好，保留启动设置与 defaults。`GET /api/config` 和写入响应通过 `raw.agent_executor_overrides`、`raw.agent_executor_display` 返回这些字段；`raw.agent_executors` 只包含已配置的描述符，不是内置引擎目录。只有显示字段不算配置引擎，也不会让未配置的裸引擎进入选择列表。已有会话仍可辨认当前绑定的隐藏引擎。
+向 `POST /api/config` 发送同名 snake_case 字段；JSON `null` 删除保存的显示偏好，保留启动设置与 defaults。`GET /api/config` 和写入响应通过 `raw.agent_executor_overrides`、`raw.agent_executor_display` 返回这些字段；`raw.agent_executors` 只包含已配置的描述符，不是内置引擎目录。选择列表包含已检测到且就绪的引擎，以及 profile、启动覆盖或已配置描述符所引用的引擎；显式隐藏设置优先。只有显示字段不会安装或配置引擎。已有会话仍可辨认当前绑定的隐藏引擎。
 
 ## 连续性提醒词表
 

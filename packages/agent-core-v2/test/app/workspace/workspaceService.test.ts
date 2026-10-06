@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
@@ -147,6 +147,25 @@ describe('WorkspaceService (file-backed)', () => {
       deleted_workspace_ids?: unknown;
     };
   }
+
+  it('creates and opens a registered workspace while legacy inventory discovery is stalled', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = vi.spyOn(FileSessionIndex.prototype, 'listRecent').mockImplementation(async () => {
+      await gate;
+      return { items: [] };
+    });
+    const registry = build();
+    const listing = registry.list();
+    await vi.waitFor(() => { expect(read).toHaveBeenCalled(); });
+    try {
+      const created = await registry.createOrTouch(homeDir, 'new project');
+      expect(await registry.get(created.id)).toEqual(created);
+      release();
+      expect((await listing).map((item) => item.id)).toContain(created.id);
+      expect((await readWorkspacesJson()).workspaces[created.id]?.name).toBe('new project');
+    } finally { release(); read.mockRestore(); await listing; }
+  });
 
   it('persists the catalog across registry instances', async () => {
     const created = await build().createOrTouch(homeDir, 'proj');

@@ -922,7 +922,7 @@ export function Composer({
     const reason = state === 'unknown' ? t('st.profiles.menuPreviewUnavailable')
       : t(state === 'warning' ? 'selection.modelMenuWarning' : 'selection.modelMenuBlocked', { source });
     return state === 'allowed' ? option : {
-      ...option, disabled: state !== 'warning', hint: state === 'unknown' ? reason : source,
+      ...option, disabled: state === 'blocked', hint: state === 'unknown' ? reason : source,
       description: reason, title: [option.title ?? option.label, reason].join('\n'),
     };
   }), [catalogModelOptions, modelProjection, models, defaultModel, serverDefaultModel, selectedProfileName, modelSelectionPosition, t]);
@@ -930,7 +930,8 @@ export function Composer({
   const validatingModel = model ?? defaultModel ?? serverDefaultModel;
   const modelRuleSource = projectedProfileModelRuleSource(modelProjection, models, validatingModel, selectedProfileName);
   const modelDomainState = projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
-  const invalidModelDomain = modelDomainState === 'blocked' || modelDomainState === 'unknown';
+  const externalExecution = execution !== undefined && !isNativeExecutor(execution.executor);
+  const invalidModelDomain = !externalExecution && engine === undefined && modelDomainState === 'blocked';
   const selectedModel = validatingModel !== undefined
     ? resolveCatalogModel(models, validatingModel)
     : undefined;
@@ -940,19 +941,16 @@ export function Composer({
   const resolvedModelKey = model !== undefined
     ? resolveCatalogModel(models, model)?.id
     : undefined;
-  // A transport failure says nothing about whether a preserved selection is valid.
-  // During its background retry, React Query is still pending but must not hold send.
-  const selectionLoading =
-    (modelsQuery.isPending && !isTransientCatalogError(modelsQuery.failureReason)) ||
-    (validateProfile && agentProfilesQuery.isPending && !isTransientCatalogError(agentProfilesQuery.failureReason));
+  // Catalogs enrich preserved choices in the background. Only a confirmed
+  // invalid choice holds send; the server owns final execution validation.
   const selectionCatalogError = [modelsQuery.error, validateProfile ? agentProfilesQuery.error : null]
     .find((error) => error !== null && !isTransientCatalogError(error)) ?? null;
-  const invalidProfile = validateProfile && agentProfilesQuery.isSuccess
+  const invalidProfile = validateProfile && (execution === undefined || execution.profile !== undefined) && agentProfilesQuery.isSuccess
     && !agentProfileOptions.some((item) => item.value === agentProfile);
-  const invalidModel = engine === undefined && modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
-  const invalidEffort = engine === undefined && modelsQuery.isSuccess && selectedModel !== undefined
+  const invalidModel = !externalExecution && engine === undefined && modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
+  const invalidEffort = !externalExecution && engine === undefined && modelsQuery.isSuccess && selectedModel !== undefined
     && effort !== undefined && !catalogModelSupportsEffort(selectedModel, effort);
-  const selectionBlocked = selectionLoading || selectionCatalogError !== null || invalidProfile || invalidModel || invalidEffort || invalidModelDomain;
+  const selectionBlocked = invalidProfile || invalidModel || invalidEffort || invalidModelDomain;
 
   // The composer mount now survives route changes (the conversation shell owns
   // it), so session-scoped transient UI must reset when the session under it
@@ -2256,7 +2254,13 @@ export function Composer({
   }
   statusSegments.push({
     key: 'model',
-    node: (
+    node: externalExecution && execution !== undefined && onChangeExecution !== undefined ? (
+      <ExternalModelChoice
+        choice={execution}
+        engineLabel={engineLabel(execution.executor, execution.executor, executorCatalog)}
+        onChange={(next) => { onChangeExecution({ ...execution, overrides: { ...execution.overrides, model: next ?? null, thinking: next === undefined ? null : execution.overrides?.thinking } }); }}
+      />
+    ) : (
       <ModelChip
         modelOptions={modelOptions}
         // An external engine's model is its own id, set on the profile: shown
@@ -2271,7 +2275,7 @@ export function Composer({
         disabled={variant === 'subagent' && disabled}
         onChangeModel={(next) => {
           const state = projectedProfileModelState(modelProjection, models, next ?? defaultModel ?? serverDefaultModel, modelSelectionPosition);
-          if (state === 'blocked' || state === 'unknown') return;
+          if (state === 'blocked') return;
           return onChangeModel(next);
         }}
         efforts={efforts}
@@ -2371,14 +2375,11 @@ export function Composer({
             </span>
           </p>
         ) : null}
-        {selectionBlocked ? <div data-selection-diagnostic role={selectionLoading ? 'status' : 'alert'} className="mb-2 space-y-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[11.5px] text-danger">
-          {selectionLoading ? <p className="text-ink-soft">{t('selection.loading')}</p> : null}
+        {selectionBlocked || selectionCatalogError !== null ? <div data-selection-diagnostic role={selectionBlocked ? 'alert' : 'status'} className="mb-2 space-y-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[11.5px] text-danger">
           {selectionCatalogError !== null ? <p>{t('selection.catalogError', { detail: selectionCatalogError.message })}</p> : null}
           {invalidProfile ? <p>{t('selection.profileInvalid', { value: agentProfile! })}</p> : null}
           {invalidModel ? <p>{t('selection.modelInvalid', { value: validatingModel! })}</p> : null}
-          {invalidModelDomain ? <p data-model-menu-blocked>{modelDomainState === 'unknown'
-            ? t(frozenMenuQuery.isPending ? 'selection.modelMenuPending' : 'selection.modelMenuError')
-            : t('selection.modelMenuBlocked', { source: modelRuleSource })}</p> : null}
+          {invalidModelDomain ? <p data-model-menu-blocked>{t('selection.modelMenuBlocked', { source: modelRuleSource })}</p> : null}
           {modelDomainState === 'unknown' && frozenMenuQuery.isError ? <button type="button" className="min-h-9 underline" onClick={() => { void frozenMenuQuery.refetch(); }}>{t('common.retry')}</button> : null}
           {invalidEffort ? <p>{t('selection.effortInvalid', { value: effort! })}</p> : null}
           {selectionCatalogError !== null ? <button type="button" className="underline" onClick={() => { void modelsQuery.refetch(); if (validateProfile) void agentProfilesQuery.refetch(); }}>{t('common.retry')}</button> : null}
@@ -3399,6 +3400,39 @@ function MentionMenuBody({
         );
       })}
     </>
+  );
+}
+
+function ExternalModelChoice({ choice, engineLabel, onChange }: {
+  choice: ExecutionChoice;
+  engineLabel: string;
+  onChange: (model: string | undefined) => void;
+}) {
+  const { t } = useI18n();
+  const model = typeof choice.overrides?.model === 'string' ? choice.overrides.model : undefined;
+  return (
+    <ComposerPanelOrigin className="flex min-w-0 [&>div]:min-w-0">
+      <SearchableSelect
+        id="composer-engine-model-select"
+        value={model ?? ''}
+        options={[
+          { value: '', label: t('composer.engineModelFollow') },
+          ...(model === undefined ? [] : [{ value: model, label: model }]),
+        ]}
+        allowCustomValue
+        customValueLabel={(value) => value}
+        searchPlaceholder={t('composer.engineModelId')}
+        onChange={(next) => { onChange(next === '' ? undefined : next); }}
+        ariaLabel={t('composer.modelAria')}
+        title={engineLabel}
+        emptyText={t('composer.engineModelFollow')}
+        density="compact"
+        placement="above"
+        hideChevron
+        panelClassName={`anim-enter ${COMPOSER_PANEL_START} w-80 ${POPOVER_SURFACE_CLASS}`}
+        buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-full ${model === undefined ? '' : STATUS_SEGMENT_SET}`}
+      />
+    </ComposerPanelOrigin>
   );
 }
 

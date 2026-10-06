@@ -295,8 +295,11 @@ export function ExecutionSelect({
   }, [open]);
 
   const facts = executionContextFacts(contextGroups, allowKikiSubagents, t);
-  const setChoice = (next: ExecutionChoice) => {
-    onChange(next);
+  const setChoice = (executor: string, profile: string | undefined) => {
+    const resetsCurrentBare = executor === choice.executor && profile === undefined && choice.profile === undefined && choice.overrides !== undefined;
+    onChange({ executor, profile, overrides: resetsCurrentBare ? {
+      model: null, thinking: null, permission_mode: null, kiki_context: null, allow_kiki_subagents: null,
+    } : undefined });
     close(true);
   };
   // A bound persona names who answers, so the face and the name replace the
@@ -411,8 +414,8 @@ export function ExecutionSelect({
                 bare={choice.profile === undefined}
                 profiles={nativeProfiles}
                 profile={choice.profile}
-                onBare={() => { setChoice({ ...choice, executor: NATIVE_EXECUTOR, profile: undefined }); }}
-                onProfile={(name) => { setChoice({ ...choice, executor: NATIVE_EXECUTOR, profile: name }); }}
+                onBare={() => { setChoice(NATIVE_EXECUTOR, undefined); }}
+                onProfile={(name) => { setChoice(NATIVE_EXECUTOR, name); }}
               />
             ) : null}
             {visibleExternal.map((item) => (
@@ -426,8 +429,8 @@ export function ExecutionSelect({
                 profiles={profilesByEngine.get(item.id) ?? []}
                 profile={choice.profile}
                 unavailable={item.status === 'unavailable'}
-                onBare={() => { setChoice({ ...choice, executor: item.id, profile: undefined }); }}
-                onProfile={(name) => { setChoice({ ...choice, executor: item.id, profile: name }); }}
+                onBare={() => { setChoice(item.id, undefined); }}
+                onProfile={(name) => { setChoice(item.id, name); }}
               />
             ))}
           </div>

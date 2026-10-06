@@ -839,8 +839,8 @@ describe('Composer execution control', () => {
     });
     for (let index = 0; index < 5; index += 1) await settle();
     expect(second.container.querySelector('#composer-execution-select')?.textContent).toContain('Kiki');
-    expect(second.container.querySelector('[role="alert"]')?.textContent).toContain('catalog offline');
-    expect(second.container.querySelector('[role="alert"] button')?.textContent).toBe('Retry');
+    expect(second.container.querySelector('[data-selection-diagnostic][role="status"]')?.textContent).toContain('catalog offline');
+    expect(second.container.querySelector('[data-selection-diagnostic] button')?.textContent).toBe('Retry');
   });
 
   it('offers only enabled main profiles, preserving an invalid choice with a diagnostic', async () => {
@@ -858,12 +858,9 @@ describe('Composer execution control', () => {
     });
     const trigger = await waitForTrigger(container);
     await click(trigger);
-    // Only Kiki is offered here. Claude Code is in the catalog, but this
-    // machine has neither a profile nor an override pointing at it, so it is a
-    // product name rather than something this picker can run — and the invalid
-    // bound choice keeps its diagnostic.
+    // The installed harness remains independently selectable without a profile.
     expect([...container.querySelectorAll('[data-execution-bare]')].map((row) =>
-      (row as HTMLElement).dataset['executionBare'])).toEqual(['native']);
+      (row as HTMLElement).dataset['executionBare'])).toEqual(['native', 'claude-acp']);
     expect(container.querySelectorAll('[data-execution-profile]')).toHaveLength(0);
     expect(container.querySelector('[data-selection-diagnostic]')?.textContent).toContain('unavailable');
   });
@@ -2832,6 +2829,54 @@ describe('Composer skill preview card', () => {
 });
 
 describe('Composer restored selection diagnostics', () => {
+  it.each([undefined, 'saved-session'])('sends immediately while catalogs and frozen details are pending (%s)', async (sessionId) => {
+    listModels.mockReturnValue(new Promise(() => {}));
+    listNamedAgentProfiles.mockReturnValue(new Promise(() => {}));
+    getAgentCapabilities.mockReturnValue(new Promise(() => {}));
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ sessionId, model: 'fixture/kiki-pro', agentProfile: 'agent', value: 'ready now', onSend });
+    expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+    expect(button.disabled).toBe(false);
+    await click(button);
+    expect(onSend).toHaveBeenCalledWith('ready now', []);
+  });
+
+  it('keeps a bare external engine sendable without a native model or profile catalog', async () => {
+    listModels.mockResolvedValue({ items: [] });
+    listNamedAgentProfiles.mockReturnValue(new Promise(() => {}));
+    const onSend = vi.fn();
+    const onChangeExecution = vi.fn();
+    const { container } = await renderComposer({ value: 'hello', model: 'vendor-only', effort: 'vendor-effort', execution: { executor: 'claude-acp', profile: undefined, overrides: undefined }, onChangeExecution, onSend });
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!);
+    expect(onSend).toHaveBeenCalledWith('hello', []);
+    expect(container.querySelector('#composer-engine-model-select')?.textContent).toContain('Follow engine configuration');
+  });
+
+  it('accepts an external model ID verbatim without looking it up in the native catalog', async () => {
+    listModels.mockResolvedValue({ items: [] });
+    const onChangeExecution = vi.fn();
+    const choice = { executor: 'claude-acp', profile: undefined, overrides: undefined };
+    const { container } = await renderComposer({ execution: choice, onChangeExecution });
+    await click(container.querySelector('#composer-engine-model-select')!);
+    const input = container.querySelector<HTMLInputElement>('input[role="combobox"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'vendor/model-id');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click(container.querySelector('[role="option"][title="vendor/model-id"]')!);
+    expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/model-id', thinking: undefined } });
+    expect(container.querySelector('[role="option"][title="vendor/model-id"]')).toBeNull();
+  });
+
+  it('clears explicit external model and thinking overrides when following the engine again', async () => {
+    const onChangeExecution = vi.fn();
+    const choice = { executor: 'claude-acp', profile: undefined, overrides: { model: 'vendor/model-v1', thinking: 'high' } };
+    const { container } = await renderComposer({ execution: choice, onChangeExecution });
+    await click(container.querySelector('#composer-engine-model-select')!);
+    await click(container.querySelector('[data-option-value=""]')!);
+    expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: null, thinking: null } });
+  });
   it.each([
     { catalog: 'model', code: API_CODES.TIMEOUT },
     { catalog: 'profile', code: -1 },
@@ -2871,14 +2916,14 @@ describe('Composer restored selection diagnostics', () => {
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(false);
   });
 
-  it('still blocks sending and offers retry on a deterministic catalog error', async () => {
+  it('offers catalog retry without mistaking a failed read for an invalid binding', async () => {
     listModels.mockRejectedValue(new ApiError({ code: API_CODES.REQUEST_INVALID, msg: 'Invalid model config', data: null }));
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: 'hello', onSend });
-    expect(container.querySelector('[data-selection-diagnostic][role="alert"]')?.textContent).toContain('Invalid model config');
+    expect(container.querySelector('[data-selection-diagnostic][role="status"]')?.textContent).toContain('Invalid model config');
     expect(container.querySelector('[data-selection-diagnostic] button')?.textContent).toBe('Retry');
     await pressKey(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, { key: 'Enter' });
-    expect(onSend).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith('hello', []);
     expect(listModels).toHaveBeenCalledTimes(1);
   });
 

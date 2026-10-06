@@ -1219,6 +1219,8 @@ export const zh = {
   'composer.pasteDraftChanged': '读取剪贴板时草稿已改变，请在当前光标处重新粘贴。',
   'composer.engineModelTitle': '{model} — 由智能体档案设置，{engine} 提供',
   'composer.engineModelDefault': '引擎默认',
+  'composer.engineModelFollow': '跟随引擎配置',
+  'composer.engineModelId': '引擎模型 ID',
   'composer.abortTitle': '停止此轮',
   'composer.sendTitle': '发送（Enter）',
   'composer.sendTitleCmdEnter': '发送（⌘/Ctrl+Enter）',

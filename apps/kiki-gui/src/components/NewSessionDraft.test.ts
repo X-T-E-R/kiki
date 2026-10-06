@@ -480,6 +480,32 @@ describe('buildNewSessionCreate', () => {
 });
 
 describe('useNewSessionDraft agent profile scope', () => {
+  it('clears touched native controls when choosing a bare engine and preserves it across remount', async () => {
+    client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'high')] });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent', 'provider/alpha', 'high')] });
+    await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => {
+      state.setModelOverride('provider/alpha');
+      state.setEffortOverride('high');
+      state.setExecution({ executor: 'claude-acp', profile: undefined, overrides: undefined });
+    });
+    state = await settleDraft((value) => value.execution.executor === 'claude-acp');
+    expect(state.modelOverride).toBeUndefined();
+    expect(state.effectiveEffort).toBeUndefined();
+    expect(readStoredDraft()).toMatchObject({ execution: { executor: 'claude-acp' } });
+    await unmountDraft();
+    client.listModels.mockReturnValue(new Promise(() => {}));
+    client.listNamedAgentProfiles.mockReturnValue(new Promise(() => {}));
+    await renderDraft();
+    state = await settleDraft((value) => value.execution.executor === 'claude-acp' && value.agentProfileCatalogPending);
+    await act(async () => { await state.send('Bare engine', []); });
+    expect(client.createSession.mock.calls[0]![0].agent_config).toEqual({
+      execution: { executor: 'claude-acp' }, plan_mode: false,
+    });
+    expect(navigate).toHaveBeenCalled();
+  });
+
   it('keeps remote cwd/draft separate from local and rejects Windows paths without sending', async () => {
     localStorage.setItem('kiki.newSessionDraft', JSON.stringify({ cwd: 'C:/local/project' }));
     scope.id = 'ssh:host-1';
@@ -638,8 +664,10 @@ describe('useNewSessionDraft agent profile scope', () => {
     );
     expect(state.autoWorkspace).toBe(true);
     expect(state.agentProfileCatalogMode).toEqual({ mode: 'unscoped' });
-    await act(async () => { void state.send('Wait for the profile catalog', []); });
-    expect(client.createSession).not.toHaveBeenCalled();
+    client.createSession.mockRejectedValueOnce(new Error('Binding rejected by server'));
+    await act(async () => { await state.send('Send without waiting for the profile catalog', []); });
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({ agent_config: expect.objectContaining({ profile: 'agent' }) }));
+    client.createSession.mockClear();
 
     catalog.resolve({ items: [profile('agent'), { ...profile('auto-lead'), source: 'user' }] });
     state = await settleDraft((value) => !value.agentProfileCatalogPending);
@@ -652,7 +680,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(body.agent_config?.profile).toBe('auto-lead');
   });
 
-  it('blocks creation until an initial agent is validated and then sends its workspace pins', async () => {
+  it('sends the preserved initial agent before catalog completion and enriches its workspace pins later', async () => {
     const catalog = deferred<{ items: NamedAgentProfile[] }>();
     client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'high')] });
@@ -662,10 +690,14 @@ describe('useNewSessionDraft agent profile scope', () => {
     let state = await settleDraft((value) =>
       value.agentProfileCatalogPending && client.listNamedAgentProfiles.mock.calls.length === 1
     );
-    await act(async () => {
-      void state.send('Too early', []);
-    });
-    expect(client.createSession).not.toHaveBeenCalled();
+    client.createSession.mockRejectedValueOnce(new Error('Binding rejected by server'));
+    await act(async () => { await state.send('Send the saved choice', []); });
+    const early = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(early.workspace_id).toBe('wd_alpha');
+    expect(early.agent_config?.profile).toBe('workspace-main');
+    expect(early.agent_config?.model).toBeUndefined();
+    expect(early.agent_config?.thinking).toBeUndefined();
+    client.createSession.mockClear();
 
     catalog.resolve({
       items: [profile('agent'), profile('workspace-main', 'provider/alpha', 'high')],
@@ -737,7 +769,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     },
   );
 
-  it('ends pending after a catalog error but keeps the initial selection blocked until retry succeeds', async () => {
+  it('keeps the initial selection sendable through a catalog error and background retry', async () => {
     const catalog = deferred<{ items: NamedAgentProfile[] }>();
     client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'high')] });
@@ -747,20 +779,29 @@ describe('useNewSessionDraft agent profile scope', () => {
     let state = await settleDraft((value) =>
       value.agentProfileCatalogPending && client.listNamedAgentProfiles.mock.calls.length === 1
     );
+    client.createSession.mockRejectedValueOnce(new Error('server binding unavailable'));
     await act(async () => {
-      void state.send('Still validating', []);
+      await state.send('Still validating', []);
       catalog.reject(new Error('catalog unavailable'));
     });
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      workspace_id: 'wd_alpha', agent_config: expect.objectContaining({ profile: 'workspace-main' }),
+    }));
+    client.createSession.mockClear();
     state = await settleDraft((value) => !value.agentProfileCatalogPending);
     expect(state.agentProfile).toBe('workspace-main');
     expect(state.modelOverride).toBeUndefined();
     expect(readStoredDraft()).toMatchObject({
       profile: 'workspace-main', modelFromProfile: true, effortFromProfile: true,
     });
+    client.createSession.mockRejectedValueOnce(new Error('server binding unavailable'));
     await act(async () => {
-      void state.send('An error is not permission to fall back', []);
+      await state.send('An error is not permission to fall back', []);
     });
-    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      workspace_id: 'wd_alpha', agent_config: expect.objectContaining({ profile: 'workspace-main' }),
+    }));
+    client.createSession.mockClear();
 
     const retry = deferred<{ items: NamedAgentProfile[] }>();
     client.listNamedAgentProfiles.mockReturnValue(retry.promise);
@@ -770,10 +811,14 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = await settleDraft((value) =>
       value.agentProfileCatalogPending && client.listNamedAgentProfiles.mock.calls.length === 2
     );
+    client.createSession.mockRejectedValueOnce(new Error('server binding unavailable'));
     await act(async () => {
-      void state.send('Retry is still pending', []);
+      await state.send('Retry is still pending', []);
     });
-    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      workspace_id: 'wd_alpha', agent_config: expect.objectContaining({ profile: 'workspace-main' }),
+    }));
+    client.createSession.mockClear();
     retry.resolve({
       items: [profile('agent'), profile('workspace-main', 'provider/alpha', 'high')],
     });
@@ -835,10 +880,16 @@ describe('useNewSessionDraft agent profile scope', () => {
       modelFromProfile: true,
       effortFromProfile: true,
     });
+    client.createSession.mockRejectedValueOnce(new Error('server binding unavailable'));
     await act(async () => {
-      void state.send('A rejected catalog must still block', []);
+      await state.send('Keep the selected profile without stale workspace pins', []);
     });
-    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      workspace_id: 'wd_beta', agent_config: expect.objectContaining({ profile: 'alpha-only' }),
+    }));
+    expect(client.createSession.mock.calls[0]![0].agent_config?.model).toBeUndefined();
+    expect(client.createSession.mock.calls[0]![0].agent_config?.thinking).toBeUndefined();
+    client.createSession.mockClear();
 
     await act(async () => {
       state.selectWorkspace('wd_alpha');
@@ -967,7 +1018,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     });
   });
 
-  it('restores profile-derived pins from localStorage and sends only after the remounted catalog resolves', async () => {
+  it('restores the profile selection immediately and enriches its pins after the remounted catalog resolves', async () => {
     const items = [profile('agent'), profile('workspace-choice', 'provider/alpha', 'low')];
     client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'low')] });
@@ -985,6 +1036,7 @@ describe('useNewSessionDraft agent profile scope', () => {
       prefillSource: JSON.stringify(['wd_alpha', null, null]),
       workspaceId: 'wd_alpha',
       cwd: '',
+      execution: { executor: 'native', profile: 'workspace-choice' },
       profile: 'workspace-choice',
       modelOverride: 'provider/alpha',
       effortOverride: 'low',
@@ -1005,10 +1057,16 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(state.agentProfile).toBe('workspace-choice');
     expect(state.modelOverride).toBe('provider/alpha');
     expect(state.effectiveEffort).toBe('low');
+    client.createSession.mockRejectedValueOnce(new Error('server binding unavailable'));
     await act(async () => {
-      void state.send('Restored pins are not yet validated', []);
+      await state.send('Restore the selection while its derived pins are unresolved', []);
     });
-    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      workspace_id: 'wd_alpha', agent_config: expect.objectContaining({ profile: 'workspace-choice' }),
+    }));
+    expect(client.createSession.mock.calls[0]![0].agent_config?.model).toBeUndefined();
+    expect(client.createSession.mock.calls[0]![0].agent_config?.thinking).toBeUndefined();
+    client.createSession.mockClear();
 
     catalog.resolve({ items });
     state = await settleDraft((value) => !value.agentProfileCatalogPending);
@@ -1179,10 +1237,16 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = await settleDraft((value) =>
       value.agentProfileCatalogMode.mode === 'cwd' && value.agentProfileCatalogPending
     );
+    client.createSession.mockRejectedValueOnce(new Error('server binding unavailable'));
     await act(async () => {
-      void state.send('The directory catalog is still pending', []);
+      await state.send('Send the exact directory while its catalog is pending', []);
     });
-    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: { cwd: '/workspace/custom' }, agent_config: expect.objectContaining({ profile: 'alpha-only' }),
+    }));
+    expect(client.createSession.mock.calls[0]![0].workspace_id).toBeUndefined();
+    expect(client.createSession.mock.calls[0]![0].agent_config?.model).toBeUndefined();
+    client.createSession.mockClear();
     catalog.resolve({ items: [profile('agent'), profile('directory-main', 'provider/custom', 'high')] });
     state = await settleDraft((value) => !value.agentProfileCatalogPending);
     expect(state.agentProfileCatalogMode).toEqual({ mode: 'cwd', cwd: '/workspace/custom', effective: true });

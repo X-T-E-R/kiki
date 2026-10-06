@@ -10,6 +10,7 @@
  * into an override.
  */
 
+import { executionSelectionSchema } from '@kiki/protocol';
 import type {
   ExecutionBinding,
   ExecutionOverrides,
@@ -51,6 +52,12 @@ export const NATIVE_CHOICE: ExecutionChoice = { executor: NATIVE_EXECUTOR, profi
 export function executionChoice(selection: ExecutionSelection | undefined): ExecutionChoice {
   if (selection === undefined) return NATIVE_CHOICE;
   return { executor: selection.executor, profile: selection.profile, overrides: selection.overrides };
+}
+
+/** Recover a saved selection without interpreting an invalid or unknown record as native. */
+export function readExecutionChoice(value: unknown): ExecutionChoice | undefined {
+  const parsed = executionSelectionSchema.safeParse(value);
+  return parsed.success ? executionChoice(parsed.data) : undefined;
 }
 
 /** The wire value, with the untouched fields left absent rather than `null`. */

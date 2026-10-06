@@ -1233,6 +1233,8 @@ export const en = {
   'composer.pasteDraftChanged': 'The draft changed while reading the clipboard. Paste again at the current cursor.',
   'composer.engineModelTitle': '{model} — set on the profile, served by {engine}',
   'composer.engineModelDefault': 'Engine default',
+  'composer.engineModelFollow': 'Follow engine configuration',
+  'composer.engineModelId': 'Engine model ID',
   'composer.abortTitle': 'Stop this turn',
   'composer.sendTitle': 'Send (Enter)',
   'composer.sendTitleCmdEnter': 'Send (⌘/Ctrl+Enter)',

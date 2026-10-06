@@ -268,7 +268,7 @@ function NewSessionPageContent({
   const cwd = state.cwd.trim();
   const sendDisabled = cwd !== ''
     ? !isAbsoluteCwdPath(cwd)
-    : state.effectiveWorkspace === undefined && !state.autoWorkspace;
+    : !state.workspacesLoading && state.effectiveWorkspace === undefined && !state.autoWorkspace;
   const showTargetHint = sendDisabled && !state.workspacesLoading;
   const mentionScopeKey = cwd !== '' ? `cwd:${cwd}` : `ws:${state.effectiveWorkspace?.id ?? ''}`;
   const starters = useMemo(() => heroStarters(workspaceChipLabel(state)), [state]);

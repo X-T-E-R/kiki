@@ -188,8 +188,8 @@ export function isConfiguredEngine(
  *
  * Native always comes first and is never hidden — it is Kiki itself, not
  * something the user opted into. An external engine appears only when the
- * machine is actually set up for it and the display choice still allows it, so
- * the picker lists engines that can run rather than every engine Kiki knows
+ * catalog found its binary or the user configured it, and the display choice
+ * still allows it. The picker lists runnable or configured engines, not every engine Kiki knows
  * about. An engine the user hid is not removed from the catalog: Settings still
  * lists and checks it, and an existing session bound to it still runs it.
  */
@@ -204,6 +204,6 @@ export function visibleEngines(
   return catalog.filter((item) => {
     if (item.id === NATIVE_EXECUTOR) return true;
     if (!prefs.externalsVisible || prefs.hidden.has(item.id)) return false;
-    return isConfiguredEngine(item.id, profiles, overrides, descriptors);
+    return item.status === 'ready' || isConfiguredEngine(item.id, profiles, overrides, descriptors);
   });
 }

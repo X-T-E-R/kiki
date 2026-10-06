@@ -31,7 +31,7 @@ function engine(id: string): ExecutorCatalogItem {
     id,
     label: id,
     protocol: 'acp-v1',
-    status: 'ready',
+    status: id === 'native' ? 'ready' : 'unavailable',
     model_binding: 'mapped',
     thinking_binding: 'mapped',
   };
@@ -155,6 +155,11 @@ describe('engineVisibilityPatch', () => {
 });
 
 describe('visibleEngines', () => {
+  it('offers an installed bare harness without a Kiki profile or override', () => {
+    const catalog = [engine('native'), { ...engine('claude-acp'), status: 'ready' as const }];
+    expect(visibleEngines(catalog, [], undefined).map((item) => item.id)).toEqual(['native', 'claude-acp']);
+    expect(visibleEngines(catalog, [], { 'claude-acp': { show_in_profile_list: false } }).map((item) => item.id)).toEqual(['native']);
+  });
   it('keeps native and lists an engine the machine is set up for', () => {
     const profiles = [profile('lead-claude', 'claude-acp')];
     expect(visibleEngines(CATALOG, profiles, undefined).map((item) => item.id))
