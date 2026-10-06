@@ -5325,6 +5325,18 @@ describe('queued prompt scheduling projection', () => {
     expect(previews[1]?.appendTiming).toBe('agent_idle');
   });
 
+  it('previews scheduled text from queue content without fabricating user bubbles or attachments', () => {
+    const content = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Controller self-check\nKeep existing work running.</prompt></cron-fire>' }];
+    const prompts = ['scheduled-1', 'scheduled-2'].map((promptId, queuePosition) => ({ promptId, userMessageId: promptId, originKind: 'cron_job' as const, content, status: 'queued' as const, createdAt: FIXED_AT, queuePosition }));
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ prompts }));
+    expect(projected.blocks.filter((block) => block.kind === 'user')).toEqual([]);
+    expect(queuedPromptPreviews(projected)).toEqual(prompts.map((prompt) => expect.objectContaining({ promptId: prompt.promptId, originKind: 'cron_job', text: 'Controller self-check\nKeep existing work running.', media: [], content })));
+    const settled = projectAgentTranscriptView(projected, 'main', emptySnapshot({ prompts: prompts.map((prompt) => ({ ...prompt, status: 'completed' })) }));
+    expect(queuedPromptPreviews(settled)).toEqual([]);
+    expect(settled.queuedPromptMeta).toEqual({});
+    expect(settled.blocks.filter((block) => block.kind === 'user')).toEqual([]);
+  });
+
   it('shows the media and exact content of an attachment-only queued prompt', () => {
     const content = [{ type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/photo.png' } }];
     const projected = projectAgentTranscriptView(

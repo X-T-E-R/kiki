@@ -419,12 +419,23 @@ export function QueueStrip({
         <span aria-hidden className="w-4 shrink-0 text-right text-[12px] text-ink-faint tabular-nums">
           {index + 1}
         </span>
-        <span
-          title={item.text === '' ? undefined : stripThreadRefContext(item.text)}
-          className="min-w-0 flex-1 basis-36 truncate text-[13px] text-ink"
-        >
-          {item.text === '' ? t('sv.queueNoText') : stripThreadRefContext(item.text)}
-        </span>
+        {item.originKind === 'cron_job' ? (
+          <details className="group/cron min-w-0 flex-1 basis-36 text-[13px] text-ink">
+            <summary className="flex cursor-pointer items-center gap-2 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
+              <span className="shrink-0 rounded bg-ink/[0.05] px-1.5 py-0.5 text-[11px] text-ink-soft">{t('transcript.marker.cron')}</span>
+              <span className="min-w-0 truncate">{item.text}</span>
+              <Icon name="chevron" size={12} className="shrink-0 transition-transform group-open/cron:rotate-90" />
+            </summary>
+            <p className="mt-2 whitespace-pre-wrap break-words pl-1 text-ink-soft">{item.text}</p>
+          </details>
+        ) : (
+          <span
+            title={item.text === '' ? undefined : stripThreadRefContext(item.text)}
+            className="min-w-0 flex-1 basis-36 truncate text-[13px] text-ink"
+          >
+            {item.text === '' ? t('sv.queueNoText') : stripThreadRefContext(item.text)}
+          </span>
+        )}
         {item.media?.map((media, mediaIndex) => {
           const label = media.name ?? media.mime ?? t('media.attachment');
           return (
@@ -495,7 +506,7 @@ export function QueueStrip({
                 ))}
               </select>
             ) : null}
-            {onEdit !== undefined && (item.text !== '' || (item.media?.length ?? 0) > 0) ? (
+            {onEdit !== undefined && item.originKind !== 'cron_job' && (item.text !== '' || (item.media?.length ?? 0) > 0) ? (
               <button
                 type="button"
                 disabled={pending || editLocked}

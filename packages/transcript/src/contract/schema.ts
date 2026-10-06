@@ -552,6 +552,7 @@ export const transcriptPromptSchema = z.object({
   status: z.enum(['running', 'queued', 'blocked', 'completed', 'failed', 'aborted']),
   userMessageId: z.string().optional(),
   content: z.unknown().optional(),
+  originKind: z.literal('cron_job').optional(),
   createdAt: z.string(),
   finishedAt: z.string().optional(),
   queuePosition: z.number().int().nonnegative().optional(),

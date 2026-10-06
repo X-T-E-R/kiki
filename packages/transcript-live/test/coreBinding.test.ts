@@ -1786,7 +1786,7 @@ describe('bindSessionTranscript', () => {
     await binding.dispose();
   });
 
-  it('skips non-user-origin prompts when seeding on attach', async () => {
+  it('retains scheduled prompts with their content and source when seeding on attach', async () => {
     const agents = new FakeAgents();
     agents.add('main', {
       prompts: {
@@ -1832,12 +1832,28 @@ describe('bindSessionTranscript', () => {
       fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
     );
     binding.seedPrompts('main');
-    expect(store.getAgent('main')?.getPrompt('p-cron')).toBeUndefined();
-    expect(store.getAgent('main')?.getPrompt('p-cron-queued')).toBeUndefined();
+    expect(store.getAgent('main')?.getPrompt('p-cron')).toMatchObject({ originKind: 'cron_job', status: 'running', content: [{ type: 'text', text: '<cron-fire jobId="j1"><prompt>nightly</prompt></cron-fire>' }] });
+    expect(store.getAgent('main')?.getPrompt('p-cron-queued')).toMatchObject({ originKind: 'cron_job', status: 'queued', content: [{ type: 'text', text: '<cron-fire jobId="j2"><prompt>hourly</prompt></cron-fire>' }] });
     expect(store.getAgent('main')?.getPrompt('p-user')).toMatchObject({
       promptId: 'p-user',
       status: 'queued',
     });
+    await binding.dispose();
+  });
+
+  it('projects a scheduled enqueue before the runtime list owns it, then moves and settles it', async () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
+    const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+    main.bus.emit(ev({ type: 'prompt.enqueued', promptId: 'scheduled-1', userMessageId: 'scheduled-1', message: { origin: { kind: 'cron_job' }, content }, queueIndex: 1, createdAt: '2026-01-01T00:00:00.000Z' }));
+    main.bus.emit(ev({ type: 'prompt.moved', promptId: 'user-1', queuedPromptIds: ['user-1', 'scheduled-1'], movedAt: '2026-01-01T00:00:01.000Z' }));
+    expect(store.getAgent('main')?.getPrompt('scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'queued', queuePosition: 1 });
+    main.bus.emit(ev({ type: 'prompt.launch_committed', promptId: 'scheduled-1' }));
+    expect(store.getAgent('main')?.getPrompt('scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'running' });
+    main.bus.emit(ev({ type: 'prompt.completed', promptId: 'scheduled-1', reason: 'completed', finishedAt: '2026-01-01T00:00:02.000Z' }));
+    expect(store.getAgent('main')?.getPrompt('scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'completed' });
     await binding.dispose();
   });
 

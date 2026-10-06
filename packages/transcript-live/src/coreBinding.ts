@@ -205,11 +205,11 @@ export function bindSessionTranscript(
       const ops: ReturnType<AgentTranscriptLiveAdapter['seedPrompt']> = [
         { op: 'meta.merge', meta: { promptQueueHold: snapshot.hold ?? null } },
       ];
-      if (snapshot.active !== undefined && isUserOriginPrompt(snapshot.active)) {
+      if (snapshot.active !== undefined && isQueueVisiblePrompt(snapshot.active)) {
         ops.push(...liveAdapter.seedPrompt(promptFromSnapshot(snapshot.active, 'running')));
       }
       for (const pending of snapshot.pending) {
-        if (!isUserOriginPrompt(pending)) continue;
+        if (!isQueueVisiblePrompt(pending)) continue;
         ops.push(...liveAdapter.seedPrompt(promptFromSnapshot(pending, 'queued')));
       }
       applyOps(agent.id, ops);
@@ -241,6 +241,21 @@ export function bindSessionTranscript(
 
   const processEvent = (agentId: string, event: TranscriptWireRecord): void => {
     if (event.type === 'context.spliced') return;
+    const message = event['message'] as { origin?: { kind?: string } } | undefined;
+    if (event.type === 'prompt.enqueued' && message?.origin?.kind === 'cron_job') {
+      const facts = wireAdapterFor(agentId).add(event);
+      applyFacts(agentId, facts);
+      for (const fact of facts) for (const op of fact.operations) {
+        if (op.op === 'prompt.upsert') liveAdapterFor(agentId).seedPrompt(op.prompt);
+      }
+      return;
+    }
+    const promptId = event['promptId'];
+    const prompt = typeof promptId === 'string' ? store.getAgent(agentId)?.getPrompt(promptId) : undefined;
+    if (event.type === 'prompt.launch_committed' && prompt?.originKind === 'cron_job') {
+      applyOps(agentId, liveAdapterFor(agentId).seedPrompt({ ...prompt, status: 'running', queuePosition: undefined }));
+      return;
+    }
     const liveOwned =
       (event.type.startsWith('prompt.') && !event.type.startsWith('prompt.model_switch_')) ||
       event.type === 'subagent.spawned' ||
@@ -259,6 +274,7 @@ export function bindSessionTranscript(
       if (ids.length > 0) applyOps(agentId, [{ op: 'items.remove', ids }]);
     }
     applyFacts(agentId, wireFacts);
+    if (event.type === 'prompt.moved') seedPrompts(agentId);
     if (
       event.type === 'task.started' ||
       event.type === 'task.terminated' ||
@@ -471,8 +487,9 @@ export function bindSessionTranscript(
   };
 }
 
-function isUserOriginPrompt(snapshot: PromptSnapshot): boolean {
-  return (snapshot.message.origin?.kind ?? 'user') === 'user';
+function isQueueVisiblePrompt(snapshot: PromptSnapshot): boolean {
+  const kind = snapshot.message.origin?.kind ?? 'user';
+  return kind === 'user' || kind === 'cron_job';
 }
 
 function promptFromSnapshot(
@@ -486,6 +503,7 @@ function promptFromSnapshot(
   return {
     promptId: snapshot.id,
     status,
+    originKind: snapshot.message.origin?.kind === 'cron_job' ? 'cron_job' : undefined,
     userMessageId: snapshot.userMessageId,
     content: projectPromptContentParts(snapshot.message.content),
     createdAt: snapshot.createdAt,

@@ -722,6 +722,8 @@ export interface FloorEntry {
 export interface QueuedPromptMeta {
   readonly appendTiming: DeferredAppendTiming;
   readonly revision?: number;
+  readonly originKind?: 'cron_job';
+  readonly content?: Message['content'];
   /**
    * The engine's shared queue-order slot (model-switch control items occupy
    * slots in the same sequence). Absent for locally echoed prompts that the
@@ -733,6 +735,7 @@ export interface QueuedPromptMeta {
 export interface QueuedPromptPreview {
   readonly promptId: string;
   readonly text: string;
+  readonly originKind?: 'cron_job';
   readonly media?: readonly MediaRef[];
   readonly content?: Message['content'];
   /** Effective append timing; absent on older servers, displays as agent_idle. */

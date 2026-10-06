@@ -1736,7 +1736,9 @@ export class AgentTranscriptLiveAdapter {
     promptId: string,
     build: (prev: TranscriptPrompt | undefined) => TranscriptPrompt,
   ): TranscriptPrompt {
-    const prompt = build(this.prompts.get(promptId));
+    const previous = this.prompts.get(promptId);
+    const next = build(previous);
+    const prompt = previous?.originKind === undefined ? next : { ...next, originKind: previous.originKind };
     this.prompts.set(promptId, prompt);
     return prompt;
   }

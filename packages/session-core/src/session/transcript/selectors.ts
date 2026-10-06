@@ -4,6 +4,7 @@ import type { AgentTranscriptSnapshot, TranscriptItem } from '@kiki/transcript';
 import type { AgentTranscriptResponse } from '../../transport';
 import { MAIN_AGENT_ID, countToolBlocks, type AgentForest, type AgentTreeNode } from '../agentTree';
 import { isModelSwitchQueueId } from '../modelSwitchQueue';
+import { classifyTranscriptText, projectMessageContent } from './classify';
 import { bump, type ApprovalBlock, type ApprovalResolution, type Block, type FloorEntry, type QueuedPromptPreview, type QuestionBlock, type QuestionOutcome, type SessionViewState, type SubagentBlock, type UserBlock } from './types';
 
 export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPromptPreview[] {
@@ -16,11 +17,13 @@ export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPr
       (candidate): candidate is UserBlock => candidate.kind === 'user' && candidate.promptId === promptId,
     );
     const meta = state.queuedPromptMeta[promptId];
+    const scheduled = meta?.originKind === 'cron_job' ? projectMessageContent(meta.content ?? []) : undefined;
     return {
       promptId,
-      text: block?.text ?? '',
-      media: block?.media,
-      content: block?.queuedContent,
+      originKind: meta?.originKind,
+      text: scheduled === undefined ? block?.text ?? '' : classifyTranscriptText({ text: scheduled.text, origin: { kind: 'cron_job' } }).text,
+      media: scheduled?.media ?? block?.media,
+      content: meta?.content ?? block?.queuedContent,
       appendTiming: meta?.appendTiming ?? 'agent_idle',
       revision: meta?.revision,
       queuePosition: meta?.queuePosition,

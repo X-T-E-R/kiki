@@ -1975,6 +1975,7 @@ function mergeTranscriptPromptBlocks(
   const context = promptOutcomeContext(blocks, items);
   const earlier: TerminalPrompt[] = [];
   for (const prompt of prompts) {
+    if (prompt.originKind === 'cron_job') continue;
     if (prompt.status === 'completed') {
       next = settleCompletedPrompt(next, prompt);
       continue;
@@ -3047,10 +3048,14 @@ export function projectAgentTranscriptView(
     const appendTiming = prompt.appendTiming ?? existing?.appendTiming ?? 'agent_idle';
     const revision = prompt.revision ?? existing?.revision;
     const queuePosition = prompt.queuePosition ?? existing?.queuePosition;
-    queuedPromptMeta[prompt.promptId] =
-      existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision && existing.queuePosition === queuePosition
-        ? existing
-        : { appendTiming, revision, queuePosition };
+    if (prompt.originKind === 'cron_job') {
+      queuedPromptMeta[prompt.promptId] = { appendTiming, revision, queuePosition, originKind: prompt.originKind, content: promptContentParts(prompt.content) };
+    } else {
+      queuedPromptMeta[prompt.promptId] =
+        existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision && existing.queuePosition === queuePosition
+          ? existing
+          : { appendTiming, revision, queuePosition };
+    }
   }
   let running: TranscriptPrompt | undefined;
   for (const prompt of prompts) {

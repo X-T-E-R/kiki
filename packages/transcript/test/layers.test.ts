@@ -3073,7 +3073,25 @@ describe('TranscriptWireAdapter', () => {
     expect(resumed.snapshot().prompts).toEqual(full.snapshot().prompts);
   });
 
-  it('hides non-user-origin prompts from replay, tail records and checkpoint restore', () => {
+  it('preserves scheduled queue content and origin across moves and checkpoint restore', () => {
+    const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscriptDraft('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    reducer.apply(adapter.add({ type: 'prompt.enqueued', promptId: 'scheduled-1', userMessageId: 'scheduled-1', message: { origin: { kind: 'cron_job' }, content }, createdAt: '2026-01-01T00:00:00.000Z', queueIndex: 0 }));
+    reducer.apply(adapter.add({ type: 'prompt.moved', promptId: 'scheduled-1', queuedPromptIds: ['user-1', 'scheduled-1'] }));
+    expect(transcript.snapshot().prompts.find((p) => p.promptId === 'scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'queued', queuePosition: 1 });
+    const resumedAdapter = new TranscriptWireAdapter('main');
+    resumedAdapter.restore(adapter.checkpoint());
+    const resumed = new AgentTranscriptDraft('main');
+    resumed.seed(transcript.snapshot());
+    const resumedReducer = new TranscriptFactReducer(resumed);
+    resumedReducer.apply(resumedAdapter.add({ type: 'prompt.launch_committed', promptId: 'scheduled-1' }));
+    resumedReducer.apply(resumedAdapter.add({ type: 'prompt.completed', promptId: 'scheduled-1', reason: 'completed' }));
+    expect(resumed.snapshot().prompts.find((p) => p.promptId === 'scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'completed' });
+  });
+
+  it('hides other non-user-origin prompts from replay, tail records and checkpoint restore', () => {
     const records: TranscriptWireRecord[] = [
       {
         type: 'prompt.enqueued',
@@ -3083,8 +3101,8 @@ describe('TranscriptWireAdapter', () => {
         createdAt: '2026-06-09T00:00:00.000Z',
         message: {
           id: 'mc1',
-          origin: { kind: 'cron_job', jobId: 'j1', cron: '* * * * *', recurring: true, coalescedCount: 0, stale: false },
-          content: [{ type: 'text', text: '<cron-fire jobId="j1"><prompt>nightly</prompt></cron-fire>' }],
+          origin: { kind: 'system_trigger', name: 'internal' },
+          content: [{ type: 'text', text: 'internal prompt' }],
         },
         alreadyMaterialized: false,
         appendTiming: 'agent_idle',
@@ -3239,7 +3257,7 @@ describe('TranscriptWireAdapter', () => {
   it.each([
     { origin: { kind: 'cron_job', jobId: 'j1' }, promptId: 'p-cron' },
     { origin: { kind: 'agent_message', senderAgentId: 'peer' }, promptId: 'p-mailbox' },
-  ])('retains the $origin.kind turn id for abort without revealing a hidden prompt', ({ origin, promptId }) => {
+  ])('retains the $origin.kind turn id for abort without revealing internal turn text', ({ origin, promptId }) => {
     const transcript = new AgentTranscript('main');
     const reducer = new TranscriptFactReducer(transcript);
     const adapter = new TranscriptWireAdapter('main', { turn: (turnId) => transcript.getTurn(turnId) });
@@ -3255,13 +3273,14 @@ describe('TranscriptWireAdapter', () => {
       input: [{ type: 'text', text: 'internal trigger' }], time: 2_000,
     }));
     const running = agentTranscriptSnapshotSchema.parse(transcript.snapshot());
-    expect(running.prompts).toEqual([]);
+    const expectedPrompts = origin.kind === 'cron_job' ? [expect.objectContaining({ promptId, originKind: 'cron_job', content: [{ type: 'text', text: 'internal trigger' }] })] : [];
+    expect(running.prompts).toEqual(expectedPrompts);
     expect(transcript.getTurn('t0')).toMatchObject({ state: 'running', promptId });
     expect(transcript.getTurn('t0')?.prompt).toBeUndefined();
 
     reducer.apply(adapter.add({ type: 'turn.ended', turnId: 0, reason: 'cancelled', time: 3_000 }));
     expect(transcript.getTurn('t0')).toMatchObject({ state: 'cancelled', promptId });
-    expect(transcript.snapshot().prompts).toEqual([]);
+    expect(transcript.snapshot().prompts).toEqual(expectedPrompts);
   });
 });
 

@@ -23,6 +23,7 @@ export interface TranscriptPrompt extends ContentWindow {
   readonly userMessageId?: string;
   /** Open content envelope (the engine's message content parts). */
   readonly content?: unknown;
+  readonly originKind?: 'cron_job';
   readonly createdAt: string;
   readonly finishedAt?: string;
   /** Zero-based position while the prompt is queued. */

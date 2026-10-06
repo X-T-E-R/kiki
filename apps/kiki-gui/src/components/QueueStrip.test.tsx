@@ -260,6 +260,20 @@ describe('QueueStrip edit round-trip', () => {
 });
 
 describe('QueueStrip drawer body', () => {
+  it('identifies scheduled text and discloses its body without making it an editable attachment row', async () => {
+    const text = 'Controller self-check: keep existing work running.';
+    const { container } = await renderStrip({ items: [{ promptId: 'scheduled-1', originKind: 'cron_job', text, content: [{ type: 'text', text }], media: [] }], onEdit: vi.fn() });
+    const row = rows(container)[0]!;
+    expect(row.textContent).toContain('Scheduled job');
+    expect(row.textContent).not.toContain('(attachment only)');
+    const disclosure = row.querySelector('details')!;
+    expect(disclosure.querySelector('p')?.textContent).toBe(text);
+    await click(disclosure.querySelector('summary')!);
+    expect(disclosure.open).toBe(true);
+    expect(row.querySelector('button[aria-label="Edit queued prompt"]')).toBeNull();
+    expect(row.querySelector('img')).toBeNull();
+  });
+
   it('lists every row with Clear all in the header (the tab carries the count)', async () => {
     const onClearAll = vi.fn();
     const { container } = await renderStrip({ onClearAll });

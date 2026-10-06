@@ -423,6 +423,7 @@ export interface AgentTranscriptPrompt {
   readonly status: 'running' | 'queued' | 'blocked' | 'completed' | 'failed' | 'aborted';
   readonly userMessageId?: string;
   readonly content?: unknown;
+  readonly originKind?: 'cron_job';
   readonly createdAt: string;
   readonly finishedAt?: string;
   readonly queuePosition?: number;

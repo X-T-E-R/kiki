@@ -445,12 +445,14 @@ export class TranscriptWireAdapter {
     if (record.type === 'prompt.enqueued') {
       const message = objectOf(record['message']);
       const originKind = stringOf(objectOf(message?.['origin'])?.['kind']) ?? 'user';
-      if (originKind !== 'user') {
+      if (originKind !== 'user' && originKind !== 'cron_job') {
         this.#hiddenPromptIds.add(promptId);
         return [];
       }
+      this.#hiddenPromptIds.delete(promptId);
       const prompt: TranscriptPrompt = {
         promptId,
+        originKind: originKind === 'cron_job' ? originKind : undefined,
         status: 'queued',
         userMessageId: stringOf(record['userMessageId']) ?? stringOf(message?.['id']),
         content: projectPromptContent(message?.['content']),
