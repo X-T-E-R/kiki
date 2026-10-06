@@ -2322,6 +2322,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
         id: task.id,
         cron: task.cron,
         recurring: task.recurring !== false,
+        deliveryMode: task.deliveryMode ?? 'idle',
         createdAt: task.createdAt,
         lastFiredAt: task.lastFiredAt,
         nextFireAt: nextFireAt[index] ?? null,

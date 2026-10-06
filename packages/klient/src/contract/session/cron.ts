@@ -8,6 +8,7 @@ export const cronTaskSchema = z.object({
   prompt: z.string(),
   createdAt: z.number(),
   recurring: z.boolean().optional(),
+  deliveryMode: z.enum(['queue', 'steer', 'idle']).optional(),
   paused: z.boolean().optional(),
   lastFiredAt: z.number().optional(),
   tags: z.record(z.string(), z.string()).optional(),

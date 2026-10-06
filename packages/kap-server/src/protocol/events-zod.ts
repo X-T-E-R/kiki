@@ -192,6 +192,7 @@ export const backgroundTaskOriginSchema = z.object({
 
 export const cronJobOriginSchema = z.object({
   kind: z.literal('cron_job'),
+  deliveryMode: z.enum(['queue', 'steer', 'idle']).optional(),
   jobId: z.string(),
   cron: z.string(),
   recurring: z.boolean(),

@@ -256,8 +256,15 @@ Sending now adds ordinary selected prompts to the active turn, or starts them as
 | `GET /api/sessions/{session_id}/tasks/{task_id}` | Read a task (optional output preview) |
 | `POST /api/sessions/{session_id}/tasks/{task_id}:cancel` | Cancel a task |
 | `GET /api/cron` | List scheduled tasks across workspaces |
+| `POST /api/cron` | Create a scheduled prompt for `session_id` |
+| `GET /api/cron/{task_id}` | Read the complete scheduled prompt |
+| `PATCH /api/cron/{task_id}` | Edit a schedule or rebind within its workspace |
+| `POST /api/cron/{task_id}:pause` / `:resume` / `:run` | Pause, resume, or trigger a schedule |
+| `DELETE /api/cron/{task_id}` | Delete a schedule |
 
 Task and cron lists accept `page_size` (1–100, default 100) and `offset` (default 0). Responses include `items`, `has_more`, and `next_offset` when more results remain. The task list also accepts `status`; the cron list accepts `session_id`. Offset pages may shift if tasks change between requests.
+
+Cron create accepts `session_id`, `cron`, `prompt`, and optional `recurring`, `paused`, and `delivery_mode`. Update accepts any nonempty subset except `paused`; use the pause/resume action for that field. `delivery_mode` is `idle` (default, wait for current work then run ahead of ordinary messages), `queue` (normal message order), or `steer` (next safe step without cancelling the current request). Repeated idle fires of one waiting job merge with a total trigger count. Task responses include the effective `delivery_mode`; omitted modes on older tasks default to idle on their next fire, without changing already queued deliveries. See [Scheduled tasks](../reference/tools.md#scheduled-tasks) for timing and recovery semantics.
 
 ### Skills, tools, and MCP
 

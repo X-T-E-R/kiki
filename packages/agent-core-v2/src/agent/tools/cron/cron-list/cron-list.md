@@ -18,6 +18,7 @@ Each record carries:
 - `nextFireAt` — local ISO timestamp with an explicit numeric offset for the
   next fire after jitter, or `null` if none occurs within 5 years.
 - `recurring` — `true` for cadenced jobs, `false` for one-shots.
+- `deliveryMode` — `idle` (default, before ordinary messages once idle), `queue` (normal order), or `steer` (next safe step).
 - `ageDays` — `(now - createdAt) / day`, two decimal places. Useful
   when deciding whether a long-running cron is still relevant.
 - `stale` — `true` when a recurring task is older than 7 days. The system
@@ -29,9 +30,8 @@ Guidelines:
 
 - This tool is read-only and never mutates state, so it is always
   safe to call (including in plan mode).
-- Users cannot directly manage cron tasks themselves; if they want to
-  cancel or modify a schedule, route the request through the model
-  (i.e. call `Cron({action:"delete",id:...})` or `Cron({action:"create",cron:...,prompt:...})` on their behalf).
+- Users can manage schedules in the GUI or ask the model to cancel or recreate
+  one with `Cron({action:"delete",id:...})` or `Cron({action:"create",cron:...,prompt:...})`.
 - The empty case returns `cron_jobs: 0\nNo cron jobs scheduled.`. Cron
   tasks keep running while their owning session is unloaded; the scheduler
   restores a cold session when delivery is due. Tasks do not bleed into new

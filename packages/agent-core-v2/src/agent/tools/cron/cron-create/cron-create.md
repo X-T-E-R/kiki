@@ -1,4 +1,4 @@
-Schedule a prompt to be enqueued at a future time. Use for both recurring schedules and one-shot reminders.
+Schedule a prompt for a future time. Use for both recurring schedules and one-shot reminders.
 
 Uses standard 5-field cron in the user's local timezone: minute hour day-of-month month day-of-week. `0 9 * * *` means 9am local — no timezone conversion needed.
 
@@ -20,9 +20,14 @@ For "every N minutes" / "every hour" / "weekdays at 9am" requests:
 
 When the request is approximate, choose a minute other than 0 or 30. Use minute 0 or 30 only when the user specifies that exact time.
 
-## Coalesce semantics
+## Delivery timing and coalescing
 
-A due fire is enqueued even while the session is cold or running an active turn. Cold sessions are restored first; active-turn delivery uses the normal prompt queue and never splices content into a step already in progress.
+Choose `delivery_mode`:
+- `idle` (default): wait for current work to finish, then run before ordinary queued messages. Repeated fires of the same waiting job merge into one delivery with their total `coalescedCount`; different jobs stay separate.
+- `queue`: keep each triggered delivery in normal message order.
+- `steer`: insert at the next safe step of the active turn without interrupting an in-flight request; while idle, run before ordinary queued messages.
+
+Cold sessions are restored before delivery. Older tasks without a saved mode use idle on their next fire; already queued legacy messages keep their FIFO position. Restarted pending deliveries retain mode and count and honor the queue recovery hold.
 
 If the scheduler slept past multiple ideal fire times (laptop closed, long-running turn, etc.), only **one** fire is delivered when it wakes up. The origin carries `coalescedCount` showing how many ideal fires were collapsed into this single delivery. You should treat `coalescedCount > 1` as "I missed some checks; only the latest state matters" rather than running the prompt that many times.
 
@@ -71,9 +76,9 @@ A session holds at most 50 live cron tasks; creating one beyond that is rejected
 
 ## Returned fields
 
-`id` (ULID), `cron` (the normalized expression), `humanSchedule` (English summary), `recurring`,
+`id` (ULID), `cron` (the normalized expression), `humanSchedule` (English summary), `recurring`, `deliveryMode`,
 `nextFireAt` (local ISO timestamp with numeric offset, or null). `id` is needed by `Cron({action:"delete",id:...})`.
 
 ## Tell the user how to cancel or modify
 
-After successfully creating a task, proactively tell the user how they can cancel or modify it later. Users have no direct `/cron` command or self-service UI to manage reminders themselves; they must ask the model to make changes (e.g. "cancel my 9am reminder" or "change my daily check to 10am"). Include the task `id` in your message so the user can reference it.
+After successfully creating a task, proactively tell the user how they can cancel or modify it later. They can manage schedules in the GUI or ask the model to list, cancel, or recreate a reminder (e.g. "cancel my 9am reminder" or "change my daily check to 10am"). Pausing or deleting a schedule stops future automatic fires, not messages already admitted. Include the task `id` in your message so the user can reference it.

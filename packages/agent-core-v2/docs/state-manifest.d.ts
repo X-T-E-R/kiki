@@ -504,6 +504,7 @@ export interface SessionStateSnapshot {
     readonly prompt: string;
     readonly createdAt: number;
     readonly recurring?: boolean;
+    readonly deliveryMode?: 'queue' | 'steer' | 'idle';
     readonly paused?: boolean;
     readonly lastFiredAt?: number;
     readonly tags?: Readonly<Record<string, string>>;
@@ -1039,6 +1040,7 @@ export interface AgentStateSnapshot {
         readonly notificationId: string;
       } | /* CronJobOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'cron_job';
+        readonly deliveryMode?: 'queue' | 'steer' | 'idle';
         readonly jobId: string;
         readonly cron: string;
         readonly recurring: boolean;
@@ -1266,6 +1268,7 @@ export interface AgentStateSnapshot {
       readonly notificationId: string;
     } | /* CronJobOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'cron_job';
+      readonly deliveryMode?: 'queue' | 'steer' | 'idle';
       readonly jobId: string;
       readonly cron: string;
       readonly recurring: boolean;
@@ -1425,6 +1428,7 @@ export interface AgentStateSnapshot {
         readonly notificationId: string;
       } | /* CronJobOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'cron_job';
+        readonly deliveryMode?: 'queue' | 'steer' | 'idle';
         readonly jobId: string;
         readonly cron: string;
         readonly recurring: boolean;
@@ -1664,6 +1668,7 @@ export interface AgentStateSnapshot {
       readonly notificationId: string;
     } | /* CronJobOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'cron_job';
+      readonly deliveryMode?: 'queue' | 'steer' | 'idle';
       readonly jobId: string;
       readonly cron: string;
       readonly recurring: boolean;
@@ -1826,7 +1831,7 @@ export interface AgentStateSnapshot {
   // src/agent/fullCompaction/compactionOps.ts
   // replayable · durable — folds: FullCompactionBegin, FullCompactionCancel, FullCompactionComplete
   'fullCompaction': /* CompactionState — packages/agent-core-v2/src/agent/fullCompaction/compactionOps.ts */ {
-    readonly phase: /* CompactionPhase — packages/agent-core-v2/src/agent/fullCompaction/compactionOps.ts */ 'completed' | 'cancelled' | 'running' | 'queued' | 'idle';
+    readonly phase: /* CompactionPhase — packages/agent-core-v2/src/agent/fullCompaction/compactionOps.ts */ 'idle' | 'completed' | 'cancelled' | 'running' | 'queued';
     readonly pendingManual?: boolean;
   };
   // src/agent/fullCompaction/contextStrategyOps.ts
@@ -5680,6 +5685,7 @@ export interface AgentStateSnapshot {
     readonly prompt: string;
     readonly createdAt: number;
     readonly recurring?: boolean;
+    readonly deliveryMode?: 'queue' | 'steer' | 'idle';
     readonly paused?: boolean;
     readonly lastFiredAt?: number;
     readonly tags?: Readonly<Record<string, string>>;

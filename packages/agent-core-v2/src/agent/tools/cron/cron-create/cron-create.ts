@@ -17,7 +17,9 @@ export const CronCreateInputSchema = z.object({
     .string()
     .min(1)
     .max(MAX_PROMPT_BYTES)
-    .describe('The prompt to enqueue at each fire time. Limited to 8 KiB (UTF-8).'),
+    .describe('The prompt to deliver at each fire time. Limited to 8 KiB (UTF-8).'),
+  delivery_mode: z.enum(['queue', 'steer', 'idle']).optional()
+    .describe('idle (default): wait for current work to finish, then run before ordinary queued messages; repeated fires of this job merge with their count. queue: retain each fire in normal FIFO order. steer: insert at the next safe step without interrupting the current request.'),
   recurring: z
     .boolean()
     .optional()
@@ -34,6 +36,7 @@ export interface CronCreateOutput {
   readonly cron: string;
   readonly humanSchedule: string;
   readonly recurring: boolean;
+  readonly deliveryMode: import('@kiki/protocol').CronDeliveryMode;
   readonly nextFireAt: number | null;
 }
 

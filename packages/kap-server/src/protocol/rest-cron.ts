@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cronDeliveryModeSchema } from '@kiki/protocol';
 
 export const cronTaskSchema = z.object({
   id: z.string(),
@@ -9,6 +10,7 @@ export const cronTaskSchema = z.object({
   prompt_preview: z.string(),
   next_fire_at: z.string().nullable(),
   recurring: z.boolean(),
+  delivery_mode: cronDeliveryModeSchema,
   paused: z.boolean(),
   age_days: z.number(),
   stale: z.boolean(),
@@ -25,6 +27,7 @@ export const createCronTaskRequestSchema = z.object({
   cron: z.string().trim().min(1),
   prompt: z.string().refine((value) => value.trim().length > 0, 'prompt must not be blank'),
   recurring: z.boolean().optional(),
+  delivery_mode: cronDeliveryModeSchema.optional(),
   paused: z.boolean().optional(),
 }).strict();
 

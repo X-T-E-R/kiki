@@ -142,8 +142,13 @@ export interface BackgroundTaskOrigin {
   readonly notificationId: string;
 }
 
+export type CronDeliveryMode = 'queue' | 'steer' | 'idle';
+
+export const cronDeliveryModeSchema = z.enum(['queue', 'steer', 'idle']);
+
 export interface CronJobOrigin {
   readonly kind: 'cron_job';
+  readonly deliveryMode?: CronDeliveryMode;
   readonly jobId: string;
   readonly cron: string;
   readonly recurring: boolean;
@@ -1346,6 +1351,7 @@ export const backgroundTaskOriginSchema = z.object({
 
 export const cronJobOriginSchema = z.object({
   kind: z.literal('cron_job'),
+  deliveryMode: cronDeliveryModeSchema.optional(),
   jobId: z.string(),
   cron: z.string(),
   recurring: z.boolean(),

@@ -20,7 +20,6 @@ import { type CronConfig, CRON_SECTION } from '#/app/cron/configSection';
 import { computeNextCronRun, parseCronExpression, type ParsedCronExpression } from '#/app/cron/cron-expr';
 import { CRON_SESSION_TAG, type CronTask, type CronTaskInit } from '#/app/cron/cronTask';
 import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
-import { renderCronFireXml } from '#/app/cron/format';
 import { jitteredNextCronRunMs, oneShotJitteredNextCronRunMs } from '#/app/cron/jitter';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionStateService } from '#/session/state/sessionState';
@@ -174,6 +173,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     if (this.ctx.ephemeral === true) throw new Error('temporary sessions cannot schedule cron tasks');
     const task: CronTask = {
       ...init,
+      deliveryMode: init.deliveryMode ?? 'idle',
       id: this.generateUniqueId(),
       createdAt: this.clocks.wallNow(),
       tags: { ...init.tags, [CRON_SESSION_TAG]: this.ctx.sessionId },
@@ -206,7 +206,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     return this.updateTask(id, { paused });
   }
 
-  async updateTask(id: string, patch: Partial<Pick<CronTask, 'cron' | 'prompt' | 'recurring' | 'paused' | 'tags'>>): Promise<CronTask | undefined> {
+  async updateTask(id: string, patch: Partial<Pick<CronTask, 'cron' | 'prompt' | 'recurring' | 'paused' | 'tags' | 'deliveryMode'>>): Promise<CronTask | undefined> {
     if (this.ctx.ephemeral === true) throw new Error('temporary sessions cannot modify cron tasks');
     if (patch.cron !== undefined) parseCronExpression(patch.cron);
     let updated: CronTask | undefined;
@@ -327,7 +327,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     const now = this.clocks.wallNow();
 
     const work: Promise<void>[] = [];
-    for (const task of this.list()) {
+    for (const task of this.list().toSorted((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))) {
       work.push(this.processDue(task, now));
     }
     await Promise.all(work);
@@ -465,21 +465,11 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
       recurring: task.recurring !== false,
       coalescedCount: ctx.coalescedCount,
       stale: this.isStaleAt(task, ctx.firedAt),
-    };
-    const message: ContextMessage = {
-      role: 'user',
-      content: [
-        {
-          type: 'text',
-          text: renderCronFireXml(origin, task.prompt),
-        },
-      ],
-      toolCalls: [],
-      origin,
+      deliveryMode: task.deliveryMode ?? 'idle',
     };
 
     try {
-      const handle = await promptService.enqueue({ message });
+      const handle = await promptService.enqueueCron({ origin, prompt: task.prompt });
       this.signalCron(new CronFired({ origin, prompt: task.prompt }));
       this.telemetry.track2(CRON_FIRED, {
         recurring: task.recurring !== false,

@@ -113,6 +113,7 @@ export class CronCreateTool implements ICronCreateTool {
         JSON.stringify({
           cron: normalizedCron,
           prompt: args.prompt,
+          deliveryMode: args.delivery_mode ?? 'idle',
           recurring,
         }),
       ),
@@ -131,6 +132,7 @@ export class CronCreateTool implements ICronCreateTool {
         const task = await this.cron.addTask({
           cron: normalizedCron,
           prompt: args.prompt,
+          deliveryMode: args.delivery_mode ?? 'idle',
           recurring,
         });
 
@@ -146,6 +148,7 @@ export class CronCreateTool implements ICronCreateTool {
           id: task.id,
           cron: normalizedCron,
           humanSchedule,
+          deliveryMode: task.deliveryMode ?? 'idle',
           recurring,
           nextFireAt,
         };
@@ -165,6 +168,7 @@ function formatOutput(o: CronCreateOutput): string {
     `cron: ${o.cron}`,
     `humanSchedule: ${o.humanSchedule}`,
     `recurring: ${String(o.recurring)}`,
+    `deliveryMode: ${o.deliveryMode}`,
     `nextFireAt: ${
       o.nextFireAt === null ? 'null' : formatLocalIsoWithOffset(o.nextFireAt)
     }`,

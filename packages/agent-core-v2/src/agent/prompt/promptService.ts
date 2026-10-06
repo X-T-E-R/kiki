@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
 import { IInstantiationService } from '#/_base/di/instantiation';
+import { renderCronFireXml } from '#/app/cron/format';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
@@ -974,6 +975,37 @@ export class AgentPromptService implements IAgentPromptService {
     return { promptId, phase: persisted.phase, turnId, terminal: persisted.terminal };
   }
 
+  async enqueueCron(input: { readonly origin: import('#/agent/contextMemory/types').CronJobOrigin; readonly prompt: string }): Promise<PromptHandle> {
+    const handle = await this.historyMutation.runAdmission(undefined, async () => {
+      let origin = input.origin;
+      const existing = origin.deliveryMode === 'idle'
+        ? this.pending.find((item) => item.message.origin?.kind === 'cron_job' &&
+          item.message.origin.jobId === origin.jobId && item.message.origin.deliveryMode === 'idle' &&
+          !this.steeringPromptIds.has(item.id))
+        : undefined;
+      if (existing?.message.origin?.kind === 'cron_job') {
+        origin = { ...origin, coalescedCount: existing.message.origin.coalescedCount + origin.coalescedCount,
+          stale: existing.message.origin.stale || origin.stale };
+      }
+      const message: ContextMessage = { role: 'user', content: [{ type: 'text', text: renderCronFireXml(origin, input.prompt) }], toolCalls: [], origin };
+      if (existing === undefined) return this.enqueueNow({ message });
+      existing.message = { ...message, id: existing.id };
+      existing.revision++;
+      await this.dispatcher.dispatch(new PromptReplaced({ promptId: existing.id, content: [...existing.message.content],
+        message: existing.message, revision: existing.revision, replacedAt: new Date().toISOString() }));
+      return existing.handle;
+    });
+    await this.wire.flush();
+    if (input.origin.deliveryMode === 'steer' && handle.state === 'pending') {
+      void this.steer([handle.id]).catch(() => {
+        if (!this.pending.some((item) => item.id === handle.id)) return;
+        this.immediatePromptIds.add(handle.id);
+        void this.startNext();
+      });
+    }
+    return handle;
+  }
+
   async enqueue(input: PromptInput): Promise<PromptHandle> {
     if (this.loop.status().persistenceFailure !== undefined) void this.loop.recoverPersistence();
     if (input.execution?.afterModelSwitch !== undefined && this.getModelSwitch(input.execution.afterModelSwitch) === undefined) {
@@ -1231,7 +1263,13 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private nextReadyQueueId(): string | undefined {
-    return this.queueOrder.find((id) => {
+    const priority = this.queueOrder.find((id) => {
+      const prompt = this.pending.find((item) => item.id === id);
+      return prompt?.message.origin?.kind === 'cron_job' &&
+        (prompt.message.origin.deliveryMode === 'idle' || prompt.message.origin.deliveryMode === 'steer') &&
+        this.isReadyPending(prompt, this.pending.indexOf(prompt));
+    });
+    return priority ?? this.queueOrder.find((id) => {
       const prompt = this.pending.find((item) => item.id === id);
       if (prompt !== undefined) return this.isReadyPending(prompt, this.pending.indexOf(prompt));
       return this.isQueuedModelSwitch(id) && (this.immediateModelSwitchIds.has(id.slice(MODEL_SWITCH_QUEUE_PREFIX.length)) || (!this.recoveryHold && !this.isQueueSlotEditHeld(id)));
@@ -1241,7 +1279,9 @@ export class AgentPromptService implements IAgentPromptService {
   private isReadyPending(item: Record, index: number): boolean {
     if (!this.isDependencyReady(item.execution)) return false;
     if (this.immediatePromptIds.has(item.id)) return true;
-    return !this.recoveryHold && !this.isEditHeld(index) && this.isTimingReady(item.appendTiming);
+    const cronPriority = item.message.origin?.kind === 'cron_job' &&
+      (item.message.origin.deliveryMode === 'idle' || item.message.origin.deliveryMode === 'steer');
+    return !this.recoveryHold && (cronPriority || !this.isEditHeld(index)) && this.isTimingReady(item.appendTiming);
   }
 
   private isQueueSlotEditHeld(id: string): boolean {

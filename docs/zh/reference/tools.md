@@ -358,13 +358,21 @@ Root 不应为了等待该结果，使用 `TaskWait`、`TaskOutput` 或 `AgentLi
 | `Cron`（`action: "list"`） | 自动放行 | 列出已安排的定时任务 |
 | `Cron`（`action: "delete"`） | 需审批 | 取消已安排的定时任务 |
 
-`Cron` 用 `action` 指定操作；旧名称 `CronCreate`、`CronList` 和 `CronDelete` 仍可被已有 profile 和审批规则引用，但不再作为单独的工具提供给模型。`action: "create"` 接受 `cron`（用户本地时区下标准的 5 段 cron 表达式：`minute hour day-of-month month day-of-week`）、`prompt`（触发时要注入的文本，UTF-8 上限 8 KB）以及可选的 `recurring`（默认 `true`；传 `false` 表示一次性提醒，触发后自动删除）。成功时返回 8 位 16 进制 `id`、人类可读的 `humanSchedule`（如 `every 5 minutes`）和 `nextFireAt`（下次触发时间的 ISO 时间戳）。
+`Cron` 用 `action` 指定操作；旧名称 `CronCreate`、`CronList` 和 `CronDelete` 仍可被已有 profile 和审批规则引用，但不再作为单独的工具提供给模型。`action: "create"` 接受 `cron`（用户本地时区下标准的 5 段 cron 表达式：`minute hour day-of-month month day-of-week`）、`prompt`（触发时要注入的文本，UTF-8 上限 8 KB）以及可选的 `recurring`（默认 `true`；传 `false` 表示一次性提醒，触发后自动删除）。成功时返回 ULID 格式的 `id`、人类可读的 `humanSchedule`（如 `every 5 minutes`）、`deliveryMode` 和 `nextFireAt`（下次触发时间的 ISO 时间戳）。
+
+可选参数 `delivery_mode` 决定投递时机：
+
+- `idle`（空闲时插入，默认）：等当前工作完成后，优先普通排队消息执行。同一任务等待期间重复触发会合成一条消息，并在 `coalescedCount` 中保留总次数；不同任务各自保留，按首次投递顺序执行。
+- `queue`（排队）：每次触发的投递都按正常消息顺序保留。
+- `steer`（立即插入）：在当前轮次的下一安全步骤插入，不取消正在进行的请求；空闲时优先普通排队消息执行。
+
+旧任务未保存投递模式时，下次触发采用 `idle`。已经入队的消息保留原有模式与位置，旧版定时消息不会被暗中重排。重启后，待投递消息保留模式和次数，等待原有队列恢复操作。删除或暂停任务只阻止未来自动触发，不撤回已经投递的消息。
 
 为避免整批用户在整点同时触发，调度器会做确定性抖动：周期任务向后偏移 `min(周期的 10%, 15 分钟)`；一次性任务若恰好落在 `:00` 或 `:30` 则向前提前最多 90 秒。如果调度器错过了若干触发时刻（如笔记本合盖），唤醒后只会触发一次，prompt 会包裹在 `<cron-fire>` 信封里并附带 `coalescedCount`。周期任务存活超过 7 天后会以 `stale="true"` 做最后一次触发后自动删除；想继续保留时，再次调用 `Cron` 的 `action: "create"` 即可。
 
-**`Cron` 的 `action: "list"`** 是只读操作，除了 `action` 不需要其他参数。为每个生效中的任务返回一条记录，字段包括 `id`、`cron`、`humanSchedule`、`nextFireAt`、`recurring`、`ageDays` 和 `stale`。记录用 `---` 分隔，按调度时间排列。
+**`Cron` 的 `action: "list"`** 是只读操作，除了 `action` 不需要其他参数。为每个生效中的任务返回一条记录，字段包括 `id`、`cron`、`humanSchedule`、`nextFireAt`、`recurring`、`deliveryMode`、`ageDays` 和 `stale`。记录用 `---` 分隔，按创建顺序排列。
 
-**`Cron` 的 `action: "delete"`** 接受一个 `id`。对周期任务，未来所有触发立即停止；对一次性任务，挂起的那次触发会被取消。已触发的一次性任务会自动删除，因此删除已触发过的一次性任务会返回 `No cron job with id ...`。删除不可撤销，需要还原时只能再次执行 `action: "create"`。Plan 模式下此操作会被拦截。
+**`Cron` 的 `action: "delete"`** 接受一个 `id`。对周期任务，未来所有触发立即停止；对一次性任务，尚未投递的触发会被取消。已触发的一次性任务会自动删除，因此删除已触发过的一次性任务会返回 `No cron job with id ...`。删除不可撤销，需要还原时只能再次执行 `action: "create"`。Plan 模式下此操作会被拦截。
 
 报告成功的 `create` 或 `delete` 表示该变化已经落盘。保存本身失败时，工具返回错误且已存储的调度保持原样，因此成功回执不会对应一个只存在于内存中的任务。
 

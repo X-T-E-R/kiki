@@ -81,6 +81,7 @@ interface CronTaskWire {
   readonly prompt_preview: string;
   readonly next_fire_at: string | null;
   readonly recurring: boolean;
+  readonly delivery_mode: import('@kiki/protocol').CronDeliveryMode;
   readonly paused: boolean;
   readonly age_days: number;
   readonly stale: boolean;
@@ -167,7 +168,7 @@ export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
         }
         const context = await presentationContext(core);
         const cron = live?.accessor.get(ISessionCronService);
-        const init = { cron: req.body.cron, prompt: req.body.prompt, recurring: req.body.recurring ?? true, paused: req.body.paused ?? false };
+        const init = { cron: req.body.cron, prompt: req.body.prompt, recurring: req.body.recurring ?? true, paused: req.body.paused ?? false, deliveryMode: req.body.delivery_mode ?? 'idle' };
         let task: CronTask;
         if (cron !== undefined) {
           task = await cron.addTask(init);
@@ -201,7 +202,7 @@ export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
         return;
       }
       const located = resolved.task;
-      const { session_id: requestedSessionId, ...editable } = req.body;
+      const { session_id: requestedSessionId, delivery_mode: deliveryMode, ...editable } = req.body;
       const targetSessionId = requestedSessionId ?? located.sessionId;
       await withCronSessions(core, [located.sessionId, targetSessionId], async () => {
         const manager = core.accessor.get(ISessionManager);
@@ -227,8 +228,9 @@ export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
             return;
           }
         }
-        const patch: Partial<Pick<CronTask, 'cron' | 'prompt' | 'recurring' | 'tags'>> = {
+        const patch: Partial<Pick<CronTask, 'cron' | 'prompt' | 'recurring' | 'tags' | 'deliveryMode'>> = {
           ...editable,
+          deliveryMode: deliveryMode ?? current.deliveryMode,
           tags: targetSessionId === undefined ? current.tags : { ...current.tags, [CRON_SESSION_TAG]: targetSessionId },
         };
         let task: CronTask | undefined;
@@ -576,6 +578,7 @@ function toWireTask(located: LocatedCronTask, context: CronPresentationContext):
     prompt_preview: previewPrompt(task.prompt),
     next_fire_at: nextFireAt === null ? null : new Date(nextFireAt).toISOString(),
     recurring,
+    delivery_mode: task.deliveryMode ?? 'idle',
     paused: task.paused === true,
     age_days: ageDays,
     stale,

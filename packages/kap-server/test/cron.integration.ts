@@ -142,7 +142,7 @@ describe('cron management routes', () => {
     });
     expect(created.code).toBe(0);
     const task = created.data.task;
-    expect(task).toMatchObject({ session_id: source, prompt, paused: true, recurring: true });
+    expect(task).toMatchObject({ session_id: source, prompt, paused: true, recurring: true, delivery_mode: 'idle' });
     expect(task.prompt_preview).not.toBe(prompt);
     const detail = await request<{ task: CronTaskWire & { prompt: string } }>(`/api/cron/${task.id}?session_id=${source}`);
     expect(detail.data.task.prompt).toBe(prompt);
@@ -151,10 +151,11 @@ describe('cron management routes', () => {
     await store.save(task.workspace_id, { ...original, lastFiredAt: original.createdAt });
     await cronFor(source).syncTaskFromStore(task.id);
     const edited = await request<{ task: CronTaskWire & { prompt: string } }>(`/api/cron/${task.id}?session_id=${source}`, 'PATCH', {
-      session_id: target, cron: '15 * * * *', prompt: 'edited', recurring: false,
+      session_id: target, cron: '15 * * * *', prompt: 'edited', recurring: false, delivery_mode: 'steer',
     });
     expect(edited.code).toBe(0);
     expect(edited.data.task).toMatchObject({ id: task.id, session_id: target, prompt: 'edited', cron: '15 * * * *', paused: true, recurring: false, created_at: task.created_at, last_fired_at: task.created_at });
+    expect(edited.data.task).toHaveProperty('delivery_mode', 'steer');
     expect(cronFor(source).getTask(task.id)).toBeUndefined();
     expect(cronFor(target).getTask(task.id)).toMatchObject({ id: task.id, createdAt: original.createdAt, lastFiredAt: original.createdAt, paused: true });
     expect(await store.list({ workspaceId: task.workspace_id })).toHaveLength(1);
@@ -162,13 +163,14 @@ describe('cron management routes', () => {
     await server!.core.accessor.get(ISessionManager).close(source);
     await server!.core.accessor.get(ISessionManager).close(target);
     const cold = await request<{ task: CronTaskWire & { prompt: string } }>(`/api/cron/${task.id}?session_id=${target}`, 'PATCH', { prompt: 'cold edit' });
-    expect(cold.data.task).toMatchObject({ id: task.id, paused: true, prompt: 'cold edit', last_fired_at: task.created_at });
+    expect(cold.data.task).toMatchObject({ id: task.id, paused: true, prompt: 'cold edit', last_fired_at: task.created_at, delivery_mode: 'steer' });
+    expect((await request(`/api/cron/${task.id}?session_id=${target}`, 'PATCH', { delivery_mode: 'invalid' })).code).toBe(40001);
     const rebound = await request<{ task: CronTaskWire }>(`/api/cron/${task.id}?session_id=${target}`, 'PATCH', { session_id: source });
     expect(rebound.data.task.session_id).toBe(source);
     expect((await request(`/api/cron/${task.id}?session_id=${source}`)).code).toBe(0);
-    const coldCreate = await request<{ task: CronTaskWire }>('/api/cron', 'POST', { session_id: target, cron: '0 9 * * *', prompt: 'cold create', paused: true });
+    const coldCreate = await request<{ task: CronTaskWire }>('/api/cron', 'POST', { session_id: target, cron: '0 9 * * *', prompt: 'cold create', paused: true, delivery_mode: 'queue' });
     expect(coldCreate.code).toBe(0);
-    expect(coldCreate.data.task.session_id).toBe(target);
+    expect(coldCreate.data.task).toMatchObject({ session_id: target, delivery_mode: 'queue' });
     expect(getLiveSessionById(server!.core.accessor, source)).toBeUndefined();
     expect(getLiveSessionById(server!.core.accessor, target)).toBeUndefined();
   });
