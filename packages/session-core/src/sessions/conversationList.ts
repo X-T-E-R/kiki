@@ -39,7 +39,7 @@ function workspacePathKey(root: string): string {
 /** Merge only loaded thread pages with room summaries; preserve the session cursor separately. */
 export function mergeConversationItems(sessions: readonly Session[], rooms: readonly RoomListItem[], seen: SessionSeenMap, order: SessionSortOrder = 'updated-desc', workspaces: readonly ConversationWorkspace[] = []): ConversationListItem[] {
   const threads: ConversationListItem[] = sessions.map((session) => ({
-    ...session, kind: 'session', session, key: `session:${session.id}`, href: `/s/${session.id}`,
+    ...session, updated_at: session.own_updated_at ?? session.updated_at, kind: 'session', session, key: `session:${session.id}`, href: `/s/${session.id}`,
     unread_count: Math.max(0, session.last_seq - (seen[session.id] ?? 0)),
     needs_you: session.pending_interaction === 'approval' || session.pending_interaction === 'question',
     failed: session.last_turn_reason === 'failed', pinned: isPinnedSession(session),
@@ -67,7 +67,7 @@ export function groupConversationItems(items: readonly ConversationListItem[], o
 }): SessionGroup<ConversationListItem>[] {
   const resolved = items.map((item) => item.kind === 'room'
     ? { ...item, workspace_id: roomWorkspaceId(item.room.workspace, options.workspaces) }
-    : { ...item, updated_at: item.session.updated_at });
+    : { ...item, updated_at: item.session.own_updated_at ?? item.session.updated_at });
   const visible = filterSessions(resolved, { ...options.filters, status: [] }).filter((item) =>
     options.filters.status.length === 0 || options.filters.status.includes(item.needs_you ? 'needs-me' : item.busy ? 'running' : 'idle'));
   const sorted = sortSessionItems(visible, options.order ?? 'updated-desc');

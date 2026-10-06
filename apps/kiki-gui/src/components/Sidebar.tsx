@@ -1887,7 +1887,7 @@ function SessionRow({
                 temporary ? '' : menuOpen ? 'invisible' : 'group-focus-within:invisible group-hover:invisible [@media(hover:none)]:invisible'
               }`}
             >
-              <RelativeTime at={session.updated_at} />
+              <RelativeTime at={session.own_updated_at ?? session.updated_at} />
             </span>
           </span>
           {fact !== undefined || archived || session.worktree !== undefined || backgroundTasks.length > 0 ? (

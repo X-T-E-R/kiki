@@ -31,6 +31,7 @@ export interface SessionSummary {
   readonly delivery?: 'reply' | 'message';
   readonly createdAt: number;
   readonly updatedAt: number;
+  readonly ownUpdatedAt?: number;
   readonly archived: boolean;
   /** Archive time (epoch ms); absent for sessions archived before the field
    *  existed — callers fall back to `updatedAt` for display. */

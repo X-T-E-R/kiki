@@ -10,6 +10,7 @@ import type { RoomDocument, RoomListItem, Session, Workspace } from '@kiki/proto
 
 import {
   CONTENT_SEARCH_DEBOUNCE_MS,
+  groupConversationItems,
   isPinnedSession,
   mergeConversationItems,
   SESSION_PIN_META_KEY,
@@ -1403,6 +1404,53 @@ describe('session thread relations', () => {
     );
     const ids = nested.flatMap((entry) => entry.nodes.flatMap((node) => [node.session.id, ...node.children.map((child) => child.session.id)]));
     expect(ids.toSorted()).toEqual(['a', 'b']);
+  });
+
+  it('keeps promoted rows independent when thread activity also refreshes the parent aggregate', async () => {
+    const stamp = (day: number, hour = 10) => new Date(2026, 9, day, hour).toISOString();
+    const parent = { ...session('root'), updated_at: stamp(2), own_updated_at: stamp(2) };
+    const child = { ...thread('t1', 'root'), updated_at: stamp(3), own_updated_at: stamp(3) };
+    const other = { ...session('other'), updated_at: stamp(4), own_updated_at: stamp(4) };
+    const metadata = structuredClone(child.metadata);
+    const propsFor = (items: Session[], groupBy: 'none' | 'time' = 'none') => ({
+      sessions: items, groupBy,
+      sessionGroups: groupConversationItems(mergeConversationItems(items, [], {}), {
+        groupBy, workspaces: [], filters: DEFAULT_SESSION_LIST_FILTERS, nowMs: new Date(2026, 9, 6, 12).getTime(),
+      }),
+    });
+    const first = await mount(propsFor([parent, child, other]));
+    const toggle = async (container: HTMLDivElement) => {
+      await act(async () => { container.querySelector('[data-session-row="t1"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })); });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-menu-item="thread-display"]')!.click(); });
+    };
+    const rows = (container: HTMLDivElement) => [...container.querySelectorAll('[data-session-row]')].map((row) => row.getAttribute('data-session-row'));
+    expect(rows(first.container)).toEqual(['other', 'root', 't1']);
+    await toggle(first.container);
+    expect(rows(first.container)).toEqual(['other', 't1', 'root']);
+    await act(async () => { first.root.unmount(); });
+
+    const freshChild = { ...child, updated_at: stamp(6, 11), own_updated_at: stamp(6, 11) };
+    const aggregateParent = { ...parent, updated_at: freshChild.updated_at };
+    const second = await mount(propsFor([aggregateParent, freshChild, other]));
+    expect(rows(second.container)).toEqual(['t1', 'other', 'root']);
+    expect(second.container.querySelector('[data-session-threads="root"] [data-session-row="t1"]')).toBeNull();
+    expect(second.container.querySelector('[data-session-row="t1"] [data-session-relation-note]')?.textContent).toContain('root');
+    await act(async () => { second.root.unmount(); });
+    const acrossTime = await mount(propsFor([aggregateParent, freshChild, other], 'time'));
+    expect(acrossTime.container.querySelector('[data-session-group-block="today"] [data-session-row="t1"]')).not.toBeNull();
+    expect(acrossTime.container.querySelector('[data-session-group-block="week"] [data-session-row="root"]')).not.toBeNull();
+    await act(async () => { acrossTime.root.unmount(); });
+
+    const freshParent = { ...aggregateParent, updated_at: stamp(6, 12), own_updated_at: stamp(6, 12) };
+    const third = await mount(propsFor([freshParent, freshChild, other], 'time'));
+    expect(rows(third.container)).toEqual(['root', 't1', 'other']);
+    expect(third.container.querySelector('[data-session-group-block="today"] [data-session-row="t1"]')).not.toBeNull();
+    expect(third.container.querySelector('[data-session-group-block="week"] [data-session-row="other"]')).not.toBeNull();
+    await toggle(third.container);
+    expect(third.container.querySelector('[data-session-threads="root"] [data-session-row="t1"]')).not.toBeNull();
+    expect(child.metadata).toEqual(metadata);
+    expect(freshChild.metadata).toEqual(metadata);
+    await act(async () => { third.root.unmount(); });
   });
 
   it('toggles thread display through its menu, persists it, and preserves creator metadata', async () => {

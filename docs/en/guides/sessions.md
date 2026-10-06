@@ -48,7 +48,7 @@ On the **New session** page in the desktop app or browser you can pick an existi
 
 Opening a saved session reads its history without waking an inactive session's agents, and selecting a subagent reads that subagent's history without the main agent's conversation. The session activates when you send, edit or regenerate a message, answer an approval or question, or steer a prompt. If activation fails, nothing is sent and the history stays readable. Reading a session never stops work already running in it.
 
-The GUI opens at the latest messages and automatically fills in earlier messages and their step lists while the conversation stays open. Large histories load progressively; you do not need to click through pages. Older message previews may be fetched again as you scroll to keep the reading cache small. Leaving the conversation cancels its pending reads, not the agent's work. A real read failure keeps the messages already loaded and offers a retry; [Reading timeout](./settings.md#timeouts) controls how long a read may wait.
+The GUI opens with a small window of the latest messages. Scrolling up loads the next earlier page automatically; staying in the conversation does not load its entire history in the background. Visible messages and expanded entries load the details they need. Jumping to an older message or returning to a saved reading position continues loading until that place is found; scrolling yourself cancels the old jump. Older message previews may be fetched again as you scroll to keep the reading cache small. Leaving the conversation cancels its pending reads, not the agent's work. A real read failure keeps the messages already loaded and offers a retry; [Reading timeout](./settings.md#timeouts) controls how long a read may wait.
 
 Every time you run `kiki` directly it creates a new session. To resume a previous session, use one of the following:
 
@@ -89,7 +89,7 @@ You can manage sessions without leaving the terminal. The following slash comman
 
 A thread created by another thread nests under its creator by default. **Show at top level** in the row's menu lifts it into its own top-level row, and **Show nested** puts it back. This is display only — the creator relationship stays as it is, and the choice survives a refresh or restart in the same browser or desktop space. The same menu also offers **Copy thread link** for a link to that thread, and **Add to conversation** to drop a reference to it into the conversation you currently have open.
 
-Sorting by recent activity uses the later of a thread's own time and the time of the most recent work anywhere in it, so new activity in a child moves its parent forward in the list. The parent's own last message time and its last prompt stay what the parent itself did.
+The sidebar sorts threads by their own update time. A thread shown at top level keeps its own position and time group: activity in it does not move its parent, and activity in the parent does not carry it along. Nested threads still follow their creator's row.
 
 If session recovery fails, the GUI keeps whatever history it had already loaded and shows the error, with a request ID when there is one. **Retry now** next to it reruns the recovery.
 

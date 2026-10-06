@@ -38,6 +38,25 @@ describe('conversation list and read state', () => {
   ])('resolves only registered room workspace identities: %s', (reference, expected) => {
     expect(roomWorkspaceId(reference, [...workspaces, { id: 'ws-windows', root: 'C:/Example/Project' }, { id: 'ws-unc', root: '//host/share/project' }])).toBe(expected);
   });
+  it('sorts and groups by own recency without changing aggregate session facts, with an old-server fallback', () => {
+    const nowMs = new Date(2026, 9, 6, 12).getTime();
+    const today = new Date(2026, 9, 6, 10).toISOString();
+    const older = new Date(2026, 9, 2, 10).toISOString();
+    const parent = session({ id: 'parent', own_updated_at: older, updated_at: today });
+    const other = session({ id: 'other', updated_at: new Date(2026, 9, 4, 10).toISOString() });
+    const items = mergeConversationItems([parent, other], [], {});
+    expect(items.map((item) => item.id)).toEqual(['other', 'parent']);
+    expect(parent.updated_at).toBe(today);
+    for (const order of ['updated-desc', 'updated-asc'] as const) {
+      expect(groupConversationItems(items, { groupBy: 'none', workspaces, filters, nowMs, order })[0]?.items.map((item) => item.id))
+        .toEqual(order === 'updated-desc' ? ['other', 'parent'] : ['parent', 'other']);
+    }
+    const time = groupConversationItems(items, { groupBy: 'time', workspaces, filters, nowMs });
+    expect(time.map((group) => group.key)).toEqual(['week']);
+    const legacy = mergeConversationItems([{ ...parent, own_updated_at: undefined }, other], [], {});
+    expect(legacy.map((item) => item.id)).toEqual(['parent', 'other']);
+    expect(groupConversationItems(legacy, { groupBy: 'time', workspaces, filters, nowMs })[0]?.key).toBe('today');
+  });
   it('does not leave a parent showing one minute ago between three- and five-day-old rows', () => {
     const nowMs = Date.parse('2026-10-05T12:00:00Z');
     const parent = session({ id: 'parent', updated_at: '2026-10-01T12:00:00Z' });

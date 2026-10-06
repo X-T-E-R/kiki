@@ -146,6 +146,9 @@ export const sessionSchema = z.object({
   title: z.string(),
   created_at: isoDateTimeSchema,
   updated_at: isoDateTimeSchema,
+  /** Original session metadata update time, excluding activity propagated from
+   *  other threads. Older servers omit this field; clients use `updated_at`. */
+  own_updated_at: isoDateTimeSchema.optional(),
   /** Any agent in the session holds an active turn or background lease.
    *  Replaces the derived five-value `status` enum: awaiting
    *  states ride the approval/question channels, and turn outcomes ride

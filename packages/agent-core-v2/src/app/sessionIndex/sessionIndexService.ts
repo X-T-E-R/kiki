@@ -529,12 +529,12 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   ): Promise<SessionSummary | undefined> {
     const queued = pending.find((summary) => summary.id === id);
     if (queued !== undefined) {
-      if (workspaceId === undefined || queued.workspaceId === workspaceId) return queued;
+      if (workspaceId === undefined || queued.workspaceId === workspaceId) return this.withOwnUpdatedAt(queued);
     } else {
       const cached: unknown = await this.queryStore.get(sessionCollection(generation), id);
       if (isSessionSummaryShape(cached)) {
         const summary = stripRecencyField(generation, cached);
-        if (workspaceId === undefined || summary.workspaceId === workspaceId) return summary;
+        if (workspaceId === undefined || summary.workspaceId === workspaceId) return this.withOwnUpdatedAt(summary);
       }
     }
     const summary = await this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId]);
@@ -596,7 +596,20 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       cursor.bounds,
       limit,
     );
-    return this.mergePending(page, query, pending, cursor.position);
+    const merged = this.mergePending(page, query, pending, cursor.position);
+    return { ...merged, items: await Promise.all(merged.items.map((summary) => this.withOwnUpdatedAt(summary))) };
+  }
+
+  private async withOwnUpdatedAt(summary: SessionSummary): Promise<SessionSummary> {
+    if (summary.ownUpdatedAt !== undefined) return summary;
+    const result = await readSessionSummaryResult(this.docs, this.sessionsScope, summary.workspaceId, summary.id, this.log);
+    if (result.kind !== 'found' || result.summary.ownUpdatedAt === undefined) return summary;
+    const current = this.mirror.pending().find((entry) => entry.id === summary.id);
+    const original = current === undefined ? result.summary : {
+      ...current, ownUpdatedAt: current.ownUpdatedAt ?? result.summary.ownUpdatedAt,
+    };
+    this.mirror.record(original);
+    return { ...summary, ownUpdatedAt: original.ownUpdatedAt };
   }
 
   private async countFromReadModel(
