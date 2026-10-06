@@ -32,6 +32,20 @@ const coldFacts: SessionFacts = {
   live: false,
 };
 
+describe('toWireSession independent recency', () => {
+  it('retains aggregate recency but projects the original metadata time for live and cold sessions', () => {
+    const live = toWireSession({ ...fields, updatedAt: 10, activityUpdatedAt: 100 }, '/example', coldFacts);
+    const cold = toWireSession({ ...fields, updatedAt: 100, ownUpdatedAt: 10 }, '/example', coldFacts);
+    for (const wire of [live, cold]) {
+      expect(wire.updated_at).toBe(new Date(100).toISOString());
+      expect(wire.own_updated_at).toBe(new Date(10).toISOString());
+    }
+    const fresh = toWireSession({ ...fields, updatedAt: 200, activityUpdatedAt: 100 }, '/example', coldFacts);
+    expect(fresh.updated_at).toBe(new Date(200).toISOString());
+    expect(fresh.own_updated_at).toBe(fresh.updated_at);
+  });
+});
+
 describe('toWireSession creator metadata', () => {
   it('projects persisted creator IDs into session.metadata for session lists', () => {
     const wire = toWireSession({

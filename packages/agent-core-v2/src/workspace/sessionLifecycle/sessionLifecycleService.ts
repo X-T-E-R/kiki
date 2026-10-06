@@ -9,6 +9,7 @@ import {
   type ISessionScopeHandle,
 } from '#/_base/di/scope';
 import { unwrapErrorCause } from '#/_base/errors/errors';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { AsyncEmitter, Emitter, type Event, type IWaitUntil } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { drainLogCloses } from '#/_base/log/logService';
@@ -242,22 +243,23 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (onDispose !== undefined) this._register({ dispose: onDispose });
     this._register({
       dispose: () => {
-        for (const sessionId of this.sessionLocks.keys()) void this.releaseSessionLock(sessionId);
+        const pending = [...this.sessionLocks.keys()].map((sessionId) => this.releaseSessionLock(sessionId));
+        Promise.all(pending).catch(onUnexpectedError);
       },
     });
   }
 
-  override dispose(): void {
+  override async dispose(): Promise<void> {
     for (const timer of this.checkpointTimers.values()) clearTimeout(timer);
     this.checkpointTimers.clear();
-    for (const subscription of this.checkpointSubscriptions.values()) subscription.dispose();
+    for (const subscription of this.checkpointSubscriptions.values()) await subscription.dispose();
     this.checkpointSubscriptions.clear();
     this.checkpointSaves.clear();
     for (const [sessionId, handle] of [...this.sessions].reverse()) {
       this.sessions.delete(sessionId);
-      handle.dispose();
+      await handle.dispose();
     }
-    super.dispose();
+    await super.dispose();
   }
 
   private get workspaceId(): string {
@@ -399,10 +401,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         subKey === undefined || subKey === '' ? sessionScope : `${sessionScope}/${subKey}`,
     };
     let workspaceReference: IDisposable | undefined;
-    const releaseWorkspaceReference = (): void => {
+    const releaseWorkspaceReference = (): void | Promise<void> => {
       const reference = workspaceReference;
       workspaceReference = undefined;
-      reference?.dispose();
+      return reference?.dispose();
     };
     let sessionContainer: IInstantiationService | undefined;
     let handle: ISessionScopeHandle;
@@ -484,7 +486,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       try {
         await sessionContainer?.dispose();
       } finally {
-        releaseWorkspaceReference();
+        await releaseWorkspaceReference();
         await this.releaseSessionLock(opts.sessionId);
       }
       throw error;
@@ -604,7 +606,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   }
 
   private installCheckpointScheduling(sessionId: string, handle: ISessionScopeHandle): void {
-    this.checkpointSubscriptions.get(sessionId)?.dispose();
+    const previous = this.checkpointSubscriptions.get(sessionId)?.dispose();
+    if (previous instanceof Promise) previous.catch(onUnexpectedError);
     try {
       const activity = handle.accessor.get(ISessionActivityView);
       this.checkpointSubscriptions.set(
@@ -665,7 +668,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const timer = this.checkpointTimers.get(sessionId);
     if (timer !== undefined) clearTimeout(timer);
     this.checkpointTimers.delete(sessionId);
-    this.checkpointSubscriptions.get(sessionId)?.dispose();
+    const previous = this.checkpointSubscriptions.get(sessionId)?.dispose();
+    if (previous instanceof Promise) previous.catch(onUnexpectedError);
     this.checkpointSubscriptions.delete(sessionId);
   }
 
@@ -792,6 +796,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       lastPrompt: meta.lastPrompt,
       createdAt: meta.createdAt,
       updatedAt: Math.max(meta.updatedAt, meta.activityUpdatedAt ?? 0),
+      ownUpdatedAt: meta.updatedAt,
       archived: meta.archived,
       archivedAt: meta.archivedAt,
       custom: meta.custom,

@@ -279,6 +279,15 @@ export function registerSessionsRoutes(
 ): void {
   registerPersonaSettingsRoutes(app, core);
   const overlayResourcesBySession = new Map<string, Set<string>>();
+  const pendingOverlayCleanups = new Set<Promise<void>>();
+  const log = core.accessor.get(ILogService);
+  const trackOverlayCleanup = (result: void | Promise<void>): void => {
+    if (!(result instanceof Promise)) return;
+    pendingOverlayCleanups.add(result);
+    result.finally(() => pendingOverlayCleanups.delete(result)).catch((error: unknown) => {
+      log.error('session source overlay release failed', { error });
+    });
+  };
   const releaseSessionOverlays = (sessionId: string) => {
     const resources = overlayResourcesBySession.get(sessionId);
     if (resources === undefined) return;
@@ -1348,6 +1357,9 @@ export function registerSessionsRoutes(
             return;
           }
           const overlayPin = await acquireSessionOperation(core, session_id, 'source-overlay');
+          const releaseOverlayPin = (): void => {
+            trackOverlayCleanup(overlayPin.dispose());
+          };
           let attached = false;
           try {
             if (overlayPin.handle === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
@@ -1364,7 +1376,7 @@ export function registerSessionsRoutes(
                 resources?.delete(resourceId);
                 if (resources?.size === 0) overlayResourcesBySession.delete(session_id);
               } finally {
-                overlayPin.dispose();
+                releaseOverlayPin();
               }
             });
             if (!attached) {
@@ -1381,7 +1393,7 @@ export function registerSessionsRoutes(
               skills: contributions.skills.skills.length,
             }, req.id));
           } finally {
-            if (!attached) overlayPin.dispose();
+            if (!attached) releaseOverlayPin();
           }
         });
       } catch (error) {
@@ -1471,6 +1483,7 @@ export interface SessionWireFields {
   readonly lastPrompt?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
+  readonly ownUpdatedAt?: number;
   readonly activityUpdatedAt?: number;
   readonly archived: boolean;
   readonly archivedAt?: number;
@@ -1509,6 +1522,7 @@ export function toWireSession(
     title: fields.title ?? '',
     created_at: new Date(fields.createdAt).toISOString(),
     updated_at: new Date(Math.max(fields.updatedAt, fields.activityUpdatedAt ?? 0)).toISOString(),
+    own_updated_at: new Date(fields.ownUpdatedAt ?? fields.updatedAt).toISOString(),
     archived_at:
       fields.archivedAt === undefined ? undefined : new Date(fields.archivedAt).toISOString(),
     busy: facts.busy,
