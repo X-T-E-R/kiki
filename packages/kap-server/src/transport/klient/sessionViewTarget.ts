@@ -97,7 +97,10 @@ export class SessionViewTarget implements BroadcastTarget {
       if (typeof event.agentId !== 'string' || event.agentId === '' || event.agentId === 'main' || typeof event.phase?.kind !== 'string') return undefined;
       const kind = event.phase.kind;
       const status = kind === 'idle' || kind === 'ended' || kind === 'awaiting_approval' ? kind : 'active';
-      const key = `${status}:${event.phase.turnId ?? ''}`;
+      const turnId = typeof event.phase.turnId === 'string' || typeof event.phase.turnId === 'number'
+        ? String(event.phase.turnId)
+        : '';
+      const key = `${status}:${turnId}`;
       if (this.rosterActivity.get(event.agentId) === key) return undefined;
       this.rosterActivity.set(event.agentId, key);
       return { type: 'sessionCursorAdvanced', cursor: { seq: envelope.seq, epoch: envelope.epoch }, generation: this.generation, rosterAgentId: event.agentId };
