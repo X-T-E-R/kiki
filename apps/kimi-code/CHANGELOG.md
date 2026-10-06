@@ -4,6 +4,12 @@
 
 ### Patch Changes
 
+- Keep cold subagents inactive and preserve completed runtime states.
+
+- Return an empty transcript when an agent has no saved history.
+
+- Avoid republishing memory snapshots when effective guidance is unchanged.
+
 - Allow subagents to resume after cancellation while preserving queued task notifications.
 
 - Allow normally completed responses to finish without text instead of retrying them as failures.
