@@ -1,4 +1,94 @@
 /**
+ * Replay one captured usage response, echoing the query the GUI actually sent.
+ *
+ * The capture carries its own `query` block; the echo lets the page assert the
+ * dimensions, filters and window it asked for while every number stays the one
+ * the server recorded. A narrower window inside a recording is projected from
+ * the buckets it covers, so a selected day or a source row's trace answers from
+ * the recording. A request no recording covers is an unsupported combination
+ * and is reported as such, never answered with a borrowed total or a measured
+ * zero.
+ */
+/**
+ * One recording, read through a narrower window: keep the buckets the window
+ * actually covers and sum their own recorded groups.
+ */
+function projectUsageResponse(capture, window, query) {
+  const trend = capture.trend.filter(
+    (bucket) => bucket.start_at >= window.startAt && bucket.start_at < window.endAt,
+  );
+  const groups = trend.flatMap((bucket) => bucket.groups);
+  const summary = {
+    tokens: groups.reduce(
+      (acc, group) => ({
+        input_other: acc.input_other + group.tokens.input_other,
+        output: acc.output + group.tokens.output,
+        input_cache_read: acc.input_cache_read + group.tokens.input_cache_read,
+        input_cache_creation: acc.input_cache_creation + group.tokens.input_cache_creation,
+      }),
+      { input_other: 0, output: 0, input_cache_read: 0, input_cache_creation: 0 },
+    ),
+    cost_usd_estimated: groups.reduce((sum, group) => sum + group.cost_usd_estimated, 0),
+    cost_unknown: groups.some((group) => group.cost_unknown === true),
+    session_count: new Set(trend.flatMap((bucket) => bucket.drilldown.sessions.map((entry) => entry.session_id))).size,
+  };
+  const windowedSessions = trend.flatMap((bucket) => bucket.drilldown.sessions.map((entry) => entry.session_id));
+  const recorded = capture.sessions.items.filter((item) => windowedSessions.includes(item.id));
+  const pageSize = Math.min(100, Math.max(1, Number(query.get('page_size') ?? 25) || 25));
+  const offset = Math.max(0, Number(query.get('page_token') ?? 0) || 0);
+  const page = recorded.slice(offset, offset + pageSize);
+  const hasMore = offset + page.length < recorded.length;
+  return {
+    query: replayUsageResponse(capture, query).query,
+    summary,
+    trend,
+    sessions: {
+      items: page,
+      total: recorded.length,
+      has_more: hasMore,
+      next_page_token: hasMore ? String(offset + page.length) : null,
+    },
+    reliability: capture.reliability,
+  };
+}
+
+function replayUsageResponse(capture, query) {
+  const pageSize = Math.min(100, Math.max(1, Number(query.get('page_size') ?? 25) || 25));
+  const offset = Math.max(0, Number(query.get('page_token') ?? 0) || 0);
+  const items = capture.sessions.items;
+  const page = items.slice(offset, offset + pageSize);
+  const hasMore = offset + page.length < items.length;
+  return {
+    query: {
+      granularity: query.get('granularity') ?? capture.query.granularity,
+      range: {
+        preset: query.get('range') ?? capture.query.range.preset,
+        start_at: query.get('start_at') !== null ? Number(query.get('start_at')) : capture.query.range.start_at,
+        end_at: query.get('end_at') !== null ? Number(query.get('end_at')) : capture.query.range.end_at,
+        defaulted_to_all_history: query.get('range') === null && capture.query.range.preset === 'all',
+      },
+      dimension: query.get('dimension') ?? capture.query.dimension,
+      models: query.getAll('model'),
+      providers: query.getAll('provider'),
+      profiles: query.getAll('profile'),
+      agent_ids: query.getAll('agent.id'),
+      workspace_ids: query.getAll('workspace.id'),
+      include_archived: query.get('include_archived') !== 'false',
+      timezone_offset_minutes: Number(query.get('timezone_offset_minutes') ?? 0) || 0,
+    },
+    summary: capture.summary,
+    trend: capture.trend,
+    sessions: {
+      items: page,
+      total: capture.sessions.total,
+      has_more: hasMore,
+      next_page_token: hasMore ? String(offset + page.length) : null,
+    },
+    reliability: capture.reliability,
+  };
+}
+
+/**
  * kiki-gui fixture server — a deterministic stand-in for kap-server so every
  * GUI state can be rendered and screenshotted without a live model.
  *
@@ -2149,44 +2239,121 @@ class FixtureServer {
     if (seed === null || seed === undefined) {
       return this.envelope(res, null, 40404, 'no usage fixture for this scenario');
     }
+    // A captured-response scenario answers from the record itself, so the
+    // window, the bars and the amounts on screen are the server's own answer
+    // for exactly those conditions rather than a hand-laid-out stand-in.
+    if (typeof seed.matchCapture === 'function') {
+      const matched = seed.matchCapture(query);
+      // No recording covers these conditions. Answering with a complete empty
+      // response would claim the period measured nothing, which is a different
+      // statement from "this combination was never recorded" — and it would
+      // make a comparison read as a real zero. The unsupported combination is
+      // reported instead, so the page keeps the current period and shows the
+      // prior one as unavailable with a retry.
+      if (matched === null) {
+        return this.envelope(res, null, 40404, 'no recorded usage response for these conditions');
+      }
+      // A narrower window inside a recording is projected from it: only the
+      // buckets inside the request, with their own real groups.
+      if (matched.capture !== undefined) {
+        return this.envelope(res, projectUsageResponse(matched.capture, matched.window, query));
+      }
+      return this.envelope(res, replayUsageResponse(matched, query));
+    }
     const granularity = query.get('granularity') ?? 'day';
     const dimension = query.get('dimension') ?? 'model';
     const range = query.get('range') ?? 'all';
     const includeArchived = query.get('include_archived') !== 'false';
     const workspace = query.get('workspace.id');
+    const modelFilter = query.getAll('model');
+    const providerFilter = query.getAll('provider');
+    const profileFilter = query.getAll('profile');
     const pageSize = Math.min(100, Math.max(1, Number(query.get('page_size') ?? 25) || 25));
     const offset = Math.max(0, Number(query.get('page_token') ?? 0) || 0);
-
-    let items = range === 'today' ? (seed.sessionsToday ?? seed.sessions) : seed.sessions;
-    if (!includeArchived) items = items.filter((item) => item.archived !== true);
-    if (workspace !== null) items = items.filter((item) => item.workspace_id === workspace);
-    const pageItems = items.slice(offset, offset + pageSize);
-    const hasMore = offset + pageItems.length < items.length;
 
     const timezoneOffset = Number(query.get('timezone_offset_minutes') ?? 0) || 0;
     const dayMs = 24 * 60 * 60 * 1000;
     const todayStart = Math.floor((Date.now() + timezoneOffset * 60_000) / dayMs) * dayMs - timezoneOffset * 60_000;
+
+    // One filter set (summary, trend and sessions) narrows every part of the
+    // response, the way the record-level server does.
+    let items = range === 'today' ? (seed.sessionsToday ?? seed.sessions) : seed.sessions;
+    if (!includeArchived) items = items.filter((item) => item.archived !== true);
+    if (workspace !== null) items = items.filter((item) => item.workspace_id === workspace);
+    if (modelFilter.length > 0) items = items.filter((item) => modelFilter.includes(item.primary_model ?? ''));
+    if (providerFilter.length > 0) items = items.filter((item) => providerFilter.includes(seed.providerByModel?.[item.primary_model ?? ''] ?? ''));
+    if (profileFilter.length > 0) items = items.filter((item) => item.profile_names?.some((name) => profileFilter.includes(name)));
+    const pageItems = items.slice(offset, offset + pageSize);
+    const hasMore = offset + pageItems.length < items.length;
+
     const dimensionTrend = seed.trendByDimension?.[dimension];
-    const allTrend = dimensionTrend?.[granularity] ?? seed.trend[granularity] ?? seed.trend.day ?? [];
-    const trend = range === 'today'
+    const startAtParam = query.get('start_at') !== null ? Number(query.get('start_at')) : null;
+    // An explicit window that ends before the seeded range asks for the prior
+    // period; the scenario seeds that span so a comparison has real numbers.
+    const wantsPrior = startAtParam !== null && startAtParam < firstSeedStart();
+    const priorTrend = wantsPrior ? seed.trendByDimension?.[`prior${dimension === 'provider' || dimension === 'profile' ? dimension : ''}${dimension === 'provider' || dimension === 'profile' ? '' : capitalize(granularity)}`] : undefined;
+    const priorGranularity = seed.trendByDimension?.[`prior${capitalize(granularity)}`]?.[granularity];
+    let allTrend = wantsPrior
+      ? (priorTrend?.[granularity] ?? priorGranularity ?? [])
+      : dimensionTrend?.[granularity] ?? seed.trend[granularity] ?? seed.trend.day ?? [];
+
+    function capitalize(value) {
+      return value.length === 0 ? value : value[0].toUpperCase() + value.slice(1);
+    }
+    function firstSeedStart() {
+      const seeded = seed.trend[granularity] ?? seed.trend.day ?? [];
+      return seeded.length === 0 ? Number.MAX_SAFE_INTEGER : Math.min(...seeded.map((bucket) => bucket.start_at));
+    }
+    if (modelFilter.length > 0) {
+      allTrend = allTrend.map((bucket) => ({
+        ...bucket,
+        groups: bucket.groups.filter((entry) => modelFilter.includes(entry.model_alias ?? '')),
+      }));
+    }
+    if (providerFilter.length > 0) {
+      allTrend = allTrend.map((bucket) => ({
+        ...bucket,
+        groups: bucket.groups.filter((entry) => providerFilter.includes(entry.provider ?? '')),
+      }));
+    }
+    if (profileFilter.length > 0) {
+      allTrend = allTrend.map((bucket) => ({
+        ...bucket,
+        groups: bucket.groups.filter((entry) => profileFilter.includes(entry.profile_name ?? '')),
+      }));
+    }
+    // An explicit window narrows the buckets the way a record-level server
+    // would, so a prior-period read returns that period and not the whole range.
+    const startAt = query.get('start_at') !== null ? Number(query.get('start_at')) : null;
+    const endAt = query.get('end_at') !== null ? Number(query.get('end_at')) : null;
+    let trend = range === 'today'
       ? allTrend.filter((bucket) => bucket.end_at > todayStart && bucket.start_at < todayStart + dayMs)
       : allTrend;
+    if (startAt !== null && endAt !== null) {
+      trend = allTrend.filter((bucket) => bucket.start_at >= startAt && bucket.start_at < endAt);
+    }
 
     return this.envelope(res, {
       query: {
         granularity,
         range: {
           preset: range,
-          start_at: range === 'today' ? todayStart : query.get('start_at') !== null ? Number(query.get('start_at')) : null,
-          end_at: range === 'today' ? todayStart + dayMs : query.get('end_at') !== null ? Number(query.get('end_at')) : null,
+          start_at: range === 'today' ? todayStart : startAt,
+          end_at: range === 'today' ? todayStart + dayMs : endAt,
           defaulted_to_all_history: query.get('range') === null,
         },
         dimension,
+        models: modelFilter,
+        providers: providerFilter,
+        profiles: profileFilter,
+        agent_ids: query.getAll('agent.id'),
         workspace_ids: workspace !== null ? [workspace] : [],
         include_archived: includeArchived,
         timezone_offset_minutes: Number(query.get('timezone_offset_minutes') ?? 0) || 0,
       },
-      summary: range === 'today' ? seed.summaryToday : { ...seed.summary, session_count: items.length },
+      summary: range === 'today'
+        ? seed.summaryToday
+        : { ...seed.summary, session_count: items.length },
       trend,
       sessions: {
         items: pageItems,

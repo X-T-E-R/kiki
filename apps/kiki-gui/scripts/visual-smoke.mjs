@@ -469,6 +469,147 @@ const SCENARIOS = [
     },
   },
   {
+    name: 'usage-sources',
+    fixture: 'usage-dashboard',
+    tags: ['smoke', 'usage'],
+    async run(page, link) {
+      const shots = [];
+      // Desktop: the whole range, one axis, no session trace on screen.
+      await page.goto(link('/usage?range=last_7_days&granularity=day'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-usage-trend] [data-bucket]', { timeout: 20_000 });
+      await page.waitForSelector('[data-usage-sources="model"]', { timeout: 20_000 });
+      shots.push(await shot(page, 'usage-sources-range'));
+      // Selecting a bar scopes the table below it and leaves the headline alone.
+      await page.locator('[data-usage-trend] [data-bucket]').nth(2).click();
+      await page.waitForSelector('[data-usage-clear-bucket]', { timeout: 10_000 });
+      shots.push(await shot(page, 'usage-sources-bucket'));
+      // One axis at a time; the provider rows replace the model rows.
+      await page.locator('[data-usage-grouping="provider"]').click();
+      await page.waitForSelector('[data-usage-sources="provider"]', { timeout: 10_000 });
+      shots.push(await shot(page, 'usage-sources-provider'));
+      // The prior period is only read once the reader asks.
+      await page.locator('[data-usage-compare]').click();
+      await page.waitForSelector('[data-usage-compare="delta"]', { timeout: 10_000 });
+      shots.push(await shot(page, 'usage-sources-compare'));
+      // The session trace is an explicit step.
+      await page.locator('[data-usage-open-sessions]').click();
+      await page.waitForSelector('[data-usage-session-panel]', { timeout: 15_000 });
+      shots.push(await shot(page, 'usage-session-trace'));
+      await page.keyboard.press('Escape');
+      // 390: the same reading without horizontal page overflow.
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto(link('/usage?range=last_7_days&granularity=day'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-usage-sources="model"]', { timeout: 20_000 });
+      await page.locator('[data-usage-trend] [data-bucket]').nth(2).click();
+      await page.waitForSelector('[data-usage-clear-bucket]', { timeout: 10_000 });
+      shots.push(await shot(page, 'usage-sources-mobile'));
+      return shots;
+    },
+  },
+  {
+    name: 'usage-real',
+    fixture: 'usage-real',
+    tags: ['smoke', 'usage'],
+    async run(page, link) {
+      const shots = [];
+      const requests = [];
+      page.on('request', (request) => {
+        const url = new URL(request.url());
+        if (url.pathname === '/api/usage') requests.push(Object.fromEntries(url.searchParams));
+      });
+      // The seven-day read: bars, dates and amount are the captured response.
+      await page.goto(link('/usage?range=last_7_days&granularity=day'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-usage-trend] [data-bucket]', { timeout: 20_000 });
+      const rangeNote = await page.locator('[data-usage-range-note]').innerText();
+      const buckets = await page.locator('[data-usage-trend] [data-bucket]').evaluateAll(
+        (nodes) => nodes.map((node) => node.getAttribute('aria-label').split(' · ')[0]),
+      );
+      const headline = await page.locator('[data-usage-summary-cost]').innerText();
+      // Every bar the reader sees falls inside the window the header states.
+      const inWindow = buckets.every((label) => {
+        const parsed = new Date(label);
+        return Number.isFinite(parsed.getTime());
+      });
+      shots.push(await shot(page, 'usage-real-range'));
+
+      // Select a period: the headline stays whole-range, the table narrows.
+      await page.locator('[data-usage-trend] [data-bucket]').nth(3).click();
+      await page.waitForSelector('[data-usage-source-subtotal]', { timeout: 10_000 });
+      const headlineAfter = await page.locator('[data-usage-summary-cost]').innerText();
+      const scope = await page.locator('[data-usage-source-scope]').innerText();
+      const periodTotal = await page.locator('[data-usage-source-subtotal]').innerText();
+      shots.push(await shot(page, 'usage-real-bucket'));
+
+      // The prior period is read on request, with its own explicit window.
+      await page.locator('[data-usage-compare]').click();
+      // The prior window is not in the capture, so the comparison must say so
+      // rather than read as a measured zero or invent a delta.
+      await page.waitForSelector('[data-usage-compare-error]', { timeout: 15_000 });
+      const compareCells = ['compare-error'];
+      const compareError = await page.locator('[data-usage-compare-error]').innerText();
+      const headlineDuringFailure = await page.locator('[data-usage-summary-cost]').innerText();
+      shots.push(await shot(page, 'usage-real-compare-unavailable'));
+
+      // The trace carries the captured per-session costs and turn ids.
+      await page.locator('[data-usage-open-sessions]').click();
+      await page.waitForSelector('[data-usage-session-panel] [data-usage-trace-session]', { timeout: 15_000 });
+      await page.locator('[data-usage-trace-locate]').first().click();
+      const hasTurns = await page.locator('[data-usage-trace-turns]').count() > 0;
+      const traceTotal = await page.locator('[data-usage-trace-total]').innerText();
+      const firstSession = await page.locator('[data-usage-trace-session]').first().innerText();
+      shots.push(await shot(page, 'usage-real-trace'));
+      // Pressing a turn opens the real session at that turn.
+      const turnButtons = await page.locator('[data-usage-trace-turn]').count();
+      let located = null;
+      if (turnButtons > 0) {
+        // Click one specific locator and prove that exact turn is the one that
+        // ends up readable. Opening any turn and looking at the first row's
+        // offset would only show that the page scrolled, not that it landed
+        // on the target.
+        const button = page.locator('[data-usage-trace-turn]').nth(20);
+        const clickedTurnId = await button.getAttribute('data-usage-trace-turn');
+        const before = page.url();
+        await button.click();
+        await page.waitForTimeout(1500);
+        const url = new URL(page.url());
+        located = await page.evaluate((wanted) => {
+          const rows = [...document.querySelectorAll('[data-turn-id]')];
+          const match = rows.find((row) => row.getAttribute('data-turn-id') === `t${wanted}`);
+          if (match === undefined) return { found: false, rows: rows.length };
+          const box = match.getBoundingClientRect();
+          const read = (box.top > 0 && box.top < window.innerHeight && box.bottom > 0 && box.bottom < window.innerHeight);
+          const text = match.textContent?.trim().slice(0, 80) ?? '';
+          return {
+            found: true,
+            rows: rows.length,
+            turnId: match.getAttribute('data-turn-id'),
+            box: { top: Math.round(box.top), bottom: Math.round(box.bottom), height: Math.round(box.height) },
+            readableInViewport: read,
+            text,
+          };
+        }, clickedTurnId);
+        located.clickedTurnId = clickedTurnId;
+        located.routeBefore = before;
+        located.routeAfter = page.url();
+        located.routeSession = url.pathname.split('/s/')[1]?.split('?')[0];
+        located.routeTurnParam = url.searchParams.get('turn');
+        located.routeMatchesButton =
+          located.routeSession === located.routeAfter.match(/\/s\/([^?]+)/)?.[1] &&
+          located.routeTurnParam === clickedTurnId;
+        if (!located.found || !located.readableInViewport) {
+          throw new Error(`turn locator did not land on turn ${clickedTurnId}: ${JSON.stringify(located)}`);
+        }
+        await shot(page, 'usage-real-turn-located');
+      }
+      console.log('[usage-real]', JSON.stringify({
+        rangeNote, buckets, inWindow, headline, headlineAfter, scope, periodTotal,
+        compareCells, compareError, headlineDuringFailure, traceTotal, firstSession, hasTurns, turnButtons, located,
+        lastRequests: requests.slice(-4),
+      }, null, 1));
+      return shots;
+    },
+  },
+  {
     name: 'first-run',
     tags: ['smoke', 'onboarding'],
     onboarding: false,

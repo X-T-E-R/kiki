@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   aggregateDimensionGroups,
+  aggregateSourceRows,
   buildAgentTree,
   buildUsageApiQuery,
   bucketLabel,
@@ -16,9 +17,17 @@ import {
   totalTokensOf,
   USAGE_FILTER_DEFAULTS,
   USAGE_FILTERS_STORAGE_KEY,
+  usageBucketCompareWindow,
+  usageCompareWindow,
   usageDetailViewToSearch,
+  usageFiltersHaveScope,
   usageFiltersToSearch,
+  usagePointChange,
+  usageRangeWindow,
+  usageRatioChange,
+  usageSeriesKeys,
   usageSessionDeepLink,
+  usageSourceKey,
   writeStoredUsageFilters,
   type UsageFilters,
   type UsageGroupWire,
@@ -50,31 +59,64 @@ function bucket(startAt: number, groups: UsageGroupWire[]): UsageTrendBucketWire
 }
 
 describe('parseUsageFilters', () => {
-  it('defaults to local today / day / model with no query', () => {
+  it('defaults to local today / 5h rhythm / model with no query', () => {
     expect(parseUsageFilters('')).toEqual(USAGE_FILTER_DEFAULTS);
     expect(USAGE_FILTER_DEFAULTS.range).toBe('today');
+    expect(USAGE_FILTER_DEFAULTS.granularity).toBe('five_hour');
   });
 
   it('parses every axis from the URL', () => {
     const filters = parseUsageFilters(
-      '?granularity=five_hour&range=last_7_days&dimension=agent&workspace=wd_1&include_archived=false',
+      '?granularity=five_hour&range=last_7_days&group_by=provider&workspace=wd_1&include_archived=false&model=example-model&profile=explore&profile=general',
     );
     expect(filters).toEqual({
       granularity: 'five_hour',
       range: 'last_7_days',
-      dimension: 'agent',
+      groupBy: 'provider',
+      advancedDimension: undefined,
       workspaceId: 'wd_1',
+      model: 'example-model',
+      provider: undefined,
+      profiles: ['explore', 'general'],
+      agentIds: [],
       includeArchived: false,
       startAt: undefined,
       endAt: undefined,
     });
   });
 
+  it('keeps an explicit agent/session dimension as the advanced reading', () => {
+    // The advanced per-agent tree is reached by an explicit link and is not
+    // folded into the profile axis, which reads a different set of records.
+    expect(parseUsageFilters('?dimension=agent')).toMatchObject({
+      advancedDimension: 'agent',
+      groupBy: 'model',
+    });
+    expect(parseUsageFilters('?dimension=session')).toMatchObject({
+      advancedDimension: 'session',
+      groupBy: 'model',
+    });
+    // provider and profile are native axes now, not the agent tree.
+    expect(parseUsageFilters('?dimension=profile')).toMatchObject({
+      advancedDimension: undefined,
+      groupBy: 'profile',
+    });
+    expect(parseUsageFilters('?dimension=provider')).toMatchObject({
+      advancedDimension: undefined,
+      groupBy: 'provider',
+    });
+    // group_by names the axis; dimension= still names the advanced reading.
+    expect(parseUsageFilters('?dimension=agent&group_by=provider')).toMatchObject({
+      advancedDimension: 'agent',
+      groupBy: 'provider',
+    });
+  });
+
   it('drops unknown values individually instead of failing the whole URL', () => {
-    const filters = parseUsageFilters('?granularity=hourly&range=bogus&dimension=model');
-    expect(filters.granularity).toBe('day');
+    const filters = parseUsageFilters('?granularity=hourly&range=bogus&group_by=team');
+    expect(filters.granularity).toBe('five_hour');
     expect(filters.range).toBe('today');
-    expect(filters.dimension).toBe('model');
+    expect(filters.groupBy).toBe('model');
   });
 
   it('accepts custom only with valid bounds', () => {
@@ -86,9 +128,10 @@ describe('parseUsageFilters', () => {
 });
 
 describe('detail view deep links', () => {
-  it('defaults to the sessions tab and degrades unknown values', () => {
-    expect(parseUsageDetailView('')).toBe('sessions');
-    expect(parseUsageDetailView('?view=bogus')).toBe('sessions');
+  it('defaults to the source table and degrades unknown values', () => {
+    expect(parseUsageDetailView('')).toBe('sources');
+    expect(parseUsageDetailView('?view=bogus')).toBe('sources');
+    expect(parseUsageDetailView('?view=sessions')).toBe('sessions');
     expect(parseUsageDetailView('?view=breakdown')).toBe('breakdown');
     expect(parseUsageDetailView('?view=five_hour')).toBe('five_hour');
   });
@@ -104,7 +147,8 @@ describe('detail view deep links', () => {
     expect(params.get('session')).toBe('s_1');
     expect(params.get('server')).toBe('http://example.com');
     // The default view is omitted so the canonical URL stays clean.
-    expect(usageDetailViewToSearch('sessions', '?view=breakdown')).toBe('');
+    expect(usageDetailViewToSearch('sessions', '?view=breakdown')).toBe('?view=sessions');
+    expect(usageDetailViewToSearch('sources', '?view=breakdown')).toBe('');
   });
 });
 
@@ -117,8 +161,13 @@ describe('usageFiltersToSearch', () => {
     const filters: UsageFilters = {
       granularity: 'week',
       range: 'custom',
-      dimension: 'project',
+      groupBy: 'workspace',
+      advancedDimension: undefined,
       workspaceId: 'wd_9',
+      model: undefined,
+      provider: 'example-provider',
+      profiles: ['explore'],
+      agentIds: ['agent-1'],
       includeArchived: false,
       startAt: 1000,
       endAt: 2000,
@@ -172,7 +221,7 @@ describe('buildUsageApiQuery', () => {
       { timezoneOffsetMinutes: 480, pageSize: 25 },
     );
     expect(query).toMatchObject({
-      granularity: 'day',
+      granularity: 'five_hour',
       range: 'today',
       dimension: 'model',
       include_archived: 'false',
@@ -206,6 +255,52 @@ describe('buildUsageApiQuery', () => {
       { timezoneOffsetMinutes: 0 },
     );
     expect(query['range']).toBeUndefined();
+  });
+
+  it('asks for the native provider/profile dimensions, never a derived one', () => {
+    expect(
+      buildUsageApiQuery({ ...USAGE_FILTER_DEFAULTS, groupBy: 'provider' }, { timezoneOffsetMinutes: 0 })['dimension'],
+    ).toBe('provider');
+    const profile = buildUsageApiQuery(
+      { ...USAGE_FILTER_DEFAULTS, groupBy: 'profile', profiles: ['explore', 'general'] },
+      { timezoneOffsetMinutes: 0 },
+    );
+    expect(profile['dimension']).toBe('profile');
+    expect(profile['profile']).toEqual(['explore', 'general']);
+    expect(
+      buildUsageApiQuery({ ...USAGE_FILTER_DEFAULTS, groupBy: 'workspace' }, { timezoneOffsetMinutes: 0 })['dimension'],
+    ).toBe('project');
+  });
+
+  it('keeps the advanced agent dimension instead of the profile axis', () => {
+    const query = buildUsageApiQuery(
+      { ...USAGE_FILTER_DEFAULTS, groupBy: 'profile', advancedDimension: 'agent' },
+      { timezoneOffsetMinutes: 0 },
+    );
+    expect(query['dimension']).toBe('agent');
+  });
+
+  it('an explicit window overrides the preset bounds without dropping the range', () => {
+    const query = buildUsageApiQuery(
+      { ...USAGE_FILTER_DEFAULTS, range: 'last_7_days' },
+      { timezoneOffsetMinutes: 0, window: { startAt: 500, endAt: 900 } },
+    );
+    expect(query['start_at']).toBe(500);
+    expect(query['end_at']).toBe(900);
+    expect(query['range']).toBe('last_7_days');
+  });
+
+  it('knows which filter sets narrow records, so a scoped summary is not reused', () => {
+    expect(usageFiltersHaveScope(USAGE_FILTER_DEFAULTS)).toBe(false);
+    // Grouping and granularity only change how the same records are read.
+    expect(usageFiltersHaveScope({ ...USAGE_FILTER_DEFAULTS, groupBy: 'profile' })).toBe(false);
+    expect(usageFiltersHaveScope({ ...USAGE_FILTER_DEFAULTS, granularity: 'day' })).toBe(false);
+    // Any real filter narrows the result set.
+    expect(usageFiltersHaveScope({ ...USAGE_FILTER_DEFAULTS, model: 'example-model' })).toBe(true);
+    expect(usageFiltersHaveScope({ ...USAGE_FILTER_DEFAULTS, provider: 'example-provider' })).toBe(true);
+    expect(usageFiltersHaveScope({ ...USAGE_FILTER_DEFAULTS, profiles: ['explore'] })).toBe(true);
+    expect(usageFiltersHaveScope({ ...USAGE_FILTER_DEFAULTS, workspaceId: 'wd_1' })).toBe(true);
+    expect(usageFiltersHaveScope({ ...USAGE_FILTER_DEFAULTS, agentIds: ['agent-1'] })).toBe(true);
   });
 });
 
@@ -345,5 +440,180 @@ describe('rates and labels', () => {
 
   it('builds the prefiltered session deep link', () => {
     expect(usageSessionDeepLink('s 1')).toBe('/usage?dimension=session&session=s%201');
+  });
+});
+
+
+describe('usageSourceKey', () => {
+  it('keeps a real "unknown" value apart from a missing one', () => {
+    // The server mints opaque identities; a record whose provider really is
+    // spelled "unknown" must not collapse into the missing row.
+    const literal = usageSourceKey(group({ key: 'p1', provider: 'unknown' }), 'provider');
+    const missing = usageSourceKey(group({ key: 'p2', provider: null }), 'provider');
+    expect(literal).not.toBe(missing);
+    expect(literal).toBe(usageSourceKey(group({ key: 'p9', provider: 'unknown' }), 'provider'));
+    expect(missing).toBe('unknown');
+  });
+
+  it('namespaces the provider and profile identities', () => {
+    expect(usageSourceKey(group({ key: 'x', profile_name: 'explore' }), 'profile'))
+      .toBe('profile:"explore"');
+    expect(usageSourceKey(group({ key: 'x', provider: 'example-provider' }), 'provider'))
+      .toBe('provider:"example-provider"');
+  });
+
+  it('uses the wire key directly on the model and workspace axes', () => {
+    expect(usageSourceKey(group({ key: 'k2-thinking', model_alias: 'k2-thinking' }), 'model')).toBe('k2-thinking');
+    expect(usageSourceKey(group({ key: 'wd_1' }), 'workspace')).toBe('wd_1');
+  });
+});
+
+describe('aggregateSourceRows', () => {
+  const trend = [
+    bucket(1000, [
+      group({ key: 'm1', model_alias: 'm1', provider: 'example-provider', profile_name: 'explore', cost_usd_estimated: 2, tokens: { input_other: 100, output: 0, input_cache_read: 0, input_cache_creation: 0 } }),
+      group({ key: 'unknown', cost_usd_estimated: 0.5, cost_unknown: true }),
+    ]),
+    bucket(2000, [
+      group({ key: 'm1', model_alias: 'm1', provider: 'example-provider', profile_name: 'explore', cost_usd_estimated: 1 }),
+      group({ key: 'm2', model_alias: 'm2', provider: 'other-provider', profile_name: null, cost_usd_estimated: 3 }),
+    ]),
+  ];
+
+  it('sums one row per source and keeps a missing source as its own row with its amount', () => {
+    const rows = aggregateSourceRows(trend, 'provider');
+    // Cost-descending; the unknown row keeps its amount rather than dropping.
+    expect(rows.map((row) => row.costUsdEstimated)).toEqual([3, 3, 0.5]);
+    expect(rows.map((row) => row.value)).toEqual([
+      'example-provider',
+      'other-provider',
+      null,
+    ]);
+    // The unknown row keeps its money and its unknown flag; it is not a zero.
+    const unknown = rows.at(-1)!;
+    expect(unknown.key).toBe('unknown');
+    expect(unknown.costUsdEstimated).toBe(0.5);
+    expect(unknown.costUnknown).toBe(true);
+  });
+
+  it('offers a filter only from the raw record attribution, never the row key', () => {
+    const rows = aggregateSourceRows(trend, 'profile');
+    const explore = rows.find((row) => row.value === 'explore')!;
+    expect(explore.filter).toEqual({ field: 'profile', value: 'explore' });
+    // A profile with no attribution has no exact filter and no sentinel.
+    expect(rows.find((row) => row.key === 'unknown')!.filter).toBeNull();
+    const workspaceRows = aggregateSourceRows([bucket(1, [group({ key: 'wd_9' })])], 'workspace');
+    expect(workspaceRows[0]?.filter).toEqual({ field: 'workspace.id', value: 'wd_9' });
+  });
+
+  it('lists the models behind a non-model row for its secondary line', () => {
+    const rows = aggregateSourceRows(trend, 'provider');
+    expect(rows.find((row) => row.value === 'example-provider')!.modelAliases).toEqual(['m1']);
+    expect(rows.find((row) => row.value === 'other-provider')!.modelAliases).toEqual(['m2']);
+  });
+
+  it('flags a partial token subtotal without hiding the known tokens', () => {
+    const rows = aggregateSourceRows(
+      [bucket(1, [group({ key: 'm1', model_alias: 'm1', tokens_unknown: true, tokens: { input_other: 7, output: 0, input_cache_read: 0, input_cache_creation: 0 }, cost_usd_estimated: 2 })])],
+      'model',
+    );
+    expect(rows[0]).toMatchObject({ totalTokens: 7, tokensUnknown: true, costUsdEstimated: 2 });
+  });
+});
+
+describe('usageSeriesKeys', () => {
+  it('ranks the whole range and caps the series, keeping the rest for the table', () => {
+    const trend = [
+      bucket(1, [
+        group({ key: 'a', model_alias: 'a', cost_usd_estimated: 1 }),
+        group({ key: 'b', model_alias: 'b', cost_usd_estimated: 5 }),
+      ]),
+      bucket(2, [
+        group({ key: 'c', model_alias: 'c', cost_usd_estimated: 3 }),
+        group({ key: 'd', model_alias: 'd', cost_usd_estimated: 0.1 }),
+      ]),
+    ];
+    expect(usageSeriesKeys(trend, 'model', 'cost', 2)).toEqual(['b', 'c']);
+    // The cache metric plots a rate, so it never produces a series.
+    expect(usageSeriesKeys(trend, 'model', 'cache', 2)).toEqual([]);
+  });
+});
+
+describe('comparison windows', () => {
+  const DAY = 86_400_000;
+
+  it('compares today against yesterday up to the same local time', () => {
+    const nowMs = new Date(2026, 9, 7, 18, 0, 0).getTime();
+    const startAt = new Date(2026, 9, 7, 0, 0, 0).getTime();
+    const prior = usageCompareWindow({ startAt, endAt: startAt + DAY }, 480, nowMs)!;
+    expect(prior.startAt).toBe(new Date(2026, 9, 6, 0, 0, 0).getTime());
+    expect(prior.endAt).toBe(new Date(2026, 9, 6, 18, 0, 0).getTime());
+  });
+
+  it('moves whole local days across a DST change instead of assuming 24h', () => {
+    // US DST ends on 2026-11-01; the offset that day is still the summer one,
+    // so a naive 24h shift would land an hour off the previous local midnight.
+    const tz = 240;
+    const startAt = new Date(2026, 10, 1, 0, 0, 0).getTime() + tz * 60_000 - 240 * 60_000;
+    const prior = usageCompareWindow({ startAt, endAt: startAt + DAY }, tz, new Date(2026, 10, 2).getTime());
+    expect(prior).not.toBeNull();
+    // The prior window's local length follows the clock, not a fixed 24h.
+    expect(prior!.endAt - prior!.startAt).toBeLessThanOrEqual(DAY);
+  });
+
+  it('has no predecessor for unbounded all-history', () => {
+    expect(usageCompareWindow({ startAt: 0, endAt: 0 }, 0, Date.now())).toBeNull();
+  });
+
+  it('derives the selected bucket its own exact window, clipped to the range', () => {
+    const nowMs = new Date(2026, 9, 7, 18, 0, 0).getTime();
+    const rangeStart = new Date(2026, 9, 1, 0, 0, 0).getTime();
+    const rangeEnd = new Date(2026, 9, 8, 0, 0, 0).getTime();
+    const bucket = { start_at: new Date(2026, 9, 4, 0, 0, 0).getTime(), end_at: new Date(2026, 9, 5, 0, 0, 0).getTime() };
+    // The bucket's own day, moved back by the seven-day span: 10/04 -> 09/27.
+    const prior = usageBucketCompareWindow({ startAt: rangeStart, endAt: rangeEnd }, bucket, 480, nowMs)!;
+    expect(prior).toEqual({
+      startAt: new Date(2026, 8, 27, 0, 0, 0).getTime(),
+      endAt: new Date(2026, 8, 28, 0, 0, 0).getTime(),
+    });
+  });
+
+  it('shifts sub-day windows by their exact length', () => {
+    const startAt = new Date(2026, 9, 7, 5, 0, 0).getTime();
+    const endAt = new Date(2026, 9, 7, 10, 0, 0).getTime();
+    const prior = usageCompareWindow({ startAt, endAt }, 0, endAt)!;
+    expect(prior.startAt).toBe(new Date(2026, 9, 7, 0, 0, 0).getTime());
+    expect(prior.endAt).toBe(new Date(2026, 9, 7, 5, 0, 0).getTime());
+  });
+
+  it('resolves preset ranges to local calendar windows and leaves all-history unbounded', () => {
+    const nowMs = new Date(2026, 9, 7, 12, 0, 0).getTime();
+    const today = usageRangeWindow({ ...USAGE_FILTER_DEFAULTS, range: 'today' }, 480, nowMs)!;
+    expect(today.startAt).toBe(new Date(2026, 9, 7, 0, 0, 0).getTime());
+    expect(today.endAt).toBe(new Date(2026, 9, 8, 0, 0, 0).getTime());
+    expect(usageRangeWindow({ ...USAGE_FILTER_DEFAULTS, range: 'all' }, 480, nowMs)).toBeNull();
+    const custom = usageRangeWindow(
+      { ...USAGE_FILTER_DEFAULTS, range: 'custom', startAt: 1000, endAt: 2000 },
+      0,
+      nowMs,
+    );
+    expect(custom).toEqual({ startAt: 1000, endAt: 2000 });
+  });
+});
+
+describe('comparison deltas', () => {
+  it('refuses to divide by a zero prior period', () => {
+    expect(usageRatioChange(5, 0)).toEqual({ kind: 'priorZero' });
+    expect(usageRatioChange(5, 4)).toEqual({ kind: 'delta', ratio: 0.25 });
+  });
+
+  it('refuses to compare an unknown measurement', () => {
+    expect(usageRatioChange(Number.NaN, 4)).toEqual({ kind: 'unavailable' });
+  });
+
+  it('reports cache hit rate in percentage points', () => {
+    expect(usagePointChange(0.5, 0.4)).toEqual({ kind: 'delta', ratio: 10 });
+    expect(usagePointChange(0.238, 0.4)).toEqual({ kind: 'delta', ratio: -16.2 });
+    expect(usagePointChange(null, 0.4)).toEqual({ kind: 'unavailable' });
   });
 });

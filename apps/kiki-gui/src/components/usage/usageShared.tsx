@@ -16,8 +16,10 @@ import {
   totalTokensOf,
   usageTokenTotalIsUnknown,
   type UsageAggregateWire,
+  type UsageCompareOutcome,
   type UsageDimensionRow,
-  type UsageFilters,
+  type UsageGroupBy,
+  type UsageLegacyDimension,
   type UsageTrendBucketWire,
 } from '../../lib/usageV2';
 import { segmentClass } from '../WorkspaceScopeControl';
@@ -143,7 +145,7 @@ export function formatCostOrDash(cost: number, unknown: boolean): string {
  */
 export function dimensionKeyLabel(
   row: Pick<UsageDimensionRow, 'key' | 'modelAlias' | 'profileName' | 'agentId'>,
-  dimension: UsageFilters['dimension'],
+  dimension: UsageLegacyDimension,
   lookups: {
     readonly unknownLabel: string;
     readonly workspaceName: (id: string) => string | undefined;
@@ -151,10 +153,20 @@ export function dimensionKeyLabel(
   },
 ): string {
   if (row.key === 'unknown') return lookups.unknownLabel;
-  if (dimension === 'model') return row.modelAlias ?? row.key;
   if (dimension === 'agent') return row.profileName ?? row.agentId ?? row.key;
-  if (dimension === 'project') return lookups.workspaceName(row.key) ?? row.key;
   return lookups.sessionTitle(row.key) ?? row.key;
+}
+
+/** Label for one source-table row; unknown attribution is never reconstructed. */
+export function sourceKeyLabel(
+  key: string,
+  value: string | null,
+  groupBy: UsageGroupBy,
+  lookups: { readonly unknownLabel: string; readonly workspaceName: (id: string) => string | undefined },
+): string {
+  if (value === null) return lookups.unknownLabel;
+  if (groupBy === 'workspace') return lookups.workspaceName(value) ?? value;
+  return value;
 }
 
 export function KnownSubtotalMarker() {
@@ -177,6 +189,40 @@ export function ShareBar({ ratio, tone = 'bg-accent' }: { readonly ratio: number
   return (
     <span aria-hidden className="block h-1.5 w-full overflow-hidden rounded-full bg-hairline/70">
       <span className={`block h-full rounded-full ${tone}`} style={{ width: `${width}%` }} />
+    </span>
+  );
+}
+
+/**
+ * A comparison cell. `points` renders cache hit rate as percentage points
+ * instead of a ratio; either way a zero prior and an incomplete period are
+ * their own short states rather than a number the reader would misread.
+ */
+export function CompareCell({ outcome, points = false }: {
+  readonly outcome: UsageCompareOutcome;
+  readonly points?: boolean;
+}) {
+  const { t } = useI18n();
+  if (outcome.kind === 'unavailable') {
+    return <span data-usage-compare="unavailable" className="text-[12px] text-ink-faint">{t('usage.compare.rowUnavailable')}</span>;
+  }
+  if (outcome.kind === 'priorZero') {
+    return <span data-usage-compare="prior-zero" className="text-[12px] text-ink-faint">{t('usage.compare.priorZero')}</span>;
+  }
+  const percent = outcome.ratio * 100;
+  // A near-zero change reads as "no change" rather than "−0%", and the sign
+  // never floats in front of an absolute value that has been rounded to 0.
+  const rounded = points ? Math.round(percent * 10) / 10 : Math.round(percent);
+  const flat = rounded === 0;
+  const magnitude = points
+    ? `${Math.abs(rounded).toFixed(1)} ${t('usage.compare.points')}`
+    : `${Math.abs(rounded)}%`;
+  const tone = flat
+    ? 'text-ink-soft'
+    : rounded > 0 ? 'text-amber-ink' : 'text-success';
+  return (
+    <span data-usage-compare="delta" className={`font-mono text-[12px] tabular-nums ${tone}`}>
+      {flat ? '' : rounded > 0 ? '+' : '−'}{magnitude}
     </span>
   );
 }
