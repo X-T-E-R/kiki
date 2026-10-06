@@ -28,6 +28,8 @@ import {
 } from '@kiki/agent-core-v2';
 import { projectAgentTranscriptView } from '@kiki/session-core/session/transcript/project';
 import { createViewState } from '@kiki/session-core/session/transcript/types';
+import { retainedAttachmentsFromContent, buildPromptContent } from '@kiki/session-core/composer/attachments';
+import { projectPromptContentParts } from '../src/promptProjection';
 import { MessageStepRequest } from '@kiki/agent-core-v2/agent/loop/stepRequest';
 import {
   AgentTranscript,
@@ -190,7 +192,81 @@ describe('bindSessionTranscript', () => {
     } as unknown as ISessionScopeHandle;
   }
 
-  it('keeps durable prompt ownership structurally identical across cold and live projection', () => {
+  it('clears backfilled conversation entities before live paging can resurrect them', async () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const transcript = store.ensureAgent('main');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    onTestFinished(() => binding.dispose());
+    transcript.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'old', startedAt: new Date(1_000).toISOString() } },
+      { op: 'marker.upsert', item: { kind: 'marker', markerId: 'message-delivery:old', marker: 'message.delivery', at: new Date(1_100).toISOString(), payload: { messageId: 'old', text: 'old delivery' } } },
+      { op: 'marker.upsert', item: { kind: 'marker', markerId: 'keep-compaction', marker: 'compaction', at: new Date(1_200).toISOString() } },
+    ]);
+    main.bus.emit(ev({ type: 'context.clear', time: 2_000 }) as unknown as Event2<any>);
+    expect(transcript.getItems().map((item) => item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.markerId : item.refId)).toEqual(['keep-compaction']);
+    const paged = new AgentTranscript('main');
+    paged.apply([{ op: 'reset', agentId: 'main', snapshot: { ...transcript.snapshot(), items: [] } }]);
+    for (const item of transcript.getItems()) {
+      if (item.kind === 'turn') paged.apply([{ op: 'turn.upsert', turn: item }]);
+      else if (item.kind === 'marker') paged.apply([{ op: 'marker.upsert', item }]);
+    }
+    expect(paged.getItems().some((item) => item.kind === 'turn' || (item.kind === 'marker' && item.marker === 'message.delivery'))).toBe(false);
+  });
+
+  it('does not replay a backfill-consumed clear over later same-millisecond conversation facts', async () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents), undefined, undefined, true);
+    onTestFinished(() => binding.dispose());
+    const records: TranscriptWireRecord[] = [
+      { type: 'turn.prompt', turnId: 0, promptId: 'old', input: [{ type: 'text', text: 'old' }], origin: { kind: 'user' }, time: 1_000 },
+      { type: 'context.clear', time: 2_000 },
+      { type: 'turn.prompt', turnId: 1, promptId: 'new', input: [{ type: 'text', text: 'new' }], origin: { kind: 'user' }, time: 2_000 },
+    ];
+    main.bus.emit(records[1] as unknown as Event2<any>);
+    const cold = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(cold);
+    const adapter = new TranscriptWireAdapter('main');
+    for (const record of records) reducer.apply(adapter.add(record));
+    const transcript = store.ensureAgent('main');
+    transcript.apply([{ op: 'reset', agentId: 'main', snapshot: cold.snapshot() }]);
+    binding.finishReplay('main', { adapter: adapter.checkpoint(), acceptedDurableFacts: reducer.checkpoint() });
+    expect(transcript.getItems().filter((item) => item.kind === 'turn').map((turn) => turn.turnId)).toEqual(['t1']);
+    const delivery = { type: 'context.append_message', message: { id: 'followup', role: 'user', content: [{ type: 'text', text: 'followup' }], origin: { kind: 'user' } }, delivery: { deliveryId: 'delivery-followup', messageId: 'followup', origin: 'user' }, time: 2_001 };
+    main.bus.emit(delivery as unknown as Event2<any>);
+    const delivered = turnOps('t1', transcript.getItems());
+    expect(delivered.steps.flatMap((step) => step.frames).map((frame) => frame.frameId)).toContain('followup');
+    main.bus.emit(ev({ type: 'context.undo', count: 1, time: 2_002 }) as unknown as Event2<any>);
+    const undone = turnOps('t1', transcript.getItems());
+    expect(undone.prompt).toBe('new');
+    expect(undone.steps.flatMap((step) => step.frames).map((frame) => frame.frameId)).not.toContain('followup');
+    main.bus.emit(ev({ type: 'context.clear', time: 3_000 }) as unknown as Event2<any>);
+    expect(transcript.getItems().some((item) => item.kind === 'turn')).toBe(false);
+  });
+
+  it('preserves the original queued blob identity through live projection, reopening and attachment editing', () => {
+    const content = [{ type: 'text' as const, text: 'original' }, { type: 'image_url' as const, imageUrl: { url: `blobref:main/${'a'.repeat(64)}` } }];
+    const expected = [{ type: 'text', text: 'edited' }, { type: 'image', source: { kind: 'session_media', file_id: `blobref:main:${'a'.repeat(64)}` } }];
+    const live = projectPromptContentParts(content);
+    expect(buildPromptContent('edited', retainedAttachmentsFromContent(live))).toEqual(expected);
+    const reopened = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(reopened);
+    const adapter = new TranscriptWireAdapter('main');
+    reducer.apply(adapter.add({ type: 'prompt.enqueued', promptId: 'same-prompt', userMessageId: 'same-prompt', revision: 0, message: { id: 'same-prompt', role: 'user', content, origin: { kind: 'user' } }, time: 1_000 }));
+    const prompt = reopened.snapshot().prompts.find((entry) => entry.promptId === 'same-prompt');
+    expect(prompt?.content).toEqual(live);
+    expect(buildPromptContent('edited', retainedAttachmentsFromContent(prompt!.content as typeof live))).toEqual(expected);
+    const malformed = projectPromptContentParts([{ type: 'image_url', imageUrl: { url: 'blobref:main/not-a-hash' } }]);
+    expect(malformed.some((part) => part.type === 'image' && part.source.kind === 'session_media')).toBe(false);
+  });
+
+  it('keeps durable prompt ownership structurally identical across cold and live projection', async () => {
     const promptRecord = {
       type: 'turn.prompt',
       turnId: 0,
@@ -257,10 +333,10 @@ describe('bindSessionTranscript', () => {
     });
     expect(overlapReducer.apply(overlapAdapter.add(promptRecord)).acceptedOperations).toEqual([]);
     expect(cold.getItems()[0]).toBe(marker);
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('projects observable agent mailbox delivery exactly like its durable context message', () => {
+  it('projects observable agent mailbox delivery exactly like its durable context message', async () => {
     const message = {
       id: 'agent-message-1',
       role: 'user',
@@ -306,10 +382,10 @@ describe('bindSessionTranscript', () => {
         agentMessage: { senderAgentId: 'main', senderTaskName: 'root' },
       }),
     ]);
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('projects a user-origin steer as a live user frame on the next step', () => {
+  it('projects a user-origin steer as a live user frame on the next step', async () => {
     const agents = new FakeAgents();
     const main = agents.add('main');
     const store = new TranscriptStore('s1');
@@ -373,10 +449,10 @@ describe('bindSessionTranscript', () => {
         origin: { kind: 'user' },
       }),
     );
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('keeps live and cold block projection equivalent after undo', () => {
+  it('keeps live and cold block projection equivalent after undo', async () => {
     const records = [
       {
         type: 'turn.prompt',
@@ -472,10 +548,10 @@ describe('bindSessionTranscript', () => {
         expect.objectContaining({ kind: 'assistant', turnId: 't0', text: 'first answer' }),
       ]),
     );
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('keeps legacy mailbox deliveries equivalent across a multi-step turn and the next turn', () => {
+  it('keeps legacy mailbox deliveries equivalent across a multi-step turn and the next turn', async () => {
     const mailbox = (id: string, time: number): TranscriptWireRecord => ({
       type: 'context.append_message',
       time,
@@ -585,10 +661,10 @@ describe('bindSessionTranscript', () => {
       delivery: { messageId: 'mail-1', turnId: 't0', stepId: 'step-1', origin: 'mailbox' },
     });
     expect(live.getTurn('t1')?.steps).toEqual([]);
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('projects sender delivery receipts with the child unsubscribed and restores them through cold replay and reconnect', () => {
+  it('projects sender delivery receipts with the child unsubscribed and restores them through cold replay and reconnect', async () => {
     const record = {
       type: 'agent_message.delivered', messageId: 'message-one', targetAgentId: 'agent-child',
       status: 'delivered', deliveredAt: '2026-01-01T00:00:02.000Z', time: 2_000,
@@ -612,16 +688,16 @@ describe('bindSessionTranscript', () => {
     const restored = new AgentTranscript('main');
     restored.apply([{ op: 'reset', agentId: 'main', snapshot: JSON.parse(JSON.stringify(cold.snapshot())) as AgentTranscriptSnapshot }]);
     expect(restored.snapshot()).toEqual(live.snapshot());
-    binding.dispose();
+    await binding.dispose();
     const reconnected = bindSessionTranscript(store,
       fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
     main.bus.emit(record as unknown as Event2<any>);
     expect(live.getItems()).toHaveLength(1);
     expect(live.getItems()[0]).toMatchObject({ payload: { status: 'delivered', messageId: 'message-one' } });
-    reconnected.dispose();
+    await reconnected.dispose();
   });
 
-  it('keeps cold and live mailbox facts identical with time fields preserved', () => {
+  it('keeps cold and live mailbox facts identical with time fields preserved', async () => {
     const message = {
       id: 'agent-message-2',
       role: 'user',
@@ -656,7 +732,7 @@ describe('bindSessionTranscript', () => {
       main.bus.emit(record as unknown as Event2<any>);
     }
     expect(store.getAgent('main')!.snapshot()).toEqual(cold.snapshot());
-    binding.dispose();
+    await binding.dispose();
   });
 
   it(
@@ -736,7 +812,7 @@ describe('bindSessionTranscript', () => {
       } else {
         expect(markers[0]).toMatchObject({ kind: 'marker', marker: 'message.delivery' });
       }
-      binding.dispose();
+      await binding.dispose();
     },
   );
 
@@ -856,7 +932,7 @@ describe('bindSessionTranscript', () => {
       const coldUserFrames = coldFrames.filter((frame) => frame.kind === 'text' && frame.role === 'user');
       expect(liveUserFrames).toEqual(coldUserFrames);
       expect(liveUserFrames).toHaveLength(0);
-      binding.dispose();
+      await binding.dispose();
     },
   );
 
@@ -976,7 +1052,7 @@ describe('bindSessionTranscript', () => {
           }),
         ]),
       );
-      binding.dispose();
+      await binding.dispose();
     },
   );
 
@@ -985,7 +1061,7 @@ describe('bindSessionTranscript', () => {
     { kind: 'agent', order: 'summary-first' },
     { kind: 'question', order: 'delivery-first' },
     { kind: 'question', order: 'summary-first' },
-  ] as const)('keeps one complete receipt per task through live, replay and reconnect ($kind, $order)', ({ kind, order }) => {
+  ] as const)('keeps one complete receipt per task through live, replay and reconnect ($kind, $order)', async ({ kind, order }) => {
     const question = kind === 'question';
     const taskId = question ? 'question-1' : 'run-1';
     const title = question ? 'Background question answered' : 'Background agent completed';
@@ -1057,10 +1133,10 @@ describe('bindSessionTranscript', () => {
     const restoredReducer = new TranscriptFactReducer(reconnect);
     for (const record of records.slice(4)) restoredReducer.apply(restoredAdapter.add(record));
     expect(receipts(cold.snapshot())).toEqual(receipts(reconnect.snapshot()));
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('keeps live and cold task notification blocks equivalent without a user bubble', () => {
+  it('keeps live and cold task notification blocks equivalent without a user bubble', async () => {
     const records = [
       {
         type: 'turn.prompt',
@@ -1179,10 +1255,10 @@ describe('bindSessionTranscript', () => {
       }),
     ]);
     expect(live.getTurn('t1')).toBeUndefined();
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('keeps foreground subagent terminals, interactions, and ended phase block-equivalent', () => {
+  it('keeps foreground subagent terminals, interactions, and ended phase block-equivalent', async () => {
     const records = [
       {
         type: 'turn.prompt',
@@ -1319,10 +1395,10 @@ describe('bindSessionTranscript', () => {
       },
     });
     expect(cold.getMeta()).toEqual(live.getMeta());
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('projects an interrupted live turn as a stopped assistant block', () => {
+  it('projects an interrupted live turn as a stopped assistant block', async () => {
     const agents = new FakeAgents();
     const main = agents.add('main');
     const store = new TranscriptStore('s1');
@@ -1382,7 +1458,7 @@ describe('bindSessionTranscript', () => {
         streaming: false,
       }),
     ]);
-    binding.dispose();
+    await binding.dispose();
   });
 
   it('retains the prompt id when only live events close a turn', () => {
@@ -1430,7 +1506,7 @@ describe('bindSessionTranscript', () => {
     });
   });
 
-  it('registers pre-bind pendings without frames and replays an early resolve at seed time', () => {
+  it('registers pre-bind pendings without frames and replays an early resolve at seed time', async () => {
     const interactions = new SessionInteractionService(new TestSessionStateService());
     interactions.enqueue({
       id: 'apr-1',
@@ -1455,10 +1531,10 @@ describe('bindSessionTranscript', () => {
       .filter((op): op is InteractionUpsertOp => op.op === 'interaction.upsert')
       .map((op) => op.interaction.state);
     expect(states).toEqual(['pending', 'approved']);
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('keeps the materialized transcript and roster entry when an agent is disposed', () => {
+  it('keeps the materialized transcript and roster entry when an agent is disposed', async () => {
     const agents = new FakeAgents();
     const store = new TranscriptStore('s1');
     const binding = bindSessionTranscript(
@@ -1478,10 +1554,10 @@ describe('bindSessionTranscript', () => {
     expect(descriptor).toBeDefined();
     expect(typeof descriptor?.disposedAt).toBe('string');
     expect(store.agents().find((a) => a.agentId === 'main')?.disposedAt).toBeUndefined();
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('seeds pre-attach Agent task mappings so a late-bound liveAdapter folds the lifecycle', () => {
+  it('seeds pre-attach Agent task mappings so a late-bound liveAdapter folds the lifecycle', async () => {
     const agents = new FakeAgents();
     const tasks = [
       {
@@ -1540,10 +1616,10 @@ describe('bindSessionTranscript', () => {
       detached: false,
     });
     expect(store.getAgent('main')?.getTask('agent-1')).toBeUndefined();
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('routes task notifications and subagent lifecycle through one live owner', () => {
+  it('routes task notifications and subagent lifecycle through one live owner', async () => {
     const agents = new FakeAgents();
     const main = agents.add('main');
     const store = new TranscriptStore('s1');
@@ -1655,10 +1731,10 @@ describe('bindSessionTranscript', () => {
       endedAt: new Date(5_100).toISOString(),
     });
     expect(store.getAgent('main')?.getTask('agent-1')).toBeUndefined();
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('seeds active, queued, and recovery-held prompt state on attach', () => {
+  it('seeds active, queued, and recovery-held prompt state on attach', async () => {
     const agents = new FakeAgents();
     agents.add('main', {
       prompts: {
@@ -1707,10 +1783,10 @@ describe('bindSessionTranscript', () => {
       reason: 'recovery',
       count: 1,
     });
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('skips non-user-origin prompts when seeding on attach', () => {
+  it('skips non-user-origin prompts when seeding on attach', async () => {
     const agents = new FakeAgents();
     agents.add('main', {
       prompts: {
@@ -1762,10 +1838,10 @@ describe('bindSessionTranscript', () => {
       promptId: 'p-user',
       status: 'queued',
     });
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('projects live prompt queue timing through the live adapter', () => {
+  it('projects live prompt queue timing through the live adapter', async () => {
     const agents = new FakeAgents();
     const main = agents.add('main');
     const store = new TranscriptStore('s1');
@@ -1800,10 +1876,10 @@ describe('bindSessionTranscript', () => {
       revision: 2,
       content: [{ type: 'text', text: 'later' }],
     });
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('stops projecting for an agent once it is disposed', () => {
+  it('stops projecting for an agent once it is disposed', async () => {
     const agents = new FakeAgents();
     const store = new TranscriptStore('s1');
     const binding = bindSessionTranscript(
@@ -1818,10 +1894,10 @@ describe('bindSessionTranscript', () => {
     agents.remove('sub-1');
     sub.bus.emit(ev({ type: 'turn.ended', turnId: 0, reason: 'completed' }));
     expect(store.getAgent('sub-1')?.getItems()[0]).toMatchObject({ kind: 'turn', state: 'running' });
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('projects an unanchored canonical delivery onto the unknown-header turn without duplicating it', () => {
+  it('projects an unanchored canonical delivery onto the unknown-header turn without duplicating it', async () => {
     const records = [
       { type: 'turn.started', time: 1_000, turnId: 0, origin: { kind: 'user' } },
       {
@@ -1884,10 +1960,10 @@ describe('bindSessionTranscript', () => {
       },
     });
     expect(live.getTurn('t0')?.steps).toHaveLength(1);
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('fills the managed opening header prompt and delivery from its canonical echo without a same-id user frame', () => {
+  it('fills the managed opening header prompt and delivery from its canonical echo without a same-id user frame', async () => {
     const records = [
       {
         type: 'turn.prompt',
@@ -1952,10 +2028,10 @@ describe('bindSessionTranscript', () => {
       (frame) => frame.kind === 'text' && (frame as { frameId: string }).frameId === 'prompt-open',
     );
     expect(sameIdUserFrames).toHaveLength(0);
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('deduplicates wire and live terminal turn.upserts while preserving the backfilled header', () => {
+  it('deduplicates wire and live terminal turn.upserts while preserving the backfilled header', async () => {
     const agents = new FakeAgents();
     const store = new TranscriptStore('s1');
     const ops: TranscriptOperation[] = [];
@@ -2014,10 +2090,10 @@ describe('bindSessionTranscript', () => {
       prompt: 'hi',
       attachmentIds: ['att_1'],
     });
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('seeds child interactions on both the owner and main transcript after owner backfill', () => {
+  it('seeds child interactions on both the owner and main transcript after owner backfill', async () => {
     const interactions = new SessionInteractionService(new TestSessionStateService());
     interactions.enqueue({ id: 'q-main', kind: 'question', payload: { toolCallId: 'call_main' }, origin: { agentId: 'main', turnId: 0 } });
     interactions.enqueue({ id: 'q-sub', kind: 'question', payload: { toolCallId: 'call_sub' }, origin: { agentId: 'sub-1', turnId: 0 } });
@@ -2039,10 +2115,10 @@ describe('bindSessionTranscript', () => {
     interactions.respond('q-sub', { answers: {} });
     expect(store.getAgent('main')?.getInteraction('q-sub')?.state).toBe('answered');
     expect(store.getAgent('sub-1')?.getInteraction('q-sub')?.state).toBe('answered');
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('defers pendings created before their owning agent is seeded', () => {
+  it('defers pendings created before their owning agent is seeded', async () => {
     const interactions = new SessionInteractionService(new TestSessionStateService());
     const store = new TranscriptStore('s1');
     const byAgent = new Map<string, TranscriptOperation[]>();
@@ -2058,10 +2134,10 @@ describe('bindSessionTranscript', () => {
 
     binding.seedPendingInteractions('sub-1');
     expect([...byAgent.keys()].toSorted()).toEqual(['main', 'sub-1']);
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('announces pendings from live-created agents immediately (their liveAdapter is complete)', () => {
+  it('announces pendings from live-created agents immediately (their liveAdapter is complete)', async () => {
     const agents = new FakeAgents();
     const interactions = new SessionInteractionService(new TestSessionStateService());
     const store = new TranscriptStore('s1');
@@ -2073,10 +2149,10 @@ describe('bindSessionTranscript', () => {
     agents.add('sub-1');
     interactions.enqueue({ id: 'q1', kind: 'question', payload: { toolCallId: 'call_q1' }, origin: { agentId: 'sub-1', turnId: 0 } });
     expect([...byAgent.keys()].toSorted()).toEqual(['main', 'sub-1']);
-    binding.dispose();
+    await binding.dispose();
   });
 
-  it('subscribes the bus for an agent whose liveAdapter was seeded before its handle existed', () => {
+  it('subscribes the bus for an agent whose liveAdapter was seeded before its handle existed', async () => {
     const agents = new FakeAgents();
     const interactions = new SessionInteractionService(new TestSessionStateService());
     interactions.enqueue({ id: 'q-sub', kind: 'question', payload: { toolCallId: 'call_sub' }, origin: { agentId: 'sub-1', turnId: 0 } });
@@ -2093,7 +2169,7 @@ describe('bindSessionTranscript', () => {
     const sub = agents.add('sub-1');
     sub.bus.emit(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
     expect(byAgent.get('sub-1')!.length).toBeGreaterThan(1);
-    binding.dispose();
+    await binding.dispose();
   });
 
   it.each([1_000, 1_001])('materializes the first subagent spawn at %s and preserves its replayed terminal', (spawnedAt) => {
@@ -2164,7 +2240,7 @@ describe('bindSessionTranscript', () => {
         if (event.type.startsWith('task.')) lifecycle.publishedEvents.push(event);
       });
       onTestFinished(async () => {
-        captureTasks.dispose();
+        await captureTasks.dispose();
         await ctx.dispose();
       });
       const tasks = ctx.get(IAgentTaskService);

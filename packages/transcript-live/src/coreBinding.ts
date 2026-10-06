@@ -17,6 +17,8 @@ import {
 import {
   TranscriptFactReducer,
   TranscriptWireAdapter,
+  transcriptWireFactId,
+  type TranscriptWireAdapterCheckpoint,
   type AgentDescriptor,
   type TranscriptChangeEvent,
   type TranscriptFact,
@@ -42,12 +44,18 @@ export interface TranscriptBindingLogger {
   warn(obj: unknown, msg: string): void;
 }
 
+/** In-memory durable replay state captured before cold finalization. */
+export interface TranscriptReplayState {
+  readonly adapter: TranscriptWireAdapterCheckpoint;
+  readonly acceptedDurableFacts: readonly string[];
+}
+
 /** The live binding plus its deferred seeding hook. */
 export interface TranscriptBinding extends IDisposable {
   seedPendingInteractions(agentId?: string): void;
   seedRunningTasks(agentId?: string): void;
   seedPrompts(agentId?: string): void;
-  finishReplay(agentId: string): void;
+  finishReplay(agentId: string, state?: TranscriptReplayState): void;
   releaseDurableTurns(agentId: string, turnIds: readonly string[], promptIds: readonly string[]): void;
 }
 
@@ -240,7 +248,16 @@ export function bindSessionTranscript(
       event.type === 'subagent.completed' ||
       event.type === 'subagent.failed' ||
       event.type === 'subagent.suspended';
+    const identity = liveOwned ? undefined : transcriptWireFactId(event);
+    if (identity !== undefined && reducerFor(agentId).hasAcceptedDurableFact(identity)) return;
     const wireFacts = liveOwned ? [] : wireAdapterFor(agentId).add(event);
+    if (event.type === 'context.clear') {
+      const ids = (store.getAgent(agentId)?.getItems() ?? []).flatMap((item) =>
+        item.kind === 'turn' ? [item.turnId]
+          : item.kind === 'marker' && item.marker === 'message.delivery' ? [item.markerId] : [],
+      );
+      if (ids.length > 0) applyOps(agentId, [{ op: 'items.remove', ids }]);
+    }
     applyFacts(agentId, wireFacts);
     if (
       event.type === 'task.started' ||
@@ -267,7 +284,11 @@ export function bindSessionTranscript(
     applyOps(agentId, wireEndedTurn ? liveOps.filter((op) => op.op !== 'turn.upsert') : liveOps);
   };
 
-  const finishReplay = (agentId: string): void => {
+  const finishReplay = (agentId: string, state?: TranscriptReplayState): void => {
+    if (state !== undefined) {
+      wireAdapterFor(agentId).restore(state.adapter);
+      reducerFor(agentId).restore(state.acceptedDurableFacts);
+    }
     replayingAgents.delete(agentId);
     const buffered = bufferedEvents.get(agentId) ?? [];
     bufferedEvents.delete(agentId);
@@ -342,8 +363,8 @@ export function bindSessionTranscript(
       seededAgents.add(handle.id);
       refreshDescriptors();
     }),
-    agents.onDidDispose((agentId) => {
-      for (const d of agentDisposables.get(agentId) ?? []) d.dispose();
+    agents.onDidDispose(async (agentId) => {
+      for (const d of agentDisposables.get(agentId) ?? []) await d.dispose();
       agentDisposables.delete(agentId);
       subscribedAgents.delete(agentId);
       liveAdapters.delete(agentId);
@@ -431,10 +452,10 @@ export function bindSessionTranscript(
       wireAdapters.get(agentId)?.releaseDurableTurns(turnIds);
       liveAdapters.get(agentId)?.releaseDurableTurns(turnIds, promptIds);
     },
-    dispose: () => {
-      for (const d of disposables) d.dispose();
+    dispose: async () => {
+      for (const d of disposables) await d.dispose();
       for (const list of agentDisposables.values()) {
-        for (const d of list) d.dispose();
+        for (const d of list) await d.dispose();
       }
       agentDisposables.clear();
       liveAdapters.clear();
