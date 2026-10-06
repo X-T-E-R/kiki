@@ -12,7 +12,7 @@
  * same views (`CapabilityTabBody`), so there is one implementation of each.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
@@ -165,6 +165,27 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
     else updated.set('tab', next);
     setParams(updated);
   };
+  // Focusing a tab that the strip has scrolled past leaves it off screen, and
+  // the browser's own scroll-into-view is not allowed here: it walks up to
+  // whatever ancestor it finds, which would move the page. Moving the strip's
+  // own offset instead is the only scroll this needs. A tab already inside the
+  // strip is left exactly where it is, so pointer and touch panning are
+  // unaffected.
+  const tabStripRef = useRef<HTMLElement>(null);
+  const revealTab = (tab: HTMLElement) => {
+    const strip = tabStripRef.current;
+    if (strip === null) return;
+    const stripBox = strip.getBoundingClientRect();
+    const tabBox = tab.getBoundingClientRect();
+    if (tabBox.left >= stripBox.left && tabBox.right <= stripBox.right) return;
+    // Raising `scrollLeft` moves the content left and lowering it moves the
+    // content right, so the two edges need opposite signs: a tab past the right
+    // edge scrolls forward, a tab past the left edge scrolls back. The
+    // distances are the gap between the tab's edge and the strip's edge, so the
+    // tab lands flush against the edge it came from.
+    if (tabBox.left < stripBox.left) strip.scrollLeft -= stripBox.left - tabBox.left;
+    else strip.scrollLeft += tabBox.right - stripBox.right;
+  };
   const setRoute = (next: PluginsRoute) => {
     const updated = applyPluginsRoute(params, next);
     updated.delete('tab');
@@ -234,13 +255,30 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
                 MCP) which workspace. Every view below starts at its own
                 switch + search. */}
             <div className="mb-6 flex flex-wrap items-center justify-between gap-3 border-b border-hairline pb-3">
-              <nav aria-label={t('cap.page.tabs')} className="-mb-3 flex min-w-0 items-end gap-5 overflow-x-auto [scrollbar-width:none]" data-capabilities-tab={tab}>
+              {/* `overflow-x` on its own computes `overflow-y` to `auto`, which
+                  turns the strip into a vertical scroll box: the label bleeds
+                  1px below the flex line (`-mb-px`) so its underline lands on
+                  this row's rule, so there is a real 1px overflow to scroll.
+                  Clipping the vertical axis removes the scroll region rather
+                  than hiding its bar, which matters because the inherited
+                  global `scrollbar-width` is unlayered and outranks a
+                  `scrollbar-width: none` utility. The padding gives the clip
+                  box room for the underline and the 4px focus ring, and the
+                  negative margins pay the same room straight back so the row
+                  keeps its spacing and the strip keeps its left edge. */}
+              <nav
+                ref={tabStripRef}
+                aria-label={t('cap.page.tabs')}
+                className="-mx-1 -mt-1 -mb-[17px] flex min-w-0 items-end gap-5 overflow-x-auto overflow-y-clip px-1 pt-1 pb-[5px] [scrollbar-width:none]"
+                data-capabilities-tab={tab}
+              >
                 {TABS.map((value) => (
                   <button
                     key={value}
                     type="button"
                     aria-current={value === tab ? 'page' : undefined}
                     data-segment={value}
+                    onFocus={(event) => { revealTab(event.currentTarget); }}
                     onClick={() => { setTab(value); }}
                     className={`-mb-px shrink-0 border-b-2 pb-2 text-[14px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
                       value === tab ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'

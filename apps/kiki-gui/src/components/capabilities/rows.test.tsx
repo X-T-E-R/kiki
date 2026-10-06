@@ -780,4 +780,83 @@ describe('CapabilitiesPage workspace skills', () => {
     await settleUntil('[data-skill-row="ws_alpha-review"]');
     expect(client.listWorkspaceSkills).not.toHaveBeenCalledWith('ws_deleted');
   });
+
+  it('scrolls the tab strip on the horizontal axis only, so no vertical bar appears beside the labels', async () => {
+    client.listWorkspaces.mockResolvedValue({ items: [alpha] });
+    await renderPage('/capabilities?tab=skills');
+    await settleUntil('[data-capabilities-tab]');
+    const strip = container.querySelector<HTMLElement>('[data-capabilities-tab]')!;
+    // `overflow-x` alone computes `overflow-y` to `auto`, which made the strip a
+    // 1px-tall vertical scroll box and painted a bar under the labels. The
+    // labels themselves stay a single row; only the vertical axis is pinned.
+    expect(strip.className).toContain('overflow-x-auto');
+    expect(strip.className).toContain('overflow-y-clip');
+    // The box has to stay wider than the selected underline and the focus ring
+    // that are drawn outside the labels, or the clip eats them.
+    const compensate = ['px-1', 'pt-1', 'pb-[5px]', '-mx-1', '-mt-1', '-mb-[17px]'];
+    for (const className of compensate) expect(strip.className).toContain(className);
+    expect(strip.className).not.toContain('overflow-y-auto');
+  });
+
+  it('brings a focused tab into view by moving only the strip, never the page', async () => {
+    client.listWorkspaces.mockResolvedValue({ items: [alpha] });
+    await renderPage('/capabilities?tab=skills');
+    await settleUntil('[data-capabilities-tab]');
+    const strip = container.querySelector<HTMLElement>('[data-capabilities-tab]')!;
+    const tabOf = (segment: string) => strip.querySelector<HTMLButtonElement>(`[data-segment="${segment}"]`)!;
+    // jsdom has no layout, so the strip is given a real scroll model: a content
+    // width, a viewport width, and rects that move with the offset the way a
+    // browser's do. Asserting against this model catches a sign error, which a
+    // hand-written expected value would only mirror back.
+    const VIEWPORT_LEFT = 12;
+    const VIEWPORT_WIDTH = 150;
+    const CONTENT_WIDTH = 265;
+    const offsets: Record<string, number> = { plugins: 0, skills: 53, mcp: 102, tools: 172 };
+    let scrollLeft = 0;
+    Object.defineProperty(strip, 'scrollLeft', { get: () => scrollLeft, set: (v: number) => { scrollLeft = v; }, configurable: true });
+    Object.defineProperty(strip, 'clientWidth', { get: () => VIEWPORT_WIDTH, configurable: true });
+    Object.defineProperty(strip, 'scrollWidth', { get: () => CONTENT_WIDTH, configurable: true });
+    strip.getBoundingClientRect = () => ({
+      left: VIEWPORT_LEFT, right: VIEWPORT_LEFT + VIEWPORT_WIDTH, top: 0, bottom: 30, width: VIEWPORT_WIDTH, height: 30, x: VIEWPORT_LEFT, y: 0, toJSON: () => ({}),
+    }) as DOMRect;
+    // Raising the offset slides the content left, which is the sign the handler
+    // has to get right.
+    const rectAtOffset = (tabOffset: number): DOMRect => {
+      const left = VIEWPORT_LEFT + tabOffset - scrollLeft;
+      return { left, right: left + 48, top: 0, bottom: 30, width: 48, height: 30, x: left, y: 0, toJSON: () => ({}) } as DOMRect;
+    };
+    for (const segment of Object.keys(offsets)) {
+      tabOf(segment).getBoundingClientRect = () => rectAtOffset(offsets[segment]!);
+    }
+    const isInside = (segment: string) => {
+      const box = tabOf(segment).getBoundingClientRect();
+      const view = strip.getBoundingClientRect();
+      return box.left >= view.left - 0.01 && box.right <= view.right + 0.01;
+    };
+    // The row that owns the strip is the page's own scroller: an implementation
+    // that used scrollIntoView would move this, which is the anchor jump the
+    // handler exists to avoid.
+    const pageScroller = strip.parentElement!;
+    Object.defineProperty(pageScroller, 'scrollTop', { value: 0, writable: true, configurable: true });
+
+    // Far right: focusing the last tab scrolls the strip forward, and nothing
+    // else moves.
+    await act(async () => { tabOf('tools').focus(); });
+    expect(isInside('tools')).toBe(true);
+    expect(strip.scrollLeft).toBeGreaterThan(0);
+    expect(pageScroller.scrollTop).toBe(0);
+
+    // Far left: with the strip still scrolled forward, Shift+Tab home has to
+    // scroll it *back*, or the label stays cut off at the left edge.
+    await act(async () => { tabOf('tools').blur(); tabOf('plugins').focus(); });
+    expect(isInside('plugins')).toBe(true);
+    expect(strip.scrollLeft).toBe(0);
+    expect(pageScroller.scrollTop).toBe(0);
+
+    // A tab already inside the strip must leave the offset alone, so pointer
+    // and touch panning keep behaving exactly as before.
+    await act(async () => { tabOf('mcp').focus(); });
+    expect(isInside('mcp')).toBe(true);
+    expect(strip.scrollLeft).toBe(0);
+  });
 });
