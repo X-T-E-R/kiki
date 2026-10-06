@@ -52,6 +52,9 @@ export type CognitionPathRef = string | readonly string[];
 export interface CognitionContent {
   overlay?: CognitionPathRef;
   steering?: CognitionPathRef;
+  steeringOnTurn?: boolean;
+  steeringOnInput?: boolean;
+  steeringIntervalSteps?: number;
   anchor?: CognitionPathRef;
   overlayMode?: 'append' | 'prepend' | 'wrap' | 'persona' | 'replace';
   anchorSteps?: number;

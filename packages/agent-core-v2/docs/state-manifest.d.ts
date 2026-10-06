@@ -2021,6 +2021,9 @@ export interface AgentStateSnapshot {
       readonly config?: /* CognitionContent — packages/agent-core-v2/src/kosong/model/model.ts */ {
         overlay?: string | readonly string[];
         steering?: string | readonly string[];
+        steeringOnTurn?: boolean;
+        steeringOnInput?: boolean;
+        steeringIntervalSteps?: number;
         anchor?: string | readonly string[];
         overlayMode?: 'replace' | 'persona' | 'append' | 'prepend' | 'wrap';
         anchorSteps?: number;
@@ -4956,6 +4959,9 @@ export interface AgentStateSnapshot {
             readonly config?: /* CognitionContent — packages/agent-core-v2/src/kosong/model/model.ts */ {
               overlay?: string | readonly string[];
               steering?: string | readonly string[];
+              steeringOnTurn?: boolean;
+              steeringOnInput?: boolean;
+              steeringIntervalSteps?: number;
               anchor?: string | readonly string[];
               overlayMode?: 'replace' | 'persona' | 'append' | 'prepend' | 'wrap';
               anchorSteps?: number;

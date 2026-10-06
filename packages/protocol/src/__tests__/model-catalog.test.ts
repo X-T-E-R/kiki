@@ -10,6 +10,7 @@ import {
   patchConfigRequestSchema,
   listProvidersResponseSchema,
   modelCatalogItemSchema,
+  modelEntitySchema,
   patchModelRequestSchema,
   modelUsagePolicySchema,
   createModelRequestSchema,
@@ -105,6 +106,19 @@ describe('model catalog schemas', () => {
 
   it('rejects invalid model context sizes', () => {
     expect(modelCatalogItemSchema.safeParse({ ...model, max_context_size: -1 }).success).toBe(false);
+  });
+
+  it('steering cadence accepts snake-case policy fields in common and identity cognition branches', () => {
+    const cognition = {
+      steering: 'cognition/example.md', steering_on_turn: false, steering_on_input: true, steering_interval_steps: 0,
+      main: { steering: 'cognition/main.md', steering_on_turn: true, steering_interval_steps: 4 }, independent: 'same',
+    };
+    expect(patchModelRequestSchema.parse({ cognition })).toEqual({ cognition });
+    expect(modelEntitySchema.parse({ ...model, provider_source: 'provider', cognition, effective_parameters: {}, parameter_sources: {}, revision: 'example-revision', issues: [] }).cognition).toEqual(cognition);
+    for (const steering_interval_steps of [-1, 1.5, '2']) {
+      expect(patchModelRequestSchema.safeParse({ cognition: { steering_interval_steps } }).success).toBe(false);
+    }
+    expect(patchModelRequestSchema.safeParse({ cognition: { steering_on_input: 'false' } }).success).toBe(false);
   });
 
   it('accepts a sparse model patch and rejects unknown fields', () => {

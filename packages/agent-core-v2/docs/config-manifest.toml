@@ -524,6 +524,9 @@ merge_all_available_skills = true
   # cognition: object
     # overlay: string | string[]
     # steering: string | string[]
+    # steering_on_turn: boolean
+    # steering_on_input: boolean
+    # steering_interval_steps: integer
     # anchor: string | string[]
     # overlay_mode: "append" | "prepend" | "wrap" | "persona" | "replace"
     # anchor_steps: integer

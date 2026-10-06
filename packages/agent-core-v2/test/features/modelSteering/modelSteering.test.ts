@@ -14,6 +14,7 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IAgentModelSteeringService } from '#/features/modelSteering/modelSteering';
+import type { CognitionContent } from '#/kosong/model/model';
 import '#/features/modelSteering/modelSteeringFeature';
 
 import {
@@ -49,7 +50,7 @@ describe('AgentModelSteeringService', () => {
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }).catch(() => undefined);
   });
 
-  async function bindModel(steering = true): Promise<void> {
+  async function bindModel(steering = true, policy: CognitionContent = {}): Promise<void> {
     const agent = ctx!;
     if (steering) {
       const current = agent.kimiConfig.models![MOCK_MODEL]!;
@@ -57,7 +58,7 @@ describe('AgentModelSteeringService', () => {
         ...agent.kimiConfig,
         models: {
           ...agent.kimiConfig.models,
-          [MOCK_MODEL]: { ...current, cognition: { steering: 'cognition/steering.md' } },
+          [MOCK_MODEL]: { ...current, cognition: { steering: 'cognition/steering.md', ...policy } },
         },
       };
     }
@@ -234,6 +235,70 @@ describe('AgentModelSteeringService', () => {
     expect(await profile.getCognitionBinding()).toEqual(binding);
     await runWillBeginStepHooks(loop, false);
     expect(steeringMessages(memory)).toHaveLength(1);
+  });
+
+  it.each([true, false])('steering cadence combines actual model steps and Send now input (onInput=%s)', async (onInput) => {
+    ctx = createTestAgent(homeDirServices(homeDir), permissionModeServices('manual'));
+    await bindModel(true, { steeringOnInput: onInput, steeringIntervalSteps: 2 });
+    const agent = ctx;
+    const loop = agent.get(IAgentLoopService);
+    const subscription = loop.hooks.onDidFinishStep.register('test.steer-and-continue', async ({ step }, next) => {
+      if (step === 1) {
+        await agent.rpc.steer({ input: [{ type: 'text', text: 'Accepted correction' }] });
+        for (let index = 0; index < 3; index++) loop.enqueue(new ContinuationStepRequest());
+      }
+      await next();
+    });
+    for (let index = 0; index < 4; index++) agent.mockNextResponse({ type: 'text', text: `answer ${index}` });
+    try {
+      await agent.rpc.prompt({ input: [{ type: 'text', text: 'Initial request' }] });
+      await loop.settled();
+    } finally {
+      await subscription.dispose();
+    }
+    expect(agent.llmCalls).toHaveLength(4);
+    const counts = agent.llmCalls.map((call) => call.history.flatMap((message) => message.content)
+      .filter((part) => part.type === 'text' && part.text === 'CLASSIFY THEN ACT').length);
+    expect(counts).toEqual(onInput ? [1, 2, 2, 3] : [1, 1, 2, 2]);
+    expect(agent.llmCalls[1]!.history.at(onInput ? -2 : -1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: 'Accepted correction' }] });
+    if (onInput) expect(agent.llmCalls[1]!.history.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: 'CLASSIFY THEN ACT' }] });
+  });
+
+  it('steering cadence can disable all triggers, including new turns and compaction re-arm', async () => {
+    ctx = createTestAgent(homeDirServices(homeDir));
+    await bindModel(true, { steeringOnTurn: false, steeringOnInput: false, steeringIntervalSteps: 0 });
+    const loop = ctx.get(IAgentLoopService);
+    const memory = ctx.get(IAgentContextMemoryService);
+    memory.append({ role: 'user', content: [{ type: 'text', text: 'Human input' }], toolCalls: [], origin: { kind: 'user' } });
+    await runWillBeginStepHooks(loop, true);
+    await runWillBeginStepHooks(loop, false);
+    memory.applyCompaction({ summary: 'Compacted input', compactedCount: memory.get().length, tokensBefore: 100 });
+    await runWillBeginStepHooks(loop, false);
+    expect(steeringMessages(memory)).toHaveLength(0);
+  });
+
+  it('steering cadence interval-only counts unique agent step heads across turns, not idle reconciliation or tool events', async () => {
+    ctx = createTestAgent(homeDirServices(homeDir));
+    await bindModel(true, { steeringOnTurn: false, steeringOnInput: false, steeringIntervalSteps: 2 });
+    const loop = ctx.get(IAgentLoopService);
+    const memory = ctx.get(IAgentContextMemoryService);
+    const step = (turnId: number, stepId: string) => loop.hooks.onWillBeginStep.run({
+      turnId, step: 1, stepId, firstStepOfTurn: true, signal: new AbortController().signal,
+    });
+    await step(0, 'first-step');
+    await loop.hooks.onDidAppendToolResult.run({ toolCallId: 'first-tool' });
+    await loop.hooks.onDidAppendToolResult.run({ toolCallId: 'second-tool' });
+    await ctx.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
+    await step(0, 'first-step');
+    expect(steeringMessages(memory)).toHaveLength(0);
+    await step(1, 'second-step');
+    expect(steeringMessages(memory)).toHaveLength(1);
+    await step(1, 'second-step');
+    expect(steeringMessages(memory)).toHaveLength(1);
+    await step(2, 'third-step');
+    expect(steeringMessages(memory)).toHaveLength(1);
+    await step(3, 'fourth-step');
+    expect(steeringMessages(memory)).toHaveLength(2);
   });
 
   it('does not inject when the bound model has no steering slot', async () => {

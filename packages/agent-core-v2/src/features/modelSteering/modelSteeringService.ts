@@ -7,6 +7,7 @@ import {
 import { cognitionPathRefs, readCognitionSlot } from '#/agent/cognition/cognitionFiles';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -15,16 +16,21 @@ import { IAgentModelSteeringService } from './modelSteering';
 
 const MODEL_STEERING_INJECTION_VARIANT = 'model_steering';
 
-/** `modelSteering` domain (L4) — `IAgentModelSteeringService` implementation (Agent scope). Owns the
- *  `model_steering` context-injection provider: each turn, after newly materialized human input,
- *  and after compaction re-arm, it appends the bound model's `[models.<alias>.cognition].steering`
- *  text as a following user message, not a `<system-reminder>`. Human input uses explicit user,
- *  plugin-command, or user-slash skill origins; peer and background deliveries do not re-arm it.
- *  The last injection position consumes all preceding inputs without changing their order.
- *  Text stays frozen at binding. Legacy bindings without saved slots read the file;
- *  a read failure is skipped by the injector. */
+/** `modelSteering` domain (L4) — Agent-scoped owner of the `model_steering` injector provider.
+ *  Frozen cognition settings independently enable all new turns/compaction re-arm (default true),
+ *  materialized human input (default true), and every N model step heads of this agent (default 0/off).
+ *  Coinciding triggers append one plain user message; any injection restarts the step interval.
+ *  Human input uses explicit user, plugin-command, or user-slash skill origins, not peer/task input.
+ *  The last injection position consumes preceding inputs without changing their order.
+ *  Binding changes and cold recovery restart the provider-local counter, not frozen text/settings.
+ *  Legacy bindings without saved slots read the file; a read failure is skipped by the injector. */
 export class AgentModelSteeringService extends Disposable implements IAgentModelSteeringService {
   declare readonly _serviceBrand: undefined;
+  private stepOrdinal = 0;
+  private lastInjectionStep = 0;
+  private lastStepId: string | undefined;
+  private inStep = false;
+  private cadenceBinding: string | undefined;
 
   constructor(
     @IAgentContextInjectorService injector: IAgentContextInjectorService,
@@ -33,8 +39,20 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @IHostEnvironment private readonly hostEnv: IHostEnvironment,
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
+    @IAgentLoopService loop: IAgentLoopService,
   ) {
     super();
+    this._register(loop.hooks.onWillBeginStep.register('model-steering.cadence', async ({ stepId, signal }, next) => {
+      signal.throwIfAborted();
+      if (stepId === undefined || stepId !== this.lastStepId) this.stepOrdinal++;
+      this.lastStepId = stepId;
+      this.inStep = true;
+      try {
+        await next();
+      } finally {
+        this.inStep = false;
+      }
+    }, { before: 'context-injector' }));
     this._register(
       injector.register(MODEL_STEERING_INJECTION_VARIANT, (ctx) => this.reminder(ctx)),
     );
@@ -44,8 +62,18 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
     isNewTurn,
     lastInjectedAt,
   }: ContextInjectionContext): Promise<ContextInjectionContent | undefined> {
-    if (!isNewTurn && !this.hasNewHumanInput(lastInjectedAt)) return undefined;
     const binding = await this.profile.getCognitionBinding();
+    const bindingKey = `${binding.modelAlias}:${binding.position}:${binding.revision}:${binding.contentRevision}`;
+    if (this.cadenceBinding !== bindingKey) {
+      this.cadenceBinding = bindingKey;
+      this.stepOrdinal = this.inStep ? 1 : 0;
+      this.lastInjectionStep = 0;
+    }
+    const interval = binding.config?.steeringIntervalSteps ?? 0;
+    const onTurn = isNewTurn && (binding.config?.steeringOnTurn ?? true);
+    const onInput = (binding.config?.steeringOnInput ?? true) && this.hasNewHumanInput(lastInjectedAt);
+    const onInterval = this.inStep && interval > 0 && this.stepOrdinal - this.lastInjectionStep >= interval;
+    if (!onTurn && !onInput && !onInterval) return undefined;
     const text = binding.slots === undefined ? await readCognitionSlot(
       this.fs,
       this.bootstrap.homeDir,
@@ -53,7 +81,8 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
       cognitionPathRefs(binding.config?.steering),
       this.hostEnv.pathClass,
     ) : binding.slots.steering;
-    if (text === undefined) return undefined;
+    if (text === undefined || text.trim().length === 0) return undefined;
+    this.lastInjectionStep = this.stepOrdinal;
     return {
       message: {
         role: 'user',
