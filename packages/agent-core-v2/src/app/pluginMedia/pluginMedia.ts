@@ -24,6 +24,10 @@ export interface IPluginMediaService {
   providers(): Promise<{ provider: string; definition: PluginMediaProviderRegistration['definition'] }[]>;
   capabilities(query: MediaCapabilityQuery): Promise<MediaCapabilities | { providers: { provider: string; definition: PluginMediaProviderRegistration['definition'] }[] }>;
   voices(query: MediaVoiceQuery): Promise<MediaVoicePage>;
+  managedSources(): Promise<import('@kiki/protocol').MediaManagedSource[]>;
+  sourceSettings(input: { provider: string }): Promise<import('@kiki/protocol').MediaManagedSource>;
+  updateSource(input: import('@kiki/protocol').MediaSourceUpdate): Promise<import('@kiki/protocol').MediaManagedSource>;
+  addScriptSource(input: import('@kiki/protocol').MediaScriptSourceInput): Promise<import('@kiki/protocol').MediaManagedSource>;
   sources(): Promise<MediaSource[]>;
   setSources(input: { sources: MediaSource[] }): Promise<MediaSource[]>;
   catalog(input: { id: string }): Promise<MediaCatalog>;

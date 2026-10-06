@@ -1,5 +1,8 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
+import { mediaTask } from '#/agent/pluginMedia/mediaTask';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
@@ -27,6 +30,9 @@ import { stubBootstrap } from '../bootstrap/stubs';
 import { stubProviderService } from '../provider/stubs';
 import type { MediaJob } from '@kiki/protocol';
 import { officialPluginFixture } from '../../fixtures/officialPlugins';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { Event } from '#/_base/event';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.resolve(here, '../../fixtures/plugin-media');
@@ -42,8 +48,10 @@ function host(providers: Record<string, ProviderConfig> = {}) {
   const storage = new FileStorageService(home); stores.push(storage);
   const target = createScopedTestHost([
     stubPair(IBootstrapService, stubBootstrap(home)),
-    stubPair(IConfigService, { _serviceBrand: undefined, ready: Promise.resolve(), get: (key: string) => config[key] ?? {}, set: async (key: string, value: unknown) => { config[key] = { ...config[key] as object, ...value as object }; }, replace: async (key: string, value: unknown) => { config[key] = value; } } as unknown as IConfigService),
-    stubPair(IFlagService, { enabled: () => true } as unknown as IFlagService),
+    stubPair(IConfigService, { _serviceBrand: undefined, ready: Promise.resolve(), onDidSectionChange: Event.None, get: (key: string) => config[key] ?? {}, set: async (key: string, value: unknown) => { config[key] = { ...config[key] as object, ...value as object }; }, replace: async (key: string, value: unknown) => { config[key] = value; } } as unknown as IConfigService),
+    stubPair(IFlagService, { enabled: (id: string) => id !== 'plugin_app_lifecycle' } as unknown as IFlagService),
+    stubPair(IPluginUsageService, { enabled: () => false, allows: async () => true } as unknown as IPluginUsageService),
+    stubPair(ISessionManager, {} as ISessionManager),
     stubPair(IProviderService, stubProviderService(providers)),
     stubPair(IOAuthService, { resolveTokenProvider: () => ({ getAccessToken: async () => 'fixture-oauth-token' }) } as unknown as IOAuthService),
     stubPair(ISkillDiscovery, { _serviceBrand: undefined, discover: async () => ({ skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] }) } satisfies ISkillDiscovery),
@@ -57,6 +65,34 @@ async function install(target: ScopedTestHost, source: string) {
   const plan = await plugins.previewPlugin({ source });
   await plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
   await plugins.setPluginEnabled({ id: plan.id, enabled: true });
+}
+async function fixtureServer(handler: (request: IncomingMessage, response: ServerResponse) => void) {
+  const server = createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('Fixture listener missing');
+  return { base: `http://127.0.0.1:${address.port}`, close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())) };
+}
+async function installUnified(target: ScopedTestHost) {
+  const source = process.env['KIKI_MEDIA_SINGLE_PLUGIN_ROOT']!;
+  const archive = process.env['KIKI_MEDIA_SINGLE_PLUGIN_ZIP'];
+  if (archive === undefined) return install(target, source);
+  const bytes = await readFile(archive);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const unexpected: string[] = [];
+  const server = await fixtureServer((request, response) => {
+    if (request.method !== 'GET' || request.url !== '/kiki-media.zip') { unexpected.push(`${request.method} ${request.url}`); response.writeHead(500).end(); return; }
+    response.writeHead(200, { 'content-type': 'application/zip' }).end(bytes);
+  });
+  try {
+    const plugins = target.app.accessor.get(IPluginService);
+    const url = `${server.base}/kiki-media.zip`;
+    await expect(plugins.previewPlugin({ source: url, sha256: '0'.repeat(64) })).rejects.toThrow();
+    const plan = await plugins.previewPlugin({ source: url, sha256 });
+    await plugins.installPlugin({ source: url, sha256, fingerprint: plan.fingerprint, consent: true });
+    await plugins.setPluginEnabled({ id: plan.id, enabled: true });
+    expect(unexpected).toEqual([]);
+  } finally { await server.close(); }
 }
 async function start(service: IPluginMediaService, requestId: string, prompt: string, kind: 'image' | 'video' | 'tts' = 'image') {
   return service.start({ request_id: requestId, provider: 'fixture-media/synthetic', request: kind === 'tts' ? { kind, text: prompt, voice: 'test-voice' } : { kind, prompt } }, owner);
@@ -228,6 +264,180 @@ describe('media provider persisted vertical slice', () => {
     expect(await service.job(job.job_id)).toMatchObject({ state: 'succeeded' });
     expect(await target.app.accessor.get(IPluginSettingsService).inspect('fixture-media')).toMatchObject({ secretsConfigured: ['apiKey'] });
     expect(await service.providers()).toHaveLength(1);
+  });
+
+  it.skipIf(!process.env['KIKI_MEDIA_SINGLE_PLUGIN_ROOT'])('installs one unified package, independently manages all built-in sources and runs an arbitrary command', async () => {
+    const target = host();
+    await installUnified(target);
+    const service = target.app.accessor.get(IPluginMediaService);
+    const plugins = target.app.accessor.get(IPluginService);
+    expect((await plugins.listPlugins()).map((item) => item.id)).toEqual(['kiki-media']);
+    expect(await service.providers()).toHaveLength(16);
+    expect((await service.managedSources()).map((item) => item.sourceId)).toEqual(['openai', 'google', 'ark', 'xai', 'minimax', 'stepfun', 'novita', 'agnes', 'newapi', 'comfyui']);
+    const openai = await service.updateSource({ provider: 'kiki-media/openai-image', values: { apiKey: 'fixture-key', baseUrl: 'https://api.example.test/v1' } });
+    expect(openai.secretsConfigured).toEqual(['apiKey']);
+    expect(openai.values).not.toHaveProperty('apiKey');
+    expect(openai.missing).toEqual([]);
+    await service.updateSource({ provider: 'kiki-media/google-image', enabled: false });
+    expect(await service.providers()).toHaveLength(14);
+    await service.updateSource({ provider: 'kiki-media/ark-image', removed: true });
+    expect(await service.providers()).toHaveLength(12);
+    expect(await service.sourceSettings({ provider: 'kiki-media/openai-image' })).toEqual(openai);
+    expect(await service.capabilities({ provider: 'kiki-media/openai-image' })).toMatchObject({ models: expect.arrayContaining([{ id: 'gpt-image-1', kind: 'image' }]) });
+    const script = path.join(root, 'independent-script.mjs');
+    await writeFile(script, `import {writeFile, readFile} from 'node:fs/promises';const [output, external] = process.argv.slice(2);await writeFile(output, process.env.FIXTURE_SCRIPT_ENV + ':' + await readFile(external, 'utf8'));`);
+    const external = path.join(root, 'external.txt'); await writeFile(external, 'external-file');
+    const custom = await service.addScriptSource({ id: 'my-speech', label: 'My speech', kinds: ['tts'], command: process.execPath, args: [script, '{output}', external], environment: { FIXTURE_SCRIPT_ENV: 'custom-env' } });
+    expect(custom).toMatchObject({ custom: true, provider: 'kiki-media/script-my-speech', secretsConfigured: ['environment'] });
+    expect(JSON.stringify(custom)).not.toContain('custom-env');
+    const job = await service.start({ request_id: 'script-1', provider: custom.provider, request: { kind: 'tts', text: 'hello', voice: 'local' } }, owner);
+    const output = await service.run(job.job_id);
+    expect(output).toMatchObject({ state: 'succeeded', artifacts: [{ kind: 'audio', mime: 'audio/mpeg', complete: true }] });
+    const media = new ScopedMediaStore(owner.mediaScope, stores.at(-1)!, target.app.accessor.get(IAtomicDocumentStore));
+    const file = await media.open(output.artifacts[0]!.file_id);
+    const chunks = []; for await (const chunk of file!.stream()) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks).toString()).toBe('custom-env:external-file');
+    await service.updateSource({ provider: custom.provider, removed: true });
+    expect(await service.job(job.job_id)).toEqual(output);
+    expect((await service.providers()).some((item) => item.provider === custom.provider)).toBe(false);
+    await expect(service.start({ request_id: 'removed-1', provider: custom.provider, request: { kind: 'tts', text: 'hello', voice: 'local' } }, owner)).rejects.toThrow('Choose');
+    expect(await service.sourceSettings({ provider: 'kiki-media/openai-image' })).toEqual(openai);
+    await service.updateSource({ provider: custom.provider, removed: false, enabled: false });
+    await service.updateSource({ provider: custom.provider, enabled: true });
+    expect((await service.providers()).some((item) => item.provider === custom.provider)).toBe(true);
+  });
+
+  it.skipIf(!process.env['KIKI_MEDIA_SINGLE_PLUGIN_ROOT'])('keeps one hundred script sources isolated and restores a JSON handle only with its original environment', async () => {
+    let target = host(); await installUnified(target);
+    let service = target.app.accessor.get(IPluginMediaService);
+    const script = path.join(root, 'async-script.mjs');
+    const ready = path.join(remote, 'ready');
+    const actions = path.join(remote, 'actions.log');
+    await writeFile(script, `import {readFile,writeFile,appendFile,access} from 'node:fs/promises';const [ready,actions] = process.argv.slice(2);const envelope = JSON.parse(await readFile(process.env.KIKI_MEDIA_INPUT,'utf8'));await appendFile(actions,envelope.action+'\\n');let complete=false;try{await access(ready);complete=true;}catch{}if(envelope.action==='poll' && envelope.input.data.id!=='accepted-script-handle')throw new Error('wrong handle');if(complete){await writeFile(envelope.output,process.env.FIXTURE_TOKEN);await writeFile(envelope.resultFile,JSON.stringify({state:'complete',artifacts:[{path:envelope.output,name:'speech.mp3',mime:'audio/mpeg',kind:'audio',role:'original',complete:true}]}));}else await writeFile(envelope.resultFile,JSON.stringify({state:'pending',phase:'generation',handle:{version:1,data:{id:'accepted-script-handle'}},retryAfterMs:3000}));`);
+    const primary = await service.addScriptSource({ id: 'async-speech', label: 'Async speech', kinds: ['tts'], command: process.execPath, args: [script, ready, actions], protocol: 'json', environment: { FIXTURE_TOKEN: 'original-token' } });
+    const settings = target.app.accessor.get(IPluginSettingsService);
+    const configured = await settings.forExecution('kiki-media');
+    const scripts = JSON.parse(String(configured['scriptSources']));
+    scripts.push(...Array.from({ length: 99 }, (_, index) => ({ id: `extra-${index}`, label: `Extra ${index}`, kinds: ['image'], command: process.execPath, protocol: 'file', enabled: true, removed: false })));
+    await settings.update({ pluginId: 'kiki-media', values: { scriptSources: JSON.stringify(scripts) } });
+    expect(await service.managedSources()).toHaveLength(110);
+    expect(await service.providers()).toHaveLength(116);
+    const job = await service.start({ request_id: 'async-script', provider: primary.provider, request: { kind: 'tts', text: 'hello', voice: 'local' } }, owner);
+    void service.run(job.job_id);
+    await vi.waitFor(async () => expect(await service.job(job.job_id)).toMatchObject({ state: 'pending', can_resume: true }));
+    await service.updateSource({ provider: 'kiki-media/script-extra-0', enabled: false });
+    await service.updateSource({ provider: 'kiki-media/script-extra-1', removed: true });
+    expect(await service.providers()).toHaveLength(114);
+    expect(await service.sourceSettings({ provider: primary.provider })).toEqual(primary);
+    await service.updateSource({ provider: primary.provider, values: { environment: JSON.stringify({ FIXTURE_TOKEN: 'changed-token' }) } });
+    await stopHost(target, service, job);
+    target = host(); service = target.app.accessor.get(IPluginMediaService);
+    await vi.waitFor(async () => expect(await service.job(job.job_id)).toMatchObject({ state: 'pending', blocked_reason: 'needs_provider', can_resume: true }), { timeout: 10_000, interval: 20 });
+    expect((await service.stored(job.job_id)).handle?.data['id']).toBe('accepted-script-handle');
+    expect((await readFile(actions, 'utf8')).trim().split('\n')).toEqual(['submit']);
+    await service.updateSource({ provider: primary.provider, values: { environment: JSON.stringify({ FIXTURE_TOKEN: 'original-token' }) } });
+    await writeFile(ready, 'ready');
+    await service.resume(job.job_id);
+    const result = await terminal(service, job.job_id);
+    expect(result).toMatchObject({ state: 'succeeded', artifacts: [{ kind: 'audio', complete: true }] });
+    expect((await readFile(actions, 'utf8')).trim().split('\n')).toEqual(['submit', 'poll']);
+    const media = new ScopedMediaStore(owner.mediaScope, stores.at(-1)!, target.app.accessor.get(IAtomicDocumentStore));
+    const file = await media.open(result.artifacts[0]!.file_id);
+    const chunks = []; for await (const chunk of file!.stream()) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks).toString()).toBe('original-token');
+  });
+
+  it.skipIf(!process.env['KIKI_MEDIA_SINGLE_PLUGIN_ROOT'])('preserves legacy settings, deduplicates new providers and recovers the original accepted handle after upgrading', async () => {
+    let ready = false;
+    const requests: string[] = [];
+    const unexpected: string[] = [];
+    let base = '';
+    const server = await fixtureServer((request, response) => {
+      const route = `${request.method} ${request.url}`; requests.push(route);
+      if (request.headers.authorization !== 'Bearer legacy-fixture-key') { unexpected.push('wrong credential'); response.writeHead(500).end(); return; }
+      if (route === 'POST /v1/videos/generations') { response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ request_id: 'accepted-handle' })); return; }
+      if (route === 'GET /v1/videos/accepted-handle') { response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(ready ? { status: 'done', video: { url: `${base}/output.mp4` } } : { status: 'pending' })); return; }
+      if (route === 'GET /output.mp4') { response.writeHead(200, { 'content-type': 'video/mp4' }).end('fixture-video'); return; }
+      unexpected.push(route); response.writeHead(500).end();
+    });
+    base = server.base;
+    try {
+      let target = host();
+      const legacy = path.join(path.dirname(process.env['KIKI_MEDIA_SINGLE_PLUGIN_ROOT']!), 'kiki-media-xai');
+      await install(target, legacy);
+      await target.app.accessor.get(IPluginSettingsService).update({ pluginId: 'kiki-media-xai', values: { apiKey: 'legacy-fixture-key', baseUrl: `${base}/v1` } });
+      let service = target.app.accessor.get(IPluginMediaService);
+      const job = await service.start({ request_id: 'legacy-job', provider: 'kiki-media-xai/video', request: { kind: 'video', prompt: 'fixture' } }, owner);
+      void service.run(job.job_id);
+      await vi.waitFor(async () => expect(await service.job(job.job_id)).toMatchObject({ state: 'pending', can_resume: true }));
+      await service.stopLocal(job.job_id);
+      await service.run(job.job_id);
+      await installUnified(target);
+      expect((await service.providers()).map((item) => item.provider)).not.toContain('kiki-media-xai/video');
+      expect((await service.providers()).map((item) => item.provider)).toContain('kiki-media/xai-video');
+      expect(await service.sourceSettings({ provider: 'kiki-media/xai-video' })).toMatchObject({ values: { baseUrl: `${base}/v1` }, secretsConfigured: ['apiKey'], missing: [] });
+      const stored = await service.stored(job.job_id);
+      expect(stored.view.provider).toBe('kiki-media-xai/video');
+      expect(stored.handle?.data['id']).toBe('accepted-handle');
+      const newer = await service.start({ request_id: 'old-default-alias', provider: 'kiki-media-xai/video', request: { kind: 'video', prompt: 'fixture-alias' } }, owner);
+      expect(newer.provider).toBe('kiki-media/xai-video');
+      await service.updateSource({ provider: 'kiki-media/google-image', values: { apiKey: 'sibling-key' } });
+      await stopHost(target, service, job);
+      target = host(); service = target.app.accessor.get(IPluginMediaService);
+      expect((await service.stored(job.job_id)).handle?.data['id']).toBe('accepted-handle');
+      ready = true;
+      await service.resume(job.job_id);
+      const result = await terminal(service, job.job_id);
+      expect(result).toMatchObject({ state: 'succeeded', artifacts: [{ kind: 'video', complete: true }] });
+      expect(requests.filter((route) => route.startsWith('POST'))).toHaveLength(1);
+      expect(unexpected).toEqual([]);
+      expect(await target.app.accessor.get(IPluginSettingsService).inspect('kiki-media-xai')).toMatchObject({ secretsConfigured: ['apiKey'], values: { baseUrl: `${base}/v1` } });
+      await service.updateSource({ provider: 'kiki-media/xai-video', values: { apiKey: null } });
+      expect(await service.sourceSettings({ provider: 'kiki-media/xai-video' })).toMatchObject({ secretsConfigured: [], missing: ['apiKey'] });
+      expect(await target.app.accessor.get(IPluginSettingsService).inspect('kiki-media-xai')).toMatchObject({ secretsConfigured: ['apiKey'] });
+      await target.app.accessor.get(IPluginService).setPluginEnabled({ id: 'kiki-media-xai', enabled: false });
+      await service.updateSource({ provider: 'kiki-media/xai-video', enabled: true });
+      expect(await service.providers()).toHaveLength(16);
+    } finally { await server.close(); }
+  });
+
+  it.skipIf(!process.env['KIKI_MEDIA_SINGLE_PLUGIN_ROOT'])('runs the unified image tool through the real child bridge, Task sink and original artifact delivery', async () => {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVZkAAAAASUVORK5CYII=', 'base64');
+    const requests: string[] = [];
+    const unexpected: string[] = [];
+    const server = await fixtureServer((request, response) => {
+      requests.push(`${request.method} ${request.url}`);
+      if (request.method !== 'POST' || request.url !== '/v1/images/generations' || request.headers.authorization !== 'Bearer fixture-key') { unexpected.push(`${request.method} ${request.url}`); response.writeHead(500).end(); return; }
+      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+    });
+    try {
+      const target = host({ 'fixture-connection': { type: 'openai', apiKey: 'fixture-key', baseUrl: `${server.base}/v1` } }); await installUnified(target);
+      const service = target.app.accessor.get(IPluginMediaService);
+      expect(await service.updateSource({ provider: 'kiki-media/openai-image', values: { connectionId: 'fixture-connection' } })).toMatchObject({ values: { connectionId: 'fixture-connection' }, secretsConfigured: [], missing: [] });
+      const finalOutputs: string[] = [];
+      const settles: unknown[] = [];
+      const api = { generate: async (input: import('@kiki/protocol').MediaGenerateInput) => {
+        const job = await service.start({ ...input, request_id: 'task-image' }, owner);
+        await service.bindTask(job.job_id, 'media-task-fixture');
+        const task = mediaTask(service, job.job_id);
+        await task.start({ appendOutput() {}, setFinalOutput: (output: string) => finalOutputs.push(output), settle: async (result: unknown) => { settles.push(result); } } as unknown as Parameters<typeof task.start>[0]);
+        return service.job(job.job_id);
+      }, media: async () => service.capabilities({}) };
+      const output = await target.app.accessor.get(IPluginHostService).execute('kiki-media', 'generate', { provider: 'kiki-media/openai-image', request: { kind: 'image', prompt: 'one square' } }, new AbortController().signal, undefined, { media: api });
+      const result = JSON.parse(output.output as string);
+      expect(result).toMatchObject({ type: 'media_generation', job: { state: 'succeeded', task_id: 'media-task-fixture' } });
+      expect(JSON.parse(finalOutputs[0]!)).toEqual(result);
+      expect(settles).toEqual([{ status: 'completed', stopReason: undefined }]);
+      const media = new ScopedMediaStore(owner.mediaScope, stores.at(-1)!, target.app.accessor.get(IAtomicDocumentStore));
+      const file = await media.open(result.job.artifacts[0].file_id);
+      const chunks = []; for await (const chunk of file!.stream()) chunks.push(Buffer.from(chunk));
+      expect(Buffer.concat(chunks)).toEqual(png);
+      expect(requests).toEqual(['POST /v1/images/generations']); expect(unexpected).toEqual([]);
+      await service.updateSource({ provider: 'kiki-media/minimax-video', values: { apiKey: 'unrelated-key' } });
+      const repeat = await service.start({ request_id: 'task-image', provider: 'kiki-media/openai-image', request: { kind: 'image', prompt: 'one square' } }, owner);
+      expect(repeat.job_id).toBe(result.job.job_id);
+      expect(requests).toHaveLength(1);
+    } finally { await server.close(); }
   });
 
   it('executes the official two tools through the actual bidirectional plugin bridge', async () => {

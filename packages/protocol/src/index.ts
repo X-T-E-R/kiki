@@ -82,6 +82,7 @@ export * from './rest/appearance';
 export * from './rest/plugin';
 export * from './rest/plugin-import';
 export * from '@kiki/plugin-sdk/media';
+export * from './media-management';
 export * from './rest/persona';
 export * from './rest/memory';
 export * from './shortcuts';

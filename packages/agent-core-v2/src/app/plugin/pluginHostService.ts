@@ -34,6 +34,7 @@ import { IPluginService } from './plugin';
 import { IPluginSettingsService } from './pluginSettingsService';
 import type { PluginTool } from './contributions';
 import type { PluginInfo } from './types';
+import { sourceSchema, sourceValues, sourceActive, sourceDefaults, scriptSources, scriptDefinition, scriptEnvironmentKey, type MediaSettingValues } from './mediaSourceSettings';
 
 export interface PluginToolRegistration {
   readonly pluginId: string;
@@ -46,6 +47,7 @@ export interface PluginMediaProviderRegistration {
   readonly source: string;
   readonly version?: string;
   readonly configuration: string;
+  readonly aliases?: readonly string[];
 }
 
 export interface PluginMediaCallContext {
@@ -176,12 +178,54 @@ export class PluginHostService extends Service implements IPluginHostService {
   async listMediaProviders(): Promise<readonly PluginMediaProviderRegistration[]> {
     await this.connections?.ready;
     const installed = await this.plugins.listPlugins();
-    const items = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map(async (plugin) => {
-      const info = await this.plugins.getPluginInfo({ id: plugin.id });
-      const settings = await this.settings.forExecution(plugin.id);
-      return (info.manifest?.kiki?.mediaProviders ?? []).map((definition) => this.mediaRegistration(info, settings, definition));
+    const infos = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map((plugin) => this.plugins.getPluginInfo({ id: plugin.id })));
+    const replaced = new Set(infos.flatMap((info) => (info.manifest?.kiki?.mediaSources ?? []).flatMap((group) => group.legacyPluginId === undefined ? [] : [group.legacyPluginId])));
+    const items = await Promise.all(infos.filter((info) => !replaced.has(info.id)).map(async (info) => {
+      const settings = await this.settings.forExecution(info.id);
+      const definitions = info.manifest?.kiki?.mediaProviders ?? [];
+      const scriptId = info.manifest?.kiki?.mediaScriptProvider;
+      const expanded = definitions.filter((definition) => definition.id !== scriptId);
+      if (scriptId !== undefined) {
+        const script = definitions.find((definition) => definition.id === scriptId)!;
+        expanded.push(...scriptSources(settings).filter((source) => source.enabled && !source.removed).map((source) => scriptDefinition(source, script.resumeVersion)));
+      }
+      const entries = await Promise.all(expanded.map((definition) => this.mediaEntry(info, settings, definition.id)));
+      return entries.filter((entry) => entry !== undefined).map((entry) => entry.registration);
     }));
     return items.flat();
+  }
+
+  private async mediaEntry(info: PluginInfo, settings: MediaSettingValues, id: string) {
+    const extension = info.manifest?.kiki;
+    let definition = extension?.mediaProviders?.find((item) => item.id === id);
+    let execution: Record<string, unknown> = settings;
+    let configuration: Record<string, unknown> = settings;
+    let connectionDefinition = definition;
+    let aliases: string[] = [];
+    const group = extension?.mediaSources?.find((item) => item.providerIds.includes(id));
+    if (group !== undefined) {
+      const legacySummary = (await this.plugins.listPlugins()).find((plugin) => plugin.id === group.legacyPluginId);
+      const legacyInfo = legacySummary === undefined ? undefined : await this.plugins.getPluginInfo({ id: legacySummary.id });
+      const legacyInstalled = legacyInfo?.manifest !== undefined;
+      if (!sourceActive(settings, group) || (settings[group.settingsPrefix + 'enabled'] === undefined && legacyInstalled && !legacyInfo.enabled)) return undefined;
+      const legacy = legacyInstalled ? await this.settings.forExecution(group.legacyPluginId!) : {};
+      configuration = sourceValues(settings, group, legacy);
+      const schema = sourceSchema(extension!, group);
+      execution = sourceDefaults(schema, configuration as MediaSettingValues);
+      connectionDefinition = definition === undefined ? undefined : { ...definition, connectionSetting: 'connectionId' };
+      aliases = group.legacyPluginId === undefined ? [] : [`${group.legacyPluginId}/${id.slice(group.id.length + 1)}`];
+    } else if (extension?.mediaScriptProvider !== undefined && id.startsWith('script-')) {
+      const source = scriptSources(settings).find((item) => `script-${item.id}` === id);
+      const runtime = extension.mediaProviders?.find((item) => item.id === extension.mediaScriptProvider);
+      if (source === undefined || !source.enabled || source.removed || runtime === undefined) return undefined;
+      definition = scriptDefinition(source, runtime.resumeVersion);
+      execution = { scriptSource: source, environment: settings[scriptEnvironmentKey(source.id)] };
+      configuration = { scriptSource: { ...source, enabled: undefined, removed: undefined }, environment: execution['environment'] };
+      connectionDefinition = undefined;
+    }
+    if (definition === undefined) return undefined;
+    const registration = { ...this.mediaRegistration(info, configuration, connectionDefinition ?? definition), provider: `${info.id}/${definition.id}`, definition, aliases };
+    return { registration, execution, runtimeId: group !== undefined ? definition.id : id.startsWith('script-') && extension?.mediaScriptProvider !== undefined ? extension.mediaScriptProvider : definition.id, connectionDefinition };
   }
 
   requestMediaProvider(provider: string, action: 'describe' | 'submit' | 'poll' | 'cancel' | 'voices', input: unknown, signal: AbortSignal, context: PluginMediaCallContext, expected?: PluginMediaProviderRegistration): Promise<unknown> {
@@ -190,12 +234,12 @@ export class PluginHostService extends Service implements IPluginHostService {
     return this.runRequest(pluginId, async (info, settings) => {
       await this.connections?.ready;
       signal.throwIfAborted();
-      const definition = info.manifest?.kiki?.mediaProviders?.find((item) => item.id === providerId);
-      if (!info.enabled || info.state !== 'ok' || info.manifest?.kiki?.entry === undefined || definition === undefined) throw new Error('Media provider is not enabled');
-      const current = this.mediaRegistration(info, settings, definition);
-      if (expected !== undefined && (expected.source !== current.source || expected.configuration !== current.configuration || expected.definition.resumeVersion !== definition.resumeVersion)) throw new Error('Media provider source, endpoint, credential or resume version changed; restore the original provider configuration');
-      return this.getHost(info).requestMediaProvider(providerId, action, input, signal, settings, {
-        ...context, connection: () => this.resolveMediaConnection(info, settings, definition, context),
+      const entry = await this.mediaEntry(info, settings, providerId);
+      if (!info.enabled || info.state !== 'ok' || info.manifest?.kiki?.entry === undefined || entry === undefined) throw new Error('Media provider is not enabled');
+      const current = entry.registration;
+      if (expected !== undefined && (expected.source !== current.source || expected.configuration !== current.configuration || expected.definition.resumeVersion !== current.definition.resumeVersion)) throw new Error('Media provider source, endpoint, credential or resume version changed; restore the original provider configuration');
+      return this.getHost(info).requestMediaProvider(entry.runtimeId, action, input, signal, entry.execution, {
+        ...context, connection: () => entry.connectionDefinition === undefined ? Promise.resolve(undefined) : this.resolveMediaConnection(info, entry.execution, entry.connectionDefinition, context),
       }, context.onProgress);
     });
   }
@@ -210,7 +254,8 @@ export class PluginHostService extends Service implements IPluginHostService {
   private async resolveMediaConnection(info: PluginInfo, settings: Record<string, unknown>, definition: MediaProviderDefinition, context: PluginMediaCallContext): Promise<MediaConnection | undefined> {
     const setting = definition.connectionSetting;
     if (setting === undefined) return undefined;
-    if (info.manifest?.kiki?.settings?.schema.properties[setting]?.type !== 'string') throw new Error('Media connectionSetting must name a declared string setting');
+    const group = info.manifest?.kiki?.mediaSources?.find((source) => source.providerIds.includes(definition.id));
+    if (info.manifest?.kiki?.settings?.schema.properties[(group?.settingsPrefix ?? '') + setting]?.type !== 'string') throw new Error('Media connectionSetting must name a declared string setting');
     const id = settings[setting];
     if (id === undefined || id === '') return undefined;
     if (typeof id !== 'string' || this.connections === undefined) throw new Error('Configured Kiki connection is unavailable');

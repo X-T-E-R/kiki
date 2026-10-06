@@ -6,6 +6,7 @@ import { LifecycleScope } from '#/app/scopes';
 
 import { IPluginService } from './plugin';
 import { currentPluginId } from './renamedPlugins';
+import { scriptSources, scriptEnvironmentKey } from './mediaSourceSettings';
 import { PLUGIN_SETTINGS_SECTION, PluginSettingsSectionSchema } from './settingsConfigSection';
 import type { PluginSettings, PluginExtension } from './contributions';
 import { builtinHistory } from '#/app/pluginImport/builtinHistory';
@@ -41,7 +42,13 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
 
   private async extension(pluginId: string): Promise<PluginExtension | undefined> {
     const id = currentPluginId(pluginId);
-    return id === builtinHistory.id ? { settings: builtinHistory.settings } : (await this.plugins.getPluginInfo({ id })).manifest?.kiki;
+    const extension = id === builtinHistory.id ? { settings: builtinHistory.settings } : (await this.plugins.getPluginInfo({ id })).manifest?.kiki;
+    if (extension?.mediaScriptProvider === undefined || extension.settings === undefined) return extension;
+    const stored = await this.stored(id);
+    const sources = scriptSources(stored);
+    const properties = { ...extension.settings.schema.properties };
+    for (const source of sources) properties[scriptEnvironmentKey(source.id)] = { type: 'string', secret: true, title: 'Script environment' };
+    return { ...extension, settings: { ...extension.settings, schema: { ...extension.settings.schema, properties } } };
   }
 
   async inspect(pluginId: string): Promise<SettingsView> {
@@ -77,6 +84,7 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
       else if (typeof value !== property.type) throw new Error(`Invalid type for setting ${key}`);
       else updated[storageKey] = value;
     }
+    if (extension?.mediaScriptProvider !== undefined) scriptSources(updated);
     await this.configService.replace(PLUGIN_SETTINGS_SECTION, { ...current, [pluginId]: updated });
     return this.inspect(pluginId);
   }

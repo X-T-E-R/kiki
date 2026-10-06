@@ -404,6 +404,11 @@ import type { AgentFacade } from '../src/core/facade/agent.js';
 import type { ManagedUsageResult as EngineManagedUsageResult } from '@kiki/agent-core-v2/app/auth/oauthProtocol';
 import type { IPluginImportService } from '@kiki/agent-core-v2/app/pluginImport/pluginImport';
 import { importsContract } from '../src/contract/global/imports.js';
+import type { IPluginMediaService } from '@kiki/agent-core-v2/app/pluginMedia/pluginMedia';
+import { mediaContract } from '../src/contract/global/media.js';
+const _mediaOutputs: { [Method in keyof typeof mediaContract]: AssertWire<(typeof mediaContract)[Method]['output'], Awaited<ReturnType<IPluginMediaService[Method]>>> } = {
+  managedSources: true, sourceSettings: true, updateSource: true, addScriptSource: true, sources: true, setSources: true, catalog: true, providers: true, capabilities: true, voices: true, jobs: true, job: true,
+};
 const _importOutputs: { [Method in keyof typeof importsContract]: AssertWire<(typeof importsContract)[Method]['output'], Awaited<ReturnType<IPluginImportService[Method]>>> } = {
   sources: true, discover: true, preview: true, start: true, jobs: true, job: true,
   cancel: true, resume: true, archives: true, read: true,
