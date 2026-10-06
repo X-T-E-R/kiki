@@ -18,6 +18,7 @@ import { listTerminalsResponseSchema, getTerminalResponseSchema, closeTerminalRe
 import { confirmsTranscriptCoverage, TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
 import { sessionCommandContract, type SessionCommandChannel } from '../../contract/session/commands.js';
 import { RPCError } from '../../core/errors.js';
+import { isValid, ulid } from 'ulid';
 import { trimTrailingUndefined } from '../args.js';
 import {
   createProcedure,
@@ -31,6 +32,16 @@ const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 const DEFAULT_RECONNECT_DELAY_MS = 500;
 const WS_BEARER_PROTOCOL_PREFIX = 'kimi-code.bearer.';
 export const HTTP_TRANSPORT_TIMEOUT_REASON = 'transport.timeout';
+
+/** Safe request context carried by HTTP deadline errors, without query or payload data. */
+export interface HttpTimeoutDetails {
+  readonly method: string;
+  readonly path: string;
+  readonly phase: 'headers' | 'body';
+  readonly timeoutMs: number;
+  readonly elapsedMs: number;
+  readonly request_id: string;
+}
 
 interface Envelope<T> {
   readonly code: number;
@@ -199,13 +210,14 @@ export class HttpChannel implements KlientChannel {
   private requestJson<T>(path: string, options: HttpRestJsonOptions = {}): Promise<T> {
     const reading = /\/klient\/session-view\//.test(path) || /\/transcript(?:\/(?:detail|details|ops))?$/.test(path);
     const callOptions = reading ? { ...options, timeoutMs: options.timeoutMs ?? this.readingTimeoutMs() } : options;
-    return this.performFetch(path, callOptions, async (response) => {
+    return this.performFetch(path, callOptions, async (response, acceptRequestId) => {
       if (response.status === 404 && options.allowMissingRoute === true) {
         await response.body?.cancel();
         return undefined as T;
       }
       const boundedSession = /\/klient\/session-view\//.test(path) || /\/transcript(?:\/(?:detail|details|ops))?$/.test(path);
       const envelope = await this.readEnvelope(response, options.signal, boundedSession ? SESSION_READ_BODY_BYTES : 4 * 1024 * 1024);
+      acceptRequestId(envelope.request_id);
       const okCodes = options.okCodes ?? [0];
       if (response.ok === false || !okCodes.includes(envelope.code)) {
         throw new RPCError(
@@ -227,13 +239,14 @@ export class HttpChannel implements KlientChannel {
     consume: (response: Response) => Promise<T>,
   ): Promise<T> {
     const requestOptions = options ?? {};
-    return this.performFetch(path, requestOptions, async (response) => {
+    return this.performFetch(path, requestOptions, async (response, acceptRequestId) => {
       const contentType = response.headers.get('content-type') ?? '';
       if ((response.ok || (response.status === 304 && requestOptions.headers?.['if-none-match'] !== undefined)) &&
           !(requestOptions.jsonErrorOnSuccess === true && contentType.includes('json'))) {
         return consume(response);
       }
       const envelope = await this.readEnvelope(response, requestOptions.signal);
+      acceptRequestId(envelope.request_id);
       const okCodes = requestOptions.okCodes ?? [0];
       throw new RPCError(
         okCodes.includes(envelope.code) ? response.status : envelope.code,
@@ -249,7 +262,7 @@ export class HttpChannel implements KlientChannel {
   private async performFetch<T>(
     path: string,
     options: HttpRestJsonOptions,
-    consume: (response: Response) => Promise<T>,
+    consume: (response: Response, acceptRequestId: (value: string | undefined) => void) => Promise<T>,
   ): Promise<T> {
     if (this.closed) throw new Error('http closed');
     const body = options.rawBody ?? (options.body === undefined ? undefined : JSON.stringify(options.body));
@@ -265,11 +278,14 @@ export class HttpChannel implements KlientChannel {
     const activeCall = { controller };
     this.activeCalls.add(activeCall);
     const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
-    let timedOut = false;
+    const startedAt = performance.now();
+    let phase: HttpTimeoutDetails['phase'] = 'headers';
+    let timedOutPhase: HttpTimeoutDetails['phase'] | undefined;
     const timer = timeoutMs === 0
       ? undefined
       : setTimeout(() => {
-          timedOut = true;
+          if (controller.signal.aborted) return;
+          timedOutPhase = phase;
           controller.abort();
         }, timeoutMs);
     const sourceSignal = options.signal;
@@ -291,35 +307,51 @@ export class HttpChannel implements KlientChannel {
           for (const item of value) url.searchParams.append(key, item);
         } else if (value !== undefined) url.searchParams.set(key, String(value));
       }
-      const headers: Record<string, string> = {
+      const headers = new Headers({
         accept: options.expectBinary === true ? 'application/octet-stream' : 'application/json',
         ...options.headers,
+      });
+      const suppliedRequestId = headers.get('x-request-id');
+      let requestId = suppliedRequestId !== null && isValid(suppliedRequestId) ? suppliedRequestId : ulid();
+      headers.set('x-request-id', requestId);
+      if (this.token !== undefined && options.skipAuth !== true) headers.set('authorization', `Bearer ${this.token}`);
+      if (options.body !== undefined && !headers.has('content-type')) headers.set('content-type', 'application/json');
+      const acceptRequestId = (value: string | undefined | null): void => {
+        if (typeof value === 'string' && isValid(value)) requestId = value;
       };
-      if (this.token !== undefined && options.skipAuth !== true) headers['authorization'] = `Bearer ${this.token}`;
-      if (options.body !== undefined && headers['content-type'] === undefined) headers['content-type'] = 'application/json';
+      const timeoutError = (): RPCError => this.transportTimeoutError({
+        method: options.method ?? 'GET',
+        path: url.pathname,
+        phase: timedOutPhase ?? phase,
+        timeoutMs,
+        elapsedMs: Math.round(performance.now() - startedAt),
+        request_id: requestId,
+      });
       let response: Response;
       try {
         const input = path === '/api/klient/call' ? url.toString() : url;
         response = await this.fetchImpl(input, {
           method: options.method ?? 'GET',
           body: body as never,
-          headers,
+          headers: Object.fromEntries(headers),
           signal: controller.signal,
           redirect: 'error',
         });
       } catch (error) {
-        if (timedOut) throw this.transportTimeoutError(timeoutMs);
+        if (timedOutPhase !== undefined) throw timeoutError();
         if (this.closed && controller.signal.aborted) throw new Error('http closed', { cause: error });
         if (error instanceof RPCError) throw error;
         throw new RPCError(-1, error instanceof Error ? error.message : 'Connection failed');
       }
-      if (timedOut) throw this.transportTimeoutError(timeoutMs);
+      acceptRequestId(response.headers.get('x-request-id'));
+      phase = 'body';
+      if (timedOutPhase !== undefined) throw timeoutError();
       try {
-        const result = await consume(response);
-        if (timedOut) throw this.transportTimeoutError(timeoutMs);
+        const result = await consume(response, acceptRequestId);
+        if (timedOutPhase !== undefined) throw timeoutError();
         return result;
       } catch (error) {
-        if (timedOut) throw this.transportTimeoutError(timeoutMs);
+        if (timedOutPhase !== undefined) throw timeoutError();
         if (this.closed && controller.signal.aborted) throw new Error('http closed', { cause: error });
         if (error instanceof TypeError && !controller.signal.aborted) {
           throw new RPCError(-1, error.message);
@@ -333,12 +365,13 @@ export class HttpChannel implements KlientChannel {
     }
   }
 
-  private transportTimeoutError(timeoutMs: number): RPCError {
+  private transportTimeoutError(details: HttpTimeoutDetails): RPCError {
     return new RPCError(
       50001,
-      `call timed out after ${timeoutMs}ms`,
-      undefined,
+      `call timed out after ${details.timeoutMs}ms`,
+      details,
       HTTP_TRANSPORT_TIMEOUT_REASON,
+      details.request_id,
     );
   }
 

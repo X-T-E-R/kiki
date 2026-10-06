@@ -164,6 +164,18 @@ and IPC reject these HTTP-only commands rather than silently emulating them.
 Inputs and outputs reuse the protocol schemas. Submission waits without the
 generic HTTP deadline; other commands use the normal request deadline.
 
+HTTP deadline errors retain `reason: "transport.timeout"` and carry
+`HttpTimeoutDetails` in `RPCError.details`: `method`, query-free `path`, `phase`
+(`headers` or `body`), `timeoutMs`, `elapsedMs`, and `request_id`. The same ID is
+available as `RPCError.requestId`; the GUI preserves both fields when mapping to
+its timeout error. Requests reuse a valid caller ULID in `x-request-id` or generate
+one using the existing ULID dependency. A valid response header ID replaces it;
+a valid parsed envelope ID takes precedence. Diagnostics contain no origin, query,
+headers, credentials, or body. Caller cancellation and server error envelopes
+remain distinct from deadlines. A timeout does not establish whether a mutation
+committed: inspect the session or operation before retrying; this transport does
+not retry automatically.
+
 ## GUI entry contracts
 
 These HTTP-only capabilities use `klient.rest` and the authenticated `/api` REST envelope. They do not promise memory/IPC parity.

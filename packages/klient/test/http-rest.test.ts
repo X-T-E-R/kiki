@@ -1,4 +1,5 @@
-import { createServer, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { isValid, ulid } from 'ulid';
 import { once } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -825,8 +826,8 @@ describe('HTTP REST domains', () => {
 });
 
 describe('native HTTP response lifecycle', () => {
-  const server = createServer((_request, response) => handler(response));
-  let handler: (response: ServerResponse) => void;
+  const server = createServer((request, response) => handler(response, request));
+  let handler: (response: ServerResponse, request: IncomingMessage) => void;
   let channel: HttpChannel;
   const timers = new Set<ReturnType<typeof setTimeout>>();
 
@@ -865,13 +866,60 @@ describe('native HTTP response lifecycle', () => {
     expect(input.text.length).toBe(4 * 1024 * 1024);
   });
 
+  it('locates a delayed-header create deadline without exposing payloads or retrying', async () => {
+    let receivedId: string | undefined;
+    let requests = 0;
+    handler = (response, request) => {
+      requests += 1;
+      receivedId = request.headers['x-request-id'] as string;
+      later(() => response.end(JSON.stringify({ code: 0, msg: 'success', data: { id: 'created' } })), 200);
+    };
+    const failure = await channel['requestJson']('/sessions?private=QUERY_SECRET#FRAGMENT_SECRET', {
+      method: 'POST', body: { title: 'BODY_SECRET' }, headers: { authorization: 'Bearer AUTH_SECRET' },
+    }).catch((error: unknown) => error) as RPCError;
+    expect(requests).toBe(1);
+    expect(isValid(receivedId!)).toBe(true);
+    expect(failure).toMatchObject({ code: 50001, reason: HTTP_TRANSPORT_TIMEOUT_REASON, requestId: receivedId });
+    expect(failure.details).toEqual({ method: 'POST', path: '/api/sessions', phase: 'headers', timeoutMs: 100, elapsedMs: expect.any(Number), request_id: receivedId });
+    expect((failure.details as { elapsedMs: number }).elapsedMs).toBeGreaterThanOrEqual(90);
+    expect(JSON.stringify(failure)).not.toMatch(/QUERY_SECRET|FRAGMENT_SECRET|BODY_SECRET|AUTH_SECRET|127\.0\.0\.1/);
+  });
+
   it.each(['json', 'binary'] as const)('bounds a stalled %s body after headers on a real socket', async (kind) => {
-    handler = (response) => {
-      response.writeHead(200, { 'content-type': kind === 'json' ? 'application/json' : 'application/octet-stream' });
+    const responseId = ulid();
+    let receivedId: string | undefined;
+    handler = (response, request) => {
+      receivedId = request.headers['x-request-id'] as string;
+      response.writeHead(200, { 'content-type': kind === 'json' ? 'application/json' : 'application/octet-stream', 'x-request-id': responseId });
       response.write(kind === 'json' ? '{"code":0,' : 'partial file');
     };
     const operation = kind === 'json' ? channel.rest.meta() : channel.rest.sessions.media('s', 'f');
-    await expect(operation).rejects.toMatchObject({ code: 50001, reason: HTTP_TRANSPORT_TIMEOUT_REASON });
+    const failure = await operation.catch((error: unknown) => error) as RPCError;
+    expect(isValid(receivedId!)).toBe(true);
+    expect(receivedId).not.toBe(responseId);
+    expect(failure).toMatchObject({ code: 50001, reason: HTTP_TRANSPORT_TIMEOUT_REASON, requestId: responseId });
+    expect(failure.details).toEqual({ method: 'GET', path: kind === 'json' ? '/api/meta' : '/api/sessions/s/media/f', phase: 'body', timeoutMs: 100, elapsedMs: expect.any(Number), request_id: responseId });
+  });
+
+  it('preserves a valid caller id and propagates an authoritative envelope id without changing success', async () => {
+    const callerId = ulid();
+    const headerId = ulid();
+    const envelopeId = ulid();
+    let receivedId: string | undefined;
+    handler = (response, request) => {
+      receivedId = request.headers['x-request-id'] as string;
+      response.writeHead(200, { 'content-type': 'application/json', 'x-request-id': headerId });
+      response.end(JSON.stringify({ code: 0, msg: 'success', request_id: envelopeId, data: { ok: true } }));
+    };
+    await expect(channel['requestJson']('/fixture', { headers: { 'X-Request-ID': callerId } })).resolves.toEqual({ ok: true });
+    expect(receivedId).toBe(callerId);
+    await expect(channel['requestJson']('/fixture', { headers: { 'x-request-id': '11111111-1111-4111-8111-111111111111' } })).resolves.toEqual({ ok: true });
+    expect(isValid(receivedId!)).toBe(true);
+    handler = (response) => {
+      response.writeHead(200, { 'content-type': 'application/json', 'x-request-id': headerId });
+      response.end(JSON.stringify({ code: 40001, msg: 'refused', request_id: envelopeId }));
+    };
+    await expect(channel.rest.meta()).rejects.toMatchObject({ code: 40001, requestId: envelopeId, reason: undefined });
   });
 
   it.each(['json', 'binary'] as const)('reports a severed %s body as connection failure, not malformed JSON or timeout', async (kind) => {
@@ -963,7 +1011,7 @@ describe('native HTTP response lifecycle', () => {
       notifyHeaders();
     };
     const controller = new AbortController();
-    const operation = channel.call({}, 'example', 'read', [], { signal: controller.signal, timeoutMs: 0 }).catch((error: unknown) => error);
+    const operation = channel.call({}, 'example', 'read', [], { signal: controller.signal, timeoutMs: 100 }).catch((error: unknown) => error);
     await headersSent;
     if (action === 'caller') controller.abort();
     else await channel.close();

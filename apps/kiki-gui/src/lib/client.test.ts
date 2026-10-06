@@ -568,6 +568,31 @@ describe('KikiClient transport error mapping', () => {
     expect(failure).toBeInstanceOf(ApiError);
     expect((failure as ApiError).code).toBe(API_CODES.TIMEOUT);
     expect((failure as ApiError).message).toContain('Request timed out after 5ms');
+    const requestId = new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('x-request-id');
+    expect(requestId).toMatch(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
+    expect((failure as ApiError).requestId).toBe(requestId);
+    expect((failure as ApiError).details).toEqual({ method: 'GET', path: '/api/meta', phase: 'headers', timeoutMs: 5, elapsedMs: expect.any(Number), request_id: requestId });
+  });
+
+  it('keeps authoritative response identity and body phase in GUI deadline diagnostics', async () => {
+    vi.useFakeTimers();
+    const responseId = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true });
+        },
+      });
+      return new Response(body, { headers: { 'content-type': 'application/json', 'x-request-id': responseId } });
+    }));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', timeoutMs: 5 });
+    const pending = client.meta().catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(5);
+    const failure = await pending as ApiError;
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure.code).toBe(API_CODES.TIMEOUT);
+    expect(failure.requestId).toBe(responseId);
+    expect(failure.details).toEqual({ method: 'GET', path: '/api/meta', phase: 'body', timeoutMs: 5, elapsedMs: expect.any(Number), request_id: responseId });
   });
 
   it('keeps the initial session snapshot loading beyond the generic request deadline', async () => {

@@ -12,7 +12,7 @@ export function createSessionTransport(klient: SessionCommandClient): SessionTra
       return await operation();
     } catch (error) {
       if (error instanceof RPCError) {
-        throw new ApiError({ code: error.code, msg: error.message, data: error.data, request_id: error.requestId });
+        throw new ApiError({ code: error.code, msg: error.message, data: error.data, details: error.details, request_id: error.requestId });
       }
       throw error;
     }
