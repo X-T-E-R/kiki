@@ -36,6 +36,7 @@ import { SpaceRowMenu } from './spaces/SpaceRowMenu';
 import { AddConnectionDialog } from './remote/AddConnectionDialog';
 import { CopyField, RemoteStateChip, connectionFailureText } from './remote/parts';
 import { useRemoteSpaceEntry } from './remote/useRemoteSpaceEntry';
+import { CloudflareEntry } from './remote/CloudflareEntry';
 
 export function RemoteConnectionsSection() {
   const host = useHost();
@@ -126,6 +127,7 @@ export function RemoteConnectionsSection() {
         ) : null}
 
         <FeedbackLine feedback={feedback} />
+        <CloudflareEntry />
 
         {identity.data !== undefined && identity.data !== null ? (
           <div className="border-t border-hairline pt-4" data-remote-self-identity>

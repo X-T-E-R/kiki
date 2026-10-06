@@ -172,6 +172,7 @@ export class AgentHookRules extends Service implements IAgentHookRules {
   }
 
   private receipt(rule: EffectiveHookRule, event: HookEvent): HookReceipt | undefined {
+    if (rule.namespace.startsWith('plugin/') && this.rules.snapshot().rules.find((current) => current.id === rule.id)?.active !== true) return undefined;
     if (!matchesHook(rule, event)) return undefined;
     if (event.executorId !== undefined && event.executorId !== 'native' && ['step.before', 'step.after', 'tool.before', 'tool.after'].includes(event.event)) return undefined;
     const state = this.states.get(hookStateKey).rules[rule.id];

@@ -76,6 +76,16 @@ You are approving the source, not the exact bytes: Kiki fingerprints the plugin 
 - **Removing a plugin deletes only the installation record.** The managed copy and your source files stay on disk.
 - **Plugins are installed per user** and apply to every project.
 
+### Choose plugins for a workspace (experimental)
+
+The GUI right rail can choose which installed plugins a workspace's sessions use, independently of other workspaces in the same space. Enable `KIKI_EXPERIMENTAL_PLUGIN_WORKSPACE_USAGE=1` when starting the server. The section names the workspace resolved from the current session; it is not a switch for just that conversation or profile.
+
+Turning a plugin off here removes its tools, Skills, commands, plugin agents, hooks and workspace panels from this workspace. New calls cannot use an old cached tool or panel; calls already admitted may finish. Plugin instructions refresh at the next safe step or while the agent is idle, so **Applying** means the choice is saved but the current request has not necessarily adopted it. Past messages stay intact.
+
+Use **Restore default** to remove the workspace override and follow the space setting again. A plugin disabled in Plugin settings remains unavailable even if the workspace requests it on; enable its space master switch there first. Profile tool restrictions still apply.
+
+Catalog or source installation from the rail uses the same preview and consent as the plugin manager. Installation and the master switch belong to the current space and can affect its other workspaces following the default. Turning a plugin off in the rail does not uninstall it, revoke consent or stop a space service; manage those in Plugin settings. This selection is not a security sandbox for trusted plugin code.
+
 ### Custom marketplace JSON
 
 Pass a marketplace JSON path or URL to `/plugins marketplace <source>`, set [`KIKI_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md), or configure `[plugins] marketplace_url` in `config.toml`; the command wins over the environment variable, which wins over the config. With no custom source, Kiki uses the official [Kiki Plugins catalog](https://x-t-e-r.github.io/kiki-plugins/marketplace.json). If the catalog cannot be reached, the bundled metadata still lets you browse it; installing a package still needs access to its download URL.

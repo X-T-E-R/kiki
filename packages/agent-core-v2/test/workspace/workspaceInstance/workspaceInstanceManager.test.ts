@@ -218,6 +218,7 @@ function manager(
     fixture.appendLogStore,
     fixture.docs,
     fixture.storage,
+    undefined,
     fixture.unitHostFactory,
     fixture.idleTtlMs,
   ]) as WorkspaceInstanceManager;

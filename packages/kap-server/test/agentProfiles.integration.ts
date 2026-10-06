@@ -38,7 +38,7 @@ import { registerAgentProfilesRoute } from '../src/routes/agentProfiles';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { panelSkills } from '../src/routes/agentPanelCapabilities';
-import { acquireWorkspaceProfileCatalog } from '../src/routes/agentProfileCapabilities';
+import { acquireDraftProfileCatalog, acquireWorkspaceProfileCatalog } from '../src/routes/agentProfileCapabilities';
 import {
   saveSubagentProfileToolSettings,
   searchSubagentToolCatalog,
@@ -408,6 +408,23 @@ describe('GET /api/agents', () => {
     expect(server.core.accessor.get(ISessionManager).get(manual.data.id)!.accessor.get(IAgentLifecycleService)
       .get('main')!.accessor.get(IAgentProfileService).data().profileName).toBe('project-only');
     expect((await readPreview()).items.some((item) => item.name === 'project-only')).toBe(false);
+  });
+
+  it('uses a registered canonical workspace id for cold cwd plugin previews without materializing a Program', async () => {
+    const cwd = join(home!, 'canonical-project');
+    await mkdir(cwd, { recursive: true });
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    const registry = server.core.accessor.get(IWorkspaceService);
+    const now = Date.now();
+    vi.spyOn(registry, 'list').mockResolvedValue([{ id: 'legacy-canonical-workspace', root: cwd, name: 'Example', createdAt: now, lastOpenedAt: now, pinned: false }]);
+    const touched = vi.spyOn(registry, 'createOrTouch');
+    const spelling = process.platform === 'win32' ? `${cwd.toUpperCase().replaceAll('\\', '/')}/` : `${cwd}/`;
+    const preview = await acquireDraftProfileCatalog(server.core, { cwd: spelling });
+    expect(preview).toBeDefined();
+    try { expect(preview!.workspaceId).toBe('legacy-canonical-workspace'); }
+    finally { await preview?.dispose(); }
+    expect(touched).not.toHaveBeenCalled();
+    expect(server.core.accessor.get(IWorkspaceInstanceManager).list()).toHaveLength(0);
   });
 
   it('probes draft directories without registration or Programs and registers once on submit', async () => {

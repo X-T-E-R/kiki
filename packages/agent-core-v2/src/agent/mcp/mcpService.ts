@@ -227,6 +227,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       resolved.client,
       resolved.tools,
       resolved.enabledNames,
+      resolved.admitCall,
     );
     this.emitMcpToolCollisions(entry.name, result.collisions);
     this.recordDiscovery(entry.name, resolved.rawTools, resolved.enabledNames, result.collisions);
@@ -265,6 +266,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     client: MCPClient,
     tools: readonly KosongTool[],
     enabledTools: ReadonlySet<string>,
+    admitCall?: () => Promise<{ release(): void } | undefined>,
   ): {
     readonly registered: readonly string[];
     readonly collisions: readonly McpToolCollision[];
@@ -299,6 +301,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
         this.registry.register(
           createMcpTool(qualified, tool, client, {
             serverName,
+            admitCall,
             onUnauthorized: (error, failedClient) =>
               this.mcpHandle.connectionManager.markNeedsAuth(serverName, error, failedClient),
             originalsDir: sessionMediaOriginalsDir(this.sessionContext.sessionDir),

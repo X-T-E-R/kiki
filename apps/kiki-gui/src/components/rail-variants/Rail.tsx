@@ -60,6 +60,7 @@ import { descendantIds, railVisibility, waitingAgentIds as pendingOrigins } from
 import { FOCUS_RING, ModeSwitch, useRailMode, type RailMode } from './shell';
 import type { RailProps } from './types';
 import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead, RailTodos } from './DefaultSections';
+import { WorkspacePluginsSection } from '../capabilities/WorkspacePluginsSection';
 import { SessionCronSection } from './SessionCronSection';
 import { PersonaSettingsUpdate } from '../persona/PersonaSettingsUpdate';
 import { useEntityPage } from '../transcriptDetail';
@@ -798,6 +799,7 @@ export function Rail({
       {/* 7 · Reference, folded: what it can use, what happened. */}
       <div data-inspector-tail className={`space-y-1 ${SECTION}`}>
         <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
+        <WorkspacePluginsSection sessionId={state.sessionId} />
         <ActivityFeed blocks={state.blocks} forest={forest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
         {show.comms && session !== undefined ? <InspectorComms sessionId={session.id} /> : null}
         {memory !== undefined ? (

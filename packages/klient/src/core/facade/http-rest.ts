@@ -637,6 +637,9 @@ export interface HttpRestFacade {
   };
 
   readonly plugins: {
+    navigation(): Promise<import('@kiki/protocol').PluginNavigation>;
+    usage(target: import('@kiki/protocol').PluginUsageTarget): Promise<import('@kiki/protocol').PluginUsageResponse>;
+    setUsage(input: import('@kiki/protocol').PluginUsageRequest): Promise<import('@kiki/protocol').PluginUsageResponse>;
     marketplace(): Promise<HttpRestPluginMarketplaceResponse>;
     preview(input: import('@kiki/protocol').PluginPreviewRequest): Promise<import('@kiki/protocol').PluginInstallPlan>;
     install(input: string | import('@kiki/protocol').PluginInstallRequest): Promise<PluginSummary>;
@@ -647,10 +650,10 @@ export interface HttpRestFacade {
     remove(id: string, options?: { readonly deleteData?: boolean }): Promise<{ readonly ok: true }>;
     rollback(id: string): Promise<{ readonly ok: true }>;
     installPrerequisite(id: string, input: import('@kiki/protocol').PluginPrerequisiteInstall): Promise<{ readonly ok: true }>;
-    panels(): Promise<{ readonly panels: readonly import('@kiki/protocol').PluginPanelSummary[] }>;
-    panelDocument(id: string, panelId: string): Promise<import('@kiki/protocol').PluginPanelDocument>;
+    panels(target?: import('@kiki/protocol').PluginUsageTarget): Promise<{ readonly panels: readonly import('@kiki/protocol').PluginPanelSummary[] }>;
+    panelDocument(id: string, panelId: string, target?: import('@kiki/protocol').PluginUsageTarget): Promise<import('@kiki/protocol').PluginPanelDocument>;
     panelBridge(id: string, panelId: string, input: import('@kiki/protocol').PluginPanelBridgeRequest): Promise<import('@kiki/protocol').PluginPanelBridgeResponse>;
-    commands(): Promise<{ readonly commands: readonly { readonly pluginId: string; readonly name: string; readonly description: string; readonly prompt: string }[] }>;
+    commands(target?: import('@kiki/protocol').PluginUsageTarget): Promise<{ readonly commands: readonly { readonly pluginId: string; readonly name: string; readonly description: string; readonly prompt: string }[] }>;
     recommend(input: { readonly cwd?: string; readonly files?: readonly string[]; readonly commands?: readonly string[]; readonly dependencies?: readonly string[] }): Promise<{ readonly entries: readonly HttpRestPluginMarketplaceEntry[] }>;
     dismissRecommendation(id: string): Promise<{ readonly ok: true }>;
   };

@@ -22,6 +22,40 @@ console.log = (...args) => console.error(...args);
 let started = false;
 let installPrerequisite;
 let handlePanelRequest;
+let activate;
+let deactivate;
+const lifetime = new AbortController();
+const settingsCalls = new Map();
+let nextSettingsCall = 0;
+let shuttingDown;
+let latestActivity = [];
+const activityListeners = new Set();
+const focusCalls = new Map();
+let nextFocusCall = 0;
+function onActivity(listener) { activityListeners.add(listener); listener(latestActivity); return () => activityListeners.delete(listener); }
+function focusSession(sessionId) {
+  const callId = ++nextFocusCall;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { focusCalls.delete(callId); reject(new Error('Session navigation timed out')); }, 5000);
+    focusCalls.set(callId, { resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } });
+    send({ method: 'app-focus-session', params: { callId, sessionId } });
+  });
+}
+function updateSettings(values) {
+  const callId = ++nextSettingsCall;
+  return new Promise((resolve, reject) => {
+    settingsCalls.set(callId, { resolve, reject });
+    send({ method: 'settings-update', params: { callId, values } });
+  });
+}
+function shutdown() {
+  if (shuttingDown !== undefined) return shuttingDown;
+  lifetime.abort();
+  for (const controller of pending.values()) controller.abort();
+  shuttingDown = Promise.resolve().then(() => deactivate?.());
+  return shuttingDown;
+}
+for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void shutdown().finally(() => process.exit()); });
 for await (const line of createInterface({ input: process.stdin })) {
   let message;
   try { message = JSON.parse(line); } catch { continue; }
@@ -37,6 +71,8 @@ for await (const line of createInterface({ input: process.stdin })) {
       if (typeof plugin.register !== 'function') throw new Error('Plugin must export register(api)');
       installPrerequisite = plugin.installPrerequisite;
       handlePanelRequest = plugin.handlePanelRequest;
+      activate = plugin.activate;
+      deactivate = plugin.deactivate;
       await plugin.register({
         registerTool(definition, execute) {
           if (typeof execute !== 'function' || typeof definition?.name !== 'string' || tools.has(definition.name)) {
@@ -66,6 +102,39 @@ for await (const line of createInterface({ input: process.stdin })) {
       break;
     }
     send({ method: 'ready', params: { version: 1 } });
+    continue;
+  }
+  if (message.method === 'settings-result') {
+    const call = settingsCalls.get(message.params?.callId);
+    settingsCalls.delete(message.params?.callId);
+    if (message.params?.error !== undefined) call?.reject(new Error(message.params.error));
+    else call?.resolve(message.params?.result);
+    continue;
+  }
+  if (message.method === 'app-activity') {
+    latestActivity = Array.isArray(message.params?.activity) ? message.params.activity : [];
+    for (const listener of activityListeners) { try { listener(latestActivity); } catch {} }
+    continue;
+  }
+  if (message.method === 'app-focus-result') {
+    const call = focusCalls.get(message.params?.callId);
+    focusCalls.delete(message.params?.callId);
+    if (message.params?.error !== undefined) call?.reject(new Error(message.params.error));
+    else call?.resolve(message.params?.result);
+    continue;
+  }
+  if (message.method === 'activate') {
+    Promise.resolve().then(() => {
+      if (typeof activate !== 'function') throw new Error('App plugin must export activate(context)');
+      return activate({ settings: message.params?.settings ?? {}, userHome: message.params?.userHome,
+        dataDir: message.params?.dataDir, signal: lifetime.signal, updateSettings, onActivity, focusSession });
+    }).then((result) => send({ id: message.id, result }),
+      (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }));
+    continue;
+  }
+  if (message.method === 'shutdown') {
+    void shutdown().then(() => send({ id: message.id, result: true }),
+      () => send({ id: message.id, error: { code: -32000, message: 'Plugin shutdown failed' } })).finally(() => process.exit());
     continue;
   }
   if (message.method === 'cancel') {
@@ -159,3 +228,4 @@ for await (const line of createInterface({ input: process.stdin })) {
     ).finally(() => pending.delete(message.id));
   }
 }
+await shutdown();

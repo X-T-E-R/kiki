@@ -65,6 +65,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       runtimeResolver: this.runtimeResolver,
       workspaceId: workspace.workspaceId,
       runtimeId: 'local',
+      allowsCall: (name) => this.mcpConfig.allowsCall?.(name) ?? Promise.resolve(true),
       resolveDefaultTimeouts: () => this.mcpConfig.tunables(),
       resolveClientName: this.resolveClientName,
     });
@@ -271,6 +272,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       .then(() => this.mutate(() => this.apply(change)))
       .catch((error) => {
         this.log.warn(`mcp server change apply failed: ${String(error)}`);
+        change.reportFailure?.(error);
       });
   }
 

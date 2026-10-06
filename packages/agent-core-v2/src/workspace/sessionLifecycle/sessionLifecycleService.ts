@@ -431,8 +431,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
               reload: async () => {
                 const beforeInstructions = JSON.stringify(this.workspaceInstructions.snapshot);
                 const beforePlugins = JSON.stringify({
-                  systemPrompts: await this.plugins.enabledSystemPrompts(),
-                  sessionStarts: await this.plugins.enabledSessionStarts(),
+                  systemPrompts: await this.plugins.enabledSystemPrompts(workspaceId),
+                  sessionStarts: await this.plugins.enabledSessionStarts(workspaceId),
                 });
                 await this.plugins.reloadPlugins();
                 await Promise.all([
@@ -445,8 +445,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
                   this.workspaceInstructions.reload(),
                 ]);
                 const afterPlugins = JSON.stringify({
-                  systemPrompts: await this.plugins.enabledSystemPrompts(),
-                  sessionStarts: await this.plugins.enabledSessionStarts(),
+                  systemPrompts: await this.plugins.enabledSystemPrompts(workspaceId),
+                  sessionStarts: await this.plugins.enabledSessionStarts(workspaceId),
                 });
                 return {
                   instructionsChanged: beforeInstructions !== JSON.stringify(this.workspaceInstructions.snapshot),

@@ -770,7 +770,7 @@ interface ProfileDynamicSnapshotPayload {
   enabled: boolean;
   revision: number;
   /** SystemPromptContext */
-  context: import('@kiki/agent-profiles/agentProfile').AgentProfileContext & { agentsMdWarning?: string, agentsMdPaths?: string[], agentsMdFiles?: import('#/agent/agentsMdReminder/instructionCoverage').InstructionFile[] };
+  context: import('@kiki/agent-profiles/agentProfile').AgentProfileContext & { pluginBlocks?: Readonly<Record<string, string>>, agentsMdWarning?: string, agentsMdPaths?: string[], agentsMdFiles?: import('#/agent/agentsMdReminder/instructionCoverage').InstructionFile[] };
   content: string;
   hash: string;
 }

@@ -4,7 +4,9 @@ import { isAbsolute } from 'node:path';
 import {
   computeUpdateStatus,
   ErrorCodes as DomainErrorCodes,
+  Error2,
   IPluginService,
+  IPluginUsageService,
   IPluginHostService,
   IPluginSettingsService,
   ISessionIndex,
@@ -29,7 +31,7 @@ import {
 import { readDefaultPluginCatalog } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
 import { z } from 'zod';
 import {
-  pluginSettingsResponseSchema, pluginSettingsPatchSchema, pluginPrerequisiteInstallSchema,
+  pluginSettingsResponseSchema, pluginSettingsPatchSchema, pluginPrerequisiteInstallSchema, pluginNavigationSchema,
   pluginPanelSummarySchema, pluginPanelDocumentSchema, pluginPanelBridgeRequestSchema, pluginPanelBridgeResponseSchema,
 } from '@kiki/protocol';
 
@@ -51,6 +53,17 @@ import {
   type PluginMarketplaceEntryWire,
 } from '../protocol/rest-plugin';
 import { parseActionSuffix } from './action-suffix';
+import { resolvePluginUsageWorkspace } from './pluginUsage';
+
+const pluginContextQuery = z.object({ workspace_id: z.string().min(1).optional(), session_id: z.string().min(1).optional() }).refine((query) => query.workspace_id === undefined || query.session_id === undefined);
+async function pluginContextWorkspace(core: Scope, query: { workspace_id?: string; session_id?: string }): Promise<string | undefined> {
+  if (!core.accessor.get(IPluginUsageService).enabled()) return undefined;
+  const target = query.workspace_id !== undefined ? { workspace_id: query.workspace_id } : query.session_id !== undefined ? { session_id: query.session_id } : undefined;
+  if (target === undefined) return undefined;
+  const workspace = await resolvePluginUsageWorkspace(core, target);
+  if (workspace === undefined) throw new Error2(DomainErrorCodes.REQUEST_INVALID, 'Plugin workspace target was not found');
+  return workspace.id;
+}
 
 interface PluginsRouteHost {
   get(
@@ -97,6 +110,11 @@ export function registerPluginsRoutes(
   core: Scope,
   opts: PluginsRouteOptions,
 ): void {
+  const navigationRoute = defineRoute({ method: 'GET', path: '/plugins/navigation', success: { data: pluginNavigationSchema }, errors: {},
+    description: 'Read the latest live-session focus request from an App plugin', tags: ['plugins'] }, (req, reply) => {
+      reply.send(okEnvelope({ request: core.accessor.get(IPluginHostService).navigation() }, req.id));
+    });
+  app.get(navigationRoute.path, navigationRoute.options, navigationRoute.handler as Parameters<PluginsRouteHost['get']>[2]);
   const marketplaceRoute = defineRoute(
     {
       method: 'GET',
@@ -281,33 +299,43 @@ export function registerPluginsRoutes(
 
   const panelListRoute = defineRoute(
     {
-      method: 'GET', path: '/plugins/panels',
+      method: 'GET', path: '/plugins/panels', querystring: pluginContextQuery,
       success: { data: z.object({ panels: z.array(pluginPanelSummarySchema) }) },
-      errors: {}, description: 'List enabled sandboxed plugin panels', tags: ['plugins'],
+      errors: { [ErrorCode.VALIDATION_FAILED]: {} }, description: 'List enabled sandboxed plugin panels', tags: ['plugins'],
     },
     async (req, reply) => {
-      const plugins = core.accessor.get(IPluginService);
-      const installed = (await plugins.listPlugins()).filter((item) => item.enabled && item.state === 'ok');
-      const panels = (await Promise.all(installed.map((item) => plugins.getPluginInfo({ id: item.id }))))
-        .flatMap((info) => (info.manifest?.kiki?.panels ?? []).map((panel) => ({
-          pluginId: info.id, id: panel.id, label: panel.label, slot: panel.slot,
-        })));
-      reply.send(okEnvelope({ panels }, req.id));
+      try {
+        const plugins = core.accessor.get(IPluginService);
+        const installed = (await plugins.listPlugins()).filter((item) => item.enabled && item.state === 'ok');
+        const workspaceId = await pluginContextWorkspace(core, req.query);
+        const usage = core.accessor.get(IPluginUsageService);
+        const panels = (await Promise.all(installed.map(async (item) => {
+          const info = await plugins.getPluginInfo({ id: item.id });
+          const allowed = !usage.enabled() || workspaceId !== undefined && await usage.allows(workspaceId, info.id);
+          return (info.manifest?.kiki?.panels ?? []).filter((panel) => panel.slot !== 'workspace' || allowed).map((panel) => ({
+            pluginId: info.id, id: panel.id, label: panel.label, slot: panel.slot,
+          }));
+        }))).flat();
+        reply.send(okEnvelope({ panels }, req.id));
+      } catch (error) { reply.send(mapPluginError(error, req.id)); }
     },
   );
   app.get(panelListRoute.path, panelListRoute.options, panelListRoute.handler as Parameters<PluginsRouteHost['get']>[2]);
 
   const commandsRoute = defineRoute(
     {
-      method: 'GET', path: '/plugins/commands',
+      method: 'GET', path: '/plugins/commands', querystring: pluginContextQuery,
       success: { data: z.object({ commands: z.array(z.object({ pluginId: z.string(), name: z.string(), description: z.string(), prompt: z.string() })) }) },
-      errors: {}, description: 'List enabled plugin commands for the command palette', tags: ['plugins'],
+      errors: { [ErrorCode.VALIDATION_FAILED]: {} }, description: 'List enabled plugin commands for the command palette', tags: ['plugins'],
     },
     async (req, reply) => {
-      const commands = (await core.accessor.get(IPluginService).listPluginCommands()).map(({ pluginId, name, description, body }) => ({
-        pluginId, name, description, prompt: body,
-      }));
-      reply.send(okEnvelope({ commands }, req.id));
+      try {
+        const workspaceId = await pluginContextWorkspace(core, req.query);
+        const commands = (await core.accessor.get(IPluginService).listPluginCommands(workspaceId)).map(({ pluginId, name, description, body }) => ({
+          pluginId, name, description, prompt: body,
+        }));
+        reply.send(okEnvelope({ commands }, req.id));
+      } catch (error) { reply.send(mapPluginError(error, req.id)); }
     },
   );
   app.get(commandsRoute.path, commandsRoute.options, commandsRoute.handler as Parameters<PluginsRouteHost['get']>[2]);
@@ -345,8 +373,8 @@ export function registerPluginsRoutes(
   const panelParams = z.object({ plugin_id: z.string().min(1), panel_id: z.string().min(1) });
   const panelDocRoute = defineRoute(
     {
-      method: 'GET', path: '/plugins/{plugin_id}/panels/{panel_id}/document', params: panelParams,
-      success: { data: pluginPanelDocumentSchema }, errors: { [ErrorCode.PLUGIN_NOT_FOUND]: {} },
+      method: 'GET', path: '/plugins/{plugin_id}/panels/{panel_id}/document', params: panelParams, querystring: pluginContextQuery,
+      success: { data: pluginPanelDocumentSchema }, errors: { [ErrorCode.PLUGIN_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
       description: 'Fetch CSP-restricted HTML for an opaque-origin sandbox iframe srcdoc', tags: ['plugins'],
     },
     async (req, reply) => {
@@ -356,6 +384,13 @@ export function registerPluginsRoutes(
         if (!info.enabled || info.state !== 'ok' || panel === undefined) {
           reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled', req.id));
           return;
+        }
+        if (panel.slot === 'workspace' && core.accessor.get(IPluginUsageService).enabled()) {
+          const workspaceId = await pluginContextWorkspace(core, req.query);
+          if (workspaceId === undefined || !await core.accessor.get(IPluginUsageService).allows(workspaceId, info.id)) {
+            reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled in this workspace', req.id));
+            return;
+          }
         }
         const html = await panelDocument(info.root, panel);
         reply.send(okEnvelope({ html, sandbox: 'allow-scripts' as const }, req.id));
@@ -377,6 +412,14 @@ export function registerPluginsRoutes(
         if (!info.enabled || info.state !== 'ok' || !info.manifest?.kiki?.panels?.some((item) => item.id === req.params.panel_id)) {
           reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled', req.id));
           return;
+        }
+        const panel = info.manifest.kiki!.panels!.find((item) => item.id === req.params.panel_id)!;
+        if (panel.slot === 'workspace' && core.accessor.get(IPluginUsageService).enabled()) {
+          const workspaceId = await pluginContextWorkspace(core, { session_id: req.body.session_id });
+          if (workspaceId === undefined || !await core.accessor.get(IPluginUsageService).allows(workspaceId, info.id)) {
+            reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled in this workspace', req.id));
+            return;
+          }
         }
         if (req.body.method === 'plugin.call') {
           const result = await core.accessor.get(IPluginHostService).requestPanel(info.id, req.params.panel_id, req.body.action, req.body.args);
@@ -573,13 +616,14 @@ const PLUGIN_ERROR_MAP: Readonly<Record<string, ErrorCode>> = {
   [PluginErrors.codes.PLUGIN_NOT_FOUND]: ErrorCode.PLUGIN_NOT_FOUND,
   [PluginErrors.codes.PLUGIN_LOAD_FAILED]: ErrorCode.VALIDATION_FAILED,
   [DomainErrorCodes.VALIDATION_FAILED]: ErrorCode.VALIDATION_FAILED,
+  [DomainErrorCodes.REQUEST_INVALID]: ErrorCode.VALIDATION_FAILED,
   [DomainErrorCodes.FS_PATH_NOT_FOUND]: ErrorCode.FS_PATH_NOT_FOUND,
 };
 
 function mapPluginError(error: unknown, requestId: string) {
   const mapped = isError2(error) ? PLUGIN_ERROR_MAP[error.code] : undefined;
   if (mapped !== undefined && isError2(error)) {
-    return errEnvelope(mapped, error.message, requestId, error.stack);
+    return errEnvelope(mapped, error.message, requestId, error.code === DomainErrorCodes.REQUEST_INVALID ? undefined : error.stack);
   }
   return errEnvelope(
     ErrorCode.INTERNAL_ERROR,

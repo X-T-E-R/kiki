@@ -23,7 +23,7 @@ import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTod
 import { IAgentPromptService, reservePrompt } from '@kiki/agent-core-v2/agent/prompt/prompt';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { ISessionActivityView } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
-import { ConfigTarget, IConfigService } from '@kiki/agent-core-v2';
+import { ConfigTarget, IConfigService, IEventService, PluginChanged } from '@kiki/agent-core-v2';
 import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import { IAgentPermissionModeService } from '@kiki/agent-core-v2/agent/permissionMode/permissionMode';
 import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
@@ -67,6 +67,16 @@ export function defineKlientConformance(
 
     afterAll(async () => {
       await target.cleanup();
+    });
+
+    it('forwards plugin changes on the global bus without requiring a plugin reload', async () => {
+      const received: Record<string, never>[] = [];
+      const sub = target.klient.events.on('plugins.changed', (event) => { received.push(event); });
+      try {
+        await sub.ready;
+        target.app.accessor.get(IEventService).publish(new PluginChanged({ payload: {} }));
+        await vi.waitFor(() => { expect(received).toEqual([{}]); });
+      } finally { sub.dispose(); }
     });
 
     it.skipIf(transport !== 'memory' && transport !== 'ipc')('explicitly rejects the HTTP-only terminal capability', async () => {

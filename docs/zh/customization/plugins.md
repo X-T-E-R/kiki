@@ -76,6 +76,16 @@ Plugin 的大部分内容是声明式的：Skills、Agent、提示词文本、�
 - **移除 plugin 只删除安装记录**，托管副本和源文件仍留在磁盘上。
 - **Plugin 按用户安装**，对所有项目生效。
 
+### 为工作区选择插件（实验功能）
+
+GUI 右栏可以选择一个工作区的会话使用哪些已安装插件，不影响同一空间中其他工作区的选择。启动服务器时设置 `KIKI_EXPERIMENTAL_PLUGIN_WORKSPACE_USAGE=1` 即可开启。面板显示服务器从当前会话解析出的工作区；这不是只针对这段对话或某个 profile 的开关。
+
+在这里关闭插件，会从本工作区移除其工具、Skills、命令、插件 Agent、hooks 和工作区面板。新调用不能借旧的工具或面板缓存继续使用它，已经获准开始的调用可以完成。插件指令在下一安全步骤或 Agent 空闲时刷新，因此「正在应用」表示选择已保存，不代表当前请求已经采用它。过去的消息保持原样。
+
+用「恢复默认」删除工作区覆盖，重新跟随空间的设置。在插件设置中关闭的插件，即使本工作区请求开启，也仍然不可用；请先在那里开启主开关。Profile 的工具限制仍然生效。
+
+从右栏目录或来源安装，沿用插件管理器的预览与知情同意流程。安装和主开关属于当前空间，可能影响其中跟随默认设置的其他工作区。在右栏关闭插件，不会卸载它、撤销同意或停止空间常驻服务；这些操作仍在插件设置中管理。这项使用选择不是受信插件代码的安全沙箱。
+
 ### 自定义 marketplace JSON
 
 浏览 marketplace 时，把 JSON 路径或 URL 传给 `/plugins marketplace <source>`，设置 [`KIKI_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md)，或在 `config.toml` 中配置 `[plugins] marketplace_url`。优先级依次为命令 source、环境变量和配置；未指定自定义 source 时，Kiki 使用官方 [Kiki Plugins 目录](https://x-t-e-r.github.io/kiki-plugins/marketplace.json)。目录暂时无法访问时，仍可浏览随版本附带的元数据；安装插件包仍需能访问其下载地址。

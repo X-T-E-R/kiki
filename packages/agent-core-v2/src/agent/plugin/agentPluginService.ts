@@ -17,6 +17,7 @@ import {
   systemReminderContent,
 } from '#/agent/systemReminder/systemReminder';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import type { EnabledPluginSessionStart, PluginMutation } from '#/app/plugin/types';
 import { PLUGIN_SKILL_SOURCE_ID } from '#/app/skillCatalog/skillSource';
 import type { SkillCatalog, SkillDefinition } from '#/app/skillCatalog/types';
@@ -68,6 +69,7 @@ export class AgentPluginService extends Service implements IAgentPluginService {
   private readonly warnedMissingSessionStartSkills = new Set<string>();
 
   private pendingMutationCatalogChanges = 0;
+  private readonly usageSettlers: { resolve(): void; reject(error: unknown): void }[] = [];
 
   constructor(
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
@@ -81,11 +83,25 @@ export class AgentPluginService extends Service implements IAgentPluginService {
     @IAgentStateService private readonly states: IAgentStateService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @IAgentToolSelectService private readonly toolSelect: IAgentToolSelectService,
+    @IPluginUsageService usage?: IPluginUsageService,
   ) {
     super();
     this.states.contributeState(pluginSessionStartSnapshotKey);
+    if (usage !== undefined) this._register(this.skillCatalog.onDidChange((sourceId) => {
+      if (sourceId !== PLUGIN_SKILL_SOURCE_ID || !usage.enabled()) return;
+      if (scopeContext.agentId === MAIN_AGENT_ID) this.refreshPending = true;
+      void this.injector.reconcileWhenIdle('runtime_snapshot').then(() => this.refreshSessionStart()).catch((error) => {
+        this.log.warn('Plugin prompt refresh failed', { error });
+      });
+    }));
     if (scopeContext.agentId !== MAIN_AGENT_ID) return;
     this.states.contributeState(pluginSessionStartRefreshPendingKey);
+    if (usage !== undefined) this._register(usage.onDidChange((event) => {
+      if (event.workspaceId !== this.sessionContext.workspaceId) return;
+      this.refreshPending = true;
+      if (this.states.get(pluginSessionStartSnapshotKey).initialized) event.waitUntil(new Promise<void>((resolve, reject) => this.usageSettlers.push({ resolve, reject })));
+    }));
+    this._register({ dispose: () => { for (const waiter of this.usageSettlers.splice(0)) waiter.resolve(); } });
     this._register(
       injector.register(SESSION_START_INJECTION_VARIANT, (injection) =>
         this.reconcileSessionStartReminder(injection),
@@ -103,6 +119,7 @@ export class AgentPluginService extends Service implements IAgentPluginService {
     );
     this._register(
       this.plugins.onDidMutate(({ mutation }) => {
+        if (usage?.enabled()) return;
         this.pendingMutationCatalogChanges++;
         if (this.toolSelect.enabled()) return;
         this.reminders.appendSystemReminder(renderPluginChangeReminder(mutation), {
@@ -136,7 +153,7 @@ export class AgentPluginService extends Service implements IAgentPluginService {
   }
 
   private async renderSessionStartReminder(): Promise<string | undefined> {
-    const sessionStarts = await this.plugins.enabledSessionStarts();
+    const sessionStarts = await this.plugins.enabledSessionStarts(this.sessionContext.workspaceId);
     if (sessionStarts.length === 0) return undefined;
     await this.skillCatalog.ready;
     return renderPluginSessionStartReminder({
@@ -148,12 +165,25 @@ export class AgentPluginService extends Service implements IAgentPluginService {
     });
   }
 
-  private async reconcileSessionStartReminder(
+  private async reconcileSessionStartReminder(injection: ContextInjectionContext): Promise<string | undefined> {
+    const waiters = this.usageSettlers.splice(0);
+    try {
+      const result = await this.reconcileSessionStartReminderNow(injection);
+      for (const waiter of waiters) waiter.resolve();
+      return result;
+    } catch (error) {
+      this.refreshPending = true;
+      for (const waiter of waiters) waiter.reject(error);
+      throw error;
+    }
+  }
+
+  private async reconcileSessionStartReminderNow(
     injection: ContextInjectionContext,
   ): Promise<string | undefined> {
     const forceRefresh = this.refreshPending;
-    const desired = await this.resolveDesiredSessionStart(injection, forceRefresh);
     this.refreshPending = false;
+    const desired = await this.resolveDesiredSessionStart(injection, forceRefresh);
     const latest = injection.lastInjection;
     if (desired === undefined) {
       if (

@@ -16,6 +16,8 @@ import {
   ISessionInteractionService,
   ICapabilityService,
   IPluginService,
+  IPluginHostService,
+  IPluginUsageService,
   resolvePluginMarketplaceSource,
   IHomeRuntimeService,
   ISessionManager,
@@ -373,6 +375,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       ...historyDirectorySeed(() => transcriptService, navigation), ...(opts.seeds ?? [])],
   );
 
+  await core.accessor.get(IPluginHostService).ready.catch(() => {
+    logger.warn({ event_type: 'plugin_app_activation_failed' }, 'An App plugin could not start; open its settings to recover');
+  });
+
   if (exposureClass !== 'loopback') {
     logger.warn(
       { host, exposureClass },
@@ -590,6 +596,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     roomChangeSubscription.dispose();
     configWarningSubscription.dispose();
     pluginChangeSubscription.dispose();
+    pluginUsageChangeSubscription.dispose();
+    pluginUsageApplySubscription.dispose();
     capabilityInstallSubscription.dispose();
     authFailureLimiter?.dispose();
     transcriptService.dispose();
@@ -602,6 +610,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       await drainSessionMetadataWrites();
       await core.accessor.get(ISessionIndexMirror).drain();
       await core.accessor.get(IMcpOAuthService).shutdown();
+      await core.accessor.get(IPluginHostService).stopAll();
       fsWatchBridge.dispose();
       const appendLogStore = core.accessor.get(IAppendLogStore);
       await core.dispose();
@@ -662,6 +671,13 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   const pluginService = core.accessor.get(IPluginService);
   const pluginChangeSubscription = pluginService.onDidReload(() => {
+    core.accessor.get(IEventService).publish(new PluginChanged({ payload: {} }));
+  });
+  const pluginUsage = core.accessor.get(IPluginUsageService);
+  const pluginUsageChangeSubscription = pluginUsage.onDidChange(() => {
+    core.accessor.get(IEventService).publish(new PluginChanged({ payload: {} }));
+  });
+  const pluginUsageApplySubscription = pluginUsage.onDidApply(() => {
     core.accessor.get(IEventService).publish(new PluginChanged({ payload: {} }));
   });
   const capabilityService = core.accessor.get(ICapabilityService);

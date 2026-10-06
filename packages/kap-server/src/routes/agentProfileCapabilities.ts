@@ -51,6 +51,7 @@ import { panelAccountingKey } from '@kiki/agent-core-v2/agent/usage/panelAccount
 import { checkPromptFiles } from '@kiki/agent-core-v2/agent/profile/promptFileChecks';
 import { PROMPT_SECTION, type PromptConfig } from '@kiki/agent-core-v2/app/prompt/configSection';
 import { createUnscopedAgentProfileCatalog } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
+import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 
 export async function acquireDraftProfileCatalog(core: Scope, query: { workspace_id?: string; cwd?: string }) {
   if (query.workspace_id !== undefined) return acquireWorkspaceProfileCatalog(core, query);
@@ -60,7 +61,9 @@ export async function acquireDraftProfileCatalog(core: Scope, query: { workspace
   } catch {
     return undefined;
   }
-  const preview = createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService), cwd);
+  const rootKey = workspaceRootKey(cwd);
+  const workspaceId = (await core.accessor.get(IWorkspaceService).list()).find((entry) => workspaceRootKey(entry.root) === rootKey)?.id;
+  const preview = createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService), cwd, workspaceId);
   try {
     await Promise.all([preview.catalog.ready, preview.skills!.ready]);
     return { workspaceId: preview.workspaceId, registry: preview.registry,

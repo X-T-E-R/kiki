@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { assertPluginSkillUsage } from '#/agent/skill/pluginSkillUsage';
 import { ErrorCodes, isError2 } from '#/errors';
 import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -47,6 +50,8 @@ export class SkillTool implements ISkillTool {
     @ISessionContext private readonly sessionContext: ISessionContext,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
+    @IPluginService private readonly plugins?: IPluginService,
+    @IPluginUsageService private readonly usage?: IPluginUsageService,
   ) {}
 
   async resolveExecution(args: SkillToolInput): Promise<ToolExecution> {
@@ -93,6 +98,8 @@ export class SkillTool implements ISkillTool {
             (inspected.environment.pathClass === 'win32' ? path.toLowerCase() : path)) {
             return errorResult(`Skill file target changed after path admission: admitted "${path}", actual "${actualPath}". Use the actual absolute path or resolve a changed link first.`);
           }
+          try { await assertPluginSkillUsage(actualPath, this.sessionContext.workspaceId, this.plugins, this.usage); }
+          catch (error) { if (isError2(error)) return errorResult(error.message); throw error; }
           await this.catalog.ready;
           for (const entry of this.catalog.catalog.listSkills()) {
             if (entry.metadata.promptCommand !== true || entry.source === 'builtin') continue;
@@ -124,19 +131,19 @@ export class SkillTool implements ISkillTool {
   }
 
   withInitialQueryDepth(initialQueryDepth: number): SkillTool {
-    const clone = new SkillTool(this.catalog, this.skill, this.sessionContext, this.runtime, this.workspace);
+    const clone = new SkillTool(this.catalog, this.skill, this.sessionContext, this.runtime, this.workspace, this.plugins, this.usage);
     clone.queryDepth = initialQueryDepth;
     return clone;
   }
 
   private async execution(args: SkillToolInput): Promise<ExecutableToolResult> {
-    return executeModelSkill(
-      this.catalog,
-      this.skill,
-      args,
-      this.queryDepth,
-      this.sessionContext.sessionId,
-    );
+    await this.catalog.ready;
+    const definition = args.skill === undefined ? undefined : this.catalog.catalog.getSkill(args.skill);
+    if (definition !== undefined) {
+      try { await assertPluginSkillUsage(definition.path, this.sessionContext.workspaceId, this.plugins, this.usage); }
+      catch (error) { if (isError2(error)) return errorResult(error.message); throw error; }
+    }
+    return executeModelSkill(this.catalog, this.skill, args, this.queryDepth, this.sessionContext.sessionId);
   }
 }
 

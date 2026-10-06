@@ -6,9 +6,13 @@
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
+import type { PluginUsageTarget } from '@kiki/protocol';
+
 import type { PluginInfo, PluginMarketplaceEntry, PluginSummary } from '../../lib/client';
 import { localizeEntry, type CatalogLocale } from '../../lib/pluginCatalog';
+import { invalidatePluginQueries } from '../../lib/pluginFreshness';
 import { useConnection } from '../../state/connection';
+import { scopeKey } from './pluginUsage';
 
 export const PLUGIN_QUERY_KEYS = {
   installed: ['plugins'] as const,
@@ -16,7 +20,10 @@ export const PLUGIN_QUERY_KEYS = {
   githubUpdates: ['plugin-github-updates'] as const,
   info: (id: string) => ['plugin', id] as const,
   recommendations: (signals: string) => ['plugin-recommendations', signals] as const,
-  panels: ['plugin-panels'] as const,
+  panels: (targetKey: string) => ['plugin-panels', targetKey] as const,
+  commands: (targetKey: string) => ['plugin-commands', targetKey] as const,
+  usage: (targetKey: string) => ['plugin-usage', targetKey] as const,
+  panelDocument: (pluginId: string, panelId: string, targetKey: string) => ['plugin-panel-document', pluginId, panelId, targetKey] as const,
   skins: ['skins'] as const,
 };
 
@@ -83,11 +90,29 @@ export function usePluginRecommendations(cwd: string | undefined) {
   });
 }
 
-export function usePluginPanels() {
+/**
+ * Panels in a scope. The target is part of the key, so the workspace a panel
+ * was opened for and the sidebar set can never answer each other's cache, and
+ * closing one leaves nothing executable behind.
+ */
+export function usePluginPanels(target?: PluginUsageTarget) {
   const { client } = useConnection();
+  const targetKey = scopeKey(target);
   return useQuery({
-    queryKey: PLUGIN_QUERY_KEYS.panels,
-    queryFn: () => client.listPluginPanels(),
+    queryKey: PLUGIN_QUERY_KEYS.panels(targetKey),
+    queryFn: () => client.listPluginPanels(target),
+    staleTime: 15_000,
+    retry: false,
+  });
+}
+
+/** Commands usable in the same scope as the panels. */
+export function usePluginCommands(target?: PluginUsageTarget) {
+  const { client } = useConnection();
+  const targetKey = scopeKey(target);
+  return useQuery({
+    queryKey: PLUGIN_QUERY_KEYS.commands(targetKey),
+    queryFn: () => client.listPluginCommands(target),
     staleTime: 15_000,
     retry: false,
   });
@@ -113,21 +138,19 @@ export function usePluginSkins(pluginId: string | undefined) {
  * Refresh every plugin surface after a change. `code: true` (an install,
  * update or rollback replaced the plugin's files) also re-asks GitHub for
  * updates; a toggle or removal does not cost a GitHub round-trip.
+ *
+ * What a plugin contributes is not only what the plugin list shows: agent
+ * capabilities, the workspace skill catalog and the MCP server lists all move
+ * with it, so they are re-read too. `event.plugin.changed` and a reconnect both
+ * land here, which is why the capability query is included — leaving it out is
+ * what made the rail keep naming tools that were already gone.
  */
 export function useInvalidatePlugins() {
   const queryClient = useQueryClient();
   return async (options?: { readonly code?: boolean }) => {
     await Promise.all([
       ...(options?.code === true ? [queryClient.invalidateQueries({ queryKey: PLUGIN_QUERY_KEYS.githubUpdates })] : []),
-      queryClient.invalidateQueries({ queryKey: PLUGIN_QUERY_KEYS.installed }),
-      queryClient.invalidateQueries({ queryKey: PLUGIN_QUERY_KEYS.marketplace }),
-      queryClient.invalidateQueries({ queryKey: ['plugin'] }),
-      queryClient.invalidateQueries({ queryKey: ['plugin-recommendations'] }),
-      queryClient.invalidateQueries({ queryKey: PLUGIN_QUERY_KEYS.panels }),
-      queryClient.invalidateQueries({ queryKey: PLUGIN_QUERY_KEYS.skins }),
-      queryClient.invalidateQueries({ queryKey: ['workspace-skills'] }),
-      queryClient.invalidateQueries({ queryKey: ['mcp-servers'] }),
-      queryClient.invalidateQueries({ queryKey: ['mcp-managed-servers'] }),
+      invalidatePluginQueries(queryClient),
     ]);
   };
 }

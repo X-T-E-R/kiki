@@ -12,6 +12,7 @@ import { loadMcpServers, resolveMcpJsonPaths } from '#/app/mcpConfig/configLoade
 import { MCP_SECTION, type McpSection } from '#/app/mcpConfig/configSection';
 import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
@@ -49,8 +50,12 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @IWorkspaceTrust private readonly trust: IWorkspaceTrust,
     @IMcpConfigStore mcpConfigStore: IMcpConfigStore,
+    @IPluginUsageService private readonly usage?: IPluginUsageService,
   ) {
     super();
+    if (usage !== undefined) this._register(usage.onDidChange((event) => {
+      if (event.workspaceId === workspace.workspaceId) event.waitUntil(this.reloadPluginServers());
+    }));
     const inheritance = resolveSpaceInheritance(bootstrap);
     this.inheritedHomeDir = inheritance.mcp ? bootstrap.baseHomeDir : undefined;
     this.ready = this.initialize().catch((error: unknown) => {
@@ -88,6 +93,14 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
     return this.current;
   }
 
+  async allowsCall(name: string): Promise<boolean> {
+    if (this.fileServers.has(name)) return this.fileServers.get(name)?.enabled !== false;
+    if (this.usage?.enabled() !== true) return true;
+    const entries = await this.plugins.mcpServerEntries();
+    const owner = entries.find((entry) => entry.name === name);
+    return owner !== undefined && owner.config.enabled !== false && await this.usage.allows(this.workspace.workspaceId, owner.pluginId);
+  }
+
   tunables(): McpTunables {
     const section = this.config.get<McpSection | undefined>(MCP_SECTION);
     return {
@@ -114,7 +127,7 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
         includeProject: this.trust.isTrusted(),
         baseSelection: resolveSpaceMcpBaseSelection(this.bootstrap),
       }),
-      this.plugins.enabledMcpServers(),
+      this.plugins.enabledMcpServers(this.workspace.workspaceId),
     ]);
     this.fileServers = new Map(Object.entries(fileServers));
     this.pluginServers = new Map(Object.entries(pluginServers));
@@ -184,7 +197,7 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
   private async reloadPluginServers(): Promise<void> {
     await this.ready;
     await this.mutate(async () => {
-      const fresh = await this.plugins.enabledMcpServers();
+      const fresh = await this.plugins.enabledMcpServers(this.workspace.workspaceId);
       this.pluginServers = new Map(Object.entries(fresh));
       await this.publishIfChanged();
     });
@@ -205,7 +218,9 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
     }
     this.current = next;
     if (Object.keys(upsert).length === 0 && remove.length === 0) return;
-    await this.changeEmitter.fireAsync({ upsert, remove }, NO_ABORT);
+    const failures: unknown[] = [];
+    await this.changeEmitter.fireAsync({ upsert, remove, reportFailure: (error) => { failures.push(error); } }, NO_ABORT);
+    if (failures.length > 0) throw new AggregateError(failures, 'Workspace MCP application failed');
   }
 }
 

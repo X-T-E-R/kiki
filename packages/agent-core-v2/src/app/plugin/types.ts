@@ -24,6 +24,7 @@ export interface PluginSessionStart {
 export interface PluginAgentRoot {
   readonly path: string;
   readonly source: 'plugin';
+  readonly pluginId?: string;
 }
 
 export interface PluginInterface {

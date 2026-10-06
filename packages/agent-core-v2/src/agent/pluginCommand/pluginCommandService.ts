@@ -35,7 +35,7 @@ export class AgentPluginCommandService implements IAgentPluginCommandService {
   ) { }
 
   async activate(payload: ActivatePluginCommandPayload): Promise<void> {
-    const commands = await this.plugins.listPluginCommands();
+    const commands = await this.plugins.listPluginCommands(this.sessionContext.workspaceId);
     const def = commands.find(
       (command) => command.pluginId === payload.pluginId && command.name === payload.commandName,
     );

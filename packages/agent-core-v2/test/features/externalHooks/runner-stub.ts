@@ -5,6 +5,8 @@ import type { HookDef } from '#/features/externalHooks/internal/types';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
+import type { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import type { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 
 export function nodeCommand(source: string): string {
@@ -19,6 +21,9 @@ export function makeHookRunner(
   options: {
     cwd?: string;
     loadError?: Error;
+    pluginHooks?: readonly HookDef[];
+    usage?: IPluginUsageService;
+    sessions?: ISessionIndex;
     onTriggered?: (event: string, target: string, count: number) => void;
     onResolved?: (
       event: string,
@@ -40,7 +45,7 @@ export function makeHookRunner(
     } as unknown as IConfigService,
     {
       _serviceBrand: undefined,
-      enabledHooks: async () => [],
+      enabledHooks: async () => options.pluginHooks ?? [],
       onDidReload: Event.None as IPluginService['onDidReload'],
     } as unknown as IPluginService,
     {
@@ -49,6 +54,8 @@ export function makeHookRunner(
       clientIdentity: { productName: 'test', version: '0.0.0-test', platform: 'test_platform' },
     } as unknown as IBootstrapService,
     new HostProcessService(),
+    options.usage,
+    options.sessions,
     { onTriggered: options.onTriggered, onResolved: options.onResolved },
   );
 }

@@ -114,6 +114,9 @@ import type {
   PersonaPutInput,
   PersonaSnapshot,
   PersonaSummary,
+  PluginUsageRequest,
+  PluginUsageResponse,
+  PluginUsageTarget,
 } from '@kiki/protocol';
 
 import { RPCError, type AgentFacade, type AgentEventPayloads, type HttpRestCronTask, type HttpRestCronTaskDetail, type HttpRestCreateCronTask, type HttpRestUpdateCronTask, type OAuthMethodStatus, type SessionViewFacade } from '@kiki/klient';
@@ -744,6 +747,14 @@ export interface PluginSummary {
 
 export interface ListPluginsResponse {
   readonly plugins: readonly PluginSummary[];
+}
+
+/** A plugin command in one scope; `pluginId` is what the scope filter keys on. */
+export interface PluginCommandSummary {
+  readonly pluginId: string;
+  readonly name: string;
+  readonly description: string;
+  readonly prompt: string;
 }
 
 export interface PluginMarketplaceEntry {
@@ -2360,12 +2371,39 @@ export class KikiClient {
     return this.run(this.rest.plugins.dismissRecommendation(pluginId));
   }
 
-  listPluginPanels(): Promise<{ readonly panels: readonly import('@kiki/protocol').PluginPanelSummary[] }> {
-    return this.run(this.rest.plugins.panels());
+  /**
+   * Panels a plugin contributes. `target` narrows the answer to the plugins
+   * usable in that scope; without one the answer is the sidebar-level set.
+   * A workspace panel is served only for a targeted read.
+   */
+  listPluginPanels(target?: PluginUsageTarget): Promise<{ readonly panels: readonly import('@kiki/protocol').PluginPanelSummary[] }> {
+    return this.run(this.rest.plugins.panels(target));
   }
 
-  getPluginPanelDocument(pluginId: string, panelId: string): Promise<import('@kiki/protocol').PluginPanelDocument> {
-    return this.run(this.rest.plugins.panelDocument(pluginId, panelId));
+  getPluginPanelDocument(pluginId: string, panelId: string, target?: PluginUsageTarget): Promise<import('@kiki/protocol').PluginPanelDocument> {
+    return this.run(this.rest.plugins.panelDocument(pluginId, panelId, target));
+  }
+
+  /** Commands usable in `target`; untargeted reads stay sidebar-scope. */
+  listPluginCommands(target?: PluginUsageTarget): Promise<{ readonly commands: readonly PluginCommandSummary[] }> {
+    return this.run(this.rest.plugins.commands(target));
+  }
+
+  /**
+   * Per-workspace plugin usage. The target resolves the workspace; the answer
+   * carries the target the server actually used, which is the only name of it
+   * the UI may show.
+   */
+  getPluginUsage(target: PluginUsageTarget): Promise<PluginUsageResponse> {
+    return this.run(this.rest.plugins.usage(target));
+  }
+
+  pluginNavigation(): Promise<import('@kiki/protocol').PluginNavigation> {
+    return this.run(this.rest.plugins.navigation());
+  }
+
+  setPluginUsage(input: PluginUsageRequest): Promise<PluginUsageResponse> {
+    return this.run(this.rest.plugins.setUsage(input));
   }
 
   callPluginPanelBridge(

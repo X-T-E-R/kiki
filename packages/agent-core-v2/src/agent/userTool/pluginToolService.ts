@@ -6,6 +6,8 @@ import { Service } from '#/_base/di/service';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import type { PluginTool } from '#/app/plugin/contributions';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -36,10 +38,15 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IAgentPluginMediaService private readonly media?: IAgentPluginMediaService,
+    @IPluginUsageService private readonly usage?: IPluginUsageService,
+    @ISessionContext private readonly session?: ISessionContext,
   ) {
     super();
     this._register(this.plugins.onDidReload((event) => {
       event.waitUntil(this.queueRefresh());
+    }));
+    if (this.usage !== undefined) this._register(this.usage.onDidChange((event) => {
+      if (event.workspaceId === this.session?.workspaceId) event.waitUntil(this.queueRefresh());
     }));
     void this.queueRefresh();
   }
@@ -56,6 +63,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
     await dispose(this.registrations.values());
     this.registrations.clear();
     for (const { pluginId, definition } of definitions) {
+      if (this.usage !== undefined && !await this.usage.allows(this.session?.workspaceId, pluginId)) continue;
       const name = `plugin__${pluginId.replaceAll('-', '_')}__${definition.name}`;
       if (this.registry.resolve(name) !== undefined) continue;
       const tool: ExecutableTool = {
@@ -118,6 +126,9 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
       approvalRule: path === undefined ? definition.approvalRule ?? name : literalRulePattern(name, path),
       matchesRule: path === undefined ? undefined : (ruleArgs) => matchesPathRuleSubject(ruleArgs, path, pathOptions),
       execute: async (context) => {
+        if (this.usage !== undefined && !await this.usage.allows(this.session?.workspaceId, pluginId)) {
+          return { isError: true, output: `Plugin ${pluginId} is disabled in this workspace.` };
+        }
         const current = this.runtime.acquire(['fs']);
         try {
           if (current.runtime.identity.generation !== inspected.identity.generation) {

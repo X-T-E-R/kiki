@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -9,12 +9,15 @@ import {
   ScopeActivation,
   _clearScopedRegistryForTests,
   registerScopedService,
+  type ScopeSeed,
 } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
+import { Event } from '#/_base/event';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { readDefaultPluginCatalog } from '#/app/plugin/defaultCatalog';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService, type PluginUsageSnapshot } from '#/app/pluginUsage/pluginUsage';
 import { PluginService } from '#/app/plugin/pluginService';
 import * as pluginStore from '#/app/plugin/store';
 import type { InstalledFile } from '#/app/plugin/store';
@@ -48,8 +51,9 @@ function makeHost(
   homeDir: string,
   providers = stubProviderService(),
   env: NodeJS.ProcessEnv = {},
+  usage: IPluginUsageService = workspaceUsage('__never__', false),
 ): ScopedTestHost {
-  return createScopedTestHost([
+  const stubs: ScopeSeed = [
     stubPair(IBootstrapService, stubBootstrap(homeDir, env)),
     stubPair(IProviderService, providers),
     stubPair(IConfigService, {
@@ -67,7 +71,29 @@ function makeHost(
         scannedDirectories: [],
       }),
     } satisfies ISkillDiscovery),
-  ]);
+    stubPair(IPluginUsageService, usage),
+  ];
+  return createScopedTestHost(stubs);
+}
+
+function workspaceUsage(blockedPluginId: string, enabled = true): IPluginUsageService {
+  const snapshot = (workspaceId: string): PluginUsageSnapshot => ({
+    workspaceId,
+    revision: 0,
+    overrides: {},
+    applyState: 'applied',
+    errors: [],
+  });
+  return {
+    _serviceBrand: undefined,
+    enabled: () => enabled,
+    read: async (workspaceId) => snapshot(workspaceId),
+    allows: async (workspaceId, pluginId) =>
+      !enabled || workspaceId !== 'workspace-a' || pluginId !== blockedPluginId,
+    set: async ({ workspaceId }) => snapshot(workspaceId),
+    onDidChange: Event.None as IPluginUsageService['onDidChange'],
+    onDidApply: Event.None as IPluginUsageService['onDidApply'],
+  };
 }
 
 async function writeInstalledFile(homeDir: string, contents: string): Promise<void> {
@@ -457,6 +483,148 @@ describe('PluginService (plugin boundary)', () => {
       await expect(svc.enabledSystemPrompts()).resolves.toEqual([
         { pluginId: 'prompt-demo', content: 'Always cite sources.' },
       ]);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it('filters every workspace-scoped consumption surface without reviving home-disabled plugins', async () => {
+    const home = await makeHome();
+    const makeAllSurfacePlugin = async (id: string, hooks: unknown): Promise<string> => {
+      const root = await makePluginDir(id, {
+        skills: './skills/',
+        agents: './agents/',
+        sessionStart: { skill: `${id}-skill` },
+        systemPrompt: `${id} prompt`,
+        mcpServers: { api: { command: `${id}-mcp` } },
+        commands: './commands',
+        hooks,
+      });
+      await mkdir(path.join(root, 'skills', `${id}-skill`), { recursive: true });
+      await writeFile(
+        path.join(root, 'skills', `${id}-skill`, 'SKILL.md'),
+        `---\nname: ${id}-skill\ndescription: ${id} skill\n---\nbody`,
+        'utf8',
+      );
+      await mkdir(path.join(root, 'agents'), { recursive: true });
+      await writeFile(
+        path.join(root, 'agents', `${id}-agent.md`),
+        `---\nname: ${id}-agent\ndescription: ${id} agent\n---\nbody`,
+        'utf8',
+      );
+      await mkdir(path.join(root, 'commands'), { recursive: true });
+      await writeFile(
+        path.join(root, 'commands', `${id}.md`),
+        `---\nname: ${id}-command\ndescription: ${id} command\n---\nrun`,
+        'utf8',
+      );
+      return root;
+    };
+    const rootA = await makeAllSurfacePlugin('plugin-a', [
+      { event: 'PreToolUse', command: 'echo plugin-a' },
+    ]);
+    const rootB = await makeAllSurfacePlugin('plugin-b', {
+      schemaVersion: 2,
+      enabled: true,
+      disabled: [],
+      files: [],
+      rules: [{ id: 'rule-b', event: 'prompt.submit', action: { type: 'inject', text: 'plugin-b rule' } }],
+      legacy: [{ event: 'PreToolUse', command: 'echo plugin-b' }],
+    });
+    const rootSkillsOnly = await makePluginDir('skills-only', { skills: './skills/' });
+    await mkdir(path.join(rootSkillsOnly, 'skills', 'only-skill'), { recursive: true });
+    await writeFile(
+      path.join(rootSkillsOnly, 'skills', 'only-skill', 'SKILL.md'),
+      '---\nname: only-skill\ndescription: only skill\n---\nbody',
+      'utf8',
+    );
+    createdDirs.push(rootA, rootB, rootSkillsOnly);
+    await writeValidInstalledFile(home);
+    const host = makeHost(home, stubProviderService(), {}, workspaceUsage('plugin-a'));
+    try {
+      const svc = host.app.accessor.get(IPluginService);
+      await installWithConsent(svc, rootA);
+      await installWithConsent(svc, rootB);
+      await installWithConsent(svc, rootSkillsOnly);
+      await svc.setPluginEnabled({ id: 'plugin-a', enabled: true });
+      await svc.setPluginEnabled({ id: 'plugin-b', enabled: true });
+      await svc.setPluginEnabled({ id: 'skills-only', enabled: true });
+
+      const workspaceA = {
+        commands: await svc.listPluginCommands('workspace-a'),
+        skills: await svc.pluginSkillRoots('workspace-a'),
+        agents: await svc.pluginAgentRoots('workspace-a'),
+        starts: await svc.enabledSessionStarts('workspace-a'),
+        prompts: await svc.enabledSystemPrompts('workspace-a'),
+        mcp: await svc.enabledMcpServers('workspace-a'),
+        hooks: await svc.enabledHooks('workspace-a'),
+        rules: await svc.enabledHookRules('workspace-a'),
+      };
+      expect(workspaceA.commands.map((entry) => entry.pluginId)).toEqual(['plugin-b']);
+      expect(workspaceA.skills.map((entry) => entry.plugin?.id).toSorted()).toEqual(['plugin-b', 'skills-only']);
+      expect(workspaceA.agents.every((entry) => entry.path.includes('plugin-b'))).toBe(true);
+      expect(workspaceA.agents).toHaveLength(1);
+      expect(workspaceA.starts).toEqual([{ pluginId: 'plugin-b', skillName: 'plugin-b-skill' }]);
+      expect(workspaceA.prompts).toEqual([{ pluginId: 'plugin-b', content: 'plugin-b prompt' }]);
+      expect(Object.keys(workspaceA.mcp)).toEqual(['plugin-plugin-b:api']);
+      expect(workspaceA.hooks).toEqual([
+        expect.objectContaining({ command: 'echo plugin-b' }),
+      ]);
+      expect(workspaceA.rules).toEqual([
+        expect.objectContaining({ namespace: 'plugin/plugin-b' }),
+      ]);
+
+      await svc.reloadPlugins();
+      expect((await svc.pluginSkillRoots('workspace-a')).map((entry) => entry.plugin?.id)).not.toContain('plugin-a');
+      expect(Object.keys(await svc.enabledMcpServers('workspace-a'))).not.toContain('plugin-plugin-a:api');
+
+      const workspaceB = {
+        commands: await svc.listPluginCommands('workspace-b'),
+        skills: await svc.pluginSkillRoots('workspace-b'),
+        agents: await svc.pluginAgentRoots('workspace-b'),
+        starts: await svc.enabledSessionStarts('workspace-b'),
+        prompts: await svc.enabledSystemPrompts('workspace-b'),
+        mcp: await svc.enabledMcpServers('workspace-b'),
+        hooks: await svc.enabledHooks('workspace-b'),
+        rules: await svc.enabledHookRules('workspace-b'),
+      };
+      expect(workspaceB.commands.map((entry) => entry.pluginId).toSorted()).toEqual(['plugin-a', 'plugin-b']);
+      expect(workspaceB.skills.map((entry) => entry.plugin?.id).toSorted()).toEqual(['plugin-a', 'plugin-b', 'skills-only']);
+      expect(workspaceB.agents).toHaveLength(2);
+      expect(workspaceB.starts.map((entry) => entry.pluginId).toSorted()).toEqual(['plugin-a', 'plugin-b']);
+      expect(workspaceB.prompts.map((entry) => entry.pluginId).toSorted()).toEqual(['plugin-a', 'plugin-b']);
+      expect(Object.keys(workspaceB.mcp).toSorted()).toEqual(['plugin-plugin-a:api', 'plugin-plugin-b:api']);
+      expect(workspaceB.hooks).toHaveLength(2);
+      expect(workspaceB.rules).toEqual([
+        expect.objectContaining({ namespace: 'plugin/plugin-b' }),
+      ]);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it('resolves plugin skill owners through canonical paths with strict directory boundaries', async () => {
+    const home = await makeHome();
+    const root = await makePluginDir('owner-demo', { skills: './skills/' });
+    await mkdir(path.join(root, 'skills', 'demo'), { recursive: true });
+    await writeFile(path.join(root, 'skills', 'demo', 'SKILL.md'), 'body', 'utf8');
+    createdDirs.push(root);
+    const host = makeHost(home);
+    const aliasBase = await mkdtemp(path.join(tmpdir(), 'plugin-skill-owner-alias-'));
+    createdDirs.push(aliasBase);
+    try {
+      const svc = host.app.accessor.get(IPluginService);
+      await installWithConsent(svc, root);
+      await svc.setPluginEnabled({ id: 'owner-demo', enabled: true });
+      const managedRoot = await realpath(path.join(home, 'plugins', 'managed', 'owner-demo'));
+      const skillRoot = path.join(managedRoot, 'skills');
+      const aliasRoot = path.join(aliasBase, 'skills-alias');
+      await symlink(skillRoot, aliasRoot, 'junction');
+
+      await expect(svc.pluginSkillOwner(path.join(skillRoot, 'demo', 'SKILL.md'))).resolves.toBe('owner-demo');
+      await expect(svc.pluginSkillOwner(path.join(aliasRoot, 'demo', 'SKILL.md'))).resolves.toBe('owner-demo');
+      await expect(svc.pluginSkillOwner(path.join(managedRoot, 'skills-other', 'SKILL.md'))).resolves.toBeUndefined();
+      await expect(svc.pluginSkillOwner(path.join(skillRoot, '..', 'outside', 'SKILL.md'))).resolves.toBeUndefined();
     } finally {
       await host.dispose();
     }

@@ -34,6 +34,8 @@ import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { AgentExecutorRegistryService } from '#/app/agentExecutor/agentExecutorRegistryService';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { PluginUsageService } from '#/app/pluginUsage/pluginUsageService';
 import { PluginAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoaderService';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { HostFsWatchService } from '#/os/backends/node-local/hostFsWatchService';
@@ -283,6 +285,7 @@ function pluginStub(
     listPluginCommands: async () => [],
     checkUpdates: async () => [],
     pluginSkillRoots: async () => [],
+    pluginSkillOwner: async () => undefined,
     pluginAgentRoots: async () => agentRoots,
     enabledSessionStarts: async () => [],
     enabledSystemPrompts: async () => [],
@@ -400,6 +403,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       [IWorkspaceContext, workspaceContext],
       [IWorkspaceTrust, opts?.workspaceTrust ?? workspaceTrustStub(opts?.workspaceTrusted ?? true)],
       [IPluginService, pluginStub(opts?.pluginAgentRoots ?? [], opts?.pluginReloadEmitter)],
+      [IPluginUsageService, new SyncDescriptor(PluginUsageService)],
       [IFlagService, flags],
       [IBuiltinSkillSource, new SyncDescriptor(BuiltinSkillSource)],
       [IAgentExecutorRegistry, opts?.executors ?? new SyncDescriptor(AgentExecutorRegistryService)],

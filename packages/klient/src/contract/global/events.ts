@@ -48,6 +48,7 @@ export interface KlientEventPayloads {
   'kosong.providers.changed': ProvidersChangedEvent;
   'kosong.models.changed': ModelsChangedEvent;
   'plugins.reloaded': ReloadSummary;
+  'plugins.changed': Record<string, never>;
   'session.archived': SessionArchivedPayload;
   'session.metaUpdated': SessionMetaUpdatedPayload;
   'usage.settled': { readonly sessionId?: string; readonly agentId?: string };
@@ -163,6 +164,9 @@ export const globalEvents = {
     service: 'pluginService',
     event: 'onDidReload',
     schema: reloadSummarySchema,
+  },
+  'plugins.changed': {
+    kind: 'bus', type: 'event.plugin.changed', schema: z.object({}).strict(),
   },
   'session.archived': {
     kind: 'bus',

@@ -4,6 +4,8 @@ import { ServiceCollection } from '#/_base/di/serviceCollection';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import type { IInstantiationService } from '#/_base/di/instantiation';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { AgentProfileRegistryService } from '#/app/agentProfileCatalog/agentProfileRegistryService';
 import { ISessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCatalog/agentProfileCatalogSeed';
@@ -44,12 +46,12 @@ class ReadOnlyWorkspaceTrustService extends WorkspaceTrustService {
 }
 
 /** With cwd, returns a disposable directory snapshot without registration, watchers, or a Program. */
-export function createUnscopedAgentProfileCatalog(instantiation: IInstantiationService, cwd?: string) {
+export function createUnscopedAgentProfileCatalog(instantiation: IInstantiationService, cwd?: string, workspaceId?: string) {
   const resources = new DisposableStore();
   try {
     const bootstrap = instantiation.invokeFunction((accessor) => accessor.get(IBootstrapService));
     const registry = resources.add(instantiation.createInstance<AgentProfileRegistryService>(new SyncDescriptor(AgentProfileRegistryService)));
-    const workspaceKey = cwd === undefined ? '__unscoped_profile_preview__' : encodeWorkDirKey(cwd);
+    const workspaceKey = workspaceId ?? (cwd === undefined ? '__unscoped_profile_preview__' : encodeWorkDirKey(cwd));
     const root = cwd ?? bootstrap.homeDir;
     const services = new ServiceCollection(
       [IAgentProfileRegistry, registry],
@@ -73,7 +75,9 @@ export function createUnscopedAgentProfileCatalog(instantiation: IInstantiationS
       services.set(IExplicitFileSkillSource, new SyncDescriptor(ExplicitFileSkillSource));
       services.set(IExtraFileSkillSource, new SyncDescriptor(ExtraFileSkillSource));
       services.set(IWorkspaceRootSkillSource, new SyncDescriptor(WorkspaceRootSkillSource));
-      services.set(IPluginSkillSource, new SyncDescriptor(PluginSkillSource));
+      services.set(IPluginSkillSource, instantiation.invokeFunction((accessor) => new PluginSkillSource(
+        services.get(ISkillDiscovery) as ISkillDiscovery, accessor.get(IPluginService), workspaceKey, accessor.get(IPluginUsageService),
+      )));
     }
     const container = resources.add(instantiation.createChild(services));
     const user = resources.add(container.createInstance(UserAgentProfileLoaderService));
@@ -81,7 +85,7 @@ export function createUnscopedAgentProfileCatalog(instantiation: IInstantiationS
     const loaders: { readonly ready: Promise<void> }[] = [
       user,
       resources.add(container.createInstance(InheritedAgentProfileLoaderService)),
-      resources.add(container.createInstance(PluginAgentProfileLoaderService)),
+      resources.add(container.createInstance<PluginAgentProfileLoaderService>(new SyncDescriptor(PluginAgentProfileLoaderService))),
       resources.add(container.createInstance(cwd === undefined ? GlobalExtraAgentProfileLoaderService : ExtraAgentProfileLoaderService)),
     ];
     if (cwd !== undefined) {

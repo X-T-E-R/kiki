@@ -182,6 +182,17 @@ describe('WorkspaceMcpService', () => {
     expect(manager.get('beta')?.status).toBe('connected');
   }, 20000);
 
+  it('reports failed MCP application to the workspace usage owner', async () => {
+    const failure = new Error('Example apply failure');
+    vi.spyOn(McpConnectionManager.prototype, 'markRemoved').mockRejectedValue(failure);
+    const service = createService();
+    manager = service.connectionManager();
+    await service.ready;
+    const reportFailure = vi.fn();
+    await configChanges.fireAsync({ upsert: {}, remove: ['alpha'], reportFailure }, new AbortController().signal);
+    expect(reportFailure).toHaveBeenCalledWith(failure);
+  });
+
   it('queues change events until the initial connect settles', async () => {
     current = { alpha: stdioServer() };
     let settleConnectAll: () => void = () => undefined;

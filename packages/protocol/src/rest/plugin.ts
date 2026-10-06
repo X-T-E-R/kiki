@@ -63,3 +63,30 @@ export type PluginPrerequisiteInstall = z.infer<typeof pluginPrerequisiteInstall
 export type PluginPreviewRequest = z.infer<typeof pluginPreviewRequestSchema>;
 export type PluginInstallRequest = z.infer<typeof pluginInstallRequestSchema>;
 export type PluginInstallPlan = z.infer<typeof pluginInstallPlanSchema>;
+
+export const pluginNavigationSchema = z.object({
+  request: z.object({ id: z.number().int(), pluginId: z.string(), sessionId: z.string(), at: z.number() }).optional(),
+});
+export type PluginNavigation = z.infer<typeof pluginNavigationSchema>;
+
+export const pluginUsageTargetSchema = z.union([
+  z.object({ workspace_id: z.string().min(1) }).strict(),
+  z.object({ session_id: z.string().min(1) }).strict(),
+]);
+export const pluginUsageOverrideSchema = z.enum(['inherit', 'on', 'off']);
+export const pluginUsageRequestSchema = z.object({ target: pluginUsageTargetSchema, plugin_id: z.string().min(1), override: pluginUsageOverrideSchema }).strict();
+export const pluginUsageItemSchema = z.object({
+  id: z.string(), displayName: z.string(), version: z.string().optional(), icon: z.string().optional(),
+  home_enabled: z.boolean(), state: z.enum(['ok', 'error']), override: pluginUsageOverrideSchema,
+  effective: z.boolean(), reason: z.enum(['home_disabled', 'workspace_disabled', 'invalid_plugin']).optional(),
+  app_service: z.boolean(), skillCount: z.number(), mcpServerCount: z.number(),
+});
+export const pluginUsageResponseSchema = z.object({
+  home_id: z.string(), target: z.object({ workspace_id: z.string(), name: z.string(), root: z.string() }),
+  revision: z.number().int().nonnegative(), apply_state: z.enum(['applied', 'pending', 'failed']),
+  errors: z.array(z.string()), plugins: z.array(pluginUsageItemSchema),
+});
+export type PluginUsageTarget = z.infer<typeof pluginUsageTargetSchema>;
+export type PluginUsageRequest = z.infer<typeof pluginUsageRequestSchema>;
+export type PluginUsageResponse = z.infer<typeof pluginUsageResponseSchema>;
+export type PluginUsageItem = z.infer<typeof pluginUsageItemSchema>;

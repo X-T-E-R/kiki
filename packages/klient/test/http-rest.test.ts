@@ -22,6 +22,30 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('sends workspace plugin selection and panel or command targets over authenticated REST', async () => {
+    const calls: { path: string; query: string; method: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      calls.push({ path: url.pathname, query: url.search, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      return envelope({});
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await channel.rest.plugins.usage({ session_id: 'session/example' });
+      await channel.rest.plugins.setUsage({ target: { workspace_id: 'workspace-a' }, plugin_id: 'example', override: 'off' });
+      await channel.rest.plugins.panels({ workspace_id: 'workspace-a' });
+      await channel.rest.plugins.panelDocument('example', 'office', { session_id: 'session/example' });
+      await channel.rest.plugins.commands({ workspace_id: 'workspace-a' });
+      expect(calls).toEqual([
+        { path: '/api/plugins/usage', query: '?session_id=session%2Fexample', method: 'GET', body: undefined },
+        { path: '/api/plugins/usage', query: '', method: 'POST', body: { target: { workspace_id: 'workspace-a' }, plugin_id: 'example', override: 'off' } },
+        { path: '/api/plugins/panels', query: '?workspace_id=workspace-a', method: 'GET', body: undefined },
+        { path: '/api/plugins/example/panels/office/document', query: '?session_id=session%2Fexample', method: 'GET', body: undefined },
+        { path: '/api/plugins/commands', query: '?workspace_id=workspace-a', method: 'GET', body: undefined },
+      ]);
+    } finally { await channel.close(); }
+  });
   it('reads validated owner-aware metadata pages through authenticated REST without opening an agent', async () => {
     const page = { items: [{ id: 'test-00000001', session_id: 'session/example', owner_agent_id: 'owner', agent_id: 'target',
       source: 'live', kind: 'subagent', description: 'example dispatch', status: 'running', created_at: '2026-06-04T10:00:00.000Z' }],

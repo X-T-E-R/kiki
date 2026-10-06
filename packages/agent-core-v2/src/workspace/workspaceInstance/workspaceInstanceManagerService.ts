@@ -17,6 +17,7 @@ import { IMcpOAuthService } from '#/app/mcpConfig/oauthService';
 import type { McpOAuthService } from '#/mcpCore/oauth/service';
 import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { ISessionIndex, ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
 import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
@@ -106,6 +107,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     @IAppendLogStore private readonly appendLogStore: IAppendLogStore,
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
+    @IPluginUsageService private readonly pluginUsage?: IPluginUsageService,
     private readonly unitHostFactory: RuntimeUnitHostFactory = new SharedRuntimeUnitHostFactory(),
     private readonly idleTtlMsOverride: number | undefined = undefined,
   ) {
@@ -360,6 +362,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
         oauth: this.oauth,
         configStore: this.configStore,
         plugins: this.plugins,
+        pluginUsage: this.pluginUsage,
         sessionManager: this.sessionManager,
         agentProfiles: this.agentProfiles,
         agentExecutors: this.agentExecutors,

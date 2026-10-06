@@ -680,6 +680,9 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     plugins: {
+      navigation: () => transport.json('/plugins/navigation'),
+      usage: (target) => transport.json('/plugins/usage', { query: target }),
+      setUsage: (input) => transport.json('/plugins/usage', { method: 'POST', body: input }),
       marketplace: () => transport.json('/plugins/marketplace'),
       preview: (input) => transport.json('/plugins:preview', {
         method: 'POST',
@@ -710,15 +713,15 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/plugins/${encodeURIComponent(id)}:install-prerequisite`,
         { method: 'POST', body: input, timeoutMs: 0 },
       ),
-      panels: () => transport.json('/plugins/panels'),
-      panelDocument: (id: string, panelId: string) => transport.json(
-        `/plugins/${encodeURIComponent(id)}/panels/${encodeURIComponent(panelId)}/document`,
+      panels: (target) => transport.json('/plugins/panels', { query: target }),
+      panelDocument: (id: string, panelId: string, target) => transport.json(
+        `/plugins/${encodeURIComponent(id)}/panels/${encodeURIComponent(panelId)}/document`, { query: target },
       ),
       panelBridge: (id: string, panelId: string, input) => transport.json(
         `/plugins/${encodeURIComponent(id)}/panels/${encodeURIComponent(panelId)}/bridge`,
         { method: 'POST', body: input },
       ),
-      commands: () => transport.json('/plugins/commands'),
+      commands: (target) => transport.json('/plugins/commands', { query: target }),
       recommend: (input) => transport.json('/plugins/recommendations/match', { method: 'POST', body: input }),
       dismissRecommendation: (id: string) => transport.json(
         `/plugins/${encodeURIComponent(id)}:dismiss-recommendation`, { method: 'POST', body: {} },

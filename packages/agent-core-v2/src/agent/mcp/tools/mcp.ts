@@ -21,6 +21,7 @@ interface McpToolOptions {
   readonly providerType?: () => string | undefined;
   readonly reconnect?: (signal?: AbortSignal) => Promise<MCPClient | undefined>;
   readonly isRemoved?: () => boolean;
+  readonly admitCall?: () => Promise<{ release(): void } | undefined>;
   readonly computerControl?: boolean;
   readonly serverName?: string;
   readonly onUnauthorized?: (error: unknown, client: MCPClient) => Promise<boolean>;
@@ -49,21 +50,29 @@ export function createMcpTool(
             isError: true,
           };
         }
-        let result;
-        try {
-          result = await callTool(client, args, context.signal);
-        } catch (error) {
-          await throwIfUnauthorized(options, qualifiedName, error, client, context.signal);
-          result = await retryAfterReconnect(error, client, args, context, options, callTool, qualifiedName);
+        const lease = await options.admitCall?.();
+        if (options.admitCall !== undefined && lease === undefined) {
+          return { isError: true, output: `MCP tool "${qualifiedName}" is no longer available in this workspace. Refresh the tool list before calling it again.` };
         }
-        return mcpResultToExecutableOutput(result, qualifiedName, {
-          signal: context.signal,
-          attachmentStore: options.attachmentStore?.(),
-          originalsDir: options.originalsDir,
-          telemetry: options.telemetry,
-          providerType: options.providerType?.(),
-          preserveStructuredContent: options.computerControl,
-        });
+        try {
+          let result;
+          try {
+            result = await callTool(client, args, context.signal);
+          } catch (error) {
+            await throwIfUnauthorized(options, qualifiedName, error, client, context.signal);
+            result = await retryAfterReconnect(error, client, args, context, options, callTool, qualifiedName);
+          }
+          return await mcpResultToExecutableOutput(result, qualifiedName, {
+            signal: context.signal,
+            attachmentStore: options.attachmentStore?.(),
+            originalsDir: options.originalsDir,
+            telemetry: options.telemetry,
+            providerType: options.providerType?.(),
+            preserveStructuredContent: options.computerControl,
+          });
+        } finally {
+          lease?.release();
+        }
       },
     }),
   };

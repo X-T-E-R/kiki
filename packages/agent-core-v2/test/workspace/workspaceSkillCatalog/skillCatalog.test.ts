@@ -130,6 +130,7 @@ function pluginStub(
     listPluginCommands: async () => [],
     checkUpdates: async () => [],
     pluginSkillRoots: async () => skillRoots,
+    pluginSkillOwner: async () => undefined,
     pluginAgentRoots: async () => [],
     enabledSessionStarts: async () => [],
     enabledSystemPrompts: async () => [],

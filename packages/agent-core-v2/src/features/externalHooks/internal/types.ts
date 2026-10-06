@@ -26,6 +26,7 @@ export const HOOK_EVENT_TYPES = [
 export type HookEventType = (typeof HOOK_EVENT_TYPES)[number];
 
 export interface HookDef {
+  readonly pluginId?: string;
   readonly event: HookEventType;
   readonly matcher?: string;
   readonly command: string;

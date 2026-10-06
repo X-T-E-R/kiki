@@ -47,6 +47,7 @@ export class PluginHost {
   private exited: Promise<void> = Promise.resolve();
   private idle?: ReturnType<typeof setTimeout>;
   private stopped = false;
+  private activitySubscription?: { dispose(): void };
 
   constructor(
     readonly id: string,
@@ -54,7 +55,28 @@ export class PluginHost {
     private readonly definitions: readonly PluginTool[],
     private readonly sources: readonly SessionSourceDefinition[] = [],
     private readonly providers: readonly MediaProviderDefinition[] = [],
+    private readonly lifecycle?: { readonly resident: boolean; readonly updateSettings: (values: Record<string, string | number | boolean | null>) => Promise<unknown>; readonly observeActivity?: (listener: (activity: readonly import('./pluginActivity').PluginActivity[]) => void) => { dispose(): void }; readonly focusSession?: (sessionId: string) => void },
   ) {}
+
+  async activate(settings: Record<string, unknown>, userHome: string, dataDir: string): Promise<void> {
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    await this.start();
+    await this.lifecycleRequest('activate', { settings, userHome, dataDir });
+    this.activitySubscription?.dispose();
+    this.activitySubscription = this.lifecycle?.observeActivity?.((activity) => this.send({ method: 'app-activity', params: { activity } }));
+  }
+
+  private lifecycleRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
+    const id = ++this.nextId;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Plugin ${this.id} lifecycle timed out`));
+      }, 15_000);
+      this.pending.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } });
+      this.send({ id, method, params });
+    });
+  }
 
   async requestMediaProvider(providerId: string, action: 'describe' | 'submit' | 'poll' | 'cancel' | 'voices', input: unknown, signal: AbortSignal, settings: Record<string, unknown>, context: { jobId: string; stagingDir: string; connection?: () => Promise<unknown> }, onProgress?: (update: ToolUpdate) => void): Promise<unknown> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
@@ -167,7 +189,7 @@ export class PluginHost {
       this.pending.set(requestId, {
         resolve: (result) => {
           this.scheduleIdle();
-          if (JSON.stringify(result)?.length > 64 * 1024) reject(new Error('Plugin panel response exceeds 64 KiB'));
+          if (JSON.stringify(result)?.length > MAX_RPC_LINE_CHARS - 1024) reject(new Error('Plugin panel response exceeds RPC limit'));
           else resolve(result);
         },
         reject: (error) => { this.scheduleIdle(); reject(error); },
@@ -176,9 +198,13 @@ export class PluginHost {
     });
   }
 
-  stopAndWait(): Promise<void> {
+  async stopAndWait(): Promise<void> {
+    this.stopped = true;
+    if (this.child !== undefined && this.lifecycle?.resident) {
+      try { await this.lifecycleRequest('shutdown', {}); } catch {}
+    }
     this.stop();
-    return this.exited;
+    await this.exited;
   }
 
   stop(): void {
@@ -253,6 +279,20 @@ export class PluginHost {
             throw new Error(message.params?.message ?? 'Plugin registration failed');
           } else if (message.method === 'progress') {
             this.pending.get(message.params?.id)?.onProgress?.(message.params.update);
+          } else if (message.method === 'settings-update') {
+            const { callId, values } = message.params ?? {};
+            void Promise.resolve().then(() => {
+              if (this.lifecycle?.resident !== true || this.stopped) throw new Error('Plugin settings bridge is unavailable');
+              return this.lifecycle.updateSettings(values);
+            }).then((result) => this.send({ method: 'settings-result', params: { callId, result } }),
+              () => this.send({ method: 'settings-result', params: { callId, error: 'Plugin settings could not be saved' } }));
+          } else if (message.method === 'app-focus-session') {
+            const { callId, sessionId } = message.params ?? {};
+            void Promise.resolve().then(() => {
+              if (this.lifecycle?.resident !== true || this.stopped || typeof sessionId !== 'string' || sessionId.length > 128) throw new Error('Plugin navigation is unavailable');
+              this.lifecycle.focusSession?.(sessionId);
+            }).then(() => this.send({ method: 'app-focus-result', params: { callId, result: true } }),
+              () => this.send({ method: 'app-focus-result', params: { callId, error: 'Session is no longer available' } }));
           } else if (message.method === 'media-call') {
             const { id, callId, action, input } = message.params ?? {};
             const call = this.pending.get(id);
@@ -300,7 +340,7 @@ export class PluginHost {
   }
 
   private scheduleIdle(): void {
-    if (this.pending.size > 0 || this.stopped) return;
+    if (this.pending.size > 0 || this.stopped || this.lifecycle?.resident === true) return;
     clearTimeout(this.idle);
     this.idle = setTimeout(() => this.terminate(new Error(`Plugin ${this.id} idle`)), IDLE_MS);
     this.idle.unref();
@@ -310,6 +350,8 @@ export class PluginHost {
     clearTimeout(this.idle);
     const child = this.child;
     this.child = undefined;
+    this.activitySubscription?.dispose();
+    this.activitySubscription = undefined;
     this.registered.clear();
     this.registeredSources.clear();
     this.registeredProviders.clear();

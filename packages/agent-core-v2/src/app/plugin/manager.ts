@@ -391,6 +391,7 @@ export class PluginManager {
       for (const hook of record.manifest.hooks ?? []) {
         out.push({
           ...hook,
+          pluginId: record.id,
           cwd: record.root,
           env: {
             KIKI_HOME: this.kimiHomeDir,
@@ -451,7 +452,7 @@ export class PluginManager {
     for (const record of this.records.values()) {
       if (!record.enabled || record.state !== 'ok' || record.manifest === undefined) continue;
       for (const dir of record.manifest.agents ?? []) {
-        roots.push({ path: dir, source: 'plugin' });
+        roots.push({ path: dir, source: 'plugin', pluginId: record.id });
       }
     }
     return roots;

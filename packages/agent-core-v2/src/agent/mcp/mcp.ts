@@ -12,6 +12,7 @@ export interface McpResolvedServer {
   readonly tools: readonly KosongTool[];
   readonly rawTools: readonly MCPToolDefinition[];
   readonly enabledNames: ReadonlySet<string>;
+  readonly admitCall?: () => Promise<{ release(): void } | undefined>;
 }
 
 export interface IAgentMcpService {

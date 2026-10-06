@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
-import { AsyncEmitter, Emitter } from '#/_base/event';
+import { AsyncEmitter, Emitter, Event } from '#/_base/event';
+import { IPluginUsageService, type PluginUsageChange } from '#/app/pluginUsage/pluginUsage';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { AgentPluginService } from '#/agent/plugin/agentPluginService';
@@ -158,6 +160,40 @@ describe('AgentPluginService plugin session-start wiring', () => {
     expect(messageText(messages.at(-1)!)).toContain(
       'supersedes any earlier plugin_session_start reminder',
     );
+  });
+
+  it('keeps workspace usage pending until session-start guidance reaches a safe boundary', async () => {
+    const catalog = new InMemorySkillCatalog();
+    catalog.register(pluginSkill());
+    const change = new Emitter<PluginUsageChange>();
+    let allowed = true;
+    const usage: IPluginUsageService = { _serviceBrand: undefined, enabled: () => true,
+      read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: {}, applyState: 'applied', errors: [] }),
+      allows: async () => allowed, set: async () => { throw new Error('unused'); },
+      onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'] };
+    const plugins = { ...stubPluginService({ sessionStarts: [] }), enabledSessionStarts: async (workspaceId?: string) => {
+      expect(workspaceId).toBe(ctx!.get(ISessionContext).workspaceId);
+      return allowed ? [{ pluginId: 'demo', skillName: 'demo-skill' }] : [];
+    } };
+    ctx = createTestAgent({ autoConfigure: true }, appService(IPluginService, plugins), appService(IPluginUsageService, usage),
+      skillServices(catalog), agentService(IAgentPluginService, new SyncDescriptor(AgentPluginService)));
+    ctx.get(IAgentPluginService);
+    await runInjectionBoundary(ctx);
+    const before = findPluginSessionStartEventMessages(ctx).length;
+    const work: Promise<unknown>[] = [];
+    let applied = false;
+    allowed = false;
+    change.fire({ workspaceId: ctx.get(ISessionContext).workspaceId, pluginId: 'demo', revision: 1, waitUntil: (promise) => work.push(promise) });
+    expect(work.length).toBeGreaterThan(0);
+    void Promise.all(work).then(() => { applied = true; });
+    await Promise.resolve();
+    expect(applied).toBe(false);
+    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(before);
+    await runInjectionBoundary(ctx);
+    await Promise.all(work);
+    expect(applied).toBe(true);
+    expect(messageText(findPluginSessionStartEventMessages(ctx).at(-1)!)).toContain('no active plugin session starts');
+    change.dispose();
   });
 
   it('does not inject when no plugin session starts are enabled', async () => {

@@ -11,6 +11,8 @@ import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import type { Runtime, RuntimeCapability, RuntimeStatus } from '#/runtime/runtime';
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService, type PluginUsageChange } from '#/app/pluginUsage/pluginUsage';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { EnabledPluginSystemPrompt } from '#/app/plugin/types';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import type { SkillCatalog } from '#/app/skillCatalog/types';
@@ -644,6 +646,86 @@ describe('AgentProfileService.applyProfile', () => {
     await svc.applyProfile(profile);
 
     expect(svc.getAgentsMdWarning()).toBeUndefined();
+  });
+
+  it.each([true, false])('reprojects plugin usage at a safe boundary without adopting profile inputs (dynamic=%s)', async (dynamic) => {
+    const change = new Emitter<PluginUsageChange>();
+    const reload = new Emitter<import('#/app/plugin/types').PluginReloadEvent>();
+    const off = new Set<string>();
+    const usage: IPluginUsageService = {
+      _serviceBrand: undefined, enabled: () => true,
+      read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: {}, applyState: 'applied', errors: [] }),
+      allows: async (_workspaceId, pluginId) => !off.has(pluginId),
+      set: async () => { throw new Error('unused'); }, onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'],
+    };
+    const sections = { value: [{ pluginId: 'demo', content: 'frozen demo' }, { pluginId: 'other', content: 'frozen other' }] };
+    const plugins = { ...pluginStub(sections), onDidReload: reload.event };
+    const { ctx: host, profile: svc } = buildContext(appService(IPluginService, plugins), appService(IPluginUsageService, usage));
+    const { IAgentStateService } = await import('#/agent/state/agentState');
+    const { profileKey } = await import('#/agent/profile/profileOps');
+    const { dynamicPromptKey } = await import('#/agent/profile/dynamicPrompt');
+    const states = host.get(IAgentStateService);
+    if (dynamic) states.set(profileKey, { ...states.get(profileKey), renderGeneration: 0 });
+    const base = normalizeAgentProfile({ name: 'plugin-use', tools: [], systemPrompt: (context) => `Role stays frozen\n${context.pluginSections ?? ''}` });
+    await svc.applyProfile(base);
+    const original = svc.data().systemPrompt;
+    const originalContext = states.get(dynamicPromptKey)!.context;
+    const waiters: Promise<unknown>[] = [];
+    const workspaceId = host.get(ISessionContext).workspaceId;
+    sections.value = [{ pluginId: 'demo', content: 'unadopted demo' }, { pluginId: 'other', content: 'unadopted other' }];
+    off.add('demo');
+    change.fire({ workspaceId, pluginId: 'demo', revision: 1, waitUntil: (work) => { waiters.push(work); } });
+    expect(svc.data().systemPrompt).toBe(original);
+    await svc.reconcilePluginUsage!();
+    await Promise.all(waiters);
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toBe('<!-- From: plugin other -->\nfrozen other');
+    expect({ ...states.get(dynamicPromptKey)!.context, pluginSections: originalContext.pluginSections }).toEqual(originalContext);
+    expect(svc.data().systemPrompt).toContain('Role stays frozen');
+    if (dynamic) expect(svc.data().systemPrompt).toBe(original);
+    else expect(svc.data().systemPrompt).not.toContain('frozen demo');
+    off.delete('demo');
+    change.fire({ workspaceId, pluginId: 'demo', revision: 2, waitUntil: () => {} });
+    await svc.reconcilePluginUsage!();
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toContain('frozen demo');
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).not.toContain('unadopted');
+    reload.fire({ added: [], removed: [], errors: [], affected: ['demo'], signal: new AbortController().signal, waitUntil: () => {} });
+    await svc.reconcilePluginUsage!();
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toContain('unadopted demo');
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toContain('frozen other');
+    change.dispose(); reload.dispose();
+  });
+
+  it.each([true, false])('restores cold frozen plugin blocks before projecting workspace usage (metadata=%s)', async (metadata) => {
+    const change = new Emitter<PluginUsageChange>();
+    let allowed = true;
+    const usage: IPluginUsageService = { _serviceBrand: undefined, enabled: () => true,
+      read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: {}, applyState: 'applied', errors: [] }),
+      allows: async () => allowed, set: async () => { throw new Error('unused'); },
+      onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'] };
+    const sections = { value: [{ pluginId: 'demo', content: 'saved demo\nwith two lines' }] };
+    const { IAgentStateService } = await import('#/agent/state/agentState');
+    const { dynamicPromptKey } = await import('#/agent/profile/dynamicPrompt');
+    const first = buildContext(appService(IPluginService, pluginStub(sections)), appService(IPluginUsageService, usage));
+    await first.profile.applyProfile(pluginProfile);
+    const saved = structuredClone(first.ctx.get(IAgentStateService).get(dynamicPromptKey)!);
+    await first.ctx.dispose();
+    sections.value = [{ pluginId: 'demo', content: 'current unadopted demo' }];
+    const second = buildContext(appService(IPluginService, pluginStub(sections)), appService(IPluginUsageService, usage));
+    const states = second.ctx.get(IAgentStateService);
+    states.set(dynamicPromptKey, { ...saved, context: { ...saved.context, pluginBlocks: metadata ? saved.context.pluginBlocks : undefined } });
+    await second.profile.reconcilePluginUsage!();
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toContain('saved demo\nwith two lines');
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).not.toContain('unadopted');
+    const workspaceId = second.ctx.get(ISessionContext).workspaceId;
+    allowed = false;
+    change.fire({ workspaceId, pluginId: 'demo', revision: 1, waitUntil: () => {} });
+    await second.profile.reconcilePluginUsage!();
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toBe('');
+    allowed = true;
+    change.fire({ workspaceId, pluginId: 'demo', revision: 2, waitUntil: () => {} });
+    await second.profile.reconcilePluginUsage!();
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toContain('saved demo\nwith two lines');
+    change.dispose();
   });
 
   it('injects enabled plugin system-prompt sections into the rendered prompt', async () => {

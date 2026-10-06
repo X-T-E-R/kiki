@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { assertPluginSkillUsage } from './pluginSkillUsage';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { validatePromptRuntimeControls } from '#/agent/prompt/runtimeControls';
 import { LifecycleScope } from '#/app/scopes';
@@ -54,6 +57,8 @@ export class AgentSkillService extends Service implements IAgentSkillService {
     @IEventService private readonly eventService: IEventService,
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
     @IAgentStateService agentState: IAgentStateService,
+    @IPluginService private readonly plugins?: IPluginService,
+    @IPluginUsageService private readonly usage?: IPluginUsageService,
   ) {
     super();
     agentState.contributeState(skillKey);
@@ -72,6 +77,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
       );
     }
 
+    await assertPluginSkillUsage(skill.path, this.sessionContext.workspaceId, this.plugins, this.usage);
     const skillArgs = input.args ?? '';
     const skillContent = this.renderSkillPrompt(skill, skillArgs);
     const content: ContentPart[] = [
@@ -144,7 +150,13 @@ export class AgentSkillService extends Service implements IAgentSkillService {
       );
     }
     await this.skillCatalog.ready;
-    const prepared = input.skills.map((skill) => this.prepareBundled(skill));
+    const prepared = await Promise.all(input.skills.map(async (inputSkill) => {
+      const skill = this.skillCatalog.catalog.getSkill(inputSkill.name);
+      if (skill === undefined) throw new Error2(ErrorCodes.SKILL_NOT_FOUND, `Skill "${inputSkill.name}" was not found`);
+      await assertPluginSkillUsage(skill.path, this.sessionContext.workspaceId, this.plugins, this.usage);
+      const activation = this.prepareBundled(inputSkill);
+      return activation;
+    }));
     this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, input.execution));
     if (this.scopeContext.agentId === MAIN_AGENT_ID) {
       await applyPromptMetadataUpdate(

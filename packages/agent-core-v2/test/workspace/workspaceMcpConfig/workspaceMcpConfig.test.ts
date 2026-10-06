@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
-import { AsyncEmitter, Emitter } from '#/_base/event';
+import { AsyncEmitter, Emitter, Event } from '#/_base/event';
+import { IPluginUsageService, type PluginUsageChange } from '#/app/pluginUsage/pluginUsage';
 import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
@@ -91,16 +92,19 @@ describe('WorkspaceMcpConfigService', () => {
     };
   }
 
-  function createService(mcpSection?: McpSection): IWorkspaceMcpConfigService {
+  function createService(mcpSection?: McpSection, usage?: IPluginUsageService): IWorkspaceMcpConfigService {
     const ix = createServices(disposables, {
       strict: true,
       additionalServices: (reg) => {
         reg.definePartialInstance(IBootstrapService, { homeDir });
-        reg.definePartialInstance(IWorkspaceContext, { cwd });
+        reg.definePartialInstance(IWorkspaceContext, { cwd, workspaceId: 'workspace-a' });
         reg.definePartialInstance(IPluginService, {
           enabledMcpServers: async () => pluginServers,
+          mcpServerEntries: async () => ['plugin-example-shared', 'plugin-example-only'].map((name) => ({ name, pluginId: 'example', serverName: name, config: stdioConfig('plugin') })),
           onDidReload: pluginReloads.event,
         });
+        if (usage !== undefined) reg.defineInstance(IPluginUsageService, usage);
+        else reg.definePartialInstance(IPluginUsageService, { enabled: () => false, onDidChange: Event.None as IPluginUsageService['onDidChange'] });
         reg.defineInstance(ILogService, stubLog());
         reg.definePartialInstance(IConfigService, {
           ready: Promise.resolve(),
@@ -310,6 +314,47 @@ describe('WorkspaceMcpConfigService', () => {
       { timeout: 10000, interval: 50 },
     );
   }, 20000);
+
+  it('keeps a file-winning plugin-shaped name callable while workspace plugin admission closes immediately', async () => {
+    await writeProjectConfig({ 'plugin-example-shared': stdioConfig('file-version') });
+    pluginServers = { 'plugin-example-shared': stdioConfig('plugin'), 'plugin-example-only': stdioConfig('plugin') };
+    const change = disposables.add(new Emitter<PluginUsageChange>());
+    let allowed = true;
+    const usage: IPluginUsageService = { _serviceBrand: undefined, enabled: () => true,
+      read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: {}, applyState: 'applied', errors: [] }),
+      allows: async () => allowed, set: async () => { throw new Error('unused'); },
+      onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'] };
+    const service = createService(undefined, usage);
+    await service.ready;
+    expect(await service.allowsCall!('plugin-example-only')).toBe(true);
+    allowed = false;
+    pluginServers = {};
+    const work: Promise<unknown>[] = [];
+    change.fire({ workspaceId: 'workspace-a', pluginId: 'example', revision: 1, waitUntil: (promise) => { work.push(promise); } });
+    expect(await service.allowsCall!('plugin-example-only')).toBe(false);
+    expect(await service.allowsCall!('plugin-example-shared')).toBe(true);
+    await Promise.all(work);
+    expect(service.servers()).toEqual({ 'plugin-example-shared': stdioConfig('file-version') });
+    expect(changes).toEqual([{ upsert: {}, remove: ['plugin-example-only'] }]);
+  });
+
+  it('rejects workspace usage application when a runtime consumer reports failure', async () => {
+    pluginServers = { 'plugin-example-only': stdioConfig('plugin') };
+    const change = disposables.add(new Emitter<PluginUsageChange>());
+    const usage: IPluginUsageService = { _serviceBrand: undefined, enabled: () => true,
+      read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: {}, applyState: 'applied', errors: [] }),
+      allows: async () => true, set: async () => { throw new Error('unused'); },
+      onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'] };
+    const service = createService(undefined, usage);
+    await service.ready;
+    disposables.add(service.onDidChange((event) => {
+      event.waitUntil(Promise.resolve().then(() => { event.reportFailure?.(new Error('Example runtime failure')); }));
+    }));
+    pluginServers = {};
+    const work: Promise<unknown>[] = [];
+    change.fire({ workspaceId: 'workspace-a', pluginId: 'example', revision: 1, waitUntil: (promise) => { work.push(promise); } });
+    await expect(Promise.all(work)).rejects.toThrow('Workspace MCP application failed');
+  });
 
   it('keeps the winning file server when the same-named plugin entry vanishes', async () => {
     await writeProjectConfig({ shared: stdioConfig('file-version') });

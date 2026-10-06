@@ -19,6 +19,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import { readLastSessionId } from '@kiki/session-core/settings';
 
+import type { PluginUsageTarget } from '@kiki/protocol';
+
 import { useI18n } from '../../i18n';
 import { pickWorkspace } from '../../lib/capabilities';
 import { useConnection } from '../../state/connection';
@@ -37,6 +39,7 @@ import { IconButton } from './primitives';
 import { SkillsView } from './SkillsView';
 import { ToolsView } from './ToolsView';
 import { usePluginPanels } from './usePlugins';
+import { panelScopeFrom } from './pluginUsage';
 
 export type CapabilityTab = 'plugins' | 'skills' | 'mcp' | 'tools';
 const TABS: readonly CapabilityTab[] = ['plugins', 'skills', 'mcp', 'tools'];
@@ -154,6 +157,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   const panel = params.get('panel');
   const [panelPluginId, panelId] = panel?.split(':') ?? [];
   const sessionId = params.get('session') ?? readLastSessionId();
+  const panelScope = panelScopeFrom(params);
 
   const setTab = (next: CapabilityTab) => {
     const updated = applyPluginsRoute(params, { view: 'market' });
@@ -282,7 +286,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
       ) : null}
       {install !== null ? <InstallFlow request={install} onClose={() => { setInstall(null); }} /> : null}
       {panelPluginId !== undefined && panelId !== undefined ? (
-        <PanelSheet pluginId={panelPluginId} panelId={panelId} sessionId={sessionId} onClose={closePanel} />
+        <PanelSheet pluginId={panelPluginId} panelId={panelId} sessionId={panelScope.sessionId} target={panelScope.target} onClose={closePanel} />
       ) : null}
     </MediaPreviewProvider>
   );
@@ -356,14 +360,16 @@ function AddMenu({ onClose, onPick }: { readonly onClose: () => void; readonly o
   );
 }
 
-function PanelSheet({ pluginId, panelId, sessionId, onClose }: {
+function PanelSheet({ pluginId, panelId, sessionId, target, onClose }: {
   readonly pluginId: string;
   readonly panelId: string;
   readonly sessionId?: string;
+  /** The scope the panel is opened for; a workspace panel is served only for it. */
+  readonly target?: PluginUsageTarget;
   readonly onClose: () => void;
 }) {
   const { t } = useI18n();
-  const panels = usePluginPanels();
+  const panels = usePluginPanels(target);
   const label = panels.data?.panels.find((entry) => entry.pluginId === pluginId && entry.id === panelId)?.label ?? panelId;
   return (
     <Dialog
@@ -380,7 +386,7 @@ function PanelSheet({ pluginId, panelId, sessionId, onClose }: {
         <IconButton icon="close" label={t('common.close')} onClick={onClose} />
       </div>
       <div className="min-h-0 flex-1">
-        <PluginPanelHost pluginId={pluginId} panelId={panelId} label={label} sessionId={sessionId} />
+        <PluginPanelHost pluginId={pluginId} panelId={panelId} label={label} sessionId={sessionId} target={target} />
       </div>
     </Dialog>
   );

@@ -4,10 +4,28 @@ import { tmpdir } from 'node:os';
 import type { ContentPart } from '#/kosong/contract/message';
 import { triggerBlockingResults } from '#/features/externalHooks/app/externalHooksRunner';
 import { describe, expect, it, vi } from 'vitest';
+import type { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import type { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 
 import { makeHookRunner, nodeCommand } from './runner-stub';
 
 describe('ExternalHooksRunnerService', () => {
+  it('filters plugin hooks by canonical session workspace while keeping user and other-workspace hooks', async () => {
+    let enabled = false;
+    const lookup = vi.fn(async (id: string) => ({ workspaceId: id === 'session-a' ? 'workspace-a' : 'workspace-b' }));
+    const runner = makeHookRunner([{ event: 'PreToolUse', command: nodeCommand('process.stdout.write("user");'), timeout: 5 }], {
+      pluginHooks: [{ pluginId: 'example', event: 'PreToolUse', command: nodeCommand('process.stdout.write("plugin");'), timeout: 5 }],
+      usage: { enabled: () => true, allows: async (workspaceId: string | undefined, pluginId: string) => pluginId !== 'example' || workspaceId !== 'workspace-a' || enabled } as unknown as IPluginUsageService,
+      sessions: { get: lookup } as unknown as ISessionIndex,
+    });
+    try {
+      expect((await runner.trigger('PreToolUse', { sessionId: 'session-a', cwd: realpathSync(tmpdir()) })).map((result) => result.stdout)).toEqual(['user']);
+      expect((await runner.trigger('PreToolUse', { sessionId: 'session-b' })).map((result) => result.stdout)).toEqual(['user', 'plugin']);
+      enabled = true;
+      expect((await runner.trigger('PreToolUse', { sessionId: 'session-a' })).map((result) => result.stdout)).toEqual(['user', 'plugin']);
+      expect(lookup).toHaveBeenCalledWith('session-a');
+    } finally { await runner.dispose(); }
+  });
   it('runs explicit v2 legacy commands with the old regex, deduplication and output contract', async () => {
     const command = nodeCommand('process.stdout.write("legacy"); process.exit(2);');
     const runner = makeHookRunner({ schemaVersion: 2, enabled: true, disabled: [], files: [], rules: [],

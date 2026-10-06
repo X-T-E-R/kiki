@@ -112,6 +112,7 @@ export interface PluginExtension {
   readonly panels?: readonly PluginPanel[];
   readonly commands?: readonly PluginDeclarativeCommand[];
   readonly entry?: string;
+  readonly activation?: 'app';
   readonly settings?: PluginSettings;
   /**
    * An extra management surface this package owns. The host offers it on the
@@ -138,6 +139,7 @@ export async function parsePluginExtension(
     panels: z.array(panelContributionSchema).optional(),
     commands: z.array(commandContributionSchema).optional(),
     entry: z.string().startsWith('./').optional(),
+    activation: z.literal('app').optional(),
     settings: settingsContributionSchema.optional(),
     prerequisites: z.unknown().optional(),
     mediaSurface: z.object({ view: z.literal('media') }).strict().optional(),
@@ -157,7 +159,7 @@ export async function parsePluginExtension(
     !satisfies(KIKI_PLUGIN_ENGINE_VERSION, value.engines.kiki))) {
     diagnostics.push({ severity: 'error', message: `Plugin requires Kiki ${value.engines.kiki}; engine is ${KIKI_PLUGIN_ENGINE_VERSION}` });
   }
-  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined) && value.entry === undefined) {
+  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.activation !== undefined) && value.entry === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.entry is required for executable contributions' });
   }
   for (const definitions of [value.sessionSources, value.mediaProviders]) {
@@ -223,6 +225,7 @@ export async function parsePluginExtension(
     panels,
     commands: value.commands,
     entry: resolvedEntry,
+    activation: value.activation,
     settings: value.settings,
     mediaSurface: value.mediaSurface,
   };

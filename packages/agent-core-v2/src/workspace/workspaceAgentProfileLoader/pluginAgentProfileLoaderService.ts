@@ -1,5 +1,6 @@
 import { ILogService } from '#/_base/log/log';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 import { IFlagService } from '#/app/flag/flag';
@@ -35,15 +36,13 @@ export class PluginAgentProfileLoaderService
     @IFlagService private readonly flags: IFlagService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
     @IAgentProfileRegistry registry: IAgentProfileRegistry,
+    @IPluginUsageService usage?: IPluginUsageService,
   ) {
     super(log, registry);
-    this._register(
-      this.plugins.onDidReload(() => {
-        void this.reload().catch((error) => {
-          this.log.warn(`agent profile loader "plugin" reload failed: ${String(error)}`);
-        });
-      }),
-    );
+    this._register(this.plugins.onDidReload((event) => event.waitUntil(this.reload())));
+    if (usage !== undefined) this._register(usage.onDidChange((event) => {
+      if (event.workspaceId === workspace.workspaceId) event.waitUntil(this.reload());
+    }));
     this.start();
   }
 
@@ -52,7 +51,7 @@ export class PluginAgentProfileLoaderService
   }
 
   protected async load(): Promise<AgentProfileContribution> {
-    const roots = await this.plugins.pluginAgentRoots();
+    const roots = await this.plugins.pluginAgentRoots(this.workspace.workspaceId);
     return profilesFromDiscovery(
       await discoverAgentFiles(
         this.fs,

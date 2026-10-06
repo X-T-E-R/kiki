@@ -41,6 +41,7 @@ function pluginServiceStub(commands: readonly PluginCommandDef[]): IPluginServic
     listPluginCommands: async () => commands,
     checkUpdates: async () => [],
     pluginSkillRoots: async () => [],
+    pluginSkillOwner: async () => undefined,
     pluginAgentRoots: async () => [],
     enabledSessionStarts: async () => [],
     enabledSystemPrompts: async () => [],

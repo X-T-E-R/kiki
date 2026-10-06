@@ -149,6 +149,51 @@ describe('McpConnectionManager', () => {
     }
   }, 20000);
 
+  it('drains an admitted call while rejecting delayed calls from a removed generation', async () => {
+    const cm = createManager();
+    try {
+      await cm.connect('alpha', { ...stdioConfig([slowToolStdioFixture]), env: { KIKI_TEST_MCP_TOOL_DELAY_MS: '100' } });
+      const resolved = cm.resolved('alpha')!;
+      const lease = await resolved.admitCall!();
+      expect(lease).toBeDefined();
+      const call = resolved.client.callTool('slow_echo', { text: 'complete original call' }, new AbortController().signal);
+      let retired = false;
+      const removal = cm.markRemoved('alpha').then(() => { retired = true; });
+      expect(cm.get('alpha')?.status).toBe('removed');
+      expect(await resolved.admitCall!()).toBeUndefined();
+      expect(retired).toBe(false);
+      const result = await call;
+      expect(result.content).toEqual([{ type: 'text', text: 'complete original call' }]);
+      lease!.release();
+      await removal;
+      expect(retired).toBe(true);
+      await cm.connect('alpha', stdioConfig());
+      expect(await resolved.admitCall!()).toBeUndefined();
+      const current = await cm.resolved('alpha')!.admitCall!();
+      expect(current).toBeDefined();
+      current!.release();
+    } finally { await cm.shutdown(); }
+  }, 20000);
+
+  it('checks workspace admission at execution without touching another manager', async () => {
+    let enabled = true;
+    const a = createManager({ allowsCall: async () => enabled });
+    const b = createManager();
+    try {
+      await Promise.all([a.connect('alpha', stdioConfig()), b.connect('alpha', stdioConfig())]);
+      const stale = a.resolved('alpha')!;
+      enabled = false;
+      expect(await stale.admitCall!()).toBeUndefined();
+      const other = await b.resolved('alpha')!.admitCall!();
+      expect(other).toBeDefined();
+      other!.release();
+      enabled = true;
+      const restored = await stale.admitCall!();
+      expect(restored).toBeDefined();
+      restored!.release();
+    } finally { await Promise.all([a.shutdown(), b.shutdown()]); }
+  }, 20000);
+
   it('markRemoved tombstones the entry: client closed, entry kept, reconnect rejected, re-connect revives', async () => {
     const cm = createManager();
     try {

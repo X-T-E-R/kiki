@@ -114,6 +114,7 @@ import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalo
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import type { ResolvedAgentProfile, SystemPromptContext } from '#/agent/profile/profile';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
@@ -278,6 +279,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private readonly emittedPersonaWarnings = new Set<string>();
   private frozenSkillListing: string | undefined;
   private frozenPluginSections: string | undefined;
+  private frozenPluginBlocks: Map<string, string> | undefined;
+  private pluginUsageDirty = true;
+  private pluginBlockRefresh: Set<string> | 'all' = new Set();
+  private readonly pluginUsageSettlers: { resolve(): void; reject(error: unknown): void }[] = [];
   private systemPromptRefreshTail: Promise<void> = Promise.resolve();
   private promptLayoutMigrationPending = false;
 
@@ -316,6 +321,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @ref(ISessionActivityView) private readonly sessionActivity: LiveRef<ISessionActivityView>,
     @IPersonaStore private readonly personas?: IPersonaStore,
     @IEventBus eventBus?: IEventBus,
+    @IPluginUsageService private readonly pluginUsage?: IPluginUsageService,
   ) {
     super();
     this.delegationPosition = resolveDelegationPosition(this.agentScope.agentId, undefined);
@@ -366,8 +372,25 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         if (sourceId === BUILTIN_SKILL_SOURCE_ID) {
           void this.refreshSystemPrompt();
         }
+        this.pluginUsageDirty = true;
       }),
     );
+    this._register(this.plugins.onDidReload((event) => {
+      if (!pluginUsage?.enabled()) return;
+      if (event.affected === undefined) this.pluginBlockRefresh = 'all';
+      else if (this.pluginBlockRefresh !== 'all') for (const id of event.affected) this.pluginBlockRefresh.add(id);
+      this.frozenPluginSections = undefined;
+      this.pluginUsageDirty = true;
+    }));
+    if (pluginUsage !== undefined) this._register(pluginUsage.onDidChange((event) => {
+      if (event.workspaceId !== this.sessionContext.workspaceId) return;
+      this.frozenPluginSections = undefined;
+      this.pluginUsageDirty = true;
+      if (this.states.get(dynamicPromptKey) !== undefined) event.waitUntil(new Promise<void>((resolve, reject) => this.pluginUsageSettlers.push({ resolve, reject })));
+    }));
+    this._register({ dispose: () => {
+      for (const waiter of this.pluginUsageSettlers.splice(0)) waiter.resolve();
+    } });
   }
 
   private get activeToolNamesOverlay(): readonly string[] | undefined {
@@ -1670,6 +1693,41 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (this.states.get(dynamicPromptKey)?.enabled !== true) return;
     const memory = await this.memorySnapshot.refreshIfDirty();
     if (memory !== undefined) await this.publishMemoryProjection(memory);
+  }
+
+  async reconcilePluginUsage(): Promise<void> {
+    if (!this.pluginUsage?.enabled() || !this.pluginUsageDirty) return;
+    const previous = this.states.get(dynamicPromptKey);
+    if (previous === undefined) return;
+    const waiters = this.pluginUsageSettlers.splice(0);
+    this.pluginUsageDirty = false;
+    try {
+      await this.skillCatalog.ready;
+      const pluginSections = await this.resolvePluginSections();
+      const skills = this.skillCatalog.catalog.getModelSkillListing();
+      this.frozenSkillListing = skills;
+      const context = { ...previous.context, pluginSections, skills, pluginBlocks: Object.fromEntries(this.frozenPluginBlocks ?? []) };
+      const content = dynamicPromptContent(context);
+      const hash = promptSectionHash(content);
+      if (!previous.enabled) {
+        let systemPrompt = this.profileState.systemPrompt;
+        for (const [before, after] of [[previous.context.pluginSections ?? '', pluginSections], [previous.context.skills ?? '', skills]] as const) {
+          if (before === after) continue;
+          systemPrompt = before.length > 0 && systemPrompt.includes(before)
+            ? systemPrompt.replace(before, after)
+            : after.length > 0 ? `${systemPrompt}\n\n${after}` : systemPrompt;
+        }
+        if (systemPrompt !== this.profileState.systemPrompt) this.update({ systemPrompt });
+      }
+      if (hash !== previous.hash || previous.context.pluginBlocks === undefined) {
+        await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled: previous.enabled, revision: previous.revision + 1, context, content, hash }));
+      }
+      for (const waiter of waiters) waiter.resolve();
+    } catch (error) {
+      this.pluginUsageDirty = true;
+      for (const waiter of waiters) waiter.reject(error);
+      throw error;
+    }
   }
 
   private async publishMemoryProjection(memory: string): Promise<void> {
@@ -3031,6 +3089,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       timeZone,
       skills,
       pluginSections,
+      pluginBlocks: this.frozenPluginBlocks === undefined ? undefined : Object.fromEntries(this.frozenPluginBlocks),
       memory,
       persona: this.currentPersona === undefined ? '' : PERSONA_PROMPT_MARKER,
       skillActive: profile !== undefined && this.isToolActiveForProfile(profile, 'Skill'),
@@ -3102,11 +3161,29 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private async resolvePluginSections(): Promise<string> {
     if (this.frozenPluginSections !== undefined) return this.frozenPluginSections;
     const sections = await this.plugins.enabledSystemPrompts();
+    if (this.pluginUsage?.enabled()) {
+      const saved = this.states.get(dynamicPromptKey)?.context;
+      this.frozenPluginBlocks ??= saved?.pluginBlocks !== undefined
+        ? new Map(Object.entries(saved.pluginBlocks)) : restoredPluginBlocks(saved?.pluginSections ?? '');
+      const available = new Map(sections.map((section) => [section.pluginId, section.content]));
+      const refresh = this.pluginBlockRefresh;
+      for (const id of refresh === 'all' ? this.frozenPluginBlocks.keys() : refresh) {
+        if (!available.has(id)) this.frozenPluginBlocks.delete(id);
+      }
+      for (const section of sections) {
+        if (!this.frozenPluginBlocks.has(section.pluginId) || refresh === 'all' || refresh.has(section.pluginId)) {
+          this.frozenPluginBlocks.set(section.pluginId, section.content);
+        }
+      }
+      this.pluginBlockRefresh = new Set();
+    }
     const parts: string[] = [];
     const skipped: string[] = [];
     let totalBytes = 0;
     for (const section of sections) {
-      const block = `<!-- From: plugin ${section.pluginId} -->\n${section.content}`;
+      if (this.pluginUsage !== undefined && !await this.pluginUsage.allows(this.sessionContext.workspaceId, section.pluginId)) continue;
+      const content = this.frozenPluginBlocks?.get(section.pluginId) ?? section.content;
+      const block = `<!-- From: plugin ${section.pluginId} -->\n${content}`;
       const bytes = Buffer.byteLength(block, 'utf8');
       if (totalBytes + bytes > PLUGIN_SECTIONS_MAX_BYTES) {
         skipped.push(section.pluginId);
@@ -3133,6 +3210,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (this.plugins.hasLoadedSnapshot()) this.frozenPluginSections = resolved;
     return resolved;
   }
+}
+
+function restoredPluginBlocks(sections: string): Map<string, string> {
+  const markers = [...sections.matchAll(/^<!-- From: plugin ([a-zA-Z0-9][a-zA-Z0-9._-]*) -->\n/gm)];
+  return new Map(markers.map((marker, index) => {
+    const start = marker.index! + marker[0].length;
+    const next = markers[index + 1]?.index;
+    const end = next === undefined ? sections.length : next - (sections.slice(next - 2, next) === '\n\n' ? 2 : 0);
+    return [marker[1]!, sections.slice(start, end)];
+  }));
 }
 
 function freezePersonaSnapshot(snapshot: PersonaSnapshot | undefined): PersonaSnapshot | undefined {

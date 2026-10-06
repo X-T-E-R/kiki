@@ -2231,6 +2231,7 @@ export interface AgentStateSnapshot {
     enabled: boolean;
     revision: number;
     context: /* SystemPromptContext — packages/agent-core-v2/src/agent/profile/profile.ts */ {
+      readonly pluginBlocks?: Readonly<Record<string, string>>;
       readonly agentsMdWarning?: string;
       readonly agentsMdPaths?: readonly string[];
       readonly agentsMdFiles?: readonly /* InstructionFile — packages/agent-core-v2/src/tool/toolContract.ts */ {

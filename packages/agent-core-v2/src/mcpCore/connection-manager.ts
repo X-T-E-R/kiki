@@ -28,6 +28,8 @@ interface InternalEntry {
   readonly name: string;
   readonly config: McpServerConfig;
   attemptId: number;
+  accepting: boolean;
+  readonly calls: Set<Promise<void>>;
   status: McpServerStatus;
   tools?: readonly Tool[];
   rawTools?: readonly MCPToolDefinition[];
@@ -58,6 +60,7 @@ export interface McpConnectionView {
         tools: readonly Tool[];
         rawTools: readonly MCPToolDefinition[];
         enabledNames: ReadonlySet<string>;
+        admitCall?: () => Promise<{ release(): void } | undefined>;
       }
     | undefined;
   getRemoteServerUrl(name: string): string | undefined;
@@ -97,6 +100,7 @@ export interface McpConnectionManagerOptions {
   readonly log?: Logger;
   readonly resolveDefaultTimeouts?: () => McpDefaultTimeouts;
   readonly resolveClientName?: () => string | undefined;
+  readonly allowsCall?: (name: string) => Promise<boolean>;
 }
 
 export class McpConnectionManager implements McpConnectionView {
@@ -155,6 +159,7 @@ export class McpConnectionManager implements McpConnectionView {
         tools: readonly Tool[];
         rawTools: readonly MCPToolDefinition[];
         enabledNames: ReadonlySet<string>;
+        admitCall?: () => Promise<{ release(): void } | undefined>;
       }
     | undefined {
     const entry = this.entries.get(name);
@@ -171,6 +176,14 @@ export class McpConnectionManager implements McpConnectionView {
       tools: entry.tools,
       rawTools: entry.rawTools,
       enabledNames: entry.enabledNames ?? new Set(entry.tools.map((t) => t.name)),
+      admitCall: async () => {
+        if (this.options.allowsCall !== undefined && !await this.options.allowsCall(name)) return undefined;
+        if (this.entries.get(name) !== entry || !entry.accepting || entry.status === 'removed' || entry.status === 'disabled') return undefined;
+        let release!: () => void;
+        const finished = new Promise<void>((resolve) => { release = resolve; });
+        entry.calls.add(finished);
+        return { release: () => { entry.calls.delete(finished); release(); } };
+      },
     };
   }
 
@@ -196,13 +209,15 @@ export class McpConnectionManager implements McpConnectionView {
       ) {
         return;
       }
-      await this.closeClient(previous);
+      await this.retire(previous);
     }
     const disabled = config.enabled === false;
     const entry: InternalEntry = {
       name,
       config,
       attemptId: 0,
+      accepting: !disabled,
+      calls: new Set(),
       status: disabled ? 'disabled' : 'pending',
     };
     this.entries.set(name, entry);
@@ -212,30 +227,31 @@ export class McpConnectionManager implements McpConnectionView {
     }
   }
 
-  async remove(name: string): Promise<boolean> {
-    const entry = this.entries.get(name);
-    if (entry === undefined) return false;
-    await this.closeClient(entry);
-    entry.status = 'disabled';
-    entry.tools = undefined;
-    entry.enabledNames = undefined;
-    entry.rawTools = undefined;
-    entry.error = undefined;
-    this.emit(entry);
-    this.entries.delete(name);
-    return true;
-  }
-
-  async markRemoved(name: string): Promise<boolean> {
-    const entry = this.entries.get(name);
-    if (entry === undefined) return false;
-    await this.closeClient(entry);
+  private async retire(entry: InternalEntry): Promise<void> {
+    entry.accepting = false;
+    entry.attemptId++;
     entry.status = 'removed';
     entry.tools = undefined;
     entry.enabledNames = undefined;
     entry.rawTools = undefined;
     entry.error = undefined;
     this.emit(entry);
+    await Promise.all(entry.calls);
+    await this.closeClient(entry);
+  }
+
+  async remove(name: string): Promise<boolean> {
+    const entry = this.entries.get(name);
+    if (entry === undefined) return false;
+    await this.retire(entry);
+    if (this.entries.get(name) === entry) this.entries.delete(name);
+    return true;
+  }
+
+  async markRemoved(name: string): Promise<boolean> {
+    const entry = this.entries.get(name);
+    if (entry === undefined) return false;
+    await this.retire(entry);
     return true;
   }
 
@@ -259,6 +275,8 @@ export class McpConnectionManager implements McpConnectionView {
         name,
         config,
         attemptId: 0,
+        accepting: !disabled,
+        calls: new Set(),
         status: disabled ? 'disabled' : 'pending',
       };
       this.entries.set(name, entry);

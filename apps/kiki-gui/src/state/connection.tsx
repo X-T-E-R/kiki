@@ -44,6 +44,7 @@ import { isVscodeWebview } from '../host/vscode';
 import { useI18n } from '../i18n';
 import { ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
 import { subscribeUsageFreshness } from '../lib/usageFreshness';
+import { subscribePluginFreshness } from '../lib/pluginFreshness';
 import {
   clearStoredConfig,
   readDeepLinkConfig,
@@ -871,6 +872,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     };
     let searchIndex = subscribeSearchIndex();
     let offUsage = subscribeUsageFreshness(klient, queryClient);
+    // A plugin change moves capabilities, skills, MCP, panels and commands too,
+    // and a reconnect can carry one this window never saw.
+    let offPlugins = subscribePluginFreshness(klient, queryClient);
     const offStatus = socket.onStatus((status) => {
       setWsStatus(status);
       if (status === 'open') {
@@ -878,6 +882,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         searchIndex = subscribeSearchIndex();
         offUsage();
         offUsage = subscribeUsageFreshness(klient, queryClient);
+        offPlugins();
+        offPlugins = subscribePluginFreshness(klient, queryClient);
       }
     });
     const catalog = klient.events.on('kosong.changed', () => {
@@ -889,6 +895,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       catalog.dispose();
       searchIndex.dispose();
       offUsage();
+      offPlugins();
     };
   }, [socket, klient, queryClient]);
 

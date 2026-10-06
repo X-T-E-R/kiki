@@ -334,10 +334,10 @@ export class Program {
       const fs = new WorkspaceFsService(this.context, dirs, runtime.fs!, this.resolver, this.dependencies.telemetry, git, this.dependencies.bootstrap);
       const watch = own(new WorkspaceFsWatchService(this.context, dirs, runtime.watch!, runtime.fs!));
       const instructions = own(new WorkspaceInstructionsService(this.context, runtime.fs!, runtime.environment, this.dependencies.bootstrap, runtime.watch!, this.dependencies.log, state));
-      const mcpConfig = own(new WorkspaceMcpConfigService(this.context, this.dependencies.bootstrap, this.dependencies.plugins, this.dependencies.log, this.dependencies.config, runtime.watch!, runtime.fs!, trust, this.dependencies.configStore));
+      const mcpConfig = own(new WorkspaceMcpConfigService(this.context, this.dependencies.bootstrap, this.dependencies.plugins, this.dependencies.log, this.dependencies.config, runtime.watch!, runtime.fs!, trust, this.dependencies.configStore, this.dependencies.pluginUsage));
       const mcp = own(new WorkspaceMcpService(this.context, this.resolver, mcpConfig, this.dependencies.oauth, this.dependencies.log, this.dependencies.telemetry, this.dependencies.identity, this.dependencies.sessionManager));
       const userAgentProfiles = own(new UserAgentProfileLoaderService(this.dependencies.bootstrap, runtime.fs!, this.dependencies.log, this.dependencies.builtinAgentProfiles, this.context, runtime.watch!, this.dependencies.flags, this.dependencies.agentExecutors, this.dependencies.shippedAgentProfiles, this.dependencies.agentProfiles));
-      const pluginAgentProfiles = own(new PluginAgentProfileLoaderService(this.dependencies.plugins, runtime.fs!, this.dependencies.log, userAgentProfiles, this.context, this.dependencies.flags, this.dependencies.agentExecutors, this.dependencies.agentProfiles));
+      const pluginAgentProfiles = own(new PluginAgentProfileLoaderService(this.dependencies.plugins, runtime.fs!, this.dependencies.log, userAgentProfiles, this.context, this.dependencies.flags, this.dependencies.agentExecutors, this.dependencies.agentProfiles, this.dependencies.pluginUsage));
       const inheritedAgentProfiles = own(new InheritedAgentProfileLoaderService(this.dependencies.bootstrap, runtime.fs!, this.dependencies.log, userAgentProfiles, this.context, runtime.watch!, this.dependencies.flags, this.dependencies.agentExecutors, this.dependencies.agentProfiles));
       const explicitAgentProfiles = own(new ExplicitAgentProfileLoaderService(this.context, this.dependencies.bootstrap, runtime.fs!, this.dependencies.log, userAgentProfiles, this.dependencies.agentExecutors, this.dependencies.agentProfiles));
       const extraAgentProfiles = own(new ExtraAgentProfileLoaderService(this.dependencies.config, this.context, this.dependencies.bootstrap, runtime.fs!, this.dependencies.log, userAgentProfiles, runtime.watch!, this.dependencies.flags, this.dependencies.agentExecutors, this.dependencies.agentProfiles));
@@ -348,7 +348,7 @@ export class Program {
       const explicitSkills = new ExplicitFileSkillSource(skillDiscovery, this.context, this.dependencies.bootstrap);
       const extraSkills = own(new ExtraFileSkillSource(skillDiscovery, this.dependencies.config, this.context, this.dependencies.bootstrap));
       const workspaceSkills = own(new WorkspaceRootSkillSource(skillDiscovery, this.context, this.dependencies.config, this.dependencies.bootstrap, runtime.watch!));
-      const pluginSkills = new PluginSkillSource(skillDiscovery, this.dependencies.plugins);
+      const pluginSkills = new PluginSkillSource(skillDiscovery, this.dependencies.plugins, this.workspaceId, this.dependencies.pluginUsage);
       const skills = own(new WorkspaceSkillCatalogService(this.dependencies.builtinSkills, userSkills, explicitSkills, extraSkills, workspaceSkills, pluginSkills, state));
       return {
         id: runtime.identity.generation,

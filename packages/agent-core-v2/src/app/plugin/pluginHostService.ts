@@ -10,6 +10,8 @@ import type { ProviderRequestAuth } from '#/kosong/contract/provider';
 import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
 import { IRequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCatalog';
 import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
+import { pluginAppLifecycleFlag } from './flag';
 import { REQUEST_IDENTITY_SECTION } from '#/app/kosongConfig/configSection';
 import { defaultOAuthRequestIdentity, type RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import { projectRequestIdentity } from '#/kosong/requestIdentity/requestIdentityProjector';
@@ -25,6 +27,8 @@ import { Error2, PluginErrors } from '#/errors';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
 
 import { PluginHost } from './host';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { observePluginActivity } from './pluginActivity';
 import { builtinHistory, builtinHistoryEntry } from '#/app/pluginImport/builtinHistory';
 import { IPluginService } from './plugin';
 import { IPluginSettingsService } from './pluginSettingsService';
@@ -61,6 +65,8 @@ export interface PluginExecutionScope {
 
 export interface IPluginHostService {
   readonly _serviceBrand: undefined;
+  readonly ready: Promise<void>;
+  stopAll(): Promise<void>;
   list(): Promise<readonly PluginToolRegistration[]>;
   listMediaProviders(): Promise<readonly PluginMediaProviderRegistration[]>;
   requestMediaProvider(provider: string, action: 'describe' | 'submit' | 'poll' | 'cancel' | 'voices', input: unknown, signal: AbortSignal, context: PluginMediaCallContext, expected?: PluginMediaProviderRegistration): Promise<unknown>;
@@ -69,6 +75,7 @@ export interface IPluginHostService {
   requestPanel(pluginId: string, panelId: string, action: string, args: unknown): Promise<unknown>;
   requestSource(pluginId: string, sourceId: string, action: 'discover' | 'probe' | 'parse', args: unknown, signal: AbortSignal): Promise<unknown>;
   running(pluginId: string): boolean;
+  navigation(): { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number } | undefined;
 }
 
 export const IPluginHostService = createDecorator<IPluginHostService>('pluginHostService');
@@ -79,6 +86,13 @@ export class PluginHostService extends Service implements IPluginHostService {
   private readonly active = new Map<string, Set<Promise<unknown>>>();
   private readonly gates = new Map<string, Promise<void>>();
   private globalGate: Promise<void> | undefined;
+  readonly ready: Promise<void>;
+  private closing = false;
+  private readonly ownSettingsWrites = new Set<string>();
+  private readonly activated = new WeakMap<PluginHost, string>();
+  private readonly residentWork = new Set<Promise<void>>();
+  private navigationRequest?: { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number };
+  private nextNavigationId = 0;
 
   constructor(
     @IPluginService private readonly plugins: IPluginService,
@@ -88,22 +102,67 @@ export class PluginHostService extends Service implements IPluginHostService {
     @IOAuthService private readonly oauth?: IOAuthService,
     @IRequestIdentityCatalog private readonly identityCatalog?: IRequestIdentityCatalog,
     @IConfigService private readonly configService?: IConfigService,
+    @IFlagService private readonly flags?: IFlagService,
+    @ISessionManager private readonly sessions?: ISessionManager,
   ) {
     super();
     this._register(this.plugins.onWillChange((event) => {
       if (event.affected === undefined) this.globalGate = event.finished;
       else for (const id of event.affected) this.gates.set(id, event.finished);
-      const ids = event.affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys()])];
-      event.waitUntil(Promise.all(ids.map(async (id) => {
-        await Promise.allSettled(this.active.get(id) ?? new Set<Promise<unknown>>());
-        const host = this.hosts.get(id);
-        this.hosts.delete(id);
-        await host?.stopAndWait();
-      })));
+      event.waitUntil((async () => {
+        await Promise.allSettled([...this.residentWork]);
+        const ids = event.affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys()])];
+        await Promise.all(ids.map(async (id) => {
+          await Promise.allSettled(this.active.get(id) ?? new Set<Promise<unknown>>());
+          const host = this.hosts.get(id);
+          this.hosts.delete(id);
+          await host?.stopAndWait();
+        }));
+      })());
     }));
-    this._register(toDisposable(() => {
-      for (const host of this.hosts.values()) host.stop();
-      this.hosts.clear();
+    this._register(this.plugins.onDidReload((event) => { event.waitUntil(this.reconcileResidents(event.affected)); }));
+    if (this.configService !== undefined) this._register(this.configService.onDidSectionChange((event) => {
+      if (event.domain !== 'pluginSettings' || this.closing) return;
+      const current = event.value as Record<string, unknown> | undefined;
+      const previous = event.previousValue as Record<string, unknown> | undefined;
+      const ids = [...new Set([...Object.keys(current ?? {}), ...Object.keys(previous ?? {})])]
+        .filter((id) => !this.ownSettingsWrites.has(id) && JSON.stringify(current?.[id]) !== JSON.stringify(previous?.[id]));
+      void this.reconcileResidents(ids, true).catch(() => {});
+    }));
+    this.ready = Promise.resolve().then(() => this.reconcileResidents());
+    void this.ready.catch(() => {});
+    this._register(toDisposable(() => { void this.stopAll(); }));
+  }
+
+  async stopAll(): Promise<void> {
+    this.closing = true;
+    await Promise.allSettled([...this.residentWork]);
+    await Promise.allSettled([...this.active.values()].flatMap((requests) => [...requests]));
+    const hosts = [...this.hosts.values()];
+    this.hosts.clear();
+    await Promise.allSettled(hosts.map((host) => host.stopAndWait()));
+  }
+
+  private reconcileResidents(affected?: readonly string[], reconfigure = false): Promise<void> {
+    const work = this.applyResidents(affected, reconfigure);
+    this.residentWork.add(work);
+    void work.then(() => this.residentWork.delete(work), () => this.residentWork.delete(work));
+    return work;
+  }
+
+  private async applyResidents(affected?: readonly string[], reconfigure = false): Promise<void> {
+    await this.configService?.ready;
+    const installed = await this.plugins.listPlugins();
+    if (this.closing || this.flags?.enabled(pluginAppLifecycleFlag.id) !== true) return;
+    await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok' &&
+      (affected === undefined || affected.includes(plugin.id))).map(async (plugin) => {
+      const info = await this.plugins.getPluginInfo({ id: plugin.id });
+      if (info.manifest?.kiki?.activation !== 'app' || this.closing) return;
+      const host = this.getHost(info);
+      if (!reconfigure && this.activated.has(host) && host.running) return;
+      const settings = await this.settings.forExecution(info.id);
+      await host.activate(settings, this.bootstrap.osHomeDir, path.join(this.bootstrap.homeDir, 'plugins', 'data', info.id));
+      this.activated.set(host, JSON.stringify(settings));
     }));
   }
 
@@ -258,7 +317,16 @@ export class PluginHostService extends Service implements IPluginHostService {
   private getHost(info: Pick<PluginInfo, 'id' | 'manifest'>): PluginHost {
     let host = this.hosts.get(info.id);
     if (host === undefined) {
-      host = new PluginHost(info.id, info.manifest!.kiki!.entry!, info.manifest!.kiki!.tools ?? [], info.manifest?.kiki?.sessionSources, info.manifest?.kiki?.mediaProviders);
+      host = new PluginHost(info.id, info.manifest!.kiki!.entry!, info.manifest!.kiki!.tools ?? [], info.manifest?.kiki?.sessionSources, info.manifest?.kiki?.mediaProviders,
+        { resident: info.manifest?.kiki?.activation === 'app', updateSettings: async (values) => {
+          this.ownSettingsWrites.add(info.id);
+          try { return await this.settings.update({ pluginId: info.id, values }); }
+          finally { this.ownSettingsWrites.delete(info.id); }
+        }, observeActivity: this.sessions === undefined ? undefined : (listener) => observePluginActivity(this.sessions!, listener),
+        focusSession: (sessionId) => {
+          if (this.sessions?.get(sessionId) === undefined) throw new Error('Session is not live');
+          this.navigationRequest = { id: ++this.nextNavigationId, pluginId: info.id, sessionId, at: Date.now() };
+        } });
       this.hosts.set(info.id, host);
     }
     return host;
@@ -268,7 +336,18 @@ export class PluginHostService extends Service implements IPluginHostService {
     return this.runTracked(pluginId, async () => {
       const info = await this.plugins.getPluginInfo({ id: pluginId.toLowerCase() });
       const settings = await this.settings.forExecution(info.id);
-      return () => action(info, settings);
+      return async () => {
+        if (this.closing) throw new Error('Plugin Host is shutting down');
+        if (info.enabled && info.state === 'ok' && info.manifest?.kiki?.activation === 'app') {
+          if (this.flags?.enabled(pluginAppLifecycleFlag.id) !== true) throw new Error('App plugin lifecycle is not enabled in this Kiki build');
+          const host = this.getHost(info);
+          if (this.activated.get(host) !== JSON.stringify(settings) || !host.running) {
+            await host.activate(settings, this.bootstrap.osHomeDir, path.join(this.bootstrap.homeDir, 'plugins', 'data', info.id));
+            this.activated.set(host, JSON.stringify(settings));
+          }
+        }
+        return action(info, settings);
+      };
     });
   }
 
@@ -295,6 +374,10 @@ export class PluginHostService extends Service implements IPluginHostService {
 
   running(pluginId: string): boolean {
     return this.hosts.get(pluginId.toLowerCase())?.running ?? false;
+  }
+
+  navigation(): { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number } | undefined {
+    return this.navigationRequest !== undefined && Date.now() - this.navigationRequest.at < 10000 ? this.navigationRequest : undefined;
   }
 }
 
