@@ -111,6 +111,11 @@ const client = {
 
 const connectionMock = vi.hoisted(() => ({ token: '', url: 'http://127.0.0.1:8080', applyConnection: vi.fn() }));
 vi.mock('../state/connection', () => ({
+  useOptionalConnection: () => ({
+    client,
+    config: { url: connectionMock.url, token: connectionMock.token },
+    scopeId: 'direct:http://127.0.0.1:8080',
+  }),
   useConnection: () => ({
     client,
     klient,
@@ -300,6 +305,27 @@ describe('SettingsPage panel scopes', () => {
     // General only changes this app, so it has nothing to say about the server.
     const general = await renderSettings('/settings/general');
     expect(general.querySelector('[data-settings-remote-line]')).toBeNull();
+  });
+
+  it('keeps the remote-server and unsaved lines on a single plugin page', async () => {
+    // The plugin page drops the section's orientation sentence because the card
+    // heading already says it. It must not drop the two facts that are not
+    // restated anywhere else: where a change is written, and whether one is
+    // waiting to be saved.
+    connectionMock.url = 'https://kiki.example.net';
+    const container = await renderSettings('/settings/plugins?plugin=kiki-notes', { guarded: true });
+    await flush();
+    expect(container.querySelector('[data-settings-intro]')).toBeNull();
+    expect(container.querySelector('[data-settings-remote-line]')).not.toBeNull();
+    expect(container.querySelector('[data-settings-page-status]')).not.toBeNull();
+
+    (container.querySelector('[data-test-dirty]') as HTMLButtonElement).click();
+    await flush();
+    const unsaved = container.querySelector('[data-settings-unsaved]');
+    expect(unsaved).not.toBeNull();
+    expect(unsaved?.textContent).toContain('Unsaved changes');
+    // Both facts still stand together: the line is not replaced by the other.
+    expect(container.querySelector('[data-settings-remote-line]')).not.toBeNull();
   });
 
   it('drops a page intro that would only restate a card title', async () => {
@@ -804,8 +830,13 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/plugins');
     await flush();
     expect(container.querySelector('#st-card-plugins')).not.toBeNull();
-    expect(container.querySelector('#st-card-plugins [data-capability-link-open="plugins"]')?.getAttribute('href')).toBe('/capabilities');
-    expect(container.querySelector('#st-card-plugins [data-plugins-view]')).toBeNull();
+    // The list is the leaf's subject; the market is reached by one link, and no
+    // configuration form opens in place.
+    expect(container.querySelector('#st-card-plugins [data-plugins-installed-empty], #st-card-plugins [data-plugins-installed-list]')).not.toBeNull();
+    expect(container.querySelector('#st-card-plugins [data-plugins-market-link]')?.getAttribute('href')).toBe('/capabilities');
+    expect(container.querySelector('#st-card-plugins [data-plugin-settings]')).toBeNull();
+    // The browser runtime card is a browser fact, not a plugin one.
+    expect(container.querySelector('#st-card-webbridge')).toBeNull();
     expect(client.listPlugins).toHaveBeenCalled();
   });
 

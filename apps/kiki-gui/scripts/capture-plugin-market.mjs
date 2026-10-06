@@ -81,12 +81,15 @@ const scenarios = [
       await resetScroll(page);
       await shot('installed');
 
-      // The settings leaf: the same catalog, and the nav it now lives under.
-      // The settings leaf stays a management page: the catalog address and
-      // the link to the market, not a second market.
+      // The settings leaf is the installed list, not a second market: it
+      // carries the plugins and one link out to the catalog, which is where
+      // the catalog address and installing now live.
       await page.goto(link('/settings/plugins'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
       await page.waitForSelector('#st-card-plugins', { timeout: 30_000 });
-      await page.waitForSelector('[data-catalog-source]', { timeout: 30_000 });
+      await page.waitForSelector('#st-card-plugins [data-plugins-market-link]', { timeout: 30_000 });
+      if (await page.locator('#st-card-plugins [data-catalog-source]').count() !== 0) {
+        throw new Error('the settings leaf must not carry the catalog address');
+      }
       await resetScroll(page);
       await shot('settings-plugins');
 

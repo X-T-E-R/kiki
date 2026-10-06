@@ -2170,7 +2170,9 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   // Server-owned, and workspace-scoped because each connection names one
   // workspace rather than the server.
   'external-clients': { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.externalClients' },
-  plugins: { scopes: ['server'], purposeKey: 'st.purpose.plugins' },
+  // No purpose line: the card's own heading and the list under it already say
+  // what this page is, and a second orientation sentence only repeats them.
+  plugins: { scopes: ['server'] },
   search: { scopes: ['server'], purposeKey: 'st.purpose.search' },
   'browser-control': { scopes: ['server'], purposeKey: 'st.purpose.browserControl' },
   'computer-control': { scopes: ['server'], purposeKey: 'st.purpose.computerControl' },
@@ -2357,8 +2359,11 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'mcp', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.configTitle', 'st.mcp.workspace', 'st.mcp.restart', 'st.mcp.toolsCount'], synonyms: ['能力', 'mcp 服务器', 'mcp server', 'mcp 状态', 'mcp status'] },
   { section: 'external-clients', cardId: 'st-card-external-clients', titleKey: 'st.section.externalClients', keywordKeys: ['st.xc.intro', 'st.xc.workspace', 'st.xc.tools', 'st.xc.listenerTitle'], synonyms: ['外部客户端', 'ChatGPT', 'chatgpt', 'mcp client', '客户端', 'client', '连接客户端', 'stdio', '反向', 'reverse mcp', '外部调用'] },
   { section: 'mcp', cardId: 'st-card-mcp-timeouts', titleKey: 'st.mcp.timeoutsTitle', keywordKeys: ['st.runtime.mcpStartupTimeout', 'st.runtime.mcpToolTimeout'], synonyms: ['mcp 超时', 'mcp timeout'] },
-  { section: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.title', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理', 'marketplace', '插件市场', '安装插件'] },
-  { section: 'plugins', cardId: 'st-card-webbridge', titleKey: 'st.plugins.runtimeTitle', keywordKeys: ['st.plugins.browserExtension'], synonyms: ['webbridge', '浏览器扩展', 'browser daemon'] },
+  { section: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.installedTitle', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理', 'marketplace', '插件市场', '安装插件'] },
+  // The WebBridge readiness card answers "is browser control working", so it
+  // lives on the browser page with the rest of that answer. Its old bookmark
+  // follows the card there (LEGACY_CARD_ALIASES).
+  { section: 'browser-control', cardId: 'st-card-webbridge', titleKey: 'st.plugins.runtimeTitle', keywordKeys: ['st.plugins.browserExtension'], synonyms: ['webbridge', '浏览器扩展', 'browser daemon'] },
   { section: 'browser-control', cardId: 'st-card-browser-default', titleKey: 'st.browser.defaultTitle', keywordKeys: ['st.browser.defaultLabel', 'st.browser.defaultHint'], synonyms: ['默认浏览器', 'default browser', '浏览器', 'browser'] },
   { section: 'browser-control', cardId: 'st-card-browser-setup', titleKey: 'st.browser.setup.title', keywordKeys: ['st.browser.setup.host', 'st.browser.route.blurb.kimi-webbridge', 'st.browser.route.blurb.independent-browser'], synonyms: ['浏览器组件', 'browser components', '安装浏览器', 'install browser', '驱动', 'driver', 'kimi', 'codex', '扩展', 'extension'] },
   { section: 'browser-control', cardId: 'st-card-browser-connections', titleKey: 'st.browser.connectionsTitle', keywordKeys: ['st.browser.add', 'st.browser.fieldType', 'st.browser.fieldEndpoint', 'st.browser.disconnect'], synonyms: ['browser control', '浏览器控制', 'cdp', 'profile', 'chromium', 'chrome', 'agent-browser', '浏览器连接', '调试端口'] },
@@ -2487,6 +2492,9 @@ export const LEGACY_CARD_ALIASES: Readonly<Record<string, { readonly section: st
   'st-card-communication': { section: 'sessions', cardId: 'st-card-agent-messaging' },
   'st-card-thread-communication': { section: 'sessions', cardId: 'st-card-agent-messaging' },
   'st-card-notify-parent': { section: 'sessions', cardId: 'st-card-agent-messaging' },
+  // The WebBridge readiness card moved off the Plugins leaf onto the browser
+  // page; a bookmark from when it lived there still resolves.
+  'st-card-webbridge': { section: 'browser-control', cardId: 'st-card-webbridge' },
 };
 
 /** Which tab a legacy section bookmark maps to (redesign §10.3's route table). */
@@ -2548,6 +2556,48 @@ export function resolveSettingsRoute(
     return { status: 'ok', section: cardSection, cardId, tab: cardTab };
   }
   return { status: 'unknown', section: sectionParam, cardId };
+}
+
+// ---- installed-plugin settings pages (Settings → Plugins) ----
+
+/**
+ * The installed-plugin detail screen is a page of its own, not a card inside
+ * the Plugins list: `/settings/plugins?plugin=<id>`. It is one settings
+ * section with a query key, the same shape `ai?tab=` already uses, so refresh,
+ * a copied link and the browser's back button all land on the same plugin
+ * without a new route in the router.
+ *
+ * The helper is the one owner of that key's spelling. Anything that navigates
+ * here — the list, the nav tree, the Capabilities detail — goes through it, so
+ * a rename can never leave one surface pointing at a page that no longer
+ * resolves.
+ */
+export const PLUGIN_SETTINGS_QUERY_KEY = 'plugin';
+
+/** The settings route of one installed plugin's own settings page. */
+export function pluginSettingsPath(pluginId: string): string {
+  return `/settings/plugins?${PLUGIN_SETTINGS_QUERY_KEY}=${encodeURIComponent(pluginId)}`;
+}
+
+/** The settings route of the installed list itself. */
+export function installedPluginsPath(): string {
+  return '/settings/plugins';
+}
+
+/**
+ * The plugin id a settings query carries, or null on the list page. An empty
+ * value is the list, not an unknown plugin: `?plugin=` is what a link built
+ * from an unset id resolves to, and showing an empty detail page there would
+ * be a dead end.
+ */
+export function pluginSettingsIdFromQuery(search: string | URLSearchParams): string | null {
+  // Accepts a query string (`?plugin=x`), a whole route (`/settings/plugins?…`)
+  // or an absolute URL, because a caller reading a location may hold any of the
+  // three and passing one where another was meant would silently answer "no
+  // plugin" rather than fail loudly.
+  const params = typeof search === 'string' ? new URLSearchParams(search.split('?').slice(1).join('?') ?? '') : search;
+  const raw = params.get(PLUGIN_SETTINGS_QUERY_KEY);
+  return raw === null || raw === '' ? null : raw;
 }
 
 // ---- millisecond humanizing (unit-ed inputs) ----

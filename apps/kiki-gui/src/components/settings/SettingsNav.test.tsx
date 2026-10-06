@@ -6,6 +6,7 @@
  */
 
 import { act } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -41,7 +42,14 @@ async function render(node: React.ReactNode): Promise<HTMLDivElement> {
   const root = createRoot(container);
   roots.push(root);
   await act(async () => {
-    root.render(<I18nProvider>{node}</I18nProvider>);
+    root.render(
+      // The navigation reads the installed-plugin cache to name what can be
+      // opened. A harness with no server gives it an empty cache rather than a
+      // missing provider, which is the state it renders in before a connection.
+      <QueryClientProvider client={new QueryClient()}>
+        <I18nProvider>{node}</I18nProvider>
+      </QueryClientProvider>,
+    );
   });
   return container;
 }

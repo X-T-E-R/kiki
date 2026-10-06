@@ -5,6 +5,7 @@ import {
   AI_SETTINGS_DEFAULT_TAB,
   SETTINGS_SECTION_META,
   experimentalTabForSection,
+  pluginSettingsIdFromQuery,
   resolveSettingsRoute,
   settingsGroupForSection,
   settingsSectionIsDeviceOnly,
@@ -88,21 +89,29 @@ function useRemoteServerAddress(): string | null {
  * mentioned), the workspace a picker targets, or unsaved changes, so a draft
  * deep in a long page is never invisible.
  */
-function SectionIntro({ section, workspaceName, remoteAddress, dirty }: {
+function SectionIntro({ section, workspaceName, remoteAddress, dirty, hidePurpose }: {
   section: SectionId;
   workspaceName: string | null;
   remoteAddress: string | null;
   dirty: boolean;
+  /** A sub-page that answers its own question, which the section line would
+   *  contradict rather than introduce (a single plugin's own settings). */
+  hidePurpose?: boolean;
 }) {
   const { t } = useI18n();
   const meta = SETTINGS_SECTION_META[section];
   if (meta === undefined) return null;
+  // Hiding a redundant orientation line is not hiding the status. Where a
+  // change is written, and whether one is unsaved, are facts the reader needs on
+  // every page that can hold a draft — including a plugin's own page, which is
+  // exactly where an unsaved draft is easiest to lose.
+  const purposeKey = hidePurpose === true ? undefined : meta.purposeKey;
   // Device pages (General, Appearance, Connection) never write to the server.
   const remote = remoteAddress !== null && !settingsSectionIsDeviceOnly(section);
   const status = remote || workspaceName !== null || dirty;
-  if (meta.purposeKey === undefined && !status) return null;
+  if (purposeKey === undefined && !status) return null;
   return <div className="space-y-2 pb-6">
-    {meta.purposeKey !== undefined ? <p data-settings-intro className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t(meta.purposeKey)}</p> : null}
+    {purposeKey !== undefined ? <p data-settings-intro className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t(purposeKey)}</p> : null}
     {status ? <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-ink-faint" data-settings-page-status>
       {remote ? (
         <span data-settings-remote-line title={t('st.storage.remoteTitle', { address: remoteAddress })}>
@@ -146,11 +155,13 @@ function SpaceBand() {
  */
 function MobileSettingsDrawer({
   active,
+  activePluginId,
   open,
   onClose,
   onNavigate,
 }: {
   active: SectionId;
+  activePluginId: string | null;
   open: boolean;
   onClose: () => void;
   onNavigate: (section: SectionId) => void;
@@ -177,7 +188,7 @@ function MobileSettingsDrawer({
             <Icon name="close" size={16} />
           </button>
         </div>
-        <SettingsNavTree active={active} onNavigate={onNavigate} onAfterNavigate={onClose} />
+        <SettingsNavTree active={active} activePluginId={activePluginId} onNavigate={onNavigate} onAfterNavigate={onClose} />
       </div>
     </div>
   );
@@ -336,6 +347,12 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
 
   const activeGroup = active === null ? undefined : settingsGroupForSection(active);
   const activeLabelKey = active === null ? undefined : SECTIONS.find((candidate) => candidate.id === active)?.labelKey;
+  // One installed plugin's own settings page, or the installed list. The
+  // section's card hash targets the list, so a bookmark to the Plugins leaf
+  // lands on the list even when the query still names a plugin.
+  const activePluginId = active === 'plugins' && hash.replace(/^#/, '') === ''
+    ? pluginSettingsIdFromQuery(search)
+    : null;
 
   const pane = active === null ? null
     : active === 'general' ? <GeneralSection />
@@ -354,7 +371,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'skills' ? <SkillsSection />
     : active === 'mcp' ? <McpSection />
     : active === 'external-clients' ? <ExternalClientsSection />
-    : active === 'plugins' ? <PluginsSection />
+    : active === 'plugins' ? <PluginsSection pluginId={activePluginId} />
     : active === 'browser-control' ? <BrowserControlSection />
     : active === 'computer-control' ? <ComputerControlSection />
     : active === 'search' ? <NbSearchSection />
@@ -392,7 +409,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
         </h1>
       </header>
       <main className="flex min-h-0 flex-1 border-t border-hairline">
-        <div className="hidden shrink-0 border-r border-hairline lg:block"><SettingsNav active={active} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
+        <div className="hidden shrink-0 border-r border-hairline lg:block"><SettingsNav active={active} activePluginId={activePluginId} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
         <div className="flex min-w-0 flex-1 flex-col">
           {active !== null ? (
             <div className="border-b border-hairline px-4 py-2 lg:hidden">
@@ -418,6 +435,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               />
               <MobileSettingsDrawer
                 active={active}
+                activePluginId={activePluginId}
                 open={drawerOpen}
                 onClose={() => { setDrawerOpen(false); }}
                 onNavigate={guardedNavigate}
@@ -432,7 +450,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
             <div ref={scrollRef} data-settings-scroll className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-16 pt-6 lg:px-10 lg:pt-8">
               <div className="mx-auto max-w-[720px]">
                 <SpaceBand />
-                <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} />
+                <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} hidePurpose={activePluginId !== null} />
                 <SettingsPageScopeContext.Provider value={settingsSectionIsDeviceOnly(active) ? 'app' : 'server'}>
                   <div className="space-y-6">{pane}{showExperimental ? <ExperimentalRows section={active} /> : null}</div>
                 </SettingsPageScopeContext.Provider>

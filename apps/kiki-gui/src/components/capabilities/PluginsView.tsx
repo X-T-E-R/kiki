@@ -51,12 +51,19 @@ export function PluginsView({
   onOpenPanel,
   onOpenSession,
   sessionId,
+  onOpenSettings,
 }: {
   readonly route: PluginsRoute;
   readonly onRoute: (next: PluginsRoute) => void;
   /** Root of the workspace in focus; the only task signal sent for suggestions. */
   readonly workspaceRoot?: string;
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
+  /**
+   * A plugin's configuration lives on its own settings page, which this view
+   * links to rather than embedding. Unset where that page is unreachable, so
+   * a build without the settings route shows no dead control.
+   */
+  readonly onOpenSettings?: (pluginId: string) => void;
   /** Continue a finished native import on the normal session route. */
   readonly onOpenSession?: (sessionId: string) => void;
   /** Session whose media jobs this view lists; without one, no job list. */
@@ -144,7 +151,12 @@ export function PluginsView({
         <MediaSourcesView
           sessionId={sessionId}
           onBack={() => { onRoute({ view: 'installed' }); }}
-          onOpenPlugin={(id) => { onRoute({ view: 'detail', id }); }}
+          // The media source's provider is a plugin, and a plugin's settings
+          // live on their own settings page. The button the media surface owns
+          // is unchanged; this is the one place its destination is decided, so
+          // it goes through the same helper as every other entry to a plugin's
+          // settings.
+          onOpenPlugin={onOpenSettings}
         />
         {sheets}
       </div>
@@ -165,6 +177,7 @@ export function PluginsView({
             ? (source) => { onRoute({ view: 'import', sourceId: source.sourceId, sourcePluginId: source.pluginId }); }
             : undefined}
           onOpenMedia={() => { onRoute({ view: 'media' }); }}
+          onOpenSettings={onOpenSettings}
         />
         {sheets}
       </>

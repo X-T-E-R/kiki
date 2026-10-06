@@ -61,6 +61,9 @@ import {
   resolveModelSource,
   resolveSessionModelOverride,
   resolveSettingsRoute,
+  installedPluginsPath,
+  pluginSettingsIdFromQuery,
+  pluginSettingsPath,
   restartRequirementSnapshot,
   runtimeConfigDraftFromConfig,
   searchSettings,
@@ -1325,6 +1328,33 @@ describe('settings nav groups (IA v2)', () => {
     expect(SETTINGS_SECTION_META['labs']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['runtime']).toBeUndefined();
     expect(SETTINGS_SECTION_META['advanced']).toBeUndefined();
+  });
+});
+
+describe('installed-plugin settings pages', () => {
+  it('addresses one plugin\'s own page inside the plugins section', () => {
+    // A copy of this link, a refresh, and the browser's back button all have to
+    // land on the same plugin, so the id travels in the query of one section.
+    expect(pluginSettingsPath('kiki-writing'))
+      .toBe('/settings/plugins?plugin=kiki-writing');
+    expect(resolveSettingsRoute('plugins', '')).toMatchObject({ status: 'ok', section: 'plugins' });
+    expect(pluginSettingsIdFromQuery('?plugin=kiki-writing')).toBe('kiki-writing');
+    expect(installedPluginsPath()).toBe('/settings/plugins');
+  });
+
+  it('round-trips an id that needs escaping and treats an empty one as the list', () => {
+    const odd = 'vendor/plugin one';
+    expect(pluginSettingsIdFromQuery(pluginSettingsPath(odd))).toBe(odd);
+    // A link built from an unset id resolves to the list, not to a dead page.
+    expect(pluginSettingsIdFromQuery('?plugin=')).toBeNull();
+    expect(pluginSettingsIdFromQuery('')).toBeNull();
+    expect(pluginSettingsIdFromQuery('?server=https%3A%2F%2Fexample.test')).toBeNull();
+  });
+
+  it('follows the WebBridge readiness card to the browser page it moved to', () => {
+    expect(resolveSettingsRoute('plugins', '#st-card-webbridge'))
+      .toMatchObject({ status: 'ok', section: 'browser-control', cardId: 'st-card-webbridge' });
+    expect(settingsSectionForCard('st-card-webbridge')).toBe('browser-control');
   });
 });
 

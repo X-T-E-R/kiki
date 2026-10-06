@@ -2072,11 +2072,14 @@ async function scenarioSettings() {
   await page.waitForTimeout(400);
   await shot('settings-mcp');
 
-  // Plugins leaf: the capability link, the catalog source, and the web-bridge
-  // runtime readiness card.
+  // Plugins leaf: the installed plugins, each row opening that plugin's own
+  // settings page. The web-bridge readiness card lives on the browser leaf now,
+  // where the rest of the browser-control answer is.
   await page.locator('nav [data-settings-nav-leaf="plugins"]').click();
-  await page.waitForSelector('#st-card-plugins [data-capability-link="plugins"]', { timeout: 10_000 });
-  await page.waitForSelector('#st-card-webbridge', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-plugins [data-plugins-installed-list], #st-card-plugins [data-plugins-installed-empty]', { timeout: 10_000 });
+  if (await page.locator('#st-card-webbridge').count() !== 0) {
+    throw new Error('the plugins leaf must not carry the browser runtime card');
+  }
   await page.waitForTimeout(300);
   await shot('settings-plugins');
 

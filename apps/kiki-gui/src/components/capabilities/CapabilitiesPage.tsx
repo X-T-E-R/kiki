@@ -17,7 +17,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
-import { readLastSessionId } from '@kiki/session-core/settings';
+import { pluginSettingsPath, readLastSessionId } from '@kiki/session-core/settings';
 
 import type { PluginUsageTarget } from '@kiki/protocol';
 
@@ -313,6 +313,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
                 onOpenPanel={openPanel}
                 onOpenPlugin={(id) => { setRoute({ view: 'detail', id }); }}
                 sessionId={sessionId}
+                onOpenSettings={(id) => { void navigate(pluginSettingsPath(id)); }}
                 onOpenSession={(sessionId) => { void navigate(`/s/${sessionId}`); }}
               />
             )}
@@ -341,6 +342,7 @@ export function CapabilityTabBody({
   onOpenPlugin,
   onOpenSession,
   sessionId,
+  onOpenSettings,
 }: {
   readonly tab: CapabilityTab;
   readonly route: PluginsRoute;
@@ -353,8 +355,11 @@ export function CapabilityTabBody({
   readonly onOpenSession?: (sessionId: string) => void;
   /** Session in focus; the media sub-view lists its jobs. */
   readonly sessionId?: string;
+  /** A plugin's own settings page; the plugins tab links there instead of
+   *  embedding the form, so both surfaces edit the plugin in one place. */
+  readonly onOpenSettings?: (pluginId: string) => void;
 }) {
-  if (tab === 'plugins') return <PluginsView route={route} onRoute={onRoute} workspaceRoot={workspaceRoot} onOpenPanel={onOpenPanel} onOpenSession={onOpenSession} sessionId={sessionId} />;
+  if (tab === 'plugins') return <PluginsView route={route} onRoute={onRoute} workspaceRoot={workspaceRoot} onOpenPanel={onOpenPanel} onOpenSession={onOpenSession} sessionId={sessionId} onOpenSettings={onOpenSettings} />;
   if (tab === 'skills') return <SkillsView workspaceId={workspaceId} onOpenPlugin={onOpenPlugin} />;
   if (tab === 'mcp') return <McpView cwd={workspaceRoot ?? ''} />;
   return <ToolsView />;

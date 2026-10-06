@@ -11,6 +11,7 @@ import { SettingsSelect } from './SettingsPrimitives';
 import { useInstantSave } from './useInstantSave';
 import { BrowserConnectionCard } from './browserControl/BrowserConnectionCard';
 import { BrowserSetupWizard } from './browserControl/BrowserSetupWizard';
+import { WebBridgeReadiness } from './browserControl/WebBridgeReadiness';
 
 export function BrowserControlSection() {
   const { t } = useI18n();
@@ -20,6 +21,10 @@ export function BrowserControlSection() {
         <BrowserSetupWizard />
       </SectionCard>
       <DefaultBrowserCard />
+      {/* The bridge's own readiness. It answers the same question as the setup
+          card above — is browser control working — so it sits with it rather
+          than on the Plugins leaf, where a browser fact read as a plugin. */}
+      <WebBridgeReadiness />
       {/* Everything a person types rather than picks sits below the routes that
           need no typing, and stays folded: a hand-written CDP address or a
           driver path is a real way in, but it is the exception, not the

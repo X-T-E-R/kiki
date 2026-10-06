@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import {
+  PLUGIN_SETTINGS_QUERY_KEY,
   SETTINGS_NAV_TREE,
   buildSettingsSearchIndex,
   searchSettings,
@@ -11,6 +12,7 @@ import {
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { Icon } from '../icons';
+import { useOptionalInstalledPlugins } from '../capabilities/usePlugins';
 import { SECTIONS, type SectionId } from './sections';
 
 /**
@@ -104,16 +106,29 @@ export function SettingsSearch({
  */
 export function SettingsNavTree({
   active,
+  activePluginId,
   onNavigate,
   onAfterNavigate,
 }: {
   /** Null on the unknown-section page: tree stays visible, nothing highlighted. */
   active: SectionId | null;
+  /**
+   * The installed plugin whose own settings page is open, when one is. The
+   * Plugins group expands to name it, so the reader can see where they are
+   * without opening anything.
+   */
+  activePluginId?: string | null;
   onNavigate: (section: SectionId) => void;
   /** Drawer hosts pass a close hook; the desktop rail leaves it unset. */
   onAfterNavigate?: () => void;
 }) {
   const { t } = useI18n();
+  // The Plugins group lists what is installed, so the reader can jump straight
+  // to one plugin's settings without going back through the list first. It
+  // reads the query the list reads, so it costs nothing extra and never shows
+  // a plugin the list would not.
+  const installed = useOptionalInstalledPlugins();
+  const plugins = installed.plugins;
   const labelFor = (id: string) => SECTIONS.find((section) => section.id === id)?.labelKey;
   const leafButton = (id: string) => {
     const labelKey = labelFor(id);
@@ -175,6 +190,32 @@ export function SettingsNavTree({
                     ))}
                   </div>
                 ) : null}
+                {id === 'plugins' && active === 'plugins' && plugins.length > 0 ? (
+                  <div className="mt-0.5 flex flex-col gap-0.5" data-settings-nav-subtabs="plugins">
+                    {plugins.map((plugin) => (
+                      <button
+                        key={plugin.id}
+                        type="button"
+                        data-settings-nav-plugin={plugin.id}
+                        aria-current={activePluginId === plugin.id ? 'page' : undefined}
+                        onClick={() => {
+                          onNavigate(`plugins?${PLUGIN_SETTINGS_QUERY_KEY}=${encodeURIComponent(plugin.id)}` as unknown as SectionId);
+                          onAfterNavigate?.();
+                        }}
+                        className={`row-interactive flex min-h-7 items-center gap-1.5 truncate py-1 pl-5 pr-2 text-left text-[12px] ${
+                          activePluginId === plugin.id ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
+                        }`}
+                      >
+                        <span className="min-w-0 flex-1 truncate">{plugin.displayName}</span>
+                        {plugin.state === 'error' || plugin.hasErrors ? (
+                          <span className="shrink-0 text-[11px] font-medium text-danger">{t('cap.state.error')}</span>
+                        ) : plugin.enabled ? null : (
+                          <span className="shrink-0 text-[11px] text-ink-faint">{t('cap.state.off')}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
@@ -186,11 +227,13 @@ export function SettingsNavTree({
 
 export function SettingsNav({
   active,
+  activePluginId,
   searchFocusToken,
   onNavigate,
   onSearchHit,
 }: {
   active: SectionId | null;
+  activePluginId?: string | null;
   searchFocusToken: string | null;
   onNavigate: (section: SectionId) => void;
   onSearchHit: (entry: SettingsSearchEntry) => void;
@@ -201,7 +244,7 @@ export function SettingsNav({
       <SettingsSearch
         focusToken={searchFocusToken}
         onSearchHit={onSearchHit}
-        idle={<SettingsNavTree active={active} onNavigate={onNavigate} />}
+        idle={<SettingsNavTree active={active} activePluginId={activePluginId} onNavigate={onNavigate} />}
       />
     </nav>
   );

@@ -35,7 +35,6 @@ import { DANGER_BUTTON, DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } 
 import { CapabilityGlyph, CapabilityIcon } from './CapabilityIcon';
 import type { InstallRequest } from './InstallFlow';
 import { PermissionBoundary, PermissionList } from './PermissionList';
-import { PluginSettingsForm } from './PluginSettingsForm';
 import { Disclosure, FactList, QUIET_BUTTON, Tag } from './primitives';
 import {
   subjectIcon,
@@ -55,6 +54,7 @@ export function PluginDetail({
   onOpenPanel,
   onOpenImport,
   onOpenMedia,
+  onOpenSettings,
 }: {
   readonly subject: PluginSubject;
   /** Available update from the catalog or GitHub; shown, never auto-installed. */
@@ -63,6 +63,12 @@ export function PluginDetail({
   readonly onInstall: (request: InstallRequest) => void;
   readonly onUpdate?: (plugin: PluginSummary, update: PluginUpdateView) => void;
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
+  /**
+   * This plugin's own settings page, which is where its configuration is
+   * edited. Unset where that page cannot be reached — the entry still renders
+   * nothing rather than pretending the plugin has no configuration.
+   */
+  readonly onOpenSettings?: (pluginId: string) => void;
   /** This plugin's importer in the host-managed import surface. */
   readonly onOpenImport?: (source: { readonly pluginId: string; readonly sourceId: string }) => void;
   /**
@@ -226,7 +232,24 @@ export function PluginDetail({
               />
             )}
           </section>
-          {installed !== undefined ? <PluginSettingsForm pluginId={subject.id} /> : null}
+          {/* A plugin's configuration is edited on its own settings page, not
+              here: this page describes what the plugin contributes and what it
+              needs, and the settings page is where its own form lives. One
+              place to edit, whichever surface the reader came from. */}
+          {installed !== undefined ? (
+            <section data-plugin-detail-settings>
+              <button
+                type="button"
+                className={`${QUIET_BUTTON} -ml-3`}
+                data-plugin-open-settings={subject.id}
+                onClick={() => { onOpenSettings?.(subject.id); }}
+                disabled={onOpenSettings === undefined}
+              >
+                <Icon name="chevron" size={14} className="text-ink-faint" />
+                {t('cap.detail.openSettings')}
+              </button>
+            </section>
+          ) : null}
           {/* A plugin that contributes a management surface offers it here. The
               manifest decides which one, so the page never names a plugin. */}
           {installed !== undefined && onOpenMedia !== undefined && pluginSurface(manifest) !== undefined ? (

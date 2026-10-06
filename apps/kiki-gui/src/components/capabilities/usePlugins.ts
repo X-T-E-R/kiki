@@ -11,7 +11,7 @@ import type { PluginUsageTarget } from '@kiki/protocol';
 import type { PluginInfo, PluginMarketplaceEntry, PluginSummary } from '../../lib/client';
 import { localizeEntry, type CatalogLocale } from '../../lib/pluginCatalog';
 import { invalidatePluginQueries } from '../../lib/pluginFreshness';
-import { useConnection } from '../../state/connection';
+import { useConnection, useOptionalConnection } from '../../state/connection';
 import { scopeKey } from './pluginUsage';
 
 export const PLUGIN_QUERY_KEYS = {
@@ -35,6 +35,34 @@ export function useInstalledPlugins() {
     staleTime: 15_000,
   });
 }
+
+/**
+ * The installed plugins, or an empty list where there is no connection to ask
+ * (a settings tree mounted before a server is chosen, a test harness that has
+ * no client at all). The settings navigation uses it because its job is to name
+ * what can be opened, and "nothing is connected yet" is a truthful answer to
+ * that rather than a reason to fail the whole navigation.
+ *
+ * It observes the installed list rather than merely reading it once. A reader
+ * who arrives here before the list has loaded — by opening a plugin's own page
+ * directly, say — would otherwise keep seeing an empty navigation until some
+ * unrelated re-render happened to re-run the read; and a plugin removed or
+ * turned off from the page beside it would leave a stale entry behind. The
+ * observer issues no request of its own: `enabled: false` means it only reads
+ * what whoever owns the fetch has already put in the cache.
+ */
+export function useOptionalInstalledPlugins(): { readonly plugins: readonly PluginSummary[] } {
+  const connection = useOptionalConnection();
+  const query = useQuery({
+    queryKey: PLUGIN_QUERY_KEYS.installed,
+    queryFn: () => connection!.client.listPlugins(),
+    enabled: false,
+    staleTime: 15_000,
+  });
+  return { plugins: query.data?.plugins ?? EMPTY_PLUGIN_LIST };
+}
+
+const EMPTY_PLUGIN_LIST: readonly PluginSummary[] = [];
 
 export function usePluginMarketplace() {
   const { client } = useConnection();
