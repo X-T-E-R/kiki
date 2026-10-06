@@ -243,23 +243,38 @@ describe('generate() stream normalization', () => {
     expect(sentTools.map((tool) => tool.name)).toEqual(['visible']);
   });
 
-  it('rejects an empty response with APIEmptyResponseError', async () => {
-    const stream = new FakeStreamedMessage([]);
-    const { provider } = createFakeProvider(stream);
+  it.each([{ parts: [] }, { parts: [{ type: 'think' as const, think: 'only thinking' }] }])(
+    'accepts explicitly completed output without text or tool calls: $parts',
+    async ({ parts }) => {
+      const stream = new FakeStreamedMessage(parts);
+      const { provider, generateSpy } = createFakeProvider(stream);
+      const onStreamEnd = vi.fn();
+      const result = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY, undefined, { onStreamEnd });
 
-    await expect(generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY)).rejects.toBeInstanceOf(
-      APIEmptyResponseError,
-    );
-  });
+      expect(result.message).toEqual({ role: 'assistant', content: parts, toolCalls: [] });
+      expect(result.finishReason).toBe('completed');
+      expect(result.rawFinishReason).toBe('stop');
+      expect(result.usage).toBe(USAGE);
+      expect(generateSpy).toHaveBeenCalledTimes(1);
+      expect(onStreamEnd).toHaveBeenCalledTimes(1);
+    },
+  );
 
-  it('rejects a thinking-only response with APIEmptyResponseError', async () => {
-    const stream = new FakeStreamedMessage([{ type: 'think', think: 'only thinking' }]);
-    const { provider } = createFakeProvider(stream);
-
-    await expect(generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY)).rejects.toBeInstanceOf(
-      APIEmptyResponseError,
-    );
-  });
+  it.each([null, 'truncated', 'filtered', 'paused', 'other', 'tool_calls'] as const)(
+    'still rejects output without text or tools when completion is %s',
+    async (finishReason) => {
+      class UncompletedStream extends FakeStreamedMessage {
+        override readonly finishReason: FinishReason | null = finishReason;
+        override readonly rawFinishReason: string | null = 'completed';
+      }
+      for (const parts of [[], [{ type: 'think' as const, think: 'only thinking' }]]) {
+        const { provider } = createFakeProvider(new UncompletedStream(parts));
+        const error = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY).catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(APIEmptyResponseError);
+        expect(isRetryableGenerateError(error)).toBe(finishReason !== 'filtered');
+      }
+    },
+  );
 
   it('marks a provider-filtered thinking-only response as non-retryable', async () => {
     class FilteredStream extends FakeStreamedMessage {

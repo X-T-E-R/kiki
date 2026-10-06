@@ -1161,13 +1161,16 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
         }
         readingEvent = true;
       }
-      if (diagnostics.endSource === 'in_progress') diagnostics.endSource = 'eof';
+      if (diagnostics.endSource === 'in_progress') {
+        diagnostics.endSource = 'eof';
+        throw new ChatProviderError('OpenAI Responses stream ended before a terminal response event.');
+      }
     } catch (error: unknown) {
       if (isAbortError(error)) {
         diagnostics.endSource = 'cancelled';
         throw attachStreamDiagnostics(createAbortError(), diagnostics);
       }
-      if (diagnostics.endSource !== 'event_error') diagnostics.endSource = readingEvent ? 'sdk_error' : 'local_error';
+      if (diagnostics.endSource !== 'event_error' && diagnostics.endSource !== 'eof') diagnostics.endSource = readingEvent ? 'sdk_error' : 'local_error';
       throw attachStreamDiagnostics(convertOpenAIError(error, this._convertErrorHook), diagnostics);
     } finally {
       if (diagnostics.endSource === 'in_progress') diagnostics.endSource = 'cancelled';

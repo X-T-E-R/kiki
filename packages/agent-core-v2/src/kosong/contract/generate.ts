@@ -139,7 +139,13 @@ export async function generate(
     );
 
     flushPending();
-    if (message.content.length === 0 && message.toolCalls.length === 0) {
+    const diagnostics = stream.diagnostics;
+    const normallyCompleted = stream.finishReason === 'completed' && (
+      diagnostics === undefined || (
+        diagnostics.endSource === 'terminal' && diagnostics.terminalStatus === 'completed'
+      )
+    );
+    if (!normallyCompleted && message.content.length === 0 && message.toolCalls.length === 0) {
       throw new APIEmptyResponseError(
         'The API returned an empty response (no content, no tool calls).' +
           formatFinishReasonHint(stream) +
@@ -155,7 +161,7 @@ export async function generate(
     const hasText = message.content.some((p) => p.type === 'text' && p.text.trim().length > 0);
     const hasToolCalls = message.toolCalls.length > 0;
 
-    if (hasThink && !hasText && !hasToolCalls) {
+    if (!normallyCompleted && hasThink && !hasText && !hasToolCalls) {
       throw new APIEmptyResponseError(
         'The API returned a response containing only thinking content ' +
           'without any text or tool calls. This usually indicates the ' +
