@@ -3060,7 +3060,7 @@ boundExecution,
       }
       const blob = /^blobref:([^;]+);([0-9a-f]{64})$/.exec(url ?? '');
       const originalId = blob === null ? fileId : `blobref:main:${blob[2]}`;
-      if (originalId !== undefined && (originalId.startsWith('inline:') || originalId.startsWith('blobref:'))) {
+      if (originalId !== undefined && (originalId.startsWith('inline:') || originalId.startsWith('inline-content:') || originalId.startsWith('blobref:'))) {
         const original = await client.readSessionMediaBytes(sessionId, originalId, client.readingOptions());
         const bytes = await fileToImageAttachment(new File([original.bytes as Uint8Array<ArrayBuffer>], media.name ?? media.kind, { type: media.mime ?? blob?.[1] ?? original.mime }));
         if (media.kind === 'image') return bytes;

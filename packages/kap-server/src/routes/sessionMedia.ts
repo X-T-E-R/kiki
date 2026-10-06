@@ -32,7 +32,7 @@ import { ErrorCode } from '../protocol/error-codes';
 import { envelopeSchema, errEnvelope } from '../protocol/envelope';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { createMediaPreview, MediaPreviewUnavailableError } from '../services/mediaPreview';
-import { inlineDataMediaFile, inlineMediaFile, inlineMediaId, inlineToolMedia } from '../services/inlineMedia';
+import { inlineDataMediaFile, inlineMediaFile, inlineMediaId, inlineToolMedia, isInlineMediaAddress } from '../services/inlineMedia';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { readSessionViewCanonicalEntity } from '../transport/klient/sessionViewReads';
 import type { TranscriptAttachment } from '@kiki/transcript';
@@ -223,11 +223,14 @@ async function openSessionMedia(core: Scope, sessionId: string, fileId: string, 
     try { address = JSON.parse(Buffer.from(parts[2]!, 'base64url').toString('utf8')); }
     catch { return { sessionExists: true }; }
     const parsed = z.object({
-      source: z.object({ kind: z.literal('frame'), id: z.string().min(1).max(256), turnId: z.string().min(1).max(256), stepId: z.string().min(1).max(256) }).strict(),
+      source: z.discriminatedUnion('kind', [
+        z.object({ kind: z.literal('frame'), id: z.string().min(1).max(256), turnId: z.string().min(1).max(256), stepId: z.string().min(1).max(256) }).strict(),
+        z.object({ kind: z.literal('prompt'), id: z.string().min(1).max(256) }).strict(),
+      ]),
       path: z.array(z.union([z.string().max(256), z.number().int().nonnegative()])).min(1).max(16),
     }).strict().safeParse(address);
-    if (!parsed.success || parsed.data.path[0] !== 'output') return { sessionExists: true };
-    const entity = await service.readCanonicalEntity(sessionId, parts[1]!, parsed.data.source);
+    if (!parsed.success || !isInlineMediaAddress(parsed.data.source, parsed.data.path)) return { sessionExists: true };
+    const entity = await readSessionViewCanonicalEntity(service, sessionId, { agentId: parts[1]!, ref: { source: parsed.data.source } });
     let selected: unknown = entity;
     for (const key of parsed.data.path) {
       if (selected === null || typeof selected !== 'object' || !Object.hasOwn(selected, key)) return { sessionExists: true };

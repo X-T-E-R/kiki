@@ -21,6 +21,50 @@ const servers: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => { for (const server of servers.splice(0)) await server.close(); });
 
 describe('canonical inline media original', () => {
+  it('keeps delivered prompt images whole in baseline, live operations and content continuations without resuming a cold session', async () => {
+    const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+    const { pictures } = await import(fixture);
+    const original: Buffer = pictures[1].bytes;
+    const prompt = { promptId: 'image-prompt', userMessageId: 'image-prompt', status: 'completed' as const, createdAt: '2026-01-01T00:00:00.000Z',
+      content: [{ type: 'text' as const, text: 'Example feedback' }, { type: 'image' as const, source: { kind: 'base64' as const, media_type: 'image/png', data: original.toString('base64') } }] };
+    const transcript = new AgentTranscript('child');
+    transcript.apply([{ op: 'reset', agentId: 'child', snapshot: { items: [], tasks: [], attachments: [], prompts: [prompt], interactions: [], todos: [], meta: {} } }]);
+    const snapshot = boundedTranscriptSnapshot(transcript.snapshot(), 'child');
+    const media = (snapshot.prompts[0]!.content as { type: string; source: { kind: string; file_id: string } }[])[1]!;
+    expect(media).toMatchObject({ type: 'image', source: { kind: 'session_media' } });
+    const op = boundedTranscriptOps([{ op: 'prompt.upsert', prompt }], transcript)[0]!;
+    expect(op).toMatchObject({ op: 'prompt.upsert', prompt: { content: [prompt.content[0], media] } });
+    const preview = boundedEntity(prompt, { kind: 'prompt', id: prompt.promptId }, 512);
+    const ref = preview.contentRefs!.find((ref) => ref.path.length === 1 && ref.path[0] === 'content')!;
+    const continuation = readContentSegment(prompt, ref, false, 'child');
+    expect(continuation.value).toEqual([prompt.content[0], media]);
+    expect(continuation.contentRefs).toEqual([]);
+    expect(prompt.content[1]!.source?.data).toBe(original.toString('base64'));
+    const queued = { ...prompt, status: 'queued' as const };
+    const queuedPreview = boundedEntity(queued, { kind: 'prompt', id: queued.promptId }, 512, 'child');
+    const queuedRef = queuedPreview.contentRefs!.find((ref) => ref.path.length === 1 && ref.path[0] === 'content')!;
+    const queuedSegment = readContentSegment(queued, queuedRef, false, 'child');
+    expect(queuedSegment.value).toMatchObject([prompt.content[0], { type: 'image', source: { kind: 'base64' } }]);
+    expect(queuedSegment.contentRefs).toContainEqual(expect.objectContaining({ path: ['content', 1, 'source', 'data'], total: original.toString('base64').length }));
+    let changed = false;
+    const service = { forSessionLive: () => undefined, readColdSnapshot: async (session: string, agent: string) =>
+      session === 'fixture-session' && agent === 'child' ? { ...transcript.snapshot(), prompts: changed ? [] : [prompt] } : undefined,
+    } as unknown as TranscriptService;
+    const app = Fastify(); servers.push(app);
+    await app.register(async (router) => { registerSessionMediaRoutes(router as unknown as Parameters<typeof registerSessionMediaRoutes>[0], {} as Scope, service); }, { prefix: '/api' });
+    const path = `/api/sessions/fixture-session/media/${encodeURIComponent(media.source.file_id)}`;
+    expect((await app.inject({ url: path })).rawPayload).toEqual(original);
+    expect((await app.inject({ url: `${path}/preview` })).statusCode).toBe(200);
+    expect((await app.inject({ url: path.replace('fixture-session', 'wrong-session') })).statusCode).toBe(404);
+    expect((await app.inject({ url: path.replace('child', 'other') })).statusCode).toBe(404);
+    const address = JSON.parse(Buffer.from(media.source.file_id.split(':')[2]!, 'base64url').toString('utf8'));
+    address.path = ['content', 1, 'source'];
+    const forged = `inline-content:child:${Buffer.from(JSON.stringify(address)).toString('base64url')}:${media.source.file_id.split(':')[3]}`;
+    expect((await app.inject({ url: `/api/sessions/fixture-session/media/${encodeURIComponent(forged)}` })).statusCode).toBe(404);
+    changed = true;
+    expect((await app.inject({ url: path })).statusCode).toBe(404);
+  });
+
   it('projects large recorded tool images to exact revision-bound HTTP media instead of truncated data URLs', async () => {
     const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
     const { pictures } = await import(fixture);

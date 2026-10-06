@@ -22,7 +22,8 @@ const GLOBAL_COLLECTION_BYTES = 4 * 1024;
 
 export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, agentId: string, direction: 'head' | 'tail' = 'tail', windowBytes = TRANSCRIPT_WINDOW_BYTES): AgentTranscriptSnapshot {
   const tasks = boundedCollection(snapshot.tasks, 'task', (task) => task.taskId);
-  const prompts = boundedCollection(snapshot.prompts, 'prompt', (prompt) => prompt.promptId);
+  const prompts = boundedCollection(snapshot.prompts, 'prompt', (prompt) => prompt.promptId,
+    (prompt) => boundedEntity(prompt, { kind: 'prompt', id: prompt.promptId }, 2048, agentId));
   const interactions = boundedCollection(snapshot.interactions, 'interaction', (interaction) => interaction.interactionId);
   const todos = boundedCollection(snapshot.todos, 'todo', (todo) => todo.todoId);
   const meta = snapshot.meta.contentRefs === undefined ? boundedEntity(snapshot.meta, { kind: 'meta', id: '' }, 4096) : snapshot.meta;
@@ -100,7 +101,7 @@ export function boundedTranscriptPageSource(snapshot: AgentTranscriptSnapshot, a
     items: snapshot.items.map((item) => boundedItem(item, agentId)),
     tasks: snapshot.tasks.map((value) => boundedEntity(value, { kind: 'task', id: value.taskId })),
     attachments: snapshot.attachments.map((value) => boundedAttachment(value, agentId)),
-    prompts: snapshot.prompts.map((value) => boundedEntity(value, { kind: 'prompt', id: value.promptId })),
+    prompts: snapshot.prompts.map((value) => boundedEntity(value, { kind: 'prompt', id: value.promptId }, undefined, agentId)),
     interactions: snapshot.interactions.map((value) => boundedEntity(value, { kind: 'interaction', id: value.interactionId })),
     todos: snapshot.todos.map((value) => boundedEntity(value, { kind: 'todo', id: value.todoId })),
     meta: boundedEntity(snapshot.meta, { kind: 'meta', id: '' }),
@@ -149,7 +150,7 @@ export function boundedTranscriptOps(ops: readonly TranscriptOperation[], transc
       case 'frame.upsert': return { ...op, frame: boundedEntity(op.frame, { kind: 'frame', id: op.frame.frameId, turnId: op.turnId, stepId: op.stepId }, undefined, transcript.agentId) };
       case 'task.upsert': return { ...op, task: boundedEntity(op.task, { kind: 'task', id: op.task.taskId }, entityBytes) };
       case 'attachment.upsert': return { ...op, attachment: boundedAttachment(op.attachment, transcript.agentId) };
-      case 'prompt.upsert': return { ...op, prompt: boundedEntity(op.prompt, { kind: 'prompt', id: op.prompt.promptId }) };
+      case 'prompt.upsert': return { ...op, prompt: boundedEntity(op.prompt, { kind: 'prompt', id: op.prompt.promptId }, undefined, transcript.agentId) };
       case 'interaction.upsert': return { ...op, interaction: boundedEntity(op.interaction, { kind: 'interaction', id: op.interaction.interactionId }) };
       case 'todo.upsert': return { ...op, todo: boundedEntity(op.todo, { kind: 'todo', id: op.todo.todoId }) };
       case 'marker.upsert': return { ...op, item: boundedEntity(op.item, { kind: 'marker', id: op.item.markerId }) };

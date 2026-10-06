@@ -31,6 +31,7 @@ export function inlineToolMedia(part: unknown): { kind: 'image' | 'video'; url: 
 }
 
 export function projectInlineToolMedia(value: unknown, path: ContentRef['path'], source: ContentSource, entity: object, agentId: string): object | undefined {
+  if (source.kind === 'prompt' && (entity as { status?: string }).status !== 'completed') return undefined;
   let frameSource = source;
   let framePath = path;
   if (source.kind === 'turn' && path[0] === 'steps' && typeof path[1] === 'number' && path[2] === 'frames' && typeof path[3] === 'number') {
@@ -41,12 +42,17 @@ export function projectInlineToolMedia(value: unknown, path: ContentRef['path'],
     frameSource = { kind: 'frame', id: frame.frameId, turnId: turn.turnId, stepId: step.stepId };
     framePath = path.slice(4);
   }
-  if (frameSource.kind !== 'frame' || frameSource.turnId === undefined || frameSource.stepId === undefined || framePath[0] !== 'output') return undefined;
+  if (!isInlineMediaAddress(frameSource, framePath)) return undefined;
   const media = inlineToolMedia(value);
   if (media === undefined) return undefined;
   const address = Buffer.from(JSON.stringify({ source: frameSource, path: framePath })).toString('base64url');
   const fileId = `inline-content:${agentId}:${address}:${contentRevision(media.url)}`;
   return { type: media.kind, source: { kind: 'session_media', file_id: fileId } };
+}
+
+export function isInlineMediaAddress(source: ContentSource, path: ContentRef['path']): boolean {
+  return source.kind === 'frame' && source.turnId !== undefined && source.stepId !== undefined && path[0] === 'output' ||
+    source.kind === 'prompt' && path.length === 2 && path[0] === 'content' && typeof path[1] === 'number' && Number.isInteger(path[1]) && path[1] >= 0;
 }
 
 export async function inlineMediaFile(attachment: TranscriptAttachment): Promise<SessionMediaFile | undefined> {
