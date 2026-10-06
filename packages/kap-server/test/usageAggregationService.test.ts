@@ -102,6 +102,7 @@ function fixture(
   onCheckpointRead: (bytes: number) => void = () => {},
   ephemeral: readonly EphemeralUsageTotal[] = [],
   beforeWireRead: () => Promise<void> = async () => {},
+  beforeMetadataRead: () => Promise<void> = async () => {},
 ): Fixture {
   const reads = new Map<string, number>();
   const readBytes = new Map<string, number>();
@@ -140,9 +141,9 @@ function fixture(
   let agentIds = ['main'];
   const storage = {
     _serviceBrand: undefined,
-    list: async () => agentIds,
-    size: async (wireScope: string) => wires.get(wireScope)?.length,
-    mtime: async (wireScope: string) => wireMtimes.get(wireScope),
+    list: async () => { await beforeMetadataRead(); return agentIds; },
+    size: async (wireScope: string) => { await beforeMetadataRead(); return wires.get(wireScope)?.length; },
+    mtime: async (wireScope: string) => { await beforeMetadataRead(); return wireMtimes.get(wireScope); },
     read: async (storageScope: string, key: string) => {
       const value = persisted.get(`${storageScope}/${key}`);
       if (value !== undefined) {
@@ -220,6 +221,83 @@ function scope(workspaceId: string, sessionId: string): string {
 async function query(service: UsageAggregationService, input: UsageQuery = {}) {
   return service.query(input);
 }
+
+describe('UsageAggregationService first load', () => {
+  it('measures checkpoint validation without dropping old long sessions or filtered details', async () => {
+    const now = Date.UTC(2026, 8, 2, 12);
+    const today = Date.UTC(2026, 8, 1, 16);
+    const sessions = Array.from({ length: 285 }, (_, i) => summary(`session-${i}`, 'workspace-example'));
+    const records = Object.fromEntries(sessions.map((session, i) => [scope(session.workspaceId, session.id), [
+      usageRecord(today - 1, 0),
+      { ...usageRecord(today, 1), modelAlias: i % 2 === 0 ? 'target' : 'other', provider: 'provider-example' },
+    ]]));
+    let delay = false;
+    let metadataReads = 0;
+    const source = fixture(sessions, records, () => now, {}, undefined, undefined, [], undefined, async () => {
+      metadataReads++;
+      if (delay) await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    });
+    await query(source.service);
+    delay = true;
+    metadataReads = 0;
+    const input = { range: 'today', timezone_offset_minutes: 480, page_size: 25 } as const;
+    const start = performance.now();
+    const result = await query(source.restart(), input);
+    console.log(JSON.stringify({ usageFirstLoad: { elapsedMs: performance.now() - start, metadataReads, sessions: sessions.length, records: 570, checkpointBytes: [...source.checkpointReads.values()].reduce((a, b) => a + b, 0) } }));
+    expect(result.reliability.complete).toBe(true);
+    expect(result.summary.tokens).toEqual({ input_other: 285, output: 285, input_cache_read: 285, input_cache_creation: 285 });
+    expect(result.trend[0]?.request_count).toBe(285);
+    expect(result.sessions.items).toHaveLength(25);
+    const next = await query(source.service, { ...input, page_token: result.sessions.next_page_token! });
+    expect(next.sessions.items).toHaveLength(25);
+    expect(next.sessions.items.some((item) => result.sessions.items.some((first) => first.id === item.id))).toBe(false);
+    const filtered = await query(source.service, { ...input, model: 'target', provider: 'provider-example' });
+    expect(filtered.summary.tokens.output).toBe(143);
+    expect(filtered.trend[0]?.drilldown.sessions[0]?.turn_ids).toEqual([1]);
+    expect(filtered.summary.cost_unknown).toBe(false);
+  });
+});
+
+describe('UsageAggregationService recovery', () => {
+  it('retries a transient source read without poisoning its durable checkpoint', async () => {
+    let unavailable = true;
+    const source = fixture([summary('session-example', 'workspace-example')], {
+      [scope('workspace-example', 'session-example')]: [usageRecord(10, 1)],
+    }, () => 0, {}, undefined, undefined, [], async () => {
+      if (unavailable) throw new Error('temporary fixture IO failure');
+    });
+    const failed = await query(source.service);
+    expect(failed.reliability.complete).toBe(false);
+    expect(failed.summary.tokens.output).toBe(0);
+    unavailable = false;
+    const recovered = await query(source.restart());
+    expect(recovered.reliability.complete).toBe(true);
+    expect(recovered.summary.tokens.output).toBe(1);
+  });
+
+  it('yields during ordinary wire reads and warmed aggregation without losing tokens', async () => {
+    const records = Array.from({ length: 20_000 }, () => usageRecord(10, 1));
+    const source = fixture([summary('session-example', 'workspace-example')], {
+      [scope('workspace-example', 'session-example')]: records,
+    }, () => 0);
+    let loopProgress = 0;
+    let running = true;
+    const tick = () => { if (running) { loopProgress++; setImmediate(tick); } };
+    setImmediate(tick);
+    try {
+      const cold = await query(source.service);
+      expect(cold.summary.tokens.output).toBe(20_000);
+      expect(cold.reliability.complete).toBe(true);
+      expect(loopProgress).toBeGreaterThan(0);
+      loopProgress = 0;
+      const warm = await query(source.service);
+      expect(warm.summary).toEqual(cold.summary);
+      expect(loopProgress).toBeGreaterThan(0);
+    } finally {
+      running = false;
+    }
+  });
+});
 
 describe('UsageAggregationService accounting evidence', () => {
   it('adds temporary usage to daily totals without exposing a session or drilldown', async () => {

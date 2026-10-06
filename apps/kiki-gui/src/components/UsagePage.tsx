@@ -132,7 +132,7 @@ function localDateKey(nowMs: number): string {
 // Live line — current session, today, burn rate
 // ---------------------------------------------------------------------------
 
-function LiveStrip() {
+function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWire; enabled: boolean }) {
   const { client } = useConnection();
   const { t, time } = useI18n();
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -142,7 +142,8 @@ function LiveStrip() {
   }, []);
 
   const todayQuery = useQuery({
-    queryKey: ['usage-v2-strip'],
+    queryKey: ['usage-v2-strip', localDateKey(nowMs), browserTimezoneOffsetMinutes()],
+    enabled: enabled && todayResponse === undefined,
     queryFn: () =>
       client.getUsage(
         buildUsageApiQuery(
@@ -161,7 +162,7 @@ function LiveStrip() {
     staleTime: 30_000,
   });
 
-  const today = todayQuery.data?.summary;
+  const today = (todayResponse ?? todayQuery.data)?.summary;
   const todayTokenTotalUnknown = today !== undefined && usageTokenTotalIsUnknown(today);
   const todayHasUnknownSubtotal = today !== undefined && hasUnknownTokenSubtotal(today);
   const knownTodayTokens = today === undefined || todayTokenTotalUnknown ? undefined : totalTokensOf(today);
@@ -770,8 +771,10 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     setSearchParams(new URLSearchParams(usageFiltersToSearch(next, location.search)), { replace: true });
   };
 
+  const reuseTodaySummary = filters.range === 'today' && filters.workspaceId === undefined && filters.includeArchived;
   const usageQuery = useInfiniteQuery({
     queryKey: ['usage-v2', filters, localUsageDate, timezoneOffsetMinutes],
+    refetchInterval: reuseTodaySummary ? 60_000 : false,
     enabled: panel === 'history',
     queryFn: ({ pageParam }) =>
       client.getUsage(
@@ -877,7 +880,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
         <div className="mx-auto max-w-[1120px] space-y-4" data-usage-page>
           <UsageNavigation panel={panel} onChange={selectPanel} />
           {panel === 'export' ? <UsageExportPanel /> : panel !== 'history' ? <RequestGovernanceView view={new URLSearchParams(location.search).get('panel') === 'limits' ? 'limits' : 'realtime'} /> : <>
-          <LiveStrip />
+          <LiveStrip todayResponse={reuseTodaySummary ? firstPage : undefined} enabled={!reuseTodaySummary && !usageQuery.isPending} />
           <FilterBar filters={filters} workspaces={workspaces} onChange={applyFilters} />
           {usageQuery.isPending ? (
             <div role="status" className="flex items-center justify-center gap-2 rounded-xl border border-hairline bg-panel px-4 py-12 text-[13px] text-ink-faint">

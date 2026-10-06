@@ -236,6 +236,54 @@ beforeEach(() => {
 });
 
 describe('UsagePage (V2)', () => {
+  it('opens today with one request and shares its real summary with the strip', async () => {
+    let complete!: (response: UsageResponseWire) => void;
+    getUsage.mockImplementation(() => new Promise<UsageResponseWire>((resolve) => { complete = resolve; }));
+    const { container, root, queryClient } = await renderPage('/usage', { flush: false });
+    expect(getUsage).toHaveBeenCalledTimes(1);
+    expect(getUsage.mock.calls[0]?.[0]).toMatchObject({ range: 'today', page_size: 25 });
+    expect(container.querySelector('[data-usage-summary-cost]')).toBeNull();
+    await act(async () => { complete(usageResponse({ summaryCost: 8.75 })); });
+    for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(getUsage).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('8.75');
+    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('8.75');
+    await act(async () => { root.unmount(); });
+    queryClient.clear();
+  });
+
+  it('defers a separate today strip until the filtered dashboard has arrived', async () => {
+    let complete!: (response: UsageResponseWire) => void;
+    getUsage.mockImplementation((query: Record<string, unknown>) => query['page_size'] === 1
+      ? Promise.resolve(usageResponse({ summaryCost: 4.5 }))
+      : new Promise<UsageResponseWire>((resolve) => { complete = resolve; }));
+    const { container, root, queryClient } = await renderPage('/usage?range=last_7_days', { flush: false });
+    expect(getUsage).toHaveBeenCalledTimes(1);
+    expect(getUsage.mock.calls[0]?.[0]).toMatchObject({ range: 'last_7_days' });
+    await act(async () => { complete(usageResponse({ summaryCost: 12 })); });
+    for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(getUsage).toHaveBeenCalledTimes(2);
+    expect(getUsage.mock.calls[1]?.[0]).toMatchObject({ range: 'today', page_size: 1 });
+    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('12.00');
+    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('4.50');
+    await act(async () => { root.unmount(); });
+    queryClient.clear();
+  });
+
+  it('recovers an initial failure without starting a competing today request', async () => {
+    getUsage.mockRejectedValueOnce(new Error('usage read unavailable')).mockResolvedValue(usageResponse({ summaryCost: 2.5 }));
+    const { container, root, queryClient } = await renderPage('/usage');
+    expect(getUsage).toHaveBeenCalledTimes(1);
+    const retry = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Retry')!;
+    expect(retry).toBeDefined();
+    await act(async () => { retry.click(); });
+    for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(getUsage).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('2.50');
+    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('2.50');
+    await act(async () => { root.unmount(); });
+    queryClient.clear();
+  });
   it('refreshes the current dashboard, strip and session automatically on settled usage', async () => {
     writeLastSessionId('usage-session');
     let cost = 3.25;
