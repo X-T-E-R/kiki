@@ -100,6 +100,19 @@ it('uses the queue tail for future sends and the first operation only for curren
   expect(handle).toMatchObject({ dependency: { input: { operationId: 'last' } } });
 });
 
+it('clears pending and future-send dependencies from completed cold facts while preserving a new explicit choice', async () => {
+  connection.list.mockResolvedValue([entry('first-completed', 'completed', -1), entry('last-completed', 'completed', -1)]);
+  await render();
+  expect(handle.active).toBeUndefined();
+  expect(handle.dependency).toBeUndefined();
+  await emit({ kind: 'queued', entry: entry('new-choice', 'pending'), queueIndex: 0 });
+  expect(handle.active?.input.operationId).toBe('new-choice');
+  expect(handle.dependency?.input.operationId).toBe('new-choice');
+  await emit({ kind: 'status', operationId: 'new-choice', receipt: entry('new-choice', 'completed').receipt });
+  expect(handle.active).toBeUndefined();
+  expect(handle.dependency).toBeUndefined();
+});
+
 it('uses the authoritative slot when the first known fact was a pending status', async () => {
   const first = deferred<readonly QueuedModelSwitch[]>(); const second = deferred<readonly QueuedModelSwitch[]>();
   connection.list.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);

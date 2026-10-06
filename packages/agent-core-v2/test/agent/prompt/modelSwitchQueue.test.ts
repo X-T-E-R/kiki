@@ -163,6 +163,101 @@ describe('model switch control queue with real engine', () => {
     expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
   });
 
+  it('Send now releases a restored completed dependency as one own turn with the original identity and content', async () => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    await svc.switchModel({ operationId: 'send-now-completed', model: NEW, mode: 'direct' });
+    vi.spyOn(ctx.get(IAgentTaskService), 'list').mockReturnValue([{ kind: 'agent', taskId: 'child', status: 'running' } as never]);
+    const input = { id: 'saved-dependent', message: { role: 'user' as const, content: [{ type: 'text' as const, text: 'Original saved question.' }], toolCalls: [] },
+      execution: { afterModelSwitch: 'send-now-completed' }, appendTiming: 'subagents_done' as const };
+    await svc.enqueue(input);
+    const cold = await host();
+    await cold.restore(await records(ctx));
+    const restored = cold.get(IAgentPromptService);
+    expect(restored.list().hold).toEqual({ reason: 'recovery', count: 1 });
+    const before = restored.list().pending[0];
+    cold.mockNextResponse({ type: 'text', text: 'Saved question answered.' });
+    const [sent] = await restored.steer([input.id]);
+    expect((await sent!.completion).state).toBe('completed');
+    const journal = await records(cold);
+    expect(journal.filter(record => record.type === 'prompt.launch_committed' && record['promptId'] === input.id)).toHaveLength(1);
+    expect(await sent!.launched).toBeDefined();
+    expect(journal.filter(record => record.type === 'turn.prompt')).toMatchObject([{ promptId: input.id }]);
+    expect(journal.some(record => record.type === 'turn.steer')).toBe(false);
+    expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: NEW }]);
+    expect(sent).toMatchObject({ id: input.id, userMessageId: before!.userMessageId, revision: before!.revision, message: before!.message });
+    expect(restored.list().pending).toEqual([]);
+    expect(restored.list().hold).toBeUndefined();
+    expect((await restored.enqueue(input)).state).toBe('completed');
+    expect(cold.llmCalls).toHaveLength(1);
+  });
+
+  it('Send now waits for an autonomous active turn instead of splicing a completed dependency into it', async () => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    await svc.switchModel({ operationId: 'completed-for-own-turn', model: NEW, mode: 'direct' });
+    const loop = ctx.get(IAgentLoopService);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const hook = loop.hooks.onWillBeginStep.register('hold-autonomous-turn', async (_step, next) => {
+      entered.resolve();
+      await release.promise;
+      await next();
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Autonomous work finished.' });
+    ctx.mockNextResponse({ type: 'text', text: 'Dependent question answered.' });
+    const autonomous = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'Autonomous work.' }], toolCalls: [],
+      origin: { kind: 'system_trigger', name: 'goal_continuation' } }, { admission: 'newTurn' }));
+    await entered.promise;
+    const input = { id: 'dependent-own-turn', message: { role: 'user' as const, content: [{ type: 'text' as const, text: 'Use the committed model in my own turn.' }], toolCalls: [] },
+      execution: { afterModelSwitch: 'completed-for-own-turn' } };
+    const dependent = await svc.enqueue(input);
+    try {
+      const [sent] = await svc.steer([dependent.id]);
+      expect(sent).toBe(dependent);
+      expect(dependent.state).toBe('pending');
+      expect(ctx.llmCalls).toHaveLength(0);
+      expect(svc.list().pending[0]).toMatchObject({ id: input.id, execution: input.execution });
+    } finally {
+      release.resolve();
+      await hook.dispose();
+    }
+    const first = (await autonomous.assigned).turn;
+    const second = await dependent.launched;
+    expect(second?.id).not.toBe(first?.id);
+    expect((await dependent.completion).state).toBe('completed');
+    const journal = await records(ctx);
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(journal.filter(record => record.type === 'turn.prompt' && record['promptId'] === input.id)).toHaveLength(1);
+    expect(journal.some(record => record.type === 'turn.steer')).toBe(false);
+    expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: NEW }, { modelAlias: NEW }]);
+  });
+
+  it.each(['pending', 'preparing', 'failed', 'cancelled'] as const)('Send now preserves an unresolved %s dependency without launching it', async (state) => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    const input = { operationId: 'unresolved-switch', model: NEW, mode: 'direct' as const };
+    if (state === 'pending' || state === 'cancelled') {
+      vi.spyOn(ctx.get(IAgentTaskService), 'list').mockReturnValue([{ kind: 'agent', taskId: 'child', status: 'running' } as never]);
+      await svc.enqueue({ id: 'edit-held', message: { role: 'user', content: [{ type: 'text', text: 'Existing queued work.' }], toolCalls: [] }, appendTiming: 'subagents_done' });
+      svc.setEditHold('edit-held', true);
+    } else if (state === 'preparing') {
+      vi.spyOn(ctx.get(IEventDispatcher), 'flush').mockRejectedValueOnce(new Error('flush unavailable'));
+    } else {
+      vi.spyOn(ctx.get(IAgentProfileService), 'prepareModelSwitchBinding').mockRejectedValueOnce(new Error('binding unavailable'));
+    }
+    await svc.switchModel(input);
+    if (state === 'cancelled') await svc.cancelModelSwitch(input.operationId);
+    expect(svc.getModelSwitch(input.operationId)?.state).toBe(state);
+    const dependent = await svc.enqueue({ id: 'unresolved-dependent', message: { role: 'user', content: [{ type: 'text', text: 'Wait for my selected switch.' }], toolCalls: [] }, execution: { afterModelSwitch: input.operationId } });
+    const before = svc.list().pending.find(item => item.id === dependent.id);
+    await expect(svc.steer([dependent.id])).rejects.toMatchObject({ message: 'The referenced model switch has not completed.' });
+    expect(svc.list().pending.find(item => item.id === dependent.id)).toEqual(before);
+    expect(dependent.state).toBe('pending');
+    expect(ctx.llmCalls).toHaveLength(0);
+  });
+
   it('skips an earlier not-ready message and runs a successful dependency exactly once on its committed binding', async () => {
     const ctx = await host();
     const svc = ctx.get(IAgentPromptService);

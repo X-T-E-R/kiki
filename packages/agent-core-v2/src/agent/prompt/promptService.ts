@@ -1602,10 +1602,10 @@ export class AgentPromptService implements IAgentPromptService {
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are not pending');
     }
     const selected = this.pending.filter((item) => ids.has(item.id));
-    if (selected.some((item) => item.execution?.afterModelSwitch !== undefined)) {
-      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Model-switch dependent prompts must run as their own turn after the referenced switch completes.');
+    if (selected.some((item) => !this.isDependencyReady(item.execution))) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The referenced model switch has not completed.');
     }
-    if (targetTurnId === undefined) {
+    if (targetTurnId === undefined || selected.some((item) => item.execution?.afterModelSwitch !== undefined)) {
       for (const item of selected) this.immediatePromptIds.add(item.id);
       void this.startNext();
       return selected.map((item) => item.handle);
