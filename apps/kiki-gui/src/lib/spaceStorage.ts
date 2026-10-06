@@ -146,6 +146,7 @@ export const SPACE_SCOPED_STORAGE_KEYS = [
   'kiki.lastSessionId',
   'kiki.viewRoute',
   'kiki.drafts',
+  'kiki.unconfirmedSubmissions',
   'kiki.composerStates',
   'kiki.newSessionDraft',
   'kiki.sessionSeen.v1',

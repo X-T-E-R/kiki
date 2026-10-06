@@ -12,10 +12,10 @@
  *   /usage           → usage dashboard
  *
  * Global actions: Ctrl+N / the sidebar button navigate to the /new draft page
- * from any route, Ctrl+K opens the QuickSwitcher, Ctrl+Tab jumps to the most
- * recent other session, and Ctrl+/ (or a bare `?`) opens the shortcuts panel.
+ * from any route, Ctrl+K opens the QuickSwitcher, Ctrl+Tab / Ctrl+Shift+Tab
+ * cycle running threads, and Ctrl+/ (or a bare `?`) opens the shortcuts panel.
  * Those are the shipped chords; the saved shortcut table (lib/shortcuts) can
- * remap each one. Ctrl+N and Ctrl+Tab register only in the desktop runtime.
+ * remap each one. Browser-owned chords are not intercepted on the web.
  * `document.title` follows the active route; toasts mount at the root.
  */
 
@@ -66,8 +66,9 @@ import { isBotOrRoomSession } from './components/persona/personaSessionUtils';
 import { TasksPage } from './components/TasksPage';
 import { Toasts } from './components/Toasts';
 import { UsagePage } from './components/UsagePage';
-import { useHost, type DesktopUpdate } from './host';
+import { useHost } from './host';
 import {
+  adjacentRunningSession,
   arrangePinnedFirst,
   dedupeSessions,
   groupConversationItems,
@@ -80,18 +81,19 @@ import {
 } from '@kiki/session-core/sessions';
 import {
   isOnboardingCompleted,
-  readDesktopPrefs,
   readLastSessionId,
-  writeDesktopPrefs,
   writeLayoutPreferences,
-  type AutoUpdateMode,
 } from '@kiki/session-core/settings';
 import { isSessionIndexBuildingError } from './lib/client';
 import { useLayoutPreferences } from './lib/layoutHooks';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
 import { useUserSkins } from './lib/skins/useUserSkins';
 import { pushToast } from './lib/toasts';
-import { isEditableTarget, matchesShortcutAction } from './lib/shortcuts';
+import { useDesktopUpdateScheduler } from './lib/useDesktopUpdateScheduler';
+import { hydrateUpdatePrefs } from './lib/desktopUpdates';
+import { UpdateAvailableDialog } from './components/UpdateAvailableDialog';
+import { browserOwnsShortcut, isEditableTarget, matchesShortcutAction } from './lib/shortcuts';
+import { useNavigationComposerFocus } from './lib/navigationComposerFocus';
 import { useShortcutPreferencesSync } from './lib/useShortcutPreferences';
 import { handleFindShortcut, QUICK_SWITCHER_EVENT, type FindRoute } from './lib/timelineFind';
 import { anyOverlayOpen } from './lib/uiBusy';
@@ -115,32 +117,6 @@ export function retryRootReadModelQuery(failureCount: number, error: Error): boo
 /** Keep cold-index retries responsive without hammering a new home. */
 export function retryRootReadModelDelay(attempt: number): number {
   return Math.min(250 * 2 ** attempt, 2_000);
-}
-
-interface StartupUpdateHost {
-  supportsDesktopUpdates(): Promise<boolean>;
-  checkDesktopUpdate(): Promise<DesktopUpdate | null>;
-}
-
-export type StartupUpdateResult = 'disabled' | 'unsupported' | 'up-to-date' | 'notified' | 'installed';
-
-export async function runStartupUpdateCheck(
-  host: StartupUpdateHost,
-  mode: AutoUpdateMode,
-  onUpdateAvailable: (update: DesktopUpdate) => void,
-  onUpdateInstalled: (update: DesktopUpdate) => void,
-): Promise<StartupUpdateResult> {
-  if (mode === 'off') return 'disabled';
-  if (!(await host.supportsDesktopUpdates())) return 'unsupported';
-  const update = await host.checkDesktopUpdate();
-  if (update === null) return 'up-to-date';
-  if (mode === 'notify') {
-    onUpdateAvailable(update);
-    return 'notified';
-  }
-  await update.install();
-  onUpdateInstalled(update);
-  return 'installed';
 }
 
 function RootRedirect() {
@@ -264,42 +240,26 @@ export function App() {
   // "New Session" events.
   useEffect(() => {
     if (host.kind !== 'tauri') return;
-    void host.readDesktopPrefs().then((prefs) => {
-      if (prefs !== null) writeDesktopPrefs(prefs);
-    });
+    void hydrateUpdatePrefs(host);
     return host.onTrayNewSession(() => navigate('/new'));
   }, [host, navigate]);
 
+  // Keep the native side (tray menu labels) on the active UI locale. The tray
+  // is a native surface, so a failed write leaves it labelled in the old
+  // language while the window is in the new one; that is worth one quiet toast
+  // rather than a rejected promise nobody handles.
   useEffect(() => {
-    if (host.kind !== 'tauri') return;
-    const timer = window.setTimeout(() => {
-      void host.readDesktopPrefs()
-        .then((nativePrefs) => {
-          if (nativePrefs !== null) writeDesktopPrefs(nativePrefs);
-          const mode = (nativePrefs ?? readDesktopPrefs()).autoUpdate;
-          return runStartupUpdateCheck(
-            host,
-            mode,
-            (update) => {
-              pushToast({ tone: 'info', text: t('st.about.updateAvailable', { version: update.version }) });
-            },
-            () => {
-              pushToast({ tone: 'success', text: t('st.about.installedRestart') });
-            },
-          );
-        })
-        .catch(() => {});
-    }, 1_500);
-    return () => { window.clearTimeout(timer); };
-  }, [host, t]);
-
-  // Keep the native side (tray menu labels) on the active UI locale.
-  useEffect(() => {
-    void host.writeDesktopPrefs?.({ locale });
-  }, [host, locale]);
+    const write = host.writeDesktopPrefs?.({ locale });
+    if (write === undefined) return;
+    void write.catch(() => {
+      pushToast({ tone: 'error', text: t('app.trayLocaleSaveFailed') });
+    });
+  }, [host, locale, t]);
 
   const sessionMatch = useMatch('/s/:id/*');
   const activeSessionId = sessionMatch?.params.id;
+  const composerAgentMatch = useMatch('/s/:id/agent/:agentId');
+  useNavigationComposerFocus(scopeId, activeSessionId, composerAgentMatch?.params.agentId);
   const isNewRoute = useMatch('/new') !== null;
   const isSettingsRoute = useMatch('/settings/*') !== null;
   const isUsageRoute = useMatch('/usage') !== null;
@@ -358,14 +318,23 @@ export function App() {
     [workspacesQuery.data],
   );
 
-  // The canonical session order powers QuickSwitcher / Ctrl+Tab hopping and the
-  // /new recent chips, so it stays pinned-first + newest-first regardless of
+  // The canonical session order powers QuickSwitcher and the /new recent
+  // chips, so it stays pinned-first + newest-first regardless of
   // the sidebar's view preference. Grouping applies its own sort internally.
   const sessions = useMemo(
     () => arrangePinnedFirst(dedupeSessions(sessionsQuery.data)),
     [sessionsQuery.data],
   );
   const conversations = useConversationList(sessions, layoutPrefs.sortBy, workspaceOptions);
+  // The one update schedule for the whole app: a check after the first screen,
+  // a daily tick for a window left open, and a catch-up when it comes back. A
+  // session waiting on an approval is a modal moment in its own right, so the
+  // offer waits rather than landing on top of it.
+  const hasPendingApproval = useMemo(
+    () => sessions.some((session) => session.pending_interaction === 'approval'),
+    [sessions],
+  );
+  const desktopUpdate = useDesktopUpdateScheduler({ host, isDesktop: desktop, hasPendingApproval });
   const sessionGroups = useMemo<readonly SessionGroup<ConversationListItem>[]>(() => {
     // A Bot's home and a room member's own session keep their single address
     // (the Bot rows above, the room's row); everything else lists here.
@@ -519,26 +488,24 @@ export function App() {
     return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [isSettingsRoute, sidebarOpen, quickSwitcherOpen, shortcutsOpen, navigate]);
 
-  // Ctrl+Tab jumps to the most recent other session. Browser tab switching
-  // owns Ctrl+Tab (preventDefault cannot intercept it), so the binding only
-  // registers in the desktop runtime — the shortcuts panel marks it
-  // desktop-only. While focus sits in an editable surface the keystroke stays
-  // with it: hopping sessions here would silently rip focus from the draft.
+  // Modified navigation chords remain usable from the composer. Browser-owned
+  // Ctrl+Tab is left alone; a web user can bind either action to another chord.
   useEffect(() => {
-    if (!desktop) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!matchesShortcutAction(event, 'next-session')) return;
-      if (isEditableTarget(event.target)) return;
+      if (event.defaultPrevented || anyOverlayOpen() || quickSwitcherOpen || shortcutsOpen) return;
+      if (!desktop && browserOwnsShortcut(event)) return;
+      if (event.target instanceof Element && event.target.closest('.xterm')) return;
+      if (isEditableTarget(event.target) && !event.ctrlKey && !event.metaKey && !event.altKey) return;
+      const direction = matchesShortcutAction(event, 'next-session') ? 1
+        : matchesShortcutAction(event, 'previous-session') ? -1 : undefined;
+      if (direction === undefined) return;
       event.preventDefault();
-      const next = sessions.find((session) => session.id !== activeSessionId);
-      if (next !== undefined) {
-        setQuickSwitcherOpen(false);
-        navigate(`/s/${next.id}`);
-      }
+      const next = adjacentRunningSession(sessions, activeSessionId, direction);
+      if (next !== undefined && next !== activeSessionId) navigate(`/s/${next}`);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [sessions, activeSessionId, navigate, desktop]);
+  }, [sessions, activeSessionId, navigate, desktop, quickSwitcherOpen, shortcutsOpen]);
 
   // Close mobile sidebar on route change.
   useEffect(() => {
@@ -767,6 +734,16 @@ export function App() {
           pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
         }); }}
         onCancel={cancelNavigation}
+      />
+      <UpdateAvailableDialog
+        offer={desktopUpdate.offer}
+        onUpdate={desktopUpdate.onUpdate}
+        onRemindLater={desktopUpdate.onRemindLater}
+        onSkip={desktopUpdate.onSkip}
+        onDismiss={desktopUpdate.onDismiss}
+        installing={desktopUpdate.installing}
+        installError={desktopUpdate.installError}
+        persistError={desktopUpdate.persistError}
       />
       </NavHistoryBridge>
     </DirtyGuardContext.Provider>

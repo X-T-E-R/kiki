@@ -164,7 +164,7 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       if (!opened.sessionExists) return r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id)) as void;
       const file = opened.file;
       if (file === undefined) return r.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', req.id)) as void;
-      const etag = `"preview-v1-${session_id}-${file_id}-${file.size}-${req.query.media_type ?? file.mediaType}"`;
+      const etag = `"preview-v2-${session_id}-${file_id}-${file.size}-${req.query.media_type ?? file.mediaType}"`;
       r.header('etag', etag).header('accept-ranges', 'bytes');
       if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) return r.code(304).send(null) as void;
       const result = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => createMediaPreview(file, req.query.media_type, signal));

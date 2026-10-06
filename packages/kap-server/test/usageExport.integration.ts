@@ -9,6 +9,10 @@ import { AGENT_WIRE_RECORD_KEY, IBootstrapService, IFileSystemStorageService, IR
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
 import { AppendLogStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/appendLogStore';
 import { RetainedUsageService } from '@kiki/agent-core-v2/app/retainedUsage/retainedUsageService';
+import { IAppendLogStore, IEventService } from '@kiki/agent-core-v2';
+import { EventService } from '@kiki/agent-core-v2/app/event/eventService';
+import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
+import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
 import { VIBE_CAFE_INGEST_ENDPOINT, usageExportBatchSchema, usageExportItemSchema, type UsageExportBatch } from '@kiki/protocol';
 import type { VibeAuthRequest } from '../src/usage/export/vibeAuth';
 import { createVibeUsageAdapter } from '../src/usage/export/vibe';
@@ -47,7 +51,10 @@ async function fixture(limits: ConstructorParameters<typeof UsageAggregationServ
   const home = await mkdtemp(join(tmpdir(), 'kiki-usage-export-')); cleanup.push(() => rm(home, { recursive: true, force: true }));
   const storage = new FileStorageService(home, 0o700, 0o600); const append = new AppendLogStore(storage); cleanup.push(async () => { await append.flush(); append.dispose(); });
   const bootstrap = { scope: (name: string) => name, credentialsHomeDir: home } as Bootstrap;
-  const retained = new RetainedUsageService(bootstrap, storage, append); const sessions: SessionSummary[] = [];
+  const ix = new TestInstantiationService(); cleanup.push(async () => { ix.dispose(); });
+  ix.stub(IBootstrapService, bootstrap); ix.stub(IFileSystemStorageService, storage); ix.stub(IAppendLogStore, append);
+  ix.set(IEventService, new SyncDescriptor(EventService)); ix.set(IRetainedUsageService, new SyncDescriptor(RetainedUsageService));
+  const retained = ix.get(IRetainedUsageService); const sessions: SessionSummary[] = [];
   const index = { listRecent: async (query: { before?: string; limit?: number }) => { const start = query.before === undefined ? 0 : sessions.findIndex((s) => s.id === query.before) + 1; const items = sessions.slice(start, start + (query.limit ?? 100)); return { items, nextCursor: start + items.length < sessions.length ? items.at(-1)?.id : undefined }; } };
   const services = new Map<unknown, unknown>([[IFileSystemStorageService, storage], [IRetainedUsageService, retained], [ISessionIndex, index], [IModelPricingService, priced], [IBootstrapService, bootstrap]]);
   const core = { accessor: { get: (key: unknown) => services.get(key) } } as Scope;
@@ -128,7 +135,7 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     await f.write(s.id, 'main', [record(T + 1, 10), record(T + 1, 10), record(T + 1_800_001, 20), { ...record(T + 2, 0, { output: 0, inputCacheRead: 0, inputCacheCreation: 0 }), usageKnown: false }, { ...record(T + 3, 0, { output: 0, inputCacheRead: 0, inputCacheCreation: 0 }), usageKnown: undefined }, record(T + 4, -1), record(T + 5, Number.MAX_SAFE_INTEGER + 1), record(T + 6, 7, undefined, SENTINEL)]);
     await f.write(s.id, 'subagent', [record(T + 7, 30)]);
     const deleted = f.add('deleted'); await f.write(deleted.id, 'main', [record(T + 8, 40)]); await f.retained.retainDeletedSession(deleted); f.sessions.splice(f.sessions.indexOf(deleted), 1);
-    await f.write('private', 'main', [record(T + 9, 50)]); await f.retained.retainEphemeralUsage('sessions/work/private', 'work');
+    await f.write('private', 'main', [record(T + 9, 50)]); await f.retained.retainEphemeralUsage!('sessions/work/private', 'work');
     const d = await destination(f.service, r.endpoint, r.port); const preview = await f.service.preview(d.id);
     expect(r.requests).toBe(0); expect(preview.source_complete).toBe(true); expect(preview.invalid_records).toBe(2);
     const totals = preview.items.reduce((sum, item) => { const t = item.bucket!.tokens; return [sum[0]! + t.input_other, sum[1]! + t.input_cache_read, sum[2]! + t.input_cache_creation, sum[3]! + t.output]; }, [0, 0, 0, 0]);

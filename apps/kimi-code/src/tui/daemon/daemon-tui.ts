@@ -6,6 +6,7 @@ import { sameWorkDir, type PermissionMode } from '@kiki/node-sdk';
 import type { PromptStatus, UpdateSessionProfileRequest } from '@kiki/protocol';
 
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
+import { sortThinkingEffortsForDisplay } from '@kiki/session-core/settings/thinkingEffort';
 import { SessionController } from '@kiki/session-core/session/sessionController';
 import type {
   ApprovalBlock,
@@ -1939,7 +1940,7 @@ export class DaemonTUI {
     const efforts = [
       'off',
       ...(supported.length > 0
-        ? supported
+        ? sortThinkingEffortsForDisplay(supported)
         : model.capabilities?.includes('thinking') === true
           ? ['on']
           : []),

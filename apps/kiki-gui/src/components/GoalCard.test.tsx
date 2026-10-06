@@ -292,9 +292,14 @@ describe('RecoveryHoldBar', () => {
     const { container } = await renderBar({ count: 2, onConfirm });
     const bar = container.querySelector('[data-recovery-hold]')!;
     expect(bar.getAttribute('role')).toBe('status');
-    expect(bar.textContent).toContain('2 queued messages were restored');
+    expect(bar.textContent).toContain('2 queued items (messages or model switches) were restored');
     await click(bar.querySelector('button:not([disabled])')!);
     expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not ask to resume an empty authoritative queue', async () => {
+    const { container } = await renderBar({ count: 0 });
+    expect(container.querySelector('[data-recovery-hold-wrapper]')).toBeNull();
   });
 
   it('locks both buttons while confirmation is pending', async () => {

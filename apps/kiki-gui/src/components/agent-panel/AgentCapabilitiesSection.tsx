@@ -5,23 +5,26 @@
  * each carrying `on/total` and the five reported states, so a full agent
  * never grows the rail by one row per tool. Skills stay chips by scope and
  * subagents stay rows. A chip only ever opens its group; the group's complete
- * member list (and the one tool inside it) is where a tool is read, hosted in
- * the rail's own column when the host passes `inlineGroupDetail` and in the
- * shared detail shell otherwise. Hover or keyboard focus shows one short
- * preview under the cluster — three lines, no floating layer.
+ * member list (and the one tool inside it) is where a tool is read.
+ *
+ * The two ways in are deliberately different. Hover or keyboard focus shows
+ * one short preview in a floating layer anchored to the chip, so passing the
+ * pointer over the cluster never moves anything on the page. A click expands
+ * the group in place, directly under the chips, so the reader keeps the
+ * cluster, the tab strip and the surrounding sections in view while the
+ * group's membership is open below it.
  */
 
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { useI18n } from '../../i18n';
-import { Dialog } from '../Dialog';
 import { Icon } from '../icons';
 import {
   AgentDetailDrawer,
-  DETAIL_OVERLAY_CLASS,
-  DETAIL_PANEL_CLASS,
   type DetailDrawerTarget,
 } from './AgentDetailDrawer';
+import { GroupPreviewCard, type GroupPreviewAnchor } from './GroupPreviewCard';
+import { SkillChipCluster, type SkillFoldState } from './SkillChipCluster';
 import { ToolGroupDetail } from './ToolGroupDetail';
 import { capabilityReasonText } from './mapCapabilities';
 import { scrollHostOf } from './scrollHost';
@@ -29,7 +32,6 @@ import { capabilitySourceLabel, SOURCE_TONE_CLASS, type SourceLabel } from './so
 import {
   extensionOwner,
   matchToolGroups,
-  toolGroupPreview,
   toolGroups,
   type ToolGroup,
 } from './toolGroups';
@@ -52,8 +54,6 @@ export interface AgentCapabilitiesSectionProps {
   /** The profile these capabilities belong to; drill-ins resolve targets through it. */
   readonly callerProfile?: string;
   readonly initialTab?: CapabilityTab;
-  /** Rail-hosted: a group opens inside this column instead of the overlay shell. */
-  readonly inlineGroupDetail?: boolean;
 }
 
 export interface CapabilityCounts {
@@ -152,23 +152,26 @@ export const CAP_SHOWN = 8;
  */
 export const TOOL_GROUPS_SHOWN = 24;
 
-/** The "M more" / "Show less" line under a capped group (`chip`: inline in a chip row). */
+/**
+ * The "M more" / "Show less" control. It is a chip inside a wrapping chip
+ * cluster and a line under a row list, so it renders the element that matches
+ * its own container: a list item only where it really is one.
+ */
 function MoreToggle({ hidden, open, onToggle, chip = false }: { hidden: number; open: boolean; onToggle: () => void; chip?: boolean }) {
   const { t } = useI18n();
   if (hidden <= 0 && !open) return null;
-  return (
-    <li>
-      <button
-        type="button"
-        data-capability-more={open ? 'less' : hidden}
-        aria-expanded={open}
-        onClick={onToggle}
-        className={`h-7 px-2 text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.045] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-9 ${chip ? 'inline-flex items-center rounded-full' : 'rounded-md'}`}
-      >
-        {open ? t('inspector.cap.less') : t('inspector.cap.more', { count: hidden })}
-      </button>
-    </li>
+  const button = (
+    <button
+      type="button"
+      data-capability-more={open ? 'less' : hidden}
+      aria-expanded={open}
+      onClick={onToggle}
+      className={`h-7 px-2 text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.045] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-9 ${chip ? 'inline-flex items-center rounded-full' : 'rounded-md'}`}
+    >
+      {open ? t('inspector.cap.less') : t('inspector.cap.more', { count: hidden })}
+    </button>
   );
+  return chip ? button : <li>{button}</li>;
 }
 
 /** Case-insensitive match on any of the given fields. */
@@ -263,63 +266,15 @@ function GroupChip({
   );
 }
 
-/** The cluster's one preview: at most three lines, under the chips, never over the conversation. */
-function GroupPreview({ id, group, title, keep, end }: {
-  readonly id: string;
-  readonly group: ToolGroup;
-  readonly title: string;
-  readonly keep: () => void;
-  readonly end: () => void;
-}) {
-  const { t } = useI18n();
-  const { counts } = group;
-  const preview = toolGroupPreview(group);
-  const names = (list: readonly string[], label: string, more: number): ReactNode => (
-    <span className="flex min-w-0 items-baseline gap-1.5">
-      <span className="shrink-0 text-ink-faint">{label}</span>
-      <span className="truncate">{list.join(' · ')}{more > 0 ? '…' : ''}</span>
-    </span>
-  );
-  const lines: ReactNode[] = [
-    <span key="head" className="flex min-w-0 items-baseline gap-1.5">
-      <span className="min-w-0 truncate text-ink-soft">{title}</span>
-      <span className="shrink-0 tabular-nums text-ink-faint">{toolGroupCountLine(t, counts)}</span>
-      {counts.approvalRequired > 0 ? (
-        <span className="shrink-0 text-amber-ink">{t('inspector.cap.groupPending', { count: counts.approvalRequired })}</span>
-      ) : null}
-    </span>,
-  ];
-  if (preview.onNames.length > 0) {
-    lines.push(names(preview.onNames, t('inspector.cap.stateOn'), counts.on - preview.onNames.length));
-  }
-  // The last line reports the states that need a look before the rest of the
-  // list: unconnected first, then unconfirmed, then off, then pending.
-  if (preview.disconnectedNames.length > 0) {
-    lines.push(names(preview.disconnectedNames, t('inspector.cap.stateDisconnected'), counts.disconnected - preview.disconnectedNames.length));
-  } else if (counts.unknown > 0) {
-    lines.push(<span className="text-ink-faint">{t('inspector.cap.groupUnknownNote', { count: counts.unknown })}</span>);
-  } else if (preview.offNames.length > 0) {
-    lines.push(names(preview.offNames, t('inspector.cap.stateOff'), counts.disabled - preview.offNames.length));
-  }
-  return (
-    <div
-      id={id}
-      data-capability-group-preview={group.key}
-      onMouseEnter={keep}
-      onMouseLeave={end}
-      className="mx-2 mt-1.5 space-y-0.5 rounded-md border border-hairline bg-paper/60 px-2 py-1.5 text-[11.5px] leading-4 text-ink"
-    >
-      {lines.map((line, index) => (
-        <p key={index} className="flex min-w-0 items-baseline gap-1.5">
-          {line}
-          {index === lines.length - 1 ? (
-            <span className="ml-auto shrink-0 text-ink-faint">{t('inspector.cap.viewGroup')}</span>
-          ) : null}
-        </p>
-      ))}
-    </div>
-  );
-}
+/**
+ * Rows of chips shown before the rest fold behind "+N more". The skills tab
+ * folds on real wrapped rows, not on a chip count, because how many chips
+ * share a line is the column's own doing: eight names in a wide panel are
+ * two rows, and the same eight in the rail's narrowest column are five.
+ * A chip cap therefore reads as arbitrarily short or long in the same build.
+ * `SKILL_ROWS` is measured against the row that actually wrapped.
+ */
+export const SKILL_ROWS = 4;
 
 /** One skill as a compact chip: the name, the description on hover. */
 function SkillChip({ skill, onOpen }: { skill: AgentSkillCapability; onOpen: () => void }) {
@@ -347,7 +302,6 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
   draftScope,
   callerProfile,
   initialTab = 'tools',
-  inlineGroupDetail = false,
 }: AgentCapabilitiesSectionProps) {
   const { t, tp } = useI18n();
   const baseId = useId();
@@ -357,11 +311,16 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
   const [query, setQuery] = useState('');
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set());
   const [groupsExpanded, setGroupsExpanded] = useState(false);
-  // The chip whose preview is showing, and the group whose detail is open.
-  const [previewKey, setPreviewKey] = useState<string | null>(null);
+  /** What each skills group's cut hides, measured from the real wrapped rows. */
+  const [skillFolds, setSkillFolds] = useState<Readonly<Record<string, SkillFoldState>>>({});
+  // The chip whose floating preview is showing, and the group expanded below
+  // the cluster. The anchor is captured when the preview opens, so the layer
+  // keeps its place while the pointer moves onto it.
+  const [preview, setPreview] = useState<{ key: string; anchor: GroupPreviewAnchor } | null>(null);
   const [openGroupKey, setOpenGroupKey] = useState<string | null>(null);
   const hoverTimer = useRef<number | undefined>(undefined);
   const chips = useRef(new Map<string, HTMLButtonElement>());
+  const clusterBox = useRef<HTMLUListElement | null>(null);
   const knownTitles = useRef(new Map<string, string>());
   const restoreChip = useRef<string | null>(null);
   const restoreTarget = useRef<HTMLElement | null>(null);
@@ -380,7 +339,17 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
   const tabGroups = tab === 'extensions' ? split.extensionTab : split.toolTab;
   const matches = useMemo(() => matchToolGroups(tabGroups, query, titleOf), [tabGroups, query, titleOf]);
   const openGroup = openGroupKey === null ? null : groups.find((group) => group.key === openGroupKey) ?? null;
-  const previewGroup = previewKey === null ? undefined : groups.find((group) => group.key === previewKey);
+  const previewGroup = preview === null ? undefined : groups.find((group) => group.key === preview.key);
+
+  /** The chip's box and the cluster's own width, measured once per open. */
+  const measure = useCallback((key: string): GroupPreviewAnchor | null => {
+    const chip = chips.current.get(key);
+    if (chip === undefined) return null;
+    return {
+      rect: chip.getBoundingClientRect(),
+      clusterWidth: clusterBox.current?.getBoundingClientRect().width ?? chip.getBoundingClientRect().width,
+    };
+  }, []);
 
   // A group that leaves the current tool list still has a name to show.
   useEffect(() => {
@@ -394,29 +363,33 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
     }
   };
   useEffect(() => clearHoverTimer, []);
+  const showPreview = (key: string) => {
+    const anchor = measure(key);
+    setPreview(anchor === null ? null : { key, anchor });
+  };
   const previewNow = (key: string) => {
     clearHoverTimer();
-    setPreviewKey(key);
+    showPreview(key);
   };
   const previewLater = (key: string) => {
     clearHoverTimer();
     hoverTimer.current = window.setTimeout(() => {
       hoverTimer.current = undefined;
-      setPreviewKey(key);
+      showPreview(key);
     }, 250);
   };
-  // Leaving the chip or the preview closes it; the pause keeps a pointer that
+  // Leaving the chip or the card closes it; the pause keeps a pointer that
   // travels between the two from flickering.
   const previewOff = () => {
     clearHoverTimer();
     hoverTimer.current = window.setTimeout(() => {
       hoverTimer.current = undefined;
-      setPreviewKey(null);
+      setPreview(null);
     }, 140);
   };
   const previewClose = () => {
     clearHoverTimer();
-    setPreviewKey(null);
+    setPreview(null);
   };
 
   const toggleGroup = (key: string) => {
@@ -427,16 +400,28 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
       return next;
     });
   };
+  const setSkillFold = useCallback((key: string, state: SkillFoldState) => {
+    setSkillFolds((previous) => {
+      const current = previous[key];
+      if (current?.hidden === state.hidden && current.folding === state.folding) return previous;
+      return { ...previous, [key]: state };
+    });
+  }, []);
+
   const chooseTab = (next: CapabilityTab) => {
     setTab(next);
     setQuery('');
     setGroupsExpanded(false);
-    setPreviewKey(null);
+    setPreview(null);
     clearHoverTimer();
+    // A group belongs to the tab it was opened from. Since the panel now
+    // expands in place, a group left open across a tab switch would sit in
+    // another tab's cluster and read as that tab's detail.
+    setOpenGroupKey(null);
   };
   const openToolGroup = (key: string) => {
     clearHoverTimer();
-    setPreviewKey(null);
+    setPreview(null);
     // The host's single scroll region is where the reader was; remember it so
     // the way back lands on the same row of chips, not on a re-centred page.
     const host = scrollHostOf(chips.current.get(key));
@@ -496,20 +481,24 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
     document.getElementById(`${baseId}-tab-${next.id}`)?.focus();
   };
 
-  /** The group cluster: chips, the one preview, and the fold past the cap. */
+  /**
+   * The group cluster: chips, the fold past the cap, and — when a chip was
+   * clicked — that group's complete membership expanded directly below, so
+   * the cluster, the tab strip and the sections after it all stay in view.
+   */
   const cluster = () => {
     const shown = filtering || groupsExpanded ? matches : matches.slice(0, TOOL_GROUPS_SHOWN);
     const hidden = filtering || groupsExpanded ? 0 : Math.max(0, matches.length - TOOL_GROUPS_SHOWN);
     return (
       <>
-        <ul data-capability-group-list={tab} className="flex flex-wrap gap-1 px-2">
+        <ul ref={clusterBox} data-capability-group-list={tab} className="flex flex-wrap gap-1 px-2">
           {shown.map(({ group, matched }) => (
             <li key={group.key} className="flex min-w-0 items-center gap-1.5">
               <GroupChip
                 group={group}
                 title={titleOf(group)}
                 selected={openGroupKey === group.key}
-                describedBy={previewKey === group.key ? previewId : undefined}
+                describedBy={preview?.key === group.key ? previewId : undefined}
                 register={(element) => {
                   if (element === null) chips.current.delete(group.key);
                   else chips.current.set(group.key, element);
@@ -554,14 +543,23 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
             </li>
           ) : null}
         </ul>
-        {previewGroup !== undefined ? (
-          <GroupPreview
-            id={previewId}
-            group={previewGroup}
-            title={titleOf(previewGroup)}
-            keep={clearHoverTimer}
-            end={previewOff}
-          />
+        {/* In place, under the cluster: the click path adds height here, on
+            purpose, and only here. The hover path adds nothing at all. */}
+        {openGroupKey !== null ? (
+          <div
+            data-capability-group-expanded={openGroupKey}
+            className="mt-1.5 border-t border-hairline px-2 pt-2.5"
+          >
+            <ToolGroupDetail
+              key={openGroupKey}
+              group={openGroup}
+              groupKey={openGroupKey}
+              title={openGroup === null ? knownTitles.current.get(openGroupKey) ?? openGroupKey : titleOf(openGroup)}
+              tabLabel={(openGroup?.extension ?? (tab === 'extensions')) ? t('inspector.cap.extensions') : t('inspector.cap.tools')}
+              inlineDetail
+              onBack={closeToolGroup}
+            />
+          </div>
         ) : null}
       </>
     );
@@ -581,24 +579,9 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
     </div>
   );
 
-  // A rail-hosted group takes the column: the same page the drawer shows, with
-  // the rail's own scroll instead of a modal over the conversation.
-  if (inlineGroupDetail && openGroupKey !== null) {
-    return (
-      <div data-agent-capabilities-section data-capability-tab={tab} className="text-[13px]">
-        <ToolGroupDetail
-          key={openGroupKey}
-          group={openGroup}
-          groupKey={openGroupKey}
-          title={openGroup === null ? knownTitles.current.get(openGroupKey) ?? openGroupKey : titleOf(openGroup)}
-          tabLabel={(openGroup?.extension ?? (tab === 'extensions')) ? t('inspector.cap.extensions') : t('inspector.cap.tools')}
-          inlineDetail
-          onBack={closeToolGroup}
-        />
-      </div>
-    );
-  }
-
+  // A host with no column of its own (the wide agent panel) still expands the
+  // group in place, in this same flow; only the rail needs the extra hint that
+  // it is narrower than the group.
   return (
     <div data-agent-capabilities-section data-capability-tab={tab} className="text-[13px]">
       <div
@@ -644,7 +627,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
               type="search"
               data-capability-filter={tab}
               value={query}
-              onChange={(event) => { setQuery(event.target.value); setPreviewKey(null); }}
+              onChange={(event) => { setQuery(event.target.value); setPreview(null); }}
               onKeyDown={(event) => { if (event.key === 'Escape' && query !== '') { event.stopPropagation(); setQuery(''); } }}
               placeholder={tab === 'tools' || tab === 'extensions' ? t('inspector.cap.search') : t('inspector.cap.filter', { tab: current.label })}
               className="h-7 w-full rounded-md border border-hairline bg-transparent pr-2 pl-7 text-[12px] text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink pointer-coarse:h-9"
@@ -668,19 +651,35 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
         {tab === 'skills' ? (
           skills.length === 0 ? <Empty>{t('inspector.cap.noSkills')}</Empty> : skillGroups.length === 0 ? <Empty>{t('inspector.cap.noMatch')}</Empty> : (
             <div data-capability-list="skills" className="space-y-1">
-              {skillGroups.map(([scope, label, list]) => {
+              {skillGroups.map(([scope, , list]) => {
                 const key = `skills:${scope}`;
-                const { shown, hidden } = capped(list, openGroups.has(key), filtering);
+                const open = openGroups.has(key) || filtering;
+                const hidden = skillFolds[key]?.hidden ?? 0;
                 return (
-                  <ul key={scope} data-capability-group={scope} className="flex flex-wrap gap-1 px-2">
-                    <li aria-hidden className="flex w-full items-baseline gap-1.5 pt-1 text-[11px] font-medium text-ink-faint">
-                      {label}<span className="font-normal tabular-nums">{list.length}</span>
-                    </li>
-                    {shown.map((skill) => (
-                      <SkillChip key={skill.id} skill={skill} onOpen={() => { setDrawerTarget({ kind: 'skill', skill }); }} />
-                    ))}
-                    <MoreToggle chip hidden={hidden} open={openGroups.has(key) && !filtering} onToggle={() => { toggleGroup(key); }} />
-                  </ul>
+                  <div key={scope} data-capability-group={scope}>
+                    <div aria-hidden className="flex items-baseline gap-1.5 px-2 pt-1 text-[11px] font-medium text-ink-faint">
+                      {t(scope === 'workspace' ? 'rail.source.workspace' : 'rail.source.global')}<span className="font-normal tabular-nums">{list.length}</span>
+                    </div>
+                    <SkillChipCluster
+                      open={open}
+                      rowCount={SKILL_ROWS}
+                      onFold={(state) => { setSkillFold(key, state); }}
+                      toggle={hidden > 0 || open ? (
+                        <div className="px-2">
+                          <MoreToggle
+                            chip
+                            hidden={hidden}
+                            open={open}
+                            onToggle={() => { toggleGroup(key); }}
+                          />
+                        </div>
+                      ) : null}
+                    >
+                      {list.map((skill) => (
+                        <SkillChip key={skill.id} skill={skill} onOpen={() => { setDrawerTarget({ kind: 'skill', skill }); }} />
+                      ))}
+                    </SkillChipCluster>
+                  </div>
                 );
               })}
             </div>
@@ -714,28 +713,15 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
         ) : null}
       </div>
 
-      {/* A host without a rail column falls back to the shared detail shell:
-          one overlay, the same body, no second drawer. */}
-      {!inlineGroupDetail && openGroupKey !== null ? (
-        <Dialog
-          onClose={closeToolGroup}
-          ariaLabel={openGroup === null ? knownTitles.current.get(openGroupKey) ?? openGroupKey : titleOf(openGroup)}
-          overlayId="capability-group-drawer"
-          overlayClassName={DETAIL_OVERLAY_CLASS}
-          panelClassName={DETAIL_PANEL_CLASS}
-        >
-          <div data-capability-group-drawer="" className="flex-1 overflow-y-auto p-4">
-            <ToolGroupDetail
-              key={openGroupKey}
-              group={openGroup}
-              groupKey={openGroupKey}
-              title={openGroup === null ? knownTitles.current.get(openGroupKey) ?? openGroupKey : titleOf(openGroup)}
-              tabLabel={(openGroup?.extension ?? (tab === 'extensions')) ? t('inspector.cap.extensions') : t('inspector.cap.tools')}
-              inlineDetail={false}
-              onBack={closeToolGroup}
-            />
-          </div>
-        </Dialog>
+      {/* The one preview is a floating layer: portaled out of the column so
+          hovering a chip cannot move the cluster or anything after it. */}
+      {previewGroup !== undefined && preview !== null ? (
+        <GroupPreviewCard
+          id={previewId}
+          group={previewGroup}
+          title={titleOf(previewGroup)}
+          anchor={preview.anchor}
+        />
       ) : null}
 
       <AgentDetailDrawer

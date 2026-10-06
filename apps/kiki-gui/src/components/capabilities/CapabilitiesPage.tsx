@@ -21,7 +21,6 @@ import { readLastSessionId } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
 import { pickWorkspace } from '../../lib/capabilities';
-import { isCatalogShelf } from '../../lib/pluginCatalog';
 import { useConnection } from '../../state/connection';
 import { Dialog } from '../Dialog';
 import { Icon } from '../icons';
@@ -71,8 +70,6 @@ export function pluginsRouteFrom(params: URLSearchParams): PluginsRoute {
   // Media is a plugins sub-view for the same reason import history is: it
   // manages what installed plugin packages can do.
   if (view === 'media') return { view: 'media' };
-  const shelf = params.get('shelf');
-  if (view === 'shelf' && isCatalogShelf(shelf)) return { view: 'shelf', shelf };
   return { view: 'market' };
 }
 
@@ -91,7 +88,6 @@ export function applyPluginsRoute(params: URLSearchParams, route: PluginsRoute):
     if (route.sourcePluginId !== undefined) next.set('sourcePlugin', route.sourcePluginId);
   }
   if (route.view === 'media') next.set('view', 'media');
-  if (route.view === 'shelf') { next.set('view', 'shelf'); next.set('shelf', route.shelf); }
   return next;
 }
 

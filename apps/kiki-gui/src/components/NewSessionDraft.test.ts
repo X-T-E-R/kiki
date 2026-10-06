@@ -208,6 +208,244 @@ describe('buildNewSessionCreate', () => {
     expect(body.agent_config).toMatchObject({ profile: 'agent' });
   });
 
+  /**
+   * A bare external engine must arrive as a bare harness. The legacy top-level
+   * fields are session overrides once the execution path reads them, so
+   * sending a value the user never chose would let Kiki's own default — the
+   * model chip's resolved id, the app's permission mode — decide for a harness
+   * that was explicitly chosen as-is.
+   */
+  it('sends no legacy control a bare external engine never inherited', () => {
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      // What the page is displaying, none of it chosen here:
+      model: 'provider/model',
+      thinking: 'high',
+      permissionMode: 'yolo',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp' },
+      plan_mode: false,
+    });
+  });
+
+  it('keeps an explicit choice on a bare external engine', () => {
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      model: 'provider/model',
+      thinking: 'high',
+      permissionMode: 'yolo',
+      planMode: false,
+      modelTouched: true,
+      effortTouched: true,
+      permissionTouched: true,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp' },
+      model: 'provider/model',
+      thinking: 'high',
+      permission_mode: 'yolo',
+      plan_mode: false,
+    });
+  });
+
+  it('drops only the control that was not touched, keeping the rest explicit', () => {
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      model: 'provider/model',
+      thinking: 'high',
+      permissionMode: 'yolo',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: true,
+      permissionTouched: true,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp' },
+      thinking: 'high',
+      permission_mode: 'yolo',
+      plan_mode: false,
+    });
+  });
+
+  it('leaves the native engine and an external profile exactly as before', () => {
+    // Native keeps every legacy field, untouched or not: that path has always
+    // sent them and the server resolves them against Kiki's own defaults.
+    const native = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: { executor: 'native', profile: 'agent', overrides: undefined },
+      model: 'provider/model',
+      thinking: 'high',
+      permissionMode: 'auto',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    expect(native.agent_config).toEqual({
+      profile: 'agent',
+      model: 'provider/model',
+      thinking: 'high',
+      permission_mode: 'auto',
+      plan_mode: false,
+    });
+    // A profile on an external engine supplies those values itself, so the
+    // page must not withhold them just because the user did not touch them.
+    const profiled = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'claude-reviewer',
+      execution: { executor: 'claude-acp', profile: 'claude-reviewer', overrides: undefined },
+      model: 'provider/model',
+      thinking: 'high',
+      permissionMode: 'auto',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    expect(profiled.agent_config).toEqual({
+      execution: { executor: 'claude-acp', profile: 'claude-reviewer' },
+      model: 'provider/model',
+      thinking: 'high',
+      permission_mode: 'auto',
+      plan_mode: false,
+    });
+  });
+
+  it('withholds only the controls the execution does not itself name', () => {
+    // The real counter-example: an engine configured with a model and an
+    // effort has said nothing about approvals, so the app's `manual` default
+    // must not be promoted into a session override on its behalf.
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: {
+        executor: 'example-acp',
+        profile: undefined,
+        overrides: { model: 'vendor-model', thinking: 'high' },
+      },
+      model: 'vendor-model',
+      thinking: 'high',
+      permissionMode: 'manual',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    // The execution names model and effort, so it owns both and the legacy
+    // fields are not repeated; permission is unnamed and untouched, so Kiki's
+    // `manual` is not promoted into an override either.
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'example-acp', overrides: { model: 'vendor-model', thinking: 'high' } },
+      plan_mode: false,
+    });
+    expect(body.agent_config).not.toHaveProperty('permission_mode');
+  });
+
+  it('does not let a null override revive the displayed default', () => {
+    // `null` is "fall through to the next layer", not "send what is on screen".
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: {
+        executor: 'example-acp',
+        profile: undefined,
+        overrides: { model: null, permission_mode: null },
+      },
+      model: 'vendor-model',
+      thinking: 'high',
+      permissionMode: 'auto',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'example-acp', overrides: { model: null, permission_mode: null } },
+      // `thinking` was never named, so the effort stays with the engine.
+      plan_mode: false,
+    });
+  });
+
+  it('sends an approval mode on a bare engine the user actually picked', () => {
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      permissionMode: 'review',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: true,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp' },
+      permission_mode: 'review',
+      plan_mode: false,
+    });
+  });
+
+  it('leaves a control the execution names entirely to the execution', () => {
+    // The execution already carries the answer for `model`, so the legacy
+    // field would be a second, conflicting statement about the same value.
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: {
+        executor: 'claude-acp',
+        profile: undefined,
+        overrides: { model: 'harness-model', allow_kiki_subagents: false },
+      },
+      model: 'harness-model',
+      thinking: 'high',
+      permissionMode: 'auto',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    // `model` is named by the execution and `thinking` was never touched, so
+    // only the untouched-and-unnamed controls are withheld; `permission_mode`
+    // was never named either and the user did not pick it.
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp', overrides: { model: 'harness-model', allow_kiki_subagents: false } },
+      plan_mode: false,
+    });
+  });
+
+  it('still lets a touched control win over an engine that names no override', () => {
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      model: 'picked/model',
+      thinking: 'low',
+      permissionMode: 'yolo',
+      planMode: false,
+      modelTouched: true,
+      effortTouched: true,
+      permissionTouched: true,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp' },
+      model: 'picked/model',
+      thinking: 'low',
+      permission_mode: 'yolo',
+      plan_mode: false,
+    });
+  });
+
   it('binds a persona and leaves its profile to the persona', () => {
     const body = buildNewSessionCreate({
       cwd: 'C:/repo',
@@ -1351,6 +1589,46 @@ describe('persona model and effort choice sources', () => {
     const handoff = navigate.mock.calls[0]![1].state;
     expect(handoff.model).toBe(explicit ? 'fixture/model' : undefined);
     expect(handoff.thinking).toBe(explicit ? 'high' : undefined);
+  });
+
+  it('carries a bare external engine to the first message with the same emptiness', async () => {
+    // The create body and the first prompt are two hops, and the second one
+    // used to re-send the displayed model, effort and approval mode — putting
+    // back exactly the overrides the create had just declined to send.
+    await renderDraft({});
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => {
+      state.setExecution({ executor: 'claude-acp', profile: undefined, overrides: undefined });
+    });
+    state = latestDraftState!;
+    // The page still shows Kiki's own default; none of it was chosen here, and
+    // whatever it is, it must not reach the harness.
+    expect(state.permissionMode).toBe('auto');
+    await act(async () => { await state.send('Hello', []); });
+
+    const body = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(body.agent_config).toEqual({ execution: { executor: 'claude-acp' }, plan_mode: expect.any(Boolean) });
+    const handoff = navigate.mock.calls[0]![1].state as Record<string, unknown>;
+    expect(handoff['model']).toBeUndefined();
+    expect(handoff['thinking']).toBeUndefined();
+    expect(handoff['permissionMode']).toBeUndefined();
+  });
+
+  it('sends an approval mode the user picked on a bare external engine', async () => {
+    await renderDraft({});
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => {
+      state.setExecution({ executor: 'claude-acp', profile: undefined, overrides: undefined });
+    });
+    state = latestDraftState!;
+    await act(async () => { state.setPermissionMode('yolo'); });
+    state = latestDraftState!;
+    await act(async () => { await state.send('Hello', []); });
+
+    const body = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(body.agent_config).toMatchObject({ execution: { executor: 'claude-acp' }, permission_mode: 'yolo' });
+    const handoff = navigate.mock.calls[0]![1].state as Record<string, unknown>;
+    expect(handoff['permissionMode']).toBe('yolo');
   });
 
   it('keeps unpinned persona profile defaults inherited and clearing persona restores ordinary profile submission', async () => {

@@ -1652,6 +1652,7 @@ export class TranscriptWireAdapter {
     if (type === 'content.part') return this.contentPart(event, ordinal);
     if (type === 'tool.call') return this.toolCall(event, ordinal, time);
     if (type === 'tool.result') return this.toolResult(event, time);
+    if (type === 'tool.progress') return this.toolProgress(event);
     return [];
   }
 
@@ -1798,11 +1799,28 @@ export class TranscriptWireAdapter {
       name: stringOf(event['name']) ?? '',
       state: 'running',
       input: event['args'],
+      display: event['display'],
       startedAt: isoOf(time),
     };
     const hit = { turnId, stepId, frame };
     this.storeTool(toolCallId, hit);
     return [{ op: 'frame.upsert', ...hit }];
+  }
+
+  private toolProgress(event: Readonly<Record<string, unknown>>): TranscriptOperation[] {
+    const toolCallId = stringOf(event['toolCallId']);
+    if (toolCallId === undefined) return [];
+    const hit = this.#tools.get(toolCallId) ?? this.lookups?.tool?.(toolCallId);
+    const update = objectOf(event['update']);
+    const kind = stringOf(update?.['kind']);
+    if (hit === undefined || update === undefined ||
+        kind !== 'stdout' && kind !== 'stderr' && kind !== 'progress' && kind !== 'status' && kind !== 'custom') return [];
+    const frame: ToolCallFrame = { ...hit.frame, progress: {
+      kind, text: stringOf(update['text']), percent: typeof update['percent'] === 'number' ? update['percent'] : undefined,
+      customKind: stringOf(update['customKind']), customData: update['customData'],
+    } };
+    this.storeTool(toolCallId, { ...hit, frame });
+    return [{ op: 'frame.upsert', turnId: hit.turnId, stepId: hit.stepId, frame }];
   }
 
   private toolResult(

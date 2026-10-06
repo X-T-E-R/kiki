@@ -309,6 +309,36 @@ describe('PluginsSection', () => {
     listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
   });
 
+  it('carries the catalog digest from detail through preview and the confirmed installation', async () => {
+    const entry = { ...ENTRY, sha256: 'b'.repeat(64), installable: true };
+    listPluginMarketplace.mockResolvedValue(catalog([entry]));
+    const container = await renderView({ view: 'detail', id: entry.id });
+    await click(container.querySelector(`[data-plugin-install="${entry.id}"]`)!);
+    await flush();
+    expect(previewPlugin).toHaveBeenCalledExactlyOnceWith(entry.source, entry.sha256);
+    expect(installPreviewedPlugin).not.toHaveBeenCalled();
+    await click(document.querySelector('[data-install-confirm]')!);
+    await flush();
+    expect(installPreviewedPlugin).toHaveBeenCalledExactlyOnceWith({ source: entry.source, sha256: entry.sha256,
+      fingerprint: PLAN.fingerprint, consent: true });
+    listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
+  });
+
+  it('keeps a catalog entry unavailable for installation on both market and detail', async () => {
+    const entry = { ...ENTRY, installable: false };
+    listPluginMarketplace.mockResolvedValue(catalog([entry]));
+    const container = await renderView({ view: 'market' });
+    expect(container.querySelector(`[data-catalog-install="${entry.id}"]`)).toBeNull();
+    await click(container.querySelector(`[data-catalog-row="${entry.id}"] button`)!);
+    await flush();
+    const install = container.querySelector<HTMLButtonElement>(`[data-plugin-install="${entry.id}"]`)!;
+    expect(install.disabled).toBe(true);
+    await click(install);
+    expect(previewPlugin).not.toHaveBeenCalled();
+    expect(installPreviewedPlugin).not.toHaveBeenCalled();
+    listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
+  });
+
   it('installs a permission-free plugin with a plain Install and leaves state alone on failure', async () => {
     listPluginMarketplace.mockResolvedValue(catalog([ENTRY]));
     previewPlugin.mockResolvedValueOnce({ ...PLAN, consentRequired: false, permissions: undefined, contributions: ['theme:dusk'] } as never);
@@ -328,19 +358,42 @@ describe('PluginsSection', () => {
     listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
   });
 
-  it('shelves the catalog, marks updates, and never offers Install for an installed entry', async () => {
+  it('shelves the catalog by what it declares, marks updates, and never offers Install for an installed entry', async () => {
     listPluginMarketplace.mockResolvedValue(catalog([
       { ...ENTRY, id: 'official-one', tier: 'official', displayName: 'Official One' },
-      { ...ENTRY, id: 'notes', displayName: 'Notes', installed: { version: '1.0.0', enabled: true } },
-      { ...ENTRY, id: 'notes-next', displayName: 'Notes Next', installed: { version: '1.0.0', enabled: true }, updateAvailable: true },
+      { ...ENTRY, id: 'notes', displayName: 'Notes', tier: 'curated', installed: { version: '1.0.0', enabled: true } },
+      { ...ENTRY, id: 'notes-next', displayName: 'Notes Next', tier: 'curated', installed: { version: '1.0.0', enabled: true }, updateAvailable: true },
     ]));
     const container = await renderView();
     await click(container.querySelector('[data-plugins-tab] [data-segment="market"]')!);
     await flush();
-    expect(container.querySelector('#plugins-shelf-featured [data-catalog-row="official-one"]')).not.toBeNull();
+    // Official and community entries get their own blocks, from the tier the
+    // catalog states, with no per-package rule anywhere in the client.
+    expect(container.querySelector('#plugins-shelf-official [data-catalog-row="official-one"]')).not.toBeNull();
+    expect(container.querySelector('#plugins-shelf-community [data-catalog-row="notes"]')).not.toBeNull();
     expect(container.querySelector('[data-catalog-row="notes"]')?.getAttribute('data-catalog-state')).toBe('installed');
     expect(container.querySelector('[data-catalog-install="notes"]')).toBeNull();
     expect(container.querySelector('[data-catalog-row="notes-next"]')?.getAttribute('data-catalog-state')).toBe('update');
+    listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
+  });
+
+  it('gives a catalog-declared package family its own block and lists every entry in it', async () => {
+    const family = [
+      { ...ENTRY, id: 'media-entry', tier: 'official' as const, displayName: 'Media', group: 'media' },
+      { ...ENTRY, id: 'media-one', tier: 'official' as const, displayName: 'Provider One', group: 'media' },
+      { ...ENTRY, id: 'media-two', tier: 'official' as const, displayName: 'Provider Two', group: 'media' },
+    ];
+    listPluginMarketplace.mockResolvedValue(catalog(family));
+    const container = await renderView();
+    await click(container.querySelector('[data-plugins-tab] [data-segment="market"]')!);
+    await flush();
+    // All three are drawn. A "see more" fold is how a reader concludes a
+    // package does not exist, so a catalog this short is never folded.
+    for (const entry of family) {
+      expect(container.querySelector(`[data-catalog-row="${entry.id}"]`), entry.id).not.toBeNull();
+    }
+    expect(container.querySelector('[data-plugins-shelf-more]')).toBeNull();
+    expect(container.querySelector('#plugins-shelf-official-media')).not.toBeNull();
     listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
   });
 
@@ -400,11 +453,23 @@ describe('PluginsSection', () => {
     expect(boundary?.textContent).toContain('not a sandbox');
   });
 
-  it('explains an unconfigured catalog instead of showing an empty list', async () => {
+  it('never shows an empty market for a server that has not configured a catalog address', async () => {
+    // No address configured is the normal case, not a broken one: the server
+    // serves the bundled official catalog, so a fresh install still browses.
+    listPluginMarketplace.mockResolvedValue({
+      configured: true,
+      source: 'builtin:kiki-official-plugins',
+      entries: [
+        { ...ENTRY, id: 'kiki-office', tier: 'official', displayName: 'Kiki Office Suite', version: '0.1.0' },
+        { ...ENTRY, id: 'kiki-extract', tier: 'official', displayName: 'Kiki Extract', version: '0.1.0' },
+      ],
+    });
     const container = await renderView();
     await click(container.querySelector('[data-plugins-tab] [data-segment="market"]')!);
     await flush();
-    expect(container.textContent).toContain('No plugin catalog is set on this server.');
+    expect(container.textContent).not.toContain('No plugin catalog is set on this server.');
+    expect(container.querySelector('#plugins-shelf-official [data-catalog-row="kiki-office"]')).not.toBeNull();
+    expect(container.querySelector('#plugins-shelf-official [data-catalog-row="kiki-extract"]')).not.toBeNull();
   });
 
   it('keeps only server defaults in settings and links management to the Capabilities page', async () => {

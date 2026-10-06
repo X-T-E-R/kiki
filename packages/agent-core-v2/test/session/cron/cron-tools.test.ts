@@ -102,6 +102,14 @@ function createToolHarness(options: {
       tasks.set(id, updated);
       return updated;
     },
+    updateTask: async (id, patch) => {
+      const task = tasks.get(id);
+      if (task === undefined) return undefined;
+      const updated = { ...task, ...patch };
+      tasks.set(id, updated);
+      return updated;
+    },
+    syncTaskFromStore: async () => {},
     fireTaskNow: async (id) => tasks.has(id),
     isStale(task) {
       const age = now - task.createdAt;

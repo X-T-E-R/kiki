@@ -1,33 +1,78 @@
 /**
- * Thread references — a link to another Kiki session (thread) typed or pasted
- * into a prompt. The GUI's "Copy link" writes the in-app route `/s/<id>`; the
- * address bar (browser build) and pasted desktop URLs carry the same route
- * behind an origin, and `kiki://s/<id>` is accepted for hand-typed links.
+ * Conversation references — a link to another Kiki session (thread) or room
+ * typed or pasted into a prompt. "Copy link" writes `/s/<id>` or `/rooms/<id>`;
+ * browser and desktop URLs carry the same route behind a local or caller-supplied
+ * origin, and explicit `kiki://` forms are accepted for hand-typed links.
  *
  * A reference is plain prompt text. At send time the GUI appends one
- * structured `<thread_refs>` block carrying what the model needs to find the
- * thread (id, title, workspace, status, last activity) and which tools read it;
- * the transcript strips that block back off and renders each link as a chip,
- * so the model sees the context and the user never sees the markup.
+ * structured `<thread_refs>` block carrying known thread or room metadata and
+ * tool guidance; the transcript strips that block back off and renders each
+ * link as a chip, so the model sees context and the user never sees markup.
  */
 
 import type { Session, Workspace } from '@kiki/protocol';
 
+import { conversationRefLink } from '../sessions/conversationLinks';
+
 /** Session ids are `session_<uuid>` (seat sessions add a `seat_` infix). */
 const SESSION_ID = 'session_[A-Za-z0-9][A-Za-z0-9_-]*';
+const ROOM_ID = '[A-Za-z0-9][A-Za-z0-9_-]{0,127}';
+const SESSION_ID_PATTERN = new RegExp(`^${SESSION_ID}$`);
+const ROOM_ID_PATTERN = new RegExp(`^${ROOM_ID}$`);
 /** Optional sub-route, query or hash after the id (`/agent/…`, `?turn=…`). */
 const TAIL = String.raw`(?:[/?#][^\s]*?)?`;
 const LEAD = String.raw`(^|[\s(\[（「“"'])`;
 const TRAIL = String.raw`(?=$|[\s)\]）」”"',.;:!?，。；：！？])`;
 const ORIGIN = String.raw`(?:(?:https?|tauri):\/\/[^\s/]+)?`;
+/** Loopback names/addresses identify this machine, regardless of port. */
+const LOOPBACK_HOSTS = new Set([
+  'localhost', '127.0.0.1', '0.0.0.0', '[::1]', '::1',
+  // The Tauri webview origin is still this machine.
+  'tauri.localhost',
+]);
 
-function linkPattern(): RegExp {
-  return new RegExp(
-    `${LEAD}(${ORIGIN}\\/s\\/(${SESSION_ID})${TAIL}|kiki:\\/\\/(?:s|session|sessions)\\/(${SESSION_ID})${TAIL})${TRAIL}`,
-    'g',
-  );
+const linkPattern = (): RegExp => new RegExp(
+  `${LEAD}((?:(?<origin>${ORIGIN})\\/(?<route>s|r|rooms)\\/(?<id>${SESSION_ID}|${ROOM_ID})|kiki:\\/\\/(?<protocolRoute>s|session|sessions|r|rooms)\\/(?<protocolId>${SESSION_ID}|${ROOM_ID}))(?<tail>${TAIL}))${TRAIL}`,
+  'g',
+);
+
+const originHost = (origin: string | undefined): string | undefined => {
+  if (origin === undefined) return undefined;
+  try {
+    return new URL(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(origin) ? origin : `http://${origin}`).host.toLowerCase();
+  } catch { return undefined; }
+};
+
+const isLocalOrigin = (origin: string, ownHost: string | undefined): boolean => {
+  try {
+    const url = new URL(origin);
+    return LOOPBACK_HOSTS.has(url.hostname.toLowerCase()) || url.host.toLowerCase() === ownHost;
+  } catch { return false; }
+};
+
+/** Controls which full URLs belong to this app; bare paths are unaffected. */
+export interface ConversationRefOptions {
+  /** This app's own origin, with or without a scheme, when the caller knows it. */
+  readonly origin?: string;
 }
 
+/** A linked conversation object of either kind. */
+export type ConversationRefKind = 'session' | 'room';
+
+/** One conversation link, with its original bounds and canonical in-app route. */
+export interface ConversationRefMatch {
+  /** Link bounds in the scanned text (`end` exclusive). */
+  readonly start: number;
+  readonly end: number;
+  /** The link exactly as written. */
+  readonly raw: string;
+  readonly kind: ConversationRefKind;
+  readonly id: string;
+  /** `/s/<id>` or `/rooms/<id>`, preserving the sub-route, query and hash. */
+  readonly href: string;
+}
+
+/** One thread link, retaining the thread-only caller contract. */
 export interface ThreadRefMatch {
   /** Link bounds in the scanned text (`end` exclusive). */
   readonly start: number;
@@ -37,18 +82,33 @@ export interface ThreadRefMatch {
   readonly sessionId: string;
 }
 
-/** Every thread link in `text`, in order. */
-export function findThreadRefs(text: string): ThreadRefMatch[] {
-  const matches: ThreadRefMatch[] = [];
+/** Every local thread or room link in `text`, in document order without overlap. */
+export function findConversationRefs(text: string, options?: ConversationRefOptions): ConversationRefMatch[] {
+  const matches: ConversationRefMatch[] = [];
+  const ownHost = originHost(options?.origin);
   for (const match of text.matchAll(linkPattern())) {
     const lead = match[1] ?? '';
     const raw = match[2] ?? '';
-    const sessionId = match[3] ?? match[4];
-    if (sessionId === undefined || raw === '') continue;
+    const groups = match.groups ?? {};
+    const id = groups['id'] ?? groups['protocolId'];
+    const route = groups['route'] ?? groups['protocolRoute'];
+    const origin = groups['origin'];
+    if (id === undefined || route === undefined || raw === '') continue;
+    if (origin && !isLocalOrigin(origin, ownHost)) continue;
+    const kind = route === 'r' || route === 'rooms' ? 'room' : 'session';
+    const isSessionId = SESSION_ID_PATTERN.test(id);
+    if (kind === 'session' ? !isSessionId : isSessionId || !ROOM_ID_PATTERN.test(id)) continue;
     const start = match.index + lead.length;
-    matches.push({ start, end: start + raw.length, raw, sessionId });
+    matches.push({ start, end: start + raw.length, raw, kind, id, href: conversationRefLink(kind, id) + (groups['tail'] ?? '') });
   }
   return matches;
+}
+
+/** Every local thread link in `text`, in order; room links are left out. */
+export function findThreadRefs(text: string, options?: ConversationRefOptions): ThreadRefMatch[] {
+  return findConversationRefs(text, options)
+    .filter((ref) => ref.kind === 'session')
+    .map(({ start, end, raw, id }) => ({ start, end, raw, sessionId: id }));
 }
 
 /** The in-app route the sidebar's "Copy link" and "Add to conversation" write. */
@@ -88,6 +148,14 @@ export interface ThreadRefInfo {
   readonly updatedAt?: string;
 }
 
+/** What the GUI knows about one referenced room at send time. */
+export interface RoomRefInfo {
+  readonly id: string;
+  readonly name?: string;
+  readonly workspaceId?: string;
+  readonly memberCount?: number;
+}
+
 /** Presentation status of a thread record (pending interaction beats busy). */
 export function threadRefStatusOf(session: Session | undefined): ThreadRefStatus {
   if (session === undefined) return 'unknown';
@@ -123,11 +191,11 @@ const BLOCK_PATTERN = /\n*<thread_refs>\n[\s\S]*?\n<\/thread_refs>\s*$/;
 
 function attr(value: string): string {
   return value
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/[\r\n]+/g, ' ');
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll(/[\r\n]+/g, ' ');
 }
 
 /** One `<thread_ref …/>` line; unknown fields are left out rather than guessed. */
@@ -148,23 +216,49 @@ export function threadRefTag(info: ThreadRefInfo): string {
   return `<thread_ref ${attrs.join(' ')}/>`;
 }
 
-/** The note that tells the model how to read a referenced thread. */
+/** One `<room_ref …/>` line; unknown fields are left out rather than guessed. */
+export function roomRefTag(info: RoomRefInfo): string {
+  const fields: [string, string | undefined][] = [
+    ['id', info.id],
+    ['name', info.name?.trim() === '' ? undefined : info.name?.trim()],
+    ['workspace_id', info.workspaceId],
+    ['member_count', info.memberCount?.toString()],
+  ];
+  const attrs = fields
+    .filter((field): field is [string, string] => field[1] !== undefined && field[1] !== '')
+    .map(([key, value]) => `${key}="${attr(value)}"`);
+  return `<room_ref ${attrs.join(' ')}/>`;
+}
+
+/** The note that tells the model how to use referenced threads and rooms. */
 export const THREAD_REF_HINT =
-  'The user linked the Kiki threads above. Read one with ThreadRead using its host_id, workspace_id and id as session_id (omit host_id for this host if absent), or search it with HistorySearch (scope=session, session_id=<id>).';
+  'The user linked the Kiki threads above. Read one with ThreadRead using its host_id, workspace_id and id as session_id (omit host_id for this host if absent), or search it with HistorySearch (scope=session, session_id=<id>).' +
+  ' A <room_ref> is a Kiki room the user linked; its page and log live at that room id, and speaking there uses ThreadSend({room: "<id>", content, mentions?}).';
 
 /**
- * Append the context block for every distinct thread linked in `text`.
- * Text without links comes back unchanged; an existing block is replaced so a
- * re-sent (edited, retried) prompt never carries two.
+ * Append the context block for every distinct linked thread and resolved room.
+ * Text without context lines comes back unchanged; an existing block is replaced
+ * so a re-sent (edited, retried) prompt never carries two.
+ * Use the same `options` as `findConversationRefs` so context and editing share
+ * one view of which full URLs are local.
  */
 export function appendThreadRefContext(
   text: string,
   resolve: (sessionId: string) => ThreadRefInfo,
+  resolveRoom?: (roomId: string) => RoomRefInfo,
+  options?: ConversationRefOptions,
 ): string {
   const body = stripThreadRefContext(text);
-  const ids = [...new Set(findThreadRefs(body).map((ref) => ref.sessionId))];
-  if (ids.length === 0) return body;
-  const lines = ids.map((id) => threadRefTag(resolve(id)));
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const ref of findConversationRefs(body, options)) {
+    const key = `${ref.kind}:${ref.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (ref.kind === 'session') lines.push(threadRefTag(resolve(ref.id)));
+    else if (resolveRoom !== undefined) lines.push(roomRefTag(resolveRoom(ref.id)));
+  }
+  if (lines.length === 0) return body;
   return `${body}\n\n${BLOCK_OPEN}\n${lines.join('\n')}\n${THREAD_REF_HINT}\n${BLOCK_CLOSE}`;
 }
 
@@ -176,17 +270,20 @@ export function stripThreadRefContext(text: string): string {
 // ---- composer editing ----
 
 /**
- * Deletion that touches a thread link removes the whole link: Backspace just
- * after (or inside) one, Delete just before (or inside) one, or a selection
+ * Deletion that touches a thread or room link removes the whole link: Backspace
+ * just after (or inside) one, Delete just before (or inside) one, or a selection
  * that overlaps one. Returns the widened range, or null when no link is hit.
+ * Use the same `options` as `findConversationRefs` so editing and context share
+ * one view of which full URLs are local.
  */
 export function threadRefDeletionRange(
   text: string,
   selectionStart: number,
   selectionEnd: number,
   key: 'Backspace' | 'Delete',
+  options?: ConversationRefOptions,
 ): { start: number; end: number } | null {
-  const refs = findThreadRefs(text);
+  const refs = findConversationRefs(text, options);
   if (refs.length === 0) return null;
   let start = Math.min(selectionStart, selectionEnd);
   let end = Math.max(selectionStart, selectionEnd);

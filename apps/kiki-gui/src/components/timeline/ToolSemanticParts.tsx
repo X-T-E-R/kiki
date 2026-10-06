@@ -5,7 +5,7 @@
  * history search differ only in what they say, never in how it is set.
  */
 
-import { useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { QueryClientContext } from '@tanstack/react-query';
 
 import type { Session } from '@kiki/protocol';
@@ -19,6 +19,9 @@ import { DisclosureChevron, Icon } from '../icons';
 import { useMediaPreview } from '../mediaPreviewContext';
 import type { SemanticContext, SemanticLink, SemanticTone, ToolSemantics } from '../toolSemantics';
 import { toolRecordCopy } from '../toolRecordCopy';
+import { useRoomRefDirectory } from '../../lib/roomRefs';
+import { ROOM_ITEMS_QUERY_KEY } from '../../lib/useConversationList';
+import { useOptionalConnection } from '../../state/connection';
 
 export const SEMANTIC_STATE_TONE: Record<SemanticTone, string> = {
   plain: 'text-ink-faint',
@@ -46,7 +49,47 @@ function useKnownSessionTitles(): (sessionId: string) => string | undefined {
 export function useSemanticContext(): SemanticContext {
   const { t, tp, locale } = useI18n();
   const threadTitle = useKnownSessionTitles();
-  return useMemo(() => ({ t, tp, locale, threadTitle }), [t, tp, locale, threadTitle]);
+  // The room list, warmed once and then read from the cache — the same shape as
+  // the thread titles above, so a room send names its room in a session the user
+  // opened directly, not only where the sidebar already ran. A surface with no
+  // client simply keeps the raw id.
+  useEnsureRoomList();
+  const rooms = useRoomRefDirectory();
+  return useMemo(
+    () => ({
+      t, tp, locale, threadTitle,
+      roomName: (roomId: string) => { const hit = rooms.lookup(roomId); return hit.exists ? hit.name : undefined; },
+    }),
+    [t, tp, locale, threadTitle, rooms],
+  );
+}
+
+/**
+ * Fill the shared room-list cache when it is empty, without subscribing to it.
+ *
+ * The list the sidebar and the room surfaces share is `['rooms','items']`
+ * (room summaries from `GET /rooms/items`), NOT the bare `['rooms']` key: the
+ * bare key only gets invalidated on a `room.changed` event, so a query
+ * registered under it stays empty forever and prefetching into it silently
+ * never lands. Only a cached array with entries counts as loaded; a failed
+ * fetch leaves the card showing the room's raw id, which is honest.
+ */
+function useEnsureRoomList(): void {
+  const client = useContext(QueryClientContext);
+  const api = useOptionalConnection()?.client;
+  const rest = api?.klient?.rest;
+  useEffect(() => {
+    if (client === undefined || rest === undefined) return;
+    const cached = client.getQueryData(ROOM_ITEMS_QUERY_KEY);
+    if (Array.isArray(cached) && cached.length > 0) return;
+    if (client.getQueryState(ROOM_ITEMS_QUERY_KEY)?.fetchStatus === 'fetching') return;
+    void client.prefetchQuery({
+      queryKey: ROOM_ITEMS_QUERY_KEY,
+      queryFn: () => rest.rooms.listItems(),
+      staleTime: 15_000,
+      retry: false,
+    }).catch(() => undefined);
+  }, [client, api, rest]);
 }
 
 /**

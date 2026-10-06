@@ -9,6 +9,7 @@ export interface CognitionBinding {
   readonly bindingRevision?: string;
   readonly config?: CognitionContent;
   readonly anchor?: string;
+  readonly slots?: { readonly overlay?: string; readonly steering?: string; readonly anchor?: string };
 }
 
 export function selectCognitionConfig(

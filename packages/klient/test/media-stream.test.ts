@@ -45,10 +45,17 @@ describe('explicit media stream', () => {
     expect(cancelled).toBe(1);
   });
 
+  it('accepts the same 512 KiB preview contract through session and host consumers', async () => {
+    const bytes = new Uint8Array(512 * 1024).fill(42);
+    const { rest } = facade(() => new Response(bytes, { headers: { 'content-type': 'image/png' } }));
+    expect((await rest.sessions.mediaPreview('session', 'file')).bytes).toEqual(bytes);
+    expect((await rest.filesystem.readHostMediaPreview('/fixture/image.png')).bytes).toEqual(bytes);
+  });
+
   it('counts preview stream bytes instead of trusting a lying content-length', async () => {
     let cancelled = 0;
     const { rest, raw } = facade(() => new Response(new ReadableStream({
-      start(controller) { controller.enqueue(new Uint8Array(64 * 1024 + 1)); },
+      start(controller) { controller.enqueue(new Uint8Array(512 * 1024 + 1)); },
       cancel() { cancelled += 1; },
     }), { headers: { 'content-length': '1', 'content-type': 'image/jpeg' } }));
     await expect(rest.sessions.mediaPreview('session', 'file', { mediaType: 'image/png' })).rejects.toThrow('preview exceeds');

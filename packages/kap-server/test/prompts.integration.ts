@@ -10,6 +10,9 @@ import {
   IAgentLoopService,
   IAgentContextMemoryService,
   IAgentExecutionService,
+  IAgentExecutorRegistry,
+  type AgentExecutorProvider,
+  type ProfileBindingSnapshot,
   IAgentLifecycleService,
   IAgentPermissionModeService,
   IAgentTaskService,
@@ -37,7 +40,16 @@ import {
 import { createKlient as createMemoryKlient } from '@kiki/klient/memory';
 import { createKlient as createHttpKlient } from '@kiki/klient/http';
 import { TaskNotificationStepRequest } from '@kiki/agent-core-v2/agent/task/taskService';
+import { createHooks } from '@kiki/agent-core-v2/hooks';
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
+import { buildNewSessionCreate } from '../../../apps/kiki-gui/src/components/NewSessionDraft';
+import { resolveProfileSwitchSubmission } from '../../../apps/kiki-gui/src/components/SessionView';
+import { executionChoice } from '../../session-core/src/composer/executionSelection';
+import { SessionController } from '../../session-core/src/session/sessionController';
+import { applyCompactionProgress, type CompactionProgress } from '../../../apps/kiki-gui/src/components/useCompactionProgress';
+import { compactSessionContext } from '../../session-core/src/commands/sessionActions';
+import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '@kiki/agent-core-v2/agent/llmRequester/llmRequester';
+import { IAgentFullCompactionService } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
 import { agentTranscriptToBlocks } from '../../session-core/src/session/transcript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -50,6 +62,8 @@ import {
 import { modelSwitchActionSchema } from '../src/protocol/rest-model-switch';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders, bearerToken } from './helpers/auth';
+
+vi.mock('../../../apps/kiki-gui/src/components/TerminalPanel', () => ({ TerminalPanel: () => null }));
 
 interface Envelope<T> {
   code: number;
@@ -281,6 +295,197 @@ describe('server-v2 /api prompts', () => {
     if (session === undefined) throw new Error(`session ${sessionId} not found`);
     await session.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
   }
+
+  it('creates a direct executor over HTTP and commits queued execution overrides only at the next user turn', async () => {
+    const bindings: ProfileBindingSnapshot[] = [];
+    const runs: Array<{ generation: number; prompt: string }> = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const provider: AgentExecutorProvider = {
+      id: 'example-provider', protocol: 'acp-v1', validateOptions: () => ({}),
+      validateBinding: (binding) => ({ ok: true, binding }),
+      create: (context) => {
+        bindings.push(structuredClone(context.binding));
+        let running = false;
+        let current = Promise.resolve();
+        return {
+          hooks: createHooks(['onWillRun']),
+          status: () => ({ state: running ? 'running' : 'idle' }),
+          run: async (request, options) => {
+            running = true;
+            runs.push({ generation: context.binding.execution!.generation, prompt: request.kind === 'retry' ? '' : request.prompt });
+            const id = runs.length;
+            current = (id === 1 ? gate : Promise.resolve()).then(() => { running = false; });
+            const completion = current.then(() => ({ summary: 'Done' }));
+            options.onReady?.();
+            return { agentId: context.agent.id, completion, turn: {
+              id, signal: options.signal, ready: Promise.resolve(), cancel: () => false,
+              result: current.then(() => ({ type: 'completed' as const, steps: 1, truncated: false })),
+            } };
+          },
+          cancel: () => false, settled: () => current, shutdown: async () => {},
+        };
+      },
+    };
+    const registry = server!.core.accessor.get(IAgentExecutorRegistry);
+    vi.spyOn(registry, 'resolveExecutable').mockResolvedValue({ descriptor: {
+      id: 'example-acp', protocol: 'acp-v1', command: 'fixture', args: [], revision: 'fixture',
+    }, options: {}, provider });
+    vi.spyOn(registry, 'validateBinding').mockImplementation((_id, _options, binding) => ({ ok: true, binding }));
+    const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!), transport: {
+      eventsUrl: `${base.replace(/^http/, 'ws')}/api/klient/events`,
+      fetch: (input, init) => {
+        if (init?.method === 'POST' && typeof init.body === 'string') {
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          requests.push({ path: new URL(url).pathname, body: JSON.parse(init.body) });
+        }
+        return fetch(input, init);
+      },
+    } });
+    let controller: SessionController | undefined;
+    try {
+      const configured = await call<{ agent_executor_overrides: unknown }>('POST', '/api/config', {
+        agent_executor_overrides: { 'example-acp': { defaults: { model_alias: 'settings-model', thinking_effort: 'low',
+          kiki_context: [], allow_kiki_subagents: false, executor_prompt: { delivery: 'preamble', include: [] } } } },
+      });
+      expect(configured.body.code, configured.body.msg).toBe(0);
+      expect(configured.body.data.agent_executor_overrides).toMatchObject({ 'example-acp': { defaults: {
+        model_alias: 'settings-model', thinking_effort: 'low', kiki_context: [], allow_kiki_subagents: false,
+      } } });
+      const cleared = await call<{ agent_executor_overrides: unknown }>('POST', '/api/config', {
+        agent_executor_overrides: { 'example-acp': { defaults: { model_alias: null, thinking_effort: null, executor_prompt: null } } },
+      });
+      expect(cleared.body.code, cleared.body.msg).toBe(0);
+      expect(cleared.body.data.agent_executor_overrides).toEqual({ 'example-acp': { defaults: { kiki_context: [], allow_kiki_subagents: false } } });
+      const chosen = executionChoice({ executor: 'example-acp', overrides: { model: 'vendor-model', thinking: 'high' } });
+      const created = await client.createSession(buildNewSessionCreate({ cwd: home!, profile: 'agent', execution: chosen,
+        model: 'stub', thinking: 'low', modelTouched: true, effortTouched: true,
+        permissionMode: 'manual', permissionTouched: false, planMode: false }));
+      const id = created.id;
+      expect(requests.find((request) => request.path === '/api/sessions')?.body['agent_config']).toEqual({
+        execution: chosen, plan_mode: false,
+      });
+      controller = new SessionController(client.sessions, client.klient.session(id).view, id);
+      const session = getLiveSessionById(server!.core.accessor, id)!;
+      const main = await ensureMainAgent(session);
+      const profile = main.accessor.get(IAgentProfileService);
+      const before = structuredClone(profile.data().execution!);
+      expect(before).toMatchObject({ selection: { executor: 'example-acp' }, effective: { model: 'vendor-model', thinking: 'high' },
+        sources: { kiki_context: 'harness-settings', allow_kiki_subagents: 'harness-settings', permission_mode: 'harness-default' } });
+      expect(before.selection.profile).toBeUndefined();
+      expect(before.effective.permission_mode).toBeUndefined();
+      const first = await controller.sendPrompt({ promptId: 'direct-first', text: 'FIRST_USER' });
+      expect(first.status).toBe('running');
+      const nextChoice = executionChoice({ executor: 'example-acp', overrides: { model: null, thinking: null, permission_mode: null,
+        kiki_context: [], allow_kiki_subagents: false } });
+      const nextSelection = resolveProfileSwitchSubmission({ pendingProfile: undefined, boundProfile: 'agent',
+        pendingExecution: nextChoice, boundExecution: executionChoice(before.selection),
+        modelTouched: true, effortTouched: true, model: 'stub', thinking: 'low', permissionTouched: true, permissionMode: 'manual' });
+      const next = await controller.sendPrompt({ ...nextSelection, promptId: 'direct-next', text: 'NEXT_USER' });
+      expect(next.status).toBe('queued');
+      expect(requests.find((request) => request.body['prompt_id'] === 'direct-next')?.body).toEqual({
+        prompt_id: 'direct-next', content: [{ type: 'text', text: 'NEXT_USER' }], execution: nextChoice,
+      });
+      expect(profile.data().execution).toEqual(before);
+      expect(bindings).toHaveLength(1);
+      release();
+      await vi.waitFor(() => { expect(runs).toHaveLength(2); }, { timeout: 5000 });
+      await main.accessor.get(IAgentExecutionService).settled();
+      await vi.waitFor(() => { expect(main.accessor.get(IAgentPromptService).list().active).toBeUndefined(); });
+      const after = structuredClone(profile.data().execution!);
+      expect(after.generation).toBe(before.generation + 1);
+      expect(after.selection.overrides).toEqual({ kiki_context: [], allow_kiki_subagents: false });
+      expect(after.effective.model).toBeUndefined();
+      expect(after.effective.thinking).toBeUndefined();
+      expect(after.sources).toMatchObject({ model: 'harness-default', thinking: 'harness-default',
+        kiki_context: 'session', allow_kiki_subagents: 'session', permission_mode: 'harness-default' });
+      expect(bindings).toHaveLength(2);
+      expect(bindings[1]).toMatchObject({ execution: after, systemPrompt: '', kikiContext: [], allowKikiSubagents: false });
+      expect(bindings[1]?.profileName).toBeUndefined();
+      const inherited = resolveProfileSwitchSubmission({ pendingProfile: undefined, boundProfile: 'agent',
+        pendingExecution: undefined, boundExecution: executionChoice(after.selection),
+        modelTouched: false, effortTouched: false, model: undefined, thinking: profile.data().thinkingLevel,
+        permissionTouched: false, permissionMode: 'manual' });
+      await controller.sendPrompt({ ...inherited, promptId: 'direct-inherit', text: 'INHERIT_USER' });
+      expect(requests.find((request) => request.body['prompt_id'] === 'direct-inherit')?.body).toEqual({
+        prompt_id: 'direct-inherit', content: [{ type: 'text', text: 'INHERIT_USER' }],
+      });
+      await main.accessor.get(IAgentExecutionService).settled();
+      expect(profile.data().execution).toEqual(after);
+      expect(bindings).toHaveLength(2);
+      expect(runs).toEqual([{ generation: before.generation, prompt: 'FIRST_USER' },
+        { generation: after.generation, prompt: 'NEXT_USER' }, { generation: after.generation, prompt: 'INHERIT_USER' }]);
+      const warm = await client.getSession(id);
+      expect(warm.agent_config.execution).toEqual(JSON.parse(JSON.stringify(after)));
+      await closeSessionById(server!.core.accessor, id);
+      const cold = await client.getSession(id);
+      expect(cold.agent_config.execution).toEqual(JSON.parse(JSON.stringify(after)));
+      const coldProfile = await call<{ agent_config: { execution: unknown } }>('GET', `/api/sessions/${id}/profile`);
+      expect(coldProfile.body.data.agent_config.execution).toEqual(JSON.parse(JSON.stringify(after)));
+      expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+    } finally { release(); controller?.close(); await client.klient.close(); }
+  });
+
+  it('queues a GUI manual compaction over HTTP and publishes manual execution and completion after a held request', async () => {
+    await server!.core.accessor.get(IModelCatalogMutationService).updateModel('stub', { max_context_size: 256000 });
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub', thinking: 'high' });
+    const context = main.accessor.get(IAgentContextMemoryService);
+    for (const [role, text] of [['user', 'Old request.'], ['assistant', 'Old response.']] as const) {
+      context.append({ role, content: [{ type: 'text', text }], toolCalls: [] });
+    }
+    let release!: () => void;
+    let requestStarted!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const held = new Promise<void>((resolve) => { requestStarted = resolve; });
+    const finish = (text: string): AgentLLMRequestFinish => ({
+      message: { role: 'assistant', content: [{ type: 'text', text }], toolCalls: [] },
+      usage: { inputOther: 1, output: 1, inputCacheRead: 0, inputCacheCreation: 0 },
+      providerFinishReason: 'completed',
+    });
+    const requester = vi.spyOn(main.accessor.get(IAgentLLMRequesterService), 'start').mockImplementation((input) => ({
+      trace: { traceId: 'fixture-manual-compaction' },
+      result: input?.source?.type === 'turn'
+        ? (async () => { requestStarted(); await gate; return finish('Held final answer.'); })()
+        : Promise.resolve(finish('Manual summary over HTTP.')),
+    }));
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!) });
+    let progress: CompactionProgress | undefined;
+    const phases: string[] = [];
+    const events = client.klient.session(id).agent('main').events;
+    const update = (event: Parameters<typeof applyCompactionProgress>[1]) => {
+      progress = applyCompactionProgress(progress, event);
+      if (progress !== undefined) phases.push(`${progress.source}:${progress.phase}`);
+    };
+    const subscriptions = [events.on('compaction.started', update), events.on('compaction.completed', update), events.on('compaction.cancelled', update)];
+    try {
+      await Promise.all(subscriptions.map((subscription) => subscription.ready));
+      await client.submitPrompt(id, { content: [{ type: 'text', text: 'Held request.' }] });
+      await held;
+      const record = await client.getSession(id);
+      const action = { client, host: {}, refreshSessions: vi.fn(), navigate: vi.fn() };
+      const receipt = await compactSessionContext(action, record);
+      expect(receipt).toEqual({ accepted: true, source: 'manual', status: 'queued' });
+      expect(await compactSessionContext(action, record)).toEqual({ accepted: false, source: 'manual', status: 'queued' });
+      await expect.poll(() => progress?.phase).toBe('queued');
+      expect(requester).toHaveBeenCalledTimes(1);
+      release();
+      await expect.poll(() => progress?.phase).toBe('completed');
+      expect(phases).toEqual(['manual:queued', 'manual:running', 'manual:completed']);
+      expect(requester).toHaveBeenCalledTimes(2);
+      expect(main.accessor.get(IAgentFullCompactionService).queuedManualCompaction).toBe(false);
+      expect(context.get().some((message) => message.origin?.kind === 'compaction_summary')).toBe(true);
+      await main.accessor.get(IAgentLoopService).settled();
+    } finally {
+      release();
+      for (const subscription of subscriptions) subscription.dispose();
+      await client.klient.close();
+      requester.mockRestore();
+    }
+  }, 30_000);
 
   async function createHeldMainAgent(sessionId: string): Promise<void> {
     await createMainAgent(sessionId);

@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Readable } from 'node:stream';
+import { EventEmitter } from 'node:events';
+import { PassThrough, Readable } from 'node:stream';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
@@ -109,5 +110,77 @@ describe('HostProcessService', () => {
     await proc.kill('SIGTERM');
     const code = await proc.wait();
     expect(code).not.toBe(0);
+  });
+});
+
+describe('HostProcessService Windows taskkill settlement', () => {
+  let platform: NodeJS.Platform;
+  let killer: EventEmitter & { kill: ReturnType<typeof vi.fn>; unref: ReturnType<typeof vi.fn> };
+  let disposables: DisposableStore;
+  let service: IHostProcessService;
+  let commands: string[];
+
+  beforeEach(async () => {
+    platform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    commands = [];
+    vi.doMock('node:child_process', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('node:child_process')>()),
+      spawn: (command: string, args: readonly string[]) => {
+        commands.push([command, ...args].join(' '));
+        const child = Object.assign(new EventEmitter(), {
+          pid: 4242, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+          kill: vi.fn(() => true), unref: vi.fn(),
+        });
+        if (command === 'taskkill') killer = child;
+        else queueMicrotask(() => child.emit('spawn'));
+        return child;
+      },
+    }));
+    vi.resetModules();
+    const { HostProcessService: WindowsHostProcessService } = await import('#/os/backends/node-local/hostProcessService');
+    const { IHostProcessService: WindowsProcessId } = await import('#/os/interface/hostProcess');
+    const { createServices: createWindowsServices } = await import('#/_base/di/test');
+    disposables = new DisposableStore();
+    const ix = createWindowsServices(disposables, {
+      additionalServices: (reg) => reg.define(WindowsProcessId, WindowsHostProcessService),
+    });
+    service = ix.get(WindowsProcessId);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    disposables.dispose();
+    vi.useRealTimers();
+    vi.doUnmock('node:child_process');
+    vi.resetModules();
+    Object.defineProperty(process, 'platform', { value: platform });
+  });
+
+  it('bounds a taskkill that never emits close and terminates the owned killer', async () => {
+    const process = await service.spawn('node', ['-e', 'owned-test']);
+    let settled = false;
+    const pending = process.kill().then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toBe(true);
+    expect(commands).toContain('taskkill /T /F /PID 4242');
+    expect(killer.kill).toHaveBeenCalledOnce();
+    expect(killer.unref).toHaveBeenCalledOnce();
+    await pending;
+    process.dispose();
+  });
+
+  it.each(['close', 'error'])('settles an early taskkill %s without killing it or leaving a deadline', async (event) => {
+    const process = await service.spawn('node', ['-e', 'owned-test']);
+    const pending = process.kill();
+    killer.emit(event, event === 'error' ? new Error('missing taskkill') : 0);
+    await pending;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(killer.kill).not.toHaveBeenCalled();
+    expect(killer.unref).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    process.dispose();
   });
 });

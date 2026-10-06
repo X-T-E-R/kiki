@@ -5,6 +5,8 @@ import { z } from 'zod';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IEventService } from '#/app/event/event';
+import { UsageSettled } from '#/agent/usage/usageEvents';
 import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -138,6 +140,7 @@ export class RetainedUsageService implements IRetainedUsageService {
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IAppendLogStore private readonly appendLog: IAppendLogStore,
+    @IEventService private readonly events: IEventService,
   ) {}
 
   async retainEphemeralUsage(sessionScope: string, workspaceId: string): Promise<void> {
@@ -158,6 +161,7 @@ export class RetainedUsageService implements IRetainedUsageService {
       kind: 'commit', sourceId,
     });
     await this.appendLog.flush();
+    this.events.publish(new UsageSettled({ payload: {} }));
   }
 
   async listEphemeralUsage(query: RetainedUsageListQuery): Promise<{

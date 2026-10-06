@@ -98,7 +98,9 @@ describe('ShortcutsSection', () => {
   it('lists every remappable action for the client platform', async () => {
     const container = await render();
     expect(client.readShortcuts).toHaveBeenCalledWith('windows');
-    expect(container.querySelectorAll('[data-shortcut-row]')).toHaveLength(17);
+    expect(container.querySelectorAll('[data-shortcut-row]')).toHaveLength(18);
+    expect(container.querySelector('[data-shortcut-row="previous-session"]')?.textContent).toContain('Previous running thread');
+    expect(container.querySelector('[data-shortcut-row="next-session"]')?.textContent).toContain('Next running thread');
     expect(container.querySelector('[data-shortcut-row="switcher"]')?.textContent).toContain('Ctrl');
   });
 

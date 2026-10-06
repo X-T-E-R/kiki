@@ -7,7 +7,7 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { ScopeUnits } from '#/_base/di/fiber';
 import { createDecorator } from '#/_base/di/instantiation';
 import type { InstantiationService } from '#/_base/di/instantiationService';
-import { Scope } from '#/_base/di/scope';
+import { Scope, createScopedChildHandle } from '#/_base/di/scope';
 import { Service } from '#/_base/di/service';
 
 interface IFoo {
@@ -26,6 +26,49 @@ class Foo implements IFoo {
 
 describe('ScopeUnits — kernel materialization fold (D11/G2)', () => {
   const log: string[] = [];
+
+  it.each([false, true])('keeps session factory ownership anchors until contributed cleanup settles (reject=%s)', async (reject) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const events: string[] = [];
+    const errors: unknown[] = [];
+    class SlowSession extends Service {
+      constructor() {
+        super();
+        this.effect(() => async () => {
+          events.push('start'); await gate; events.push('end');
+          if (reject) throw new Error('cleanup failed');
+        });
+      }
+    }
+    class Pack extends Service {
+      constructor() { super(); this.provide(ScopeUnits('session'), SlowSession); }
+    }
+    const app = Scope.createApp({ id: 'ownership-app' });
+    app.instantiation.provide(IPack, new SyncDescriptor(Pack));
+    app.accessor.get(IPack);
+    const session = createScopedChildHandle(app.instantiation, 'session', 'ownership-session', {
+      configureContainer: (container) => {
+        container.anchorKernelEntry(async () => { events.push('lock released'); }, 'session-lock');
+        container.anchorKernelEntry(() => { events.push('workspace released'); }, 'workspace-reference');
+      },
+    });
+    setUnexpectedErrorHandler((error) => errors.push(error));
+    try {
+      const close = session.dispose();
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      const observed = [...events];
+      release();
+      await close;
+      expect(observed).toEqual(['start']);
+      expect(events).toEqual(['start', 'end', 'workspace released', 'lock released']);
+      expect(errors).toHaveLength(reject ? 1 : 0);
+    } finally {
+      release();
+      await app.dispose();
+      resetUnexpectedErrorHandler();
+    }
+  });
 
   class AgentFeature extends Service {
     constructor() {
@@ -149,6 +192,90 @@ describe('ScopeUnits — kernel materialization fold (D11/G2)', () => {
       expect(unexpected).toEqual([]);
     } finally {
       app.dispose();
+      resetUnexpectedErrorHandler();
+    }
+  });
+
+  it.each([false, true])('awaits async contributed cleanup during provider withdrawal without deadlocking the cascade (close target=%s)', async (closeTarget) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const events: string[] = [];
+    class AsyncFeature extends Service {
+      constructor() {
+        super();
+        this.provide(IFoo, Foo);
+        this.effect(() => async () => { events.push('started'); await gate; events.push('ended'); });
+      }
+    }
+    class AsyncPack extends Service {
+      constructor() { super(); this.provide(ScopeUnits('agent'), AsyncFeature); }
+    }
+    const app = Scope.createApp({ id: 'async-withdraw-app' });
+    app.instantiation.provide(IPack, new SyncDescriptor(AsyncPack));
+    app.accessor.get(IPack);
+    const agent = app.createChild('agent', 'async-withdraw-agent');
+    expect(agent.accessor.get(IFoo).tag).toBe('foo');
+    app.instantiation.unprovide(IPack);
+    let settled = false;
+    const pending = app.instantiation.cascade.whenIdle().then(() => { settled = true; });
+    await Promise.resolve();
+    expect(events).toEqual(['started']);
+    expect(settled).toBe(false);
+    let targetSettled = false;
+    const targetPending = closeTarget
+      ? Promise.resolve(agent.dispose()).then(() => { targetSettled = true; })
+      : undefined;
+    await Promise.resolve();
+    if (closeTarget) expect(targetSettled).toBe(false);
+    release();
+    await Promise.all([pending, targetPending]);
+    expect(events).toEqual(['started', 'ended']);
+    expect(() => agent.accessor.get(IFoo)).toThrow();
+    await app.dispose();
+  });
+
+  it.each([false, true])('awaits async contributed unit teardown once and settles failures (reject=%s)', async (reject) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const events: string[] = [];
+    const unexpected: unknown[] = [];
+    class AsyncFeature extends Service {
+      constructor() {
+        super();
+        this.effect(() => () => { events.push('remaining'); });
+        this.effect(() => async () => {
+          events.push('started');
+          await gate;
+          events.push('ended');
+          if (reject) throw new Error('async teardown failed');
+        });
+      }
+    }
+    class AsyncPack extends Service {
+      constructor() { super(); this.provide(ScopeUnits('agent'), AsyncFeature); }
+    }
+    const app = Scope.createApp({ id: 'async-app' });
+    app.instantiation.provide(IPack, new SyncDescriptor(AsyncPack));
+    app.accessor.get(IPack);
+    const agent = app.createChild('agent', 'async-agent');
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    try {
+      let settled = false;
+      const first = agent.dispose();
+      expect(agent.dispose()).toBe(first);
+      const pending = Promise.resolve(first).then(() => { settled = true; });
+      await Promise.resolve();
+      expect(events).toEqual(['started']);
+      expect(settled).toBe(false);
+      release();
+      await pending;
+      expect(events).toEqual(['started', 'ended', 'remaining']);
+      expect(unexpected).toHaveLength(reject ? 1 : 0);
+      await app.dispose();
+      expect(events).toHaveLength(3);
+    } finally {
+      release();
+      await app.dispose();
       resetUnexpectedErrorHandler();
     }
   });

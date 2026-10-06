@@ -100,6 +100,40 @@ export function detectAttentionEvents(
   return { events, baseline };
 }
 
+export interface StableCompletion {
+  readonly session_id: string;
+  readonly episode_id: string;
+  readonly completed_at: number;
+}
+
+export class CompletionObserver {
+  private initialized = false;
+  private readonly seen = new Map<string, StableCompletion>();
+
+  disconnected(): void {
+    this.initialized = false;
+  }
+
+  observe(completions: readonly StableCompletion[], sessions: readonly Session[]): readonly AttentionEvent[] {
+    const baseline = !this.initialized;
+    this.initialized = true;
+    const events: AttentionEvent[] = [];
+    for (const completion of completions) {
+      const previous = this.seen.get(completion.session_id);
+      this.seen.set(completion.session_id, completion);
+      if (baseline || previous?.episode_id === completion.episode_id) continue;
+      const session = sessions.find((item) => item.id === completion.session_id);
+      if (session?.archived) continue;
+      events.push({ sessionId: completion.session_id, kind: 'completed', title: session?.title ?? '' });
+    }
+    const watermark = completions.reduce((max, item) => Math.max(max, item.completed_at), 0);
+    for (const [id, completion] of this.seen) {
+      if (watermark - completion.completed_at > 600_000) this.seen.delete(id);
+    }
+    return events;
+  }
+}
+
 // ---- delivery plan ----
 
 export interface AwayNotificationPrefs {

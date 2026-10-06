@@ -147,6 +147,11 @@ interface HostCapabilities {
     readonly paths: readonly string[];
     readonly media: readonly HostSelectedFile[];
   } | null>;
+  /** Lazily classify native image drops using the same media policy as clipboard files. */
+  readDroppedFiles?: (paths: readonly string[]) => Promise<{
+    readonly paths: readonly string[];
+    readonly media: readonly HostSelectedFile[];
+  }>;
   /**
    * Subscribe to native OS file drops. Present only where the shell owns
    * drag-and-drop (the desktop runtime); the returned function unsubscribes.

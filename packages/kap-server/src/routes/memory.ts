@@ -1,4 +1,5 @@
-import { IConfigService, IMemoryStore, IWorkspaceService, MEMORY_SECTION, memoryEnabled, type MemoryConfig, type MemoryScope, type MemoryType, type Scope } from '@kiki/agent-core-v2';
+import { IConfigService, IMemoryStore, IWorkspaceService, MEMORY_SECTION, MemoryDomainError, memoryApplicability, memoryEnabled, type MemoryConfig, type MemoryScope, type Scope } from '@kiki/agent-core-v2';
+import { memoryPutBodySchema } from '@kiki/protocol';
 import { z } from 'zod';
 import type { FastifyReply } from 'fastify';
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -17,7 +18,7 @@ const entryParams = scopeParams.extend({ id: z.string().regex(/^m_[a-zA-Z0-9_]+$
 const personaIdQuery = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional();
 const scopeQuery = z.object({ workspace_id: z.string().optional(), persona_id: personaIdQuery });
 const entryQuery = scopeQuery.extend({ expected_revision: z.string().optional() });
-const body = z.object({ action: z.enum(['create', 'update', 'supersede', 'archive']).default('create'), type: z.enum(['user', 'feedback', 'project', 'reference']), title: z.string().min(1).max(200), body: z.string().min(1).max(1_500), reason: z.string().min(1), expected_revision: z.string().optional(), pinned: z.boolean().optional() });
+const body = memoryPutBodySchema.extend({ action: z.enum(['create', 'update', 'supersede', 'archive']).default('create') });
 const generic = z.any();
 const errors = { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.MEMORY_NOT_FOUND]: {}, [ErrorCode.WORKSPACE_NOT_FOUND]: {}, [ErrorCode.MEMORY_REVISION_CONFLICT]: {} };
 
@@ -49,8 +50,8 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     try { reply.send(okEnvelope(await operation(), requestId)); }
     catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      const code = msg.includes('revision conflict') ? ErrorCode.MEMORY_REVISION_CONFLICT : msg === 'Workspace not found' ? ErrorCode.WORKSPACE_NOT_FOUND : msg.includes('not found') ? ErrorCode.MEMORY_NOT_FOUND : ErrorCode.VALIDATION_FAILED;
-      reply.send(errEnvelope(code, msg, requestId));
+      const code = error instanceof MemoryDomainError && (error.code === 'revision_conflict' || error.code === 'covered_target_changed' || error.code === 'cursor_invalidated') || msg.includes('revision conflict') ? ErrorCode.MEMORY_REVISION_CONFLICT : msg === 'Workspace not found' ? ErrorCode.WORKSPACE_NOT_FOUND : msg.includes('not found') ? ErrorCode.MEMORY_NOT_FOUND : ErrorCode.VALIDATION_FAILED;
+      reply.send({ ...errEnvelope(code, msg, requestId), details: error instanceof MemoryDomainError ? { code: error.code, recovery: error.recovery } : undefined });
     }
   };
 
@@ -78,8 +79,14 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
       return { workspace_id: req.params.workspace_id, enabled: req.body.enabled, effective_enabled: memoryEnabled(settings(), req.params.workspace_id) };
     });
   }));
-  add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/inbox', params: scopeParams, querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => (await store().list(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), true)).filter((entry) => entry.status === 'pending'));
+  add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/inbox', params: scopeParams, querystring: scopeQuery.extend({ cursor: z.string().optional(), page_size: z.coerce.number().int().min(1).max(20).optional() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, async () => {
+      const target = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
+      if (req.query.cursor !== undefined && req.query.page_size !== undefined) throw new MemoryDomainError('cursor_invalidated', 'Continue with cursor alone', 'Restart Inbox to change its page size.');
+      const page = await store().query([target], req.query.cursor === undefined ? { mode: 'list', statuses: ['pending'], page_size: req.query.page_size } : { cursor: req.query.cursor });
+      if (page.mode !== 'list' || page.coverage.statuses.length !== 1 || page.coverage.statuses[0] !== 'pending') throw new MemoryDomainError('cursor_invalidated', 'Cursor does not belong to Inbox', 'Restart Inbox with its own cursor.');
+      return page;
+    });
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/journal', params: scopeParams, querystring: scopeQuery.extend({ id: z.string().optional() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => store().journal(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.query.id));
@@ -87,19 +94,27 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
   add('post', defineRoute({ method: 'POST', path: '/memory/{scope}/undo', params: scopeParams, querystring: scopeQuery, body: z.object({ operation_id: z.string().uuid() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => ({ entry: await store().undo(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.body.operation_id) ?? null }));
   }));
-  add('get', defineRoute({ method: 'GET', path: '/memory/{scope}', params: scopeParams, querystring: scopeQuery.extend({ query: z.string().optional(), type: z.enum(['user', 'feedback', 'project', 'reference']).optional(), include_inactive: z.enum(['true', 'false']).transform((value) => value === 'true').optional() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
+  add('get', defineRoute({ method: 'GET', path: '/memory/{scope}', params: scopeParams, querystring: scopeQuery.extend({
+    query: z.string().optional(), type: z.enum(['user', 'feedback', 'project', 'reference']).optional(), include_inactive: z.enum(['true', 'false']).transform((value) => value === 'true').optional(),
+    mode: z.enum(['search', 'list']).optional(), page_size: z.coerce.number().int().min(1).max(20).optional(), cursor: z.string().optional(),
+    statuses: z.string().transform((value) => value.split(',')).pipe(z.array(z.enum(['active', 'pending', 'superseded', 'archived'])).min(1).max(4)).optional(),
+  }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => {
       const target = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
-      if (req.query.query) return { items: await store().search([target], req.query.query, req.query.type as MemoryType | undefined, req.query.include_inactive) };
-      const items = await store().list(target, req.query.include_inactive);
-      return { items: req.query.type === undefined ? items : items.filter((entry) => entry.type === req.query.type) };
+      if (req.query.cursor !== undefined && (['mode', 'query', 'type', 'page_size', 'statuses', 'include_inactive'] as const).some((key) => req.query[key] !== undefined)) throw new MemoryDomainError('cursor_invalidated', 'Continue with cursor alone', 'Restart the original query if its filters need changing.');
+      const mode = req.query.mode ?? (req.query.query === undefined ? 'list' : 'search');
+      return store().query([target], req.query.cursor !== undefined ? { cursor: req.query.cursor } : {
+        mode, query: req.query.query, type: req.query.type, page_size: req.query.page_size,
+        statuses: req.query.statuses ?? (req.query.include_inactive ? ['active', 'pending', 'superseded', 'archived'] : mode === 'list' ? ['active', 'pending'] : ['active']),
+      });
     });
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/{id}', params: entryParams, querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => {
-      const entry = await store().get(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.params.id);
+      const scope = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
+      const entry = await store().get(scope, req.params.id);
       if (entry === undefined) throw new Error('Memory not found');
-      return entry;
+      return { ...entry, scope, target: { scope: scope.kind, id: entry.id, expected_revision: entry.revision }, applicability: memoryApplicability(entry), complete: true };
     });
   }));
   add('put', defineRoute({ method: 'PUT', path: '/memory/{scope}/{id}', params: z.object({ scope: scopeParams.shape.scope, id: z.union([z.literal('new'), entryParams.shape.id]) }), querystring: scopeQuery, body, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
@@ -107,7 +122,7 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
       scope: await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id),
       action: req.params.id === 'new' ? 'create' : req.body.action, id: req.params.id === 'new' ? undefined : req.params.id,
       type: req.body.type, title: req.body.title, body: req.body.body, reason: req.body.reason,
-      expectedRevision: req.body.expected_revision, pinned: req.body.pinned, source: { writer: 'user' },
+      expectedRevision: req.body.expected_revision, pinned: req.body.pinned, basis: req.body.basis, validity: req.body.validity, covered_by: req.body.covered_by, source: { writer: 'user' },
     }));
   }));
   add('delete', defineRoute({ method: 'DELETE', path: '/memory/{scope}/{id}', params: entryParams, querystring: entryQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {

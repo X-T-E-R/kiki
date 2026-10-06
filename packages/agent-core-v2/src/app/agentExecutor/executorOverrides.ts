@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { executionContextSchema, executionPermissionSchema } from '@kiki/protocol';
+import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
 
 import { registerConfigSection } from '#/app/config/configSectionContributions';
 import { deepMerge } from '#/app/config/configPure';
@@ -16,7 +18,18 @@ export const AGENT_EXECUTOR_OVERRIDES_SECTION = 'agentExecutorOverrides';
 /** Source id an explicit `bin_path` reports through, so the check can say where the program came from. */
 export const EXECUTOR_OVERRIDE_SOURCE_ID = 'override';
 
+export const AgentExecutorDefaultsSchema = z.strictObject({
+  model_alias: z.string().min(1).optional(),
+  thinking_effort: z.string().min(1).optional(),
+  permission_mode: executionPermissionSchema.optional(),
+  kiki_context: z.array(executionContextSchema).optional(),
+  allow_kiki_subagents: z.boolean().optional(),
+  executor_prompt: executorPromptSchema.optional(),
+});
+export type AgentExecutorDefaults = z.infer<typeof AgentExecutorDefaultsSchema>;
+
 export const AgentExecutorOverrideSchema = z.object({
+  defaults: AgentExecutorDefaultsSchema.optional(),
   binPath: z.string().trim().min(1).optional(),
   homeDir: z.string().trim().min(1).optional(),
   env: z.record(z.string(), z.string()).optional(),
@@ -49,6 +62,15 @@ function mergeAgentExecutorOverrides(
       }
       if (Object.keys(env).length === 0) delete entry['env'];
       else entry['env'] = env;
+    }
+    const defaultsPatch = raw['defaults'];
+    if (defaultsPatch === null) delete entry['defaults'];
+    else if (isPlainObject(defaultsPatch) && isPlainObject(entry['defaults'])) {
+      const defaults = { ...entry['defaults'] };
+      for (const [key, value] of Object.entries(defaultsPatch)) {
+        if (value === null) delete defaults[key];
+      }
+      entry['defaults'] = defaults;
     }
     merged[id] = entry;
   }

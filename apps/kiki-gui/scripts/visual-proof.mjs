@@ -379,7 +379,7 @@ const LITERALS = {
   capEmptyFilter: { en: 'No capabilities match', zh: '没有匹配', anchor: 'cap.emptyFilter' },
   capNoWorkspace: { en: 'No workspace to show skills for yet', zh: '还没有可查看技能的工作区', anchor: 'cap.noWorkspace' },
   queueEditBanner: { en: 'Editing a queued message', zh: '正在编辑排队消息', anchor: 'composer.queueEditBanner' },
-  editNote: { en: 'Full replacement', zh: '完整替换语义', anchor: 'transcript.editAttachmentsNote' },
+  editNote: { en: 'Keep or change attachments', zh: '附件已保留，可增删', anchor: 'transcript.editAttachmentsNote' },
   compactionRequested: { en: 'Compaction requested', zh: '已请求压缩', anchor: 'context.strategy.compactRequested.summarize' },
   exportArchive: { en: 'Export archive', zh: '导出归档', anchor: 'menu.export' },
   undoLastTurn: { en: 'Undo last turn', zh: '撤销最后一轮', anchor: 'menu.undo' },
@@ -786,13 +786,22 @@ async function scenarioSubagentInvocations() {
   await run.locator('[data-binding-advisories]').waitFor();
   if (!(await run.innerText()).includes('model_not_preferred')) throw new Error('binding advisory missing');
   if (!(await run.innerText()).includes('actual_profile: explore')) throw new Error('actual binding missing');
-  if (await run.locator('details').getAttribute('open') !== null) throw new Error('prompt was not folded by default');
+  // One expand is the whole read: the prompt is on screen verbatim, and no
+  // inner disclosure stands between the expand and the text it exists for.
+  const prompt = run.locator('[data-invocation-text="prompt"] pre');
+  await prompt.waitFor();
+  if (!(await prompt.innerText()).includes('核对原始工具帧中的输入和输出')) throw new Error('prompt body missing after one expand');
+  if (await run.locator('details').count() !== 0) throw new Error('a second collapse still stands between the expand and the prompt');
   await log.evaluate((node) => { node.scrollTop = 0; });
   await shot('subagent-agentrun-details');
   await runToggle.click();
   await log.locator('[data-invocation-toggle="send-lead"]').click();
   const send = log.locator('[data-invocation-tool="send-lead"]');
-  await send.locator('summary').click();
+  // The injected message reads straight out of the one expand: no summary to
+  // press first, and the whole body on screen rather than a truncated head.
+  const message = send.locator('[data-invocation-text="message"] pre');
+  await message.waitFor();
+  if (!(await message.innerText()).includes('请同时检查嵌套智能体')) throw new Error('injected message missing after one expand');
   if (!(await send.innerText()).includes('message-example')) throw new Error('send receipt missing');
   await send.scrollIntoViewIfNeeded();
   await shot('subagent-agentsend-details');
@@ -810,6 +819,30 @@ async function scenarioSubagentInvocations() {
   if (await live.getAttribute('data-card-form') !== 'full') throw new Error('running nested agent was folded');
   await done.scrollIntoViewIfNeeded();
   await shot('subagent-nested-completed-folded');
+  // A long prompt is the same reading purpose at a size that needs scrolling,
+  // so it opens on the one press too rather than behind its own control.
+  const longCard = childLog.locator('[data-subagent-id="agent-long"]').first();
+  await longCard.waitFor();
+  if (await longCard.getAttribute('data-nested-folded') !== 'true') throw new Error('completed nested agent did not default-fold');
+  await longCard.locator('[data-card-expand]').click();
+  await longCard.locator('[data-invocation-toggle="call-long"]').click();
+  const longBody = childLog.locator('[data-subagent-id="agent-long"] [data-invocation-tool="call-long"]').first();
+  await longBody.waitFor();
+  const longPrompt = longBody.locator('[data-invocation-text="prompt"] pre');
+  await longPrompt.waitFor();
+  // The long case is the same one-press read at a size that needs scrolling:
+  // the body opens at its first line and scrolls from there, so the reader
+  // lands on the beginning of the text rather than mid-paragraph.
+  if (!(await longPrompt.innerText()).startsWith('第 1 行')) throw new Error('long prompt did not open at its first line');
+  await longPrompt.evaluate((node) => { node.scrollTop = 0; });
+  await longBody.scrollIntoViewIfNeeded();
+  await longPrompt.evaluate((node) => { node.scrollTop = 0; });
+  // The child log keeps its own scroll; put the body at the top of the reading
+  // column so the shot shows where a reader actually lands.
+  await childLog.evaluate((node) => { node.scrollTop = 0; });
+  await longBody.evaluate((node) => { node.scrollIntoView({ block: 'start' }); });
+  await longPrompt.evaluate((node) => { node.scrollTop = 0; });
+  await shot('subagent-nested-long-body');
   await live.locator('[data-invocation-toggle="call-live"]').click();
   await live.scrollIntoViewIfNeeded();
   await shot('subagent-nested-running-expanded');

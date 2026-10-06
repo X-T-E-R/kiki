@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
 import type { AddressInfo as HttpAddress } from 'node:net';
 
+import * as authModule from '@modelcontextprotocol/sdk/client/auth.js';
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -21,6 +22,8 @@ import {
 import { mcpOAuthStoreKey, type McpOAuthStore } from '#/mcpCore/oauth/store';
 
 import { createMemoryMcpOAuthStore, ManualMcpOAuthScheduler } from '../stubs';
+
+vi.mock('@modelcontextprotocol/sdk/client/auth.js', { spy: true });
 
 const SERVER_NAME = 'notion';
 const SERVER_URL = 'https://mcp.example.test/mcp';
@@ -754,6 +757,114 @@ describe('McpOAuthService single-flight refresh', () => {
     await provider.saveTokens(granted);
     expect(await provider.tokens()).toBeUndefined();
   }, 15000);
+});
+
+describe('McpOAuthService offline access scope', () => {
+  it.each([
+    { supported: ['read', 'offline_access'], resource: ['read', 'write'], expected: 'read write offline_access', consent: 'consent' },
+    { supported: ['read', 'offline_access'], resource: ['read', 'offline_access'], expected: 'read offline_access', consent: 'consent' },
+    { supported: ['read'], resource: ['read', 'write'], expected: 'read write', consent: null },
+    { supported: undefined, resource: ['read'], expected: 'read', consent: null },
+    { supported: ['offline_access'], resource: undefined, expected: 'offline_access', consent: 'consent' },
+    { supported: ['offline_access'], resource: undefined, clientScope: 'read\twrite', expected: 'read write offline_access', consent: 'consent' },
+    { supported: ['offline_access'], resource: [], clientScope: 'read write', expected: 'read write offline_access', consent: 'consent' },
+  ])('preserves resource scopes with server support $supported', async ({ supported, resource, clientScope, expected, consent }) => {
+    const fixture = makeFixture();
+    cleanups.push(() => fixture.service.dispose());
+    const authServer = await startFakeAuthServer();
+    const provider = await readyProvider(fixture);
+    if (clientScope !== undefined) {
+      const metadata = provider.clientMetadata;
+      const scope = vi.spyOn(provider, 'clientMetadata', 'get').mockReturnValue({ ...metadata, scope: clientScope });
+      cleanups.push(() => scope.mockRestore());
+    }
+    const discovery = authServerState(authServer.url).discovery;
+    await provider.saveDiscoveryState({
+      ...discovery,
+      authorizationServerMetadata: { ...discovery.authorizationServerMetadata, scopes_supported: supported },
+      resourceMetadata: { resource: SERVER_URL, scopes_supported: resource },
+    });
+    const flow = await fixture.service.beginAuthorization(SERVER_NAME, SERVER_URL);
+    expect(flow.authorizationUrl.searchParams.get('scope')).toBe(expected);
+    expect(await provider.clientInformation()).toMatchObject({ scope: expected });
+    expect(flow.authorizationUrl.searchParams.get('prompt')).toBe(consent);
+    await flow.cancel();
+  });
+
+  it('enriches a cached authorization server without replacing its identity or resource scopes', async () => {
+    const fixture = makeFixture();
+    cleanups.push(() => fixture.service.dispose());
+    const authServer = await startFakeAuthServer();
+    const provider = await readyProvider(fixture);
+    const state = authServerState(authServer.url).discovery;
+    await provider.saveDiscoveryState({ ...state, authorizationServerMetadata: undefined, resourceMetadata: { resource: SERVER_URL, scopes_supported: ['read'] } });
+    const discover = vi.spyOn(authModule, 'discoverAuthorizationServerMetadata').mockResolvedValue({
+      ...state.authorizationServerMetadata, scopes_supported: ['offline_access'],
+    });
+    cleanups.push(() => discover.mockRestore());
+    const flow = await fixture.service.beginAuthorization(SERVER_NAME, SERVER_URL);
+    expect(discover).toHaveBeenCalledWith(authServer.url, expect.objectContaining({ fetchFn: expect.any(Function) }));
+    expect(flow.authorizationUrl.origin).toBe(authServer.url);
+    expect(flow.authorizationUrl.searchParams.get('scope')).toBe('read offline_access');
+    expect((await provider.discoveryState())?.authorizationServerUrl).toBe(authServer.url);
+    await flow.cancel();
+  });
+
+  it('discovers supported offline access before constructing a new authorization request', async () => {
+    const fixture = makeFixture();
+    cleanups.push(() => fixture.service.dispose());
+    const authServer = await startFakeAuthServer();
+    const discovery = authServerState(authServer.url).discovery;
+    const discovered = {
+      ...discovery,
+      authorizationServerMetadata: { ...discovery.authorizationServerMetadata, scopes_supported: ['offline_access'] },
+      resourceMetadata: { resource: SERVER_URL, scopes_supported: ['read'] },
+    };
+    const discover = vi.spyOn(authModule, 'discoverOAuthServerInfo').mockResolvedValue(discovered);
+    cleanups.push(() => discover.mockRestore());
+    const flow = await fixture.service.beginAuthorization(SERVER_NAME, SERVER_URL);
+    expect(discover).toHaveBeenCalledOnce();
+    expect(await fixture.service.getProvider(SERVER_NAME, SERVER_URL).discoveryState()).toEqual(discovered);
+    expect(flow.authorizationUrl.searchParams.get('scope')).toBe('read offline_access');
+    expect(flow.authorizationUrl.searchParams.get('prompt')).toBe('consent');
+    await flow.cancel();
+  });
+
+  it('leaves scope selection to the SDK when the additional discovery fails', async () => {
+    const fixture = makeFixture();
+    cleanups.push(() => fixture.service.dispose());
+    const authServer = await startFakeAuthServer();
+    const provider = await readyProvider(fixture);
+    const discovery = authServerState(authServer.url).discovery;
+    await provider.saveDiscoveryState({ ...discovery, resourceMetadata: { resource: SERVER_URL, scopes_supported: ['read'] } });
+    const cached = vi.spyOn(provider, 'discoveryState').mockResolvedValueOnce(undefined);
+    const discover = vi.spyOn(authModule, 'discoverOAuthServerInfo').mockRejectedValue(new Error('discovery unavailable'));
+    cleanups.push(() => cached.mockRestore(), () => discover.mockRestore());
+    const flow = await fixture.service.beginAuthorization(SERVER_NAME, SERVER_URL);
+    expect(discover).toHaveBeenCalledOnce();
+    expect(flow.authorizationUrl.searchParams.get('scope')).toBe('read');
+    expect(flow.authorizationUrl.searchParams.get('prompt')).toBeNull();
+    await flow.cancel();
+  });
+
+  it('refreshes an existing grant without opening a new consent flow or registering a client', async () => {
+    const fixture = makeFixture();
+    cleanups.push(() => fixture.service.dispose());
+    const authServer = await startFakeAuthServer();
+    const provider = await readyProvider(fixture);
+    const state = authServerState(authServer.url);
+    await provider.saveDiscoveryState({
+      ...state.discovery,
+      resourceMetadata: { resource: SERVER_URL },
+      authorizationServerMetadata: { ...state.discovery.authorizationServerMetadata, scopes_supported: ['offline_access'] },
+    });
+    await provider.saveClientInformation({ client_id: state.client.client_id });
+    await provider.saveTokens({ access_token: 'existing-access', refresh_token: 'existing-refresh', token_type: 'Bearer' });
+    await expect(fixture.service.beginAuthorization(SERVER_NAME, SERVER_URL)).rejects.toBeInstanceOf(AlreadyAuthorizedError);
+    expect(authServer.counts).toEqual({ register: 0, exchange: 0, refresh: 1 });
+    expect(await provider.tokens()).toMatchObject({ access_token: 'fresh-token' });
+    expect(provider.takeAuthorizationUrl()).toBeUndefined();
+  });
 });
 
 describe('McpOAuthService interactive flow serialization', () => {

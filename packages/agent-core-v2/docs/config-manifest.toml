@@ -70,6 +70,18 @@
 
 # one [agent_executor_overrides."<name>"] table per entry:
 # [agent_executor_overrides."<name>"]
+  # defaults: object
+    # model_alias: string
+    # thinking_effort: string
+    # permission_mode: "manual" | "auto" | "review" | "yolo"
+    # kiki_context: "memory" | "board" | "cron" | "threads" | "history" | "hooks"[]
+    # allow_kiki_subagents: boolean
+    # executor_prompt: object
+      # delivery: "append" | "replace" | "preamble"
+      # include: "agents_md" | "memory_snapshot" | "skill_catalog" | "workspace_info" | "system.*" | "delegation.*" | string[]
+      # body: string
+      # append: string
+      # per_engine: record<string, object>
   # bin_path: string
   # home_dir: string
   # env: record<string, string>
@@ -563,7 +575,7 @@ reuse_local_config = true
 # ##########################################################################
 
 [notifications]
-global = { enabled = false, suppress_viewing_session = true, min_work_ms = 30000, work_stable_ms = 3000, que…
+global = { enabled = true, suppress_viewing_session = true, min_work_ms = 0, work_stable_ms = 3000, question…
 provider_instances = {  }
 channels = {  }
 credential_slots = {  }

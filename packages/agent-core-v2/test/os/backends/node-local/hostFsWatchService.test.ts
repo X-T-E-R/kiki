@@ -42,6 +42,7 @@ class TestNativeWatcher {
 }
 
 interface TestNativeAttempt {
+  readonly root: string;
   readonly watcher: TestNativeWatcher;
   emit(filename: string | null): void;
 }
@@ -56,6 +57,7 @@ function signalRig(options?: {
   readonly synchronousFailures?: number;
   readonly platform?: NodeJS.Platform;
   readonly homeDir?: string;
+  readonly resolvePath?: (path: string) => string;
 }): {
   readonly service: IHostFsWatchService;
   readonly attempts: TestNativeAttempt[];
@@ -73,13 +75,15 @@ function signalRig(options?: {
   const runtime: HostFsWatchRuntime = {
     platform: options?.platform ?? 'darwin',
     homeDir: options?.homeDir ?? '/Users/example',
-    watchNative: (_root, listener) => {
+    resolvePath: options?.resolvePath,
+    watchNative: (root, listener) => {
       if (synchronousFailures > 0) {
         synchronousFailures -= 1;
         throw Object.assign(new Error('native watch creation failed'), { code: 'EIO' });
       }
       const watcher = new TestNativeWatcher();
       attempts.push({
+        root,
         watcher,
         emit: (filename) => {
           listener('rename', filename);
@@ -169,6 +173,26 @@ describe('host filesystem change notifications', () => {
     await handle.ready;
     return events;
   }
+
+  it('watches resolved Windows short paths while keeping requested paths in filters and events', () => {
+    const requested = 'C:\\SHORT~1\\repo';
+    const watched = 'C:\\Long Folder\\repo';
+    const rig = signalRig({ platform: 'win32', resolvePath: () => watched });
+    const filtered: string[] = [];
+    const events: HostFsChange[] = [];
+    const ignored = Object.assign((path: string) => { filtered.push(path); return path.endsWith('ignored.txt'); }, {
+      subtree: (path: string) => path.endsWith('node_modules'),
+    });
+    handle = rig.service.watch(requested, { signal: true, ignored });
+    handle.onDidChange((event) => events.push(event));
+    expect(rig.attempt(0).root).toBe(watched);
+    rig.attempt(0).emit('ignored.txt');
+    rig.attempt(0).emit('node_modules/pkg/index.js');
+    expect(events).toEqual([]);
+    rig.attempt(0).emit('AGENTS.md');
+    expect(filtered).toEqual([`${requested}\\ignored.txt`, `${requested}\\AGENTS.md`]);
+    expect(events).toEqual([{ path: requested, action: 'modified', kind: 'directory' }]);
+  });
 
   it('emits a coarse root invalidation when a native signal path changes', () => {
     const rig = signalRig();

@@ -6,6 +6,7 @@ import type { SessionWorktree } from '#/app/git/worktreeModel';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 export interface AgentMeta {
+  readonly execution?: import('@kiki/protocol').ExecutionBinding;
   readonly personaId?: string;
   readonly homedir?: string;
   readonly type?: 'main' | 'sub' | 'independent';
@@ -46,6 +47,7 @@ export interface SessionMeta {
   readonly lastPrompt?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
+  readonly activityUpdatedAt?: number;
   readonly archived: boolean;
   readonly archivedAt?: number;
   readonly cwd?: string;

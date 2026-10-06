@@ -31,6 +31,28 @@ class Bar implements IBar {
 }
 
 describe('InstantiationService.provide/unprovide (L1)', () => {
+  it('waits for an ordinary token retirement already in progress before closing its scope', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const events: string[] = [];
+    class Slow {
+      async dispose(): Promise<void> { events.push('start'); await gate; events.push('end'); }
+    }
+    const id = createDecorator<Slow>('pending-retirement-token');
+    const ix = new InstantiationService(new ServiceCollection());
+    ix.provide(id, new SyncDescriptor(Slow));
+    ix.invokeFunction((accessor) => accessor.get(id));
+    ix.unprovide(id);
+    let settled = false;
+    const idle = ix.cascade.whenIdle();
+    const close = Promise.resolve(ix.dispose()).then(() => { settled = true; });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const observed = { settled, events: [...events] };
+    release();
+    await Promise.all([close, idle]);
+    expect(observed).toEqual({ settled: false, events: ['start'] });
+    expect(events).toEqual(['start', 'end']);
+  });
   it('provides a service at runtime and resolves it', () => {
     const ix = new InstantiationService(new ServiceCollection(), true);
     ix.provide(IFoo, new SyncDescriptor(Foo));

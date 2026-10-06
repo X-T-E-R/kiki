@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -92,20 +92,21 @@ describe('cron management routes', () => {
     }
   });
 
-  async function request<T>(path: string, method = 'GET'): Promise<Envelope<T>> {
+  async function request<T>(path: string, method = 'GET', data?: unknown): Promise<Envelope<T>> {
     const response = await fetch(`${base}${path}`, {
       method,
-      headers: authHeaders(server as RunningServer),
+      headers: authHeaders(server as RunningServer, data === undefined ? {} : { 'content-type': 'application/json' }),
+      body: data === undefined ? undefined : JSON.stringify(data),
     } as never);
     expect(response.status).toBe(200);
     return response.json() as Promise<Envelope<T>>;
   }
 
-  async function createSession(): Promise<string> {
+  async function createSession(cwd = home as string): Promise<string> {
     const response = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
-      body: JSON.stringify({ metadata: { cwd: home as string } }),
+      body: JSON.stringify({ metadata: { cwd } }),
     } as never);
     const body = (await response.json()) as Envelope<{ id: string }>;
     expect(body.code).toBe(0);
@@ -132,6 +133,68 @@ describe('cron management routes', () => {
     return task;
   }
 
+  it('creates and reads complete prompts, edits in place, and rebinds the same task without copying', async () => {
+    const source = await createSession();
+    const target = await createSession();
+    const prompt = '完整定时任务内容\n'.repeat(100);
+    const created = await request<{ task: CronTaskWire & { prompt: string } }>('/api/cron', 'POST', {
+      session_id: source, cron: '0 * * * *', prompt, paused: true,
+    });
+    expect(created.code).toBe(0);
+    const task = created.data.task;
+    expect(task).toMatchObject({ session_id: source, prompt, paused: true, recurring: true });
+    expect(task.prompt_preview).not.toBe(prompt);
+    const detail = await request<{ task: CronTaskWire & { prompt: string } }>(`/api/cron/${task.id}?session_id=${source}`);
+    expect(detail.data.task.prompt).toBe(prompt);
+    const store = server!.core.accessor.get(ICronTaskPersistence);
+    const original = cronFor(source).getTask(task.id)!;
+    await store.save(task.workspace_id, { ...original, lastFiredAt: original.createdAt });
+    await cronFor(source).syncTaskFromStore(task.id);
+    const edited = await request<{ task: CronTaskWire & { prompt: string } }>(`/api/cron/${task.id}?session_id=${source}`, 'PATCH', {
+      session_id: target, cron: '15 * * * *', prompt: 'edited', recurring: false,
+    });
+    expect(edited.code).toBe(0);
+    expect(edited.data.task).toMatchObject({ id: task.id, session_id: target, prompt: 'edited', cron: '15 * * * *', paused: true, recurring: false, created_at: task.created_at, last_fired_at: task.created_at });
+    expect(cronFor(source).getTask(task.id)).toBeUndefined();
+    expect(cronFor(target).getTask(task.id)).toMatchObject({ id: task.id, createdAt: original.createdAt, lastFiredAt: original.createdAt, paused: true });
+    expect(await store.list({ workspaceId: task.workspace_id })).toHaveLength(1);
+    expect((await request(`/api/cron/${task.id}?session_id=${source}`)).code).toBe(40406);
+    await server!.core.accessor.get(ISessionManager).close(source);
+    await server!.core.accessor.get(ISessionManager).close(target);
+    const cold = await request<{ task: CronTaskWire & { prompt: string } }>(`/api/cron/${task.id}?session_id=${target}`, 'PATCH', { prompt: 'cold edit' });
+    expect(cold.data.task).toMatchObject({ id: task.id, paused: true, prompt: 'cold edit', last_fired_at: task.created_at });
+    const rebound = await request<{ task: CronTaskWire }>(`/api/cron/${task.id}?session_id=${target}`, 'PATCH', { session_id: source });
+    expect(rebound.data.task.session_id).toBe(source);
+    expect((await request(`/api/cron/${task.id}?session_id=${source}`)).code).toBe(0);
+    const coldCreate = await request<{ task: CronTaskWire }>('/api/cron', 'POST', { session_id: target, cron: '0 9 * * *', prompt: 'cold create', paused: true });
+    expect(coldCreate.code).toBe(0);
+    expect(coldCreate.data.task.session_id).toBe(target);
+    expect(getLiveSessionById(server!.core.accessor, source)).toBeUndefined();
+    expect(getLiveSessionById(server!.core.accessor, target)).toBeUndefined();
+  });
+
+  it('rejects invalid edits and leaves identity, pause, cursor and persistence intact on save failure', async () => {
+    const sessionId = await createSession();
+    const task = await addTask(sessionId);
+    const path = `/api/cron/${task.id}?session_id=${sessionId}`;
+    for (const data of [{ cron: '60 * * * *' }, { prompt: '  ' }, {}, { id: 'replacement' }, { paused: true }]) {
+      expect((await request(path, 'PATCH', data)).code).toBe(40001);
+    }
+    expect((await request('/api/cron', 'POST', { session_id: 'missing', cron: '0 * * * *', prompt: 'example' })).code).toBe(40401);
+    expect((await request(path, 'PATCH', { session_id: 'missing' })).code).toBe(40401);
+    const store = server!.core.accessor.get(ICronTaskPersistence);
+    const save = vi.spyOn(store, 'save').mockRejectedValueOnce(new Error('EIO update fixture'));
+    const failed = await request(path, 'PATCH', { prompt: 'not saved' });
+    expect(failed.code).not.toBe(0);
+    expect(failed.msg).toContain('EIO update fixture');
+    expect(cronFor(sessionId).getTask(task.id)).toEqual(task);
+    save.mockRestore();
+    expect((await store.listWorkspaceIds()).length).toBe(1);
+    expect(await store.get((await store.listWorkspaceIds())[0]!, task.id)).toEqual(task);
+    const unauthenticated = await fetch(`${base}${path}`);
+    expect(unauthenticated.status).toBe(401);
+  });
+
   it('returns errors for live pause/delete persistence failures without claiming saved state', async () => {
     const sessionId = await createSession();
     const task = await addTask(sessionId);
@@ -155,6 +218,28 @@ describe('cron management routes', () => {
     expect(listed.data.items).toEqual([expect.objectContaining({ id: task.id, paused: false })]);
     expect((await request(`/api/cron/${task.id}:pause?session_id=${sessionId}`, 'POST')).code).toBe(0);
     expect((await request(`/api/cron/${task.id}?session_id=${sessionId}`, 'DELETE')).code).toBe(0);
+  });
+
+  it('rejects cross-workspace migration and disambiguates duplicate task ids before any write', async () => {
+    const source = await createSession();
+    const otherRoot = join(home!, 'other-workspace');
+    await mkdir(otherRoot);
+    const target = await createSession(otherRoot);
+    const task = await addTask(source);
+    const createdTarget = await addTask(target);
+    const list = await request<{ items: CronTaskWire[] }>('/api/cron');
+    const targetWorkspace = list.data.items.find((item) => item.id === createdTarget.id)!.workspace_id;
+    expect((await request(`/api/cron/${task.id}?session_id=${source}`, 'PATCH', { session_id: target })).code).toBe(40001);
+    expect(cronFor(source).getTask(task.id)).toEqual(task);
+    const store = server!.core.accessor.get(ICronTaskPersistence);
+    await store.save(targetWorkspace, { ...task, tags: { sessionId: target } });
+    await cronFor(target).syncTaskFromStore(task.id);
+    expect((await request(`/api/cron/${task.id}`)).code).toBe(40001);
+    expect((await request(`/api/cron/${task.id}`, 'PATCH', { prompt: 'ambiguous edit' })).code).toBe(40001);
+    const detail = await request<{ task: CronTaskWire & { prompt: string } }>(`/api/cron/${task.id}?session_id=${source}`);
+    expect(detail.data.task).toMatchObject({ id: task.id, session_id: source, prompt: task.prompt });
+    expect(cronFor(source).getTask(task.id)).toEqual(task);
+    expect(cronFor(target).getTask(task.id)?.prompt).toBe(task.prompt);
   });
 
   it('caps the cross-workspace list and exposes subsequent pages', async () => {

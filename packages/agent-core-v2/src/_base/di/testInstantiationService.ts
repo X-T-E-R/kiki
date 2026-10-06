@@ -256,11 +256,9 @@ export class TestInstantiationService extends InstantiationService implements ID
     return new TestInstantiationService(services, false, this);
   }
 
-  public override dispose(): void {
+  public override dispose(): void | Promise<void> {
     sinon.restore();
-    if (this._properDispose) {
-      super.dispose();
-    }
+    if (this._properDispose) return super.dispose();
   }
 }
 

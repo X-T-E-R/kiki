@@ -71,7 +71,7 @@ import {
 } from './prompt';
 import { IAgentModelSwitchService, type ModelSwitchInput, type ModelSwitchReceipt } from '#/agent/modelSwitch/modelSwitch';
 import { ModelSwitchQueued, ModelSwitchQueueStatus, modelSwitchQueueKey } from './modelSwitchQueueOps';
-import { promptFingerprint, PromptOutcomeCommitted, type PromptLookup } from './promptReplay';
+import { matchesPromptIdentity, promptFingerprint, promptRequestFingerprint, updatePromptRequestFingerprint, PromptOutcomeCommitted, type PromptIdentity, type PromptLookup } from './promptReplay';
 import { promptMetadataTextFromContentParts } from './promptMetadataText';
 import { promptLaunchFailure } from './promptFailure';
 import { capturePromptGoalId, hasPromptRuntimeControls, preparePromptRuntimeControls, readPromptRuntimeControlChanges, validatePromptRuntimeControls } from './runtimeControls';
@@ -460,10 +460,22 @@ export const promptQueueKey = defineState<PersistedPromptQueueState>(
     }
   });
 
-export const promptIdentityKey = defineState('prompt.identity', (): Map<string, PromptLookup & { readonly fingerprint: string }> => new Map())
-  .replayable({ schema: z.custom<Map<string, PromptLookup & { readonly fingerprint: string }>>() })
+export const promptIdentityKey = defineState('prompt.identity', (): Map<string, PromptIdentity> => new Map())
+  .replayable({ schema: z.custom<Map<string, PromptIdentity>>().refine((value) =>
+    value instanceof Map && [...value.values()].every((identity) => identity.currentRequest !== undefined)) })
   .on(PromptEnqueued, (state, event) => {
-    if (!state.has(event.promptId)) state.set(event.promptId, { promptId: event.promptId, phase: 'pending', fingerprint: promptFingerprint(event) });
+    if (!state.has(event.promptId)) state.set(event.promptId, { promptId: event.promptId, phase: 'pending',
+      fingerprint: promptFingerprint(event), currentRequest: promptRequestFingerprint(event) });
+  })
+  .on(PromptReplaced, (state, event) => {
+    const entry = state.get(event.promptId);
+    if (entry?.currentRequest === undefined || entry.phase !== 'pending') return;
+    state.set(event.promptId, { ...entry, currentRequest: updatePromptRequestFingerprint(entry.currentRequest, event) });
+  })
+  .on(PromptTimingChanged, (state, event) => {
+    const entry = state.get(event.promptId);
+    if (entry?.currentRequest === undefined || entry.phase !== 'pending') return;
+    state.set(event.promptId, { ...entry, currentRequest: updatePromptRequestFingerprint(entry.currentRequest, event) });
   })
   .on(PromptLaunchCommitted, (state, event) => {
     const entry = state.get(event.promptId);
@@ -939,7 +951,7 @@ export class AgentPromptService implements IAgentPromptService {
   lookup(promptId: string, input?: PromptInput): PromptLookup | undefined {
     const persisted = this.states.get(promptIdentityKey).get(promptId);
     const identity = persisted ?? this.enqueueFlights.get(promptId);
-    if (input !== undefined && identity !== undefined && identity.fingerprint !== promptFingerprint(input)) {
+    if (input !== undefined && identity !== undefined && !matchesPromptIdentity(identity, input)) {
       throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' already belongs to another request`);
     }
     if (persisted === undefined) return undefined;
@@ -948,6 +960,7 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   async enqueue(input: PromptInput): Promise<PromptHandle> {
+    if (this.loop.status().persistenceFailure !== undefined) void this.loop.recoverPersistence();
     if (input.execution?.afterModelSwitch !== undefined && this.getModelSwitch(input.execution.afterModelSwitch) === undefined) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Unknown model switch dependency.');
     }
@@ -962,7 +975,7 @@ export class AgentPromptService implements IAgentPromptService {
     }
     const identity = this.states.get(promptIdentityKey).get(id);
     if (identity !== undefined) {
-      if (identity.fingerprint !== fingerprint) throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${id}' already belongs to another request`);
+      if (!matchesPromptIdentity(identity, input)) throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${id}' already belongs to another request`);
       const handle = this.promptHandles.get(id);
       if (handle !== undefined) { await this.wire.flush(); return handle; }
       if (identity.terminal !== undefined) {
@@ -1204,7 +1217,7 @@ export class AgentPromptService implements IAgentPromptService {
     return this.queueOrder.find((id) => {
       const prompt = this.pending.find((item) => item.id === id);
       if (prompt !== undefined) return this.isReadyPending(prompt, this.pending.indexOf(prompt));
-      return id.startsWith(MODEL_SWITCH_QUEUE_PREFIX) && (this.immediateModelSwitchIds.has(id.slice(MODEL_SWITCH_QUEUE_PREFIX.length)) || (!this.recoveryHold && !this.isQueueSlotEditHeld(id)));
+      return this.isQueuedModelSwitch(id) && (this.immediateModelSwitchIds.has(id.slice(MODEL_SWITCH_QUEUE_PREFIX.length)) || (!this.recoveryHold && !this.isQueueSlotEditHeld(id)));
     });
   }
 
@@ -1267,8 +1280,19 @@ export class AgentPromptService implements IAgentPromptService {
     void this.startNext();
   }
 
+  private isQueuedModelSwitch(id: string): boolean {
+    if (!id.startsWith(MODEL_SWITCH_QUEUE_PREFIX)) return false;
+    const entry = this.states.get(modelSwitchQueueKey).get(id.slice(MODEL_SWITCH_QUEUE_PREFIX.length));
+    return entry?.receipt.state === 'pending' || entry?.receipt.state === 'preparing';
+  }
+
+  private recoveryQueueCount(): number {
+    return this.pending.length + this.queueOrder.filter((id) => this.isQueuedModelSwitch(id)).length;
+  }
+
   private queueHold(): PromptQueueHold | undefined {
-    return this.recoveryHold ? { reason: 'recovery', count: this.pending.length + this.queueOrder.filter((id) => id.startsWith(MODEL_SWITCH_QUEUE_PREFIX)).length } : undefined;
+    const count = this.recoveryQueueCount();
+    return this.recoveryHold && count > 0 ? { reason: 'recovery', count } : undefined;
   }
 
   private isTimingReady(timing: DeferredAppendTiming): boolean {
@@ -1333,7 +1357,7 @@ export class AgentPromptService implements IAgentPromptService {
       this.pending.push(record);
       this.recoveryPendingIds.add(record.id);
     }
-    this.recoveryHold = persisted.order.length > 0;
+    this.recoveryHold = this.recoveryQueueCount() > 0;
     if (this.recoveryHold) this.publishQueueHoldChanged();
   }
 
@@ -1632,7 +1656,7 @@ export class AgentPromptService implements IAgentPromptService {
   private syncRecoveryHold(): void {
     this.syncEditHold();
     if (!this.recoveryHold) return;
-    if (this.pending.length === 0 && !this.queueOrder.some((id) => id.startsWith(MODEL_SWITCH_QUEUE_PREFIX))) this.recoveryHold = false;
+    if (this.recoveryQueueCount() === 0) this.recoveryHold = false;
     this.publishQueueHoldChanged();
   }
 
@@ -1849,7 +1873,7 @@ export class AgentPromptService implements IAgentPromptService {
   private hasExecutionBindingChange(execution: PromptExecutionBinding | undefined): boolean {
     if (execution === undefined) return false;
     const profile = this.profile.data();
-    return (execution.profile !== undefined && execution.profile !== profile.profileName) ||
+    return execution.execution !== undefined || (execution.profile !== undefined && execution.profile !== profile.profileName) ||
       (execution.model !== undefined && execution.model !== profile.modelAlias) ||
       (execution.thinking !== undefined && execution.thinking !== profile.thinkingLevel) ||
       (execution.permissionMode !== undefined && execution.permissionMode !== this.permissionMode.mode) ||
@@ -1858,6 +1882,22 @@ export class AgentPromptService implements IAgentPromptService {
 
   private async applyExecutionBinding(execution: PromptExecutionBinding | undefined): Promise<void> {
     if (execution === undefined) return;
+    if (execution.execution !== undefined) {
+      await this.profile.bind({ execution: { ...execution.execution, overrides: {
+        ...execution.execution.overrides,
+        permission_mode: execution.permissionMode ?? execution.execution.overrides?.permission_mode,
+      } }, model: execution.model, thinking: execution.thinking });
+      const permission = this.profile.data().execution?.effective.permission_mode;
+      if (permission !== undefined) this.permissionMode.setMode(permission);
+      await this.syncProfileBindingMetadata();
+      return;
+    }
+    const currentExecution = this.profile.data().execution;
+    if (currentExecution !== undefined && execution.profile === undefined && (execution.model !== undefined || execution.thinking !== undefined)) {
+      await this.profile.bind({ execution: currentExecution.selection, model: execution.model, thinking: execution.thinking });
+      await this.syncProfileBindingMetadata();
+      return;
+    }
     let profileChanged = false;
     let thinkingConsumed = false;
     if (

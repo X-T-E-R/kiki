@@ -118,6 +118,46 @@ export const FIXTURE_TOKEN = 'kiki-fixture-token';
 const DEFAULT_PORT = 58901;
 const fixtureHash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
+/** Five cron fields, the same shape the engine's parser accepts. */
+const FIXTURE_CRON_PATTERN = /^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/;
+const FIXTURE_CRON_PROMPT_PREVIEW = 120;
+
+/**
+ * A cron row in kap-server's wire shape, so the fixture answers detail,
+ * create and update with the same row the list route would serve. The
+ * engine's own `human_schedule` is reproduced here only so the list has a
+ * plausible fallback; the GUI prefers its localized reading of `cron`.
+ */
+function fixtureCronTask({ id, session_id: sessionId, cron, prompt, recurring, paused, workspace_id: workspaceId }) {
+  const now = Date.now();
+  return {
+    id,
+    session_id: sessionId,
+    workspace_id: workspaceId ?? 'wd_fixture_000000000000',
+    cron,
+    human_schedule: fixtureHumanSchedule(cron),
+    prompt,
+    prompt_preview: prompt.length > FIXTURE_CRON_PROMPT_PREVIEW
+      ? `${prompt.slice(0, FIXTURE_CRON_PROMPT_PREVIEW)}…(truncated)`
+      : prompt,
+    next_fire_at: paused === true ? null : new Date(now + 42 * 60_000).toISOString(),
+    recurring,
+    paused: paused === true,
+    age_days: 3,
+    stale: false,
+    created_at: new Date(now - 3 * 24 * 60 * 60_000).toISOString(),
+    last_fired_at: new Date(now - 18 * 60 * 60_000).toISOString(),
+  };
+}
+
+function fixtureHumanSchedule(cron) {
+  const [minute, hour, dom, month, dow] = String(cron).trim().split(/\s+/);
+  if (minute === '0' && hour === '*') return 'every hour';
+  if (hour === '*') return `every hour at minute ${minute}`;
+  if (dom === '*' && dow === '*' && month === '*') return `at ${hour}:${String(minute).padStart(2, '0')} every day`;
+  return cron;
+}
+
 function fixtureSearchCredentialBinding(config, instanceId) {
   const instance = config?.nb_search?.provider_instances?.[instanceId];
   const slotId = instance?.credential_slot_id;
@@ -288,6 +328,17 @@ function nextId(prefix) {
 }
 function now() {
   return new Date().toISOString();
+}
+
+/**
+ * What a stored `validity` means right now, matching the store's own reading:
+ * a check with no endpoint is one to re-run, a passed one is a lead, and no
+ * record at all is not a claim of permanence.
+ */
+function memoryEntryApplicability(entry) {
+  if (entry.validity === undefined) return 'unrecorded';
+  const until = entry.validity.until === undefined ? undefined : Date.parse(entry.validity.until);
+  return until !== undefined && !Number.isNaN(until) && until <= Date.now() ? 'expired' : 'recheck';
 }
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -816,9 +867,61 @@ class FixtureServer {
     this.memoryJournal.get(key).push(record);
   }
 
-  /** Deterministic revision so `expected_revision` round-trips like the store. */
+  /**
+   * Deterministic revision so `expected_revision` round-trips like the store.
+   * Content metadata is part of what a write changes, so it moves the revision
+   * too: a save that only rewrites the basis is a new version.
+   */
   memoryRevision(entry) {
-    return fixtureHash({ title: entry.title, body: entry.body, type: entry.type, status: entry.status, pinned: entry.pinned });
+    return fixtureHash({
+      title: entry.title, body: entry.body, type: entry.type, status: entry.status, pinned: entry.pinned,
+      basis: entry.basis, validity: entry.validity, covered_by: entry.covered_by,
+    });
+  }
+
+  /** The namespace a scope query names, in the shape the tools emit. */
+  memoryOwnerScope(scope, workspaceId, personaId) {
+    if (scope === 'persona') return { kind: 'persona', personaId };
+    if (scope === 'persona_workspace') return { kind: 'persona_workspace', workspaceId, personaId };
+    return scope === 'global' ? { kind: 'global' } : { kind: 'workspace', workspaceId };
+  }
+
+  /**
+   * The copyable field group for an existing entry, as `MemorySearch` /
+   * `MemoryRead` return it.
+   */
+  memoryTarget(scope, workspaceId, personaId, entry) {
+    return { scope, id: entry.id, expected_revision: this.memoryRevision(entry) };
+  }
+
+  /**
+   * Undo restores a journal record's before-image. A newer write to the same
+   * entry since then is a real concurrent change, so it is kept and the
+   * refusal is reported instead of the newer content being replaced.
+   */
+  memoryEntrySnapshot(entry) {
+    const { body, revision: _revision, ...metadata } = entry;
+    return `---\n${JSON.stringify(metadata)}\n---\n${body}\n`;
+  }
+
+  /** The entry a journal before-image restores: frontmatter plus body, or nothing. */
+  memoryBeforeImage(raw) {
+    const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(raw);
+    if (match === null) return undefined;
+    try {
+      const meta = JSON.parse(match[1]);
+      if (typeof meta.id !== 'string' || typeof meta.title !== 'string') return undefined;
+      return { ...meta, body: match[2].replace(/\r?\n$/, '') };
+    } catch { return undefined; }
+  }
+
+  memoryRestore(entry, record) {
+    if (entry === undefined) return { restored: false, reason: 'not_found' };
+    const current = this.memoryRevision(entry);
+    if (record.afterRevision !== null && current !== record.afterRevision) {
+      return { restored: false, reason: 'changed_since', entry };
+    }
+    return { restored: true, entry };
   }
 
   /**
@@ -878,7 +981,32 @@ class FixtureServer {
         .filter((entry) => search === '' || `${entry.title} ${entry.body}`.toLowerCase().includes(search))
         .toSorted((a, b) => Number(b.pinned) - Number(a.pinned) || b.updated.localeCompare(a.updated))
         .map(withRevision);
-      this.envelope(res, { items });
+      const owner = this.memoryOwnerScope(scopeMatch[1], query.get('workspace_id') ?? undefined, query.get('persona_id') ?? undefined);
+      const statusFilter = (query.get('statuses') ?? '').split(',').filter((value) => value !== '');
+      const statuses = statusFilter.length > 0 ? statusFilter : includeInactive ? ['active', 'pending', 'superseded', 'archived'] : ['active', 'pending'];
+      const pageSize = Number(query.get('page_size') ?? 20);
+      const offset = Number(query.get('offset') ?? 0);
+      const withOwner = items.map((entry) => ({
+        ...entry,
+        scope: owner,
+        applicability: memoryEntryApplicability(entry),
+        target: this.memoryTarget(scopeMatch[1], owner.workspaceId, owner.personaId, entry),
+      }));
+      const page = withOwner.slice(offset, offset + pageSize);
+      this.envelope(res, {
+        items: page,
+        mode: query.get('query') === null ? 'list' : 'search',
+        next_cursor: offset + pageSize < withOwner.length ? fixtureHash({ offset: offset + pageSize, count: withOwner.length }) : null,
+        coverage: {
+          scopes: [owner],
+          statuses,
+          exhausted: offset + pageSize >= withOwner.length,
+          // A record the store could not read is counted, not hidden: a short
+          // list must never read as proof that nothing else is there.
+          complete: true,
+          warnings: [],
+        },
+      });
       return true;
     }
     if (tail === 'inbox' && method === 'GET') {
@@ -898,12 +1026,22 @@ class FixtureServer {
         return true;
       }
       let restored = null;
+      // Newest first, and a record whose content moved on since is refused: an
+      // undo must not replace a newer version with an older before-image.
       for (const record of [...records].reverse()) {
         const index = entries.findIndex((entry) => entry.id === record.id);
+        if (index >= 0 && record.afterRevision !== null && this.memoryRevision(entries[index]) !== record.afterRevision) {
+          this.envelope(res, { entry: null, reason: 'changed_since', revision: this.memoryRevision(entries[index]) }, 40944, 'memory.revision_conflict');
+          return true;
+        }
         if (record.before === null) {
           if (index >= 0) entries.splice(index, 1);
         } else {
-          const before = JSON.parse(record.before);
+          // A journal before-image is the stored document (JSON frontmatter
+          // plus body), not a JSON blob, so it is read the way the page reads
+          // a version rather than parsed as a bare object.
+          const before = this.memoryBeforeImage(record.before);
+          if (before === undefined) continue;
           if (index >= 0) entries[index] = before;
           else entries.push(before);
           restored ??= before;
@@ -925,8 +1063,8 @@ class FixtureServer {
       return true;
     }
     if (method === 'PUT') {
-      const operationId = `op_fixture_${++this.memoryOpCounter}`;
       if (id === 'new') {
+        const operationId = `op_fixture_${++this.memoryOpCounter}`;
         const entry = {
           id: `m_20260928_${String(this.memoryOpCounter).padStart(6, '0')}`,
           type: body?.type ?? 'project',
@@ -938,10 +1076,12 @@ class FixtureServer {
           updated: now(),
           source: { writer: 'user' },
           reason: body?.reason ?? '',
+          basis: body?.basis === undefined ? undefined : structuredClone(body.basis),
+          validity: body?.validity === null ? undefined : (body?.validity === undefined ? undefined : structuredClone(body.validity)),
         };
         entries.push(entry);
         this.memoryLog(key, { operationId, action: 'create', id: entry.id, at: now(), writer: 'user', before: null, beforeRevision: null, afterRevision: this.memoryRevision(entry) });
-        this.envelope(res, { entry: withRevision(entry), operationId });
+        this.envelope(res, { entry: withRevision(entry), operationId, outcome: entry.status === 'pending' ? 'pending' : 'applied' });
         return true;
       }
       if (index < 0) {
@@ -953,20 +1093,43 @@ class FixtureServer {
         this.envelope(res, null, 40944, 'memory.revision_conflict');
         return true;
       }
-      const before = JSON.stringify(current);
+      const archive = body?.action === 'archive';
       const next = {
         ...current,
         type: body?.type ?? current.type,
         title: body?.title ?? current.title,
         body: body?.body ?? current.body,
-        status: body?.action === 'archive' ? 'archived' : 'active',
+        status: archive ? 'archived' : current.status === 'pending' ? 'active' : current.status,
         pinned: body?.pinned ?? current.pinned,
         reason: body?.reason ?? current.reason,
+        // Content metadata rides the same save. Omitting it preserves what is
+        // held; `validity: null` clears the check on purpose.
+        basis: body?.basis === undefined ? current.basis : structuredClone(body.basis),
+        validity: body?.validity === null ? undefined : (body?.validity === undefined ? current.validity : structuredClone(body.validity)),
+        covered_by: archive
+          ? (body?.covered_by === undefined ? current.covered_by : { id: body.covered_by.id, revision: body.covered_by.expected_revision })
+          : current.covered_by,
         updated: now(),
       };
+      // A save whose content, state and metadata all match is not a change:
+      // no new revision, no journal record, and no operation to undo.
+      const unchanged = !archive
+        && next.title === current.title
+        && next.body === current.body
+        && next.type === current.type
+        && next.pinned === current.pinned
+        && next.status === current.status
+        && JSON.stringify(next.basis) === JSON.stringify(current.basis)
+        && JSON.stringify(next.validity) === JSON.stringify(current.validity);
+      if (unchanged) {
+        this.envelope(res, { entry: withRevision(current), operationId: null, outcome: 'unchanged' });
+        return true;
+      }
+      const operationId = `op_fixture_${++this.memoryOpCounter}`;
+      const before = this.memoryEntrySnapshot(current);
       entries[index] = next;
       this.memoryLog(key, { operationId, action: body?.action ?? 'update', id: next.id, at: now(), writer: 'user', before, beforeRevision: this.memoryRevision(current), afterRevision: this.memoryRevision(next) });
-      this.envelope(res, { entry: withRevision(next), operationId });
+      this.envelope(res, { entry: withRevision(next), operationId, outcome: next.status === 'pending' ? 'pending' : 'applied' });
       return true;
     }
     if (method === 'DELETE') {
@@ -980,7 +1143,7 @@ class FixtureServer {
         return true;
       }
       const operationId = `op_fixture_${++this.memoryOpCounter}`;
-      this.memoryLog(key, { operationId, action: 'delete', id: current.id, at: now(), writer: 'user', before: JSON.stringify(current), beforeRevision: this.memoryRevision(current), afterRevision: null });
+      this.memoryLog(key, { operationId, action: 'delete', id: current.id, at: now(), writer: 'user', before: this.memoryEntrySnapshot(current), beforeRevision: this.memoryRevision(current), afterRevision: null });
       entries.splice(index, 1);
       this.envelope(res, { operation_id: operationId });
       return true;
@@ -1513,6 +1676,18 @@ class FixtureServer {
     res.end(JSON.stringify({ code, msg, data, request_id: nextId('req'), ...(details === undefined ? {} : { details }) }));
   }
 
+  /**
+   * An envelope with the HTTP status the real route would use. A failure that
+   * arrives as a 200 is a success to every client, so a fixture that answers a
+   * missing or forbidden file this way leaves the product's own error handling
+   * untestable: kap-server sends 404 for a missing path and 403 for a denied
+   * one, and the client only raises on a non-OK status.
+   */
+  failureEnvelope(res, status, code, msg, details) {
+    res.writeHead(status, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ code, msg, data: null, request_id: nextId('req'), ...(details === undefined ? {} : { details }) }));
+  }
+
   async readBody(req) {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -1631,6 +1806,7 @@ class FixtureServer {
       const advanced = path === '/usage'
         || path === '/usage/pricing'
         || path === '/usage/realtime'
+        || path === '/usage/rescan'
         || path === '/sessions/query'
         || path === '/mcp/servers'
         || path.startsWith('/mcp/servers/')
@@ -1679,6 +1855,29 @@ class FixtureServer {
     }
     if (path === '/usage/pricing' && method === 'GET') {
       return this.envelope(res, this.usagePricingResponse(query.getAll('model')));
+    }
+    if (path === '/usage/rescan' && method === 'GET') {
+      // The usage page polls this for the "Rescan all" affordance. Without the
+      // route the request 404s and the page shows its red "Progress
+      // unavailable. Reconnecting…" alert on every capture. Idle is the real
+      // resting state of UsageAggregationService.rescan, so the frame shows a
+      // page that is not mid-rescan rather than one that cannot ask.
+      if (this.usageV2 === null) {
+        return this.envelope(res, null, 40404, 'no usage fixture for this scenario');
+      }
+      return this.envelope(res, {
+        state: 'idle', scanned_sessions: 0, total_sessions: 0, scanned_records: 0,
+        started_at: null, finished_at: null, error: null,
+      });
+    }
+    if (path === '/usage/rescan' && method === 'POST') {
+      if (this.usageV2 === null) {
+        return this.envelope(res, null, 40404, 'no usage fixture for this scenario');
+      }
+      return this.envelope(res, {
+        state: 'completed', scanned_sessions: 12, total_sessions: 12, scanned_records: 418,
+        started_at: this.scenario?.data.startedAt ?? null, finished_at: null, error: null,
+      });
     }
     if (path === '/usage/pricing' && method === 'PUT' && body !== undefined) {
       for (const [model, price] of Object.entries(body.overrides ?? {})) {
@@ -2021,12 +2220,71 @@ class FixtureServer {
         next_offset: hasMore ? offset + pageSize : undefined,
       });
     }
+    // Create: the same request/response shape as kap-server's `POST /cron`.
+    // `cronFailures` lets a scenario make the next write fail so the panel's
+    // real-failure path is exercisable against a mock, not a guess.
+    if (path === '/cron' && method === 'POST') {
+      const rows = this.scenario?.data.cronTasks;
+      if (rows === undefined || typeof body?.cron !== 'string' || body.cron.trim() === '') {
+        return this.envelope(res, null, 40001, 'cron expression is invalid');
+      }
+      if (typeof body.prompt !== 'string' || body.prompt.trim() === '') {
+        return this.envelope(res, null, 40001, 'prompt must not be blank');
+      }
+      if (this.consumeScenarioFlag('cronFailNextWrite')) {
+        return this.envelope(res, null, 40001, 'cron tasks can only be rebound within the same workspace');
+      }
+      const id = `cron_fixture_created_${rows.length + 1}`;
+      rows.push(fixtureCronTask({
+        id,
+        session_id: body.session_id,
+        cron: body.cron,
+        prompt: body.prompt,
+        recurring: body.recurring !== false,
+        paused: body.paused === true,
+      }));
+      const created = rows[rows.length - 1];
+      return this.envelope(res, { task: structuredClone(created) });
+    }
     const cronTaskMatch = /^\/cron\/([^/:]+)(?::([a-z]+))?$/.exec(path);
     if (cronTaskMatch !== null) {
       const rows = this.scenario?.data.cronTasks;
       const task = (rows ?? []).find((entry) => entry.id === cronTaskMatch[1]);
       if (task === undefined) return this.envelope(res, null, 40406, 'task.not_found');
       const action = cronTaskMatch[2];
+      // Detail: the list row's preview plus the prompt in full.
+      if (action === undefined && method === 'GET') {
+        return this.envelope(res, { task: structuredClone(task) });
+      }
+      // Edit: `session_id` in the body is the target binding, and a target in
+      // another workspace is refused exactly as the real route refuses it.
+      if (action === undefined && method === 'PATCH') {
+        if (this.consumeScenarioFlag('cronFailNextWrite')) {
+          return this.envelope(res, null, 40001, 'cron tasks can only be rebound within the same workspace');
+        }
+        if (typeof body.cron === 'string' && !FIXTURE_CRON_PATTERN.test(body.cron.trim())) {
+          return this.envelope(res, null, 40001, 'cron expression is invalid');
+        }
+        if (body.session_id !== undefined) {
+          const target = (this.scenario?.data.sessions ?? []).find((entry) => entry.id === body.session_id);
+          if (target === undefined) return this.envelope(res, null, 40408, 'target session does not exist');
+          if (target.workspace_id !== undefined && task.workspace_id !== undefined
+            && target.workspace_id !== task.workspace_id) {
+            return this.envelope(res, null, 40001, 'cron tasks can only be rebound within the same workspace');
+          }
+          task.session_id = body.session_id;
+        }
+        if (typeof body.cron === 'string') {
+          task.cron = body.cron;
+          task.human_schedule = fixtureHumanSchedule(body.cron);
+        }
+        if (typeof body.prompt === 'string') {
+          task.prompt = body.prompt;
+          task.prompt_preview = body.prompt.length > 120 ? `${body.prompt.slice(0, 120)}…(truncated)` : body.prompt;
+        }
+        if (typeof body.recurring === 'boolean') task.recurring = body.recurring;
+        return this.envelope(res, { task: structuredClone(task) });
+      }
       if (action === 'pause') {
         task.paused = true;
         task.next_fire_at = null;
@@ -2608,8 +2866,15 @@ class FixtureServer {
     if (path.startsWith('/plugins') && handlePlugins(this, res, path, method, body)) return;
     if (path === '/plugins/marketplace') {
       const source = this.config.plugins?.marketplaceUrl;
+      // No address configured is the normal case, not a broken one: a real
+      // server answers with its bundled official catalog, so the fixture does
+      // too. Only a scenario that explicitly wants an empty market sets one.
       if (typeof source !== 'string' || source.trim() === '') {
-        return this.envelope(res, { configured: false, entries: [] });
+        return this.envelope(res, {
+          configured: true,
+          source: 'builtin:kiki-official-plugins',
+          entries: marketplaceWithState(this),
+        });
       }
       return this.envelope(res, {
         configured: true,
@@ -2749,7 +3014,7 @@ class FixtureServer {
       const filePath = query.get('path') ?? '';
       const file = this.scenario?.data.fsFiles?.[filePath];
       if (file === undefined) {
-        return this.envelope(res, null, 40409, 'fs.path_not_found');
+        return this.failureEnvelope(res, 404, 40409, 'fs.path_not_found');
       }
       const bytes =
         file.base64 !== undefined
@@ -3432,6 +3697,27 @@ class FixtureServer {
         };
         session.record.updated_at = now();
       }
+      // An `execution` selection commits the same way and opens a new
+      // generation. Without this echo a switched session reads back as the
+      // engine it left, so every later message would be projected against the
+      // old binding.
+      if (body.execution !== undefined && body.execution !== null) {
+        const previous = session.record.agent_config?.execution;
+        const selection = body.execution;
+        session.record.agent_config = {
+          ...session.record.agent_config,
+          execution: {
+            version: previous?.version ?? 1,
+            selection,
+            // The server resolves effective values; the fixture keeps whatever
+            // the engine would report and only tracks the generation.
+            effective: { ...(previous?.effective ?? {}) },
+            sources: { ...(previous?.sources ?? {}) },
+            generation: (previous?.generation ?? 0) + 1,
+          },
+        };
+        session.record.updated_at = now();
+      }
       const item = { prompt_id: promptId, user_message_id: userMessageId, status: 'running', content: body.content, created_at: createdAt, text };
       // A parked turn owns the session — park behind it like the real server.
       if (session.scriptRunning || session.activePrompt !== null) {
@@ -3801,10 +4087,22 @@ class FixtureServer {
     return this.envelope(res, null, 40404, `fixture: no route ${path}`);
   }
 
+  /** Reads and clears a one-shot failure armed by `__control`. */
+  consumeScenarioFlag(name) {
+    if (!this[name]) return false;
+    this[name] = false;
+    return true;
+  }
+
   async handleControl(body, res) {
     switch (body.action) {
-      case 'list': {
-        const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
+      case 'cron_fail_next_write':
+        // Arms a one-shot refusal of the next cron create/update, so the
+        // panel's real-failure path (draft kept, panel open) is walkable
+        // against the mock rather than asserted in the abstract.
+        this.cronFailNextWrite = true;
+        return this.envelope(res, { armed: true });
+      case 'list': {        const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
         const files = await readdir(dir);
         return this.envelope(res, {
           scenarios: files.filter((f) => f.endsWith('.scenario.mjs')).map((f) => f.replace('.scenario.mjs', '')),

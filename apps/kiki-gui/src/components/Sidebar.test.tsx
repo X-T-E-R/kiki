@@ -49,6 +49,10 @@ const listTasks = vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] 
 const listPrompts = vi.fn(async (): Promise<unknown> => ({ active: null, queued: [] }));
 // The room rows' lifecycle calls; wired into the mocked client's klient.rest.
 const roomRest = vi.hoisted(() => ({
+  list: vi.fn(),
+  addMember: vi.fn(),
+  createFromThreads: vi.fn(),
+  searchThreads: vi.fn(),
   get: vi.fn(),
   update: vi.fn(),
   pause: vi.fn(),
@@ -1152,11 +1156,48 @@ describe('Sidebar session menu location & link group', () => {
     return menu;
   }
 
+  it('offers one room entry and joins an existing room through the member API', async () => {
+    const room = { id: 'example-room', name: 'Project room', members: [] } as unknown as RoomDocument;
+    roomRest.list.mockResolvedValue([room]);
+    roomRest.get.mockResolvedValue(room);
+    roomRest.addMember.mockResolvedValue({ ...room, members: [{ kind: 'thread', sessionId: 'one' }] });
+    const { container } = await mount(listed());
+    const menu = await openSessionMenu(container);
+    expect(menu.querySelector('[data-menu-item="new-thread-room"]')).toBeNull();
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="join-room"]')!.click(); });
+    await settle();
+    expect(document.querySelector('[data-join-room-new]')?.textContent).toBe('New room…');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-join-room="example-room"]')!.click(); });
+    await settle();
+    expect(roomRest.addMember).toHaveBeenCalledWith('example-room', { kind: 'thread', sessionId: 'one' });
+    expect(document.querySelector('[data-join-room-dialog]')).toBeNull();
+  });
+
+  it('keeps multi-selected threads through the empty-room chooser into real room creation', async () => {
+    roomRest.list.mockResolvedValue([]);
+    roomRest.searchThreads.mockResolvedValue({ items: [], has_more: false });
+    roomRest.createFromThreads.mockResolvedValue({ id: 'new-example-room', name: 'New room' });
+    const threads = [session('one'), session('two')];
+    const { container } = await mount({ sessions: threads, sessionGroups: [{ key: 'today', label: 'Today', items: threads }] });
+    await act(async () => {
+      for (const id of ['one', 'two']) container.querySelector<HTMLButtonElement>(`[data-session-row="${id}"] > button`)!.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+    });
+    const menu = await openSessionMenu(container);
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="join-room"]')!.click(); });
+    await settle();
+    expect(document.querySelector('[data-join-room-dialog]')?.textContent).toContain('Add 2 threads');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-join-room-new]')!.click(); });
+    expect(document.querySelectorAll('[data-new-thread-room-member]')).toHaveLength(2);
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-new-thread-room-submit]')!.click(); });
+    await settle();
+    expect(roomRest.createFromThreads).toHaveBeenCalledWith(expect.objectContaining({ sessionIds: ['one', 'two'] }));
+  });
+
   it('copies the in-app route and the session cwd from the new group', async () => {
     const { container } = await mount(listed());
     const menu = await openSessionMenu(container);
-    expect(menu.querySelector('[data-menu-item="copy-link"]')?.textContent).toBe('Copy link');
-    expect(menu.querySelector('[data-menu-item="copy-path"]')?.textContent).toBe('Copy path');
+    expect(menu.querySelector('[data-menu-item="copy-link"]')?.textContent).toBe('Copy thread link');
+    expect(menu.querySelector('[data-menu-item="copy-path"]')?.textContent).toBe('Copy working directory');
     await act(async () => {
       menu.querySelector<HTMLButtonElement>('[data-menu-item="copy-link"]')?.click();
     });
@@ -1181,14 +1222,12 @@ describe('Sidebar session menu location & link group', () => {
     const revealPath = vi.fn(async () => {});
     const openPath = vi.fn(async () => {});
     const { container } = await mount(listed(), { ...browserHost, revealPath, openPath });
-    let menu = await openSessionMenu(container);
-    expect(menu.querySelector('[data-menu-item="open-folder"]')?.textContent).toBe('Open containing folder');
-    expect(menu.querySelector('[data-menu-item="open-default-app"]')?.textContent).toBe('Open with default app');
+    const menu = await openSessionMenu(container);
+    expect(menu.querySelector('[data-menu-item="open-folder"]')?.textContent).toBe('Open working directory');
+    expect(menu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
     await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="open-folder"]')!.click(); });
     expect(revealPath).toHaveBeenCalledWith('C:/tmp');
-    menu = await openSessionMenu(container);
-    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="open-default-app"]')!.click(); });
-    expect(openPath).toHaveBeenCalledWith('C:/tmp');
+    expect(openPath).not.toHaveBeenCalled();
   });
 
   it('hides host path actions for SSH even when native openers exist, while keeping copy actions', async () => {

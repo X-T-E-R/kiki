@@ -253,9 +253,7 @@ export class DisposableStore implements IDisposable {
     if (!this._entries.has(d)) {
       this._entries.set(
         d,
-        this._ledger.register(() => {
-          d.dispose();
-        }, disposableLabel(d)),
+        this._ledger.register(() => d.dispose(), disposableLabel(d)),
       );
     }
     return d;
@@ -293,12 +291,12 @@ export class DisposableStore implements IDisposable {
     }
   }
 
-  dispose(): void {
-    if (this._isDisposed) return;
+  dispose(): void | Promise<void> {
+    if (this._isDisposed) return this._ledger.teardown('scope-close');
     this._isDisposed = true;
     markAsDisposed(this);
     try {
-      void this._ledger.teardown('scope-close');
+      return this._ledger.teardown('scope-close');
     } finally {
       this._entries.clear();
     }
@@ -330,9 +328,9 @@ export abstract class Disposable implements IDisposable {
     return this._store.add(d);
   }
 
-  dispose(): void {
+  dispose(): void | Promise<void> {
     markAsDisposed(this);
-    this._store.dispose();
+    return this._store.dispose();
   }
 }
 

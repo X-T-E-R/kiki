@@ -24,6 +24,37 @@ function deferred<T = void>(): {
 
 describe('Ledger', () => {
   describe('teardown ordering', () => {
+    it.each([false, true])('owns pending entry retirement until settlement and then drains remaining entries (reject=%s)', async (reject) => {
+      const gate = deferred();
+      const ledger = new Ledger('pending-entry');
+      const events: string[] = [];
+      const errors: unknown[] = [];
+      setUnexpectedErrorHandler((error) => errors.push(error));
+      ledger.register(() => { events.push('remaining'); });
+      const entry = ledger.register(async () => {
+        events.push('start');
+        await gate.promise;
+        events.push('end');
+        if (reject) throw new Error('retirement failed');
+      });
+      try {
+        const retirement = entry.dispose('cascade');
+        expect(entry.dispose()).toBe(retirement);
+        const close = ledger.teardown();
+        await Promise.resolve();
+        expect(events).toEqual(['start']);
+        expect(ledger.state).toBe('disposing');
+        gate.resolve();
+        await Promise.all([retirement, close]);
+        expect(events).toEqual(['start', 'end', 'remaining']);
+        expect(errors).toHaveLength(reject ? 1 : 0);
+        expect(ledger.state).toBe('disposed');
+      } finally {
+        gate.resolve();
+        await ledger.teardown();
+        resetUnexpectedErrorHandler();
+      }
+    });
     it('tears down entries in strict reverse registration order', () => {
       const events: string[] = [];
       const ledger = new Ledger('test');

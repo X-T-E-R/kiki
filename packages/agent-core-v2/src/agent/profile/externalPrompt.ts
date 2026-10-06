@@ -1,7 +1,19 @@
-import { resolveExecutorPrompt } from '@kiki/agent-profiles/executorPrompt';
+import { resolveExecutorPrompt, type ExecutorPrompt } from '@kiki/agent-profiles/executorPrompt';
 import { renderPromptTemplateResult } from '@kiki/agent-profiles/profileShared';
 import type { AgentProfile, AgentProfileContext } from '@kiki/agent-profiles/agentProfile';
 import type { ResolvedPromptFieldOverrides } from '#/app/promptField/promptFieldRegistry';
+
+export function mergeExecutorPrompt(defaults: ExecutorPrompt | undefined, profile: ExecutorPrompt | undefined, executor: string): ExecutorPrompt | undefined {
+  if (defaults === undefined && profile === undefined) return undefined;
+  const base = defaults?.per_engine?.[executor];
+  const override = profile?.per_engine?.[executor];
+  return {
+    delivery: override?.delivery ?? profile?.delivery ?? base?.delivery ?? defaults?.delivery,
+    include: override?.include ?? profile?.include ?? base?.include ?? defaults?.include,
+    body: override?.body ?? profile?.body ?? base?.body ?? defaults?.body,
+    append: override?.append ?? profile?.append ?? base?.append ?? defaults?.append,
+  };
+}
 
 export interface ExternalPromptBlock {
   readonly id: string;
@@ -9,7 +21,7 @@ export interface ExternalPromptBlock {
 }
 
 export function renderExternalPromptBlocks(
-  profile: AgentProfile,
+  profile: Pick<AgentProfile, 'executor' | 'executorPrompt'>,
   context: AgentProfileContext,
   fields: ResolvedPromptFieldOverrides,
   fallback: string,
@@ -41,7 +53,7 @@ export function renderExternalPromptBlocks(
 }
 
 export function renderExternalPrompt(
-  profile: AgentProfile,
+  profile: Pick<AgentProfile, 'executor' | 'executorPrompt'>,
   context: AgentProfileContext,
   fields: ResolvedPromptFieldOverrides,
   fallback: string,

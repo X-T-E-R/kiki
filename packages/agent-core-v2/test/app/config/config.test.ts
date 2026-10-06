@@ -219,7 +219,7 @@ describe('Agent config', () => {
     expect(ctx.newEvents()).toMatchInlineSnapshot(`
       [wire] config.update            { "profileName": "test-profile", "systemPrompt": "Profile system prompt.", "environmentDisclosure": { "cwd": "<cwd>", "date": { "disclosed": false } }, "agentsMdPaths": [], "disallowedTools": [], "time": "<time>" }
       [emit] agent.status.updated     { "time": "<time>", "model": "mock-model", "maxContextTokens": 1000000 }
-      [emit] agent.status.updated     { "time": "<time>", "autoCompactTokens": 850000, "autoCompactSource": "legacy", "effectiveMaxContextTokens": 1000000, "reservedContextTokens": 50000, "contextStrategy": "summarize", "contextStrategySource": "default" }
+      [emit] agent.status.updated     { "time": "<time>", "autoCompactTokens": 850000, "autoCompactSource": "legacy", "effectiveMaxContextTokens": 1000000, "reservedContextTokens": 50000, "contextStrategy": "auto", "contextStrategySource": "default" }
       [wire] tools.set_active_tools   { "names": [ "Read" ], "time": "<time>" }
     `);
   });

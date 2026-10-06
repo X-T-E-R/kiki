@@ -18,16 +18,30 @@ const pauseCronTask = vi.fn();
 const resumeCronTask = vi.fn();
 const runCronTask = vi.fn();
 const deleteCronTask = vi.fn();
+const getCronTask = vi.fn();
+const createCronTask = vi.fn();
+const updateCronTask = vi.fn();
 
 vi.mock('../state/connection', () => ({
   useOptionalConnection: () => undefined,
   useConnection: () => ({
-    client: { listCronTasks, pauseCronTask, resumeCronTask, runCronTask, deleteCronTask },
+    client: {
+      listCronTasks,
+      pauseCronTask,
+      resumeCronTask,
+      runCronTask,
+      deleteCronTask,
+      getCronTask,
+      createCronTask,
+      updateCronTask,
+    },
   }),
 }));
 
 const sessions = [
   { id: 'sess-1', title: 'Alpha session', workspace_id: 'ws-a' },
+  { id: 'sess-2', title: 'Beta session', workspace_id: 'ws-a' },
+  { id: 'sess-3', title: 'Gamma session', workspace_id: 'ws-b' },
 ] as unknown as readonly Session[];
 const workspaceOptions = [
   { id: 'ws-a', name: 'Alpha' },
@@ -76,7 +90,7 @@ beforeAll(() => {
 beforeEach(() => {
   clearToasts();
   seedTasks([]);
-  for (const mock of [listCronTasks, pauseCronTask, resumeCronTask, runCronTask, deleteCronTask]) {
+  for (const mock of [listCronTasks, pauseCronTask, resumeCronTask, runCronTask, deleteCronTask, getCronTask, createCronTask, updateCronTask]) {
     mock.mockReset();
   }
   listCronTasks.mockImplementation((query: { session_id?: string; offset?: number; page_size?: number } = {}) => {
@@ -114,6 +128,34 @@ beforeEach(() => {
     currentTasks = currentTasks.filter((task) => task.id !== id);
     return Promise.resolve({ deleted: true as const });
   });
+  getCronTask.mockImplementation((id: string) => {
+    const found = currentTasks.find((task) => task.id === id);
+    if (found === undefined) {
+      return Promise.reject(new ApiError({ code: 40406, msg: `cron task ${id} does not exist`, data: null }));
+    }
+    return Promise.resolve({ task: { ...found, prompt: `Full prompt for ${id}` } });
+  });
+  createCronTask.mockImplementation((input: { session_id: string; cron: string; prompt: string; recurring: boolean }) => {
+    const created: CronTask = makeCronTask({
+      id: 'created-1',
+      session_id: input.session_id,
+      cron: input.cron,
+      human_schedule: 'Every day at 09:00',
+      prompt_preview: input.prompt,
+      recurring: input.recurring,
+    });
+    currentTasks = [...currentTasks, created];
+    return Promise.resolve({ task: { ...created, prompt: input.prompt } });
+  });
+  updateCronTask.mockImplementation((id: string, patch: { cron?: string; prompt?: string; session_id?: string; recurring?: boolean }) => {
+    const found = currentTasks.find((task) => task.id === id);
+    if (found === undefined) {
+      return Promise.reject(new ApiError({ code: 40406, msg: `cron task ${id} does not exist`, data: null }));
+    }
+    const updated: CronTask = { ...found, ...patch };
+    currentTasks = currentTasks.map((task) => (task.id === id ? updated : task));
+    return Promise.resolve({ task: { ...updated, prompt: patch.prompt ?? found.prompt_preview } });
+  });
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   container = document.createElement('div');
   document.body.append(container);
@@ -135,6 +177,16 @@ async function flush(turns = 6): Promise<void> {
   for (let i = 0; i < turns; i += 1) {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   }
+}
+
+/** Types into a React-controlled field the way the browser would. */
+async function typeInto(field: HTMLInputElement | HTMLTextAreaElement, value: string): Promise<void> {
+  const proto = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value')!.set!;
+  await act(async () => {
+    setter.call(field, value);
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 }
 
 async function mount(entry = '/cron', onNavigate: (target: unknown) => void = () => undefined): Promise<void> {
@@ -195,9 +247,11 @@ describe('CronPage', () => {
     expect(rows).toHaveLength(2);
 
     expect(rows[0]!.querySelector('[data-cron-status="running"]')).not.toBeNull();
-    expect(rows[0]!.textContent).toContain('Every day at 09:00');
+    // The row leads with the schedule in the reader's language, not the
+    // engine's string and not the raw expression.
+    expect(rows[0]!.querySelector('[data-cron-schedule]')?.textContent).toBe('Every day at 09:00');
     expect(rows[0]!.textContent).toContain('Summarize overnight logs');
-    expect(rows[0]!.textContent).toContain('0 9 * * *');
+    expect(rows[0]!.textContent).not.toContain('0 9 * * *');
     expect(rows[0]!.textContent).toContain('Recurring');
     expect(rows[0]!.querySelector('[data-cron-session="sess-1"]')?.textContent).toBe('Alpha session');
     expect(rows[0]!.textContent).toContain('Alpha');
@@ -246,7 +300,8 @@ describe('CronPage', () => {
     expect(pauseCronTask).toHaveBeenCalledWith('task-1', 'sess-1');
     expect(getToasts().some((toast) => toast.tone === 'success' && toast.text === 'Scheduled task paused')).toBe(true);
     expect(dialog.querySelector('[data-cron-task="task-1"] [data-cron-status="paused"]')).not.toBeNull();
-    expect(dialog.querySelector('[data-cron-task="task-1"] [data-cron-action="resume"]')).not.toBeNull();
+    // The one control flips its own label; its test hook stays the same.
+    expect(dialog.querySelector('[data-cron-task="task-1"] [data-cron-action="pause"]')?.textContent).toBe('Resume');
   });
 
   it('resumes a paused task', async () => {
@@ -254,8 +309,8 @@ describe('CronPage', () => {
     await mount();
     const dialog = await openPanel();
 
-    const resume = dialog.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="resume"]');
-    expect(resume).not.toBeNull();
+    const resume = dialog.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="pause"]');
+    expect(resume?.textContent).toBe('Resume');
     await act(async () => { resume!.click(); });
     await flush();
 
@@ -346,6 +401,257 @@ describe('CronPage', () => {
 
     expect(onNavigate).toHaveBeenCalledWith('/s/sess-1');
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('names the schedule in the locale instead of the engine string, and keeps the expression for the detail', async () => {
+    seedTasks([makeCronTask({ id: 'task-1', cron: '0 * * * *', human_schedule: 'at minute 0 of every hour' })]);
+    await mount();
+    const page = await openPanel();
+
+    // The engine's English must not stand in for the schedule.
+    expect(page.querySelector('[data-cron-schedule]')?.textContent).toBe('Every hour on the hour');
+    expect(page.textContent).not.toContain('at minute 0 of every hour');
+    // The expression is a fact about the rule, so it lives in the panel.
+    expect(page.textContent).not.toContain('0 * * * *');
+
+    await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-action="expand"]')!.click(); });
+    await flush();
+    expect(page.querySelector('[data-cron-detail]')?.textContent).toContain('0 * * * *');
+  });
+
+  it('reads the full prompt only for the row that was opened', async () => {
+    seedTasks([makeCronTask({ id: 'task-1' }), makeCronTask({ id: 'task-2' })]);
+    await mount();
+    const page = await openPanel();
+
+    expect(getCronTask).not.toHaveBeenCalled();
+    await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-action="expand"]')!.click(); });
+    await flush();
+
+    expect(getCronTask).toHaveBeenCalledTimes(1);
+    expect(getCronTask).toHaveBeenCalledWith('task-1', 'sess-1');
+    expect(page.querySelector('[data-cron-detail-prompt]')?.textContent).toBe('Full prompt for task-1');
+  });
+
+  it('creates a task bound to the chosen conversation with the schedule the controls describe', async () => {
+    await mount();
+    const page = await openPanel();
+
+    await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-create]')!.click(); });
+    await flush();
+    const editor = document.querySelector<HTMLElement>('[data-cron-editor-title]')!;
+    expect(editor.closest('[role="dialog"]')).not.toBeNull();
+
+    const prompt = document.querySelector<HTMLTextAreaElement>('[data-cron-prompt]')!;
+    await typeInto(prompt, 'Summarize the overnight logs.');
+    // Pick a different conversation than the default one.
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('#cron-bind-session')!.click();
+    });
+    await flush();
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-option-value="sess-2"]')!.click();
+    });
+    await flush();
+
+    const save = document.querySelector<HTMLButtonElement>('[data-cron-save]')!;
+    expect(save.disabled).toBe(false);
+    await act(async () => { save.click(); });
+    await flush();
+
+    expect(createCronTask).toHaveBeenCalledWith({
+      session_id: 'sess-2',
+      cron: '0 9 * * *',
+      prompt: 'Summarize the overnight logs.',
+      recurring: true,
+    });
+    expect(getToasts().some((toast) => toast.text === 'Scheduled task created')).toBe(true);
+    expect(document.querySelector('[data-cron-editor-title]')).toBeNull();
+  });
+
+  it('edits an existing rule in place and keeps a complex rule as its own text', async () => {
+    seedTasks([
+      makeCronTask({ id: 'task-simple', cron: '0 9 * * *' }),
+      makeCronTask({ id: 'task-complex', cron: '0 9 15 * 1', human_schedule: 'at 09:00 on day 15 of January and Monday' }),
+    ]);
+    await mount();
+    const page = await openPanel();
+
+    // A rule the controls cannot hold opens on the expression, verbatim.
+    await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-task="task-complex"] [data-cron-action="edit"]')!.click(); });
+    await flush();
+    const advanced = document.querySelector<HTMLInputElement>('[data-cron-advanced-input]')!;
+    expect(advanced.value).toBe('0 9 15 * 1');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-save]')!.click(); });
+    await flush();
+    // Saving an untouched complex rule must not rewrite it into a simpler one.
+    expect(updateCronTask).toHaveBeenCalledWith(
+      'task-complex',
+      expect.objectContaining({ cron: '0 9 15 * 1' }),
+      'sess-1',
+    );
+  });
+
+  it('keeps the draft and the panel open when the server refuses a save', async () => {
+    seedTasks([makeCronTask({ id: 'task-1' })]);
+    updateCronTask.mockRejectedValueOnce(new ApiError({ code: 40001, msg: 'cron expression is invalid', data: null }));
+    await mount();
+    const page = await openPanel();
+
+    await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="edit"]')!.click(); });
+    await flush();
+    const prompt = document.querySelector<HTMLTextAreaElement>('[data-cron-prompt]')!;
+    await typeInto(prompt, 'A prompt the user typed');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-save]')!.click(); });
+    await flush();
+
+    // The panel survives, and so does everything in it.
+    expect(document.querySelector('[data-cron-submit-error]')?.textContent)
+      .toBe('Could not save your changes. The draft is still here, try again.');
+    expect(document.querySelector<HTMLTextAreaElement>('[data-cron-prompt]')!.value).toBe('A prompt the user typed');
+  });
+
+  // The list row carries a preview; the detail carries the prompt. Saving
+  // the preview would truncate the task on the server, so the editor may
+  // only ever submit text that came from the detail read.
+  describe('the prompt is only savable once it is the real prompt', () => {
+    const PREVIEW = 'Summarize overnight logs and post the digest to the release room';
+    const FULL = `${PREVIEW}, then list every follow-up the owner has not answered yet.`;
+
+    function seedWithDistinctPrompt(): void {
+      seedTasks([makeCronTask({ id: 'task-1', prompt_preview: `${PREVIEW}…(truncated)` })]);
+    }
+
+    it('opens on the full prompt, not the preview, and saves the full prompt when only the schedule changed', async () => {
+      getCronTask.mockImplementation((id: string) => Promise.resolve({
+        task: { ...makeCronTask({ id }), prompt: FULL },
+      }));
+      seedWithDistinctPrompt();
+      await mount();
+      const page = await openPanel();
+
+      await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="edit"]')!.click(); });
+      await flush();
+
+      expect(document.querySelector<HTMLTextAreaElement>('[data-cron-prompt]')!.value).toBe(FULL);
+      // Change only the frequency; the prompt must not be involved at all.
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-cadence="hourly"]')!.click(); });
+      await flush();
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-save]')!.click(); });
+      await flush();
+
+      expect(updateCronTask).toHaveBeenCalledWith(
+        'task-1',
+        expect.objectContaining({ prompt: FULL, cron: '0 * * * *' }),
+        'sess-1',
+      );
+      // The truncated preview must never reach the server.
+      expect(updateCronTask.mock.calls[0]?.[1]).not.toMatchObject({ prompt: expect.stringContaining('(truncated)') });
+    });
+
+    it('cannot save while the full prompt is still loading, then saves it once it arrives', async () => {
+      let release: (() => void) | undefined;
+      getCronTask.mockImplementation((id: string) => new Promise((resolve) => {
+        release = () => { resolve({ task: { ...makeCronTask({ id }), prompt: FULL } }); };
+      }));
+      seedWithDistinctPrompt();
+      await mount();
+      const page = await openPanel();
+
+      await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="edit"]')!.click(); });
+      await flush();
+
+      // Still loading: the box is disabled and Save is unavailable, so no
+      // save can be built from the preview.
+      const prompt = document.querySelector<HTMLTextAreaElement>('[data-cron-prompt]')!;
+      expect(prompt.disabled).toBe(true);
+      expect(prompt.value).not.toContain('(truncated)');
+      expect(document.querySelector<HTMLButtonElement>('[data-cron-save]')!.disabled).toBe(true);
+
+      await act(async () => { release?.(); });
+      await flush();
+
+      expect(document.querySelector<HTMLTextAreaElement>('[data-cron-prompt]')!.value).toBe(FULL);
+      expect(document.querySelector<HTMLButtonElement>('[data-cron-save]')!.disabled).toBe(false);
+    });
+
+    it('keeps a schedule edit made before the prompt arrives, and does not overwrite prompt text typed first', async () => {
+      let release: (() => void) | undefined;
+      getCronTask.mockImplementation((id: string) => new Promise((resolve) => {
+        release = () => { resolve({ task: { ...makeCronTask({ id }), prompt: FULL } }); };
+      }));
+      seedWithDistinctPrompt();
+      await mount();
+      const page = await openPanel();
+
+      await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="edit"]')!.click(); });
+      await flush();
+
+      // Touching the frequency is not touching the prompt: the late read
+      // must still land, and must not roll the schedule back.
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-cadence="hourly"]')!.click(); });
+      await act(async () => { release?.(); });
+      await flush();
+
+      expect(document.querySelector<HTMLTextAreaElement>('[data-cron-prompt]')!.value).toBe(FULL);
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-save]')!.click(); });
+      await flush();
+      expect(updateCronTask).toHaveBeenCalledWith(
+        'task-1',
+        expect.objectContaining({ prompt: FULL, cron: '0 * * * *' }),
+        'sess-1',
+      );
+    });
+
+    it('lets the user type their own prompt when the detail read fails, and offers a retry', async () => {
+      getCronTask.mockRejectedValue(new ApiError({ code: 50001, msg: 'detail unavailable', data: null }));
+      seedWithDistinctPrompt();
+      await mount();
+      const page = await openPanel();
+
+      await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="edit"]')!.click(); });
+      await flush();
+
+      // A failed read is not a reason to save the preview; the box opens
+      // empty and says the prompt is unavailable. The editor is portaled to
+      // the body, so it is read from `document`, not from the page subtree.
+      const prompt = document.querySelector<HTMLTextAreaElement>('[data-cron-prompt]')!;
+      expect(prompt.value).toBe('');
+      expect(prompt.disabled).toBe(false);
+      expect(document.querySelector('[data-cron-prompt-error]')?.textContent)
+        .toContain('Could not read the full prompt');
+      expect(document.querySelector('[data-cron-prompt-retry]')).not.toBeNull();
+
+      await typeInto(prompt, 'The prompt I meant to write.');
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-save]')!.click(); });
+      await flush();
+      expect(updateCronTask).toHaveBeenCalledWith(
+        'task-1',
+        expect.objectContaining({ prompt: 'The prompt I meant to write.' }),
+        'sess-1',
+      );
+    });
+  });
+
+  it('asks before discarding an edited form', async () => {
+    seedTasks([makeCronTask({ id: 'task-1' })]);
+    await mount();
+    const page = await openPanel();
+
+    await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-create]')!.click(); });
+    await flush();
+    const prompt = document.querySelector<HTMLTextAreaElement>('[data-cron-prompt]')!;
+    await typeInto(prompt, 'half-written');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-cancel]')!.click(); });
+    await flush();
+
+    // The editor is still open: closing it now would lose the draft.
+    expect(document.querySelector('[data-cron-editor-title]')).not.toBeNull();
+    const confirm = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
+    const discard = [...confirm.querySelectorAll('button')].find((button) => button.textContent === 'Discard changes')!;
+    await act(async () => { discard.click(); });
+    await flush();
+    expect(document.querySelector('[data-cron-editor-title]')).toBeNull();
   });
 
   it('filters rows client-side to the workspace carried in the URL and keeps the workspace tag', async () => {

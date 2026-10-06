@@ -40,6 +40,7 @@ export class Ledger {
   private _state: LedgerState = 'active';
   private readonly _records: EntryRecord[] = [];
   private _teardownPromise: Promise<void> | undefined;
+  private readonly _pending = new Set<Promise<void>>();
   private _parentEntry: LedgerEntry | undefined;
 
   constructor(readonly label: string = 'ledger') {}
@@ -121,7 +122,12 @@ export class Ledger {
     }
     this._state = 'disposing';
     this._detachFromParent();
-    const out = drainRecords(this._records, reason);
+    const drain = (): void | Promise<void> => {
+      const out = drainRecords(this._records, reason);
+      return isPromiseLike(out) ? Promise.resolve(out).then(() => this._waitForPending()) : this._waitForPending();
+    };
+    const pending = this._waitForPending();
+    const out = isPromiseLike(pending) ? Promise.resolve(pending).then(drain) : drain();
     if (isPromiseLike(out)) {
       this._teardownPromise = Promise.resolve(out).then(() => {
         this._state = 'disposed';
@@ -156,16 +162,23 @@ export class Ledger {
       record.stack = new Error('Ledger registration').stack;
     }
     this._records.push(record);
+    let result: void | Promise<void> = undefined;
     return {
       label: record.label,
       get disposed() {
         return !record.active;
       },
       dispose: (reason: TeardownReason = 'scope-close') => {
-        if (!record.active) return undefined;
+        if (!record.active) return result;
         record.active = false;
         this._remove(record);
-        return runGuarded(record, reason);
+        const out = runGuarded(record, reason);
+        if (isPromiseLike(out)) {
+          const pending = Promise.resolve(out).finally(() => this._pending.delete(pending));
+          this._pending.add(pending);
+          result = pending;
+        }
+        return result;
       },
       release: () => {
         if (!record.active) return;
@@ -173,6 +186,11 @@ export class Ledger {
         this._remove(record);
       },
     };
+  }
+
+  private _waitForPending(): void | Promise<void> {
+    if (this._pending.size === 0) return;
+    return Promise.all(this._pending).then(() => this._waitForPending());
   }
 
   private _remove(record: EntryRecord): void {

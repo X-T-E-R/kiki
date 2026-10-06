@@ -147,9 +147,9 @@ export function createCompactionElisionMessage(omittedTokens: number): ContextMe
   };
 }
 
-export function buildCompactionElisionText(omittedTokens: number): string {
+export function buildCompactionElisionText(_omittedTokens: number): string {
   return wrapSystemReminder(
-    `Some of this conversation's user messages were omitted here during compaction: the messages above this note are the oldest user input, the messages below are the most recent, and roughly ${String(omittedTokens)} tokens in between were dropped. The omitted content is covered by the compaction summary at the end of the conversation.`,
+    'Some earlier user messages were omitted here during compaction. Messages above this note are the oldest retained input; messages below it are the most recent. Consult the handoff for carried context and use available history tools for any missing original wording that changes the next action. The summary is not a substitute for an omitted instruction\'s source.',
   );
 }
 

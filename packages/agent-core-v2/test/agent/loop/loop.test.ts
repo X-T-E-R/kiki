@@ -309,6 +309,70 @@ describe('Agent loop', () => {
     ctx.wire.flush = originalFlush;
   });
 
+  it('automatically finalizes a real prompt after two flush failures without repeating execution', async () => {
+    profile.update({ activeToolNames: [] });
+    const prompts = ctx.get(IAgentPromptService);
+    const originalFlush = ctx.wire.flush.bind(ctx.wire);
+    let finalFlushes = 0;
+    ctx.wire.flush = async () => {
+      if (loop.status().finalizing && finalFlushes++ < 2) throw new Error('temporary final flush unavailable');
+      await originalFlush();
+    };
+    const ended: TurnEnded[] = [];
+    const subscription = ctx.get(IEventBus).subscribe(TurnEnded, (event) => ended.push(event));
+    ctx.mockNextResponse({ type: 'text', text: 'computed once' });
+    const handle = await prompts.enqueue({ id: 'automatic-finalization', message: { role: 'user', content: [{ type: 'text', text: 'compute once' }], toolCalls: [] } });
+    const turn = await handle.launched;
+    await expect(turn!.result).rejects.toMatchObject({ details: { executionOutcome: 'completed', persistenceOutcome: 'failed' } });
+    expect(ended).toEqual([]);
+    expect(loop.status().finalizing).toBe(true);
+    expect((await handle.completion).state).toBe('completed');
+    expect(loop.status()).toMatchObject({ state: 'idle', finalizing: false });
+    expect(prompts.list().active).toBeUndefined();
+    expect(ended).toHaveLength(1);
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect((await ctx.persistedWireRecords()).filter((entry) => entry.type === 'turn.ended')).toHaveLength(1);
+    subscription.dispose();
+    ctx.wire.flush = originalFlush;
+  });
+
+  it('bounds finalization retry timers and recovers on the next prompt after a longer storage outage', async () => {
+    profile.update({ activeToolNames: [] });
+    const prompts = ctx.get(IAgentPromptService);
+    const originalFlush = ctx.wire.flush.bind(ctx.wire);
+    let failing = true;
+    let failures = 0;
+    ctx.wire.flush = async () => {
+      if (failing && loop.status().finalizing) {
+        if (failures === 0) vi.useFakeTimers();
+        failures++;
+        throw new Error('storage still unavailable');
+      }
+      await originalFlush();
+    };
+    ctx.mockNextResponse({ type: 'text', text: 'first computed once' });
+    const first = await prompts.enqueue({ id: 'long-outage', message: { role: 'user', content: [{ type: 'text', text: 'compute' }], toolCalls: [] } });
+    await expect((await first.launched)!.result).rejects.toMatchObject({ details: { persistenceOutcome: 'failed' } });
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      const boundedFailures = failures;
+      expect(boundedFailures).toBe(8);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(failures).toBe(boundedFailures);
+      expect(loop.status()).toMatchObject({ state: 'running', finalizing: true });
+      failing = false;
+      ctx.mockNextResponse({ type: 'text', text: 'next prompt completed' });
+      const next = await prompts.enqueue({ id: 'after-long-outage', message: { role: 'user', content: [{ type: 'text', text: 'next task' }], toolCalls: [] } });
+      expect((await first.completion).state).toBe('completed');
+      expect((await next.completion).state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect(loop.status().finalizing).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      ctx.wire.flush = originalFlush;
+    }
+  });
+
   it('fails the turn after a filtered step completes', async () => {
     profile.update({ activeToolNames: [] });
     ctx.mockNextProviderResponse({

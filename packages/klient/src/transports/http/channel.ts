@@ -49,6 +49,8 @@ export interface HttpChannelOptions {
   readonly WebSocket?: typeof WebSocket;
   /** Default deadline for HTTP calls and typed REST domains. */
   readonly timeoutMs?: number;
+  /** Reading deadlines are sampled per request; zero means wait until completed or cancelled. */
+  readonly readingTimeoutMs?: () => number;
   /** Observes the event socket's lifecycle, for connection diagnostics. */
   readonly onSocketDiagnostic?: (event: HttpSocketDiagnostic) => void;
 }
@@ -100,6 +102,7 @@ export class HttpChannel implements KlientChannel {
   private readonly token?: string;
   private readonly fetchImpl: typeof fetch;
   private readonly defaultTimeoutMs: number;
+  private readonly readingTimeoutMs: () => number;
   private readonly socket: HttpEventSocket;
   private readonly activeCalls = new Set<ActiveCall>();
   readonly rest: HttpRestFacade;
@@ -125,12 +128,12 @@ export class HttpChannel implements KlientChannel {
 
   readonly sessionView: SessionViewChannel = {
     snapshot: (sessionId, options) => this.viewRequest(`/api/klient/session-view/${encodeURIComponent(sessionId)}/snapshot`, {}, { signal: options?.signal, timeoutMs: options?.timeoutMs }),
-    transcriptPage: (sessionId, input) => this.transcriptRequest('page', `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript`, {
+    transcriptPage: (sessionId, input, options) => this.transcriptRequest('page', `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript`, {
       agent_id: input.agentId, before_turn: input.beforeTurn, before_item: input.beforeItem, after_turn: input.afterTurn, after_item: input.afterItem, page_size: input.pageSize,
-    }),
-    transcriptCatchUp: (sessionId, input) => this.transcriptRequest('catchUp', `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript/catch-up`, {
+    }, options),
+    transcriptCatchUp: (sessionId, input, options) => this.transcriptRequest('catchUp', `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript/catch-up`, {
       agent_id: input.agentId, epoch: input.since.epoch, since_seq: input.since.seq, grade: input.grade ?? 'delta',
-    }),
+    }, options),
     transcriptDetail: (sessionId, input, options) => this.viewRequest(
       `/api/sessions/${encodeURIComponent(sessionId)}/transcript/detail`,
       { agent_id: input.agentId, kind: input.kind, id: input.id },
@@ -187,14 +190,16 @@ export class HttpChannel implements KlientChannel {
     return this.requestJson(path, { ...options, query });
   }
 
-  private async transcriptRequest(kind: 'page' | 'catchUp', path: string, query: Record<string, string | number | undefined>): Promise<unknown> {
-    const data = await this.viewRequest(path, { ...query, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION });
+  private async transcriptRequest(kind: 'page' | 'catchUp', path: string, query: Record<string, string | number | undefined>, options?: CallOptions): Promise<unknown> {
+    const data = await this.viewRequest(path, { ...query, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION }, { signal: options?.signal, timeoutMs: options?.timeoutMs });
     if (confirmsTranscriptCoverage(data)) return data;
     return kind === 'page' ? degradeUnconfirmedTranscriptPage(data) : degradeUnconfirmedTranscriptCatchUp(data);
   }
 
   private requestJson<T>(path: string, options: HttpRestJsonOptions = {}): Promise<T> {
-    return this.performFetch(path, options, async (response) => {
+    const reading = /\/klient\/session-view\//.test(path) || /\/transcript(?:\/(?:detail|details|ops))?$/.test(path);
+    const callOptions = reading ? { ...options, timeoutMs: options.timeoutMs ?? this.readingTimeoutMs() } : options;
+    return this.performFetch(path, callOptions, async (response) => {
       if (response.status === 404 && options.allowMissingRoute === true) {
         await response.body?.cancel();
         return undefined as T;
@@ -361,6 +366,7 @@ export class HttpChannel implements KlientChannel {
     }
     this.fetchImpl = options.fetch ?? fetchImpl.bind(globalThis);
     this.defaultTimeoutMs = options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+    this.readingTimeoutMs = options.readingTimeoutMs ?? (() => 0);
     this.socket = new HttpEventSocket({
       endpoint,
       eventsUrl: options.eventsUrl,

@@ -1,30 +1,17 @@
-/**
- * Content continuation — the one control that reads the next bounded segment
- * of a body the server had to cut (message text, thinking, tool or shell output).
- *
- * A row appears only while the body it sits under is genuinely incomplete:
- * the reader clicked nothing, and there is nothing to explain when the server
- * sent the whole value. Each press reads exactly one segment of exactly one
- * ref; the control never walks the remaining refs on its own and never offers
- * a whole-session download. The existing renderer re-projects the grown body,
- * so the row simply disappears once the last segment lands.
- *
- * Units come from the contract, not from a guess: text `offset`/`total` are
- * UTF-16 code units (shown as a share of the field), array and object lengths
- * are element/entry counts. No byte figure is ever invented.
- */
+/** Reading progress for the displayed field; the controller owns continuation and cancellation. */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { contentOriginalFileId, type ContentRef } from '@kiki/transcript';
 import type { HttpRestMediaOptions, HttpRestMediaSink } from '@kiki/klient';
 import type { I18nKey } from '@kiki/session-core/i18n';
+import { ContentRangeText } from './ContentRangeText';
 
 import { useHost } from '../host';
 import { browserSaveSink, bufferedSaveSink } from '../host/saveSink';
 import { useI18n } from '../i18n';
 import { useOptionalConnection } from '../state/connection';
-import { useContentContinuation, useTranscriptTarget, type ContentBodySource } from './transcriptDetail';
+import { useAutomaticContentRead, useContentContinuation, useTranscriptController, useTranscriptTarget, type ContentBodySource } from './transcriptDetail';
 
 /** Field-path roots each reading area consumes, stable so the hook can memo. */
 export const MESSAGE_TEXT_ROOTS: readonly string[] = ['text', 'prompt'];
@@ -157,12 +144,13 @@ export function ContinuationRow({
  * from; a download that had already begun closing its sink is left alone,
  * because the host decides what closing commits.
  */
-function ContentOriginalDownload({ ref, label }: { readonly ref: ContentRef; readonly label: string }): ReactNode {
+function ContentOriginalDownload({ ref, label, callerAgentId }: { readonly ref: ContentRef; readonly label: string; readonly callerAgentId?: string }): ReactNode {
   const { t } = useI18n();
   const host = useHost();
   const connection = useOptionalConnection();
   const client = connection?.client;
-  const target = useTranscriptTarget();
+  const workspaceTarget = useTranscriptTarget();
+  const target = useMemo(() => workspaceTarget === undefined || callerAgentId === undefined ? workspaceTarget : { ...workspaceTarget, agentId: callerAgentId }, [workspaceTarget, callerAgentId]);
   const [transfer, setTransfer] = useState<'idle' | 'downloading' | 'saving' | 'saved' | 'failed'>('idle');
   const controllerRef = useRef<AbortController | null>(null);
   // What the in-flight download belongs to, so a cancellation can name it and a
@@ -285,8 +273,12 @@ export function ContentContinuation({
   source,
   roots,
   label,
+  callerAgentId,
+  headingPresent = false,
   className = '',
 }: {
+  headingPresent?: boolean;
+  callerAgentId?: string;
   /** The canonical entity this body was rendered from; undefined = no reader. */
   source: ContentBodySource | undefined;
   roots: readonly string[];
@@ -295,22 +287,29 @@ export function ContentContinuation({
   className?: string;
 }): ReactNode {
   const { t, tp } = useI18n();
-  const { pending, statusOf, request } = useContentContinuation(source, roots);
-  const ref = pending[0];
-  if (ref === undefined) return null;
-  const progress = contentRefProgress(ref, t);
-  return (
-    <ContinuationRow
+  const { pending, statusOf, request } = useContentContinuation(source, roots, callerAgentId);
+  const controller = useTranscriptController();
+  const target = useTranscriptTarget();
+  const agentId = callerAgentId ?? target?.agentId;
+  const automatic = controller !== undefined;
+  const retry = useAutomaticContentRead(source, roots, callerAgentId);
+  const ranges = controller !== undefined && agentId !== undefined ? pending.filter((ref) => controller.isContentRange(agentId, ref)) : [];
+  const ref = pending.find((candidate) => !ranges.includes(candidate));
+  if (ref === undefined && ranges.length === 0) return null;
+  const progress = ref === undefined ? '' : contentRefProgress(ref, t);
+  return <>
+    {ranges.map((range) => <div key={JSON.stringify([range.source, range.path, range.revision])} className={className}><ContentRangeText contentRef={range} callerAgentId={callerAgentId} headingPresent={headingPresent && range.path.length === 1} label={range.path.length === 1 ? label : `${label} · ${range.path.slice(1).join('.')}`} /><ContentOriginalDownload ref={range} label={label} callerAgentId={callerAgentId} /></div>)}
+    {ref === undefined ? null : <ContinuationRow
       kind="content"
-      state={statusOf(ref)?.status ?? 'idle'}
+      state={statusOf(ref)?.status ?? (automatic ? 'loading' : 'idle')}
       progress={pending.length > 1
         ? `${label} · ${progress} · ${tp('transcript.content.morePending', pending.length - 1)}`
         : `${label} · ${progress}`}
       error={t('transcript.content.failed')}
       label={label}
-      onRequest={() => { request(ref); }}
-      original={<ContentOriginalDownload ref={ref} label={label} />}
+      onRequest={() => { if (automatic) retry(); else request(ref); }}
+      original={<ContentOriginalDownload ref={ref} label={label} callerAgentId={callerAgentId} />}
       className={className}
-    />
-  );
+    />}
+  </>;
 }

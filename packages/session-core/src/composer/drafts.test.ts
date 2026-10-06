@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PermissionMode } from '@kiki/protocol';
 
 import type { ComposerAttachment } from './attachments';
+import { preserveSubmission, readUnconfirmedSubmissions, forgetUnconfirmedSubmission } from './submissionRecovery';
+import { configureSpaceStorage } from '../storage/spaceStorage';
 import { addAnnotation, removeAnnotation } from './selectionQuote';
 import {
   appendToDraft,
@@ -417,5 +419,48 @@ describe('per-session input history (memory-only)', () => {
     expect(list).toHaveLength(INPUT_HISTORY_LIMIT);
     expect(list[0]).toBe('prompt 5');
     expect(list.at(-1)).toBe(`prompt ${INPUT_HISTORY_LIMIT + 4}`);
+  });
+});
+
+
+describe('unacknowledged submissions', () => {
+  beforeEach(() => { localStorage.clear(); configureSpaceStorage(null); });
+  afterEach(() => { configureSpaceStorage(null); });
+  const input = (promptId: string) => ({ sessionId: 'session-example', agentId: 'main', promptId,
+    content: [{ type: 'text' as const, text: `saved ${promptId}` }, { type: 'image' as const, source: { kind: 'base64' as const, media_type: 'image/png', data: 'AAAA' } }],
+    createdAt: '2026-01-01T00:00:00Z' });
+  it('persists synchronously across render failure/reload with text, media and order, and never resends', () => {
+    const ack = preserveSubmission(input('one'));
+    preserveSubmission(input('two'));
+    resetDraftMemoryForTests();
+    expect(readUnconfirmedSubmissions('session-example')).toEqual([input('one'), input('two')]);
+    ack.acknowledge();
+    expect(readUnconfirmedSubmissions('session-example')).toEqual([input('two')]);
+    forgetUnconfirmedSubmission('session-example', 'two');
+    expect(readUnconfirmedSubmissions('session-example')).toEqual([]);
+  });
+  it('deduplicates a manual same-identity retry and binds a late ack to its original space', () => {
+    configureSpaceStorage({ homeId: 'space-one' });
+    const ack = preserveSubmission(input('one'));
+    preserveSubmission(input('one'));
+    expect(readUnconfirmedSubmissions('session-example')).toHaveLength(1);
+    configureSpaceStorage({ homeId: 'space-two' });
+    preserveSubmission(input('one'));
+    ack.acknowledge();
+    expect(readUnconfirmedSubmissions('session-example')).toHaveLength(1);
+    configureSpaceStorage({ homeId: 'space-one' });
+    expect(readUnconfirmedSubmissions('session-example')).toEqual([]);
+  });
+  it('reports unavailable backup without refusing submission, and cleanup cannot turn an ack into failure', () => {
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+    const degraded = preserveSubmission(input('one'));
+    expect(degraded.persisted).toBe(false);
+    expect(degraded.acknowledge).not.toThrow();
+    spy.mockRestore();
+    const ack = preserveSubmission(input('one'));
+    expect(ack.persisted).toBe(true);
+    const cleanup = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('quota'); });
+    expect(ack.acknowledge).not.toThrow();
+    cleanup.mockRestore();
   });
 });

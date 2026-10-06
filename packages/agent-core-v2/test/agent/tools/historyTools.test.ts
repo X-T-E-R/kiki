@@ -6,6 +6,7 @@ import {
   HistorySearchTool,
   IHistoryArchive,
   IHistorySearchTool,
+  IHistoryReadTool,
 } from '../../../src/agent/tools/history/historyTools';
 import { SyncDescriptor } from '../../../src/_base/di/descriptors';
 import { TestInstantiationService } from '../../../src/_base/di/test';
@@ -241,5 +242,43 @@ describe('history tools', () => {
     expect('accesses' in search && search.accesses).toEqual([{
       kind: 'file', operation: 'search', path: '/external/project', recursive: true, implicitExternal: true,
     }]);
+  });
+
+  it('binds preparation cursors to their target and never advises replaying a stale directory ref', async () => {
+    const ix = new TestInstantiationService();
+    const source = archive();
+    source.lookupDirectory = vi.fn(async () => ({ status: 'navigation_building' as const,
+      next: { offset: 8000, incarnation: 'incarnation' }, scanned: { bytes: 8000, records: 2 } }));
+    source.readDirectory = vi.fn(async () => ({ status: 'stale_ref' as const }));
+    ix.set(IHistoryArchive, source);
+    ix.set(SessionContextToken, session);
+    ix.set(AgentScopeContextToken, caller);
+    ix.set(SessionIndexToken, sessions);
+    ix.set(WorkspaceToken, workspaces);
+    ix.set(IHistoryReadTool, new SyncDescriptor(HistoryReadTool));
+    const tool = ix.get(IHistoryReadTool);
+    const execute = async (input: Record<string, unknown>) => {
+      const execution = await tool.resolveExecution(input as never);
+      if (!('execute' in execution)) throw new Error('Expected execute');
+      const result = await execution.execute({ signal: new AbortController().signal, turnId: 1, toolCallId: 'read' });
+      return { result, data: JSON.parse(result.output as string) };
+    };
+    try {
+      const first = await execute({ step_id: 't782.14', max_chars: 10_000 });
+      expect(first.data).toMatchObject({ status: 'partial', has_more: true, continuation: 'scan' });
+      await execute({ cursor: first.data.next_cursor });
+      expect(source.lookupDirectory).toHaveBeenLastCalledWith('ws-a', 'current', 'main', 782, 't782.14',
+        { offset: 8000, incarnation: 'incarnation' }, expect.any(AbortSignal));
+      const wrong = await execute({ cursor: first.data.next_cursor, turn: 1 });
+      expect(wrong.data.error.code).toBe('cursor_mismatch');
+      const foreign = await execute({ cursor: first.data.next_cursor, max_chars: 1000 });
+      expect(foreign.data.error.code).toBe('cursor_mismatch');
+      const ref = `h1_${Buffer.from(JSON.stringify({ workspace: 'ws-a', session: 'current', agent: 'main', kind: 'turn' })).toString('base64url')}`;
+      const stale = await execute({ ref });
+      expect(stale.data).toMatchObject({ error: { code: 'stale_ref', retryable: false,
+        next_call: { tool: 'HistoryList', arguments: { session_id: 'current', agent_id: 'main' } } } });
+      expect(stale.data.error.next_call.arguments).not.toHaveProperty('ref');
+      expect(source.readTurn).not.toHaveBeenCalled();
+    } finally { ix.dispose(); }
   });
 });

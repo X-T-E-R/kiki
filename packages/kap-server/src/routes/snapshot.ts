@@ -6,6 +6,8 @@ import {
 import {
   ensureMainAgent,
   IAgentProfileService,
+  IAgentLifecycleService,
+  IAgentActivityView,
   IAtomicDocumentStore,
   ISessionContext,
   ISessionIndex,
@@ -35,6 +37,8 @@ import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBro
 import { readAgentRuntimeControls } from './sessionAgentConfig';
 import { resolveSessionFacts, toWireSession } from './sessions';
 import { boundedEntity } from '../transport/klient/boundedContent';
+import { sessionAgentCounts } from './sessionAgentCounts';
+import { sessionAgentRoster } from './sessionAgentRoster';
 
 const SNAPSHOT_MESSAGE_PAGE_SIZE = 100;
 
@@ -109,7 +113,7 @@ export function registerSnapshotRoutes(app: SnapshotRouteHost, deps: SnapshotRou
 }
 
 export async function assembleBrowseSnapshot(core: Scope, broadcaster: SessionEventBroadcaster, sessionId: string): Promise<SessionSnapshotResponse> {
-  return boundedEntity(await assembleBrowseSnapshotSource(core, broadcaster, sessionId), { kind: 'snapshot', id: '' }, 24 * 1024);
+  return boundedSessionSnapshot(await assembleBrowseSnapshotSource(core, broadcaster, sessionId), '');
 }
 
 export async function assembleBrowseSnapshotSource(
@@ -130,32 +134,24 @@ export async function assembleBrowseSnapshotSource(
   if (meta === undefined) throw new SnapshotNotFoundError(sessionId);
   const cursor = await broadcaster.getCursor(sessionId);
   const workspace = await core.accessor.get(IWorkspaceService).get(summary.workspaceId);
-  const subagents: SnapshotSubagent[] = Object.entries(meta.agents ?? {})
-    .filter(([id]) => id !== 'main')
-    .map(([id, agent]) => ({
-      id, agent_id: id, session_id: sessionId, kind: 'subagent',
-      description: resolveSubagentDisplayName(subagentUserLabel(agent), agent.displayName, id),
-      status: agent.status ?? 'running', live: false,
-      created_at: new Date(meta.createdAt).toISOString(),
-      completed_at: agent.completedAt === undefined ? undefined : new Date(agent.completedAt).toISOString(),
-      profile: agent.displayName, label: subagentUserLabel(agent),
-      parent_agent_id: subagentParentAgentId(agent),
-      model: agent.model, thinking_effort: agent.thinkingEffort,
-      output_preview: agent.resultSummary?.slice(0, 2048), stop_reason: agent.error?.slice(0, 2048),
-      tool_call_count: agent.toolCallCount,
-    }));
+  const subagents = sessionAgentRoster(sessionId, meta);
   return {
     as_of_seq: cursor.seq, epoch: cursor.epoch || `cold:${sessionId}`,
     session: toWireSession({ ...meta, workspaceId: summary.workspaceId }, workspace?.root ?? meta.cwd ?? '',
       { ...resolveSessionFacts(core, sessionId, summary.usage),
         agentConfig: { model: meta.agents?.['main']?.model ?? '' } }, cursor.seq),
     messages: { items: [], has_more: false }, in_flight_turn: null,
-    subagents, pending_approvals: [], pending_questions: [],
+    subagents, agent_counts: sessionAgentCounts(meta.agents, subagents),
+    pending_approvals: [], pending_questions: [],
   };
 }
 
 export async function assembleSnapshot(...args: Parameters<typeof assembleSnapshotSource>): Promise<SessionSnapshotResponse> {
-  return boundedEntity(await assembleSnapshotSource(...args), { kind: 'snapshot', id: args[3] === 'transcript' ? '' : 'legacy' }, 24 * 1024);
+  return boundedSessionSnapshot(await assembleSnapshotSource(...args), args[3] === 'transcript' ? '' : 'legacy');
+}
+
+export function boundedSessionSnapshot(snapshot: SessionSnapshotResponse, id: string): SessionSnapshotResponse {
+  return { ...boundedEntity(snapshot, { kind: 'snapshot', id }, 128 * 1024), agent_counts: snapshot.agent_counts };
 }
 
 async function assembleSnapshotSource(
@@ -196,6 +192,8 @@ async function assembleSnapshotFromLease(
       const model = readBoundModel(main);
       return {
         meta,
+        runtime: new Map(handle.accessor.get(IAgentLifecycleService).list().map((agent) =>
+          [agent.id, agent.accessor.get(IAgentActivityView).state()] as const)),
         session: {
           ...projected,
           agent_config: {
@@ -208,11 +206,10 @@ async function assembleSnapshotFromLease(
     },
   });
   if (snapState.captured === undefined) throw new SnapshotNotFoundError(sessionId);
-  const { meta, session } = snapState.captured;
-  const subagentCandidates = [...snapState.subagents];
+  const { meta, session, runtime } = snapState.captured;
+  const subagentCandidates = sessionAgentRoster(sessionId, meta, snapState.subagents, runtime);
   const subagentIds = subagentCandidates.map((subagent) => subagent.id);
   const toolCallCounts = broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, subagentIds);
-  void broadcaster.getTranscriptToolCallCounts(sessionId, subagentIds).catch(() => undefined);
   const subagents = enrichSnapshotSubagents(
     subagentCandidates,
     meta.agents,
@@ -243,6 +240,7 @@ async function assembleSnapshotFromLease(
     messages: { items: messageTail?.items ?? [], has_more: messageTail?.has_more ?? false },
     in_flight_turn: inFlightTurn,
     subagents,
+    agent_counts: sessionAgentCounts(meta.agents, subagents),
     context_tokens: status?.contextTokens,
     max_context_tokens: status?.maxContextTokens,
     context_breakdown:

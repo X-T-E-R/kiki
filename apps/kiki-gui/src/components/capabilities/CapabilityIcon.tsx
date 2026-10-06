@@ -6,9 +6,14 @@
  * every rename.
  *
  * Glyphs follow the icon family spec (16px viewBox, 1.35 stroke, round caps).
+ * A plugin icon is drawn in the app's own ink: `useThemedIcon` recolours a mark
+ * that asks for `currentColor`, so it follows the palette and a skin like every
+ * other mark on the page, while a painted brand icon is left alone.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+
+import { useThemedIcon } from '../../lib/pluginIcon';
 
 export type CapabilityKind = 'plugin' | 'skill' | 'mcp' | 'tool' | 'panel' | 'theme' | 'command' | 'refresh';
 
@@ -82,13 +87,6 @@ const TILE_SIZE = {
   lg: { box: 'h-14 w-14 rounded-[14px]', glyph: 'h-6 w-6', img: 'h-14 w-14' },
 } as const;
 
-function usableIcon(icon: string | undefined): string | undefined {
-  if (icon === undefined) return undefined;
-  if (icon.startsWith('data:image/svg+xml') || icon.startsWith('data:image/png')) return icon;
-  if (/^https?:\/\//.test(icon)) return icon;
-  return undefined;
-}
-
 export function CapabilityIcon({
   icon,
   kind = 'plugin',
@@ -98,18 +96,20 @@ export function CapabilityIcon({
   readonly kind?: CapabilityKind;
   readonly size?: keyof typeof TILE_SIZE;
 }) {
-  const [failed, setFailed] = useState(false);
-  const source = failed ? undefined : usableIcon(icon);
+  const [failedIcon, setFailedIcon] = useState<string>();
+  const source = useThemedIcon(icon);
+  useEffect(() => { setFailedIcon(undefined); }, [icon]);
   const dims = TILE_SIZE[size];
-  if (source !== undefined) {
+  if (source !== undefined && failedIcon !== icon) {
     return (
       <img
+        key={icon}
         src={source}
         alt=""
         aria-hidden
         draggable={false}
         referrerPolicy="no-referrer"
-        onError={() => { setFailed(true); }}
+        onError={() => { setFailedIcon(icon); }}
         className={`${dims.img} shrink-0 object-contain`}
         data-capability-icon="image"
       />

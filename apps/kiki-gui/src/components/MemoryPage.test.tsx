@@ -10,8 +10,12 @@ import type { PersonaSnapshot, Session, Workspace } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
 import { KikiClient, MEMORY_TYPES, type MemoryEntry, type MemoryJournalRecord, type MemorySettings } from '../lib/client';
 import { MemoryPage } from './MemoryPage';
+import { getToasts } from '../lib/toasts';
 import { memorySourceTargets } from './useMemorySources';
 import { memorySnapshot } from './MemoryHistory';
+import type { ToolBlock } from '@kiki/session-core/session';
+import { MemoryToolRow } from './MemoryToolRow';
+import { parseMemoryReadResult, parseMemorySearchSummary, parseMemoryWriteResult } from './memory/memoryReceipt';
 import { DirtyGuardContext, useDirtyGuardState } from './dirtyGuard';
 
 const listBots = vi.hoisted(() => vi.fn(async () => [] as { personaId: string; name: string; homeSessionId: string; hidden: boolean; pinned: boolean }[]));
@@ -20,7 +24,7 @@ vi.mock('../lib/botRooms', () => ({ BOTS_QUERY_KEY: ['bots'], useBotRoomApi: () 
 const client = new KikiClient({ baseUrl: 'http://example.test', token: 'example-token' });
 vi.mock('../state/connection', () => ({
   useConnection: () => ({ client }),
-  useOptionalConnection: () => undefined,
+  useOptionalConnection: () => ({ client }),
 }));
 
 const entries: MemoryEntry[] = MEMORY_TYPES.flatMap((type) =>
@@ -266,7 +270,9 @@ function seedBot(shared?: ('global' | 'workspace')[]) {
   return snapshot;
 }
 async function click(container: HTMLElement, selector: string) {
-  const button = container.querySelector<HTMLElement>(selector)!;
+  const button = (selector.startsWith('[data-option-value=')
+    ? document.querySelector<HTMLElement>(`[data-select-panel] ${selector}`)
+    : container.querySelector<HTMLElement>(selector))!;
   expect(button).not.toBeNull();
   await act(async () => {
     await vi.waitFor(() => { expect((button as HTMLButtonElement).disabled).not.toBe(true); });
@@ -471,6 +477,104 @@ describe('MemoryPage history detail', () => {
     expect(document.querySelector('[data-memory-history-detail="op_first"]')).toBeNull();
   });
 
+  it('keeps the recorded basis and the writer apart, and invents neither', async () => {
+    const human = fixtureEntry({ id: 'm_human', title: 'Report at decision points', basis: { kind: 'human', note: 'The user asked for this cadence.', refs: ['session_x#turn-6'] } });
+    const derived = fixtureEntry({ id: 'm_derived', title: 'GPU schedule', basis: { kind: 'derived', note: 'Kiki worked the numbers out itself.' }, validity: { check: 'Check the current schedule first.' } });
+    const plain = fixtureEntry({ id: 'm_plain', title: 'Written before the field existed' });
+    seedMemories({ 'global::': [human, derived, plain] });
+    const container = await renderPage('/memory');
+    await click(container, '[data-memory-row="m_human"]');
+    const read = container.querySelector('[data-memory-read="m_human"]')!;
+    // The content basis and the session that last wrote it are two facts.
+    expect(read.querySelector('[data-memory-basis="human"]')?.textContent).toContain('you asked for');
+    expect(read.querySelector('[data-memory-basis-note]')?.textContent).toContain('cadence');
+    expect(read.querySelector('[data-memory-basis-refs]')?.textContent).toContain('session_x#turn-6');
+    expect(read.querySelector('[data-memory-validity-state]')?.getAttribute('data-memory-validity-state')).toBe('unrecorded');
+    // An agent's write is not presented as the user's authorization.
+    expect(read.textContent).not.toContain('asked for this cadence. by the user');
+    await click(container, '[data-memory-detail-back]');
+
+    await click(container, '[data-memory-row="m_derived"]');
+    const checked = container.querySelector('[data-memory-read="m_derived"]')!;
+    expect(checked.querySelector('[data-memory-basis="derived"]')?.textContent).toContain('inference');
+    expect(checked.querySelector('[data-memory-validity-state="recheck"]')?.textContent).toContain('Check the current schedule first.');
+    await click(container, '[data-memory-detail-back]');
+
+    // An entry with no recorded basis says so, rather than claiming one.
+    await click(container, '[data-memory-row="m_plain"]');
+    expect(container.querySelector('[data-memory-read="m_plain"] [data-memory-basis="unrecorded"]')?.textContent).toContain('Not recorded');
+  });
+
+  it('marks the rows a reader must act on before relying on the content', async () => {
+    const recheck = fixtureEntry({ id: 'm_recheck', title: 'Check me', validity: { check: 'Check the schedule.' } });
+    const expired = fixtureEntry({ id: 'm_expired', title: 'Past its endpoint', validity: { check: 'Re-authorize.', until: '2026-01-01T00:00:00Z' } });
+    const plain = fixtureEntry({ id: 'm_plain', title: 'No check recorded' });
+    seedMemories({ 'global::': [recheck, expired, plain] });
+    const container = await renderPage('/memory');
+    const state = (id: string) => container.querySelector(`[data-memory-row="${id}"]`)?.getAttribute('data-memory-validity');
+    expect(state('m_recheck')).toBe('recheck');
+    expect(state('m_expired')).toBe('expired');
+    expect(state('m_plain')).toBe('unrecorded');
+    // Only the two actionable states earn a mark; a missing check is not a
+    // defect the reader has to triage in the list.
+    const marks = [...container.querySelectorAll('[data-memory-row-validity]')].map((node) => node.getAttribute('data-memory-row-validity'));
+    expect(marks).toEqual(['recheck', 'expired']);
+  });
+
+  it('names the entry a consolidation retired this one into, and can open it', async () => {
+    const kept = fixtureEntry({ id: 'm_kept', title: 'The retained rule' });
+    const retired = fixtureEntry({ id: 'm_retired', title: 'The old rule', status: 'archived', covered_by: { id: 'm_kept', revision: 'rev_kept' } });
+    seedMemories({ 'global::': [kept, retired] });
+    vi.spyOn(client, 'getMemory').mockResolvedValue(kept);
+    const container = await renderPage('/memory');
+    await toggleInactive(container);
+    await click(container, '[data-memory-row="m_retired"]');
+    expect(container.querySelector('[data-memory-covered-by="m_kept"]')?.textContent).toContain('m_kept');
+    await click(container, '[data-memory-open-covered]');
+    expect(container.querySelector('[data-memory-read="m_kept"]')).not.toBeNull();
+  });
+
+  it('carries the recorded basis and check through an edit instead of dropping them', async () => {
+    const entry = fixtureEntry({ id: 'm_edit', title: 'Editable rule', basis: { kind: 'human', note: 'The user set this.' }, validity: { check: 'Check before reuse.' } });
+    seedMemories({ 'global::': [entry] });
+    const put = vi.spyOn(client, 'putMemory').mockResolvedValue({ entry, operationId: 'op_1', outcome: 'applied' });
+    const container = await renderPage('/memory');
+    await click(container, '[data-memory-row="m_edit"]');
+    await click(container, '[data-memory-edit]');
+    await fillDraft(container, 'Editable rule');
+    const input = container.querySelector<HTMLTextAreaElement>('[data-memory-body]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Rewritten body.');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await flush();
+    await click(container, '[data-memory-save]');
+    expect(put).toHaveBeenCalledWith({ scope: 'global' }, 'm_edit', expect.objectContaining({
+      action: 'update', body: 'Rewritten body.',
+      // Rewording a rule is not a change of the evidence behind it.
+      basis: entry.basis, validity: entry.validity,
+    }));
+  });
+
+  it('does not claim a save that changed nothing was a new version', async () => {
+    const entry = fixtureEntry({ id: 'm_same', title: 'Unchanged rule' });
+    seedMemories({ 'global::': [entry] });
+    vi.spyOn(client, 'putMemory').mockResolvedValue({ entry, operationId: null, outcome: 'unchanged' });
+    const container = await renderPage('/memory');
+    await click(container, '[data-memory-row="m_same"]');
+    await click(container, '[data-memory-edit]');
+    const input = container.querySelector<HTMLInputElement>('[data-memory-reason]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'Checking whether it already matches.');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await flush();
+    await click(container, '[data-memory-save]');
+    // The toast store is module state, so read it directly rather than through
+    // the app shell this test does not mount.
+    expect(getToasts().map((toast) => toast.text).join(' ')).toContain('did not change');
+  });
+
   it('does not invent snapshots for missing or hand-edited metadata', () => {
     expect(memorySnapshot(null, null)).toBeUndefined();
     expect(memorySnapshot('---\ntitle: Hand edited\n---\nOriginal body', 'rev')).toBeUndefined();
@@ -496,7 +600,7 @@ describe('MemoryPage scope switcher', () => {
   const sourceKeys = (container: HTMLElement) => [...container.querySelectorAll('[data-memory-source]')].map((node) => node.getAttribute('data-memory-source'));
 
   async function typeCombobox(container: HTMLElement, value: string) {
-    const input = container.querySelector<HTMLInputElement>('input[role="combobox"]')!;
+    const input = document.querySelector<HTMLInputElement>('[data-select-panel] input[role="combobox"]')!;
     expect(input).not.toBeNull();
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
@@ -523,9 +627,9 @@ describe('MemoryPage scope switcher', () => {
     await click(container, '[data-memory-kind="workspace"]');
     expect(scopeKind(container)).toBe('workspace');
     await click(container, '#memory-workspace-picker');
-    expect(container.querySelectorAll('[data-option-value]').length).toBe(120);
+    expect(document.querySelectorAll('[data-select-panel] [data-option-value]').length).toBe(120);
     await typeCombobox(container, 'docs');
-    expect(container.querySelectorAll('[data-option-value]').length).toBe(1);
+    expect(document.querySelectorAll('[data-select-panel] [data-option-value]').length).toBe(1);
     await click(container, '[data-option-value="wd_042"]');
     expect(scopeKind(container)).toBe('workspace');
     expect(container.querySelector('[data-memory-workspace-switch]')).not.toBeNull();
@@ -723,16 +827,16 @@ describe('MemoryPage scope switcher', () => {
     const container = await renderPage('/memory?workspace=wd_current', [workspace]);
     await click(container, '#memory-workspace-picker');
     await typeCombobox(container, 'not-a-workspace');
-    expect(container.querySelectorAll('[data-option-value]').length).toBe(0);
-    expect(container.querySelector('[role="listbox"]')?.textContent).toContain('not-a-workspace');
-    const input = container.querySelector<HTMLInputElement>('input[role="combobox"]')!;
+    expect(document.querySelectorAll('[data-select-panel] [data-option-value]').length).toBe(0);
+    expect(document.querySelector('[data-select-panel] [role="listbox"]')?.textContent).toContain('not-a-workspace');
+    const input = document.querySelector<HTMLInputElement>('[data-select-panel] input[role="combobox"]')!;
     expect(input.hasAttribute('aria-activedescendant')).toBe(false);
     await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
     await flush();
     expect(routeParams(container).get('workspace')).toBe(workspace.id);
     expect(container.querySelector('#memory-workspace-picker')?.getAttribute('aria-expanded')).toBe('true');
     await typeCombobox(container, '');
-    expect(container.querySelectorAll('[data-option-value]').length).toBe(1);
+    expect(document.querySelectorAll('[data-select-panel] [data-option-value]').length).toBe(1);
     await click(container, '[data-option-value="wd_current"]');
     expect(container.querySelector('#memory-workspace-picker')?.getAttribute('aria-expanded')).toBe('false');
   });
@@ -1248,7 +1352,7 @@ describe('MemoryPage inbox proposals', () => {
   async function openInbox(inbox: readonly MemoryEntry[]) {
     seedMemories({ 'global::': [] });
     vi.mocked(client.getMemorySettings).mockResolvedValue({ ...enabledSettings, approval: 'review' });
-    vi.spyOn(client, 'memoryInbox').mockResolvedValue(inbox);
+    vi.spyOn(client, 'memoryInbox').mockResolvedValue({ items: inbox });
     const container = await renderPage('/memory');
     await click(container, '[data-memory-tab="inbox"]');
     return container;
@@ -1297,4 +1401,362 @@ describe('MemoryPage inbox proposals', () => {
     expect(container.querySelector('[data-memory-inbox-action]')).toBeNull();
     expect(container.querySelector('[data-memory-inbox-keep]')?.textContent).toBe('Keep');
   });
+});
+
+
+describe('memory S4 logic contracts', () => {
+  const receipt = (fields: Record<string, unknown> = {}) => ({
+    id: 'm_located', title: 'Located rule', scope: 'global', status: 'active', revision: 'r1',
+    outcome: 'applied', operation_id: 'op_real', target: { scope: 'global', id: 'm_located', expected_revision: 'r1' }, ...fields,
+  });
+  async function renderRow(payload: unknown, name = 'MemoryWrite') {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounted.push({ root, container, queryClient });
+    const block: ToolBlock = { kind: 'tool', id: 'tool-memory', toolCallId: 'call-memory', name,
+      argsText: '', args: {}, display: undefined, description: undefined, status: 'done',
+      output: JSON.stringify(payload), isError: undefined, durationMs: undefined, progressText: undefined };
+    await act(async () => { root.render(<I18nProvider><MemoryRouter><RouteProbe /><MemoryToolRow block={block} /></MemoryRouter></I18nProvider>); });
+    await flush();
+    return container;
+  }
+
+  it.each([null, undefined, '', '   '])('does not invent Undo for a repeated pending proposal with operation %s', async (operation_id) => {
+    const payload = receipt({ outcome: 'pending', status: 'pending', operation_id });
+    expect(parseMemoryWriteResult(JSON.stringify(payload))?.operation_id).toBeNull();
+    const container = await renderRow(payload);
+    expect(container.querySelector('[data-memory-tool-view]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-tool-undo]')).toBeNull();
+    await click(container, '[data-memory-tool-toggle]');
+    expect(container.querySelector('[data-memory-tool-pending]')?.textContent).toBe('This is a pending proposal and is not in effect yet.');
+  });
+
+  it.each([
+    { scope: 'global', owner: { kind: 'global' }, target: { scope: 'global' }, search: { entry: 'm_located' } },
+    { scope: 'workspace', owner: { kind: 'workspace', workspaceId: 'wd_current' }, target: { scope: 'workspace', workspaceId: 'wd_current' }, search: { entry: 'm_located', workspace: 'wd_current' } },
+    { scope: 'persona', owner: { kind: 'persona', personaId: 'lin-lan' }, target: { scope: 'persona', personaId: 'lin-lan' }, search: { entry: 'm_located', persona: 'lin-lan' } },
+    { scope: 'persona_workspace', owner: { kind: 'persona_workspace', personaId: 'lin-lan', workspaceId: 'wd_home' }, target: { scope: 'persona_workspace', personaId: 'lin-lan', workspaceId: 'wd_home' }, search: { entry: 'm_located', persona: 'lin-lan', workspace: 'wd_home' } },
+  ])('View and Undo use the real $scope namespace and entry identity', async ({ scope, owner, target, search }) => {
+    const undo = vi.spyOn(client, 'undoMemory').mockResolvedValue({ entry: null });
+    const session = vi.spyOn(client, 'getSession');
+    const container = await renderRow(receipt({ scope, owner_scope: owner, target: { scope, id: 'm_located', expected_revision: 'r1' } }));
+    await click(container, '[data-memory-tool-view]');
+    expect(Object.fromEntries(routeParams(container))).toEqual(search);
+    expect(session).not.toHaveBeenCalled();
+    await click(container, '[data-memory-tool-undo]');
+    expect(undo).toHaveBeenCalledWith(target, 'op_real');
+    expect(container.querySelector('[data-memory-tool-undone]')).not.toBeNull();
+  });
+
+  it('does not demote an incomplete persona-workspace locator to another namespace', async () => {
+    const undo = vi.spyOn(client, 'undoMemory');
+    const container = await renderRow(receipt({ scope: 'persona_workspace', owner_scope: { kind: 'persona_workspace', workspaceId: 'wd_home' } }));
+    await click(container, '[data-memory-tool-view]');
+    expect(routeParams(container).toString()).toBe('');
+    expect(getToasts().at(-1)?.text).toBe('Could not complete that: This record is missing location information.');
+    await click(container, '[data-memory-tool-undo]');
+    expect(undo).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-memory-tool-undone]')).toBeNull();
+    expect(getToasts().at(-1)?.text).toBe('Could not undo: This record is missing location information.');
+  });
+
+  it('keeps a conflicting Undo visible without claiming that newer content was restored', async () => {
+    const { ApiError, MEMORY_REVISION_CONFLICT } = await import('../lib/client');
+    vi.spyOn(client, 'undoMemory').mockRejectedValue(new ApiError({ code: MEMORY_REVISION_CONFLICT, msg: 'Conflict', data: null }));
+    const container = await renderRow(receipt());
+    await click(container, '[data-memory-tool-undo]');
+    expect(container.querySelector('[data-memory-tool-undone]')).toBeNull();
+    expect(container.querySelector('[data-memory-tool-undo]')).not.toBeNull();
+    expect(getToasts().at(-1)?.text).toBe('Changed since — review it in Memory');
+  });
+
+  it.each([
+    { complete: true, exhausted: true, next_cursor: null, expected: '0 matches', partial: false, hasMore: false },
+    { complete: true, exhausted: false, next_cursor: 'next', expected: '0 results on this page, more pages remain', partial: false, hasMore: true },
+    { complete: true, exhausted: false, next_cursor: null, expected: '0 results on this page, more pages remain', partial: false, hasMore: true },
+    { complete: false, exhausted: true, next_cursor: null, expected: '0 results, maybe more', partial: true, hasMore: false },
+  ])('distinguishes empty results from incomplete inventory and remaining pages ($complete/$exhausted/$next_cursor)', async ({ complete, exhausted, next_cursor, expected, partial, hasMore }) => {
+    const payload = { items: [], mode: 'search', next_cursor, coverage: { scopes: [{ kind: 'global' }], statuses: ['active'], complete, exhausted, warnings: [] } };
+    expect(parseMemorySearchSummary(JSON.stringify(payload))).toEqual({ count: 0, partial, hasMore, warnings: [] });
+    const container = await renderRow(payload, 'MemorySearch');
+    expect(container.textContent).toContain(expected);
+    expect(parseMemorySearchSummary('[]')).toEqual({ count: 0, partial: false, hasMore: false, warnings: [] });
+  });
+
+  it('reads owning scope objects, complete metadata and old wire arrays without rewriting them', () => {
+    const entry = fixtureEntry({ id: 'm_read', basis: { kind: 'human', note: 'Explicit request' }, validity: { check: 'Check current permission.' } });
+    const current = parseMemoryReadResult(JSON.stringify([{ ...entry, scope: { kind: 'persona_workspace', workspaceId: 'wd_home', personaId: 'lin-lan' }, target: { scope: 'persona_workspace', id: entry.id, expected_revision: entry.revision }, complete: false }]));
+    expect(current?.items[0]?.owner_scope).toEqual({ scope: 'persona_workspace', workspaceId: 'wd_home', personaId: 'lin-lan' });
+    expect(current?.items[0]?.entry.basis?.note).toBe('Explicit request');
+    expect(current?.items[0]?.applicability).toBe('recheck');
+    expect(current?.complete).toBe(false);
+    expect(parseMemoryReadResult(JSON.stringify([entry]))?.items).toHaveLength(1);
+    expect(parseMemoryWriteResult(JSON.stringify(receipt({ outcome: undefined })))?.outcome).toBe('applied');
+  });
+
+  it('opens a same-ID workspace entry rather than its shared global copy, including an archived entry', async () => {
+    seedMemories({ 'global::': [fixtureEntry({ id: 'm_located', body: 'Global copy.' })], 'workspace:wd_current:': [fixtureEntry({ id: 'm_located', status: 'archived', body: 'Workspace archive.' })] });
+    const container = await renderPage('/memory?workspace=wd_current&entry=m_located&inactive=true', [workspace]);
+    expect(container.querySelector('[data-memory-read-body]')?.textContent).toBe('Workspace archive.');
+    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(true);
+  });
+
+  it('opens persona-workspace detail with the ID from View', async () => {
+    seedBot([]);
+    seedMemories({ 'persona::lin-lan': [fixtureEntry({ id: 'm_located', body: 'Long-term copy.' })], 'persona_workspace:wd_home:lin-lan': [fixtureEntry({ id: 'm_located', body: 'Workspace-specific rule.' })] });
+    const container = await renderPage('/memory?persona=lin-lan&workspace=wd_home&entry=m_located', [workspace]);
+    expect(container.querySelector('[data-memory-read-body]')?.textContent).toBe('Workspace-specific rule.');
+  });
+
+  it('opens a pending create in the inbox and preserves metadata when accepting it', async () => {
+    const entry = fixtureEntry({ id: 'm_proposal', status: 'pending', basis: { kind: 'derived', note: 'Proposed from observation.' }, validity: { check: 'Check the current scope.' } });
+    seedMemories({ 'global::': [] }, { ...enabledSettings, approval: 'review' });
+    vi.spyOn(client, 'memoryInbox').mockResolvedValue({ items: [entry] });
+    const put = vi.spyOn(client, 'putMemory').mockResolvedValue({ entry: { ...entry, status: 'active' }, outcome: 'applied', operationId: 'op_accept' });
+    const container = await renderPage('/memory?entry=m_proposal&tab=inbox');
+    expect(container.querySelector('[data-memory-tab="inbox"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('[data-memory-inbox-provenance]')?.textContent).toContain('Proposed from observation.');
+    await click(container, '[data-memory-inbox-keep]');
+    expect(put).toHaveBeenCalledWith({ scope: 'global' }, entry.id, expect.objectContaining({ action: 'update', expected_revision: entry.revision, basis: entry.basis, validity: entry.validity }));
+    expect(put.mock.calls[0]?.[2].covered_by).toBeUndefined();
+  });
+
+  it('preserves metadata while pinning and leaves a legacy validity omitted, never null', async () => {
+    const entry = fixtureEntry({ id: 'm_pin', basis: { kind: 'observed', note: 'Checked in the source.' }, validity: { check: 'Read current source.', until: '2030-01-01T00:00:00Z' } });
+    seedMemories({ 'global::': [entry] });
+    const put = vi.spyOn(client, 'putMemory').mockResolvedValue({ entry, outcome: 'applied', operationId: 'op_pin' });
+    const container = await renderPage();
+    await click(container, '[data-memory-row="m_pin"]');
+    await click(container, '[data-memory-pin]');
+    expect(put).toHaveBeenCalledWith({ scope: 'global' }, entry.id, expect.objectContaining({ pinned: true, expected_revision: entry.revision, basis: entry.basis, validity: entry.validity }));
+    const legacy = fixtureEntry({ id: 'm_legacy' });
+    expect(memorySnapshot(rawSnapshot(legacy), legacy.revision)?.validity).toBeUndefined();
+    expect(memorySnapshot(rawSnapshot(entry), entry.revision)?.basis).toEqual(entry.basis);
+    expect(memorySnapshot(rawSnapshot(entry), entry.revision)?.validity).toEqual(entry.validity);
+  });
+});
+
+
+describe('memory covered-by and journal metadata', () => {
+  it.each(['same', 'changed', 'archived', 'missing'])('checks the retained current entry after a merge (%s)', async (state) => {
+    const kept = fixtureEntry({ id: 'm_kept', title: 'Retained rule', revision: state === 'changed' ? 'r2' : 'r1', status: state === 'archived' ? 'archived' : 'active' });
+    const retired = fixtureEntry({ id: 'm_retired', status: 'archived', covered_by: { id: kept.id, revision: 'r1' } });
+    seedMemories({ 'global::': [retired, kept] });
+    const get = vi.spyOn(client, 'getMemory');
+    if (state === 'missing') get.mockRejectedValue(new Error('Unavailable'));
+    else get.mockResolvedValue(kept);
+    const container = await renderPage('/memory?entry=m_retired&inactive=true');
+    expect(get).toHaveBeenCalledWith({ scope: 'global' }, kept.id);
+    const message = container.querySelector('[data-memory-covered-state]');
+    if (state === 'same') expect(message).toBeNull();
+    else expect(message?.textContent).toContain(state === 'missing' ? 'could not be loaded' : 'has changed');
+  });
+
+  it('shows each real journal version with its own basis, check and covered-by identity', async () => {
+    const before = fixtureEntry({ id: 'm_history', revision: 'r1', body: 'Earlier rule.', basis: { kind: 'human', note: 'Earlier human requirement.' }, validity: { check: 'Earlier check.' } });
+    const after = { ...before, revision: 'r2', status: 'archived' as const, body: 'Stored rule.', basis: { kind: 'observed' as const, note: 'Later source evidence.', refs: ['example.test/source'] }, validity: { check: 'Later check.' }, covered_by: { id: 'm_retained', revision: 'kept-r1' } };
+    seedMemories({ 'global::': [after] });
+    vi.spyOn(client, 'getMemory').mockResolvedValue(fixtureEntry({ id: 'm_retained', revision: 'kept-r1' }));
+    vi.mocked(client.memoryJournal).mockResolvedValue([{ operationId: 'op_history', action: 'archive', id: before.id, at: before.updated, writer: 'user', before: rawSnapshot(before), beforeRevision: before.revision, afterRevision: after.revision }]);
+    const container = await renderPage('/memory?entry=m_history&inactive=true');
+    await click(container, '[data-memory-history-record="op_history"]');
+    const dialog = document.querySelector('[data-memory-history-detail="op_history"]')!;
+    expect(dialog.textContent).toContain('Earlier rule.');
+    expect(dialog.textContent).toContain('Stored rule.');
+    expect([...dialog.querySelectorAll('[data-memory-basis-note]')].map((node) => node.textContent)).toEqual(['Later source evidence.', 'Earlier human requirement.']);
+    expect([...dialog.querySelectorAll('[data-memory-validity-check]')].map((node) => node.textContent)).toEqual(['Later check.', 'Earlier check.']);
+    expect(dialog.querySelector('[data-memory-covered-by="m_retained"]')?.textContent).toContain('m_retained');
+    expect(memorySnapshot(rawSnapshot(after), after.revision)?.covered_by).toEqual({ id: 'm_retained', revision: 'kept-r1' });
+  });
+});
+
+describe('MemoryPage pending View location', () => {
+  const proposals = Array.from({ length: 24 }, (_, index) => fixtureEntry({ id: `m_pending_${String(index).padStart(2, '0')}`, title: `Review proposal ${index + 1}`, status: 'pending', body: `Proposed condition ${index + 1}.` }));
+  const sought = proposals[20]!;
+  const scrolled: HTMLElement[] = [];
+  let previousScroll: PropertyDescriptor | undefined;
+  beforeEach(() => {
+    scrolled.length = 0;
+    previousScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value(this: HTMLElement) { scrolled.push(this); } });
+  });
+  afterEach(() => {
+    if (previousScroll === undefined) delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+    else Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', previousScroll);
+  });
+
+  it.each([
+    { suffix: '', target: { scope: 'global' as const } },
+    { suffix: '&persona=lin-lan&workspace=wd_current', target: { scope: 'persona_workspace' as const, personaId: 'lin-lan', workspaceId: 'wd_current' } },
+  ])('locates the 21st pending card after loading in its own $target.scope without approving or hiding neighbours', async ({ suffix, target }) => {
+    if (target.scope === 'persona_workspace') seedBot([]);
+    seedMemories({ 'global::': [], 'persona::lin-lan': [], 'persona_workspace:wd_current:lin-lan': [] }, { ...enabledSettings, approval: 'review' });
+    const inbox = deferred<{ items: readonly MemoryEntry[] }>();
+    const read = vi.spyOn(client, 'memoryInbox').mockReturnValue(inbox.promise);
+    const put = vi.spyOn(client, 'putMemory');
+    const remove = vi.spyOn(client, 'deleteMemory');
+    const container = await renderPage(`/memory?entry=${sought.id}&tab=inbox${suffix}`, [workspace]);
+    expect(scrolled).toEqual([]);
+    expect(container.querySelector('[data-memory-inbox]')).toBeNull();
+    await act(async () => { inbox.resolve({ items: proposals }); });
+    await flush();
+    const card = container.querySelector<HTMLElement>(`[data-memory-inbox-row="${sought.id}"]`)!;
+    expect([...container.querySelectorAll<HTMLElement>('[data-memory-inbox-row]')].map((node) => node.dataset['memoryInboxRow'])).toEqual(proposals.map((entry) => entry.id));
+    expect(scrolled).toEqual([card]);
+    expect(document.activeElement).toBe(card);
+    expect(card.getAttribute('aria-current')).toBe('true');
+    expect(read).toHaveBeenCalledWith(target, { page_size: 20 }, expect.any(AbortSignal));
+    expect(put).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('leaves all proposals usable when the linked pending ID is absent, without picking or approving another one', async () => {
+    seedMemories({ 'global::': [] }, { ...enabledSettings, approval: 'review' });
+    vi.spyOn(client, 'memoryInbox').mockResolvedValue({ items: proposals });
+    const put = vi.spyOn(client, 'putMemory').mockResolvedValue({ entry: proposals[0]!, operationId: 'op_keep', outcome: 'applied' });
+    const container = await renderPage('/memory?entry=m_missing&tab=inbox');
+    expect(scrolled).toEqual([]);
+    expect(container.querySelector('[aria-current="true"]')).toBeNull();
+    expect(container.querySelectorAll('[data-memory-inbox-row]')).toHaveLength(24);
+    expect(put).not.toHaveBeenCalled();
+    await click(container, `[data-memory-inbox-row="${proposals[0]!.id}"] [data-memory-inbox-keep]`);
+    expect(put).toHaveBeenCalledWith({ scope: 'global' }, proposals[0]!.id, expect.objectContaining({ expected_revision: proposals[0]!.revision }));
+  });
+
+  it('keeps the existing empty-inbox state when the linked proposal no longer exists', async () => {
+    seedMemories({ 'global::': [] }, { ...enabledSettings, approval: 'review' });
+    vi.spyOn(client, 'memoryInbox').mockResolvedValue({ items: [] });
+    const container = await renderPage('/memory?entry=m_missing&tab=inbox');
+    expect(container.querySelector('[data-memory-inbox-empty]')).not.toBeNull();
+    expect(scrolled).toEqual([]);
+  });
+
+  it('does not repeat the pending landing on background refresh or discard an entry draft after leaving the inbox', async () => {
+    const entry = fixtureEntry({ id: 'm_editable' });
+    seedMemories({ 'global::': [entry] }, { ...enabledSettings, approval: 'review' });
+    const read = vi.spyOn(client, 'memoryInbox').mockResolvedValue({ items: proposals });
+    const { container, queryClient } = await mountGuardedPage(`/memory?entry=${sought.id}&tab=inbox`);
+    expect(scrolled).toHaveLength(1);
+    const otherAction = container.querySelector<HTMLButtonElement>('[data-memory-inbox-keep]')!;
+    await act(async () => { otherAction.focus(); });
+    read.mockResolvedValue({ items: proposals.map((proposal) => proposal.id === sought.id ? { ...proposal, revision: 'pending-r2', title: 'Refreshed proposal 21' } : proposal) });
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['memory-inbox'] }); });
+    await flush();
+    expect(container.querySelector(`[data-memory-inbox-row="${sought.id}"]`)?.textContent).toContain('Refreshed proposal 21');
+    expect(scrolled).toHaveLength(1);
+    expect(document.activeElement).toBe(otherAction);
+    await click(container, '[data-memory-tab="entries"]');
+    await click(container, '[data-memory-row="m_editable"]');
+    await click(container, '[data-memory-edit]');
+    await fillDraft(container, 'Keep my entry draft');
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['memory-inbox'] }); });
+    await flush();
+    expect(container.querySelector<HTMLInputElement>('[data-memory-title]')?.value).toBe('Keep my entry draft');
+    expect(container.querySelector('[data-guard-dirty]')?.textContent).toBe('true');
+    expect(scrolled).toHaveLength(1);
+  });
+});
+
+
+describe('MemoryPage bounded vertical continuation', () => {
+  it('shows early pages while automatically reaching the source suffix, keeps bad-record diagnostics, and approves the complete proposal via real client/routes/store', async () => {
+    const { memoryContinuationFixture } = await import('../../../../packages/kap-server/test/fixtures/memoryContinuation');
+    const fixture = await memoryContinuationFixture();
+    const release = deferred<void>();
+    const applied = deferred<{ code: number; msg: string }>();
+    let hold = false;
+    let firstListPage = false;
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/api/memory/global' && hold) await release.promise;
+      const response = await fixture.fetch(input, init);
+      if (init?.method === 'PUT') applied.resolve(await response.clone().json());
+      if (url.pathname === '/api/memory/global') {
+        calls++;
+        const envelope = await response.clone().json();
+        if (!firstListPage && envelope.data?.items?.length > 0) { firstListPage = true; hold = true; }
+      }
+      return response;
+    }));
+    try {
+      const { container, queryClient } = await mountPage();
+      for (let index = 0; index < 60 && rowIds(container).length === 0; index++) await flush();
+      expect(firstListPage).toBe(true);
+      expect(rowIds(container).length).toBeGreaterThan(0);
+      expect(rowIds(container).length).toBeLessThan(5);
+      expect(container.querySelector('[data-memory-continuing]')).not.toBeNull();
+      expect(container.querySelector('[data-memory-empty]')).toBeNull();
+      hold = false;
+      release.resolve();
+      for (let index = 0; index < 100 && container.querySelector('[data-memory-continuing]') !== null; index++) await flush();
+      expect(rowIds(container)).toHaveLength(5);
+      expect(rowIds(container)).toContain('m_active_4');
+      expect(calls).toBeGreaterThan(5);
+      const cache = queryClient.getQueriesData<{ items: MemoryEntry[] }>({ queryKey: ['memory'] });
+      expect(cache.flatMap(([, page]) => page?.items ?? []).every((entry) => entry.body.length <= 160)).toBe(true);
+      await click(container, '[data-memory-row="m_active_4"]');
+      expect(container.textContent).toContain('END-active-4');
+      await click(container, '[data-memory-tab="inbox"]');
+      for (let index = 0; index < 100 && container.querySelectorAll('[data-memory-inbox-row]').length < 5; index++) await flush();
+      expect(container.querySelectorAll('[data-memory-inbox-row]')).toHaveLength(5);
+      expect(container.querySelector('[data-memory-coverage]')?.textContent).toContain('1 memory records were skipped');
+      expect(container.querySelector('[data-memory-inbox-empty]')).toBeNull();
+      await click(container, '[data-memory-inbox-row="m_pending_4"] [data-memory-inbox-read]');
+      expect(container.textContent).toContain('END-pending-4');
+      await click(container, '[data-memory-inbox-row="m_pending_4"] [data-memory-inbox-keep]');
+      let receipt: { code: number; msg: string } | undefined;
+      await act(async () => { receipt = await applied.promise; });
+      expect(receipt).toMatchObject({ code: 0 });
+      const accepted = await fixture.store.get({ kind: 'global' }, 'm_pending_4');
+      expect(accepted?.status).toBe('active');
+      expect(accepted?.body).toContain('END-pending-4');
+      expect(accepted?.body.length).toBeGreaterThan(160);
+      expect(accepted?.basis).toEqual({ kind: 'observed', note: 'Fixture observation.' });
+    } finally {
+      release.resolve();
+      for (const mountedPage of mounted.splice(0)) {
+        await act(async () => { mountedPage.root.unmount(); });
+        mountedPage.queryClient.clear(); mountedPage.container.remove();
+      }
+      await fixture.close();
+    }
+  }, 30_000);
+
+  it('preserves already-read rows when continuation fails instead of presenting an empty or complete list', async () => {
+    seedMemories({ 'global::': [] });
+    const entry = fixtureEntry({ id: 'm_readable' });
+    vi.mocked(client.listMemory).mockResolvedValueOnce({ items: [entry], next_cursor: 'continue-example', coverage: { scopes: [{ kind: 'global' }], statuses: ['active'], exhausted: false, complete: true, warnings: [] } }).mockRejectedValueOnce(new Error('Source changed during continuation'));
+    const container = await renderPage('/memory');
+    expect(rowIds(container)).toEqual(['m_readable']);
+    expect(container.querySelector('[data-memory-coverage]')?.textContent).toContain('Source changed during continuation');
+    expect(container.querySelector('[data-memory-empty]')).toBeNull();
+  });
+});
+
+
+it('MemoryPage continuation retains one current cumulative diagnostic instead of adding prior skip totals', async () => {
+  const { continueMemory } = await import('./memory/continueMemory');
+  const coverage = { scopes: [{ kind: 'global' as const }], statuses: ['active' as const], complete: false, exhausted: false };
+  let index = 0;
+  const totals = ['1 memory records were skipped', '2 memory records were skipped'];
+  const result = await continueMemory(async () => ({ items: [], next_cursor: ++index < 2 ? 'second' : null, coverage: { ...coverage, exhausted: index === 2, warnings: [totals[index - 1]!] } }), () => {}, new AbortController().signal);
+  expect(result.coverage?.warnings).toEqual([totals[1]]);
+  expect(result.coverage?.complete).toBe(false);
+});
+
+
+it('MemoryPage continuation refuses to approve a newer full proposal fetched from a short preview', async () => {
+  const entry = fixtureEntry({ id: 'm_long_proposal', status: 'pending', body: 'Proposed original content. '.repeat(20) });
+  seedMemories({ 'global::': [] }, { ...enabledSettings, approval: 'review' });
+  vi.spyOn(client, 'memoryInbox').mockResolvedValue({ items: [entry] });
+  vi.spyOn(client, 'getMemory').mockResolvedValue({ ...entry, revision: 'newer-proposal', body: 'A different proposal.' });
+  const put = vi.spyOn(client, 'putMemory');
+  const container = await renderPage('/memory?tab=inbox');
+  await click(container, '[data-memory-inbox-keep]');
+  expect(put).not.toHaveBeenCalled();
+  expect(getToasts().some((toast) => toast.text.includes('changed since you opened it'))).toBe(true);
+  expect(container.querySelectorAll('[data-memory-inbox-row]')).toHaveLength(1);
 });

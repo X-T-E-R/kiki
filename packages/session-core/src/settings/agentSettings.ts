@@ -17,6 +17,8 @@ export function parseNamedAgentTools(value: string): string[] | null {
   return tools.length === 0 ? null : tools;
 }
 
+export { sortThinkingEffortsForDisplay } from './thinkingEffort';
+
 export function resolveSelectedEffort(
   efforts: readonly string[] | undefined,
   effortOverride: string | undefined,

@@ -1,13 +1,13 @@
 import '#/_base/utils/fsWatchGuard';
-import { watch as fsWatch } from 'node:fs';
+import { watch as fsWatch, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, posix, relative, win32 } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, win32 } from 'node:path';
 
 import { FSWatcher } from 'chokidar';
 
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { Emitter, type Event } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { LifecycleScope } from '#/app/scopes';
 
@@ -39,6 +39,7 @@ interface NativeFsWatcher {
 interface HostFsWatchRuntime {
   readonly platform: NodeJS.Platform;
   readonly homeDir: string;
+  readonly resolvePath?: (path: string) => string;
   watchNative(
     root: string,
     listener: (eventType: string, filename: string | null) => void,
@@ -54,6 +55,7 @@ interface HostFsWatchRuntime {
 const NODE_HOST_FS_WATCH_RUNTIME: HostFsWatchRuntime = {
   platform: process.platform,
   homeDir: homedir(),
+  resolvePath: (path) => process.platform === 'win32' && /~\d/.test(path) ? resolveLongWatchPath(path) : path,
   watchNative: (root, listener) =>
     fsWatch(root, { persistent: false, recursive: true }, listener),
   watchFallback: (root, options, reportError) =>
@@ -323,13 +325,44 @@ export class HostFsWatchService implements IHostFsWatchService {
   ) {}
 
   watch(path: string, options?: HostFsWatchOptions): IHostFsWatchHandle {
-    if (
-      useNativeRecursive(options, this.runtime.platform) &&
-      !isExpansiveNativeRoot(path, this.runtime)
-    ) {
-      return new SignalWatchHandle(path, options, this.runtime, this.reportError);
+    const watched = this.runtime.resolvePath?.(path) ?? path;
+    const requestedPath = (changed: string): string => {
+      const pathApi = this.runtime.platform === 'win32' ? win32 : posix;
+      const rel = pathApi.relative(watched, changed);
+      if (rel === '..' || rel.startsWith(`..${pathApi.sep}`) || pathApi.isAbsolute(rel)) return changed;
+      return rel === '' ? path : pathApi.join(path, rel);
+    };
+    const ignored = options?.ignored;
+    const watchOptions = watched === path || ignored === undefined ? options : {
+      ...options,
+      ignored: Object.assign((changed: string) => ignored(requestedPath(changed)), {
+        subtree: ignored.subtree === undefined ? undefined : (changed: string) => ignored.subtree!(requestedPath(changed)),
+      }),
+    };
+    const handle = useNativeRecursive(watchOptions, this.runtime.platform) && !isExpansiveNativeRoot(watched, this.runtime)
+      ? new SignalWatchHandle(watched, watchOptions, this.runtime, this.reportError)
+      : this.runtime.watchFallback(watched, watchOptions, this.reportError);
+    if (watched === path) return handle;
+    return {
+      ready: handle.ready,
+      onDidChange: Event.map(handle.onDidChange, (change) => ({ ...change, path: requestedPath(change.path) })),
+      dispose: () => handle.dispose(),
+    };
+  }
+}
+
+function resolveLongWatchPath(path: string): string {
+  const missing: string[] = [];
+  let current = path;
+  for (;;) {
+    try {
+      return join(realpathSync.native(current), ...missing);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return path;
+      missing.unshift(basename(current));
+      current = parent;
     }
-    return this.runtime.watchFallback(path, options, this.reportError);
   }
 }
 

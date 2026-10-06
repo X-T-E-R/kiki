@@ -44,11 +44,13 @@ describe('shortcutsGroups follows the saved bindings', () => {
     resetShortcutRuntime('windows');
     applyShortcutPreferences(shortcutPreferencesSchema.parse({
       version: 1,
-      overrides: { windows: { switcher: [{ key: 'p', modifier: 'mod', shift: true }], approve: [] } },
+      overrides: { windows: { switcher: [{ key: 'p', modifier: 'mod', shift: true }], approve: [], 'next-session': [{ key: 'F6', modifier: 'ctrl' }], 'previous-session': [{ key: 'F6', modifier: 'ctrl', shift: true }] } },
     }));
     const groups = shortcutsGroups('enter', false, shortcutState());
     const all = groups.flatMap((group) => group.rows);
     expect(all.find((entry) => entry.labelKey === 'shortcuts.switcher')?.keys).toEqual(['Ctrl', 'Shift', 'P']);
+    expect(all.find((entry) => entry.labelKey === 'shortcuts.nextSession')).toEqual({ keys: ['Ctrl', 'F6'], labelKey: 'shortcuts.nextSession', desktopOnly: undefined });
+    expect(all.find((entry) => entry.labelKey === 'shortcuts.previousSession')).toEqual({ keys: ['Ctrl', 'Shift', 'F6'], labelKey: 'shortcuts.previousSession', desktopOnly: undefined });
     expect(all.some((entry) => entry.labelKey === 'shortcuts.approve')).toBe(false);
     expect(all.some((entry) => entry.labelKey === 'shortcuts.reject')).toBe(true);
     resetShortcutRuntime('windows');

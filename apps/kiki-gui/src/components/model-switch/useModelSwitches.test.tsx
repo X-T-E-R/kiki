@@ -5,9 +5,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { KikiClient, type AgentModelSwitchEvent, type QueuedModelSwitch } from '../../lib/client';
 import { useModelSwitches, type ModelSwitchesHandle } from './useModelSwitches';
 
-const connection = vi.hoisted(() => ({ scopeId: 'scope-a', identity: {}, list: vi.fn(), subscribe: vi.fn() }));
+const connection = vi.hoisted(() => ({ scopeId: 'scope-a', identity: {}, wsStatus: 'open', list: vi.fn(), subscribe: vi.fn() }));
 vi.mock('../../state/connection', () => ({ useConnection: () => ({
-  scopeId: connection.scopeId,
+  scopeId: connection.scopeId, wsStatus: connection.wsStatus,
   client: { klient: connection.identity, listAgentModelSwitches: connection.list, subscribeAgentModelSwitches: connection.subscribe },
 }) }));
 function deferred<T>() {
@@ -31,7 +31,7 @@ async function render(session = 's1') { await act(async () => { root.render(<Pro
 async function emit(event: AgentModelSwitchEvent) { await act(async () => { listeners.at(-1)!(event); }); }
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  vi.resetAllMocks(); connection.scopeId = 'scope-a'; connection.identity = {};
+  vi.resetAllMocks(); connection.scopeId = 'scope-a'; connection.identity = {}; connection.wsStatus = 'open';
   listeners = []; ready = deferred<void>();
   connection.subscribe.mockImplementation((_session, _agent, listener) => { listeners.push(listener); return { ready: ready.promise, dispose: vi.fn() }; });
   connection.list.mockResolvedValue([]);
@@ -147,4 +147,27 @@ it('carries the second pending operation selected by the hook through the real G
     expect(requests).toEqual([{ agent_id: 'child', content: [{ type: 'text', text: 'continue' }],
       prompt_id: 'dependent-message', after_model_switch: 'second-operation' }]);
   } finally { await client.klient.close(); vi.unstubAllGlobals(); }
+});
+
+it('continues cold preparation as loading and only clears an actual read failure after authoritative recovery', async () => {
+  vi.useFakeTimers();
+  try {
+    connection.list.mockRejectedValueOnce(new Error('model_switch_queue_preparing')).mockResolvedValueOnce([entry('cold')]);
+    await render(); expect(handle.loading).toBe(true); expect(handle.error).toBeUndefined();
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    expect(handle.loading).toBe(false); expect(handle.switches[0]?.input.operationId).toBe('cold');
+    connection.list.mockRejectedValueOnce(new Error('read failed')).mockResolvedValueOnce([]);
+    await act(async () => { handle.refresh(); }); expect(handle.error?.message).toBe('read failed');
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(handle.error).toBeUndefined(); expect(handle.switches).toEqual([]);
+  } finally { vi.useRealTimers(); }
+});
+it('rereads the queue after reconnect and aborts a superseded list without cancelling model operations', async () => {
+  const old = deferred<readonly QueuedModelSwitch[]>();
+  connection.list.mockReturnValueOnce(old.promise).mockResolvedValueOnce([entry('restored')]);
+  await render(); const signal = connection.list.mock.calls[0]![2] as AbortSignal;
+  connection.wsStatus = 'closed'; await render(); connection.wsStatus = 'open'; await render();
+  expect(signal.aborted).toBe(true); expect(handle.switches[0]?.input.operationId).toBe('restored');
+  await act(async () => { old.reject(new Error('aborted')); });
+  expect(handle.error).toBeUndefined();
 });

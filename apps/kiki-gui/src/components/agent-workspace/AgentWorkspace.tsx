@@ -199,6 +199,10 @@ function WorkspaceSurface({
   timelineOverlay?: ReactNode;
 }) {
   const { t } = useI18n();
+  useEffect(() => {
+    if (timeline.visible === false) return;
+    return controller?.retainHistoryRead(target.agentId);
+  }, [controller, target.agentId, timeline.visible]);
   const loadDetail = useCallback(
     (agentId: string, kind: TranscriptDetailKind, id: string) =>
       controller?.loadTranscriptDetail(agentId, kind, id) ?? Promise.resolve(false),
@@ -220,6 +224,7 @@ function WorkspaceSurface({
   );
   return (
     <TranscriptDetailProvider
+      controller={controller ?? undefined}
       load={loadDetail}
       loads={timeline.state.detailLoads}
       contentRefs={timeline.state.contentRefs}

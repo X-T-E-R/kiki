@@ -19,7 +19,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { BrowserCatalogResponse, BrowserConnection, BrowserStatus, BrowserControlList, BrowserTabsResponse } from '@kiki/protocol';
+import type { BrowserCatalogResponse, BrowserConnection, BrowserPresetId, BrowserSetupList, BrowserSetupStatus, BrowserStatus, BrowserControlList, BrowserTabsResponse } from '@kiki/protocol';
 
 import { I18nProvider } from '../../i18n';
 import { DirtyGuardContext, type DirtyGuardValue } from '../dirtyGuard';
@@ -37,17 +37,18 @@ const connect = vi.fn<(id: string) => Promise<BrowserStatus>>();
 const disconnect = vi.fn<(id: string) => Promise<BrowserStatus>>();
 const tabs = vi.fn<(id: string) => Promise<BrowserTabsResponse>>();
 const catalog = vi.fn<(id: string, options?: { includeSchema?: boolean }) => Promise<BrowserCatalogResponse>>();
+const setupPresets = vi.fn<() => Promise<BrowserSetupList>>();
+const setupStatus = vi.fn<(preset: BrowserPresetId) => Promise<BrowserSetupStatus>>();
+const prepare = vi.fn<(preset: BrowserPresetId, input: { consent: true }) => Promise<BrowserSetupStatus>>();
+const connectPreset = vi.fn<(preset: BrowserPresetId, input: Record<string, unknown>) => Promise<BrowserSetupStatus>>();
+const cancelSetup = vi.fn<(preset: BrowserPresetId) => Promise<BrowserSetupStatus>>();
 const revealSecret = vi.fn(async () => ({ value: 'http://127.0.0.1:9222' }));
-const getCapability = vi.fn();
-const installCapability = vi.fn();
-const cancelCapability = vi.fn();
-const nativeBrowserEnabled = vi.fn();
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     client: {
-      revealSecret, getCapability, installCapability, cancelCapability,
-      klient: { global: { flags: { enabled: nativeBrowserEnabled } }, rest: { browser: { list, upsert, remove, setDefault, status, check, connect, disconnect, tabs, catalog } } },
+      revealSecret,
+      klient: { rest: { browser: { list, upsert, remove, setDefault, status, check, connect, disconnect, tabs, catalog, setupPresets, setupStatus, prepare, connectPreset, cancelSetup } } },
     },
     scopeId: connection.scopeId,
     sshLabel: connection.sshLabel,
@@ -55,6 +56,53 @@ vi.mock('../../state/connection', () => ({
 }));
 
 const BUS_USER = 'kiki-fixture-host';
+
+/**
+ * A route in the server's own status shape. The wizard draws nothing it was not
+ * given, so each case seeds exactly the steps and actions the real service
+ * would send for that situation.
+ */
+function preset(patch: Partial<BrowserSetupStatus> & { preset: BrowserPresetId }): BrowserSetupStatus {
+  return {
+    displayName: patch.preset, controlSurface: 'browser-connection', state: 'not_prepared',
+    supported: true, executionHost: BUS_USER, steps: [], actions: [],
+    sourceUrl: 'https://example.test/source',
+    ...patch,
+  };
+}
+
+/** Everything is installed; only the store approval, which is a person, is left. */
+const KIMI_NEEDS_EXTENSION = preset({
+  preset: 'kimi-webbridge', displayName: 'Kimi Browser Extension', controlSurface: 'plugin-skill',
+  state: 'needs_user_action', skill: 'kimi-webbridge',
+  sourceUrl: 'https://www.kimi.com/en/help/kimi-webbridge',
+  steps: [
+    { id: 'daemon', state: 'ready' },
+    { id: 'skill', state: 'ready' },
+    { id: 'extension', state: 'user_action', reason: 'extension_not_connected', detail: 'raw detector prose' },
+  ],
+  actions: [
+    { id: 'prepare' }, { id: 'connect' },
+    { id: 'install_extension', url: 'https://store.test/kimi', target: 'chrome' },
+    { id: 'open_instructions', url: 'https://www.kimi.com/en/help', target: 'documentation' },
+  ],
+});
+
+/** Another app owns the control surface: nothing here is for Kiki to do. */
+const CODEX_EXTERNAL = preset({
+  preset: 'codex-browser', displayName: 'Codex / ChatGPT browser extension', controlSurface: 'external-app',
+  state: 'external_only', supported: false, reason: 'external_app_required',
+  sourceUrl: 'https://developers.openai.com/codex/app/chrome-extension',
+  steps: [{ id: 'desktop-app', state: 'user_action', reason: 'external_app_required' }],
+  actions: [{ id: 'open_instructions', url: 'https://developers.openai.com/codex/app/chrome-extension', target: 'documentation' }],
+});
+
+const MANAGED_READY = preset({
+  preset: 'independent-browser', displayName: 'Independent browser', capabilityId: 'kiki-browser',
+  state: 'ready', sourceUrl: 'https://github.com/vercel-labs/agent-browser',
+  steps: [{ id: 'driver', state: 'ready' }, { id: 'chrome', state: 'ready' }],
+  actions: [{ id: 'prepare' }, { id: 'connect' }],
+});
 
 function browserStatus(patch: Partial<BrowserStatus> & { browser: string }): BrowserStatus {
   return { state: 'idle', executionHost: BUS_USER, generation: 0, ...patch };
@@ -170,8 +218,7 @@ beforeEach(() => {
   localStorage.setItem('kiki.locale', 'en');
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
   list.mockResolvedValue({ connections: [] });
-  nativeBrowserEnabled.mockResolvedValue(true);
-  getCapability.mockResolvedValue({ id: 'kiki-browser', supported: true, state: 'partial', steps: [{ id: 'driver', state: 'ok' }, { id: 'chrome', state: 'missing' }], install: { running: false }, plan: { artifact: { sha256: 'a'.repeat(64) }, destination: 'C:\\fixture\\home\\browser\\resources' } });
+  setupPresets.mockResolvedValue({ presets: [MANAGED_READY, CODEX_EXTERNAL] });
   revealSecret.mockResolvedValue({ value: 'http://127.0.0.1:9222' });
   queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   container = document.createElement('div');
@@ -185,55 +232,323 @@ afterEach(async () => {
 });
 
 describe('BrowserControlSection', () => {
-  it('shows the disabled experimental flag before execution without installing or connecting automatically', async () => {
-    nativeBrowserEnabled.mockResolvedValue(false);
-    await render();
-    expect(nativeBrowserEnabled).toHaveBeenCalledWith('native_browser');
-    expect(query('[data-browser-setup-flag]')).not.toBeNull();
-    expect(query<HTMLAnchorElement>('[data-browser-setup-flag] a')?.getAttribute('href')).toMatch(/^\/settings\/developer#/);
-    expect(installCapability).not.toHaveBeenCalled();
-    expect(connect).not.toHaveBeenCalled();
-  });
-  it('starts component installation, shows progress, cancels honestly and permits retry', async () => {
-    const initial = await getCapability();
-    installCapability.mockResolvedValue({ ...initial, install: { running: true, step: 'chrome-download', percent: 37 } });
-    cancelCapability.mockResolvedValue({ ...initial, install: { running: false, note: 'cancelled' } });
-    await render();
-    await click('[data-browser-install]');
-    expect(installCapability).toHaveBeenCalledWith('kiki-browser', 'a'.repeat(64), 'managed-browser');
-    expect(query('[data-browser-install-progress]')?.textContent).toContain('37%');
-    expect(query('[data-browser-install]')).toBeNull();
-    await click('[data-browser-install-cancel]');
-    expect(cancelCapability).toHaveBeenCalledWith('kiki-browser');
-    expect(query('[data-browser-setup]')?.textContent).toContain('Installation cancelled');
-    expect(query('[data-browser-install]')).not.toBeNull();
-    expect(connect).not.toHaveBeenCalled();
+  describe('the wizard', () => {
+    it('names each route, says what it still needs, and offers nothing the server did not', async () => {
+      setupPresets.mockResolvedValue({ presets: [KIMI_NEEDS_EXTENSION, MANAGED_READY, CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route="kimi-webbridge"]');
+
+      expect(query('[data-browser-routes]')).not.toBeNull();
+      // A store approval is a person's click: the row says what it waits for
+      // and links the store, it does not claim to have crossed it.
+      expect(query('[data-browser-route-blocker="extension"]')?.textContent).toContain('the browser extension connected');
+      expect(query<HTMLAnchorElement>('[data-browser-route-extension="chrome"]')?.getAttribute('href')).toBe('https://store.test/kimi');
+      expect(query<HTMLAnchorElement>('[data-browser-route-instructions]')?.getAttribute('href')).toBe('https://www.kimi.com/en/help');
+      // The detector's own sentence lives in the folded diagnostics, never in
+      // the row a reader acts on.
+      expect(query('[data-browser-route-blocker]')?.textContent).not.toContain('raw detector prose');
+      expect(query<HTMLDetailsElement>('[data-browser-route-diagnostics]')?.open).toBe(false);
+      expect(prepare).not.toHaveBeenCalled();
+      expect(connectPreset).not.toHaveBeenCalled();
+    });
+
+    it('gives an external control surface no Kiki action at all', async () => {
+      setupPresets.mockResolvedValue({ presets: [KIMI_NEEDS_EXTENSION, MANAGED_READY, CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route="codex-browser"]');
+
+      const row = query('[data-browser-route="codex-browser"]');
+      expect(row).not.toBeNull();
+      // Nothing here is for Kiki to install or connect, so no button may offer
+      // it — and no badge may claim a connection Kiki never made.
+      expect(row?.querySelector('[data-browser-route-prepare]')).toBeNull();
+      expect(row?.querySelector('[data-browser-route-connect]')).toBeNull();
+      expect(row?.querySelector('[data-browser-route-connected]')).toBeNull();
+      expect(row?.querySelector('[data-browser-route-instructions]')).not.toBeNull();
+      expect(row?.textContent).toContain('Set up in another app');
+      // Its own un-actionable step is not restated as a Kiki-side blocker.
+      expect(row?.querySelector('[data-browser-route-blocker]')).toBeNull();
+    });
+
+    it('confirms before preparing, then offers the connect the server says is next', async () => {
+      // A fresh machine: the driver and browser are missing, so Set up is the
+      // next move and has to go through a consent.
+      const fresh = preset({
+        ...MANAGED_READY, state: 'not_prepared',
+        steps: [{ id: 'driver', state: 'missing' }, { id: 'chrome', state: 'missing' }],
+      });
+      // The list the page re-reads after acting: the server's own new answer,
+      // not the one that was on screen when the button was pressed.
+      let current = fresh;
+      setupPresets.mockImplementation(async () => ({ presets: [current, CODEX_EXTERNAL] }));
+      prepare.mockImplementation(async () => { current = MANAGED_READY; return current; });
+      connectPreset.mockImplementation(async () => {
+        current = preset({ ...MANAGED_READY, state: 'connected', connectionId: 'independent-browser' });
+        return current;
+      });
+      await render();
+      await settleUntil('[data-browser-route-prepare]');
+
+      // Nothing is written on the way in: reading the routes starts no install.
+      expect(prepare).not.toHaveBeenCalled();
+      await click('[data-browser-route-prepare]');
+      // The install is a consent, not a keystroke: it goes through a dialog.
+      expect(prepare).not.toHaveBeenCalled();
+      expect(query('[data-confirm-action="confirm"]')).not.toBeNull();
+      await click('[data-confirm-action="confirm"]');
+      expect(prepare).toHaveBeenCalledWith('independent-browser', { consent: true });
+      await settleUntil('[data-browser-route-connect]');
+      await click('[data-browser-route-connect]');
+      expect(connectPreset).toHaveBeenCalledWith('independent-browser', {});
+      // The connected state is the server's, re-read: the row stops offering
+      // both actions and says when it was verified.
+      await settleUntil('[data-browser-route-connected]');
+      expect(query('[data-browser-route-prepare]')).toBeNull();
+      expect(query('[data-browser-route-connect]')).toBeNull();
+    });
+
+    it('turns browser control on from the same consent when only the flag is left', async () => {
+      // Nothing is left to install, so the button must not claim to set
+      // anything up — and it must not send the reader to another page to find
+      // a switch, because this consent is what enables it.
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...MANAGED_READY, state: 'needs_user_action',
+        steps: [{ id: 'driver', state: 'ready' }, { id: 'chrome', state: 'ready' }, { id: 'feature', state: 'user_action', reason: 'feature_disabled' }],
+        actions: [{ id: 'prepare' }, { id: 'connect' }],
+      }), CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route-prepare]');
+
+      const row = query('[data-browser-route="independent-browser"]');
+      const button = row?.querySelector('[data-browser-route-prepare]');
+      expect(button?.textContent).toBe('Turn on browser control');
+      // No trip to the Developer page while Set up already covers the flag.
+      expect(row?.querySelector('[data-browser-route-enable-feature]')).toBeNull();
+      // And it does not claim the components were just installed.
+      expect(row?.querySelector('[data-browser-route-settled]')).toBeNull();
+      expect(row?.querySelector('[data-browser-route-blocker="feature"]')?.textContent).toContain('Still needs browser control.');
+
+      await click('[data-browser-route-prepare]');
+      expect(query('[data-confirm-action="confirm"]')).not.toBeNull();
+      // The consent says what it will switch on, not only what it installs.
+      expect(document.body.textContent).toContain('switches browser control on for this server');
+      expect(document.body.textContent).toContain('Turns browser control on for this server');
+    });
+
+    it('offers Set up for components and never a trip to another page for the flag', async () => {
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...MANAGED_READY, state: 'not_prepared',
+        steps: [{ id: 'driver', state: 'missing' }, { id: 'feature', state: 'user_action', reason: 'feature_disabled' }],
+      }), CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route-prepare]');
+
+      const row = query('[data-browser-route="independent-browser"]');
+      // Components are missing, so the button says it sets things up.
+      expect(row?.querySelector('[data-browser-route-prepare]')?.textContent).toBe('Set up');
+      // The same consent also switches the flag on, so there is no second
+      // control and nowhere else to go.
+      expect(row?.querySelector('[data-browser-route-enable-feature]')).toBeNull();
+    });
+
+    it('reports a forced-off flag with no action, and names what holds it off', async () => {
+      // An env var or a runtime override outranks anything consented here, so
+      // the server withholds every action. The page must not offer one, and
+      // must name the real cause instead of sending the reader to a switch
+      // that would have no effect.
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...MANAGED_READY, state: 'needs_user_action', reason: 'feature_forced_off',
+        steps: [
+          { id: 'driver', state: 'ready' }, { id: 'chrome', state: 'ready' },
+          { id: 'feature', state: 'user_action', reason: 'feature_forced_off',
+            detail: 'KIKI_EXPERIMENTAL_NATIVE_BROWSER=0 disables browser control on this execution host; preparation cannot override the environment' },
+        ],
+        actions: [],
+      }), CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route-forced-off]');
+
+      const row = query('[data-browser-route="independent-browser"]');
+      expect(row?.querySelector('[data-browser-route-prepare]')).toBeNull();
+      expect(row?.querySelector('[data-browser-route-connect]')).toBeNull();
+      expect(row?.querySelector('[data-browser-route-enable-feature]')).toBeNull();
+      // The headline says what it means and nothing more: an env var name is
+      // noise for almost every reader and must not compete with it. It is
+      // deferred, not deleted — `textContent` still holds it because the fold
+      // is closed, so the claim under test is that it is not in the headline.
+      const headline = row?.querySelector('[data-browser-route-forced-off]');
+      expect(headline?.textContent).toContain('no action here can change it');
+      expect(headline?.textContent).toContain('keeps browser control off');
+      expect(headline?.textContent).not.toContain('KIKI_EXPERIMENTAL_NATIVE_BROWSER');
+      // The override that holds it off is the only way back, so it is one
+      // click away rather than hidden — and that click opens the existing fold.
+      expect(row?.querySelector('[data-browser-route-forced-off-cause]')).not.toBeNull();
+      expect(row?.querySelector<HTMLDetailsElement>('[data-browser-route-diagnostics]')?.open).toBe(false);
+      await click('[data-browser-route-forced-off-cause]');
+      const fold = row?.querySelector<HTMLDetailsElement>('[data-browser-route-diagnostics]');
+      expect(fold?.open).toBe(true);
+      expect(fold?.textContent).toContain('KIKI_EXPERIMENTAL_NATIVE_BROWSER=0');
+      // And it does not claim the components are missing, or that it is ready.
+      expect(row?.querySelector('[data-browser-route-settled]')).toBeNull();
+      expect(row?.querySelector('[data-browser-route-blocker]')).toBeNull();
+    });
+
+    it('shows a warning the server raised without calling it a blocker', async () => {
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...KIMI_NEEDS_EXTENSION, state: 'ready',
+        steps: [
+          { id: 'daemon', state: 'ready' },
+          { id: 'extension', state: 'ready' },
+          { id: 'compatibility', state: 'warning', reason: 'version_mismatch' },
+        ],
+        actions: [{ id: 'prepare' }, { id: 'connect' }],
+      }), CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route-warning]');
+
+      const row = query('[data-browser-route="kimi-webbridge"]');
+      expect(row?.querySelector('[data-browser-route-blocker]')).toBeNull();
+      expect(row?.querySelector('[data-browser-route-warning]')?.textContent).toContain('the bridge and the plugin reporting the same version');
+    });
+
+    it('keeps the missing component actionable when a warning comes first', async () => {
+      // A warning ahead of a real gap must not stand in for it: the row would
+      // claim everything is installed and drop the install button, while a
+      // component is still missing. This is the order the live Kimi route uses
+      // once the version drifts and the daemon later goes missing.
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...MANAGED_READY, state: 'not_prepared',
+        steps: [
+          { id: 'compatibility', state: 'warning', reason: 'version_mismatch' },
+          { id: 'driver', state: 'missing' },
+          { id: 'chrome', state: 'ready' },
+        ],
+      }), CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route-prepare]');
+
+      const row = query('[data-browser-route="independent-browser"]');
+      // The blocker is the missing step, not the warning that preceded it.
+      expect(row?.querySelector('[data-browser-route-blocker]')?.getAttribute('data-browser-route-blocker')).toBe('driver');
+      expect(row?.querySelector('[data-browser-route-blocker]')?.textContent).toContain('the browser driver');
+      expect(row?.querySelector('[data-browser-route-settled]')).toBeNull();
+      // And the warning is still shown: it does not have to give way.
+      expect(row?.querySelector('[data-browser-route-warning="compatibility"]')?.textContent).toContain('the bridge and the plugin reporting the same version');
+    });
+
+    it('keeps a store approval actionable when a warning comes first', async () => {
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...KIMI_NEEDS_EXTENSION,
+        steps: [
+          { id: 'compatibility', state: 'warning', reason: 'version_mismatch' },
+          { id: 'daemon', state: 'ready' },
+          { id: 'skill', state: 'ready' },
+          { id: 'extension', state: 'user_action', reason: 'extension_not_connected' },
+        ],
+      }), CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route-blocker="extension"]');
+
+      const row = query('[data-browser-route="kimi-webbridge"]');
+      expect(row?.querySelector('[data-browser-route-blocker]')?.getAttribute('data-browser-route-blocker')).toBe('extension');
+      expect(row?.querySelector('[data-browser-route-warning="compatibility"]')).not.toBeNull();
+      expect(row?.querySelector('[data-browser-route-extension="chrome"]')).not.toBeNull();
+    });
+
+    it('never claims an external route has everything installed', async () => {
+      // "Everything Kiki can install is in place" is a claim about Kiki's own
+      // work. Codex's control surface belongs to another app, so the sentence
+      // has no subject there and must not appear.
+      setupPresets.mockResolvedValue({ presets: [MANAGED_READY, CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route="codex-browser"]');
+
+      const codex = query('[data-browser-route="codex-browser"]');
+      expect(codex?.querySelector('[data-browser-route-settled]')).toBeNull();
+      expect(codex?.textContent).not.toContain('Everything Kiki can install is already in place.');
+      // A route Kiki does fill in still says so.
+      expect(query('[data-browser-route="independent-browser"] [data-browser-route-settled]')).not.toBeNull();
+    });
+
+    it('reports progress from the server step and percent, then leaves install mid-run', async () => {
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...MANAGED_READY, state: 'preparing',
+        steps: [{ id: 'chrome', state: 'missing' }, { id: 'chrome-download', state: 'running', percent: 62 }],
+        actions: [{ id: 'cancel' }],
+      }), CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route-progress]');
+
+      expect(query('[data-browser-route-progress="chrome-download"]')?.textContent).toContain('62%');
+      expect(query('[data-browser-route-prepare]')).toBeNull();
+      expect(query('[data-browser-route-connect]')).toBeNull();
+      expect(query('[data-browser-route-cancel]')).not.toBeNull();
+    });
+
+    it('keeps a failed preparation visible as the server wrote it, with the retry still offered', async () => {
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...MANAGED_READY, state: 'failed', error: 'Download failed: HTTP 503',
+        steps: [{ id: 'driver', state: 'failed', reason: 'install_failed' }],
+      }), CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route-error]');
+
+      expect(query('[data-browser-route-error]')?.textContent).toContain('HTTP 503');
+      expect(query('[data-browser-route-prepare]')).not.toBeNull();
+      expect(query('[data-browser-route="independent-browser"]')?.getAttribute('data-browser-route-state')).toBe('blocked');
+    });
+
+    it('reads the routes once and never re-reads a settled route on a timer', async () => {
+      setupPresets.mockResolvedValue({ presets: [KIMI_NEEDS_EXTENSION, MANAGED_READY, CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route="kimi-webbridge"]');
+      expect(setupPresets).toHaveBeenCalledTimes(1);
+      // One list read covers the whole wizard; a settled route is re-read on
+      // demand, not on a poll.
+      expect(setupStatus).not.toHaveBeenCalled();
+      const readiness = [...queryAll('[data-browser-route-readiness]')].map((el) => el.textContent);
+      expect(readiness).toEqual(['Needs setup', 'Ready to connect', 'Set up in another app']);
+    });
+
+    it('re-reads a settled route on demand rather than only on a timer', async () => {
+      // The store approval happens in another window, so returning to the
+      // settings page has to be able to pick up a newly connected extension
+      // without pressing anything. The page offers no permanent poll, so the
+      // re-read has to actually work when asked — this is that path.
+      setupPresets.mockResolvedValue({ presets: [KIMI_NEEDS_EXTENSION, CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route="kimi-webbridge"]');
+      const before = setupPresets.mock.calls.length;
+
+      setupPresets.mockResolvedValue({ presets: [
+        preset({ ...KIMI_NEEDS_EXTENSION, state: 'connected', checkedAt: '2026-10-06T03:17:00.000Z' }),
+        CODEX_EXTERNAL,
+      ] });
+      await act(async () => { await queries.invalidateQueries({ queryKey: ['browser', 'setup', 'local'] }); });
+      await settleUntil('[data-browser-route-connected]');
+
+      expect(setupPresets.mock.calls.length).toBeGreaterThan(before);
+      expect(query('[data-browser-route="kimi-webbridge"]')?.textContent).toContain('Connected');
+      expect(query('[data-browser-route="kimi-webbridge"] [data-browser-route-prepare]')).toBeNull();
+    });
+
+    it('polls only while a route is actually preparing', async () => {
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...MANAGED_READY, state: 'preparing',
+        steps: [{ id: 'chrome-download', state: 'running', percent: 10 }],
+        actions: [{ id: 'cancel' }],
+      }), CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route-progress]');
+      // A preparing route is the only one worth a timer; the interval is a
+      // short poll so a download shows progress, not a fixed 1s cadence.
+      expect(queries.getQueryState(['browser', 'setup', 'local'])).toBeDefined();
+      expect(setupPresets.mock.calls.length).toBeGreaterThanOrEqual(1);
+    });
   });
 
-  it('prepares only the driver for CDP and does not require Chrome to proceed', async () => {
-    const initial = await getCapability();
-    getCapability.mockResolvedValue({ ...initial, steps: [{ id: 'driver', state: 'missing' }, { id: 'chrome', state: 'missing' }] });
-    installCapability.mockResolvedValue(initial);
-    await render();
-    await click('#browser-setup-mode');
-    await act(async () => { document.querySelector<HTMLButtonElement>('[role="option"][data-option-value="driver-only"]')!.click(); });
-    await settle();
-    await click('[data-browser-install]');
-    expect(installCapability).toHaveBeenCalledWith('kiki-browser', 'a'.repeat(64), 'driver-only');
-    expect(query('[data-browser-install]')).toBeNull();
-    expect(query('[data-browser-setup]')?.textContent).toContain('Add a connection below');
-  });
-
-  it('keeps install failure visible with an executable retry action, not a success message', async () => {
-    const initial = await getCapability();
-    installCapability.mockResolvedValue({ ...initial, install: { running: false, error: 'Download failed: HTTP 503' } });
-    await render();
-    await click('[data-browser-install]');
-    expect(query('[data-browser-setup]')?.textContent).toContain('HTTP 503');
-    expect(query('[data-browser-install]')?.textContent).toBe('Retry install');
-    expect(query('[data-browser-setup]')?.textContent).not.toContain('installed successfully');
-  });
-  it('lists every connection with the state and location the server reported', async () => {
+  describe('the connections behind the routes', () => {
+    it('lists every connection with the state and location the server reported', async () => {
     list.mockResolvedValue({ connections: [profileRow(), cdpRow(), profileRow({ id: 'qa', name: 'Regression', enabled: false })], defaultBrowser: 'research' });
 
     await render();
@@ -812,5 +1127,6 @@ describe('BrowserControlSection', () => {
     await click('[data-browser-connection="office-mac"]');
     await settleUntil('[data-browser-execution-host]');
     expect(query('[data-browser-execution-host]')?.textContent).toBe('office-mac-host');
+  });
   });
 });

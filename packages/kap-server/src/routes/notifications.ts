@@ -42,6 +42,7 @@ export function registerNotificationRoutes(app: FastifyInstance, service: Notifi
         code === undefined ? message : `${code}: ${message}`, req.id));
     }
   };
+  app.get('/notifications/completions', (req, reply) => respond(req, reply, () => service.listCompletions()));
   app.get('/notifications/settings', (req, reply) => respond(req, reply, () => service.getSettings()));
   app.put('/notifications/settings', (req, reply) => respond(req, reply, () =>
     service.updateSettings(globalSettings.parse(req.body) as NotificationGlobalSettings)));

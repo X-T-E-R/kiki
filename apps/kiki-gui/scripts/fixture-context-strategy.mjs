@@ -43,7 +43,7 @@ export function resolveContextStrategy(server, session, agentId) {
   if (override !== undefined) return { strategy: override, source: 'session', shadow: false };
   if (profile !== undefined) return { strategy: profile, source: 'profile', shadow: false };
   if (loop.contextStrategy !== undefined) return { strategy: loop.contextStrategy, source: 'global', shadow: false };
-  return { strategy: 'summarize', source: 'default', shadow: false };
+  return { strategy: 'auto', source: 'default', shadow: false };
 }
 
 /** Resets per-scenario state; call when a scenario loads. */

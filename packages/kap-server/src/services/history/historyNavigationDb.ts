@@ -25,6 +25,19 @@ export interface HistoryNavManifest {
   readonly source: HistoryNavigationProof;
 }
 
+export interface HistoryCanonicalSpan {
+  readonly turnId: string;
+  readonly start: number;
+  readonly end: number;
+  readonly ordinal: number;
+  readonly digest: string;
+}
+
+export interface HistoryCanonicalSeed {
+  readonly legacyTurn: number;
+  readonly ordinal: number;
+}
+
 const COLUMNS = new Set(['turn', 'position', 'time']);
 const FILTERS = new Set(['workspace', 'session', 'agent', 'kind', 'turn', 'active', 'step']);
 
@@ -75,6 +88,8 @@ export class HistoryNavigationDb implements NavigationStore {
           scope TEXT NOT NULL, bucket TEXT NOT NULL, key TEXT NOT NULL,
           value TEXT NOT NULL, PRIMARY KEY(scope, bucket, key)
         ) STRICT, WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS nav_canonical_source ON state(scope,json_extract(value,'$.turnId'),
+          CAST(key AS INTEGER)) WHERE bucket='canonicalRecords';
         CREATE TABLE IF NOT EXISTS turn_sequence (
           scope TEXT NOT NULL, seq INTEGER NOT NULL, id TEXT NOT NULL,
           start_ordinal INTEGER NOT NULL, active INTEGER NOT NULL,
@@ -128,6 +143,48 @@ export class HistoryNavigationDb implements NavigationStore {
       ? value as NavigationAdapterCursor : undefined;
   }
 
+  hasCanonicalSources(scope: string): boolean {
+    return this.db.prepare("SELECT 1 FROM state WHERE scope=? AND bucket='cursor' AND key='canonicalSources'")
+      .get(scope) !== undefined;
+  }
+
+  markCanonicalCall(scope: string, callId: string, located: boolean, turnId: string | undefined, ordinal: number): void {
+    if (located) this.db.prepare("DELETE FROM state WHERE scope=? AND bucket='canonicalUnlocatedCalls' AND key=?").run(scope, callId);
+    else this.db.prepare(`INSERT INTO state(scope,bucket,key,value) VALUES(?,'canonicalUnlocatedCalls',?,?)
+      ON CONFLICT(scope,bucket,key) DO UPDATE SET value=excluded.value`).run(scope, callId, JSON.stringify({ turnId, ordinal }));
+  }
+
+  hasUnlocatedCanonicalCall(scope: string, callId: string): boolean {
+    return this.db.prepare("SELECT 1 FROM state WHERE scope=? AND bucket='canonicalUnlocatedCalls' AND key=?")
+      .get(scope, callId) !== undefined;
+  }
+
+  clearUnlocatedCanonicalCalls(scope: string): void {
+    this.db.prepare("DELETE FROM state WHERE scope=? AND bucket='canonicalUnlocatedCalls'").run(scope);
+  }
+
+  addCanonicalSource(scope: string, span: HistoryCanonicalSpan, seed: HistoryCanonicalSeed): void {
+    this.db.prepare(`INSERT INTO state(scope,bucket,key,value) VALUES(?,'canonicalSeeds',?,?)
+      ON CONFLICT(scope,bucket,key) DO NOTHING`).run(scope, span.turnId, JSON.stringify(seed));
+    this.db.prepare(`INSERT INTO state(scope,bucket,key,value) VALUES(?,'canonicalRecords',?,?)
+      ON CONFLICT(scope,bucket,key) DO UPDATE SET value=excluded.value`)
+      .run(scope, String(span.ordinal), JSON.stringify(span));
+  }
+
+  canonicalSeed(scope: string, turnId: string): HistoryCanonicalSeed | undefined {
+    const row = this.db.prepare("SELECT value FROM state WHERE scope=? AND bucket='canonicalSeeds' AND key=?")
+      .get(scope, turnId) as { value: string } | undefined;
+    return row === undefined ? undefined : JSON.parse(row.value) as HistoryCanonicalSeed;
+  }
+
+  canonicalSources(scope: string, turnId: string, afterOrdinal: number, limit: number): HistoryCanonicalSpan[] {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 128) throw new Error('invalid canonical source page');
+    const rows = this.db.prepare(`SELECT value FROM state WHERE scope=? AND bucket='canonicalRecords'
+      AND json_extract(value,'$.turnId')=? AND CAST(key AS INTEGER)>?
+      ORDER BY CAST(key AS INTEGER) LIMIT ?`).all(scope, turnId, afterOrdinal, limit) as Array<{ value: string }>;
+    return rows.map((row) => JSON.parse(row.value) as HistoryCanonicalSpan);
+  }
+
   beginSlice(): void {
     if (this.scanTransactionOpen) throw new Error('history navigation transaction already active');
     this.db.exec('BEGIN IMMEDIATE');
@@ -140,6 +197,7 @@ export class HistoryNavigationDb implements NavigationStore {
     if (Buffer.byteLength(value) > MANIFEST_MAX_BYTES) throw new Error('navigation manifest exceeds 16 KiB');
     this.db.prepare(`INSERT INTO state(scope,bucket,key,value) VALUES(?,'cursor','adapter',?)
       ON CONFLICT(scope,bucket,key) DO UPDATE SET value=excluded.value`).run(scope, JSON.stringify(cursor));
+    this.db.prepare("INSERT OR REPLACE INTO state(scope,bucket,key,value) VALUES(?,'cursor','canonicalSources','1')").run(scope);
     this.db.prepare(`INSERT INTO manifest(scope,value) VALUES(?,?)
       ON CONFLICT(scope) DO UPDATE SET value=excluded.value`).run(scope, value);
     this.db.exec('COMMIT');
@@ -178,11 +236,11 @@ export class HistoryNavigationDb implements NavigationStore {
       turns: new SqliteNavigationTurnSequence(this.db, scope),
       anchors: new SqliteNavigationAnchorSequence(this.db, scope),
       purgeRemovedTurns: (range) => {
-        for (const bucket of ['turnStart', 'turnStates', 'canonicalTurns', 'currentStep']) {
+        for (const bucket of ['turnStart', 'turnStates', 'canonicalTurns', 'currentStep', 'canonicalSeeds']) {
           this.db.prepare(`DELETE FROM state WHERE scope=? AND bucket=? AND key IN (${removed})`)
             .run(scope, bucket, scope, range[0], range[1]);
         }
-        this.db.prepare(`DELETE FROM state WHERE scope=? AND bucket IN ('steps','tools')
+        this.db.prepare(`DELETE FROM state WHERE scope=? AND bucket IN ('steps','tools','canonicalRecords','canonicalUnlocatedCalls')
           AND json_extract(value,'$.turnId') IN (${removed})`).run(scope, scope, range[0], range[1]);
         this.db.prepare(`DELETE FROM state WHERE scope=? AND bucket='unpairedSteerCredits'
           AND substr(key,1,instr(key,char(0))-1) IN (${removed})`).run(scope, scope, range[0], range[1]);
@@ -209,6 +267,12 @@ export class HistoryNavigationDb implements NavigationStore {
         .run(input.workspace, input.session, input.agent, input.scope, input.range[0], input.range[1]);
     }
     if (input.retain !== undefined) {
+      this.db.prepare(`DELETE FROM state WHERE scope=? AND bucket='canonicalUnlocatedCalls'
+        AND json_extract(value,'$.turnId')=? AND json_extract(value,'$.ordinal')>=?`)
+        .run(input.scope, `t${input.retain.turn}`, input.retain.beforeOrdinal);
+      this.db.prepare(`DELETE FROM state WHERE scope=? AND bucket='canonicalRecords'
+        AND json_extract(value,'$.turnId')=? AND CAST(key AS INTEGER)>=?`)
+        .run(input.scope, `t${input.retain.turn}`, input.retain.beforeOrdinal);
       this.db.prepare(`UPDATE rows SET active=0,value=json_set(value,'$.active',json('false'))
         WHERE workspace=? AND session=? AND agent=? AND active=1 AND turn=? AND kind<>'turn' AND position>=?`)
         .run(input.workspace, input.session, input.agent, input.retain.turn, input.retain.beforeOrdinal * 1024);

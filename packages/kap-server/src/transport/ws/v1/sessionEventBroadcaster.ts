@@ -1800,6 +1800,7 @@ function matchesAgentFilter(envelope: EventEnvelope, filter: AgentFilter): boole
   if (filter === undefined) return true;
   if (isGlobalEvent(envelope.type)) return true;
   if (isAgentLifecycleEvent(envelope.type)) return true;
+  if (envelope.type.startsWith('event.approval.') || envelope.type.startsWith('event.question.')) return true;
   const payload = envelope.payload;
   const agentId =
     typeof payload === 'object' && payload !== null

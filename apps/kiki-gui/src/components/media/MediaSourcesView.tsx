@@ -34,7 +34,6 @@ import {
   mediaApi,
   outcomeIsFor,
   useMediaJobAction,
-  useMediaGenerationEnabled,
   useMediaJobs,
   useMediaProviders,
   useMediaSubscriptions,
@@ -72,7 +71,6 @@ export function MediaSourcesView({
   const subscriptions = useMediaSubscriptions(client, api !== undefined);
   const plugins = useInstalledPlugins();
   const jobs = useMediaJobs(client, sessionId ?? '', JOBS_LIMIT);
-  const generation = useMediaGenerationEnabled(client);
   const actions = useMediaJobAction(client, sessionId ?? '', JOBS_LIMIT);
   const [open, setOpen] = useState<string | null>(null);
 
@@ -160,18 +158,6 @@ export function MediaSourcesView({
   return (
     <div className="min-w-0 space-y-6" data-media-sources-view="list">
       <BackLink onBack={onBack} />
-
-      {/* Media generation off is not "no media". Only `start()` is gated, so
-          every source, every setting and every past job below still applies and
-          is still editable; the notice says the one thing that cannot be done
-          yet, and points at the existing Experimental settings rather than
-          inventing a switch here. */}
-      {generation.enabled === false ? (
-        <p className="flex items-start gap-2 rounded-md bg-panel px-2.5 py-2 text-[12px] leading-4 text-ink-soft" role="status" data-media-generation-off>
-          <span className="mt-[3px] h-1.5 w-1.5 shrink-0 rounded-full bg-ink-faint" aria-hidden />
-          {t('cap.media.flagOff')}
-        </p>
-      ) : null}
 
       <CapabilitySection id="media-sources" title={t('cap.media.title')}>
         <MediaSourceList

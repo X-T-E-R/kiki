@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { PageResponse, Session, Workspace } from '@kiki/protocol';
 
 import {
+  adjacentRunningSession,
   arrangePinnedFirst,
   dedupeSessions,
   filterSessions,
@@ -13,6 +14,7 @@ import {
   groupSessionsByWorkspace,
   isPinnedSession,
   mergeSessionFirstPage,
+  mergeSessionActivity,
   pinMetadataPatch,
   SESSION_PIN_META_KEY,
   sortSessionItems,
@@ -67,6 +69,25 @@ describe('mergeSessionFirstPage', () => {
 
   it('is a no-op before the first load', () => {
     expect(mergeSessionFirstPage(undefined, page(['s1'], false))).toBeUndefined();
+  });
+});
+
+describe('activity recency', () => {
+  it('moves a loaded old-page parent on a point update without losing cursors or other rows', () => {
+    const old = data(page(['newer'], true), page(['parent'], false));
+    const fresh = session('parent', '2026-10-05T12:00:00Z');
+    const merged = mergeSessionActivity(old, fresh);
+    expect(merged?.pageParams).toBe(old.pageParams);
+    expect(merged?.pages.map((entry) => entry.has_more)).toEqual([true, false]);
+    expect(sortSessionItems(dedupeSessions(merged), 'updated-desc').map((entry) => entry.id)).toEqual(['parent', 'newer']);
+    expect(mergeSessionActivity(merged, session('parent', '2025-01-01T00:00:00Z'))?.pages[1]?.items[0]).toBe(fresh);
+  });
+  it('orders by the same instant displayed by RelativeTime, rather than ISO spelling', () => {
+    const newer = session('newer', '2026-10-05T00:30:00+08:00');
+    const older = session('older', '2026-10-04T20:00:00+08:00');
+    const canonical = { ...newer, updated_at: '2026-10-04T16:30:00.000Z' };
+    expect(sortSessionItems([older, canonical], 'updated-desc').map((entry) => entry.id)).toEqual(['newer', 'older']);
+    expect(sortSessionItems([older, newer], 'updated-desc').map((entry) => entry.id)).toEqual(['newer', 'older']);
   });
 });
 
@@ -367,5 +388,32 @@ describe('poll boundary coverage', () => {
     const merged = mergeSessionFirstPage(data(page(['deleted', 's2'], true), page(['s1'], false)), page(['s2'], false));
     expect(dedupeSessions(merged).map((entry) => entry.id)).toEqual(['s2']);
     expect(merged?.pageParams).toEqual([undefined]);
+  });
+});
+
+
+describe('adjacentRunningSession', () => {
+  const entries = [
+    session('idle-pin', '2026-10-06', { metadata: { cwd: 'C:/example', 'kiki.pinned': true } }),
+    ...['c', 'a', 'b'].map((id) => session(id, '2026-10-06', { busy: true })),
+    session('waiting', '2026-10-06', { pending_interaction: 'approval' }),
+  ];
+  it('cycles all three running threads in both directions, never idle/pinned/waiting-only rows', () => {
+    expect(['a', 'b', 'c'].map((id) => adjacentRunningSession(entries, id, 1))).toEqual(['b', 'c', 'a']);
+    expect(['a', 'b', 'c'].map((id) => adjacentRunningSession(entries, id, -1))).toEqual(['c', 'a', 'b']);
+    expect(adjacentRunningSession(entries, 'idle-pin', 1)).toBe('a');
+    expect(adjacentRunningSession(entries, undefined, -1)).toBe('c');
+  });
+  it('uses creation order rather than list order, pins, updates or pending-interaction priority', () => {
+    const changed = entries.map((entry) => entry.id === 'b' ? { ...entry, created_at: '2026-10-06', pending_interaction: 'question' as const, metadata: { 'kiki.pinned': true } } : entry);
+    expect(adjacentRunningSession(changed.reverse(), undefined, 1)).toBe('b');
+    expect(adjacentRunningSession(changed, 'b', 1)).toBe('a');
+  });
+  it('reflects completed/newly-running threads and safely handles zero/one candidate', () => {
+    expect(adjacentRunningSession([], 'a', 1)).toBeUndefined();
+    const changed = entries.map((entry) => ({ ...entry, busy: entry.id === 'waiting' }));
+    expect(adjacentRunningSession(changed, 'a', 1)).toBe('waiting');
+    expect(adjacentRunningSession(changed, 'waiting', -1)).toBe('waiting');
+    expect(adjacentRunningSession(entries.map((entry) => ({ ...entry, busy: false })), 'a', -1)).toBeUndefined();
   });
 });

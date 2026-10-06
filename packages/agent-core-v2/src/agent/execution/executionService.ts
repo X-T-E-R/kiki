@@ -36,7 +36,7 @@ import type {
 } from '#/session/subagent/subagent';
 
 import { IAgentExecutionService, type AgentExecutionRunContext } from './execution';
-import { ExecutorHintDelivery, ExecutorSessionUpdated, externalExecutorKey } from './externalExecutorOps';
+import { ExecutorHintDelivery, ExecutorSessionUpdated, externalExecutorKey, externalStateForGeneration } from './externalExecutorOps';
 import { ILocalSessionCatalog } from '#/app/agentExecutor/localSessionCatalog';
 import { localSourceFromRef, type LocalExecutorSessionSource } from '#/app/agentExecutor/localSessionRef';
 import { IFlagService } from '#/app/flag/flag';
@@ -134,7 +134,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       let outbound = runContext.request ?? request;
       const binding = this.profile.data();
       const usesContextHooks = binding.kikiContext?.includes('hooks') === true && binding.executorId !== 'grok-acp';
-      if ((binding.executorId ?? 'native') !== 'native' && outbound.kind !== 'retry' && !usesContextHooks) {
+      if (binding.execution === undefined && (binding.executorId ?? 'native') !== 'native' && outbound.kind !== 'retry' && !usesContextHooks) {
         await this.agent.accessor.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
         const todos = this.agent.accessor.get(ISessionTodoService);
         hints = [
@@ -286,6 +286,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Local session source is unavailable or cannot be resumed');
     }
     await this.agent.accessor.get(IEventDispatcher).dispatch(new ExecutorSessionUpdated({
+      executionGeneration: binding.execution?.generation,
       executorId: source.executorId,
       descriptorRevision: binding.executorDescriptorRevision!,
       bindingFingerprint: agentExecutorBindingFingerprint(binding),
@@ -301,7 +302,7 @@ export class AgentExecutionService implements IAgentExecutionService {
     await this.profile.preparePromptConfiguration();
     const data = this.profile.data();
     const executorId = data.executorId ?? 'native';
-    const prior = this.agent.accessor.get(IAgentStateService).get(externalExecutorKey);
+    const prior = externalStateForGeneration(this.agent.accessor.get(IAgentStateService).get(externalExecutorKey), data.execution?.generation);
     const source = localSourceFromRef(prior.sessionRef?.ref);
     if (source !== undefined && (source.executorId !== executorId ||
         prior.bindingFingerprint !== agentExecutorBindingFingerprint(data) ||
@@ -311,7 +312,7 @@ export class AgentExecutionService implements IAgentExecutionService {
     const binding = { ...data, systemPrompt: executorId === 'native'
       ? this.profile.getSystemPrompt() : data.systemPrompt };
     assertResearchExecutor(binding.executionRestriction, executorId);
-    const modeKey = this.executors.get?.(executorId)?.permission?.via === 'argv'
+    const modeKey = binding.execution === undefined && this.executors.get?.(executorId)?.permission?.via === 'argv'
       ? `:${this.agent.accessor.get(IAgentPermissionModeService).mode}` : '';
     const bindingKey = executorId === 'native' ? 'native'
       : `${agentExecutorBindingFingerprint(binding)}${modeKey}`;

@@ -98,6 +98,16 @@ export interface HistoryReadBlocksPage {
   readonly complete?: boolean;
 }
 
+export interface HistoryPreparation {
+  readonly offset: number;
+  readonly incarnation: string;
+}
+
+export type HistoryDirectoryLookup = { readonly status: 'ok'; readonly ref: string } |
+  { readonly status: 'navigation_building'; readonly next: HistoryPreparation;
+    readonly scanned: { readonly bytes: number; readonly records: number } } |
+  { readonly status: 'not_found' | 'source_pending' | 'source_missing' | 'stale_ref' | 'navigation_unavailable'; readonly reason?: string };
+
 export interface IHistoryArchive {
   readonly _serviceBrand: undefined;
   search(query: {
@@ -123,6 +133,8 @@ export interface IHistoryArchive {
   readRef?(ref: string): Promise<{ status: 'ok'; text?: string; turn: number; stepId?: string;
     role?: 'user' | 'assistant' | 'tool'; toolName?: string; part?: string; ref: string } |
     { status: 'stale_ref' | 'source_missing' | 'invalid_ref' }>;
+  lookupDirectory?(workspace: string, session: string, agent: string, turn: number, step?: string,
+    preparation?: HistoryPreparation, signal?: AbortSignal): Promise<HistoryDirectoryLookup>;
   directoryRef?(workspace: string, session: string, agent: string, turn: number, step?: string): Promise<string | undefined>;
   readDirectory?(ref: string, maxChars: number, cursor?: { readonly position: number;
     readonly offset: number; readonly watermark: number; readonly asOfBytes: number }): Promise<HistoryReadBlocksPage>;
@@ -138,8 +150,27 @@ type ReadCursor = { v: 1; session: string; agent: string; turn: number; step?: s
 type BlockCursor = { v: 2; ref: string; offset: number; maxChars: number };
 type DirectoryCursor = { v: 3; ref: string; maxChars: number; position: number; offset: number;
   watermark: number; asOfBytes: number };
+type PreparingReadCursor = { v: 4; workspace: string; session: string; agent: string; turn: number;
+  step?: string; maxChars: number; preparation: HistoryPreparation };
 type RefTarget = { workspace: string; session: string; agent: string;
   kind?: 'turn' | 'step' | 'frame'; focus?: number };
+
+function decodePreparingReadCursor(value: string | undefined): PreparingReadCursor | undefined {
+  if (value === undefined) return undefined;
+  let raw: Partial<PreparingReadCursor>;
+  try { raw = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Partial<PreparingReadCursor>; }
+  catch { return undefined; }
+  if (raw?.v !== 4) return undefined;
+  if (typeof raw.workspace !== 'string' || !raw.workspace || typeof raw.session !== 'string' || !raw.session ||
+      !AgentIdSchema.safeParse(raw.agent).success || !Number.isSafeInteger(raw.turn) || raw.turn! < 0 ||
+      raw.step !== undefined && !new RegExp(`^t${raw.turn}\\.\\d+$`).test(raw.step) ||
+      !Number.isSafeInteger(raw.maxChars) || raw.maxChars! < 1000 || raw.maxChars! > 20_000 ||
+      !Number.isSafeInteger(raw.preparation?.offset) || raw.preparation!.offset < 0 ||
+      typeof raw.preparation?.incarnation !== 'string' || !raw.preparation.incarnation) {
+    throw new Error('Invalid HistoryRead preparation cursor; restart the selector.');
+  }
+  return raw as PreparingReadCursor;
+}
 
 function decodeDirectoryCursor(cursor: string | undefined): DirectoryCursor | undefined {
   if (cursor === undefined) return undefined;
@@ -310,12 +341,16 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
           });
           context.signal.throwIfAborted();
         } catch (error) {
-          if (error instanceof Error && (error.message === 'stale_scan_cursor' || error.message === 'invalid_scan_cursor')) {
+          if (error instanceof Error && (error.message === 'stale_scan_cursor' || error.message === 'invalid_scan_cursor' ||
+              error.message === 'history_source_changed')) {
+            const sourceChanged = error.message === 'history_source_changed' ||
+              error.message === 'stale_scan_cursor' && input.cursor === undefined;
             return { isError: true, output: JSON.stringify({ scope_used: scope,
               mode_used: request.mode ?? 'auto', target: { workspace_id: target.id, session_id: sessionId,
                 agent_id: agentId, all_agents: request.include_subagents === true ? true : undefined },
-              error: { code: error.message,
-                message: 'HistorySearch scan cursor is no longer available; restart the original query.',
+              error: { code: sourceChanged ? 'source_changed' : error.message,
+                message: sourceChanged ? 'The transcript changed during this read; restart the query after its writer settles.' :
+                  'HistorySearch scan cursor no longer matches its source or query; restart without cursor.',
                 retryable: true, next_call: { tool: 'HistorySearch', arguments: request },
               } }) };
           }
@@ -361,7 +396,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
 export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infer<typeof HistoryReadInputSchema>> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistoryRead';
-  readonly description = 'Read original history as bounded source blocks. A HistoryList turn ref opens the entire turn; step_id such as t42.3 or a 0-based turn also selects a block directory. A Search hit ref starts near its match. Pass cursor alone for more blocks, or reopen one block by its ref plus start_char=range.end; stale refs report an error.';
+  readonly description = 'Read original history as bounded source blocks. A HistoryList turn ref opens the entire turn; step_id such as t42.3 or a 0-based turn also selects a block directory. A Search hit ref starts near its match. Pass cursor alone for more blocks or navigation preparation; a partial scan with empty blocks is not a no-match result. Reopen one block by ref plus start_char=range.end. For a stale ref, use the returned recovery call to obtain a fresh source.';
   readonly parameters = toInputJsonSchema(HistoryReadInputSchema, (schema) => {
     schema['anyOf'] = [{ required: ['ref'] }, { required: ['turn'] }, { required: ['step_id'] }, { required: ['cursor'] }];
   });
@@ -382,13 +417,16 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
       asOfBytes: cursor.asOfBytes,
     });
     signal.throwIfAborted();
-    if (page === undefined || page.status !== 'ok') return { isError: true, output: JSON.stringify({ error: {
-      code: page?.status ?? 'source_missing',
-      message: page?.status === 'navigation_building' ? 'Navigation is still building; retry this selector.' :
-        'The historical turn or step source is missing or stale.',
-      retryable: page?.status === 'navigation_building',
-      next_call: { tool: 'HistoryRead', arguments: { ref } },
-    } }) };
+    if (page === undefined || page.status !== 'ok') {
+      const target = refTarget(ref);
+      return { isError: true, output: JSON.stringify({ error: {
+        code: page?.status ?? 'source_missing',
+        message: page?.status === 'navigation_building' ? 'This directory ref is not prepared; use HistoryList to advance navigation and obtain a fresh ref.' :
+          'The historical source is missing or stale; use HistoryList to find a current source ref.',
+        retryable: false, next_call: { tool: 'HistoryList', arguments: { workspace_id: target.workspace,
+          session_id: target.session, agent_id: target.agent, kind: 'turns' } },
+      } }) };
+    }
     const next = page.next === undefined ? undefined : Buffer.from(JSON.stringify({
       v: 3, ref, maxChars, ...page.next,
     } satisfies DirectoryCursor)).toString('base64url');
@@ -498,26 +536,31 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
     const blockCursor = decodeBlockCursor(input.cursor);
     if (input.ref !== undefined || blockCursor !== undefined) return this.resolveRef(input, blockCursor);
     if (input.start_char !== undefined) throw new Error('start_char requires a text-block ref.');
-    const cursor = readCursor(input.cursor);
+    const preparing = decodePreparingReadCursor(input.cursor);
+    const cursor = preparing === undefined ? readCursor(input.cursor) : undefined;
+    const selector = preparing ?? cursor;
     const stepTurn = input.step_id === undefined ? undefined : Number(input.step_id.match(/^t(\d+)\.\d+$/)?.[1]);
-    if (input.turn === undefined && stepTurn === undefined && cursor === undefined) {
+    if (input.turn === undefined && stepTurn === undefined && selector === undefined) {
       throw new Error('Provide turn, step_id, or cursor.');
     }
-    const turn = input.turn ?? stepTurn ?? cursor!.turn;
+    const turn = input.turn ?? stepTurn ?? selector!.turn;
     if (!Number.isSafeInteger(turn) || turn < 0 ||
       (stepTurn !== undefined && input.turn !== undefined && stepTurn !== input.turn)) {
       throw new Error('step_id does not belong to turn.');
     }
-    const sessionId = input.session_id ?? cursor?.session ?? this.session.sessionId;
+    const sessionId = input.session_id ?? selector?.session ?? this.session.sessionId;
     const summary = await this.sessions.get(sessionId);
     if (summary === undefined) throw new Error('Session not found.');
-    const target = await this.target(input.workspace_id ?? (cursor === undefined ? undefined : summary.workspaceId));
+    const target = await this.target(input.workspace_id ?? preparing?.workspace ??
+      (cursor === undefined ? undefined : summary.workspaceId));
     if (summary.workspaceId !== target.id) throw new Error('Session not found in the requested workspace.');
-    const agentId = input.agent_id ?? cursor?.agent ??
+    const agentId = input.agent_id ?? selector?.agent ??
       (sessionId === this.session.sessionId ? this.caller.agentId : 'main');
-    const stepId = input.step_id ?? cursor?.step;
-    const cursorMismatch = cursor !== undefined && (cursor.session !== sessionId || cursor.agent !== agentId ||
-      cursor.turn !== turn || cursor.step !== stepId);
+    const stepId = input.step_id ?? selector?.step;
+    const maxChars = input.max_chars ?? preparing?.maxChars ?? 6000;
+    const cursorMismatch = selector !== undefined && (selector.session !== sessionId || selector.agent !== agentId ||
+      selector.turn !== turn || selector.step !== stepId || preparing !== undefined &&
+      (preparing.workspace !== target.id || preparing.maxChars !== maxChars));
     return {
       approvalRule: this.name,
       description: 'Reading historical transcript',
@@ -527,14 +570,45 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
           code: 'cursor_mismatch', message: 'HistoryRead cursor conflicts with the selector.',
           retryable: true, next_call: { tool: 'HistoryRead', arguments: { session_id: sessionId, agent_id: agentId, turn, step_id: stepId } },
         } }) };
+        if (cursor === undefined && this.archive.lookupDirectory !== undefined) {
+          const lookup = await this.archive.lookupDirectory(target.id, sessionId, agentId, turn, stepId,
+            preparing?.preparation, context.signal);
+          context.signal.throwIfAborted();
+          if (lookup.status === 'ok') return this.renderDirectory(lookup.ref, maxChars, context.signal);
+          const selected = { workspace_id: target.id, session_id: sessionId, agent_id: agentId, turn, step_id: stepId };
+          if (lookup.status === 'not_found') return { output: JSON.stringify({ schema_version: 2,
+            status: 'no_match', target: selected, source: 'transcript', blocks: [], has_more: false,
+            coverage: { complete: true, domain: 'full_text', gaps: [] },
+            message: 'The persisted transcript has no visible turn or step matching this selector.',
+          }) };
+          if (lookup.status === 'source_pending') return { output: JSON.stringify({ schema_version: 2,
+            status: 'partial', target: selected, source: 'transcript', blocks: [], has_more: false,
+            coverage: { complete: false, domain: 'full_text', gaps: ['source_pending'] },
+            message: 'The persisted transcript ends in an unfinished record. Retry the selector after its writer settles.',
+          }) };
+          if (lookup.status === 'navigation_building') {
+            const next = Buffer.from(JSON.stringify({ v: 4, workspace: target.id, session: sessionId,
+              agent: agentId, turn, step: stepId, maxChars, preparation: lookup.next } satisfies PreparingReadCursor)).toString('base64url');
+            return { output: JSON.stringify({ schema_version: 2, status: 'partial', target: selected,
+              source: 'transcript', blocks: [], coverage: { complete: false, domain: 'full_text',
+                gaps: ['navigation_building'], scanned: lookup.scanned },
+              progress: { through_bytes: lookup.next.offset }, next_cursor: next, has_more: true,
+              continuation: 'scan', next_call: { tool: 'HistoryRead', arguments: { cursor: next } },
+              message: 'Navigation preparation advanced. Continue with the cursor before interpreting empty blocks as no match.',
+            }) };
+          }
+          return { isError: true, output: JSON.stringify({ error: { code: lookup.status,
+            message: lookup.status === 'source_missing' ? 'The persisted agent transcript is unavailable; use HistoryList kind=agents to check the agent ID.' :
+              lookup.status === 'stale_ref' ? 'The persisted source changed; restart this selector without cursor.' :
+                `Navigation cannot advance (${lookup.reason ?? 'unavailable'}); do not repeat the same call.`,
+            retryable: lookup.status === 'stale_ref', next_call: { tool: 'HistoryList', arguments: {
+              session_id: sessionId, agent_id: lookup.status === 'source_missing' ? undefined : agentId,
+              kind: lookup.status === 'source_missing' ? 'agents' : 'turns', workspace_id: target.id } },
+          } }) };
+        }
         if (cursor === undefined && this.archive.directoryRef !== undefined && this.archive.readDirectory !== undefined) {
           const ref = await this.archive.directoryRef(target.id, sessionId, agentId, turn, stepId);
-          if (ref === undefined) return { isError: true, output: JSON.stringify({ error: {
-            code: 'navigation_building_or_missing', message: 'This turn or step is not yet in the navigation directory.',
-            retryable: true, next_call: { tool: 'HistoryRead', arguments: {
-              session_id: sessionId, agent_id: agentId, turn, step_id: stepId } },
-          } }) };
-          return this.renderDirectory(ref, input.max_chars ?? 6000, context.signal);
+          if (ref !== undefined) return this.renderDirectory(ref, maxChars, context.signal);
         }
         const text = await this.archive.readTurn(sessionId, agentId, turn, stepId);
         if (text === undefined) return { isError: true, output: 'Turn or step not found.' };

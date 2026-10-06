@@ -425,6 +425,18 @@ describe('persisted agent panel metrics cache scope', () => {
     expect(second.reads()).toBe(1);
   });
 
+  it('refreshes a mutable persisted subtotal immediately when live accounting records advance', async () => {
+    const fixture = persistedFixture([record('model', usage(1, 0), true)]);
+    const modelPricing = pricing({ model: 1 });
+    const options = { mutableAgentIds: ['main'], mutableUsageRecords: { main: 1 } };
+    expect((await persisted(fixture.core, modelPricing, 'settled-generation', options))['main']?.totalTokens).toBe(1);
+    fixture.setRecords([record('model', usage(1, 0), true), record('model', usage(2, 0), true)]);
+    const next = { ...options, mutableUsageRecords: { main: 2 } };
+    expect((await persisted(fixture.core, modelPricing, 'settled-generation', next))['main']?.totalTokens).toBe(3);
+    expect((await persisted(fixture.core, modelPricing, 'settled-generation', next))['main']?.totalTokens).toBe(3);
+    expect(fixture.reads()).toBe(2);
+  });
+
   it('keeps mutable usage growth cached for five seconds and refreshes after thirty seconds', async () => {
     vi.useFakeTimers({ now: 0 });
     try {

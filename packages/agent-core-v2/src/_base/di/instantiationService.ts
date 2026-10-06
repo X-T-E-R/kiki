@@ -34,7 +34,7 @@ import { isDisposable, type DisposableStore, type IDisposable } from './lifecycl
 import { onUnexpectedError } from '../errors/unexpectedError';
 import { Emitter } from '../event';
 import { Ledger, type LedgerEntry } from '../lifecycle/ledger';
-import type { Disposer } from '../lifecycle/disposer';
+import { isPromiseLike, type Disposer } from '../lifecycle/disposer';
 import { ServiceCollection } from './serviceCollection';
 
 const enum TraceType {
@@ -645,9 +645,7 @@ export class InstantiationService implements IInstantiationService {
     }
     const child = this._createChildService(services);
     this._children.add(child);
-    child._parentLedgerEntry = this._ledger.register(() => {
-      child.dispose();
-    }, 'child-instantiation');
+    child._parentLedgerEntry = this._ledger.register(() => child.dispose(), 'child-instantiation');
     store?.add(child);
     return child;
   }
@@ -656,39 +654,49 @@ export class InstantiationService implements IInstantiationService {
     return new InstantiationService(services, this._strict, this, this._enableTracing);
   }
 
-  dispose(): void {
-    if (this._disposed) {
-      return;
-    }
+  private _disposeResult: void | Promise<void> = undefined;
+
+  dispose(): void | Promise<void> {
+    if (this._disposed) return this._disposeResult;
     this._disposed = true;
     this._onWillDispose.fire();
     this._onWillDispose.dispose();
-
-    try {
-      for (const child of Array.from(this._children)) {
-        child.dispose();
+    const children = Array.from(this._children).reverse();
+    const teardown = (): void | Promise<void> => {
+      while (children.length > 0) {
+        const child = children.pop()!;
+        let pending: void | Promise<void>;
+        try { pending = child.dispose(); }
+        catch (error) { onUnexpectedError(error); continue; }
+        if (isPromiseLike(pending)) {
+          return Promise.resolve(pending).catch(onUnexpectedError).then(teardown);
+        }
       }
-      this._children.clear();
-      void this._ledger.teardown('scope-close');
+      return this._ledger.teardown('scope-close');
+    };
+    try {
+      this._disposeResult = teardown();
       this._services.dispose();
       this.cascade.dispose();
-      for (const view of this._collectionViews.values()) {
-        view.dispose();
-      }
+      for (const view of this._collectionViews.values()) view.dispose();
       this._collectionViews.clear();
-      for (const node of this._edgeNodes) {
-        this._tree.graph.removeInstance(node);
-      }
+      for (const node of this._edgeNodes) this._tree.graph.removeInstance(node);
       this._edgeNodes.clear();
       this._tree.graph.removeScope(this);
     } finally {
       this._children.clear();
-      this._parentLedgerEntry?.release();
-      this._parentLedgerEntry = undefined;
-      if (this._parent) {
-        this._parent._children.delete(this);
+      const detach = (): void => {
+        this._parentLedgerEntry?.release();
+        this._parentLedgerEntry = undefined;
+        this._parent?._children.delete(this);
+      };
+      if (isPromiseLike(this._disposeResult)) {
+        this._disposeResult = this._disposeResult.then(detach, (error) => { detach(); throw error; });
+      } else {
+        detach();
       }
     }
+    return this._disposeResult;
   }
 
   private _createInstance<T>(ctor: any, args: unknown[], _trace: Trace, unit?: {

@@ -72,36 +72,22 @@ export function BrowserStateMark({ state, compact = false }: {
   );
 }
 
-/** The ecosystems the design keeps on the route but this version does not drive. */
-const OTHER_ECOSYSTEMS = [
-  { id: 'webbridge', name: 'st.browser.other.webbridge.name', condition: 'st.browser.other.webbridge' },
-  { id: 'cloud', name: 'st.browser.other.cloud.name', condition: 'st.browser.other.cloud' },
-  { id: 'codex', name: 'st.browser.other.codex.name', condition: 'st.browser.other.codex' },
-  { id: 'executors', name: 'st.browser.other.executors.name', condition: 'st.browser.other.executors' },
-] as const satisfies readonly { id: string; name: I18nKey; condition: I18nKey }[];
-
 /**
- * Named, not clickable: each line is the real condition for that route, and the
- * page says outright that it is not wired. An inert button would claim a
- * capability the server does not have.
+ * The one other browser route that exists outside this page, named as the trip
+ * to where it is actually installed. It used to sit here as four inert lines of
+ * conditions; the Kimi route now has a real place in the wizard above, so what
+ * is left is the plugin page this page sends a reader to when the extension they
+ * want is installed from Kiki's plugin catalog rather than a store.
  */
 export function OtherBrowserEcosystems() {
   const { t } = useI18n();
   return (
-    <AdvancedDetails summary={t('st.browser.otherTitle')} data-browser-other>
-      <p className="max-w-[62ch]">{t('st.browser.otherHint')}</p>
-      <dl className="space-y-2">
-        {OTHER_ECOSYSTEMS.map((row) => (
-          <div key={row.id} data-browser-other-row={row.id}>
-            <dt className="flex flex-wrap items-baseline gap-1.5">
-              <span className="font-medium text-ink">{t(row.name)}</span>
-              {row.id === 'webbridge' ? <Link to="/settings/plugins" className="text-ink-soft underline underline-offset-2" data-browser-webbridge-link>{t('st.browser.other.webbridge.action')}</Link> : <Tag>{t('st.browser.other.state')}</Tag>}
-            </dt>
-            <dd className="max-w-[62ch]">{t(row.condition)}</dd>
-          </div>
-        ))}
-      </dl>
-    </AdvancedDetails>
+    <div className="space-y-1.5" data-browser-other>
+      <p className="max-w-[62ch] text-[12px] text-ink-faint">{t('st.browser.otherHint')}</p>
+      <Link to="/settings/plugins" className="inline-block text-[12px] text-selected-ink hover:underline" data-browser-webbridge-link>
+        {t('st.browser.other.webbridge.action')}
+      </Link>
+    </div>
   );
 }
 

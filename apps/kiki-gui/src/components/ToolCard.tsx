@@ -34,8 +34,9 @@ import {
 } from './timeline/ToolSemanticParts';
 import { describeTool, toolPayloadIncomplete } from './toolSemantics';
 import { toolRecordCopy } from './toolRecordCopy';
-import { LoadedToolText, recordText } from './timeline/LoadedToolText';
-import { CopyButton } from './timeline/SubagentInvocationView';
+import { LoadedToolText, ReadableToolText, recordText } from './timeline/LoadedToolText';
+import { CopyButton } from './timeline/ContentCopyButton';
+import { useTranscriptController } from './transcriptDetail';
 
 type Translate = ReturnType<typeof useI18n>['t'];
 type TranslatePlural = ReturnType<typeof useI18n>['tp'];
@@ -325,13 +326,7 @@ function OutputView({ output, agentId, island = false }: { output: unknown; agen
   if (mediaJob !== undefined) {
     return <MediaJobView job={mediaJob} agentId={agentId} />;
   }
-  if (typeof output === 'string') {
-    return (
-      <pre className={wellClass(island)}>
-        {output}
-      </pre>
-    );
-  }
+  if (typeof output === 'string') return <ReadableToolText text={output} className={wellClass(island)} />;
   if (typeof output === 'object') {
     const candidate = output as { kind?: unknown };
     if (candidate.kind === 'command_output') {
@@ -367,7 +362,7 @@ function OutputView({ output, agentId, island = false }: { output: unknown; agen
       );
     }
   }
-  return <LoadedToolText text={recordText(output)} className={wellClass(island)} copy={island} />;
+  return <LoadedToolText copyLabel={t('tc.output')} text={recordText(output)} className={wellClass(island)} copy={island} />;
 }
 
 export const ToolCard = memo(function ToolCard({
@@ -399,6 +394,9 @@ export const ToolCard = memo(function ToolCard({
   // continue them belong to this frame, and the reading areas below ask only
   // for the field roots they actually show.
   const frameSource = frameContentSource(block);
+  const detailController = useTranscriptController();
+  const prepareCopy = (field: string) => detailController === undefined || frameSource === undefined ? undefined : (signal: AbortSignal) => field === 'output' ? detailController.copyToolCallField(agentId, block.toolCallId, 'output', signal) : detailController.copyContentField(agentId, frameSource, [field], signal);
+  const rangeField = (field: string) => detailController !== undefined && frameSource !== undefined && detailController.contentRefsFor(agentId, frameSource).some((ref) => ref.path.length === 1 && ref.path[0] === field && detailController.isContentRange(agentId, ref));
   // Memory stays quieter than a tool step: one line with View / Undo instead of
   // this header and its input/output wells. Routed here so every mount agrees.
   const memoryRow = isMemoryToolName(block.name);
@@ -481,13 +479,14 @@ ${engineError}`;
   const inputWell = (
     <div>
       <p className={label}>{t('tc.input')}</p>
-      <LoadedToolText text={block.args !== undefined ? recordText(block.args) : block.argsText || t('tc.noInput')} />
+      {rangeField(block.args === undefined ? 'inputText' : 'input') ? <div className="flex justify-end"><CopyButton label={t('tc.input')} text="" prepare={prepareCopy(block.args === undefined ? 'inputText' : 'input')} /></div> : <LoadedToolText copyLabel={t('tc.input')} text={block.args !== undefined ? recordText(block.args) : block.argsText || t('tc.noInput')} prepareCopy={prepareCopy(block.args === undefined ? 'inputText' : 'input')} />}
       {/* The well shows the parsed args when they exist and the streamed text
           otherwise, so it continues whichever of the two it is showing. */}
       <ContentContinuation
         source={frameSource}
         roots={block.args === undefined ? INPUT_TEXT_ROOTS : INPUT_ROOTS}
         label={t('tc.input')}
+        headingPresent
         className="mt-1"
       />
     </div>
@@ -496,12 +495,12 @@ ${engineError}`;
     <div>
       <div className="mb-1 flex items-center justify-between text-[12px] font-medium text-ink-faint">
         <span>{t('tc.output')}{block.isError === true ? t('tc.outputError') : ''}</span>
-        {block.output === undefined ? null : <CopyButton text={recordText(block.output)} />}
+        {block.output === undefined ? null : <CopyButton label={t('tc.output')} text={recordText(block.output)} prepare={prepareCopy('output')} />}
       </div>
       {toolPayloadIncomplete(block.output) ? <p data-tool-payload-status className="text-[12px] text-ink-faint">{toolRecordCopy('payloadTruncated', semanticContext.locale)}</p> : null}
       {block.output === undefined ? <p className="text-[12px] text-ink-faint">{toolRecordCopy('notLoaded', semanticContext.locale)}</p>
-        : <OutputView output={block.output} agentId={agentId} />}
-      <ContentContinuation source={frameSource} roots={OUTPUT_ROOTS} label={t('tc.output')} className="mt-1" />
+        : rangeField('output') || rangeField('error') ? null : <OutputView output={block.output} agentId={agentId} />}
+      <ContentContinuation source={frameSource} roots={OUTPUT_ROOTS} label={t('tc.output')} headingPresent className="mt-1" />
     </div>
   );
 

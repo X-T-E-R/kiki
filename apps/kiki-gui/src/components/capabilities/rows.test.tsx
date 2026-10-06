@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SkillDescriptor, Workspace } from '@kiki/protocol';
+import { ApiError } from '@kiki/session-core/transport';
 import { I18nProvider } from '../../i18n';
 import { MediaPreviewProvider } from '../mediaPreview';
 import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
@@ -14,9 +15,11 @@ import { CapabilitiesPage } from './CapabilitiesPage';
 import { resetListPrefsCache } from '../settings/list';
 
 const client = vi.hoisted(() => ({
-  readHostFile: vi.fn<(path: string) => Promise<string>>(),
-  previewHostFile: vi.fn<(path: string) => Promise<{ text: string; truncated: boolean }>>(),
-  readBuiltinSkill: vi.fn<(name: string) => Promise<string>>(),
+  // The options bag is what carries the sheet's abort signal, so the mock keeps
+  // the real signature rather than the bare one.
+  readHostFile: vi.fn<(path: string, options?: { signal?: AbortSignal }) => Promise<string>>(),
+  previewHostFile: vi.fn<(path: string, maxBytes?: number, options?: { signal?: AbortSignal }) => Promise<{ text: string; truncated: boolean }>>(),
+  readBuiltinSkill: vi.fn<(name: string, options?: { signal?: AbortSignal }) => Promise<string>>(),
   listWorkspaceSkills: vi.fn<(id: string) => Promise<{ skills: SkillDescriptor[] }>>(),
   listWorkspaces: vi.fn<() => Promise<{ items: Workspace[] }>>(),
 }));
@@ -42,14 +45,39 @@ const sampleSkill: SkillDescriptor = {
 };
 
 beforeEach(() => {
-  client.readHostFile.mockReset();
   client.previewHostFile.mockReset();
   client.readBuiltinSkill.mockReset();
+  client.readHostFile.mockReset();
   localStorage.setItem('kiki.locale', 'zh');
+  copied.length = 0;
+  // The copy control promises what it copies, so the clipboard is observed
+  // rather than stubbed away.
+  // jsdom ships no clipboard, so one is defined for the copy control to write
+  // to. Every other navigator property is left exactly as it is.
+  Object.defineProperty(globalThis.navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: async (text: string) => { copied.push(text); } },
+  });
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
 });
+
+afterEach(() => {
+  delete (globalThis.navigator as { clipboard?: unknown }).clipboard;
+});
+
+/** What the copy control actually handed the clipboard, in order. */
+const copied: string[] = [];
+async function lastCopiedText(): Promise<string | undefined> {
+  return copied.at(-1);
+}
+/** The toast for a finished copy runs after the clipboard promise settles. */
+async function settleClipboard(): Promise<void> {
+  for (let attempt = 0; attempt < 20 && copied.length === 0; attempt += 1) {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  }
+}
 
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -120,8 +148,8 @@ describe('SkillCard preview', () => {
     expect(client.readBuiltinSkill).toHaveBeenCalledTimes(1);
   });
 
-  it('closes the agent skill drawer so the opened built-in tab is visible', async () => {
-    client.readBuiltinSkill.mockResolvedValue('# Kiki operations (kiki-ops)');
+  it('reads a built-in skill into the open drawer instead of a second surface', async () => {
+    client.readBuiltinSkill.mockResolvedValue('# Kiki operations (kiki-ops)\n\nBuilt-in instructions.');
     function Drawer() {
       const [open, setOpen] = useState(true);
       return (
@@ -142,13 +170,451 @@ describe('SkillCard preview', () => {
     const dialog = document.querySelector('[role="dialog"]');
     expect(dialog).not.toBeNull();
     expect(dialog?.textContent).toContain('builtin://kiki-ops');
-    expect(dialog?.querySelector('[role="link"]')).toBeNull();
-    const button = Array.from(dialog!.querySelectorAll('button')).find((item) => item.textContent?.includes('查看 SKILL.md'));
-    await act(async () => { button!.click(); });
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
-    expect(container.querySelector('[data-preview-tab="skill:builtin:kiki-ops"]')).not.toBeNull();
+    // A built-in skill is never read as a host path.
     expect(client.readHostFile).not.toHaveBeenCalled();
-    expect(client.readBuiltinSkill).toHaveBeenCalledWith('kiki-ops');
+    // The sheet is filled by reading the skill: no click, no second tab, and
+    // the reader keeps the drawer they opened.
+    expect(dialog?.querySelector('[data-skill-md]')).not.toBeNull();
+    for (let attempt = 0; attempt < 30 && dialog!.querySelector('[data-skill-md-content]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    // The read carries the sheet's signal, so leaving it stops the request.
+    expect(client.readBuiltinSkill).toHaveBeenCalledWith('kiki-ops', expect.objectContaining({ signal: expect.anything() }));
+    const content = dialog!.querySelector('[data-skill-md-content]')!;
+    // Rendered as Markdown, which is what a SKILL.md is written in.
+    expect(content.querySelector('h1')?.textContent).toBe('Kiki operations (kiki-ops)');
+    expect(content.textContent).toContain('Built-in instructions.');
+    // The drawer stayed open: the content is here, not in a preview tab.
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(container.querySelector('[data-preview-tab]')).toBeNull();
+    // Copy and the full file stay one click away, without leaving the sheet.
+    expect(dialog!.querySelector('[data-skill-md-copy]')).not.toBeNull();
+    expect(dialog!.querySelector('[data-skill-md-open]')).not.toBeNull();
+  });
+
+  it('reads a file skill through the host read and names the failure with a retry', async () => {
+    function Drawer() {
+      return (
+        <MediaPreviewProvider>
+          <AgentDetailDrawer
+            target={{ kind: 'skill', skill: {
+              id: 'project:code-review', name: 'code-review', source: 'project',
+              path: sampleSkill.path, scope: 'workspace', state: 'enabled',
+              description: '代码审查规则集。',
+            } }}
+            onClose={() => undefined}
+          />
+        </MediaPreviewProvider>
+      );
+    }
+    client.previewHostFile.mockRejectedValueOnce(new Error('ENOENT'));
+    await act(async () => {
+      root.render(<I18nProvider><Drawer /></I18nProvider>);
+    });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    for (let attempt = 0; attempt < 30 && dialog.querySelector('[data-skill-md-retry]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    expect(client.previewHostFile).toHaveBeenCalledWith(sampleSkill.path, undefined, expect.objectContaining({ signal: expect.anything() }));
+    expect(client.readBuiltinSkill).not.toHaveBeenCalled();
+    // A failed read says what happened and how to get the file anyway.
+    expect(dialog.querySelector('[data-skill-md-retry]')).not.toBeNull();
+    expect(dialog.textContent).toContain('无法读取这份 SKILL.md');
+    expect(dialog.querySelector('[data-skill-md-open]')).not.toBeNull();
+    // Retrying reads again, and a success then renders the Markdown.
+    client.previewHostFile.mockResolvedValue({ text: '# Code Review\n\nRun review checks.', truncated: false });
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('[data-skill-md-retry]')!.click(); });
+    for (let attempt = 0; attempt < 30 && dialog.querySelector('[data-skill-md-content]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    expect(client.previewHostFile).toHaveBeenCalledTimes(2);
+    expect(dialog.querySelector('[data-skill-md-content] h1')?.textContent).toBe('Code Review');
+    expect(dialog.querySelector('[data-skill-md-retry]')).toBeNull();
+  });
+
+  it('reads a file whose body is JSON as the file it is', async () => {
+    // A SKILL.md may legitimately be JSON, and it may open with a "code" field.
+    // The read succeeds, so the body is the document: nothing about its shape
+    // decides whether it is shown.
+    const jsonBody = '{\n  "code": 0,\n  "msg": "the real instructions",\n  "steps": ["one", "two"]\n}\n';
+    client.previewHostFile.mockResolvedValue({ text: jsonBody, truncated: false });
+    function Drawer() {
+      return (
+        <MediaPreviewProvider>
+          <AgentDetailDrawer
+            target={{ kind: 'skill', skill: {
+              id: 'user:json', name: 'json', source: 'user',
+              path: '~/.kiki/skills/json/SKILL.md', scope: 'global', state: 'enabled',
+            } }}
+            onClose={() => undefined}
+          />
+        </MediaPreviewProvider>
+      );
+    }
+    await act(async () => { root.render(<I18nProvider><Drawer /></I18nProvider>); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    for (let attempt = 0; attempt < 30 && dialog.querySelector('[data-skill-md-content]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    const content = dialog.querySelector('[data-skill-md-content]');
+    expect(content).not.toBeNull();
+    expect(dialog.querySelector('[data-skill-md-retry]')).toBeNull();
+    // The whole file is on screen, not a message about it.
+    expect(content?.textContent).toContain('the real instructions');
+    expect(content?.textContent).toContain('"steps"');
+  });
+
+  it('names a failed read in the reader\'s words and recovers on retry', async () => {
+    // The host answers a missing file with a failed request (HTTP 404 over
+    // REST), so the failure arrives as a rejection with the fs wire code. What
+    // the reader sees is a sentence, never the code or the host's message.
+    client.previewHostFile.mockRejectedValueOnce(new ApiError({ code: 40409, msg: 'fs.path_not_found', data: null }));
+    client.previewHostFile.mockResolvedValue({ text: '# Code Review\n\nRun review checks.', truncated: false });
+    function Drawer() {
+      return (
+        <MediaPreviewProvider>
+          <AgentDetailDrawer
+            target={{ kind: 'skill', skill: {
+              id: 'user:gone', name: 'gone', source: 'user',
+              path: '~/.kiki/skills/gone/SKILL.md', scope: 'global', state: 'enabled',
+            } }}
+            onClose={() => undefined}
+          />
+        </MediaPreviewProvider>
+      );
+    }
+    await act(async () => { root.render(<I18nProvider><Drawer /></I18nProvider>); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    for (let attempt = 0; attempt < 30 && dialog.querySelector('[data-skill-md-retry]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    const alert = dialog.querySelector('[data-skill-md] [role="alert"]')?.textContent ?? '';
+    // A specific sentence for "it moved", not the generic one and not a code.
+    expect(alert).toContain('已经不在原位置');
+    expect(alert).not.toContain('fs.path_not_found');
+    expect(alert).not.toContain('40409');
+    expect(dialog.querySelector('[data-skill-md-content]')).toBeNull();
+    // The file is one click away even when the read failed.
+    expect(dialog.querySelector('[data-skill-md-open]')).not.toBeNull();
+
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('[data-skill-md-retry]')!.click(); });
+    for (let attempt = 0; attempt < 30 && dialog.querySelector('[data-skill-md-content]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    expect(client.previewHostFile).toHaveBeenCalledTimes(2);
+    expect(dialog.querySelector('[data-skill-md-content] h1')?.textContent).toBe('Code Review');
+    expect(dialog.querySelector('[data-skill-md-retry]')).toBeNull();
+  });
+
+  it('never shows an internal code for a denied file either', async () => {
+    client.previewHostFile.mockRejectedValueOnce(new ApiError({ code: 40411, msg: 'fs.permission_denied', data: null }));
+    function Drawer() {
+      return (
+        <MediaPreviewProvider>
+          <AgentDetailDrawer
+            target={{ kind: 'skill', skill: {
+              id: 'user:denied', name: 'denied', source: 'user',
+              path: '~/.kiki/skills/denied/SKILL.md', scope: 'global', state: 'enabled',
+            } }}
+            onClose={() => undefined}
+          />
+        </MediaPreviewProvider>
+      );
+    }
+    await act(async () => { root.render(<I18nProvider><Drawer /></I18nProvider>); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    for (let attempt = 0; attempt < 30 && dialog.querySelector('[data-skill-md-retry]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    const alert = dialog.querySelector('[data-skill-md] [role="alert"]')?.textContent ?? '';
+    expect(alert).toContain('这里读不到');
+    expect(alert).not.toContain('40411');
+    expect(alert).not.toContain('fs.permission_denied');
+  });
+
+  it('falls back to a plain sentence for a failure it cannot name', async () => {
+    client.previewHostFile.mockRejectedValueOnce(new Error('socket hang up'));
+    function Drawer() {
+      return (
+        <MediaPreviewProvider>
+          <AgentDetailDrawer
+            target={{ kind: 'skill', skill: {
+              id: 'user:weird', name: 'weird', source: 'user',
+              path: '~/.kiki/skills/weird/SKILL.md', scope: 'global', state: 'enabled',
+            } }}
+            onClose={() => undefined}
+          />
+        </MediaPreviewProvider>
+      );
+    }
+    await act(async () => { root.render(<I18nProvider><Drawer /></I18nProvider>); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    for (let attempt = 0; attempt < 30 && dialog.querySelector('[data-skill-md-retry]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    const alert = dialog.querySelector('[data-skill-md] [role="alert"]')?.textContent ?? '';
+    // A transport string is not an explanation, so it is not what is shown.
+    expect(alert).toContain('无法读取这份 SKILL.md');
+    expect(alert).not.toContain('socket hang up');
+  });
+
+  it('shows a cut preview at once, then reads the rest without being asked', async () => {
+    const prefix = '# Big skill\n\nStart of a very long file.';
+    const whole = `${prefix}\n\n## Steps\n\n1. Read the range.\n2. Drop what nobody can observe.\n`;
+    client.previewHostFile.mockResolvedValue({ text: prefix, truncated: true });
+    let releaseWhole!: (value: string) => void;
+    client.readHostFile.mockReturnValue(new Promise((done) => { releaseWhole = done; }));
+    function Drawer() {
+      return (
+        <MediaPreviewProvider>
+          <AgentDetailDrawer
+            target={{ kind: 'skill', skill: {
+              id: 'project:big', name: 'big', source: 'project',
+              path: 'C:/p/big/SKILL.md', scope: 'workspace', state: 'enabled',
+            } }}
+            onClose={() => undefined}
+          />
+        </MediaPreviewProvider>
+      );
+    }
+    await act(async () => { root.render(<I18nProvider><Drawer /></I18nProvider>); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    for (let attempt = 0; attempt < 30 && dialog.querySelector('[data-skill-md-content]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    // What arrived is already on screen, and the rest is on its way: the
+    // reader is not left staring at a spinner over a file they could read.
+    expect(dialog.querySelector('[data-skill-md-content]')?.textContent).toContain('Start of a very long file.');
+    expect(dialog.querySelector('[data-skill-md-truncated]')?.textContent).toContain('正在读取文件的剩余部分');
+    expect(client.readHostFile).toHaveBeenCalledWith('C:/p/big/SKILL.md', expect.objectContaining({ signal: expect.anything() }));
+
+    await act(async () => {
+      releaseWhole(whole);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    // The whole document replaces the prefix, and the boundary notice goes
+    // with it: there is nothing left to qualify.
+    const content = dialog.querySelector('[data-skill-md-content]')!;
+    expect(content.textContent).toContain('Read the range.');
+    expect(dialog.querySelector('[data-skill-md-truncated]')).toBeNull();
+    expect(dialog.querySelector('[data-skill-md-incomplete]')).toBeNull();
+    // Now that the file is whole, the copy control says so.
+    const copy = dialog.querySelector<HTMLButtonElement>('[data-skill-md-copy]')!;
+    expect(copy.textContent).toBe('复制 SKILL.md');
+    await act(async () => { copy.click(); });
+    await settleClipboard();
+    expect(await lastCopiedText()).toBe(whole);
+  });
+
+  it('takes an empty whole file as the file, not as a failure', async () => {
+    // A file that was emptied between the preview and the whole read has
+    // genuinely become empty. That is a successful read of an empty document,
+    // so the read ends, the stale prefix does not survive it, and the copy is
+    // the empty document rather than the bytes that used to be there.
+    client.previewHostFile.mockResolvedValue({ text: '# Big skill\n\nStart of a very long file.', truncated: true });
+    client.readHostFile.mockResolvedValue('');
+    function Drawer() {
+      return (
+        <MediaPreviewProvider>
+          <AgentDetailDrawer
+            target={{ kind: 'skill', skill: {
+              id: 'project:big', name: 'big', source: 'project',
+              path: 'C:/p/big/SKILL.md', scope: 'workspace', state: 'enabled',
+            } }}
+            onClose={() => undefined}
+          />
+        </MediaPreviewProvider>
+      );
+    }
+    // The whole read is held until the prefix has actually been on screen, so
+    // the sequence this test is about is observable rather than raced past.
+    let releaseWhole!: () => void;
+    client.readHostFile.mockReturnValue(new Promise<string>((done) => { releaseWhole = () => { done(''); }; }));
+    await act(async () => { root.render(<I18nProvider><Drawer /></I18nProvider>); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    for (let attempt = 0; attempt < 30
+      && !(dialog.querySelector('[data-skill-md-content]')?.textContent ?? '').includes('Start of a very long file.'); attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    // The prefix arrived first, so the read was under way.
+    expect(dialog.querySelector('[data-skill-md-content]')?.textContent).toContain('Start of a very long file.');
+    expect(dialog.querySelector('[data-skill-md-truncated]')).not.toBeNull();
+
+    await act(async () => { releaseWhole(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+    // Loading ended: no "reading the rest" line is left behind, and nothing is
+    // offered as a failure, because nothing failed.
+    expect(dialog.querySelector('[data-skill-md-truncated]')).toBeNull();
+    expect(dialog.querySelector('[data-skill-md-incomplete]')).toBeNull();
+    expect(dialog.querySelector('[data-skill-md-retry]')).toBeNull();
+    // The file is empty now, so the old bytes are gone rather than lingering.
+    expect(dialog.querySelector('[data-skill-md-content]')?.textContent?.trim()).toBe('');
+    // And the copy is the empty document, not the prefix that used to be there.
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('[data-skill-md-copy]')!.click(); });
+    await settleClipboard();
+    expect(await lastCopiedText()).toBe('');
+  });
+
+  it('keeps the prefix and offers a retry when the rest cannot be read', async () => {
+    const prefix = '# Big skill\n\nStart of a very long file.';
+    client.previewHostFile.mockResolvedValue({ text: prefix, truncated: true });
+    client.readHostFile.mockRejectedValueOnce(new Error('socket hang up'));
+    function Drawer() {
+      return (
+        <MediaPreviewProvider>
+          <AgentDetailDrawer
+            target={{ kind: 'skill', skill: {
+              id: 'project:big', name: 'big', source: 'project',
+              path: 'C:/p/big/SKILL.md', scope: 'workspace', state: 'enabled',
+            } }}
+            onClose={() => undefined}
+          />
+        </MediaPreviewProvider>
+      );
+    }
+    await act(async () => { root.render(<I18nProvider><Drawer /></I18nProvider>); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    for (let attempt = 0; attempt < 30 && dialog.querySelector('[data-skill-md-incomplete]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    // A failed follow-up never takes away what was already read.
+    expect(dialog.querySelector('[data-skill-md-content]')?.textContent).toContain('Start of a very long file.');
+    const notice = dialog.querySelector('[data-skill-md-incomplete]')!;
+    expect(notice.textContent).toContain('没能读到');
+    expect(notice.textContent).not.toContain('socket hang up');
+    // And the copy still says it is copying what is shown.
+    expect(dialog.querySelector('[data-skill-md-copy]')?.textContent).toBe('复制显示的内容');
+
+    // Retrying reads again, and this time the file arrives whole.
+    const whole = `${prefix}\n\n## Steps\n\n1. Read the range.\n`;
+    client.readHostFile.mockResolvedValue(whole);
+    await act(async () => {
+      dialog.querySelector<HTMLButtonElement>('[data-skill-md-complete-retry]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(dialog.querySelector('[data-skill-md-content]')?.textContent).toContain('Read the range.');
+    expect(dialog.querySelector('[data-skill-md-incomplete]')).toBeNull();
+    const copy = dialog.querySelector<HTMLButtonElement>('[data-skill-md-copy]')!;
+    await act(async () => { copy.click(); });
+    await settleClipboard();
+    expect(await lastCopiedText()).toBe(whole);
+  });
+
+  it('abandons the rest-read when the reader moves to another skill', async () => {
+    // Each skill gets its own preview, so what is on screen after the switch
+    // can only be the new one, and each read gets its own answer.
+    client.previewHostFile.mockImplementation(async (path: string) => ({
+      text: path.includes('slow') ? '# Slow skill\n\nSlow prefix.' : '# Fast skill\n\nFast prefix.',
+      truncated: true,
+    }));
+    const pending: ((value: string) => void)[] = [];
+    client.readHostFile.mockImplementation(() => new Promise<string>((done) => { pending.push(done); }));
+    function Drawer({ name }: { name: string }) {
+      return (
+        <MediaPreviewProvider>
+          <AgentDetailDrawer
+            target={{ kind: 'skill', skill: {
+              id: `project:${name}`, name, source: 'project',
+              path: `C:/p/${name}/SKILL.md`, scope: 'workspace', state: 'enabled',
+            } }}
+            onClose={() => undefined}
+          />
+        </MediaPreviewProvider>
+      );
+    }
+    // The first sheet settles on its preview and starts its rest-read.
+    await act(async () => { root.render(<I18nProvider><Drawer name="slow" /></I18nProvider>); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    for (let attempt = 0; attempt < 30 && pending.length === 0; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    expect(pending).toHaveLength(1);
+
+    // Moving on starts the new sheet's own read and abandons the old one.
+    await act(async () => { root.render(<I18nProvider><Drawer name="fast" /></I18nProvider>); });
+    for (let attempt = 0; attempt < 30 && pending.length < 2; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    expect(pending).toHaveLength(2);
+    const signals = client.readHostFile.mock.calls.map(
+      ([, options]) => (options as { signal?: AbortSignal } | undefined)?.signal);
+    // Leaving a sheet aborts the read still in flight for it, rather than
+    // leaving it to run against a sheet nobody is looking at.
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[1]?.aborted).toBe(false);
+
+    // The abandoned read lands last and must change nothing on the new sheet.
+    await act(async () => {
+      pending[0]!('# Slow skill\n\nStale tail.');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    const shown = dialog.querySelector('[data-skill-md-content]')?.textContent ?? '';
+    expect(shown).toContain('Fast prefix.');
+    expect(shown).not.toContain('Slow prefix.');
+    expect(shown).not.toContain('Stale tail');
+  });
+
+  it('copies the whole file when nothing was cut', async () => {
+    const whole = '# Code Review\n\nRun review checks.';
+    client.previewHostFile.mockResolvedValue({ text: whole, truncated: false });
+    function Drawer() {
+      return (
+        <MediaPreviewProvider>
+          <AgentDetailDrawer
+            target={{ kind: 'skill', skill: {
+              id: 'project:whole', name: 'whole', source: 'project',
+              path: 'C:/p/whole/SKILL.md', scope: 'workspace', state: 'enabled',
+            } }}
+            onClose={() => undefined}
+          />
+        </MediaPreviewProvider>
+      );
+    }
+    await act(async () => { root.render(<I18nProvider><Drawer /></I18nProvider>); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    for (let attempt = 0; attempt < 30 && dialog.querySelector('[data-skill-md-copy]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    const copy = dialog.querySelector<HTMLButtonElement>('[data-skill-md-copy]')!;
+    expect(copy.textContent).toBe('复制 SKILL.md');
+    await act(async () => { copy.click(); });
+    await settleClipboard();
+    expect(await lastCopiedText()).toBe(whole);
+  });
+
+  it('drops a read that finished after the reader moved on to another skill', async () => {
+    // Two skills, the first one slow. The second sheet must never show the
+    // first one's text, and a late answer for the first must not paint over it.
+    let resolveFirst!: (value: { text: string; truncated: boolean }) => void;
+    client.previewHostFile
+      .mockReturnValueOnce(new Promise((done) => { resolveFirst = done; }))
+      .mockResolvedValue({ text: '# Second skill\n\nSecond body.', truncated: false });
+    function Drawer({ name }: { name: string }) {
+      return (
+        <MediaPreviewProvider>
+          <AgentDetailDrawer
+            target={{ kind: 'skill', skill: {
+              id: `project:${name}`, name, source: 'project',
+              path: `C:/p/${name}/SKILL.md`, scope: 'workspace', state: 'enabled',
+            } }}
+            onClose={() => undefined}
+          />
+        </MediaPreviewProvider>
+      );
+    }
+    await act(async () => { root.render(<I18nProvider><Drawer name="slow" /></I18nProvider>); });
+    await act(async () => { root.render(<I18nProvider><Drawer name="fast" /></I18nProvider>); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    for (let attempt = 0; attempt < 30 && dialog.querySelector('[data-skill-md-content]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    expect(dialog.querySelector('[data-skill-md-content]')?.textContent).toContain('Second body');
+    // The abandoned read arrives last and must change nothing.
+    await act(async () => { resolveFirst({ text: '# Slow skill\n\nStale body.', truncated: false }); await new Promise((r) => setTimeout(r, 10)); });
+    expect(dialog.querySelector('[data-skill-md-content]')?.textContent).toContain('Second body');
+    expect(dialog.querySelector('[data-skill-md-content]')?.textContent).not.toContain('Stale body');
+    // The two reads asked for their own files.
+    expect(vi.mocked(client.previewHostFile).mock.calls.map(([path]) => path))
+      .toEqual(['C:/p/slow/SKILL.md', 'C:/p/fast/SKILL.md']);
   });
 });
 

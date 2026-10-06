@@ -8,6 +8,7 @@ import {
 } from '@kiki/pi-tui';
 
 import type { ThinkingEffort } from '@kiki/node-sdk';
+import { sortThinkingEffortsForDisplay } from '@kiki/session-core/settings/thinkingEffort';
 
 import { currentTheme } from '#/tui/theme';
 
@@ -44,8 +45,8 @@ export class EffortSelectorComponent extends Container implements Focusable {
 
   constructor(opts: EffortSelectorOptions) {
     super();
-    this.opts = opts;
-    const idx = opts.efforts.indexOf(opts.currentValue);
+    this.opts = { ...opts, efforts: sortThinkingEffortsForDisplay(opts.efforts) };
+    const idx = this.opts.efforts.indexOf(opts.currentValue);
     this.activeIndex = Math.max(idx, 0);
   }
 

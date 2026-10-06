@@ -420,11 +420,16 @@ export function registerSessionsRoutes(
           },
           mainAgentBinding:
             body.persona === undefined
+              && body.agent_config?.execution === undefined
               && body.agent_config?.model === undefined
               && body.agent_config?.profile === undefined
               && body.agent_config?.thinking === undefined
               ? undefined
               : {
+                  execution: body.agent_config?.execution === undefined ? undefined : { ...body.agent_config.execution, overrides: {
+                    ...body.agent_config.execution.overrides,
+                    permission_mode: body.agent_config.permission_mode ?? body.agent_config.execution.overrides?.permission_mode,
+                  } },
                   persona: body.persona,
                   profile: body.agent_config?.profile
                     ?? (body.persona === undefined ? DEFAULT_AGENT_PROFILE_NAME : undefined),
@@ -702,19 +707,7 @@ export function registerSessionsRoutes(
         );
         return;
       }
-      let facts = resolveSessionFacts(core, session_id, summary.usage);
-      if (!facts.live) {
-        const profile = await readPersistedAgentProfileSnapshot(core, summary.workspaceId, session_id, MAIN_AGENT_ID, undefined);
-        const persona = profile?.persona?.definition;
-        if (profile !== undefined) {
-          facts = { ...facts, executorId: profile.executorId ?? 'native', agentConfig: {
-            model: profile.modelAlias ?? '', profile: profile.profileName,
-            persona: persona === undefined ? undefined : {
-              id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
-            },
-          } };
-        }
-      }
+      const facts = await resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage);
       reply.send(
         okEnvelope(
           toWireSession(
@@ -788,7 +781,7 @@ export function registerSessionsRoutes(
           toWireSession(
             summary,
             cwd,
-            resolveSessionFacts(core, session_id, summary.usage),
+            await resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage),
           ),
           req.id,
         ),
@@ -1060,11 +1053,11 @@ export function registerSessionsRoutes(
         if (parsed.action === 'compact') {
           const body = compactSessionRequestSchema.parse(req.body);
           await withMainAgent(core, parsed.id, async (agent) => {
-            agent.accessor
-              .get(IAgentFullCompactionService)
-              .begin({ source: 'manual', instruction: normalizeOptional(body.instruction), strategy: body.strategy });
-            requestLog(req)?.info({ session_id: parsed.id, action: 'compact' }, 'session action completed');
-            reply.send(okEnvelope({}, req.id));
+            const compaction = agent.accessor.get(IAgentFullCompactionService);
+            const accepted = compaction.begin({ source: 'manual', instruction: normalizeOptional(body.instruction), strategy: body.strategy });
+            const status = compaction.queuedManualCompaction ? 'queued' : 'running';
+            requestLog(req)?.info({ session_id: parsed.id, action: 'compact', source: 'manual', accepted, status }, 'session compaction requested');
+            reply.send(okEnvelope({ accepted, status, source: 'manual' }, req.id));
           });
           return;
         }
@@ -1478,6 +1471,7 @@ export interface SessionWireFields {
   readonly lastPrompt?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
+  readonly activityUpdatedAt?: number;
   readonly archived: boolean;
   readonly archivedAt?: number;
   readonly worktree?: { readonly worktreeId: string; readonly branch: string; readonly sourceRoot: string; readonly baseRef: string };
@@ -1514,7 +1508,7 @@ export function toWireSession(
     delivery: facts.delivery ?? fields.delivery ?? 'reply',
     title: fields.title ?? '',
     created_at: new Date(fields.createdAt).toISOString(),
-    updated_at: new Date(fields.updatedAt).toISOString(),
+    updated_at: new Date(Math.max(fields.updatedAt, fields.activityUpdatedAt ?? 0)).toISOString(),
     archived_at:
       fields.archivedAt === undefined ? undefined : new Date(fields.archivedAt).toISOString(),
     busy: facts.busy,
@@ -1559,6 +1553,25 @@ export interface SessionFacts {
   /** False when no live handle exists (cold session); live warm sessions
    *  always report their own outcome, never the persisted fallback. */
   readonly live?: boolean;
+}
+
+async function resolveSessionBindingFacts(
+  core: Scope,
+  sessionId: string,
+  workspaceId: string,
+  persistedUsage?: SessionUsageSummary,
+): Promise<SessionFacts> {
+  const facts = resolveSessionFacts(core, sessionId, persistedUsage);
+  if (facts.live) return facts;
+  const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, undefined);
+  if (profile === undefined) return facts;
+  const persona = profile.persona?.definition;
+  return { ...facts, executorId: profile.executorId ?? 'native', agentConfig: {
+    execution: profile.execution, model: profile.modelAlias ?? '', profile: profile.profileName,
+    persona: persona === undefined ? undefined : {
+      id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
+    },
+  } };
 }
 
 /**
@@ -1611,6 +1624,7 @@ export function resolveSessionFacts(
     agentConfig: profile === undefined
       ? undefined
       : {
+          execution: profile.execution,
           model: profile.modelAlias ?? '',
           profile: profile.profileName,
           persona: persona === undefined

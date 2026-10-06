@@ -189,6 +189,16 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 
 For automatic allocation, send `{}` to `POST /api/sessions`. The server creates a distinct directory under `$KIKI_HOME/workspaces/`, registers it, and returns its `workspace_id` and `metadata.cwd` in the session response. Supplying an existing `workspace_id` or `metadata.cwd` keeps the existing targeting behavior; an unknown `workspace_id` is still rejected.
 
+Set `agent_config.execution` at creation to select a harness independently of a profile:
+
+```json
+{ "agent_config": { "execution": { "executor": "claude-acp" } } }
+```
+
+The selection is `{ executor, profile?, overrides? }`. Omit `profile` for direct external execution; an explicitly selected profile must use the same executor. `overrides` accepts `model`, `thinking`, `permission_mode`, `kiki_context` and `allow_kiki_subagents`. With the same executor/profile, omitted overrides keep the session's saved overrides; `null` removes an override and restores the [lower-priority defaults](../configuration/config-files.md#external-harness-defaults), while `[]` and `false` explicitly disable their respective capabilities. Legacy top-level model/profile/thinking requests remain supported.
+
+Session reads return the committed `agent_config.execution` binding as `{ version: 1, selection, effective, sources, generation }`. Sources are `session`, `profile`, `harness-settings` or `harness-default`; an absent effective model or effort means Kiki has not selected one, not that the harness has none. A reported vendor model is an observation, not a new override. Idle updates can also use `POST /api/sessions/{session_id}/profile` with `agent_config.execution`; while running, submit the selection with the next prompt instead.
+
 #### `POST /api/sessions/{session_id}:compact`
 
 The body is optional. It accepts `instruction` (what to preserve) and `strategy`, which is `summarize` or `relay` — the two renewal strategies the server implements. A session that was idle when the request arrives starts compressing immediately; one with a model call or tool result still landing in its history is queued, and Kiki processes it at the next step boundary once that work has finished, without waiting for the whole turn.
@@ -224,7 +234,9 @@ Both transcript-page and catch-up requests must send `transcript_coverage_versio
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | Abort one queued, launching, running, or steered prompt |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | Send one queued prompt now |
 
-Sending now adds the selected prompts to the active turn, or starts them as new turns in queue order when no turn is active. After a restart, it bypasses the recovery hold only for the selected prompts; other restored prompts still wait for confirmation. Aborting a steered prompt cancels the turn it joined, not a later turn. Aborting an unknown or already settled prompt returns `40402`.
+A prompt can carry the same [execution selection](#sessions) in its top-level `execution` field. It is captured with that prompt and applied when the prompt launches, not when it enters the queue. The current turn keeps its committed binding. A changed execution generation starts a fresh remote session without resuming or forking the old one or sending a handoff of the old Kiki conversation; visible Kiki history is retained. Cold recovery reuses the committed generation and its own saved remote reference.
+
+Sending now adds ordinary selected prompts to the active turn, or starts them as new turns in queue order when no turn is active. A prompt carrying an execution selection must launch as its own turn, rather than steer a new binding into the current turn. After a restart, it bypasses the recovery hold only for the selected prompts; other restored prompts still wait for confirmation. Aborting a steered prompt cancels the turn it joined, not a later turn. Aborting an unknown or already settled prompt returns `40402`.
 
 ### Approvals and questions
 
@@ -348,9 +360,11 @@ PTY terminal endpoints; mounted only on loopback binds.
 | `GET /api/memory/{scope}/journal` | Change history, optionally narrowed to one `id` |
 | `POST /api/memory/{scope}/undo` | Undo one operation by `operation_id` |
 
-`GET /api/memory/{scope}` without pagination returns the whole namespace as `{ items, coverage }` and keeps working for existing clients. Its default statuses differ by shape: with no `query` it returns `active` and `pending`, with a `query` it searches `active` only, and `include_inactive=true` widens either to all four. `coverage` reports the statuses that were actually inspected.
+`GET /api/memory/{scope}` returns bounded pages as `{ items, mode, next_cursor, coverage }`, including when no pagination parameters are supplied. `mode` defaults to `list` with no `query` and to `search` with one; `page_size` is 1–20. Without explicit `statuses`, list reads `active` and `pending`, search reads `active`, and `include_inactive=true` widens either to all four. `statuses` is a comma-separated list of `active`, `pending`, `superseded` and `archived`. Existing clients must consume `next_cursor` rather than treating the first page as the whole namespace.
 
-Passing `mode`, `page_size`, `statuses` or `cursor` switches to paged results and adds `next_cursor`. Here `mode` defaults to `list` with no `query` and to `search` with one, `page_size` is 1–20, and `statuses` is a comma-separated list of `active`, `pending`, `superseded` and `archived` defaulting to `active`. Keep the same `{scope}` path and the same `workspace_id` / `persona_id` that identify the namespace, and send `cursor` without `mode`, `query`, `type`, `page_size`, `statuses` or `include_inactive` — the cursor already carries the scopes, filters and page size it was issued for, and adding any of them back returns the `40944` code. A cursor also stops working when the underlying entries or the namespace change; start the query over and reconcile by id rather than assuming the second run covers what the first did.
+Continue until `next_cursor` is null and `coverage.exhausted` is true. An empty preparation page with a cursor is not an empty namespace. `coverage.complete` and `warnings` report unreadable, invalid or oversized records; those records do not hide the other readable entries. Scan budgets are per call, not a permanent inventory limit; search ranking and list title ordering apply within each bounded source chunk.
+
+Keep the same `{scope}` path and owning `workspace_id` / `persona_id`, and send `cursor` alone, without the original filters or page size. Mixing them returns `40944`. A cursor is invalidated by source changes or a store restart; restart and reconcile by scope plus ID. `GET /api/memory/{scope}/inbox` returns the same page shape for `pending` only and accepts `page_size` or a pending-list `cursor`; cursors for other statuses or search mode are rejected.
 
 `PUT /api/memory/{scope}/{id}` takes the same action vocabulary as [`MemoryWrite`](../reference/tools.md#writing-an-entry): `action` (`create`, `update`, `supersede`, `archive`), `type`, `title`, `body`, `reason`, `expected_revision` and `pinned`. Writes through REST are recorded as coming from you, whatever `source` the agent would have used. The response is `{ entry, operationId, outcome, warnings? }`, where `outcome` is `applied`, `pending` or `unchanged`; `operationId` is `null` for `unchanged` and for a proposal identical to one already waiting, and those two cases have nothing to undo. For `update`, `supersede` and `archive`, `expected_revision` is required — a `PUT` built on a stale revision is refused instead of overwriting a newer one.
 

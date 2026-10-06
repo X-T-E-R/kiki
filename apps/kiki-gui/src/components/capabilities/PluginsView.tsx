@@ -13,20 +13,18 @@
 
 import { useMemo, useState } from 'react';
 
-import { errorText } from '@kiki/session-core/i18n';
+import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import type { PluginMarketplaceEntry, PluginSummary } from '../../lib/client';
 import { useImportHistoryEnabled } from '../../lib/importHistory';
-import { pluginUpdate, shelfOverflow, shelveCatalog, type CatalogShelfId, type PluginUpdateView } from '../../lib/pluginCatalog';
+import { localizeEntry, pluginUpdate, shelveCatalog, type CatalogShelfId, type PluginUpdateView } from '../../lib/pluginCatalog';
 import { useConnection } from '../../state/connection';
 import { InlineError } from '../controls';
 import { Icon, Spinner } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { AddSourceDialog, CatalogSourceField } from './AddSourceDialog';
-import { CapabilityIcon } from './CapabilityIcon';
 import { ImportHistoryView } from './ImportHistoryView';
-import { MediaKindGlyph } from '../media/MediaKindGlyph';
 import { MediaSourcesView } from '../media/MediaSourcesView';
 import { InstalledList } from './InstalledList';
 import { InstallFlow, type InstallRequest } from './InstallFlow';
@@ -35,17 +33,15 @@ import { PluginDetail } from './PluginDetail';
 import { CapabilitySection, Disclosure, EmptyNote, QUIET_BUTTON, RowGrid, SearchField, Segmented, Tag } from './primitives';
 import { useInstalledPlugins, usePluginGithubUpdates, usePluginMarketplace, usePluginRecommendations, type PluginSubject } from './usePlugins';
 
-/** Two rows of two cards before a category folds into "See N more". */
-const SHELF_ROWS = 4;
+
 
 export type PluginsRoute =
   | { readonly view: 'market' }
   | { readonly view: 'installed' }
   | { readonly view: 'detail'; readonly id: string }
-  | { readonly view: 'shelf'; readonly shelf: CatalogShelfId }
-  /** D27 import history: the session-source importers, and the archives they wrote. */
+  /** History import: the session-source importers, and the archives they wrote. */
   | { readonly view: 'import'; readonly sourceId?: string; readonly sourcePluginId?: string }
-  /** D12: the media surface — providers, defaults, and this session's jobs. */
+  /** The media surface, reached through the media plugin's own entry. */
   | { readonly view: 'media' };
 
 export function PluginsView({
@@ -67,10 +63,10 @@ export function PluginsView({
   readonly sessionId?: string;
 }) {
   const { t, tp, locale, time } = useI18n();
-  const { client } = useConnection();
+  const { client, scopeId } = useConnection();
   // The entry exists only where the server offers the import routes, so a build
   // without them shows no dead control.
-  const importAvailable = useImportHistoryEnabled(client).enabled === true;
+  const importAvailable = useImportHistoryEnabled(client, scopeId).enabled === true;
   const installedQuery = useInstalledPlugins();
   const marketQuery = usePluginMarketplace();
   const recommendQuery = usePluginRecommendations(workspaceRoot);
@@ -98,13 +94,16 @@ export function PluginsView({
     entry: entries.find((entry) => entry.id === id),
   });
   const startInstall = (entry: PluginMarketplaceEntry) => {
-    setInstall({ source: entry.source, displayName: entry.displayName, icon: entry.icon, entry });
+    // The catalog's own digest travels with the request: a published archive
+    // is only installable when the installer can verify it.
+    setInstall({ source: entry.source, sha256: entry.sha256, displayName: entry.displayName, icon: entry.icon, entry });
   };
   /** Every update goes through the same preview sheet; nothing installs here. */
   const startUpdate = (plugin: UpdateTarget, update: PluginUpdateView) => {
     const entry = entries.find((candidate) => candidate.id === plugin.id);
     setInstall({
       source: update.source,
+      sha256: update.sha256,
       displayName: plugin.displayName,
       icon: plugin.icon ?? entry?.icon,
       entry,
@@ -165,6 +164,7 @@ export function PluginsView({
           onOpenImport={importAvailable
             ? (source) => { onRoute({ view: 'import', sourceId: source.sourceId, sourcePluginId: source.pluginId }); }
             : undefined}
+          onOpenMedia={() => { onRoute({ view: 'media' }); }}
         />
         {sheets}
       </>
@@ -175,7 +175,6 @@ export function PluginsView({
   const filtering = query.trim() !== '';
   const relevant = new Set((recommendQuery.data?.entries ?? []).map((entry) => entry.id));
   const shelves = shelveCatalog(entries, query, relevant);
-  const visibleShelves = route.view === 'shelf' ? shelves.filter((shelf) => shelf.id === route.shelf) : shelves;
   const attention = installed.filter((plugin) => plugin.state === 'error' || plugin.hasErrors || updates.has(plugin.id)).length;
   const updateCheck = hasGithub ? (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 text-[12px] leading-[18px]" data-plugins-update-check={githubQuery.isFetching ? 'checking' : githubQuery.isError ? 'failed' : 'checked'}>
@@ -217,32 +216,13 @@ export function PluginsView({
             />
           ) : null}
         </div>
-        {/* Import history is a plugin capability, so it lives on the Plugins tab
-            next to install/manage rather than as a second global destination. */}
-        {/* Media is a plugin capability too: the providers, their keys and
-            the per-modality defaults are all reached through installed plugin
-            packages, so it belongs on this tab rather than as a second
-            destination. */}
-        <button
-          type="button"
-          className={`${QUIET_BUTTON} shrink-0 self-start min-[720px]:self-auto`}
-          data-plugins-open-media
-          onClick={() => { onRoute({ view: 'media' }); }}
-        >
-          <MediaKindGlyph kind="image" className="h-3.5 w-3.5 text-ink-faint" />
-          {t('cap.media.title')}
-        </button>
-        {importAvailable ? (
-          <button
-            type="button"
-            className={`${QUIET_BUTTON} shrink-0 self-start min-[720px]:self-auto`}
-            data-plugins-open-import
-            onClick={() => { onRoute({ view: 'import' }); }}
-          >
-            <Icon name="read" size={14} className="text-ink-faint" />
-            {t('cap.import.entry')}
-          </button>
-        ) : null}
+        {/* No import button here on purpose. Bringing an old conversation in
+            is a way of working with sessions and it ships with Kiki, so it is
+            offered from Settings → Sessions (and beside the new-session
+            starters) rather than as a control on the plugin market, where it
+            would read as a plugin to install. `?view=import` still resolves, so
+            an old link and a source plugin's "import from here" both land on
+            the same built-in surface. */}
       </div>
 
       {tab === 'installed' ? (
@@ -259,12 +239,7 @@ export function PluginsView({
         />
       ) : (
         <>
-          {route.view === 'shelf' ? (
-            <button type="button" className={`${QUIET_BUTTON} -ml-2`} onClick={() => { onRoute({ view: 'market' }); }} data-plugins-shelf-back>
-              <Icon name="arrowLeft" size={14} />
-              {t('cap.plugins.allShelves')}
-            </button>
-          ) : attention > 0 && !filtering ? (
+          {attention > 0 && !filtering ? (
             <button type="button" className={`${QUIET_BUTTON} -ml-2 text-selected-ink hover:text-selected-ink`} onClick={() => { onRoute({ view: 'installed' }); }} data-plugins-attention>
               {tp('cap.plugins.attention', attention)}
               <Icon name="arrowRight" size={14} />
@@ -281,19 +256,17 @@ export function PluginsView({
             <EmptyNote title={t('cap.plugins.noCatalog')} body={t('cap.plugins.noCatalogBody')} />
           ) : (
             <div className="space-y-8">
-              {visibleShelves.map((shelf) => (
+              {shelves.map((shelf) => (
                 <CatalogShelfSection
-                  key={shelf.id}
+                  key={shelf.group ?? shelf.id}
                   id={shelf.id}
+                  group={shelf.group}
                   entries={shelf.entries}
-                  expanded={route.view === 'shelf' || filtering}
                   installed={installed}
-                  relevant={relevant}
                   updates={updates}
                   onOpen={open}
                   onInstall={startInstall}
                   onUpdate={startUpdate}
-                  onMore={() => { onRoute({ view: 'shelf', shelf: shelf.id }); }}
                 />
               ))}
               {shelves.length === 0 ? (
@@ -327,80 +300,92 @@ export function PluginsView({
 type UpdateTarget = Pick<PluginSummary, 'id' | 'displayName' | 'icon' | 'version' | 'enabled'>;
 
 const SHELF_TITLE = {
-  featured: 'cap.shelf.featured',
-  productivity: 'cap.shelf.productivity',
-  coding: 'cap.shelf.coding',
-  web: 'cap.shelf.web',
-  data: 'cap.shelf.data',
+  recommended: 'cap.shelf.recommended',
+  official: 'cap.shelf.official',
+  community: 'cap.shelf.community',
   more: 'cap.shelf.more',
 } as const;
 
+/**
+ * A catalog-declared sub-group is a machine key, so it is never printed raw.
+ * A group the UI has a title for uses that title; any other group is titled by
+ * its own entries, so a new group in the catalog still reads as a heading
+ * rather than as a leaked field value.
+ */
+const GROUP_TITLE: Readonly<Record<string, I18nKey>> = {
+  media: 'cap.shelf.media',
+};
+
+function groupHeading(group: string, entries: readonly PluginMarketplaceEntry[], t: (key: I18nKey) => string): string {
+  const known = GROUP_TITLE[group];
+  if (known !== undefined) return t(known);
+  const lead = entries.find((entry) => entry.group === group);
+  return lead === undefined ? group : lead.displayName;
+}
+
+/**
+ * One catalog block. Every entry in a shelf is listed: the catalog is short
+ * enough to read, and hiding an official package behind a "see more" is how a
+ * user concludes it does not exist. A catalog-declared sub-group gets its own
+ * block so a package family reads together.
+ */
 function CatalogShelfSection({
   id,
+  group,
   entries,
-  expanded,
   installed,
-  relevant,
   updates,
   onOpen,
   onInstall,
   onUpdate,
-  onMore,
 }: {
   readonly id: CatalogShelfId;
+  readonly group?: string;
   readonly entries: readonly PluginMarketplaceEntry[];
-  /** A single category page or a search: every entry, no overflow link. */
-  readonly expanded: boolean;
   readonly installed: readonly PluginSummary[];
-  readonly relevant: ReadonlySet<string>;
   readonly updates: ReadonlyMap<string, PluginUpdateView>;
   readonly onOpen: (id: string) => void;
   readonly onInstall: (entry: PluginMarketplaceEntry) => void;
   readonly onUpdate: (plugin: UpdateTarget, update: PluginUpdateView) => void;
-  readonly onMore: () => void;
 }) {
-  const { t } = useI18n();
-  const { shown, hidden } = expanded ? { shown: entries, hidden: [] as readonly PluginMarketplaceEntry[] } : shelfOverflow(entries, SHELF_ROWS);
+  const { t, locale } = useI18n();
   return (
-    <CapabilitySection id={`plugins-shelf-${id}`} title={t(SHELF_TITLE[id])} count={expanded ? entries.length : undefined}>
+    <CapabilitySection
+      id={group === undefined ? `plugins-shelf-${id}` : `plugins-shelf-${id}-${group}`}
+      title={group === undefined ? t(SHELF_TITLE[id]) : groupHeading(group, entries, t)}
+      count={entries.length}
+    >
       <RowGrid>
-        {shown.map((entry) => {
+        {entries.map((entry) => {
           const plugin = installed.find((item) => item.id === entry.id);
           // The catalog can report an install the list has not caught up with yet.
           const update = updates.get(entry.id)
-            ?? (entry.updateAvailable === true && entry.installed !== undefined ? { via: 'catalog' as const, source: entry.source, version: entry.version } : undefined);
+            ?? (entry.updateAvailable === true && entry.installed !== undefined
+              ? { via: 'catalog' as const, source: entry.source, version: entry.version, sha256: entry.sha256 }
+              : undefined);
+          const text = localizeEntry(entry, locale);
           const target: UpdateTarget | undefined = plugin
-            ?? (entry.installed !== undefined ? { id: entry.id, displayName: entry.displayName, icon: entry.icon, version: entry.installed.version, enabled: entry.installed.enabled } : undefined);
+            ?? (entry.installed !== undefined ? { id: entry.id, displayName: text.displayName, icon: entry.icon, version: entry.installed.version, enabled: entry.installed.enabled } : undefined);
           return (
-          <PluginCard
-            key={entry.id}
-            id={entry.id}
-            name={entry.displayName}
-            icon={entry.icon}
-            line={entry.description ?? ''}
-            entry={entry}
-            installed={plugin}
-            hasUpdate={update !== undefined}
-            badge={relevant.has(entry.id) && id === 'featured' && entry.installed === undefined
-              ? <Tag>{t('cap.plugins.relevant')}</Tag>
-              : entry.tier === 'third-party' ? <Tag tone="warn">{t('cap.tier.thirdParty')}</Tag> : undefined}
-            onOpen={() => { onOpen(entry.id); }}
-            onInstall={() => { onInstall(entry); }}
-            onUpdate={target !== undefined && update !== undefined ? () => { onUpdate(target, update); } : undefined}
-          />
+            <PluginCard
+              key={entry.id}
+              id={entry.id}
+              name={text.displayName}
+              icon={entry.icon}
+              line={text.description ?? ''}
+              entry={entry}
+              installed={plugin}
+              hasUpdate={update !== undefined}
+              badge={id === 'recommended' && entry.installed === undefined
+                ? <Tag>{t('cap.plugins.relevant')}</Tag>
+                : entry.tier === 'third-party' ? <Tag tone="warn">{t('cap.tier.thirdParty')}</Tag> : undefined}
+              onOpen={() => { onOpen(entry.id); }}
+              onInstall={entry.installable === false ? undefined : () => { onInstall(entry); }}
+              onUpdate={target !== undefined && update !== undefined ? () => { onUpdate(target, update); } : undefined}
+            />
           );
         })}
       </RowGrid>
-      {hidden.length > 0 ? (
-        <button type="button" className={`${QUIET_BUTTON} mt-2 -ml-0.5`} data-plugins-shelf-more={id} onClick={onMore}>
-          <span className="flex -space-x-1.5" aria-hidden>
-            {hidden.slice(0, 3).map((entry) => (
-              <span key={entry.id} className="rounded-[7px] ring-2 ring-paper"><CapabilityIcon icon={entry.icon} size="sm" /></span>
-            ))}
-          </span>
-          {t('cap.plugins.seeMore', { count: hidden.length })}
-        </button>
-      ) : null}
     </CapabilitySection>
   );
 }

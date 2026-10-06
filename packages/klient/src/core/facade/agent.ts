@@ -36,7 +36,7 @@ import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/
 import type { McpServerConfig } from '../../contract/mcp.js';
 import type { AgentTaskInfo } from '../../contract/agent/schemas.js';
 import type { ModelSwitchMode } from '../../contract/agent/modelSwitch.js';
-import type { ScopeRef } from '../channel.js';
+import type { ScopeRef, CallOptions } from '../channel.js';
 import type { ScopedCaller } from './session.js';
 
 export type PromptLaunchResult = Awaited<ReturnType<IAgentPromptService['submit']>>;
@@ -65,7 +65,7 @@ export interface AgentFacade {
   readonly media: AgentMediaFacade;
   switchModel(input: Parameters<IAgentPromptService['switchModel']>[0]): ReturnType<IAgentPromptService['switchModel']>;
   getModelSwitch(operationId: string): Promise<ReturnType<IAgentPromptService['getModelSwitch']>>;
-  listModelSwitches(): Promise<ReturnType<IAgentPromptService['listModelSwitches']>>;
+  listModelSwitches(options?: CallOptions): Promise<ReturnType<IAgentPromptService['listModelSwitches']>>;
   updateModelSwitch(input: Parameters<IAgentPromptService['switchModel']>[0], expectedRevision?: number): ReturnType<IAgentPromptService['updateModelSwitch']>;
   cancelModelSwitch(operationId: string): ReturnType<IAgentPromptService['cancelModelSwitch']>;
   recoverModelSwitch(operationId: string, action: 'retry' | 'keep_original', mode?: ModelSwitchMode): ReturnType<IAgentPromptService['recoverModelSwitch']>;
@@ -190,7 +190,7 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
     media: createAgentMedia((service, method, args, options) => call(scope, service, method, args, options)),
     switchModel: (input) => call(scope, 'agentPromptService', 'switchModel', [input]) as ReturnType<AgentFacade['switchModel']>,
     getModelSwitch: (id) => call(scope, 'agentPromptService', 'getModelSwitch', [id]) as ReturnType<AgentFacade['getModelSwitch']>,
-    listModelSwitches: () => call(scope, 'agentPromptService', 'listModelSwitches', []) as ReturnType<AgentFacade['listModelSwitches']>,
+    listModelSwitches: (options) => call(scope, 'agentPromptService', 'listModelSwitches', [], options) as ReturnType<AgentFacade['listModelSwitches']>,
     updateModelSwitch: (input, revision) => call(scope, 'agentPromptService', 'updateModelSwitch', revision === undefined ? [input] : [input, revision]) as ReturnType<AgentFacade['updateModelSwitch']>,
     cancelModelSwitch: (id) => call(scope, 'agentPromptService', 'cancelModelSwitch', [id]) as ReturnType<AgentFacade['cancelModelSwitch']>,
     recoverModelSwitch: (id, action, mode) => call(scope, 'agentPromptService', 'recoverModelSwitch', mode === undefined ? [id, action] : [id, action, mode]) as ReturnType<AgentFacade['recoverModelSwitch']>,

@@ -1,3 +1,18 @@
+/**
+ * The reading face of one entry, and the version walk beside it.
+ *
+ * Three facts about a memory are separate things, and this view keeps them
+ * apart instead of merging them into one "source" line: what the content is
+ * based on (`basis`), who last wrote it (`source`, the writer's session and
+ * turn), and when it must be checked again (`validity`). A tool call records
+ * the writer, never the original human instruction, so the two never stand in
+ * for each other. An entry with no recorded basis says so; none is invented.
+ *
+ * The journal panel shows the real before and after content, with the
+ * metadata that rode each version, so a change can be read rather than
+ * inferred from a revision number.
+ */
+
 import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
@@ -10,6 +25,12 @@ import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from './Dialog';
 import { Icon } from './icons';
 import { memoryTargetKey } from './persona/PersonaMemoryScope';
 import { SECONDARY_BUTTON } from './ui';
+import {
+  memoryApplicability,
+  parseMemoryEntry,
+  type MemoryEntryView,
+  type MemoryValidity,
+} from './memory/memoryReceipt';
 
 /** Store-written snapshots have JSON frontmatter. Keep hand-edited formats intact as raw text. */
 export function memorySnapshot(raw: string | null, revision: string | null): MemoryEntry | undefined {
@@ -35,6 +56,11 @@ export function memorySnapshot(raw: string | null, revision: string | null): Mem
       // entry that is itself the fact; present on a review candidate, whose
       // own id and revision are what a decision is made about.
       pending_action: meta.pending_action === 'update' || meta.pending_action === 'archive' ? meta.pending_action : undefined,
+      // A before-image written after the metadata existed carries it; an older
+      // one simply has none, and reads as a version with no recorded basis.
+      basis: meta.basis as MemoryEntry['basis'],
+      validity: meta.validity as MemoryEntry['validity'],
+      covered_by: meta.covered_by as MemoryEntry['covered_by'],
     };
   } catch { return undefined; }
 }
@@ -67,17 +93,111 @@ export function TypeTag({ type }: { readonly type: MemoryEntry['type'] }) {
 const dateText = (locale: string, value: string) => Number.isNaN(Date.parse(value)) ? value : new Date(value).toLocaleString(locale);
 
 /**
+ * Why this content is recorded, separate from who last wrote it. An absent
+ * basis is a gap in the record, not a judgment about the content, and it is
+ * worded that way.
+ */
+export function BasisLine({ entry, className = '' }: { readonly entry: MemoryEntryView; readonly className?: string }) {
+  const { t } = useI18n();
+  const basis = entry.basis;
+  return (
+    <div data-memory-basis={basis?.kind ?? 'unrecorded'} className={`min-w-0 ${className}`}>
+      <p className="flex flex-wrap items-baseline gap-x-1.5">
+        <span className="text-ink-faint">{t('memory.basis.label')}</span>
+        <span className={`font-medium ${basis?.kind === 'unknown' || basis === undefined ? 'text-ink-faint' : 'text-ink-soft'}`}>
+          {t(basis === undefined ? 'memory.basis.unrecorded' : `memory.basis.${basis.kind}`)}
+        </span>
+        {basis !== undefined && basis.refs.length > 0 ? (
+          <span className="text-ink-faint">{tpRefs(t, basis.refs.length)}</span>
+        ) : null}
+      </p>
+      {basis !== undefined && basis.note !== '' ? (
+        <p data-memory-basis-note className="mt-0.5 text-[12px] leading-relaxed break-words text-ink-soft">{basis.note}</p>
+      ) : null}
+      {basis !== undefined && basis.refs.length > 0 ? (
+        <ul data-memory-basis-refs className="mt-1 space-y-0.5">
+          {basis.refs.map((ref) => (<li key={ref} className="font-mono text-[11px] break-all text-ink-faint">{ref}</li>))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+const tpRefs = (t: (key: I18nKey, params?: Readonly<Record<string, string | number>>) => string, count: number) =>
+  t('memory.basis.refs', { count });
+
+/**
+ * What must be checked before relying on this, and whether its answer has run
+ * out. `unrecorded` states that no check was written down; it never implies
+ * the fact is permanent.
+ */
+export function ValidityLine({ validity, now, className = '' }: {
+  readonly validity: MemoryValidity | undefined;
+  readonly now?: number;
+  readonly className?: string;
+}) {
+  const { t, locale } = useI18n();
+  const applicability = memoryApplicability(validity, now);
+  if (applicability === 'unrecorded') {
+    return (
+      <p data-memory-validity="unrecorded" data-memory-validity-state="unrecorded" className={`text-ink-faint ${className}`}>
+        <span className="text-ink-faint">{t('memory.validity.label')}: </span>
+        {t('memory.validity.unrecorded')}
+      </p>
+    );
+  }
+  const expired = applicability === 'expired';
+  return (
+    <div data-memory-validity={applicability} data-memory-validity-state={applicability} className={`min-w-0 ${className} ${expired ? 'text-amber-ink' : 'text-ink-soft'}`}>
+      <p className="flex flex-wrap items-baseline gap-x-1.5">
+        <span>{t('memory.validity.label')}: </span>
+        <span className="font-medium">{t(expired ? 'memory.validity.expired' : 'memory.validity.recheck')}</span>
+        {validity?.until !== undefined ? (
+          <span className="text-ink-faint">{dateText(locale, validity.until)}</span>
+        ) : null}
+      </p>
+      {validity !== undefined ? (
+        <p data-memory-validity-check className="mt-0.5 text-[12px] leading-relaxed break-words text-ink-soft">{validity.check}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/** The entry a consolidation retired this one into, and whether it still holds that role. */
+function CoveredByLine({ coveredBy, onOpen }: { readonly coveredBy: NonNullable<MemoryEntryView['covered_by']>; readonly onOpen?: () => void }) {
+  const { t } = useI18n();
+  return (
+    <p data-memory-covered-by={coveredBy.id} className="text-[13px] text-ink-soft">
+      <span className="text-ink-faint">{t('memory.coveredBy.label')}: </span>
+      {onOpen === undefined ? coveredBy.id : (
+        <button
+          type="button"
+          data-memory-open-covered
+          onClick={onOpen}
+          className="underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+        >
+          {coveredBy.id}
+        </button>
+      )}
+    </p>
+  );
+}
+
+/**
  * The reading face of one entry: source, title, body, and the reason when one
  * was written. Provenance (revisions, exact timestamps, replacement chains)
  * stays in the history panel, so the normal view carries only what a reader
  * needs. A superseded entry still reads its retirement reason from the
  * replacement's journal, and links to the replacement when it is in view.
  */
-export function MemoryReadView({ entry, target, sourceLabel, onOpenReplacement }: {
+export function MemoryReadView({ entry, target, sourceLabel, onOpenReplacement, onOpenCoveredBy, now }: {
   readonly entry: MemoryEntry;
   readonly target: MemoryTarget;
   readonly sourceLabel: string;
   readonly onOpenReplacement?: () => void;
+  readonly onOpenCoveredBy?: () => void;
+  /** Passed in so a list of entries shares one reading of "now". */
+  readonly now?: number;
 }) {
   const { t } = useI18n();
   const { client } = useConnection();
@@ -87,6 +207,13 @@ export function MemoryReadView({ entry, target, sourceLabel, onOpenReplacement }
     enabled: entry.superseded_by !== undefined,
     staleTime: 5_000,
   });
+  const covered = useQuery({
+    queryKey: ['memory-related', memoryTargetKey(target), entry.covered_by?.id],
+    queryFn: () => client.getMemory(target, entry.covered_by!.id),
+    enabled: entry.covered_by !== undefined,
+    staleTime: 5_000,
+  });
+  const coveredChanged = covered.data !== undefined && (covered.data.revision !== entry.covered_by?.revision || covered.data.status !== 'active');
   const replacementHistory = useQuery({
     queryKey: ['memory-journal', memoryTargetKey(target), entry.superseded_by],
     queryFn: () => client.memoryJournal(target, entry.superseded_by!),
@@ -99,6 +226,7 @@ export function MemoryReadView({ entry, target, sourceLabel, onOpenReplacement }
       : memorySnapshot(replacementHistory.data?.find((record) => record.beforeRevision === supersede.afterRevision)?.before ?? null, supersede.afterRevision);
   const retired = entry.status === 'archived' || entry.status === 'superseded';
   const reason = entry.status === 'superseded' ? originalReplacement?.reason : entry.reason;
+  const view = parseMemoryEntry(entry);
   return (
     <article data-memory-read={entry.id} className="min-w-0 space-y-3">
       <div>
@@ -120,6 +248,18 @@ export function MemoryReadView({ entry, target, sourceLabel, onOpenReplacement }
           {t(entry.status === 'superseded' && (replacement.isPending || replacementHistory.isPending) ? 'memory.loading' : 'memory.history.reasonUnavailable')}
         </p>
       ) : null}
+      {/* Who last wrote this, and why the content reads as it does: two
+          different facts, so two lines rather than one merged one. */}
+      {view !== undefined ? (
+        <div data-memory-provenance className="space-y-3 border-t border-hairline pt-3">
+          <BasisLine entry={view} />
+          <ValidityLine validity={view.validity} now={now} />
+        </div>
+      ) : null}
+      {view?.covered_by !== undefined ? <>
+        <CoveredByLine coveredBy={view.covered_by} onOpen={onOpenCoveredBy} />
+        {coveredChanged || covered.isError ? <p data-memory-covered-state className="text-[12px] text-amber-ink">{t(covered.isError ? 'memory.coveredBy.unavailable' : 'memory.coveredBy.changed')}</p> : null}
+      </> : null}
       {entry.superseded_by !== undefined ? (
         onOpenReplacement !== undefined && replacement.data !== undefined ? (
           <button
@@ -142,7 +282,7 @@ export function MemoryReadView({ entry, target, sourceLabel, onOpenReplacement }
 
 function VersionBlock({ label, entry, raw, revision }: {
   readonly label: string;
-  readonly entry: MemoryEntry | undefined;
+  readonly entry: MemoryEntryView | undefined;
   readonly raw: string | null | undefined;
   readonly revision: string | null;
 }) {
@@ -160,12 +300,18 @@ function VersionBlock({ label, entry, raw, revision }: {
           <p className="flex flex-wrap items-center gap-1.5">
             <TypeTag type={entry.type} />
             {entry.status !== 'active' ? <span className="text-[11px] text-ink-faint">{t(`memory.status.${entry.status}`)}</span> : null}
+            {entry.covered_by !== undefined ? <span data-memory-version-covered className="text-[11px] text-ink-faint">{t('memory.coveredBy.label')}</span> : null}
           </p>
           <p className="break-words text-[14px] font-medium leading-snug text-ink">{entry.title}</p>
           <p className="text-[13px] leading-6 break-words whitespace-pre-wrap text-ink">{entry.body}</p>
           {entry.reason !== '' ? (
             <p className="text-[13px] leading-6 break-words text-ink-soft">{t('memory.field.reason')} · {entry.reason}</p>
           ) : null}
+          {/* The metadata that rode this version, so a diff of the basis or the
+              check is readable next to the content it belongs to. */}
+          <BasisLine entry={entry} />
+          <ValidityLine validity={entry.validity} />
+          {entry.covered_by === undefined ? null : <CoveredByLine coveredBy={entry.covered_by} />}
           {dates === '' ? null : <p className="text-[12px] text-ink-faint">{dates}</p>}
         </div>
       ) : raw !== null && raw !== undefined ? (
@@ -241,9 +387,9 @@ export function MemoryHistoryDialog({
           </p>
         ) : null}
         <div className="mt-4 space-y-4">
-          <VersionBlock label={t('memory.history.after')} entry={after} raw={afterRecord?.before} revision={record.afterRevision} />
+          <VersionBlock label={t('memory.history.after')} entry={parseMemoryEntry(after)} raw={afterRecord?.before} revision={record.afterRevision} />
           {record.beforeRevision !== null ? <hr className="border-hairline" /> : null}
-          <VersionBlock label={t('memory.history.before')} entry={before} raw={record.before} revision={record.beforeRevision} />
+          <VersionBlock label={t('memory.history.before')} entry={parseMemoryEntry(before)} raw={record.before} revision={record.beforeRevision} />
         </div>
       </div>
       <div className="mt-4 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-t border-hairline pt-4">

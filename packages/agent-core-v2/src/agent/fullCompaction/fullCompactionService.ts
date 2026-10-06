@@ -31,7 +31,7 @@ import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { renderTodoList, type TodoItem } from '#/session/todo/todoItem';
 import { compactionDirectivesBudget, renderTodoNotes } from '#/session/todo/todoNotes';
-import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { IAgentMemorySnapshot, memoryEntryReference } from '#/app/memory/memorySnapshot';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IConfigService } from '#/app/config/config';
 import { type LoopControl } from '#/agent/loop/configSection';
@@ -149,6 +149,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   private readonly strategy: CompactionStrategy;
   private _compacting: ActiveCompaction | null = null;
+  private pendingManual: CompactionBeginData | null = null;
   private compactedHistoryLength: number | null = null;
 
   constructor(
@@ -270,6 +271,11 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   }
 
   cancel(): void {
+    if (this.pendingManual !== null) {
+      this.pendingManual = null;
+      void this.dispatcher.dispatch(new FullCompactionCancel({ queued: true }));
+      void this.dispatcher.dispatch(new CompactionCancelled({ trigger: 'manual' }));
+    }
     const active = this._compacting;
     if (active !== null) {
       this.telemetry.track2('cancel', {
@@ -336,7 +342,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     if (override !== null) return { strategy: override, source: 'session', shadow };
     if (profileStrategy !== undefined) return { strategy: profileStrategy, source: 'profile', shadow };
     if (config?.contextStrategy !== undefined) return { strategy: config.contextStrategy, source: 'global', shadow };
-    return { strategy: 'summarize', source: 'default', shadow };
+    return { strategy: 'auto', source: 'default', shadow };
   }
 
   setContextStrategyOverride(strategy: 'summarize' | 'auto' | 'fresh' | null): void {
@@ -414,22 +420,62 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     this.publishAutoCompactStatus();
   }
 
-  begin(input: FullCompactionInput): boolean {
-    if (this._compacting) return false;
-    const data: CompactionBeginData = { source: input.source, instruction: input.instruction, strategy: input.strategy };
-    if (!this.reserveCompactionSlot(data.source)) return false;
+  get queuedManualCompaction(): boolean {
+    return this.pendingManual !== null;
+  }
 
-    const tokenCount = this.validateCompactionStart(data.source);
-    const quiescence = data.source === 'manual'
-      ? this.loopService.tryAcquireQuiescence()
-      : undefined;
-    if (data.source === 'manual' && quiescence === undefined) {
-      throw new Error2(
-        ErrorCodes.COMPACTION_UNABLE,
-        'Cannot compact while a turn is active or another context change is running. Wait for it to finish, then retry.',
-      );
+  begin(input: FullCompactionInput): boolean {
+    const data: CompactionBeginData = { source: input.source, instruction: input.instruction, strategy: input.strategy };
+    if (data.source === 'manual') {
+      if (this.pendingManual !== null || this._compacting?.trigger === 'manual') return false;
+      const quiescence = this._compacting === null ? this.loopService.tryAcquireQuiescence() : undefined;
+      if (quiescence !== undefined) return this.startCompaction(data, quiescence);
+      this.pendingManual = data;
+      void this.dispatcher.dispatch(new FullCompactionBegin({ ...data, queued: true }));
+      void this.runPendingWhenIdle(data);
+      return true;
     }
+    if (this._compacting || this.pendingManual !== null) return false;
+    return this.startCompaction(data);
+  }
+
+  private async runPendingWhenIdle(data: CompactionBeginData): Promise<void> {
+    await this.loopService.settled();
+    if (this.pendingManual !== data) return;
+    const quiescence = this.loopService.tryAcquireQuiescence();
+    if (quiescence === undefined) return;
     try {
+      await this.runPendingManual();
+    } finally {
+      quiescence.dispose();
+    }
+  }
+
+  private async runPendingManual(): Promise<void> {
+    const data = this.pendingManual;
+    if (data === null) return;
+    if (this._compacting !== null) await this._compacting.promise.catch(() => undefined);
+    if (this.pendingManual !== data) return;
+    this.pendingManual = null;
+    let started = false;
+    try {
+      started = this.startCompaction(data);
+      await this._compacting?.promise;
+    } catch (error) {
+      if (!started) {
+        void this.dispatcher.dispatch(new FullCompactionCancel({ queued: true }));
+        void this.dispatcher.dispatch(new CompactionCancelled({ trigger: 'manual', reason: error instanceof Error ? error.message : String(error) }));
+      }
+    }
+  }
+
+  private startCompaction(data: CompactionBeginData, quiescence?: IDisposable): boolean {
+    try {
+      const tokenCount = this.validateCompactionStart(data.source);
+      if (!this.reserveCompactionSlot(data.source)) {
+        quiescence?.dispose();
+        return false;
+      }
       void this.dispatcher.dispatch(new FullCompactionBegin(data));
 
       const active = this.createActiveCompaction(
@@ -466,12 +512,6 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     const history = this.context.get();
     if (history.length === 0) {
       throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'No messages to compact in current history.');
-    }
-    if (source === 'manual' && this.loopService.status().state !== 'idle') {
-      throw new Error2(
-        ErrorCodes.COMPACTION_UNABLE,
-        'Cannot compact while a turn is active. Wait for it to finish, then retry.',
-      );
     }
     if (this.strategy.computeCompactCount(history, source) <= 0) {
       throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'No messages to compact in current history.');
@@ -515,20 +555,21 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   }
 
   override dispose(): void {
+    this.pendingManual = null;
     if (this._compacting !== null && !this._compacting.abortController.signal.aborted) {
       this._compacting.abortController.abort();
     }
     super.dispose();
   }
 
-  private cancelActive(active: ActiveCompaction): boolean {
+  private cancelActive(active: ActiveCompaction, reason?: string): boolean {
     if (this._compacting !== active) return false;
     void this.dispatcher.dispatch(new FullCompactionCancel({}));
     this._compacting = null;
     if (!active.abortController.signal.aborted) {
       active.abortController.abort();
     }
-    void this.dispatcher.dispatch(new CompactionCancelled({}));
+    void this.dispatcher.dispatch(new CompactionCancelled({ trigger: active.trigger, reason }));
     return true;
   }
 
@@ -540,7 +581,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   }
 
   private normalizeAfterReplay(): void {
-    if (this.states.get(fullCompactionKey).phase !== 'running') return;
+    const state = this.states.get(fullCompactionKey);
+    if (state.phase !== 'running' && state.phase !== 'queued') return;
+    void this.dispatcher.dispatch(new FullCompactionCancel({ queued: true }));
     void this.dispatcher.dispatch(new FullCompactionCancel({}));
   }
 
@@ -583,6 +626,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   private async beforeStep(signal: AbortSignal, turnId?: number): Promise<void> {
     this.activeTurnId = turnId;
+    await this.runPendingManual();
     this.checkAutoCompaction();
     if (this.strategy.shouldBlock(this.tokenCountWithPending())) {
       await this.block(signal, turnId);
@@ -590,6 +634,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   }
 
   private async afterStep(): Promise<void> {
+    await this.runPendingManual();
     this.consecutiveOverflowCompactions = 0;
     if (this.strategy.checkAfterStep) {
       this.checkAutoCompaction(false);
@@ -693,7 +738,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       }
       const { contextSummary: _contextSummary, ...eventResult } = result;
       void _contextSummary;
-      void this.dispatcher.dispatch(new CompactionCompleted({ result: eventResult }));
+      void this.dispatcher.dispatch(new CompactionCompleted({ trigger: active.trigger, result: eventResult }));
       return result;
     } catch (error) {
       if (active.abortController.signal.aborted || isAbortError(error)) {
@@ -702,7 +747,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       }
       const blockedByTurn = this._compacting === active && active.blockedByTurn;
       if (this._compacting === active) {
-        this.cancelActive(active);
+        this.cancelActive(active, error instanceof Error ? error.message : String(error));
       }
       if (blockedByTurn) {
         throw error;
@@ -741,7 +786,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       sessionId: this.session.sessionId, epoch: this.states.get(contextWindowEpochKey),
       notes: notes.notes, meta: notes.meta, todos: this.currentTodos(),
       estimateText: (text) => this.tokenCounting.estimateText(text),
-      memoryEntries: liveEntries.map((entry) => `- [${entry.id}] ${entry.title}`), memoryReferences, linkedBoardCards,
+      memoryEntries: liveEntries.map((entry) => memoryEntryReference(entry)), memoryReferences, linkedBoardCards,
     };
     const startedAt = Date.now();
     const maxAttempts = model.compactionMaxAttempts ?? MAX_COMPACTION_RETRY_ATTEMPTS;
@@ -817,7 +862,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         this.memorySnapshot.resolveReferences([notes.notes?.directives, notes.notes?.decided].filter(Boolean).join('\n')),
         this.readLinkedBoardCards(),
       ]);
-      const memoryEntries = liveEntries.map((entry) => `- [${entry.id}] ${entry.title}`);
+      const memoryEntries = liveEntries.map((entry) => memoryEntryReference(entry));
       const relayInput: RelayInput = {
         history: originalHistory, compactCount, agentId: this.scope.agentId,
         sessionId: this.session.sessionId, epoch,
@@ -1033,6 +1078,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         this.profile.getModelProviderType() ?? 'unknown-provider',
         this.profile.data().modelAlias ?? 'unknown-model',
         requestAttempts,
+        data.source,
       ), { cause: error, details: isError2(error) ? error.details : undefined });
     }
   }

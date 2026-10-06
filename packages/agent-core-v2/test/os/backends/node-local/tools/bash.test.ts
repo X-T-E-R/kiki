@@ -482,6 +482,7 @@ function createFakeTaskService(
 
   const service: IAgentTaskService = {
     _serviceBrand: undefined,
+    hasUnfinishedWork: () => service.list().some((info) => info.lifetime !== 'service'),
     track(): never {
       throw new Error('fake IAgentTaskService.track is not implemented');
     },

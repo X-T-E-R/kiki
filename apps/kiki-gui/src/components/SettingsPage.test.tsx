@@ -420,7 +420,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.textContent).toContain('Request timeout (seconds)');
 
     // The field saves itself on Enter; there is no separate Save button.
-    expect(card.querySelector('button')).toBeNull();
+    expect(card.querySelector('button:not([data-setting-help])')).toBeNull();
     await commitText(input, '120');
     await flush();
 
@@ -433,6 +433,22 @@ describe('SettingsPage batch-3 leaves', () => {
     await commitText(input, '2');
     expect(input.getAttribute('aria-invalid')).toBe('true');
     expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ requestTimeoutSeconds: 120 });
+  });
+
+  it('saves an unlimited reading timeout independently of ordinary request timeouts', async () => {
+    localStorage.removeItem('kiki.settings');
+    const container = await renderSettings('/settings/connection');
+    const input = container.querySelector<HTMLInputElement>('#st-conn-reading-timeout')!;
+    expect(input.value).toBe('0');
+    expect(container.querySelector<HTMLInputElement>('#st-conn-request-timeout')!.value).toBe('30');
+    await commitText(input, '3600');
+    expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ readingTimeoutSeconds: 3600 });
+    expect(container.querySelector<HTMLInputElement>('#st-conn-request-timeout')!.value).toBe('30');
+    await commitText(input, '-1');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ readingTimeoutSeconds: 3600 });
+    await commitText(input, '0');
+    expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ readingTimeoutSeconds: 0 });
   });
 
   it('reveals, edits, and overwrites the saved connection token', async () => {

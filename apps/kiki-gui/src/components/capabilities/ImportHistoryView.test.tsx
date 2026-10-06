@@ -317,11 +317,11 @@ describe('ImportHistoryView', () => {
     expect((target as HTMLElement).dataset['pluginImportTarget']).toBe('11111111-1111-4111-8111-111111111111');
   });
 
-  it('reports the server flag rather than pretending the feature is absent', async () => {
+  it('asks the server whether it can import rather than reading an experimental flag', async () => {
     meta.mockResolvedValue({ experimental_flags: {} });
     const { container } = await render();
-    expect(container.querySelector('[data-cap-import-disabled]')).not.toBeNull();
-    expect(sources).not.toHaveBeenCalled();
+    expect(sources).toHaveBeenCalled();
+    expect(container.querySelector('[data-cap-import-disabled]')).toBeNull();
   });
 
   it('labels a bounded preview as a sample and shows the server’s own losses', async () => {

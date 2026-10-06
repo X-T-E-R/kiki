@@ -1,4 +1,4 @@
-import { personaAvatarDataSchema } from '@kiki/protocol';
+import { executionBindingSchema, executionSelectionSchema, personaAvatarDataSchema } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { isoDateTimeSchema } from '#/_base/utils/isoDateTime';
@@ -35,6 +35,7 @@ export type SessionMetadata = z.infer<typeof sessionMetadataSchema>;
  *  pinned together by a drift test in kap-server. */
 export const sessionAgentConfigSchema = z.object({
   model: z.string(),
+  execution: executionBindingSchema.optional(),
   profile: z.string().min(1).optional(),
   persona: personaAvatarDataSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
@@ -44,6 +45,7 @@ export type SessionAgentConfig = z.infer<typeof sessionAgentConfigSchema>;
 
 /** Strict: unapplied keys are validation errors. */
 export const sessionAgentConfigPartialSchema = z.strictObject({
+  execution: executionSelectionSchema.optional(),
   model: z.string().optional(),
   profile: z.string().min(1).optional(),
   thinking: promptThinkingSchema.optional(),

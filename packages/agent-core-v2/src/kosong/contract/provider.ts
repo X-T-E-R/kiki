@@ -1,6 +1,7 @@
 import type { Message, StreamedMessagePart, VideoURLPart } from './message';
 import type { Tool } from './tool';
 import type { TokenUsage } from './usage';
+import type { StreamDiagnostics } from './streamDiagnostics';
 
 export type ThinkingEffort = 'off' | 'on' | (string & {});
 
@@ -42,6 +43,7 @@ export interface StreamedMessage {
   readonly finishReason: FinishReason | null;
   readonly rawFinishReason: string | null;
   readonly traceId?: string | null;
+  readonly diagnostics?: StreamDiagnostics;
 }
 
 export interface ProviderRequestAuth {

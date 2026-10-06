@@ -6,7 +6,7 @@
  * one image pixel per device pixel, and a mouse drag pans it.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { useI18n } from '../i18n';
 import { Dialog } from './Dialog';
@@ -25,6 +25,9 @@ export function MediaLightbox({
   const { t } = useI18n();
   const [actualSize, setActualSize] = useState(false);
   const [naturalWidth, setNaturalWidth] = useState<number | undefined>();
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => { setFailed(false); setNaturalWidth(undefined); setActualSize(false); }, [src]);
   const dpr = useDevicePixelRatio();
   const pan = useDragPan(actualSize);
   const label = name ?? t('media.viewImage');
@@ -73,10 +76,16 @@ export function MediaLightbox({
             : 'flex items-center justify-center'
         }
       >
-        <img
+        {failed ? <div role="alert" className="flex min-h-48 flex-col items-center justify-center gap-3 text-sm text-shell-ink">
+          <span>{t('media.unavailable', { name: label })}</span>
+          <button type="button" onClick={() => { setFailed(false); setAttempt((value) => value + 1); }} className={controlClass}>{t('transcript.detail.retry')}</button>
+        </div> : <img
+          key={attempt}
           src={src}
           alt={label}
           draggable={false}
+          decoding="async"
+          onError={() => { setFailed(true); }}
           onLoad={(event) => { setNaturalWidth(event.currentTarget.naturalWidth); }}
           onClick={() => {
             if (pan.consumePan()) return;
@@ -88,7 +97,7 @@ export function MediaLightbox({
               ? 'max-w-none'
               : 'max-h-[80vh] max-w-[92vw] cursor-zoom-in rounded-lg object-contain'
           }
-        />
+        />}
       </div>
     </Dialog>
   );

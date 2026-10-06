@@ -13,6 +13,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { coldPromptFixture } from './coldPromptFixture';
+import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 import { attachExternalMailboxHarness } from './mailboxHarness';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -139,6 +140,7 @@ function createHarness(options: HarnessOptions = {}) {
       }
       if (event instanceof ExecutorSessionUpdated) {
         stateValues.set(externalExecutorKey, {
+          executionGeneration: event.executionGeneration,
           executorId: event.executorId,
           descriptorRevision: event.descriptorRevision,
           bindingFingerprint: event.bindingFingerprint,
@@ -483,6 +485,45 @@ function createExecutionHarness(options: HarnessOptions = {}) {
 }
 
 describe('Codex app-server external executor', () => {
+  it('sends only explicitly selected Codex controls without injecting sandbox or developer instructions', async () => {
+    const harness = createHarness({ modelReasoningEfforts: ['high'] });
+    const execution = resolveExecutionBinding({ executor: 'codex-app-server', overrides: {
+      model: 'gpt-test', thinking: 'high', permission_mode: 'auto',
+    } }, undefined, undefined, undefined);
+    const session = harness.createSession({ ...harness.context, binding: {
+      ...harness.context.binding, execution, systemPrompt: '', kikiContext: [], allowKikiSubagents: false,
+    } });
+    try {
+      const handle = await session.run({ kind: 'prompt', prompt: 'ONLY_USER' }, { signal: new AbortController().signal });
+      await handle.completion;
+      expect(JSON.parse(JSON.stringify(harness.starts[0]))).toEqual({ cwd: 'C:/workspace', model: 'gpt-test', approvalPolicy: 'on-request' });
+      expect(JSON.parse(JSON.stringify(harness.prompts[0]))).toEqual({ threadId: 'thread-new', model: 'gpt-test', effort: 'high', approvalPolicy: 'on-request', input: [{ type: 'text', text: 'ONLY_USER' }] });
+    } finally { await session.shutdown(); }
+  });
+  it('starts a bare new Codex thread at a generation boundary and reuses it after cold restore', async () => {
+    const harness = createHarness({ priorThreadId: 'old-thread', unpinModel: true, thinkingEffort: 'off',
+      history: [{ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'OLD_KIKI_HISTORY' }] }] });
+    const execution = resolveExecutionBinding({ executor: 'codex-app-server' }, undefined, undefined, undefined);
+    const context = { ...harness.context, binding: { ...harness.context.binding, execution,
+      modelAlias: undefined, thinkingLevel: 'off', systemPrompt: '', kikiContext: [], allowKikiSubagents: false } };
+    const session = harness.createSession(context);
+    try {
+      const handle = await session.run({ kind: 'prompt', prompt: 'ONLY_NEW_USER' }, { signal: new AbortController().signal });
+      await handle.completion;
+      expect(harness.resumes).toEqual([]);
+      expect(JSON.parse(JSON.stringify(harness.starts[0]))).toEqual({ cwd: 'C:/workspace' });
+      expect(JSON.parse(JSON.stringify(harness.prompts[0]))).toEqual({ threadId: 'thread-new', input: [{ type: 'text', text: 'ONLY_NEW_USER' }] });
+      expect(harness.states.get(externalExecutorKey)).toMatchObject({ executionGeneration: 1, sessionEpoch: 2 });
+      await session.shutdown();
+      const cold = harness.createSession(context);
+      try {
+        const next = await cold.run({ kind: 'prompt', prompt: 'COLD_USER' }, { signal: new AbortController().signal });
+        await next.completion;
+        expect(harness.resumes[0]).toMatchObject({ threadId: 'thread-new' });
+        expect(harness.starts).toHaveLength(1);
+      } finally { await cold.shutdown(); }
+    } finally { await session.shutdown(); }
+  });
   it('delivers a text steer into the active remote turn and rejects stale acknowledgments', async () => {
     const harness = createHarness({ deferTurnCompletion: true });
     await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
@@ -988,7 +1029,7 @@ describe('Codex app-server external executor', () => {
     await transport.session.shutdown();
   });
 
-  it.each(['sub', 'independent'] as const)('sends the refreshed cold %s identity through Codex developer instructions', async (position) => {
+  it.each(['sub', 'independent'] as const)('sends the saved cold %s identity through Codex developer instructions', async (position) => {
     const harness = createExecutionHarness();
     const adapter = harness.ix.get(IAgentProfileService);
     const cold = await coldPromptFixture(position, adapter.data(), harness.ix.get(IAgentExecutorRegistry));
@@ -998,9 +1039,11 @@ describe('Codex app-server external executor', () => {
     try {
       const run = await harness.execution.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
       const sent = String(harness.starts[0]?.['developerInstructions']);
-      expect(sent).toContain('Role NEW');
-      expect(sent).not.toContain('Role OLD');
+      expect(sent).toBe(cold.before.systemPrompt);
+      expect(sent).toContain('Role OLD');
+      expect(sent).not.toContain('Role NEW');
       expect(sent).not.toContain('SHARED_NEW');
+      expect(cold.profile.data().boundProfile?.promptBase?.inputs).toEqual(cold.before.boundProfile?.promptBase?.inputs);
       const snippet = cold.before.boundProfile?.promptBase?.delegationSnippet;
       expect(snippet).toBeTruthy();
       expect(sent).not.toContain(snippet!);
@@ -1225,18 +1268,45 @@ function realProtocolProcess() {
   return {
     process, stdout, methods, dispose, kill, releaseDispose,
     exit: () => { exitCode = 0; resolveExit(0); },
-    complete: (status = 'completed') => {
+    complete: (status = 'completed', error?: Readonly<Record<string, unknown>>) => {
       stdout.write(`${JSON.stringify({ method: 'item/agentMessage/delta', params: {
         threadId: 'thread-1', turnId: `turn-${turnIndex}`, itemId: 'message-1', delta: 'done',
       } })}\n`);
       stdout.write(`${JSON.stringify({ method: 'turn/completed', params: {
-        threadId: 'thread-1', turn: { id: `turn-${turnIndex}`, status },
+        threadId: 'thread-1', turn: { id: `turn-${turnIndex}`, status, error },
       } })}\n`);
     },
   };
 }
 
 describe('real Codex client through execution settlement and capacity', () => {
+  it('preserves the structured vendor error message in failed turn results', async () => {
+    const fixture = realProtocolProcess();
+    const harness = createExecutionHarness({ clientFactory: (_processes, onServerRequest) =>
+      new CodexAppServerClient({ spawn: async () => fixture.process }, {
+        id: 'fixture', command: 'fixture', shutdownGraceMs: 5,
+      }, { onServerRequest }) });
+    const message = 'stream disconnected before completion: stream closed before response.completed';
+    const vendorError = { message, codexErrorInfo: 'other' };
+    try {
+      const handle = await harness.execution.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      const completion = handle.completion.catch((error: unknown) => error);
+      fixture.complete('failed', vendorError);
+      expect(await completion).toMatchObject({ message });
+      await harness.execution.settled();
+      const result = await handle.turn.result;
+      expect(result).toMatchObject({ type: 'failed', error: { message, code: 'remote', data: vendorError } });
+      if (result.type !== 'failed') throw new Error('Expected failed turn');
+      expect(result.error).toBeInstanceOf(Error);
+      expect(String(result.error)).toContain(message);
+    } finally {
+      fixture.exit();
+      fixture.releaseDispose();
+      await harness.execution.shutdown();
+      harness.ix.dispose();
+    }
+  });
+
   it.each(['abort', 'shutdown', 'eof'] as const)('retains capacity until process exit and disposal on %s', async (kind) => {
     const fixture = realProtocolProcess();
     const harness = createExecutionHarness({ clientFactory: (_processes, onServerRequest) =>

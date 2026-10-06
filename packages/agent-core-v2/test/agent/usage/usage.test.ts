@@ -1,4 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IEventService } from '#/app/event/event';
+import { EventService } from '#/app/event/eventService';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { UsageSettled } from '#/agent/usage/usageEvents';
+import { ILogService } from '#/_base/log/log';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -31,6 +36,7 @@ import {
   registerTestEventDispatcher,
   restoreTestEventDispatcher,
   testWireScope,
+  noopLogger,
 } from '../../wire/stubs';
 
 const SCOPE = 'wire';
@@ -46,6 +52,7 @@ beforeEach(() => {
   disposables = new DisposableStore();
   ix = disposables.add(new TestInstantiationService());
   ix.stub(IFileSystemStorageService, new InMemoryStorageService());
+  ix.stub(ILogService, noopLogger);
   ix.stub(IAgentProfileService, {
     _serviceBrand: undefined,
     data: () => ({
@@ -59,6 +66,8 @@ beforeEach(() => {
   ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
   ix.set(IAgentStateService, new AgentStateService());
   ix.set(IEventBus, new SyncDescriptor(EventBusService));
+  ix.set(IEventService, new SyncDescriptor(EventService));
+  ix.stub(ISessionContext, { sessionId: 'fixture-session' } as ISessionContext);
   ix.set(IAgentUsageService, new SyncDescriptor(AgentUsageService));
   log = ix.get(IAppendLogStore);
   registerTestAgentWire(ix, testWireScope(SCOPE, KEY), {
@@ -113,6 +122,34 @@ const a2 = { inputOther: 10, output: 20, inputCacheRead: 30, inputCacheCreation:
 const b1 = { inputOther: 100, output: 200, inputCacheRead: 300, inputCacheCreation: 400 };
 
 describe('AgentUsageService (wire-backed)', () => {
+  it('publishes usage settlement only after the wire is durable, without recording twice', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const flush = log.flush.bind(log);
+    const blocked = vi.spyOn(log, 'flush').mockImplementation(async () => { await gate; await flush(); });
+    const settled = vi.fn();
+    disposables.add(ix.get(IEventService).subscribe((event) => {
+      if (event.type === UsageSettled.type) settled((event as UsageSettled).payload);
+    }));
+    svc.record('model-a', a1);
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    expect(svc.status().total).toEqual(a1);
+    release();
+    await vi.waitFor(() => expect(settled).toHaveBeenCalledExactlyOnceWith({ sessionId: 'fixture-session', agentId: 'agent-child' }));
+    blocked.mockRestore();
+    expect((await readRecords()).filter((record) => record.type === 'usage.record')).toHaveLength(1);
+  });
+
+  it('does not advertise failed persistence as settled usage', async () => {
+    vi.spyOn(dispatcher, 'dispatchDurably').mockRejectedValueOnce(new Error('fixture flush failure'));
+    const published = vi.spyOn(ix.get(IEventService), 'publish');
+    svc.record('model-a', a1);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(published).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
   it('retains known and missing accounting with only successful compactions across replay', async () => {
     const state = ix.get(IAgentStateService);
     expect(state.get(panelAccountingKey)).toEqual({

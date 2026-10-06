@@ -4,6 +4,7 @@ import type { Session } from '@kiki/protocol';
 
 import {
   ATTENTION_COOLDOWN_MS,
+  CompletionObserver,
   EMPTY_ATTENTION_RATE,
   detectAttentionEvents,
   planAttentionNotifications,
@@ -95,6 +96,21 @@ describe('detectAttentionEvents', () => {
     expect(narrow.baseline.get('b')?.busy).toBe(true);
     const archived = detectAttentionEvents(narrow.baseline, [session({ id: 'b', archived: true, last_turn_reason: 'completed' })], START);
     expect(archived.events).toEqual([]);
+  });
+});
+
+describe('CompletionObserver', () => {
+  it('baselines startup/reconnection and deduplicates stable episodes even after their projection disappears', () => {
+    const observer = new CompletionObserver();
+    const rows = [session({ id: 'a' })];
+    const completion = (episode_id: string) => [{ session_id: 'a', episode_id, completed_at: START }];
+    expect(observer.observe(completion('old'), rows)).toEqual([]);
+    expect(observer.observe(completion('new'), rows)).toEqual([{ sessionId: 'a', kind: 'completed', title: 'a' }]);
+    expect(observer.observe([], rows)).toEqual([]);
+    expect(observer.observe(completion('new'), rows)).toEqual([]);
+    observer.disconnected();
+    expect(observer.observe(completion('offline'), rows)).toEqual([]);
+    expect(observer.observe(completion('later'), rows)).toHaveLength(1);
   });
 });
 

@@ -31,7 +31,31 @@ function makeWalker(path, ready, extra) {
 
 const scenarios = [
   { name: 'lists-spaces', fixture: 'settings-lists', matrix: ['theme'], run: makeWalker('/settings/spaces', '[data-space-row]', { name: 'spaces' }) },
-  { name: 'lists-notifications', fixture: 'settings-lists', matrix: ['theme'], run: makeWalker('/settings/notifications', '[data-notify-channels]', { name: 'notifications' }) },
+  {
+    name: 'lists-notifications', fixture: 'settings-lists', matrix: ['theme'],
+    run: async (context) => {
+      await context.page.addInitScript(() => {
+        Object.defineProperty(window, 'Notification', {
+          configurable: true,
+          value: class {
+            static permission = 'denied';
+            static requestPermission() { throw new Error('Notification permission must not be requested in visual proof'); }
+            constructor() { throw new Error('System notifications must not be sent in visual proof'); }
+          },
+        });
+      });
+      await makeWalker('/settings/notifications', '[data-notify-channels]', {
+        name: 'notifications',
+        after: async ({ page, shot }) => {
+          await page.setViewportSize({ width: 390, height: 844 });
+          await page.locator('#st-card-notify-away').scrollIntoViewIfNeeded();
+          const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+          if (overflow) throw new Error('Notifications page overflows the 390px viewport');
+          await shot('list-notifications-390');
+        },
+      })(context);
+    },
+  },
   { name: 'lists-permissions', fixture: 'settings-lists', matrix: ['theme'], run: makeWalker('/settings/permissions', '[data-permission-rules]', { name: 'permissions' }) },
   { name: 'lists-providers', fixture: 'settings-lists', matrix: ['theme'], run: makeWalker('/settings/ai?tab=providers', '[data-connection-list]', { name: 'providers' }) },
   { name: 'lists-identity', fixture: 'settings-lists', matrix: ['theme'], run: makeWalker('/settings/identity', '[data-identity-row]', { name: 'identity' }) },

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { executionSelectionSchema } from '@kiki/protocol';
 
 import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
 import { messageContentSchema } from './message';
@@ -31,6 +32,7 @@ export const goalInitialStatusSchema = z.enum(['active', 'paused']);
 export type GoalInitialStatus = z.infer<typeof goalInitialStatusSchema>;
 
 export const promptSubmissionSchema = z.object({
+  execution: executionSelectionSchema.optional(),
   after_model_switch: z.string().min(1).optional(),
   content: z.array(messageContentSchema).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
@@ -54,6 +56,7 @@ export const promptSubmissionSchema = z.object({
 export type PromptSubmission = z.infer<typeof promptSubmissionSchema>;
 
 export const promptExecutionOverridesSchema = promptSubmissionSchema.pick({
+  execution: true,
   profile: true,
   model: true,
   thinking: true,

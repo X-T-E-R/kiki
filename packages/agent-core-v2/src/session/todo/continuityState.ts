@@ -6,7 +6,7 @@ import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { ToolsUpdateStore } from './todoOps';
 import { hashTodoNotes, type TodoNotes } from './todoNotes';
 import type { TodoReminderDisclosure } from './todoListReminder';
-import { initialMemoryMaintenance, type MemoryMaintenanceState } from './memoryCadence';
+import { initialMemoryMaintenance, memoryWriteAttempt, memoryWriteResolves, normalizeMemoryAttempt, type MemoryMaintenanceState } from './memoryCadence';
 
 export interface ContinuityClock {
   readonly humanTurnOrdinal: number;
@@ -20,6 +20,14 @@ export interface ContinuityClock {
   readonly lastNotesReminderU?: number;
   readonly lastNotesReminderStep?: number;
   readonly memoryMaintenance?: MemoryMaintenanceState;
+  readonly materialWorkStepOrdinal?: number;
+  readonly materialWorkTokens?: number;
+  readonly materialStepTokens?: number;
+  readonly materialSubstantial?: boolean;
+  readonly materialSuccessfulWork?: boolean;
+  readonly memoryToolCalls?: readonly string[];
+  readonly materialToolCalled?: boolean;
+  readonly materialStepIds?: readonly string[];
   readonly successfulWork?: boolean;
   readonly notesRenewalEpoch?: number;
   readonly notesRebuildEpoch?: number;
@@ -80,34 +88,58 @@ export function advanceContinuityClock(state: ContinuityClock, event: TurnPrompt
   }
   if (event.type === ContextAppendLoopEvent.type) {
     const loop = (event as ContextAppendLoopEvent).event;
-    if (loop.type === 'step.begin') return { ...state, openStep: loop.uuid, substantial: false, successfulWork: false, stepTokens: 0, pollingCalls: [] };
+    if (loop.type === 'step.begin') return { ...state, openStep: loop.uuid, substantial: false, successfulWork: false, stepTokens: 0, pollingCalls: [],
+      materialSubstantial: false, materialSuccessfulWork: false, materialStepTokens: 0, memoryToolCalls: [], materialToolCalled: false };
     if (loop.type === 'content.part' && loop.part.type === 'text' && loop.part.text.trim()) return { ...state, substantial: true,
-      stepTokens: (state.stepTokens ?? 0) + Math.ceil(loop.part.text.length / 4) };
+      stepTokens: (state.stepTokens ?? 0) + Math.ceil(loop.part.text.length / 4), materialSubstantial: true,
+      materialStepTokens: (state.materialStepTokens ?? 0) + Math.ceil(loop.part.text.length / 4) };
     const maintenance = state.memoryMaintenance ?? initialMemoryMaintenance();
-    if (loop.type === 'tool.call' && loop.name === 'MemoryWrite') {
+    if (loop.type === 'tool.call' && ['MemoryWrite', 'MemoryRead', 'MemorySearch'].includes(loop.name)) {
       const source = maintenance.offer?.inputRevision === state.humanInputRevision ? maintenance.offer.source : `unassociated:${loop.toolCallId}`;
-      return { ...state, memoryMaintenance: { ...maintenance, calls: { ...maintenance.calls, [loop.toolCallId]: source } } };
+      return { ...state, memoryToolCalls: [...(state.memoryToolCalls ?? []), loop.toolCallId],
+        memoryMaintenance: loop.name !== 'MemoryWrite' ? maintenance : { ...maintenance,
+          calls: { ...maintenance.calls, [loop.toolCallId]: memoryWriteAttempt(loop.toolCallId, source, loop.args) } } };
     }
     if (loop.type === 'tool.result') {
-      const { [loop.toolCallId]: source, ...calls } = maintenance.calls;
+      const { [loop.toolCallId]: value, ...calls } = maintenance.calls;
+      const attempt = value === undefined ? undefined : normalizeMemoryAttempt(loop.toolCallId, value);
       const receipt = loop.result.isError ? undefined : loop.result.memoryReceipt;
-      const memoryMaintenance = { ...maintenance, calls,
-        receipts: receipt === undefined ? maintenance.receipts : [...maintenance.receipts.filter((entry) => entry.id !== receipt.id).slice(-255),
-          { ...receipt, source: source ?? `unassociated:${loop.toolCallId}` }] };
       const text = typeof loop.result.output === 'string' ? loop.result.output : loop.result.output.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n');
+      let code = loop.result.errorCode ?? (loop.result.isError ? 'write_error' : 'result_unknown');
+      if (loop.result.isError) {
+        try { const error = JSON.parse(text) as { code?: unknown }; if (typeof error.code === 'string') code = error.code; } catch {}
+      }
+      const failures = maintenance.failures ?? [];
+      const memoryMaintenance = { ...maintenance, calls,
+        failures: attempt === undefined ? failures : receipt === undefined
+          ? [...failures.filter((failure) => failure.callId !== loop.toolCallId), { ...attempt, callId: loop.toolCallId, code }]
+          : failures.filter((failure) => !memoryWriteResolves(failure, attempt, receipt)),
+        receipts: receipt === undefined ? maintenance.receipts : [...maintenance.receipts.filter((entry) => entry.id !== receipt.id).slice(-255),
+          { ...receipt, source: attempt?.source ?? `unassociated:${loop.toolCallId}` }] };
       const useful = !state.pollingCalls.includes(loop.toolCallId) && !loop.result.isError && text.trim().length > 0;
+      const material = useful && !(state.memoryToolCalls ?? []).includes(loop.toolCallId) && value === undefined && receipt === undefined;
       return { ...state, memoryMaintenance, substantial: state.substantial || useful, successfulWork: state.successfulWork || useful,
-        stepTokens: (state.stepTokens ?? 0) + (useful ? Math.ceil(text.length / 4) : 0) };
+        stepTokens: (state.stepTokens ?? 0) + (useful ? Math.ceil(text.length / 4) : 0),
+        materialSubstantial: state.materialSubstantial || material, materialSuccessfulWork: state.materialSuccessfulWork || material,
+        materialStepTokens: (state.materialStepTokens ?? 0) + (material ? Math.ceil(text.length / 4) : 0) };
     }
     if (loop.type === 'tool.call' && ['TaskWait', 'TaskOutput', 'TaskList', 'AgentList', 'TodoList'].includes(loop.name)) {
       return { ...state, substantial: state.successfulWork === true, stepTokens: state.successfulWork ? state.stepTokens : 0,
+        materialSubstantial: state.materialSuccessfulWork === true, materialStepTokens: state.materialSuccessfulWork ? state.materialStepTokens : 0,
         pollingCalls: [...state.pollingCalls, loop.toolCallId] };
     }
-    if (loop.type === 'tool.call') return { ...state, substantial: state.successfulWork === true };
+    if (loop.type === 'tool.call') return { ...state, substantial: state.successfulWork === true,
+      materialToolCalled: true, materialSubstantial: state.materialSuccessfulWork === true };
     const stepId = loop.type === 'step.end' ? loop.turnId === undefined || loop.step === undefined ? loop.uuid : `t${loop.turnId}.${loop.step}` : undefined;
-    if (stepId !== undefined && state.substantial && !state.stepIds.includes(stepId)) {
-      return { ...state, workStepOrdinal: state.workStepOrdinal + 1, workTokens: (state.workTokens ?? 0) + (state.stepTokens ?? 0),
-        stepIds: [...state.stepIds.slice(-255), stepId], substantial: false, stepTokens: 0 };
+    if (stepId !== undefined) {
+      const work = state.substantial && !state.stepIds.includes(stepId);
+      const material = state.materialSubstantial === true && ((state.memoryToolCalls?.length ?? 0) === 0 || state.materialToolCalled === true) && !(state.materialStepIds ?? state.stepIds).includes(stepId);
+      return { ...state, workStepOrdinal: state.workStepOrdinal + Number(work), workTokens: (state.workTokens ?? 0) + (work ? state.stepTokens ?? 0 : 0),
+        stepIds: work ? [...state.stepIds.slice(-255), stepId] : state.stepIds, substantial: false, stepTokens: 0,
+        materialWorkStepOrdinal: (state.materialWorkStepOrdinal ?? state.workStepOrdinal) + Number(material),
+        materialWorkTokens: (state.materialWorkTokens ?? state.workTokens ?? 0) + (material ? state.materialStepTokens ?? 0 : 0),
+        materialStepIds: material ? [...(state.materialStepIds ?? state.stepIds).slice(-255), stepId] : state.materialStepIds,
+        materialSubstantial: false, materialStepTokens: 0 };
     }
     return state;
   }
@@ -141,7 +173,9 @@ export function advanceContinuityClock(state: ContinuityClock, event: TurnPrompt
     inputIds: offer.reason === 'M1' && disclosure?.inputId !== undefined
       ? [...maintenance.inputIds.filter((id) => id !== disclosure.inputId).slice(-255), disclosure.inputId] : maintenance.inputIds,
     periodicEpoch: offer.reason === 'M3' ? offer.epoch : maintenance.periodicEpoch,
-    renewalEpoch: offer.reason === 'M2' ? offer.epoch : maintenance.renewalEpoch };
+    renewalEpoch: offer.reason === 'M2' ? offer.epoch : maintenance.renewalEpoch,
+    failures: offer.reason === 'M2' ? (maintenance.failures ?? []).map((failure) => ({ ...failure, handedOff: true })) : maintenance.failures,
+    calls: offer.reason === 'M2' ? Object.fromEntries(Object.entries(maintenance.calls).map(([callId, attempt]) => [callId, { ...normalizeMemoryAttempt(callId, attempt), handedOff: true }])) : maintenance.calls };
   const common = { ...state, deliveredInputs: delivered, historyReferences, memoryMaintenance,
     notesRenewalEpoch: disclosure?.triggers.includes('T2') ? disclosure.epoch : state.notesRenewalEpoch,
     notesRebuildEpoch: disclosure?.triggers.includes('P1') ? disclosure.epoch : state.notesRebuildEpoch };

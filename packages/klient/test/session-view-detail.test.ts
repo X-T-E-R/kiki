@@ -46,3 +46,72 @@ describe('session view transcript detail', () => {
     }
   });
 });
+
+
+describe('session history page lifecycle', () => {
+  it('waits beyond the ordinary request deadline by default and samples a new reading deadline on the same client', async () => {
+    let readingTimeout = 0;
+    const fetchMock = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 45);
+        init?.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Cancelled', 'AbortError')); }, { once: true });
+      });
+      return envelope({ session_id: 's1', agent_id: 'main', epoch: 'epoch-1', through_seq: 1, complete: true, batches: [] });
+    });
+    const klient = createKlient({ endpoint: 'http://example.test', timeoutMs: 5,
+      readingTimeoutMs: () => readingTimeout, fetch: fetchMock as typeof fetch });
+    try {
+      await expect(klient.session('s1').view.transcript.catchUp({ agentId: 'main', since: { seq: 0 } })).resolves.toMatchObject({ complete: true });
+      readingTimeout = 10;
+      await expect(klient.session('s1').view.transcript.catchUp({ agentId: 'main', since: { seq: 0 } })).rejects.toThrow('call timed out after 10ms');
+      readingTimeout = 0;
+      await expect(klient.session('s1').view.transcript.catchUp({ agentId: 'main', since: { seq: 0 } })).resolves.toMatchObject({ complete: true });
+      await expect(klient.session('s1').status()).rejects.toThrow('call timed out after 5ms');
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    } finally { await klient.close(); }
+  });
+  it.each(['page', 'catchUp'] as const)('forwards %s cancellation through body consumption without putting the signal in wire input', async (kind) => {
+    let receivedSignal: AbortSignal | undefined;
+    let requestedUrl: URL | undefined;
+    let bodyStarted = false;
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      requestedUrl = new URL(String(input));
+      receivedSignal = init?.signal ?? undefined;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"code":0,"msg":"success","data":'));
+          bodyStarted = true;
+          receivedSignal?.addEventListener('abort', () => controller.error(new DOMException('Cancelled', 'AbortError')), { once: true });
+        },
+      }));
+    });
+    const klient = createKlient({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    const controller = new AbortController();
+    try {
+      const transcript = klient.session('s1').view.transcript;
+      const pending = kind === 'page'
+        ? transcript.page({ agentId: 'main', beforeItem: 'cursor-1', pageSize: 100 }, { signal: controller.signal })
+        : transcript.catchUp({ agentId: 'main', since: { seq: 4, epoch: 'epoch-1' } }, { signal: controller.signal });
+      const failure = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(bodyStarted).toBe(true);
+      expect(receivedSignal?.aborted).toBe(false);
+      expect(requestedUrl?.searchParams.has('signal')).toBe(false);
+      controller.abort();
+      await failure;
+      expect(receivedSignal?.aborted).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally { await klient.close(); }
+  });
+
+  it('still rejects malformed JSON and invalid UTF-8 on uncapped history pages', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{invalid json'))
+      .mockResolvedValueOnce(new Response(new Uint8Array([0xff, 0xfe])));
+    const klient = createKlient({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(klient.session('s1').view.transcript.page({ agentId: 'main' })).rejects.toThrow('non-JSON response');
+      await expect(klient.session('s1').view.transcript.page({ agentId: 'main' })).rejects.toThrow();
+    } finally { await klient.close(); }
+  });
+});

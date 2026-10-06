@@ -94,17 +94,33 @@ GUI 的 main agent 选择器列出当前工作区或工作目录下生效的 pro
 
 agent 文件被监听并在变更时热刷新，且热刷新不会打断进行中的会话：已在运行或恢复的 agent 继续使用绑定时的提示词与约束快照，哪怕 profile 被编辑、设为 `private`、删除或失效。因此改动只对**新的**派遣生效，向私有或已删除的 profile 派遣会得到明确报错；冻结的派遣列表会跳过失效目标，而不是让整段对话失败。恢复一个 profile 已不存在的旧记录时会降级到默认 profile 并给出警告，模型、effort 与执行器仍会校验。
 
+### 选择引擎与它的 profile
+
+输入区状态栏最左侧的那个控件用一个面板回答一个问题——本会话由什么运行。第一项是 Kiki 自身，其后是各个外部引擎，每个引擎下面列出该引擎自己的主档。每个引擎的第一行都是该 harness **原样运行**：不套用 Kiki profile、不注入 Kiki 提示词和工具，模型、思考强度与审批模式都归它自己。在某个引擎下选中一个 profile 会同时选定引擎与 profile，两半永远不会互相矛盾。
+
+旁边的模型控件刻意保持独立。模型是在你选定的引擎**之内**的选择，不是同一个问题的第三个维度；在原样运行的引擎上它属于 harness，Kiki 只报告会话解析出的结果，不提供改动入口。
+
+新会话立即应用所选引擎。已经说过话的会话里，改动从你的下一条消息起生效，换一个引擎会先确认一次。确认框回答的正是你真正不确定的两件事：新引擎从自己的上下文开始——Kiki 不会把旧对话交接给它，也不会续用旧引擎的会话——而这段对话本身完整保留在 Kiki 里，随时可读。正在运行的那一轮会用当前引擎跑完，控件则把新选择标记为待生效，直到下一条消息带上它。
+
+**设置 → AI → 外部引擎**中的「此引擎运行时 Kiki 补充的内容」为该引擎设定默认值，作用于所有未自行覆盖的会话：harness 能触及哪些 Kiki 工具组和 hooks、能否派遣 Kiki 子 agent，以及 profile 提示词如何投递。这里全部留空等同于在输入区选择「原样运行」那一行，因此你本就信任的 harness 会和它自己的 CLI 一样运行。
+
+### 外部直连执行
+
+harness 决定实际运行程序，profile 是可选定制，模型则是在该 harness 内选择。main agent 使用 [REST execution 选择](../server/rest-api.md#会话) 时，省略 `profile` 就直接运行外部程序。没有会话覆盖或 [harness 默认设置](../configuration/config-files.md#外部-harness-默认设置) 时，Kiki 不发送 profile 提示词、cognition、共享字段、记忆、hooks 或 MCP 工具，也不指定模型、档位、审批模式或 Codex 沙箱策略。原生执行不选 profile 时保持既有 Kiki 默认行为。
+
+直连保留配置的启动环境、home 和工作目录，但实际程序必须解析到你预期的 CLI 同一可执行文件及设置来源。ACP adapter 可能启动 SDK 自带 binary 或显式覆盖，而不是 PATH 上的 CLI；不选 profile 不会让两者自动变成同一个程序。仅登录观测未知并不阻止启动。
+
 ### 外部 ACP profile 的投递
 
 对于对外使用的 ACP（Agent Client Protocol）执行器，只有 harness 接受 `session/new` 的 `_meta.systemPromptOverride` 扩展时，Kiki 才把冻结的 profile 作为系统提示词发送。内置 `grok-acp` 执行器启用，其他 ACP 执行器把 profile 放在第一条 User 消息的前言里。自定义 harness 支持该扩展时，可在 `config.toml` 的 `[agent_executors.<id>]` 中设 `profile_delivery = "system_prompt_override"`；会忽略该扩展的 harness 不要启用，因为 Kiki 随后就不再附加 User 消息前言作为后备。
 
-覆写只在创建**新的远端会话**时生效，`session/resume` 和 `session/load` 不会重新发送；已有远端会话保留最初的投递方式。使用已变更的冻结 profile 重新派发会创建新的远端会话，若远端恢复失败，Kiki 新建会话并再次发送覆写，附上有长度限制的对话交接。系统提示词覆写可能替换 harness 原有的默认系统提示词，因此只对适合这种替换的 harness 启用。
+覆写只在创建**新的远端会话**时生效，`session/resume` 和 `session/load` 不会重新发送；已有远端会话保留最初的投递方式。旧的纯 profile 派发在重建远端会话时会附上有长度限制的对话交接；main agent 的 `execution` 路径在代际切换或重新连接失败后不会发送旧 Kiki 历史。系统提示词覆写可能替换 harness 原有的默认系统提示词，因此只对适合这种替换的 harness 启用。
 
-内置 `kimi-acp` 执行器会把已配置的 MCP 服务器转发给 Kimi Code。`0.37.0` 起、不含 `0.39.0` 的 Kimi CLI 不接受 ACP stdio MCP 服务器，预检会警告 MCP 工具将失败并建议升级；警告不阻止转发，无法探测版本时也不发这条警告。
+旧的纯 profile 绑定中，内置 `kimi-acp` 执行器会把已配置的 MCP 服务器转发给 Kimi Code；`execution` 路径不会自动转发工作区 MCP。`0.37.0` 起、不含 `0.39.0` 的 Kimi CLI 不接受 ACP stdio MCP 服务器，预检会警告 MCP 工具将失败并建议升级；警告不阻止转发，无法探测版本时也不发这条警告。
 
 ### 外部 main agent 的委派
 
-外部执行器可以担任 main agent。要让它派遣 Kiki subagent，在其 profile 中添加 `allow_kiki_subagents: true` 并把该 profile 绑定为 main agent，默认是 `false`，也不会为外部子 Agent 开启委派。
+外部执行器可以担任 main agent。要让它派遣 Kiki subagent，在其 profile 中添加 `allow_kiki_subagents: true` 并把该 profile 绑定为 main agent。main agent 的 `execution` 路径也可在会话覆盖或 [harness 默认设置](../configuration/config-files.md#外部-harness-默认设置) 中开启；profile 未声明该字段时继承这些默认值。没有任何显式值时为 `false`，也不会为外部子 Agent 开启委派。
 
 Kiki 把 MCP 工具（harness 调用 Kiki 的桥）附加到**已有会话**，不另建 seat 会话。harness 需要支持本机 stdio MCP，且其进程能找到 `kiki`。profile 的派发开关、预设权限与推荐、模型约束和父级通知策略仍然生效。改开关后需重新绑定 main profile，已有绑定保留冻结快照；在已绑定的 main profile 上关闭委派或关闭执行器都会撤销这个桥。
 
@@ -124,7 +140,7 @@ allow_kiki_subagents: true
 kiki_context: [memory, board, cron, threads, history, hooks]
 ```
 
-列表默认不设置（全部关闭），`[]` 同样表示全部关闭。改完需要重新绑定 main profile。工具在桥启动时一次性注册，之后开启的工具组不会改写正在运行的 harness 工具列表。profile 的工具策略与功能设置仍然生效，只有外部 main agent 能取得这个桥。
+旧的纯 profile 绑定中，不设置列表表示全部关闭。main agent 的 `execution` 路径中，profile 未声明该字段时继承 [harness 默认设置](../configuration/config-files.md#外部-harness-默认设置)，会话覆盖优先；`[]` 明确关闭全部组。改完需要重新绑定 execution。工具在桥启动时一次性注册，之后开启的工具组不会改写正在运行的 harness 工具列表。profile 的工具策略与功能设置仍然生效，只有外部 main agent 能取得这个桥。
 
 | 工具组 | MCP 工具 |
 | --- | --- |
@@ -352,7 +368,7 @@ Route 的 `tools` 与 `disallowedTools` 替换基础对应字段，`allowed_suba
 
 恢复时不会重新选择或切换 route：journal 保存规范基础 role、route id 以及渲染后的提示词、工具策略、denylist、子 Agent 限制、模型与 effort 锁、service tier 和请求参数，因此即便之后关闭 flag 或 sidecar 变化，已有 routed Agent 仍从快照恢复，变化只影响新派发。
 
-新子 Agent 的选模顺序是：具体的 `model_alias` 参数 → 生效 profile / route / caller lease 的 pin → 显式配置的 `[subagent].default_model`；都没有则以 `model.not_configured` 失败且不创建子 Agent，调用方模型不是静默回退。在 profile、route 或 caller lease 中写 `model_alias: inherit` 才是显式跟随调用方已解析的模型，而 `AgentRun` 本身拒绝 `model_alias: "inherit"`，请写具体模型名或省略参数。配置为继承时思考强度也跟随调用方，除非工具 `effort` 或适用的 `thinking_effort` pin 优先；否则按工具 `effort` → route 上锁定的 effort（route 未锁定时改用 caller lease 的）→ 匹配的 `model_profiles` 档位 → 绑定模型与 profile pin 一致时的 `thinking_effort` → 绑定模型默认档位解析；都不提供时子 Agent 不会启动。未知 alias 一律报错。
+新子 Agent 的选模顺序是：具体的 `model_alias` 参数 → 生效 profile / route / caller lease 的 pin → 显式配置的 `[subagent].default_model`；都没有则以 `model.not_configured` 失败且不创建子 Agent，调用方模型不是静默回退。在 profile、route 或 caller lease 中写 `model_alias: inherit` 才是显式跟随调用方已解析的模型，而 `AgentRun` 本身拒绝 `model_alias: "inherit"`，请写具体模型名或省略参数。配置为继承时思考强度也跟随调用方，除非工具 `effort` 或适用的 `thinking_effort` pin 优先；否则按工具 `effort` → route 上锁定的 effort（route 未锁定时改用 caller lease 的）→ 匹配的 `model_profiles` 档位 → 绑定模型与 profile pin 一致时的 `thinking_effort` → 绑定模型默认档位解析。都不提供时，能力明确不支持思考的模型使用 `off`；思考模型没有可解析默认档位时仍需显式选择。未知能力不视为 `off`，未知 alias 一律报错。
 
 `resume` 时省略 `model_alias` 和 `effort` 保留已保存绑定，解析到同一规范模型的 alias 不产生变化；只改 `effort` 在下次空闲运行生效；换到不同规范模型需要 `allow_model_change: true`，此时省略 `effort` 会重新解析目标模型默认值而不沿用旧值。恢复准入会检查 profile、lease、model-profile 与继承的硬规则，拒绝时已保存绑定保持不变；provider 无法执行的 effort、机器级模型禁止和 executor thread 绑定限制同样是硬错误。
 

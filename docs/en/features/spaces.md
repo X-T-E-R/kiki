@@ -28,7 +28,9 @@ A remote connection is a directed link from this Kiki's home to another Kiki hom
 
 Receiving is off by default. Enabling the gate on the target does not approve anyone by itself — you then create an invitation, hand it to the source, and the source registers a connection against it. Every connection is one row with its own state, its last-known measurements, and actions that affect only that link: enable, disable, retry, or remove. `inbound revoke <grantId>` stops one source's reads and streams without touching the others, and `inbound disable` closes all peer access while keeping the allow list. Removing a connection releases local credentials and owned tunnels; it does not stop the target daemon or undo work already started there. An offline target keeps its last-known measurements and their timestamp rather than reporting invented zeros.
 
-The command side plans before it acts. `kiki connections ... ssh plan` only queries; `ssh execute PLAN_ID` attaches; only an explicit `--ensure` may start a remote daemon, and that daemon keeps running until you stop it. Neither opens inbound access on its own. Both hosts need a compatible Kiki and working SSH authentication with known-host verification, and Kiki does not install remote software for you.
+The command side plans before it acts. `kiki connections ... ssh plan` only queries; `ssh execute PLAN_ID` attaches; only an explicit `--ensure` may start a remote daemon, and that daemon keeps running until you stop it. Neither opens inbound access on its own. The GUI also rechecks an already-running target before attaching, without starting it or asking for another confirmation. Both hosts need a compatible connection protocol and working SSH authentication with known-host verification; their Kiki version strings do not have to match. Kiki does not install remote software for you.
+
+If the target temporarily closes inbound access, wait for its owner to reopen it, then try your operation again. A refusal for one operation does not sign you out of the connection, and Kiki never automatically repeats a refused write. An invalid token or revoked grant still rejects access; replace the connection's credentials or authorization before trying again.
 
 See [`kiki connections`](/en/reference/command#kiki-connections) and [`kiki bridges`](/en/reference/command#kiki-bridges) for the command reference behind these settings.
 
@@ -60,13 +62,15 @@ See [Use Kiki in a browser](/en/server/local-server#use-kiki-in-a-browser).
 
 ## In-session SSH
 
-A session can hold SSH hosts. Use the input box's **+** menu to add one, and the **Session SSH** control above the input box lists the joined hosts, takes a host away on **X**, and reopens the same list to add more. A joined host is a resource of that session, not something each message carries — so the timeline does not fill with host bubbles, and removing a host removes it from the session rather than from your machine.
+A session can hold SSH hosts. Use the input box's **+** menu to add one, and the **SSH** control above the input box lists the joined hosts, takes a host away on **X**, and reopens the same list to add more. A joined host is a resource of that session, not something each message carries — so the timeline does not fill with host bubbles, and removing a host removes it from the session rather than from your machine.
 
-Adding a host makes it available to the session; it does not connect to it. In a new session the control reads **SSH to join**, and the hosts you selected are joined to the created session before its first message is sent.
+The control appears only once the session holds a host. A session that has joined none has no SSH line above its input box, and the **+** menu is still the way to add the first one. It stays on screen for as long as the host is joined, including between turns, because "joined" is the session's own state rather than whether a request happens to be running.
 
-![The Session SSH panel above the input box, listing the hosts joined to this session and the ones still available to add.](/shots/spaces/ps-20261005-spaces-session-ssh.en.png)
+Adding a host makes it available to the session; it does not connect to it. In a new session, picking a host in the **+** menu shows the same **SSH** control before the first message, and the hosts you selected are joined to the created session before that message is sent.
 
-See [Interface overview](/en/guides/interface#input-box) for the Session SSH control and the send-timing menu beside it.
+![The SSH panel above the input box, listing the hosts joined to this session and the ones still available to add.](/shots/spaces/ps-20261005-spaces-session-ssh.en.png)
+
+See [Interface overview](/en/guides/interface#input-box) for the SSH control and the send-timing menu beside it.
 
 ## Next steps
 

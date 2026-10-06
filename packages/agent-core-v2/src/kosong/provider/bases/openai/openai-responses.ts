@@ -1,12 +1,16 @@
-import OpenAI from 'openai';
+import OpenAI, { OpenAIError } from 'openai';
 
-import { Error2 } from '#/_base/errors/errors';
+import { Error2, attachErrorDetails } from '#/_base/errors/errors';
+import { addDiagnosticCount, attachStreamDiagnostics, createStreamDiagnostics, safeProviderFailureDetails, safeStreamDiagnostics, type StreamDiagnostics } from '#/kosong/contract/streamDiagnostics';
 import {
   APIContextOverflowError,
   APIProviderQuotaExhaustedError,
   APIProviderRateLimitError,
   ChatProviderError,
+  createAbortError,
+  isAbortError,
   isContextOverflowErrorCode,
+  providerStreamErrorDetails,
 } from '#/kosong/contract/errors';
 import type {
   ContentPart,
@@ -257,20 +261,32 @@ function errorFromOpenAIResponsesEvent(
 ): ChatProviderError {
   const formatted = formatResponsesErrorEvent(code, message, param);
   const fullMessage = `${prefix}: ${formatted}`;
+  const raw = asRawObject(options?.rawEvent);
+  const failedResponse = raw === null ? undefined : readObjectField(raw, 'response');
+  const body = failedResponse === undefined ? raw : readObjectField(failedResponse, 'error');
+  const metadata = providerStreamErrorDetails({
+    error: body ?? { type: 'error', code },
+    request_id: raw?.['request_id'],
+  });
+  const withEventDetails = (error: ChatProviderError): ChatProviderError => attachErrorDetails(error, {
+    ...metadata,
+    ...Object.fromEntries(Object.entries(safeProviderFailureDetails(error.details)).filter(([, value]) => value !== null)),
+    errorSource: 'provider_event',
+  });
   const hooked = options?.convertErrorHook?.(options.rawEvent ?? { code, message, param });
   if (hooked !== undefined) {
-    return hooked;
+    return withEventDetails(hooked);
   }
   if (isContextOverflowErrorCode(code)) {
-    return new APIContextOverflowError(400, fullMessage);
+    return withEventDetails(new APIContextOverflowError(400, fullMessage));
   }
   if (isOpenAIInsufficientQuotaCode(code)) {
-    return new APIProviderQuotaExhaustedError(fullMessage);
+    return withEventDetails(new APIProviderQuotaExhaustedError(fullMessage));
   }
   if (code === 'rate_limit_exceeded' || readEmbeddedStatusCode(message) === 429) {
-    return new APIProviderRateLimitError(fullMessage);
+    return withEventDetails(new APIProviderRateLimitError(fullMessage));
   }
-  return new ChatProviderError(fullMessage);
+  return withEventDetails(new ChatProviderError(fullMessage));
 }
 
 function parseNestedGatewayStreamError(message: string):
@@ -677,6 +693,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
   private _finishReason: FinishReason | null = null;
   private _rawFinishReason: string | null = null;
   private readonly _iter: AsyncGenerator<StreamedMessagePart>;
+  private _diagnostics?: { -readonly [K in keyof StreamDiagnostics]: StreamDiagnostics[K] };
 
   constructor(
     response: unknown,
@@ -686,6 +703,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
       | undefined,
   ) {
     if (isStream) {
+      this._diagnostics = createStreamDiagnostics();
       this._iter = this._convertStreamResponse(response as AsyncIterable<RawObject>);
     } else {
       this._iter = this._convertNonStreamResponse(response as RawObject);
@@ -708,8 +726,52 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     return this._rawFinishReason;
   }
 
+  get diagnostics(): StreamDiagnostics | undefined {
+    return safeStreamDiagnostics(this._diagnostics);
+  }
+
   async *[Symbol.asyncIterator](): AsyncIterator<StreamedMessagePart> {
-    yield* this._iter;
+    for await (const part of this._iter) {
+      if (this._diagnostics !== undefined) {
+        if (part.type === 'text') this._diagnostics.emittedTextChars = addDiagnosticCount(this._diagnostics.emittedTextChars, part.text.length);
+        if (part.type === 'function') this._diagnostics.emittedToolHeaders = addDiagnosticCount(this._diagnostics.emittedToolHeaders);
+      }
+      yield part;
+    }
+  }
+
+  private _captureTerminalDiagnostics(response: RawObject, status: 'completed' | 'incomplete' | 'failed'): void {
+    const diagnostics = this._diagnostics;
+    if (diagnostics === undefined) return;
+    diagnostics.terminalStatus = status;
+    diagnostics.terminalTextParts = null;
+    diagnostics.terminalTextChars = null;
+    diagnostics.terminalToolCalls = null;
+    const output = response['output'];
+    if (!Array.isArray(output)) return;
+    let textParts = 0;
+    let textChars = 0;
+    let toolCalls = 0;
+    for (const value of output) {
+      const item = asRawObject(value);
+      if (item === null) return;
+      if (item['type'] === 'function_call') toolCalls = addDiagnosticCount(toolCalls);
+      if (item['type'] !== 'message') continue;
+      const content = item['content'];
+      if (!Array.isArray(content)) return;
+      for (const value of content) {
+        const part = asRawObject(value);
+        if (part === null) return;
+        if (part['type'] !== 'output_text') continue;
+        const text = readStringField(part, 'text');
+        if (text === undefined) return;
+        textParts = addDiagnosticCount(textParts);
+        textChars = addDiagnosticCount(textChars, text.length);
+      }
+    }
+    diagnostics.terminalTextParts = textParts;
+    diagnostics.terminalTextChars = textChars;
+    diagnostics.terminalToolCalls = toolCalls;
   }
 
   private _captureFinishReasonFromResponse(response: RawObject): void {
@@ -909,13 +971,28 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
       yield part;
     };
 
+    const diagnostics = this._diagnostics!;
+    const counters = new Map<string, keyof Pick<StreamDiagnostics, 'textDeltaCount' | 'textDoneCount' | 'contentPartAddedCount' | 'outputItemAddedCount' | 'outputItemDoneCount' | 'terminalEventCount' | 'errorEventCount'>>([
+      ['response.output_text.delta', 'textDeltaCount'], ['response.output_text.done', 'textDoneCount'],
+      ['response.content_part.added', 'contentPartAddedCount'], ['response.output_item.added', 'outputItemAddedCount'],
+      ['response.output_item.done', 'outputItemDoneCount'], ['response.completed', 'terminalEventCount'],
+      ['response.incomplete', 'terminalEventCount'], ['response.failed', 'terminalEventCount'],
+      ['error', 'errorEventCount'],
+    ]);
+    let readingEvent = true;
     try {
       for await (const chunk of response) {
+        readingEvent = false;
+        diagnostics.eventCount = addDiagnosticCount(diagnostics.eventCount);
         const type = readStringField(chunk, 'type');
+        const counter = type === undefined ? undefined : counters.get(type);
+        if (counter !== undefined) diagnostics[counter] = addDiagnosticCount(diagnostics[counter]);
         if (type === undefined) {
           if (!hasOwn(chunk, 'type')) {
             const message = readStringField(chunk, 'message');
             if (message !== undefined) {
+              diagnostics.endSource = 'event_error';
+              diagnostics.errorEventCount = addDiagnosticCount(diagnostics.errorEventCount);
               throw malformedStreamErrorEvent(message, this._convertErrorHook);
             }
           }
@@ -1033,6 +1110,8 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
           case 'response.completed':
           case 'response.incomplete': {
             const responseObject = requireObjectField(chunk, 'response', type);
+            diagnostics.endSource = 'terminal';
+            this._captureTerminalDiagnostics(responseObject, type === 'response.completed' ? 'completed' : 'incomplete');
             const respId = readStringField(responseObject, 'id');
             if (respId !== undefined) {
               this._id = respId;
@@ -1048,6 +1127,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             break;
           }
           case 'error': {
+            diagnostics.endSource = 'event_error';
             const message = requireStringField(chunk, 'message', type);
             throw errorFromOpenAIResponsesEvent(
               'OpenAI Responses stream error',
@@ -1058,7 +1138,10 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             );
           }
           case 'response.failed': {
+            diagnostics.endSource = 'event_error';
+            diagnostics.errorEventCount = addDiagnosticCount(diagnostics.errorEventCount);
             const responseObject = requireObjectField(chunk, 'response', type);
+            this._captureTerminalDiagnostics(responseObject, 'failed');
             const error = readResponsesFailedResponseError(responseObject);
             if (error !== undefined) {
               throw errorFromOpenAIResponsesEvent(
@@ -1069,16 +1152,25 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
                 { rawEvent: chunk, convertErrorHook: this._convertErrorHook },
               );
             }
-            throw new ChatProviderError(
+            throw attachErrorDetails(new ChatProviderError(
               `OpenAI Responses response.failed: ${formatResponsesFailedResponse(responseObject)}`,
-            );
+            ), { ...providerStreamErrorDetails({ type, code: null }), errorSource: 'provider_event' });
           }
           default:
             break;
         }
+        readingEvent = true;
       }
+      if (diagnostics.endSource === 'in_progress') diagnostics.endSource = 'eof';
     } catch (error: unknown) {
-      throw convertOpenAIError(error, this._convertErrorHook);
+      if (isAbortError(error)) {
+        diagnostics.endSource = 'cancelled';
+        throw attachStreamDiagnostics(createAbortError(), diagnostics);
+      }
+      if (diagnostics.endSource !== 'event_error') diagnostics.endSource = readingEvent ? 'sdk_error' : 'local_error';
+      throw attachStreamDiagnostics(convertOpenAIError(error, this._convertErrorHook), diagnostics);
+    } finally {
+      if (diagnostics.endSource === 'in_progress') diagnostics.endSource = 'cancelled';
     }
   }
 }
@@ -1284,7 +1376,12 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
           : await responsePromise;
       return new OpenAIResponsesStreamedMessage(response, this._stream, this._convertErrorHook);
     } catch (error: unknown) {
-      throw convertOpenAIError(error, this._convertErrorHook);
+      const diagnostics: StreamDiagnostics | undefined = this._stream ? {
+        ...createStreamDiagnostics(),
+        endSource: isAbortError(error) ? 'cancelled' : error instanceof OpenAIError ? 'sdk_error' : 'local_error',
+      } : undefined;
+      if (isAbortError(error)) throw attachStreamDiagnostics(createAbortError(), diagnostics);
+      throw attachStreamDiagnostics(convertOpenAIError(error, this._convertErrorHook), diagnostics);
     }
   }
 

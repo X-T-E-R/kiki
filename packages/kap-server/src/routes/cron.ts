@@ -6,6 +6,7 @@ import {
   ISessionContext,
   ISessionCronService,
   ISessionManager,
+  ISessionIndex,
   computeNextCronRun,
   cronToHuman,
   jitteredNextCronRunMs,
@@ -18,6 +19,7 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { z } from 'zod';
+import { ulid } from 'ulid';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
@@ -31,6 +33,9 @@ import {
   listCronTasksQuerySchema,
   listCronTasksResponseSchema,
   runCronTaskResponseSchema,
+  cronTaskDetailResponseSchema,
+  createCronTaskRequestSchema,
+  updateCronTaskRequestSchema,
 } from '../protocol/rest-cron';
 import { parseActionSuffix } from './action-suffix';
 
@@ -38,31 +43,20 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const STALE_THRESHOLD_MS = 7 * MS_PER_DAY;
 const PROMPT_PREVIEW_BYTES = 200;
 
+type CronRouteRegistration = (
+  path: string,
+  options: { preHandler: unknown[]; schema?: Record<string, unknown> },
+  handler: (
+    req: { id: string; params: unknown; query: unknown; body: unknown },
+    reply: { send(payload: unknown): unknown },
+  ) => Promise<void> | void,
+) => unknown;
+
 interface CronRouteHost {
-  get(
-    path: string,
-    options: { preHandler: unknown[]; schema?: Record<string, unknown> },
-    handler: (
-      req: { id: string; query: unknown },
-      reply: { send(payload: unknown): unknown },
-    ) => Promise<void> | void,
-  ): unknown;
-  post(
-    path: string,
-    options: { preHandler: unknown[]; schema?: Record<string, unknown> },
-    handler: (
-      req: { id: string; params: unknown; query: unknown },
-      reply: { send(payload: unknown): unknown },
-    ) => Promise<void> | void,
-  ): unknown;
-  delete(
-    path: string,
-    options: { preHandler: unknown[]; schema?: Record<string, unknown> },
-    handler: (
-      req: { id: string; params: unknown; query: unknown },
-      reply: { send(payload: unknown): unknown },
-    ) => Promise<void> | void,
-  ): unknown;
+  get: CronRouteRegistration;
+  post: CronRouteRegistration;
+  patch: CronRouteRegistration;
+  delete: CronRouteRegistration;
 }
 
 interface LocatedCronTask {
@@ -130,6 +124,130 @@ export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
     },
   );
   app.get(listRoute.path, listRoute.options, listRoute.handler as Parameters<CronRouteHost['get']>[2]);
+
+  const detailRoute = defineRoute(
+    {
+      method: 'GET', path: '/cron/{task_id}', params: taskParamsSchema,
+      querystring: cronTaskActionQuerySchema, success: { data: cronTaskDetailResponseSchema },
+      errors: { [ErrorCode.VALIDATION_FAILED]: { detailsSchema }, [ErrorCode.TASK_NOT_FOUND]: {} },
+      description: 'Read a complete cron task without opening its session', tags: ['cron'],
+    },
+    async (req, reply) => {
+      const resolved = await locateCronTask(core, req.params.task_id, req.query.session_id);
+      if (resolved.kind !== 'found') {
+        reply.send(resolved.kind === 'not_found' ? taskNotFound(req.params.task_id, req.id)
+          : ambiguousTask(req.params.task_id, req.id));
+        return;
+      }
+      reply.send(okEnvelope({ task: toWireDetail(resolved.task, await presentationContext(core)) }, req.id));
+    },
+  );
+  app.get(detailRoute.path, detailRoute.options, detailRoute.handler as Parameters<CronRouteHost['get']>[2]);
+
+  const createRoute = defineRoute(
+    {
+      method: 'POST', path: '/cron', body: createCronTaskRequestSchema,
+      success: { data: cronTaskDetailResponseSchema },
+      errors: { [ErrorCode.VALIDATION_FAILED]: { detailsSchema }, [ErrorCode.SESSION_NOT_FOUND]: {} },
+      description: 'Create a scheduled prompt bound to an existing conversation', tags: ['cron'],
+    },
+    async (req, reply) => {
+      if (!validateCron(req.body.cron, reply, req.id)) return;
+      const manager = core.accessor.get(ISessionManager);
+      await withCronSessions(core, [req.body.session_id], async () => {
+        const workspaceId = await sessionWorkspace(core, req.body.session_id);
+        if (workspaceId === undefined) {
+          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'target session does not exist', req.id));
+          return;
+        }
+        const live = manager.get(req.body.session_id);
+        if (live?.accessor.get(ISessionContext).ephemeral === true) {
+          reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'temporary sessions cannot schedule cron tasks', req.id));
+          return;
+        }
+        const context = await presentationContext(core);
+        const cron = live?.accessor.get(ISessionCronService);
+        const init = { cron: req.body.cron, prompt: req.body.prompt, recurring: req.body.recurring ?? true, paused: req.body.paused ?? false };
+        let task: CronTask;
+        if (cron !== undefined) {
+          task = await cron.addTask(init);
+        } else {
+          const store = core.accessor.get(ICronTaskPersistence);
+          let id = ulid();
+          while (await store.get(workspaceId, id) !== undefined) id = ulid();
+          task = { ...init, id, createdAt: context.now, tags: { [CRON_SESSION_TAG]: req.body.session_id } };
+          await store.save(workspaceId, task);
+        }
+        reply.send(okEnvelope({ task: toWireDetail({ workspaceId, sessionId: req.body.session_id, task, liveCron: cron }, context) }, req.id));
+      });
+    },
+  );
+  app.post(createRoute.path, createRoute.options, createRoute.handler as Parameters<CronRouteHost['post']>[2]);
+
+  const updateRoute = defineRoute(
+    {
+      method: 'PATCH', path: '/cron/{task_id}', params: taskParamsSchema,
+      querystring: cronTaskActionQuerySchema, body: updateCronTaskRequestSchema,
+      success: { data: cronTaskDetailResponseSchema },
+      errors: { [ErrorCode.VALIDATION_FAILED]: { detailsSchema }, [ErrorCode.TASK_NOT_FOUND]: {}, [ErrorCode.SESSION_NOT_FOUND]: {} },
+      description: 'Edit a cron task in place or rebind within its workspace', tags: ['cron'],
+    },
+    async (req, reply) => {
+      if (req.body.cron !== undefined && !validateCron(req.body.cron, reply, req.id)) return;
+      const resolved = await locateCronTask(core, req.params.task_id, req.query.session_id);
+      if (resolved.kind !== 'found') {
+        reply.send(resolved.kind === 'not_found' ? taskNotFound(req.params.task_id, req.id)
+          : ambiguousTask(req.params.task_id, req.id));
+        return;
+      }
+      const located = resolved.task;
+      const { session_id: requestedSessionId, ...editable } = req.body;
+      const targetSessionId = requestedSessionId ?? located.sessionId;
+      await withCronSessions(core, [located.sessionId, targetSessionId], async () => {
+        const manager = core.accessor.get(ISessionManager);
+        const store = core.accessor.get(ICronTaskPersistence);
+        const liveCron = located.sessionId === undefined ? undefined : manager.get(located.sessionId)?.accessor.get(ISessionCronService);
+        const current = liveCron?.getTask(located.task.id) ?? await store.get(located.workspaceId, located.task.id);
+        if (current === undefined || current.tags?.[CRON_SESSION_TAG] !== located.sessionId) {
+          reply.send(taskNotFound(located.task.id, req.id));
+          return;
+        }
+        if (targetSessionId !== undefined) {
+          const targetWorkspace = await sessionWorkspace(core, targetSessionId);
+          if (targetWorkspace === undefined) {
+            reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'target session does not exist', req.id));
+            return;
+          }
+          if (targetWorkspace !== located.workspaceId) {
+            reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'cron tasks can only be rebound within the same workspace', req.id));
+            return;
+          }
+          if (manager.get(targetSessionId)?.accessor.get(ISessionContext).ephemeral === true) {
+            reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'temporary sessions cannot schedule cron tasks', req.id));
+            return;
+          }
+        }
+        const patch: Partial<Pick<CronTask, 'cron' | 'prompt' | 'recurring' | 'tags'>> = {
+          ...editable,
+          tags: targetSessionId === undefined ? current.tags : { ...current.tags, [CRON_SESSION_TAG]: targetSessionId },
+        };
+        let task: CronTask | undefined;
+        if (liveCron !== undefined) task = await liveCron.updateTask(current.id, patch);
+        else {
+          task = { ...current, ...patch };
+          await store.save(located.workspaceId, task);
+        }
+        if (task === undefined) {
+          reply.send(taskNotFound(current.id, req.id));
+          return;
+        }
+        const targetCron = targetSessionId === undefined ? undefined : manager.get(targetSessionId)?.accessor.get(ISessionCronService);
+        if (targetCron !== undefined && targetCron !== liveCron) await targetCron.syncTaskFromStore(task.id);
+        reply.send(okEnvelope({ task: toWireDetail({ ...located, task, sessionId: targetSessionId, liveCron: targetCron }, await presentationContext(core)) }, req.id));
+      });
+    },
+  );
+  app.patch(updateRoute.path, updateRoute.options, updateRoute.handler as Parameters<CronRouteHost['patch']>[2]);
 
   const actionRoute = defineRoute(
     {
@@ -277,6 +395,44 @@ export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
     deleteRoute.options,
     deleteRoute.handler as Parameters<CronRouteHost['delete']>[2],
   );
+}
+
+function validateCron(cron: string, reply: { send(payload: unknown): unknown }, requestId: string): boolean {
+  try {
+    parseCronExpression(cron);
+    return true;
+  } catch (error) {
+    reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error instanceof Error ? error.message : 'invalid cron expression', requestId));
+    return false;
+  }
+}
+
+function ambiguousTask(taskId: string, requestId: string): unknown {
+  return errEnvelope(ErrorCode.VALIDATION_FAILED, `cron task ${taskId} exists in multiple sessions; pass session_id`, requestId);
+}
+
+async function sessionWorkspace(core: Scope, sessionId: string): Promise<string | undefined> {
+  const live = core.accessor.get(ISessionManager).get(sessionId);
+  if (live !== undefined) return live.accessor.get(ISessionContext).workspaceId;
+  return (await core.accessor.get(ISessionIndex).get(sessionId))?.workspaceId;
+}
+
+async function withCronSessions<T>(core: Scope, sessionIds: readonly (string | undefined)[], operation: () => Promise<T>): Promise<T> {
+  const manager = core.accessor.get(ISessionManager);
+  const ids = [...new Set(sessionIds.filter((id): id is string => id !== undefined))].toSorted();
+  const enter = async (index: number): Promise<T> => {
+    const id = ids[index];
+    if (id === undefined) return operation();
+    return manager.withLifecycleSerialization(id, async () => {
+      await manager.whenResumeSettled(id).catch(() => undefined);
+      return enter(index + 1);
+    });
+  };
+  return enter(0);
+}
+
+function toWireDetail(located: LocatedCronTask, context: CronPresentationContext): CronTaskWire & { readonly prompt: string } {
+  return { ...toWireTask(located, context), prompt: located.task.prompt };
 }
 
 async function collectCronTasks(core: Scope): Promise<LocatedCronTask[]> {

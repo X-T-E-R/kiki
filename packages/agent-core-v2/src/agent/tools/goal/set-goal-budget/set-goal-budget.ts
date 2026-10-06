@@ -8,7 +8,7 @@ const BUDGET_UNITS = ['turns', 'tokens', 'milliseconds', 'seconds', 'minutes', '
 export const SetGoalBudgetToolInputSchema = z
   .object({
     value: z.number().positive().describe('The positive numeric budget value.'),
-    unit: z.enum(BUDGET_UNITS),
+    unit: z.enum(BUDGET_UNITS).describe("Budget dimension. tokens counts only this agent's goal-driven output, not context size, total billed tokens, or the agent tree."),
   })
   .strict();
 

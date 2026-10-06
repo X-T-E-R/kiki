@@ -12,22 +12,22 @@ import {
 export async function ensurePromptAuthReady(
   session: ISessionScopeHandle,
   accessor: IAgentScopeHandle['accessor'],
-  overrides: { readonly model?: string; readonly profile?: string } = {},
+  overrides: { readonly execution?: import('@kiki/protocol').ExecutionSelection; readonly model?: string; readonly profile?: string } = {},
 ): Promise<void> {
   const profile = accessor.get(IAgentProfileService);
-  let model = overrides.model;
+  if (overrides.execution !== undefined && overrides.execution.executor !== 'native') return;
+  if (overrides.execution === undefined && overrides.profile === undefined && (profile.data().executorId ?? 'native') !== 'native') return;
+  const selectedProfile = overrides.execution?.profile ?? overrides.profile;
+  let model = overrides.model ?? overrides.execution?.overrides?.model ?? undefined;
   if (model === undefined) {
-    if (overrides.profile !== undefined && overrides.profile !== profile.data().profileName) {
+    if (selectedProfile !== undefined && (overrides.execution !== undefined || selectedProfile !== profile.data().profileName)) {
       const catalog = session.accessor.get(ISessionAgentProfileCatalog);
       await catalog.ready;
-      const selected = overrides.profile === DEFAULT_AGENT_PROFILE_NAME
-        ? catalog.getDefault()
-        : catalog.get(overrides.profile);
-      if (selected === undefined) {
-        throw new Error2(ErrorCodes.REQUEST_INVALID, `Unknown agent profile: "${overrides.profile}"`);
-      }
+      const selected = selectedProfile === DEFAULT_AGENT_PROFILE_NAME ? catalog.getDefault() : catalog.get(selectedProfile);
+      if (selected === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, `Unknown agent profile: "${selectedProfile}"`);
+      if ((selected.executor ?? 'native') !== 'native') return;
       model = selected.modelAlias;
-    } else {
+    } else if (overrides.execution === undefined) {
       model = profile.getModel() || undefined;
     }
   }

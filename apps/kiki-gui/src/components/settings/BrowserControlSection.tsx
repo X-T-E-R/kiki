@@ -6,21 +6,29 @@ import { useConnection } from '../../state/connection';
 import { browserApi, browserKeys } from '../../lib/browserRest';
 import { FeedbackLine, Hint, SaveStatus } from '../controls';
 import { SectionCard } from './SectionCard';
-import { SettingField } from './fields';
+import { AdvancedDetails, SettingField } from './fields';
 import { SettingsSelect } from './SettingsPrimitives';
 import { useInstantSave } from './useInstantSave';
 import { BrowserConnectionCard } from './browserControl/BrowserConnectionCard';
-import { BrowserSetupCard } from './browserControl/BrowserSetupCard';
+import { BrowserSetupWizard } from './browserControl/BrowserSetupWizard';
 
 export function BrowserControlSection() {
   const { t } = useI18n();
   return (
     <div className="space-y-6" data-settings-browser-control>
-      <BrowserSetupCard />
-      <SectionCard id="st-card-browser-connections" title={t('st.browser.connectionsTitle')}>
-        <BrowserConnectionCard />
+      <SectionCard id="st-card-browser-setup" title={t('st.browser.setup.title')}>
+        <BrowserSetupWizard />
       </SectionCard>
       <DefaultBrowserCard />
+      {/* Everything a person types rather than picks sits below the routes that
+          need no typing, and stays folded: a hand-written CDP address or a
+          driver path is a real way in, but it is the exception, not the
+          opening move. Editing what is already saved lives in here too. */}
+      <AdvancedDetails summary={t('st.browser.advanced.title')} data-browser-advanced-region>
+        <SectionCard id="st-card-browser-connections" title={t('st.browser.connectionsTitle')}>
+          <BrowserConnectionCard />
+        </SectionCard>
+      </AdvancedDetails>
     </div>
   );
 }

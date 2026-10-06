@@ -17,9 +17,10 @@ function setup() {
   const routes: CapturedRoute[] = [];
   let settings: MemoryConfig = MemoryConfigSchema.parse({ enabled: false });
   const store = {
-    list: async () => [], get: async () => undefined, journal: async () => [], undo: async () => undefined,
+    list: async () => [], inventory: async () => ({ entries: [], complete: true, warnings: [], fingerprint: 'empty' }), get: async () => undefined, journal: async () => [], undo: async () => undefined,
     put: async (input: Record<string, unknown>) => ({ entry: input, operationId: 'receipt-id' }),
     delete: async () => 'receipt-id', search: async () => [],
+    query: async (_scopes: unknown, input: { statuses?: string[] }) => ({ items: [], mode: 'list', next_cursor: null, coverage: { scopes: [{ kind: 'global' }], statuses: input.statuses ?? ['active'], complete: true, exhausted: true, warnings: [] } }),
   };
   const config = {
     get: () => settings,
@@ -166,4 +167,56 @@ describe('memory REST', () => {
       await rm(home, { force: true, recursive: true });
     }
   });
+
+  it('preserves metadata across real HTTP editing, archive, approval and undo while exposing no-op and cursor errors', async () => {
+    await mkdir(join(process.cwd(), '.tmp'), { recursive: true });
+    const home = await mkdtemp(join(process.cwd(), '.tmp', 'memory-metadata-http-'));
+    const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    const base = `http://127.0.0.1:${server.port}/api/memory/global`;
+    const request = async (method: string, path: string, body?: unknown) => {
+      const response = await fetch(`${base}${path}`, { method, headers: authHeaders(server, { 'content-type': 'application/json' }), body: body === undefined ? undefined : JSON.stringify(body) });
+      expect(response.status).toBe(200);
+      return await response.json() as { code: number; data: any; details?: { code: string; recovery: string } };
+    };
+    const basis = { kind: 'derived', note: 'The peer proposed the numeric plan; the human supplied the communication constraint.', refs: ['history:example/t2', 'peer:example-plan'] };
+    const validity = { check: 'Read the current authority before relying on the resource arrangement.', until: '2099-01-01T00:00:00Z' };
+    try {
+      const body = { type: 'project', title: 'Mutable arrangement', body: 'Use the current authority; preserve the specialist exception.', reason: 'Useful discovery pointer', basis, validity };
+      const saved = await request('PUT', '/new', body);
+      expect(saved.code).toBe(0);
+      expect(saved.data).toMatchObject({ outcome: 'applied', entry: { basis, validity } });
+      const original = saved.data.entry;
+      const unchanged = await request('PUT', `/${original.id}`, { ...body, action: 'update', expected_revision: original.revision, reason: 'Repeated confirmation' });
+      expect(unchanged.data).toMatchObject({ outcome: 'unchanged', operationId: null, entry: { revision: original.revision, source: original.source, updated: original.updated } });
+      expect((await request('GET', `/journal?id=${original.id}`)).data).toHaveLength(1);
+      const edited = await request('PUT', `/${original.id}`, { type: body.type, title: body.title, body: 'Read example-authority.md; the authority owns the schedule.', action: 'update', expected_revision: original.revision, reason: 'Retire copied schedule' });
+      expect(edited.code).toBe(0);
+      expect(edited.data.entry.basis).toEqual({ kind: 'unknown', note: 'content changed without refreshed attribution' });
+      expect(edited.data.entry.validity).toEqual(validity);
+      const read = await request('GET', `/${original.id}`);
+      expect(read.data).toMatchObject({ scope: { kind: 'global' }, target: { scope: 'global', id: original.id, expected_revision: edited.data.entry.revision }, applicability: 'recheck', complete: true });
+      const retained = (await request('PUT', '/new', { ...body, title: 'Retained complete rule' })).data.entry;
+      const proposal = await server.core.accessor.get(IMemoryStore).put({ action: 'archive', scope: { kind: 'global' }, id: original.id, expectedRevision: edited.data.entry.revision, reason: 'Consolidation review', source: { writer: 'agent' }, pending: true, covered_by: { id: retained.id, expected_revision: retained.revision } });
+      const accepted = await request('PUT', `/${proposal.entry.id}`, { action: 'update', type: proposal.entry.type, title: proposal.entry.title, body: proposal.entry.body, expected_revision: proposal.entry.revision, reason: 'Approve consolidation' });
+      expect(accepted.code).toBe(0);
+      expect(accepted.data.entry).toMatchObject({ id: original.id, status: 'archived', body: edited.data.entry.body, validity, covered_by: { id: retained.id, revision: retained.revision } });
+      expect((await request('POST', '/undo', { operation_id: accepted.data.operationId })).data.entry).toMatchObject({ id: original.id, status: 'active', validity });
+      expect((await request('GET', `/${proposal.entry.id}`)).data.status).toBe('pending');
+      const archived = await request('PUT', `/${retained.id}`, { action: 'archive', expected_revision: retained.revision, reason: 'Explicit revocation' });
+      expect(archived.data.entry).toMatchObject({ body: retained.body, basis, validity, status: 'archived' });
+      expect((await request('PUT', `/${original.id}`, { action: 'archive', reason: 'Missing CAS' })).details?.code).toBe('missing_revision');
+      const list = await request('GET', '?mode=list&page_size=1&statuses=active,pending,archived');
+      expect(list.data.coverage).toMatchObject({ complete: true, exhausted: false });
+      expect(list.data.next_cursor).toEqual(expect.any(String));
+      await request('PUT', '/new', { ...body, title: 'Concurrent addition' });
+      const invalid = await request('GET', `?cursor=${encodeURIComponent(list.data.next_cursor)}`);
+      expect(invalid.details?.code).toBe('cursor_invalidated');
+      expect((await request('GET', '?mode=search&query=!!!')).details?.code).toBe('invalid_query');
+      const journal = (await request('GET', '/journal')).data;
+      expect(journal.some((record: { before: string | null }) => record.before?.includes('history:example/t2'))).toBe(true);
+    } finally {
+      await server.close();
+      await rm(home, { force: true, recursive: true });
+    }
+  }, 30_000);
 });

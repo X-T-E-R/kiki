@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FiberState } from '#/_base/di/fiber';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -122,6 +122,38 @@ describe('AgentDateChangeService', () => {
       await ctx.expectResumeMatches();
     } finally {
       await ctx.dispose();
+    }
+  });
+
+  it('reuses the formatter across steps and dates, and refreshes it when the timezone changes', async () => {
+    updateSystemPromptWithDate(profile, ctx.get(ISessionContext).cwd, INITIAL_INSTANT, '2026-07-29');
+    const timeZone = vi.spyOn(clock, 'timeZone').mockReturnValue('Pacific/Honolulu');
+    const OriginalFormat = Intl.DateTimeFormat;
+    const format = vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(function (...args) {
+      return new OriginalFormat(...args);
+    });
+    try {
+      await runWillBeginStepHooks(loop);
+      await runWillBeginStepHooks(loop);
+      expect(format).toHaveBeenCalledTimes(1);
+      expect(dateReminders(context).at(-1)?.origin).toMatchObject({
+        disclosure: { localDate: '2026-07-28', timeZone: 'Pacific/Honolulu' },
+      });
+      clock.set('2026-07-30T04:00:00.000Z');
+      await runWillBeginStepHooks(loop);
+      expect(format).toHaveBeenCalledTimes(1);
+      expect(dateReminders(context).at(-1)?.origin).toMatchObject({
+        disclosure: { localDate: '2026-07-29', timeZone: 'Pacific/Honolulu' },
+      });
+      timeZone.mockReturnValue(TEST_TIME_ZONE);
+      await runWillBeginStepHooks(loop);
+      expect(format).toHaveBeenCalledTimes(2);
+      expect(dateReminders(context).at(-1)?.origin).toMatchObject({
+        disclosure: { localDate: '2026-07-30', timeZone: TEST_TIME_ZONE },
+      });
+    } finally {
+      format.mockRestore();
+      timeZone.mockRestore();
     }
   });
 

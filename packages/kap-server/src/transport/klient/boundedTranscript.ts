@@ -17,7 +17,7 @@ export function boundedAttachment(attachment: TranscriptAttachment, agentId: str
   return boundedEntity(entity, { kind: 'attachment', id: attachment.attachmentId }, maxBytes);
 }
 
-export const TRANSCRIPT_WINDOW_BYTES = 64 * 1024;
+export const TRANSCRIPT_WINDOW_BYTES = 1024 * 1024;
 const GLOBAL_COLLECTION_BYTES = 4 * 1024;
 
 export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, agentId: string, direction: 'head' | 'tail' = 'tail'): AgentTranscriptSnapshot {
@@ -25,7 +25,7 @@ export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, age
   const prompts = boundedCollection(snapshot.prompts, 'prompt', (prompt) => prompt.promptId);
   const interactions = boundedCollection(snapshot.interactions, 'interaction', (interaction) => interaction.interactionId);
   const todos = boundedCollection(snapshot.todos, 'todo', (todo) => todo.todoId);
-  const meta = boundedEntity(snapshot.meta, { kind: 'meta', id: '' }, 4096);
+  const meta = snapshot.meta.contentRefs === undefined ? boundedEntity(snapshot.meta, { kind: 'meta', id: '' }, 4096) : snapshot.meta;
   const budget = TRANSCRIPT_WINDOW_BYTES - 4096 - GLOBAL_COLLECTION_BYTES - jsonBytes({ tasks, prompts, interactions, todos, meta });
   const items = boundedItems(snapshot.items, budget, direction);
   const required = new Set<string>();
@@ -82,25 +82,42 @@ export function boundedTranscriptResponse(response: TranscriptResponse, directio
       ? { kind: 'tail' as const, fromTurnId: snapshot.items.find((item) => item.kind === 'turn')?.turnId, throughTurnId: snapshot.items.findLast((item) => item.kind === 'turn')?.turnId, hasMoreOlder: true }
       : response.coverage,
   };
-  if (jsonBytes(result) > TRANSCRIPT_WINDOW_BYTES + 24 * 1024) throw new Error('Transcript response exceeds its window budget');
+
   return result as TranscriptResponse;
 }
 
 export function itemKey(item: AgentTranscriptSnapshot['items'][number]): string { return `${item.kind}:${itemId(item)}`; }
+
+function boundedItem(item: AgentTranscriptSnapshot['items'][number]): AgentTranscriptSnapshot['items'][number] {
+  if (item.kind === 'taskref' || item.contentRefs !== undefined) return item;
+  const preview = boundedEntity(item, { kind: item.kind, id: itemId(item) });
+  return preview.kind === 'turn' ? rebindTurnContentRefs(preview) : preview;
+}
+
+export function boundedTranscriptPageSource(snapshot: AgentTranscriptSnapshot, agentId: string): AgentTranscriptSnapshot {
+  return {
+    ...snapshot,
+    items: snapshot.items.map(boundedItem),
+    tasks: snapshot.tasks.map((value) => boundedEntity(value, { kind: 'task', id: value.taskId })),
+    attachments: snapshot.attachments.map((value) => boundedAttachment(value, agentId)),
+    prompts: snapshot.prompts.map((value) => boundedEntity(value, { kind: 'prompt', id: value.promptId })),
+    interactions: snapshot.interactions.map((value) => boundedEntity(value, { kind: 'interaction', id: value.interactionId })),
+    todos: snapshot.todos.map((value) => boundedEntity(value, { kind: 'todo', id: value.todoId })),
+    meta: boundedEntity(snapshot.meta, { kind: 'meta', id: '' }),
+  };
+}
 
 function boundedItems(items: AgentTranscriptSnapshot['items'], budget: number, direction: 'head' | 'tail'): AgentTranscriptSnapshot['items'] {
   const selected: AgentTranscriptSnapshot['items'][number][] = [];
   let bytes = 2;
   for (let offset = 0; offset < items.length; offset += 1) {
     const item = items[direction === 'head' ? offset : items.length - 1 - offset]!;
-    const preview = item.kind === 'taskref' ? item : boundedEntity(item, { kind: item.kind, id: itemId(item) });
-    const projected = preview.kind === 'turn' ? rebindTurnContentRefs(preview) : preview;
+    const projected = boundedItem(item);
     const size = jsonBytes(projected) + 1;
-    if (bytes + size > budget) break;
+    if (selected.length > 0 && bytes + size > budget) break;
     selected.push(projected);
     bytes += size;
   }
-  if (items.length > 0 && selected.length === 0) throw new Error('Transcript window cannot fit a canonical item header');
   return direction === 'head' ? selected : selected.reverse();
 }
 
@@ -110,7 +127,8 @@ function boundedCollection<T extends object>(values: readonly T[], kind: 'task' 
   const candidates = [...values.filter((value) => required.has(id(value))), ...values.filter((value) => !required.has(id(value))).toReversed()];
   for (const value of candidates) {
     if (!required.has(id(value)) && selected.size >= 8) break;
-    const projected = project?.(value) ?? boundedEntity(value, { kind, id: id(value) }, 2048);
+    const projected = (value as import('@kiki/transcript').ContentWindow).contentRefs !== undefined ? value
+      : project?.(value) ?? boundedEntity(value, { kind, id: id(value) }, 2048);
     const size = jsonBytes(projected) + 1;
     if (bytes + size > GLOBAL_COLLECTION_BYTES) continue;
     selected.set(id(value), projected);

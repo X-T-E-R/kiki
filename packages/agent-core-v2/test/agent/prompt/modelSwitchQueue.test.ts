@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { testAgent, agentServices, type TestAgentContext } from '../../harness';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
-import { AgentPromptService, promptQueueKey } from '#/agent/prompt/promptService';
+import { AgentPromptService, promptIdentityKey, promptQueueKey } from '#/agent/prompt/promptService';
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
 import { AgentModelSwitchService } from '#/agent/modelSwitch/modelSwitchService';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -47,6 +47,22 @@ afterEach(async () => {
 });
 
 describe('model switch control queue with real engine', () => {
+  it('invalidates an old identity checkpoint so authorized request hashes rebuild from the journal', async () => {
+    const ctx = await host();
+    vi.spyOn(ctx.get(IAgentTaskService), 'list').mockReturnValue([{ kind: 'agent', taskId: 'child', status: 'running' } as never]);
+    const svc = ctx.get(IAgentPromptService);
+    await svc.enqueue({ id: 'checkpoint-prompt', message: { role: 'user', content: [{ type: 'text', text: 'Original.' }], toolCalls: [] }, appendTiming: 'subagents_done' });
+    expect(svc.replace('checkpoint-prompt', [{ type: 'text', text: 'Edited.' }]).revision).toBe(1);
+    const current = ctx.get(IAgentStateService).get(promptIdentityKey);
+    expect(promptIdentityKey.replayable.schema.safeParse(current).success).toBe(true);
+    const legacy = new Map([...current].map(([id, value]) => [id, { ...value, currentRequest: undefined }]));
+    expect(promptIdentityKey.replayable.schema.safeParse(legacy).success).toBe(false);
+    const cold = await host();
+    await cold.restore(await records(ctx));
+    expect(cold.get(IAgentStateService).get(promptIdentityKey)).toEqual(current);
+    expect(cold.llmCalls).toHaveLength(0);
+  });
+
   it.each(['direct', 'fresh', 'compact'] as const)('runs %s without a chat turn and replays one operation', async (mode) => {
     const ctx = await host();
     const svc = ctx.get(IAgentPromptService);
@@ -77,7 +93,14 @@ describe('model switch control queue with real engine', () => {
     expect(svc.listModelSwitches()[0]).toMatchObject({ revision: 1, queueIndex: 1, input: { mode: 'direct' } });
     const cold = await host();
     await cold.restore(await records(ctx));
-    expect(cold.get(IAgentPromptService).list().hold).toEqual({ reason: 'recovery', count: 2 });
+    const restored = cold.get(IAgentPromptService);
+    expect(restored.list().hold).toEqual({ reason: 'recovery', count: 2 });
+    expect(restored.abort('prior')).toBe(true);
+    expect(restored.list().pending).toEqual([]);
+    expect(restored.list().hold).toEqual({ reason: 'recovery', count: 1 });
+    expect(cold.llmCalls).toHaveLength(0);
+    expect(await restored.cancelModelSwitch('pending')).toMatchObject({ state: 'cancelled' });
+    expect(restored.list().hold).toBeUndefined();
     expect(await svc.cancelModelSwitch('pending')).toMatchObject({ state: 'cancelled' });
     expect(svc.list().pending[0]).toMatchObject({ id: 'prior', revision: 0, appendTiming: 'subagents_done', execution: { model: OLD } });
     expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
@@ -165,6 +188,61 @@ describe('prompt identity and recovery boundaries', () => {
     expect(uncertain.get(IAgentPromptService).lookup(input.id)?.phase).toBe('launched');
     await expect(uncertain.get(IAgentPromptService).enqueue(input)).rejects.toMatchObject({ code: 'prompt.id_conflict' });
     expect(uncertain.llmCalls).toHaveLength(0);
+  });
+
+  it.each(['replace', 'timing', 'both'] as const)('replays original and authorized current %s requests warm and cold without another execution', async (edit) => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    ctx.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-before-edit', async (_context, next) => {
+      entered.resolve();
+      await gate.promise;
+      await next();
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Active turn completed.' });
+    const active = await svc.enqueue({ id: 'active-before-edit', message: { role: 'user', content: [{ type: 'text', text: 'First.' }], toolCalls: [] } });
+    await entered.promise;
+    const original = { id: 'authorized-edit', message: { role: 'user' as const,
+      content: [{ type: 'text' as const, text: 'Original request.' }], toolCalls: [], origin: { kind: 'user' as const } } };
+    const queued = await svc.enqueue(original);
+    if (edit !== 'timing') svc.replace(original.id, [{ type: 'text', text: 'Authorized replacement.' }]);
+    if (edit !== 'replace') svc.changeTiming(original.id, 'tasks_done');
+    const current = { ...original, message: { ...original.message,
+      content: [{ type: 'text' as const, text: edit === 'timing' ? 'Original request.' : 'Authorized replacement.' }] },
+      appendTiming: edit === 'replace' ? 'agent_idle' as const : 'tasks_done' as const };
+    expect(await svc.enqueue(original)).toBe(queued);
+    expect(await svc.enqueue(current)).toBe(queued);
+    expect(svc.lookup(original.id, original)).toMatchObject({ phase: 'pending' });
+    expect(svc.lookup(original.id, current)).toMatchObject({ phase: 'pending' });
+    expect(queued.message.content).toEqual(current.message.content);
+    await expect(svc.enqueue({ ...current, message: { ...current.message, content: [{ type: 'text', text: 'Unauthorized replacement.' }] } })).rejects.toMatchObject({ code: 'prompt.id_conflict' });
+    await expect(svc.enqueue({ ...current, execution: { model: NEW } })).rejects.toMatchObject({ code: 'prompt.id_conflict' });
+    const pendingJournal = await records(ctx);
+    const cold = await host();
+    await cold.restore(pendingJournal);
+    const restored = cold.get(IAgentPromptService);
+    const restoredOriginal = await restored.enqueue(original);
+    expect(await restored.enqueue(current)).toBe(restoredOriginal);
+    expect(restoredOriginal.message.content).toEqual(current.message.content);
+    expect(restoredOriginal.appendTiming).toBe(current.appendTiming);
+    await expect(restored.enqueue({ ...current, message: { ...current.message, origin: { kind: 'system_trigger', name: 'subagent' } } })).rejects.toMatchObject({ code: 'prompt.id_conflict' });
+    cold.mockNextResponse({ type: 'text', text: 'Edited task completed once.' });
+    restored.resumeRecoveredQueue();
+    expect((await restoredOriginal.completion).state).toBe('completed');
+    expect(cold.llmCalls).toHaveLength(1);
+    ctx.mockNextResponse({ type: 'text', text: 'Warm edited task completed once.' });
+    gate.resolve();
+    await active.completion;
+    await queued.completion;
+    expect(ctx.llmCalls).toHaveLength(2);
+    const terminal = await host();
+    await terminal.restore(await records(cold));
+    const replay = terminal.get(IAgentPromptService);
+    expect((await replay.enqueue(original)).state).toBe('completed');
+    expect((await replay.enqueue(current)).state).toBe('completed');
+    expect(replay.lookup(original.id, current)?.phase).toBe('terminal');
+    expect(terminal.llmCalls).toHaveLength(0);
   });
 
   it('recovers a committed switch with failed metadata without redoing context or losing the dependent prompt', async () => {

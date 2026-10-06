@@ -1,6 +1,16 @@
 # Keyboard Shortcuts
 
-Kiki's TUI shortcuts are grouped by context: general input, mode switching, editing, streaming, tool output, approval panels, and help navigation. Type `/help` to browse command usage, descriptions, support status, and input shortcuts.
+This page covers GUI thread navigation, followed by TUI shortcuts grouped by context: general input, mode switching, editing, streaming, tool output, approval panels, and help navigation. In the TUI, type `/help` to browse command usage, descriptions, support status, and input shortcuts.
+
+## Desktop and web thread navigation
+
+In the GUI, open Settings → Shortcuts to rebind **Next running thread** and **Previous running thread**. The defaults are `Ctrl-Tab` and `Ctrl-Shift-Tab`, respectively. Browsers own these tab-switching chords; choose different bindings to use the actions on the web. Existing custom bindings remain unchanged. If a custom binding already uses `Ctrl-Shift-Tab`, the new previous-thread action stays unbound until you assign a free chord.
+
+These actions cycle through running sessions already loaded in the current window's session list, within its connection and fetched workspace/archive scope. They use creation time, newest first, rather than pin order or recent updates. From a thread outside that set, Next enters the first running thread and Previous enters the last. With no running threads they do nothing; with one, they stay on it.
+
+A running session has an active main or subagent turn, or background work. A pending approval/question alone, unread output, or a pinned session does not make it running. A session that still has running work remains eligible even if it also needs your input.
+
+Switching conversations through these shortcuts, the sidebar, or the quick switcher focuses the current editable composer once it is ready. Drafts and unchanged draft selections are retained without scrolling the transcript to the composer. Open dialogs and terminal input keep their focus; ordinary Tab, Shift-Tab and IME text input keep their usual behavior.
 
 ## General Shortcuts
 

@@ -42,6 +42,8 @@ import type {
   ListTerminalsResponse,
   ListToolsResponse,
   ListWorkspacesResponse,
+  MemoryRestListQuery,
+  MemoryRestListResponse,
   Message,
   MessageContent,
   MetaResponse,
@@ -114,11 +116,12 @@ import type {
   PersonaSummary,
 } from '@kiki/protocol';
 
-import { RPCError, type AgentFacade, type AgentEventPayloads, type HttpRestCronTask, type OAuthMethodStatus, type SessionViewFacade } from '@kiki/klient';
+import { RPCError, type AgentFacade, type AgentEventPayloads, type HttpRestCronTask, type HttpRestCronTaskDetail, type HttpRestCreateCronTask, type HttpRestUpdateCronTask, type OAuthMethodStatus, type SessionViewFacade } from '@kiki/klient';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
 import {
   fetchRemoteModels,
   providerTemplateFor,
+  readSettings,
   type ProviderModelDraft,
   type RemoteModelsProbe,
 } from '@kiki/session-core/settings';
@@ -500,6 +503,9 @@ export interface ResumeAgentGoalInput {
  * see `HttpRestCronTask`). Paused tasks carry `next_fire_at: null` and sort last.
  */
 export type CronTask = HttpRestCronTask;
+export type CronTaskDetail = HttpRestCronTaskDetail;
+export type CreateCronTaskRequest = HttpRestCreateCronTask;
+export type UpdateCronTaskRequest = HttpRestUpdateCronTask;
 
 export interface ListCronTasksResponse {
   readonly items: readonly CronTask[];
@@ -520,6 +526,40 @@ export type MemoryWriter = 'user' | 'agent' | 'consolidator' | 'import';
 export type MemoryApproval = 'auto' | 'review' | 'off';
 
 export const MEMORY_TYPES: readonly MemoryType[] = ['user', 'feedback', 'project', 'reference'];
+
+/** Why the content is recorded as it is. `unknown` means unestablished, not false. */
+export type MemoryBasisKind = 'human' | 'observed' | 'derived' | 'unknown';
+
+/**
+ * Content evidence, separate from `source`, which records who last wrote the
+ * entry. A write's session and turn identify the writer, not the original
+ * human instruction, so neither stands in for the other. Absent on entries
+ * written before the field existed; nothing is inferred to fill it.
+ */
+export interface MemoryBasis {
+  readonly kind: MemoryBasisKind;
+  readonly note: string;
+  readonly refs?: readonly string[];
+}
+
+/** What must be checked before relying on a changing fact, and its hard endpoint. */
+export interface MemoryValidity {
+  readonly check: string;
+  readonly until?: string;
+}
+
+/**
+ * The active same-scope entry that took over this one's content when it was
+ * retired, with the revision checked at the time. A stored entry carries
+ * `revision`; a request sends the same pair as `expected_revision`.
+ */
+export interface MemoryCoveredBy {
+  readonly id: string;
+  readonly revision: string;
+}
+
+/** What a write actually did. A pre-`outcome` server leaves it absent. */
+export type MemoryWriteOutcome = 'applied' | 'pending' | 'unchanged';
 
 export interface MemoryEntry {
   readonly id: string;
@@ -542,7 +582,11 @@ export interface MemoryEntry {
    * id, and `archive` archives that entry rather than the candidate.
    */
   readonly pending_action?: 'update' | 'archive';
+  readonly basis?: MemoryBasis;
+  readonly validity?: MemoryValidity;
+  readonly covered_by?: MemoryCoveredBy;
   readonly revision: string;
+  readonly content_complete?: boolean;
 }
 
 export interface MemorySettings {
@@ -589,12 +633,24 @@ export interface MemoryPutBody {
   readonly reason: string;
   readonly expected_revision?: string;
   readonly pinned?: boolean;
+  /**
+   * Content metadata rides the same save, so editing here cannot silently drop
+   * what a write recorded. Both are omitted to keep what the store holds;
+   * `validity: null` clears a check deliberately, and `basis` is cleared by
+   * writing `{kind: 'unknown', note}` rather than by null.
+   */
+  readonly basis?: MemoryBasis;
+  readonly validity?: MemoryValidity | null;
+  /** Consolidation retirement: the retained same-scope entry and the revision checked against it. */
+  readonly covered_by?: { readonly id: string; readonly expected_revision: string };
 }
 
-export interface MemoryListQuery {
-  readonly query?: string;
-  readonly type?: MemoryType;
-  readonly include_inactive?: boolean;
+export type MemoryListQuery = MemoryRestListQuery;
+
+export interface MemoryListPage {
+  readonly items: readonly MemoryEntry[];
+  readonly next_cursor?: MemoryRestListResponse['next_cursor'];
+  readonly coverage?: MemoryRestListResponse['coverage'];
 }
 
 /** 40423 / 40944 on the memory routes. */
@@ -707,6 +763,28 @@ export interface PluginMarketplaceEntry {
   };
   readonly version?: string;
   readonly source: string;
+  /** Digest of the archive at `source`, when the catalog publishes one. */
+  readonly sha256?: string;
+  /** Plugin engine range this build is checked against, not the product version. */
+  readonly engines?: { readonly kiki?: string };
+  readonly author?: string;
+  readonly license?: string;
+  /** Whether this build can install the entry now; a listed entry may not be installable. */
+  readonly installable?: boolean;
+  /** Catalog-declared sub-group, so a package family reads as one block. */
+  readonly group?: string;
+  /**
+   * Per-language catalog text keyed by language tag, so the reader sees names
+   * and descriptions in their own language. Catalog metadata only — it never
+   * travels with the plugin itself. Every field is optional and falls back to
+   * the top-level value, so an entry with no localization simply shows its own
+   * text.
+   */
+  readonly localizations?: Readonly<Record<string, {
+    readonly displayName?: string;
+    readonly description?: string;
+    readonly keywords?: readonly string[];
+  }>>;
   readonly installed?: { readonly version?: string; readonly enabled: boolean };
   readonly updateAvailable?: boolean;
 }
@@ -1064,6 +1142,7 @@ export class KikiClient {
   private serverLeaseId: string | undefined;
   private readonly previewBytes = new Map<string, { bytes: Uint8Array; mime: string; name?: string; etag: string }>();
   private previewCacheBytes = 0;
+  private readonly previewFlights = new Map<string, { controller: AbortController; users: number; promise: Promise<{ bytes: Uint8Array; mime: string; name?: string }> }>();
   private readonly onSessionMutation: KikiClientOptions['onSessionMutation'];
 
   constructor(options: KikiClientOptions) {
@@ -1075,6 +1154,7 @@ export class KikiClient {
       endpoint: this.baseUrl,
       token: this.token,
       timeoutMs: options.timeoutMs,
+      readingTimeoutMs: () => this.readingOptions().timeoutMs,
       onSocketDiagnostic: (event) => { recordConnectionEvent(event); },
       ...options.transport,
     });
@@ -1105,22 +1185,14 @@ export class KikiClient {
     return result;
   }
 
+  readingOptions(): { timeoutMs: number } {
+    return { timeoutMs: typeof localStorage === 'undefined' ? 0 : readSettings().readingTimeoutSeconds * 1000 };
+  }
+
   sessionView(sessionId: string): SessionViewFacade {
     const view = this.klient.session(sessionId).view;
     return {
-      snapshot: async (options) => {
-        const snapshotKlient = createKlient({
-          endpoint: this.baseUrl,
-          token: this.token,
-          timeoutMs: 0,
-          ...this.transport,
-        });
-        try {
-          return await this.run(() => snapshotKlient.session(sessionId).view.snapshot(options));
-        } finally {
-          await snapshotKlient.close();
-        }
-      },
+      snapshot: (options) => this.run(() => view.snapshot(options)),
       transcript: view.transcript,
       subscribe: (input, onSignal) => view.subscribe(input, onSignal),
     };
@@ -1494,8 +1566,8 @@ export class KikiClient {
   }
 
   /** Every switch operation this agent still tracks, with queue positions. */
-  listAgentModelSwitches(sessionId: string, agentId: string): Promise<readonly QueuedModelSwitch[]> {
-    return this.run(this.klient.session(sessionId).agent(agentId).listModelSwitches());
+  listAgentModelSwitches(sessionId: string, agentId: string, signal?: AbortSignal): Promise<readonly QueuedModelSwitch[]> {
+    return this.run(this.klient.session(sessionId).agent(agentId).listModelSwitches({ signal }));
   }
 
   /** Edit a still-pending switch (target model / mode); the revision guards races. */
@@ -1660,6 +1732,7 @@ export class KikiClient {
     const api = this.rest.notifications;
     const wrap = <A extends unknown[], R>(call: (...args: A) => Promise<R>) => (...args: A): Promise<R> => this.run(() => call(...args));
     return {
+      listCompletions: wrap(api.listCompletions.bind(api)),
       getSettings: wrap(api.getSettings.bind(api)),
       updateSettings: wrap(api.updateSettings.bind(api)),
       listProviders: wrap(api.listProviders.bind(api)),
@@ -1687,6 +1760,24 @@ export class KikiClient {
     return this.run(this.klient.global.agentPanel.read(query, { signal }));
   }
 
+  /**
+   * Background task metadata for every agent in the session, one bounded page
+   * at a time.
+   *
+   * This is the cockpit's whole-tree read: `GET /sessions/:id/agent-tasks`
+   * answers for agents the reader has never opened, and says which owners it
+   * settled, which are still pending and which failed, so a partial read is
+   * never mistaken for an idle session. Task metadata only — no message
+   * bodies, no output, no agent materialization.
+   */
+  listAgentTasks(
+    sessionId: string,
+    query?: import('@kiki/protocol').ListAgentTasksQuery,
+    requestOptions?: { readonly signal?: AbortSignal },
+  ): Promise<import('@kiki/protocol').ListAgentTasksResponse> {
+    return this.run(this.rest.sessions.listAgentTasks(sessionId, query, requestOptions));
+  }
+
   createAgentProfile(body: CreateNamedAgentProfileRequest): Promise<NamedAgentProfile> {
     return this.run(this.rest.agents.create(body));
   }
@@ -1706,12 +1797,12 @@ export class KikiClient {
     return this.run(this.rest.agents.shipped.restore(id));
   }
 
-  async readHostFile(path: string): Promise<string> {
-    return this.run(this.rest.filesystem.readHostFile(path));
+  async readHostFile(path: string, options?: import('@kiki/klient').HttpRestRequestOptions): Promise<string> {
+    return this.run(this.rest.filesystem.readHostFile(path, { ...this.readingOptions(), ...options }));
   }
 
-  async readBuiltinSkill(name: string): Promise<string> {
-    const result = await this.run(this.rest.skills.readBuiltinContent(name));
+  async readBuiltinSkill(name: string, options?: import('@kiki/klient').HttpRestRequestOptions): Promise<string> {
+    const result = await this.run(this.rest.skills.readBuiltinContent(name, { ...this.readingOptions(), ...options }));
     return result.content;
   }
 
@@ -1725,11 +1816,44 @@ export class KikiClient {
     return this.run(this.rest.skills.installHost(host, revision));
   }
 
-  async previewHostFile(path: string, maxBytes = 512_001): Promise<{ text: string; truncated: boolean }> {
-    return this.run(this.rest.filesystem.previewHostFile(path, maxBytes));
+  async previewHostFile(path: string, maxBytes = 512_001, options?: import('@kiki/klient').HttpRestRequestOptions): Promise<{ text: string; truncated: boolean }> {
+    return this.run(this.rest.filesystem.previewHostFile(path, maxBytes, { ...this.readingOptions(), ...options }));
   }
 
-  private async cachedPreviewBytes(
+  private cachedPreviewBytes(
+    key: string,
+    read: (etag: string | undefined, signal: AbortSignal) => Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }>,
+    signal?: AbortSignal,
+  ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
+    if (signal?.aborted === true) return Promise.reject(signal.reason);
+    let flight = this.previewFlights.get(key);
+    if (flight === undefined) {
+      const controller = new AbortController();
+      flight = { controller, users: 0, promise: this.readAndCachePreview(key, (etag) => read(etag, controller.signal)) };
+      this.previewFlights.set(key, flight);
+      const current = flight;
+      const clear = () => { if (this.previewFlights.get(key) === current) this.previewFlights.delete(key); };
+      void current.promise.then(clear, clear);
+    }
+    const current = flight;
+    current.users += 1;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (done: () => void) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', cancel);
+        current.users -= 1;
+        if (current.users === 0 && this.previewFlights.get(key) === current) { this.previewFlights.delete(key); current.controller.abort(); }
+        done();
+      };
+      const cancel = () => { finish(() => { reject(signal?.reason); }); };
+      signal?.addEventListener('abort', cancel, { once: true });
+      void current.promise.then((value) => { finish(() => { resolve(value); }); }, (error: unknown) => { finish(() => { reject(error); }); });
+    });
+  }
+
+  private async readAndCachePreview(
     key: string,
     read: (etag?: string) => Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }>,
   ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
@@ -1757,16 +1881,16 @@ export class KikiClient {
 
   /** Binary variant of readHostFile, retaining the server MIME. */
   readHostFileBytes(path: string, options?: import('@kiki/klient').HttpRestMediaOptions): Promise<{ bytes: Uint8Array; mime: string }> {
-    return this.run(this.rest.filesystem.readHostFileBytes(path, options));
+    return this.run(this.rest.filesystem.readHostFileBytes(path, { ...this.readingOptions(), ...options }));
   }
 
   readHostMediaPreviewBytes(path: string, options?: import('@kiki/klient').HttpRestMediaOptions): Promise<{ bytes: Uint8Array; mime: string }> {
-    return this.cachedPreviewBytes(`host-preview:${path}`, (etag) =>
-      this.rest.filesystem.readHostMediaPreview(path, { ...options, ifNoneMatch: etag }));
+    return this.cachedPreviewBytes(`host-preview:${path}:${options?.mediaType ?? ''}`, (etag, signal) =>
+      this.rest.filesystem.readHostMediaPreview(path, { ...this.readingOptions(), ...options, signal, ifNoneMatch: etag }), options?.signal);
   }
 
   downloadHostFile(path: string, sink: import('@kiki/klient').HttpRestMediaSink, options?: import('@kiki/klient').HttpRestMediaOptions): Promise<import('@kiki/klient').HttpRestMediaReceipt> {
-    return this.run(this.rest.filesystem.downloadHostFile(path, sink, options));
+    return this.run(this.rest.filesystem.downloadHostFile(path, sink, { ...this.readingOptions(), ...options }));
   }
 
   /** Read a canonical transcript attachment (or its staged-upload fallback). */
@@ -1775,7 +1899,7 @@ export class KikiClient {
     fileId: string,
     options?: import('@kiki/klient').HttpRestMediaOptions,
   ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
-    return this.run(this.rest.sessions.media(sessionId, fileId, options));
+    return this.run(this.rest.sessions.media(sessionId, fileId, { ...this.readingOptions(), ...options }));
   }
 
   readSessionMediaPreviewBytes(
@@ -1783,8 +1907,8 @@ export class KikiClient {
     fileId: string,
     options?: import('@kiki/klient').HttpRestMediaOptions,
   ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
-    return this.cachedPreviewBytes(`media-preview:${sessionId}:${fileId}:${options?.mediaType ?? ''}`, (etag) =>
-      this.rest.sessions.mediaPreview(sessionId, fileId, { ...options, ifNoneMatch: etag }));
+    return this.cachedPreviewBytes(`media-preview:${sessionId}:${fileId}:${options?.mediaType ?? ''}`, (etag, signal) =>
+      this.rest.sessions.mediaPreview(sessionId, fileId, { ...this.readingOptions(), ...options, signal, ifNoneMatch: etag }), options?.signal);
   }
 
   downloadSessionMedia(
@@ -1793,7 +1917,7 @@ export class KikiClient {
     sink: import('@kiki/klient').HttpRestMediaSink,
     options?: import('@kiki/klient').HttpRestMediaOptions,
   ): Promise<import('@kiki/klient').HttpRestMediaReceipt> {
-    return this.run(this.rest.sessions.downloadMedia(sessionId, fileId, sink, options));
+    return this.run(this.rest.sessions.downloadMedia(sessionId, fileId, sink, { ...this.readingOptions(), ...options }));
   }
 
   downloadTranscriptContent(
@@ -2328,6 +2452,18 @@ export class KikiClient {
     return this.run(this.rest.cron.list(query));
   }
 
+  getCronTask(taskId: string, sessionId?: string): Promise<{ readonly task: CronTaskDetail }> {
+    return this.run(this.rest.cron.get(taskId, { session_id: sessionId }));
+  }
+
+  createCronTask(input: CreateCronTaskRequest): Promise<{ readonly task: CronTaskDetail }> {
+    return this.run(this.rest.cron.create(input));
+  }
+
+  updateCronTask(taskId: string, input: UpdateCronTaskRequest, sessionId?: string): Promise<{ readonly task: CronTaskDetail }> {
+    return this.run(this.rest.cron.update(taskId, input, { session_id: sessionId }));
+  }
+
   /** `sessionId` disambiguates a task id shared by several sessions (else 40001). */
   pauseCronTask(taskId: string, sessionId?: string): Promise<{ readonly task: CronTask }> {
     return this.run(this.rest.cron.pause(taskId, { session_id: sessionId }));
@@ -2367,13 +2503,16 @@ export class KikiClient {
     return this.memoryRequest('PATCH', `/memory/workspaces/${encodeURIComponent(workspaceId)}/settings`, { body: { enabled } });
   }
 
-  listMemory(target: MemoryTarget, query: MemoryListQuery = {}): Promise<{ readonly items: readonly MemoryEntry[] }> {
+  listMemory(target: MemoryTarget, query: MemoryListQuery = {}, signal?: AbortSignal): Promise<MemoryListPage> {
     return this.memoryRequest('GET', `/memory/${target.scope}`, {
-      target,
-      query: {
+      target, signal,
+      query: query.cursor !== undefined ? { cursor: query.cursor } : {
         query: query.query !== undefined && query.query.trim() !== '' ? query.query.trim() : undefined,
         type: query.type,
         include_inactive: query.include_inactive === true ? 'true' : undefined,
+        mode: query.mode,
+        statuses: query.statuses?.join(','),
+        page_size: query.page_size?.toString(),
       },
     });
   }
@@ -2382,8 +2521,19 @@ export class KikiClient {
     return this.memoryRequest('GET', `/memory/${target.scope}/${encodeURIComponent(id)}`, { target });
   }
 
-  /** `id: 'new'` creates; otherwise `expected_revision` guards the update (40944 on a stale revision). */
-  putMemory(target: MemoryTarget, id: string, body: MemoryPutBody): Promise<{ readonly entry: MemoryEntry; readonly operationId: string }> {
+  /**
+   * `id: 'new'` creates; otherwise `expected_revision` guards the update (40944
+   * on a stale revision). `outcome` reports what the store actually did: a
+   * save whose content already matched returns `unchanged` with a null
+   * `operationId`, so the caller must not offer to undo it. A pre-`outcome`
+   * server leaves `outcome` absent, which reads as `applied`.
+   */
+  putMemory(target: MemoryTarget, id: string, body: MemoryPutBody): Promise<{
+    readonly entry: MemoryEntry;
+    readonly operationId: string | null;
+    readonly outcome?: MemoryWriteOutcome;
+    readonly warnings?: readonly string[];
+  }> {
     return this.memoryRequest('PUT', `/memory/${target.scope}/${encodeURIComponent(id)}`, { target, body });
   }
 
@@ -2398,8 +2548,11 @@ export class KikiClient {
     return this.memoryRequest('GET', `/memory/${target.scope}/journal`, { target, query: { id } });
   }
 
-  memoryInbox(target: MemoryTarget): Promise<readonly MemoryEntry[]> {
-    return this.memoryRequest('GET', `/memory/${target.scope}/inbox`, { target });
+  async memoryInbox(target: MemoryTarget, query: Pick<MemoryListQuery, 'cursor' | 'page_size'> = {}, signal?: AbortSignal): Promise<MemoryListPage> {
+    const page = await this.memoryRequest<MemoryListPage | readonly MemoryEntry[]>('GET', `/memory/${target.scope}/inbox`, {
+      target, signal, query: query.cursor !== undefined ? { cursor: query.cursor } : { page_size: query.page_size?.toString() },
+    });
+    return Array.isArray(page) ? { items: page } : page as MemoryListPage;
   }
 
   undoMemory(target: MemoryTarget, operationId: string): Promise<{ readonly entry: MemoryEntry | null }> {
@@ -2409,7 +2562,7 @@ export class KikiClient {
   private async memoryRequest<T>(
     method: 'GET' | 'PUT' | 'PATCH' | 'POST' | 'DELETE',
     path: string,
-    options: { readonly target?: MemoryTarget; readonly query?: Record<string, string | undefined>; readonly body?: unknown; readonly timeoutMs?: number } = {},
+    options: { readonly target?: MemoryTarget; readonly query?: Record<string, string | undefined>; readonly body?: unknown; readonly timeoutMs?: number; readonly signal?: AbortSignal } = {},
   ): Promise<T> {
     const root = this.baseUrl.replace(/\/+$/u, '');
     const url = root === '' ? new URL(`/api${path}`, globalThis.location?.origin ?? 'http://localhost') : new URL(`${root}/api${path}`);
@@ -2431,7 +2584,7 @@ export class KikiClient {
         method,
         headers,
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
-        signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+        signal: options.signal === undefined ? AbortSignal.timeout(options.timeoutMs ?? 30_000) : AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? 30_000)]),
       });
     } catch (error) {
       if (error instanceof DOMException && error.name === 'TimeoutError') {

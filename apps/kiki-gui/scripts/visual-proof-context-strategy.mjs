@@ -136,7 +136,7 @@ try {
     }
     await shot(`timeline-1440-${theme}`);
     await openCard();
-    await expectStrategy('summarize', 'default');
+    await expectStrategy('auto', 'default');
     await shot(`card-default-1440-${theme}`);
 
     // Pick fresh: session override; hint and source label follow.
@@ -147,7 +147,7 @@ try {
     await page.waitForSelector('[data-strategy-source-menu]');
     await shot(`card-source-menu-1440-${theme}`);
     await page.click('[data-strategy-reset]');
-    await expectStrategy('summarize', 'default');
+    await expectStrategy('auto', 'default');
 
     // Compact now with a chosen strategy: the marker lands on the timeline.
     await page.click('[data-context-compact-with]');

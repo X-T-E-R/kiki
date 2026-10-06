@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useCallback, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ExecutorCatalogItem } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
@@ -14,6 +14,7 @@ import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { EXECUTORS_QUERY_KEY, useExecutorCatalogQuery } from './profileEditor/engines';
+import { EngineDefaults } from './EngineDefaults';
 import { ANTIGRAVITY_ID, AntigravitySetup } from './AntigravitySetup';
 import { HARNESS_CAPABILITIES } from '../harness/HarnessMark';
 
@@ -434,6 +435,21 @@ function EngineOverrides({ item, program, onCheck }: { item: ExecutorCatalogItem
 }
 
 
+/**
+ * One engine's saved `defaults` block, read from the config's raw record.
+ * The wire keeps launch keys and defaults under the same executor entry, so
+ * only the `defaults` sub-object is this editor's business.
+ */
+export function engineDefaultsOf(raw: Readonly<Record<string, unknown>> | undefined, executorId: string): Record<string, unknown> | null | undefined {
+  const overrides = raw?.['agent_executor_overrides'];
+  if (typeof overrides !== 'object' || overrides === null) return undefined;
+  const entry = (overrides as Record<string, unknown>)[executorId];
+  if (typeof entry !== 'object' || entry === null) return undefined;
+  const defaults = (entry as Record<string, unknown>)['defaults'];
+  if (defaults === null) return null;
+  return typeof defaults === 'object' && !Array.isArray(defaults) ? defaults as Record<string, unknown> : undefined;
+}
+
 function EngineRow({ item }: { item: ExecutorCatalogItem }) {
   const { client } = useConnection();
   const { t, time, locale } = useI18n();
@@ -442,7 +458,17 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
   const [checkedAt, setCheckedAt] = useState<string | undefined>();
   const [checking, setChecking] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  // The saved per-engine defaults live in the config's raw record, keyed by
+  // executor id. A config that does not echo the section simply has none.
+  const configQuery = useQuery({
+    queryKey: ['config'],
+    queryFn: () => client.getConfig(),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const refetchConfig = useCallback(async () => { await configQuery.refetch(); }, [configQuery]);
   const connection = item.connection;
+  const config = configQuery.data;
   const health = engineHealth(item, check);
   const healthText = t(HEALTH_KEY[health]);
   const login: LoginStatus = check?.login_status ?? connection?.login_status ?? 'unknown';
@@ -644,6 +670,7 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
           {item.default_profile === true ? <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.defaultProfile')}</p> : null}
         <EngineOverrides item={item} program={program} onCheck={runCheck} />
         </div>
+        <EngineDefaults item={item} saved={engineDefaultsOf(config?.raw, item.id)} onSaved={refetchConfig} />
         <FeedbackLine feedback={feedback} />
       </div>
     </details>

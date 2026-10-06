@@ -780,7 +780,7 @@ export function snapshotSubagentAgentId(subagent: SnapshotSubagent): string {
  * never promotes the block to an active status.
  */
 function mapSnapshotSubagentStatus(subagent: SnapshotSubagent): SubagentBlock['status'] {
-  const status = subagent.subagent_phase === 'suspended' ? 'suspended' : mapTaskState(subagent.status);
+  const status = subagent.activity_status ?? (subagent.subagent_phase === 'suspended' ? 'suspended' : mapTaskState(subagent.status));
   return subagent.live === false && (status === 'running' || status === 'suspended') ? 'unknown' : status;
 }
 
@@ -2239,6 +2239,7 @@ export function agentTranscriptToBlocks(
 ): Block[] {
   const blocks: Block[] = [];
   const deferredTaskBlocks: Block[] = [];
+  const markerBlocks: Block[] = [];
   const subagentPromptAsUser = response.agent_id !== MAIN_AGENT_ID;
   const phase = response.meta?.agent?.phase;
   const prompts = response.prompts ?? [];
@@ -2265,8 +2266,9 @@ export function agentTranscriptToBlocks(
     if (item.kind === 'marker') {
       const compactionFate = compactionFates.get(item.markerId);
       if (compactionFate === 'hidden') continue;
+      const destination = timestampMs(item.at) === undefined ? blocks : markerBlocks;
       if (compactionFate === 'pending') {
-        blocks.push({
+        destination.push({
           kind: 'notice',
           id: `agent-marker-${item.markerId}`,
           text: item.marker,
@@ -2285,10 +2287,11 @@ export function agentTranscriptToBlocks(
         const messageId = recordString(payload, 'messageId');
         const text = recordString(payload, 'text');
         if (messageId !== undefined && text !== undefined) {
-          blocks.push(...classifiedTextToBlocks({
+          destination.push(...classifiedTextToBlocks({
             id: messageId,
             classified: classifyTranscriptText({ text, role: 'user', origin: originFromRecord(payload), subagentPromptAsUser }),
             createdAt: item.at ?? '',
+            turnId: normalizeTurnId(payload['turnId']),
             userMessageId: messageId,
             media: mediaFromAttachmentIds(
               Array.isArray(payload['attachmentIds']) ? payload['attachmentIds'].filter((id): id is string => typeof id === 'string') : undefined,
@@ -2300,7 +2303,7 @@ export function agentTranscriptToBlocks(
         continue;
       }
       const marker = markerToBlock(item);
-      if (marker !== undefined) blocks.push(marker);
+      if (marker !== undefined) destination.push(marker);
       continue;
     }
     if (item.kind === 'taskref') {
@@ -2604,7 +2607,65 @@ export function agentTranscriptToBlocks(
       cacheTerminalTurnBlocks(item, response.agent_id, blocks.slice(blockStart));
     }
   }
-  const withTaskBlocks = [...mergeTranscriptPromptBlocks(blocks, prompts, previous, response.items)];
+  const deliveredBlocks = blocks.flatMap((block): Block[] => {
+    if (block.kind !== 'user' || block.turnId === undefined || block.userMessageId === undefined) return [block];
+    const first = prompts.find((prompt) => prompt.promptId === block.userMessageId && prompt.steeredAt !== undefined);
+    if (first === undefined) return [block];
+    const batch = prompts.filter((prompt) => prompt.steeredAt === first.steeredAt && prompt.status === 'completed');
+    if (batch.length < 2 || batch[0]?.promptId !== first.promptId ||
+      batch.slice(1).some((prompt) => blocks.some((candidate) => candidate.kind === 'user' && candidate.userMessageId === prompt.promptId && candidate.turnId !== undefined))) return [block];
+    const parts = batch.map((prompt) => promptContentParts(prompt.content));
+    const combined = parts.flat().filter((part) => part.type === 'text').map((part) => part.text).join('');
+    if (combined !== block.text) return [block];
+    return batch.map((prompt, index) => {
+      const projection = projectMessageContent(parts[index]!);
+      return { ...block, id: `user-${prompt.userMessageId ?? prompt.promptId}`,
+        text: projection.text, media: projection.media.length > 0 ? projection.media : undefined,
+        userMessageId: prompt.userMessageId ?? prompt.promptId, promptId: prompt.promptId,
+        contentSource: { kind: 'prompt', id: prompt.promptId },
+      };
+    });
+  });
+  const withTaskBlocks = [...mergeTranscriptPromptBlocks(deliveredBlocks, prompts, previous, response.items)];
+  const frameTimes = new Map<string, number>();
+  const sourceItems = [...response.items];
+  const turns = sourceItems.filter((item): item is Extract<typeof item, { kind: 'turn' }> => item.kind === 'turn');
+  for (const turn of turns) {
+    for (const step of turn.steps) {
+      for (const frame of step.frames) {
+        const at = timestampMs('startedAt' in frame ? frame.startedAt : step.startedAt) ?? timestampMs(step.startedAt);
+        if (at !== undefined) frameTimes.set(frame.frameId, at);
+      }
+    }
+  }
+  const ordinalOf = (turn: (typeof turns)[number]) => 'ordinal' in turn ? turn.ordinal : Number(turn.turnId.replace(/^t/, ''));
+  const firstTurn = turns.reduce<(typeof turns)[number] | undefined>((first, turn) =>
+    first === undefined || ordinalOf(turn) < ordinalOf(first) ? turn : first, undefined);
+  const firstAt = timestampMs(firstTurn?.startedAt);
+  for (const marker of markerBlocks.toSorted((left, right) => blockTimelineMs(left)! - blockTimelineMs(right)!)) {
+    const at = blockTimelineMs(marker)!;
+    if (firstTurn !== undefined && ordinalOf(firstTurn) > 0 && firstAt !== undefined && at < firstAt) continue;
+    const owner = blockTurnId(marker);
+    const ownerStart = owner === undefined ? -1 : withTaskBlocks.findIndex((block) => sameTurnId(blockTurnId(block), owner));
+    const sourceTime = (block: Block) => 'frameId' in block && block.frameId !== undefined
+      ? frameTimes.get(block.frameId) ?? blockTimelineMs(block) : blockTimelineMs(block);
+    const next = withTaskBlocks.findIndex((block, index) => {
+      if (ownerStart >= 0 && index < ownerStart) return false;
+      const time = sourceTime(block);
+      return time !== undefined && time > at;
+    });
+    const sourceIndex = sourceItems.findIndex((item) => item.kind === 'marker' &&
+      (`agent-marker-${item.markerId}` === marker.id || (marker.kind === 'user' &&
+        typeof item.payload === 'object' && item.payload !== null &&
+        recordString(item.payload as Record<string, unknown>, 'messageId') === marker.userMessageId)));
+    const nextSourceTurn = sourceIndex < 0 ? undefined : sourceItems.slice(sourceIndex + 1).find((item) => item.kind === 'turn');
+    const structural = nextSourceTurn?.kind === 'turn'
+      ? withTaskBlocks.findIndex((block) => sameTurnId(blockTurnId(block), nextSourceTurn.turnId)) : -1;
+    const tied = withTaskBlocks.some((block) => sourceTime(block) === at);
+    const noClock = !withTaskBlocks.some((block) => sourceTime(block) !== undefined);
+    const insertion = (tied || noClock) && structural >= 0 ? structural : next;
+    withTaskBlocks.splice(insertion < 0 ? withTaskBlocks.length : insertion, 0, marker);
+  }
   for (const block of deferredTaskBlocks) {
     if (
       blockTimelineMs(block) === undefined &&
@@ -3047,6 +3108,7 @@ export function applyTranscriptShell(
     contextTokens: snapshot.context_tokens ?? base.contextTokens,
     maxContextTokens: snapshot.max_context_tokens ?? base.maxContextTokens,
     snapshotSubagents: snapshot.subagents ?? base.snapshotSubagents,
+    agentCounts: snapshot.agent_counts,
     loaded: true,
     loadError: undefined,
     resyncFailed: false,
@@ -3065,15 +3127,50 @@ export function prependOlderTranscriptSnapshot(
   current: AgentTranscriptSnapshot,
   older: Pick<AgentTranscriptSnapshot, 'items' | 'attachments' | 'hasMoreOlder'> & { readonly hasMore?: boolean; readonly has_more?: boolean },
 ): AgentTranscriptSnapshot {
-  const existingIds = new Set(current.items.map(transcriptItemId));
-  const prepended = older.items.filter((item) => !existingIds.has(transcriptItemId(item)));
+  const positions = new Map(current.items.map((item, index) => [transcriptItemId(item), index]));
+  const insertions = new Map<number, TranscriptItem[]>();
+  let pending: TranscriptItem[] = [];
+  let previousPosition: number | undefined;
+  const insert = (position: number) => {
+    if (pending.length > 0) insertions.set(position, [...insertions.get(position) ?? [], ...pending]);
+    pending = [];
+  };
+  for (const item of older.items) {
+    const position = positions.get(transcriptItemId(item));
+    if (position === undefined) pending.push(item);
+    else {
+      insert(position);
+      previousPosition = position;
+    }
+  }
+  if (pending.length > 0) {
+    const firstTurn = pending.find((item) => item.kind === 'turn');
+    const laterTurn = firstTurn === undefined ? -1
+      : current.items.findIndex((item) => item.kind === 'turn' && item.ordinal > firstTurn.ordinal);
+    let position = previousPosition !== undefined ? previousPosition + 1
+      : laterTurn >= 0 ? laterTurn : firstTurn !== undefined && current.items.some((item) => item.kind === 'turn') ? current.items.length : 0;
+    if (previousPosition === undefined && firstTurn !== undefined) {
+      const first = pending[0]!;
+      const at = timestampMs(first.kind === 'turn' ? first.startedAt : first.at) ?? timestampMs(firstTurn.startedAt);
+      while (position > 0) {
+        const preceding = current.items[position - 1]!;
+        if (preceding.kind === 'turn') break;
+        const precedingAt = timestampMs(preceding.at);
+        if (at === undefined || precedingAt === undefined || precedingAt < at) break;
+        position -= 1;
+      }
+    }
+    insert(position);
+  }
+  const items = current.items.flatMap((item, index) => [...insertions.get(index) ?? [], item]);
+  items.push(...insertions.get(current.items.length) ?? []);
   const existingAttachments = new Set(current.attachments.map((attachment) => attachment.attachmentId));
   const olderAttachments = older.attachments.filter(
     (attachment) => !existingAttachments.has(attachment.attachmentId),
   );
   return {
     ...current,
-    items: [...prepended, ...current.items],
+    items,
     attachments: [...olderAttachments, ...current.attachments],
     hasMoreOlder: older.hasMoreOlder ?? older.hasMore ?? older.has_more ?? current.hasMoreOlder,
   };

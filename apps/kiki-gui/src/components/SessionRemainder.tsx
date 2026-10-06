@@ -3,10 +3,10 @@
  * fields the header shows (a cut title, a cut cwd) and the agent roster the
  * list is built from. Those refs hang off no rendered body, so their outlet
  * belongs at the end of the reading column, after the last existing row: one
- * quiet summary line, and one row per structure once opened. Each row reads
- * exactly one segment of one ref; nothing walks the rest of the refs on its
- * own, and with nothing left that the reader would see, the section renders
- * nothing — including on a blank transcript, which then says the same thing.
+ * quiet summary line, and one row per structure once opened. The controller
+ * follows roster array pages automatically; this outlet reports progress or
+ * offers recovery. Other fields retain their one-segment action. With no
+ * visible refs left, the section renders nothing, including on a blank transcript.
  *
  * Labels name what the reader is missing, never a source or a path.
  */
@@ -38,6 +38,11 @@ function StructuralRow({
   const ref = refs[0];
   if (ref === undefined) return null;
   const progress = contentRefProgress(ref, t);
+  if (kind === 'agents' && ref.source.kind === 'snapshot' && ref.path.length === 1 && ref.kind === 'array' && statusOf(ref)?.status !== 'error') {
+    return <p role="status" data-roster-reading className="text-[12px] leading-5 text-ink-faint">
+      {label} · {progress} · {t('transcript.content.remainder.readingAgents')}
+    </p>;
+  }
   return (
     <ContinuationRow
       kind={kind}

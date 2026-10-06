@@ -49,7 +49,7 @@ async function createHost() {
   ctx.kimiConfig = { ...ctx.kimiConfig, models: {
     ...ctx.kimiConfig.models,
     [OLD]: { ...original!, cognition: { overlay: 'cognition/old.md' }, promptOverrides: { fields: { 'system.shared': 'OLD SHARED FIELD' } } },
-    [NEW]: { provider: 'test-provider', model: NEW, maxContextSize: 1_000_000,
+    [NEW]: { provider: 'test-provider', model: NEW, maxContextSize: 1_000_000, defaultEffort: 'off',
       cognition: { overlay: 'cognition/new.md' }, promptOverrides: { fields: { 'system.shared': 'NEW SHARED FIELD' } } },
   } };
   const metadata = ctx.get(ISessionMetadata);

@@ -8,6 +8,8 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IEventService } from '#/app/event/event';
+import { EventService } from '#/app/event/eventService';
 import {
   IRetainedUsageService,
   RETAINED_USAGE_VERSION,
@@ -130,6 +132,7 @@ describe('RetainedUsageService', () => {
   ): {
     readonly service: IRetainedUsageService;
     readonly appendLog: IAppendLogStore;
+    readonly events: IEventService;
   } {
     const disposables = new DisposableStore();
     stores.push(disposables);
@@ -137,10 +140,12 @@ describe('RetainedUsageService', () => {
     ix.stub(IBootstrapService, stubBootstrap(homeDir));
     ix.stub(IFileSystemStorageService, storage);
     ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    ix.set(IEventService, new SyncDescriptor(EventService));
     ix.set(IRetainedUsageService, new SyncDescriptor(RetainedUsageService));
     return {
       service: ix.get(IRetainedUsageService),
       appendLog: ix.get(IAppendLogStore),
+      events: ix.get(IEventService),
     };
   }
 
@@ -201,13 +206,18 @@ describe('RetainedUsageService', () => {
 
   it('retains temporary usage without session identifiers, titles, or prompts', async () => {
     const first = build();
+    const published = vi.spyOn(first.events, 'publish');
     const sessionScope = 'ephemeral/workspace-1/private-session';
     first.appendLog.append(`${sessionScope}/agents/main`, AGENT_WIRE_RECORD_KEY, {
       type: 'usage.record', time: 150, model: 'model-a', usage,
       agentId: 'main', profileName: 'secret title', turnId: 3,
     });
     await first.appendLog.flush();
+    expect(published).not.toHaveBeenCalled();
     await first.service.retainEphemeralUsage!(sessionScope, 'workspace-1');
+    expect(published).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: 'event.usage.settled', payload: {} }));
+    await first.service.retainEphemeralUsage!(sessionScope, 'workspace-1');
+    expect(published).toHaveBeenCalledTimes(1);
     await fsp.rm(join(homeDir, sessionScope), { recursive: true, force: true });
     const ledger = await fsp.readFile(join(homeDir, 'store/ephemeral-totals-v1.jsonl'), 'utf8');
     expect(ledger).not.toMatch(/private-session|secret title|turnId|agentId/);
@@ -242,7 +252,8 @@ describe('RetainedUsageService', () => {
   });
 
   it('completes a partially appended ephemeral source once and preserves genuine equal records', async () => {
-    const { service, appendLog } = build();
+    const { service, appendLog, events } = build();
+    const published = vi.spyOn(events, 'publish');
     const scope = 'ephemeral/workspace-1/partial-source';
     for (let i = 0; i < 2; i++) appendLog.append(`${scope}/agents/main`, AGENT_WIRE_RECORD_KEY, {
       type: 'usage.record', time: 150, model: 'model-a', usage,
@@ -255,6 +266,7 @@ describe('RetainedUsageService', () => {
       original(scope, key, record, options);
     });
     await expect(service.retainEphemeralUsage!(scope, 'workspace-1')).rejects.toThrow('append-failed');
+    expect(published).not.toHaveBeenCalled();
     failure.mockRestore();
     await appendLog.flush();
     expect(await service.listEphemeralUsage!(listQuery())).toMatchObject({ items: [], complete: false });

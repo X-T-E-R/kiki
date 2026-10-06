@@ -166,6 +166,7 @@ export interface IAgentLoopService {
 
   status(): AgentLoopStatus;
 
+  /** Retries the original completion event, never the model turn. Failed finalization also retries with bounded delays and on the next enqueue, while keeping admission held until durable success. */
   recoverPersistence(): Promise<boolean>;
 
   cancel(turnId?: number, reason?: unknown): boolean;

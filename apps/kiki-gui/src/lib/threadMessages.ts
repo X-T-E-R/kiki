@@ -171,17 +171,65 @@ export function groupByRoom(messages: readonly ThreadMessage[]): RoomGroup[] {
 
 /**
  * One line for a room delivery: the last room line in the catch-up block
- * (`[id author] @mentions text`), as `author: text` (or `format`). Falls back to the
- * first line when the block does not parse.
+ * (`[id author] @mentions text`), as `author: text` (or `format`).
+ *
+ * A block that carries no room line at all — an empty catch-up, or one holding
+ * only system rows such as `wake_failed` — is not a message, and the catch-up
+ * envelope plus the "you were selected for…" trailer are the transport's
+ * plumbing rather than anything a reader wrote. Those come back as
+ * `systemOnly`/`empty` with no text, so no surface falls back to printing the
+ * raw envelope; a block that is not a catch-up envelope at all (a hand-typed or
+ * older-server body) still summarizes as its first line.
  */
-export function roomMessageSummary(content: string, format: (author: string, text: string) => string = (author, text) => `${author}: ${text}`): string {
-  const rows = content.split(/\r?\n/u).map((line) => line.replace(/^<room-messages[^>]*>/u, '').trim())
-    .filter((line) => line.startsWith('[') && !line.startsWith('[system '));
-  const last = rows.at(-1);
+export function roomMessageSummary(
+  content: string,
+  format: (author: string, text: string) => string = (author, text) => `${author}: ${text}`,
+): string {
+  return roomMessageDetail(content, format).summary;
+}
+
+export interface RoomMessageDetail {
+  /** The one reader-visible line; `''` when the block carries no room line. */
+  readonly summary: string;
+  readonly kind: 'line' | 'system-only' | 'empty' | 'plain';
+  /** The `[system <event>] <text>` row, when that is all the block carries. */
+  readonly systemEvent?: string;
+  readonly systemText?: string;
+}
+
+/** What a room catch-up block actually contains, as the surfaces need to read it. */
+export function roomMessageDetail(
+  content: string,
+  format: (author: string, text: string) => string = (author, text) => `${author}: ${text}`,
+): RoomMessageDetail {
+  const body = roomCatchupBody(content);
+  if (body === undefined) return { summary: messageSummary(content), kind: 'plain' };
+  const rows = body.map((line) => line.trim()).filter((line) => line !== '');
+  const systemRow = rows.filter((line) => line.startsWith('[system '));
+  const roomRows = rows.filter((line) => line.startsWith('[') && !line.startsWith('[system '));
+  const last = roomRows.at(-1);
   const match = last === undefined ? null : /^\[\S+ ([^\]]+)\](?: @\S+)* (.*)$/u.exec(last);
-  if (match === null) return messageSummary(content);
+  if (match === null) {
+    const system = /^\[system (\S+)\]\s*(.*)$/u.exec(systemRow.at(-1) ?? '');
+    return {
+      summary: system === null ? '' : system[2]!.trim(),
+      kind: systemRow.length === 0 ? 'empty' : 'system-only',
+      systemEvent: system?.[1],
+      systemText: system?.[2]?.trim(),
+    };
+  }
   const author = match[1]!.replace(/ \([^)]*\)$/u, '');
-  return format(author, match[2]!.trim());
+  return { summary: format(author, match[2]!.trim()), kind: 'line' };
+}
+
+/**
+ * The rows between `<room-messages …>` and its closing tag, or `undefined` when
+ * the text is not a catch-up envelope. The trailer the engine appends after the
+ * closing tag is transport plumbing and is deliberately not returned.
+ */
+function roomCatchupBody(content: string): readonly string[] | undefined {
+  const match = /<room-messages[^>]*>([\s\S]*?)<\/room-messages>/u.exec(content);
+  return match === null ? undefined : match[1]!.split(/\r?\n/u);
 }
 
 /** The first non-empty line of a message, for one-line summaries. */

@@ -27,6 +27,9 @@ features:
   - title: "Roles you can talk to"
     details: A persona is a long-term identity with its own memory, a fixed daily conversation, and a seat in a room where several of them discuss one topic.
     link: ./features/people
+  - title: "Know what it costs"
+    details: "The usage page answers three questions: what a date range cost, which concurrency rule is holding a request back, and where the content-free numbers can be sent."
+    link: ./features/daily
   - title: "Your data, your machines"
     details: Spaces with their own credentials, directed remote connections, one-way thread bridges, Web access, and in-session SSH.
     link: ./features/spaces

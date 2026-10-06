@@ -16,15 +16,15 @@ import {
 
 import type { TranscriptService } from '../../services/transcript/transcriptService';
 import { boundedEntity, readContentSegment } from './boundedContent';
-import { boundedAttachment, boundedTranscriptOps, boundedTranscriptResponse, boundedTranscriptSnapshot, itemKey, TRANSCRIPT_WINDOW_BYTES } from './boundedTranscript';
+import { boundedAttachment, boundedTranscriptOps, boundedTranscriptResponse, boundedTranscriptSnapshot, boundedTranscriptPageSource, itemKey, TRANSCRIPT_WINDOW_BYTES } from './boundedTranscript';
 import { jsonBytes, type ContentRef, type ContentSegment, type TranscriptItem } from '@kiki/transcript';
 
 export async function readSessionViewTranscriptContent(
   service: TranscriptService, sessionId: string,
-  input: { readonly agentId: string; readonly ref: ContentRef; readonly signal?: AbortSignal },
+  input: { readonly agentId: string; readonly ref: ContentRef; readonly range?: boolean; readonly signal?: AbortSignal },
 ): Promise<ContentSegment | undefined> {
   const entity = await readSessionViewCanonicalEntity(service, sessionId, input);
-  return entity === undefined ? undefined : readContentSegment(entity, input.ref);
+  return entity === undefined ? undefined : readContentSegment(entity, input.ref, input.range);
 }
 
 export async function readSessionViewCanonicalEntity(
@@ -32,6 +32,9 @@ export async function readSessionViewCanonicalEntity(
   input: { readonly agentId: string; readonly ref: Pick<ContentRef, 'source'>; readonly signal?: AbortSignal },
 ): Promise<object | undefined> {
   input.signal?.throwIfAborted();
+  if (input.ref.source.kind === 'turn' || input.ref.source.kind === 'frame') {
+    return service.readCanonicalEntity(sessionId, input.agentId, input.ref.source, input.signal);
+  }
   const store = service.forSessionLive(sessionId);
   const transcript = store === undefined ? undefined : await service.ensureAgentHistory(sessionId, input.agentId);
   const snapshot = transcript?.snapshot() ?? await service.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
@@ -75,6 +78,10 @@ export async function readSessionViewTranscriptDetail(
 ): ReturnType<typeof readSessionViewTranscriptDetailRaw> {
   const detail = await readSessionViewTranscriptDetailRaw(...args);
   if (detail === undefined) return undefined;
+  if (detail.kind === 'tool') {
+    const lookup = detail.lookup;
+    return lookup.status !== 'found' ? detail : { ...detail, lookup: { ...lookup, frame: boundedEntity(lookup.frame, { kind: 'frame', id: lookup.frame.frameId, turnId: lookup.turnId, stepId: lookup.stepId }) } };
+  }
   if (detail.kind === 'task') return { ...detail, task: boundedEntity(detail.task, { kind: 'task', id: detail.task.taskId }) };
   if (detail.kind === 'attachment') return { ...detail, attachment: boundedAttachment(detail.attachment, detail.agent_id) };
   return { ...detail, prompt: boundedEntity(detail.prompt, { kind: 'prompt', id: detail.prompt.promptId }) };
@@ -87,7 +94,8 @@ export async function readColdSessionViewBaseline(
   grade: Exclude<TranscriptGrade, 'off'>,
   signal: AbortSignal,
 ): Promise<TranscriptResetEvent | undefined> {
-  const source = await service.readColdSnapshot(sessionId, agentId, undefined, signal);
+  const source = await service.readColdPageSnapshot(sessionId, agentId,
+    (snapshot) => boundedTranscriptPageSource(snapshot, agentId), signal);
   if (source === undefined) return undefined;
   signal.throwIfAborted();
   const transcript = new AgentTranscript(agentId);
@@ -158,7 +166,8 @@ async function readSessionViewTranscriptPageRaw(
     if (transcript === undefined) return undefined;
     const liveVerified = await transcriptService.verifyTranscriptLiveCoverage(sessionId, input.agentId);
     if (transcript.hasMoreOlder && (input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined)) {
-      const cold = await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal);
+      const cold = await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal,
+        (source) => boundedTranscriptPageSource(source, input.agentId));
       if (cold === undefined) return undefined;
       const page = paginateTurns(cold.items, pageQuery);
       const verified = liveVerified && transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId) &&
@@ -191,7 +200,8 @@ async function readSessionViewTranscriptPageRaw(
       coverage: coverageForItems(page.items, page.hasMore || transcript.hasMoreOlder, verified),
     } as unknown as TranscriptResponse;
   }
-  const snapshot = await transcriptService.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
+  const snapshot = await transcriptService.readColdPageSnapshot(sessionId, input.agentId,
+    (source) => boundedTranscriptPageSource(source, input.agentId), input.signal);
   if (snapshot === undefined) return undefined;
   const page = paginateTurns(snapshot.items, pageQuery);
   const roster = (await transcriptService.readColdRoster(sessionId)) ?? [];
@@ -213,7 +223,7 @@ async function readSessionViewTranscriptDetailRaw(
   sessionId: string,
   input: {
     readonly agentId: string;
-    readonly kind: 'task' | 'attachment' | 'prompt';
+    readonly kind: 'task' | 'attachment' | 'prompt' | 'tool';
     readonly id: string;
     readonly signal?: AbortSignal;
   },
@@ -236,8 +246,10 @@ async function readSessionViewTranscriptDetailRaw(
       readonly kind: 'prompt';
       readonly prompt: TranscriptPrompt;
     }
+  | { readonly session_id: string; readonly agent_id: string; readonly kind: 'tool'; readonly lookup: Awaited<ReturnType<TranscriptService['lookupToolCall']>> }
   | undefined
 > {
+  if (input.kind === 'tool') return { session_id: sessionId, agent_id: input.agentId, kind: 'tool', lookup: await transcriptService.lookupToolCall(sessionId, input.agentId, input.id, input.signal) };
   const store = transcriptService.forSessionLive(sessionId);
   let task: TranscriptTask | undefined;
   let attachment: TranscriptAttachment | undefined;
@@ -311,16 +323,16 @@ export async function readSessionViewTranscriptDetails(
   for (const entity of ordered.slice(offset, offset + limit)) {
     input.signal?.throwIfAborted();
     const projected = input.kind === 'attachment' ? boundedAttachment(entity as TranscriptAttachment, input.agentId)
-      : boundedEntity(entity, { kind: input.kind, id: detailEntityId(input.kind, entity) }, 12 * 1024);
+      : boundedEntity(entity, { kind: input.kind, id: detailEntityId(input.kind, entity) });
     const size = jsonBytes(projected) + 1;
-    if (bytes + size > TRANSCRIPT_WINDOW_BYTES) break;
+    if (items.length > 0 && bytes + size > TRANSCRIPT_WINDOW_BYTES) break;
     items.push(projected);
     bytes += size;
   }
   const hasMore = offset + items.length < ordered.length;
   const nextCursor = hasMore && items.length > 0 ? encodeTranscriptDetailCursor({ v: 1, agentId: input.agentId, kind: input.kind, after: detailEntityId(input.kind, items.at(-1)!) }) : undefined;
   const result = { session_id: sessionId, agent_id: input.agentId, kind: input.kind, items, total: ordered.length, has_more: hasMore, ...(nextCursor === undefined ? {} : { next_cursor: nextCursor }) };
-  if (jsonBytes(result) > TRANSCRIPT_WINDOW_BYTES) throw new Error('Transcript collection exceeds its window budget');
+
   return result as TranscriptDetailListResponse;
 }
 
@@ -361,16 +373,15 @@ export async function readSessionViewTranscriptCatchUp(
     const ops = boundedTranscriptOps(filterOpsForGrade(grade, batch.ops), transcript);
     const bounded = { seq: batch.seq, ops };
     const size = jsonBytes(bounded) + 1;
-    if (bytes + size > 48 * 1024) {
-      hasMore = batches.length > 0;
-      if (!hasMore) complete = false;
+    if (batches.length > 0 && bytes + size > TRANSCRIPT_WINDOW_BYTES) {
+      hasMore = true;
       break;
     }
     if (ops.length > 0) { batches.push(bounded as TranscriptOpsCatchupResponse['batches'][number]); bytes += size; }
     through = batch.seq;
   }
   const result = { session_id: sessionId, agent_id: input.agentId, epoch: catchup.epoch, batches, through_seq: hasMore ? through : catchup.throughSeq, complete, has_more: hasMore };
-  if (jsonBytes(result) > 48 * 1024) throw new Error('Transcript catch-up exceeds its page budget');
+
   return result;
 }
 

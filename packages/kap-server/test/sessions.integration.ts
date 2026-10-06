@@ -1891,6 +1891,33 @@ describe('server-v2 /api/sessions', () => {
     expect(childChildren.body.data.items.some((s) => s.id === grandchildId)).toBe(true);
   });
 
+  it.each(['custom', 'generated', 'replaceable'] as const)('preserves the source title kind on a default fork (%s)', async (kind) => {
+    const parent = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } });
+    expect(parent.body.code).toBe(0);
+    const source = getLiveSessionById(server!.core.accessor, parent.body.data.id)!;
+    await source.accessor.get(ISessionMetadata).update({ title: 'Source title', titleKind: kind });
+    const forked = await postJson<SessionWire>(`/api/sessions/${source.id}:fork`, {});
+    expect(forked.body.code).toBe(0);
+    const target = getLiveSessionById(server!.core.accessor, forked.body.data.id)!;
+    expect(await target.accessor.get(ISessionMetadata).read()).toMatchObject({ title: 'Fork: Source title', titleKind: kind });
+    const disk = JSON.parse(await readFile(join(home!, 'sessions', parent.body.data.workspace_id, forked.body.data.id, 'state.json'), 'utf8'));
+    expect(disk.titleKind).toBe(kind);
+    await closeSessionById(server!.core.accessor, target.id);
+    const resumed = await resumeSessionById(server!.core.accessor, target.id);
+    expect(await resumed!.accessor.get(ISessionMetadata).read()).toMatchObject({ title: 'Fork: Source title', titleKind: kind });
+  });
+
+  it('marks an explicitly named fork custom even when the source title is replaceable', async () => {
+    const parent = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } });
+    expect(parent.body.code).toBe(0);
+    const source = getLiveSessionById(server!.core.accessor, parent.body.data.id)!;
+    await source.accessor.get(ISessionMetadata).update({ title: 'Source title', titleKind: 'replaceable' });
+    const forked = await postJson<SessionWire>(`/api/sessions/${source.id}:fork`, { title: 'Named fork' });
+    expect(forked.body.code).toBe(0);
+    const target = getLiveSessionById(server!.core.accessor, forked.body.data.id)!;
+    expect(await target.accessor.get(ISessionMetadata).read()).toMatchObject({ title: 'Named fork', titleKind: 'custom' });
+  });
+
   it('does not list a plain fork as a child (kind must be "child")', async () => {
     const cwd = home as string;
     const parent = await postJson<SessionWire>('/api/sessions', { metadata: { cwd } });

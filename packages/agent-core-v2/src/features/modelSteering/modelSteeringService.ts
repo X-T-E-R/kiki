@@ -18,8 +18,8 @@ const MODEL_STEERING_INJECTION_VARIANT = 'model_steering';
  *  `model_steering` context-injection provider: each turn (including after compaction re-arm) it
  *  appends the bound model's `[models.<alias>.cognition].steering` text as a following user message
  *  after the user/task prompt — the dsh near-field shape, not a `<system-reminder>` — and re-injects
- *  the same text each turn so the cue does not drift from the latest prompt. File presence is
- *  validated at profile bind; a later read failure is skipped by the injector (fail-open there only). */
+ *  the text frozen at binding on each turn. Legacy bindings without saved slots read the file;
+ *  a read failure is skipped by the injector. */
 export class AgentModelSteeringService extends Disposable implements IAgentModelSteeringService {
   declare readonly _serviceBrand: undefined;
 
@@ -41,13 +41,13 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
   }: ContextInjectionContext): Promise<ContextInjectionContent | undefined> {
     if (!isNewTurn) return undefined;
     const binding = await this.profile.getCognitionBinding();
-    const text = await readCognitionSlot(
+    const text = binding.slots === undefined ? await readCognitionSlot(
       this.fs,
       this.bootstrap.homeDir,
       'steering',
       cognitionPathRefs(binding.config?.steering),
       this.hostEnv.pathClass,
-    );
+    ) : binding.slots.steering;
     if (text === undefined) return undefined;
     return {
       message: {

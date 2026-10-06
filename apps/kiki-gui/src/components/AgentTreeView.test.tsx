@@ -5,6 +5,7 @@ import { buildAgentForest, sessionAgentForestFromAgentSnapshots, type AgentRoste
 import { CHILD_AGENT_ID, childFailureWireRecords, childRetryWireRecords, replayAgentWire } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
 import { I18nProvider } from '../i18n';
 import { AgentTreeView } from './AgentTreeView';
+import { AgentIdentitySection } from './agent-panel/AgentIdentitySection';
 
 function renderRow(entry: AgentRosterDescriptor): string {
   return renderToStaticMarkup(
@@ -96,6 +97,25 @@ describe('AgentTreeView tool-count display', () => {
   it('renders a persisted terminal roster error as visible text, not just a tooltip', () => {
     const html = renderRow({ agentId: 'child', name: 'Child', status: 'failed', error: 'Connection closed' });
     expect(html).toContain('>Connection closed</span>');
+  });
+
+  it('keeps terminal, idle and unknown rows neutral and untimed even with a stale busy hint', () => {
+    for (const status of ['completed', 'failed', 'cancelled', 'lost', 'idle', 'unknown']) {
+      const html = renderRow({ agentId: 'child', name: 'Child', status, busy: true, startedAt: '2026-01-01T00:00:00.000Z' });
+      expect(html).not.toContain('status-dot-busy');
+      expect(html).not.toContain('bg-success');
+      expect(html).not.toMatch(/\d+h\s\d+m/);
+    }
+  });
+
+  it('keeps the identity status mark inactive for terminal, unknown and idle identities', () => {
+    for (const status of ['completed', 'failed', 'cancelled', 'lost', 'unknown', 'idle'] as const) {
+      const html = renderToStaticMarkup(<I18nProvider><AgentIdentitySection
+        identity={{ id: 'child', profile: 'example', label: 'Recorded worker', status, context: 'live' }}
+      /></I18nProvider>);
+      expect(html).not.toContain('status-dot-busy');
+      expect(html).not.toContain('bg-success');
+    }
   });
 
   it('renders an unknown tree node instead of dropping the row', () => {

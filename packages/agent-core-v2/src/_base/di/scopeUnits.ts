@@ -1,6 +1,7 @@
 import { onUnexpectedError } from '../errors/unexpectedError';
 import type { IDisposable } from './lifecycle';
 import { Ledger, type LedgerEntry } from '../lifecycle/ledger';
+import { isPromiseLike } from '../lifecycle/disposer';
 import type { StoredRecord } from './collection';
 import {
   FiberRuntime,
@@ -22,7 +23,7 @@ export function watchScopeUnits(container: InstantiationService, kind: ScopeKind
   const foldLedger = new Ledger(`scope-units:${kind}`);
   container.anchorKernelEntry((reason) => foldLedger.teardown(reason), `scope-units:${kind}`);
 
-  const materialized = new Map<number, () => void>();
+  const materialized = new Map<number, () => void | Promise<void>>();
 
   const materialize = (record: StoredRecord): void => {
     const recipe = record.value as ServiceRecipe;
@@ -31,9 +32,7 @@ export function watchScopeUnits(container: InstantiationService, kind: ScopeKind
     try {
       if (isClassRecipe(recipe)) {
         const instance = host.constructService(recipe, undefined) as Partial<IDisposable>;
-        unitLedger.register(() => {
-          instance.dispose?.();
-        }, `unit:${name}`);
+        unitLedger.register(() => instance.dispose?.(), `unit:${name}`);
       } else {
         const facade = new FiberRuntime(
           host,
@@ -57,19 +56,26 @@ export function watchScopeUnits(container: InstantiationService, kind: ScopeKind
     }
 
     let retracted = false;
+    let retractResult: void | Promise<void> = undefined;
     let providerEntry: LedgerEntry | undefined;
     let foldEntry: LedgerEntry | undefined;
-    const retract = (): void => {
-      if (retracted) {
-        return;
-      }
-      retracted = true;
+    const detach = (): void => {
       if (record.providerBook.isActive) providerEntry?.release();
       if (foldLedger.isActive) foldEntry?.release();
       providerEntry = undefined;
       foldEntry = undefined;
       materialized.delete(record.id);
-      void unitLedger.teardown('unload');
+    };
+    const retract = (): void | Promise<void> => {
+      if (retracted) return retractResult;
+      retracted = true;
+      retractResult = unitLedger.teardown('unload');
+      if (isPromiseLike(retractResult)) {
+        retractResult = retractResult.then(detach, (error) => { detach(); throw error; });
+      } else {
+        detach();
+      }
+      return retractResult;
     };
     if (!record.providerBook.isActive || !foldLedger.isActive) {
       retract();

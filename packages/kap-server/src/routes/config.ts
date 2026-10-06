@@ -9,6 +9,7 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
+import { agentExecutorOverridesFromToml } from '@kiki/agent-core-v2/app/agentExecutor/executorOverrides';
 import { modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
 import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { IRequestIdentityCatalog } from '@kiki/agent-core-v2/app/requestIdentity/requestIdentityCatalog';
@@ -417,7 +418,9 @@ function convertKeysSnakeToCamel(obj: unknown, preserveKeys = false): unknown {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
       const targetKey = preserveKeys ? key : snakeToCamel(key);
-      if (!preserveKeys && (key === 'nb_search' || key === 'nb_search_source' || key === 'prompt')) {
+      if (!preserveKeys && key === 'agent_executor_overrides') {
+        result[targetKey] = agentExecutorOverridesFromToml(value);
+      } else if (!preserveKeys && (key === 'nb_search' || key === 'nb_search_source' || key === 'prompt')) {
         result[targetKey] = value;
       } else {
         result[targetKey] = convertKeysSnakeToCamel(

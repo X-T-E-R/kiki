@@ -180,6 +180,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     subscriptions.add(execution.hooks.onWillRun.register(
       DELIVERY_HOOK_ID,
       async (context, next) => {
+        if (!this.kikiMailEnabled(handle)) { await next(); return; }
         if (this.isExternalExecutor(handle)) {
           const request = context.request;
           const replaceRequest = context.replaceRequest;
@@ -226,6 +227,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     sourceAgentId: string,
     child?: DispatchChild,
   ): Promise<boolean> {
+    if (!this.kikiMailEnabled(handle)) return false;
     const initialExecutionState = handle.accessor.get(IAgentExecutionService).status().state;
     const initiallyIdle =
       initialExecutionState === 'idle' &&
@@ -242,6 +244,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   }
 
   private async deliverRunning(handle: IAgentScopeHandle): Promise<void> {
+    if (!this.kikiMailEnabled(handle)) return;
     const execution = handle.accessor.get(IAgentExecutionService);
     const steer = execution.steer?.bind(execution);
     if (execution.status().state !== 'running' || steer === undefined) return;
@@ -335,6 +338,11 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       dispatchDecision: data.dispatchDecision,
       meta,
     };
+  }
+
+  private kikiMailEnabled(handle: IAgentScopeHandle): boolean {
+    const binding = handle.accessor.get(IAgentProfileService).data();
+    return binding.execution === undefined || (binding.executorId ?? 'native') === 'native' || binding.allowKikiSubagents === true;
   }
 
   private isExternalExecutor(handle: IAgentScopeHandle): boolean {

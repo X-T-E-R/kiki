@@ -197,6 +197,10 @@ class FakeTaskService implements IAgentTaskService {
     return this.getTask(taskId);
   }
 
+  hasUnfinishedWork(): boolean {
+    return this.list().some((info) => info.lifetime !== 'service');
+  }
+
   list(activeOnly = true, limit?: number, offset = 0): readonly AgentTaskInfo[] {
     const result: AgentTaskInfo[] = [];
     let skipped = 0;

@@ -52,7 +52,11 @@ export interface MemoryWriteReceipt {
   readonly id: string;
   readonly revision: string;
   readonly status: string;
-  readonly operationId: string;
+  readonly operationId?: string;
+  readonly outcome?: 'applied' | 'pending' | 'unchanged';
+  readonly ownerScope?: import('#/app/memory/memoryScopes').MemoryScope;
+  readonly target?: import('#/app/memory/memoryStore').MemoryTarget;
+  readonly proposedTarget?: import('#/app/memory/memoryStore').MemoryTarget;
 }
 
 export interface ExecutableToolSuccessResult {

@@ -67,7 +67,7 @@ export function groupConversationItems(items: readonly ConversationListItem[], o
 }): SessionGroup<ConversationListItem>[] {
   const resolved = items.map((item) => item.kind === 'room'
     ? { ...item, workspace_id: roomWorkspaceId(item.room.workspace, options.workspaces) }
-    : item);
+    : { ...item, updated_at: item.session.updated_at });
   const visible = filterSessions(resolved, { ...options.filters, status: [] }).filter((item) =>
     options.filters.status.length === 0 || options.filters.status.includes(item.needs_you ? 'needs-me' : item.busy ? 'running' : 'idle'));
   const sorted = sortSessionItems(visible, options.order ?? 'updated-desc');

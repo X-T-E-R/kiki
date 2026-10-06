@@ -222,7 +222,8 @@ async function navigationSearch(transcript: TranscriptService, nav: HistoryLocat
   return { items: scan.hits ?? [], hasMore: next !== undefined, pageToken: next,
     source: 'fallback', continuation: next === undefined ? undefined : 'scan', incomplete: scan.incompleteReason,
     coverage: { complete: scan.complete, domain: 'full_text', gaps, scanned: { bytes: scan.bytesRead, records: scan.recordsRead } },
-    warning: gaps.includes('page_local_relevance') ? 'Transcript relevance ranks only this page; continuation scans newest-first and may find stronger matches.' : undefined,
+    warning: gaps.includes('source_pending') ? 'The captured transcript ends in an unfinished record; restart the query after its writer settles.' :
+      gaps.includes('page_local_relevance') ? 'Transcript relevance ranks only this page; continuation scans newest-first and may find stronger matches.' : undefined,
     indexState: { state: 'unavailable', stale: true, degraded: SEARCH_INDEX_UNAVAILABLE },
     fallback: { reason: SEARCH_INDEX_UNAVAILABLE, scope: 'requested_session_wire', maxBytes: 8 << 20,
       maxRecords: 50_000, bytesRead: scan.bytesRead, recordsRead: scan.recordsRead, truncated: !scan.complete } };
@@ -287,6 +288,11 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       const { row, text } = result;
       return { status: 'ok', text, turn: row.turn, stepId: row.step, role: row.role,
         toolName: row.toolName, part: row.part, ref: nav.ref(row) };
+    },
+    async lookupDirectory(workspace, session, agent, turn, step, preparation, signal) {
+      const nav = getNavigation?.();
+      if (nav === undefined) return { status: 'navigation_unavailable', reason: 'navigation_not_configured' };
+      return nav.lookupDirectory(workspace, session, agent, turn, step, preparation, signal);
     },
     async directoryRef(workspace, session, agent, turn, step) {
       return getNavigation?.().directoryRef(workspace, session, agent, turn, step);

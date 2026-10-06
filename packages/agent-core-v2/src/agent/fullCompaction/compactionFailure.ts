@@ -30,7 +30,7 @@ export function isRetryableCompactionError(error: unknown): boolean {
   return isRetryableGenerateError(cause);
 }
 
-export function describeCompactionFailure(error: unknown, provider: string, model: string, attempts: number): string {
+export function describeCompactionFailure(error: unknown, provider: string, model: string, attempts: number, source: 'manual' | 'auto' = 'auto'): string {
   const cause = unwrapErrorCause(error);
   const status = cause instanceof APIStatusError ? cause : undefined;
   const kind = compactionFailureKind(error);
@@ -41,5 +41,5 @@ export function describeCompactionFailure(error: unknown, provider: string, mode
     .slice(0, 200);
   const code = /\b(CONTENT_FILTERED|content_filter|[A-Z][A-Z0-9_]{3,})\s*:/i.exec(detail)?.[1];
   const request = status?.requestId ?? status?.traceId;
-  return `Automatic compaction failed (${labels[kind]}; HTTP ${status?.statusCode ?? 'n/a'}${code ? ` ${code}` : ''}; ${provider}/${model}${request ? `; request ${request}` : ''}; ${attempts} attempt${attempts === 1 ? '' : 's'}): ${sanitized}`;
+  return `${source === 'manual' ? 'Manual' : 'Automatic'} compaction failed (${labels[kind]}; HTTP ${status?.statusCode ?? 'n/a'}${code ? ` ${code}` : ''}; ${provider}/${model}${request ? `; request ${request}` : ''}; ${attempts} attempt${attempts === 1 ? '' : 's'}): ${sanitized}`;
 }

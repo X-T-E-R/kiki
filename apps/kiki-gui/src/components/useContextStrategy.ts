@@ -33,7 +33,7 @@ export interface ContextStrategyHandle {
   /** Writes `strategy` as the global default and drops the session override. */
   readonly saveGlobal: (strategy: ContextStrategy) => Promise<ContextStrategyStatus>;
   /** Manual compaction; no strategy runs the session's effective one. */
-  readonly compact: (strategy?: ManualCompactStrategy) => Promise<void>;
+  readonly compact: (strategy?: ManualCompactStrategy) => Promise<import('@kiki/protocol').CompactSessionResponse | void>;
 }
 
 export function useContextStrategy(input: {
@@ -75,8 +75,9 @@ export function useContextStrategy(input: {
   const compact = useCallback(async (strategy?: ManualCompactStrategy) => {
     if (sessionId === undefined) throw new Error('no session');
     // The compact route names the fresh strategy `relay`.
-    await client.compactSession(sessionId, strategy === undefined ? {} : { strategy: strategy === 'fresh' ? 'relay' : 'summarize' });
+    const receipt = await client.compactSession(sessionId, strategy === undefined ? {} : { strategy: strategy === 'fresh' ? 'relay' : 'summarize' });
     void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    return receipt;
   }, [client, queryClient, sessionId]);
 
   // An engine without the route (404 / error) keeps the card as it was.

@@ -25,9 +25,17 @@ import {
 const META_KEY = 'state.json';
 
 const pendingWrites = new Set<Promise<void>>();
+const pendingActivityPropagation = new Set<Promise<void>>();
 
-export async function drainSessionMetadataWrites(): Promise<void> {
-  await Promise.all(pendingWrites);
+/** Pass false while holding a session lifecycle lock; propagation may be queued behind that lock. */
+export async function drainSessionMetadataWrites(includeActivityPropagation = true): Promise<void> {
+  await Promise.all(includeActivityPropagation ? [...pendingWrites, ...pendingActivityPropagation] : pendingWrites);
+}
+
+export function trackSessionMetadataWork(work: Promise<void>): void {
+  const tracked = work.catch(() => {});
+  pendingActivityPropagation.add(tracked);
+  void tracked.finally(() => pendingActivityPropagation.delete(tracked));
 }
 
 export const sessionMetadataDataKey = defineState<SessionMeta | undefined>(
@@ -95,6 +103,9 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     void this.enqueueUpdate(async () => {
       if (this.disposed) return;
       await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
+      if (this.disposed) return;
+      this.mirrorToReadModel();
+      this._onDidChangeMetadata.fire({ changed: ['usage'] });
     }).catch((error: unknown) => {
       this.log.warn('session usage metadata write failed', {
         sessionId: this.ctx.sessionId,
@@ -120,7 +131,9 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     if (this.disposed) return false;
     const updatedAt =
       patch.updatedAt ?? (opts?.touchUpdatedAt === false ? this.data.updatedAt : Date.now());
-    this.data = { ...this.data, ...patch, updatedAt };
+    const activityUpdatedAt = patch.activityUpdatedAt === undefined ? this.data.activityUpdatedAt
+      : Math.max(this.data.activityUpdatedAt ?? 0, patch.activityUpdatedAt);
+    this.data = { ...this.data, ...patch, updatedAt, activityUpdatedAt };
     await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
     if (this.disposed) return false;
     this.mirrorToReadModel();
@@ -216,6 +229,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
           delivery: this.data.delivery,
           createdAt: this.data.createdAt,
           updatedAt: this.data.updatedAt,
+          activityUpdatedAt: this.data.activityUpdatedAt,
           archived: this.data.archived === true,
           archivedAt: this.data.archivedAt,
           custom: this.data.custom,

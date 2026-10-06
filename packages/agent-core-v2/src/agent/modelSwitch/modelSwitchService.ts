@@ -24,7 +24,7 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { goalKey } from '#/agent/goal/goalOps';
 import { permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
 import { planKey } from '#/features/plan/planOps';
-import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { IAgentMemorySnapshot, memoryEntryReference } from '#/app/memory/memorySnapshot';
 import { readTodoState, todoKey } from '#/session/todo/todoOps';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
@@ -251,7 +251,7 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
         this.states.has(permissionModeKey) ? `## Permission state\n${this.states.get(permissionModeKey)}` : '',
         this.states.has(planKey) ? `## Plan state\n${JSON.stringify(this.states.get(planKey))}` : '',
       ].filter(Boolean),
-      memoryEntries: memoryEntries.map((entry) => `- [${entry.id}] ${entry.title}`), memoryReferences,
+      memoryEntries: memoryEntries.map((entry) => memoryEntryReference(entry)), memoryReferences,
     };
   }
 

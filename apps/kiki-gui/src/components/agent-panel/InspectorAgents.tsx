@@ -157,7 +157,7 @@ export const RailCrumbs = memo(function RailCrumbs({
 
 const STATUS_KEY = (status: string): I18nKey => `subagent.status.${status}` as I18nKey;
 
-const BUCKET_LIFE: Record<RosterBucket, LifeState> = { waiting: 'waiting', running: 'working', ended: 'done' };
+const BUCKET_LIFE: Record<RosterBucket, LifeState> = { waiting: 'waiting', running: 'working', idle: 'idle', unknown: 'idle', ended: 'done' };
 /** Running is the one live colour in the list; waiting keeps the accent. */
 const BUCKET_TONE: Partial<Record<RosterBucket, string>> = { running: 'bg-success', waiting: 'bg-attention' };
 /** A failed agent is marked by its shape, never by red. */
@@ -254,18 +254,27 @@ const RosterAgent = memo(function RosterAgent({
   onSelect: (agentId: string) => void;
   onToggle: (agentId: string) => void;
 }) {
-  const { t, tp } = useI18n();
+  const { t, tp, time } = useI18n();
   const { node, bucket, depth } = row;
   const waiting = bucket === 'waiting';
-  const failed = node.status === 'failed';
+  const failed = node.status === 'failed' || node.status === 'lost';
+  const label = node.label !== node.agentId ? node.label
+    : t(node.nameSource === 'unreported' ? 'subagent.name.unreported' : 'subagent.name.loading', { id: node.agentId });
   const settled = bucket === 'ended';
   // A failure reads as one plain line (never a payload), in the same ink as
   // any other ending; the full error stays in the agent's own timeline.
   const failure = failed ? (plainFailure(node.error) ?? t('inspector.failedNoDetail')) : undefined;
   const body = failure ?? (settled ? (node.summary ?? node.description) : node.description);
-  const elapsed = bucket === 'running' ? coarseElapsed(node.startedAt, now) : undefined;
+  const elapsed = bucket === 'running' && node.busy !== false ? coarseElapsed(node.startedAt, now) : undefined;
+  const start = Date.parse(node.startedAt ?? '');
+  const end = Date.parse(node.endedAt ?? '');
+  const duration = settled && Number.isFinite(start) && Number.isFinite(end) && end >= start
+    ? time.formatDuration(end - start) : undefined;
   const model = shortModel(node.model);
   const meta = [
+    node.agentId,
+    node.nameSource === undefined ? undefined : t(`subagent.source.name.${node.nameSource}`),
+    node.statusSource === undefined ? undefined : t(`subagent.source.status.${node.statusSource}`),
     node.model,
     node.thinkingEffort !== undefined ? t('subagent.effort', { effort: node.thinkingEffort }) : undefined,
     node.toolCallCountKnown === true ? t('subagent.tools', { count: node.toolCallCount }) : undefined,
@@ -276,7 +285,7 @@ const RosterAgent = memo(function RosterAgent({
       // A busy row reads as working from its first moment, never as a bare
       // "background" status until the first minute has passed.
       ? (elapsed ?? (node.busy === false ? t(STATUS_KEY(node.status)) : t('inspector.nowWorking')))
-      : t(STATUS_KEY(node.status));
+      : `${t(STATUS_KEY(node.status))}${duration === undefined ? '' : ` · ${duration}`}`;
   const trail = row.path.length > 0 ? row.path.join(' › ') : undefined;
   return (
     <div
@@ -309,7 +318,9 @@ const RosterAgent = memo(function RosterAgent({
         data-agent-id={node.agentId}
         data-agent-depth={depth}
         data-roster-bucket={bucket}
-        aria-label={t('subagent.openAgent', { name: node.label })}
+        data-agent-name-source={node.nameSource}
+        data-agent-status-source={node.statusSource}
+        aria-label={t('subagent.openAgent', { name: label })}
         title={meta === '' ? undefined : meta}
         onClick={() => { onSelect(node.agentId); }}
         className={ROW_BUTTON}
@@ -324,7 +335,7 @@ const RosterAgent = memo(function RosterAgent({
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-baseline gap-2 leading-5">
-            <span className={`max-w-[70%] shrink-0 truncate text-[13px] font-medium ${settled ? 'text-ink-soft' : 'text-ink'}`}>{node.label}</span>
+            <span className={`max-w-[70%] shrink-0 truncate text-[13px] font-medium ${settled ? 'text-ink-soft' : 'text-ink'}`}>{label}</span>
             {model !== undefined ? <span className="min-w-0 truncate text-[11.5px] text-ink-faint">{model}</span> : null}
             <span
               data-agent-status={node.status}

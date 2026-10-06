@@ -16,9 +16,11 @@ import { useI18n } from '../../i18n';
 import { importKeys, importsApi, type ImportsFacade } from '../../lib/importHistory';
 import {
   hasAnyPermission,
+  localizeEntry,
   pluginContributions,
   pluginPermissions,
   pluginPrerequisites,
+  pluginSurface,
   type PluginContributions,
   type PluginUpdateView,
 } from '../../lib/pluginCatalog';
@@ -36,7 +38,7 @@ import { PluginSettingsForm } from './PluginSettingsForm';
 import { Disclosure, FactList, QUIET_BUTTON, Tag } from './primitives';
 import {
   subjectIcon,
-  subjectName,
+  localizedSubjectName,
   useInvalidatePlugins,
   usePluginInfo,
   usePluginSkins,
@@ -51,6 +53,7 @@ export function PluginDetail({
   onUpdate,
   onOpenPanel,
   onOpenImport,
+  onOpenMedia,
 }: {
   readonly subject: PluginSubject;
   /** Available update from the catalog or GitHub; shown, never auto-installed. */
@@ -61,6 +64,12 @@ export function PluginDetail({
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
   /** This plugin's importer in the host-managed import surface. */
   readonly onOpenImport?: (source: { readonly pluginId: string; readonly sourceId: string }) => void;
+  /**
+   * The media management surface. It belongs to the media package, so it is
+   * offered on that plugin's own page rather than as a global control that
+   * exists before anything is installed.
+   */
+  readonly onOpenMedia?: () => void;
 }) {
   const { client, scopeId } = useConnection();
   const { t, locale } = useI18n();
@@ -105,9 +114,9 @@ export function PluginDetail({
   });
   const permissions = pluginPermissions(manifest);
   const prerequisites = pluginPrerequisites(info, manifest);
-  const name = subjectName(subject);
+  const name = localizedSubjectName(subject, locale);
   const description = (manifest?.['description'] as string | undefined)
-    ?? subject.entry?.description;
+    ?? (subject.entry === undefined ? undefined : localizeEntry(subject.entry, locale).description);
   const broken = installed !== undefined && (installed.state === 'error' || installed.hasErrors);
   const catalogSource = subject.entry?.source;
   const version = installed?.version ?? subject.entry?.version;
@@ -126,9 +135,10 @@ export function PluginDetail({
   };
 
   const install = () => {
-    if (catalogSource === undefined) return;
+    if (catalogSource === undefined || subject.entry?.installable === false) return;
     onInstall({
       source: catalogSource,
+      sha256: subject.entry?.sha256,
       displayName: name,
       icon: subjectIcon(subject, info),
       entry: subject.entry,
@@ -172,7 +182,7 @@ export function PluginDetail({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {installed === undefined ? (
-            <button type="button" className={PRIMARY_BUTTON} onClick={install} disabled={catalogSource === undefined} data-plugin-install={subject.id}>
+            <button type="button" className={PRIMARY_BUTTON} onClick={install} disabled={catalogSource === undefined || subject.entry?.installable === false} data-plugin-install={subject.id}>
               {t('cap.action.install')}
             </button>
           ) : (
@@ -216,6 +226,23 @@ export function PluginDetail({
             )}
           </section>
           {installed !== undefined ? <PluginSettingsForm pluginId={subject.id} /> : null}
+          {/* A plugin that contributes a management surface offers it here. The
+              manifest decides which one, so the page never names a plugin. */}
+          {installed !== undefined && onOpenMedia !== undefined && pluginSurface(manifest) !== undefined ? (
+            <section data-plugin-detail-surface>
+              <h2 className="text-[13px] font-medium text-ink">{t('cap.media.title')}</h2>
+              <p className="mt-1 max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('cap.media.manageHint')}</p>
+              <button
+                type="button"
+                className={`${QUIET_BUTTON} -ml-3 mt-1`}
+                data-plugin-open-media={subject.id}
+                onClick={() => { onOpenMedia(); }}
+              >
+                <Icon name="chevron" size={14} className="text-ink-faint" />
+                {t('cap.media.open')}
+              </button>
+            </section>
+          ) : null}
           {onOpenImport !== undefined && importerIds.length > 0 ? (
             <section data-plugin-detail-import>
               <h2 className="text-[13px] font-medium text-ink">{t('cap.import.title')}</h2>

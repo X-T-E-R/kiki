@@ -17,7 +17,7 @@
  *
  * The inline user-message editor also lives here: it replaces the bubble in
  * place (anything-llm's EditMessageForm shape), prefills the original text,
- * and warns that attachments are not carried over by a full-replacement edit.
+ * and carries the edited text and attachments through full-replacement edit-resend.
  */
 
 import { createContext, useContext, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
@@ -26,6 +26,9 @@ import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { registerOverlay } from '../lib/uiBusy';
 import { Icon } from './icons';
+import type { ComposerAttachment } from '@kiki/session-core/composer';
+import { Composer } from './Composer';
+import { useTranscriptTarget } from './transcriptDetail';
 
 /**
  * The in-app deep link to a message row, in the `?block=` shape SessionView's
@@ -422,83 +425,62 @@ export function MessageRowActions({
   );
 }
 
-/**
- * Inline editor for a user bubble (edit-resend). Esc cancels; the submit
- * button is disabled for blank text. The parent owns submission — the editor
- * closes itself on submit, and failures surface as toasts upstream.
- */
+/** Inline edit-resend with the same attachment pipeline as the main composer. */
 export function UserMessageEditor({
   initialText,
+  loadAttachments,
   onSubmit,
   onCancel,
 }: {
   initialText: string;
-  onSubmit: (text: string) => void;
+  loadAttachments?: () => Promise<readonly ComposerAttachment[]>;
+  onSubmit: (text: string, attachments: readonly ComposerAttachment[]) => void | Promise<void>;
   onCancel: () => void;
 }) {
   const { t } = useI18n();
+  const target = useTranscriptTarget();
   const [text, setText] = useState(initialText);
-  const areaRef = useRef<HTMLTextAreaElement>(null);
-
+  const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>([]);
+  const [loading, setLoading] = useState(loadAttachments !== undefined);
+  const [loadError, setLoadError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
+  const loaderRef = useRef(loadAttachments);
   useEffect(() => {
-    const area = areaRef.current;
-    if (area === null) return;
-    area.focus();
-    // Cursor to the end, like liveagent's EditableUserMessageBubble.
-    area.selectionStart = area.selectionEnd = area.value.length;
-  }, []);
-
-  const submit = () => {
-    const trimmed = text.trim();
-    if (trimmed === '') return;
-    onSubmit(text);
-  };
-
+    const load = loaderRef.current;
+    if (load === undefined) return;
+    let active = true;
+    setLoading(true);
+    setLoadError(false);
+    void load().then((media) => { if (active) setAttachments(media); })
+      .catch(() => { if (active) setLoadError(true); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [attempt]);
+  const cancel = () => { if (!submitting) onCancel(); };
   return (
-    <div
-      data-edit-editor
-      className="w-full max-w-[85%] rounded-2xl rounded-br-md border border-accent/40 bg-panel px-3 py-2"
-    >
-      <textarea
-        ref={areaRef}
-        value={text}
-        rows={Math.min(12, Math.max(2, text.split('\n').length))}
-        onChange={(event) => { setText(event.target.value); }}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            onCancel();
-          } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-            event.preventDefault();
-            submit();
-          }
+    <div data-edit-editor className="w-full max-w-[85%] rounded-2xl rounded-br-md border border-accent/40 bg-panel p-2">
+      <Composer
+        busy={false} disabled={loading} sendDisabled={loadError}
+        variant="subagent" messageEditing autoFocus
+        sessionId={target?.sessionId} agentId={target?.agentId}
+        value={text} onChange={setText}
+        attachments={attachments} onChangeAttachments={setAttachments}
+        model={undefined} defaultModel={undefined} serverDefaultModel={undefined}
+        modelSource="server-default" agentProfileCatalogMode={{ mode: 'global' }}
+        permissionMode="manual" planMode={false} efforts={undefined} effort={undefined}
+        onChangeModel={() => {}} onChangePermissionMode={() => {}}
+        onChangePlanMode={() => {}} onChangeEffort={() => {}}
+        onQueueEditCancel={cancel}
+        onSend={async (body, media) => {
+          setSubmitting(true);
+          try { await onSubmit(body, media); } finally { setSubmitting(false); }
         }}
-        className="w-full resize-y bg-transparent text-[13.5px] leading-relaxed text-ink outline-none"
       />
-      <div className="mt-1.5 flex items-center justify-between gap-3">
-        <span className="min-w-0 truncate text-[10.5px] text-ink-faint/80">
-          {t('transcript.editAttachmentsNote')}
-        </span>
-        <span className="flex shrink-0 items-center gap-1.5">
-          <button
-            type="button"
-            data-edit-cancel
-            onClick={onCancel}
-            className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-hairline-strong"
-          >
-            {t('common.cancel')}
-          </button>
-          <button
-            type="button"
-            data-edit-submit
-            disabled={text.trim() === ''}
-            onClick={submit}
-            title={t('transcript.editSubmitTitle')}
-            className="rounded-full bg-accent px-2 py-0.5 text-[10.5px] font-semibold text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {t('transcript.editSubmit')}
-          </button>
-        </span>
+      <div className="mt-2 flex items-center justify-between gap-3 px-1">
+        {loadError ? <button type="button" onClick={() => { setAttempt((value) => value + 1); }} className="text-[11px] text-danger">{t('preview.failed')} · {t('transcript.detail.retry')}</button> :
+          <span className="text-[11px] leading-snug text-ink-faint">{t('transcript.editAttachmentsNote')}</span>}
+        <button type="button" data-edit-cancel disabled={submitting} onClick={cancel} className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-soft hover:border-hairline-strong disabled:opacity-40">{t('common.cancel')}</button>
       </div>
     </div>
   );

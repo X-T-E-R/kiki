@@ -7,6 +7,8 @@ import {
   ISessionMetadata,
   IAgentLifecycleService,
   IAgentLoopService,
+  IAgentUsageService,
+  IEventDispatcher,
   IModelService,
   ensureMainAgent,
   resumeSessionById,
@@ -121,6 +123,47 @@ describe('klient HTTP host', () => {
     } finally {
       await klient.close();
     }
+  });
+
+  it('delivers settled usage globally before the next HTTP usage and session read, without duplication', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    try {
+      if (klient.rest === undefined) throw new Error('HTTP client must expose its REST facade');
+      const created = await klient.global.sessions.create({ workDir: homeDir, title: 'Usage fixture' });
+      const handle = await resumeSessionById(server.core.accessor, created.id);
+      if (handle === undefined) throw new Error('Fixture session did not resume');
+      const main = await ensureMainAgent(handle);
+      const before = await klient.rest.usage({ range: 'today' });
+      const settled = vi.fn();
+      const subscription = klient.events.on('usage.settled', settled);
+      await subscription.ready;
+      main.accessor.get(IAgentUsageService).record('example-model', { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 });
+      await vi.waitFor(() => expect(settled).toHaveBeenCalledExactlyOnceWith({ sessionId: created.id, agentId: 'main' }));
+      const after = await klient.rest.usage({ range: 'today' });
+      expect(after.summary.tokens.input_other - before.summary.tokens.input_other).toBe(3);
+      expect(after.summary.tokens.output - before.summary.tokens.output).toBe(2);
+      expect((await klient.rest.usage({ range: 'today' })).summary).toEqual(after.summary);
+      const sessionRead = await fetch(`${endpoint}/api/sessions/${created.id}`, { headers: { authorization: `Bearer ${TOKEN}` } })
+        .then((response) => response.json()) as { data: { usage: unknown } };
+      expect(sessionRead.data.usage).toMatchObject({ input_tokens: 3, output_tokens: 2, cache_read_tokens: 1 });
+      expect((await klient.global.agentPanel.read({ session_id: created.id, agent_id: 'main' })).metrics?.['main']?.totalTokens).toBe(6);
+      const workspace = await klient.global.workspaces.createOrTouch({ root: homeDir });
+      const temporary = await klient.rest.sessions.create({ workspace_id: workspace.id, ephemeral: true, title: 'Temporary usage fixture' });
+      const temporaryHandle = server.core.accessor.get(ISessionManager).get(temporary.id);
+      if (temporaryHandle === undefined) throw new Error('Fixture temporary session is not live');
+      const temporaryMain = await ensureMainAgent(temporaryHandle);
+      temporaryMain.accessor.get(IAgentUsageService).record('example-model', { inputOther: 4, output: 1, inputCacheRead: 0, inputCacheCreation: 0 });
+      await temporaryMain.accessor.get(IEventDispatcher).flush();
+      expect(settled).toHaveBeenCalledTimes(1);
+      await klient.rest.sessions.endEphemeral(temporary.id);
+      await vi.waitFor(() => expect(settled).toHaveBeenCalledTimes(2));
+      expect(settled.mock.calls[1]).toEqual([{}]);
+      const afterTemporary = await klient.rest.usage({ range: 'today' });
+      expect(afterTemporary.summary.tokens.input_other - after.summary.tokens.input_other).toBe(4);
+      expect(afterTemporary.sessions.items.some((item) => item.id === temporary.id)).toBe(false);
+      expect((await klient.rest.usage({ range: 'today' })).summary).toEqual(afterTemporary.summary);
+      subscription.dispose();
+    } finally { await klient.close(); }
   });
 
   it('shares sessions between the typed REST surface and session facade on the unified host', async () => {

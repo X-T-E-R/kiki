@@ -18,12 +18,59 @@ export class PromptOutcomeCommitted extends Event2<{ terminal: PromptTerminalRes
 }
 registerEvent2Class(PromptOutcomeCommitted);
 
-export function promptFingerprint(input: Pick<PromptInput, 'message' | 'execution' | 'appendTiming' | 'alreadyMaterialized' | 'deferredDisabledTools'>): string {
-  const value = { message: { ...input.message, id: undefined }, execution: input.execution,
+type PromptRequest = Pick<PromptInput, 'message' | 'execution' | 'appendTiming' | 'alreadyMaterialized' | 'deferredDisabledTools'>;
+
+export interface PromptRequestFingerprint {
+  readonly message: string;
+  readonly execution: string;
+  readonly appendTiming: string;
+  readonly alreadyMaterialized: string;
+  readonly deferredDisabledTools: string;
+}
+
+/** Keeps the immutable admission hash and field hashes of the latest authorized queued request, without retaining message content. */
+export interface PromptIdentity extends PromptLookup {
+  readonly fingerprint: string;
+  readonly currentRequest?: PromptRequestFingerprint;
+}
+
+function normalizedPromptRequest(input: PromptRequest) {
+  return { message: { ...input.message, id: undefined }, execution: input.execution,
     appendTiming: input.appendTiming ?? 'agent_idle', alreadyMaterialized: input.alreadyMaterialized === true,
     deferredDisabledTools: input.deferredDisabledTools };
-  const canonical = JSON.stringify(value, (_key, item: unknown) =>
+}
+
+function hashValue(value: unknown): string {
+  const canonical = JSON.stringify({ value }, (_key, item: unknown) =>
     item !== null && typeof item === 'object' && !Array.isArray(item)
       ? Object.fromEntries(Object.entries(item).toSorted(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) : item);
   return createHash('sha256').update(canonical).digest('hex');
+}
+
+export function promptFingerprint(input: PromptRequest): string {
+  const canonical = JSON.stringify(normalizedPromptRequest(input), (_key, item: unknown) =>
+    item !== null && typeof item === 'object' && !Array.isArray(item)
+      ? Object.fromEntries(Object.entries(item).toSorted(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) : item);
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+export function promptRequestFingerprint(input: PromptRequest): PromptRequestFingerprint {
+  const request = normalizedPromptRequest(input);
+  return { message: hashValue(request.message), execution: hashValue(request.execution),
+    appendTiming: hashValue(request.appendTiming), alreadyMaterialized: hashValue(request.alreadyMaterialized),
+    deferredDisabledTools: hashValue(request.deferredDisabledTools) };
+}
+
+export function updatePromptRequestFingerprint(current: PromptRequestFingerprint, input: Partial<Pick<PromptRequest, 'message' | 'execution' | 'appendTiming'>>): PromptRequestFingerprint {
+  return { ...current,
+    message: input.message === undefined ? current.message : hashValue({ ...input.message, id: undefined }),
+    execution: input.execution === undefined ? current.execution : hashValue(input.execution),
+    appendTiming: input.appendTiming === undefined ? current.appendTiming : hashValue(input.appendTiming) };
+}
+
+export function matchesPromptIdentity(identity: Pick<PromptIdentity, 'fingerprint' | 'currentRequest'>, input: PromptRequest): boolean {
+  if (identity.fingerprint === promptFingerprint(input)) return true;
+  if (identity.currentRequest === undefined) return false;
+  const current = promptRequestFingerprint(input);
+  return Object.entries(current).every(([key, value]) => identity.currentRequest?.[key as keyof PromptRequestFingerprint] === value);
 }

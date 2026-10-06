@@ -54,7 +54,7 @@ export const sessionViewTranscriptCatchUpInputSchema = z
 export const sessionViewTranscriptDetailInputSchema = z
   .object({
     agentId: z.string().min(1),
-    kind: z.enum(['task', 'attachment', 'prompt']),
+    kind: z.enum(['task', 'attachment', 'prompt', 'tool']),
     id: z.string().min(1),
   })
   .refine((value) => isPlainAgentId(value.agentId), {
@@ -72,6 +72,7 @@ export interface SessionViewTranscriptEntitiesInput {
 export const sessionViewTranscriptContentInputSchema = z.object({
   agentId: z.string().min(1),
   ref: contentRefSchema,
+  range: z.boolean().optional(),
 }).refine((value) => isPlainAgentId(value.agentId), { message: 'agentId must be a plain agent id', path: ['agentId'] });
 export const sessionViewTranscriptContentOutputSchema = contentSegmentSchema;
 export type SessionViewTranscriptContentInput = z.infer<typeof sessionViewTranscriptContentInputSchema>;

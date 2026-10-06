@@ -64,11 +64,17 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 在服务端的 transcript 回退检索中，`sort: "newest"` 和 `"oldest"` 按时间戳排列命中文本，跨页用稳定来源 ID 处理同时间命中；缺失的时间戳按零排序。导航先构建到固定来源水位，确认当前可见性，因此冷态大会话可能先返回空的 `navigation_building` 准备页，再返回命中。用 `next_cursor` 继续；投影准备和原文读取共享每次调用的预算。导航就绪后，最新优先检索会直接读取近期文本片段，不再从 wire 开头扫起。
 
-默认的 `sort: "relevance"` 只在当前有界页收集到的命中之间按词法得分排序：完整查询命中和更多词组命中提高分值，再以较新时间戳和稳定 ID 打破平分。跨页按最新时间优先扫描，并非全局相关度排序；后续页可能有更相关的命中。部分页会在 coverage 中披露 `page_local_relevance`。新版扫描 cursor 绑定查询、来源指纹和导航 generation；来源追加、undo、clear 或改写都会使其失效，失效后应重新发起查询。旧版扫描 cursor 仍能按来源顺序续扫，但会提示重新查询以使用排序导航。
+默认的 `sort: "relevance"` 只在当前有界页收集到的命中之间按词法得分排序：完整查询命中和更多词组命中提高分值，再以较新时间戳和稳定 ID 打破平分。跨页按最新时间优先扫描，并非全局相关度排序；后续页可能有更相关的命中。部分页会在 coverage 中披露 `page_local_relevance`。
+
+新版扫描 cursor 固定本次查询在开始时的历史范围；来源正常追加后仍可翻页，但新增内容不在本次结果里，要查看它们需重新查询。已固定的来源内容改变、查询条件改变，或共享导航已推进到本次范围之后时，按返回提示重新发起查询。旧版扫描 cursor 仍按原兼容规则续读。
+
+`HistorySearch` 在读取过程中发现来源发生变化时返回 `source_changed`，等写入方稳定后重新发起查询即可。这与你确实带了 cursor、而它与来源或查询不再匹配是不同的情况，那种情况提示去掉 cursor 重新发起。
 
 省略新版的 scope 和 mode 参数时，会按当前 session 和 `auto` 模式处理。不要假定旧版默认值，请读取响应中的 `scope_used` 和 `mode_used`；如果结果范围太窄，按 `expand_hint.next_call` 的建议改用 `scope: "workspace"` 重试。
 
-不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会按来源 block 读取整轮；也可用 `turn` 或 `step_id` 选择有界的轮次、步骤 block。导航目录尚在构建时，coverage 会披露已扫描范围。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会明确报错，不会跳到同号的新轮次。已有的 v1 Read cursor 仍按旧 JSON 形式续页；用 ref、turn 或 step_id 重新发起可切换到 blocks。
+不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会按来源 block 读取整轮；也可用 `turn` 或 `step_id` 选择有界的轮次、步骤 block。导航目录尚在构建时，返回的是 `partial` 准备页，会披露已扫描范围并带上 cursor——用它继续，而不是把当前列表当成完整结果。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会明确报错，不会跳到同号的新轮次。已有的 v1 Read cursor 仍按旧 JSON 形式续页；用 ref、turn 或 step_id 重新发起可切换到 blocks。
+
+`HistoryRead` 正常返回 `partial` 时，会带上已扫描到的 block 和续读 cursor。`no_match` 表示扫描已完成、这个定位没有内容。`source_pending` 表示持久化转录末尾是一条未写完的记录，还无法判断该定位是否命中，等写入方稳定后重试。导航目录仍在准备时同样是 `partial`，但带的是准备 cursor 和进度；此时的空 block 列表表示「还没扫到」而不是「没有」，先用该 cursor 续读再判断。若该 Agent 的持久化转录整体不可用，错误会指向 `HistoryList` 的 `kind: "agents"` 去核对 agent id。来源已变化时返回错误，不会读到另一轮内容。
 
 只检索跨线程消息时，使用 `HistorySearch({"query":"交接","scope":"peer"})`。它搜索当前工作区内的双向往来，也可指定经批准访问的 `workspace_id`；可选 `session_id` 限定一个会话。Peer 检索复用既有词法匹配模式，但始终按最新时间优先排列：省略 `sort` 或使用 `"newest"`。它排除子 Agent 和普通用户输入，不接受 `source: "transcript"`；指定 Agent 时只接受 `agent_id: "main"`。结果来源为 `source: "mailbox"`，命中带有 `communication` 元数据，包含消息身份、两端和投递状态，不会编造会话轮次号或 HistoryRead ref。完整正文和导航身份见[沟通记录 REST 读取](../server/rest-api.md#沟通记录)。部分页或空页应使用 `next_cursor` 继续读取；此视图覆盖邮箱仍保留的记录，不包含旧版本已淘汰的更早消息。
 
@@ -238,7 +244,7 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 
 ### 搜索与读取
 
-`MemorySearch` 可以用 `mode: "search"`（默认，需要 `query`）或 `mode: "list"`（不带 query，浏览清单）。`page_size` 取 1–20，search 默认 8、list 默认 20；翻页只带 `cursor`，改动任何过滤条件都会让它失效。每一项都带完整标题、type、status、revision、所属范围、可直接复制进 `MemoryWrite` 的 `target`、`basis_kind`，以及 `expired` / `recheck` / `unrecorded` 三态的 `applicability`。响应里的 `coverage` 说明实际查了哪些范围和状态、有没有跳过什么。search 额外给最多 200 字符的 `snippet` 和 `score`，list 两者都没有。片段会省略条件，所以要依赖、合并或替换一条记忆前先完整读出来。
+`MemorySearch` 可以用 `mode: "search"`（默认，需要 `query`）或 `mode: "list"`（不带 query，浏览清单）。`page_size` 取 1–20，search 默认 8、list 默认 20；翻页只带 `cursor`，改动任何过滤条件都会让它失效。每一项都带完整标题、type、status、revision、所属范围、可直接复制进 `MemoryWrite` 的 `target`、`basis_kind`，以及 `expired` / `recheck` / `unrecorded` 三态的 `applicability`。响应里的 `coverage` 说明实际查了哪些范围和状态、有没有跳过什么。只要 `exhausted` 为 false，空准备页也要接续；扫描预算不会截掉剩余源内容。搜索相关性排序针对每个有界源片段。search 额外给最多 200 字符的 `snippet` 和 `score`，list 两者都没有。片段会省略条件，所以要依赖、合并或替换一条记忆前先完整读出来。
 
 `MemoryRead` 在 `id` 和 `ids`（最多 10 个）中恰好取一个，默认读取生效、已归档和被替代的条目，只有显式传 `include_pending: true` 才包含待审提议。结果是完整条目而不是摘要，并带所属范围、target 字段和适用性，所以一次读取可以直接作为 `update` 的来源。
 
@@ -291,7 +297,7 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 `tools` 和 `disallowed_tools` 都省略时，新建子 Agent 使用配置默认，`resume` 保留已保存的覆盖。两者都要求原生 executor；不支持它们的外部 executor 会在子 Agent 启动前报错。
 
-**模型与档位。** 新派生项按此顺序选模型：`model_alias` 参数 → 生效 profile、route 或 caller lease 上的 pin → 显式配置的 `[subagent].default_model`。这些来源都不存在时以 `model.not_configured` 失败，不会创建子 Agent——调用方模型与主 Agent 的 `default_model` 都不是静默回退来源。`AgentRun` 拒绝 `model_alias: "inherit"`，请写具体的已配置模型名或省略该参数；subagent profile、route、caller lease 里仍可写 `model_alias: inherit` 跟随调用方。其他情况下，思考强度按工具 `effort` → route 上锁定的 effort（route 未锁定时改用 caller lease 的）→ 匹配的 `model_profiles` 档位 → 所绑定模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型自身的默认档位解析；都不提供时该调用失败。
+**模型与档位。** 新派生项按此顺序选模型：`model_alias` 参数 → 生效 profile、route 或 caller lease 上的 pin → 显式配置的 `[subagent].default_model`。这些来源都不存在时以 `model.not_configured` 失败，不会创建子 Agent——调用方模型与主 Agent 的 `default_model` 都不是静默回退来源。`AgentRun` 拒绝 `model_alias: "inherit"`，请写具体的已配置模型名或省略该参数；subagent profile、route、caller lease 里仍可写 `model_alias: inherit` 跟随调用方。其他情况下，思考强度按工具 `effort` → route 上锁定的 effort（route 未锁定时改用 caller lease 的）→ 匹配的 `model_profiles` 档位 → 所绑定模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型自身的默认档位解析。未声明档位时，能力明确不支持思考的模型使用 `off`；思考模型没有可解析默认档位时仍需显式选择。未知能力不视为 `off`。完整规则见[绑定解析](../customization/agents.md#具名-profile-route-实验功能)。
 
 `preferred_models`、`discouraged_models`、`preferred_efforts` 是建议，选到列表之外的模型仍然能跑。`allowed_models`、`deny_models`、`allowed_efforts` 是硬限制：绑定、人工切换与恢复都会拒绝违规，机器级 deny 与不可用能力同样如此。
 

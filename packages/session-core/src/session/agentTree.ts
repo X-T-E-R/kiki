@@ -4,6 +4,10 @@
  * inputs or depends on a not-yet-landed wire candidate.
  */
 
+import type { SnapshotSubagent } from '@kiki/protocol';
+
+type SnapshotNameSource = SnapshotSubagent['name_source'];
+
 export const MAIN_AGENT_ID = 'main';
 
 /**
@@ -11,6 +15,8 @@ export const MAIN_AGENT_ID = 'main';
  */
 export type AgentStatus =
   | 'unknown'
+  | 'idle'
+  | 'lost'
   | 'running'
   | 'suspended'
   | 'completed'
@@ -87,6 +93,8 @@ export interface AgentRosterDescriptor {
   readonly maxContextTokens?: number;
   readonly usage?: AgentUsageSummary;
   readonly status?: string;
+  readonly statusSource?: 'metadata' | 'runtime';
+  readonly nameSource?: SnapshotNameSource;
   readonly refreshing?: boolean;
   readonly refreshingUntil?: string;
   readonly busy?: boolean;
@@ -150,6 +158,8 @@ export interface AgentTreeNode {
   readonly parentToolCallId?: string;
   readonly name: string;
   readonly label: string;
+  readonly nameSource?: SnapshotNameSource;
+  readonly statusSource?: SnapshotSubagent['status_source'];
   readonly model?: string;
   readonly thinkingEffort?: string;
   readonly contextTokens?: number;
@@ -343,6 +353,8 @@ export function agentTreeNodesEqual(a: AgentTreeNode, b: AgentTreeNode): boolean
     a.parentToolCallId === b.parentToolCallId &&
     a.name === b.name &&
     a.label === b.label &&
+    a.nameSource === b.nameSource &&
+    a.statusSource === b.statusSource &&
     a.model === b.model &&
     a.thinkingEffort === b.thinkingEffort &&
     a.contextTokens === b.contextTokens &&
@@ -821,11 +833,17 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
       ((draft.statusStartedAt === undefined || draft.statusStartedAt <= refreshingAt) &&
         (draft.statusEndedAt === undefined || draft.statusEndedAt <= refreshingAt)));
   const status = normalizeStatus(entry.status);
-  const accepted =
-    status === undefined
+  const authority = entry.statusSource === undefined ? STATUS_AUTHORITY.roster : 4;
+  const inactive = entry.statusSource !== undefined && (status === 'idle' || status === 'unknown');
+  if (inactive) {
+    draft.status = status;
+    draft.statusAuthority = authority;
+    draft.busy = false;
+  }
+  const accepted = inactive ||
+    (status === undefined
       ? draft.status === undefined && draft.disposedAt === undefined
-      : applyStatus(draft, status, STATUS_AUTHORITY.roster, entry.startedAt, entry.endedAt)
-          .accepted;
+      : applyStatus(draft, status, authority, entry.startedAt, entry.endedAt).accepted);
   if (refreshing) {
     draft.refreshing = true;
     draft.refreshingUntil = entry.refreshingUntil;
@@ -861,7 +879,7 @@ function invalidateDisposedRun(draft: DraftNode, disposedAt: number, authority: 
 function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
   draft.parentAgentId = draft.parentAgentId ?? cleanId(block.parentAgentId);
   draft.parentToolCallId = firstPresent(block.parentToolCallId) ?? draft.parentToolCallId;
-  draft.name = firstPresent(block.name) ?? draft.name;
+  if (block.name !== block.subagentId || draft.name === undefined) draft.name = firstPresent(block.name) ?? draft.name;
   draft.label = firstPresent(block.label) ?? draft.label;
   draft.description = firstPresent(block.description) ?? draft.description;
   applyToolCallCount(
@@ -870,6 +888,8 @@ function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
     block.toolCallCountKnown,
     block.toolCallCountAuthoritative,
   );
+  if (draft.statusAuthority === 4 && (draft.status === 'unknown' || draft.status === 'idle') &&
+    isActiveStatus(normalizeStatus(block.status) ?? 'unknown')) return;
   const disposedAt = parseStatusTimestamp(block.disposedAt);
   if (disposedAt !== undefined && (draft.disposedAt === undefined || disposedAt > draft.disposedAt)) {
     draft.disposedAt = disposedAt;
@@ -1012,7 +1032,9 @@ function normalizeStatus(raw: string | undefined, detached = false): AgentStatus
   }
   switch (raw) {
     case 'unknown':
-      return 'unknown';
+    case 'idle':
+    case 'lost':
+      return raw;
     case 'running':
     case 'queued':
     case 'working':
@@ -1024,7 +1046,6 @@ function normalizeStatus(raw: string | undefined, detached = false): AgentStatus
       return 'completed';
     case 'failed':
     case 'timed_out':
-    case 'lost':
       return 'failed';
     case 'cancelled':
     case 'killed':
@@ -1038,7 +1059,7 @@ function normalizeStatus(raw: string | undefined, detached = false): AgentStatus
 
 function statusRank(status: AgentStatus): number {
   if (status === 'unknown') return 0;
-  if (status === 'completed' || status === 'failed' || status === 'cancelled') return 2;
+  if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'lost') return 2;
   return 1;
 }
 
@@ -1145,7 +1166,7 @@ function isActiveStatus(status: AgentStatus): boolean {
 
 /** Terminal statuses are never busy; running/suspended/background stay active. */
 function busyFromStatus(status: AgentStatus, hinted?: boolean): boolean {
-  if (status === 'completed' || status === 'failed' || status === 'cancelled') return false;
+  if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'lost' || status === 'idle') return false;
   return hinted ?? isActiveStatus(status);
 }
 

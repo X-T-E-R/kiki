@@ -132,6 +132,39 @@ describe('InstantiationService.createChild', () => {
     expect(parent.invokeFunction((a) => a.get(IScoped))).toBeUndefined();
   });
 
+  it.each([false, true])('awaits asynchronous child teardown before parent service teardown completes (already disposing=%s)', async (alreadyDisposing) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const events: string[] = [];
+    class SlowChild {
+      async dispose(): Promise<void> {
+        events.push('child started');
+        await gate;
+        events.push('child ended');
+      }
+    }
+    class ParentService {
+      dispose(): void { events.push('parent ended'); }
+    }
+    const childId = createDecorator<SlowChild>('async-dispose-child');
+    const parentId = createDecorator<ParentService>('async-dispose-parent');
+    const parent = new InstantiationService(new ServiceCollection([parentId, new SyncDescriptor(ParentService)]));
+    const child = parent.createChild(new ServiceCollection([childId, new SyncDescriptor(SlowChild)]));
+    parent.invokeFunction((accessor) => accessor.get(parentId));
+    child.invokeFunction((accessor) => accessor.get(childId));
+    if (alreadyDisposing) child.dispose();
+    let settled = false;
+    const pending = Promise.resolve(parent.dispose()).then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(events).toEqual(['child started']);
+    release();
+    await pending;
+    expect(events).toEqual(['child started', 'child ended', 'parent ended']);
+    await parent.dispose();
+    expect(events).toHaveLength(3);
+  });
+
   it('dispose order: A→B→C construction yields C→B→A teardown', () => {
     const events: string[] = [];
     interface ITagged {

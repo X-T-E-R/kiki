@@ -169,7 +169,8 @@ export function resolveThinkingEffortForModel(
     const effort = normalizeRequestedThinkingEffort(requested)
       ?? normalizeRequestedThinkingEffort(model?.preferredThinkingEffort)
       ?? normalizeRequestedThinkingEffort(model?.overrides?.defaultEffort)
-      ?? normalizeRequestedThinkingEffort(model?.defaultEffort);
+      ?? normalizeRequestedThinkingEffort(model?.defaultEffort)
+      ?? (model?.capabilities !== undefined && !modelSupportsThinking(model) ? 'off' : undefined);
     if (effort === undefined) {
       throw new Error2(CONFIG_INVALID_ERROR_CODE,
         'The selected model has no resolvable default thinking effort. Provide effort explicitly or configure a model default.',

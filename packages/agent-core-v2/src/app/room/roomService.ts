@@ -8,6 +8,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { IConfigService } from '#/app/config/config';
 import { BOT_SECTION } from '#/app/bot/configSection';
 import { Error2, ErrorCodes, toErrorPayload } from '#/errors';
+import { safeProviderFailureDetails } from '#/kosong/contract/streamDiagnostics';
 import { IPersonaStore } from '#/app/persona/personaStore';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
@@ -761,9 +762,29 @@ export class RoomService extends Disposable implements IRoomService {
   }
 
   private async deliverWake(work: WakeWork): Promise<void> {
-    const room = await this.requireRoom(work.roomId);
-    if (work.cancelled || room.paused || room.generation !== work.generation) return;
-    if (!room.members.some((member) => member.sessionId === work.member.sessionId)) return;
+    const room = await this.withRoomLock(work.roomId, async () => {
+      const current = await this.requireRoom(work.roomId);
+      if (work.cancelled || current.paused || current.generation !== work.generation) return undefined;
+      if (!current.members.some((member) => member.sessionId === work.member.sessionId)) return undefined;
+      const cursor = current.cursors[work.member.sessionId];
+      if (cursor === undefined) return current;
+      await this.ensureLogState(work.roomId);
+      const [sourcePointer, cursorPointer] = await Promise.all([
+        this.documents.get<RoomLogPointer>(roomScope(work.roomId), roomLogPointerKey(work.sourceMessageId)),
+        this.documents.get<RoomLogPointer>(roomScope(work.roomId), roomLogPointerKey(cursor)),
+      ]);
+      if (sourcePointer === undefined || cursorPointer === undefined || sourcePointer.seq > cursorPointer.seq) return current;
+      const pendingWakes = current.pendingWakes ?? [];
+      const nextPendingWakes = pendingWakes.filter((pending) =>
+        !(pending.sessionId === work.member.sessionId && pending.sourceMessageId === work.sourceMessageId && pending.generation === work.generation));
+      if (nextPendingWakes.length !== pendingWakes.length) {
+        const updated = { ...current, pendingWakes: nextPendingWakes };
+        await this.documents.set(roomScope(work.roomId), 'room.json', updated);
+        this.fire({ roomId: work.roomId, room: updated });
+      }
+      return undefined;
+    });
+    if (room === undefined) return;
     const entries = await this.readIndexedLog(work.roomId, room.cursors[work.member.sessionId]);
     const catchup = renderCatchup(entries, room, work.member, work.sourceMessageId, await this.loadPersonaCards(room.members).catch(() => new Map<string, PersonaCard>()));
     const target = await this.threadRef(room, work.member);
@@ -886,8 +907,10 @@ export class RoomService extends Disposable implements IRoomService {
             sourceMessageId: work.sourceMessageId,
             reason_code: failure.code,
             reason: failure.message,
+            name: failure.name,
             retryable: failure.retryable,
             provider: failure.details?.['provider'],
+            providerFailure: safeProviderFailureDetails(failure.details),
           });
         }).catch(() => undefined);
       } finally {
@@ -1212,7 +1235,7 @@ export function renderRoomPrompt(room: {
     const suffix = card?.job === undefined ? '' : ` (${escapeXml(card.job)})`;
     return `${escapeXml(card?.name ?? id)}${suffix}`;
   }).join('; ');
-  return `<room name="${escapeXml(room.name)}">Your host is ${escapeXml(host?.name ?? room.host)}; members: ${roster}; the user is User. Only speak when mentioned by the user or assigned by the host; a room message is visible in the next wake. Do not repeat your own SendMessage output.</room>`;
+  return `<room name="${escapeXml(room.name)}">Your host is ${escapeXml(host?.name ?? room.host)}; members: ${roster}; the user is User. A user message without mentions wakes the host; an agent room message wakes only its mentioned members. Other room messages are visible in the next wake. Do not repeat your own SendMessage output.</room>`;
 }
 
 function renderCatchup(entries: readonly RoomLogEntry[], room: RoomDocument, member: RoomMember, sourceMessageId: string, cards: ReadonlyMap<string, PersonaCard> = new Map()): RoomCatchup {
@@ -1231,7 +1254,7 @@ function renderCatchup(entries: readonly RoomLogEntry[], room: RoomDocument, mem
     return `[${entry.id} ${author}]${mentions} ${entry.text}${attachments}`;
   }).join('\n');
   return {
-    content: `<room-messages room="${escapeXml(room.id)}" since="${escapeXml(cursor ?? '')}">${rows}\n</room-messages>\nYou were selected for room message ${escapeXml(sourceMessageId)}. ${member.kind === 'thread' ? `Ordinary assistant text is NOT posted to this room. To speak in the room, use ThreadSend({room: "${escapeXml(room.id)}", content, mentions?}); mentions use member ids: ${escapeXml(room.members.filter((candidate) => candidate.sessionId !== member.sessionId).map((candidate) => label(roomMemberId(candidate))).join('; '))}. A message that mentions no one goes to the room host. Your existing workspace and permissions are unchanged.` : 'Only SendMessage posts your speech to this room.'}`,
+    content: `<room-messages room="${escapeXml(room.id)}" since="${escapeXml(cursor ?? '')}">${rows}\n</room-messages>\nYou were selected for room message ${escapeXml(sourceMessageId)}. ${member.kind === 'thread' ? `Ordinary assistant text is NOT posted to this room. To speak in the room, use ThreadSend({room: "${escapeXml(room.id)}", content, mentions?}); mentions must use these exact member IDs, not display names: ${escapeXml(JSON.stringify(room.members.filter((candidate) => candidate.sessionId !== member.sessionId).map(roomMemberId)))}. Your room send without mentions is logged but wakes no one; mention a member ID to request its attention. Only a user room message without mentions wakes the host. Your existing workspace and permissions are unchanged.` : 'Only SendMessage posts your speech to this room.'}`,
     cursor: after.at(-1)?.id,
   };
 }

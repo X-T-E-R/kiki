@@ -6,6 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
+import { applyCompactionProgress, type CompactionProgress } from './useCompactionProgress';
 import {
   CONTEXT_DANGER_RATIO,
   CONTEXT_WARN_RATIO,
@@ -434,6 +435,44 @@ describe('ContextMeter interaction', () => {
     expect(breakdown?.textContent).toContain('8.0k');
     expect(breakdown?.textContent).toContain('Messages');
     expect(breakdown?.textContent).toContain('60.0k');
+    await act(async () => { root.unmount(); });
+  });
+});
+
+describe('manual compaction progress', () => {
+  it('keeps manual queue attribution when an earlier automatic compaction finishes', () => {
+    const queued = applyCompactionProgress(undefined, { type: 'compaction.started', trigger: 'manual', phase: 'queued' });
+    expect(applyCompactionProgress(queued, { type: 'compaction.completed', trigger: 'auto', result: { summary: 'auto', compactedCount: 2, tokensBefore: 30, tokensAfter: 10 } })).toEqual(queued);
+    expect(applyCompactionProgress(queued, { type: 'compaction.completed', result: { summary: 'unknown source', compactedCount: 2, tokensBefore: 30, tokensAfter: 10 } })).toEqual(queued);
+    expect(applyCompactionProgress({ source: 'manual', phase: 'running' }, { type: 'compaction.completed', result: { summary: 'older server', compactedCount: 2, tokensBefore: 30, tokensAfter: 10 } })).toBeUndefined();
+    expect(applyCompactionProgress(queued, { type: 'compaction.cancelled', trigger: 'manual', reason: 'No safe prefix' })).toEqual({ source: 'manual', phase: 'failed', reason: 'No safe prefix' });
+  });
+
+  it('shows queue, execution, completion and real failure without disabling an unrelated active turn', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    const onCompact = vi.fn();
+    const draw = async (compaction?: CompactionProgress) => {
+      await act(async () => { root.render(<I18nProvider><ContextBreakdownProvider value={undefined} compaction={compaction}><ContextMeter used={80_000} limit={100_000} onCompact={onCompact} /></ContextBreakdownProvider></I18nProvider>); });
+    };
+    await draw({ source: 'auto', phase: 'running' });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+    expect(container.querySelector<HTMLButtonElement>('[data-context-compact]')?.disabled).toBe(false);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-compact]')!.click(); });
+    expect(onCompact).toHaveBeenCalledTimes(1);
+    await draw({ source: 'manual', phase: 'queued' });
+    expect(container.querySelector('[data-compaction-progress]')?.textContent).toBe('Manual compaction queued');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+    expect(container.querySelector<HTMLButtonElement>('[data-context-compact]')?.disabled).toBe(true);
+    await draw({ source: 'manual', phase: 'running' });
+    expect(container.textContent).toContain('Manual compaction running');
+    await draw({ source: 'manual', phase: 'completed' });
+    expect(container.textContent).toContain('Manual compaction complete');
+    expect(container.querySelector<HTMLButtonElement>('[data-context-compact]')?.disabled).toBe(false);
+    await draw({ source: 'manual', phase: 'failed', reason: 'No safe prefix' });
+    expect(container.querySelector('[data-compaction-progress]')?.getAttribute('title')).toBe('No safe prefix');
     await act(async () => { root.unmount(); });
   });
 });

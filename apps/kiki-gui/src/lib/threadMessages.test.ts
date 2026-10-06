@@ -7,6 +7,7 @@ import {
   groupByPeer,
   groupByRoom,
   messageJumpHref,
+  roomMessageDetail,
   roomMessageSummary,
   readThreadMessagesPage,
   type ThreadToThreadMessage,
@@ -126,5 +127,40 @@ describe('room deliveries', () => {
     ].join('\n');
     expect(roomMessageSummary(content)).toBe('后端线程: 字段改成 camelCase');
     expect(roomMessageSummary('plain text')).toBe('plain text');
+  });
+
+  it('reads an empty catch-up as no message instead of the raw envelope', () => {
+    const content = [
+      '<room-messages room="contract" since="m_7">',
+      '</room-messages>',
+      'You were selected for room message m_9. Ordinary assistant text is NOT posted to this room.',
+    ].join('\n');
+    expect(roomMessageDetail(content).kind).toBe('empty');
+    expect(roomMessageSummary(content)).toBe('');
+    expect(roomMessageSummary(content)).not.toContain('room-messages');
+  });
+
+  it('reads a system-only catch-up as its system row, not the envelope', () => {
+    const content = [
+      '<room-messages room="contract" since="m_7">',
+      '[system wake_failed] Unable to wake session_b: provider timeout',
+      '</room-messages>',
+      'You were selected for room message m_9.',
+    ].join('\n');
+    const detail = roomMessageDetail(content);
+    expect(detail.kind).toBe('system-only');
+    expect(detail.systemEvent).toBe('wake_failed');
+    expect(detail.systemText).toBe('Unable to wake session_b: provider timeout');
+    expect(roomMessageSummary(content)).toBe('Unable to wake session_b: provider timeout');
+  });
+
+  it('prefers the last real room line over a trailing system row', () => {
+    const content = [
+      '<room-messages room="contract" since="">[m_1 User] ship it',
+      '[m_2 后端线程 (thread-a)] 字段改成 camelCase',
+      '[system wake_failed] Unable to wake session_b',
+      '</room-messages>',
+    ].join('\n');
+    expect(roomMessageSummary(content)).toBe('后端线程: 字段改成 camelCase');
   });
 });

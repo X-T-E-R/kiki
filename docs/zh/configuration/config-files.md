@@ -109,6 +109,26 @@ command = "node ~/.kiki/hooks/check-bash.mjs"
 timeout = 5
 ```
 
+## 外部 harness 默认设置
+
+外部 harness（实际运行 Agent 的程序）可以不选 Kiki profile，使用自身配置。main agent 的 `execution` 选择通过 `[agent_executor_overrides.<id>.defaults]` 保存可复用的 Kiki 覆盖值；会话覆盖优先于 profile 显式声明，profile 显式声明优先于这些设置，仍未设置的值由 harness 自己决定。原生执行保持 Kiki 既有的模型与 profile 默认行为。
+
+```toml
+[agent_executor_overrides."claude-acp".defaults]
+# 可选：填写 harness 自己的模型 ID，而非 Kiki 原生模型 alias。
+model_alias = "YOUR_HARNESS_MODEL"
+thinking_effort = "high"
+permission_mode = "auto"
+kiki_context = []
+allow_kiki_subagents = false
+```
+
+省略模型、思考强度与权限字段，就交给 harness 自己选择。`kiki_context` 接受 `memory`、`board`、`cron`、`threads`、`history`、`hooks`；`[]` 明确关闭全部组，`allow_kiki_subagents = false` 明确关闭委派。在这条 execution 路径中，profile 未声明的字段继承 harness 设置。修改设置不会改写已有绑定；重新选择 execution 或显式重建上下文才会采用新值。
+
+`defaults.executor_prompt` 接受 `delivery`（`append`、`replace`、`preamble`）、`body`、`append`、`include` 和 `per_engine.<id>` 覆盖。这些字段与所选 profile 逐项合并，因此只设置 `delivery` 不会抹掉默认正文。省略 `include` 会继承，`include = []` 关闭附加段落。没有有效的 `executor_prompt.body` 时才使用 profile 正文。外部 execution 不会自动添加 Kiki cognition 或共享提示字段；需要哪些字段，在 `include` 中显式选择。
+
+通过 [REST API](../server/rest-api.md#会话) 修改时，向 `POST /api/config` 发送 `agent_executor_overrides` 对象。defaults 字段的 JSON `null` 删除该项保存值，`defaults: null` 删除整个默认设置块。TOML 不支持 `null`，直接编辑文件时删除对应键即可。`bin_path`、`home_dir`、`env`、`args` 等启动设置与 defaults 分开保存。
+
 ## 连续性提醒词表
 
 Kiki 会提醒 Agent 记录持续有效的指示、查找早先决定、更新未完成待办，并在上下文压缩前后保留工作笔记。提醒追加到对话历史，不会自动保存记忆或修改系统提示词。进度提醒需要 `TodoList`；`TodoList` 不可用但记忆访问已获批准时，记录指示和回看历史提醒仍可工作。
@@ -163,6 +183,7 @@ api_key = "YOUR_API_KEY"
 | `retry` | `table` | — | 按错误定制的单步重试策略 → [`retry`](#retry) |
 | `request_governance` | `table` | 无规则 | 原生模型请求并发与等待预算 → [`request_governance`](#request-governance) |
 | `token_counting` | `table` | — | 对外上报哪种上下文 token 计数 → [`token_counting`](#token-counting) |
+| `transcript_memory` | `table` | — | 服务端转录历史的内存预算 → [`transcript_memory`](#transcript-memory) |
 | `background` | `table` | — | 后台任务运行参数 → [`background`](#background) |
 | `subagent` | `table` | — | subagent 运行默认值与限额 → [`subagent`](#subagent) |
 | `agents` | `table` | — | 委派说明默认值 → [`agents`](#agents) |
@@ -180,7 +201,7 @@ api_key = "YOUR_API_KEY"
 | `identity` | `table` | — | 自定义 Agent 身份 → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | 提示词字段覆写与自定义变量 → [`prompt`](#prompt) |
 
-以下各节对 `providers`、`models`、`thinking`、`loop_control`、`retry`、`token_counting`、`background`、`subagent`、`agents`、`thread_communication`、`mcp`、`tools`、`image`、`session_title`、`experimental`、`nb_search`、`permission`、`interaction`、`prompt` 等嵌套表逐一展开。
+以下各节对 `providers`、`models`、`thinking`、`loop_control`、`retry`、`token_counting`、`transcript_memory`、`background`、`subagent`、`agents`、`thread_communication`、`mcp`、`tools`、`image`、`session_title`、`experimental`、`nb_search`、`permission`、`interaction`、`prompt` 等嵌套表逐一展开。
 
 ## `providers`
 
@@ -480,6 +501,18 @@ backoff = 1000
 match = '^provider\.'
 retry = false
 ```
+
+## `transcript_memory`
+
+`transcript_memory` 控制服务端把多少转录历史留在内存里。三个字段都是可选的：省略即使用默认值。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `tail_turns` | 正整数 | `20` | 每个 agent 常驻保留多少个已结束的 turn |
+| `max_agent_bytes` | 正整数 | `16777216`（16 MiB） | 每个 agent 的常驻字节预算，即留在内存里的量。更早的 turn 会按需从磁盘读取 |
+| `max_detail_cache_bytes` | 非负安全整数 | `268435456`（256 MiB） | 单次完整正文读取的最大缓存量。`0` 关掉这个额外缓存槽，内容照样读取，只是不留在该缓存里。改动后的值在下一次缓存准入或淘汰时生效；调低会淘汰放不下的内容，不会取消正在进行中的读取 |
+
+这些是服务端内存预算，不是读取上限。调低它们会减少内存占用，可能增加从磁盘重复读取的次数。
 
 ## `token_counting`
 

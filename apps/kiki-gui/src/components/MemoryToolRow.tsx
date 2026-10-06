@@ -8,8 +8,12 @@
  * expands to the write's reason (and the raw payload for a read), because the
  * reason is the only part a user may want to check without leaving the turn.
  *
- * Undoing a workspace-scoped write needs the session's workspace id, which is
- * resolved on click (`getSession`) rather than threaded through the transcript.
+ * Three outcomes read differently, because they are different facts: a write
+ * that stored something, a proposal waiting in the inbox, and a write whose
+ * content already matched. Undo requires a real operation ID; an unchanged
+ * write or a repeated pending proposal has nothing new to replay. View follows
+ * the receipt's own owning scope and entry ID. Only old workspace receipts
+ * without an owner ID resolve the session's workspace on click.
  */
 
 import { useState } from 'react';
@@ -19,7 +23,7 @@ import { isMemoryToolName } from '@kiki/session-core/session';
 import type { ToolBlock } from '@kiki/session-core/session';
 
 import { useI18n } from '../i18n';
-import { ApiError, MEMORY_REVISION_CONFLICT, type MemoryScopeKind } from '../lib/client';
+import { ApiError, MEMORY_REVISION_CONFLICT, type MemoryTarget } from '../lib/client';
 import { pushToast } from '../lib/toasts';
 import { useOptionalConnection } from '../state/connection';
 import { DisclosureChevron, Icon } from './icons';
@@ -27,56 +31,37 @@ import { useGuardedNavigate } from './dirtyGuard';
 import { useMediaPreview } from './mediaPreviewContext';
 import { LoadedToolText, recordText } from './timeline/LoadedToolText';
 import { toolRecordCopy } from './toolRecordCopy';
+import {
+  parseMemoryReadResult,
+  parseMemorySearchSummary,
+  parseMemoryWriteResult,
+  type MemoryOwnerScope,
+} from './memory/memoryReceipt';
 
 // The tool-name predicate lives with the grouping rule that exempts these
 // tools from step folding, so the two can never disagree.
 export { isMemoryToolName } from '@kiki/session-core/session';
 
-interface MemoryWriteResult {
-  readonly id: string;
-  readonly title: string;
-  readonly scope: MemoryScopeKind;
-  readonly status: string;
-  readonly revision: string;
-  readonly operation_id: string;
-}
-
-/** `MemoryWrite`'s JSON result, or undefined when the call has not landed. */
-export function parseMemoryWriteResult(output: unknown): MemoryWriteResult | undefined {
-  if (typeof output !== 'string') return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(output);
-  } catch {
-    return undefined;
-  }
-  if (parsed === null || typeof parsed !== 'object') return undefined;
-  const value = parsed as Record<string, unknown>;
-  if (typeof value['id'] !== 'string' || typeof value['title'] !== 'string') return undefined;
-  if (value['scope'] !== 'global' && value['scope'] !== 'workspace') return undefined;
-  return {
-    id: value['id'],
-    title: value['title'],
-    scope: value['scope'],
-    status: typeof value['status'] === 'string' ? value['status'] : 'active',
-    revision: typeof value['revision'] === 'string' ? value['revision'] : '',
-    operation_id: typeof value['operation_id'] === 'string' ? value['operation_id'] : '',
-  };
-}
-
-/** How many hits a `MemorySearch` / `MemoryRead` result carries. */
-function resultCount(output: unknown): number | undefined {
-  if (typeof output !== 'string') return undefined;
-  try {
-    const parsed = JSON.parse(output) as unknown;
-    return Array.isArray(parsed) ? parsed.length : undefined;
-  } catch {
-    return undefined;
-  }
-}
+/**
+ * Re-exported so the transcript's own tests and any other reader of a write
+ * result share this one parser. Old receipts without `outcome` still parse.
+ */
+export { parseMemoryWriteResult, parseMemorySearchSummary, parseMemoryReadResult } from './memory/memoryReceipt';
 
 const ROW =
   'group/step -mx-2 flex min-h-7 w-[calc(100%+1rem)] min-w-0 items-center gap-2 rounded-md px-2 py-0.5 text-left transition-colors duration-[var(--kiki-motion-quick)] hover:bg-panel';
+
+/** What a read or search line says about its own result. */
+function resultSummary(output: unknown, name: string | undefined): { readonly text: string; readonly partial: boolean; readonly hasMore: boolean } | undefined {
+  if (name === 'MemorySearch') {
+    const summary = parseMemorySearchSummary(output);
+    if (summary === undefined) return undefined;
+    return { text: String(summary.count), partial: summary.partial, hasMore: summary.hasMore };
+  }
+  const read = parseMemoryReadResult(output);
+  if (read === undefined) return undefined;
+  return { text: String(read.items.length), partial: !read.complete, hasMore: false };
+}
 
 export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
   const { t, tp, locale } = useI18n();
@@ -101,60 +86,65 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
     : running
       ? t(block.name === 'MemoryWrite' ? 'memory.tool.writing' : 'memory.tool.read')
       : block.name === 'MemoryWrite'
-        ? write?.status === 'pending'
+        ? write?.outcome === 'pending'
           ? t('memory.tool.pending')
-          : t(
-              args['action'] === 'archive' ? 'memory.tool.archived'
-              : args['action'] === 'supersede' ? 'memory.tool.replaced'
-              : args['action'] === 'update' ? 'memory.tool.updated'
-              : 'memory.tool.remembered',
-            )
+          : write?.outcome === 'unchanged'
+            ? t('memory.tool.unchanged')
+            : t(
+                args['action'] === 'archive' ? 'memory.tool.archived'
+                : args['action'] === 'supersede' ? 'memory.tool.replaced'
+                : args['action'] === 'update' ? 'memory.tool.updated'
+                : 'memory.tool.remembered',
+              )
         : block.name === 'MemoryRead'
           ? t('memory.tool.read')
           : t('memory.tool.searched');
 
-  const hits = block.name === 'MemoryWrite' ? undefined : resultCount(block.output);
+  const summary = write === undefined && !failed && !running ? resultSummary(block.output, block.name) : undefined;
+  const hits = summary === undefined
+    ? undefined
+    : summary.partial ? t('memory.tool.hitsPartial', { count: summary.text })
+      : summary.hasMore ? t('memory.tool.hitsMore', { count: summary.text }) : tp('memory.tool.hits', Number(summary.text));
+  // A read or search answers a question with a result, not with the question:
+  // the count (and whether more pages remain) is the fact the turn turns on, so
+  // it takes the line and the query goes to the expanded disclosure.
   const detail = failed
     ? typeof block.output === 'string' ? block.output.split('\n', 1)[0] : undefined
-    : write?.title
-      ?? (typeof args['query'] === 'string' ? args['query'] : undefined)
-      ?? (hits !== undefined ? tp('memory.tool.hits', hits) : undefined);
+    : write?.title ?? hits;
 
-  const scopeTarget = write === undefined
-    ? undefined
-    : write.scope === 'global'
-      ? { scope: 'global' as const }
-      : undefined;
-
-  /** Workspace-scoped rows need the session's workspace id; resolve on demand. */
-  const resolveWorkspaceId = async (): Promise<string | undefined> => {
+  /** Only old workspace receipts can borrow the session's workspace. */
+  const resolveTarget = async (owner: MemoryOwnerScope): Promise<MemoryTarget | undefined> => {
+    if (owner.scope === 'global') return { scope: 'global' };
+    if (owner.scope === 'persona') return owner.personaId === undefined ? undefined : { scope: 'persona', personaId: owner.personaId };
+    if (owner.scope === 'persona_workspace') return owner.personaId === undefined || owner.workspaceId === undefined
+      ? undefined : { scope: 'persona_workspace', workspaceId: owner.workspaceId, personaId: owner.personaId };
+    if (owner.workspaceId !== undefined) return { scope: 'workspace', workspaceId: owner.workspaceId };
     if (connection === null || sessionId === undefined) return undefined;
-    return (await connection.client.getSession(sessionId)).workspace_id;
+    return { scope: 'workspace', workspaceId: (await connection.client.getSession(sessionId)).workspace_id };
   };
 
+  /** Scope plus ID distinguishes copied entries in shared-memory lists. */
   const openEntry = () => {
     if (write === undefined) return;
-    if (write.scope === 'global') {
-      navigate('/memory');
-      return;
-    }
-    void resolveWorkspaceId()
-      .then((workspaceId) => {
-        navigate(workspaceId === undefined ? '/memory' : `/memory?workspace=${encodeURIComponent(workspaceId)}`);
+    void resolveTarget(write.owner_scope)
+      .then((target) => {
+        if (target === undefined) throw new Error(t('memory.locationMissing'));
+        const params = new URLSearchParams({ entry: write.target.id });
+        if (target.workspaceId !== undefined) params.set('workspace', target.workspaceId);
+        if (target.personaId !== undefined) params.set('persona', target.personaId);
+        if (write.outcome === 'pending') params.set('tab', 'inbox');
+        if (write.status === 'archived' || write.status === 'superseded') params.set('inactive', 'true');
+        navigate(`/memory?${params}`);
       })
-      .catch(() => { navigate('/memory'); });
+      .catch((error: unknown) => { pushToast({ tone: 'error', text: t('memory.actionFailed', { detail: errorText(locale, error) }) }); });
   };
 
   const runUndo = async () => {
-    if (write === undefined || connection === null) return;
+    if (write === undefined || connection === null || write.operation_id === null) return;
     setUndoing(true);
     try {
-      let target = scopeTarget as { scope: MemoryScopeKind; workspaceId?: string } | undefined;
-      if (target === undefined) {
-        const workspaceId = await resolveWorkspaceId();
-        if (workspaceId === undefined) throw new Error(t('memory.scopeTag.workspace'));
-        target = { scope: 'workspace', workspaceId };
-      }
+      const target = await resolveTarget(write.owner_scope);
+      if (target === undefined) throw new Error(t('memory.locationMissing'));
       await connection.client.undoMemory(target, write.operation_id);
       setUndone(true);
     } catch (error) {
@@ -168,6 +158,17 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
       setUndoing(false);
     }
   };
+
+  const undoable = write !== undefined && write.outcome !== 'unchanged' && write.operation_id !== null;
+  const scopeTag = write === undefined
+    ? undefined
+    : write.owner_scope.scope === 'global'
+      ? t('memory.scopeTag.global')
+      : write.owner_scope.scope === 'workspace'
+        ? t('memory.scopeTag.workspace')
+        : write.owner_scope.scope === 'persona'
+          ? t('memory.scopeTag.persona')
+          : t('memory.scopeTag.personaWorkspace');
 
   return (
     <div data-tool data-memory-tool={block.name} data-tool-id={block.toolCallId} className="anim-enter">
@@ -190,9 +191,9 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
           ) : (
             <span className="flex-1" />
           )}
-          {write !== undefined ? (
-            <span data-memory-tool-scope className="shrink-0 text-[12px] text-ink-faint">
-              {t(write.scope === 'global' ? 'memory.scopeTag.global' : 'memory.scopeTag.workspace')}
+          {scopeTag !== undefined ? (
+            <span data-memory-tool-scope data-memory-scope-kind={write?.owner_scope.scope} className="shrink-0 text-[12px] text-ink-faint">
+              {scopeTag}
             </span>
           ) : null}
           <DisclosureChevron
@@ -212,7 +213,7 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
             </button>
             {undone ? (
               <span data-memory-tool-undone role="status" className="text-ink-faint">{t('memory.tool.undone')}</span>
-            ) : write.operation_id !== '' ? (
+            ) : undoable ? (
               <button
                 type="button"
                 data-memory-tool-undo
@@ -228,6 +229,12 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
       </div>
       {expanded ? (
         <div className="space-y-1 pt-0.5 pb-1.5 pl-6 text-[12px] leading-relaxed">
+          {typeof args['query'] === 'string' && args['query'] !== '' ? (
+            <p className="text-ink-soft">
+              <span className="text-ink-faint">{t('memory.tool.query')}: </span>
+              {args['query']}
+            </p>
+          ) : null}
           {reason !== undefined ? (
             <p className="text-ink-soft">
               <span className="text-ink-faint">{t('memory.tool.reason')}: </span>
@@ -236,6 +243,20 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
           ) : null}
           {typeof args['body'] === 'string' ? (
             <p className="text-ink-soft">{args['body']}</p>
+          ) : null}
+          {write !== undefined && write.warnings.length > 0 ? (
+            <ul data-memory-tool-warnings className="space-y-0.5 text-amber-ink">
+              {write.warnings.map((warning) => (<li key={warning} className="break-words">{warning}</li>))}
+            </ul>
+          ) : null}
+          {write?.outcome === 'unchanged' ? (
+            <p data-memory-tool-unchanged className="text-ink-faint">{t('memory.tool.unchangedNote')}</p>
+          ) : write?.outcome === 'pending' ? (
+            <p data-memory-tool-pending className="text-ink-faint">
+              {write.proposed_target === undefined
+                ? t('memory.tool.pendingCreate')
+                : t('memory.tool.pendingUpdate')}
+            </p>
           ) : null}
           {!failed && block.name !== 'MemoryWrite' && typeof block.output === 'string' && block.output !== '' ? (
             <LoadedToolText text={block.output} limit={2000}
@@ -252,11 +273,11 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
           {rawOpen ? (
             <div data-tool-raw className="space-y-2 pt-1.5">
               <div><p className="text-ink-faint">{t('tc.input')}</p>
-                <LoadedToolText text={block.args !== undefined ? recordText(block.args) : block.argsText || t('tc.noInput')} />
+                <LoadedToolText copyLabel={t('tc.input')} text={block.args !== undefined ? recordText(block.args) : block.argsText || t('tc.noInput')} />
               </div>
               <div><p className="text-ink-faint">{t('tc.output')}</p>
                 {block.output === undefined ? <p className="text-ink-faint">{toolRecordCopy('notLoaded', locale)}</p>
-                  : <LoadedToolText text={recordText(block.output)} />}
+                  : <LoadedToolText copyLabel={t('tc.output')} text={recordText(block.output)} />}
               </div>
             </div>
           ) : null}

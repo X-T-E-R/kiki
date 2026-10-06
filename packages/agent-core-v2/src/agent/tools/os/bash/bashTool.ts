@@ -2,6 +2,8 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { resolveAgentTaskConfig } from '#/agent/task/configSection';
 import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
+import { TASK_WAIT_FLAG_ID } from '#/agent/tools/task/task-wait/flag';
 import type { HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -92,6 +94,7 @@ export class BashTool implements IBashTool {
     @IAgentTaskService private readonly tasks: IAgentTaskService,
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
     @IConfigService private readonly config: IConfigService,
+    @IFlagService private readonly flags: IFlagService,
     @IAgentPermissionModeService private readonly permissionMode: IAgentPermissionModeService,
   ) {}
 
@@ -116,10 +119,12 @@ export class BashTool implements IBashTool {
   get description(): string {
     const renderedDescription = renderBashDescription(inspectAgentRuntime(this.runtime).environment.shellName);
     if (!this.allowBackground()) return withoutBackgroundDescription(renderedDescription);
-    if (!this.autoBackgroundOnTimeout()) {
-      return withoutAutoBackgroundOnTimeout(renderedDescription);
-    }
-    return renderedDescription;
+    const description = this.autoBackgroundOnTimeout()
+      ? renderedDescription
+      : withoutAutoBackgroundOnTimeout(renderedDescription);
+    return this.flags.enabled(TASK_WAIT_FLAG_ID) && this.toolPolicy.isToolActive('TaskWait')
+      ? description
+      : `${description}\nNo blocking task-wait tool is available to this agent. Keep finite delivery dependencies in bounded foreground calls when possible. TaskOutput does not wait; do not poll it to keep a turn open or claim a detached dependency completed. Use automatic completion notifications when available, and report a remaining dependency honestly if no supported completion path exists.`;
   }
 
   resolveExecution(args: BashInput): ToolExecution {

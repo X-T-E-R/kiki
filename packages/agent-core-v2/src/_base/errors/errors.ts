@@ -47,6 +47,20 @@ export class Error2 extends Error {
   }
 }
 
+const attachedErrorDetails = new WeakMap<object, Readonly<Record<string, unknown>>>();
+
+/** Adds trusted diagnostic details without replacing an error or changing cancellation identity. */
+export function attachErrorDetails<T>(error: T, details: Readonly<Record<string, unknown>>): T {
+  if (typeof error === 'object' && error !== null) {
+    attachedErrorDetails.set(error, { ...attachedErrorDetails.get(error), ...details });
+  }
+  return error;
+}
+
+export function readAttachedErrorDetails(error: object): Readonly<Record<string, unknown>> | undefined {
+  return attachedErrorDetails.get(error);
+}
+
 export function isError2(error: unknown): error is Error2 {
   return error instanceof Error2;
 }

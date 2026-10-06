@@ -12,7 +12,8 @@ import {
 
 const revisions = new WeakMap<object, string>();
 const fieldRevisions = new WeakMap<object, Map<string, string>>();
-const ENTITY_BYTES = 12 * 1024;
+export const ENTITY_BYTES = 64 * 1024;
+export const TIMELINE_ENTITY_BYTES = 128 * 1024;
 const ARRAY_WINDOW = 4;
 const OBJECT_WINDOW = 64;
 const ID_KEYS = /^(?:kind|state|status|role|op|.*Id|.*_id|mediaType|marker|interactionKind|type)$/u;
@@ -68,7 +69,13 @@ function fieldRevision(entity: object, path: Path): string {
   const key = JSON.stringify(path);
   const existing = fields.get(key);
   if (existing !== undefined) return existing;
-  const revision = contentRevision(selectContent(entity, path));
+  const selected = selectContent(entity, path);
+  const revision = isStructurePath(path) && Array.isArray(selected)
+    ? contentRevision(selected.map((child) => {
+      const header = child as Record<string, unknown>;
+      return [header['kind'], header['stepId'] ?? header['frameId'], header['ordinal']];
+    }))
+    : contentRevision(selected);
   fields.set(key, revision);
   return revision;
 }
@@ -77,7 +84,7 @@ function bindCuts(entity: object, source: ContentSource, cuts: readonly Cut[]): 
   return cuts.map((cut) => ({ ...cut, source, revision: fieldRevision(entity, cut.path) }));
 }
 
-export function boundedEntity<T extends object>(entity: T, source: ContentSource, maxBytes = source.kind === 'turn' || source.kind === 'frame' ? 24 * 1024 : ENTITY_BYTES): T & ContentWindow {
+export function boundedEntity<T extends object>(entity: T, source: ContentSource, maxBytes = source.kind === 'turn' || source.kind === 'frame' ? TIMELINE_ENTITY_BYTES : ENTITY_BYTES): T & ContentWindow {
   const result = projectAt(entity, [], source, entity, maxBytes);
   return { ...(result.value as T), contentRefs: result.refs.length === 0 ? undefined : result.refs };
 }
@@ -90,61 +97,84 @@ export function boundedListPreview<T extends object>(entity: T, maxBytes = 2048)
     if (jsonBytes(projected) <= maxBytes) return projected;
     if (arrayWindow > 0) { arrayWindow = 0; continue; }
     if (textBytes > 32) { textBytes = Math.floor(textBytes / 2); continue; }
-    throw new Error('Canonical list identity exceeds the page budget');
+    return projected;
   }
 }
 
 function projectAt(value: unknown, path: Path, source: ContentSource, entity: object, maxBytes: number): { value: unknown; refs: ContentRef[] } {
   let textBytes = source.kind === 'turn' || source.kind === 'frame' ? 16 * 1024 : CONTENT_PREVIEW_BYTES;
   let arrayWindow = ARRAY_WINDOW;
+  let structureWindow = 8;
   for (;;) {
     const cuts: Cut[] = [];
-    const projected = projectValue(value, path, cuts, textBytes, arrayWindow, 0, { nodes: 128 });
+    const projected = projectValue(value, path, cuts, textBytes, arrayWindow, 0, { nodes: 128 }, structureWindow);
     const refs = bindCuts(entity, source, cuts);
     if (jsonBytes({ value: projected, refs }) <= maxBytes) return { value: projected, refs };
     if (textBytes > CONTENT_PREVIEW_BYTES) { textBytes = Math.floor(textBytes / 2); continue; }
     if (arrayWindow > 0) { arrayWindow = 0; continue; }
     if (textBytes > 32) { textBytes = Math.floor(textBytes / 2); continue; }
-    throw new Error('Canonical entity header exceeds the content page budget');
+    if (structureWindow > 1) { structureWindow = Math.floor(structureWindow / 2); continue; }
+    return { value: projected, refs };
   }
 }
 
-function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number, arrayWindow: number, depth: number, budget: Budget): unknown {
+function isStructurePath(path: Path): boolean {
+  return path.length === 1 && path[0] === 'steps' ||
+    path.length === 3 && path[0] === 'steps' && typeof path[1] === 'number' && path[2] === 'frames';
+}
+
+function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number, arrayWindow: number, depth: number, budget: Budget, structureWindow = 16): unknown {
   budget.nodes -= 1;
   if (typeof value === 'string') {
     const key = path.at(-1);
     const prose = (path.length === 1 && (key === 'prompt' || key === 'text')) ||
       (path.length === 5 && path[0] === 'steps' && path[2] === 'frames' && key === 'text');
-    const limit = typeof key === 'string' && ID_KEYS.test(key) ? 512 : prose ? textBytes : Math.min(textBytes, CONTENT_PREVIEW_BYTES);
+    if (typeof key === 'string' && ID_KEYS.test(key) || key === 'url' && path.at(-2) === 'source') return value;
+    const limit = prose ? textBytes : Math.min(textBytes, CONTENT_PREVIEW_BYTES);
     const prefix = jsonTextPrefix(value, 0, limit);
     if (prefix.length < value.length) cuts.push({ path, kind: 'text', offset: prefix.length, total: value.length });
     return prefix;
   }
   if (value === null || typeof value !== 'object') return value;
   if (Array.isArray(value)) {
-    const count = depth > 12 || budget.nodes < 0 ? 0 : Math.min(value.length, arrayWindow);
-    const projected = value.slice(0, count).map((child, index) => projectValue(child, [...path, index], cuts, textBytes, arrayWindow, depth + 1, budget));
+    const structure = isStructurePath(path);
+    const count = structure ? Math.min(value.length, structureWindow)
+      : depth > 12 || budget.nodes < 0 ? 0 : Math.min(value.length, arrayWindow);
+    const projected = value.slice(0, count).map((child, index) => projectValue(child, [...path, index], cuts, textBytes, arrayWindow, depth + 1, structure ? { nodes: 128 } : budget, structureWindow));
     if (count < value.length) cuts.push({ path, kind: 'array', offset: count, total: value.length });
     return projected;
   }
   const entries = Object.entries(value);
   const opaque = path.some((key) => typeof key === 'string' && OPAQUE_FIELDS.has(key));
-  if (entries.length > OBJECT_WINDOW || depth > 12 || (opaque && budget.nodes < 0) || entries.some(([key]) => key.length > CONTENT_PREVIEW_BYTES || jsonBytes(key) > CONTENT_PREVIEW_BYTES)) {
+  if (entries.length > OBJECT_WINDOW || depth > 12 || (opaque && entries.length > Math.max(0, budget.nodes)) || entries.some(([key]) => key.length > CONTENT_PREVIEW_BYTES || jsonBytes(key) > CONTENT_PREVIEW_BYTES)) {
     cuts.push({ path, kind: 'object', offset: 0, total: entries.length });
     return {};
   }
-  return Object.fromEntries(entries.map(([key, child]) => [key, projectValue(child, [...path, key], cuts, textBytes, arrayWindow, depth + 1, budget)]));
+  return Object.fromEntries(entries.map(([key, child]) => {
+    const childPath = [...path, key];
+    if (OPAQUE_FIELDS.has(key) && textBytes <= CONTENT_PREVIEW_BYTES && child !== null && typeof child === 'object') {
+      const total = Array.isArray(child) ? child.length : Object.keys(child).length;
+      if (total > 8) {
+        cuts.push({ path: childPath, kind: Array.isArray(child) ? 'array' : 'object', offset: 0, total });
+        return [key, Array.isArray(child) ? [] : {}];
+      }
+    }
+    return [key, projectValue(child, childPath, cuts, textBytes, arrayWindow, depth + 1, OPAQUE_FIELDS.has(key) ? { nodes: 64 } : budget, structureWindow)];
+  }));
 }
 
-export function readContentSegment(entity: object, ref: ContentRef): ContentSegment {
+export function readContentSegment(entity: object, ref: ContentRef, range = false): ContentSegment {
   const selected = selectContent(entity, ref.path);
+  if (range && ref.kind === 'text' && typeof selected === 'string' && ref.offset > 0 && /[\uD800-\uDBFF]/u.test(selected[ref.offset - 1]!)) ref = { ...ref, offset: ref.offset - 1 };
   if (fieldRevision(entity, ref.path) !== ref.revision) throw new ContentChangedError();
   const refs: ContentRef[] = [];
   let value: unknown;
   let offset: number;
   if (ref.kind === 'text') {
     if (typeof selected !== 'string' || selected.length !== ref.total || ref.offset >= selected.length || (ref.offset > 0 && /[\uD800-\uDBFF]/u.test(selected[ref.offset - 1]!))) throw new ContentChangedError();
-    value = jsonTextPrefix(selected, ref.offset, CONTENT_PAGE_BYTES / 2);
+    let end = Math.min(selected.length, ref.offset + 4097);
+    if (end < selected.length && /[\uD800-\uDBFF]/u.test(selected[end - 1]!)) end -= 1;
+    value = range ? jsonTextPrefix(selected.slice(ref.offset, end), 0, CONTENT_PAGE_BYTES / 2) : jsonTextPrefix(selected, ref.offset, CONTENT_PAGE_BYTES / 2);
     offset = ref.offset + (value as string).length;
   } else if (ref.kind === 'array') {
     if (!Array.isArray(selected) || selected.length !== ref.total || ref.offset >= selected.length) throw new ContentChangedError();
@@ -152,12 +182,11 @@ export function readContentSegment(entity: object, ref: ContentRef): ContentSegm
     offset = ref.offset;
     while (offset < selected.length && values.length < 20) {
       const child = projectAt(selected[offset], [...ref.path, offset], ref.source, entity, ENTITY_BYTES);
-      if (jsonBytes({ values: [...values, child.value], refs: [...refs, ...child.refs] }) > CONTENT_PAGE_BYTES / 2) break;
+      if (values.length > 0 && jsonBytes({ values: [...values, child.value], refs: [...refs, ...child.refs] }) > CONTENT_PAGE_BYTES / 2) break;
       values.push(child.value);
       refs.push(...child.refs);
       offset += 1;
     }
-    if (offset === ref.offset) throw new Error('Content element exceeds the page budget');
     value = values;
   } else {
     if (selected === null || typeof selected !== 'object' || Array.isArray(selected)) throw new ContentChangedError();
@@ -167,18 +196,14 @@ export function readContentSegment(entity: object, ref: ContentRef): ContentSegm
     offset = ref.offset;
     while (offset < entries.length && offset - ref.offset < OBJECT_WINDOW) {
       const [key, child] = entries[offset]!;
-      if (key.length > CONTENT_PAGE_BYTES / 2 || jsonBytes(key) > CONTENT_PAGE_BYTES / 2) throw new Error('Content object key exceeds the page budget');
       const projected = projectAt(child, [...ref.path, key], ref.source, entity, ENTITY_BYTES);
-      if (jsonBytes({ values: { ...values, [key]: projected.value }, refs: [...refs, ...projected.refs] }) > CONTENT_PAGE_BYTES / 2) break;
+      if (offset > ref.offset && jsonBytes({ values: { ...values, [key]: projected.value }, refs: [...refs, ...projected.refs] }) > CONTENT_PAGE_BYTES / 2) break;
       values[key] = projected.value;
       refs.push(...projected.refs);
       offset += 1;
     }
-    if (offset === ref.offset) throw new Error('Content object entry exceeds the page budget');
     value = values;
   }
   const next = offset < ref.total ? { ...ref, offset } : undefined;
-  const result = { ref, value, next, contentRefs: refs };
-  if (jsonBytes(result) > CONTENT_PAGE_BYTES - 1024) throw new Error('Content segment exceeds the page budget');
-  return result;
+  return { ref, value, next, contentRefs: refs };
 }

@@ -56,6 +56,7 @@ export async function setColdSessionArchived(
       delivery: nextMeta.delivery,
       createdAt: nextMeta.createdAt,
       updatedAt: nextMeta.updatedAt,
+      activityUpdatedAt: nextMeta.activityUpdatedAt,
       archived,
       archivedAt,
       custom: nextMeta.custom,

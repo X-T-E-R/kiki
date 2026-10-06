@@ -1,6 +1,7 @@
 import { RPCError } from '../../core/errors.js';
 
-export const SESSION_READ_BODY_BYTES = 96 * 1024;
+/** History pages are bounded by the server; a required entity header may exceed its soft page budget. */
+export const SESSION_READ_BODY_BYTES = Number.POSITIVE_INFINITY;
 
 /** Count decoded response bytes while reading, without trusting headers or parsing an oversized body. */
 export async function readBoundedJsonBody(response: Response, maxBytes = SESSION_READ_BODY_BYTES): Promise<unknown> {

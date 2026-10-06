@@ -1,8 +1,8 @@
 /**
  * ContextStrategySection — the "When it fills up" block of the ContextMeter
  * detail card, under the compaction track: which renewal strategy this agent
- * uses at its compaction point. A three-way radio group (summarize is the
- * default, fresh restarts from the work notes, auto picks per run) writes the
+ * uses at its compaction point. A three-way radio group (auto is the main-agent
+ * default, fresh restarts from the work notes, summarize keeps a summary) writes the
  * session override; the source label says which layer the value came from
  * and doubles as the menu that saves it globally or resets to the inherited
  * layer. Subagents and external executors read only.

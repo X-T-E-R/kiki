@@ -48,6 +48,8 @@ On the **New session** page in the desktop app or browser you can pick an existi
 
 Opening a saved session reads its history without waking an inactive session's agents, and selecting a subagent reads that subagent's history without the main agent's conversation. The session activates when you send, edit or regenerate a message, answer an approval or question, or steer a prompt. If activation fails, nothing is sent and the history stays readable. Reading a session never stops work already running in it.
 
+The GUI opens at the latest messages and automatically fills in earlier messages and their step lists while the conversation stays open. Large histories load progressively; you do not need to click through pages. Older message previews may be fetched again as you scroll to keep the reading cache small. Leaving the conversation cancels its pending reads, not the agent's work. A real read failure keeps the messages already loaded and offers a retry; [Reading timeout](./settings.md#timeouts) controls how long a read may wait.
+
 Every time you run `kiki` directly it creates a new session. To resume a previous session, use one of the following:
 
 **Resume the most recent session in the current directory (`-c` is the short form of `--continue`, the same `kiki -c` shown in [First launch](../getting-started/first-launch.md)):**
@@ -85,13 +87,19 @@ You can manage sessions without leaving the terminal. The following slash comman
 
 ## GUI session recovery and activity
 
-A thread created by another thread nests under its creator by default. **Show at top level** in the row's menu lifts it into its own top-level row, and **Show nested** puts it back. This is display only — the creator relationship stays as it is, and the choice survives a refresh or restart in the same browser or desktop space. Sorting by recent activity uses each thread's own time, so activity in a child does not pull its parent forward.
+A thread created by another thread nests under its creator by default. **Show at top level** in the row's menu lifts it into its own top-level row, and **Show nested** puts it back. This is display only — the creator relationship stays as it is, and the choice survives a refresh or restart in the same browser or desktop space. The same menu also offers **Copy thread link** for a link to that thread, and **Add to conversation** to drop a reference to it into the conversation you currently have open.
+
+Sorting by recent activity uses the later of a thread's own time and the time of the most recent work anywhere in it, so new activity in a child moves its parent forward in the list. The parent's own last message time and its last prompt stay what the parent itself did.
 
 If session recovery fails, the GUI keeps whatever history it had already loaded and shows the error, with a request ID when there is one. **Retry now** next to it reruns the recovery.
 
+Editing a queued prompt's text or delivery timing through Kiki keeps its identity on recovery; you do not need to restore the original text or send a duplicate. If a completed turn cannot be saved because storage is temporarily unavailable, Kiki briefly retries saving the same result without running the turn again. A longer outage keeps the turn waiting for persistence; after storage is writable again, submitting the next prompt retries that save before continuing. A pending save is not confirmation that the result is on disk.
+
 Resolved questions, approvals, markers and finished background tasks stay in the timeline as compact entries. Finished work can be grouped under **Worked**; expand it to see the individual entries. Expanding a question shows the full question and, for an answered one, the saved answer — dismissed and expired questions show their original choices too. Output from completed tasks stays in task history. File references can be previewed, opened or revealed in their folder; a preview is generated on demand, and the original file is still there to open or download.
 
-Markdown previews open rendered. **Source** shows the text, and in the desktop app you can edit it there when a write channel is available. The rendered view handles tables, math, diagrams and images linked relative to the Markdown file. Above roughly 512 KB the first view is the beginning of the file and read-only; **Load full file** in either view shows the rest, and still does not enable editing.
+Images in sent attachments and in tool results appear as soon as they scroll into view — you do not click to load them. Clicking one opens it full size, and a real failure offers a retry. The viewer keeps its own **Download**; there is no second download link under each image.
+
+Markdown previews open rendered. **Source** shows the text, and in the desktop app you can edit it there when a write channel is available. The rendered view handles tables, math, diagrams and images linked relative to the Markdown file. A file above roughly 512 KB starts as its opening portion and keeps loading the rest in the background; it stays read-only at that size, so use **Source** to read it but edit smaller files. If the background read fails, the view says so and offers a retry.
 
 ## GUI usage statistics
 
@@ -115,7 +123,7 @@ You can pass a hint to tell the model what to prioritize when compressing:
 
 You can ask for a compaction while the agent is already working. Kiki queues the request and runs it once the current response and the tools it called have finished, without waiting for the rest of the turn. Asking again while a manual compaction is queued or running does nothing — there is only ever one. The line above the context meter says which one you are watching and how far along it is: **Manual compaction queued**, then **running**, then **complete**. A run that cannot compact ends as **failed**. The automatic one from the context limit reads the same way, with *Automatic* in place of *Manual*.
 
-The context meter under the composer shows the same numbers, lets you set the compaction point, and carries the renewal strategy: **summarize** (the default), **fresh** (restart from the agent's working notes), or **auto**. `/autocompact` shows or moves the compaction point from the terminal. Facts that must survive compression belong in [memory](./memory.md), which outlives the session.
+The context meter under the composer shows the same numbers, lets you set the compaction point, and carries the renewal strategy: **summarize**, **fresh** (restart from the agent's working notes), or **auto** (the built-in main-agent default: restart when the notes safely cover the work, otherwise summarize). `/autocompact` shows or moves the compaction point from the terminal. Facts that must survive compression belong in [memory](./memory.md), which outlives the session.
 
 ## Forking a session
 
@@ -125,7 +133,7 @@ The context meter under the composer shows the same numbers, lets you set the co
 /fork
 ```
 
-You stay in the original session; the fork is an independent copy you can switch to whenever you like with `/sessions`. A `/goal` you saved does not come along — set one in the fork if you want goal-driven work there. The CLI prints a ready-to-run `kiki --resume` command, also on your clipboard, so you can open the fork from a fresh terminal.
+You stay in the original session; the fork is an independent copy you can switch to whenever you like with `/sessions`. A `/goal` you saved does not come along — set one in the fork if you want goal-driven work there. New forks do not inherit scheduled tasks, whether you copy the full session, fork at a turn boundary, or create a child session. Schedules in the original session and existing copies stay unchanged; create a new task explicitly in the new session if needed. The CLI prints a ready-to-run `kiki --resume` command, also on your clipboard, so you can open the fork from a fresh terminal.
 
 ## Exporting a session
 

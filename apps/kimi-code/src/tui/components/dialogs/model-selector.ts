@@ -1,4 +1,5 @@
 import { effectiveModelAlias, type ModelAlias, type ThinkingEffort } from '@kiki/node-sdk';
+import { sortThinkingEffortsForDisplay } from '@kiki/session-core/settings/thinkingEffort';
 import {
   Container,
   Key,
@@ -120,7 +121,8 @@ export function segmentsFor(model: ModelAlias): readonly string[] {
   const efforts = effortsOf(model);
   const availability = thinkingAvailability(model);
   if (efforts.length > 0) {
-    return availability === 'always-on' ? efforts : ['off', ...efforts];
+    const displayEfforts = sortThinkingEffortsForDisplay(efforts);
+    return availability === 'always-on' ? displayEfforts : ['off', ...displayEfforts];
   }
   if (availability === 'always-on') return ['on'];
   if (availability === 'unsupported') return ['off'];

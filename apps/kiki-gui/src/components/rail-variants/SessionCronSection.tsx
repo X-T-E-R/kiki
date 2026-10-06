@@ -19,6 +19,8 @@ import { useCallback, useMemo, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
+import { cronScheduleLabel } from '@kiki/session-core/util';
+
 import { useI18n } from '../../i18n';
 import type { CronTask, KikiClient, ListCronTasksResponse } from '../../lib/client';
 import { useOptionalConnection } from '../../state/connection';
@@ -104,8 +106,12 @@ function CronRow({
   readonly onOpen: () => void;
   readonly onToggle: (resume: boolean) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const next = task.next_fire_at;
+  // The rail reads in the active locale like every other surface: the
+  // engine's English phrase would be the one untranslated line in a Chinese
+  // rail, and a schedule is the only thing this row is for.
+  const schedule = cronScheduleLabel(locale, task.cron, task.human_schedule, t);
   // A paused task advertises how to wake it; an active one keeps its control
   // out of the way until the row is read.
   const reveal = task.paused || pending ? '' : HOVER_REVEAL;
@@ -132,7 +138,7 @@ function CronRow({
             {task.prompt_preview}
           </span>
           <span className="flex min-w-0 items-baseline gap-1.5 text-[11.5px] leading-[17px] text-ink-faint">
-            <span className="min-w-0 truncate" title={task.human_schedule}>{task.human_schedule}</span>
+            <span data-rail-cron-schedule className="min-w-0 truncate" title={schedule}>{schedule}</span>
             {task.paused ? (
               <>
                 <span aria-hidden>·</span>

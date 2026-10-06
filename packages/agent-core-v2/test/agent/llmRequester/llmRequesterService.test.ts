@@ -215,6 +215,8 @@ function createService(
   options: {
     readonly thinkingLevel?: ThinkingEffort;
     readonly tokenMeasurementTrusted?: boolean;
+    readonly measuredTokens?: number;
+    readonly reservedContextSize?: number;
     readonly mediaResolver?: Partial<IAgentMediaResolverService>;
     readonly contextMessages?: Message[];
     readonly sessionId?: string;
@@ -254,11 +256,11 @@ function createService(
   const profile: Partial<IAgentProfileService> = {
     resolveModelContext: () => ({
       modelAlias: selectedModelAlias(),
-      modelCapabilities: capabilities,
-      maxOutputSize: undefined,
+      modelCapabilities: requester.model.capabilities,
+      maxOutputSize: requester.model.maxOutputSize,
       alwaysThinking: undefined,
       thinkingLevel,
-      reservedContextSize: undefined,
+      reservedContextSize: options.reservedContextSize,
       compactionTriggerRatio: undefined,
       compactionMaxAttempts: undefined,
       compactionSoftContextSize: undefined,
@@ -293,7 +295,7 @@ function createService(
   };
   const measuredCalls: { readonly messages: number; readonly usage: TokenUsage }[] = [];
   const tokenCounting = {
-    get: () => ({ size: 0, measured: 0, estimated: 0 }),
+    get: () => ({ size: 0, measured: options.measuredTokens ?? 0, estimated: 0 }),
     isCurrentContextMeasured: () => options.tokenMeasurementTrusted ?? false,
     measured: (input: readonly Message[], _output: readonly Message[], usage: TokenUsage) => {
       measuredCalls.push({ messages: input.length, usage });
@@ -531,6 +533,56 @@ describe('AgentLLMRequesterService prompt snapshot invalidation', () => {
 });
 
 describe('AgentLLMRequesterService parameter budgets', () => {
+  it.each(['openai', 'openai_responses'] as const)('uses the server output default for %s without a real output limit', async (protocol) => {
+    for (const contextSize of [0, 128000]) {
+      const requester = createRequester({ value: 0 }, null, [], undefined, {
+        protocol, capabilities: { ...capabilities, max_context_tokens: contextSize }, maxContextSize: contextSize,
+      });
+      const captured = captureRequestParams(requester);
+      const { service } = createService(requester, undefined, { reservedContextSize: 50000 });
+      await service.request({ messages: history });
+      expect(captured[0]?.maxCompletionTokens).toBeUndefined();
+      expect(captured[0]?.maxContextTokens).toBeUndefined();
+    }
+  });
+
+  it('keeps explicit output, real model output and ContextBudget ceilings for OpenAI', async () => {
+    for (const limit of [
+      { model: {}, params: { maxCompletionTokens: 300 }, expected: 300 },
+      { model: { maxOutputSize: 600 }, params: {}, expected: 600 },
+      { model: {}, params: { maxContextTokens: 400 }, expected: 400 },
+    ]) {
+      const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai', ...limit.model });
+      const captured = captureRequestParams(requester);
+      const { service } = createService(requester, undefined, { requestParams: limit.params });
+      await service.request({ maxOutputSize: 900, messages: history });
+      expect(captured[0]?.maxCompletionTokens).toBe(limit.expected);
+    }
+  });
+
+  it('retains measured context independently of an automatic output budget', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai' });
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, { tokenMeasurementTrusted: true, measuredTokens: 800 });
+    await service.request({});
+    expect(captured[0]).toMatchObject({ usedContextTokens: 800, usedContextTokensTrusted: true });
+    expect(captured[0]?.maxCompletionTokens).toBeUndefined();
+  });
+
+  it('keeps legacy unknown output fallback for other protocols and Kimi', async () => {
+    for (const model of [
+      { protocol: 'anthropic' as const },
+      { protocol: 'openai' as const, providerType: 'kimi' },
+    ]) {
+      const requester = createRequester({ value: 0 }, null, [], undefined, {
+        ...model, capabilities: { ...capabilities, max_context_tokens: 0 }, maxContextSize: 0,
+      });
+      const captured = captureRequestParams(requester);
+      const { service } = createService(requester, undefined);
+      await service.request({ messages: history });
+      expect(captured[0]?.maxCompletionTokens).toBe(32000);
+    }
+  });
   it('clamps output to the context budget even when operation history has no measured usage', async () => {
     const requester = createRequester({ value: 0 }, null);
     const captured = captureRequestParams(requester);

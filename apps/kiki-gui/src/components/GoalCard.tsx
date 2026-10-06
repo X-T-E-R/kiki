@@ -430,6 +430,7 @@ export function RecoveryHoldBar({
 }) {
   const { t, tp } = useI18n();
   const [compact, setCompact] = useState(false);
+  if (count <= 0) return null;
   if (compact) {
     return (
       <div className="px-6 pb-1.5" data-recovery-hold-wrapper>

@@ -1,10 +1,15 @@
 /**
  * Read model for the right rail: which parts show for the viewed agent, the
- * fleet under it, and the small formatting helpers both overview modes use.
+ * fleet under it, the session execution graph, and the small formatting
+ * helpers both overview modes use.
  *
  * The rail describes one agent at a time. Every rule that makes the main
  * agent's page differ from a subagent's lives in `railVisibility`, so the two
  * never grow separate copies of the same panel.
+ *
+ * The cockpit deliberately does not follow that rule. Its subject is the
+ * whole current session, so it reads the forest from the root every time;
+ * which agent the reader happens to have selected only marks a row.
  */
 
 import { useEffect, useState } from 'react';
@@ -17,7 +22,13 @@ import {
   type QuestionBlock,
 } from '@kiki/session-core/session';
 
-export type FleetState = 'waiting' | 'running' | 'done' | 'failed' | 'stopped';
+/**
+ * Agent state as the graph reads it. `unknown` is a real state, kept distinct
+ * from `done`: an agent whose status was never reported has not finished, and
+ * folding it into "done" would let a cold or partial read look like a session
+ * that completed.
+ */
+export type FleetState = 'waiting' | 'running' | 'done' | 'failed' | 'stopped' | 'unknown';
 export type PendingItem = ApprovalBlock | QuestionBlock;
 
 export interface FleetAgent {
@@ -131,11 +142,16 @@ function stateOf(status: string, waiting: boolean): FleetState {
     case 'background':
       return 'running';
     case 'failed':
+    case 'lost':
       return 'failed';
     case 'cancelled':
       return 'stopped';
-    default:
+    case 'completed':
       return 'done';
+    // 'unknown' and anything the wire adds later stay unknown rather than
+    // being counted as finished work.
+    default:
+      return 'unknown';
   }
 }
 
@@ -180,6 +196,302 @@ export function waitingAgentIds(pending: readonly PendingItem[]): Set<string> {
   }
   return ids;
 }
+
+/**
+ * How long a reader has actually been blocked, when that is knowable.
+ *
+ * A long-running agent is not a long wait: the API worker in the design's
+ * scenario had been alive 29 minutes and had been waiting on the user for 3.
+ * So the clock starts at the request's own `createdAt` and stays undefined
+ * when the pending item carries no creation time, rather than borrowing the
+ * agent's start.
+ */
+export function waitingSince(pending: readonly PendingItem[], agentId: string): number | undefined {
+  const times: number[] = [];
+  for (const item of pending) {
+    if (item.originAgentId !== agentId) continue;
+    const at = parseTime(item.request.created_at);
+    if (at !== undefined) times.push(at);
+  }
+  return times.length === 0 ? undefined : Math.min(...times);
+}
+
+// ---------------------------------------------------------------- session graph
+
+/** A status, in the order a reader scans them: what needs them first. */
+export const STATE_ORDER: readonly FleetState[] = ['waiting', 'running', 'failed', 'stopped', 'done', 'unknown'];
+
+export interface StatusComposition {
+  readonly state: FleetState;
+  readonly count: number;
+  /** True for the wait that is specifically the user's to answer. */
+  readonly needsUser: boolean;
+}
+
+/**
+ * The whole session as one list of graph rows, folded at first-level branches.
+ *
+ * `expanded` holds the branch ids the reader opened; everything else stays a
+ * single group row, so eight branches read as eight lines and sixty-five
+ * agents read as the eight groups that contain them. Expansion only deepens
+ * the same graph.
+ */
+export interface GraphBranch {
+  readonly kind: 'branch';
+  readonly id: string;
+  readonly label: string;
+  /** How many agents this group contains, itself included. */
+  readonly size: number;
+  /** States of every agent in the group, counted. Denominator = size. */
+  readonly composition: readonly StatusComposition[];
+  /**
+   * Earliest start and latest end known anywhere in the group. This is the
+   * period the group has records for, not continuous execution time: agents
+   * inside it ran at different moments, and nothing here claims otherwise.
+   */
+  readonly from: number | undefined;
+  readonly to: number | undefined;
+  /** Waiting on the user from a pending request's own creation time. */
+  readonly waitingSince: number | undefined;
+}
+
+export interface GraphAgent {
+  readonly kind: 'agent';
+  readonly id: string;
+  readonly label: string;
+  readonly state: FleetState;
+  readonly needsUser: boolean;
+  /** Depth from the main agent. */
+  readonly depth: number;
+  readonly startedAt: number | undefined;
+  readonly endedAt: number | undefined;
+  readonly waitingSince: number | undefined;
+}
+
+export interface GraphMain {
+  readonly kind: 'main';
+  readonly id: string;
+  readonly label: string;
+  readonly state: FleetState;
+  /** The current turn's start; the session's own lane. */
+  readonly startedAt: number | undefined;
+}
+
+export type GraphRow = GraphMain | GraphBranch | GraphAgent;
+
+export interface SessionGraph {
+  readonly rows: readonly GraphRow[];
+  /** Every agent in the session, main included. The denominator for totals. */
+  readonly agentCount: number;
+  /** Composition over every agent, not only the visible rows. */
+  readonly composition: readonly StatusComposition[];
+  /** Earliest start known in the session; the axis opens here. */
+  readonly from: number | undefined;
+}
+
+function compose(states: readonly { state: FleetState; needsUser: boolean }[]): StatusComposition[] {
+  const counts = new Map<string, { count: number; needsUser: boolean }>();
+  for (const entry of states) {
+    const key = entry.state === 'waiting' && entry.needsUser ? 'waiting:you' : entry.state;
+    const existing = counts.get(key);
+    if (existing === undefined) counts.set(key, { count: 1, needsUser: entry.needsUser });
+    else existing.count += 1;
+  }
+  // A wait on the user and a wait that is not the user's are different
+  // obligations, so they are two segments of the same state rather than one
+  // number that hides which one is theirs.
+  const out: StatusComposition[] = [];
+  for (const state of STATE_ORDER) {
+    if (state === 'waiting') {
+      const you = counts.get('waiting:you');
+      if (you !== undefined) out.push({ state, count: you.count, needsUser: true });
+      const other = counts.get(state);
+      if (other !== undefined && other.count > 0) out.push({ state, count: other.count, needsUser: false });
+      continue;
+    }
+    const plain = counts.get(state);
+    if (plain !== undefined) out.push({ state, count: plain.count, needsUser: plain.needsUser });
+  }
+  return out;
+}
+
+function spanOf(nodes: readonly { startedAt: number | undefined; endedAt: number | undefined }[]) {
+  let from: number | undefined;
+  let to: number | undefined;
+  for (const node of nodes) {
+    if (node.startedAt !== undefined) from = from === undefined ? node.startedAt : Math.min(from, node.startedAt);
+    const end = node.endedAt;
+    if (end !== undefined) to = to === undefined ? end : Math.max(to, end);
+  }
+  // A group with only open-ended runs still has a latest moment: the earliest
+  // start is the only thing recorded, and the axis reads it as open, not zero.
+  return { from, to: to ?? from };
+}
+
+/** The branch agent and everything under it, in dispatch order. */
+function collect(forest: AgentForest, rootId: string, out: FleetAgent[], seen: Set<string>): void {
+  if (seen.has(rootId)) return;
+  seen.add(rootId);
+  const node = forest.byId[rootId];
+  if (node === undefined) return;
+  out.push({
+    id: rootId,
+    label: node.label,
+    description: node.description,
+    state: stateOf(node.status, false),
+    needsUser: false,
+    depth: 0,
+    startedAt: parseTime(node.startedAt),
+    endedAt: parseTime(node.endedAt),
+  });
+  for (const childId of node.childIds) collect(forest, childId, out, seen);
+}
+
+/**
+ * The whole session as graph rows, folded to first-level branches.
+ *
+ * The scope is the whole forest and the main agent is the root lane: the
+ * cockpit answers "how is this session going", and a selected agent is a
+ * highlight, never a narrower scope. Branch labels are the labels the
+ * dispatch already used; nothing here guesses a workflow phase from text.
+ */
+export function sessionGraph(input: {
+  readonly forest: AgentForest;
+  readonly pending: readonly PendingItem[];
+  readonly mainState: { readonly busy: boolean; readonly turnStartedAt: number | undefined };
+  readonly expanded: ReadonlySet<string>;
+  readonly mainLabel: string;
+}): SessionGraph {
+  const { forest, pending, mainState, expanded, mainLabel } = input;
+  const branches = firstLevelBranchIds(forest);
+  const rows: GraphRow[] = [];
+  const everything: { state: FleetState; needsUser: boolean }[] = [];
+  const mainStateWord: FleetState = mainState.busy ? 'running' : 'done';
+  rows.push({
+    kind: 'main',
+    id: MAIN_AGENT_ID,
+    label: mainLabel,
+    state: mainStateWord,
+    startedAt: mainState.turnStartedAt,
+  });
+  everything.push({ state: mainStateWord, needsUser: false });
+  let from = mainState.turnStartedAt;
+  for (const branchId of branches) {
+    const nodes: FleetAgent[] = [];
+    collect(forest, branchId, nodes, new Set());
+    // A branch with no agent in the forest is not a branch; an agent with no
+    // children is, and must still appear.
+    if (nodes.length === 0) continue;
+    const enriched = nodes.map((node) => {
+      const wait = waitingSince(pending, node.id);
+      return {
+        ...node,
+        state: wait !== undefined ? 'waiting' as const : node.state,
+        needsUser: wait !== undefined,
+        waitingSince: wait,
+      };
+    });
+    for (const node of enriched) {
+      everything.push({ state: node.state, needsUser: node.needsUser });
+    }
+    if (expanded.has(branchId)) {
+      for (const node of enriched) {
+        rows.push({
+          kind: 'agent',
+          id: node.id,
+          label: node.label,
+          state: node.state,
+          needsUser: node.needsUser,
+          depth: depthIn(forest, node.id),
+          startedAt: node.startedAt,
+          endedAt: node.endedAt,
+          waitingSince: node.waitingSince,
+        });
+      }
+      continue;
+    }
+    const groupSpan = spanOf(enriched);
+    // The axis covers the session's own records, main's current turn included,
+    // so a session whose oldest work is a three-day-old agent is not drawn
+    // from today backwards.
+    for (const at of [groupSpan.from, groupSpan.to]) {
+      if (at !== undefined) from = from === undefined ? at : Math.min(from, at);
+    }
+    rows.push({
+      kind: 'branch',
+      id: branchId,
+      label: forest.byId[branchId]?.label ?? branchId,
+      size: enriched.length,
+      composition: compose(enriched),
+      from: groupSpan.from,
+      to: groupSpan.to,
+      waitingSince: waitingSince(pending, branchId),
+    });
+  }
+  return { rows, agentCount: everything.length, composition: compose(everything), from };
+}
+
+/** The main agent's first-level children, in dispatch order. */
+export function firstLevelBranchIds(forest: AgentForest): string[] {
+  const main = forest.byId[MAIN_AGENT_ID];
+  if (main !== undefined) return [...main.childIds];
+  return forest.roots.map((node) => node.agentId).filter((id) => id !== MAIN_AGENT_ID);
+}
+
+/**
+ * Levels below the main agent, which is the graph's root and draws no lane of
+ * its own in the expanded rows. So a first-level branch is depth 1 and its
+ * workers depth 2, which is also how far the label is indented.
+ */
+function depthIn(forest: AgentForest, agentId: string): number {
+  let depth = 0;
+  let current: string | undefined = agentId;
+  const seen = new Set<string>();
+  while (current !== undefined && current !== MAIN_AGENT_ID && !seen.has(current)) {
+    seen.add(current);
+    depth += 1;
+    current = forest.byId[current]?.parentAgentId;
+  }
+  return Math.max(1, depth);
+}
+
+/** The axis window: the session's own earliest known start through now. */
+export function sessionWindow(from: number | undefined, now: number): LaneWindow {
+  return laneWindow({ starts: [from], markers: [], now });
+}
+
+/**
+ * The ticks an axis can actually print, thinned by the room each label needs.
+ *
+ * A label is centered on its tick, so two ticks closer than a label's width
+ * read as one run-together string. Both ends always survive: the window's
+ * start and `now` are what tell a reader the range, and dropping either would
+ * leave the axis unanchored. Interior ticks yield to whichever neighbour was
+ * printed last, so a long history thins evenly instead of dropping every other
+ * label at one end.
+ *
+ * `labelPx` is the measured width of one label; `width` is the axis column.
+ */
+export function axisTicks(
+  ticks: readonly number[],
+  pct: (at: number) => number,
+  width: number,
+  labelPx: number,
+): { readonly tick: number; readonly last: boolean }[] {
+  if (ticks.length === 0) return [];
+  const out: { tick: number; last: boolean }[] = [];
+  for (const [index, tick] of ticks.entries()) {
+    const last = index === ticks.length - 1;
+    if (last) { out.push({ tick, last: true }); break; }
+    if (index === 0) { out.push({ tick, last: false }); continue; }
+    const previous = out[out.length - 1]!.tick;
+    const gapPx = width === 0 ? Number.POSITIVE_INFINITY : (pct(tick) - pct(previous)) * (width / 100);
+    if (gapPx < labelPx) continue;
+    out.push({ tick, last: false });
+  }
+  return out;
+}
+
 
 /** Epoch ms of each context compaction in these blocks. */
 export function compactionTimes(blocks: readonly Block[]): number[] {

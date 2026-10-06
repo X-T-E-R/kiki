@@ -102,6 +102,7 @@ export interface IAgentTaskService {
   getTask(taskId: string): AgentTaskInfo | undefined;
   getTaskSnapshot(taskId: string): Promise<AgentTaskInfo | undefined>;
   list(activeOnly?: boolean, limit?: number, offset?: number): readonly AgentTaskInfo[];
+  hasUnfinishedWork(): boolean;
   persistOutput(taskId: string): void;
   getOutputSnapshot(
     taskId: string,

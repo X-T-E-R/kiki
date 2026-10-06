@@ -46,6 +46,7 @@ import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
 import { MediaLightbox } from './MediaLightbox';
+import { CodeEditor } from './CodeEditor';
 import { PreviewCloseConfirm, PreviewWorkspace } from './PreviewWorkspace';
 import {
   MediaPreviewContext,
@@ -407,7 +408,7 @@ export { PreviewToggleButton } from './PreviewToggleButton';
 
 // ---------------------------------------------------------------------------
 
-import { attachmentName, useSessionMedia } from './mediaParts';
+import { attachmentName, MediaLoadFailure, useSessionMedia } from './mediaParts';
 
 function isTextPreview(mime: string, name: string): boolean {
   if (mime.startsWith('text/')) return true;
@@ -427,11 +428,12 @@ function AttachmentPreviewDialog({
   const { t } = useI18n();
   const host = useHost();
   const client = useOptionalConnection()?.client;
-  const [original, setOriginal] = useState(false);
-  const [textLimit, setTextLimit] = useState(1024 * 1024);
   const [transfer, setTransfer] = useState<{ status: 'idle' | 'downloading' | 'saving' | 'saved' | 'failed'; bytes?: number; total?: number; message?: string }>({ status: 'idle' });
   const downloadController = useRef<AbortController | null>(null);
-  const load = useSessionMedia(item, sessionId, true, !original);
+  const [attempt, setAttempt] = useState(0);
+  const [failedUrl, setFailedUrl] = useState<string>();
+  const viewable = item.kind !== 'file' || /^(?:image|video|audio)\//.test(item.mime ?? '') || item.mime === 'application/pdf' || /\.pdf$/i.test(item.name ?? '') || isTextPreview(item.mime ?? '', item.name ?? '');
+  const load = useSessionMedia(item, sessionId, viewable, false, attempt);
   const name = attachmentName(item, load.status === 'ready' ? load.name : undefined);
   const title = t('preview.openFile', { name });
   useEffect(() => () => { downloadController.current?.abort(); }, [client, sessionId, item.fileId, item.path]);
@@ -452,7 +454,7 @@ function AttachmentPreviewDialog({
         await target.write(chunk);
         if (!controller.signal.aborted) setTransfer({ status: 'downloading', bytes: progress.bytes, total: progress.totalBytes });
       };
-      const options = { signal: controller.signal, timeoutMs: 0 };
+      const options = { ...client.readingOptions(), signal: controller.signal };
       if (item.path !== undefined) await client.downloadHostFile(item.path, consume, options);
       else await client.downloadSessionMedia(sessionId!, item.fileId!, consume, options);
       controller.signal.throwIfAborted();
@@ -468,29 +470,25 @@ function AttachmentPreviewDialog({
   };
   let body: ReactNode;
 
-  if (load.status === 'loading') {
+  if (!viewable) {
+    body = <div className="flex min-h-48 items-center justify-center text-sm text-ink-faint">{t('preview.unsupported')}</div>;
+  } else if (load.status === 'loading') {
     body = <div className="flex min-h-48 items-center justify-center text-sm text-ink-faint">{t('preview.loading')}</div>;
-  } else if (load.status === 'failed') {
-    body = <div className="flex min-h-48 items-center justify-center text-sm text-danger">{t('preview.failed')}</div>;
+  } else if (load.status === 'failed' || failedUrl === load.url) {
+    body = <MediaLoadFailure name={name} decode={load.status === 'ready'} onRetry={() => { setFailedUrl(undefined); setAttempt((value) => value + 1); }} />;
   } else if (load.mime.startsWith('image/')) {
-    body = <img src={load.url} alt={name} className="max-h-[72vh] max-w-full object-contain" />;
+    body = <img src={load.url} alt={name} decoding="async" onError={() => { setFailedUrl(load.url); }} className="max-h-[72vh] max-w-full object-contain" />;
   } else if (load.mime.startsWith('video/')) {
-    body = <video src={load.url} controls className="max-h-[72vh] max-w-full" />;
+    body = <video src={load.url} controls onError={() => { setFailedUrl(load.url); }} className="max-h-[72vh] max-w-full" />;
   } else if (load.mime.startsWith('audio/')) {
     body = <audio src={load.url} controls className="w-full" />;
   } else if (load.mime === 'application/pdf' || name.toLowerCase().endsWith('.pdf')) {
     body = <iframe src={load.url} title={name} className="h-[72vh] w-full rounded-lg border border-hairline bg-white" />;
   } else if (isTextPreview(load.mime, name)) {
-    const shown = load.bytes.subarray(0, textLimit);
-    const text = new TextDecoder().decode(shown, { stream: shown.byteLength < load.bytes.byteLength });
-    body = (
-      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-hairline bg-paper p-3">
-        <pre className="font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink">{text}</pre>
-        {load.bytes.byteLength > shown.byteLength ? (
-          <button type="button" onClick={() => { setTextLimit((value) => value + 1024 * 1024); }} className="mt-3 text-[11px] text-accent">{t('transcript.showMore')}</button>
-        ) : null}
-      </div>
-    );
+    const text = new TextDecoder().decode(load.bytes);
+    body = load.bytes.byteLength > 1024 * 1024
+      ? <div className="h-[72vh] min-h-0 w-full overflow-hidden rounded-lg border border-hairline bg-paper"><CodeEditor key={load.url} path={name} value={text} generation={attempt} readOnly onChange={() => {}} ariaLabel={title} /></div>
+      : <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-hairline bg-paper p-3"><pre className="font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink">{text}</pre></div>;
   } else {
     body = (
       <div className="flex min-h-48 flex-col items-center justify-center gap-3 text-sm text-ink-faint">
@@ -515,11 +513,6 @@ function AttachmentPreviewDialog({
             <p className="truncate font-mono text-[11px] text-ink-faint">{load.mime} · {formatBytes(load.bytes.byteLength)}</p>
           ) : null}
         </div>
-        {!original ? (
-          <button type="button" onClick={() => { setOriginal(true); }} className="rounded-lg border border-hairline px-3 py-1 text-[11px] text-ink-soft hover:border-accent hover:text-ink">
-            {t('preview.loadFullFile')}
-          </button>
-        ) : null}
         <button
           type="button"
           disabled={transfer.status === 'downloading' || transfer.status === 'saving'}

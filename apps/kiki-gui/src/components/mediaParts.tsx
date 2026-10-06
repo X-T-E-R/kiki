@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { basenameOf, formatBytes, type MediaRef } from '@kiki/session-core/composer/media';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
+import { ApiError, API_CODES } from '@kiki/session-core/transport';
 import { useOptionalConnection } from '../state/connection';
 import { Icon } from './icons';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
@@ -26,9 +27,10 @@ export function useSessionMedia(
   sessionId: string | undefined,
   enabled = true,
   previewOnly = true,
+  attempt = 0,
 ): SessionMediaLoad {
   const client = useOptionalConnection()?.client;
-  const source = useMemo(() => ({ client, sessionId, fileId: item.fileId, path: item.path }), [client, sessionId, item.fileId, item.path, item.mime, item.kind, previewOnly]);
+  const source = useMemo(() => ({ client, sessionId, fileId: item.fileId, path: item.path, attempt }), [client, sessionId, item.fileId, item.path, item.mime, item.kind, item.blobHash, previewOnly, attempt]);
   const [loaded, setLoaded] = useState<{ source: typeof source; load: SessionMediaLoad }>({ source, load: { status: 'loading' } });
   const setLoad = useCallback((load: SessionMediaLoad) => { setLoaded({ source, load }); }, [source]);
   const load: SessionMediaLoad = loaded.source === source ? loaded.load : { status: 'loading' };
@@ -42,13 +44,18 @@ export function useSessionMedia(
     const controller = new AbortController();
     let objectUrl: string | undefined;
     setLoad({ status: 'loading' });
-    const options = { signal: controller.signal, mediaType: item.mime, timeoutMs: previewOnly ? undefined : 0 };
+    const options = { ...client.readingOptions(), signal: controller.signal, mediaType: item.mime };
     const read: Promise<{ bytes: Uint8Array; mime: string; name?: string }> = item.path !== undefined
       ? previewOnly ? client.readHostMediaPreviewBytes(item.path, options) : client.readHostFileBytes(item.path, options)
       : previewOnly ? client.readSessionMediaPreviewBytes(sessionId!, item.fileId!, options) : client.readSessionMediaBytes(sessionId!, item.fileId!, options);
-    read.then(({ bytes, mime, name }) => {
+    const resolved: Promise<{ bytes: Uint8Array; mime: string; name?: string }> = read.catch((error: unknown) => {
+      if (!previewOnly || item.kind !== 'image' || controller.signal.aborted || !(error instanceof ApiError) || error.code !== API_CODES.REQUEST_INVALID) throw error;
+      return item.path !== undefined ? client.readHostFileBytes(item.path, options) : client.readSessionMediaBytes(sessionId!, item.fileId!, options);
+    });
+    resolved.then(({ bytes, mime, name }) => {
       if (controller.signal.aborted) return;
-      const mediaType = !previewOnly && item.blobHash !== undefined ? item.mime ?? mime : mime;
+      if (bytes.byteLength === 0) { setLoad({ status: 'failed' }); return; }
+      const mediaType = mime === 'application/octet-stream' ? item.mime ?? mime : mime;
       objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mediaType }));
       setLoad({ status: 'ready', bytes, mime: mediaType, name, url: objectUrl });
     }, () => {
@@ -91,12 +98,11 @@ function SessionMediaThumb({ item, size = 'default' }: { item: MediaRef; size?: 
   const preview = useMediaPreview();
   const [hostRef, visible] = useVisibleOnce();
   const load = useSessionMedia(item, preview?.sessionId, visible);
+  const [failedUrl, setFailedUrl] = useState<string>();
   const name = attachmentName(item, load.status === 'ready' ? load.name : undefined);
   let body: ReactNode;
-  if (load.status === 'failed') {
-    body = size === 'default'
-      ? <FileChip item={item} />
-      : <button type="button" onClick={() => { preview?.openAttachment(item); }} title={name}><BrokenThumb size={size} name={name} /></button>;
+  if (load.status === 'failed' || load.status === 'ready' && failedUrl === load.url) {
+    body = <MediaLoadFailure name={name} decode={load.status === 'ready'} size={size} onRetry={() => { preview?.openAttachment(item); }} />;
   } else if (load.status === 'loading') {
     body = (
       <span className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} border border-hairline bg-paper text-[11px] text-ink-faint`}>
@@ -111,26 +117,22 @@ function SessionMediaThumb({ item, size = 'default' }: { item: MediaRef; size?: 
         onClick={() => { preview?.openAttachment(item); }}
         className={`block overflow-hidden ${THUMB_SIZE[size].frame} border border-hairline transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
       >
-        <img src={load.thumbnailUrl ?? load.url} alt={name} className={`${THUMB_SIZE[size].img} object-cover`} />
+        <img src={load.url} alt={name} decoding="async" onError={() => { setFailedUrl(load.url); }} className={`${THUMB_SIZE[size].img} object-cover`} />
       </button>
     );
   }
   return <span ref={hostRef} className="inline-flex">{body}</span>;
 }
 
-/** An image that could not be read, in the slot it would have taken: neutral, never an error. */
-function BrokenThumb({ size, name }: { size: MediaThumbSize; name: string }) {
+export function MediaLoadFailure({ name, decode, size = 'default', onRetry }: { name: string; decode: boolean; size?: MediaThumbSize; onRetry: () => void }) {
   const { t } = useI18n();
+  const label = decode ? t('media.unavailable', { name }) : t('preview.failed');
   return (
-    <span
-      data-media-broken
-      role="img"
-      aria-label={t('media.unavailable', { name })}
-      title={name}
-      className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} border border-dashed border-hairline-strong bg-panel text-ink-faint`}
-    >
+    <button type="button" data-media-broken={decode ? 'decode' : 'read'} onClick={onRetry} title={name} aria-label={`${label} · ${t('transcript.detail.retry')}`}
+      className={`flex ${THUMB_SIZE[size].slot} flex-col items-center justify-center gap-1 ${THUMB_SIZE[size].frame} border border-dashed border-hairline-strong bg-panel p-2 text-[11px] text-ink-faint hover:border-accent focus-visible:outline-2 focus-visible:outline-selected-ink`}>
       <Icon name="file" size={size === 'strip' ? 12 : 16} />
-    </span>
+      {size === 'strip' ? null : <>{decode ? null : <span className="max-w-full truncate">{name}</span>}<span>{label}</span><span className="text-accent">{t('transcript.detail.retry')}</span></>}
+    </button>
   );
 }
 
@@ -181,37 +183,44 @@ const THUMB_SIZE: Record<MediaThumbSize, { img: string; slot: string; frame: str
 const LOADABLE_MEDIA_URL = /^(?:data:|blob:|https?:\/\/)/i;
 
 function UrlMediaPart({ item, size }: { item: MediaRef & { url: string }; size: MediaThumbSize }) {
-  const { t } = useI18n();
   const preview = useMediaPreview();
   const client = useOptionalConnection()?.client;
   const source = useMemo(() => ({ client, sessionId: preview?.sessionId, url: item.url }), [client, preview?.sessionId, item.url]);
-  const [opened, setOpened] = useState<typeof source | null>(null);
+  const [failed, setFailed] = useState<typeof source | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [hostRef, visible] = useVisibleOnce();
   const name = attachmentName(item);
   if (!LOADABLE_MEDIA_URL.test(item.url)) return <FileChip item={item} />;
-  if (opened !== source) return (
-    <button type="button" onClick={() => { setOpened(source); }} title={name} className={`flex ${THUMB_SIZE[size].slot} flex-col items-center justify-center gap-2 ${THUMB_SIZE[size].frame} border border-hairline bg-paper p-2 text-[11px] text-accent`}>
-      <Icon name="file" /><span>{t('preview.loadFullFile')}</span>
-    </button>
-  );
-  return <span className="flex flex-col gap-1">
-    {item.kind === 'video' ? <video src={item.url} controls className="max-h-52 rounded-lg border border-hairline" /> :
-      <button type="button" onClick={() => { preview?.openImage(item.url, name); }} title={name}><img src={item.url} alt={name} className={`${THUMB_SIZE[size].img} ${THUMB_SIZE[size].frame} border border-hairline object-cover`} /></button>}
-    <a href={item.url} download={name} target="_blank" rel="noopener noreferrer" className="text-[11px] text-accent">{t('media.download')}</a>
-  </span>;
+  const body = failed === source ? <MediaLoadFailure name={name} decode size={size} onRetry={() => { setFailed(null); setAttempt((value) => value + 1); }} />
+    : !visible ? <span className={`${THUMB_SIZE[size].slot} ${THUMB_SIZE[size].frame} border border-hairline bg-paper`} />
+    : item.kind === 'video' ? <video key={attempt} src={item.url} controls onError={() => { setFailed(source); }} className="max-h-52 rounded-lg border border-hairline" />
+    : <button type="button" onClick={() => { preview?.openImage(item.url, name); }} title={name} className="focus-visible:outline-2 focus-visible:outline-selected-ink"><img key={attempt} src={item.url} alt={name} decoding="async" onError={() => { setFailed(source); }} className={`${THUMB_SIZE[size].img} ${THUMB_SIZE[size].frame} border border-hairline object-cover`} /></button>;
+  return <span ref={hostRef} className="inline-flex">{body}</span>;
 }
 
 function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNullable<MediaRef['detail']> }; size: MediaThumbSize }) {
   const { t } = useI18n();
   const detail = useTranscriptDetail({ agentId: item.detail.agentId, kind: 'attachment', id: item.detail.attachmentId });
   const name = item.name ?? t('media.attachment');
-  if (detail.request === undefined) return <FileChip item={item} />;
+  const client = useOptionalConnection()?.client;
+  const preview = useMediaPreview();
+  const [hostRef, visible] = useVisibleOnce();
+  const target = useMemo(() => ({ client, sessionId: preview?.sessionId, agentId: item.detail.agentId, id: item.detail.attachmentId }), [client, preview?.sessionId, item.detail.agentId, item.detail.attachmentId]);
+  const attempted = useRef<typeof target | undefined>(undefined);
   const status = detail.status?.status;
+  useEffect(() => {
+    if (!visible || item.kind === 'file' || detail.request === undefined || attempted.current === target || status === 'error') return;
+    attempted.current = target;
+    detail.request();
+  }, [visible, item.kind, detail.request, target, status]);
+  if (detail.request === undefined) return <FileChip item={item} />;
   const label = status === 'loading' ? t('media.detail.loading', { name }) : status === 'error' ? t('media.detail.failed', { name }) : t('media.detail.open', { name });
   const meta = item.size !== undefined ? formatBytes(item.size) : item.mime;
   if (size === 'strip') {
     return (
       <button
         type="button"
+        ref={hostRef}
         data-media-deferred={status ?? 'idle'}
         onClick={detail.request}
         disabled={status === 'loading'}
@@ -225,6 +234,7 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
   }
   return (
     <button
+      ref={hostRef}
       type="button"
       data-media-deferred={status ?? 'idle'}
       onClick={detail.request}

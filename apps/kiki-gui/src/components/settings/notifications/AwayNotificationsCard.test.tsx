@@ -18,12 +18,12 @@ const mounts: { container: HTMLDivElement; root: Root }[] = [];
 const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
 
 beforeAll(() => {
-  vi.stubGlobal('navigator', { language: 'en-US' });
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 beforeEach(() => {
-  hostState.notify = async () => undefined;
+  vi.stubGlobal('navigator', { language: 'en-US' });
+  hostState.notify = vi.fn(async () => undefined);
   writeDesktopPrefs({ notifications: true });
   writeSettings({ awayNotifications: DEFAULT_AWAY_NOTIFICATION_KINDS });
 });
@@ -33,6 +33,7 @@ afterEach(async () => {
     await act(async () => { root.unmount(); });
     container.remove();
   }
+  vi.unstubAllGlobals();
 });
 
 async function render(): Promise<HTMLDivElement> {
@@ -65,6 +66,38 @@ describe('AwayNotificationsCard', () => {
     await act(async () => { master.click(); });
     expect(readDesktopPrefs().notifications).toBe(false);
     expect(card.querySelector('[data-notify-away-kinds]')).toBeNull();
+  });
+
+  it('explains the master scope and denied permission without changing preferences or sending a notification', async () => {
+    const notification = Object.assign(vi.fn(), {
+      permission: 'denied' as NotificationPermission,
+      requestPermission: vi.fn(),
+    });
+    vi.stubGlobal('Notification', notification);
+    const prefs = readDesktopPrefs();
+    const kinds = readSettings().awayNotifications;
+    const card = await render();
+    expect(card.textContent).toContain('Allow system notifications');
+    expect(card.textContent).toContain('other spaces');
+    expect(card.textContent).toContain('Your browser has blocked notifications');
+    expect(card.textContent).toContain('site permissions');
+    expect(kindToggle(card, 'completed').checked).toBe(true);
+    expect(readDesktopPrefs()).toEqual(prefs);
+    expect(readSettings().awayNotifications).toEqual(kinds);
+
+    notification.permission = 'granted';
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(card.textContent).not.toContain('Your browser has blocked notifications');
+    expect(notification).not.toHaveBeenCalled();
+    expect(notification.requestPermission).not.toHaveBeenCalled();
+    expect(hostState.notify).not.toHaveBeenCalled();
+  });
+
+  it.each(['default', 'granted'] as const)('does not show a refusal warning for %s permission', async (permission) => {
+    vi.stubGlobal('Notification', Object.assign(vi.fn(), { permission }));
+    const card = await render();
+    expect(card.textContent).not.toContain('Your browser has blocked notifications');
+    expect(card.querySelector('[data-notify-away]')).not.toBeNull();
   });
 
   it('says why nothing can be switched on a host without notifications', async () => {

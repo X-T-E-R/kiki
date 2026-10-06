@@ -1,8 +1,9 @@
 /**
  * Fixture stand-in for the browser REST surface (kap-server routes/browser.ts;
- * contract: packages/protocol/src/rest/browser.ts). Wired routes only:
- * connection list with each connection's status, defaults, upsert, remove, and
- * the status / check / connect / disconnect actions.
+ * contracts: packages/protocol/src/rest/browser.ts and rest/browser-setup.ts).
+ * Wired routes only: the named setup presets, the connection list with each
+ * connection's status, defaults, upsert, remove, and the status / check /
+ * connect / disconnect actions.
  *
  * The status model mirrors `agent-core-v2/src/app/browser/browserControlService.ts`:
  * `idle` until something is live, `ready` once the driver answered, `running`
@@ -11,9 +12,17 @@
  * confirmed gone. Nothing here invents a driver version or a session name that
  * the page could not have received from the real service.
  *
+ * The preset model mirrors `browserSetupService.ts`: two managed routes report
+ * their own steps and action list, the native flag gate appears as a `feature`
+ * step with an `enable_feature` action, and the external route is never
+ * supported — it offers its documentation and nothing else.
+ *
  * Scenario seeds (all optional):
  *   browser: {
  *     defaultBrowser?: string,
+ *     presets?: {                       // browser.setup[preset] overrides
+ *       [preset]: { state?, error?, steps?, omitAction?, connectionId? }
+ *     },
  *     connections: [{
  *       id, name, enabled, type,
  *       profilePath?, executablePath?, driverPath?, headed?,   // agent-browser-profile
@@ -55,6 +64,7 @@ function state(server) {
       host: server.scenario?.data.host ?? 'fixture-browser-host',
       connections: seed.connections ?? [],
       defaultBrowser: seed.defaultBrowser,
+      overrides: structuredClone(seed.presets ?? {}),
     };
   }
   return server.browser;
@@ -88,6 +98,146 @@ function find(browser, id) {
   return browser.connections.find((entry) => entry.id === id);
 }
 
+const KIMI_STORE = { id: 'install_extension', url: 'https://chromewebstore.google.com/detail/kimi-webbridge/example', target: 'chrome' };
+const EDGE_STORE = { id: 'install_extension', url: 'https://microsoftedge.microsoft.com/addons/detail/kimi-webbridge/example', target: 'edge' };
+const KIMI_HELP = 'https://www.kimi.com/en/help/kimi-webbridge/kimi-webbridge-introduction';
+const CODEX_HELP = 'https://developers.openai.com/codex/app/chrome-extension';
+
+/** The routes the wizard reads, in the server's own order and shapes. */
+const PRESETS = {
+  'kimi-webbridge': {
+    preset: 'kimi-webbridge',
+    displayName: 'Kimi Browser Extension',
+    controlSurface: 'plugin-skill',
+    pluginId: 'kimi-webbridge',
+    skill: 'kimi-webbridge',
+    capabilityId: 'kimi-webbridge',
+    sourceUrl: KIMI_HELP,
+    steps: [
+      { id: 'daemon-binary', state: 'ready' },
+      { id: 'daemon', state: 'ready' },
+      { id: 'skill', state: 'ready' },
+      { id: 'extension', state: 'user_action', reason: 'extension_not_connected',
+        detail: 'Browser extension is not connected (installation cannot be inferred)' },
+    ],
+    actions: [{ id: 'prepare' }, { id: 'connect' }, KIMI_STORE, EDGE_STORE, { id: 'open_instructions', url: KIMI_HELP, target: 'documentation' }],
+  },
+  'independent-browser': {
+    preset: 'independent-browser',
+    displayName: 'Independent browser',
+    controlSurface: 'browser-connection',
+    capabilityId: 'kiki-browser',
+    sourceUrl: 'https://github.com/vercel-labs/agent-browser',
+    steps: [{ id: 'driver', state: 'ready' }, { id: 'chrome', state: 'ready' }],
+    actions: [{ id: 'prepare' }, { id: 'connect' }],
+  },
+  'codex-browser': {
+    preset: 'codex-browser',
+    displayName: 'Codex / ChatGPT browser extension',
+    controlSurface: 'external-app',
+    supported: false,
+    state: 'external_only',
+    reason: 'external_app_required',
+    sourceUrl: CODEX_HELP,
+    steps: [{ id: 'desktop-app', state: 'user_action', reason: 'external_app_required' }],
+    actions: [{ id: 'open_instructions', url: CODEX_HELP, target: 'documentation' }],
+  },
+};
+
+/**
+ * A preset as the list returns it. The managed routes take their readiness from
+ * what is actually installed on this fixture host, so a scenario says "the
+ * extension is missing" and the page draws a missing step rather than a seed
+ * that claims a state the fixture has no evidence for.
+ */
+function presetStatus(browser, seed) {
+  const base = PRESETS[seed];
+  const override = browser.overrides?.[base.preset] ?? {};
+  const steps = override.steps ?? base.steps;
+  const state = override.state ?? (override.error !== undefined ? 'failed' : 'not_prepared');
+  const flagOff = steps.some((step) => step.reason === 'feature_disabled');
+  const served = base.actions.filter((action) => override.omitAction !== action.id);
+  const actions = state === 'preparing'
+    ? served.filter((action) => action.id === 'cancel')
+    : flagOff && served.some((action) => action.id === 'connect')
+      ? [...served, { id: 'enable_feature' }]
+      : served;
+  const common = {
+    supported: base.supported ?? true,
+    executionHost: browser.host,
+    steps,
+    actions,
+    connectionId: override.connectionId,
+    error: override.error,
+  };
+  if (base.controlSurface === 'external-app') {
+    return { ...base, executionHost: browser.host, ...common };
+  }
+  return {
+    preset: base.preset,
+    displayName: base.displayName,
+    controlSurface: base.controlSurface,
+    state,
+    sourceUrl: base.sourceUrl,
+    pluginId: base.pluginId,
+    skill: base.skill,
+    capabilityId: base.capabilityId,
+    ...common,
+  };
+}
+
+function handleSetup(server, browser, res, path, method, body) {
+  const isList = path === '/browser/setup';
+  const one = isList ? null : /^\/browser\/setup\/([^/:]+)$/.exec(path);
+  const action = /^\/browser\/setup\/([^/:]+):(prepare|connect|cancel)$/.exec(path);
+  if (!isList && one === null && action === null) return false;
+
+  if (isList) {
+    server.envelope(res, { presets: Object.keys(PRESETS).map((id) => presetStatus(browser, id)) });
+    return true;
+  }
+  if (one !== null) {
+    const id = decodeURIComponent(one[1]);
+    if (!Object.hasOwn(PRESETS, id)) { server.envelope(res, null, 40001, 'Unknown browser setup preset'); return true; }
+    server.envelope(res, presetStatus(browser, id));
+    return true;
+  }
+  const id = decodeURIComponent(action[1]);
+  if (!Object.hasOwn(PRESETS, id)) { server.envelope(res, null, 40001, 'Unknown browser setup preset'); return true; }
+  const name = action[2];
+  const override = browser.overrides?.[id] ?? {};
+  if (name === 'prepare') {
+    if (body?.consent !== true) { server.envelope(res, null, 40001, 'Confirm installation and plugin enablement before preparing browser access'); return true; }
+    if (override.prepareError !== undefined) {
+      server.envelope(res, null, 40001, override.prepareError);
+      return true;
+    }
+    browser.overrides = { ...browser.overrides, [id]: { ...override, state: 'ready', prepareError: undefined } };
+    server.envelope(res, presetStatus(browser, id));
+    return true;
+  }
+  if (name === 'connect') {
+    if (override.state !== 'ready' && override.state !== 'connected') { server.envelope(res, presetStatus(browser, id)); return true; }
+    if (id === 'independent-browser') {
+      if (find(browser, 'independent-browser') === undefined) {
+        browser.connections = [...browser.connections, {
+          id: 'independent-browser', name: 'Independent browser', enabled: true, type: 'agent-browser-profile',
+          headed: true, status: { state: 'ready', generation: 1 },
+        }];
+      }
+      browser.overrides = { ...browser.overrides, [id]: { ...override, state: 'connected' } };
+      server.envelope(res, { ...presetStatus(browser, id), connectionId: 'independent-browser' });
+      return true;
+    }
+    browser.overrides = { ...browser.overrides, [id]: { ...override, state: 'connected', checkedAt: new Date().toISOString() } };
+    server.envelope(res, presetStatus(browser, id));
+    return true;
+  }
+  browser.overrides = { ...browser.overrides, [id]: { ...override, state: 'not_prepared' } };
+  server.envelope(res, presetStatus(browser, id));
+  return true;
+}
+
 function valid(status) {
   return typeof status === 'object' && status !== null && STATES.includes(status.state);
 }
@@ -102,6 +252,8 @@ export function browserEndpointSecret(server, id) {
 export function handleBrowser(server, res, path, query, method, body) {
   const browser = state(server);
   const list = () => browser.connections.map((entry) => record(entry, browser.host));
+
+  if (handleSetup(server, browser, res, path, method, body)) return true;
 
   if (path === '/browser/connections' && method === 'GET') {
     server.envelope(res, { connections: list(), defaultBrowser: browser.defaultBrowser });

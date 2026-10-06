@@ -972,6 +972,7 @@ export const compactionStartedEventSchema = z.object({
   type: z.literal('compaction.started'),
   trigger: z.enum(['manual', 'auto']),
   instruction: z.string().optional(),
+  phase: z.enum(['queued', 'running']).optional(),
 }) satisfies z.ZodType<CompactionStartedPayload>;
 
 export const compactionBlockedEventSchema = z.object({
@@ -981,10 +982,13 @@ export const compactionBlockedEventSchema = z.object({
 
 export const compactionCancelledEventSchema = z.object({
   type: z.literal('compaction.cancelled'),
+  trigger: z.enum(['manual', 'auto']).optional(),
+  reason: z.string().optional(),
 });
 
 export const compactionCompletedEventSchema = z.object({
   type: z.literal('compaction.completed'),
+  trigger: z.enum(['manual', 'auto']).optional(),
   result: compactionResultSchema,
 }) satisfies z.ZodType<CompactionCompletedPayload>;
 

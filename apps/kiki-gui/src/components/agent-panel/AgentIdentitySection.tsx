@@ -154,8 +154,9 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
       case 'background':
         return 'status-dot-busy bg-ink-soft';
       case 'completed':
-        return 'bg-success';
+        return 'bg-ink-faint';
       case 'failed':
+      case 'lost':
         return 'bg-danger';
       case 'suspended':
         return 'bg-amber-rule';

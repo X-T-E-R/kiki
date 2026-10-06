@@ -341,6 +341,86 @@ describe('AgentToolDedupeService', () => {
     });
   });
 
+  describe('native asynchronous status reads', () => {
+    afterEach(() => vi.restoreAllMocks());
+    const jobId = '11111111-1111-4111-8111-111111111111';
+    const args = { action: 'get', job_id: jobId };
+    function status(step: number, state = 'running'): ExecutableToolResult {
+      return { output: JSON.stringify({ schema_version: '3.0', action: 'get', job_id: jobId,
+        state, updated_at: String(step), poll_after_ms: 250 }) };
+    }
+
+    it.each(['WebSearch', 'FetchURL'])('collects %s after more than 12 paced pending reads and dedupes each same-step copy', async (name) => {
+      let now = 1000;
+      vi.spyOn(Date, 'now').mockImplementation(() => now);
+      const h = createHarness();
+      let progress = 0;
+      const tool = new EchoTool(name, (input) => input['action'] === 'read'
+        ? { output: JSON.stringify({ action: 'read', job_id: jobId, state: 'succeeded', chunks: [{ data_base64: 'cmVzdWx0' }] }) }
+        : status(++progress, progress > 14 ? 'succeeded' : 'running'));
+      h.registry.register(tool);
+      for (let step = 1; step <= 15; step += 1) {
+        const results = await runStep(h, 1, step, [toolCall(`original-${step}`, name, args), toolCall(`duplicate-${step}`, name, args)]);
+        expect(results).toHaveLength(2);
+        expect(results[0]!.result.output).toBe(results[1]!.result.output);
+        for (const { result } of results) {
+          expect(result.stopTurn).not.toBe(true);
+          expect(result.output).not.toContain('<system-reminder>');
+        }
+        now += 250;
+      }
+      expect(tool.calls).toHaveLength(15);
+      expect(progress).toBe(15);
+      const [read] = await runStep(h, 1, 16, [toolCall('read-result', name, { action: 'read', job_id: jobId })]);
+      expect(read!.result.stopTurn).not.toBe(true);
+      expect(read!.result.output).toContain('cmVzdWx0');
+    });
+
+    it.each(['WebSearch', 'FetchURL'])('uses a paced one-second status read when %s omits a polling hint', async (name) => {
+      let now = 1000;
+      vi.spyOn(Date, 'now').mockImplementation(() => now);
+      const h = createHarness();
+      h.registry.register(new EchoTool(name, () => ({ output: JSON.stringify({ action: 'get', job_id: jobId, state: 'running' }) })));
+      for (let step = 1; step <= 14; step += 1) {
+        const [item] = await runStep(h, 1, step, [toolCall(`c-${step}`, name, args)]);
+        expect(item!.result.stopTurn).not.toBe(true);
+        expect(item!.result.output).not.toContain('<system-reminder>');
+        now += 1000;
+      }
+    });
+
+    it.each(['WebSearch', 'FetchURL'])('still stops %s busy polling before poll_after_ms', async (name) => {
+      vi.spyOn(Date, 'now').mockReturnValue(1000);
+      const h = createHarness();
+      h.registry.register(new EchoTool(name, () => status(1)));
+      let last: ToolResult | undefined;
+      for (let step = 1; step <= 13; step += 1) {
+        last = (await runStep(h, 1, step, [toolCall(`c-${step}`, name, args)]))[0]!.result;
+      }
+      expect(last!.stopTurn).toBe(true);
+    });
+
+    it.each([
+      ['WebSearch', args, { output: 'authentication error', isError: true }],
+      ['FetchURL', { action: 'get', job_id: 'invalid' }, status(1)],
+      ['OtherTool', args, status(1)],
+      ['WebSearch', { action: 'cancel', job_id: jobId }, status(1)],
+      ['WebSearch', args, { output: JSON.stringify({ action: 'get', job_id: jobId, state: 'unknown', poll_after_ms: 250 }) }],
+      ['FetchURL', args, { output: JSON.stringify({ action: 'get', job_id: '22222222-2222-4222-8222-222222222222', state: 'running', poll_after_ms: 250 }) }],
+    ] as const)('does not exempt invalid/error/other calls (%s, %j)', async (name, input, output) => {
+      let now = 1000;
+      vi.spyOn(Date, 'now').mockImplementation(() => now);
+      const h = createHarness();
+      h.registry.register(new EchoTool(name, () => output));
+      let last: ToolResult | undefined;
+      for (let step = 1; step <= 12; step += 1) {
+        last = (await runStep(h, 1, step, [toolCall(`c-${step}`, name, input)]))[0]!.result;
+        now += 250;
+      }
+      expect(last!.stopTurn).toBe(true);
+    });
+  });
+
   describe('cross-step streak', () => {
     function registerRead(h: Harness): EchoTool {
       const tool = new EchoTool('Read');

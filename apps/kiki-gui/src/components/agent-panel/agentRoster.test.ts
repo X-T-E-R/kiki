@@ -34,7 +34,7 @@ describe('buildRoster', () => {
   it('counts every agent in the tree and orders by the most urgent agent below', () => {
     const model = buildRoster(base);
     // A failure is not a bucket of its own: it ended like the others.
-    expect(model.counts).toEqual({ waiting: 1, running: 2, ended: 6 });
+    expect(model.counts).toEqual({ waiting: 1, running: 2, idle: 0, unknown: 0, ended: 6 });
     expect(model.total).toBe(9);
     // Lead finished, but its grandchild waits on the user: it leads the list.
     expect(labels(model.rows)).toEqual(['Lead', 'Live', '[5 done]']);
@@ -88,4 +88,19 @@ describe('buildRoster', () => {
     expect(agentTrail(forest, 'probe')).toEqual(['Lead', 'Worker']);
     expect(agentTrail(forest, 'lead')).toEqual([]);
   });
+});
+
+
+it('keeps unknown and idle inventory rows separate from the finished fold', () => {
+  const registered = buildAgentForest([], [
+    { agentId: 'main' },
+    ...Array.from({ length: 4 }, (_, index) => ({ agentId: `unknown-${index}`, parentAgentId: 'main', status: 'unknown' })),
+    { agentId: 'idle', parentAgentId: 'main', status: 'idle' },
+    ...Array.from({ length: 4 }, (_, index) => ({ agentId: `done-${index}`, parentAgentId: 'main', status: 'completed' })),
+  ]);
+  const model = buildRoster({ ...base, forest: registered, waiting: new Set() });
+  expect(model.counts).toEqual({ waiting: 0, running: 0, idle: 1, unknown: 4, ended: 4 });
+  expect(model.total).toBe(9);
+  expect(model.rows.filter((row) => row.kind === 'agent')).toHaveLength(5);
+  expect(model.rows.find((row) => row.kind === 'group')).toMatchObject({ count: 4 });
 });

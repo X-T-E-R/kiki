@@ -13,6 +13,8 @@
 
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 
+import type { ContentRef } from '@kiki/transcript';
+
 import { useI18n } from '../../i18n';
 import type { KikiClient, SearchMessageHit } from '../../lib/client';
 import {
@@ -28,6 +30,7 @@ import {
 import { useOptionalConnection } from '../../state/connection';
 import { Icon } from '../icons';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
+import { useTranscriptController } from '../transcriptDetail';
 
 export interface FindBarProps {
   readonly items: readonly FindItem[];
@@ -40,7 +43,7 @@ export interface FindBarProps {
   /** Seeds the query (a selection); `nonce` changes on every Ctrl+F. */
   readonly request: { readonly prefill?: string; readonly nonce: number };
   /** Land a match (open, scroll, paint); resolves false when it cannot. */
-  readonly onLand: (match: FindMatch, pattern: RegExp) => Promise<boolean>;
+  readonly onLand: (match: FindMatch, pattern: RegExp, range?: { ref: ContentRef; offset: number }) => Promise<boolean>;
   /** Clear paint (query emptied or no matches). */
   readonly onClear: () => void;
   /** Index of the match to start from (nearest the reader's viewport). */
@@ -91,6 +94,7 @@ export interface OutsideHits {
 export function classifyOutsideHits(input: {
   readonly hits: readonly SearchMessageHit[];
   readonly loadedTurns: ReadonlySet<number>;
+  readonly incompleteTurns?: ReadonlySet<number>;
   readonly hasMoreHistory: boolean;
   readonly pattern: RegExp;
   readonly more: boolean;
@@ -100,13 +104,13 @@ export function classifyOutsideHits(input: {
   let compacted = 0;
   let nearestTurn: number | undefined;
   for (const hit of input.hits) {
-    if (hit.role === 'title' || hit.turn === undefined || input.loadedTurns.has(hit.turn)) continue;
+    if (hit.role === 'title' || hit.turn === undefined || input.loadedTurns.has(hit.turn) && !input.incompleteTurns?.has(hit.turn)) continue;
     // The snippet carries the matched passage; it re-applies case / whole-word
     // (the index matches loosely) and counts repeats inside the window.
     input.pattern.lastIndex = 0;
     const inSnippet = (hit.snippet.match(input.pattern) ?? []).length;
     if (inSnippet === 0) continue;
-    const loadable = input.hasMoreHistory && (oldestLoaded === undefined || hit.turn < oldestLoaded);
+    const loadable = input.incompleteTurns?.has(hit.turn) === true || input.hasMoreHistory && (oldestLoaded === undefined || hit.turn < oldestLoaded);
     if (loadable) {
       earlier += inSnippet;
       nearestTurn = nearestTurn === undefined ? hit.turn : Math.max(nearestTurn, hit.turn);
@@ -138,6 +142,7 @@ function useOutsideHits(input: {
   readonly sessionId: string | undefined;
   readonly agentId: string;
   readonly loadedTurns: ReadonlySet<number>;
+  readonly incompleteTurns: ReadonlySet<number>;
   readonly hasMoreHistory: boolean;
 }): OutsideHits {
   const client = useOptionalConnection()?.client ?? searchOverride;
@@ -170,10 +175,10 @@ function useOutsideHits(input: {
   return useMemo(() => {
     if (!armed || page === null || page.key !== key || input.pattern === null || page.failed) return NO_OUTSIDE;
     return classifyOutsideHits({
-      hits: page.hits, loadedTurns: input.loadedTurns, hasMoreHistory: input.hasMoreHistory,
+      hits: page.hits, loadedTurns: input.loadedTurns, incompleteTurns: input.incompleteTurns, hasMoreHistory: input.hasMoreHistory,
       pattern: input.pattern, more: page.more,
     });
-  }, [armed, page, key, input.pattern, input.loadedTurns, input.hasMoreHistory]);
+  }, [armed, page, key, input.pattern, input.loadedTurns, input.incompleteTurns, input.hasMoreHistory]);
 }
 
 export function FindBar({
@@ -187,10 +192,17 @@ export function FindBar({
   // Typing stays instant on a long session; counting follows a beat behind.
   const deferredQuery = useDeferredValue(query);
   const pattern = useMemo(() => buildFindPattern(deferredQuery, options), [deferredQuery, options]);
-  const matches = useMemo(() => collectMatches(items, pattern), [items, pattern]);
-  const outside = useOutsideHits({ query: deferredQuery, pattern, sessionId, agentId, loadedTurns, hasMoreHistory });
+  const [rangeHit, setRangeHit] = useState<{ match: FindMatch; ref: ContentRef; offset: number; key: string }>();
+  const readKey = JSON.stringify([sessionId, agentId, query, options]);
+  const readKeyRef = useRef(readKey);
+  readKeyRef.current = readKey;
+  const matches = useMemo(() => [...collectMatches(items, pattern), ...(rangeHit?.key === readKey ? [rangeHit.match] : [])], [items, pattern, rangeHit, readKey]);
+  const detailController = useTranscriptController();
+  const incompleteTurns = useMemo(() => detailController?.incompleteTurnOrdinals(agentId) ?? new Set<number>(), [detailController, agentId, items]);
+  const outside = useOutsideHits({ query: deferredQuery, pattern, sessionId, agentId, loadedTurns, incompleteTurns, hasMoreHistory });
   const [currentKey, setCurrentKey] = useState<string | undefined>(undefined);
   const [lookingBack, setLookingBack] = useState(false);
+  const [readFailed, setReadFailed] = useState(false);
   const index = currentKey === undefined ? -1 : matches.findIndex((match) => matchKey(match) === currentKey);
   const current = index === -1 ? undefined : matches[index];
 
@@ -210,6 +222,8 @@ export function FindBar({
   startRef.current = startIndex;
   const matchesRef = useRef(matches);
   matchesRef.current = matches;
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
   useEffect(() => {
     const list = matchesRef.current;
     if (pattern === null || list.length === 0) {
@@ -239,8 +253,11 @@ export function FindBar({
     const key = `${matchKey(current)}\0${pattern.source}\0${pattern.flags}`;
     if (landedRef.current === key) return;
     landedRef.current = key;
-    void landRef.current(current, pattern);
-  }, [current, pattern, onClear]);
+    const range = current === rangeHit?.match ? rangeHit : undefined;
+    void landRef.current(current, pattern, range).then((landed) => {
+      if (range !== undefined && !landed && landedRef.current === key && readKeyRef.current === range.key) setReadFailed(true);
+    }, () => { if (range !== undefined && landedRef.current === key && readKeyRef.current === range.key) setReadFailed(true); });
+  }, [current, pattern, onClear, rangeHit]);
 
   const step = useCallback((direction: 1 | -1) => {
     if (matches.length === 0) return;
@@ -255,15 +272,37 @@ export function FindBar({
   // appears. With a server hit it jumps straight to that turn instead.
   const lookBackRef = useRef<AbortController | null>(null);
   useEffect(() => () => { lookBackRef.current?.abort(); }, []);
-  useEffect(() => { lookBackRef.current?.abort(); setLookingBack(false); }, [pattern]);
+  useEffect(() => { lookBackRef.current?.abort(); setLookingBack(false); setReadFailed(false); setRangeHit(undefined); }, [readKey]);
   const lookBack = useCallback(async () => {
     lookBackRef.current?.abort();
     const controller = new AbortController();
     lookBackRef.current = controller;
     setLookingBack(true);
+    setReadFailed(false);
     try {
       if (outside.nearestTurn !== undefined) {
-        await onLocateTurn(outside.nearestTurn);
+        const located = await onLocateTurn(outside.nearestTurn);
+        controller.signal.throwIfAborted();
+        if (readKeyRef.current !== readKey) return;
+        if (!located) throw new Error('Search turn could not be loaded');
+        // Locating a cold turn publishes its structure and content refs. Read
+        // that new state, not the render captured before the navigation.
+        if (detailController !== undefined && detailController.incompleteTurnOrdinals(agentId).has(outside.nearestTurn) && pattern !== null) {
+          const hit = await detailController.findTurnContentRange(agentId, outside.nearestTurn, pattern, controller.signal);
+          if (controller.signal.aborted || readKeyRef.current !== readKey) return;
+          if (hit !== undefined) {
+            const block = detailController.getAgentState(agentId).blocks.find((candidate) =>
+              'contentSource' in candidate && JSON.stringify(candidate.contentSource) === JSON.stringify(hit.ref.source) ||
+              hit.ref.source.kind === 'frame' && 'frameId' in candidate && candidate.frameId === hit.ref.source.id);
+            const currentItems = itemsRef.current;
+            const item = currentItems.find((candidate) => candidate.blockId === block?.id || (hit.toolCallId === undefined ? hit.ref.source.kind === 'turn' && candidate.turnId === hit.ref.source.id : candidate.toolCallId === hit.toolCallId));
+            if (item === undefined) throw new Error('Search field has no visible target');
+            const occurrence = collectMatches(currentItems, pattern).filter((match) => match.item.blockId === item.blockId).length;
+            const match = { item, occurrence, start: hit.offset };
+            setRangeHit({ ...hit, match, key: readKey });
+            setCurrentKey(matchKey(match));
+          }
+        }
         return;
       }
       for (let page = 0; page < LOOK_BACK_PAGES && !controller.signal.aborted; page += 1) {
@@ -273,13 +312,15 @@ export function FindBar({
         await new Promise((resolve) => { setTimeout(resolve, 60); });
         if (!loaded || matchesRef.current.length > before) break;
       }
+    } catch {
+      if (!controller.signal.aborted && readKeyRef.current === readKey) setReadFailed(true);
     } finally {
       if (lookBackRef.current === controller) {
         lookBackRef.current = null;
         setLookingBack(false);
       }
     }
-  }, [onLoadOlder, onLocateTurn, outside.nearestTurn]);
+  }, [onLoadOlder, onLocateTurn, outside.nearestTurn, incompleteTurns, detailController, agentId, pattern, items, readKey]);
   const stopLookBack = () => {
     lookBackRef.current?.abort();
     setLookingBack(false);
@@ -311,7 +352,7 @@ export function FindBar({
       ? t('find.noResults')
       : t('find.count', { current: index === -1 ? '–' : String(index + 1), total: String(total) });
   const earlierCount = outside.earlier;
-  const canLookBack = hasQuery && hasMoreHistory && (earlierCount > 0 || !outside.known || (total === 0 && outside.more));
+  const canLookBack = hasQuery && (rangeHit?.key !== readKey || readFailed) && (hasMoreHistory || outside.nearestTurn !== undefined && incompleteTurns.has(outside.nearestTurn)) && (earlierCount > 0 || !outside.known || (total === 0 && outside.more));
   const plus = outside.more ? '+' : '';
 
   const toggle = (on: boolean) => `${BAR_BUTTON} font-mono text-[11px] font-semibold ${on ? TOGGLE_ON : ''}`;
@@ -416,13 +457,14 @@ export function FindBar({
           ) : canLookBack ? (
             <p data-find-earlier className="flex items-center gap-2">
               <span className="min-w-0 flex-1">
-                {earlierCount > 0 ? t('find.earlier', { count: `${earlierCount}${plus}` }) : t('find.loadedOnly')}
+                {earlierCount > 0 ? t(outside.nearestTurn !== undefined && incompleteTurns.has(outside.nearestTurn) ? 'find.unread' : 'find.earlier', { count: `${earlierCount}${plus}` }) : t('find.loadedOnly')}
               </span>
               <button type="button" data-find-look-back onClick={() => { void lookBack(); }} className={NOTE_ACTION}>
-                {t('find.lookBack')}
+                {t(outside.nearestTurn !== undefined && incompleteTurns.has(outside.nearestTurn) ? 'find.readContent' : 'find.lookBack')}
               </button>
             </p>
           ) : null}
+          {readFailed ? <p role="status" className="text-danger">{t('find.readFailed')}</p> : null}
           {outside.compacted > 0 ? (
             <p data-find-compacted className="flex items-center gap-2">
               <span className="min-w-0 flex-1">{t('find.compacted', { count: `${outside.compacted}${plus}` })}</span>

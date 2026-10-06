@@ -285,7 +285,7 @@ function createTool(options: {
       : vi.fn(options.send);
   const tool = new AgentSendTool(
     { agentId: options.callerAgentId ?? CALLER_ID } as IAgentScopeContext,
-    { read: async () => ({ agents: options.agents ?? {} }) } as ISessionMetadata,
+    { read: async () => ({ id: 'session-1', createdAt: 0, updatedAt: 0, archived: false, agents: options.agents ?? {} }) } as ISessionMetadata,
     { send } as unknown as IAgentCollaborationMessagingService,
   );
   return { tool, send };

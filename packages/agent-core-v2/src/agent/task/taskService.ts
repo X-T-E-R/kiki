@@ -679,6 +679,21 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return result;
   }
 
+  hasUnfinishedWork(): boolean {
+    for (const entry of this.tasks.values()) {
+      if (entry.options.lifetime === 'service') continue;
+      if (!TERMINAL_STATUSES.has(entry.status)) return true;
+      if (entry.visible && this.isDetached(entry) && !this.isTerminalNotificationSuppressed(entry.taskId) &&
+        !this.deliveredNotificationKeys.has(entry.taskId)) return true;
+    }
+    for (const info of this.ghosts.values()) {
+      if (this.localTaskIds.has(info.taskId) && info.lifetime !== 'service' && info.detached !== false &&
+        !this.isTerminalNotificationSuppressed(info.taskId) && !this.deliveredNotificationKeys.has(info.taskId)) return true;
+    }
+    return this.buildingNotificationKeys.size > 0 || this.pendingNotificationRequests.size > 0 ||
+      this.pendingWaitDeliveries.size > 0;
+  }
+
   private async reconcileNotificationDeliveryAfterUndo(): Promise<void> {
     this.notificationUndoGeneration += 1;
     this.buildingNotificationKeys.clear();

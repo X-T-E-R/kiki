@@ -32,6 +32,8 @@ import { join } from 'node:path';
 import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
 import { IHostFileSystem } from '@kiki/agent-core-v2/os/interface/hostFileSystem';
 import { readPersistedPlan } from '@kiki/agent-core-v2/features/plan/planRead';
+import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
+import { PersistedModelSwitchReader, ModelSwitchQueuePreparingError } from '@kiki/agent-core-v2/agent/prompt/modelSwitchQueueRead';
 import type {
   FileMeta,
   GetResult,
@@ -101,6 +103,7 @@ type FileServiceWireTarget = {
 };
 
 export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
+  let modelSwitchReader: PersistedModelSwitchReader | undefined;
   /** Mirrors kap-server's `resolveScope`, incl. main-agent materialization. */
   async function resolveScope(scope: ScopeRef): Promise<ResolvedScope> {
     if (scope.workspaceId !== undefined) {
@@ -248,6 +251,33 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
           await restoreKnownAgentForProfileChange(scope, options);
         } catch (error) {
           throw toRPCError(error);
+        }
+      }
+      if (service === 'agentPromptService' && method === 'listModelSwitches' &&
+        scope.sessionId !== undefined && scope.agentId !== undefined && scope.workspaceId === undefined) {
+        const live = getLiveSessionById(root.accessor, scope.sessionId);
+        const resident = live?.accessor.get(IAgentLifecycleService).get(scope.agentId);
+        if (resident === undefined) {
+          const summary = await root.accessor.get(ISessionIndex).get(scope.sessionId);
+          if (summary === undefined) throw new RPCError(NOT_FOUND, `session not found: ${scope.sessionId}`);
+          const sessionScope = `sessions/${summary.workspaceId}/${scope.sessionId}`;
+          const metadata = await root.accessor.get(IAtomicDocumentStore).get<SessionMeta>(sessionScope, 'state.json');
+          if (!/^[a-zA-Z0-9_-]+$/.test(scope.agentId) ||
+            (scope.agentId !== 'main' && !Object.hasOwn(metadata?.agents ?? {}, scope.agentId))) {
+            throw new RPCError(NOT_FOUND, `agent not found: ${scope.agentId}`);
+          }
+          modelSwitchReader ??= new PersistedModelSwitchReader({
+            docs: root.accessor.get(IAtomicDocumentStore), storage: root.accessor.get(IFileSystemStorageService),
+            files: root.accessor.get(IHostFileSystem),
+          });
+          try {
+            return wireClone(await modelSwitchReader.read(`${sessionScope}/agents/${scope.agentId}`, options?.signal));
+          } catch (error) {
+            if (error instanceof ModelSwitchQueuePreparingError) {
+              throw new RPCError(REQUEST_INVALID, error.message, { reason: 'model_switch_queue_preparing' });
+            }
+            throw toRPCError(error);
+          }
         }
       }
       if (service === 'sessionMetadata' && method === 'read' && scope.sessionId !== undefined && scope.workspaceId === undefined && scope.agentId === undefined && getLiveSessionById(root.accessor, scope.sessionId) === undefined) {

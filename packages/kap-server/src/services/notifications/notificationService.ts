@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import {
   ConfigTarget, IConfigService, ISessionManager, ISessionActivityView,
   ISessionInteractionService, IAgentLifecycleService, IAgentPromptService,
-  MAIN_AGENT_ID, IInstantiationService, type Scope, type ISessionScopeHandle,
+  IInstantiationService, IAgentTaskService, IAgentLoopService, IAgentActivityView, IEventBus, IAgentExecutionService,
+  type Scope, type ISessionScopeHandle, type IAgentScopeHandle,
 } from '@kiki/agent-core-v2';
 import {
   DEFAULT_NOTIFICATIONS_CONFIG, NOTIFICATIONS_SECTION, NotificationsConfigSchema,
@@ -27,6 +28,9 @@ type Watched = {
   cycle: string;
   questions: Map<string, { timer: ReturnType<typeof setTimeout>; deliveries: string[] }>;
   completion?: ReturnType<typeof setTimeout>;
+  completed?: { session_id: string; episode_id: string; completed_at: number };
+  agents: Set<string>;
+  reconcileQueued?: boolean;
 };
 
 const fields = (id: string): NotificationProviderDescriptor['instance_fields'] => {
@@ -342,8 +346,8 @@ export class NotificationService {
     if (this.watched.has(session.id) || this.retired.has(session) || this.stopped) return;
     const activity = session.accessor.get(ISessionActivityView);
     const interactions = session.accessor.get(ISessionInteractionService);
-    const state: Watched = { session, subscriptions: [], startedAt: activity.state().busy ? Date.now() : undefined,
-      cycle: randomUUID(), questions: new Map() };
+    const state: Watched = { session, subscriptions: [], startedAt: activity.state().mainTurnActive ? Date.now() : undefined,
+      cycle: randomUUID(), questions: new Map(), agents: new Set() };
     this.watched.set(session.id, state);
     state.subscriptions.push(session.accessor.get(IInstantiationService).onWillDispose(() => {
       this.retired.add(session);
@@ -352,7 +356,59 @@ export class NotificationService {
     state.subscriptions.push(activity.onDidChange(() => { this.reconcileSession(state); }));
     state.subscriptions.push(interactions.onDidChangePending(() => { this.reconcileSession(state); }));
     state.subscriptions.push(interactions.onDidResolve(({ id }) => { this.cancelQuestion(state, id); }));
+    const agents = session.accessor.get(IAgentLifecycleService);
+    const attach = (agent: IAgentScopeHandle) => {
+      if (state.agents.has(agent.id)) return;
+      state.agents.add(agent.id);
+      state.subscriptions.push(agent.accessor.get(IEventBus).subscribe((event) => {
+        if (!/^(turn\.|task\.|prompt\.|compaction\.)/u.test(event.type)) return;
+        this.queueReconcile(state);
+        if (event.type === 'turn.ended') void Promise.all([
+          agent.accessor.get(IAgentLoopService).settled(),
+          agent.accessor.get(IAgentExecutionService).settled(),
+        ]).then(() => { this.queueReconcile(state); }, this.onError);
+      }));
+    };
+    for (const agent of agents.list()) attach(agent);
+    state.subscriptions.push(agents.onDidCreate(attach));
+    state.subscriptions.push(agents.onDidDispose((id) => {
+      state.agents.delete(id);
+      this.queueReconcile(state);
+    }));
     this.reconcileSession(state);
+  }
+  private queueReconcile(state: Watched): void {
+    if (state.reconcileQueued) return;
+    state.reconcileQueued = true;
+    queueMicrotask(() => {
+      state.reconcileQueued = false;
+      if (this.watched.get(state.session.id) === state && !this.stopped) this.reconcileSession(state);
+    });
+  }
+  private workPending(state: Watched): boolean {
+    for (const agent of state.session.accessor.get(IAgentLifecycleService).list()) {
+      const loop = agent.accessor.get(IAgentLoopService).status();
+      const prompt = agent.accessor.get(IAgentPromptService);
+      const queue = prompt.list();
+      const activity = agent.accessor.get(IAgentActivityView).state();
+      const execution = agent.accessor.get(IAgentExecutionService).status();
+      if (execution.state === 'starting' || execution.state === 'running' || execution.state === 'cancelling' ||
+        loop.state === 'running' || loop.finalizing || loop.persistenceFailure || loop.hasPendingRequests ||
+        loop.pendingTurnIds.length > 0 || prompt.hasReadyPending() || queue.active !== undefined ||
+        queue.launching !== undefined || queue.pending.length > 0 ||
+        activity.turn !== undefined || activity.background.some((item) => item.kind === 'compaction') ||
+        agent.accessor.get(IAgentTaskService).hasUnfinishedWork()) return true;
+    }
+    return false;
+  }
+  private completeReady(state: Watched): boolean {
+    const activity = state.session.accessor.get(ISessionActivityView).state();
+    return !activity.mainTurnActive && activity.pendingInteraction === 'none' &&
+      activity.lastTurnReason === 'completed' && !this.workPending(state);
+  }
+  listCompletions(): readonly { session_id: string; episode_id: string; completed_at: number }[] {
+    return [...this.watched.values()].flatMap((state) => state.completed !== undefined &&
+      Date.now() - state.completed.completed_at < 600_000 && this.completeReady(state) ? [state.completed] : []);
   }
   private unwatch(id: string): void {
     const state = this.watched.get(id);
@@ -379,29 +435,31 @@ export class NotificationService {
       }, this.settings.global.question_delay_ms);
     }
     for (const id of state.questions.keys()) if (!pending.some((question) => question.id === id)) this.cancelQuestion(state, id);
-    if (activity.busy) {
-      if (state.startedAt === undefined) { state.startedAt = Date.now(); state.cycle = randomUUID(); }
+    if (activity.mainTurnActive && state.startedAt === undefined) {
+      state.startedAt = Date.now();
+      state.cycle = randomUUID();
+      state.completed = undefined;
+    }
+    if (!this.completeReady(state)) {
       if (state.completion) { clearTimeout(state.completion); state.completion = undefined; }
-    } else if (state.startedAt !== undefined && state.completion === undefined &&
-      activity.pendingInteraction === 'none' && activity.lastTurnReason === 'completed') {
-      const cycle = state.cycle;
+      if (!activity.mainTurnActive && (activity.pendingInteraction !== 'none' ||
+        activity.lastTurnReason === 'failed' || activity.lastTurnReason === 'cancelled')) {
+        state.startedAt = undefined;
+        state.completed = undefined;
+      }
+      return;
+    }
+    if (state.startedAt === undefined || state.completion !== undefined) return;
+    const cycle = state.cycle;
+    state.completion = setTimeout(() => {
+      state.completion = undefined;
+      if (state.cycle !== cycle || !this.completeReady(state) || state.startedAt === undefined) return;
       const elapsed = Date.now() - state.startedAt;
       state.startedAt = undefined;
-      if (elapsed >= this.settings.global.min_work_ms) {
-        state.completion = setTimeout(() => {
-          state.completion = undefined;
-          this.dispatch(state, 'work_complete', `w:${cycle}`, () => {
-            const current = state.session.accessor.get(ISessionActivityView).state();
-            const main = state.session.accessor.get(IAgentLifecycleService).list().find((agent) => agent.id === MAIN_AGENT_ID);
-            return state.cycle === cycle && state.startedAt === undefined && !current.busy &&
-              current.pendingInteraction === 'none' && current.lastTurnReason === 'completed' &&
-              (main === undefined || !main.accessor.get(IAgentPromptService).hasReadyPending());
-          });
-        }, this.settings.global.work_stable_ms);
-      }
-    } else if (!activity.busy && state.startedAt !== undefined && activity.pendingInteraction === 'none') {
-      state.startedAt = undefined;
-    }
+      state.completed = { session_id: state.session.id, episode_id: cycle, completed_at: Date.now() };
+      if (elapsed >= this.settings.global.min_work_ms) this.dispatch(state, 'work_complete', `w:${cycle}`, () =>
+        state.cycle === cycle && state.startedAt === undefined && this.completeReady(state));
+    }, this.settings.global.work_stable_ms);
   }
   private cancelQuestion(state: Watched, id: string): void {
     const job = state.questions.get(id);

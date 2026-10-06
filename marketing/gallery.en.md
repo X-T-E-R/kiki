@@ -60,6 +60,14 @@ The usage page breaks a date range into tokens and cost, with separate indicator
 
 ![The usage page on its History tab.](shots/daily-usage.en.light.png)
 
+Its Live tab shows what is running and what is waiting, and names the concurrency rule holding each waiting request — the same rule, editable, right below.
+
+![The Live tab, with a waiting request and the concurrency rules that gate it.](shots/ux-usage-live.en.light.png)
+
+External sync sends the content-free numbers to a webhook, a VibeCafe account, or a script you approve, and shows each destination's own state — including a refused credential that kept its queue.
+
+![The External sync tab, with a webhook, a VibeCafe destination, and a script in three different states.](shots/ux-usage-export.en.light.png)
+
 ## Roles you can talk to
 
 A persona is an identity with its own memory. The card names it, gives it an avatar, and says what it is for.

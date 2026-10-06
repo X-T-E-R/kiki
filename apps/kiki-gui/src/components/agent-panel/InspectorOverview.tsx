@@ -21,6 +21,9 @@
  * missing figure closes its gap instead of holding a third of the column open
  * as blank paper. Unknown values are left out rather than printed as
  * "Unknown", and an incomplete count says so rather than reading as final.
+ *
+ * Elements the rail restyles are addressed by name — `data-overview-fact` for
+ * the figures, `data-overview-context-figures` for the context reading.
  */
 
 import { memo, type ReactNode } from 'react';
@@ -194,7 +197,8 @@ export const InspectorOverview = memo(function InspectorOverview({
         <div data-overview-context={level} className="space-y-1.5">
           <div className="flex items-baseline gap-2 text-[12.5px]">
             <span className="text-ink-soft">{t('inspector.context')}</span>
-            <span className="ml-auto text-[13px] font-medium text-ink tabular-nums">
+            {/* Stable hook for the rail's context figure styling. */}
+            <span data-overview-context-figures className="ml-auto text-[13px] font-medium text-ink tabular-nums">
               {compactTokens(contextUsed)}
               {contextLimit !== undefined ? <span className="font-normal text-ink-faint"> / {compactTokens(contextLimit)}</span> : null}
             </span>

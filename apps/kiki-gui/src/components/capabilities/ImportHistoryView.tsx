@@ -123,7 +123,7 @@ export function ImportHistoryView({
   // facts here rather than disabled-and-pretending.
   const remote = connectionId !== null;
   const api = importsApi(client);
-  const { enabled, loading: flagLoading } = useImportHistoryEnabled(client);
+  const { enabled, loading: flagLoading } = useImportHistoryEnabled(client, scopeId);
 
   // A Kiki session is the point of this page, so it is what the reader gets
   // without choosing. The archive stays one segment away because it is still
@@ -352,7 +352,7 @@ export function ImportHistoryView({
   if (enabled !== true) {
     return (
       <div data-cap-import-disabled className="space-y-3">
-        <EmptyNote title={t('cap.import.unavailableTitle')} body={t('cap.import.unavailableBody', { flag: 'KIKI_EXPERIMENTAL_PLUGIN_IMPORT' })} />
+        <EmptyNote title={t('cap.import.unavailableTitle')} body={t('cap.import.unavailableBody')} />
       </div>
     );
   }

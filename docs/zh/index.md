@@ -27,6 +27,9 @@ features:
   - title: 能一起干活的人
     details: 角色是长期身份：有自己的记忆、固定的日常对话入口，还能进房间和别的角色一起讨论同一个话题。
     link: ./features/people
+  - title: 知道花了多少
+    details: 用量页回答三个问题：这个区间花了多少、是哪条并发规则挡住了请求、这些不含内容的统计能送到哪儿。
+    link: ./features/daily
   - title: 数据与机器都在你手上
     details: 各自带凭据的空间、有方向的远端连接、单向 thread bridge、Web 访问，以及会话内 SSH。
     link: ./features/spaces

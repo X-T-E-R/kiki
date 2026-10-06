@@ -741,6 +741,32 @@ describe('AgentLifecycleService', () => {
     expect(promptDrain).toHaveBeenCalledOnce();
   });
 
+  it('remove awaits asynchronous scope disposal once before emitting onDidDispose', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const disposalStarted = new Promise<void>((resolve) => { started = resolve; });
+    const svc = ix.get(IAgentLifecycleService);
+    const handle = await svc.create({ agentId: 'main' });
+    const originalDispose = handle.dispose.bind(handle);
+    const dispose = vi.spyOn(handle, 'dispose').mockImplementation(async () => {
+      started();
+      await gate;
+      await originalDispose();
+    });
+    const disposed: string[] = [];
+    disposables.add(svc.onDidDispose((agentId) => disposed.push(agentId)));
+    const removal = svc.remove('main');
+    const duplicate = svc.remove('main');
+    await disposalStarted;
+    expect(disposed).toEqual([]);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    release();
+    await Promise.all([removal, duplicate]);
+    expect(disposed).toEqual(['main']);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
   it('remove waits for prompt intake to drain before disposing the agent scope', async () => {
     let releaseDrain!: () => void;
     let markDrainStarted!: () => void;

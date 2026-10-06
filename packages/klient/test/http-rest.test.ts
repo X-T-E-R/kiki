@@ -539,6 +539,28 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('reads full cron details and sends create/update bodies with separate source and target sessions', async () => {
+    const calls: { path: string; method: string; body: unknown; session: string | null }[] = [];
+    const task = { id: 'task/example', prompt: 'full prompt' };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ path: url.pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body), session: url.searchParams.get('session_id') });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      return envelope({ task });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      expect((await channel.rest.cron.get('task/example', { session_id: 'source' })).task.prompt).toBe('full prompt');
+      await channel.rest.cron.create({ session_id: 'target', cron: '0 * * * *', prompt: 'new' });
+      await channel.rest.cron.update('task/example', { session_id: 'target', prompt: 'edit' }, { session_id: 'source' });
+      expect(calls).toEqual([
+        { path: '/api/cron/task%2Fexample', method: 'GET', body: undefined, session: 'source' },
+        { path: '/api/cron', method: 'POST', body: { session_id: 'target', cron: '0 * * * *', prompt: 'new' }, session: null },
+        { path: '/api/cron/task%2Fexample', method: 'PATCH', body: { session_id: 'target', prompt: 'edit' }, session: 'source' },
+      ]);
+    } finally { await channel.close(); }
+  });
+
   it('routes cron list and task actions through /api/cron with the disambiguating session query', async () => {
     const seen: { pathname: string; method: string; sessionId: string | null }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
@@ -833,6 +855,37 @@ describe('native HTTP response lifecycle', () => {
     await expect(channel.rest.meta()).rejects.toMatchObject({ code: 503 });
   });
 
+  it.each(['skill', 'preview', 'original'] as const)('applies explicit reading deadlines and body cancellation to %s text reads', async (kind) => {
+    const read = (options: import('../src/index.js').HttpRestRequestOptions) => kind === 'skill'
+      ? channel.rest.skills.readBuiltinContent('example', options)
+      : kind === 'preview' ? channel.rest.filesystem.previewHostFile('/example', 8, options)
+        : channel.rest.filesystem.readHostFile('/example', options);
+    const document = kind === 'skill' ? JSON.stringify({ code: 0, msg: 'success', data: { name: 'example', content: '# instructions' } }) : 'preview!';
+    handler = (response) => {
+      response.writeHead(kind === 'preview' ? 206 : 200, { 'content-type': kind === 'skill' ? 'application/json' : 'text/plain', 'content-range': 'bytes 0-7/24' });
+      response.write(document.slice(0, 1));
+      later(() => response.end(document.slice(1)), 180);
+    };
+    const result = await read({ timeoutMs: 0 });
+    expect(result).toEqual(kind === 'skill' ? { name: 'example', content: '# instructions' } : kind === 'preview' ? { text: 'preview!', truncated: true } : 'preview!');
+    await expect(read({ timeoutMs: 10 })).rejects.toMatchObject({ reason: HTTP_TRANSPORT_TIMEOUT_REASON });
+    let notifyHeaders!: () => void;
+    const headers = new Promise<void>((resolve) => { notifyHeaders = resolve; });
+    let disconnected = false;
+    handler = (response) => {
+      response.once('close', () => { disconnected = true; });
+      response.writeHead(200, { 'content-type': kind === 'skill' ? 'application/json' : 'text/plain' });
+      response.write(document.slice(0, 1));
+      notifyHeaders();
+    };
+    const controller = new AbortController();
+    const operation = read({ signal: controller.signal, timeoutMs: 0 }).catch((error: unknown) => error);
+    await headers;
+    controller.abort();
+    expect(await operation).toBeInstanceOf(Error);
+    await vi.waitFor(() => expect(disconnected).toBe(true));
+  });
+
   it('keeps long export body consumption alive without the default deadline', async () => {
     handler = (response) => {
       response.writeHead(200, { 'content-type': 'application/zip' });
@@ -1047,5 +1100,34 @@ describe('fixed connection transport error normalization', () => {
       await expect(client.rest!.meta()).rejects.toMatchObject({ code: -1, message: failure.message });
       expect(fetchMock).toHaveBeenCalledOnce();
     } finally { await client.close(); }
+  });
+});
+
+
+describe('guided browser setup HTTP facade', () => {
+  it('uses typed preset routes and explicit preparation consent without rewriting browser connections', async () => {
+    const calls: Array<{ path: string; method: string; body: unknown }> = [];
+    const status = { preset: 'kimi-webbridge', state: 'needs_user_action' };
+    const fetchMock: typeof fetch = async (input, init) => {
+      calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      return envelope(status);
+    };
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture', fetch: fetchMock });
+    try {
+      await channel.rest.browser.setupPresets();
+      await channel.rest.browser.setupStatus('kimi-webbridge');
+      await channel.rest.browser.prepare('kimi-webbridge', { consent: true });
+      await channel.rest.browser.connectPreset('kimi-webbridge');
+      await channel.rest.browser.connectPreset('independent-browser', { connectionId: 'work', name: 'Work', setDefault: true });
+      await channel.rest.browser.cancelSetup('independent-browser');
+      expect(calls).toEqual([
+        { path: '/api/browser/setup', method: 'GET', body: undefined },
+        { path: '/api/browser/setup/kimi-webbridge', method: 'GET', body: undefined },
+        { path: '/api/browser/setup/kimi-webbridge:prepare', method: 'POST', body: { consent: true } },
+        { path: '/api/browser/setup/kimi-webbridge:connect', method: 'POST', body: {} },
+        { path: '/api/browser/setup/independent-browser:connect', method: 'POST', body: { connectionId: 'work', name: 'Work', setDefault: true } },
+        { path: '/api/browser/setup/independent-browser:cancel', method: 'POST', body: {} },
+      ]);
+    } finally { await channel.close(); }
   });
 });

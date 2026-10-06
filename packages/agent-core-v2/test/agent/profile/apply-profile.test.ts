@@ -373,7 +373,7 @@ describe('AgentProfileService.applyProfile', () => {
     expect(svc.getSystemPrompt()).toBe('BASE\n\nVALID');
   });
 
-  it.each(['file', 'route', 'file-sources'] as const)('refreshes a cold %s from its stored definition without changing its lease or duplicating shared text', async (kind) => {
+  it.each(['file', 'route', 'file-sources'] as const)('keeps a legacy cold %s prompt without adopting new configuration or changing its lease', async (kind) => {
     const { ctx: host, profile: svc } = buildContext();
     const config = host.get(IConfigService);
     const get = config.get.bind(config);
@@ -388,18 +388,18 @@ describe('AgentProfileService.applyProfile', () => {
     const before = { ...svc.data(), routeId: kind === 'route' ? 'frozen-route' : undefined, boundProfile: frozen };
     svc.applyBindingSnapshot(before);
     prompt = { variables: { guidance: 'new ${literal}' }, overrides: { fields: { 'system.shared': 'GLOBAL_NEW' } } };
-    await svc.preparePromptConfiguration();
-    expect(svc.getSystemPrompt()).toContain('Role new ${literal}');
-    if (kind === 'route') expect(svc.getSystemPrompt()).toContain('Route new ${literal}');
-    expect(svc.getSystemPrompt().split('GLOBAL_NEW')).toHaveLength(2);
+    expect(await svc.preparePromptConfiguration()).toBe(false);
+    expect(svc.getSystemPrompt()).toContain('Role old');
+    if (kind === 'route') expect(svc.getSystemPrompt()).toContain('Route old');
+    expect(svc.getSystemPrompt()).not.toContain('GLOBAL_NEW');
     expect(svc.data().activeToolNames).toEqual(before.activeToolNames);
-    expect({ ...svc.data().boundProfile, promptBase: undefined }).toEqual({ ...frozen, promptBase: undefined });
-    expect(svc.data().boundProfile?.promptBase?.text).toContain('Role new ${literal}');
-    expect(svc.data().systemPrompt).not.toContain('GLOBAL_NEW');
+    expect(svc.data().boundProfile).toEqual(frozen);
+    expect(svc.data().systemPrompt).toBe(before.systemPrompt);
+    expect(svc.data().renderGeneration).toBe(before.renderGeneration);
     svc.applyBindingSnapshot(svc.data());
     prompt = {};
-    await svc.preparePromptConfiguration();
-    expect(svc.getSystemPrompt()).toContain('Role ${guidance}');
+    expect(await svc.preparePromptConfiguration()).toBe(false);
+    expect(svc.getSystemPrompt()).toContain('Role old');
     expect(svc.getSystemPrompt()).not.toContain('GLOBAL_NEW');
   });
 
@@ -437,11 +437,12 @@ describe('AgentProfileService.applyProfile', () => {
     await svc.applyProfile(selected);
     const snapshot = { ...svc.data(), systemPrompt: 'HISTORIC_FROZEN_PROMPT', boundProfile: freezeBoundProfile(selected) };
     svc.applyBindingSnapshot(snapshot);
+    getDefault.mockClear();
 
     await expect(svc.refreshSystemPrompt()).resolves.toBeUndefined();
 
-    expect(svc.getSystemPrompt()).toContain('Stored role');
-    expect(svc.getSystemPrompt()).not.toContain('HISTORIC_FROZEN_PROMPT');
+    expect(svc.getSystemPrompt()).toBe('HISTORIC_FROZEN_PROMPT');
+    expect(getDefault).not.toHaveBeenCalled();
   });
 
   it('reports an unavailable saved source instead of silently keeping stale configured variables', async () => {

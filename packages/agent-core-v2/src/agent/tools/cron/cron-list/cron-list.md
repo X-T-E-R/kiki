@@ -1,11 +1,11 @@
 List all cron jobs currently scheduled in this session.
 
 Use this tool to inspect pending recurring and one-shot jobs scheduled with
-`CronCreate`.
+`Cron({action:"create",cron:...,prompt:...})`.
 
 Each record carries:
 
-- `id` — the task id (a ULID). Pass this to `CronDelete` to remove the
+- `id` — the task id (a ULID). Pass this to `Cron({action:"delete",id:...})` to remove the
   task, or quote it in user-facing messages when asking for
   confirmation.
 - `cron` — the verbatim 5-field cron expression as scheduled.
@@ -14,7 +14,7 @@ Each record carries:
   newlines stay on one line. Truncated to 200 UTF-8 bytes with
   `…(truncated)` if longer. Use this to recall what a task is for
   after a context compaction, and as the source for the
-  `CronCreate` refresh ritual.
+  `Cron({action:"create",cron:...,prompt:...})` refresh ritual.
 - `nextFireAt` — local ISO timestamp with an explicit numeric offset for the
   next fire after jitter, or `null` if none occurs within 5 years.
 - `recurring` — `true` for cadenced jobs, `false` for one-shots.
@@ -22,7 +22,7 @@ Each record carries:
   when deciding whether a long-running cron is still relevant.
 - `stale` — `true` when a recurring task is older than 7 days. The system
   auto-deletes it after this final fire; `stale: true` marks that delivery.
-  Recreate it with `CronCreate` using the original `cron` and `prompt` to
+  Recreate it with `Cron({action:"create",cron:...,prompt:...})` using the original `cron` and `prompt` to
   resume. One-shots are never stale.
 
 Guidelines:
@@ -31,7 +31,7 @@ Guidelines:
   safe to call (including in plan mode).
 - Users cannot directly manage cron tasks themselves; if they want to
   cancel or modify a schedule, route the request through the model
-  (i.e. call `CronDelete` or `CronCreate` on their behalf).
+  (i.e. call `Cron({action:"delete",id:...})` or `Cron({action:"create",cron:...,prompt:...})` on their behalf).
 - The empty case returns `cron_jobs: 0\nNo cron jobs scheduled.`. Cron
   tasks keep running while their owning session is unloaded; the scheduler
   restores a cold session when delivery is due. Tasks do not bleed into new

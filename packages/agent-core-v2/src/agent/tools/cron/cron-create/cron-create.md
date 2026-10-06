@@ -45,7 +45,7 @@ The envelope is parseable. Use `coalescedCount > 1` to know multiple ideal fires
 Recurring tasks that have been alive for more than 7 days fire one
 final time with `stale: true` on the envelope, and the system then
 auto-deletes the task. The flag is the model's notice that this is
-the last delivery. If the schedule is still wanted, call `CronCreate`
+the last delivery. If the schedule is still wanted, call `Cron({action:"create",cron:...,prompt:...})`
 again with the same `cron` and `prompt` — that resets `createdAt` and
 starts a fresh 7-day window. One-shot tasks are never marked stale.
 
@@ -72,7 +72,7 @@ A session holds at most 50 live cron tasks; creating one beyond that is rejected
 ## Returned fields
 
 `id` (ULID), `cron` (the normalized expression), `humanSchedule` (English summary), `recurring`,
-`nextFireAt` (local ISO timestamp with numeric offset, or null). `id` is needed by `CronDelete`.
+`nextFireAt` (local ISO timestamp with numeric offset, or null). `id` is needed by `Cron({action:"delete",id:...})`.
 
 ## Tell the user how to cancel or modify
 

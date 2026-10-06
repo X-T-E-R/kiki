@@ -669,6 +669,33 @@ describe('transcript authority projection', () => {
     expect(first.attachments.map((attachment) => attachment.attachmentId)).toEqual(['a1', 'a2']);
   });
 
+  it('keeps leading marker and taskref page boundaries in source order while prepending', () => {
+    const at = (minute: number) => `2026-10-01T00:${String(minute).padStart(2, '0')}:00.000Z`;
+    const turn = (ordinal: number) => ({ kind: 'turn' as const, turnId: `t${ordinal}`, ordinal,
+      startedAt: at(ordinal * 10), state: 'completed' as const, origin: { kind: 'user' as const }, steps: [] });
+    const marker = { kind: 'marker' as const, markerId: 'm4', marker: 'message.delivery', at: at(40) };
+    const ref = { kind: 'taskref' as const, refId: 'r4', taskId: 'task4', at: at(41) };
+    const latest = { ...emptySnapshot(), items: [marker, ref, turn(5)] };
+    const middle = [turn(3), { kind: 'marker' as const, markerId: 'm3', marker: 'message.delivery', at: at(35) }];
+    const first = [turn(0), turn(1)];
+    const merged = prependOlderTranscriptSnapshot(prependOlderTranscriptSnapshot(latest,
+      { items: middle, attachments: [], hasMoreOlder: true }), { items: first, attachments: [], hasMoreOlder: false });
+    expect(merged.items).toEqual([...first, ...middle, ...latest.items]);
+    expect(merged.items.at(-1)).toBe(latest.items.at(-1));
+    expect(prependOlderTranscriptSnapshot(merged, { items: middle, attachments: [], hasMoreOlder: true }).items).toEqual(merged.items);
+  });
+
+  it('places a recovered middle gap before the following turn’s leading activity without moving earlier activity', () => {
+    const turn = (ordinal: number) => ({ kind: 'turn' as const, turnId: `t${ordinal}`, ordinal,
+      startedAt: `2026-10-01T00:0${ordinal}:00.000Z`, state: 'completed' as const, origin: { kind: 'user' as const }, steps: [] });
+    const marker = (ordinal: number) => ({ kind: 'marker' as const, markerId: `m${ordinal}`, marker: 'message.delivery',
+      at: `2026-10-01T00:0${ordinal}:30.000Z` });
+    const current = { ...emptySnapshot(), items: [turn(0), marker(0), turn(1), marker(3), turn(4)] };
+    const gap = [turn(2), marker(2), turn(3)];
+    expect(prependOlderTranscriptSnapshot(current, { items: gap, attachments: [], hasMoreOlder: true }).items)
+      .toEqual([...current.items.slice(0, 3), ...gap, ...current.items.slice(3)]);
+  });
+
   it('anchors Agent entries on the real tool frame agentRefs', () => {
     const snapshots = new Map([
       [

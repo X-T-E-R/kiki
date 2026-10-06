@@ -177,7 +177,7 @@ export function rosterFromSnapshotSubagents(
     const label = presentSnapshotText(subagent.label);
     const description = presentSnapshotText(subagent.description);
     const name = label ?? description ?? presentSnapshotText(subagent.profile) ?? agentId;
-    const startedAt = subagent.started_at ?? subagent.created_at;
+    const startedAt = subagent.started_at;
     return [
       {
         agentId,
@@ -187,7 +187,9 @@ export function rosterFromSnapshotSubagents(
         label,
         model: presentSnapshotText(subagent.model),
         thinkingEffort: presentSnapshotText(subagent.thinking_effort),
-        status: subagent.subagent_phase === 'suspended' ? 'suspended' : subagent.status,
+        status: subagent.activity_status ?? (subagent.subagent_phase === 'suspended' ? 'suspended' : subagent.status),
+        statusSource: subagent.status_source,
+        nameSource: subagent.name_source,
         refreshing: subagent.refreshing,
         refreshingUntil: subagent.refreshing_until,
         disposedAt: subagent.live === false ? startedAt : undefined,
@@ -388,7 +390,7 @@ export function liveSourcesFromAgentSnapshots(
               parentAgentId,
               parentToolCallId: frame.toolCallId,
               name: existing?.name ?? ref.agentId,
-              status: existing?.status ?? 'running',
+              status: existing?.status ?? 'unknown',
               description: existing?.description,
               summary: existing?.summary,
               error: existing?.error,
@@ -486,6 +488,13 @@ export function sessionAgentForestFromAgentSnapshots(
   roster.push(...rosterFromSnapshotSubagents(snapshotSubagents));
   const forest = overlayForestDisplayFields(buildAgentForest(live, filterRosterToLiveOrPresent(roster, snapshots), tasks), live);
   const byId = { ...forest.byId };
+  for (const row of snapshotSubagents ?? []) {
+    const id = snapshotSubagentAgentId(row);
+    const node = byId[id];
+    if (node === undefined) continue;
+    byId[id] = { ...node, nameSource: row.name_source,
+      statusSource: node.status === (row.activity_status ?? row.status) ? row.status_source : undefined };
+  }
   for (const [agentId, snapshot] of snapshots) {
     const node = byId[agentId];
     if (node === undefined) continue;
@@ -511,7 +520,7 @@ function filterRosterToLiveOrPresent(
 ): readonly AgentRosterDescriptor[] {
   if (snapshots.size === 0) return roster;
   const presentIds = new Set<string>(snapshots.keys());
-  return roster.filter((entry) => presentIds.has(entry.agentId) ||
+  return roster.filter((entry) => entry.statusSource !== undefined || presentIds.has(entry.agentId) ||
     entry.status === 'failed' || entry.status === 'cancelled' || (
     entry.disposedAt === undefined &&
     ((entry.refreshing === true && Date.parse(entry.refreshingUntil ?? '') > Date.now()) ||

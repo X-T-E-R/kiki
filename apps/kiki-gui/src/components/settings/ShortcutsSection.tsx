@@ -35,6 +35,7 @@ import { useI18n } from '../../i18n';
 import {
   applyShortcutPreferences,
   beginShortcutRecording,
+  browserOwnsChord,
   chordFromEvent,
   chordKeys,
   detectShortcutPlatform,
@@ -64,6 +65,8 @@ const CONTEXT_TITLE: Record<Context, I18nKey> = {
 
 /** Labels the catalog shares between two actions get a disambiguating line. */
 const ACTION_NOTE: Partial<Record<ShortcutAction, I18nKey>> = {
+  'next-session': 'shortcuts.runningThreadsNote',
+  'previous-session': 'shortcuts.runningThreadsNote',
   shortcuts: 'st.shortcuts.note.anywhere',
   'shortcuts-help': 'st.shortcuts.note.outsideFields',
   approve: 'st.shortcuts.note.outsideFields',
@@ -397,7 +400,7 @@ function ShortcutRow({
               {t('st.shortcuts.custom')}
             </span>
           ) : null}
-          {definition.desktopOnly && !desktop ? <span className="text-[11.5px] text-ink-faint">{t('shortcuts.desktopOnly')}</span> : null}
+          {(definition.desktopOnly || chords.some(browserOwnsChord)) && !desktop ? <span className="text-[11.5px] text-ink-faint">{t('shortcuts.desktopOnly')}</span> : null}
         </p>
         {note !== undefined ? <p className="text-[12px] text-ink-faint">{t(note)}</p> : null}
         {serverConflict && issue === null ? <p className="text-[12px] text-amber-ink">{t('st.shortcuts.savedConflict')}</p> : null}

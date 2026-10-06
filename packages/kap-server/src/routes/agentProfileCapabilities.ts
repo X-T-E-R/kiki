@@ -218,9 +218,13 @@ export async function agentCapabilities(
     const pricing = core.accessor.get(IModelPricingService);
     const skipAgentIds: string[] = [];
     const mutableAgentIds: string[] = [];
+    const mutableUsageRecords: Record<string, number> = Object.create(null);
     for (const handle of lifecycle?.list() ?? []) {
       const accounting = handle.accessor.get(IAgentStateService).get(panelAccountingKey);
-      if (accounting.incomplete) mutableAgentIds.push(handle.id);
+      if (accounting.incomplete) {
+        mutableAgentIds.push(handle.id);
+        mutableUsageRecords[handle.id] = accounting.records;
+      }
       else skipAgentIds.push(handle.id);
     }
     const persisted = workspaceId === undefined ? {} : await readPersistedAgentPanelMetrics(
@@ -233,6 +237,7 @@ export async function agentCapabilities(
         agentIds: [query.agent_id],
         skipAgentIds,
         mutableAgentIds,
+        mutableUsageRecords,
       },
     );
     if (agent === undefined) {

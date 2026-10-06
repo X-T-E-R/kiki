@@ -58,6 +58,25 @@ describe('Scope tree', () => {
     return { app, session, agent };
   }
 
+  it('waits for the complete ledger of an independently disposing child scope', async () => {
+    const { app, session } = buildTree();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const events: string[] = [];
+    session.ledger.register(async () => { events.push('start'); await gate; events.push('end'); }, 'finalizer');
+    const childClose = session.dispose();
+    expect(session.dispose()).toBe(childClose);
+    let settled = false;
+    const parentClose = Promise.resolve(app.dispose()).then(() => { settled = true; });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const observed = { settled, events: [...events] };
+    release();
+    await Promise.all([childClose, parentClose]);
+    expect(observed).toEqual({ settled: false, events: ['start'] });
+    expect(events).toEqual(['start', 'end']);
+    expect(app.children.size).toBe(0);
+  });
+
   it('each scope resolves its own layer service', () => {
     const { app, session, agent } = buildTree();
     expect(app.accessor.get(IAppSvc).tag).toBe('app');

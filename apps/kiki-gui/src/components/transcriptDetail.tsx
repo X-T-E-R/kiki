@@ -13,7 +13,8 @@
  * and error state is the controller's own, never a second local one.
  */
 
-import { createContext, useCallback, useContext, useMemo, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useMemo, type ReactNode } from 'react';
+import type { SessionController } from '@kiki/session-core/session';
 
 import {
   transcriptDetailKey,
@@ -23,6 +24,7 @@ import {
 import type { ContentRef, ContentSource, TranscriptDetailListResponse } from '@kiki/transcript';
 
 interface TranscriptDetailApi {
+  readonly controller: SessionController | undefined;
   readonly load: (agentId: string, kind: TranscriptDetailKind, id: string) => Promise<boolean>;
   /** Load states of the agent this timeline renders. */
   readonly loads: Readonly<Record<string, TranscriptDetailStatus>>;
@@ -43,6 +45,7 @@ const TranscriptDetailContext = createContext<TranscriptDetailApi | null>(null);
 const NO_REFS: readonly ContentRef[] = [];
 
 export function TranscriptDetailProvider({
+  controller,
   load,
   loads,
   contentRefs,
@@ -52,6 +55,7 @@ export function TranscriptDetailProvider({
   loadEntities,
   children,
 }: {
+  readonly controller?: SessionController;
   readonly load: TranscriptDetailApi['load'];
   readonly loads: TranscriptDetailApi['loads'];
   /** Absent on read-only surfaces: content rows then render nothing. */
@@ -71,8 +75,8 @@ export function TranscriptDetailProvider({
     [sessionId, agentId],
   );
   const value = useMemo(
-    () => ({ load, loads, contentRefs: contentRefs ?? NO_REFS, session, loadContent, loadEntities }),
-    [load, loads, contentRefs, session, loadContent, loadEntities],
+    () => ({ controller, load, loads, contentRefs: contentRefs ?? NO_REFS, session, loadContent, loadEntities }),
+    [controller, load, loads, contentRefs, session, loadContent, loadEntities],
   );
   return <TranscriptDetailContext.Provider value={value}>{children}</TranscriptDetailContext.Provider>;
 }
@@ -146,6 +150,7 @@ function useContinuationFor(pending: readonly ContentRef[]): ContentContinuation
 export function useContentContinuation(
   source: ContentBodySource | undefined,
   roots: readonly string[],
+  callerAgentId?: string,
 ): ContentContinuationHandle {
   const api = useContext(TranscriptDetailContext);
   const kind = source?.kind;
@@ -154,16 +159,24 @@ export function useContentContinuation(
   const stepId = source?.stepId;
   const pending = useMemo(() => {
     if (api === null || kind === undefined || id === undefined) return NO_REFS;
-    return api.contentRefs.filter((ref) =>
+    const agentId = callerAgentId ?? api.session?.agentId;
+    const refs = api.controller !== undefined && agentId !== undefined ? api.controller.contentRefsFor(agentId, { kind, id, turnId, stepId }) : api.contentRefs;
+    return refs.filter((ref) =>
       ref.source.kind === kind &&
       ref.source.id === id &&
       ref.source.turnId === turnId &&
       ref.source.stepId === stepId &&
       ref.path.length > 0 &&
-      roots.includes(String(ref.path[0])),
+      roots.includes(String(ref.path[0])) &&
+      (ref.path[0] !== 'steps' || ref.path.length === 1 || ref.path.length === 3 && ref.path[2] === 'frames'),
     );
-  }, [api, kind, id, turnId, stepId, roots]);
-  return useContinuationFor(pending);
+  }, [api, kind, id, turnId, stepId, roots, callerAgentId]);
+  const continuation = useContinuationFor(pending);
+  const statusOf = useCallback((ref: ContentRef) => {
+    const agentId = callerAgentId ?? api?.session?.agentId;
+    return api?.controller !== undefined && agentId !== undefined && agentId !== api.session?.agentId ? api.controller.getAgentState(agentId).detailLoads[contentSegmentKey(ref)] : continuation.statusOf(ref);
+  }, [api, callerAgentId, continuation]);
+  return { ...continuation, statusOf };
 }
 
 /**
@@ -235,4 +248,24 @@ export function useEntityPage(kind: TranscriptEntityKind): EntityPageHandle {
   const api = useContext(TranscriptDetailContext);
   const request = useCallback(() => { void api?.loadEntities?.(kind); }, [api, kind]);
   return { status: api?.loads[entityPageKey(kind)], request };
+}
+
+export function useTranscriptController(): SessionController | undefined {
+  return useContext(TranscriptDetailContext)?.controller;
+}
+
+export function useAutomaticContentRead(source: ContentBodySource | undefined, roots: readonly string[], callerAgentId?: string): () => void {
+  const api = useContext(TranscriptDetailContext);
+  const lease = useRef<ReturnType<SessionController['beginContentRead']> | undefined>(undefined);
+  const sourceKey = JSON.stringify(source);
+  const rootsKey = JSON.stringify(roots);
+  const controller = api?.controller;
+  const agentId = callerAgentId ?? api?.session?.agentId;
+  useEffect(() => {
+    if (controller === undefined || sourceKey === undefined || agentId === undefined) return;
+    const read = controller.beginContentRead(agentId, JSON.parse(sourceKey) as ContentSource, JSON.parse(rootsKey) as string[]);
+    lease.current = read;
+    return () => { read.release(); lease.current = undefined; };
+  }, [controller, sourceKey, rootsKey, agentId]);
+  return useCallback(() => { lease.current?.retry(); }, []);
 }

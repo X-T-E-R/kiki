@@ -12,7 +12,11 @@ export async function runPluginNodeEntry(entry: string, args: readonly string[])
 
   const { entryReal, argsReal } = await validatePluginNodeEntry(entry, args, pluginRoot);
   process.argv = [process.argv[0] ?? process.execPath, entryReal, ...argsReal];
-  await import(pathToFileURL(entryReal).href);
+  // Keep disk ESM/TLA loading outside the native bundle's dynamic-import-to-require transform.
+  const importModule = new Function('specifier', 'return import(specifier)') as (
+    specifier: string,
+  ) => Promise<unknown>;
+  await importModule(pathToFileURL(entryReal).href);
 }
 
 export async function validatePluginNodeEntry(

@@ -8,7 +8,7 @@ export const executorPromptIncludeSchema = z.enum([
 
 const executorPromptSectionSchema = z.object({
   delivery: executorPromptDeliverySchema.optional(),
-  include: z.array(executorPromptIncludeSchema).default([]).readonly(),
+  include: z.array(executorPromptIncludeSchema).readonly().optional(),
   body: z.string().optional(),
   append: z.string().optional(),
 }).strict();

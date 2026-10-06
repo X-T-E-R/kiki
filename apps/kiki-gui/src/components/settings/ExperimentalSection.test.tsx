@@ -102,7 +102,7 @@ describe('ExperimentalRows', () => {
     expect(row.textContent).toContain('Server-specific feature');
   });
 
-  it('names the two shipped feature flags instead of the server-specific fallback', async () => {
+  it('names the shipped feature flag and never offers a switch for history import', async () => {
     client.meta.mockResolvedValue({
       experimental_flags: { usage_export: false, plugin_import: false, vendor_extension: true },
     });
@@ -110,9 +110,11 @@ describe('ExperimentalRows', () => {
     const exportRow = container.querySelector('[data-experimental-row="usage_export"]')!;
     expect(exportRow.textContent).toContain('Send usage to other tools');
     expect(exportRow.textContent).toContain('Turning it on needs a server restart.');
-    const importRow = container.querySelector('[data-experimental-row="plugin_import"]')!;
-    expect(importRow.textContent).toContain('Import history from other tools');
-    expect(importRow.querySelector('[data-experimental-effect]')?.textContent).toBe('Applies right away.');
+    // History import is a shipped capability, so the old flag id gets no
+    // switch and no product copy here: a server still reporting it draws the
+    // fallback row instead of pretending it can be enabled.
+    expect(container.querySelector('[data-experimental-row="plugin_import"]')?.textContent)
+      .not.toContain('Import history from other tools');
     // A flag nobody claims still lands on the same page under the fallback name.
     expect(container.querySelector('[data-experimental-row="vendor_extension"]')?.textContent)
       .toContain('Server-specific feature');

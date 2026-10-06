@@ -39,6 +39,17 @@ describe('source-generated media preview', () => {
   it('does not report invalid encoded image data as a successful preview', async () => {
     await expect(createMediaPreview({ name: 'invalid.png', mediaType: 'image/png', size: 4, stream: async function* () { yield new Uint8Array([1, 2, 3, 4]); } }, undefined, new AbortController().signal)).rejects.toThrow();
   });
+  it('preserves the exact PNG bytes above the old 64 KiB gate without recoding, using magic rather than an incorrect MIME hint', async () => {
+    const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+    const { pictures } = await import(fixture);
+    const original: Buffer = pictures[1].bytes;
+    expect(original.byteLength).toBeGreaterThan(64 * 1024);
+    expect(original.byteLength).toBeLessThanOrEqual(MEDIA_PREVIEW_BYTES);
+    const preview = await createMediaPreview({ name: 'example.bin', mediaType: 'image/jpeg', size: original.byteLength, stream: async function* () { yield original; } }, undefined, new AbortController().signal);
+    expect(preview.mime).toBe('image/png');
+    expect(preview.bytes).toEqual(original);
+  });
+
   it('compresses the source image to a small preview before any client original read', async () => {
     const original = bitmap(800, 600);
     let reads = 0;
@@ -57,6 +68,11 @@ describe('source-generated media preview', () => {
     await expect(createMediaPreview({ name: 'large.png', mediaType: 'image/png', size: 300 * 1024 * 1024, stream: async function* () { read = true; yield new Uint8Array(1); } }, undefined, new AbortController().signal)).rejects.toThrow('Open or download the original');
     expect(read).toBe(false);
   });
+
+  it.skipIf(process.env['KIKI_SENT_IMAGE_PROOF'] !== '1')('decodes sent images through real HTTP routes in the full GUI and cold-reloads them', async () => {
+    const proof = new URL('../../../apps/kiki-gui/scripts/sent-image-proof.mts', import.meta.url).href;
+    await import(proof);
+  }, 180_000);
 
   it('aborts the source iterator while a preview body is being read', async () => {
     const abort = new AbortController();

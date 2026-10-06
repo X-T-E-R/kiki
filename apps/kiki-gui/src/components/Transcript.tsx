@@ -29,6 +29,7 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { parseMarkdownIntoBlocks } from 'streamdown';
+import type { ContentRef } from '@kiki/transcript';
 import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 
 import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
@@ -45,6 +46,7 @@ import {
   parseSelectionCarryovers,
   parseSshHostContext,
   type TimelineAnnotation,
+  type ComposerAttachment,
   appendToDraft,
   appendThreadRefContext,
   findThreadRefs,
@@ -177,7 +179,7 @@ import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentTool
 import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './ToolCard';
 import { DisclosureChevron, Icon, OutcomeMark } from './icons';
 import { Wordmark } from './Wordmark';
-import { useContentContinuation, useTranscriptDetail } from './transcriptDetail';
+import { useContentContinuation, useTranscriptDetail, useTranscriptController } from './transcriptDetail';
 import { ContentContinuation, frameContentSource, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
 import { SessionRemainder, useSessionRemainderPending } from './SessionRemainder';
 import { BridgedOriginRow } from './message/BridgedOriginLine';
@@ -296,7 +298,8 @@ export function projectUserText(text: string): ReactNode {
 export interface TranscriptRowActions {
   /** Turn running / resyncing: mutating actions render but disable. */
   disabled: boolean;
-  onEditMessage: (block: UserBlock, text: string) => void;
+  onEditMessage: (block: UserBlock, text: string, attachments?: readonly ComposerAttachment[]) => void | Promise<void>;
+  loadEditAttachments?: (block: UserBlock) => Promise<readonly ComposerAttachment[]>;
   onRegenerate: (block: AssistantBlock) => void;
   onFork: (block: UserBlock | AssistantBlock) => void;
   /** False when the session's engine cannot fork (external handshake said no): the fork action leaves the row. */
@@ -469,9 +472,10 @@ const UserMessage = memo(function UserMessage({
       {editing && rowActions !== undefined ? (
         <UserMessageEditor
           initialText={typedText}
-          onSubmit={(text) => {
+          loadAttachments={rowActions.loadEditAttachments === undefined ? undefined : () => rowActions.loadEditAttachments!(block)}
+          onSubmit={async (text, attachments) => {
+            await rowActions.onEditMessage(block, appendThreadRefContext(text, threadRefDirectory.info), attachments);
             setEditing(false);
-            rowActions.onEditMessage(block, appendThreadRefContext(text, threadRefDirectory.info));
           }}
           onCancel={() => { setEditing(false); }}
         />
@@ -1075,8 +1079,10 @@ function subagentStatusTone(status: AgentTreeNode['status'] | SubagentBlock['sta
       // should know", which the timeline never needs to say.
       return 'bg-ink-faint';
     case 'failed':
+    case 'lost':
       return 'bg-danger';
     case 'cancelled':
+    case 'idle':
     case 'unknown':
       return 'bg-ink-faint';
     case 'suspended':
@@ -1421,15 +1427,21 @@ const SubagentCard = memo(function SubagentCard({
           ) : null}
           {childCount > 0 ? (
             <div className="flex items-center gap-1">
+              {/* A chevron and the count: the button disclosed the child cards,
+                  and the count says how many without a second line of words. */}
               <button
                 type="button"
+                data-subagent-children={block.subagentId}
                 aria-expanded={expanded}
+                aria-label={t(expanded ? 'subagent.collapseChildren' : 'subagent.expandChildren')}
+                title={t(expanded ? 'subagent.collapseChildren' : 'subagent.expandChildren')}
                 onClick={() => {
                   setExpanded((value) => !value);
                 }}
-                className="mt-1 min-h-7 rounded-md px-2 text-[12px] text-ink-faint transition-colors hover:bg-panel hover:text-ink"
+                className="mt-1 inline-flex min-h-7 items-center gap-1 rounded-md px-1.5 text-[12px] tabular-nums text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
               >
-                {expanded ? t('subagent.collapseChildren') : t('subagent.expandChildren')}
+                <DisclosureChevron open={expanded} className="text-current" />
+                {childCount}
               </button>
             </div>
           ) : null}
@@ -2718,6 +2730,18 @@ function JumpToBottom({
       <Icon name="arrowDown" size={12} /> {t('transcript.jumpToLatest')}
     </button>
   );
+}
+
+function HistoryPreviewReader({ agentId, turnId, state }: { agentId: string; turnId: string; state: SessionViewState }) {
+  const controller = useTranscriptController();
+  const { t } = useI18n();
+  useEffect(() => controller?.retainHistoryPreview(agentId, turnId), [controller, agentId, turnId]);
+  if (!controller?.historyPreviewPending(agentId, turnId)) return null;
+  const status = state.detailLoads[`history:${turnId}`];
+  return <div role="status" data-history-preview className="flex items-center gap-2 text-[12px] text-ink-faint">
+    {status?.status === 'error' ? <><span>{status.message}</span><button type="button" onClick={() => { void controller.loadHistoryPreview(agentId, turnId); }}>{t('transcript.retryEarlier')}</button></>
+      : <><span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />{t('transcript.loadingEarlier')}</>}
+  </div>;
 }
 
 function TopEdge({ state, onLoadOlder }: {
@@ -4047,7 +4071,7 @@ export function Transcript({
 
   // The current match, re-resolved against the DOM on every paint: rows
   // remount as the virtualizer scrolls, so a stored Range would go stale.
-  const findCurrentRef = useRef<{ match: FindMatch; pattern: RegExp } | null>(null);
+  const findCurrentRef = useRef<{ match: FindMatch; pattern: RegExp; rangeKey?: string } | null>(null);
   const findLandTokenRef = useRef(0);
   const findScope = useCallback((match: FindMatch): HTMLElement | null => {
     const scroll = scrollRef.current;
@@ -4064,7 +4088,8 @@ export function Transcript({
       clearFindPaint();
       return undefined;
     }
-    const scope = findScope(current.match);
+    const row = findScope(current.match);
+    const scope = current.rangeKey === undefined ? row : [...(row?.querySelectorAll<HTMLElement>('[data-content-range-key]') ?? [])].find((element) => element.dataset['contentRangeKey'] === current.rangeKey) ?? null;
     const all = scope === null ? [] : findRanges(scope, current.pattern);
     // An opened row repeats its first line in the summary above the body;
     // the current match is the one in the body the model text came from.
@@ -4080,10 +4105,10 @@ export function Transcript({
     paintFindHighlights(findOwner, others, range);
     return range;
   }, [clearFindPaint, findOwner, findScope]);
-  const landFind = useCallback(async (match: FindMatch, pattern: RegExp): Promise<boolean> => {
+  const landFind = useCallback(async (match: FindMatch, pattern: RegExp, contentRange?: { ref: ContentRef; offset: number }): Promise<boolean> => {
     const token = findLandTokenRef.current + 1;
     findLandTokenRef.current = token;
-    findCurrentRef.current = { match, pattern };
+    findCurrentRef.current = { match: contentRange === undefined ? match : { ...match, occurrence: 0 }, pattern, rangeKey: contentRange === undefined ? undefined : JSON.stringify([contentRange.ref.source, contentRange.ref.path, contentRange.ref.revision]) };
     findReveal.set(match.item.reveal);
     const outcome = await locate({ kind: 'block', blockId: match.item.blockId }, { quiet: true });
     if (findLandTokenRef.current !== token) return false;
@@ -4093,7 +4118,9 @@ export function Transcript({
     }
     // The row's own disclosure opens on the next commit; wait for its text.
     let range: Range | undefined;
-    for (let frame = 0; frame < 12; frame += 1) {
+    for (let frame = 0; frame < (contentRange === undefined ? 12 : 60); frame += 1) {
+      if (contentRange === undefined) findScope(match)?.querySelectorAll('[data-virtual-tool-text]').forEach((element) => { element.dispatchEvent(new CustomEvent('kiki:reveal-tool-match', { detail: { pattern, occurrence: match.occurrence } })); });
+      else findScope(match)?.querySelectorAll('[data-content-range-text] > div').forEach((element) => { element.dispatchEvent(new CustomEvent('kiki:reveal-content-match', { detail: { key: JSON.stringify([contentRange.ref.source, contentRange.ref.path, contentRange.ref.revision]), offset: contentRange.offset } })); });
       range = paintFind();
       if (range !== undefined) break;
       await nextFrame();
@@ -4112,7 +4139,7 @@ export function Transcript({
     viewportAnchorRef.current = captureTranscriptAnchor(virtualizer);
     paintFind();
     return true;
-  }, [findReveal, locate, paintFind, virtualizer]);
+  }, [findReveal, locate, findScope, paintFind, virtualizer]);
   const handleFindClear = useCallback(() => {
     findLandTokenRef.current += 1;
     findCurrentRef.current = null;
@@ -4303,6 +4330,7 @@ export function Transcript({
               >
                 <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
                   {first ? <TopEdge state={state} onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : onLoadOlder} /> : null}
+                  {visible && turnTailId !== undefined ? <HistoryPreviewReader agentId={agentId} turnId={turnTailId} state={state} /> : null}
                   {node === undefined ? null : view === 'message' && isMessageViewOwnRow(node) ? (
                     <div data-transcript-lane="agent" className={AGENT_LANE}>
                       <MessageViewRow

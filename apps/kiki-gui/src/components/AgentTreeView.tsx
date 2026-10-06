@@ -19,6 +19,8 @@ import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
 
 const STATUS_I18N: Record<AgentStatus, I18nKey> = {
   unknown: 'subagent.status.unknown',
+  idle: 'subagent.status.idle',
+  lost: 'subagent.status.lost',
   running: 'subagent.status.running',
   suspended: 'subagent.status.suspended',
   completed: 'subagent.status.completed',
@@ -33,10 +35,12 @@ function statusDot(status: AgentStatus): string {
     case 'background':
       return 'bg-ink-soft';
     case 'completed':
-      return 'bg-success';
+      return 'bg-ink-faint';
     case 'failed':
+    case 'lost':
       return 'bg-danger';
     case 'cancelled':
+    case 'idle':
     case 'unknown':
       return 'bg-ink-faint';
     case 'suspended':
@@ -95,6 +99,8 @@ const AgentTreeRow = memo(function AgentTreeRow({
   }, [node.refreshing, node.refreshingUntil]);
 
   const selected = selectedAgentId === node.agentId;
+  const label = node.label !== node.agentId || node.agentId === 'main' ? node.label
+    : t(node.nameSource === 'unreported' ? 'subagent.name.unreported' : 'subagent.name.loading', { id: node.agentId });
   const indent = Math.min(depth, 6) * 12;
 
   return (
@@ -129,8 +135,10 @@ const AgentTreeRow = memo(function AgentTreeRow({
               type="button"
               data-agent-id={node.agentId}
               data-agent-depth={depth}
+              data-agent-name-source={node.nameSource}
+              data-agent-status-source={node.statusSource}
               aria-current={selected ? 'page' : undefined}
-              aria-label={t('subagent.openAgent', { name: node.label })}
+              aria-label={t('subagent.openAgent', { name: label })}
               title={node.error}
               onClick={() => {
                 onOpen(node.agentId);
@@ -146,11 +154,11 @@ const AgentTreeRow = memo(function AgentTreeRow({
             >
               <span
                 className={`h-2 w-2 shrink-0 rounded-full ${refreshing ? 'bg-amber-rule' : statusDot(node.status)} ${
-                  refreshing || node.busy ? 'status-dot-busy' : ''
+                  refreshing || (isActiveStatus(node.status) && node.busy) ? 'status-dot-busy' : ''
                 }`}
               />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[12px] font-medium text-ink">{node.label}</span>
+                <span className="block truncate text-[12px] font-medium text-ink">{label}</span>
                 <span className="block truncate text-[12px] text-ink-faint">
                   {t(refreshing ? 'subagent.status.refreshing' : STATUS_I18N[node.status])}
                   {node.model !== undefined ? ` · ${node.model}` : ''}

@@ -306,7 +306,7 @@ export interface SubagentBlock {
   readonly instruction?: string;
   readonly model: string | undefined;
   readonly thinkingEffort: string | undefined;
-  readonly status: 'unknown' | 'running' | 'suspended' | 'completed' | 'failed' | 'cancelled';
+  readonly status: 'unknown' | 'idle' | 'lost' | 'running' | 'suspended' | 'completed' | 'failed' | 'cancelled';
   readonly summary: string | undefined;
   readonly error: string | undefined;
   readonly usage?: TokenUsage;
@@ -589,6 +589,7 @@ export interface SessionViewState {
    * open. Never used to invent cards that are not on the current page.
    */
   readonly snapshotSubagents: readonly SnapshotSubagent[];
+  readonly agentCounts?: import('@kiki/protocol').SessionAgentCounts;
   /**
    * How much of each global collection the last windowed reset carried.
    * Undefined for servers that send the full collections.

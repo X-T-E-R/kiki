@@ -33,6 +33,7 @@ const listModels = vi.fn();
 const listSessionSkills = vi.fn();
 const listWorkspaceSkills = vi.fn();
 const listNamedAgentProfiles = vi.fn();
+const listExecutors = vi.fn();
 const getAgentCapabilities = vi.fn();
 const uploadFile = vi.fn();
 const meta = vi.fn();
@@ -41,6 +42,13 @@ const sshSessionHosts = vi.fn();
 const sshAdd = vi.fn();
 const sshRemove = vi.fn();
 const sshHost = { id: 'example-host', name: 'Example host', source: 'kiki', hostname: 'example.test', agentAccess: 'offered' };
+/** The engine catalog the execution panel offers. */
+const EXECUTOR_ITEMS = [
+  { id: 'native', label: 'Kiki', protocol: 'native', status: 'ready' as const, model_binding: 'mapped' as const, thinking_binding: 'mapped' as const },
+  { id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', status: 'ready' as const, version: '2.1.0', model_binding: 'mapped' as const, thinking_binding: 'unavailable' as const },
+];
+/** The native engine with the default main profile: an ordinary new session. */
+const NATIVE_AGENT = { executor: 'native', profile: 'agent', overrides: undefined } as const;
 
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
@@ -53,6 +61,7 @@ vi.mock('../state/connection', () => ({
       listSessionSkills,
       listWorkspaceSkills,
       listNamedAgentProfiles,
+      listExecutors,
       getAgentCapabilities,
       uploadFile,
       meta,
@@ -129,10 +138,21 @@ beforeEach(() => {
         routes: [],
         description: 'Grok-only profile.',
       },
-      { name: 'reviewer', source: 'workspace', main: false, disabled: false, routes: [] },
+      {
+        // A main profile on an external engine: it must appear under that
+        // engine only, never under the native one.
+        name: 'reviewer',
+        source: 'workspace',
+        main: true,
+        disabled: false,
+        routes: [],
+        executor: 'claude-acp',
+        description: 'Reviews changes before they land.',
+      },
       { name: 'legacy', source: 'workspace', main: false, disabled: true, routes: [] },
     ] satisfies NamedAgentProfile[],
   });
+  listExecutors.mockReset().mockResolvedValue({ items: EXECUTOR_ITEMS });
 });
 
 afterEach(() => {
@@ -225,16 +245,16 @@ async function click(element: Element): Promise<void> {
 }
 
 /**
- * The agent-profile picker is a standalone toolbar control — reaching it just
+ * The execution control is a standalone toolbar control — reaching it just
  * means waiting for the profile catalog to land.
  */
 async function waitForTrigger(container: HTMLDivElement): Promise<HTMLButtonElement> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const trigger = container.querySelector<HTMLButtonElement>('#composer-agent-profile-select');
+    const trigger = container.querySelector<HTMLButtonElement>('#composer-execution-select');
     if (trigger !== null && container.querySelector('[data-selection-diagnostic][role="status"]') === null) return trigger;
     await settle();
   }
-  throw new Error('profile select never rendered');
+  throw new Error('execution control never rendered');
 }
 
 /** Open the permission mode chip's panel and hand back its trigger. */
@@ -599,83 +619,144 @@ describe('Composer non-text sends', () => {
   });
 });
 
-describe('Composer agent profile picker', () => {
+describe('Composer execution control', () => {
   it('keeps the picked persona name on the chip at any toolbar width', async () => {
     const { container } = await renderComposer({
       agentProfile: 'agent',
       onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: () => {},
       personaPick: { value: { id: 'lin-lan', name: '林岚' }, onChange: () => {} },
     });
     const chip = container.querySelector('[data-composer-persona-chip="lin-lan"]');
-    const name = chip?.querySelector('button span.truncate');
-    expect(name?.textContent).toBe('林岚');
+    // The persona branch of the one control: the trigger keeps the face and the
+    // name, and the panel behind it is still the engine list.
+    const trigger = container.querySelector('#composer-execution-select');
+    expect(chip).not.toBeNull();
+    expect(trigger?.querySelector('span.truncate')?.textContent).toBe('林岚');
     // No container-query rule may turn the name into a screen-reader-only label.
     expect(chip?.innerHTML).not.toContain('sr-only');
-    expect(chip?.querySelector('[data-composer-persona-clear]')?.getAttribute('aria-label')).toBe('Remove persona 林岚');
+    const clear = container.querySelector('[data-composer-persona-clear]');
+    expect(clear?.getAttribute('aria-label')).toBe('Remove persona 林岚');
+    await click(trigger!);
+    expect(container.querySelector('[data-execution-bare="claude-acp"]')).not.toBeNull();
   });
 
-  it('renders the bound profile without a main suffix and lists only enabled main profiles', async () => {
+  it('keeps the persona-branch control openable while a turn runs', async () => {
+    const { container } = await renderComposer({
+      busy: true,
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: () => {},
+      personaPick: { value: { id: 'lin-lan', name: '林岚' }, onChange: () => {} },
+    });
+    const trigger = await waitForTrigger(container);
+    expect(trigger.disabled).toBe(false);
+  });
+
+  it('names the native engine as the product and lists only enabled main profiles', async () => {
     const { container } = await renderComposer({
       agentProfile: 'agent',
       onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: () => {},
     });
     const trigger = await waitForTrigger(container);
-    // The default `agent` profile reads as the product name on the chip.
     expect(trigger.textContent).toContain('Kiki');
     expect(trigger.textContent).not.toContain('main');
 
-    await act(async () => {
-      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await click(trigger);
     const options = [...container.querySelectorAll('[role="option"]')].map(
       (row) => row.textContent ?? '',
     );
-    // Only enabled main profiles are offered; non-main and disabled drop out.
+    // Each engine offers its own bare row, plus only that engine's enabled
+    // main profiles; a disabled or non-main profile never appears.
+    expect(container.querySelectorAll('[data-execution-bare]').length).toBe(EXECUTOR_ITEMS.length);
     expect(options.some((text) => text.includes('grok-only'))).toBe(true);
-    expect(options.some((text) => text.includes('reviewer'))).toBe(false);
+    expect(options.some((text) => text.includes('reviewer'))).toBe(true);
     expect(options.some((text) => text.includes('legacy'))).toBe(false);
-    expect(options.findIndex((text) => text.includes('Kiki (default)'))).toBeLessThan(
-      options.findIndex((text) => text.includes('grok-only')),
-    );
-    expect(options.some((text) => text.includes('main'))).toBe(false);
-    // Rows carry the useful facts: description, source badge.
-    const agentRow = [...container.querySelectorAll('[role="option"]')].find(
-      (row) => row.textContent?.includes('Kiki (default)'),
-    );
-    expect(agentRow?.textContent).toContain('General-purpose built-in agent.');
-    expect(agentRow?.textContent).toContain('builtin');
-  });
-
-  it('reports picks through onChangeAgentProfile (the parent owns the confirm flow)', async () => {
-    const onChangeAgentProfile = vi.fn();
-    const { container } = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile,
-    });
-    const trigger = await waitForTrigger(container);
-    await act(async () => {
-      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    const grokRow = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(
+    // A profile appears exactly once, under the engine it belongs to.
+    expect(options.filter((text) => text.includes('reviewer'))).toHaveLength(1);
+    expect(
+      container.querySelector('[data-execution-engine="claude-acp"] [data-execution-profile="reviewer"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-execution-engine="native"] [data-execution-profile="reviewer"]'),
+    ).toBeNull();
+    const nativeRow = [...container.querySelectorAll('[role="option"]')].find(
       (row) => row.textContent?.includes('grok-only'),
     );
-    expect(grokRow).toBeDefined();
-    await act(async () => {
-      grokRow?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    expect(onChangeAgentProfile).toHaveBeenCalledWith('grok-only');
+    expect(nativeRow?.textContent).toContain('Grok-only profile.');
   });
 
-  it('shows rebuild context in the profile menu and calls it only after confirmation', async () => {
+  it('offers the bare harness under every engine, and it sends no profile', async () => {
+    const onChangeExecution = vi.fn();
+    const { container } = await renderComposer({
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution,
+    });
+    const trigger = await waitForTrigger(container);
+    await click(trigger);
+    // The bare row is the first entry of each engine: it runs the harness as it
+    // is, with no Kiki profile invented for it.
+    const bareRows = [...container.querySelectorAll<HTMLElement>('[data-execution-bare]')];
+    expect(bareRows.length).toBeGreaterThan(0);
+    const bareRow = bareRows.find((row) => row.getAttribute('data-execution-bare') === 'claude-acp');
+    expect(bareRow?.textContent).toContain('Run this engine as it is');
+    await click(bareRow!);
+    expect(onChangeExecution).toHaveBeenCalledWith({
+      executor: 'claude-acp', profile: undefined, overrides: undefined,
+    });
+  });
+
+  it('reports a profile pick with its own engine, so one pick answers both halves', async () => {
+    const onChangeExecution = vi.fn();
+    const { container } = await renderComposer({
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution,
+    });
+    await click(await waitForTrigger(container));
+    const row = container.querySelector<HTMLElement>('[data-execution-profile="reviewer"]');
+    expect(row).not.toBeNull();
+    await click(row!);
+    expect(onChangeExecution).toHaveBeenCalledWith({
+      executor: 'claude-acp', profile: 'reviewer', overrides: undefined,
+    });
+  });
+
+  it('clears a picked persona when the engine is chosen bare', async () => {
+    const onPersona = vi.fn();
+    const { container } = await renderComposer({
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: () => {},
+      personaPick: { value: { id: 'lin-lan', name: '林岚' }, onChange: onPersona },
+    });
+    // The chip is the persona branch; the engine choice is behind it.
+    await click(await waitForTrigger(container));
+    const bare = [...container.querySelectorAll<HTMLElement>('[data-execution-bare]')]
+      .find((row) => row.getAttribute('data-execution-bare') === 'claude-acp');
+    await click(bare!);
+    expect(onPersona).toHaveBeenCalledWith(undefined);
+  });
+
+  it('shows rebuild context in the ＋ menu and calls it only after confirmation', async () => {
     const onRebuildContext = vi.fn(async () => ({ changed: true }));
     const { container } = await renderComposer({
       sessionId: 'session-1',
       agentProfile: 'agent',
       onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: () => {},
       onRebuildContext,
     });
     await waitForTrigger(container);
-    // Rebuild moved out of the profile picker into the ＋ menu.
     await openAddMenu(container);
     const rebuildRow = container.querySelector<HTMLButtonElement>('[data-add-menu-rebuild]');
     expect(rebuildRow?.textContent).toContain('Rebuild context');
@@ -693,12 +774,14 @@ describe('Composer agent profile picker', () => {
     expect(getToasts().some((toast) => toast.tone === 'success' && toast.text.includes('latest sources'))).toBe(true);
   });
 
-  it('reports rebuild failures and disables the profile menu while busy', async () => {
+  it('reports rebuild failures and keeps the execution control openable while busy', async () => {
     const onRebuildContext = vi.fn(async () => { throw new Error('reload failed'); });
     const rendered = await renderComposer({
       sessionId: 'session-1',
       agentProfile: 'agent',
       onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: () => {},
       onRebuildContext,
     });
     await waitForTrigger(rendered.container);
@@ -711,16 +794,30 @@ describe('Composer agent profile picker', () => {
     await settle();
     expect(getToasts().some((toast) => toast.tone === 'error' && toast.text.includes('reload failed'))).toBe(true);
 
+    const onChangeWhileBusy = vi.fn();
     await rendered.rerender({
       busy: true,
       sessionId: 'session-1',
       agentProfile: 'agent',
       onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: onChangeWhileBusy,
       onRebuildContext,
     });
-    const trigger = rendered.container.querySelector<HTMLButtonElement>('#composer-agent-profile-select')!;
-    expect(trigger.disabled).toBe(true);
-    expect(trigger.title).toContain('Wait for the current turn');
+    // A running turn must not lock the control: it stays browsable, and the
+    // tooltip says a pick lands on the next message.
+    const trigger = rendered.container.querySelector<HTMLButtonElement>('#composer-execution-select')!;
+    expect(trigger.disabled).toBe(false);
+    expect(trigger.title).toContain('next message');
+    expect(trigger.title).not.toContain('rebuilding context');
+    await click(trigger);
+    const option = [...rendered.container.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find((row) => row.textContent?.includes('grok-only'));
+    await click(option!);
+    expect(onChangeWhileBusy).toHaveBeenCalledWith({
+      executor: 'native', profile: 'grok-only', overrides: undefined,
+    });
+    // Rebuild stays locked: it really does rewrite the live turn's context.
     await openAddMenu(rendered.container);
     expect(rendered.container.querySelector<HTMLButtonElement>('[data-add-menu-rebuild]')?.disabled).toBe(true);
   });
@@ -728,12 +825,17 @@ describe('Composer agent profile picker', () => {
   it('hides without a handler but preserves the choice and offers retry when the catalog fails', async () => {
     const { container } = await renderComposer({ agentProfile: 'agent' });
     for (let index = 0; index < 5; index += 1) await settle();
-    expect(container.querySelector('#composer-agent-profile-select')).toBeNull();
+    expect(container.querySelector('#composer-execution-select')).toBeNull();
 
     listNamedAgentProfiles.mockRejectedValue(new Error('catalog offline'));
-    const second = await renderComposer({ agentProfile: 'agent', onChangeAgentProfile: () => {} });
+    const second = await renderComposer({
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: () => {},
+    });
     for (let index = 0; index < 5; index += 1) await settle();
-    expect(second.container.querySelector('#composer-agent-profile-select')?.textContent).toContain('Kiki');
+    expect(second.container.querySelector('#composer-execution-select')?.textContent).toContain('Kiki');
     expect(second.container.querySelector('[role="alert"]')?.textContent).toContain('catalog offline');
     expect(second.container.querySelector('[role="alert"] button')?.textContent).toBe('Retry');
   });
@@ -748,15 +850,15 @@ describe('Composer agent profile picker', () => {
     const { container } = await renderComposer({
       agentProfile: 'agent',
       onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: () => {},
     });
     const trigger = await waitForTrigger(container);
-    await act(async () => {
-      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    const options = [...container.querySelectorAll('[role="option"]')].map(
-      (row) => row.textContent ?? '',
-    );
-    expect(options).toHaveLength(0);
+    await click(trigger);
+    // The bare rows remain — a harness is always runnable as it is — but no
+    // profile is offered, and the invalid bound choice keeps its diagnostic.
+    expect(container.querySelectorAll('[data-execution-bare]').length).toBe(EXECUTOR_ITEMS.length);
+    expect(container.querySelectorAll('[data-execution-profile]')).toHaveLength(0);
     expect(container.querySelector('[data-selection-diagnostic]')?.textContent).toContain('unavailable');
   });
 
@@ -774,6 +876,8 @@ describe('Composer agent profile picker', () => {
       agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_alpha' },
       agentProfile: 'alpha-main',
       onChangeAgentProfile: () => {},
+      execution: { executor: 'native', profile: 'alpha-main', overrides: undefined },
+      onChangeExecution: () => {},
     });
     const trigger = await waitForTrigger(container);
     expect(listNamedAgentProfiles).toHaveBeenCalledWith('wd_alpha');
@@ -803,6 +907,8 @@ describe('Composer agent profile picker', () => {
       agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_alpha' },
       agentProfile: 'alpha-main',
       onChangeAgentProfile: () => {},
+      execution: { executor: 'native', profile: 'alpha-main', overrides: undefined },
+      onChangeExecution: () => {},
     });
     expect((await waitForTrigger(rendered.container)).textContent).toContain('alpha-main');
 
@@ -811,10 +917,12 @@ describe('Composer agent profile picker', () => {
       agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_beta' },
       agentProfile: 'beta-main',
       onChangeAgentProfile: () => {},
+      execution: { executor: 'native', profile: 'beta-main', overrides: undefined },
+      onChangeExecution: () => {},
     });
     await settle();
     expect(listNamedAgentProfiles).toHaveBeenCalledWith('wd_beta');
-    expect(rendered.container.querySelector('#composer-agent-profile-select')).not.toBeNull();
+    expect(rendered.container.querySelector('#composer-execution-select')).not.toBeNull();
 
     workspaceB.resolve({
       items: [
@@ -839,10 +947,12 @@ describe('Composer agent profile picker', () => {
       agentProfileCatalogMode: { mode: 'disabled' },
       agentProfile: 'workspace-main',
       onChangeAgentProfile: () => {},
+      execution: { executor: 'native', profile: 'workspace-main', overrides: undefined },
+      onChangeExecution: () => {},
     });
     await settle();
     expect(listNamedAgentProfiles).not.toHaveBeenCalled();
-    expect(rendered.container.querySelector('#composer-agent-profile-select')).not.toBeNull();
+    expect(rendered.container.querySelector('#composer-execution-select')).not.toBeNull();
 
     await rendered.rerender({
       workspaceId: 'wd_session',
@@ -850,6 +960,8 @@ describe('Composer agent profile picker', () => {
       sessionId: 'session-1',
       agentProfile: 'workspace-main',
       onChangeAgentProfile: () => {},
+      execution: { executor: 'native', profile: 'workspace-main', overrides: undefined },
+      onChangeExecution: () => {},
     });
     catalog.resolve({
       items: [
@@ -859,9 +971,12 @@ describe('Composer agent profile picker', () => {
     const trigger = await waitForTrigger(rendered.container);
     expect(listNamedAgentProfiles).toHaveBeenCalledWith('wd_session');
     expect(trigger.textContent).toContain('workspace-main');
-    expect(trigger.textContent).not.toContain('agent');
     await click(trigger);
-    expect(rendered.container.querySelector('[role="option"]')?.getAttribute('aria-selected')).toBe('true');
+    // The late-arriving profile is the selected row, and it lands on its own
+    // engine rather than the first one listed.
+    const selected = rendered.container.querySelector('[role="option"][aria-selected="true"]');
+    expect(selected?.getAttribute('data-execution-profile')).toBe('workspace-main');
+    expect(selected?.closest('[data-execution-engine]')?.getAttribute('data-execution-engine')).toBe('native');
   });
 
   it('accents the pill while a switch is pending', async () => {
@@ -869,9 +984,12 @@ describe('Composer agent profile picker', () => {
       agentProfile: 'reviewer',
       agentProfilePending: true,
       onChangeAgentProfile: () => {},
+      execution: { executor: 'claude-acp', profile: 'reviewer', overrides: undefined },
+      onChangeExecution: () => {},
+      executionPending: true,
     });
     const trigger = await waitForTrigger(container);
-    // A pending switch names the profile and when it applies.
+    // A pending switch names the engine/profile and when it applies.
     expect(trigger.textContent).toContain('reviewer · next message');
     expect(trigger.title).toContain('applies from your next message');
   });
@@ -1194,6 +1312,36 @@ describe('Composer model chip', () => {
     const label = trigger.querySelector('span.truncate')!;
     expect(label.className).toContain('truncate');
     expect(label.textContent).not.toContain('high');
+  });
+
+  it('orders displayed thinking effort and gauge without changing the selected value or support array', async () => {
+    listModels.mockResolvedValue(catalog);
+    const efforts = Object.freeze(['high', 'max', 'low', 'medium', 'xhigh']);
+    const onChangeEffort = vi.fn();
+    const { container } = await renderComposer({ model: 'fixture/kiki-pro', efforts, effort: 'high', onChangeEffort });
+    for (let index = 0; index < 5; index += 1) await settle();
+    const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
+    expect(trigger.querySelector('[data-effort-gauge]')?.getAttribute('data-effort-gauge')).toBe('2');
+    expect(trigger.querySelector('[data-effort-label]')?.textContent).toBe('high');
+    await click(trigger);
+    expect([...container.querySelectorAll('[data-effort]')].map((node) => node.getAttribute('data-effort')))
+      .toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(container.querySelector('[data-effort="high"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(onChangeEffort).not.toHaveBeenCalled();
+    expect(efforts).toEqual(['high', 'max', 'low', 'medium', 'xhigh']);
+    await click(container.querySelector('[data-effort="xhigh"]')!);
+    expect(onChangeEffort).toHaveBeenCalledExactlyOnceWith('xhigh');
+  });
+
+  it('keeps unknown thinking effort values verbatim and selected in the sorted display', async () => {
+    listModels.mockResolvedValue(catalog);
+    const efforts = Object.freeze(['high', 'Vendor-ULTRA', 'low', 'Vendor-Fast', 'max']);
+    const { container } = await renderComposer({ model: 'fixture/kiki-pro', efforts, effort: 'Vendor-ULTRA' });
+    await click(container.querySelector('#composer-model-select')!);
+    expect([...container.querySelectorAll('[data-effort]')].map((node) => node.getAttribute('data-effort')))
+      .toEqual(['low', 'Vendor-ULTRA', 'high', 'Vendor-Fast', 'max']);
+    expect(container.querySelector('[data-effort="Vendor-ULTRA"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('[data-effort="Vendor-ULTRA"]')?.textContent).toContain('Vendor-ULTRA');
   });
 
   it('changes model and effort from the one panel', async () => {
@@ -2743,6 +2891,108 @@ describe('Composer queue edit mode', () => {
     };
   }
 
+  it('allows selecting images while editing and confirms an image-only replacement', async () => {
+    const onChangeAttachments = vi.fn();
+    const props = queueEditProps({ onChangeAttachments });
+    const { container, rerender } = await renderComposer({ value: 'queued', ...props });
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    expect(input.disabled).toBe(false);
+    Object.defineProperty(input, 'files', { value: [new File(['png'], 'added.png', { type: 'image/png' })], configurable: true });
+    await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect(onChangeAttachments).toHaveBeenCalled();
+    const image: ComposerAttachment = { kind: 'image', name: 'added.png', mediaType: 'image/png', data: 'cG5n', size: 3, previewUrl: 'data:image/png;base64,cG5n' };
+    await rerender({ value: '', attachments: [image], ...props });
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Confirm edit"]')!;
+    expect(button.disabled).toBe(false);
+    await click(button);
+    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('', [image]);
+  });
+
+  it.each(['paste', 'drop'])('adds an image through %s while editing without inserting its filename as text', async (gesture) => {
+    const onChangeAttachments = vi.fn();
+    const onChange = vi.fn();
+    const { container } = await renderComposer({ value: 'queued', onChange, ...queueEditProps({ onChangeAttachments }) });
+    const area = container.querySelector('textarea')!;
+    const file = new File(['png'], 'added.png', { type: 'image/png' });
+    if (gesture === 'paste') await dispatchClipboardPaste(area, [file]);
+    else await dispatchFileDrop(area, [file]);
+    expect(onChangeAttachments).toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('waits for image reads before confirming an edit', async () => {
+    const props = queueEditProps();
+    const { container } = await renderComposer({ value: 'edited', attachments: [{ kind: 'image', name: 'pending.png', data: '', size: 3, mediaType: 'image/png', previewUrl: '' }], ...props });
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Confirm edit"]')!;
+    expect(button.disabled).toBe(true);
+    await pressKey(container.querySelector('textarea')!, { key: 'Enter' });
+    expect(props.onQueueEditConfirm).not.toHaveBeenCalled();
+  });
+
+  it('discards a native picker result after cancelling or switching edit ownership', async () => {
+    desktopRuntime.value = true;
+    const picker = deferred<[{ name: string; size: number; type: string; read: () => Promise<File> }]>();
+    const read = vi.fn(async () => new File(['png'], 'late.png', { type: 'image/png' }));
+    selectFilesNative.mockReturnValue(picker.promise);
+    const onChangeAttachments = vi.fn();
+    const props = queueEditProps({ onChangeAttachments, attachmentScopeKey: 'edit-1' });
+    const { container, rerender } = await renderComposer({ value: 'same text', ...props });
+    await clickAttach(container);
+    await rerender({ value: 'same text', ...props, attachmentScopeKey: 'edit-2' });
+    await act(async () => { picker.resolve([{ name: 'late.png', size: 3, type: 'image/png', read }]); });
+    expect(read).not.toHaveBeenCalled();
+    expect(onChangeAttachments).not.toHaveBeenCalled();
+  });
+
+  it('discards an image read finishing after its edit is cancelled', async () => {
+    desktopRuntime.value = true;
+    const contents = deferred<File>();
+    selectFilesNative.mockResolvedValue([{ name: 'late.png', size: 3, type: 'image/png', read: () => contents.promise }]);
+    const onChangeAttachments = vi.fn();
+    const props = queueEditProps({ onChangeAttachments, attachmentScopeKey: 'edit-1' });
+    const { container, rerender } = await renderComposer({ value: 'edited', ...props });
+    await clickAttach(container);
+    await settle();
+    expect(onChangeAttachments).toHaveBeenCalledOnce();
+    onChangeAttachments.mockClear();
+    await rerender({ value: 'parked', onChangeAttachments });
+    await act(async () => { contents.resolve(new File(['png'], 'late.png', { type: 'image/png' })); });
+    await settle(); await settle();
+    expect(onChangeAttachments).not.toHaveBeenCalled();
+  });
+
+  it('lets a parked draft image read finish without mutating the active queue edit', async () => {
+    desktopRuntime.value = true;
+    const contents = deferred<File>();
+    selectFilesNative.mockResolvedValue([{ name: 'draft.png', size: 3, type: 'image/png', read: () => contents.promise }]);
+    let draftAttachments: readonly ComposerAttachment[] = [];
+    const onDraftAttachments = vi.fn((next: readonly ComposerAttachment[] | ((items: readonly ComposerAttachment[]) => readonly ComposerAttachment[])) => {
+      draftAttachments = typeof next === 'function' ? next(draftAttachments) : next;
+    });
+    const onEditAttachments = vi.fn();
+    const { container, rerender } = await renderComposer({ value: 'parked', onChangeAttachments: onDraftAttachments });
+    await clickAttach(container); await settle();
+    await rerender({ value: 'edited', ...queueEditProps({ onChangeAttachments: onEditAttachments, attachmentScopeKey: 'edit-1' }) });
+    await act(async () => { contents.resolve(new File(['png'], 'draft.png', { type: 'image/png' })); });
+    await settle(); await settle();
+    expect(draftAttachments[0]).toMatchObject({ kind: 'image', data: 'cG5n' });
+    expect(onEditAttachments).not.toHaveBeenCalled();
+  });
+
+  it('submits history edits verbatim without activating commands and keeps Ctrl+Enter semantics', async () => {
+    const onSend = vi.fn();
+    const onActivateSkill = vi.fn();
+    const image: ComposerAttachment = { kind: 'retained', name: 'original.png', content: { type: 'image', source: { kind: 'url', url: 'https://example.test/original.png' } } };
+    const { container } = await renderComposer({ value: '/goal edited', messageEditing: true, attachments: [image], onSend, onActivateSkill });
+    const area = container.querySelector('textarea')!;
+    await pressKey(area, { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    await pressKey(area, { key: 'Enter', ctrlKey: true });
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('/goal edited', [image]);
+    expect(onActivateSkill).not.toHaveBeenCalled();
+  });
+
   it('routes Enter to the queue edit confirm instead of a fresh send', async () => {
     const onSend = vi.fn();
     const props = queueEditProps({ onSend });
@@ -2752,7 +3002,7 @@ describe('Composer queue edit mode', () => {
 
     expect(sendButton.disabled).toBe(false);
     await pressKey(textarea, { key: 'Enter' });
-    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('edited queued text');
+    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('edited queued text', []);
     expect(onSend).not.toHaveBeenCalled();
   });
 
@@ -2763,7 +3013,7 @@ describe('Composer queue edit mode', () => {
 
     await pressKey(textarea, { key: 'Enter' });
     // A slash-looking edit is queue text, not a command attempt: no guard.
-    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('/not-a-skill at all');
+    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('/not-a-skill at all', []);
     expect(container.textContent).not.toContain('Send as plain text');
   });
 
@@ -2842,7 +3092,7 @@ describe('Composer projected profile model menu', () => {
   it('warns for hard-menu exclusions but lets main users select and send without hiding profiles', async () => {
     const onChangeModel = vi.fn();
     const onSend = vi.fn();
-    const props = { agentProfile: 'agent', model: 'fixture/kiki-pro', value: 'hello', onChangeModel, onSend, onChangeAgentProfile: vi.fn() };
+    const props = { agentProfile: 'agent', model: 'fixture/kiki-pro', value: 'hello', onChangeModel, onSend, onChangeAgentProfile: vi.fn(), execution: NATIVE_AGENT, onChangeExecution: vi.fn() };
     const { container, rerender } = await renderComposer(props);
     expect(container.querySelector('[data-model-menu-blocked]')).toBeNull();
     expect(container.querySelector('[data-model-menu-warning]')).toBeNull();
@@ -2856,7 +3106,7 @@ describe('Composer projected profile model menu', () => {
     expect(container.querySelector('[data-model-menu-warning]')?.textContent).toContain('profile:agent.restrict_models_to_menu');
     await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(onSend).toHaveBeenCalledWith('hello', []);
-    await act(async () => container.querySelector<HTMLButtonElement>('#composer-agent-profile-select')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('#composer-execution-select')!.click());
     expect([...document.body.querySelectorAll('[role="option"]')].some((node) => node.textContent?.includes('outside-profile'))).toBe(true);
   });
   it('does not warn or block main choices outside a recommended menu or stale projection', async () => {
@@ -3078,7 +3328,10 @@ describe('session SSH stays resident and rides no message', () => {
     await click(container.querySelector('[data-composer-ssh-host="example-host"]')!);
     expect(sshAdd).not.toHaveBeenCalled();
     expect(sshSessionHosts).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-composer-ssh-strip]')?.textContent).toContain('SSH to join');
+    // The draft strip and the session strip say the same word: both are this
+    // conversation's SSH context, and the scope is what the placement means.
+    expect(container.querySelector('[data-composer-ssh-strip]')?.textContent).toContain('SSH');
+    expect(container.querySelector('[data-composer-ssh-strip]')?.textContent).not.toContain('to join');
     expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
     await click(container.querySelector('[data-add-menu-trigger]')!);
     await click(container.querySelector('button[aria-label="Send message"]')!);
@@ -3098,7 +3351,8 @@ describe('session SSH stays resident and rides no message', () => {
     const { container, rerender } = await renderComposer({
       sessionId: 'session-example', value: 'Inspect the host', onSend, onActivateSkill,
     });
-    expect(container.querySelector('[data-composer-ssh-strip]')?.textContent).toContain('Session SSH');
+    expect(container.querySelector('[data-composer-ssh-strip]')?.textContent).toContain('SSH');
+    expect(container.querySelector('[data-composer-ssh-strip]')?.textContent).not.toContain('Session');
     await click(container.querySelector('button[aria-label="Send message"]')!);
     await settle();
     await rerender({ sessionId: 'session-example', value: 'And now the build', onSend, onActivateSkill });
@@ -3131,6 +3385,51 @@ describe('session SSH stays resident and rides no message', () => {
     for (let index = 0; index < 4; index += 1) await settle();
     expect(sshSessionHosts.mock.calls.at(-1)).toEqual(['session-example']);
     expect(container.querySelector('[data-composer-ssh-chip]')).toBeNull();
+    // The last host leaving takes the whole strip with it: with no SSH context
+    // this session is not in, and an "SSH 0" line beside the input would be a
+    // control to clear rather than a fact about the session.
+    expect(container.querySelector('[data-composer-ssh-strip]')).toBeNull();
+    // The way back in is untouched — the ＋ menu still opens the host list.
+    await openAddMenu(container);
+    expect(container.querySelector('[data-add-menu-ssh]')).not.toBeNull();
+  });
+
+  it('draws no strip at all while this session has no joined host', async () => {
+    meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+    sshSessionHosts.mockResolvedValue({ hosts: [] });
+    const { container } = await renderComposer({ sessionId: 'session-example', value: 'Inspect', onSend: vi.fn() });
+    for (let index = 0; index < 4; index += 1) await settle();
+    // The list has been read and it is empty: this is a settled answer, not a
+    // load still in flight.
+    expect(sshSessionHosts).toHaveBeenCalledWith('session-example');
+    expect(container.querySelector('[data-composer-ssh-strip]')).toBeNull();
+    expect(container.querySelector('[data-composer-ssh-toggle]')).toBeNull();
+    expect(container.textContent ?? '').not.toContain('SSH 0');
+  });
+
+  it('holds the strip back until the session host list is read, rather than showing zero', async () => {
+    meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+    // A list that never resolves: an unread session is not an empty session.
+    sshSessionHosts.mockReturnValue(new Promise(() => {}));
+    const { container } = await renderComposer({ sessionId: 'session-example', value: 'Inspect', onSend: vi.fn() });
+    for (let index = 0; index < 4; index += 1) await settle();
+    expect(container.querySelector('[data-composer-ssh-strip]')).toBeNull();
+    expect(container.textContent ?? '').not.toContain('SSH 0');
+  });
+
+  it('keeps the strip for the host context across a send, not only while a request runs', async () => {
+    meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+    sshSessionHosts.mockResolvedValue({ hosts: [{ host: sshHost }] });
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    const { container, rerender } = await renderComposer({ sessionId: 'session-example', value: 'Inspect', onSend });
+    await click(container.querySelector('button[aria-label="Send message"]')!);
+    await settle();
+    // The turn is over and nothing is in flight; the host is still joined, so
+    // the strip is still the session's SSH context.
+    await rerender({ sessionId: 'session-example', value: 'Again', onSend });
+    for (let index = 0; index < 4; index += 1) await settle();
+    expect(container.querySelector('[data-composer-ssh-strip]')).not.toBeNull();
+    expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
   });
 
   it('re-reads the joined list when another session opens', async () => {

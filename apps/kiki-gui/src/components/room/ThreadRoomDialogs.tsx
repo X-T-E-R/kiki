@@ -4,7 +4,8 @@
  *
  *   - NewThreadRoomDialog: name the room, confirm the 2–6 threads; each joins
  *     as itself (no session is copied), "wait while busy" on.
- *   - JoinRoomDialog: pick an existing room for one thread.
+ *   - JoinRoomDialog: add one or more threads to an existing room, or continue
+ *     to the new-room dialog when the caller supplies that entry.
  *
  * With thread communication off both dialogs say so and create nothing.
  */
@@ -143,7 +144,12 @@ export function NewThreadRoomDialog({
   );
 }
 
-export function JoinRoomDialog({ session, onClose }: { readonly session: Session; readonly onClose: () => void }) {
+export function JoinRoomDialog({ session, threads = [session], onNewRoom, onClose }: {
+  readonly session: Session;
+  readonly threads?: readonly Session[];
+  readonly onNewRoom?: () => void;
+  readonly onClose: () => void;
+}) {
   const { t } = useI18n();
   const api = useBotRoomApi();
   const queryClient = useQueryClient();
@@ -151,29 +157,53 @@ export function JoinRoomDialog({ session, onClose }: { readonly session: Session
   const roomsQuery = useQuery({ queryKey: ROOMS_QUERY_KEY, queryFn: () => api.listRooms(), staleTime: 15_000, retry: false });
   const rooms = useMemo(() => [...(roomsQuery.data ?? [])].sort((a, b) => a.name.localeCompare(b.name)), [roomsQuery.data]);
   const label = threadMemberName(session, session.id, t('comms.untitled'));
+  const heading = threads.length > 1 ? t('room.joinRoomCountTitle', { count: threads.length }) : t('room.joinRoomTitle', { name: label });
   const join = useMutation({
-    mutationFn: (room: RoomDocument) => api.addRoomMember(room.id, { kind: 'thread', sessionId: session.id }),
+    mutationFn: async (room: RoomDocument) => {
+      let current = await api.getRoom(room.id);
+      if (current === undefined) throw new Error(t('room.joinRoomLoadFailed'));
+      for (const thread of threads) {
+        if (current.members.some((member) => member.sessionId === thread.id)) continue;
+        current = await api.addRoomMember(room.id, { kind: 'thread', sessionId: thread.id });
+        queryClient.setQueryData(roomQueryKey(room.id), current);
+      }
+      return current;
+    },
     onSuccess: (room) => {
       queryClient.setQueryData(roomQueryKey(room.id), room);
       void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY });
       pushToast({ tone: 'success', text: t('room.joined', { name: room.name }) });
       onClose();
     },
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY }); },
   });
   const blocked = commsEnabled === false;
 
   return (
-    <Dialog onClose={() => { if (!join.isPending) onClose(); }} ariaLabel={t('room.joinRoomTitle', { name: label })} overlayId="join-room-dialog">
+    <Dialog onClose={() => { if (!join.isPending) onClose(); }} ariaLabel={heading} overlayId="join-room-dialog">
       <div data-join-room-dialog>
-        <h2 className="font-display text-[17px] font-semibold text-ink">{t('room.joinRoomTitle', { name: label })}</h2>
+        <h2 className="font-display text-[17px] font-semibold text-ink">{heading}</h2>
         {blocked ? <div className="mt-3"><CommsOffNotice /></div> : null}
+        {onNewRoom !== undefined ? (
+          <button type="button" data-join-room-new disabled={blocked || join.isPending} onClick={onNewRoom}
+            className="mt-3 flex min-h-10 w-full items-center gap-2 rounded-lg border border-hairline px-3 text-left text-[13px] text-ink transition-colors hover:bg-ink/[0.04] disabled:text-ink-faint disabled:hover:bg-transparent">
+            <Icon name="plus" size={14} />{t('room.chooseNewRoom')}
+          </button>
+        ) : null}
+        {roomsQuery.isError ? (
+          <div role="alert" className="mt-3 text-[12.5px] text-ink-soft">
+            <p>{t('room.joinRoomLoadFailed')}</p>
+            <button type="button" className={`${SECONDARY_BUTTON} mt-2`} onClick={() => { void roomsQuery.refetch(); }}>{t('common.retry')}</button>
+          </div>
+        ) : null}
         {roomsQuery.isSuccess && rooms.length === 0 ? (
           <p className="mt-3 text-[12.5px] text-ink-soft">{t('room.joinRoomNone')}</p>
         ) : (
           <ul role="list" className="mt-3 max-h-72 space-y-px overflow-y-auto rounded-lg border border-hairline p-1">
             {rooms.map((room) => {
-              const member = room.members.some((item) => item.sessionId === session.id);
-              const full = room.members.length >= ROOM_MAX_MEMBERS;
+              const missing = threads.filter((thread) => !room.members.some((item) => item.sessionId === thread.id));
+              const member = missing.length === 0;
+              const full = room.members.length + missing.length > ROOM_MAX_MEMBERS;
               const disabled = blocked || member || full || join.isPending;
               return (
                 <li key={room.id}>

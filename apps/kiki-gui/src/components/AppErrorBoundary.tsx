@@ -23,6 +23,14 @@ class AppErrorBoundaryView extends Component<BoundaryProps, BoundaryState> {
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
     console.error('[app:error-boundary]', error, info.componentStack);
+    try {
+      sessionStorage.setItem('kiki.lastRenderFailure', JSON.stringify({
+        at: new Date().toISOString(), path: window.location.pathname,
+        version: import.meta.env['VITE_APP_VERSION'], build: import.meta.env['VITE_BUILD_SHA'],
+        message: error.message.slice(0, 4096), stack: error.stack?.slice(0, 16384),
+        componentStack: info.componentStack?.slice(0, 16384),
+      }));
+    } catch { /* Rendering recovery must not depend on diagnostic storage. */ }
   }
 
   override render(): ReactNode {

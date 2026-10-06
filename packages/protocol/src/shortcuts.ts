@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const shortcutPlatformSchema = z.enum(['windows', 'macos', 'linux']);
 export type ShortcutPlatform = z.infer<typeof shortcutPlatformSchema>;
 export const shortcutActionSchema = z.enum([
-  'new-session', 'switcher', 'next-session', 'settings', 'shortcuts', 'shortcuts-help',
+  'new-session', 'switcher', 'next-session', 'previous-session', 'settings', 'shortcuts', 'shortcuts-help',
   'find', 'find-next', 'find-previous', 'terminal-toggle', 'terminal-copy', 'terminal-paste',
   'approve', 'reject', 'composer-mode', 'composer-undo', 'composer-redo',
 ]);
@@ -40,7 +40,8 @@ export interface ShortcutDefinition {
 export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
   { id: 'new-session', context: 'global', labelKey: 'shortcuts.newSession', defaults: [chord('n', 'mod')], desktopOnly: true, source: 'App.tsx' },
   { id: 'switcher', context: 'global', labelKey: 'shortcuts.switcher', defaults: [chord('k', 'mod')], desktopOnly: false, source: 'App.tsx' },
-  { id: 'next-session', context: 'global', labelKey: 'shortcuts.nextSession', defaults: [chord('Tab', 'ctrl')], desktopOnly: true, source: 'App.tsx' },
+  { id: 'next-session', context: 'global', labelKey: 'shortcuts.nextSession', defaults: [chord('Tab', 'ctrl')], desktopOnly: false, source: 'App.tsx' },
+  { id: 'previous-session', context: 'global', labelKey: 'shortcuts.previousSession', defaults: [chord('Tab', 'ctrl', true)], desktopOnly: false, source: 'App.tsx' },
   { id: 'settings', context: 'global', labelKey: 'shortcuts.settings', defaults: [chord(',', 'mod')], desktopOnly: false, source: 'App.tsx' },
   { id: 'shortcuts', context: 'global', labelKey: 'shortcuts.thisPanel', defaults: [chord('/', 'mod')], desktopOnly: false, source: 'App.tsx' },
   { id: 'shortcuts-help', context: 'global', labelKey: 'shortcuts.thisPanel', defaults: [chord('?', 'none', true)], desktopOnly: false, source: 'App.tsx (outside editable surfaces)' },
@@ -84,9 +85,17 @@ export const SHORTCUT_CATALOG: readonly (ShortcutDefinition | FixedShortcutDefin
 ];
 
 export function resolveShortcutBindings(preferences: ShortcutPreferences, platform: ShortcutPlatform): Record<ShortcutAction, ShortcutChord[]> {
-  return Object.fromEntries(SHORTCUT_DEFINITIONS.map((definition) => [definition.id,
-    preferences.overrides[platform]?.[definition.id] ?? [...definition.defaults],
+  const overrides = preferences.overrides[platform];
+  const bindings = Object.fromEntries(SHORTCUT_DEFINITIONS.map((definition) => [definition.id,
+    overrides?.[definition.id] ?? [...definition.defaults],
   ])) as Record<ShortcutAction, ShortcutChord[]>;
+  // A newly shipped reverse action must not claim an existing explicit chord.
+  if (overrides?.['previous-session'] === undefined) {
+    const custom = Object.values(overrides ?? {}).flat();
+    bindings['previous-session'] = bindings['previous-session'].filter((binding) =>
+      !custom.some((other) => chordsOverlap(binding, other)));
+  }
+  return bindings;
 }
 
 export interface ShortcutKeyEvent {

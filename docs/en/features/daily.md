@@ -4,7 +4,7 @@ title: The daily driver
 
 # The daily driver
 
-The workbench is one window, but the work is not: a turn runs, a subagent finishes, something needs your approval, and the cost adds up. This page is about the parts of that window you look at every day — the timeline that stays readable, annotations you can leave on a message, the tray that collects what needs you, the right rail that follows whichever agent you are focused on, and the usage page that tells you what it cost.
+The workbench is one window, but the work is not: a turn runs, a subagent finishes, something needs your approval, and the cost adds up. This page is about the parts of that window you look at every day — the timeline that stays readable, annotations you can leave on a message, the tray that collects what needs you, the right rail that follows whichever agent you are focused on, and the usage page that tells you what it cost, what is holding a request up, and where those numbers can go.
 
 ## A timeline that stays readable
 
@@ -12,7 +12,7 @@ A long agent turn is mostly tool calls, thinking, and shell output. The conversa
 
 Resolved questions, approvals, markers, and completion notices stay inline at their original position as compact one-line entries. Consecutive entries fold into an expandable "Activity history" row, and consecutive identical marker dividers (such as goal updates) show only the latest one with a repeat count, for example "Goal updated ×12", when nothing separates them. Reopening a session shows model changes as dividers naming the previous and new model; changing only thinking effort does not add one.
 
-Long tool output loads in stages — **Continue loading** pulls in the rest, and if that fails on a field that has an original to fetch, the same place offers **Download original** to save the field's full content to your machine. See [Interface overview](/en/guides/interface#conversation-view).
+Long tool output loads by itself as you scroll: Kiki keeps reading the next segment in the background and the row under the body shows the progress. If a segment fails, it stops there and offers **Retry**, and where the server keeps an original for that field the same row offers **Download original** to save the field's full content to your machine. See [Interface overview](/en/guides/interface#conversation-view).
 
 ## Annotations: say something about a message
 
@@ -34,15 +34,45 @@ It shows the agent's head over what it is doing now, "needs you" items as plain 
 
 See [Interface overview](/en/guides/interface#right-rail) and [Session controls](/en/guides/settings#session-controls).
 
-## The usage page tells you what it cost
+## The usage page answers three different questions
 
-**Usage** in the sidebar opens **History** by default: token usage and estimated cost for a date range, defaulting to today. Token usage and cost carry separate completeness indicators — when a provider does not return usage, Kiki marks it as unknown rather than a real zero — and the **Data reliability** section distinguishes unknown providers and incomplete accounting from an empty range or a failed request.
+**Usage** in the sidebar is one page with three tabs. **History** answers what a date range cost, **Live** answers why nothing is moving, and **External sync** answers where you want the numbers to go.
 
-**Live** shows running and queued requests for this service, with a per-model, provider, and role breakdown, waiting rows naming the blocking rule, and **Concurrency limits** for adding or editing rules. **External sync** sends content-free usage (model, UTC half-hour, four token counts, quality, cost) to vibecafe.ai, a Kiki webhook, or your own script — never a prompt, answer, title, workspace name, or path. It stays off until the server enables the `usage_export` flag, and a saved destination sends nothing until you preview the exact payload and agree once.
+### History: what the range cost
 
-See [Usage](/en/guides/settings#usage) and [`kiki usage-export`](/en/reference/command#kiki-usage-export).
+**History** opens by default: token usage and estimated cost for a date range, starting at today. The filter bar drives it — range first, then workspace, bucket size, and what the chart is broken down by — and every choice rides the URL, so a view you settled on is a link you can paste. Under the four totals, the trend chart stacks by the breakdown axis, a bucket opens into the sessions and turns behind it, and the tabs below rank sessions by cost so the expensive one is the first row.
+
+The number it will not give you is a confident wrong one. Token usage and cost carry **separate** completeness indicators: when a provider does not return usage for a call, Kiki marks it unknown rather than recording a real zero, and a figure with unknowns in it is shown as partially unknown instead of a total. **Data reliability** then separates the cases a reader must not confuse — a provider that never reported, accounting that is incomplete, a range with nothing in it, and a request that failed. The cost itself is a local estimate from your own price table; **Model prices** in the header is where an unpriced model gets one, and the page names the models it could not price rather than quietly pricing them at zero.
 
 ![The usage page on its History tab: cost, token, and cache-hit totals for the range, a seven-day trend, and the per-session breakdown below.](/shots/daily/daily-usage.en.png)
+
+### Live: who is running, who is waiting, and which rule is holding them
+
+**Live** is the other half of the same page, and it answers the question a spending page raises the moment something feels slow. It counts what this Kiki service is running and what it is holding, and **Request details** breaks those counts down by model, provider, or role.
+
+The part that makes it useful is the **Waiting now** list. Each waiting row names the model, how long it has been waiting, and which concurrency rule is holding it back, by rule id. That id is the same one in the **Concurrency limits** editor directly below, so the row tells you which rule to change.
+
+A rule picks a target (specific models, specific providers, or everything), a scope (**All sessions** shares one budget across the service; **Each session** gives every session its own), a cap, and what happens past it: **Queue** waits for a slot, **Reject** fails the request immediately. A rule can also carry a wait budget, and a rule targeting only subagents is a switch away. The toggle beside a rule pauses it without deleting it or dropping its wait budget, and saving applies to new and queued requests without killing anything already streaming — which is why raising a cap can release a queue while lowering one can leave running requests briefly above the new limit.
+
+Two boundaries worth knowing before you tune this. The cap counts **requests**, not tokens, money, or agents — it is not a spending budget. And it governs model requests this Kiki service sends itself: when you hand a turn to Codex, Claude Code, or Grok Build as the engine, those requests are the engine's own and do not pass through these rules. An external tool that calls back into Kiki to run a native request does count, as Kiki's own.
+
+![The usage page on its Live tab: running and queued counts by model, a waiting request naming the kimi-cap rule that holds it, and the concurrency rules below with one enabled and one paused.](/shots/daily/ux-usage-live.en.png)
+
+### External sync: send the numbers somewhere you chose
+
+**External sync** sends this server's own usage to a destination you pick, on a schedule you pick. It is the tab for a person who wants their token counts somewhere other than this app: a team warehouse, a personal script, or a hosted service. Three kinds of destination are available:
+
+- **Kiki webhook** — your own HTTPS endpoint, receiving a documented JSON batch. Bearer or HMAC authentication, optional gzip, and a secret you can keep in the system keyring or, if you prefer, in a private file on the server; you may narrow the range, exclude workspaces, and keep temporary sessions out.
+- **VibeCafe** — signs in from the page itself with a device code, against the official service. A custom address, or a key you supply yourself, is a separate advanced path. The sign-in is part of the experimental `usage_export` feature: the device-code flow is implemented, but it has not yet been verified end to end against the live service.
+- **Script** — a command you approve. Kiki writes the batch to its stdin and reads a receipt from its output. It runs as your own OS user with your ordinary permissions, so it can read files and reach the network on its own; **this is not a sandbox**, and approval is per command, not per batch.
+
+What crosses the wire is deliberately small: the model, a UTC half-hour bucket, four token counts, a quality flag, and a local cost estimate. Prompts, answers, titles, workspace names, and paths are not part of the payload — though the receiving end can still see your address and when you work, and the model name it sees may be an opaque id rather than your local alias. Every destination shows its own state: active, paused, waiting to be sent, refused credential, or a service that already holds a different value. A pause keeps the queue; removing a destination asks separately whether to discard what is still pending.
+
+The whole feature is off by default until the server enables the `usage_export` flag, and a saved destination stays **disabled until you preview the exact payload and agree once**. Widening the range, changing the endpoint, or pointing the destination at a different credential asks again; narrowing the range or changing the interval does not.
+
+![The usage page on its External sync tab: three destinations — a webhook that is active, a VibeCafe connection whose credential was refused with its queue intact, and a script that is paused — each with its endpoint, state, and pending count.](/shots/daily/ux-usage-export.en.png)
+
+The same destinations can be managed from the terminal with [`kiki usage-export`](/en/reference/command#kiki-usage-export), and every control on this page has a documented field, error code, and limit behind it: see [Usage](/en/guides/settings#usage) for where each control lives and [`request_governance`](/en/configuration/config-files#request-governance) for the rules' full field reference.
 
 ## Next steps
 

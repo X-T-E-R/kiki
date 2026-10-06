@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import {
@@ -9,8 +10,10 @@ import {
 } from '@kiki/session-core/settings';
 import type { KikiConfigResponse } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
+import { useImportHistoryEnabled } from '../../lib/importHistory';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
+import { Icon } from '../icons';
 import { buildCatalogModelOptions } from '../modelSelectOptions';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { AgentMessagingCard } from './CommunicationSection';
@@ -349,6 +352,41 @@ function SessionTitlesCard() {
 }
 
 /**
+ * Import an old conversation into this machine's session history.
+ *
+ * This is the primary place the reader meets it, because bringing history in
+ * is a way of working with sessions, not a plugin to install: it ships with
+ * Kiki, needs no flag, and opens the built-in import surface. It offers itself
+ * only when the connected server can actually read a history — otherwise the
+ * row would promise something this server cannot do.
+ */
+function ImportHistoryCard() {
+  const { client, scopeId } = useConnection();
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const enabled = useImportHistoryEnabled(client, scopeId).enabled === true;
+  if (!enabled) return null;
+  return (
+    <SectionCard id="sessions-import" title={t('cap.import.entry')}>
+      <p className="mt-1 max-w-[62ch] text-[13px] leading-5 text-ink-soft">
+        {t('cap.import.settingsHint')}
+      </p>
+      <div className="mt-3">
+        <button
+          type="button"
+          data-settings-open-import
+          className="inline-flex h-9 items-center gap-2 rounded-lg border border-hairline-strong px-3 text-[13px] font-medium text-ink transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
+          onClick={() => { void navigate('/capabilities?view=import'); }}
+        >
+          <Icon name="read" size={16} className="text-ink-faint" />
+          {t('cap.import.open')}
+        </button>
+      </div>
+    </SectionCard>
+  );
+}
+
+/**
  * Sessions: what a new session looks like and how agents behave inside one.
  * Everything here is stored on the server and instant-apply, except the
  * plan-approval timeout, which is a typed number and keeps its own Save.
@@ -357,6 +395,7 @@ export function SessionsSection() {
   return (
     <>
       <PlanSettings />
+      <ImportHistoryCard />
       <QuestionsCard />
       <SessionTitlesCard />
       <AgentMessagingCard />

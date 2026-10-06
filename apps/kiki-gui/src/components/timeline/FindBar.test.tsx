@@ -5,13 +5,13 @@
  * focus return, selection prefill, and the route rule for Ctrl+F.
  */
 
-import { act, type ReactNode } from 'react';
+import { act, useSyncExternalStore, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { createViewState, type Block, type SessionViewState } from '@kiki/session-core/session';
+import { createViewState, type Block, type SessionViewState, SessionController } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../../i18n';
 import type { SearchMessageHit } from '../../lib/client';
@@ -25,7 +25,8 @@ import {
   selectionPrefill,
 } from '../../lib/timelineFind';
 import { Transcript } from '../Transcript';
-import { classifyOutsideHits, setFindSearchForTests } from './FindBar';
+import { FindBar, classifyOutsideHits, setFindSearchForTests } from './FindBar';
+import { TranscriptDetailProvider } from '../transcriptDetail';
 import { buildFindItems } from './findItems';
 
 vi.mock('../markdown/streamdown-plugins', async (importOriginal) => {
@@ -368,4 +369,105 @@ describe('find bar in the timeline', () => {
     expect(press(document.body, { key: 'F3' }).defaultPrevented).toBe(false);
     offSettings();
   });
+});
+
+it('keeps a server tail hit in an already loaded but incomplete turn even when older history is complete', () => {
+  const hit = { role: 'assistant', turn: 7, snippet: 'hidden output tail needle' } as SearchMessageHit;
+  const outside = classifyOutsideHits({ hits: [hit], loadedTurns: new Set([7]), incompleteTurns: new Set([7]), hasMoreHistory: false, pattern: /needle/gu, more: false });
+  expect(outside).toMatchObject({ earlier: 1, compacted: 0, nearestTurn: 7, known: true });
+  expect(classifyOutsideHits({ hits: [hit], loadedTurns: new Set([7]), incompleteTurns: new Set(), hasMoreHistory: false, pattern: /needle/gu, more: false }).earlier).toBe(0);
+});
+
+
+it('clears the prior query failure and ignores an old read failing after the query changes', async () => {
+  setFindSearchForTests({ searchMessages: vi.fn(async ({ query }) => ({ items: [{ role: 'assistant', turn: 7, snippet: query } as SearchMessageHit], has_more: false, index_state: { state: 'ready' } } as never)) });
+  let failOld!: (error: Error) => void;
+  const find = vi.fn().mockRejectedValueOnce(new Error('first read failed')).mockImplementationOnce(() => new Promise((_resolve, reject) => { failOld = reject; }));
+  const controller = { incompleteTurnOrdinals: () => new Set([7]), findTurnContentRange: find } as unknown as SessionController;
+  const { container } = await mount(<TranscriptDetailProvider controller={controller} load={async () => false} loads={{}}><FindBar items={[]} sessionId="s" agentId="main" hasMoreHistory={false} loadedTurns={new Set([7])} request={{ prefill: 'needle', nonce: 1 }} onLand={async () => true} onClear={() => {}} startIndex={() => 0} onLoadOlder={async () => false} onLocateTurn={async () => true} onClose={() => {}} stepRef={{ current: null }} /></TranscriptDetailProvider>);
+  await settle(350);
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-look-back]')!.click(); });
+  expect(container.textContent).toContain('Could not read the matching content');
+  await typeQuery(container.querySelector<HTMLInputElement>('[data-find-input]')!, 'other');
+  expect(container.textContent).not.toContain('Could not read the matching content');
+  await settle(350);
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-look-back]')!.click(); });
+  await typeQuery(container.querySelector<HTMLInputElement>('[data-find-input]')!, 'fresh');
+  await act(async () => { failOld(new Error('late old read failure')); });
+  expect(find).toHaveBeenCalledTimes(2);
+  expect(container.textContent).not.toContain('Could not read the matching content');
+});
+
+
+it('lands a large non-tool frame by its actual projected source and passes the range offset', async () => {
+  setFindSearchForTests({ searchMessages: vi.fn(async () => ({ items: [{ role: 'assistant', turn: 7, snippet: 'range needle' } as SearchMessageHit], has_more: false, index_state: { state: 'ready' } } as never)) });
+  const ref = { source: { kind: 'frame' as const, id: 'answer-frame', turnId: 't7', stepId: 's7' }, revision: 'answer-range', kind: 'text' as const, path: ['text'], offset: 3, total: 600_000 };
+  const controller = { incompleteTurnOrdinals: () => new Set([7]), findTurnContentRange: async () => ({ ref, offset: 12345 }), getAgentState: () => ({ blocks: [{ kind: 'assistant', id: 'answer-row', frameId: 'answer-frame' }] }) } as unknown as SessionController;
+  const land = vi.fn(async () => true);
+  const item = { blockId: 'answer-row', turnId: 't7', text: 'prefix', reveal: [] };
+  const { container } = await mount(<TranscriptDetailProvider controller={controller} load={async () => false} loads={{}}><FindBar items={[item]} sessionId="s" agentId="main" hasMoreHistory={false} loadedTurns={new Set([7])} request={{ prefill: 'needle', nonce: 1 }} onLand={land} onClear={() => {}} startIndex={() => 0} onLoadOlder={async () => false} onLocateTurn={async () => true} onClose={() => {}} stepRef={{ current: null }} /></TranscriptDetailProvider>);
+  await settle(350);
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-look-back]')!.click(); });
+  expect(land).toHaveBeenCalledWith(expect.objectContaining({ item, start: 12345 }), expect.any(RegExp), expect.objectContaining({ ref, offset: 12345 }));
+});
+
+
+async function coldFindHarness(range: boolean, waitForPage?: Promise<void>) {
+  const text = range ? 'a'.repeat(8190) + ' cold needle ' + 'b'.repeat(600_000) : 'ordinary cold needle';
+  const ref = { source: { kind: 'frame' as const, id: 'cold-frame', turnId: 't1', stepId: 's1' }, path: ['output'], revision: 'cold-body', kind: 'text' as const, offset: 3, total: text.length };
+  const turn = (ordinal: number, output: string, pending = false) => ({ kind: 'turn' as const, turnId: `t${ordinal}`, ordinal, state: 'completed' as const, origin: { kind: 'user' as const }, steps: [{ kind: 'step' as const, stepId: `s${ordinal}`, turnId: `t${ordinal}`, ordinal: 1, state: 'completed' as const, frames: [{ kind: 'tool' as const, frameId: ordinal === 1 ? 'cold-frame' : 'new-frame', toolCallId: ordinal === 1 ? 'cold-call' : 'new-call', name: 'ExampleTool', state: 'done' as const, output, ...(pending ? { contentRefs: [ref] } : {}) }] }] });
+  const read = vi.fn(async ({ ref: request }: { ref: typeof ref }) => ({ ref: request, value: text.slice(request.offset, request.offset + 4097), contentRefs: [] }));
+  const page = vi.fn(async () => { await waitForPage; return { session_id: 'cold-test', agent_id: 'main', items: [turn(1, range ? 'aaa' : text, range)], has_more: false }; });
+  const view = { snapshot: async () => ({ session: { id: 'cold-test', title: 'Cold find' }, as_of_seq: 1, epoch: 'cold', in_flight_turn: null }), transcript: { page, content: read }, subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }) } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+  const controller = new SessionController({} as import('@kiki/session-core/transport').SessionTransport, view, 'cold-test', { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } });
+  await controller.open();
+  controller.handleTranscript({ type: 'transcript.reset', session_id: 'cold-test', agent_id: 'main', grade: 'delta', cursor: { seq: 1, epoch: 'cold' }, coverage: { kind: 'tail', hasMoreOlder: true, fromTurnId: 't2', throughTurnId: 't2' }, snapshot: { items: [turn(2, 'newest preview')], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {}, hasMoreOlder: true } });
+  controller.flushFrames();
+  const land = vi.fn(async () => true);
+  const locate = vi.fn(async () => { const loaded = await controller.loadOlderMessages(); await new Promise((resolve) => setTimeout(resolve, 0)); return loaded; });
+  function ColdHarness() {
+    const state = useSyncExternalStore(controller.subscribe, controller.getState);
+    const items = state.blocks.filter((block) => block.kind === 'tool').map((block) => ({ blockId: block.id, toolCallId: block.toolCallId, turnId: block.turnId, text: typeof block.output === 'string' ? block.output : '', reveal: [] }));
+    return <TranscriptDetailProvider controller={controller} load={async () => false} loads={state.detailLoads} contentRefs={state.contentRefs} sessionId="cold-test" agentId="main"><FindBar items={items} sessionId="cold-test" agentId="main" hasMoreHistory={state.hasMoreHistory} loadedTurns={new Set(items.map((item) => Number(item.turnId?.slice(1))))} request={{ prefill: 'needle', nonce: 1 }} onLand={land} onClear={() => {}} startIndex={() => 0} onLoadOlder={() => controller.loadOlderMessages()} onLocateTurn={locate} onClose={() => {}} stepRef={{ current: null }} /></TranscriptDetailProvider>;
+  }
+  setFindSearchForTests({ searchMessages: vi.fn(async ({ query }) => ({ items: [{ role: 'assistant', turn: 1, snippet: `cold ${query}` } as SearchMessageHit], has_more: false, index_state: { state: 'ready' } } as never)) });
+  const mounted = await mount(<ColdHarness />);
+  await settle(350);
+  return { ...mounted, controller, read, page, locate, land, ref };
+}
+
+it.each([true, false])('one cold-turn intent uses the newly loaded real controller and rendered items (range: %s)', async (range) => {
+  const fixture = await coldFindHarness(range);
+  try {
+    expect(fixture.controller.incompleteTurnOrdinals('main').has(1)).toBe(false);
+    expect(fixture.controller.getState().blocks.some((block) => 'turnId' in block && block.turnId === 't1')).toBe(false);
+    await act(async () => { fixture.container.querySelector<HTMLButtonElement>('[data-find-look-back]')!.click(); });
+    await settle(100);
+    expect(fixture.page).toHaveBeenCalledTimes(1);
+    expect(fixture.locate).toHaveBeenCalledTimes(1);
+    if (range) {
+      expect(fixture.read).toHaveBeenCalled();
+      expect(fixture.land).toHaveBeenCalledWith(expect.objectContaining({ item: expect.objectContaining({ toolCallId: 'cold-call' }) }), expect.any(RegExp), expect.objectContaining({ ref: fixture.ref, offset: 8196 }));
+    } else {
+      expect(fixture.read).not.toHaveBeenCalled();
+      expect(fixture.land).toHaveBeenCalledWith(expect.objectContaining({ item: expect.objectContaining({ toolCallId: 'cold-call' }) }), expect.any(RegExp), undefined);
+    }
+    expect(fixture.container.textContent).not.toContain('Could not read the matching content');
+  } finally { fixture.controller.close(); }
+});
+
+it('a query change while locating a cold turn prevents its late arrival from starting the old range read', async () => {
+  let arrive!: () => void;
+  const pageReady = new Promise<void>((resolve) => { arrive = resolve; });
+  const fixture = await coldFindHarness(true, pageReady);
+  try {
+    await act(async () => { fixture.container.querySelector<HTMLButtonElement>('[data-find-look-back]')!.click(); });
+    await typeQuery(fixture.container.querySelector<HTMLInputElement>('[data-find-input]')!, 'different');
+    await act(async () => { arrive(); });
+    await settle(80);
+    expect(fixture.page).toHaveBeenCalledTimes(1);
+    expect(fixture.read).not.toHaveBeenCalled();
+    expect(fixture.land).not.toHaveBeenCalled();
+    expect(fixture.container.textContent).not.toContain('Could not read the matching content');
+  } finally { fixture.controller.close(); }
 });

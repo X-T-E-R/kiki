@@ -474,6 +474,7 @@ export interface AgentTranscriptResponse {
     | { kind: 'taskref'; refId: string; taskId: string; at?: string }
   )[];
   readonly has_more: boolean;
+  readonly next_cursor?: string;
   readonly coverage?: { readonly kind: 'full' | 'tail' | 'unknown'; readonly hasMoreOlder: boolean };
   readonly tool_call_count?: number;
   readonly cursor?: { readonly seq: number; readonly epoch?: string };

@@ -100,6 +100,7 @@ export const loopLastRequestTraceIdKey = defineState<string | undefined>(
 export const loopDisposingKey = defineState<boolean>('loop.disposing', () => false);
 
 const MAX_STEP_SIGNAL_LISTENERS = 64;
+const PERSISTENCE_RECOVERY_DELAYS_MS = [100, 500, 2000] as const;
 
 export class AgentLoopService extends Disposable implements IAgentLoopService {
   declare readonly _serviceBrand: undefined;
@@ -120,7 +121,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private readonly settleWaiters: Array<() => void> = [];
   private quiescenceDepth = 0;
   private activeRequestTrace: LLMRequestTrace | undefined;
-  private finalization: { readonly turn: Turn; readonly result: TurnResult; readonly event: TurnEnded; error?: unknown } | undefined;
+  private finalization: { readonly turn: Turn; readonly result: TurnResult; readonly event: TurnEnded; recoveryAttempts?: number; error?: unknown } | undefined;
+  private persistenceRecoveryTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -168,6 +170,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   override dispose(): void {
     if (this.disposing) return;
     this.disposing = true;
+    clearTimeout(this.persistenceRecoveryTimer);
+    this.persistenceRecoveryTimer = undefined;
     const reason = abortError('Agent loop disposed');
     for (const job of this.pendingTurns.slice()) this.cancel(job.turn.id, reason);
     this.activeTurnJob?.turn.cancel(reason);
@@ -192,6 +196,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     if (this.quiescenceDepth > 0 || this.finalization !== undefined) {
       if (options?.at === 'head') this.heldAdmissions.unshift({ request, options });
       else this.heldAdmissions.push({ request, options });
+      if (this.finalization?.error !== undefined) void this.recoverPersistence();
     } else {
       this.admit(request, options);
     }
@@ -608,9 +613,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     } catch (error) {
       finalization.error = error;
       onUnexpectedError(error);
+      this.schedulePersistenceRecovery(finalization);
       return false;
     }
     if (this.finalization !== finalization) return true;
+    clearTimeout(this.persistenceRecoveryTimer);
+    this.persistenceRecoveryTimer = undefined;
     this.finalization = undefined;
     if (this.activeTurnJob?.turn === finalization.turn) {
       this.activeRequestTrace = undefined;
@@ -620,6 +628,19 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.releaseActiveTurn(finalization.turn, finalization.result);
     this.releaseQuiescence();
     return true;
+  }
+
+  private schedulePersistenceRecovery(finalization: NonNullable<AgentLoopService['finalization']>): void {
+    if (this.disposing || this.finalization !== finalization || this.persistenceRecoveryTimer !== undefined) return;
+    const attempt = finalization.recoveryAttempts ?? 0;
+    const delay = PERSISTENCE_RECOVERY_DELAYS_MS[attempt];
+    if (delay === undefined) return;
+    finalization.recoveryAttempts = attempt + 1;
+    this.persistenceRecoveryTimer = setTimeout(() => {
+      this.persistenceRecoveryTimer = undefined;
+      if (!this.disposing && this.finalization === finalization) void this.recoverPersistence();
+    }, delay);
+    this.persistenceRecoveryTimer.unref?.();
   }
 
   private resultFromTurnError(turn: Turn, error: unknown): TurnResult {

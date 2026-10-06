@@ -77,6 +77,9 @@ export type InFlightTurn = z.infer<typeof inFlightTurnSchema>;
  */
 export const snapshotSubagentSchema = taskSchema.extend({
   live: z.boolean().optional(),
+  activity_status: z.enum(['unknown', 'idle', 'running', 'suspended', 'completed', 'failed', 'cancelled', 'lost']).optional(),
+  status_source: z.enum(['metadata', 'runtime']).optional(),
+  name_source: z.enum(['user_label', 'collaboration_task', 'profile', 'task', 'unreported']).optional(),
   refreshing: z.boolean().optional(),
   refreshing_until: z.string().optional(),
   subagent_phase: z.enum(['queued', 'working', 'suspended', 'completed', 'failed']).optional(),
@@ -92,7 +95,21 @@ export const snapshotSubagentSchema = taskSchema.extend({
 });
 export type SnapshotSubagent = z.infer<typeof snapshotSubagentSchema>;
 
+export const sessionAgentCountsSchema = z.object({
+  total: z.number().int().nonnegative(),
+  subagents: z.number().int().nonnegative(),
+  completed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  cancelled: z.number().int().nonnegative(),
+  active: z.number().int().nonnegative(),
+  idle: z.number().int().nonnegative().optional(),
+  unknown: z.number().int().nonnegative(),
+});
+export type SessionAgentCounts = z.infer<typeof sessionAgentCountsSchema>;
+
 export const sessionSnapshotResponseSchema = z.object({
+  /** Metadata inventory counts, independent of the returned roster/body window. Terminal and active counts exclude main; cold nonterminal registrations are unknown, not active. */
+  agent_counts: sessionAgentCountsSchema.optional(),
   contentRefs: z.array(contentRefSchema).optional(),
   /** Durable event watermark this snapshot is consistent with. */
   as_of_seq: z.number().int().nonnegative(),

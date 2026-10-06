@@ -21,6 +21,7 @@ import {
   requestIdentityPolicyFromDraft,
   sessionTitleModelPatch,
   sessionTitleSettingsPatch,
+  sortThinkingEffortsForDisplay,
   validateImagePolicyDraft,
   validateRequestIdentityLayerDraft,
   writeSettings,
@@ -694,7 +695,7 @@ export function ThinkingCard() {
               value={effort}
               disabled={!thinkingEnabled || busy}
               onChange={(value) => void saveThinking(thinkingEnabled, value)}
-              choices={defaultItem.support_efforts.map((level) => ({ value: level, label: effortLabel(level) }))}
+              choices={sortThinkingEffortsForDisplay(defaultItem.support_efforts).map((level) => ({ value: level, label: effortLabel(level) }))}
             />
           ) : (
             <input

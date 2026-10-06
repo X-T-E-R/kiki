@@ -22,7 +22,7 @@ export const notificationsBase = {
   snapshots: { [SID]: { messages: [] } },
 };
 
-export const GLOBAL = { enabled: true, suppress_viewing_session: true, min_work_ms: 60_000, work_stable_ms: 3_000, question_delay_ms: 10_000, quiet_hours: { start: '22:30', end: '07:30', time_zone: 'Asia/Shanghai' } };
+export const GLOBAL = { enabled: true, suppress_viewing_session: true, min_work_ms: 0, work_stable_ms: 3_000, question_delay_ms: 10_000, quiet_hours: { start: '22:30', end: '07:30', time_zone: 'Asia/Shanghai' } };
 
 const slot = (provider, instance, purpose) => ({ provider_id: provider, provider_instance_id: instance, purpose, env: `KIKI_NOTIFY_${instance.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_${purpose.toUpperCase()}` });
 

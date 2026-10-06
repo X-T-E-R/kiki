@@ -58,6 +58,7 @@ import type { AcpElicitationRequest } from '@kiki/acp-client';
 import {
   ExecutorSessionUpdated,
   externalExecutorKey,
+  externalStateForGeneration,
   type ExecutorLossCode,
   type ExecutorResumeMode,
 } from './externalExecutorOps';
@@ -217,7 +218,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     await this.#client.connect(controller.signal);
     await this.#validateModel(controller.signal);
     const opened = await this.#openThread(roots, controller.signal);
-    const prior = this.#states.get(externalExecutorKey);
+    const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     const priorThreadId = threadIdFromState(prior.sessionRef);
     const sessionEpoch = priorThreadId === opened.threadId
       ? prior.sessionEpoch ?? 1
@@ -282,17 +283,17 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         threadId: opened.threadId,
         input: [{ type: 'text', text: remotePrompt }, ...codexAttachments(externalAttachments(request))],
         model: this.context.binding.modelAlias,
-        effort: this.context.binding.thinkingLevel === 'off'
-          ? undefined
-          : this.context.binding.thinkingLevel,
+        effort: this.context.binding.execution !== undefined ? this.context.binding.execution.effective.thinking
+          : this.context.binding.thinkingLevel === 'off' ? undefined : this.context.binding.thinkingLevel,
         approvalPolicy: this.#approvalPolicy(),
-        sandboxPolicy: {
+        sandboxPolicy: this.context.binding.execution !== undefined ? undefined : {
           type: 'workspaceWrite',
           writableRoots: roots.additionalDirs,
           networkAccess: false,
         },
       }, controller.signal);
       await this.#dispatcher.dispatch(new ExecutorSessionUpdated({
+        executionGeneration: this.context.binding.execution?.generation,
         executorId: this.context.descriptor.id,
         descriptorRevision: this.context.descriptor.revision,
         bindingFingerprint: agentExecutorBindingFingerprint(this.context.binding),
@@ -518,7 +519,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     roots: { readonly workDir: string; readonly additionalDirs?: readonly string[] },
     signal: AbortSignal,
   ): Promise<OpenedThread> {
-    const state = this.#states.get(externalExecutorKey);
+    const state = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     if (state.sessionRef?.ref['localSource'] !== undefined &&
         state.bindingFingerprint !== agentExecutorBindingFingerprint(this.context.binding)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint changed');
@@ -547,19 +548,19 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           model: this.context.binding.modelAlias,
           cwd: roots.workDir,
           approvalPolicy: this.#approvalPolicy(),
-          sandbox: 'workspace-write',
+          sandbox: this.context.binding.execution === undefined ? 'workspace-write' : undefined,
           ...this.#instructions(),
         }, signal);
         this.#threadId = resumed.thread.id;
         return { threadId: resumed.thread.id, mode: 'resume' };
       } catch (error) {
         if (state.sessionRef?.ref['localSource'] !== undefined || !isResumeProtocolFailure(error)) throw error;
-        const handoff = buildHandoff(this.#memory.get());
+        const handoff = this.context.binding.execution === undefined ? buildHandoff(this.#memory.get()) : undefined;
         const fresh = await this.#startFreshThread(roots, signal);
-        return { threadId: fresh.thread.id, mode: 'handoff', handoff };
+        return { threadId: fresh.thread.id, mode: handoff === undefined ? 'new' : 'handoff', handoff };
       }
     }
-    if (state.sessionRef !== undefined && !reusable) {
+    if (this.context.binding.execution === undefined && state.sessionRef !== undefined && !reusable) {
       const handoff = buildHandoff(this.#memory.get());
       const fresh = await this.#startFreshThread(roots, signal);
       return { threadId: fresh.thread.id, mode: 'handoff', handoff };
@@ -576,7 +577,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       model: this.context.binding.modelAlias,
       cwd: roots.workDir,
       approvalPolicy: this.#approvalPolicy(),
-      sandbox: 'workspace-write',
+      sandbox: this.context.binding.execution === undefined ? 'workspace-write' : undefined,
       ...this.#instructions(),
     }, signal);
     this.#threadId = started.thread.id;
@@ -590,8 +591,10 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     return delivery === 'replace' ? { baseInstructions: prompt } : { developerInstructions: prompt };
   }
 
-  #approvalPolicy(): string {
-    const mode = this.context.agent.accessor.get(IAgentPermissionModeService).mode;
+  #approvalPolicy(): string | undefined {
+    const mode = this.context.binding.execution === undefined
+      ? this.context.agent.accessor.get(IAgentPermissionModeService).mode : this.context.binding.execution.effective.permission_mode;
+    if (mode === undefined) return undefined;
     const mapping = this.context.descriptor.permission;
     if (mapping?.via === 'turn_param') return mapping[mode === 'review' ? 'review' : mode] ?? mapping.manual;
     if (mode === 'manual' || mode === 'review') {
@@ -927,7 +930,7 @@ function turnResultFromCodex(completed: CodexTurnCompletion): TurnResult {
   return {
     type: 'failed',
     steps: 1,
-    error: completed.error ?? new Error(`Codex turn completed with status ${completed.status}`),
+    error: toError(completed.error, `Codex turn completed with status ${completed.status}`),
   };
 }
 
@@ -990,6 +993,9 @@ function isTerminalTurnState(state: NonNullable<Turn['state']>): boolean {
 
 function toError(value: unknown, fallback: string): Error {
   if (value instanceof Error) return value;
+  if (isObject(value) && typeof value['message'] === 'string') {
+    return new CodexClientError('remote', value['message'], value);
+  }
   return new Error(typeof value === 'string' ? value : fallback);
 }
 

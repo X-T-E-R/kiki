@@ -9,6 +9,7 @@
 
 import { z } from 'zod';
 import { taskReceiptSchema } from '@kiki/protocol';
+import { executionSelectionWireSchema as executionSelectionSchema } from '../execution.js';
 
 // ── prompt parts ────────────────────────────────────────────────────────────
 
@@ -39,6 +40,7 @@ export const promptPartSchema = z.discriminatedUnion('type', [
 export const emptyPayloadSchema = z.object({});
 
 export const promptExecutionBindingSchema = z.object({
+  execution: executionSelectionSchema.optional(),
   afterModelSwitch: z.string().min(1).optional(),
   personaGreetingReply: z.boolean().optional(),
   profile: z.string().optional(),

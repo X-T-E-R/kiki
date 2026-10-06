@@ -83,6 +83,7 @@ export type IconName =
   | 'notes'
   | 'persona'
   | 'branch'
+  | 'room'
   | 'thread';
 
 export type IconSize = 12 | 14 | 16;
@@ -309,6 +310,8 @@ const PATHS: Record<IconName, ReactNode> = {
   ),
   // An arrow leaving a line: a session another session started.
   thread: <path d="M4 2.8v5.4c0 1.4 1.1 2.5 2.5 2.5H12m-2.6-2.6 2.6 2.6-2.6 2.6" />,
+  // A hash: a room is a named group (# is how the sidebar and chips write it).
+  room: <path d="M6.3 2.6 5.2 13.4M10.9 2.6 9.8 13.4M3 5.6h10.4M2.6 10.4H13" />,
   // A face on a kept card: the Personas page (who, not what it can do).
   persona: (
     <>

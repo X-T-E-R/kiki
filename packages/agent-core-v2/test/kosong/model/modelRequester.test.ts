@@ -7,6 +7,7 @@ import { RequestGovernanceService } from '#/app/requestGovernance/requestGoverna
 import { StubConfigService } from '../stubs';
 import type OpenAI from 'openai';
 import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
+import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
 
 import { isError2 } from '#/_base/errors/errors';
 import { APIStatusError, createAbortError } from '#/kosong/contract/errors';
@@ -147,6 +148,50 @@ async function collect(stream: AsyncIterable<ModelRequestEvent>): Promise<ModelR
 const INPUT = { systemPrompt: 'sys', tools: [], messages: [] };
 
 describe('ModelRequesterImpl request execution', () => {
+  it.each(['openai', 'openai_responses'] as const)('omits speculative %s output fields and preserves real ceilings on the wire', async (protocol) => {
+    const payloads: Record<string, unknown>[] = [];
+    const client = {
+      chat: { completions: { create: (params: Record<string, unknown>) => {
+        payloads.push(params);
+        return { withResponse: async () => ({
+          response: new Response(),
+          data: { id: 'chat-1', choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] },
+        }) };
+      } } },
+      responses: { create: async (params: Record<string, unknown>) => {
+        payloads.push(params);
+        return { async *[Symbol.asyncIterator]() {
+          yield { type: 'response.output_text.delta', delta: 'ok' };
+          yield { type: 'response.completed', response: { id: 'response-1', status: 'completed', output: [] } };
+        } };
+      } },
+    } as unknown as OpenAI;
+    const provider = protocol === 'openai'
+      ? new OpenAILegacyChatProvider({ apiKey: '', model: 'example-model', stream: false, clientFactory: () => client })
+      : new OpenAIResponsesChatProvider({ apiKey: '', model: 'example-model', clientFactory: () => client });
+    const model = { ...modelWith(staticAuth()), protocol };
+    const requester = new ModelRequesterImpl(model, registryReturning(provider));
+    await collect(requester.request(INPUT));
+    await collect(new ModelRequesterImpl({ ...model, maxContextSize: 0 }, registryReturning(provider)).request(INPUT));
+    await collect(requester.request(INPUT, undefined, { maxCompletionTokens: 600 }));
+    await collect(new ModelRequesterImpl({ ...model, maxOutputSize: 800 }, registryReturning(provider)).request(INPUT));
+    await collect(requester.request(INPUT, undefined, { usedContextTokens: 127500, usedContextTokensTrusted: true }));
+    await collect(requester.request(INPUT, undefined, { usedContextTokens: 127500, usedContextTokensTrusted: false }));
+    await collect(requester.request(INPUT, undefined, { maxContextTokens: 900, usedContextTokens: 700, usedContextTokensTrusted: true }));
+    const largeWindow = { ...model, maxContextSize: 300000 };
+    await collect(new ModelRequesterImpl(largeWindow, registryReturning(provider)).request(INPUT, undefined, { maxCompletionTokens: 200000 }));
+    await collect(new ModelRequesterImpl({ ...largeWindow, maxOutputSize: 150000 }, registryReturning(provider)).request(INPUT, undefined, { maxCompletionTokens: 200000 }));
+    await collect(new ModelRequesterImpl(largeWindow, registryReturning(provider)).request(INPUT, undefined, {
+      maxCompletionTokens: 200000, usedContextTokens: 250000, usedContextTokensTrusted: true,
+    }));
+    const field = protocol === 'openai' ? 'max_tokens' : 'max_output_tokens';
+    expect(payloads.map((payload) => payload[field])).toEqual([undefined, undefined, 600, 800, 500, undefined, 200, 200000, 150000, 50000]);
+    for (const index of [0, 1, 5]) {
+      expect(payloads[index]).not.toHaveProperty('max_tokens');
+      expect(payloads[index]).not.toHaveProperty('max_completion_tokens');
+      expect(payloads[index]).not.toHaveProperty('max_output_tokens');
+    }
+  });
   it('uses model tier as a default beneath resolved request overrides without leaking to another model', async () => {
     const provider = new FakeChatProvider();
     const model = modelWith(staticAuth());

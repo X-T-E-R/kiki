@@ -71,6 +71,7 @@ export interface DesktopSettings {
   closeToTray: boolean;
   theme: ThemePreference;
   requestTimeoutSeconds: number;
+  readingTimeoutSeconds: number;
   subagentPanelOpenMode: SubagentPanelOpenMode;
   defaultAppendTiming: DefaultAppendTiming;
   /** Fold runs of ≥3 consecutive pure reads into one summary line (off by default). */
@@ -388,6 +389,7 @@ const DEFAULTS: DesktopSettings = {
   closeToTray: true,
   theme: 'system',
   requestTimeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
+  readingTimeoutSeconds: 0,
   subagentPanelOpenMode: 'tab',
   defaultAppendTiming: 'agent_idle',
   foldSteps: false,
@@ -437,6 +439,11 @@ export function validateRequestTimeoutSeconds(value: number): ValidationIssue | 
     : { key: 'val.requestTimeoutSeconds' };
 }
 
+export function validateReadingTimeoutSeconds(value: number): ValidationIssue | null {
+  return Number.isSafeInteger(value) && value >= 0 && value * 1000 <= 2_147_483_647
+    ? null : { key: 'val.readingTimeoutSeconds' };
+}
+
 export function readDeviceSettings(): DesktopSettings {
   return normalizeSettings(readObject(STORAGE_KEY));
 }
@@ -479,6 +486,8 @@ function normalizeSettings(stored: Partial<DesktopSettings>): DesktopSettings {
       && validateRequestTimeoutSeconds(requestTimeoutSeconds) === null
         ? requestTimeoutSeconds
         : DEFAULTS.requestTimeoutSeconds,
+    readingTimeoutSeconds: stored.readingTimeoutSeconds !== undefined && validateReadingTimeoutSeconds(stored.readingTimeoutSeconds) === null
+      ? stored.readingTimeoutSeconds : DEFAULTS.readingTimeoutSeconds,
     subagentPanelOpenMode:
       stored.subagentPanelOpenMode === 'fullscreen' ? 'fullscreen' : 'tab',
     defaultAppendTiming: isDefaultAppendTiming(stored.defaultAppendTiming)
@@ -2326,7 +2335,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.title', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理', 'marketplace', '插件市场', '安装插件'] },
   { section: 'plugins', cardId: 'st-card-webbridge', titleKey: 'st.plugins.runtimeTitle', keywordKeys: ['st.plugins.browserExtension'], synonyms: ['webbridge', '浏览器扩展', 'browser daemon'] },
   { section: 'browser-control', cardId: 'st-card-browser-default', titleKey: 'st.browser.defaultTitle', keywordKeys: ['st.browser.defaultLabel', 'st.browser.defaultHint'], synonyms: ['默认浏览器', 'default browser', '浏览器', 'browser'] },
-  { section: 'browser-control', cardId: 'st-card-browser-setup', titleKey: 'st.browser.setup.title', keywordKeys: ['st.browser.setup.driver', 'st.browser.setup.chrome', 'st.browser.setup.host'], synonyms: ['浏览器组件', 'browser components', '安装浏览器', 'install browser', '驱动', 'driver'] },
+  { section: 'browser-control', cardId: 'st-card-browser-setup', titleKey: 'st.browser.setup.title', keywordKeys: ['st.browser.setup.host', 'st.browser.route.blurb.kimi-webbridge', 'st.browser.route.blurb.independent-browser'], synonyms: ['浏览器组件', 'browser components', '安装浏览器', 'install browser', '驱动', 'driver', 'kimi', 'codex', '扩展', 'extension'] },
   { section: 'browser-control', cardId: 'st-card-browser-connections', titleKey: 'st.browser.connectionsTitle', keywordKeys: ['st.browser.add', 'st.browser.fieldType', 'st.browser.fieldEndpoint', 'st.browser.disconnect'], synonyms: ['browser control', '浏览器控制', 'cdp', 'profile', 'chromium', 'chrome', 'agent-browser', '浏览器连接', '调试端口'] },
   { section: 'computer-control', cardId: 'st-card-computer-machine', titleKey: 'st.computer.title', keywordKeys: ['st.computer.machineLabel', 'st.computer.statusLabel'], synonyms: ['computer control', '电脑控制', 'desktop control', '桌面控制', 'cua', 'cua-driver', 'mouse', 'keyboard', '屏幕'] },
   { section: 'computer-control', cardId: 'st-card-computer-setup', titleKey: 'st.computer.setupTitle', keywordKeys: ['st.computer.statusLabel', 'st.computer.installButton', 'st.computer.recheckButton'], synonyms: ['executor', '执行器', '安装', 'install', '版本'] },

@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
+import type { AgentForest, ApprovalBlock, QuestionBlock, SessionController, SessionViewState } from '@kiki/session-core/session';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
 import { sumAgentTreeMetrics, UNKNOWN_AGENT_PANEL_METRICS } from '@kiki/session-core/session/agentPanel';
 import { useConnection, useOptionalControllerRegistry } from '../state/connection';
@@ -45,6 +45,9 @@ import {
 
 const noopSubscribe = (): (() => void) => () => {};
 const NO_WAITING: ReadonlySet<string> = new Set();
+const NO_BRANCHES: ReadonlySet<string> = new Set();
+const NO_PENDING_BLOCKS: readonly (ApprovalBlock | QuestionBlock)[] = [];
+const noopToggleBranch = () => {};
 
 /**
  * Live view state of the agent this panel belongs to, or `undefined` when no
@@ -105,7 +108,7 @@ function useAgentViewState(sessionId: string, agentId: string): SessionViewState
  */
 export type AgentPanelPart = 'all' | 'work' | 'usage' | 'overview' | 'profile';
 
-export function AgentPanelContainer({ state, forest, agentId, visible = true, part = 'all', overviewMode = 'default', renderOverview, waitingIds, onOpenAgent }: {
+export function AgentPanelContainer({ state, forest, agentId, visible = true, part = 'all', overviewMode = 'default', renderOverview, waitingIds, onOpenAgent, expandedBranches, onToggleBranch, sessionPending, mainLabel }: {
   state: SessionViewState;
   forest: AgentForest;
   agentId: string;
@@ -118,6 +121,13 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   waitingIds?: ReadonlySet<string>;
   /** Cockpit lane rows open that agent. */
   onOpenAgent?: (agentId: string) => void;
+  /** Cockpit graph: branches the reader opened, owned by the rail. */
+  expandedBranches?: ReadonlySet<string>;
+  onToggleBranch?: (branchId: string) => void;
+  /** Cockpit graph: every pending item in the session, any depth. */
+  sessionPending?: readonly (ApprovalBlock | QuestionBlock)[];
+  /** Cockpit graph: how the main agent's own lane reads. */
+  mainLabel?: string;
 }) {
   const { klient } = useConnection();
   const { t } = useI18n();
@@ -270,17 +280,26 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   if (part === 'overview') {
     const cockpit = (
       <CockpitOverview
+        sessionId={state.sessionId}
         agentId={agentId}
         forest={forest}
         blocks={state.blocks}
-        waitingIds={waitingIds ?? NO_WAITING}
         contextUsed={facts.contextUsed}
         contextLimit={facts.contextLimit}
         compactPoint={facts.compactPoint}
         figures={facts.figures}
+        treeFigures={facts.cockpitTreeFigures}
         turns={facts.turns}
         toolCalls={facts.toolCalls}
         onOpenAgent={onOpenAgent}
+        expandedBranches={expandedBranches ?? NO_BRANCHES}
+        onToggleBranch={onToggleBranch ?? noopToggleBranch}
+        sessionPending={sessionPending ?? NO_PENDING_BLOCKS}
+        mainBusy={state.busy}
+        turnStartedAt={state.turnStartedAt}
+        mainLabel={mainLabel ?? t('rail.ownerMain')}
+        sessionTasks={state.tasks}
+        agentCounts={state.agentCounts}
       />
     );
     return <div data-agent-panel-container data-agent-panel-part="overview" data-overview-mode={overviewMode}>
@@ -460,16 +479,39 @@ function overviewFacts(input: {
     : agentState?.maxContextTokens ?? (isMain ? state.maxContextTokens ?? (state.session?.usage?.context_limit || undefined) : node?.maxContextTokens);
   const hasPanelUsage = known(usage.totalTokens) || known(usage.totalCostUsd);
   const figures = hasPanelUsage ? figuresFrom(usage, t) : (isMain ? figuresFromSession(state) : undefined) ?? figuresFrom(usage, t);
-  // Main's page always offers the tree scope. A tree that is not fully
-  // counted yet sums only the agents the server has actually reported and
-  // says so, rather than disappearing from the rail or passing a partial sum
-  // off as the whole tree.
+  // The standard inspector's own tree scope. It stays main-only on purpose:
+  // the inspector offers a reader a switch between "this agent" and "the
+  // tree", and widening that switch to every child page is a product change
+  // this slice does not own. The cockpit is the other surface (see
+  // `cockpitTreeFigures`), and there the tree is the fixed subject.
   const treeFigures: OverviewFigures | undefined = isMain ? {
     costUsd: tree.totalCostUsd ?? undefined,
     totalTokens: tree.totalTokens ?? undefined,
     cacheRate: aggregateTreeCacheHitRate(ids, metrics) ?? undefined,
     incomplete: !treeComplete,
   } : undefined;
+  // The cockpit's figures, for every agent's page.
+  //
+  // The cockpit's context and cache arcs answer "what has this session cost",
+  // which is a question about the tree and not about whichever agent happens
+  // to be open — its graph is the whole tree on every page. So it is fed the
+  // tree figures on any agent's page, not just main's. Gating these on main
+  // meant a child page's cockpit fell back to that one agent's own numbers
+  // while still labelling them "whole session", so the same rail reported two
+  // different totals depending on which agent was selected. The inputs
+  // (`tree`, `metrics`, `ids`, `treeComplete`) are already derived for every
+  // agent, so this widens what is *offered*, not what is read: no per-agent
+  // transcript or body is subscribed here.
+  //
+  // A tree that is not fully counted sums only the agents the server has
+  // reported and marks itself incomplete, which the arcs already render as a
+  // partial scope instead of a total.
+  const cockpitTreeFigures: OverviewFigures = {
+    costUsd: tree.totalCostUsd ?? undefined,
+    totalTokens: tree.totalTokens ?? undefined,
+    cacheRate: aggregateTreeCacheHitRate(ids, metrics) ?? undefined,
+    incomplete: !treeComplete,
+  };
   const startedAt = isMain ? state.session?.created_at : node?.startedAt;
   const turns = isMain ? state.session?.usage?.turn_count : undefined;
   const toolCalls = !isMain && node?.toolCallCountKnown === true ? node.toolCallCount : undefined;
@@ -479,6 +521,7 @@ function overviewFacts(input: {
     compactPoint: input.compactPoint,
     figures,
     treeFigures,
+    cockpitTreeFigures,
     startedAt,
     turns,
     toolCalls,

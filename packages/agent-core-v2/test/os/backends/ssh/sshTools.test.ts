@@ -187,7 +187,7 @@ describe('SSH tools over a real ssh2 transport', () => {
   it('keeps seven actual tool schemas byte-identical across SSH reconnects', async () => {
     const f = await fixture();
     const tools = [
-      new BashTool(f.runtime, undefined as never, f.workspace, undefined as never, undefined as never, undefined as never, undefined as never),
+      new BashTool(f.runtime, undefined as never, f.workspace, undefined as never, undefined as never, undefined as never, undefined as never, undefined as never),
       new ReadTool(f.runtime, f.workspace, f.catalog, f.truncation),
       new WriteTool(f.runtime, f.workspace),
       new EditTool(new FileEditService(f.localFs), f.runtime, f.workspace),

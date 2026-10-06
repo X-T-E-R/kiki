@@ -56,7 +56,7 @@ text = "继续前核对目标、已有证据和下一步。"
 await klient.session(sessionId).agent("main").runCommand({ name: "hooks-inspect" });
 ```
 
-结果是 `hook.result` 诊断事件（`hookEvent = "hooks.inspect"`），不会进入模型对话。GUI 里会话 Agent 面板的 **Hooks** 显示同样的信息，读取 `GET /api/sessions/{session_id}/agents/{agent_id}/hooks`——规则保存成功但在该会话未激活时，原因就显示在这里。
+结果是 `hook.result` 诊断事件（`hookEvent = "hooks.inspect"`），不会进入模型对话。GUI 里会话 Agent 面板的**自动规则**显示同样的信息，读取 `GET /api/sessions/{session_id}/agents/{agent_id}/hooks`——规则保存成功但在该会话未激活时，原因就显示在这里。没有配置任何规则、也没有需要修复的来源时，这个区块整个不出现。
 
 在**设置 → 能力 → 钩子**（`/settings/hooks`）里编辑用户配置：选中规则直接编辑，或用 **高级：编辑 JSON** 处理整个 legacy 数组或 v2 对象。添加第一条声明式规则会把 legacy 数组切换为 v2，原命令保留在 `legacy` 下；打开或保存这个页面都不会执行它们。**保存自动操作** 校验完整的 hooks 值并显示服务器实际保存的内容，保存失败时你的草稿还在。v2 开关和停用 id 只影响声明式规则。
 

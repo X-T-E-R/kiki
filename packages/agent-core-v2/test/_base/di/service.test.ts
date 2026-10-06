@@ -4,6 +4,7 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { Emitter } from '#/_base/event';
 import {
   FiberProtocolError,
+  FiberRuntime,
   FiberState,
   ScopeUnits,
   setFiberEventResolver,
@@ -14,6 +15,7 @@ import { createDecorator, ref, type LiveRef } from '#/_base/di/instantiation';
 import { InstantiationService } from '#/_base/di/instantiationService';
 import { Service } from '#/_base/di/service';
 import { ServiceCollection } from '#/_base/di/serviceCollection';
+import { Ledger } from '#/_base/lifecycle/ledger';
 
 interface IFoo {
   tag: string;
@@ -37,6 +39,47 @@ class Bar implements IBar {
 describe('Service — kernel construction protocol (L3)', () => {
   afterEach(() => {
     setFiberEventResolver(undefined);
+  });
+
+  it.each(['token', 'instance', 'anonymous', 'function', 'effect'] as const)('shares the explicit %s fiber disposal receipt while cleanup is pending', async (kind) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const events: string[] = [];
+    class Slow {
+      async dispose(): Promise<void> { events.push('start'); await gate; events.push('end'); }
+    }
+    const ix = new InstantiationService(new ServiceCollection());
+    const book = new Ledger('provider');
+    const fiber = new FiberRuntime(ix.fiberHost, book, 'provider', undefined, undefined, new Set(), undefined);
+    const id = createDecorator<Slow>(`repeat-dispose-${kind}`);
+    const cleanup = async (): Promise<void> => { events.push('start'); await gate; events.push('end'); };
+    const handle = kind === 'token' ? fiber.provide(id, Slow)
+      : kind === 'instance' ? fiber.provide(id, new Slow())
+        : kind === 'anonymous' ? fiber.provide(Slow)
+          : kind === 'function' ? fiber.provide(() => cleanup)
+            : fiber.effect(() => cleanup);
+    if (kind === 'instance') {
+      class Dependent extends Slow {
+        constructor(@id readonly borrowed: Slow) { super(); }
+      }
+      const dependentId = createDecorator<Dependent>('repeat-instance-dependent');
+      ix.provide(dependentId, new SyncDescriptor(Dependent));
+      ix.invokeFunction((accessor) => accessor.get(dependentId));
+    }
+    let firstSettled = false;
+    let secondSettled = false;
+    const receipt = handle.dispose();
+    expect(handle.dispose()).toBe(receipt);
+    const first = receipt.then(() => { firstSettled = true; });
+    const second = handle.dispose().then(() => { secondSettled = true; });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const observed = { firstSettled, secondSettled, events: [...events] };
+    release();
+    await Promise.all([first, second]);
+    await book.teardown();
+    await ix.dispose();
+    expect(observed).toEqual({ firstSettled: false, secondSettled: false, events: ['start'] });
+    expect(events).toEqual(['start', 'end']);
   });
 
   it('flushes buffered capability calls in writing order', () => {
@@ -200,6 +243,32 @@ describe('Service — kernel construction protocol (L3)', () => {
     provideHandle.dispose();
     expect(consumer.disposed).toBe(false);
     ix.dispose();
+  });
+
+  it('awaits asynchronous cleanup from anonymous class contributions', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const events: string[] = [];
+    class Child extends Service {
+      constructor() {
+        super();
+        this.effect(() => async () => { events.push('started'); await gate; events.push('ended'); });
+      }
+    }
+    class Provider extends Service {
+      constructor() { super(); this.provide(Child); }
+    }
+    const ix = new InstantiationService(new ServiceCollection(), true);
+    ix.provide(IBar, new SyncDescriptor(Provider));
+    ix.invokeFunction((a) => a.get(IBar));
+    let settled = false;
+    const pending = Promise.resolve(ix.dispose()).then(() => { settled = true; });
+    await Promise.resolve();
+    expect(events).toEqual(['started']);
+    expect(settled).toBe(false);
+    release();
+    await pending;
+    expect(events).toEqual(['started', 'ended']);
   });
 
   it('runs function recipes against a checked facade and anchors the return disposer', () => {

@@ -143,7 +143,7 @@ describe('thread communication tools', () => {
       content: 'from ambient',
       idempotencyKey: 'ambient-key',
     }]);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it.each([
@@ -163,7 +163,31 @@ describe('thread communication tools', () => {
       if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
       await expect(execution.execute({ toolCallId: 'call-1' } as never)).rejects.toThrow(error);
       expect(posted).toEqual([]);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
+  });
+
+  it('explains room mentions without promising a host wake and preserves the logged receipt', async () => {
+    const posted: unknown[] = [];
+    const ix = new TestInstantiationService();
+    try {
+      ix.set(IThreadCommunicationService, { _serviceBrand: undefined, hostId: 'local-host', isWorkspaceEnabled: async () => true } as unknown as IThreadCommunicationService);
+      ix.set(ISessionContext, { _serviceBrand: undefined, sessionId: 'thread-a', workspaceId: 'workspace-a' } as ISessionContext);
+      ix.stub(IRoomService, { postBotMessage: async (...args: unknown[]) => { posted.push(args); return { id: 'room-message-1' } as never; } });
+      ix.stub(IAgentScopeContext, { agentId: 'main' });
+      ix.stub(IAgentContextMemoryService, {});
+      ix.set(ISendMessageToThreadTool, new SyncDescriptor(SendMessageToThreadTool));
+      const tool = ix.get(ISendMessageToThreadTool);
+      expect(tool.description).toContain('exact member IDs (thread sessionId or personaId), not display names');
+      expect(tool.description).toContain('A room send without mentions is logged but wakes no one');
+      expect(tool.description).toContain('Only a user room message without mentions wakes the host');
+      expect(tool.description).toContain('never ordinary assistant text');
+      expect(tool.description).toContain('room delivery means logged, not that every member has replied');
+      const execution = tool.resolveExecution({ room: 'room-a', content: 'hello room' });
+      if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
+      const result = await execution.execute({ toolCallId: 'call-1' } as never);
+      expect(posted).toEqual([['room-a', { sessionId: 'thread-a', toolCallId: 'call-1', text: 'hello room', mentions: undefined }]]);
+      expect(JSON.parse(result.output as string)).toEqual({ roomId: 'room-a', messageId: 'room-message-1', delivery: 'delivered' });
+    } finally { await ix.dispose(); }
   });
 
   it('creates a top-level session in an existing directory outside the current workspace', async () => {

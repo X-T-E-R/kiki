@@ -55,11 +55,6 @@ export class GoalInjection extends Service {
   }
 }
 
-const BUDGET_GUIDANCE_NEARING =
-  'Budget guidance: you are nearing a budget. Converge on the objective and avoid starting new discretionary work.';
-const BUDGET_GUIDANCE_WITHIN =
-  'Budget guidance: you are within budget. Make steady, focused progress toward the objective.';
-
 function buildBlockedNote(goal: GoalSnapshot): string {
   return renderPrompt(GOAL_BLOCKED_REMINDER, {
     reason_suffix: reasonSuffix(goal),
@@ -82,10 +77,10 @@ function buildGoalReminder(goal: GoalSnapshot, taskWaitEnabled: boolean): string
     objective: escapeUntrustedText(goal.objective),
     completion_criterion_block: completionCriterionBlock(goal),
     status: goal.status,
-    progress: `${goal.turnsUsed} continuation turns, ${goal.tokensUsed} tokens, ${formatElapsed(goal.wallClockMs)} elapsed`,
-    budgets_block: budgets.length > 0 ? `Budgets: ${budgets}.\n` : '',
-    budget_guidance: isNearingBudget(goal) ? BUDGET_GUIDANCE_NEARING : BUDGET_GUIDANCE_WITHIN,
-    follow_up_guidance: ` ${buildGoalFollowUpGuidance(goal, taskWaitEnabled)}`,
+    budgets_block: budgets.length > 0
+      ? `Budgets as of this reminder: ${budgets}.\nUse Goal({action:"get"}) when a decision needs the latest remaining amount.\n${goal.budget.tokenBudget !== null ? "Goal output tokens count this agent's goal-driven output only, not context size, total billed tokens, or the agent tree.\n" : ''}${isNearingBudget(goal) ? 'A configured budget is nearing its limit. Prioritize the required outcome and essential verification; avoid optional expansion. Report partial work honestly if the limit prevents completion.\n' : ''}`
+      : '',
+    follow_up_guidance: buildGoalFollowUpGuidance(goal, taskWaitEnabled),
   });
 }
 
@@ -108,7 +103,7 @@ function formatBudgets(goal: GoalSnapshot): string {
   }
   if (goal.budget.tokenBudget !== null) {
     budgetLines.push(
-      `tokens ${goal.tokensUsed}/${goal.budget.tokenBudget} (remaining ${goal.budget.remainingTokens})`,
+      `goal output tokens ${goal.tokensUsed}/${goal.budget.tokenBudget} (remaining ${goal.budget.remainingTokens})`,
     );
   }
   if (goal.budget.wallClockBudgetMs !== null) {

@@ -317,7 +317,7 @@ const CognitionPathSchema = z.string().min(1).refine((ref) => {
 }, { message: 'Cognition paths must be non-empty paths relative to and inside the Kiki home directory' });
 const CognitionPathRefSchema = z.union([
   CognitionPathSchema,
-  z.array(CognitionPathSchema).min(1),
+  z.array(CognitionPathSchema).min(1).readonly(),
 ]);
 
 const CognitionContentSchema = z.object({

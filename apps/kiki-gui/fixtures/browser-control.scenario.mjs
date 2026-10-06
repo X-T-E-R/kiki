@@ -1,11 +1,12 @@
 /**
  * browser-control — the settings 浏览器控制 leaf, seeded with what that page
- * reads: the connection list (each with the status the control service would
- * report), the stored default, and the conditions that make the walk worth
- * taking — a connection that is already up, one that has never been connected and
- * whose connect the gated server refuses, a CDP connection borrowed from another
- * machine, a disabled one, and a connection whose managed driver is the wrong
- * build.
+ * reads: the three named setup routes the server offers, the connection list
+ * (each with the status the control service would report), the stored default,
+ * and the conditions that make the walk worth taking — a route whose extension
+ * still needs a person, a route already connected, a connection that has never
+ * been connected and whose connect the gated server refuses, a CDP connection
+ * borrowed from another machine, a disabled one, and a connection whose managed
+ * driver is the wrong build.
  *
  * The walk in scripts/capture-browser-control.mjs creates, checks, connects,
  * disconnects and deletes through the real controls; nothing is patched into
@@ -29,6 +30,29 @@ export default {
   experimentalFlags: { native_browser: false },
   browser: {
     defaultBrowser: 'research',
+    // The wizard's opening state: the Kimi route has everything except the
+    // extension (a store approval is a person's action, not a checkbox), the
+    // managed route is installed and waiting for the flag, and Codex is owned
+    // by another app.
+    presets: {
+      'kimi-webbridge': {
+        steps: [
+          { id: 'daemon-binary', state: 'ready' },
+          { id: 'daemon', state: 'ready' },
+          { id: 'skill', state: 'ready' },
+          { id: 'extension', state: 'user_action', reason: 'extension_not_connected',
+            detail: 'Browser extension is not connected (installation cannot be inferred)' },
+        ],
+      },
+      'independent-browser': {
+        state: 'needs_user_action',
+        steps: [
+          { id: 'driver', state: 'ready' },
+          { id: 'chrome', state: 'ready' },
+          { id: 'feature', state: 'user_action', reason: 'feature_disabled' },
+        ],
+      },
+    },
     connections: [
       {
         id: 'research',

@@ -21,7 +21,7 @@ import type { ServerConnection } from '@kiki/session-core/settings';
 import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../../i18n';
 import { DirtyGuardContext } from '../dirtyGuard';
-import { CatalogRefreshCard, GlobalDefaultsCard, ModelCatalogCard } from './ModelsSection';
+import { CatalogRefreshCard, GlobalDefaultsCard, ModelCatalogCard, ThinkingCard } from './ModelsSection';
 import { ModelSwitchCard } from './ModelSwitchCard';
 import { pickValue } from './testControls';
 
@@ -606,6 +606,29 @@ describe('ModelCatalogRowEditor request identity save guard', () => {
       process.off('unhandledRejection', onError);
       localStorage.removeItem('kiki.locale');
     }
+  });
+});
+
+describe('ThinkingCard display order', () => {
+  it('sorts the default model efforts without changing the configured selection or saving', async () => {
+    const support_efforts = ['high', 'max', 'low', 'medium', 'xhigh', 'Vendor-ULTRA'];
+    listModels.mockResolvedValue({ items: [{ ...MODELS[0], support_efforts, default_effort: 'max' }] });
+    getConfig.mockResolvedValue({ default_model: 'kimi-code/kimi-k2', thinking: { effort: 'high' } });
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={client}><I18nProvider><ThinkingCard /></I18nProvider></QueryClientProvider>);
+    });
+    for (let index = 0; index < 3; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const choices = [...container.querySelectorAll<HTMLButtonElement>('[role="group"] button')];
+    expect(choices.map((node) => node.textContent)).toEqual(['Low', 'Medium', 'High', 'Xhigh', 'Max', 'Vendor-ULTRA']);
+    expect(choices.filter((node) => node.getAttribute('aria-pressed') === 'true').map((node) => node.textContent)).toEqual(['High']);
+    expect(support_efforts).toEqual(['high', 'max', 'low', 'medium', 'xhigh', 'Vendor-ULTRA']);
+    expect(patchConfig).not.toHaveBeenCalled();
   });
 });
 

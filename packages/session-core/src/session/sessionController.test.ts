@@ -1176,14 +1176,14 @@ describe('SessionController message closure', () => {
 });
 
 describe('SessionController transcript authority', () => {
-  async function openTranscriptController(options: { rewriteResetTimeoutMs?: number } = {}) {
+  async function openTranscriptController(options: { rewriteResetTimeoutMs?: number; historyPreviewBytes?: number } = {}) {
     const client = {
       snapshot: vi.fn(async () => snapshot()),
       listPrompts: vi.fn(async () => ({ active: null, queued: [] })),
       listTasks: vi.fn(async () => ({ items: [] })),
       getSessionGoal: vi.fn(async () => null),
       listMessages: vi.fn(async () => ({ items: [], has_more: false })),
-      getAgentTranscript: vi.fn(async (): Promise<AgentTranscriptResponse> => ({
+      getAgentTranscript: vi.fn(async (_sessionId: string, _agentId: string, _options: object): Promise<AgentTranscriptResponse> => ({
         agent_id: 'main',
         items: [],
         has_more: false,
@@ -1225,7 +1225,7 @@ describe('SessionController transcript authority', () => {
       client as unknown as KikiClient,
       fakeView(client, socket),
       'session_test',
-      { scheduler, rewriteResetTimeoutMs: options.rewriteResetTimeoutMs },
+      { scheduler, rewriteResetTimeoutMs: options.rewriteResetTimeoutMs, historyPreviewBytes: options.historyPreviewBytes },
     );
     await controller.open();
     return { controller, client, socket, flushAll };
@@ -1488,6 +1488,214 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
+  const historyTurn = (ordinal: number) => ({ kind: 'turn' as const, turnId: `history-${ordinal}`, ordinal,
+    state: 'completed' as const, origin: { kind: 'user' as const }, prompt: `History ${ordinal}`, steps: [] });
+  const historyTexts = (controller: SessionController) => controller.getState().blocks
+    .filter((block): block is UserBlock => block.kind === 'user').map((block) => block.text);
+
+  it('keeps automatic history headers beyond the preview cache budget and restores a visible page without user pagination', async () => {
+    const { controller, client } = await openTranscriptController({ historyPreviewBytes: 12000 });
+    const turns = Array.from({ length: 80 }, (_, ordinal) => ({ ...historyTurn(ordinal), prompt: `History ${ordinal} ${'x'.repeat(2000)}`,
+      contentRefs: [{ source: { kind: 'turn' as const, id: `history-${ordinal}` }, path: ['steps', 0, 'frames', 0, 'text'], revision: 'preview', kind: 'text' as const, offset: 2000, total: 4000 }],
+      steps: [{ kind: 'step' as const, stepId: `history-${ordinal}.1`, turnId: `history-${ordinal}`, ordinal: 1, state: 'completed' as const,
+        frames: [{ kind: 'text' as const, frameId: `reply-${ordinal}`, role: 'assistant' as const, text: `Reply ${ordinal} ${'y'.repeat(2000)}` }] }] }));
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: turns.slice(-1), olderCursor: '79' }), 1, true));
+    client.getAgentTranscript.mockImplementation(async (_session, _agent, options) => {
+      const input = options as { beforeItem: string };
+      const end = Number(input.beforeItem); const start = Math.max(0, end - 10);
+      return { agent_id: 'main', items: turns.slice(start, end), has_more: start > 0, next_cursor: start > 0 ? String(start) : undefined };
+    });
+    const release = controller.retainHistoryRead('main');
+    try {
+      await waitFor(() => !controller.getState().hasMoreHistory);
+      expect(historyTexts(controller)).toHaveLength(80);
+      expect(controller.historyPreviewPending('main', 'history-0')).toBe(true);
+      const before = controller.residentBytes();
+      const releasePreview = controller.retainHistoryPreview('main', 'history-0');
+      try {
+        await waitFor(() => !controller.historyPreviewPending('main', 'history-0'));
+        expect(historyTexts(controller)[0]).toBe(turns[0]!.prompt);
+        expect(controller.getState().blocks.find((block) => block.kind === 'assistant' && block.turnId === 'history-0')).toMatchObject({ text: turns[0]!.steps[0]!.frames[0]!.text });
+        expect(client.getAgentTranscript.mock.calls.length).toBe(9);
+      } finally { releasePreview(); }
+      expect(controller.residentBytes()).toBeLessThan(before + 12000);
+      expect(controller.historyPreviewPending('main', 'history-0')).toBe(true);
+      expect(controller.getState().hasMoreHistory).toBe(false);
+    } finally { release(); controller.close(); }
+  });
+
+  it('automatically drains 1100 turns beyond the old window while preserving live newest messages', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    const turns = Array.from({ length: 1100 }, (_, ordinal) => historyTurn(ordinal));
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: turns.slice(-20), olderCursor: '1080' }), 1, true));
+    // The old consumer path leaves only the reset window until scrolling requests a page.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(historyTexts(controller)).toEqual(turns.slice(-20).map((turn) => turn.prompt));
+    expect(client.getAgentTranscript).not.toHaveBeenCalled();
+    client.getAgentTranscript.mockImplementation(async (_session, _agent, options) => {
+      const input = options as { beforeItem: string; pageSize: number };
+      const end = Number(input.beforeItem);
+      const start = Math.max(0, end - input.pageSize);
+      if (end === 1080) {
+        controller.handleTranscript(opsEvent('main', [{ op: 'turn.upsert', turn: historyTurn(1100) }], 2));
+        flushAll();
+      }
+      return { agent_id: 'main', items: turns.slice(start, end), has_more: start > 0,
+        next_cursor: start > 0 ? String(start) : undefined,
+        coverage: start > 0 ? { kind: 'tail', hasMoreOlder: true } : { kind: 'full', hasMoreOlder: false } };
+    });
+    const release = controller.retainHistoryRead('main');
+    try {
+      await waitFor(() => !controller.getState().hasMoreHistory);
+      expect(historyTexts(controller)).toEqual([...turns, historyTurn(1100)].map((turn) => turn.prompt));
+      expect(controller.getState()).toMatchObject({ historyCoverageKind: 'full', loadingOlder: false, olderError: undefined });
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(11);
+      expect(client.getAgentTranscript.mock.calls[0]?.[2]).toMatchObject({ beforeItem: '1080', pageSize: 100 });
+    } finally { release(); controller.close(); }
+  });
+
+  it('consumes oversized HTTP pages through the real klient decoder and completes ordered history', async () => {
+    const { createKlient } = await import('@kiki/klient/http');
+    const { controller, client } = await openTranscriptController();
+    const turns = Array.from({ length: 240 }, (_, ordinal) => ({ ...historyTurn(ordinal), prompt: `History ${ordinal} ${'界'.repeat(700)}` }));
+    const decodedBytes: number[] = [];
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const input = new URL(String(url));
+      const end = Number(input.searchParams.get('before_item'));
+      const start = Math.max(0, end - 100);
+      const body = JSON.stringify({ code: 0, msg: 'success', request_id: 'history-page', data: {
+        session_id: 'session_test', agent_id: 'main', items: turns.slice(start, end), has_more: start > 0,
+        next_cursor: start > 0 ? String(start) : undefined, transcript_coverage_version: 2,
+        tasks: [], meta: {}, agents: [], pending_interactions: [],
+        coverage: start > 0 ? { kind: 'tail', hasMoreOlder: true } : { kind: 'full', hasMoreOlder: false },
+      } });
+      decodedBytes.push(new TextEncoder().encode(body).byteLength);
+      return new Response(body);
+    });
+    const klient = createKlient({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    const view = fakeView(client, {});
+    const scoped = new SessionController(client as unknown as KikiClient, { ...view, transcript: klient.session('session_test').view.transcript }, 'session_test');
+    await scoped.open();
+    scoped.handleTranscript(resetEvent('main', emptySnapshot({ items: turns.slice(-20), olderCursor: '220' }), 1, true));
+    const release = scoped.retainHistoryRead('main');
+    try {
+      await waitFor(() => !scoped.getState().hasMoreHistory);
+      expect(decodedBytes[0]).toBeGreaterThan(96 * 1024);
+      expect(historyTexts(scoped)).toEqual(turns.map((turn) => turn.prompt));
+      expect(scoped.getState()).toMatchObject({ olderError: undefined, historyCoverageKind: 'full' });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally { release(); scoped.close(); controller.close(); await klient.close(); }
+  });
+
+  it('continues a preparing history page without reporting it as a terminal read failure', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(1)] }), 1, true));
+    client.getAgentTranscript.mockRejectedValueOnce(new ApiError({ code: 40923, msg: 'Preparing navigation', data: null }));
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0)], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
+    const errors: string[] = [];
+    const unsubscribe = controller.subscribe(() => { if (controller.getState().olderError !== undefined) errors.push(controller.getState().olderError!); });
+    const release = controller.retainHistoryRead('main');
+    try {
+      await waitFor(() => !controller.getState().hasMoreHistory);
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1']);
+      expect(errors).toEqual([]);
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(2);
+    } finally { release(); unsubscribe(); controller.close(); }
+  });
+
+  it('automatically retries a transient page failure and clears the real error before continuing', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)] }), 1, true));
+    client.getAgentTranscript.mockRejectedValueOnce(new Error('temporary network failure'));
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(1)], has_more: true });
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0)], has_more: false,
+      coverage: { kind: 'full', hasMoreOlder: false } });
+    const release = controller.retainHistoryRead('main');
+    try {
+      await waitFor(() => controller.getState().olderError !== undefined);
+      expect(controller.getState().hasMoreHistory).toBe(true);
+      await waitFor(() => !controller.getState().hasMoreHistory);
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1', 'History 2']);
+      expect(controller.getState().olderError).toBeUndefined();
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(3);
+    } finally { release(); controller.close(); }
+  });
+
+  it('stops repeated cursors as a retryable error without falsely completing history', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'cursor-2' }), 1, true));
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(1)], has_more: true, next_cursor: 'cursor-2' });
+    const release = controller.retainHistoryRead('main');
+    try {
+      await waitFor(() => controller.getState().olderError !== undefined);
+      await new Promise((resolve) => setTimeout(resolve, 70));
+      expect(controller.getState()).toMatchObject({ hasMoreHistory: true, loadingOlder: false, olderError: 'History page did not advance its cursor' });
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
+      client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0), historyTurn(1)], has_more: false });
+      await controller.loadOlderMessages();
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1', 'History 2']);
+      expect(controller.getState().olderError).toBeUndefined();
+    } finally { release(); controller.close(); }
+  });
+
+  it('retains read windows on same-epoch tail refresh but fills the gap from the new tail cursor', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: '2' }), 1, true));
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0), historyTurn(1)], has_more: false });
+    await controller.loadOlderMessages();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(5)], olderCursor: '5' }), 2, true));
+    expect(historyTexts(controller)).toEqual(['History 0', 'History 1', 'History 2', 'History 5']);
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(2), historyTurn(3), historyTurn(4)], has_more: true, next_cursor: '2' });
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0), historyTurn(1)], has_more: false });
+    const release = controller.retainHistoryRead('main');
+    try {
+      await waitFor(() => !controller.getState().hasMoreHistory);
+      expect(historyTexts(controller)).toEqual(Array.from({ length: 6 }, (_, ordinal) => `History ${ordinal}`));
+      expect(client.getAgentTranscript.mock.calls[1]?.[2]).toMatchObject({ beforeItem: '5' });
+    } finally { release(); controller.close(); }
+  });
+
+  it('keeps unknown coverage partial even after automatic pagination reaches its source boundary', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(1)] }), 1, true));
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0)], has_more: false,
+      coverage: { kind: 'unknown', hasMoreOlder: true } });
+    const release = controller.retainHistoryRead('main');
+    try {
+      await waitFor(() => !controller.getState().hasMoreHistory);
+      expect(controller.getState().historyCoverageKind).toBe('unknown');
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1']);
+    } finally { release(); controller.close(); }
+  });
+
+  it.each(['release', 'suspend', 'close', 'reset'] as const)('aborts obsolete page HTTP metadata on %s and ignores its late body', async (action) => {
+    const { controller, client } = await openTranscriptController();
+    const held = deferred<AgentTranscriptResponse>();
+    let signal: AbortSignal | undefined;
+    const view = fakeView(client, {});
+    view.transcript.page = async (_input, options) => { signal = options?.signal; return held.promise as ReturnType<SessionViewFacade['transcript']['page']>; };
+    const scoped = new SessionController(client as unknown as KikiClient, view, 'session_test');
+    await scoped.open();
+    scoped.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)] }), 1, true));
+    const first = scoped.retainHistoryRead('main');
+    const second = scoped.retainHistoryRead('main');
+    try {
+      await waitFor(() => signal !== undefined);
+      first();
+      expect(signal?.aborted).toBe(false);
+      if (action === 'release') second();
+      else if (action === 'suspend') scoped.suspend();
+      else if (action === 'close') scoped.close();
+      else scoped.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(9)] }), 2));
+      expect(signal?.aborted).toBe(true);
+      held.resolve({ agent_id: 'main', items: [historyTurn(0)], has_more: false });
+      await held.promise;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(historyTexts(scoped)).not.toContain('History 0');
+      expect(scoped.getState().loadingOlder).toBe(false);
+    } finally { first(); second(); scoped.close(); controller.close(); }
+  });
+
   it('shares a pending older-page request between two views of one agent', async () => {
     const { controller, client } = await openTranscriptController();
     controller.retainAgentView('route', 'child-1', 'delta');
@@ -1501,7 +1709,7 @@ describe('SessionController transcript authority', () => {
     expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
     held.resolve({ agent_id: 'child-1', items: [{ kind: 'turn', turnId: 't0', prompt: 'older', steps: [] }], has_more: false });
     expect(await first).toBe(true);
-    expect(await second).toBe(false);
+    expect(await second).toBe(true);
     expect(controller.getAgentState('child-1').blocks.some((block) => block.kind === 'user' && block.text === 'older')).toBe(true);
     controller.close();
   });
@@ -1819,7 +2027,8 @@ describe('SessionController transcript authority', () => {
     client.getAgentTranscript.mockResolvedValueOnce(olderPage);
     await expect(controller.loadOlderMessages('main')).resolves.toBe(true);
     const firstIds = controller.getState().blocks.map((block) => block.id);
-    await expect(controller.loadOlderMessages('main')).resolves.toBe(true);
+    await expect(controller.loadOlderMessages('main')).resolves.toBe(false);
+    expect(controller.getState().olderError).toBe('History page did not advance its cursor');
     expect(controller.getState().blocks.map((block) => block.id)).toEqual(firstIds);
 
     controller.handleTranscript(asTranscriptEvent({
@@ -2398,6 +2607,18 @@ describe('SessionController transcript authority', () => {
     });
     expect(controller.getState().blocks.find((block): block is UserBlock => block.kind === 'user'))
       .toMatchObject({ text: 'keep text', queuedContent: [{ type: 'text', text: 'keep text' }] });
+    controller.close();
+  });
+
+  it('replaces a queued prompt with image-only content without an empty text part or a new identity', async () => {
+    const { controller, client } = await openTranscriptController();
+    const image = { type: 'image' as const, source: { kind: 'base64' as const, media_type: 'image/png', data: 'cG5n' } };
+    client.replacePrompt = vi.fn(async () => ({ prompt_id: 'p-edit', user_message_id: 'um-edit', status: 'queued' as const, content: [image], created_at: '2026-01-01T00:00:00.000Z' }));
+    await controller.replaceQueued('p-edit', '', [image]);
+    expect(client.replacePrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'p-edit', { content: [image], replace_attachments: true });
+    expect(controller.getState().blocks.filter((block) => block.kind === 'user')).toEqual([
+      expect.objectContaining({ promptId: 'p-edit', userMessageId: 'um-edit', queuedContent: [image] }),
+    ]);
     controller.close();
   });
 
@@ -3831,16 +4052,33 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
-  it('resynchronizes the current window instead of draining an unbounded catchup backlog', async () => {
+  it('continues beyond two bounded catchup pages and publishes the recovered newest region', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
     seedTextAgent(controller, 'main', 'f1', 'Hello');
-    const before = client.snapshot.mock.calls.length;
-    client.getTranscriptOps.mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 2, complete: true, has_more: true, batches: [] });
-    client.getTranscriptOps.mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 3, complete: true, has_more: true, batches: [] });
-    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'main', seq: 9, ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 99, text: 'gap' }] }));
+    const target = { type: 'frame' as const, turnId: 't1', stepId: 't1.1', frameId: 'f1' };
+    for (let seq = 2; seq <= 6; seq += 1) client.getTranscriptOps.mockResolvedValueOnce({
+      session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: seq,
+      complete: true, has_more: seq < 6,
+      batches: [{ seq, ops: [{ op: 'append', target, offset: seq + 3, text: String(seq) }] }],
+    });
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'main', seq: 6,
+      ops: [{ op: 'append', target, offset: 9, text: '6' }] }));
     flushAll();
-    await waitFor(() => client.snapshot.mock.calls.length > before);
-    expect(client.getTranscriptOps).toHaveBeenCalledTimes(2);
+    await waitFor(() => { flushAll(); return controller.getState().blocks.some((block) => block.kind === 'assistant' && block.text === 'Hello23456'); });
+    expect(client.getTranscriptOps).toHaveBeenCalledTimes(5);
+    expect(client.snapshot).toHaveBeenCalledTimes(1);
+    controller.close();
+  });
+
+  it('resynchronizes a catchup cursor that stops advancing rather than looping forever', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    seedTextAgent(controller, 'main', 'f1', 'Hello');
+    client.getTranscriptOps.mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 1, complete: true, has_more: true, batches: [] });
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'main', seq: 9,
+      ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 99, text: 'gap' }] }));
+    flushAll();
+    await waitFor(() => client.snapshot.mock.calls.length > 1);
+    expect(client.getTranscriptOps).toHaveBeenCalledTimes(1);
     controller.close();
   });
 

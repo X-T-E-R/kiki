@@ -1,4 +1,5 @@
-import { APIEmptyResponseError, createAbortError } from './errors';
+import { APIEmptyResponseError, createAbortError, isAbortError } from './errors';
+import { attachStreamDiagnostics, type StreamDiagnostics } from './streamDiagnostics';
 import {
   isContentPart,
   isToolCall,
@@ -23,6 +24,7 @@ export interface GenerateResult {
   readonly finishReason: FinishReason | null;
   readonly rawFinishReason: string | null;
   readonly traceId?: string | null;
+  readonly diagnostics?: StreamDiagnostics;
 }
 
 export interface GenerateCallbacks {
@@ -65,126 +67,131 @@ export async function generate(
 
   options?.onRequestStart?.();
   const stream = await provider.generate(systemPrompt, wireTools, history, options);
-  if (stream.traceId !== undefined) {
-    options?.onTraceId?.(stream.traceId);
-  }
-
-  await throwIfAborted(options?.signal, stream);
-
-  let serverDecodeMs = 0;
-  let clientConsumeMs = 0;
-  let firstPartAt: number | undefined;
-  let lastResumeAt = 0;
-
-  for await (const part of stream) {
-    const arrivedAt = Date.now();
-    if (firstPartAt === undefined) {
-      firstPartAt = arrivedAt;
-    } else {
-      serverDecodeMs += arrivedAt - lastResumeAt;
+  try {
+    if (stream.traceId !== undefined) {
+      options?.onTraceId?.(stream.traceId);
     }
 
-    try {
-      await throwIfAborted(options?.signal, stream);
+    await throwIfAborted(options?.signal, stream);
 
-      if (callbacks?.onMessagePart !== undefined) {
-        await callbacks.onMessagePart(deepCopyPart(part));
+    let serverDecodeMs = 0;
+    let clientConsumeMs = 0;
+    let firstPartAt: number | undefined;
+    let lastResumeAt = 0;
+
+    for await (const part of stream) {
+      const arrivedAt = Date.now();
+      if (firstPartAt === undefined) {
+        firstPartAt = arrivedAt;
+      } else {
+        serverDecodeMs += arrivedAt - lastResumeAt;
+      }
+
+      try {
         await throwIfAborted(options?.signal, stream);
-      }
 
-      if (
-        isToolCallPart(part) &&
-        part.index !== undefined &&
-        !isPendingToolCallAtIndex(pendingPart, part.index)
-      ) {
-        const arrayIdx = toolCallIndexMap.get(part.index);
-        if (arrayIdx !== undefined) {
-          const target = message.toolCalls[arrayIdx];
-          if (target !== undefined && part.argumentsPart !== null) {
-            target.arguments =
-              target.arguments === null
-                ? part.argumentsPart
-                : target.arguments + part.argumentsPart;
-          }
-          continue;
+        if (callbacks?.onMessagePart !== undefined) {
+          await callbacks.onMessagePart(deepCopyPart(part));
+          await throwIfAborted(options?.signal, stream);
         }
-      }
 
-      if (part.type === 'text') {
-        deferredThink = null;
+        if (
+          isToolCallPart(part) &&
+          part.index !== undefined &&
+          !isPendingToolCallAtIndex(pendingPart, part.index)
+        ) {
+          const arrayIdx = toolCallIndexMap.get(part.index);
+          if (arrayIdx !== undefined) {
+            const target = message.toolCalls[arrayIdx];
+            if (target !== undefined && part.argumentsPart !== null) {
+              target.arguments =
+                target.arguments === null
+                  ? part.argumentsPart
+                  : target.arguments + part.argumentsPart;
+            }
+            continue;
+          }
+        }
+
+        if (part.type === 'text') {
+          deferredThink = null;
+        }
+        if (pendingPart === null) {
+          pendingPart = part;
+        } else if (pendingPart.type === 'text' && part.type === 'think' && isVacuousContentPart(part)) {
+          deferredThink = structuredClone(part);
+        } else if (!mergeInPlace(pendingPart, part)) {
+          flushPending();
+          pendingPart = part;
+        }
+      } finally {
+        lastResumeAt = Date.now();
+        clientConsumeMs += lastResumeAt - arrivedAt;
       }
-      if (pendingPart === null) {
-        pendingPart = part;
-      } else if (pendingPart.type === 'text' && part.type === 'think' && isVacuousContentPart(part)) {
-        deferredThink = structuredClone(part);
-      } else if (!mergeInPlace(pendingPart, part)) {
-        flushPending();
-        pendingPart = part;
-      }
-    } finally {
-      lastResumeAt = Date.now();
-      clientConsumeMs += lastResumeAt - arrivedAt;
     }
-  }
 
-  await throwIfAborted(options?.signal, stream);
-  if (firstPartAt !== undefined) {
-    serverDecodeMs += Date.now() - lastResumeAt;
-  }
-  options?.onStreamEnd?.(
-    firstPartAt === undefined ? undefined : { serverDecodeMs, clientConsumeMs },
-  );
-
-  flushPending();
-  if (message.content.length === 0 && message.toolCalls.length === 0) {
-    throw new APIEmptyResponseError(
-      'The API returned an empty response (no content, no tool calls).' +
-        formatFinishReasonHint(stream) +
-        ` Provider: ${provider.name}, model: ${provider.modelName}`,
-      {
-        finishReason: stream.finishReason,
-        rawFinishReason: stream.rawFinishReason,
-      },
-    );
-  }
-
-  const hasThink = message.content.some((p) => p.type === 'think');
-  const hasText = message.content.some((p) => p.type === 'text' && p.text.trim().length > 0);
-  const hasToolCalls = message.toolCalls.length > 0;
-
-  if (hasThink && !hasText && !hasToolCalls) {
-    throw new APIEmptyResponseError(
-      'The API returned a response containing only thinking content ' +
-        'without any text or tool calls. This usually indicates the ' +
-        'stream was interrupted or the output token budget was exhausted ' +
-        'during reasoning.' +
-        formatFinishReasonHint(stream) +
-        ` Provider: ${provider.name}, model: ${provider.modelName}`,
-      {
-        finishReason: stream.finishReason,
-        rawFinishReason: stream.rawFinishReason,
-      },
-    );
-  }
-
-  if (callbacks?.onToolCall !== undefined) {
-    for (const toolCall of message.toolCalls) {
-      await throwIfAborted(options?.signal, stream);
-      await callbacks.onToolCall(toolCall);
+    await throwIfAborted(options?.signal, stream);
+    if (firstPartAt !== undefined) {
+      serverDecodeMs += Date.now() - lastResumeAt;
     }
-  }
+    options?.onStreamEnd?.(
+      firstPartAt === undefined ? undefined : { serverDecodeMs, clientConsumeMs },
+    );
 
-  const result: GenerateResult = {
-    id: stream.id,
-    message,
-    usage: stream.usage,
-    finishReason: stream.finishReason,
-    rawFinishReason: stream.rawFinishReason,
-  };
-  if (stream.traceId !== undefined) {
-    return { ...result, traceId: stream.traceId };
+    flushPending();
+    if (message.content.length === 0 && message.toolCalls.length === 0) {
+      throw new APIEmptyResponseError(
+        'The API returned an empty response (no content, no tool calls).' +
+          formatFinishReasonHint(stream) +
+          ` Provider: ${provider.name}, model: ${provider.modelName}`,
+        {
+          finishReason: stream.finishReason,
+          rawFinishReason: stream.rawFinishReason,
+        },
+      );
+    }
+
+    const hasThink = message.content.some((p) => p.type === 'think');
+    const hasText = message.content.some((p) => p.type === 'text' && p.text.trim().length > 0);
+    const hasToolCalls = message.toolCalls.length > 0;
+
+    if (hasThink && !hasText && !hasToolCalls) {
+      throw new APIEmptyResponseError(
+        'The API returned a response containing only thinking content ' +
+          'without any text or tool calls. This usually indicates the ' +
+          'stream was interrupted or the output token budget was exhausted ' +
+          'during reasoning.' +
+          formatFinishReasonHint(stream) +
+          ` Provider: ${provider.name}, model: ${provider.modelName}`,
+        {
+          finishReason: stream.finishReason,
+          rawFinishReason: stream.rawFinishReason,
+        },
+      );
+    }
+
+    if (callbacks?.onToolCall !== undefined) {
+      for (const toolCall of message.toolCalls) {
+        await throwIfAborted(options?.signal, stream);
+        await callbacks.onToolCall(toolCall);
+      }
+    }
+
+    let result: GenerateResult = {
+      id: stream.id,
+      message,
+      usage: stream.usage,
+      finishReason: stream.finishReason,
+      rawFinishReason: stream.rawFinishReason,
+    };
+    if (stream.diagnostics !== undefined) result = { ...result, diagnostics: stream.diagnostics };
+    if (stream.traceId !== undefined) {
+      return { ...result, traceId: stream.traceId };
+    }
+    return result;
+  } catch (error) {
+    throw attachStreamDiagnostics(error, stream.diagnostics, isAbortError(error));
   }
-  return result;
 }
 
 type CancelableStream = StreamedMessage & {

@@ -1534,6 +1534,7 @@ function TextTabView({
   const [loadingFull, setLoadingFull] = useState(false);
   const [fullError, setFullError] = useState(false);
   const fullLoadId = useRef(0);
+  const fullReadController = useRef<AbortController | null>(null);
   useEffect(() => {
     if (navigation?.line !== undefined) setMode('source');
   }, [navigation]);
@@ -1570,7 +1571,7 @@ function TextTabView({
   useEffect(() => {
     setLoadingFull(false);
     setFullError(false);
-    return () => { fullLoadId.current += 1; };
+    return () => { fullLoadId.current += 1; fullReadController.current?.abort(); fullReadController.current = null; };
   }, [client, path, snap.generation]);
 
   const dirty = snap.dirty;
@@ -1591,20 +1592,26 @@ function TextTabView({
   }, [snap.status, snap.generation, showEditor, fullText !== undefined, onReadingReady]);
   const normalizedPath = path.replaceAll('\\', '/');
   const documentDirectory = normalizedPath.slice(0, normalizedPath.lastIndexOf('/')) || '/';
-  const loadFullMarkdown = async () => {
-    if (client === undefined || controller === null || loadingFull) return;
+  const loadFullMarkdown = useCallback(async () => {
+    if (client === undefined || controller === null || fullReadController.current !== null) return;
     const loadId = ++fullLoadId.current;
+    const abort = new AbortController();
+    fullReadController.current = abort;
     setLoadingFull(true);
     setFullError(false);
     try {
-      const text = await client.readHostFile(path);
-      if (loadId === fullLoadId.current) setFullMarkdown({ controller, client, path, generation: snap.generation, text });
+      const { bytes } = await client.readHostFileBytes(path, { ...client.readingOptions(), signal: abort.signal });
+      if (loadId === fullLoadId.current && !abort.signal.aborted) setFullMarkdown({ controller, client, path, generation: snap.generation, text: new TextDecoder().decode(bytes) });
     } catch {
-      if (loadId === fullLoadId.current) setFullError(true);
+      if (loadId === fullLoadId.current && !abort.signal.aborted) setFullError(true);
     } finally {
+      if (fullReadController.current === abort) fullReadController.current = null;
       if (loadId === fullLoadId.current) setLoadingFull(false);
     }
-  };
+  }, [client, controller, path, snap.generation]);
+  useEffect(() => {
+    if (snap.status === 'ready' && snap.oversized && fullText === undefined && !fullError) void loadFullMarkdown();
+  }, [snap.status, snap.oversized, fullText, fullError, loadFullMarkdown]);
 
   return (
     <>
@@ -1707,17 +1714,8 @@ function TextTabView({
         }`} data-preview-size-notice>
           <span>{snap.oversized && fullText === undefined
             ? t('preview.oversized') : t('preview.editUnsupported')}</span>
-          {markdown && snap.oversized && fullText === undefined ? (
-            <button
-              type="button"
-              data-load-full-markdown
-              disabled={loadingFull}
-              onClick={() => { void loadFullMarkdown(); }}
-              className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-medium disabled:opacity-50"
-            >
-              {loadingFull ? t('preview.loading') : t('preview.loadFullFile')}
-            </button>
-          ) : null}
+          {loadingFull ? <span role="status">{t('preview.loading')}</span> : null}
+          {fullError ? <button type="button" data-load-full-markdown onClick={() => { void loadFullMarkdown(); }} className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-medium">{t('transcript.detail.retry')}</button> : null}
           {fullError ? <span role="alert">{t('preview.failed')}</span> : null}
         </div>
       ) : null}

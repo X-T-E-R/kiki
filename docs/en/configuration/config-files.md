@@ -109,6 +109,26 @@ command = "node ~/.kiki/hooks/check-bash.mjs"
 timeout = 5
 ```
 
+## External harness defaults
+
+An external harness (the program running the agent) can use its own configuration without a Kiki profile. For the main-agent `execution` selection, set reusable Kiki overrides under `[agent_executor_overrides.<id>.defaults]`; a session override wins over an explicitly declared profile value, which wins over these settings. Anything left unset stays with the harness's own default. Native execution keeps Kiki's existing model and profile defaults.
+
+```toml
+[agent_executor_overrides."claude-acp".defaults]
+# Optional: use the harness's model ID, not a native Kiki model alias.
+model_alias = "YOUR_HARNESS_MODEL"
+thinking_effort = "high"
+permission_mode = "auto"
+kiki_context = []
+allow_kiki_subagents = false
+```
+
+Omit model, effort and permission fields to let the harness choose them. `kiki_context` accepts `memory`, `board`, `cron`, `threads`, `history` and `hooks`; `[]` explicitly disables all groups, and `allow_kiki_subagents = false` explicitly disables delegation. An omitted profile field inherits the harness settings in this execution path. Changing settings does not rewrite an existing binding: select the execution again or explicitly rebuild its context to adopt them.
+
+`defaults.executor_prompt` accepts `delivery` (`append`, `replace` or `preamble`), `body`, `append`, `include`, and `per_engine.<id>` overrides. These fields merge individually with the selected profile, so setting only `delivery` does not erase the default body. Omitted `include` inherits; `include = []` turns off the additional sections. A profile body is used when no effective `executor_prompt.body` is set. External execution does not automatically add Kiki cognition or shared prompt fields; request the desired fields explicitly in `include`.
+
+Through [the REST API](../server/rest-api.md#sessions), update these settings with `POST /api/config` and an `agent_executor_overrides` object. A defaults field set to JSON `null` removes that saved setting; `defaults: null` removes the whole defaults block. TOML has no `null`, so remove the corresponding key when editing the file. Launch settings such as `bin_path`, `home_dir`, `env` and `args` remain separate from defaults.
+
 ## Continuity reminder cues
 
 Kiki can remind the agent to record standing instructions, find earlier decisions, update unfinished todos, and preserve working notes before or after context compaction. Reminders are appended to conversation history; they do not automatically save memories or change the system prompt. Progress reminders require `TodoList`; instruction and history reminders can also operate with approved memory access when `TodoList` is unavailable.
@@ -163,6 +183,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `retry` | `table` | — | Error-specific step retry policies → [`retry`](#retry) |
 | `request_governance` | `table` | No rules | Native model-request concurrency and waiting budgets → [`request_governance`](#request-governance) |
 | `token_counting` | `table` | — | Which context token count is reported externally → [`token_counting`](#token-counting) |
+| `transcript_memory` | `table` | — | Server-side transcript history memory budgets → [`transcript_memory`](#transcript-memory) |
 | `background` | `table` | — | Background task runtime parameters → [`background`](#background) |
 | `subagent` | `table` | — | Subagent run defaults and limits → [`subagent`](#subagent) |
 | `agents` | `table` | — | Delegation-notice defaults → [`agents`](#agents) |
@@ -180,7 +201,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | Prompt field overrides and custom variables → [`prompt`](#prompt) |
 
-The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `retry`, `token_counting`, `background`, `subagent`, `agents`, `thread_communication`, `mcp`, `tools`, `image`, `session_title`, `experimental`, `nb_search`, `permission`, `interaction`, and `prompt`.
+The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `retry`, `token_counting`, `transcript_memory`, `background`, `subagent`, `agents`, `thread_communication`, `mcp`, `tools`, `image`, `session_title`, `experimental`, `nb_search`, `permission`, `interaction`, and `prompt`.
 
 ## `providers`
 
@@ -494,6 +515,18 @@ backoff = 1000
 match = '^provider\.'
 retry = false
 ```
+
+## `transcript_memory`
+
+`transcript_memory` controls how much transcript history the server keeps in memory. All three fields are optional: an omitted field uses its default.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `tail_turns` | positive integer | `20` | How many finished turns stay resident per agent |
+| `max_agent_bytes` | positive integer | `16777216` (16 MiB) | Per-agent resident byte budget — what stays in memory. Older turns are read from disk on demand |
+| `max_detail_cache_bytes` | non-negative safe integer | `268435456` (256 MiB) | Largest single full-detail read cached at once. `0` turns that extra slot off, leaving the content to be read without being held in that cache. A changed value takes effect at the next cache admission or eviction; lowering it evicts what no longer fits, and does not cancel a read already in progress |
+
+These are server-side memory budgets, not read limits. Lowering them reduces memory use and may mean reading the same content from disk again.
 
 ## `token_counting`
 

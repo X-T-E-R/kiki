@@ -1,7 +1,8 @@
-import { IBrowserConnectionStore, IBrowserControlService, isError2, isBrowserOperation, browserToolGroup, type Scope } from '@kiki/agent-core-v2';
+import { IBrowserConnectionStore, IBrowserControlService, IBrowserSetupService, BrowserError, isError2, isBrowserOperation, browserToolGroup, type Scope } from '@kiki/agent-core-v2';
 import { ErrorCode, browserIdSchema, browserConnectionInputSchema, browserConnectionResponseSchema,
   browserDefaultInputSchema, browserControlListSchema, browserStatusSchema, browserFailureSchema,
-  browserTabsResponseSchema, browserCatalogResponseSchema, browserCatalogQuerySchema } from '@kiki/protocol';
+  browserTabsResponseSchema, browserCatalogResponseSchema, browserCatalogQuerySchema,
+  browserPresetIdSchema, browserSetupListSchema, browserSetupStatusSchema, browserSetupPrepareInputSchema, browserSetupConnectInputSchema } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { okEnvelope, errEnvelope } from '../envelope';
@@ -31,6 +32,33 @@ function protect(handler: Handler): Handler {
 export function registerBrowserRoutes(app: BrowserRouteHost, core: Scope): void {
   const control = () => core.accessor.get(IBrowserControlService);
   const store = () => core.accessor.get(IBrowserConnectionStore);
+  const setup = () => core.accessor.get(IBrowserSetupService);
+  const setupList = defineRoute({ method: 'GET', path: '/browser/setup', success: { data: browserSetupListSchema }, errors: browserRouteErrors, tags: ['browser'] }, async (req, reply) => {
+    reply.send(okEnvelope(await setup().list(), req.id));
+  });
+  app.get(setupList.path, setupList.options, protect(setupList.handler as Handler));
+  const setupStatus = defineRoute({ method: 'GET', path: '/browser/setup/{preset}', params: z.object({ preset: browserPresetIdSchema }), success: { data: browserSetupStatusSchema }, errors: browserRouteErrors, tags: ['browser'] }, async (req, reply) => {
+    reply.send(okEnvelope(await setup().status(req.params.preset), req.id));
+  });
+  app.get(setupStatus.path, setupStatus.options, protect(setupStatus.handler as Handler));
+  const setupAction = defineRoute({ method: 'POST', path: '/browser/setup/{tail}', params: z.object({ tail: z.string().min(1) }),
+    body: z.union([browserSetupPrepareInputSchema, browserSetupConnectInputSchema]), success: { data: browserSetupStatusSchema }, errors: browserRouteErrors, tags: ['browser'] }, async (req, reply) => {
+    const action = parseActionSuffix({ tail: req.params.tail, allowedActions: ['prepare', 'connect', 'cancel'], resourceLabel: 'browser setup' });
+    const preset = action.kind === 'action' ? browserPresetIdSchema.safeParse(action.id) : undefined;
+    if (action.kind !== 'action' || preset?.success !== true) throw new BrowserError('browser.invalid', 'Unknown browser setup action');
+    let result;
+    if (action.action === 'prepare') {
+      const input = browserSetupPrepareInputSchema.safeParse(req.body);
+      if (!input.success) throw new BrowserError('browser.invalid', 'Confirm installation and plugin enablement before preparing browser access');
+      result = await setup().prepare(preset.data, input.data);
+    } else if (action.action === 'connect') {
+      const input = browserSetupConnectInputSchema.safeParse(req.body);
+      if (!input.success) throw new BrowserError('browser.invalid', 'Invalid guided browser connection input');
+      result = await setup().connect(preset.data, input.data);
+    } else result = await setup().cancel(preset.data);
+    reply.send(okEnvelope(result, req.id));
+  });
+  app.post(setupAction.path, setupAction.options, protect(setupAction.handler as Handler));
   const params = z.object({ id: browserIdSchema });
   const list = defineRoute({ method: 'GET', path: '/browser/connections', success: { data: browserControlListSchema }, errors: browserRouteErrors, tags: ['browser'] }, async (req, reply) => {
     reply.send(okEnvelope(await control().list(), req.id));

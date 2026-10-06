@@ -983,6 +983,7 @@ export interface CompactionStartedEvent {
   readonly type: 'compaction.started';
   readonly trigger: 'manual' | 'auto';
   readonly instruction?: string;
+  readonly phase?: 'queued' | 'running';
 }
 
 export interface CompactionBlockedEvent {
@@ -992,10 +993,13 @@ export interface CompactionBlockedEvent {
 
 export interface CompactionCancelledEvent {
   readonly type: 'compaction.cancelled';
+  readonly trigger?: 'manual' | 'auto';
+  readonly reason?: string;
 }
 
 export interface CompactionCompletedEvent {
   readonly type: 'compaction.completed';
+  readonly trigger?: 'manual' | 'auto';
   readonly result: CompactionResult;
 }
 
@@ -2079,6 +2083,7 @@ export const compactionStartedEventSchema = z.object({
   type: z.literal('compaction.started'),
   trigger: z.enum(['manual', 'auto']),
   instruction: z.string().optional(),
+  phase: z.enum(['queued', 'running']).optional(),
 }) satisfies z.ZodType<CompactionStartedEvent>;
 
 export const compactionBlockedEventSchema = z.object({
@@ -2088,10 +2093,13 @@ export const compactionBlockedEventSchema = z.object({
 
 export const compactionCancelledEventSchema = z.object({
   type: z.literal('compaction.cancelled'),
+  trigger: z.enum(['manual', 'auto']).optional(),
+  reason: z.string().optional(),
 }) satisfies z.ZodType<CompactionCancelledEvent>;
 
 export const compactionCompletedEventSchema = z.object({
   type: z.literal('compaction.completed'),
+  trigger: z.enum(['manual', 'auto']).optional(),
   result: compactionResultSchema,
 }) satisfies z.ZodType<CompactionCompletedEvent>;
 

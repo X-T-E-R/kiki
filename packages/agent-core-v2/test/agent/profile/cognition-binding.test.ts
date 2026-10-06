@@ -2,9 +2,11 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Event } from '#/_base/event';
+import { IWireService } from '#/wire/wire';
+import { IConfigService } from '#/app/config/config';
 import { DEFAULT_AGENT_PROFILE_NAME, normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { CognitionConfig, ModelRecord } from '#/kosong/model/model';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -22,6 +24,7 @@ import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalo
 
 import {
   createTestAgent,
+  InMemoryWireRecordPersistence,
   homeDirServices,
   sessionService,
   type TestAgentContext,
@@ -59,11 +62,128 @@ describe('per-model cognition overlay', () => {
           cognition === undefined
             ? current!
             : { ...current!, cognition },
-        ...extraModels,
+        ...Object.fromEntries(Object.entries(extraModels ?? {}).map(([alias, model]) => [alias, { defaultEffort: 'off', ...model }])),
       },
     };
     return ctx;
   }
+
+  it.each(['modified', 'deleted'] as const)('cold-recovers frozen prompt inputs after their files are %s', async (change) => {
+    const persistence = new InMemoryWireRecordPersistence();
+    await writeFile(join(homeDir, 'cognition/anchor.md'), 'OLD ANCHOR');
+    await writeFile(join(homeDir, 'fields.toml'), 'schema_version = 1\n[fields]\n"system.shared" = "OLD SHARED"\n"tool.read.description" = "OLD READ"');
+    const create = () => {
+      ctx = createTestAgent({ persistence, autoConfigure: false }, homeDirServices(homeDir));
+      ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, [MOCK_MODEL]: { ...ctx.kimiConfig.models![MOCK_MODEL]!, cognition: { overlay: 'cognition/overlay.md', steering: 'cognition/steering.md', anchor: 'cognition/anchor.md' }, promptOverrides: { files: ['fields.toml'] } } } };
+      return ctx;
+    };
+    let agent = create();
+    let profile = agent.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    const prompt = profile.getSystemPrompt();
+    const fields = profile.getPromptFieldSnapshot();
+    const cognition = await profile.getCognitionBinding();
+    await agent.get(IWireService).flush();
+    await agent.dispose();
+    for (const file of ['cognition/overlay.md', 'cognition/steering.md', 'cognition/anchor.md', 'fields.toml']) {
+      if (change === 'deleted') await rm(join(homeDir, file));
+      else await writeFile(join(homeDir, file), file.endsWith('.toml') ? 'schema_version = 1\n[fields]\n"system.shared" = "NEW SHARED"\n"tool.read.description" = "NEW READ"' : 'NEW CONTENT');
+    }
+    agent = create();
+    await agent.restorePersisted();
+    profile = agent.get(IAgentProfileService);
+    await profile.syncBindingMetadata();
+    expect(profile.getSystemPrompt()).toBe(prompt);
+    expect(profile.getPromptFieldSnapshot()).toEqual(fields);
+    expect(await profile.getCognitionBinding()).toEqual(cognition);
+    expect(await profile.preparePromptConfiguration()).toBe(false);
+    agent.get(IAgentModelSteeringService);
+    await runWillBeginStepHooks(agent.get(IAgentLoopService), true);
+    expect(agent.get(IAgentContextMemoryService).get().some((message) => message.origin?.kind === 'injection' && message.origin.variant === 'model_steering' && message.content.some((part) => part.type === 'text' && part.text === 'FLASH STEERING'))).toBe(true);
+    expect(await agent.get(IAgentCognitionAnchorService).project({ sourceType: 'turn', turnId: 0, step: 1, hasExplicitSystemPrompt: false })).toBe('OLD ANCHOR');
+  });
+
+  it('keeps prompt variables and overrides frozen until an explicit context rebuild', async () => {
+    const agent = createBoundAgent({ overlay: 'cognition/overlay.md' });
+    const config = agent.get(IConfigService);
+    const get = config.get.bind(config);
+    let value = 'OLD VARIABLE';
+    vi.spyOn(config, 'get').mockImplementation(((domain: string) => domain === 'prompt'
+      ? { variables: { example: value }, overrides: { fields: { 'system.shared': '${example}', 'tool.read.description': '${example}' } } }
+      : get(domain)) as IConfigService['get']);
+    const profile = agent.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    value = 'NEW VARIABLE';
+    expect(await profile.preparePromptConfiguration()).toBe(false);
+    await profile.refreshSystemPrompt();
+    expect(profile.getSystemPrompt()).toContain('OLD VARIABLE');
+    expect(profile.getSystemPrompt()).not.toContain('NEW VARIABLE');
+    expect(profile.data().boundProfile?.promptBase?.inputs?.variables).toEqual({ example: 'OLD VARIABLE' });
+    await profile.rebuildPromptContext();
+    expect(profile.getSystemPrompt()).toContain('NEW VARIABLE');
+    expect(profile.data().boundProfile?.promptBase?.inputs?.variables).toEqual({ example: 'NEW VARIABLE' });
+  });
+
+  it.each(['body-only', 'unchanged-projections', 'missing-projections', 'corrupt-inputs', 'pre-diagnostics'] as const)('recovers legacy evidence or reports the exact missing inputs: %s', async (format) => {
+    const persistence = new InMemoryWireRecordPersistence();
+    const cognition = { overlay: 'cognition/overlay.md', steering: format.includes('projections') ? 'cognition/steering.md' : undefined };
+    const create = () => {
+      ctx = createTestAgent({ persistence, autoConfigure: false }, homeDirServices(homeDir));
+      ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, [MOCK_MODEL]: { ...ctx.kimiConfig.models![MOCK_MODEL]!, cognition } } };
+      return ctx;
+    };
+    let agent = create();
+    const profile = agent.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    const prompt = profile.getSystemPrompt();
+    await agent.get(IWireService).flush();
+    await agent.dispose();
+    for (const record of persistence.records) {
+      if (record.type !== 'profile.bind') continue;
+      const bound = record['boundProfile'] as { promptBase: { inputs?: { revision: string }; promptDiagnostics?: unknown } };
+      if (format === 'corrupt-inputs') bound.promptBase.inputs!.revision = 'corrupt';
+      else delete bound.promptBase.inputs;
+      if (format === 'pre-diagnostics') delete bound.promptBase.promptDiagnostics;
+    }
+    if (format !== 'unchanged-projections') await rm(join(homeDir, 'cognition'), { recursive: true });
+    agent = create();
+    await agent.restorePersisted();
+    const restored = agent.get(IAgentProfileService);
+    if (format === 'missing-projections') await expect(restored.syncBindingMetadata()).rejects.toThrow(/legacy binding.*cognition.steering/);
+    else if (format === 'corrupt-inputs') await expect(restored.syncBindingMetadata()).rejects.toThrow(/saved prompt inputs are incomplete or invalid/);
+    else {
+      await restored.syncBindingMetadata();
+      expect(restored.getSystemPrompt()).toBe(prompt);
+      expect(await restored.preparePromptConfiguration()).toBe(false);
+    }
+  });
+
+  it.each([false, true])('commits explicit model resume with new_window=%s and freezes its new inputs for cold recovery', async (newWindow) => {
+    const persistence = new InMemoryWireRecordPersistence();
+    const create = () => {
+      ctx = createTestAgent({ persistence, autoConfigure: false }, homeDirServices(homeDir));
+      ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, [MOCK_MODEL]: { ...ctx.kimiConfig.models![MOCK_MODEL]!, cognition: { overlay: 'cognition/overlay.md' } }, [OTHER_MODEL]: { provider: 'test-provider', model: OTHER_MODEL, maxContextSize: 1_000_000, defaultEffort: 'off', cognition: { overlay: 'cognition/steering.md' } } } };
+      return ctx;
+    };
+    let agent = create();
+    const profile = agent.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    await agent.get(ISessionMetadata).registerAgent('main', { type: 'main' });
+    await expect(profile.prepareResumeBinding({ modelAlias: OTHER_MODEL })).rejects.toThrow(/allow_model_change/);
+    const binding = await profile.prepareResumeBinding({ modelAlias: OTHER_MODEL, allowModelChange: !newWindow, newWindow });
+    await agent.get(IAgentModelSwitchService).execute({ operationId: `frozen-resume-${newWindow}`, model: binding.model, thinking: binding.thinking, mode: newWindow ? 'fresh' : 'direct' }, { binding });
+    expect(profile.getSystemPrompt()).toContain('FLASH STEERING');
+    expect(profile.getSystemPrompt()).not.toContain('FLASH OVERLAY');
+    await agent.get(IWireService).flush();
+    await agent.dispose();
+    await rm(join(homeDir, 'cognition'), { recursive: true });
+    agent = create();
+    await agent.restorePersisted();
+    const restored = agent.get(IAgentProfileService);
+    await restored.syncBindingMetadata();
+    expect(restored.data().modelAlias).toBe(OTHER_MODEL);
+    expect(restored.getSystemPrompt()).toContain('FLASH STEERING');
+  });
 
   it.each(['main', 'sub', 'independent'] as const)('keeps common overlays for two models but delivers main-only cues only to %s', async (position) => {
     await writeFile(join(homeDir, 'cognition/second-steering.md'), 'SECOND MAIN CUE');

@@ -15,6 +15,7 @@ import {
 } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import {
   constrainPermissionMode,
   IAgentPermissionModeService,
@@ -64,6 +65,7 @@ export class AgentPermissionModeService extends Service implements IAgentPermiss
     const changed = effective !== previousMode;
     if (!changed && this.agentState.get(permissionModeConfiguredKey)) return;
     void this.dispatcher.dispatch(new PermissionSetMode({ mode: effective }));
+    void this.dispatcher.dispatch(new AgentStatusUpdated({ permission: effective }));
     if (changed) this._onDidChangeMode.fire({ mode: effective, previousMode });
   }
 

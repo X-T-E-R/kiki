@@ -17,6 +17,8 @@ export interface ISessionCronService {
   addTask(init: CronTaskInit): Promise<CronTask>;
   removeTasks(ids: readonly string[]): Promise<readonly string[]>;
   setTaskPaused(id: string, paused: boolean): Promise<CronTask | undefined>;
+  updateTask(id: string, patch: Partial<Pick<CronTask, 'cron' | 'prompt' | 'recurring' | 'paused' | 'tags'>>): Promise<CronTask | undefined>;
+  syncTaskFromStore(id: string): Promise<void>;
   fireTaskNow(id: string): Promise<boolean>;
   getTask(id: string): CronTask | undefined;
   list(): readonly CronTask[];

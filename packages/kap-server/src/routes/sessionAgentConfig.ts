@@ -2,6 +2,7 @@ import {
   DEFAULT_AGENT_PROFILE_NAME,
   ErrorCodes,
   Error2,
+  IAgentExecutionService,
   IAgentGoalService,
   IAgentLifecycleService,
   IAgentPermissionModeService,
@@ -26,9 +27,23 @@ export async function applySessionAgentConfig(
   const agent = await ensureMainAgent(session);
 
   const profile = agent.accessor.get(IAgentProfileService);
-  let thinkingConsumed = false;
+  const execution = agentConfig.execution ?? ((agentConfig.model !== undefined || agentConfig.thinking !== undefined || agentConfig.permission_mode !== undefined) && agentConfig.profile === undefined
+    ? profile.data().execution?.selection : undefined);
+  let selectionConsumed = false;
+  if (execution !== undefined) {
+    if (agent.accessor.get(IAgentExecutionService).status().state !== 'idle') {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Executor selection requires an idle agent; submit it with the next user message instead');
+    }
+    await profile.bind({ execution: { ...execution, overrides: { ...execution.overrides,
+      permission_mode: agentConfig.permission_mode ?? execution.overrides?.permission_mode,
+    } }, model: agentConfig.model || undefined, thinking: agentConfig.thinking });
+    const permission = profile.data().execution?.effective.permission_mode;
+    if (permission !== undefined) agent.accessor.get(IAgentPermissionModeService).setMode(permission);
+    selectionConsumed = true;
+  }
+  let thinkingConsumed = selectionConsumed;
   const currentProfile = profile.data().profileName ?? DEFAULT_AGENT_PROFILE_NAME;
-  if (agentConfig.profile !== undefined && currentProfile !== agentConfig.profile) {
+  if (!selectionConsumed && agentConfig.profile !== undefined && currentProfile !== agentConfig.profile) {
     try {
       const current = profile.data();
       const requestedModel = agentConfig.model === '' ? undefined : agentConfig.model;
@@ -55,7 +70,7 @@ export async function applySessionAgentConfig(
   if (agentConfig.profile !== undefined && currentProfile === agentConfig.profile && profile.data().personaId !== undefined) {
     profile.update({ personaOverrides: { ...profile.data().personaOverrides, profile: agentConfig.profile } });
   }
-  if (agentConfig.model !== undefined && agentConfig.model !== '') {
+  if (!selectionConsumed && agentConfig.model !== undefined && agentConfig.model !== '') {
     await profile.setModel(agentConfig.model);
   }
   if (agentConfig.thinking !== undefined && !thinkingConsumed) {

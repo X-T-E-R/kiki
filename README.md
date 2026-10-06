@@ -63,6 +63,22 @@ Memory is what outlives the session: preferences, feedback, verified project fac
 
 Each workspace also has a board where requirements are cards that link to the sessions working on them, and the agent reads and updates it. Scheduled prompts cover the recurring case: a prompt fires on a cron schedule while a Kiki process holds that session open. See [Work that runs long](https://x-t-e-r.github.io/kiki/en/features/long-work).
 
+## Know what it costs, and where the numbers go
+
+The **Usage** page is one page with three tabs, because those are three different moments.
+
+**History** breaks a date range into tokens, cost, and cache hit rate, with separate completeness indicators — a provider that never returned usage reads as unknown rather than as a real zero — and ranks sessions by cost so the expensive one is the first row. Every filter rides the URL, so a view you settled on is a link you can paste.
+
+**Live** shows what this service is running and holding, and names the concurrency rule holding each waiting request, with that same rule editable right below. The cap counts requests, not money, and it governs the model requests this Kiki sends itself: hand a turn to Codex, Claude Code, or Grok Build as the engine and those requests are the engine's own, outside these rules.
+
+**External sync** sends the numbers to a webhook you control, a VibeCafe account, or a script you approve — model, UTC half-hour, four token counts, quality, and a local cost estimate, never a prompt, answer, title, or path. A script runs as your own OS user, so it is not a sandbox. This service sends no usage batches until the server enables `usage_export` and you preview the exact payload and agree once.
+
+![The usage page's Live tab: a request waiting on a named concurrency rule, with the rule list below showing one enabled and one paused.](marketing/shots/ux-usage-live.en.light.png)
+
+![The usage page's External sync tab: a webhook that is active, a VibeCafe connection whose credential was refused, and a script that is paused.](marketing/shots/ux-usage-export.en.light.png)
+
+See [The daily driver](https://x-t-e-r.github.io/kiki/en/features/daily) and [`kiki usage-export`](https://x-t-e-r.github.io/kiki/en/reference/command#kiki-usage-export).
+
 ## Roles you can talk to
 
 A **persona** is a long-term identity — a name, an avatar, what it is for, the standing rules for how it works, and its own memory — stored as a Markdown file you can read and edit. Clicking its name lands you in the same conversation every time, so "ask Lin Lan" means one thing; the same persona can hold several conversations at once for different projects.

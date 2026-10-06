@@ -1,4 +1,4 @@
-import { AcpClientError } from '@kiki/acp-client';
+import { AcpClientError, parseExecutorSessionRefEnvelope } from '@kiki/acp-client';
 import type {
   AcpOpenSessionOptions,
   AcpOpenSessionResult,
@@ -17,6 +17,7 @@ import type {
 import { describe, expect, it, vi } from 'vitest';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { coldPromptFixture } from './coldPromptFixture';
+import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 import { attachExternalMailboxHarness } from './mailboxHarness';
 
 import { buildModeOption } from '../../../../acp-server/src/config-options';
@@ -227,6 +228,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
       }
       if (event instanceof ExecutorSessionUpdated) {
         state.values.set(externalExecutorKey, {
+          executionGeneration: event.executionGeneration,
           executorId: event.executorId,
           descriptorRevision: event.descriptorRevision,
           bindingFingerprint: event.bindingFingerprint,
@@ -616,6 +618,83 @@ const mappingEvents: NormalizedExecutorEvent[] = [
 ];
 
 describe('ACP external executor', () => {
+  it('does not splice old Kiki reminders or pending collaboration mail into a bare user turn', async () => {
+    const harness = createExecutionHarness({ unpinModel: true, thinkingEffort: 'off',
+      history: [{ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'OLD_CONTEXT' }], origin: { kind: 'injection', variant: 'goal_state' } }],
+      todos: [{ title: 'OLD_TODO', status: 'pending' }],
+    });
+    const profile = harness.ix.get(IAgentProfileService);
+    const original = profile.data();
+    const execution = resolveExecutionBinding({ executor: original.executorId! }, undefined, undefined, undefined);
+    vi.spyOn(profile, 'data').mockReturnValue({ ...original, execution, modelAlias: undefined, thinkingLevel: 'off', systemPrompt: '', kikiContext: [], allowKikiSubagents: false });
+    const reconcile = vi.spyOn(harness.ix.get(IAgentContextInjectorService), 'reconcileAllAtSafeBoundary');
+    const mailbox = attachExternalMailboxHarness(harness.ix, 'external-agent');
+    try {
+      await mailbox.messaging.send({ sourceAgentId: 'main', sourceTaskName: 'root', targetAgentId: 'external-agent',
+        targetTaskName: 'external-agent', content: 'OLD_MAIL', idempotencyKey: 'old-mail', waitForRunningDelivery: true });
+      await harness.execution.run({ kind: 'prompt', prompt: 'ONLY_NEW_USER' }, { signal: new AbortController().signal });
+      expect(harness.starts[0]?.prompt).toBe('ONLY_NEW_USER');
+      expect(reconcile).not.toHaveBeenCalled();
+      expect(mailbox.delivered()).toBe(false);
+    } finally { mailbox.dispose(); await harness.execution.shutdown(); harness.ix.dispose(); }
+  });
+
+  it('keeps direct ACP factory payload bare across a durable generation boundary', async () => {
+    const harness = createHarness({ unpinModel: true, thinkingEffort: 'off',
+      mcpServers: { relay: { transport: 'stdio', command: 'node' } },
+      history: [{ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'OLD_KIKI_HISTORY' }] }],
+      prior: { executorId: 'old-executor', descriptorRevision: 'old-revision', sessionEpoch: 3,
+        sessionRef: { executorId: 'old-executor', version: 1, ref: { sessionId: 'old-session' } } },
+    });
+    const execution = resolveExecutionBinding({ executor: 'example-acp' }, undefined, undefined, undefined);
+    const context = { ...harness.executorContext, binding: { ...harness.executorContext.binding, execution,
+      modelAlias: undefined, thinkingLevel: 'off', systemPrompt: '', kikiContext: [], allowKikiSubagents: false } };
+    const session = harness.createSession(context);
+    try {
+      const handle = await session.run({ kind: 'prompt', prompt: 'ONLY_NEW_USER' }, { signal: new AbortController().signal });
+      await handle.completion;
+      expect(harness.opens[0]).toMatchObject({ cwd: harness.workspace.workDir, mcpServers: [] });
+      expect(harness.opens[0]?.sessionRef).toBeUndefined();
+      expect(harness.opens[0]?.systemPromptOverride).toBeUndefined();
+      expect(harness.selections).toEqual([]);
+      expect(harness.starts[0]?.prompt).toBe('ONLY_NEW_USER');
+      expect(harness.state.get(externalExecutorKey)).toMatchObject({ executionGeneration: 1, sessionEpoch: 4 });
+      const persistedRef = harness.state.get(externalExecutorKey).sessionRef;
+      expect(() => parseExecutorSessionRefEnvelope(persistedRef)).not.toThrow();
+      expect(persistedRef?.ref).not.toHaveProperty('localSource');
+      await session.shutdown();
+      if (persistedRef === undefined) throw new Error('Expected saved remote reference');
+      harness.state.set(externalExecutorKey, { ...harness.state.get(externalExecutorKey),
+        sessionRef: { ...persistedRef, ref: { ...persistedRef.ref, localSource: undefined } } });
+      const cold = harness.createSession(context);
+      try {
+        const next = await cold.run({ kind: 'prompt', prompt: 'COLD_USER' }, { signal: new AbortController().signal });
+        await next.completion;
+        expect(harness.opens[1]?.sessionRef).toMatchObject({ ref: { sessionId: 'remote-2' } });
+        expect(() => parseExecutorSessionRefEnvelope(harness.opens[1]?.sessionRef)).not.toThrow();
+        expect(harness.starts[1]?.prompt).toBe('COLD_USER');
+      } finally { await cold.shutdown(); }
+    } finally { await session.shutdown(); }
+  });
+  it('sends only explicitly selected ACP controls without adding a Kiki preamble', async () => {
+    const harness = createHarness();
+    const execution = resolveExecutionBinding({ executor: 'example-acp', overrides: {
+      model: 'model-a', thinking: 'high', permission_mode: 'auto',
+    } }, undefined, undefined, undefined);
+    const session = harness.createSession({ ...harness.executorContext, binding: {
+      ...harness.executorContext.binding, execution, systemPrompt: '', kikiContext: [], allowKikiSubagents: false,
+    } });
+    try {
+      const handle = await session.run({ kind: 'prompt', prompt: 'ONLY_USER' }, { signal: new AbortController().signal });
+      await handle.completion;
+      expect(harness.selections).toEqual([
+        { configId: 'model-id', value: 'model-a' }, { configId: 'thought-id', value: 'high' },
+        { configId: 'auto_approve', value: false },
+      ]);
+      expect(harness.starts[0]?.prompt).toBe('ONLY_USER');
+    } finally { await session.shutdown(); }
+  });
+
   it.each(['0.37.0', '0.39.0', undefined])('forwards MCP to Kimi independently of its probed version %s', async (executorVersion) => {
     const harness = createHarness({
       executorId: 'kimi-acp', executorVersion,
@@ -1856,7 +1935,7 @@ describe('ACP external executor', () => {
     expect(harness.starts).toHaveLength(1);
   });
 
-  it.each(['sub', 'independent'] as const)('sends the refreshed cold %s identity through the ACP preamble', async (position) => {
+  it.each(['sub', 'independent'] as const)('sends the saved cold %s identity through the ACP preamble', async (position) => {
     const harness = createExecutionHarness();
     const adapter = harness.ix.get(IAgentProfileService);
     const cold = await coldPromptFixture(position, adapter.data(), harness.ix.get(IAgentExecutorRegistry));
@@ -1866,9 +1945,11 @@ describe('ACP external executor', () => {
     try {
       const run = await harness.execution.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
       const sent = JSON.stringify(harness.starts[0]);
-      expect(sent).toContain('Role NEW');
-      expect(sent).not.toContain('Role OLD');
+      expect(harness.starts[0]?.prompt).toContain(cold.before.systemPrompt);
+      expect(sent).toContain('Role OLD');
+      expect(sent).not.toContain('Role NEW');
       expect(sent).not.toContain('SHARED_NEW');
+      expect(cold.profile.data().boundProfile?.promptBase?.inputs).toEqual(cold.before.boundProfile?.promptBase?.inputs);
       const snippet = cold.before.boundProfile?.promptBase?.delegationSnippet;
       expect(snippet).toBeTruthy();
       expect(sent).not.toContain(snippet!);

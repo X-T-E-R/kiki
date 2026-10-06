@@ -1735,3 +1735,33 @@ describe('applyNewestAgentPage / resetAgentHistoryCache', () => {
     expect(resetAgentHistoryCache(cache, 'agent-1')).toBe(cache);
   });
 });
+
+
+describe('historical metadata roster', () => {
+  const at = '2026-01-01T00:00:00.000Z';
+  const end = '2026-01-01T00:01:00.000Z';
+  const registered = (id: string, status: SnapshotSubagent['status'] = 'completed'): SnapshotSubagent => ({
+    id, agent_id: id, session_id: 'fixture-session', kind: 'subagent', description: 'Protocol investigation',
+    label: 'Protocol investigation', profile: 'researcher', model: 'fixture/model',
+    status, live: false, status_source: 'metadata', name_source: 'user_label',
+    activity_status: status === 'running' ? 'unknown' : status,
+    created_at: at, completed_at: status === 'running' ? undefined : end,
+  });
+  const main = (state: 'running' | 'completed' = 'running', startedAt = at): AgentTranscriptSnapshot => ({
+    items: [], tasks: [{ taskId: 'old-dispatch', kind: 'subagent', state, detached: false,
+      agentId: 'child', startedAt, outputTail: '' }], interactions: [], attachments: [], todos: [], prompts: [], meta: {},
+  });
+
+  it('retains named terminal inventory rows and outranks a historical running dispatch without loading child bodies', () => {
+    const forest = sessionAgentForestFromAgentSnapshots(new Map([['main', main()]]), [registered('child'), registered('unopened', 'failed')]);
+    expect(forest.byId['child']).toMatchObject({ label: 'Protocol investigation', name: 'Protocol investigation', status: 'completed', busy: false, model: 'fixture/model' });
+    expect(forest.byId['unopened']).toMatchObject({ label: 'Protocol investigation', status: 'failed', busy: false, startedAt: undefined });
+  });
+
+  it('does not time a cold unfinished registration as running, and accepts a newer live generation', () => {
+    const cold = sessionAgentForestFromAgentSnapshots(new Map([['main', main()]]), [registered('child', 'running')]);
+    expect(cold.byId['child']).toMatchObject({ status: 'unknown', busy: false, label: 'Protocol investigation' });
+    const live = sessionAgentForestFromAgentSnapshots(new Map([['main', main('running', '2026-01-01T00:02:00.000Z')]]), [registered('child')]);
+    expect(live.byId['child']).toMatchObject({ status: 'running', busy: true, startedAt: '2026-01-01T00:02:00.000Z' });
+  });
+});

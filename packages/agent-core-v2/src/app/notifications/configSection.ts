@@ -22,9 +22,9 @@ export type NotificationsConfig = z.infer<typeof NotificationsConfigSchema>;
 
 export const DEFAULT_NOTIFICATIONS_CONFIG: NotificationsConfig = {
   global: {
-    enabled: false,
+    enabled: true,
     suppress_viewing_session: true,
-    min_work_ms: 30_000,
+    min_work_ms: 0,
     work_stable_ms: 3_000,
     question_delay_ms: 10_000,
   },

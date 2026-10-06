@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { executionBindingWireSchema as executionBindingSchema } from '../execution.js';
 
 import { tokenUsageSchema } from '../agent/schemas.js';
 import { noResult } from '../helpers.js';
@@ -19,6 +20,7 @@ export const negotiatedExecutorSchema = z.object({
 });
 
 export const agentMetaSchema = z.object({
+  execution: executionBindingSchema.optional(),
   homedir: z.string().optional(),
   type: z.enum(['main', 'sub', 'independent']).optional(),
   parentAgentId: z.union([z.string(), z.null()]).optional(),
@@ -58,6 +60,7 @@ export const sessionMetaSchema = z.object({
   delivery: z.enum(['reply', 'message']).optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
+  activityUpdatedAt: z.number().optional(),
   archived: z.boolean(),
   archivedAt: z.number().optional(),
   cwd: z.string().optional(),
@@ -77,6 +80,7 @@ export const sessionMetaPatchSchema = z.object({
   lastPrompt: z.string().optional(),
   delivery: z.enum(['reply', 'message']).optional(),
   updatedAt: z.number().optional(),
+  activityUpdatedAt: z.number().optional(),
   archived: z.boolean().optional(),
   archivedAt: z.number().optional(),
   cwd: z.string().optional(),
@@ -98,6 +102,7 @@ export const sessionMetaKeySchema = z.enum([
   'delivery',
   'createdAt',
   'updatedAt',
+  'activityUpdatedAt',
   'archived',
   'archivedAt',
   'cwd',

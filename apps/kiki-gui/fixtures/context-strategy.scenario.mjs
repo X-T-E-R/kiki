@@ -4,7 +4,7 @@
  * `…/auto-compact` (scripts/fixture-auto-compact.mjs) and
  * `…/context-strategy` (scripts/fixture-context-strategy.mjs).
  *
- *   - "strategy timeline"  built-in default (summarize); the timeline holds a
+ *   - "strategy timeline"  built-in default (auto); the timeline holds a
  *                          summarize, a fresh, a fresh→summarize fallback and
  *                          a summarize→fresh rescue compaction marker;
  *   - "from profile"       profile `builder` sets fresh;

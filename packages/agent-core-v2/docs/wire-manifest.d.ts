@@ -75,10 +75,10 @@
 //   prompt.model_switch_status         prompt.modelSwitches                                                                                                                                                                 src/agent/prompt/modelSwitchQueueOps.ts
 //   prompt.moved                       (none)                                                                                                                                                                               src/agent/prompt/promptService.ts
 //   prompt.outcome_committed           prompt.identity                                                                                                                                                                      src/agent/prompt/promptReplay.ts
-//   prompt.replaced                    (none)                                                                                                                                                                               src/agent/prompt/promptService.ts
+//   prompt.replaced                    prompt.identity                                                                                                                                                                      src/agent/prompt/promptService.ts
 //   prompt.retry_committed             promptRetryReceipt                                                                                                                                                                   src/agent/prompt/promptOps.ts
 //   prompt.steered                     promptResolution                                                                                                                                                                     src/agent/prompt/promptService.ts
-//   prompt.timing_changed              (none)                                                                                                                                                                               src/agent/prompt/promptService.ts
+//   prompt.timing_changed              prompt.identity                                                                                                                                                                      src/agent/prompt/promptService.ts
 //   runtime.set_binding                runtimeBinding                                                                                                                                                                       src/agent/runtimeBinding/runtimeBindingOps.ts
 //   session.delivery                   (none)                                                                                                                                                                               src/agent/delivery/deliveryReminder.ts
 //   staleGuard.cleared                 staleGuard                                                                                                                                                                           src/features/staleGuard/staleGuardOps.ts
@@ -169,6 +169,7 @@ interface AutoCompactOverrideChangedPayload {
  */
 interface ConfigUpdatePayload {
   _name: 'config.update';
+  execution?: import('@kiki/protocol').executionBindingSchema;
   toolOverride?: {
     tools?: string[];
     disallowedTools?: string[];
@@ -341,6 +342,7 @@ interface ExecutorRuntimeUpdatePayload {
  */
 interface ExecutorSessionUpdatedPayload {
   _name: 'executor.session.updated';
+  executionGeneration?: number;
   executorId: string;
   descriptorRevision: string;
   bindingFingerprint?: string;
@@ -392,6 +394,7 @@ interface ForkedPayload {
  */
 interface FullCompactionBeginPayload {
   _name: 'full_compaction.begin';
+  queued?: boolean;
   instruction?: string;
   strategy?: 'summarize' | 'relay';
   source: 'manual' | 'auto';
@@ -403,6 +406,7 @@ interface FullCompactionBeginPayload {
  */
 interface FullCompactionCancelPayload {
   _name: 'full_compaction.cancel';
+  queued?: boolean;
 }
 
 /**
@@ -696,6 +700,7 @@ interface PluginSessionStartPayload {
  */
 interface ProfileBindPayload {
   _name: 'profile.bind';
+  execution?: import('@kiki/protocol').executionBindingSchema;
   toolOverride?: {
     tools?: string[];
     disallowedTools?: string[];
@@ -888,6 +893,7 @@ interface PromptEnqueuedPayload {
   };
   /** PromptExecutionBinding */
   execution?: {
+    execution?: import('@kiki/protocol').ExecutionSelection;
     afterModelSwitch?: string;
     personaGreetingReply?: boolean;
     profile?: string;
@@ -1017,7 +1023,7 @@ interface PromptOutcomeCommittedPayload {
 }
 
 /**
- * states: (none)
+ * states: prompt.identity
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptReplacedPayload {
@@ -1057,6 +1063,7 @@ interface PromptReplacedPayload {
   };
   /** PromptExecutionBinding */
   execution?: {
+    execution?: import('@kiki/protocol').ExecutionSelection;
     afterModelSwitch?: string;
     personaGreetingReply?: boolean;
     profile?: string;
@@ -1101,7 +1108,7 @@ interface PromptSteeredPayload {
 }
 
 /**
- * states: (none)
+ * states: prompt.identity
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptTimingChangedPayload {

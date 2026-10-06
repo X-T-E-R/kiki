@@ -438,6 +438,7 @@ describe('AgentExecutorRegistryService', () => {
         home_dir: 'C:/codex-home',
         env: { CODEX_TOKEN: 'fixture-token' },
         args: ['--profile', 'fixture'],
+        defaults: { model_alias: 'vendor-model', thinking_effort: 'high', permission_mode: 'auto', kiki_context: [], allow_kiki_subagents: false },
       },
     };
     const runtime = AgentExecutorOverridesSchema.parse(agentExecutorOverridesFromToml(toml));
@@ -448,11 +449,26 @@ describe('AgentExecutorRegistryService', () => {
         homeDir: 'C:/codex-home',
         env: { CODEX_TOKEN: 'fixture-token' },
         args: ['--profile', 'fixture'],
+        defaults: { model_alias: 'vendor-model', thinking_effort: 'high', permission_mode: 'auto', kiki_context: [], allow_kiki_subagents: false },
       },
     });
     expect(agentExecutorOverridesToToml(runtime)).toEqual(toml);
     expect(AgentExecutorOverrideSchema.safeParse({ binPath: 'x', unsupported: true }).success).toBe(false);
     expect(AgentExecutorOverridesSchema.safeParse({ 'codex-acp': { env: { TOKEN: 1 } } }).success).toBe(false);
+  });
+
+  it('removes null harness defaults while preserving explicit empty and false settings', async () => {
+    const { ConfigRegistry } = await import('#/app/config/configService');
+    const registry = new ConfigRegistry();
+    try {
+      const base = { 'example-acp': { binPath: 'fixture', defaults: { model_alias: 'old-model', thinking_effort: 'high',
+        kiki_context: ['memory'], allow_kiki_subagents: true } } };
+      const merged = registry.validate(AGENT_EXECUTOR_OVERRIDES_SECTION, registry.merge(AGENT_EXECUTOR_OVERRIDES_SECTION, base,
+        { 'example-acp': { defaults: { model_alias: null, thinking_effort: null, kiki_context: [], allow_kiki_subagents: false } } }));
+      expect(merged).toEqual({ 'example-acp': { binPath: 'fixture', defaults: { kiki_context: [], allow_kiki_subagents: false } } });
+      expect(registry.validate(AGENT_EXECUTOR_OVERRIDES_SECTION, registry.merge(AGENT_EXECUTOR_OVERRIDES_SECTION, merged,
+        { 'example-acp': { defaults: null } }))).toEqual({ 'example-acp': { binPath: 'fixture' } });
+    } finally { registry.dispose(); }
   });
 
   it('maps an override home and environment into the executor process environment', () => {

@@ -32,6 +32,16 @@ Two features carry work beyond a single conversation. Both are listed globally r
 
 ![The scheduled tasks panel, with enabled one-shot and recurring entries above a paused one, and run-now, pause, resume, and delete per entry.](/shots/long-work/wl-20261005-longwork-scheduled.en.png)
 
+### Managing a schedule by hand
+
+The scheduled-tasks page is also where you change a schedule yourself. Every entry leads with when it runs, in words rather than a cron expression: "every hour on the hour", "every day at 09:00", "every Monday at 08:30". The expression is still there, one click away in the entry's detail panel, along with the prompt in full, the owning conversation, and the moment the server computed for the next run.
+
+**New scheduled task** creates one, and **Edit** changes one. The form asks whether the task runs once or on a schedule, then for the repeat: every N hours, a time each day, days of the week, or a day of the month. You pick the conversation it belongs to, searchable by title and grouped by workspace, because that is where its output arrives.
+
+A schedule more specific than those controls — several times a day, a day of the month pinned to a weekday — opens on the cron expression itself and is saved exactly as written. Editing such a task never quietly turns it into a simpler rule. A save the server refuses leaves everything you typed in the form, so a rejected change costs you nothing to retry.
+
+**Run now** sits on its own line at the bottom left of an entry, away from pause and delete: it runs the prompt once without touching the schedule. Rebinding an existing task to another conversation stays inside the task's own workspace.
+
 **The task board.** Each workspace has a board where requirements are cards, and each card links to the sessions working on it. Cards are persistent requirements, not agent runs — reading a card does not change it, and the board does not update from todo lists. The main agent reads and writes the board itself with `BoardRead` and `BoardWrite`, under the normal approval rules. Open it from the fixed button at the bottom of the main agent's right panel. See [Task board](/en/guides/sessions#task-board).
 
 ![The task board, with requirement cards in To do, In progress, Paused, and Done columns, each linked to the sessions working on it.](/shots/long-work/wl-20261005-longwork-board.en.png)
@@ -44,11 +54,11 @@ The context meter sits below the composer. Opening it gives you a detail card wi
 
 The card also holds the **renewal strategy** — a three-way choice for what happens at the compaction point:
 
-- **Summarize** (the default) — compress the history into a summary and keep going.
+- **Summarize** — compress the history into a summary and keep going.
 - **Fresh** — do not carry the history. Restart from the agent's working notes alone.
-- **Auto** — let the agent decide per run.
+- **Auto** (the built-in main-agent default) — restart when the working notes safely cover the work; otherwise summarize.
 
-The source label next to it says which layer the current value came from (session, profile, global, or inherited) and doubles as the control that saves it more broadly or resets it. Subagents and external executors read this value but do not set it.
+The source label next to it says which layer the current value came from (session, profile, global, or inherited) and doubles as the control that saves it more broadly or resets it. A session choice takes precedence over its profile, then the global setting, then the built-in default. Subagents have a separate default, and external executors manage their own context; both are read-only here.
 
 **Fresh has real conditions.** Restarting from notes throws away the conversation, so Kiki only does it when nothing would be lost — the history is available, the working notes exist and have been reviewed in the current window, and the restart will fit. When something arrived after the last handoff, or a result cannot be recovered from notes, Kiki compacts instead of clearing. Treat Fresh as "restart from notes when that is safe", not "clear the history at any moment".
 

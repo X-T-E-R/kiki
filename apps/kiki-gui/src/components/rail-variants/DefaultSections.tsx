@@ -476,7 +476,7 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
       <FoldHead title={t('rail.capabilities.title')} summary={summary} open={open} onToggle={() => { setOpen((v) => !v); }} />
       {open ? (
         <div className="pt-1">
-          <AgentCapabilitiesSection tools={tools} skills={skills} subagentTargets={targets} draftScope={{ workspace_id: workspaceId, cwd }} callerProfile={data.profile?.name} inlineGroupDetail />
+          <AgentCapabilitiesSection tools={tools} skills={skills} subagentTargets={targets} draftScope={{ workspace_id: workspaceId, cwd }} callerProfile={data.profile?.name} />
         </div>
       ) : null}
     </section>

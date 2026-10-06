@@ -820,28 +820,34 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     const resolved = turnConfig?.resolved ?? this.profile.resolveModelContext();
     const baseParams = turnConfig?.params ?? this.profile.resolveRequestParams();
     const agentMeta = (await this.sessionMetadata.read()).agents?.[this.agentContext.agentId];
+    const requester = this.modelCatalog.getRequester(resolved.modelAlias);
+    const useServerOutputDefault = (requester.model.protocol === 'openai' || requester.model.protocol === 'openai_responses') &&
+      !isKimiProviderFamily(requester.model.providerType);
+    const usedContextTokens = overrides.messages === undefined ? this.tokenCounting.get().measured : undefined;
     const globalCompletionCap = this.config.get<ModelOverrides>('modelOverrides')?.maxCompletionTokens;
-    const completionCap = Math.min(
+    const outputCap = Math.min(
       globalCompletionCap !== undefined && globalCompletionCap <= 0 && (baseParams.maxCompletionTokens !== undefined || baseParams.maxContextTokens !== undefined)
         ? Infinity : globalCompletionCap ?? Infinity,
       baseParams.maxCompletionTokens ?? Infinity,
-      resolved.maxOutputSize ?? Infinity,
-      overrides.maxOutputSize ?? Infinity,
-      resolved.modelCapabilities.max_context_tokens > 0 ? resolved.modelCapabilities.max_context_tokens : Infinity,
+      resolved.maxOutputSize !== undefined && (!useServerOutputDefault || resolved.maxOutputSize > 0) ? resolved.maxOutputSize : Infinity,
+      overrides.maxOutputSize !== undefined && (!useServerOutputDefault || overrides.maxOutputSize > 0) ? overrides.maxOutputSize : Infinity,
+    );
+    const constrainToContext = !useServerOutputDefault || (Number.isFinite(outputCap) && outputCap > 0) ||
+      (baseParams.maxContextTokens ?? 0) > 0;
+    const completionCap = Math.min(outputCap,
+      constrainToContext && resolved.modelCapabilities.max_context_tokens > 0 ? resolved.modelCapabilities.max_context_tokens : Infinity,
+      useServerOutputDefault && (baseParams.maxContextTokens ?? 0) > 0 ? baseParams.maxContextTokens! : Infinity,
     );
     const budgetParams = completionBudgetParams({
       budget: resolveCompletionBudget({
         maxOutputSize: overrides.maxOutputSize ?? resolved.maxOutputSize,
         reservedContextSize: resolved.reservedContextSize,
         maxCompletionTokensCap: Number.isFinite(completionCap) ? completionCap : undefined,
+        allowFallback: !useServerOutputDefault,
       }),
       capability: resolved.modelCapabilities,
-      usedContextTokens:
-        overrides.messages === undefined
-          ? this.tokenCounting.get().measured
-          : undefined,
+      usedContextTokens,
     });
-    const requester = this.modelCatalog.getRequester(resolved.modelAlias);
     await this.identityCatalog.ready;
     const providerConfig =
       turnConfig?.providerConfig ??
@@ -884,7 +890,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     const promptFields = anchoredPrompt === undefined
       ? turnConfig?.promptFields ?? this.profile.getPromptFieldSnapshot()
       : this.profile.getPromptFieldSnapshot({ anchor: true });
-    const promptVariables = customPromptVariables(promptConfig?.variables);
+    const promptVariables = customPromptVariables(this.profile.data().boundProfile?.promptBase?.inputs?.variables ?? promptConfig?.variables);
     return {
       requester,
       model: requester.model,
@@ -896,6 +902,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
           identityProjection.params,
         ),
         ...budgetParams,
+        usedContextTokens: useServerOutputDefault ? usedContextTokens : budgetParams?.usedContextTokens,
         usedContextTokensTrusted: overrides.messages === undefined && this.tokenCounting.isCurrentContextMeasured(),
         headers: identityProjection.headers,
         requestIdentity: identityProjection.wire,

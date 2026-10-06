@@ -272,6 +272,20 @@ export interface HttpRestCronTask {
   readonly last_fired_at: string | null;
 }
 
+export interface HttpRestCronTaskDetail extends HttpRestCronTask {
+  readonly prompt: string;
+}
+
+export interface HttpRestCreateCronTask {
+  readonly session_id: string;
+  readonly cron: string;
+  readonly prompt: string;
+  readonly recurring?: boolean;
+  readonly paused?: boolean;
+}
+
+export type HttpRestUpdateCronTask = Partial<Omit<HttpRestCreateCronTask, 'paused'>>;
+
 /** `session_id` disambiguates a task id that exists in several sessions. */
 export interface HttpRestCronTaskQuery {
   readonly session_id?: string;
@@ -317,6 +331,11 @@ export interface HttpRestFacade {
   };
 
   readonly browser: {
+    setupPresets(): Promise<import('@kiki/protocol').BrowserSetupList>;
+    setupStatus(preset: import('@kiki/protocol').BrowserPresetId): Promise<import('@kiki/protocol').BrowserSetupStatus>;
+    prepare(preset: import('@kiki/protocol').BrowserPresetId, input: import('@kiki/protocol').BrowserSetupPrepareInput): Promise<import('@kiki/protocol').BrowserSetupStatus>;
+    connectPreset(preset: import('@kiki/protocol').BrowserPresetId, input?: import('@kiki/protocol').BrowserSetupConnectInput): Promise<import('@kiki/protocol').BrowserSetupStatus>;
+    cancelSetup(preset: import('@kiki/protocol').BrowserPresetId): Promise<import('@kiki/protocol').BrowserSetupStatus>;
     list(): Promise<import('@kiki/protocol').BrowserControlList>;
     upsert(id: string, input: import('@kiki/protocol').BrowserConnectionInput): Promise<{ readonly connection: import('@kiki/protocol').BrowserConnection }>;
     remove(id: string): Promise<{ readonly removed: true }>;
@@ -424,7 +443,7 @@ export interface HttpRestFacade {
   };
 
   readonly skills: {
-    readBuiltinContent(name: string): Promise<import('@kiki/protocol').BuiltinSkillContentResponse>;
+    readBuiltinContent(name: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').BuiltinSkillContentResponse>;
     previewHostInstall(host: 'claude' | 'codex' | 'grok' | 'agents'): Promise<{ readonly host: string; readonly directory: string; readonly path: string; readonly overwrites: boolean; readonly revision: string }>;
     installHost(host: 'claude' | 'codex' | 'grok' | 'agents', revision: string): Promise<{ readonly host: string; readonly directory: string; readonly path: string; readonly overwrites: boolean; readonly revision: string }>;
   };
@@ -512,6 +531,7 @@ export interface HttpRestFacade {
   };
 
   readonly notifications: {
+    listCompletions(): Promise<readonly { session_id: string; episode_id: string; completed_at: number }[]>;
     getSettings(): Promise<NotificationSettings>;
     updateSettings(settings: NotificationGlobalSettings): Promise<NotificationSettings>;
     listProviders(): Promise<readonly NotificationProviderDescriptor[]>;
@@ -552,8 +572,8 @@ export interface HttpRestFacade {
   };
 
   readonly filesystem: {
-    readHostFile(path: string): Promise<string>;
-    previewHostFile(path: string, maxBytes: number): Promise<{ readonly text: string; readonly truncated: boolean }>;
+    readHostFile(path: string, options?: HttpRestRequestOptions): Promise<string>;
+    previewHostFile(path: string, maxBytes: number, options?: HttpRestRequestOptions): Promise<{ readonly text: string; readonly truncated: boolean }>;
     readHostFileBytes(path: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
     readHostMediaPreview(path: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
     downloadHostFile(path: string, sink: HttpRestMediaSink, options?: HttpRestMediaOptions): Promise<HttpRestMediaReceipt>;
@@ -583,6 +603,9 @@ export interface HttpRestFacade {
 
   /** Cross-workspace cron aggregate: `GET /api/cron` plus per-task actions. */
   readonly cron: {
+    get(taskId: string, query?: HttpRestCronTaskQuery): Promise<{ readonly task: HttpRestCronTaskDetail }>;
+    create(input: HttpRestCreateCronTask): Promise<{ readonly task: HttpRestCronTaskDetail }>;
+    update(taskId: string, input: HttpRestUpdateCronTask, query?: HttpRestCronTaskQuery): Promise<{ readonly task: HttpRestCronTaskDetail }>;
     list(query?: HttpRestCronTaskQuery): Promise<{
       readonly items: readonly HttpRestCronTask[];
       readonly has_more?: boolean;

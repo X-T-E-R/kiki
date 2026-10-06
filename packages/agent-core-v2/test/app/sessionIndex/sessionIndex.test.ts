@@ -165,6 +165,16 @@ describe('FileSessionIndex (legacy)', () => {
     expect(page.items[0]?.archived).toBe(false);
   });
 
+  it('orders a cold parent by persisted child activity with the same point-read timestamp', async () => {
+    await seedSession('parent', { createdAt: 1, updatedAt: 10, activityUpdatedAt: 100 });
+    await seedSession('other', { createdAt: 1, updatedAt: 50 });
+    const store = build();
+    const page = await store.listRecent({ workspaceIds: [workspaceId] });
+    expect(page.items.map((entry) => entry.id)).toEqual(['parent', 'other']);
+    expect(page.items[0]?.updatedAt).toBe((await store.get('parent'))?.updatedAt);
+    expect(page.items[0]?.updatedAt).toBe(100);
+  });
+
   it('listRecent includes archived when requested', async () => {
     await seedSession('active', {});
     await seedSession('archived', { archived: true });

@@ -185,6 +185,26 @@ describe('AgentTaskService', () => {
   });
   afterEach(() => disposables.dispose());
 
+  it('unfinished work excludes resident services but includes terminal results until delivered', async () => {
+    const svc = ix.get(IAgentTaskService);
+    let settle!: Parameters<AgentTask['start']>[0]['settle'];
+    const finite = svc.registerTask({ ...fakeProcessTask(), start: (sink) => { settle = sink.settle; } });
+    const resident = svc.registerTask(fakeProcessTask(), { lifetime: 'service' });
+    await Promise.resolve();
+    expect(svc.hasUnfinishedWork()).toBe(true);
+    await settle({ status: 'completed' });
+    expect(svc.hasUnfinishedWork()).toBe(true);
+    const loop = ix.get(IAgentLoopService) as StubLoop;
+    await vi.waitFor(() => { expect(loop.queue.hasPendingRequests()).toBe(true); });
+    loop.drainNextBatch(ix.get(IAgentContextMemoryService));
+    await runWillBeginStepHooks(loop);
+    await ix.get(IEventDispatcher).flush();
+    expect(svc.getTask(finite)?.status).toBe('completed');
+    expect(svc.hasUnfinishedWork()).toBe(false);
+    await svc.suppressTerminalNotification(resident);
+    await svc.stop(resident);
+  });
+
   it('registerTask / list / readOutput / stop', async () => {
     const svc = ix.get(IAgentTaskService);
     const id = svc.registerTask(fakeProcessTask());

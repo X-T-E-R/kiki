@@ -56,7 +56,7 @@ The `hooks-inspect` command reports each rule's source, why it is active or not,
 await klient.session(sessionId).agent("main").runCommand({ name: "hooks-inspect" });
 ```
 
-The result is a `hook.result` diagnostic event (`hookEvent = "hooks.inspect"`) and is not added to the model's conversation. In the GUI, **Hooks** in the session's agent panel shows the same information, reading `GET /api/sessions/{session_id}/agents/{agent_id}/hooks` — a rule that saved successfully can still be inactive in a given session, and this is where you see why.
+The result is a `hook.result` diagnostic event (`hookEvent = "hooks.inspect"`) and is not added to the model's conversation. In the GUI, **Automatic rules** in the session's agent panel shows the same information, reading `GET /api/sessions/{session_id}/agents/{agent_id}/hooks` — a rule that saved successfully can still be inactive in a given session, and this is where you see why. With no rules configured and no source to repair, the panel shows no block at all.
 
 **Settings → Capabilities → Hooks** (`/settings/hooks`) edits the user configuration. Pick a rule to edit it, or use **Advanced: edit JSON** for the whole legacy array or v2 object. Adding the first declarative rule switches a legacy array to v2 and keeps the commands under `legacy`; opening or saving that page never runs them. **Save actions** validates the entire hooks value and shows what the server stored, and a failed save keeps your draft. The v2 enable switch and disabled ids affect declarative rules only.
 

@@ -98,27 +98,27 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve };
 }
 
-/** jsdom has no DataTransfer; React only reads the fields the drag handlers touch. */
-function createDataTransfer() {
-  const store = new Map<string, string>();
-  return {
-    effectAllowed: '',
-    dropEffect: '',
-    setData: (type: string, value: string) => { store.set(type, value); },
-    getData: (type: string) => store.get(type) ?? '',
-    setDragImage: () => {},
-  };
+/** These unit events check geometry/contracts, not actual desktop mouse delivery. */
+async function pointer(target: Element, type: string, clientY: number, clientX = 20, pointerId = 1): Promise<void> {
+  await act(async () => {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY });
+    Object.defineProperties(event, { pointerId: { value: pointerId }, isPrimary: { value: true } });
+    target.dispatchEvent(event);
+  });
 }
 
-function dispatchDnd(
-  target: Element,
-  type: 'dragstart' | 'dragover' | 'drop' | 'dragend',
-  dataTransfer: ReturnType<typeof createDataTransfer>,
-  clientY = 0,
-): void {
-  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientY });
-  Object.defineProperty(event, 'dataTransfer', { value: dataTransfer });
-  target.dispatchEvent(event);
+function queueGeometry(container: HTMLDivElement): void {
+  const box = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 300, width: 300, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+  vi.spyOn(container.querySelector('ol')!, 'getBoundingClientRect').mockReturnValue(box(100, rows(container).length * 40));
+  rows(container).forEach((row, index) => {
+    vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(box(100 + index * 40, 40));
+    const handle = row.querySelector<HTMLButtonElement>('button[aria-label="Reorder this queued prompt"]');
+    if (handle !== null) {
+      handle.setPointerCapture = vi.fn();
+      handle.hasPointerCapture = vi.fn(() => true);
+      handle.releasePointerCapture = vi.fn();
+    }
+  });
 }
 
 describe('QueueStrip remove confirmation', () => {
@@ -311,72 +311,89 @@ describe('QueueStrip reorder', () => {
     expect(onMove).toHaveBeenCalledTimes(calls);
   });
 
-  it('converts a drop below a later row into the engine post-removal index', async () => {
+  it('captures the pointer and converts a drop below a later row into the post-removal index', async () => {
     const onMove = vi.fn();
     const { container } = await renderStrip({ onMove });
-    const dataTransfer = createDataTransfer();
-
-    await act(async () => {
-      dispatchDnd(handleOf(container, 0), 'dragstart', dataTransfer);
-    });
-    // jsdom reports zeroed rects; give the target row a box so the drop can
-    // land on its lower half ("after").
-    vi.spyOn(rows(container)[2]!, 'getBoundingClientRect').mockReturnValue({
-      top: 100,
-      bottom: 140,
-      height: 40,
-      left: 0,
-      right: 300,
-      width: 300,
-      x: 0,
-      y: 100,
-      toJSON: () => ({}),
-    } as DOMRect);
-    await act(async () => {
-      dispatchDnd(rows(container)[2]!, 'dragover', dataTransfer, 130);
-    });
-    await act(async () => {
-      dispatchDnd(rows(container)[2]!, 'drop', dataTransfer, 130);
-    });
-
-    // Visual slot 3 (below #3) with the dragged row lifted out first → 2.
+    queueGeometry(container);
+    const handle = handleOf(container, 0);
+    expect(handle.draggable).toBe(false);
+    await pointer(handle, 'pointerdown', 110);
+    expect(handle.setPointerCapture).toHaveBeenCalledWith(1);
+    await pointer(handle, 'pointermove', 210);
+    expect(container.querySelector('li[aria-hidden]')).not.toBeNull();
+    await pointer(handle, 'pointerup', 210);
+    // Slot 3 after lifting #1 out → 2. A trailing capture loss is not another move.
+    await pointer(handle, 'lostpointercapture', 210);
     expect(onMove).toHaveBeenCalledExactlyOnceWith('p1', 2);
+    expect(container.querySelector('li[aria-hidden]')).toBeNull();
   });
 
-  it('converts a drop above an earlier row into the engine post-removal index', async () => {
+  it('uses the release position above an earlier row, not a stale hover slot', async () => {
     const onMove = vi.fn();
     const { container } = await renderStrip({ onMove });
-    const dataTransfer = createDataTransfer();
-
-    await act(async () => {
-      dispatchDnd(handleOf(container, 2), 'dragstart', dataTransfer);
-    });
-    // Zeroed rect defaults to the row's upper half ("before").
-    await act(async () => {
-      dispatchDnd(rows(container)[0]!, 'dragover', dataTransfer, 0);
-    });
-    await act(async () => {
-      dispatchDnd(rows(container)[0]!, 'drop', dataTransfer, 0);
-    });
-
+    queueGeometry(container);
+    const handle = handleOf(container, 2);
+    await pointer(handle, 'pointerdown', 210);
+    await pointer(handle, 'pointermove', 170);
+    await pointer(handle, 'pointerup', 110);
     expect(onMove).toHaveBeenCalledExactlyOnceWith('p3', 0);
   });
 
-  it('ignores a drop back onto the dragged row own position', async () => {
+  it('ignores a click, small jitter and a drop back onto the same slot', async () => {
     const onMove = vi.fn();
     const { container } = await renderStrip({ onMove });
-    const dataTransfer = createDataTransfer();
+    queueGeometry(container);
+    const handle = handleOf(container, 1);
+    await pointer(handle, 'pointerdown', 150);
+    await pointer(handle, 'pointermove', 152);
+    await pointer(handle, 'pointerup', 152);
+    await pointer(handle, 'pointerdown', 150);
+    await pointer(handle, 'pointermove', 169);
+    await pointer(handle, 'pointerup', 169);
+    expect(onMove).not.toHaveBeenCalled();
+  });
 
-    await act(async () => {
-      dispatchDnd(handleOf(container, 1), 'dragstart', dataTransfer);
-    });
-    await act(async () => {
-      dispatchDnd(rows(container)[1]!, 'dragover', dataTransfer, 0);
-    });
-    await act(async () => {
-      dispatchDnd(rows(container)[1]!, 'drop', dataTransfer, 0);
-    });
+  it('cancels on Escape, pointer cancellation, capture loss or release outside the queue', async () => {
+    const onMove = vi.fn();
+    const { container } = await renderStrip({ onMove });
+    queueGeometry(container);
+    const handle = handleOf(container, 0);
+    for (const cancel of ['pointercancel', 'lostpointercapture', 'Escape', 'outside']) {
+      await pointer(handle, 'pointerdown', 110);
+      await pointer(handle, 'pointermove', 210);
+      if (cancel === 'Escape') await keydown(handle, 'Escape');
+      else if (cancel !== 'outside') await pointer(handle, cancel, 210);
+      await pointer(handle, 'pointerup', 210, cancel === 'outside' ? 400 : 20);
+      expect(container.querySelector('li[aria-hidden]')).toBeNull();
+    }
+    expect(onMove).not.toHaveBeenCalled();
+  });
 
+  it('does not drop onto a row clipped outside the composer queue viewport', async () => {
+    const onMove = vi.fn();
+    const { container } = await renderStrip({ onMove });
+    queueGeometry(container);
+    container.classList.add('composer-header-scroll');
+    const rect = container.querySelector('ol')!.getBoundingClientRect();
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({ ...rect, bottom: 180, height: 80 });
+    const handle = handleOf(container, 0);
+    await pointer(handle, 'pointerdown', 110);
+    await pointer(handle, 'pointermove', 210);
+    await pointer(handle, 'pointerup', 210);
+    expect(onMove).not.toHaveBeenCalled();
+  });
+
+  it('ignores another pointer and leaves the edited prompt unmovable', async () => {
+    const onMove = vi.fn();
+    const { container } = await renderStrip({ onMove, editingPromptId: 'p2' });
+    queueGeometry(container);
+    expect(handleOf(container, 1).disabled).toBe(true);
+    const handle = handleOf(container, 0);
+    await pointer(handle, 'pointerdown', 110);
+    await pointer(handle, 'pointermove', 210, 20, 2);
+    await pointer(handle, 'pointerup', 210, 20, 2);
+    expect(onMove).not.toHaveBeenCalled();
+    await pointer(handle, 'pointerup', 110);
     expect(onMove).not.toHaveBeenCalled();
   });
 
@@ -400,6 +417,22 @@ describe('QueueStrip reorder', () => {
       gate.resolve();
     });
     expect(handleOf(container, 0).disabled).toBe(false);
+  });
+
+  it('keeps authoritative rows and unlocks after the parent handles a failed move', async () => {
+    const reportError = vi.fn();
+    const onMove = vi.fn(() => Promise.reject(new Error('move unavailable')).catch(reportError));
+    const { container } = await renderStrip({ onMove });
+    queueGeometry(container);
+    const handle = handleOf(container, 0);
+    await pointer(handle, 'pointerdown', 110);
+    await pointer(handle, 'pointermove', 210);
+    await pointer(handle, 'pointerup', 210);
+    expect(onMove).toHaveBeenCalledExactlyOnceWith('p1', 2);
+    expect(reportError).toHaveBeenCalledOnce();
+    expect(rows(container).map(row => row.dataset['queueItem'])).toEqual(['p1', 'p2', 'p3']);
+    expect(handle.disabled).toBe(false);
+    expect(container.querySelector('li[aria-hidden]')).toBeNull();
   });
 });
 
@@ -504,6 +537,23 @@ describe('QueueStrip model-switch control rows', () => {
     const cancel = container.querySelector<HTMLButtonElement>('[data-queue-model-switch-actions] button:last-child')!;
     await click(cancel);
     expect(onCancelModelSwitch).toHaveBeenCalledExactlyOnceWith('op-1');
+  });
+
+  it('counts the switch slot when dragging a message across it without making the control row draggable', async () => {
+    const onMove = vi.fn();
+    const { container } = await renderStrip({
+      items: [{ ...ITEMS[0], queuePosition: 0 }, { ...ITEMS[1], queuePosition: 2 }],
+      modelSwitches: [switchEntry({ queueIndex: 1 })],
+      onMove,
+    });
+    queueGeometry(container);
+    expect(rows(container)[1]!.querySelector('button[aria-label="Reorder this queued prompt"]')).toBeNull();
+    const handle = handleOf(container, 2);
+    await pointer(handle, 'pointerdown', 210);
+    await pointer(handle, 'pointermove', 150);
+    await pointer(handle, 'pointerup', 150);
+    expect(onMove).toHaveBeenCalledExactlyOnceWith('p2', 1);
+    expect(container.querySelector('[data-queue-model-switch="op-1"]')).not.toBeNull();
   });
 
   it('names the progress of a preparing switch and offers no cancel for it', async () => {

@@ -8,6 +8,7 @@ import {
   MIN_REQUEST_TIMEOUT_SECONDS,
   readSettings,
   validateRequestTimeoutSeconds,
+  validateReadingTimeoutSeconds,
   writeSettings,
 } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
@@ -39,6 +40,8 @@ export function ConnectionSection() {
   const busySessions = useBusySessionCount();
   const [savedRequestTimeout, setSavedRequestTimeout] = useState(() => readSettings().requestTimeoutSeconds);
   const [timeoutSaved, pingTimeoutSaved] = useSavedTick();
+  const [savedReadingTimeout, setSavedReadingTimeout] = useState(() => readSettings().readingTimeoutSeconds);
+  const [readingTimeoutSaved, pingReadingTimeoutSaved] = useSavedTick();
   // Inline editing: the page owns the (url, token) pair, so the value is
   // edited where it is shown instead of behind disconnect → connect screen.
   const [urlDraft, setUrlDraft] = useState(config.url);
@@ -177,6 +180,21 @@ export function ConnectionSection() {
             validate={timeoutIssue}
             onCommit={(text) => { saveRequestTimeout(Number(text)); }}
           />
+        </SettingField>
+        <SettingField label={t('st.conn.readingTimeoutLabel')} htmlFor="st-conn-reading-timeout" detail={t('st.conn.readingTimeoutHint')}>
+          <SavedTick show={readingTimeoutSaved} />
+          <CommitInput id="st-conn-reading-timeout" className="w-24 text-right" inputMode="numeric"
+            value={String(savedReadingTimeout)}
+            validate={(text) => {
+              const issue = validateReadingTimeoutSeconds(text === '' ? Number.NaN : Number(text));
+              return issue === null ? null : issueText(locale, issue);
+            }}
+            onCommit={(text) => {
+              const seconds = Number(text);
+              writeSettings({ readingTimeoutSeconds: seconds });
+              setSavedReadingTimeout(seconds);
+              pingReadingTimeoutSaved();
+            }} />
         </SettingField>
       </SectionCard>
 

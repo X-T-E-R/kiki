@@ -3,7 +3,7 @@ import multipart from '@fastify/multipart';
 import type { FastifyInstance } from 'fastify';
 import type { IncomingMessage } from 'node:http';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
-import { connectionAddInputSchema, connectionBrokerInputSchema, connectionClaimInputSchema, connectionInviteInputSchema, connectionProvisionInputSchema, sshConnectionRegisterInputSchema, sshRemoteExecuteSchema, sshRemoteProfileSchema } from '@kiki/protocol';
+import { MEDIA_PREVIEW_MAX_BYTES, connectionAddInputSchema, connectionBrokerInputSchema, connectionClaimInputSchema, connectionInviteInputSchema, connectionProvisionInputSchema, sshConnectionRegisterInputSchema, sshRemoteExecuteSchema, sshRemoteProfileSchema } from '@kiki/protocol';
 import type { SshRemoteConnector } from '../services/sshRemote/connector';
 import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
 import { decodeJsonFrame } from '@kiki/klient/host';
@@ -72,9 +72,10 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     const controller = new AbortController(); const stop = () => controller.abort(); let release = () => {};
     reply.raw.once('close', stop);
     try {
-      const lease = manager.lease(id, AbortSignal.any([controller.signal, AbortSignal.timeout(30000)])); release = () => lease.release();
+      const reading = ['snapshot', 'transcript', 'content', 'catchUp', 'transcriptPage', 'transcriptDetail', 'transcriptDetails', 'transcriptOps'].includes(input.operation);
+      const lease = manager.lease(id, reading ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(30000)])); release = () => lease.release();
       const response = await manager.forward(id, input, lease.signal);
-      const cap = ['snapshot', 'transcript', 'content', 'catchUp', 'transcriptPage', 'transcriptDetail', 'transcriptDetails', 'transcriptOps'].includes(input.operation) ? SESSION_READ_BODY_BYTES : BROKER_BODY_BYTES;
+      const cap = reading ? SESSION_READ_BODY_BYTES : BROKER_BODY_BYTES;
       const body = await readBoundedJsonBody(response, cap);
       return await reply.code(response.status).send(body);
     } catch (error) { if (error instanceof AdmissionError) return await reply.code(error.status).send(errEnvelope(40101, error.reason, req.id)); throw error; }
@@ -123,7 +124,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
             const next = await Promise.race([reader.read(), new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new AdmissionError(504, 'download_stalled')); }, 30000); })]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
             if (next.done) break;
             total += next.value.byteLength;
-            if (input.operation === 'mediaPreview' && total > 64 * 1024) throw new AdmissionError(413, 'preview_budget_exceeded');
+            if (input.operation === 'mediaPreview' && total > MEDIA_PREVIEW_MAX_BYTES) throw new AdmissionError(413, 'preview_budget_exceeded');
             yield next.value;
           }
         } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); cleanup(); }
@@ -147,7 +148,7 @@ async function brokerSocket(local: WebSocket, request: IncomingMessage, manager:
     const { transport, credential } = await manager.connect(id, lease.signal);
     if (local.readyState !== WebSocket.OPEN || lease.signal.aborted) return;
     const url = new URL('/api/klient/events', transport.endpoint); url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    remote = new WebSocket(url, [`kimi-code.bearer.${credential.ownerToken}`], { headers: { 'x-kiki-connection-grant': credential.grant }, maxPayload: BROKER_WS_MESSAGE_BYTES, perMessageDeflate: false, followRedirects: false, handshakeTimeout: 15000 });
+    remote = new WebSocket(url, [`kimi-code.bearer.${credential.ownerToken}`], { headers: { 'x-kiki-connection-grant': credential.grant }, maxPayload: 0, perMessageDeflate: false, followRedirects: false, handshakeTimeout: 15000 });
     const target = remote;
     const send = (to: WebSocket, data: RawData) => {
       const bytes = Array.isArray(data) ? data.reduce((size, chunk) => size + chunk.byteLength, 0) : data.byteLength;
@@ -160,8 +161,18 @@ async function brokerSocket(local: WebSocket, request: IncomingMessage, manager:
       if (frame === undefined || !isPeerFrameAllowed(frame)) { local.close(1008, 'operation not allowed'); target.terminate(); return; }
       send(target, data);
     });
-    target.on('message', (data) => send(local, data));
-    target.on('unexpected-response', (_request, response) => { response.resume(); manager.failed(id, new AdmissionError(response.statusCode ?? 502, 'connection_not_approved')); stop(); });
+    let pendingResponses = 0;
+    target.on('message', (data) => {
+      if (local.readyState !== WebSocket.OPEN || lease.signal.aborted) return;
+      pendingResponses += 1;
+      target.pause();
+      local.send(data, { binary: false }, (error) => {
+        pendingResponses -= 1;
+        if (error) { stop(); return; }
+        if (pendingResponses === 0 && !lease.signal.aborted && target.readyState === WebSocket.OPEN) target.resume();
+      });
+    });
+    target.on('unexpected-response', (_request, response) => { response.resume(); manager.failed(id, new AdmissionError(response.statusCode ?? 502, response.statusCode === 401 ? 'connection_not_approved' : 'event_transport_rejected')); stop(); });
     target.on('close', (code, reason) => { if (code === 4001) manager.failed(id, new AdmissionError(401, 'connection_not_approved')); local.close(code === 1006 ? 1011 : code, reason.toString().slice(0, 100)); lease.release(); });
     target.on('error', () => { manager.failed(id, new AdmissionError(502, 'event_transport_failed')); stop(); });
   } catch (error) { manager.failed(id, error); stop(); }

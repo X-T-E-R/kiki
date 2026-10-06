@@ -826,6 +826,18 @@ describe('Agent context', () => {
   });
 
   describe('compaction handoff under a zero estimator', () => {
+    it('marks omitted message locations without token counts or a guarantee that the summary covers them', () => {
+      const messages = Array.from({ length: 300 }, (_, i) => userMessage(`user ${i} ${'x'.repeat(400)}`));
+      const shape = buildContextCompactionShape(messages, { summary: 'carried context', compactedCount: messages.length, tokensBefore: 100000 });
+      const elision = shape.messages.find((message) => message.origin?.kind === 'injection' && message.origin.variant === 'compaction_elision');
+      expect(elision).toBeDefined();
+      const text = textOf(elision!);
+      expect(text).toContain('oldest retained input');
+      expect(text).toContain('most recent');
+      expect(text).toContain('available history tools');
+      expect(text).toContain('not a substitute');
+      expect(text).not.toMatch(/roughly|\\d+ tokens|omitted content is covered/);
+    });
     const zero: TokenEstimate = { text: () => 0, message: () => 0, messages: () => 0 };
 
     it('keeps every user message without elision', () => {

@@ -83,6 +83,16 @@ describe('SessionMetadata', () => {
     expect((await meta.read()).createdAt).toBeGreaterThan(0);
   });
 
+  it('persists activity recency without rewriting main prompt time or custom title', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.update({ title: 'Custom title', titleKind: 'custom', lastPrompt: 'Main prompt', updatedAt: 1_000 });
+    await meta.update({ activityUpdatedAt: 5_000 }, { touchUpdatedAt: false });
+    await meta.update({ activityUpdatedAt: 3_000 }, { touchUpdatedAt: false });
+    expect(await meta.read()).toMatchObject({ activityUpdatedAt: 5_000, updatedAt: 1_000, title: 'Custom title', lastPrompt: 'Main prompt' });
+    expect(mirror.recorded.at(-1)?.updatedAt).toBe(5_000);
+    expect(await createFreshMetadata(ix).read()).toMatchObject({ activityUpdatedAt: 5_000, updatedAt: 1_000 });
+  });
+
   it('persists creator metadata and mirrors it for session-list reads', async () => {
     const meta = ix.get(ISessionMetadata);
     const custom = {
@@ -131,6 +141,7 @@ describe('SessionMetadata', () => {
       .get(IAtomicDocumentStore)
       .get<{ usage?: { wireComplete?: boolean } }>(META_SCOPE, 'state.json');
     expect(persisted?.usage?.wireComplete).toBeUndefined();
+    expect(mirror.recorded.at(-1)?.usage).toEqual((await meta.read()).usage);
   });
 
   it('update merges fields and bumps updatedAt', async () => {

@@ -22,11 +22,11 @@
 
 import { MAIN_AGENT_ID, type AgentForest, type AgentTreeNode } from '@kiki/session-core/session';
 
-export type RosterBucket = 'waiting' | 'running' | 'ended';
+export type RosterBucket = 'waiting' | 'running' | 'idle' | 'unknown' | 'ended';
 
-export const ROSTER_BUCKETS: readonly RosterBucket[] = ['waiting', 'running', 'ended'];
+export const ROSTER_BUCKETS: readonly RosterBucket[] = ['waiting', 'running', 'idle', 'unknown', 'ended'];
 
-const RANK: Record<RosterBucket, number> = { waiting: 0, running: 1, ended: 2 };
+const RANK: Record<RosterBucket, number> = { waiting: 0, running: 1, idle: 2, unknown: 3, ended: 4 };
 
 export function rosterBucket(node: AgentTreeNode, waiting: ReadonlySet<string>): RosterBucket {
   if (waiting.has(node.agentId) || node.status === 'suspended') return 'waiting';
@@ -34,6 +34,10 @@ export function rosterBucket(node: AgentTreeNode, waiting: ReadonlySet<string>):
     case 'running':
     case 'background':
       return 'running';
+    case 'idle':
+      return 'idle';
+    case 'unknown':
+      return 'unknown';
     default:
       return 'ended';
   }
@@ -109,7 +113,7 @@ function timeOf(iso: string | undefined): number {
 export function buildRoster(input: RosterInput): RosterModel {
   const { forest, rootId, waiting, expanded, filter, doneOpen } = input;
   const needle = input.query.trim().toLowerCase();
-  const counts: Record<RosterBucket, number> = { waiting: 0, running: 0, ended: 0 };
+  const counts: Record<RosterBucket, number> = { waiting: 0, running: 0, idle: 0, unknown: 0, ended: 0 };
   const bucketOf = new Map<string, RosterBucket>();
   const subtreeRank = new Map<string, number>();
   const waitingBelow = new Map<string, number>();
@@ -144,7 +148,7 @@ export function buildRoster(input: RosterInput): RosterModel {
     return true;
   });
   for (const node of top) visit(node);
-  const total = counts.waiting + counts.running + counts.ended;
+  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
 
   // Within a rank, the most recently updated first: a node's update time is
   // the latest start or end anywhere in its subtree.

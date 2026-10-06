@@ -2,7 +2,7 @@
  * Away notifications and the unread badge, mounted once in the App shell.
  *
  * - Watches the session list the app already polls and turns transitions
- *   (turn finished or failed, approval or question waiting) into system
+ *   (turn failed, approval or question waiting) into system
  *   notifications through `awayNotifier`, which only delivers while the
  *   window is hidden or unfocused and rate-limits per session.
  * - The app's own list poll stops while the document is hidden (a window
@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { Session } from '@kiki/protocol';
 import {
   buildInboxModel,
+  CompletionObserver,
   detectAttentionEvents,
   type AttentionBaseline,
   type AttentionNotification,
@@ -26,6 +27,7 @@ import { sessionSeenSnapshot, subscribeSessionSeen } from '@kiki/session-core/se
 
 import type { HostAdapter, HostNotification } from '../host';
 import { useI18n } from '../i18n';
+import { useConnection } from '../state/connection';
 import { awayNotifier, notificationRoute } from './awayNotify';
 import { useThreadTitleResolver } from './threadTitles';
 
@@ -72,6 +74,30 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
   const format = useFormatter(sessions);
   const sinceRef = useRef(Date.now());
   const baselineRef = useRef<AttentionBaseline | undefined>(undefined);
+  const { client, scopeId } = useConnection();
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  useEffect(() => {
+    if (host.notify === undefined) return;
+    const observer = new CompletionObserver();
+    let stopped = false;
+    let running = false;
+    const tick = async () => {
+      if (running) return;
+      running = true;
+      try {
+        const completions = await client.notifications.listCompletions();
+        if (!stopped) await awayNotifier.report(observer.observe(completions, sessionsRef.current));
+      } catch {
+        observer.disconnected();
+      } finally {
+        running = false;
+      }
+    };
+    void tick();
+    const timer = setInterval(() => { void tick(); }, 5_000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [client, scopeId, host]);
 
   // Wire the shared notifier to this host and locale.
   useEffect(() => {
@@ -100,7 +126,7 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
     baselineRef.current = baseline;
     // The very first list is the baseline: what was already true at launch is not news.
     if (previous === undefined) return;
-    void awayNotifier.report(events);
+    void awayNotifier.report(events.filter((event) => event.kind !== 'completed'));
   });
   useEffect(() => {
     if (sessions.length === 0 && baselineRef.current === undefined) return;

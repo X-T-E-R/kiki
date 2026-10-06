@@ -67,7 +67,7 @@ MCP server 配置写在 `mcp.json` 中，分两层：
 
 连接超时和单次工具调用超时的默认值都不必逐个 server 设置：`config.toml` 的 `[mcp] startup_timeout_ms` / `[mcp] tool_timeout_ms` 或环境变量 `KIKI_MCP_STARTUP_TIMEOUT_MS` / `KIKI_MCP_TOOL_TIMEOUT_MS` 可以调整全局默认值，优先级为 server 字段 > 环境变量 > `config.toml` > 内置默认。详见 [配置文件](../configuration/config-files.md#mcp)。
 
-HTTP 与 SSE server 支持通过 `headers` 或 `bearerTokenEnvVar` 提供静态凭证。需要 OAuth 时，运行 `/kiki-ops 帮我登录 MCP <server-name>` 完成浏览器授权。
+HTTP 与 SSE server 支持通过 `headers` 或 `bearerTokenEnvVar` 提供静态凭证。需要 OAuth 时，运行 `/kiki-ops 帮我登录 MCP <server-name>` 完成浏览器授权。如果该 server 的授权元数据声明支持 `offline_access`，Kiki 会在登录时一并请求这个 scope，以便之后能续期而不必重新登录；否则按你原本的 scope 授权。声明支持该 scope 的 server 仍可能多显示一次同意页，也不保证一定签发 refresh token。已经登录过的 server 保留现有授权并继续用它续期——新增 scope 不会把你登出。
 
 Plugins 也可以在 manifest 中声明 MCP servers。Plugin 声明的 servers 默认启用，可以在 `/plugins` 中禁用或重新启用：禁用或移除后，已打开会话中的工具调用会失败并返回移除提示；重新启用则会让该 server 立即重连到已打开的会话并恢复工具——前提是会话创建时这个 server 已存在（包括重新启用 `mcp.json` 中 `enabled: false` 的条目）。全新出现的 server 仍遵循上一段的规则：只加入之后创建的会话。详见 [Plugins](../customization/plugins.md#plugin-中的-mcp-servers)。
 

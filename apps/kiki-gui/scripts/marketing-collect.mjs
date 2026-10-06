@@ -51,6 +51,8 @@ const PAGE_OF = new Map([
   ['long-work-context-fresh', 'long-work'],
   ['long-work-memory-scopes', 'long-work'],
   ['daily-usage', 'daily'],
+  ['ux-usage-live', 'daily'],
+  ['ux-usage-export', 'daily'],
   ['people-persona-card', 'people'],
   ['people-daily-conversation', 'people'],
   ['people-room', 'people'],

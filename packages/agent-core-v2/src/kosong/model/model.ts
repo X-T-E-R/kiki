@@ -47,7 +47,7 @@ export interface ModelOverride extends ModelParameterDefaults {
   offEffort?: string;
 }
 
-export type CognitionPathRef = string | string[];
+export type CognitionPathRef = string | readonly string[];
 
 export interface CognitionContent {
   overlay?: CognitionPathRef;

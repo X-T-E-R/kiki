@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import { join } from 'pathe';
-import { ulid } from 'ulid';
 
 import type { IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
@@ -20,8 +19,6 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { CRON_SESSION_TAG, type CronTask } from '#/app/cron/cronTask';
-import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
 import { IConfigService } from '#/app/config/config';
 import { IEventService } from '#/app/event/event';
 import {
@@ -218,7 +215,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @ILogService private readonly log: ILogService,
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
-    @ICronTaskPersistence private readonly cronStore: ICronTaskPersistence,
     @IEventService private readonly event: IEventService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IWorkspaceAgentProfileLoader
@@ -403,6 +399,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         subKey === undefined || subKey === '' ? sessionScope : `${sessionScope}/${subKey}`,
     };
     let workspaceReference: IDisposable | undefined;
+    const releaseWorkspaceReference = (): void => {
+      const reference = workspaceReference;
+      workspaceReference = undefined;
+      reference?.dispose();
+    };
+    let sessionContainer: IInstantiationService | undefined;
     let handle: ISessionScopeHandle;
     try {
       await this.acquireSessionLock(opts.sessionId, opts.waitForSessionMs);
@@ -455,13 +457,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             ...sessionEphemeralMcpServersSeed(opts.mcpServers ?? {}),
           ],
           configureContainer: (container) => {
+            sessionContainer = container;
             if (this.hookWorkspace !== undefined) container.provide(ISessionHookWorkspace, this.hookWorkspace);
             container.anchorKernelEntry(
-              () => void this.releaseSessionLock(opts.sessionId),
+              () => this.releaseSessionLock(opts.sessionId),
               'sessionLifecycle:sessionLock',
             );
             container.anchorKernelEntry(
-              () => workspaceReference?.dispose(),
+              releaseWorkspaceReference,
               'sessionLifecycle:workspaceReference',
             );
             this._onWillCreateSession.fire({
@@ -478,8 +481,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         },
       ) as ISessionScopeHandle;
     } catch (error) {
-      workspaceReference?.dispose();
-      await this.releaseSessionLock(opts.sessionId);
+      try {
+        await sessionContainer?.dispose();
+      } finally {
+        releaseWorkspaceReference();
+        await this.releaseSessionLock(opts.sessionId);
+      }
       throw error;
     }
     try {
@@ -497,7 +504,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       if (opts.rollbackOnMaterializationFailure === true) {
         return this.rollbackSession(opts.sessionId, handle, sessionDir, error);
       }
-      handle.dispose();
+      await handle.dispose();
       await this.releaseSessionLock(opts.sessionId);
       throw error;
     }
@@ -582,7 +589,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await this.announceCreated({ sessionId, handle, source: 'resume' });
     } catch (error) {
       this.sessions.delete(sessionId);
-      handle.dispose();
+      await handle.dispose();
       throw error;
     }
     return handle;
@@ -673,9 +680,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await this.drainAgents(handle);
     await this.persistUsage(handle, usageFallback);
     await this.appendLogStore.drainRetirements();
-    await drainSessionMetadataWrites();
+    await drainSessionMetadataWrites(false);
     await this.indexMirror.drain();
-    handle.dispose();
+    await handle.dispose();
     await drainLogCloses();
     await this.releaseSessionLock(sessionId);
     this._onDidCloseSession.fire({ sessionId, reason: 'exit' });
@@ -700,7 +707,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const usageFallback = aggregateSessionUsage(handle);
     await this.persistUsage(handle, usageFallback);
     await this.appendLogStore.drainRetirements();
-    await drainSessionMetadataWrites();
+    await drainSessionMetadataWrites(false);
     await this.indexMirror.drain();
     if (!canCommit()) return false;
     const finalActivity = handle.accessor.get(ISessionActivityView).state();
@@ -709,7 +716,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (handle.accessor.get(ISessionTerminalService).countLiveTerminals() > 0) return false;
     if (this.hasUnloadBlockers(handle)) return false;
     this.sessions.delete(sessionId);
-    handle.dispose();
+    await handle.dispose();
     await drainLogCloses();
     await this.releaseSessionLock(sessionId);
     this._onDidCloseSession.fire({ sessionId, reason: 'evict' });
@@ -741,9 +748,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     this.event.publish(new SessionArchived({ payload: { sessionId } }));
     await this.announceWillClose({ sessionId, handle, reason: 'archive' });
     this.sessions.delete(sessionId);
-    await drainSessionMetadataWrites();
+    await drainSessionMetadataWrites(false);
     await this.indexMirror.drain();
-    handle.dispose();
+    await handle.dispose();
     await drainLogCloses();
     await this.releaseSessionLock(sessionId);
     this._onDidArchiveSession.fire({ sessionId });
@@ -784,7 +791,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       title: meta.title,
       lastPrompt: meta.lastPrompt,
       createdAt: meta.createdAt,
-      updatedAt: meta.updatedAt,
+      updatedAt: Math.max(meta.updatedAt, meta.activityUpdatedAt ?? 0),
       archived: meta.archived,
       archivedAt: meta.archivedAt,
       custom: meta.custom,
@@ -868,13 +875,13 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       }
     }
     try {
-      await drainSessionMetadataWrites();
+      await drainSessionMetadataWrites(false);
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
     }
     if (handle !== undefined) {
       try {
-        handle.dispose();
+        await handle.dispose();
       } catch (cleanupError) {
         cleanupErrors.push(cleanupError);
       }
@@ -908,7 +915,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     throw error;
   }
 
-  /** Forks a session into a new Session scope. Fails before allocating or copying a target when the
+  /** Forks conversation context into a new Session scope without inheriting scheduled tasks.
+   *  Fails before allocating or copying a target when the
    *  source holds an external-delegation root: that root is Session-scoped authority rather than
    *  ordinary conversation state, and with no authority-transfer protocol in the MVP, cloning it
    *  would leave its child ownership dangling. */
@@ -940,7 +948,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     let target: ISessionScopeHandle | undefined;
     let targetSessionDir: string | undefined;
     try {
-      await drainSessionMetadataWrites();
+      await drainSessionMetadataWrites(false);
       const sourceMeta =
         sourceHandle !== undefined
           ? await sourceHandle.accessor.get(ISessionMetadata).read()
@@ -1039,7 +1047,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
       await targetMeta.update({
         title,
-        titleKind: opts.title !== undefined ? 'custom' : 'replaceable',
+        titleKind: opts.title !== undefined ? 'custom' : sourceMeta?.titleKind,
         forkedFrom: sourceId,
         archived: false,
         updatedAt: toEpochMs(sourceMeta?.updatedAt) || Date.now(),
@@ -1048,10 +1056,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         usage: aggregateSessionUsage(target),
         custom: forkCustomMetadata(sourceMeta?.custom, opts.metadata),
       });
-
-      if (turnSlice === undefined) {
-        await this.duplicateCronTasks(sourceId, targetId);
-      }
 
       await this.appendSessionIndexEntry(targetId, this.workspaceContext.cwd);
       this._onDidForkSession.fire({
@@ -1099,10 +1103,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     readonly targetSessionId: string;
     readonly records?: readonly WireRecord[];
   }): Promise<void> {
-    const records = [
-      ...(args.records ??
-        (await this.readSourceWireRecords(args.sourceHandle, args.sourceSessionId, args.agentId))),
-    ];
+    const records = (args.records ??
+      (await this.readSourceWireRecords(args.sourceHandle, args.sourceSessionId, args.agentId)))
+      .filter((record) => record.type !== 'cron.add' && record.type !== 'cron.delete' && record.type !== 'cron.cursor');
     if (records.length === 0) {
       records.push(createWireMetadataRecord());
     } else if (records[0]?.type !== 'metadata') {
@@ -1220,19 +1223,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         await this.hostFs.mkdir(targetDir, { recursive: true });
         await this.hostFs.writeBytes(targetPath, data);
       }
-    }
-  }
-
-  private async duplicateCronTasks(sourceId: string, targetId: string): Promise<void> {
-    const tasks = await this.cronStore.list({ workspaceId: this.workspaceId });
-    for (const task of tasks) {
-      if (task.tags?.[CRON_SESSION_TAG] !== sourceId) continue;
-      const clone: CronTask = {
-        ...task,
-        id: ulid(),
-        tags: { ...task.tags, [CRON_SESSION_TAG]: targetId },
-      };
-      await this.cronStore.save(this.workspaceId, clone);
     }
   }
 

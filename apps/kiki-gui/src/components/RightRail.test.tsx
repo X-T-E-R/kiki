@@ -220,9 +220,14 @@ describe('RightRail fixed and switchable parts', () => {
     expect(switcher.closest('[data-rail-owner]')).not.toBeNull();
     expect(rail.querySelector('[data-rail-switchable-head] [data-rail-mode-switch]')).toBeNull();
     const zone = () => rail.querySelector('[data-rail-switchable]')!;
+    // The cockpit deliberately reorders the rail's own sections, so what has
+    // to hold across the switch is the SET of sections outside the switchable
+    // zone, not their sequence. Inside the zone is the only thing the mode is
+    // allowed to change.
     const outside = () => [...rail.querySelectorAll('[data-agent-panel-scroll] > .rail-page > *')]
       .filter((node) => !node.hasAttribute('data-rail-switchable'))
-      .map((node) => node.outerHTML);
+      .map((node) => node.outerHTML)
+      .sort();
     expect(zone().getAttribute('data-rail-switchable')).toBe('default');
     expect(zone().querySelector('[data-panel-props="overview"]')?.getAttribute('data-panel-mode')).toBe('default');
     const before = outside();

@@ -91,6 +91,7 @@ export interface ProfileData extends AgentConfigData {
   readonly bindingAdvisories?: readonly BindingAdvisory[];
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly allowParentNotify?: boolean;
+  readonly execution?: import('@kiki/protocol').ExecutionBinding;
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
@@ -122,6 +123,7 @@ export interface ProfileData extends AgentConfigData {
 }
 
 export type ProfileUpdateData = Partial<{
+  execution: import('@kiki/protocol').ExecutionBinding;
   personaOverrides: NonNullable<ProfileData['personaOverrides']>;
   promptBase: import('./boundProfile').BoundPromptBase;
   modelAlias: string;
@@ -155,6 +157,7 @@ export interface ProfileBindingSnapshot {
   readonly lockedThinkingEffort?: string;
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly allowParentNotify?: boolean;
+  readonly execution?: import('@kiki/protocol').ExecutionBinding;
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
@@ -248,6 +251,7 @@ export interface BindingConstraintInput {
 }
 
 export interface BindAgentInput {
+  readonly execution?: import('@kiki/protocol').ExecutionSelection;
   readonly toolOverride?: ToolBindingOverride;
   readonly memoryReadContext?: import('#/app/memory/memorySnapshot').MemoryPersonaContext;
   readonly persona?: string;

@@ -547,7 +547,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           await validateProfileSelection(session, resolved.profile, req.body.profile);
         }
         const execution: PromptExecutionBinding | undefined =
-          req.body.profile === undefined &&
+          req.body.execution === undefined && req.body.profile === undefined &&
             req.body.model === undefined &&
             req.body.thinking === undefined &&
             req.body.permission_mode === undefined &&
@@ -561,6 +561,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             req.body.after_model_switch === undefined
             ? undefined
             : {
+                execution: req.body.execution,
                 afterModelSwitch: req.body.after_model_switch,
                 profile: req.body.profile,
                 model: req.body.model,

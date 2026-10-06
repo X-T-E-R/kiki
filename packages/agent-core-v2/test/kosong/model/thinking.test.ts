@@ -64,6 +64,19 @@ describe('resolveThinkingEffortForModel', () => {
     expect(() => resolveThinkingEffortForModel('off', undefined, { ...thinkingModel, alwaysThinking: true }, true, true)).toThrow(/not supported/);
   });
 
+  it('uses off without an effort declaration only for known non-thinking models', () => {
+    const plain = { capabilities: ['tool_use'], supportEfforts: [] };
+    expect(resolveThinkingEffortForModel(undefined, { effort: 'high' }, plain, false, true)).toBe('off');
+    expect(resolveThinkingEffortForModel(undefined, undefined, { capabilities: [] }, true, true)).toBe('off');
+    expect(() => resolveThinkingEffortForModel('high', undefined, plain, false, true)).toThrow(/not supported/);
+    expect(() => resolveThinkingEffortForModel(undefined, undefined, undefined, false, true)).toThrow(/no resolvable default/);
+    expect(() => resolveThinkingEffortForModel(undefined, undefined, {}, false, true)).toThrow(/no resolvable default/);
+    expect(() => resolveThinkingEffortForModel(undefined, undefined, { ...plain, alwaysThinking: true }, false, true)).toThrow(/no resolvable default/);
+    expect(() => resolveThinkingEffortForModel('off', undefined, { ...plain, alwaysThinking: true }, false, true)).toThrow(/not supported/);
+    expect(() => resolveThinkingEffortForModel(undefined, undefined, { ...plain, adaptiveThinking: true }, false, true)).toThrow(/no resolvable default/);
+    expect(() => resolveThinkingEffortForModel(undefined, undefined, { capabilities: ['thinking'], supportEfforts: ['low', 'high'] }, false, true)).toThrow(/no resolvable default/);
+  });
+
   it('prefers a model default over the global effort when no effort is requested', () => {
     const model = { ...thinkingModel, supportEfforts: ['low', 'max', 'xhigh'], defaultEffort: 'xhigh' };
     expect(resolveThinkingEffortForModel(undefined, { effort: 'max' }, model, true)).toBe('xhigh');

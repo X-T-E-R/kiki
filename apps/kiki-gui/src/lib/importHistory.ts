@@ -43,7 +43,7 @@ export type {
   ImportArchive, ImportDestination, ImportJob, ImportLoss, ImportPreview, ImportReadPage, ImportRecord, ImportSource,
 } from '@kiki/protocol';
 
-/** Server flag that registers the import routes; off by default (D27 first phase). */
+/** Whether this server offers history import; a shipped capability, not a flag. */
 export const PLUGIN_IMPORT_FLAG = 'plugin_import';
 
 export const importKeys = {
@@ -84,17 +84,28 @@ export function importsApi(client: KikiClient): ImportsFacade {
 }
 
 /**
- * Flag read from `/meta`, the same query key and shape the SSH and
- * usage-export settings use. `undefined` means not known yet; `false` means the
- * server has not registered the routes, so the entry is a dead link rather than
- * a list that will not load.
+ * Whether this server offers history import, asked of the server itself: the
+ * entry point calls the real source list. Import is a shipped capability, so
+ * there is no flag to read, and a build without the domain answers with an
+ * error that becomes `false` rather than a dead link.
+ * `undefined` means not known yet, which is not the same as unavailable.
  */
-export function useImportHistoryEnabled(client: KikiClient): { enabled: boolean | undefined; loading: boolean } {
-  const meta = useQuery({ queryKey: ['meta'], queryFn: () => client.meta(), staleTime: 15_000 });
-  return {
-    enabled: meta.data === undefined ? undefined : meta.data.experimental_flags?.[PLUGIN_IMPORT_FLAG] === true,
-    loading: meta.isLoading,
-  };
+export function useImportHistoryEnabled(client: KikiClient, scopeId: string): { enabled: boolean | undefined; loading: boolean } {
+  // A client without the import domain (an older server, or a partial test
+  // double) is a server that cannot import, not a crash.
+  let api: Partial<ImportsFacade> | undefined;
+  try {
+    api = importsApi(client);
+  } catch {
+    api = undefined;
+  }
+  const sources = useQuery({
+    queryKey: importKeys.sources(scopeId),
+    queryFn: async () => (api as { sources?: () => Promise<unknown[]> } | undefined)?.sources?.() ?? [],
+    staleTime: 60_000,
+    retry: false,
+  });
+  return { enabled: sources.data === undefined ? undefined : true, loading: sources.isLoading };
 }
 
 // ---------------------------------------------------------------------------

@@ -128,6 +128,23 @@ async function openHelp(trigger: HTMLButtonElement): Promise<string> {
   return document.querySelector('[data-setting-help-bubble]')?.textContent ?? '';
 }
 
+describe('PersonaEditor thinking effort display order', () => {
+  it('keeps follow first and the persona effort selected without rewriting supported values', async () => {
+    const support_efforts = ['high', 'max', 'low', 'medium', 'xhigh', 'Vendor-ULTRA'];
+    listModels.mockResolvedValue({ items: [{ id: 'example-model', provider_id: 'example', remote_id: 'example-model', support_efforts }] });
+    listWorkspaces.mockResolvedValue({ items: WORKSPACES });
+    getPersona.mockResolvedValue(snapshot({ id: 'example', name: 'Example', description: 'Example persona', modelAlias: 'example-model', thinkingEffort: 'high' }));
+    const container = await render('example');
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="思考强度"]')!;
+    await act(async () => { trigger.click(); });
+    const rows = [...document.body.querySelectorAll('[role="option"]')];
+    expect(rows.map((row) => row.getAttribute('data-option-value'))).toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max', 'Vendor-ULTRA']);
+    expect(rows.filter((row) => row.getAttribute('aria-selected') === 'true').map((row) => row.getAttribute('data-option-value'))).toEqual(['high']);
+    expect(putPersona).not.toHaveBeenCalled();
+    expect(support_efforts).toEqual(['high', 'max', 'low', 'medium', 'xhigh', 'Vendor-ULTRA']);
+  });
+});
+
 describe('what each field says about itself', () => {
   it('keeps description and greeting off the first screen and one hover away', async () => {
     listWorkspaces.mockResolvedValue({ items: WORKSPACES });

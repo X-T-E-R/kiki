@@ -50,12 +50,14 @@ vi.mock('../state/connection', async (importOriginal) => {
   // per-call fresh object would recreate the controller every render (and
   // leak listeners until the worker OOMs).
   const fakeClient = {
+    readingOptions: () => ({ timeoutMs: 0 }),
     readHostFile: (path: string) =>
       path in FILES ? Promise.resolve(FILES[path]) : Promise.reject(new Error('not found')),
     previewHostFile: (path: string) =>
       path === '/work/docs/long.md' ? Promise.resolve({ text: '# Beginning\n', truncated: true })
         : path in FILES ? Promise.resolve({ text: FILES[path], truncated: false }) : Promise.reject(new Error('not found')),
     readHostFileBytes: (path: string) => {
+      if (path in FILES) return Promise.resolve({ bytes: new TextEncoder().encode(FILES[path]), mime: 'text/plain' });
       const file = {
         '/work/shots/screen.png': { bytes: new Uint8Array([137, 80, 78, 71]), mime: 'image/png' },
         '/work/clips/intro.mp4': { bytes: new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]), mime: 'video/mp4' },
@@ -504,7 +506,7 @@ describe('PreviewWorkspace', () => {
     expect(panel?.querySelector('h1')?.textContent).toBe('Design');
   });
 
-  it('discloses a truncated Markdown preview and loads the full file on demand without enabling editing', async () => {
+  it('automatically completes a truncated Markdown preview without enabling editing', async () => {
     FILES['/work/docs/long.md'] = '# Beginning\n\n# Hidden ending\n';
     const probe = makeRoot();
     await renderSettled(probe.root,
@@ -515,11 +517,7 @@ describe('PreviewWorkspace', () => {
     await openFile(probe.container, '/work/docs/long.md');
     const panel = workspace().querySelector('[data-preview-tabpanel="/work/docs/long.md"]')!;
     expect(panel.querySelector('h1')?.textContent).toBe('Beginning');
-    expect(panel.textContent).toContain('preview shows only the beginning');
-    expect(panel.textContent).not.toContain('Hidden ending');
-    await act(async () => {
-      panel.querySelector('[data-load-full-markdown]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    expect(panel.textContent).toContain('Hidden ending');
     expect(panel.querySelector('h1')?.textContent).toBe('Beginning');
     expect([...panel.querySelectorAll('h1')].map((heading) => heading.textContent)).toEqual(['Beginning', 'Hidden ending']);
     expect(panel.querySelector('[data-load-full-markdown]')).toBeNull();
@@ -541,11 +539,6 @@ describe('PreviewWorkspace', () => {
       panel.querySelector('[data-md-mode="source"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     const editor = () => panel.querySelector('[data-testid="editor"]') as HTMLTextAreaElement;
-    expect(editor().value).not.toContain('Hidden ending');
-    expect(panel.querySelector('[data-load-full-markdown]')).not.toBeNull();
-    await act(async () => {
-      panel.querySelector('[data-load-full-markdown]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
     expect(editor().value).toContain('# Hidden ending');
     expect(editor().readOnly).toBe(true);
     expect(panel.querySelector('[data-load-full-markdown]')).toBeNull();
@@ -558,12 +551,10 @@ describe('PreviewWorkspace', () => {
     const view = () => <MediaPreviewProvider cwd="/work"><OpenButton path="/work/docs/long.md" /></MediaPreviewProvider>;
     await renderSettled(probe.root, view());
     await openFile(probe.container, '/work/docs/long.md');
-    await act(async () => {
-      workspace().querySelector('[data-load-full-markdown]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
     expect(workspace().textContent).toContain('Private ending');
 
     connectionMock.activeClient = {
+      readingOptions: () => ({ timeoutMs: 0 }),
       readHostFile: async () => '# Second host\n',
       previewHostFile: async () => ({ text: '# Second host\n', truncated: true }),
       readHostFileBytes: async () => { throw new Error('not found'); },

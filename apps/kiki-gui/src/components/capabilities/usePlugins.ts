@@ -7,6 +7,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PluginInfo, PluginMarketplaceEntry, PluginSummary } from '../../lib/client';
+import { localizeEntry, type CatalogLocale } from '../../lib/pluginCatalog';
 import { useConnection } from '../../state/connection';
 
 export const PLUGIN_QUERY_KEYS = {
@@ -143,6 +144,17 @@ export interface PluginSubject {
 
 export function subjectName(subject: PluginSubject): string {
   return subject.installed?.displayName ?? subject.entry?.displayName ?? subject.id;
+}
+
+/**
+ * The name to show for the reader's language. An installed plugin is named by
+ * its own manifest, so only a catalog entry that is not installed yet can be
+ * renamed by the catalog's localization — and only when the catalog supplied
+ * one.
+ */
+export function localizedSubjectName(subject: PluginSubject, locale: CatalogLocale): string {
+  if (subject.entry === undefined) return subjectName(subject);
+  return subject.installed?.displayName ?? localizeEntry(subject.entry, locale).displayName;
 }
 
 export function subjectIcon(subject: PluginSubject, info?: PluginInfo): string | undefined {

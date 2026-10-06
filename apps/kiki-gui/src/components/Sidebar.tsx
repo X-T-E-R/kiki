@@ -461,7 +461,7 @@ export function Sidebar({
   // Ctrl/⌘-click multi-select, for pulling several threads into one room.
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [roomDraft, setRoomDraft] = useState<readonly Session[] | null>(null);
-  const [joiningRoom, setJoiningRoom] = useState<Session | null>(null);
+  const [joiningRoom, setJoiningRoom] = useState<readonly Session[] | null>(null);
   const threadCommsEnabled = useThreadCommsEnabled(client);
   const toggleSelected = (session: Session) => {
     setSelected((current) => {
@@ -1588,14 +1588,12 @@ export function Sidebar({
           onAction={(action) => { runAction(menuItem.session, action); }}
           onArchive={() => { archive(menuItem.session); }}
           onRestore={() => { restore(menuItem.session); }}
-          roomSelection={selected.has(menuItem.id) ? selected.size : 0}
           threadCommsEnabled={threadCommsEnabled}
-          onNewRoom={() => {
+          onJoinRoom={() => {
             const ids = selected.has(menuItem.id) && selected.size >= 2 ? selected : new Set([menuItem.id]);
-            setRoomDraft(sessions.filter((item) => ids.has(item.id)));
+            setJoiningRoom(sessions.filter((item) => ids.has(item.id)));
             setMenu(null);
           }}
-          onJoinRoom={() => { setJoiningRoom(menuItem.session); setMenu(null); }}
         />
       ) : null}
       {menuItem !== null && menuItem.kind === 'room' ? (
@@ -1621,7 +1619,11 @@ export function Sidebar({
       {roomDraft !== null ? (
         <NewThreadRoomDialog threads={roomDraft} onClose={() => { setRoomDraft(null); setSelected(new Set()); }} />
       ) : null}
-      {joiningRoom !== null ? <JoinRoomDialog session={joiningRoom} onClose={() => { setJoiningRoom(null); }} /> : null}
+      {joiningRoom !== null && joiningRoom[0] !== undefined ? (
+        <JoinRoomDialog session={joiningRoom[0]} threads={joiningRoom}
+          onClose={() => { setJoiningRoom(null); }}
+          onNewRoom={() => { setRoomDraft(joiningRoom); setJoiningRoom(null); }} />
+      ) : null}
       {renaming !== null ? (
         <RenameDialog
           currentTitle={renaming.kind === 'room' ? renaming.title : renaming.session.title}
@@ -2939,9 +2941,7 @@ function SessionMenu({
   onAction,
   onArchive,
   onRestore,
-  roomSelection,
   threadCommsEnabled,
-  onNewRoom,
   onJoinRoom,
 }: {
   session: Session;
@@ -2958,11 +2958,8 @@ function SessionMenu({
   onAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
   onArchive: () => void;
   onRestore: () => void;
-  /** Size of the multi-select this row belongs to (0 when it is not selected). */
-  roomSelection: number;
   /** `[thread_communication].enabled`; undefined while the config loads. */
   threadCommsEnabled: boolean | undefined;
-  onNewRoom: () => void;
   onJoinRoom: () => void;
 }) {
   const host = useHost();
@@ -3011,7 +3008,7 @@ function SessionMenu({
   // editor actions ride the desktop opener commands, so the browser build
   // degrades to the two copy entries only.
   const cwd = session.metadata.cwd;
-  const desktop = !scopeId.startsWith('ssh:') && host.revealPath !== undefined && host.openPath !== undefined;
+  const desktop = !scopeId.startsWith('ssh:') && host.revealPath !== undefined;
   const runAndClose = (label: string, action: () => Promise<void>) => {
     onClose();
     runToastAction(label, action);
@@ -3065,10 +3062,10 @@ function SessionMenu({
             data-menu-item="copy-link"
             className={itemClass}
             onClick={() => {
-              runAndClose(t('menu.copyLink'), () => copyTextToClipboard(`/s/${session.id}`));
+              runAndClose(t('menu.copyThreadLink'), () => copyTextToClipboard(`/s/${session.id}`));
             }}
           >
-            {t('menu.copyLink')}
+            {t('menu.copyThreadLink')}
           </button>
           {/* A thread reference into the open conversation's composer, at its
               caret. Nothing open, or this row IS the open one: nothing to add to. */}
@@ -3100,17 +3097,6 @@ function SessionMenu({
               <button
                 type="button"
                 role="menuitem"
-                data-menu-item="new-thread-room"
-                disabled={threadCommsEnabled === false}
-                title={threadCommsEnabled === false ? t('room.commsOff') : undefined}
-                className={`${itemClass} disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent`}
-                onClick={onNewRoom}
-              >
-                {roomSelection >= 2 ? t('room.fromThreadsCount', { count: roomSelection }) : t('room.fromThreads')}
-              </button>
-              <button
-                type="button"
-                role="menuitem"
                 data-menu-item="join-room"
                 disabled={threadCommsEnabled === false}
                 title={threadCommsEnabled === false ? t('room.commsOff') : undefined}
@@ -3130,32 +3116,21 @@ function SessionMenu({
               role="menuitem"
               data-menu-item="copy-path"
               className={itemClass}
-              onClick={() => { runAndClose(t('menu.copyPath'), () => copyTextToClipboard(cwd)); }}
+              onClick={() => { runAndClose(t('menu.copyWorkingDirectory'), () => copyTextToClipboard(cwd)); }}
             >
-              {t('menu.copyPath')}
+              {t('menu.copyWorkingDirectory')}
             </button>
           ) : null}
           {desktop && cwd !== '' ? (
-            <>
-              <button
-                type="button"
-                role="menuitem"
-                data-menu-item="open-folder"
-                className={itemClass}
-                onClick={() => { runAndClose(t('menu.openFolder'), () => host.revealPath!(cwd)); }}
-              >
-                {t('menu.openFolder')}
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                data-menu-item="open-default-app"
-                className={itemClass}
-                onClick={() => { runAndClose(t('menu.openDefaultApp'), () => host.openPath!(cwd)); }}
-              >
-                {t('menu.openDefaultApp')}
-              </button>
-            </>
+            <button
+              type="button"
+              role="menuitem"
+              data-menu-item="open-folder"
+              className={itemClass}
+              onClick={() => { runAndClose(t('menu.openWorkingDirectory'), () => host.revealPath!(cwd)); }}
+            >
+              {t('menu.openWorkingDirectory')}
+            </button>
           ) : null}
           <div className="mx-1 my-1 border-t border-hairline" />
           <button type="button" role="menuitem" className={itemClass} onClick={onTogglePin}>

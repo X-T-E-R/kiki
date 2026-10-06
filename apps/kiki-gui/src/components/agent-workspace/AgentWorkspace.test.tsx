@@ -655,6 +655,9 @@ it.each([false, true])('updates a mounted child tree and composer after send and
     getState: () => sessionState,
     getAgentState: () => childState,
     getForest: () => forest,
+    retainHistoryRead: () => () => {},
+    retainHistoryPreview: () => () => {},
+    historyPreviewPending: () => false,
   } as unknown as SessionController;
   function MountedWorkspace() {
     const state = useSyncExternalStore(subscribe, () => sessionState);
@@ -1080,6 +1083,9 @@ function controllerStub(input: {
     subscribeAgent: () => () => {},
     getAgentState: (agentId: string) => input.agentStates[agentId] ?? EMPTY_AGENT_STATE,
     getForest: () => input.forest,
+    retainHistoryRead: () => () => {},
+    retainHistoryPreview: () => () => {},
+    historyPreviewPending: () => false,
   } as unknown as SessionController;
 }
 

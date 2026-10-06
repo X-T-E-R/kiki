@@ -1227,6 +1227,21 @@ describe('AgentPromptService', () => {
     }
   });
 
+  it('does not hold an empty restored queue with orphan prompt or control slots', async () => {
+    const { prompt, loop, dispatcher, states, eventBus } = harness();
+    const holds: unknown[] = [];
+    eventBus.subscribe(PromptQueueHoldChanged, (event) => holds.push(event.hold));
+    const queue = states.get(promptQueueKey);
+    states.set(promptQueueKey, { ...queue, order: ['missing-prompt', '\u0000model-switch:missing-control'] });
+    await dispatcher.hooks.onDidRestore.run({});
+    expect(prompt.list().hold).toBeUndefined();
+    expect(prompt.list().pending).toEqual([]);
+    expect(holds).toEqual([]);
+    const fresh = await prompt.enqueue({ id: 'fresh', message: message('Continue independently.') });
+    await fresh.launched;
+    expect(loop.launches).toEqual([0]);
+  });
+
   it('rebuilds and releases the observable recovery hold from durable prompt state', async () => {
     const { prompt, goal, dispatcher, eventBus } = harness();
     const holds: Array<{ readonly reason: 'recovery'; readonly count: number } | null> = [];

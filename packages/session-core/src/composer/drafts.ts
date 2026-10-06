@@ -2,6 +2,7 @@
 
 import type { PermissionMode, PromptPlanGate } from '@kiki/protocol';
 
+import type { ExecutionChoice } from './executionSelection';
 import type { ComposerAttachment } from './attachments';
 import type { SelectionAnnotation } from './selectionQuote';
 import { readSettings } from '../settings/settings';
@@ -146,6 +147,13 @@ export interface ComposerSessionState {
   goalObjective: string | undefined;
   modelOverride: string | undefined;
   effortOverride: string | undefined;
+  /**
+   * Engine (and optional profile of it) the user picked for this session.
+   * `undefined` = never picked: the session's own committed binding stands.
+   * It rides every prompt of the session until the pick is dropped, and is
+   * never mirrored to disk with the model scalars.
+   */
+  execution?: ExecutionChoice;
 }
 
 export interface PersistedComposerScalars {
@@ -377,6 +385,7 @@ export function restorePromptToDraft(sessionId: string, content: readonly import
     goalObjective: previous.goalObjective,
     modelOverride: previous.modelOverride,
     effortOverride: previous.effortOverride,
+    execution: previous.execution,
   });
   for (const listener of appendListeners) listener(sessionId, restored);
 }

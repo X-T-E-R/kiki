@@ -126,7 +126,7 @@ describe('delegation context at bind', () => {
     assertAnchored();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it.each(['sub', 'independent', 'off'] as const)('preserves the saved %s notice across a cold variable refresh', async (position) => {
+  it.each(['sub', 'independent', 'off'] as const)('preserves the saved %s notice and inputs when cold configuration changes', async (position) => {
     const custom = normalizeAgentProfile({
       name: DEFAULT_AGENT_PROFILE_NAME,
       delegationNotice: position === 'off' ? 'off' : undefined,
@@ -147,8 +147,12 @@ describe('delegation context at bind', () => {
     const restored = ctx.get(IAgentProfileService);
     restored.applyBindingSnapshot(before);
     await restored.preparePromptConfiguration();
-    expect(restored.getSystemPrompt()).toContain('Role NEW');
-    expect(restored.getSystemPrompt().split('SHARED_NEW')).toHaveLength(2);
+    expect(restored.getSystemPrompt()).toContain(before.systemPrompt);
+    expect(restored.getSystemPrompt()).toContain('Role OLD');
+    expect(restored.getSystemPrompt()).not.toContain('Role NEW');
+    expect(restored.getSystemPrompt().split('SHARED_OLD')).toHaveLength(2);
+    expect(restored.getSystemPrompt()).not.toContain('SHARED_NEW');
+    expect(restored.data().boundProfile?.promptBase?.inputs).toEqual(before.boundProfile?.promptBase?.inputs);
     expect(restored.data().boundProfile?.promptBase?.delegationSnippet).toBe(snippet);
     if (snippet !== undefined) expect(restored.getSystemPrompt().split(snippet)).toHaveLength(2);
     else {

@@ -189,6 +189,16 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 
 要自动分配工作区，可向 `POST /api/sessions` 发送 `{}`。服务端会在 `$KIKI_HOME/workspaces/` 下为该会话新建独立目录并注册工作区；响应中的 `workspace_id` 和 `metadata.cwd` 是新工作区的信息。显式提供已有 `workspace_id` 或 `metadata.cwd` 时仍按原方式定位，未知 `workspace_id` 仍会被拒绝。
 
+创建时设置 `agent_config.execution`，即可独立于 profile 选择 harness：
+
+```json
+{ "agent_config": { "execution": { "executor": "claude-acp" } } }
+```
+
+选择对象为 `{ executor, profile?, overrides? }`。省略 `profile` 表示外部直连；显式选择的 profile 必须使用同一执行器。`overrides` 接受 `model`、`thinking`、`permission_mode`、`kiki_context`、`allow_kiki_subagents`。执行器与 profile 相同时，省略覆盖字段保留该会话已有覆盖；`null` 删除覆盖并恢复 [下层默认值](../configuration/config-files.md#外部-harness-默认设置)，`[]` 与 `false` 则明确关闭对应能力。旧的顶层 model/profile/thinking 请求仍可使用。
+
+读取会话时，已提交的 `agent_config.execution` 绑定为 `{ version: 1, selection, effective, sources, generation }`。来源取 `session`、`profile`、`harness-settings`、`harness-default`；有效模型或档位未设置表示 Kiki 没有指定，而不是 harness 没有使用模型。厂商报告的模型是观测值，不会变成新的覆盖。空闲时也可通过 `POST /api/sessions/{session_id}/profile` 的 `agent_config.execution` 修改；运行中请随下一条提示词提交选择。
+
 #### `POST /api/sessions/{session_id}:compact`
 
 请求体可以省略。它接受 `instruction`（要保留什么）和 `strategy`，取值为服务端实现的两种续上下文策略 `summarize` 或 `relay`。请求到达时会话空闲就直接开始压缩；仍有模型响应或工具结果正在落进历史时则先排队，等那部分工作结束后的下一个 step 边界处理，不用等整个轮次。
@@ -224,7 +234,9 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | 中止指定的排队中、启动中、运行中或已追加的提示词 |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | 立即发送单个排队提示词 |
 
-立即发送会把选中的提示词追加到活跃轮次；没有活跃轮次时，则按队列顺序分别启动新轮次。重启后，此操作只让选中项绕过恢复确认，其他恢复的提示词仍等待确认。中止已追加的提示词会取消它所加入的轮次，不会取消后续轮次。中止不存在或已经结束的提示词会返回 `40402`。
+提示词可在顶层 `execution` 携带同一份 [execution 选择](#会话)。选择随该提示词保存，到启动时才应用，而不是入队就生效；当前轮次保持已提交的绑定。execution 代际变化时新建远端会话，不恢复或 fork 旧远端，也不发送旧 Kiki 对话的交接文本；Kiki 中可见的历史仍保留。冷恢复继续使用已提交的代际及其自身保存的远端引用。
+
+立即发送会把普通选中提示词追加到活跃轮次；没有活跃轮次时，则按队列顺序分别启动新轮次。带有 execution 选择的提示词必须独立启动，不能把新绑定追加进当前轮次。重启后，此操作只让选中项绕过恢复确认，其他恢复的提示词仍等待确认。中止已追加的提示词会取消它所加入的轮次，不会取消后续轮次。中止不存在或已经结束的提示词会返回 `40402`。
 
 ### 审批与提问
 
@@ -348,9 +360,11 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 | `GET /api/memory/{scope}/journal` | 改动历史，可用 `id` 收窄到单条 |
 | `POST /api/memory/{scope}/undo` | 按 `operation_id` 撤销一次操作 |
 
-不带分页参数的 `GET /api/memory/{scope}` 返回整个命名空间的 `{ items, coverage }`，既有客户端无需改动。它的默认状态按形状不同：没有 `query` 时返回 `active` 和 `pending`，带 `query` 时只搜 `active`，`include_inactive=true` 则把两者都放宽到四种。`coverage` 会写明实际查的是哪些状态。
+`GET /api/memory/{scope}` 返回有界分页的 `{ items, mode, next_cursor, coverage }`，不带分页参数时也一样。没有 `query` 时 `mode` 默认 `list`，有 `query` 时默认 `search`；`page_size` 取 1–20。没有显式 `statuses` 时，list 查 `active` 和 `pending`，search 查 `active`，`include_inactive=true` 把两者都放宽到四种。`statuses` 是 `active`、`pending`、`superseded`、`archived` 的逗号串。既有客户端必须消费 `next_cursor`，不能把第一页当成整个命名空间。
 
-传 `mode`、`page_size`、`statuses` 或 `cursor` 则切换为分页结果，并多出 `next_cursor`。此时没有 `query` 时 `mode` 默认 `list`，有 `query` 时默认 `search`，`page_size` 取 1–20，`statuses` 是 `active`、`pending`、`superseded`、`archived` 的逗号串，默认只查生效条目。翻页时保持同一个 `{scope}` 路径和同一组 `workspace_id` / `persona_id`，并且只带 `cursor`，不要再带 `mode`、`query`、`type`、`page_size`、`statuses` 或 `include_inactive`——范围、过滤条件和页大小都记在 cursor 里了，把其中任何一项加回去都会返回 `40944`。底下的条目或命名空间发生变化后 cursor 也会失效，这时重新发起查询并按 id 对账，不要以为第二次跑的就覆盖了第一次的范围。
+持续接续，直到 `next_cursor` 为 null 且 `coverage.exhausted` 为 true。带 cursor 的空准备页不代表命名空间为空。`coverage.complete` 和 `warnings` 说明不可读、非法或过大的记录；这些记录不会隐藏其余可读条目。扫描预算限制单次调用，不永久限制清单大小；搜索相关性排序与列表标题排序针对每个有界源片段。
+
+续读保持同一个 `{scope}` 路径和归属的 `workspace_id` / `persona_id`，只传 `cursor`，不要再带原过滤条件或页大小，混传会返回 `40944`。源内容变化或 store 重启会让 cursor 失效；重新查询并按范围加 ID 对账。`GET /api/memory/{scope}/inbox` 为 `pending` 返回同样的分页形状，接受 `page_size` 或 pending 列表的 `cursor`；其他状态或 search 模式的 cursor 会被拒绝。
 
 `PUT /api/memory/{scope}/{id}` 使用与 [`MemoryWrite`](../reference/tools.md#写入一条条目)相同的动作词表：`action`（`create`、`update`、`supersede`、`archive`）、`type`、`title`、`body`、`reason`、`expected_revision` 和 `pinned`。经 REST 的写入一律记录为来自你，无论 Agent 本会用哪个 `source`。响应是 `{ entry, operationId, outcome, warnings? }`，`outcome` 取 `applied`、`pending` 或 `unchanged`；`unchanged` 以及与已在等待的提议完全相同的重复提交，`operationId` 为 `null`，这两种情况都没有可撤销的操作。`update`、`supersede` 和 `archive` 必须带 `expected_revision`——基于过期版本的 `PUT` 会被拒绝，而不是覆盖掉更新的那一版。
 

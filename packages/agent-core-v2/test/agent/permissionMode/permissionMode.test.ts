@@ -18,6 +18,9 @@ import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IEventBus } from '#/app/event/eventBus';
+import { EventBusService } from '#/app/event/eventBusService';
+import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
@@ -105,7 +108,8 @@ beforeEach(() => {
   ix.set(IAgentStateService, new AgentStateService());
   ix.set(IAgentPermissionModeService, new SyncDescriptor(AgentPermissionModeService));
   log = ix.get(IAppendLogStore);
-  registerTestAgentWire(ix, testWireScope(SCOPE, KEY), { log });
+  ix.set(IEventBus, new SyncDescriptor(EventBusService));
+  registerTestAgentWire(ix, testWireScope(SCOPE, KEY), { log, eventBus: ix.get(IEventBus) });
   dispatcher = registerTestEventDispatcher(ix);
   svc = ix.get(IAgentPermissionModeService);
 });
@@ -160,6 +164,34 @@ describe('AgentPermissionModeService (wire-backed)', () => {
 
     svc.setMode('manual');
     expect(changes).toEqual([{ mode: 'manual', previousMode: 'auto' }]);
+  });
+
+  it('publishes the initially configured default mode once without a mode-change notification', async () => {
+    const statuses: AgentStatusUpdated[] = [];
+    const changes: unknown[] = [];
+    disposables.add(ix.get(IEventBus).subscribe(AgentStatusUpdated, (event) => statuses.push(event)));
+    disposables.add(svc.onDidChangeMode((event) => changes.push(event)));
+    svc.setMode('auto');
+    svc.setMode('auto');
+    await dispatcher.flush();
+    expect(statuses.map((event) => event.permission)).toEqual(['auto']);
+    expect(changes).toEqual([]);
+    expect((await readRecords()).map((record) => record.type)).toEqual(['permission.set_mode']);
+  });
+
+  it('publishes the effective permission mode for status consumers without duplicating unchanged updates', async () => {
+    const statuses: AgentStatusUpdated[] = [];
+    disposables.add(ix.get(IEventBus).subscribe(AgentStatusUpdated, (event) => statuses.push(event)));
+    svc.setMode('manual');
+    svc.setMode('manual');
+    svc.setMode('review');
+    svc.setModeCeiling('auto');
+    svc.setMode('yolo');
+    await dispatcher.flush();
+    expect(statuses.map((event) => event.permission)).toEqual(['manual', 'review', 'auto']);
+    expect((await readRecords()).map((record) => record.type)).toEqual([
+      'permission.set_mode', 'permission.set_mode', 'permission.set_mode',
+    ]);
   });
 
   it('enforces a persistent mode ceiling across later mode changes', () => {

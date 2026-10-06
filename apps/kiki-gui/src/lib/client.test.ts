@@ -14,7 +14,13 @@ import {
   NativeChildPromptConflictError,
   type AgentTranscriptResponse,
 } from './client';
-import { isMemoryToolName, parseMemoryWriteResult } from '../components/MemoryToolRow';
+import {
+  isMemoryToolName,
+  parseMemoryReadResult,
+  parseMemorySearchSummary,
+  parseMemoryWriteResult,
+} from '../components/MemoryToolRow';
+import { memoryApplicability } from '../components/memory/memoryReceipt';
 import { refreshSessionAttention } from '../state/connection';
 
 function transcriptView(sessionId: string, validate = false) {
@@ -28,6 +34,56 @@ function resumeResponse(url: string | URL, init?: RequestInit): Response | undef
   expect(body).toEqual({ procedure: { scope: 'core', service: 'sessionManager', method: 'resume' }, params: ['s1'] });
   return Response.json({ code: 0, msg: 'success', data: { id: 's1', kind: 'session' } });
 }
+
+describe('KikiClient reading deadline options', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('defaults to unlimited reading without browser storage', async () => {
+    vi.stubGlobal('localStorage', undefined);
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try { expect(client.readingOptions()).toEqual({ timeoutMs: 0 }); }
+    finally { await client.klient.close(); }
+  });
+  it('reads changed browser deadlines on the existing client', async () => {
+    let stored = '{}';
+    vi.stubGlobal('localStorage', { getItem: () => stored });
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      expect(client.readingOptions()).toEqual({ timeoutMs: 0 });
+      stored = JSON.stringify({ readingTimeoutSeconds: 3600 });
+      expect(client.readingOptions()).toEqual({ timeoutMs: 3600000 });
+      stored = JSON.stringify({ readingTimeoutSeconds: 0 });
+      expect(client.readingOptions()).toEqual({ timeoutMs: 0 });
+    } finally { await client.klient.close(); }
+  });
+});
+
+describe('KikiClient skill and text preview reading options', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('samples the live reading setting and forwards cancellation without changing existing read arguments', async () => {
+    let stored = '{}';
+    vi.stubGlobal('localStorage', { getItem: () => stored });
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    const rest = client.klient.rest;
+    if (rest === undefined) throw new Error('HTTP client must expose its REST facade');
+    const builtin = vi.spyOn(rest.skills, 'readBuiltinContent').mockResolvedValue({ name: 'example', content: '# skill' });
+    const preview = vi.spyOn(rest.filesystem, 'previewHostFile').mockResolvedValue({ text: 'preview', truncated: true });
+    const original = vi.spyOn(rest.filesystem, 'readHostFile').mockResolvedValue('complete');
+    const controller = new AbortController();
+    try {
+      await expect(client.readBuiltinSkill('example')).resolves.toBe('# skill');
+      expect(builtin).toHaveBeenLastCalledWith('example', { timeoutMs: 0 });
+      await client.previewHostFile('/example');
+      expect(preview).toHaveBeenLastCalledWith('/example', 512001, { timeoutMs: 0 });
+      stored = JSON.stringify({ readingTimeoutSeconds: 2 });
+      await client.readBuiltinSkill('example', { signal: controller.signal });
+      expect(builtin).toHaveBeenLastCalledWith('example', { timeoutMs: 2000, signal: controller.signal });
+      await client.previewHostFile('/example', 8, { signal: controller.signal });
+      expect(preview).toHaveBeenLastCalledWith('/example', 8, { timeoutMs: 2000, signal: controller.signal });
+      await client.readHostFile('/example', { signal: controller.signal, timeoutMs: 0 });
+      expect(original).toHaveBeenLastCalledWith('/example', { timeoutMs: 0, signal: controller.signal });
+    } finally { await client.klient.close(); }
+  });
+});
 
 describe('KikiClient cold-session actions', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
@@ -900,6 +956,40 @@ describe('KikiClient.readHostFileBytes', () => {
 });
 
 describe('KikiClient.readSessionMediaBytes', () => {
+  it('shares a source preview request and cancels only the departing reader', async () => {
+    let complete!: (response: Response) => void;
+    let sharedSignal: AbortSignal | null | undefined;
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      sharedSignal = init?.signal;
+      return new Promise<Response>((resolve) => { complete = resolve; });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'fixture-token' });
+    const first = new AbortController();
+    const second = new AbortController();
+    try {
+      const leaving = client.readSessionMediaPreviewBytes('s1', 'image', { signal: first.signal });
+      const staying = client.readSessionMediaPreviewBytes('s1', 'image', { signal: second.signal });
+      const rejected = expect(leaving).rejects.toThrow();
+      first.abort();
+      await rejected;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(sharedSignal?.aborted).toBe(false);
+      complete(new Response(new Uint8Array([1, 2]), { headers: { 'content-type': 'image/png', etag: 'fixture-v2' } }));
+      expect((await staying).bytes).toEqual(new Uint8Array([1, 2]));
+    } finally { await client.klient.close(); vi.unstubAllGlobals(); }
+  });
+
+  it('does not retain failed shared preview requests and permits retry', async () => {
+    const fetchMock = vi.fn().mockRejectedValueOnce(new Error('temporary transport failure')).mockResolvedValueOnce(new Response(new Uint8Array([1]), { headers: { 'content-type': 'image/png' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'fixture-token' });
+    try {
+      await expect(client.readSessionMediaPreviewBytes('s1', 'image')).rejects.toThrow('temporary transport failure');
+      expect((await client.readSessionMediaPreviewBytes('s1', 'image')).bytes.byteLength).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally { await client.klient.close(); vi.unstubAllGlobals(); }
+  });
   it('revalidates a bounded image thumbnail without downloading the original', async () => {
     const thumbnail = new Uint8Array(64 * 1024);
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
@@ -1612,6 +1702,27 @@ describe('KikiClient transcript protocol', () => {
 describe('memory client surface', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
+  it('carries page coverage and scope while continuing with only cursor, and forwards cancellation', async () => {
+    const seen: URL[] = [];
+    const controller = new AbortController();
+    const page = { items: [], next_cursor: 'opaque-example', coverage: { scopes: [{ kind: 'persona_workspace', workspaceId: 'wd_a_0123456789ab', personaId: 'example-role' }], statuses: ['pending'], complete: false, exhausted: false, warnings: ['1 invalid memory record'] } };
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      seen.push(new URL(String(url)));
+      expect(init?.signal?.aborted).toBe(controller.signal.aborted);
+      return new Response(JSON.stringify({ code: 0, msg: 'success', data: page }));
+    }));
+    const api = new KikiClient({ baseUrl: 'http://example.test' });
+    const target = { scope: 'persona_workspace' as const, workspaceId: 'wd_a_0123456789ab', personaId: 'example-role' };
+    expect(await api.listMemory(target, { mode: 'list', statuses: ['pending'], page_size: 2 }, controller.signal)).toEqual(page);
+    expect(seen[0]!.searchParams.get('statuses')).toBe('pending');
+    await api.listMemory(target, { cursor: 'opaque-example' }, controller.signal);
+    expect([...seen[1]!.searchParams.keys()].sort()).toEqual(['cursor', 'persona_id', 'workspace_id']);
+    expect(await api.memoryInbox(target, { cursor: 'opaque-example' }, controller.signal)).toEqual(page);
+    expect([...seen[2]!.searchParams.keys()].sort()).toEqual(['cursor', 'persona_id', 'workspace_id']);
+    controller.abort();
+    await api.memoryInbox(target, {}, controller.signal);
+  });
+
   const client = () => new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
   const envelope = (data: unknown, code = 0, msg = 'success') =>
     new Response(JSON.stringify({ code, msg, data, request_id: 'req_1' }), {
@@ -1673,6 +1784,36 @@ describe('memory client surface', () => {
     expect(result.operation_id).toBe('op_1');
   });
 
+  it('preserves metadata omission versus explicit validity null and reads an unchanged null operation', async () => {
+    const sent: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      sent.push(JSON.parse(init?.body as string));
+      return envelope({ entry: { id: 'm_1' }, outcome: 'unchanged', operationId: null });
+    }));
+    const fields = { action: 'update' as const, type: 'project' as const, title: 'Rule', body: 'Keep the current condition.', reason: 'Reviewed.', expected_revision: 'r1' };
+    const result = await client().putMemory({ scope: 'global' }, 'm_1', fields);
+    expect(sent[0]).not.toHaveProperty('basis');
+    expect(sent[0]).not.toHaveProperty('validity');
+    expect(result).toMatchObject({ outcome: 'unchanged', operationId: null });
+    const basis = { kind: 'human' as const, note: 'An explicit current requirement.' };
+    await client().putMemory({ scope: 'global' }, 'm_1', { ...fields, basis, validity: null });
+    expect(sent[1]).toMatchObject({ basis, validity: null });
+    expect(sent[1]?.['basis']).not.toBeNull();
+  });
+
+  it('sends covered-by expected_revision on archive and keeps the stored revision response', async () => {
+    let sent: Record<string, unknown> | undefined;
+    const covered = { id: 'm_kept', expected_revision: 'kept-r1' };
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      sent = JSON.parse(init?.body as string);
+      return envelope({ entry: { id: 'm_retired', covered_by: { id: covered.id, revision: covered.expected_revision } }, outcome: 'applied', operationId: 'op_archive' });
+    }));
+    const result = await client().putMemory({ scope: 'global' }, 'm_retired', { action: 'archive', type: 'project', title: 'Old rule', body: 'Stored rule.', reason: 'Covered by the retained rule.', expected_revision: 'r1', covered_by: covered });
+    expect(sent?.['covered_by']).toEqual(covered);
+    expect(sent?.['covered_by']).not.toHaveProperty('revision');
+    expect(result.entry.covered_by).toEqual({ id: 'm_kept', revision: 'kept-r1' });
+  });
+
   it('rejects a non-envelope response instead of returning undefined data', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>nope</html>', { status: 502 })));
     await expect(client().getMemorySettings()).rejects.toMatchObject({ code: API_CODES.INVALID_RESPONSE });
@@ -1693,9 +1834,12 @@ describe('memory timeline rows', () => {
       id: 'm_1', title: 'Use pnpm', scope: 'workspace', status: 'active',
       revision: 'rev_1', operation_id: 'op_1',
     });
-    expect(parseMemoryWriteResult(output)).toEqual({
+    // A pre-`outcome` receipt still reads as `applied`: the payload it carries
+    // is the whole truth about what happened.
+    expect(parseMemoryWriteResult(output)).toMatchObject({
       id: 'm_1', title: 'Use pnpm', scope: 'workspace', status: 'active',
-      revision: 'rev_1', operation_id: 'op_1',
+      revision: 'rev_1', operation_id: 'op_1', outcome: 'applied',
+      target: { scope: 'workspace', id: 'm_1', expected_revision: 'rev_1' },
     });
     // A running call, a plain string, and a foreign shape all yield undefined.
     expect(parseMemoryWriteResult(undefined)).toBeUndefined();
@@ -1706,6 +1850,66 @@ describe('memory timeline rows', () => {
 
   it('defaults the optional result fields so a partial payload still renders', () => {
     const parsed = parseMemoryWriteResult(JSON.stringify({ id: 'm_2', title: 'T', scope: 'global' }));
-    expect(parsed).toMatchObject({ status: 'active', revision: '', operation_id: '' });
+    expect(parsed).toMatchObject({ status: 'active', revision: '', operation_id: null, outcome: 'applied' });
+  });
+
+  it('gives a receipt its real owning scope, so a persona entry is not read as the session workspace', () => {
+    const parsed = parseMemoryWriteResult(JSON.stringify({
+      id: 'm_3', title: 'Publish confirmation', scope: 'persona_workspace',
+      owner_scope: { kind: 'persona_workspace', workspaceId: 'wd_home', personaId: 'lin-lan' },
+      target: { scope: 'persona_workspace', id: 'm_3', expected_revision: 'rev_3' },
+      status: 'active', revision: 'rev_3', operation_id: 'op_3', outcome: 'applied',
+    }));
+    expect(parsed?.owner_scope).toEqual({ scope: 'persona_workspace', workspaceId: 'wd_home', personaId: 'lin-lan' });
+  });
+
+  it('reads a no-op write as unchanged and withholds the operation it never created', () => {
+    const parsed = parseMemoryWriteResult(JSON.stringify({
+      id: 'm_4', title: 'Already said', scope: 'global', status: 'active',
+      revision: 'rev_4', operation_id: null, outcome: 'unchanged',
+    }));
+    // There is nothing to replay, so Undo must not be offered.
+    expect(parsed?.outcome).toBe('unchanged');
+    expect(parsed?.operation_id).toBeNull();
+  });
+
+  it('reads both search shapes, and a short page as a partial one rather than an absence', () => {
+    expect(parseMemorySearchSummary(JSON.stringify([{ id: 'm_1' }, { id: 'm_2' }])))
+      .toEqual({ count: 2, hasMore: false, partial: false, warnings: [] });
+    expect(parseMemorySearchSummary(JSON.stringify({
+      items: [{ id: 'm_1' }],
+      mode: 'list',
+      next_cursor: 'next-page',
+      coverage: { scopes: [{ kind: 'global' }], statuses: ['active'], exhausted: false, complete: true, warnings: [] },
+    }))).toMatchObject({ count: 1, hasMore: true, partial: false });
+    expect(parseMemorySearchSummary(JSON.stringify({
+      items: [{ id: 'm_1' }],
+      coverage: { scopes: [{ kind: 'global' }], statuses: ['active'], exhausted: true, complete: false, warnings: ['1 unreadable'] },
+    }))).toMatchObject({ count: 1, partial: true });
+  });
+
+  it('reads a read result as full entries with their own scope, target and applicability', () => {
+    const read = parseMemoryReadResult(JSON.stringify([{
+      id: 'm_5', type: 'project', title: 'GPU schedule', body: 'Check the schedule first.',
+      status: 'active', revision: 'rev_5', complete: true,
+      scope: { kind: 'persona', personaId: 'lin-lan' },
+      target: { scope: 'persona', id: 'm_5', expected_revision: 'rev_5' },
+      applicability: 'expired',
+      validity: { check: 'check the schedule', until: '2026-01-01T00:00:00Z' },
+    }]));
+    expect(read?.complete).toBe(true);
+    expect(read?.items[0]?.applicability).toBe('expired');
+    expect(read?.items[0]?.owner_scope).toEqual({ scope: 'persona', workspaceId: undefined, personaId: 'lin-lan' });
+    // An entry with no validity reads as unrecorded, which is not permanence.
+    expect(memoryApplicability(undefined)).toBe('unrecorded');
+    expect(memoryApplicability({ check: 'c' })).toBe('recheck');
+  });
+
+  it('reports an id the read could not resolve instead of dropping it', () => {
+    const read = parseMemoryReadResult(JSON.stringify([
+      { id: 'm_6', missing: true, reason: 'not_found', recovery: 'Locate it in a visible scope.' },
+    ]));
+    expect(read?.items).toEqual([]);
+    expect(read?.missing).toEqual([{ id: 'm_6', reason: 'not_found' }]);
   });
 });

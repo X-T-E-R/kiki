@@ -202,18 +202,40 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     return results.filter((id): id is string => id !== undefined);
   }
 
-  async setTaskPaused(id: string, paused: boolean): Promise<CronTask | undefined> {
+  setTaskPaused(id: string, paused: boolean): Promise<CronTask | undefined> {
+    return this.updateTask(id, { paused });
+  }
+
+  async updateTask(id: string, patch: Partial<Pick<CronTask, 'cron' | 'prompt' | 'recurring' | 'paused' | 'tags'>>): Promise<CronTask | undefined> {
     if (this.ctx.ephemeral === true) throw new Error('temporary sessions cannot modify cron tasks');
+    if (patch.cron !== undefined) parseCronExpression(patch.cron);
     let updated: CronTask | undefined;
     await this.persistEnqueue(id, async () => {
       const existing = this.tasks.get(id);
       if (existing === undefined) return;
-      updated = { ...existing, paused };
+      updated = { ...existing, ...patch };
       await this.store.save(this.ctx.workspaceId, updated);
-      this.tasks.set(id, updated);
-      this.dispatchCron(new CronAdd({ task: updated }));
+      this.syncTask(updated, id);
     });
     return updated;
+  }
+
+  async syncTaskFromStore(id: string): Promise<void> {
+    await this.persistEnqueue(id, async () => {
+      this.syncTask(await this.store.get(this.ctx.workspaceId, id), id);
+    });
+  }
+
+  private syncTask(task: CronTask | undefined, id: string): void {
+    if (task === undefined || task.tags?.[CRON_SESSION_TAG] !== this.ctx.sessionId) {
+      this.removeByIds([id]);
+      this.lastSeenAt.delete(id);
+      this.seededFromStore.delete(id);
+      this.dispatchCron(new CronDelete({ ids: [id] }));
+      return;
+    }
+    this.tasks.set(id, task);
+    this.dispatchCron(new CronAdd({ task }));
   }
 
   async fireTaskNow(id: string): Promise<boolean> {
@@ -477,13 +499,14 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
   }
 
   private async advanceCursor(id: string, lastFiredAt: number): Promise<void> {
-    const updated = this.markFired(id, lastFiredAt);
-    if (updated === undefined) return;
-
-    this.dispatchCron(new CronCursor({ id, lastFiredAt }));
-    await this.persistEnqueue(id, () =>
-      this.store.save(this.ctx.workspaceId, updated),
-    );
+    await this.persistEnqueue(id, async () => {
+      const existing = this.tasks.get(id);
+      if (existing === undefined) return;
+      const updated = { ...existing, lastFiredAt };
+      await this.store.save(this.ctx.workspaceId, updated);
+      this.tasks.set(id, updated);
+      this.dispatchCron(new CronCursor({ id, lastFiredAt }));
+    });
   }
 
   private dispatchCron(event: CronAdd | CronDelete | CronCursor): void {
@@ -594,14 +617,6 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
 
   private adopt(task: CronTask): void {
     this.tasks.set(task.id, task);
-  }
-
-  private markFired(id: string, lastFiredAt: number): CronTask | undefined {
-    const existing = this.tasks.get(id);
-    if (existing === undefined) return undefined;
-    const updated: CronTask = { ...existing, lastFiredAt };
-    this.tasks.set(id, updated);
-    return updated;
   }
 
   private removeByIds(ids: readonly string[]): readonly string[] {

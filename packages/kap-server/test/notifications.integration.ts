@@ -3,14 +3,37 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Fastify from 'fastify';
-import { IConfigService, ISessionManager, ISessionActivityView, ISessionInteractionService, IAgentLifecycleService, IInstantiationService, type Scope } from '@kiki/agent-core-v2';
+import { IConfigService, ISessionManager, ISessionActivityView, ISessionInteractionService, IAgentLifecycleService, IInstantiationService, IAgentLoopService, IAgentTaskService, IAgentPromptService, IAgentActivityView, IEventBus, IAgentExecutionService, type Scope } from '@kiki/agent-core-v2';
+import { DEFAULT_NOTIFICATIONS_CONFIG, NotificationsConfigSchema } from '@kiki/agent-core-v2/app/notifications/configSection';
 import type { NotificationChannel, NotificationSettings } from '@kiki/klient';
+import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
+import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
+import { ConfigRegistry, ConfigService } from '@kiki/agent-core-v2/app/config/configService';
+import { IConfigRegistry } from '@kiki/agent-core-v2/app/config/config';
+import { IBootstrapService } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
+import { ILogService } from '@kiki/agent-core-v2/_base/log/log';
+import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
+import { IAtomicTomlDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
+import { TomlAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
+import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
+import { stubBootstrap } from '../../agent-core-v2/test/app/bootstrap/stubs';
+import { stubLog } from '../../agent-core-v2/test/_base/log/stubs';
 import { startServer, type RunningServer } from '../src/start';
 import { NotificationService } from '../src/services/notifications/notificationService';
 import { registerNotificationRoutes } from '../src/routes/notifications';
 import { ErrorCode } from '../src/protocol/error-codes';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
+
+vi.mock('@nb-im/core', async (original) => {
+  const donor = await original<typeof import('@nb-im/core')>();
+  return { ...donor, webhookProvider: (id: Parameters<typeof donor.webhookProvider>[0]) => donor.webhookProvider(id, {
+    post: async (_input, permit) => {
+      const allowed = permit();
+      return allowed === 'ready' ? { status: 200, body: '{}' } : { blocked: allowed };
+    },
+  }) };
+});
 
 type Envelope<T> = { code: number; data: T };
 
@@ -25,6 +48,156 @@ function emitter<T>() {
 describe('notification coordinator', () => {
   let home: string;
   afterEach(async () => { vi.useRealTimers(); if (home) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); });
+
+  it('persists switches and completes only after the whole work chain settles', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-notifications-idle-'));
+    const makeConfig = async () => {
+      const ix = new TestInstantiationService();
+      ix.stub(ILogService, stubLog());
+      ix.stub(IBootstrapService, stubBootstrap(home));
+      ix.stub(IFileSystemStorageService, new FileStorageService(home));
+      ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+      ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+      ix.set(IConfigService, new SyncDescriptor(ConfigService));
+      const config = ix.get(IConfigService);
+      await config.ready;
+      return { ix, config };
+    };
+    let stored = await makeConfig();
+    const work = emitter<unknown>();
+    const events = emitter<{ type: string }>();
+    const noEvent = emitter<never>();
+    const activity = { busy: false, mainTurnActive: false, pendingInteraction: 'none', lastTurnReason: 'completed' };
+    const loop = { state: 'idle', finalizing: false, pendingTurnIds: [] as number[], hasPendingRequests: false };
+    let unfinished = false;
+    let readyPrompt = false;
+    let heldPrompt = false;
+    let executionState = 'idle';
+    const main = { id: 'main', accessor: { get: (key: unknown) => {
+      if (key === IEventBus) return { subscribe: events.on };
+      if (key === IAgentLoopService) return { status: () => loop, settled: async () => {} };
+      if (key === IAgentExecutionService) return { status: () => ({ state: executionState }), settled: async () => {} };
+      if (key === IAgentPromptService) return { hasReadyPending: () => readyPrompt, list: () => ({ pending: heldPrompt ? [{}] : [] }) };
+      if (key === IAgentTaskService) return { hasUnfinishedWork: () => unfinished };
+      if (key === IAgentActivityView) return { state: () => ({ background: [] }) };
+      throw new Error('unexpected_agent_service');
+    } } };
+    const session = { id: 'work-chain', accessor: { get: (key: unknown) => {
+      if (key === IInstantiationService) return { onWillDispose: noEvent.on };
+      if (key === ISessionActivityView) return { state: () => activity, onDidChange: work.on };
+      if (key === ISessionInteractionService) return { listPending: () => [], onDidChangePending: noEvent.on, onDidResolve: noEvent.on };
+      if (key === IAgentLifecycleService) return { list: () => [main], onDidCreate: noEvent.on, onDidDispose: noEvent.on };
+      throw new Error('unexpected_session_service');
+    } } };
+    const core = { accessor: { get: (key: unknown) => {
+      if (key === IConfigService) return stored.config;
+      if (key === ISessionManager) return { list: () => [session] };
+      throw new Error('unexpected_app_service');
+    } } } as unknown as Scope;
+    let service = new NotificationService(core, home, () => false, () => { throw new Error('unexpected_notification_error'); });
+    const app = Fastify();
+    const proxy = new Proxy({} as NotificationService, { get: (_target, key) => {
+      const value = service[key as keyof NotificationService];
+      return typeof value === 'function' ? value.bind(service) : value;
+    } });
+    registerNotificationRoutes(app, proxy);
+    try {
+      await service.start();
+      expect(service.getSettings().global).toMatchObject({ enabled: true, min_work_ms: 0 });
+      const channel = { provider_instance_id: 'hook', enabled: true, revision: 'v1', target: {}, directions: ['send'] as ['send'], scenes: { work_complete: true, question_pending: false } };
+      await service.upsertInstance('hook', { provider_id: 'http', enabled: true, revision: 'v1', options: { endpoint: 'https://example.test/', format: 'json' } }, {});
+      await service.upsertChannel('enabled', channel);
+      await service.upsertChannel('disabled', { ...channel, enabled: false });
+      const global = { ...service.getSettings().global, work_stable_ms: 100 };
+      const saved = await app.inject({ method: 'PUT', url: '/notifications/settings', payload: { ...global, enabled: false } });
+      expect(saved.json().code).toBe(0);
+      await service.close();
+      stored.ix.dispose();
+      stored = await makeConfig();
+      service = new NotificationService(core, home, () => false, () => { throw new Error('unexpected_notification_error'); });
+      await service.start();
+      expect(service.getSettings().global.enabled).toBe(false);
+      expect(service.getSettings().channels['disabled']?.enabled).toBe(false);
+      expect(await readFile(join(home, 'config.toml'), 'utf8')).toContain('enabled = false');
+      vi.useFakeTimers();
+      const begin = () => { activity.mainTurnActive = true; loop.state = 'running'; work.fire({}); };
+      const end = () => { activity.mainTurnActive = false; loop.state = 'idle'; work.fire({}); };
+      begin(); end();
+      await vi.advanceTimersByTimeAsync(120);
+      expect(service.listDeliveries()).toEqual([]);
+      vi.useRealTimers();
+      expect((await app.inject({ method: 'PUT', url: '/notifications/settings', payload: global })).json().code).toBe(0);
+      vi.useFakeTimers();
+      begin();
+      unfinished = true;
+      end();
+      await vi.advanceTimersByTimeAsync(400);
+      expect(service.listCompletions()).toEqual([]);
+      expect(service.listDeliveries()).toEqual([]);
+      unfinished = false;
+      loop.hasPendingRequests = true;
+      events.fire({ type: 'task.settlement_ready' });
+      await vi.advanceTimersByTimeAsync(400);
+      expect(service.listCompletions()).toEqual([]);
+      loop.hasPendingRequests = false;
+      readyPrompt = true;
+      events.fire({ type: 'prompt.queued' });
+      await vi.advanceTimersByTimeAsync(400);
+      expect(service.listCompletions()).toEqual([]);
+      readyPrompt = false;
+      heldPrompt = true;
+      events.fire({ type: 'prompt.queued' });
+      await vi.advanceTimersByTimeAsync(400);
+      expect(service.listCompletions()).toEqual([]);
+      heldPrompt = false;
+      begin(); end();
+      loop.finalizing = true;
+      await vi.advanceTimersByTimeAsync(400);
+      expect(service.listDeliveries()).toEqual([]);
+      loop.finalizing = false;
+      executionState = 'running';
+      events.fire({ type: 'turn.ended' });
+      await vi.advanceTimersByTimeAsync(400);
+      expect(service.listCompletions()).toEqual([]);
+      executionState = 'idle';
+      events.fire({ type: 'turn.ended' });
+      activity.busy = true;
+      await vi.advanceTimersByTimeAsync(120);
+      expect(service.listCompletions()).toHaveLength(1);
+      expect(service.listDeliveries()).toHaveLength(1);
+      expect(service.listDeliveries()[0]?.channel_id).toBe('enabled');
+      events.fire({ type: 'task.notified' });
+      work.fire({});
+      await vi.advanceTimersByTimeAsync(120);
+      expect(service.listDeliveries()).toHaveLength(1);
+      for (const reason of ['failed', 'cancelled']) {
+        begin(); activity.lastTurnReason = reason; end();
+        await vi.advanceTimersByTimeAsync(120);
+        expect(service.listCompletions()).toEqual([]);
+        expect(service.listDeliveries()).toHaveLength(1);
+      }
+      begin(); activity.lastTurnReason = 'completed'; activity.pendingInteraction = 'approval'; end();
+      await vi.advanceTimersByTimeAsync(120);
+      expect(service.listCompletions()).toEqual([]);
+      activity.pendingInteraction = 'none';
+      begin(); end();
+      await vi.advanceTimersByTimeAsync(120);
+      expect(service.listCompletions()).toHaveLength(1);
+      vi.useRealTimers();
+      await vi.waitFor(() => { expect(service.listDeliveries()[0]?.status).toBe('accepted_by_provider'); }, { timeout: 2000 });
+      await service.close();
+      service = new NotificationService(core, home, () => false, () => { throw new Error('unexpected_notification_error'); });
+      await service.start();
+      expect(service.listCompletions()).toEqual([]);
+      expect(service.listDeliveries()).toHaveLength(1);
+      expect(NotificationsConfigSchema.parse({ ...DEFAULT_NOTIFICATIONS_CONFIG, global: { ...global, enabled: false } }).global.enabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      await app.close();
+      await service.close();
+      stored.ix.dispose();
+    }
+  });
 
   it('sends one long-work completion, cancels answered questions and waits for background work', async () => {
     home = await mkdtemp(join(tmpdir(), 'kiki-notifications-core-'));
@@ -45,12 +218,22 @@ describe('notification coordinator', () => {
     };
     const disposing = emitter<void>();
     let sessionDisposed = false;
+    const agentEvents = emitter<{ type: string }>();
+    const main = { id: 'main', accessor: { get: (key: unknown) => {
+      if (key === IEventBus) return { subscribe: agentEvents.on };
+      if (key === IAgentLoopService) return { status: () => ({ state: activity.mainTurnActive ? 'running' : 'idle', pendingTurnIds: [], hasPendingRequests: false }), settled: async () => {} };
+      if (key === IAgentExecutionService) return { status: () => ({ state: 'idle' }), settled: async () => {} };
+      if (key === IAgentPromptService) return { hasReadyPending: () => false, list: () => ({ pending: [] }) };
+      if (key === IAgentTaskService) return { hasUnfinishedWork: () => activity.busy && !activity.mainTurnActive };
+      if (key === IAgentActivityView) return { state: () => ({ background: [] }) };
+      throw new Error('unexpected_agent_service');
+    } } };
     const session = { id: 'session1', accessor: { get: (key: unknown) => {
       if (sessionDisposed) throw new Error('session_scope_disposed');
       if (key === IInstantiationService) return { onWillDispose: disposing.on };
       if (key === ISessionActivityView) return activityView;
       if (key === ISessionInteractionService) return interaction;
-      if (key === IAgentLifecycleService) return { list: () => [] };
+      if (key === IAgentLifecycleService) return { list: () => [main], onDidCreate: created.on, onDidDispose: disposing.on };
       throw new Error('unexpected_session_service');
     } } };
     const settings = { global: { enabled: true, suppress_viewing_session: true, min_work_ms: 1000,
@@ -69,6 +252,7 @@ describe('notification coordinator', () => {
     const service = new NotificationService(core, home, () => false, () => { throw new Error('unexpected_notification_error'); });
     try {
       await service.start();
+      activity.mainTurnActive = true;
       activity.busy = true;
       work.fire({});
       await vi.advanceTimersByTimeAsync(1100);

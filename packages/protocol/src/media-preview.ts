@@ -1,0 +1,1 @@
+export const MEDIA_PREVIEW_MAX_BYTES = 512 * 1024;

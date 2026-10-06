@@ -16,6 +16,23 @@ export const cronTaskSchema = z.object({
   last_fired_at: z.string().nullable(),
 });
 
+export const cronTaskDetailSchema = cronTaskSchema.extend({ prompt: z.string() });
+
+export const cronTaskDetailResponseSchema = z.object({ task: cronTaskDetailSchema });
+
+export const createCronTaskRequestSchema = z.object({
+  session_id: z.string().min(1),
+  cron: z.string().trim().min(1),
+  prompt: z.string().refine((value) => value.trim().length > 0, 'prompt must not be blank'),
+  recurring: z.boolean().optional(),
+  paused: z.boolean().optional(),
+}).strict();
+
+export const updateCronTaskRequestSchema = createCronTaskRequestSchema
+  .omit({ paused: true })
+  .partial()
+  .refine((value) => Object.keys(value).length > 0, 'at least one editable field is required');
+
 export const listCronTasksQuerySchema = z.object({
   session_id: z.string().min(1).optional(),
   page_size: z.coerce.number().int().min(1).max(100).optional(),

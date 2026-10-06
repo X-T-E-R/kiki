@@ -43,6 +43,7 @@ import {
 import { isVscodeWebview } from '../host/vscode';
 import { useI18n } from '../i18n';
 import { ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
+import { subscribeUsageFreshness } from '../lib/usageFreshness';
 import {
   clearStoredConfig,
   readDeepLinkConfig,
@@ -869,11 +870,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       return subscription;
     };
     let searchIndex = subscribeSearchIndex();
+    let offUsage = subscribeUsageFreshness(klient, queryClient);
     const offStatus = socket.onStatus((status) => {
       setWsStatus(status);
       if (status === 'open') {
         searchIndex.dispose();
         searchIndex = subscribeSearchIndex();
+        offUsage();
+        offUsage = subscribeUsageFreshness(klient, queryClient);
       }
     });
     const catalog = klient.events.on('kosong.changed', () => {
@@ -884,6 +888,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       offStatus();
       catalog.dispose();
       searchIndex.dispose();
+      offUsage();
     };
   }, [socket, klient, queryClient]);
 

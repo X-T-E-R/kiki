@@ -26,7 +26,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PersonaSnapshot, PersonaSummary, Workspace } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
-import { resolveCatalogModel } from '@kiki/session-core/settings';
+import { resolveCatalogModel, sortThinkingEffortsForDisplay } from '@kiki/session-core/settings';
 
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
@@ -248,7 +248,7 @@ function PersonaForm({
   const selectedModel = draft.modelAlias === '' ? undefined : resolveCatalogModel(models, draft.modelAlias);
   const effortOptions: SearchableSelectOption[] = [
     { value: '', label: t('persona.effortFollow') },
-    ...(selectedModel?.support_efforts ?? []).map((effort) => ({ value: effort, label: effort })),
+    ...sortThinkingEffortsForDisplay(selectedModel?.support_efforts ?? []).map((effort) => ({ value: effort, label: effort })),
   ];
 
   const saveMutation = useMutation({

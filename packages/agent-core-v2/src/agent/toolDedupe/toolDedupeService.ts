@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import { NativeFetchInputSchema, NativeSearchInputSchema } from '#/app/nbSearch/nativeInput';
+
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -159,6 +161,7 @@ export const toolDedupeTurnRepeatCountKey = defineState<number>(
 export class AgentToolDedupeService extends Service implements IAgentToolDedupeService {
   declare readonly _serviceBrand: undefined;
   private readonly stepDeferreds = new Map<string, Deferred<ToolDedupeResult>>();
+  private readonly nextStatusPollAt = new Map<string, number>();
 
   constructor(
     @ITelemetryService private readonly telemetry: ITelemetryService,
@@ -287,6 +290,7 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
   private clearTurnRecords(): void {
     this.turnCallRecords.clear();
     this.turnRepeatCount = 0;
+    this.nextStatusPollAt.clear();
   }
 
   private beginStep(turnId?: number, step?: number): void {
@@ -418,6 +422,32 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
     this.telemetry.track2('tool_call_dedup_detected', properties);
   }
 
+  private isRepeatableStatusRead(toolName: string, args: unknown, key: string, result: ToolDedupeResult): boolean {
+    if (result.isError === true || result.truncated === true || typeof result.output !== 'string') return false;
+    const parsed = toolName === 'WebSearch'
+      ? NativeSearchInputSchema.safeParse(args)
+      : toolName === 'FetchURL' ? NativeFetchInputSchema.safeParse(args) : undefined;
+    if (parsed?.success !== true || parsed.data.action !== 'get') return false;
+    let envelope: Record<string, unknown>;
+    try {
+      const value: unknown = JSON.parse(result.output);
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+      envelope = value as Record<string, unknown>;
+    } catch {
+      return false;
+    }
+    if (envelope['action'] !== 'get' || envelope['job_id'] !== parsed.data.job_id || envelope['error'] !== undefined) return false;
+    const state = envelope['state'];
+    if (state !== 'queued' && state !== 'running' && state !== 'succeeded') return false;
+    const now = Date.now();
+    const nextPollAt = this.nextStatusPollAt.get(key) ?? 0;
+    const pollAfterMs = envelope['poll_after_ms'] ?? 1000;
+    if (state !== 'succeeded' && (typeof pollAfterMs !== 'number' || !Number.isFinite(pollAfterMs) || pollAfterMs <= 0)) return false;
+    if (now < nextPollAt) return false;
+    this.nextStatusPollAt.set(key, state === 'succeeded' ? Number.POSITIVE_INFINITY : now + (pollAfterMs as number));
+    return true;
+  }
+
   private async finalizeResult(
     toolCallId: string,
     toolName: string,
@@ -448,6 +478,12 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
         lastKey = k;
         streak = 1;
       }
+    }
+
+    if (this.isRepeatableStatusRead(toolName, args, key, result)) {
+      streak = 0;
+      this.consecutiveKey = null;
+      this.consecutiveCount = 0;
     }
 
     let finalResult = result;

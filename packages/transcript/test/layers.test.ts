@@ -620,6 +620,32 @@ describe('TranscriptWireAdapter', () => {
     return transcript;
   };
 
+  it('retains recorded display and latest progress without fabricating missing or orphan facts', () => {
+    const event = (value: Record<string, unknown>): TranscriptWireRecord => ({ type: 'context.append_loop_event', event: value });
+    const call = records[3]!;
+    const original = call['event'] as Record<string, unknown>;
+    const enriched = { ...call, event: { ...original, display: { type: 'diff', before: 'a', after: 'b' } } };
+    const transcript = replay([
+      ...records.slice(0, 3),
+      event({ type: 'tool.progress', toolCallId: 'orphan', update: { kind: 'status', text: 'ignored' } }),
+      enriched,
+      event({ type: 'tool.progress', toolCallId: 'call-1', update: { kind: 'progress', percent: 10 } }),
+      event({ type: 'tool.progress', toolCallId: 'call-1', update: { kind: 'custom', text: 'latest', customKind: 'phase', customData: { phase: 2 } } }),
+      ...records.slice(4),
+      event({ type: 'tool.progress', toolCallId: 'call-1', update: { kind: 'invalid', text: 'ignored' } }),
+    ]);
+    expect(transcript.getToolCall('orphan')).toBeUndefined();
+    expect(transcript.getToolCall('call-1')?.frame).toMatchObject({ state: 'done', output: '/repo',
+      display: { type: 'diff', before: 'a', after: 'b' },
+      progress: { kind: 'custom', text: 'latest', customKind: 'phase', customData: { phase: 2 } } });
+    const absent = replay(records).getToolCall('call-1')?.frame;
+    expect(absent?.display).toBeUndefined();
+    expect(absent?.progress).toBeUndefined();
+    const terminal = replay([...records, event({ type: 'tool.progress', toolCallId: 'call-1',
+      update: { kind: 'status', text: 'late update' } })]).getToolCall('call-1')?.frame;
+    expect(terminal).toMatchObject({ state: 'done', output: '/repo', progress: { kind: 'status', text: 'late update' } });
+  });
+
   it('recovers an edited message appended before its managed resend turn', () => {
     const message = (text: string) => ({
       id: 'message-1', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text }],
@@ -4072,4 +4098,27 @@ describe('wire model binding facts', () => {
     const resume = adapter.add({ type: 'subagent.spawned', subagentId: 'child', taskId: 'task-b', parentToolCallId: 'tool-b', runInBackground: true, model: 'example/new' });
     expect(resume.flatMap((fact) => fact.operations)).toContainEqual(expect.objectContaining({ task: expect.objectContaining({ model: 'example/new' }) }));
   });
+});
+
+
+it('windows a resident tail independently of historical standalone headers without deleting them', () => {
+  const transcript = new AgentTranscript('main');
+  transcript.apply([
+    turnOp(0),
+    { op: 'marker.upsert', item: { kind: 'marker', markerId: 'old-marker', marker: 'compaction' } },
+    turnOp(1),
+    { op: 'taskref.upsert', item: { kind: 'taskref', refId: 'old-taskref', taskId: 'task-example' } },
+    turnOp(2),
+    { op: 'marker.upsert', item: { kind: 'marker', markerId: 'tail-marker', marker: 'compaction' } },
+  ]);
+  expect(transcript.snapshot({ tailTurns: 20 }).items.map(idLabel)).toEqual(['t0', 'old-marker', 't1', 'old-taskref', 't2', 'tail-marker']);
+  const durable = transcript.snapshot();
+  transcript.apply([{ op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' } } },
+    { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' } } }]);
+  const complete = transcript.snapshot();
+  transcript.releaseDurableHistory(complete, { tailTurns: 1, maxBytes: Number.MAX_SAFE_INTEGER });
+  expect(transcript.snapshot({ tailTurns: 20 }).items.map(idLabel)).toEqual(['t2', 'tail-marker']);
+  expect(transcript.snapshot({ tailTurns: 20 }).hasMoreOlder).toBe(true);
+  expect(transcript.snapshot().items.map(idLabel)).toEqual(['old-marker', 'old-taskref', 't2', 'tail-marker']);
+  expect(durable.items.map(idLabel)).toEqual(['t0', 'old-marker', 't1', 'old-taskref', 't2', 'tail-marker']);
 });

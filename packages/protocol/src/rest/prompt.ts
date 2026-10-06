@@ -36,6 +36,7 @@
 import { z } from 'zod';
 
 import { messageContentSchema } from '../message';
+import { executionSelectionSchema } from '../execution';
 import { isoDateTimeSchema } from '../time';
 
 // Accept any non-empty, model-declared effort string. Providers normalize
@@ -68,6 +69,7 @@ export const promptSubmissionSchema = z.object({
   content: z.array(messageContentSchema).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
   agent_id: z.string().min(1).optional(),
+  execution: executionSelectionSchema.optional(),
   // Agent profile captured with this prompt and applied when the prompt starts.
   // A different name replaces the target agent's current base-profile binding.
   profile: z.string().min(1).optional(),
@@ -97,6 +99,7 @@ export const promptSubmissionSchema = z.object({
 export type PromptSubmission = z.infer<typeof promptSubmissionSchema>;
 
 export const promptExecutionOverridesSchema = promptSubmissionSchema.pick({
+  execution: true,
   profile: true,
   model: true,
   thinking: true,

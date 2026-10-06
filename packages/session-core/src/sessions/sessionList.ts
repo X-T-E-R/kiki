@@ -96,6 +96,14 @@ export function mergeSessionFirstPage(
   return { ...old, pages: [head, ...old.pages.slice(1)] };
 }
 
+export function mergeSessionActivity(old: SessionListData | undefined, fresh: Session): SessionListData | undefined {
+  if (old === undefined) return old;
+  return { ...old, pages: old.pages.map((page) => ({
+    ...page,
+    items: page.items.map((session) => session.id === fresh.id && Date.parse(fresh.updated_at) >= Date.parse(session.updated_at) ? fresh : session),
+  })) };
+}
+
 /** A fresher page 1 can overlap an older loaded page as sessions shift. */
 export function dedupeSessions(data: SessionListData | undefined): Session[] {
   const seen = new Set<string>();
@@ -123,12 +131,17 @@ export function isSessionSortOrder(value: unknown): value is SessionSortOrder {
   return value === 'updated-desc' || value === 'updated-asc' || value === 'created-desc' || value === 'title';
 }
 
+function timestamp(at: string): number {
+  const value = Date.parse(at);
+  return Number.isFinite(value) ? value : 0;
+}
+
 function byUpdatedDesc(a: SessionListEntry, b: SessionListEntry): number {
-  return b.updated_at.localeCompare(a.updated_at);
+  return timestamp(b.updated_at) - timestamp(a.updated_at);
 }
 
 function byUpdatedAsc(a: SessionListEntry, b: SessionListEntry): number {
-  return a.updated_at.localeCompare(b.updated_at);
+  return timestamp(a.updated_at) - timestamp(b.updated_at);
 }
 
 function byCreatedDesc(a: SessionListEntry, b: SessionListEntry): number {
@@ -142,7 +155,21 @@ function byTitle(a: SessionListEntry, b: SessionListEntry): number {
     return an.localeCompare(bn, undefined, { sensitivity: 'base', numeric: true });
   }
   // Deterministic tie-break that does not drift with the runtime locale.
-  return b.updated_at.localeCompare(a.updated_at);
+  return byUpdatedDesc(a, b);
+}
+
+/** Cycle loaded running sessions in a stable creation order, independent of pin and activity updates. */
+export function adjacentRunningSession(
+  sessions: readonly Pick<Session, 'id' | 'busy' | 'created_at'>[],
+  currentId: string | undefined,
+  direction: 1 | -1,
+): string | undefined {
+  const running = sessions.filter((session) => session.busy).sort((a, b) =>
+    b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id));
+  if (running.length === 0) return undefined;
+  const index = running.findIndex((session) => session.id === currentId);
+  if (index === -1) return (direction === 1 ? running[0] : running.at(-1))?.id;
+  return running[(index + direction + running.length) % running.length]?.id;
 }
 
 /** Pinned sessions float to the top (newest-pinned first by `updated_at`). */

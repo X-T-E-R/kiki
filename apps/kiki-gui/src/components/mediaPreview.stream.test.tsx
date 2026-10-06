@@ -48,11 +48,11 @@ beforeEach(async () => {
     if (request.headers.authorization !== 'Bearer fixture-token') { response.writeHead(401).end(); return; }
     if (/^\/api\/sessions\/session\/media\/image(?:-\d+)?\/preview(?:\?|$)/.test(request.url ?? '')) {
       previewRequests += 1;
-      const bytes = boundaryPreviews ? block.byteLength : 1024;
+      const bytes = boundaryPreviews ? 512 * 1024 : 1024;
       const oversized = boundaryPreviews && request.url?.includes('/image-4/preview');
       // Chunked responses force the production reader to count actual bytes.
       response.writeHead(200, { 'content-type': 'image/jpeg' });
-      response.write(block.subarray(0, bytes));
+      response.write(new Uint8Array(bytes).fill(0x5a));
       response.end(oversized ? new Uint8Array([0x5a]) : undefined);
       return;
     }
@@ -98,12 +98,9 @@ afterEach(async () => {
 
 async function openAttachment() {
   await act(async () => {
-    root.render(<MemoryRouter><I18nProvider><MediaPreviewProvider sessionId="session"><MediaPartList media={[item]} /></MediaPreviewProvider></I18nProvider></MemoryRouter>);
+    root.render(<MemoryRouter><I18nProvider><MediaPreviewProvider sessionId="session"><MediaPartList media={[{ ...item, kind: 'file', mime: 'application/octet-stream', name: 'original.bin' }]} /></MediaPreviewProvider></I18nProvider></MemoryRouter>);
   });
-  for (let tries = 0; !container.querySelector('img') && tries < 40; tries += 1) {
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
-  }
-  expect(container.querySelector('img')).not.toBeNull();
+  expect(container.querySelector('button')).not.toBeNull();
   await act(async () => { container.querySelector<HTMLButtonElement>('button')!.click(); });
   return [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Download')!;
 }
@@ -182,20 +179,17 @@ describe('media preview budget and ownership', () => {
     expect(previewRequests).toBe(5);
     for (const result of results.slice(0, 4)) {
       expect(result.status).toBe('fulfilled');
-      if (result.status === 'fulfilled') expect(result.value.bytes.byteLength).toBe(64 * 1024);
+      if (result.status === 'fulfilled') expect(result.value.bytes.byteLength).toBe(512 * 1024);
     }
     expect(results[4]).toMatchObject({ status: 'rejected', reason: new Error('Media preview exceeds its byte budget') });
     expect(container.querySelectorAll('img')).toHaveLength(4);
     expect(URL.createObjectURL).toHaveBeenCalledTimes(4);
     expect(originals).not.toHaveBeenCalled();
     expect(originalRequests).toBe(0);
-    const unavailable = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.title === 'image-4');
-    expect(unavailable).toBeDefined();
+    const unavailable = container.querySelector<HTMLButtonElement>('[data-media-broken]');
+    expect(unavailable).not.toBeNull();
     await act(async () => { unavailable!.click(); });
-    expect(originals).not.toHaveBeenCalled();
-    const full = [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Load full file')!;
-    expect(full).toBeDefined();
-    await act(async () => { full.click(); });
+    expect([...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Load full file')).toBeUndefined();
     expect(originals).toHaveBeenCalledExactlyOnceWith('session', 'image-4', expect.objectContaining({ signal: expect.any(AbortSignal), timeoutMs: 0 }));
   });
 
@@ -229,14 +223,12 @@ describe('media preview budget and ownership', () => {
     expect(original).not.toHaveBeenCalled();
   });
 
-  it('keeps external URL originals explicit instead of auto-loading them or forwarding a bearer header', async () => {
+  it('displays external images automatically without forwarding a bearer header or adding a download link', async () => {
     await act(async () => {
-      root.render(<MemoryRouter><I18nProvider><MediaPreviewProvider sessionId="session"><MediaPartList media={[{ kind: 'image', url: 'https://fixture.invalid/original.png', name: 'external.png' }]} /></MediaPreviewProvider></I18nProvider></MemoryRouter>);
+      root.render(<MemoryRouter><I18nProvider><MediaPreviewProvider sessionId="session"><MediaPartList media={[{ kind: 'image', url: 'https://example.test/original.png', name: 'external.png' }]} /></MediaPreviewProvider></I18nProvider></MemoryRouter>);
     });
-    expect(container.querySelector('img')).toBeNull();
-    await act(async () => { container.querySelector<HTMLButtonElement>('button')!.click(); });
-    expect(container.querySelector('img')?.getAttribute('src')).toBe('https://fixture.invalid/original.png');
-    expect(container.querySelector('a')?.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('https://example.test/original.png');
+    expect(container.querySelector('a[download]')).toBeNull();
     expect(originalRequests).toBe(0);
   });
 });

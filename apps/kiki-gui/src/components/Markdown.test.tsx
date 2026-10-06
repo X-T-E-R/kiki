@@ -10,6 +10,7 @@
 import { act, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
@@ -272,6 +273,130 @@ describe('Markdown link menus', () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     });
     expect(document.body.querySelector('[data-link-menu]')).toBeNull();
+  });
+});
+
+describe('Markdown internal links', () => {
+  it.each([
+    ['/rooms/release-contract', 'room'],
+    ['/s/session_example', 'thread'],
+    ['/board', 'board'],
+    ['/memory', 'memory'],
+    ['/usage', 'usage'],
+  ])('marks a link to a real page %s and keeps the author text', async (to, name) => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={`[see the contract](${to})`} /></MemoryRouter>);
+    const link = probe.container.querySelector(`[data-internal-link="${name}"]`)!;
+    expect(link).not.toBeNull();
+    expect(link.getAttribute('href')).toBe(to);
+    // The writer's own words are the label; only the mark is added.
+    expect(link.textContent).toBe('see the contract');
+    expect(link.querySelector('svg')).not.toBeNull();
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it('leaves an unknown in-app path as a plain router link with no mark', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={'[custom](/custom/thing)'} /></MemoryRouter>);
+    const link = probe.container.querySelector('a')!;
+    expect(link.getAttribute('href')).toBe('/custom/thing');
+    expect(probe.container.querySelector('[data-internal-link]')).toBeNull();
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it('keeps an external link external, with its own menu', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={'[example](https://example.com/rooms/x)'} /></MemoryRouter>);
+    const link = probe.container.querySelector('a')!;
+    expect(link.getAttribute('href')).toBe('https://example.com/rooms/x');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(probe.container.querySelector('[data-internal-link]')).toBeNull();
+    await act(async () => { probe.root.unmount(); });
+  });
+});
+
+describe('Markdown autolinks beside CJK punctuation', () => {
+  const real = '新版预览已启动：**http://127.0.0.1:63474**，浏览器也已打开。';
+
+  it('keeps the URL a real link and gives the swallowed sentence back', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={real} /></MemoryRouter>);
+    const link = probe.container.querySelector('a')!;
+    expect(link).not.toBeNull();
+    expect(link.getAttribute('href')).toBe('http://127.0.0.1:63474/');
+    expect(link.textContent).toBe('http://127.0.0.1:63474');
+    // The tail the autolink swallowed is readable prose again, and the block
+    // marker is gone.
+    expect(probe.container.textContent).toContain('浏览器也已打开。');
+    expect(probe.container.textContent).not.toContain('[blocked]');
+    // The emphasis the writer put around the URL is emphasis again, not raw
+    // `**` beside it.
+    expect(probe.container.textContent).not.toContain('**');
+    expect(probe.container.querySelector('[data-streamdown="strong"] a')).not.toBeNull();
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it('renders the same way while the text is still streaming', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={real} mode="streaming" /></MemoryRouter>);
+    expect(probe.container.querySelector('a')?.getAttribute('href')).toBe('http://127.0.0.1:63474/');
+    expect(probe.container.textContent).not.toContain('[blocked]');
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it.each([
+    ['a **http://127.0.0.1:63474** b', 'http://127.0.0.1:63474/'],
+    ['see http://127.0.0.1:63474 now', 'http://127.0.0.1:63474/'],
+    ['see https://example.com/x now', 'https://example.com/x'],
+  ])('leaves an ordinary link alone: %s', async (text, href) => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={text} /></MemoryRouter>);
+    expect(probe.container.querySelector('a')?.getAttribute('href')).toBe(href);
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it('leaves an author-written link alone even when its URL is malformed', async () => {
+    const probe = makeRoot();
+    // `[说明](https://example.com:bad)` is the writer's own link with a bad URL.
+    // Re-cutting it would invent a different address AND replace their label.
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={'[说明](https://example.com:bad)'} /></MemoryRouter>);
+    expect(probe.container.textContent).toContain('说明');
+    expect(probe.container.textContent).not.toContain('https://example.com/');
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it.each([
+    ['inline with a matching label', '[https://example.com:bad](https://example.com:bad)'],
+    ['a reference link', '[https://example.com:bad]'],
+    ['an autolink in angle brackets', '<https://example.com:bad>'],
+  ])('never trims an explicit link: %s', async (_label, text) => {
+    const probe = makeRoot();
+    // Each of these carries an author's own malformed URL and a label equal to
+    // it, which is not evidence that GFM built a bare autolink. Trimming it
+    // would silently invent a different address.
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={text} /></MemoryRouter>);
+    const shown = probe.container.textContent ?? '';
+    expect(shown).toContain('https://example.com:bad');
+    expect(probe.container.querySelector('a[href="https://example.com/"]')).toBeNull();
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it('keeps the label of a valid link whose path is Chinese', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={'[说明](https://example.com/中文路径)'} /></MemoryRouter>);
+    const link = probe.container.querySelector('a')!;
+    expect(link.textContent).toBe('说明');
+    expect(link.getAttribute('href')).toBe('https://example.com/%E4%B8%AD%E6%96%87%E8%B7%AF%E5%BE%84');
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it('still refuses a dangerous scheme', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={'[click](javascript:alert(1))'} /></MemoryRouter>);
+    // The sanitizer is untouched: nothing becomes a live javascript: link.
+    const link = probe.container.querySelector('a');
+    expect(link?.getAttribute('href') ?? '').not.toContain('javascript:');
+    await act(async () => { probe.root.unmount(); });
   });
 });
 

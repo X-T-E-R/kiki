@@ -1,14 +1,17 @@
 import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 import type { IQueryStore, WriteOp, IHistoryArchive, Scope } from '@kiki/agent-core-v2';
-import { HistoryReadTool } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
-import type { ISessionContext } from '@kiki/agent-core-v2/session/sessionContext/sessionContext';
-import type { IAgentScopeContext } from '@kiki/agent-core-v2/agent/scopeContext/scopeContext';
-import type { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
-import type { IWorkspaceService } from '@kiki/agent-core-v2/app/workspace/workspace';
+import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
+import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
+import { HistoryReadTool, IHistoryReadTool, IHistoryArchive as HistoryArchiveToken } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
+import { ISessionContext as SessionContextToken, type ISessionContext } from '@kiki/agent-core-v2/session/sessionContext/sessionContext';
+import { IAgentScopeContext as AgentScopeContextToken, type IAgentScopeContext } from '@kiki/agent-core-v2/agent/scopeContext/scopeContext';
+import { ISessionIndex as SessionIndexToken, type ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
+import { IWorkspaceService as WorkspaceToken, type IWorkspaceService } from '@kiki/agent-core-v2/app/workspace/workspace';
 
 import { TranscriptWireAdapter } from '@kiki/transcript';
 import { HistoryLocatorStore, HISTORY_NAV_COLLECTION } from '../src/services/history/historyLocatorStore';
@@ -716,5 +719,126 @@ describe('history navigation source rows', () => {
       expect(await nav.row('ws', 's', 'main', 'turn', 2)).toBeUndefined();
       expect((await nav.row('ws', 's', 'main', 'turn', 1))?.excerpt).toBe('next');
     } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('recovers a distant step through preparation cursors and distinguishes absent and missing sources', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-read-preparation-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    const ix = new TestInstantiationService();
+    try {
+      const filler = 'f'.repeat(1 << 20);
+      const target = lines.map((record) => record.replaceAll('"turnId":4',
+        record.includes('context.append_loop_event') ? '"turnId":"782"' : '"turnId":782').replaceAll('"step":1', '"step":14')).join('');
+      await writeFile(wirePath, Array.from({ length: 9 }, (_, turnId) => line({ type: 'turn.prompt', turnId,
+        input: [{ type: 'text', text: filler }], origin: { kind: 'user' } })).join('') +
+        line({ type: 'context.apply_compaction', history: [] }) + target);
+      const transcript = { historyWireLocation: async (_session: string, agent: string) =>
+        agent === 'missing' ? undefined : { workspaceId: 'ws', wirePath } } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+        () => transcript, () => nav)[0]![1] as IHistoryArchive;
+      ix.set(HistoryArchiveToken, archive);
+      ix.set(SessionContextToken, { sessionId: 's', workspaceId: 'ws' } as ISessionContext);
+      ix.set(AgentScopeContextToken, { agentId: 'main' } as IAgentScopeContext);
+      ix.set(SessionIndexToken, { get: async () => ({ workspaceId: 'ws' }) } as unknown as ISessionIndex);
+      ix.set(WorkspaceToken, { get: async () => undefined } as unknown as IWorkspaceService);
+      ix.set(IHistoryReadTool, new SyncDescriptor(HistoryReadTool));
+      const tool = ix.get(IHistoryReadTool);
+      const run = async (input: Record<string, unknown>) => {
+        const execution = await tool.resolveExecution(input as never);
+        if (!('execute' in execution)) throw new Error('not executable');
+        const result = await execution.execute({ signal: new AbortController().signal, turnId: 0, toolCallId: 'c' });
+        return { result, data: JSON.parse(result.output as string) };
+      };
+      const first = await run({ step_id: 't782.14', max_chars: 1000 });
+      expect(first.result.isError).not.toBe(true);
+      expect(first.data).toMatchObject({ status: 'partial', continuation: 'scan', has_more: true,
+        coverage: { complete: false, gaps: ['navigation_building'] }, blocks: [] });
+      expect(first.data.next_call.arguments).toEqual({ cursor: first.data.next_cursor });
+      await appendFile(wirePath, line({ type: 'metadata', time: 2000 }));
+      const recovered = await run(first.data.next_call.arguments);
+      expect(recovered.data.status).toBe('ok');
+      expect(recovered.data.blocks).toContainEqual(expect.objectContaining({ step_id: 't782.14', part: 'output', text: 'needle 𠮷 suffix' }));
+      expect((await run({ step_id: 't782.999' })).data).toMatchObject({ status: 'no_match', has_more: false,
+        coverage: { complete: true }, blocks: [] });
+      expect((await run({ turn: 782, agent_id: 'missing' })).data).toMatchObject({ error: { code: 'source_missing', retryable: false,
+        next_call: { tool: 'HistoryList', arguments: { kind: 'agents' } } } });
+      await appendFile(wirePath, line({ type: 'context.clear' }));
+      expect((await run({ step_id: 't782.14' })).data.status).toBe('no_match');
+      await appendFile(wirePath, '{"type":');
+      const pending = await run({ step_id: 't782.14' });
+      expect(pending.result.isError).not.toBe(true);
+      expect(pending.data).toMatchObject({ status: 'partial', has_more: false,
+        coverage: { complete: false, gaps: ['source_pending'] } });
+      const pendingSearch = await archive.search({ query: 'needle', mode: 'auto', workspaceId: 'ws',
+        sessionId: 's', agentId: 'main', pageSize: 1 });
+      expect(pendingSearch).toMatchObject({ items: [], hasMore: false, incomplete: 'source_pending',
+        coverage: { complete: false, gaps: ['source_pending'] } });
+      expect(pendingSearch.warning).toContain('unfinished record');
+      await appendFile(wirePath, '"metadata"}\n');
+      expect((await run({ step_id: 't782.14' })).data.status).toBe('no_match');
+    } finally { ix.dispose(); await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('continues newest List preparation instead of returning a prefix as the newest directory', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-list-preparation-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    try {
+      const filler = 'f'.repeat(1 << 20);
+      await writeFile(wirePath, Array.from({ length: 9 }, (_, turnId) => line({ type: 'turn.prompt', turnId,
+        time: 1000 + turnId, input: [{ type: 'text', text: filler }], origin: { kind: 'user' } })).join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const request = { workspaceId: 'ws', sessionId: 's', agentId: 'main', kind: 'turns' as const,
+        order: 'newest' as const, limit: 2, at: 1008 };
+      const first = await nav.list(request);
+      expect(first).toMatchObject({ status: 'partial', turns: [], nextCursor: expect.any(String),
+        coverage: { complete: false, gaps: ['navigation_building'] } });
+      await appendFile(wirePath, line({ type: 'metadata' }));
+      const next = await nav.list({ ...request, cursor: first.nextCursor });
+      expect(next.turns?.map((turn) => turn.turn)).toEqual([8, 7]);
+      expect((await nav.readBlocks(next.turns![0]!.ref!, 1000)).status).toBe('ok');
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('pins Search preparation and query pages despite append during and between calls', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-search-self-append-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    try {
+      const filler = 'f'.repeat(1 << 20);
+      await writeFile(wirePath, Array.from({ length: 9 }, (_, turnId) => line({ type: 'turn.prompt', turnId,
+        time: 1000 + turnId, input: [{ type: 'text', text: `needle ${filler}` }], origin: { kind: 'user' } })).join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const database = await db.ready();
+      const commit = database.commitSlice.bind(database);
+      let appended = false;
+      const spy = vi.spyOn(database, 'commitSlice').mockImplementation((...args) => {
+        commit(...args);
+        if (!appended) { appended = true; appendFileSync(wirePath, line({ type: 'metadata' })); }
+      });
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+        () => transcript, () => nav)[0]![1] as IHistoryArchive;
+      const request = { query: 'needle', mode: 'auto' as const, sort: 'newest' as const,
+        workspaceId: 'ws', sessionId: 's', agentId: 'main', pageSize: 2 };
+      const first = await archive.search(request);
+      expect(first).toMatchObject({ items: [], hasMore: true, coverage: { gaps: ['navigation_building'] } });
+      spy.mockRestore();
+      const turns: number[] = [];
+      let pageToken = first.pageToken;
+      let pages = 0;
+      while (pageToken !== undefined) {
+        if (++pages > 10) throw new Error('Search preparation did not terminate');
+        await appendFile(wirePath, line({ type: 'metadata', time: 2000 + pages }));
+        const page = await archive.search({ ...request, pageToken });
+        turns.push(...page.items.map((hit) => hit.turn!));
+        for (const hit of page.items) expect((await archive.readRef?.(hit.ref!))?.status).toBe('ok');
+        pageToken = page.pageToken;
+      }
+      expect(turns).toEqual([8, 7, 6, 5, 4, 3, 2, 1, 0]);
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 });

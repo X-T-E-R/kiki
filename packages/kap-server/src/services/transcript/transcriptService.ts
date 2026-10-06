@@ -45,6 +45,7 @@ import {
   type ToolCountSetOp,
   type TranscriptTaskRef,
   type TranscriptTurn,
+  type ContentSource,
 } from '@kiki/transcript';
 
 import {
@@ -61,6 +62,9 @@ import {
   type WireRecordsStreamOptions,
   type WireRecordsStreamResult,
 } from '@kiki/transcript-live';
+
+import type { HistoryLocatorStore } from '../history/historyLocatorStore';
+import { CanonicalEntityPreparingError, type CanonicalToolLookup } from '../history/historyCanonicalReader';
 
 import {
   readWireRecordsBounded,
@@ -259,6 +263,7 @@ interface WireReceiptVerificationFlight {
 interface ColdSnapshotCacheEntry {
   readonly snapshot: AgentTranscriptSnapshot;
   readonly fingerprint: string;
+  readonly pageOnly: boolean;
   readonly bytes: number;
   readonly expiresAt: number;
   readonly timer: ReturnType<typeof setTimeout>;
@@ -1390,17 +1395,6 @@ export class TranscriptService {
     );
   }
 
-  private logColdReadFence(
-    sessionId: string,
-    agentId: string,
-    reason: WireRecordsIncompleteReason | 'unknown',
-  ): void {
-    this.deps.logger?.warn(
-      { sessionId, agentId, reason, ...this.coldReadLimits },
-      'transcript: history snapshot unavailable (wire read fence tripped)',
-    );
-  }
-
   private async historyFailureChanged(
     sessionId: string,
     agentId: string,
@@ -1471,7 +1465,7 @@ export class TranscriptService {
     this.coldSnapshotCacheBytes -= entry.bytes;
   }
 
-  private admitColdSnapshotCache(key: string, fingerprint: string, snapshot: AgentTranscriptSnapshot): void {
+  private admitColdSnapshotCache(key: string, fingerprint: string, snapshot: AgentTranscriptSnapshot, pageOnly = false): void {
     if (snapshot.toolCallCountKnown !== true) return;
     const bytes = estimateColdSnapshotBytes(snapshot, COLD_SNAPSHOT_CACHE_MAX_BYTES);
     if (bytes > COLD_SNAPSHOT_CACHE_MAX_BYTES) return;
@@ -1487,24 +1481,22 @@ export class TranscriptService {
       if (this.coldSnapshotCache.get(key)?.timer === timer) this.deleteColdSnapshotCache(key);
     }, COLD_SNAPSHOT_CACHE_TTL_MS);
     timer.unref();
-    this.coldSnapshotCache.set(key, { snapshot, fingerprint, bytes, expiresAt, timer });
+    this.coldSnapshotCache.set(key, { snapshot, fingerprint, pageOnly, bytes, expiresAt, timer });
     this.coldSnapshotCacheBytes += bytes;
   }
 
   /**
    * Rebuild one agent's transcript snapshot for a cold session from its
-   * persisted wire records, streaming the wire under the cold-read fences.
+   * persisted wire records, continuing across cold-read scheduling slices.
    * Cold reads of the same session and agent that carry no `preserveOpenTurnIds`
    * share a single wire scan (that callback decides the projection, so callers
    * with one keep their own scan), and a shared scan is cancelled as soon as no
    * caller is left waiting for it.
    *
-   * A tripped fence (`byte_budget` / `record_budget` / `line_budget`) is a read
-   * failure, not a shorter history: the caller gets the unreadable-history
-   * answer, never a wire prefix presented as a full transcript. A truncated
-   * tail still answers with the readable prefix and an unknown tool-call count,
-   * which is the historical shape. Returns `undefined` when the session is
-   * unknown to the index.
+   * Byte, record and line budgets yield between complete records, never cap
+   * accessible history. One indivisible record may exceed a scheduling slice.
+   * Corruption and IO failures reject; a partial tail retains its readable
+   * prefix with unknown coverage. Returns `undefined` for an unknown session.
    */
   async readColdSnapshot(
     sessionId: string,
@@ -1545,6 +1537,96 @@ export class TranscriptService {
     const snapshot = await this.awaitColdSnapshot(flight, signal);
     this.assertReadableAgent(sessionId, agentId);
     return snapshot;
+  }
+
+  /** Cache a source-verified lightweight page projection without retaining its canonical body. */
+  async readColdPageSnapshot(sessionId: string, agentId: string,
+    project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot,
+    signal?: AbortSignal): Promise<AgentTranscriptSnapshot | undefined> {
+    signal?.throwIfAborted();
+    const location = await this.historyWireLocation(sessionId, agentId);
+    if (location === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
+    const { wirePath } = location;
+    const info = await stat(wirePath);
+    const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
+    const cached = this.coldSnapshotCache.get(wirePath);
+    if (cached !== undefined) {
+      if (cached.fingerprint === fingerprint && cached.expiresAt > Date.now() &&
+          (await this.hasVerifiedWireReceipt(wirePath, info, signal ?? new AbortController().signal) ||
+           await this.hasVerifiedLiveEpoch(sessionId, agentId))) {
+        signal?.throwIfAborted();
+        this.assertReadableAgent(sessionId, agentId);
+        this.admitColdSnapshotCache(wirePath, fingerprint, cached.snapshot, cached.pageOnly);
+        return cached.snapshot;
+      }
+      this.deleteColdSnapshotCache(wirePath);
+    }
+    const snapshot = await this.readColdSnapshot(sessionId, agentId, undefined, signal);
+    if (snapshot === undefined || snapshot.toolCallCountKnown !== true || this.coldSnapshotCache.has(wirePath)) return snapshot;
+    const after = await stat(wirePath);
+    signal?.throwIfAborted();
+    this.assertReadableAgent(sessionId, agentId);
+    if (`${fileIdentity(after)}:${fileFingerprint(after)}` !== fingerprint) return snapshot;
+    const preview = project(snapshot);
+    this.admitColdSnapshotCache(wirePath, fingerprint, preview, true);
+    return preview;
+  }
+
+  /** Oversized canonical detail cache admission; zero disables retention, never reading. */
+  detailCacheBudgetBytes(): number {
+    return (this.deps.core.accessor.get(IConfigService) as IConfigService | undefined)
+      ?.get<TranscriptMemoryConfig>(TRANSCRIPT_MEMORY_SECTION)?.maxDetailCacheBytes ??
+      DEFAULT_TRANSCRIPT_MEMORY_CONFIG.maxDetailCacheBytes;
+  }
+
+  private historyLocatorReader?: () => HistoryLocatorStore;
+  private detailHistoryLocator?: HistoryLocatorStore;
+
+  setHistoryLocatorReader(reader: () => HistoryLocatorStore): void {
+    this.detailHistoryLocator?.invalidateCanonical();
+    this.detailHistoryLocator = undefined;
+    this.historyLocatorReader = reader;
+  }
+
+  canonicalReadReport(): ReturnType<HistoryLocatorStore['canonicalReadReport']> | undefined {
+    return this.detailHistoryLocator?.canonicalReadReport();
+  }
+
+  private detailLocator(): HistoryLocatorStore {
+    if (this.historyLocatorReader === undefined) throw new Error('history_canonical_reader_unavailable');
+    return this.detailHistoryLocator ??= this.historyLocatorReader();
+  }
+
+  async lookupToolCall(sessionId: string, agentId: string, toolCallId: string,
+    signal?: AbortSignal): Promise<CanonicalToolLookup> {
+    signal?.throwIfAborted();
+    this.assertReadableAgent(sessionId, agentId);
+    const transcript = this.live.get(sessionId)?.store.getAgent(agentId);
+    if (transcript !== undefined && await this.verifyTranscriptLiveCoverage(sessionId, agentId)) {
+      signal?.throwIfAborted();
+      const hit = transcript.getToolCall(toolCallId);
+      if (hit !== undefined) return { status: 'found', ...hit };
+    }
+    return this.detailLocator().lookupToolCall(sessionId, agentId, toolCallId, signal);
+  }
+
+  async readCanonicalEntity(sessionId: string, agentId: string, source: ContentSource,
+    signal?: AbortSignal): Promise<object | undefined> {
+    signal?.throwIfAborted();
+    this.assertReadableAgent(sessionId, agentId);
+    if (source.kind !== 'turn' && source.kind !== 'frame') throw new Error('history_canonical_unsupported_source');
+    const transcript = this.live.get(sessionId)?.store.getAgent(agentId);
+    if (transcript !== undefined && await this.verifyTranscriptLiveCoverage(sessionId, agentId)) {
+      signal?.throwIfAborted();
+      const turn = transcript.getTurn(source.kind === 'turn' ? source.id : source.turnId ?? '');
+      const entity = source.kind === 'turn' ? turn : turn?.steps.find((step) => step.stepId === source.stepId)
+        ?.frames.find((frame) => frame.frameId === source.id);
+      if (entity !== undefined) return entity;
+    }
+    const result = await this.detailLocator().readCanonicalEntity(sessionId, agentId, source, signal);
+    signal?.throwIfAborted();
+    if (result.status === 'preparing') throw new CanonicalEntityPreparingError();
+    return result.status === 'found' ? result.entity : undefined;
   }
 
   async historyWireLocation(sessionId: string, agentId: string): Promise<{ workspaceId: string; wirePath: string } | undefined> {
@@ -1798,7 +1880,7 @@ export class TranscriptService {
     const cacheFingerprint = info === undefined ? undefined : `${fingerprint}:${fileFingerprint(info)}`;
     if (verified && preserveOpenTurnIds === undefined) {
       const cached = this.coldSnapshotCache.get(wirePath);
-      if (cached !== undefined) {
+      if (cached !== undefined && !cached.pageOnly) {
         if (cached.fingerprint === cacheFingerprint && cached.expiresAt > Date.now()) return cached.snapshot;
         this.deleteColdSnapshotCache(wirePath);
       }
@@ -1831,16 +1913,39 @@ export class TranscriptService {
     const readLimits = limits ?? this.coldReadLimits;
     const startedAt = Date.now();
     try {
-      const read = await this.wireRecordReader(wirePath, {
-        startByteOffset: checkpoint?.nextByteOffset,
-        chunkBytes: readLimits.chunkBytes,
-        maxBytes: readLimits.maxBytes,
-        maxRecords: readLimits.maxRecords,
-        maxLineBytes: readLimits.maxLineBytes,
-        signal,
-        onRecord: (record) => reducer.apply(adapter.add(record)),
-      });
-      readResult = read;
+      let nextByteOffset = checkpoint?.nextByteOffset ?? 0;
+      let recordCount = 0;
+      let bytesRead = 0;
+      let oversizedRecord = false;
+      for (;;) {
+        signal.throwIfAborted();
+        const read = await this.wireRecordReader(wirePath, {
+          startByteOffset: nextByteOffset === 0 ? undefined : nextByteOffset,
+          startRecordOrdinal: (checkpoint?.recordCount ?? 0) + recordCount,
+          chunkBytes: readLimits.chunkBytes,
+          maxBytes: oversizedRecord ? undefined : readLimits.maxBytes,
+          maxRecords: oversizedRecord ? 1 : readLimits.maxRecords,
+          maxLineBytes: oversizedRecord ? undefined : readLimits.maxLineBytes,
+          signal,
+          onRecord: (record) => {
+            if (record === null || typeof record !== 'object' || typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
+            return reducer.apply(adapter.add(record));
+          },
+        });
+        bytesRead += read.bytesRead;
+        recordCount += read.recordCount;
+        readResult = { ...read, bytesRead, recordCount };
+        if (bounded || read.complete || read.incompleteReason === 'partial_tail') break;
+        const progressed = read.nextByteOffset > nextByteOffset;
+        if (!progressed && oversizedRecord) throw new Error('history_canonical_source_no_progress');
+        if (read.incompleteReason !== 'byte_budget' && read.incompleteReason !== 'record_budget' && read.incompleteReason !== 'line_budget') {
+          throw new Error(`history_canonical_source_incomplete:${read.incompleteReason ?? 'unknown'}`);
+        }
+        oversizedRecord = !progressed;
+        nextByteOffset = read.nextByteOffset;
+        await new Promise<void>((resolve) => { setImmediate(resolve); });
+      }
+      const read = readResult;
       if (stats !== undefined) {
         stats.bytesRead = read.bytesRead;
         stats.recordsRead = read.recordCount;
@@ -1851,18 +1956,14 @@ export class TranscriptService {
       this.coldReadBytes += read.bytesRead;
       this.coldReadRecords += read.recordCount;
       this.coldReadDurationMs += Date.now() - startedAt;
-      if (!read.complete && read.incompleteReason !== 'partial_tail' && !bounded) {
-        this.coldReadsFenced += 1;
-        this.logColdReadFence(sessionId, agentId, read.incompleteReason ?? 'unknown');
-        return unknownSnapshot();
-      }
+      if (!read.complete && read.incompleteReason !== 'partial_tail') this.coldReadsFenced += 1;
       complete = read.complete;
     } catch (error) {
       if (signal.aborted) {
         throw signal.reason ?? new DOMException('The cold transcript read was aborted', 'AbortError');
       }
       this.logTranscriptFailure(sessionId, agentId, error);
-      return unknownSnapshot();
+      throw error;
     }
     try {
       const preservedTurns: TranscriptTurn[] = [];
@@ -1916,7 +2017,7 @@ export class TranscriptService {
     } catch (error) {
       if (signal.aborted) throw signal.reason ?? new DOMException('The cold transcript read was aborted', 'AbortError');
       this.logTranscriptFailure(sessionId, agentId, error);
-      return unknownSnapshot();
+      throw error;
     }
   }
 
@@ -1977,9 +2078,11 @@ export class TranscriptService {
   }
 
   /** Recover evicted history into a request-local projection and overlay current live facts. */
-  async readFullAgentSnapshot(sessionId: string, agentId: string, transcript: AgentTranscript, signal?: AbortSignal): Promise<AgentTranscriptSnapshot | undefined> {
+  async readFullAgentSnapshot(sessionId: string, agentId: string, transcript: AgentTranscript, signal?: AbortSignal,
+    pageProject?: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot): Promise<AgentTranscriptSnapshot | undefined> {
     if (!transcript.hasMoreOlder) return transcript.snapshot();
-    const cold = await this.readColdSnapshot(sessionId, agentId, undefined, signal);
+    const cold = pageProject === undefined ? await this.readColdSnapshot(sessionId, agentId, undefined, signal)
+      : await this.readColdPageSnapshot(sessionId, agentId, pageProject, signal);
     if (cold === undefined) return undefined;
     const merged = new AgentTranscript(agentId);
     merged.apply([{ op: 'reset', agentId, snapshot: cold }]);
@@ -2057,6 +2160,7 @@ export class TranscriptService {
   }
 
   dispose(): void {
+    this.detailHistoryLocator?.invalidateCanonical();
     this.eventLoopDelay.disable();
     this.clearVerifiedWireReceipts();
     this.resolvedToolCallCounts.clear();

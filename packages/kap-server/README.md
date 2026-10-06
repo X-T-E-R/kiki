@@ -16,6 +16,21 @@ the commands below run from a Kiki install, not from an npm dependency.
 
 Both endpoints authenticate with the KAP bearer token. HTTP sends `Authorization: Bearer <token>`; a browser WebSocket sends it as the `kimi-code.bearer.<token>` subprotocol.
 
+Ordered session views use `/api/klient/session-view/{sessionId}`. Transcript pages target 1 MiB and content segments target 256 KiB. These are scheduling targets, not access limits: an indivisible identity, object key or reference header may exceed them. Follow `next_cursor`, `next` and newly returned `contentRefs` until complete; clients must not reject successful reading responses merely because they exceed a local page budget. A changed content revision returns `40922`; refresh the preview before continuing. `40923` means canonical navigation is still preparing and can be read again. Source corruption and IO failures remain errors rather than empty history, and disconnecting cancels the current reader.
+
+A windowed baseline is a continuous suffix of the available timeline. When resident turns have been released, historical standalone markers before that suffix remain recoverable through pages but must not become the baseline's `olderCursor`. Continue from the first emitted item after both turn and byte windowing; a marker is a valid boundary only when it belongs to that suffix.
+
+Cold page previews share a 4 MiB, 15-second source-verified cache; canonical bodies stay in source-backed detail reads. Large detail retention uses one expiring slot, configured in `config.toml`:
+
+```toml
+[transcript_memory]
+tail_turns = 20
+max_agent_bytes = 16777216
+max_detail_cache_bytes = 268435456
+```
+
+`max_detail_cache_bytes` is a nonnegative integer byte budget, defaulting to 256 MiB. `0` disables the large-detail slot, not reading; the ordinary 4 MiB detail cache remains. Raising it can avoid replaying a large target repeatedly. Changes apply on the next cache admission or eviction check and do not cancel an active read. The resident settings govern the live tail, not how much saved history can be opened.
+
 ## Connecting an external tool to Kiki
 
 For a caller such as Cursor, Claude Code, or Codex:

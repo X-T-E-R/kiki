@@ -9,6 +9,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { I18nProvider } from '../i18n';
 import { USAGE_FILTERS_STORAGE_KEY, type UsageResponseWire } from '../lib/usageV2';
 import { UsagePage } from './UsagePage';
+import { subscribeUsageFreshness } from '../lib/usageFreshness';
+import { writeLastSessionId } from '@kiki/session-core/settings';
+import type { Klient } from '@kiki/klient';
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -198,7 +201,7 @@ async function renderPage(entry = '/usage?panel=history', options: { flush?: boo
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     }
   }
-  return { container, root };
+  return { container, root, queryClient };
 }
 
 async function openReliability(container: HTMLElement) {
@@ -233,6 +236,38 @@ beforeEach(() => {
 });
 
 describe('UsagePage (V2)', () => {
+  it('refreshes the current dashboard, strip and session automatically on settled usage', async () => {
+    writeLastSessionId('usage-session');
+    let cost = 3.25;
+    getUsage.mockImplementation(async () => usageResponse({ summaryCost: cost }));
+    getSession.mockImplementation(async () => ({ id: 'usage-session', title: 'Usage session', usage: { total_cost_usd: cost } }));
+    const { container, root, queryClient } = await renderPage();
+    let notify!: (payload: { sessionId: string; agentId: string }) => void;
+    const dispose = vi.fn();
+    const on = vi.fn((_name, listener) => { notify = listener; return { ready: Promise.resolve(), dispose }; });
+    const source = { events: { on } } as unknown as Pick<Klient, 'events'>;
+    let off!: () => void;
+    await act(async () => { off = subscribeUsageFreshness(source, queryClient); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(on).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('3.25');
+    const priorSessionReads = getSession.mock.calls.length;
+    cost = 7.5;
+    await act(async () => { notify({ sessionId: 'usage-session', agentId: 'main' }); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('7.50');
+    expect(container.querySelector('[data-usage-strip]')?.textContent).toContain('7.50');
+    expect(getSession.mock.calls.length).toBeGreaterThan(priorSessionReads);
+    expect(on).toHaveBeenCalledTimes(1);
+    off();
+    expect(dispose).toHaveBeenCalledTimes(1);
+    const afterDispose = getUsage.mock.calls.length;
+    notify({ sessionId: 'usage-session', agentId: 'main' });
+    await act(async () => { await Promise.resolve(); });
+    expect(getUsage).toHaveBeenCalledTimes(afterDispose);
+    await act(async () => { root.unmount(); });
+    queryClient.clear();
+  });
   it('opens history by default and offers History, the combined Live tab and Export', async () => {
     const { container, root } = await renderPage('/usage');
     expect([...container.querySelectorAll<HTMLElement>('[data-usage-panel]')].map((node) => node.dataset['usagePanel'])).toEqual(['history', 'realtime', 'export']);

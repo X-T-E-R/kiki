@@ -3,14 +3,20 @@
  * the input that holds the hosts joined to THIS session for as long as the
  * session lives.
  *
- *   - The strip is a single row under the card's top edge: a quiet label, one
- *     chip per joined host (removable in place), and a "＋" that opens the same
- *     host list the ＋ menu's SSH view uses. It is not a send-time attachment
- *     and it never rides a prompt: a joined host is a session resource, the
- *     server owns the list, and `GET /sessions/{id}/ssh/hosts` is the truth.
- *   - On /new there is no session yet, so the strip previews the hosts that
- *     will join before the first message (and NewSessionDraft performs the
- *     real PUT once the session exists).
+ *   - The strip appears only once this session has SSH context — a joined
+ *     host, or on /new a host picked to join. With nothing joined it is not
+ *     drawn at all: an "SSH 0" line beside the input reads as a control the
+ *     user must clear, and a zero count is not session state. The ＋ menu's SSH
+ *     view stays the way in, so hiding the strip removes no route to adding.
+ *   - When it is drawn it is a single row under the card's top edge: a quiet
+ *     label, one chip per joined host (removable in place), and the list behind
+ *     the label. It is not a send-time attachment and it never rides a prompt:
+ *     a joined host is a session resource, the server owns the list, and
+ *     `GET /sessions/{id}/ssh/hosts` is the truth.
+ *
+ * "In use" is the session's host list, never whether a request is on the wire
+ * right now: a joined host stays joined between turns, and keying the strip to
+ * live traffic would make it blink out mid-conversation.
  *
  * Adding a host does not connect to it. There is no push event for session
  * hosts, so every change refetches the session list (contract).
@@ -55,7 +61,7 @@ export interface ComposerSsh {
   readonly joinedCount: number;
   /** The ＋ menu's SSH view; `close` closes the popover. */
   readonly renderPanel: (close: (refocus?: boolean) => void) => ReactNode;
-  /** The resident session strip; null when there is nothing to show. */
+  /** The resident session strip; null when this session has no SSH context. */
   readonly resident: ReactNode;
   /** The host form, mounted outside the popover so it survives the close. */
   readonly dialog: ReactNode;
@@ -218,7 +224,13 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
     };
   }, [listOpen]);
 
-  const resident = available ? (
+  // The strip is a session-context control, so it stands only while this
+  // session has SSH context. A session whose host list has not been read yet
+  // is not an empty session: the strip waits for that read rather than
+  // flashing a zero line and then growing one chip. On /new the picks are
+  // local state, so an empty pick is genuinely empty.
+  const contextKnown = sessionId === undefined || sessionQuery.data !== undefined;
+  const resident = available && contextKnown && joined.length > 0 ? (
     <div
       data-composer-ssh-strip
       data-composer-ssh-open={listOpen ? '' : undefined}
@@ -234,7 +246,9 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
         className={`inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md pl-1.5 pr-1.5 text-[11px] font-medium tracking-wide text-ink-faint uppercase transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8 ${listOpen ? 'bg-ink/[0.05] text-ink-soft' : ''}`}
       >
         <Icon name="terminal" size={12} className="shrink-0" />
-        <span className="shrink-0">{t(sessionId === undefined ? 'composer.ssh.draftHosts' : 'composer.ssh.sessionHosts')}</span>
+        {/* Just "SSH": the strip only ever draws a session's own hosts, so the
+            scope is what it means rather than something to spell out. */}
+        <span className="shrink-0">{t('composer.ssh.hosts')}</span>
         <span className="shrink-0 tabular-nums">{joined.length}</span>
         <Icon name="chevron" size={12} className={`shrink-0 transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${listOpen ? 'rotate-90' : ''}`} />
       </button>

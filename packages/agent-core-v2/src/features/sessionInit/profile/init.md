@@ -6,11 +6,9 @@ Task requirements:
 3. Identify how the code is organized and main module divisions.
 4. Discover project-specific development conventions, testing strategies, and deployment processes.
 
-After the exploration, do a thorough summary of your findings and write it to the `AGENTS.md` file in the project root, replacing the file's previous content. If the file already exists, read it first and carry forward whatever is still accurate — the result should be one coherent, up-to-date file, not an append.
+Write a concise `AGENTS.md` in the relevant project root for AI coding agents: actionable entry points, verified build/test commands, module boundaries, and applicable development rules—not a complete project tutorial. If the file exists, read it first and preserve still-valid human-authored constraints as well as accurate code facts. Do not discard a human instruction merely because code cannot prove it. Produce one coherent updated file, not an append.
 
-For your information, `AGENTS.md` is a file intended to be read by AI coding agents. Expect the reader of this file to know nothing about the project.
-
-You should compose this file according to the actual project content. Do not make any assumptions or generalizations. Ensure the information is accurate and useful. You must use the natural language that is mainly used in the project's comments and documentation.
+Ground repository facts in the inspected project and distinguish unknowns from verified commands. Use the natural language mainly used in the project's comments and documentation.
 
 Popular sections that people usually write in `AGENTS.md` are:
 
