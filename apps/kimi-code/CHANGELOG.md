@@ -4,6 +4,26 @@
 
 ### Patch Changes
 
+- Allow subagents to resume after cancellation while preserving queued task notifications.
+
+- Allow normally completed responses to finish without text instead of retrying them as failures.
+
+- Fix timeline ordering, load history on demand, and preserve complete images when viewing tool results or editing queued messages.
+
+- Keep top-level threads sorted and grouped independently of their parent threads.
+
+- The first-run setup's last button now opens a new conversation with a short setup request waiting in the composer, instead of an empty one.
+
+- Give Kiki's default guidance a warmer voice, clearer judgment, and concrete standards for writing and visual craft.
+
+- Prevent active session event journals from growing indefinitely.
+
+- Show complete working notes when the agent's right-hand panel is expanded.
+
+- Make general web search work by default without registration, an API key, or source selection.
+
+- Restore missing todo lists in the agent's right-hand panel.
+
 - [`685ef24`](https://github.com/X-T-E-R/kiki/commit/685ef2445d29ec5cf9e37580a928ce20167efb74) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix continuation of directly created external ACP sessions.
 
 - [`685ef24`](https://github.com/X-T-E-R/kiki/commit/685ef2445d29ec5cf9e37580a928ce20167efb74) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep historical agent counts when older subagents are outside the loaded session window.
@@ -26,7 +46,7 @@
 
 - [`685ef24`](https://github.com/X-T-E-R/kiki/commit/685ef2445d29ec5cf9e37580a928ce20167efb74) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve Codex failure messages in failed turn receipts.
 
-- [`685ef24`](https://github.com/X-T-E-R/kiki/commit/685ef2445d29ec5cf9e37580a928ce20167efb74) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Automatically restore complete main and subagent conversation histories when opening them.
+- [`685ef24`](https://github.com/X-T-E-R/kiki/commit/685ef2445d29ec5cf9e37580a928ce20167efb74) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Open main and subagent conversations with recent history, then load older pages on reading demand.
 
 - [`685ef24`](https://github.com/X-T-E-R/kiki/commit/685ef2445d29ec5cf9e37580a928ce20167efb74) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Notify by default when the conversation's assigned work has fully settled instead of when a turn ends.
 
