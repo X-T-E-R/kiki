@@ -17,7 +17,8 @@ import type { ExecutorCatalogItem, NamedAgentProfile } from '@kiki/protocol';
 
 import {
   DEFAULT_ENGINE_VISIBILITY,
-  EXTERNAL_VISIBILITY_KEY,
+  configuredEngineDescriptors,
+  engineDisplayOf,
   engineOverridesOf,
   engineVisibilityOf,
   engineVisibilityPatch,
@@ -62,10 +63,32 @@ describe('isConfiguredEngine', () => {
   });
 
   it('is true once the user pointed Kiki at the engine with an override', () => {
-    expect(isConfiguredEngine('codex-app-server', [], { 'codex-app-server': { binPath: 'codex' } })).toBe(true);
+    expect(isConfiguredEngine('codex-app-server', [], { 'codex-app-server': { bin_path: '/opt/codex' } })).toBe(true);
+    expect(isConfiguredEngine('codex-app-server', [], { 'codex-app-server': { home_dir: '/srv/codex' } })).toBe(true);
+    expect(isConfiguredEngine('codex-app-server', [], { 'codex-app-server': { args: ['--yolo'] } })).toBe(true);
+    expect(isConfiguredEngine('codex-app-server', [], { 'codex-app-server': { env: { KEY: 'v' } } })).toBe(true);
+    expect(isConfiguredEngine('codex-app-server', [], { 'codex-app-server': { defaults: { model_alias: 'x' } } })).toBe(true);
     // An empty record is not an override; it is the shape a hidden engine's
     // cleared field leaves behind.
     expect(isConfiguredEngine('codex-app-server', [], { 'codex-app-server': {} })).toBe(false);
+  });
+
+  it('does not count the display preference as configuration', () => {
+    // A user who hid an engine has looked at its visibility; that says nothing
+    // about whether the machine can run it. Counting this would make hiding the
+    // thing that "configures" an engine.
+    expect(isConfiguredEngine('codex-app-server', [], { 'codex-app-server': { show_in_profile_list: false } })).toBe(false);
+    expect(isConfiguredEngine('codex-app-server', [], { 'codex-app-server': { show_in_profile_list: true } })).toBe(false);
+    // A real field beside the display flag still counts.
+    expect(isConfiguredEngine('codex-app-server', [],
+      { 'codex-app-server': { show_in_profile_list: false, bin_path: '/opt/codex' } })).toBe(true);
+  });
+
+  it('is true once the user authored a descriptor for the engine', () => {
+    const descriptors = { 'grok-acp': { protocol: 'acp', command: 'grok' } };
+    expect(isConfiguredEngine('grok-acp', [], undefined, descriptors)).toBe(true);
+    expect(isConfiguredEngine('claude-acp', [], undefined, descriptors)).toBe(false);
+    expect(isConfiguredEngine('grok-acp', [], undefined, undefined)).toBe(false);
   });
 });
 
@@ -81,16 +104,18 @@ describe('engineVisibilityOf', () => {
     expect(prefs.externalsVisible).toBe(true);
   });
 
-  it('reads the global switch', () => {
-    const prefs = engineVisibilityOf({ [EXTERNAL_VISIBILITY_KEY]: { externals_visible: false } });
-    expect(prefs.externalsVisible).toBe(false);
+  it('reads the global switch from its own section', () => {
+    expect(engineVisibilityOf({}, { externals_visible: false }).externalsVisible).toBe(false);
+    expect(engineVisibilityOf({}, { externals_visible: true }).externalsVisible).toBe(true);
+    // The server echoes an unset section as `{}`, which is also "show".
+    expect(engineVisibilityOf({}, {}).externalsVisible).toBe(true);
   });
 
   it('reads a shape it does not know as "show", never as hidden', () => {
     // The failure mode of a preference is hiding an engine someone still uses.
     expect(engineVisibilityOf({ 'claude-acp': 'nonsense' }).hidden.size).toBe(0);
     expect(engineVisibilityOf({ 'claude-acp': { show_in_profile_list: 'no' } }).hidden.size).toBe(0);
-    expect(engineVisibilityOf({ [EXTERNAL_VISIBILITY_KEY]: { externals_visible: 'no' } }).externalsVisible).toBe(true);
+    expect(engineVisibilityOf({}, { externals_visible: 'no' }).externalsVisible).toBe(true);
   });
 });
 
@@ -109,10 +134,17 @@ describe('engineVisibilityPatch', () => {
     expect(engineVisibilityPatch(engineVisibilityOf({}), { externals: true })).toBeUndefined();
   });
 
-  it('writes the global switch as its own record', () => {
+  it('writes the global switch to its own section', () => {
     expect(engineVisibilityPatch(engineVisibilityOf({}), { externals: false })).toEqual({
-      agent_executor_overrides: { [EXTERNAL_VISIBILITY_KEY]: { externals_visible: false } },
+      agent_executor_display: { externals_visible: false },
     });
+  });
+
+  it('round-trips the global switch through the reader', () => {
+    const prefs = engineVisibilityOf({}, { externals_visible: false });
+    const patch = engineVisibilityPatch(prefs, { externals: true })!;
+    const stored = patch['agent_executor_display'] as Record<string, unknown>;
+    expect(engineVisibilityOf({}, stored).externalsVisible).toBe(true);
   });
 
   it('round-trips through the reader', () => {
@@ -138,8 +170,14 @@ describe('visibleEngines', () => {
     const hidden = { 'claude-acp': { show_in_profile_list: false } };
     expect(visibleEngines(CATALOG, profiles, hidden).map((item) => item.id))
       .toEqual(['native', 'codex-app-server']);
-    const all = { [EXTERNAL_VISIBILITY_KEY]: { externals_visible: false } };
-    expect(visibleEngines(CATALOG, profiles, all).map((item) => item.id)).toEqual(['native']);
+    expect(visibleEngines(CATALOG, profiles, undefined, { externals_visible: false }).map((item) => item.id))
+      .toEqual(['native']);
+  });
+
+  it('lists an engine configured only by a user-authored descriptor', () => {
+    const descriptors = { 'grok-acp': { protocol: 'acp', command: 'grok' } };
+    expect(visibleEngines(CATALOG, [], undefined, undefined, descriptors).map((item) => item.id))
+      .toEqual(['native', 'grok-acp']);
   });
 
   it('still lists a hidden engine that has a profile, because that profile needs it', () => {
@@ -152,9 +190,9 @@ describe('visibleEngines', () => {
 });
 
 describe('engineOverridesOf', () => {
-  it('reads the section out of a config echo', () => {
-    expect(engineOverridesOf({ raw: { agent_executor_overrides: { 'claude-acp': { binPath: 'x' } } } }))
-      .toEqual({ 'claude-acp': { binPath: 'x' } });
+  it('reads the section out of a config echo, in its snake shape', () => {
+    expect(engineOverridesOf({ raw: { agent_executor_overrides: { 'claude-acp': { bin_path: 'x' } } } }))
+      .toEqual({ 'claude-acp': { bin_path: 'x' } });
   });
 
   it('is undefined for a config without one, or with a shape it cannot trust', () => {
@@ -163,5 +201,25 @@ describe('engineOverridesOf', () => {
     expect(engineOverridesOf({ raw: {} })).toBeUndefined();
     expect(engineOverridesOf({ raw: { agent_executor_overrides: 'nope' } })).toBeUndefined();
     expect(engineOverridesOf({ raw: { agent_executor_overrides: [] } })).toBeUndefined();
+  });
+});
+
+describe('engineDisplayOf and configuredEngineDescriptors', () => {
+  it('reads the global display section and the authored descriptors', () => {
+    const config = {
+      raw: {
+        agent_executor_display: { externals_visible: false },
+        agent_executors: { 'grok-acp': { protocol: 'acp' } },
+      },
+    };
+    expect(engineDisplayOf(config)).toEqual({ externals_visible: false });
+    expect(configuredEngineDescriptors(config)).toEqual({ 'grok-acp': { protocol: 'acp' } });
+  });
+
+  it('is undefined when absent or untrustworthy, never a partial guess', () => {
+    expect(engineDisplayOf(undefined)).toBeUndefined();
+    expect(engineDisplayOf({ raw: {} })).toBeUndefined();
+    expect(engineDisplayOf({ raw: { agent_executor_display: 'no' } })).toBeUndefined();
+    expect(configuredEngineDescriptors({ raw: { agent_executors: [] } })).toBeUndefined();
   });
 });

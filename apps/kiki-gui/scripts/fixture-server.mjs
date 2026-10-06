@@ -2295,6 +2295,22 @@ class FixtureServer {
         }
         this.config.agent_executor_overrides = merged;
       }
+      // `[agent_executor_display]` is its own section, not a key in the
+      // overrides map. `null` clears the stored value, which the server resolves
+      // back to the default (`externals_visible: true`) — so a cleared switch
+      // reads as absent rather than as a stored `false`.
+      const displayPatch = patch.agent_executor_display;
+      delete patch.agent_executor_display;
+      if (displayPatch !== null && typeof displayPatch === 'object' && !Array.isArray(displayPatch)) {
+        const previous = this.config.agent_executor_display;
+        const base = typeof previous === 'object' && previous !== null && !Array.isArray(previous) ? previous : {};
+        const merged = { ...base };
+        for (const [key, value] of Object.entries(displayPatch)) {
+          if (value === null) delete merged[key];
+          else merged[key] = value;
+        }
+        this.config.agent_executor_display = merged;
+      }
       if (body?.request_identity === null) delete this.config.request_identity;
       if (patch.plugins !== undefined) {
         const url = patch.plugins.marketplace_url ?? patch.plugins.marketplaceUrl;

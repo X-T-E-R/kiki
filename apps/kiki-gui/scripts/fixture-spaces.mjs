@@ -478,9 +478,12 @@ export function spaceConfig(server) {
 /**
  * Sections the response types do not model are echoed under `raw`, the way the
  * real server reports them: the GUI reads free-form config records — per-engine
- * overrides, for one — out of that record, never off the typed top level.
+ * overrides and the global display switch, for two — out of that record, never
+ * off the typed top level. `agent_executors` is here too: the user-authored
+ * descriptors, which are how an engine counts as configured on a machine that
+ * has neither a profile nor an override for it.
  */
-const RAW_SECTIONS = ['agent_executor_overrides'];
+const RAW_SECTIONS = ['agent_executor_overrides', 'agent_executor_display', 'agent_executors'];
 
 function withRaw(config) {
   const raw = {};

@@ -106,7 +106,7 @@ import { RoomRefChip, ThreadRefChip } from './ThreadRefChip';
 import { roomRefFetcher, useRoomRefDirectory } from '../lib/roomRefs';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { ExecutionSelect } from './harness/ExecutionSelect';
-import { engineLabel, engineOverridesOf, useExecutorCatalog } from './settings/profileEditor/engines';
+import { configuredEngineDescriptors, engineDisplayOf, engineLabel, engineOverridesOf, useExecutorCatalog } from './settings/profileEditor/engines';
 import type { ExecutionChoice, ExecutionContextGroup } from '@kiki/session-core/composer';
 import { buildCatalogModelOptions, modelFactBadges, modelTooltip, useProviderGroupLabel } from './modelSelectOptions';
 import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
@@ -873,9 +873,11 @@ export function Composer({
   // server without the route; the native engine is always offered regardless.
   const executorCatalog = useExecutorCatalog();
   // Which engines the panel may list: the display choice lives in the config's
-  // own record, read here so a hidden engine stops being offered as a choice.
+  // own records, read here so a hidden engine stops being offered as a choice.
   const engineOverridesQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000, retry: retryCatalog });
   const engineOverrides = engineOverridesOf(engineOverridesQuery.data);
+  const engineDisplay = engineDisplayOf(engineOverridesQuery.data);
+  const engineDescriptors = configuredEngineDescriptors(engineOverridesQuery.data);
   const agentProfileOptions: readonly SearchableSelectOption[] = useMemo(
     () => buildAgentProfileOptions(
       agentProfilesQuery.data?.items ?? [],
@@ -2222,6 +2224,8 @@ export function Composer({
           catalog={executorCatalog}
           profiles={agentProfilesQuery.data?.items ?? []}
           engineOverrides={engineOverrides}
+          engineDisplay={engineDisplay}
+          engineDescriptors={engineDescriptors}
           pickableProfile={isConversationProfile}
           nativeLabel={t('composer.agentDefaultName')}
           contextGroups={executionGrants?.kikiContext}

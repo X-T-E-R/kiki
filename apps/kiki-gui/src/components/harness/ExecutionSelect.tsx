@@ -162,6 +162,8 @@ export function ExecutionSelect({
   catalog,
   profiles,
   engineOverrides,
+  engineDisplay,
+  engineDescriptors,
   pickableProfile,
   nativeLabel,
   contextGroups,
@@ -188,6 +190,16 @@ export function ExecutionSelect({
    * it.
    */
   engineOverrides?: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * The raw `agent_executor_display` record: the one switch that hides every
+   * external engine at once (see `visibleEngines`).
+   */
+  engineDisplay?: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * The raw `agent_executors` descriptors the user authored, which are an engine
+   * they configured even without a profile or an override entry.
+   */
+  engineDescriptors?: Readonly<Record<string, unknown>> | undefined;
   /** Whether one profile is a conversation candidate (main, enabled, public). */
   pickableProfile: (profile: NamedAgentProfile) => boolean;
   nativeLabel: string;
@@ -253,11 +265,11 @@ export function ExecutionSelect({
    * *offered* next, never about what is already in flight.
    */
   const listedEngines = useMemo(() => {
-    const listed = visibleEngines(catalog, profiles, engineOverrides);
+    const listed = visibleEngines(catalog, profiles, engineOverrides, engineDisplay, engineDescriptors);
     if (listed.some((item) => item.id === choice.executor)) return listed;
     const bound = catalog.find((item) => item.id === choice.executor);
     return bound === undefined ? listed : [...listed, bound];
-  }, [catalog, profiles, engineOverrides, choice.executor]);
+  }, [catalog, profiles, engineOverrides, engineDisplay, engineDescriptors, choice.executor]);
 
   /**
    * One filter over the whole panel, matched against everything a reader can

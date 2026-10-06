@@ -254,6 +254,98 @@ const scenarios = [
     },
   },
   {
+    /**
+     * The device sign-in's "open the verification page" button, end to end.
+     *
+     * This is the other half of the reported defect and it is named explicitly
+     * by the user, so it is proved the same way as the settings links rather
+     * than assumed from the shared opener. Nothing here touches a real account:
+     * the fixture already issues a synthetic pending flow (a code, a
+     * verification address and an expiry), so the button under test is the real
+     * one on the real card with a synthetic server behind it.
+     *
+     * The chain asserted is the whole thing the defect broke: sign-in pressed →
+     * the server issues a code → the pending card renders → "open the
+     * verification page" reaches `open_external_url` exactly once, carrying the
+     * verification address the server issued. Then the failure case, because a
+     * refused open that says nothing is the original defect: the shell refuses,
+     * and the card must show it.
+     */
+    name: 'oauth-device-opens-verification',
+    fixture: 'oauth-connections',
+    async run({ page, view, shot, link }) {
+      await page.context().addInitScript(spaceDesktopMock, {
+        fixtureUrl: new URL(link('/')).searchParams.get('server'),
+        token: FIXTURE_TOKEN,
+        spaces: [],
+        windowMode: 'switch',
+      });
+      await page.addInitScript(() => {
+        window.__ui033OpenedUrls = [];
+        // The refusal is injected, not simulated: the card's own catch must be
+        // what turns this into a visible line.
+        window.__ui033RefuseOpen = false;
+        const internals = window.__TAURI_INTERNALS__;
+        const original = internals.invoke;
+        internals.invoke = async (command, args) => {
+          if (command !== 'open_external_url') return original(command, args);
+          window.__ui033OpenedUrls.push(args?.url);
+          if (window.__ui033RefuseOpen) throw new Error('shell refused the address');
+          return original(command, args);
+        };
+      });
+
+      await page.goto(link('/settings/ai?tab=providers'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-connection-list]', { timeout: 30_000 });
+      await page.locator('[data-add-connection]').first().click();
+      await page.waitForSelector('[data-connection-method-picker]', { timeout: 15_000 });
+      await page.locator('[data-connection-choice="account"]').click();
+
+      // The real sign-in button for the account the page does not list yet.
+      const method = page.locator('[data-oauth-method="openai-codex"]');
+      await method.waitFor({ timeout: 15_000 });
+      await method.locator('[data-account-sign-in-button]').click();
+
+      // The card only exists once the server has issued a code, so its presence
+      // is the proof that the button actually started a flow.
+      const code = method.locator('code');
+      await code.waitFor({ timeout: 15_000 });
+      const userCode = (await code.innerText()).trim();
+      expect(userCode.length > 0, 'the pending card must show the device code it was issued');
+
+      const openButton = method.locator('[data-oauth-open-page]');
+      await openButton.waitFor({ timeout: 10_000 });
+      await openButton.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(400);
+      await shot('ui033-13-oauth-device-card');
+
+      await openButton.click();
+      await page.waitForFunction(() => (window.__ui033OpenedUrls ?? []).length > 0, undefined, { timeout: 10_000 })
+        .catch(() => undefined);
+      const opened = await page.evaluate(() => window.__ui033OpenedUrls ?? []);
+      expect(opened.length === 1,
+        `the sign-in button must reach open_external_url exactly once, saw ${JSON.stringify(opened)}`);
+      // The address must be the one the server issued for this flow, complete
+      // with the code — not a login page, and not some other flow's address.
+      expect(typeof opened[0] === 'string' && opened[0].includes(userCode),
+        `the address opened must be this flow's verification page carrying ${userCode}, saw ${opened[0]}`);
+      expect(await method.locator('[role="alert"]').count() === 0,
+        'a successful open must leave no failure line on the card');
+
+      // The recovery case: the shell refuses, and the card has to say so.
+      await page.evaluate(() => { window.__ui033RefuseOpen = true; });
+      await openButton.click();
+      const alert = method.locator('[role="alert"]');
+      await alert.waitFor({ timeout: 10_000 });
+      const message = (await alert.innerText()).trim();
+      expect(message.length > 0, 'a refused open must leave a visible message, not a dead button');
+      // The code stays readable, which is the manual way out of a failed open.
+      expect((await code.innerText()).trim() === userCode,
+        'a failed open must leave the device code on screen so the flow can be finished by hand');
+      await shot('ui033-14-oauth-open-refused');
+    },
+  },
+  {
     name: 'onboarding-model-picker',
     fixture: 'first-run',
     onboarding: false,
