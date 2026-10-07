@@ -570,6 +570,57 @@ describe('PluginsSection', () => {
     expect(container.querySelector('[data-plugin-settings]')).toBeNull();
   });
 
+  it('puts the one marketplace action at the top of the card, never below the list', async () => {
+    // Skills and MCP put theirs in the first card at the top; this leaf does
+    // the same so the way into the market reads the same on all three. One
+    // action, one place: a second copy under the list would be the same move
+    // offered twice, and the reader would not know which one is canonical.
+    const container = await renderLeaf();
+    const card = container.querySelector('#st-card-plugins')!;
+    expect(card.querySelectorAll('[data-plugins-market-link]')).toHaveLength(1);
+    const list = card.querySelector('[data-plugins-installed-list]')!;
+    const link = card.querySelector('[data-plugins-market-link]')!;
+    // Ahead of the list it acts on, and reachable from the card's first screen.
+    expect(link.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(link.getAttribute('href')).toBe('/capabilities');
+    // Labelled as finding a plugin, which is not this page's own job of
+    // managing the installed ones.
+    expect(link.textContent).toContain('Find plugins in the market');
+    expect(card.textContent).not.toContain('Manage plugins');
+  });
+
+  it('keeps the marketplace action reachable before, and without, the installed list', async () => {
+    const entry = () => document.querySelector('[data-plugins-market-link]');
+    // Nothing installed: the state where finding one is the only thing to do.
+    listPlugins.mockResolvedValue({ plugins: [] });
+    const empty = await renderLeaf();
+    await flush();
+    expect(empty.querySelectorAll('[data-plugins-market-link]')).toHaveLength(1);
+    expect(empty.querySelector('[data-plugins-installed-empty]')).not.toBeNull();
+
+    // Still loading: the action must not wait on a query it does not need.
+    listPlugins.mockImplementation(() => new Promise(() => {}));
+    const pending = await renderLeaf();
+    await flush();
+    expect(pending.querySelectorAll('[data-plugins-market-link]')).toHaveLength(1);
+    // Still the card's own busy line, with the action above it rather than a
+    // page that has nothing to offer yet.
+    expect(pending.textContent).toContain('Loading…');
+
+    // And when the list fails to load, the way out is still there.
+    listPlugins.mockRejectedValue(new Error('list failed'));
+    const failed = await renderLeaf();
+    await flush();
+    expect(failed.querySelectorAll('[data-plugins-market-link]')).toHaveLength(1);
+    expect(failed.querySelector('[data-plugins-installed-error]')).not.toBeNull();
+
+    listPlugins.mockResolvedValue({ plugins: [PLUGIN] });
+    listPlugins.mockClear();
+  });
+
+
+
   it('sends a plugin row to that plugin\'s own settings page', async () => {
     // The row navigates and the route decides what renders, so the leaf is
     // mounted through the same route the row points to — which is what a copied

@@ -7,6 +7,12 @@
  * plugin's own settings page. Nothing configures in place here, so a list
  * stays readable however many plugins are installed.
  *
+ * Finding and installing a plugin is a different job from managing the ones
+ * already here, so it is one action at the top — where the Skills and MCP
+ * leaves put theirs — rather than a second subject buried under the list. It
+ * renders in every state, including before the installed list has answered,
+ * because a server with nothing installed is exactly when it is needed.
+ *
  * The list reads the installed query the Capabilities page reads, so a toggle
  * or a removal made on either surface is what the other one shows.
  */
@@ -21,6 +27,7 @@ import { useI18n } from '../../../i18n';
 import type { PluginSummary } from '../../../lib/client';
 import { pluginOrigin, type PluginOrigin } from '../../../lib/pluginCatalog';
 import { useConnection } from '../../../state/connection';
+import { LINK_CLASS } from '../../capabilities/CapabilityLink';
 import { CapabilityIcon } from '../../capabilities/CapabilityIcon';
 import { Tag } from '../../capabilities/primitives';
 import { useInstalledPlugins, useInvalidatePlugins, usePluginMarketplace } from '../../capabilities/usePlugins';
@@ -51,6 +58,7 @@ export function InstalledPluginsList() {
 
   return (
     <SectionCard id="st-card-plugins" title={t('st.plugins.installedTitle')}>
+      <MarketAction />
       {query.isPending ? (
         <p className="py-3 text-[13px] text-ink-faint" role="status">{t('cap.loading')}</p>
       ) : query.isError ? (
@@ -58,41 +66,39 @@ export function InstalledPluginsList() {
       ) : plugins.length === 0 ? (
         <div className="py-3" data-plugins-installed-empty>
           <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.plugins.noneInstalledBody')}</p>
-          <MarketLink />
         </div>
       ) : (
-        <>
-          <ul className="mt-1" data-plugins-installed-list>
-            {plugins.map((plugin) => (
-              <InstalledPluginRow
-                key={plugin.id}
-                plugin={plugin}
-                origin={pluginOrigin(plugin, entriesQuery.data?.entries ?? [])}
-                onOpen={() => { void navigate(pluginSettingsPath(plugin.id)); }}
-              />
-            ))}
-          </ul>
-          <MarketLink />
-        </>
+        <ul className="mt-3" data-plugins-installed-list>
+          {plugins.map((plugin) => (
+            <InstalledPluginRow
+              key={plugin.id}
+              plugin={plugin}
+              origin={pluginOrigin(plugin, entriesQuery.data?.entries ?? [])}
+              onOpen={() => { void navigate(pluginSettingsPath(plugin.id)); }}
+            />
+          ))}
+        </ul>
       )}
     </SectionCard>
   );
 }
 
 /**
- * The market is where a plugin is found and installed, so this leaf only says
- * so once and links there. It is deliberately a link rather than a second
- * copy of the catalog.
+ * The way to find and install a plugin — one action, at the top, where the
+ * Skills and MCP leaves put theirs. It is not this page's own job: this leaf
+ * manages what is already installed, and the market is where new ones come
+ * from, so the two are labelled as different places rather than one link
+ * pretending to be the other.
+ *
+ * It carries no data of its own, so it is present whether the installed list
+ * has loaded, failed, or turned out to be empty. A server with nothing
+ * installed is exactly when someone needs it.
  */
-function MarketLink() {
+function MarketAction() {
   const { t } = useI18n();
   return (
-    <div className="mt-5 border-t border-hairline pt-3">
-      <Link
-        to="/capabilities"
-        className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-selected-ink transition-colors hover:underline"
-        data-plugins-market-link
-      >
+    <div className="mb-1 flex justify-end">
+      <Link to="/capabilities" className={LINK_CLASS} data-plugins-market-link>
         {t('st.plugins.browseMarket')}
         <Icon name="arrowRight" size={14} />
       </Link>
