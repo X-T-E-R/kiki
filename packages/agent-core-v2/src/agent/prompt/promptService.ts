@@ -556,6 +556,7 @@ interface Record extends PromptSnapshot {
   readonly completionDeferred: Deferred<PromptCompletion>;
   handle: PromptHandle;
   detachedForClose?: boolean;
+  outcomeCommitted?: boolean;
 }
 
 export function bundledSkillActivations(origin: PromptOrigin | undefined): readonly BundledSkillActivation[] {
@@ -1576,22 +1577,36 @@ export class AgentPromptService implements IAgentPromptService {
     void record.completionDeferred.promise.then((completion) => {
       void record.launchedDeferred.promise.then((turn) => {
         if (record.detachedForClose) return;
-        const result = completion.result;
-        const terminal: PromptTerminalResult = { promptId: record.id, turnId: turn?.id, state: completion.state,
-          result: result?.type === 'failed' ? { ...result, error: toErrorPayload(result.error) }
-            : result?.type === 'cancelled' ? { ...result, reason: toErrorPayload(result.reason) } : result };
-        void this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal }));
+        this.commitOutcome(record, completion, turn);
       });
     });
     return handle;
   }
 
+  private commitOutcome(record: Record, completion: PromptCompletion, turn: Turn | undefined): void {
+    if (record.outcomeCommitted) return;
+    record.outcomeCommitted = true;
+    const result = completion.result;
+    const terminal: PromptTerminalResult = { promptId: record.id, turnId: turn?.id, state: completion.state,
+      result: result?.type === 'failed' ? { ...result, error: toErrorPayload(result.error) }
+        : result?.type === 'cancelled' ? { ...result, reason: toErrorPayload(result.reason) } : result };
+    void this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal }));
+  }
+
   private async restorePendingQueue(): Promise<void> {
-    if (this.pending.length > 0 || this.active !== undefined) return;
+    if (this.closing !== undefined) return;
     const persisted = this.states.get(promptQueueKey);
+    const identities = this.states.get(promptIdentityKey);
+    const liveIds = new Set(this.pending.map((item) => item.id));
+    if (this.active !== undefined) liveIds.add(this.active.id);
+    if (this.launchingPrompt !== undefined) liveIds.add(this.launchingPrompt.record.id);
+    let recovered = 0;
     for (const promptId of persisted.order) {
+      if (liveIds.has(promptId)) continue;
       const entry = persisted.entries.get(promptId) as PersistedPromptQueueEntry | undefined;
-      if (entry === undefined) continue;
+      const identity = identities.get(promptId);
+      if (entry === undefined || entry.promptId !== promptId || identity?.promptId !== promptId ||
+          identity.phase !== 'pending' || identity.currentRequest === undefined) continue;
       const launchedDeferred = deferred<Turn | undefined>();
       const completionDeferred = deferred<PromptCompletion>();
       const record = {
@@ -1614,8 +1629,15 @@ export class AgentPromptService implements IAgentPromptService {
       await this.rememberOriginalPromptMessage(record.id, record.originalMessage);
       this.pending.push(record);
       this.recoveryPendingIds.add(record.id);
+      liveIds.add(record.id);
+      recovered += 1;
     }
-    this.recoveryHold = this.recoveryQueueCount() > 0;
+    const queueIndex = new Map(persisted.order.map((id, index) => [id, index]));
+    this.pending.sort((left, right) =>
+      (queueIndex.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (queueIndex.get(right.id) ?? Number.MAX_SAFE_INTEGER));
+    const hasQueuedModelSwitch = persisted.order.some((id) => this.isQueuedModelSwitch(id));
+    if (recovered > 0 || hasQueuedModelSwitch) this.recoveryHold = true;
+    else if (this.recoveryQueueCount() === 0) this.recoveryHold = false;
     if (this.recoveryHold) this.publishQueueHoldChanged();
   }
 
@@ -2113,8 +2135,10 @@ export class AgentPromptService implements IAgentPromptService {
     }));
     item.state = 'cancelled';
     item.launchedDeferred.resolve(undefined);
-    item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'cancelled' });
+    const completion: PromptCompletion = { promptId: item.id, result: undefined, state: 'cancelled' };
+    item.completionDeferred.resolve(completion);
     this.publishAborted(item, beforeStart);
+    this.commitOutcome(item, completion, undefined);
   }
 
   private closing: 'cancel' | 'preserve-pending' | undefined;

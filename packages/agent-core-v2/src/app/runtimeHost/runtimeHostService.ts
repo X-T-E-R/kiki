@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Emitter, type Event } from '#/_base/event';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
@@ -300,7 +301,7 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
         this.publishRoleStatus();
       },
       onOwnerLost: (error) => {
-        void this.onServerLost(error);
+        void this.onServerLost(error).catch(onUnexpectedError);
       },
     };
   }
@@ -311,15 +312,18 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
     this.readyState = false;
     this.publishRoleStatus();
     this.abortDirectCalls(new HomeRuntimeError('runtime.owner_gone', 'runtime owner role was lost', { cause: error }));
-    if (this.server !== undefined) {
-      const server = this.server;
-      this.server = undefined;
-      await server.detach();
-      await removeOwnedEndpoint(this.platform, this.canonicalHomeDir, this.endpointPath).catch(() => undefined);
+    try {
+      if (this.server !== undefined) {
+        const server = this.server;
+        this.server = undefined;
+        await server.detach();
+        await removeOwnedEndpoint(this.platform, this.canonicalHomeDir, this.endpointPath).catch(() => undefined);
+      }
+    } finally {
+      this.fence.reset();
+      if (isFatalRuntimeError(error)) this.bootstrapError = error;
+      this.signalRoleLost();
     }
-    this.fence.reset();
-    if (isFatalRuntimeError(error)) this.bootstrapError = error;
-    this.signalRoleLost();
   }
 
   private clientCallbacks(): ClientCallbacks {

@@ -29,6 +29,7 @@ import {
   PromptAborted,
   PromptCompleted,
   PromptEnqueued,
+  PromptLaunchCommitted,
   PromptMoved,
   PromptQueued,
   PromptQueueHoldChanged,
@@ -40,6 +41,7 @@ import {
   promptResolutionKey,
   type PromptEnqueuedPayload,
 } from '#/agent/prompt/promptService';
+import { PromptOutcomeCommitted } from '#/agent/prompt/promptReplay';
 import {
   IAgentProfileService,
   type BindAgentInput,
@@ -721,12 +723,10 @@ describe('AgentPromptService', () => {
   });
 
   it.each([
-    { model: 'next-model' },
-    { profile: 'next-profile' },
-    { thinking: 'next-thinking' },
-    { permissionMode: 'yolo' as const },
-    { planGate: 'gated' as const },
-  ])('keeps a queued prompt and the active settings when Send now changes $model$profile$thinking$permissionMode$planGate', async (execution) => {
+    { field: 'profile', execution: { profile: 'next-profile' } },
+    { field: 'permission', execution: { permissionMode: 'yolo' as const } },
+    { field: 'plan', execution: { planGate: 'gated' as const } },
+  ])('keeps a queued prompt and the active settings when Send now requires its own turn for $field', async ({ execution }) => {
     const { prompt, profile, permissionMode, plan } = harness({ manualTurnResult: true });
     await prompt.enqueue({ message: message('active') });
     const queued = await prompt.enqueue({ message: message('later'), execution });
@@ -991,6 +991,85 @@ describe('AgentPromptService', () => {
     expect(same.userMessageId).toBe('logical-restore-one');
     expect(cold.prompt.list().pending).toHaveLength(2);
     await cold.prompt.drain(new Error('cold cleanup'));
+  });
+
+  it('reconciles a canonical queued cron prompt when a live active runtime prompt already exists', async () => {
+    const { prompt, dispatcher, loop, states } = harness({ manualTurnResult: true });
+    const entry: PromptEnqueuedPayload = {
+      schemaVersion: 1,
+      promptId: 'canonical-cron',
+      userMessageId: 'canonical-cron',
+      createdAt: '2026-10-07T16:02:13.941Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'scheduled recovery' }],
+        toolCalls: [],
+        origin: {
+          kind: 'cron_job',
+          jobId: 'cron-034',
+          cron: '0 * * * *',
+          recurring: true,
+          coalescedCount: 1,
+          stale: false,
+          deliveryMode: 'idle',
+        },
+      },
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 0,
+      queueIndex: 0,
+    };
+    await dispatcher.dispatch(new PromptEnqueued(entry));
+    const active = await prompt.enqueue({ id: 'runtime-active', message: message('runtime active') });
+    await active.launched;
+    expect(prompt.list()).toMatchObject({ active: { id: 'runtime-active' }, pending: [] });
+
+    await dispatcher.hooks.onDidRestore.run({});
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['canonical-cron']);
+    expect(prompt.list().hold).toEqual({ reason: 'recovery', count: 1 });
+    expect(loop.launches).toEqual([0]);
+
+    expect(prompt.abort('canonical-cron')).toBe(true);
+    expect(states.get(promptQueueKey).entries.has('canonical-cron')).toBe(false);
+    expect(prompt.lookup('canonical-cron')).toMatchObject({ phase: 'terminal', terminal: { state: 'cancelled' } });
+    loop.settleActive();
+    await active.completion;
+  });
+
+  it('does not revive launched, terminal, or unknown canonical queue entries', async () => {
+    const { prompt, dispatcher, states } = harness({ manualTurnResult: true });
+    const entryFor = (promptId: string): PromptEnqueuedPayload => ({
+      schemaVersion: 1,
+      promptId,
+      userMessageId: `${promptId}-message`,
+      createdAt: '2026-10-07T16:02:13.941Z',
+      message: { ...message(promptId), id: `${promptId}-message` },
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 0,
+      queueIndex: 0,
+    });
+    const launched = entryFor('launched');
+    await dispatcher.dispatch(new PromptEnqueued(launched));
+    await dispatcher.dispatch(new PromptLaunchCommitted({
+      launchId: 'launch-1', promptId: launched.promptId, revision: 0, committedAt: '2026-10-07T16:02:14.000Z',
+    }));
+    const terminal = entryFor('terminal');
+    await dispatcher.dispatch(new PromptEnqueued(terminal));
+    await dispatcher.dispatch(new PromptOutcomeCommitted({ terminal: { promptId: terminal.promptId, state: 'cancelled' } }));
+    const unknown = entryFor('unknown');
+    const persisted = states.get(promptQueueKey);
+    const entries = new Map(persisted.entries);
+    const order = [...persisted.order];
+    for (const entry of [launched, terminal, unknown]) {
+      entries.set(entry.promptId, entry);
+      order.push(entry.promptId);
+    }
+    states.set(promptQueueKey, { entries, order });
+
+    await dispatcher.hooks.onDidRestore.run({});
+    expect(prompt.list().pending).toEqual([]);
+    expect([...states.get(promptQueueKey).entries.keys()]).toEqual(['launched', 'terminal', 'unknown']);
   });
 
   it('settles queued prompts when Loop admission closes during teardown', async () => {
@@ -1738,13 +1817,13 @@ describe('AgentPromptService', () => {
       model: undefined,
       thinking: undefined,
       strictThinking: false,
-    });
+    }, undefined);
     expect(profile.bind).toHaveBeenNthCalledWith(2, {
       profile: 'B',
       model: undefined,
       thinking: undefined,
       strictThinking: false,
-    });
+    }, undefined);
 
     loop.settleActive();
     await second.completion;
@@ -1888,7 +1967,7 @@ describe('AgentPromptService', () => {
   });
 
   it('suppresses lifecycle events for non-user-origin prompts', async () => {
-    const { prompt, eventBus, loop } = harness({ manualTurnResult: true });
+    const { prompt, eventBus, loop, states } = harness({ manualTurnResult: true });
     const submitted: string[] = [];
     const started: string[] = [];
     const completed: string[] = [];
@@ -1916,6 +1995,7 @@ describe('AgentPromptService', () => {
     await active.launched;
     const queued = await prompt.enqueue({ id: 'cron-queued', message: cronMessage('later') });
     expect(prompt.abort(queued.id)).toBe(true);
+    expect(states.get(promptQueueKey).entries.has('cron-queued')).toBe(false);
     loop.settleActive();
     await active.completion;
 

@@ -253,6 +253,74 @@ describe('home runtime broker', () => {
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
+  it('finishes owner-loss cleanup when server detach rejects', async () => {
+    const fixture = service(homeDir);
+    instantiations.push(fixture.ix);
+    runtimes.push(fixture.runtime);
+    const internal = fixture.runtime as unknown as {
+      role: 'owner';
+      readyState: boolean;
+      server?: { detach(): Promise<void> };
+      fence: FenceTable;
+      bootstrapError: unknown;
+      roleLostWaiters: Array<() => void>;
+      onServerLost(error: Error): Promise<void>;
+    };
+    const detachError = new Error('test detach failed');
+    const ownerError = new HomeRuntimeError('runtime.connection_fatal', 'test owner lost');
+    let awakened = false;
+    let operationSignal: AbortSignal | undefined;
+    fixture.runtime.registerMethod('test.pending', (_payload, ctx) => {
+      operationSignal = ctx.signal;
+      return new Promise<never>((_resolve, reject) => {
+        ctx.signal.addEventListener('abort', () => reject(ctx.signal.reason), { once: true });
+      });
+    });
+    internal.role = 'owner';
+    internal.readyState = true;
+    internal.server = { detach: async () => { throw detachError; } };
+    internal.roleLostWaiters.push(() => { awakened = true; });
+    expect(internal.fence.claim('test-host', 'test.method', 'test-request').kind).toBe('claimed');
+
+    const pending = fixture.runtime.call('test.pending', undefined, { requestId: 'test-pending' }).catch((error: unknown) => error);
+    await expect(internal.onServerLost(ownerError)).rejects.toBe(detachError);
+
+    expect(await pending).toMatchObject({ code: 'runtime.owner_gone', cause: ownerError });
+    expect(operationSignal?.aborted).toBe(true);
+    expect(fixture.runtime.status()).toMatchObject({ role: 'idle', ready: false });
+    expect(internal.server).toBeUndefined();
+    expect(internal.bootstrapError).toBe(ownerError);
+    expect(awakened).toBe(true);
+    expect(internal.roleLostWaiters).toEqual([]);
+    expect(internal.fence.claim('test-host', 'test.method', 'test-request').kind).toBe('claimed');
+  });
+
+  it('reports asynchronous owner-loss detach failure without an unhandled rejection', async () => {
+    const fixture = service(homeDir);
+    instantiations.push(fixture.ix);
+    runtimes.push(fixture.runtime);
+    const internal = fixture.runtime as unknown as {
+      role: 'owner';
+      readyState: boolean;
+      server?: { detach(): Promise<void> };
+      serverCallbacks(): { onOwnerLost(error: Error): void };
+    };
+    const detachError = new Error('test detach failed');
+    internal.role = 'owner';
+    internal.readyState = true;
+    internal.server = { detach: async () => { throw detachError; } };
+    const reported: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { reported.push(...args); };
+    try {
+      internal.serverCallbacks().onOwnerLost(new HomeRuntimeError('runtime.connection_fatal', 'test owner lost'));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(reported).toContain(detachError);
+    } finally {
+      console.error = original;
+    }
+  });
+
   it('keeps different homes independently owned and routes only within each home', async () => {
     const first = service(join(homeDir, 'a'));
     const second = service(join(homeDir, 'b'));
