@@ -796,6 +796,28 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
   });
 
+  it('shows a cache-hit-rate change in percentage points, not a scaled ratio', async () => {
+    // The current period reads a 50% cache hit rate and the prior 40%, so the
+    // change is +10 percentage points. The point outcome already carries points,
+    // so the cell prints "+10.0 pp" instead of multiplying it into a
+    // +1000.0 pp growth claim. The helper counts the cache read against fresh +
+    // cached input, so 2 000/4 000 reads as 50% and 1 600/4 000 as 40%.
+    getUsage.mockImplementation(async (query: Record<string, unknown>) =>
+      query['start_at'] === undefined
+        ? usageResponse({ summaryTokens: tokens(2000, 2000), trendTokens: tokens(2000, 2000) })
+        : usageResponse({ summaryTokens: tokens(2400, 1600), trendTokens: tokens(2400, 1600) }),
+    );
+    const { container, root } = await renderPage('/usage?range=last_7_days&metric=cache');
+    await act(async () => { container.querySelector<HTMLInputElement>('[data-usage-compare]')!.click(); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const points = container.querySelector('[data-usage-compare="delta"]');
+    expect(points).not.toBeNull();
+    expect(points!.textContent).toBe('+10.0 pp');
+    expect(points!.textContent).not.toContain('1000');
+    await act(async () => { root.unmount(); });
+  });
+
   it('keeps the current period readable when the prior read fails', async () => {
     getUsage.mockImplementation(async (query: Record<string, unknown>) => {
       if (query['start_at'] !== undefined) throw new Error('prior window unavailable');

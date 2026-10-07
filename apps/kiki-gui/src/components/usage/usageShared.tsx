@@ -209,10 +209,13 @@ export function CompareCell({ outcome, points = false }: {
   if (outcome.kind === 'priorZero') {
     return <span data-usage-compare="prior-zero" className="text-[12px] text-ink-faint">{t('usage.compare.priorZero')}</span>;
   }
-  const percent = outcome.ratio * 100;
+  // A point outcome arrives already in percentage points, so scaling it by 100
+  // again would turn a 10 pp move into a 1000 pp claim. A ratio outcome is a
+  // fraction of the prior and still needs the conversion.
+  const scaled = points ? outcome.ratio : outcome.ratio * 100;
   // A near-zero change reads as "no change" rather than "−0%", and the sign
   // never floats in front of an absolute value that has been rounded to 0.
-  const rounded = points ? Math.round(percent * 10) / 10 : Math.round(percent);
+  const rounded = points ? Math.round(scaled * 10) / 10 : Math.round(scaled);
   const flat = rounded === 0;
   const magnitude = points
     ? `${Math.abs(rounded).toFixed(1)} ${t('usage.compare.points')}`
