@@ -6,7 +6,7 @@
  * the lazy-loaded Streamdown engine. Typography lives in `.kiki-md` (index.css).
  */
 
-import { memo, useMemo, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Streamdown, defaultRemarkPlugins, defaultRehypePlugins, type Components } from 'streamdown';
 
@@ -19,11 +19,14 @@ import { useOptionalConnection } from '../state/connection';
 import { sourceTextVersion, type TimelineAnnotation } from '@kiki/session-core/composer';
 import {
   resolveFileReference,
+  findFileReferences,
+  FILE_TEXT_REFERENCE_SENTINEL,
   unwrapFileLinkTarget,
   wrapFileLinkTarget,
 } from '@kiki/session-core/composer/media';
 import { KikiMarkdownPre } from './markdown/KikiCodeBlock';
 import { MarkdownFileImage } from './markdown/MarkdownFileImage';
+import { indexMarkdownHeadings } from './markdown/headingNavigation';
 import { projectTextWithAnnotationMarks, rehypeAnnotationMarks } from './markdown/annotationMarks';
 import { useStreamdownPlugins } from './markdown/streamdown-plugins';
 import { useMediaPreview } from './mediaPreviewContext';
@@ -122,14 +125,56 @@ interface MdastLike {
 }
 
 function remarkLocalFileLinks(includeImages = false) {
-  return (tree: MdastLike) => {
+  return (tree: MdastLike, file: VFileLike) => {
+    const source = typeof file.value === 'string' ? file.value : undefined;
     const visit = (node: MdastLike) => {
       if ((node.type === 'link' || (includeImages && node.type === 'image')) && typeof node.url === 'string') {
         const target = node.type === 'image' ? node.url.split(/[?#]/, 1)[0]! : node.url;
         const wrapped = wrapFileLinkTarget(target);
         if (wrapped !== undefined) node.url = wrapped;
       }
-      node.children?.forEach(visit);
+      if (node.type === 'link' || node.type === 'code' || node.type === 'html') return;
+      if (node.children !== undefined) {
+        node.children = node.children.flatMap((child): MdastLike[] => {
+          if (child.type === 'inlineCode' && child.value !== undefined) {
+            const value = child.value;
+            const exact = findFileReferences(value).some((ref) => ref.start === 0 && ref.end === value.length);
+            const rooted = /^(?:[A-Za-z]:[\\/]|\.?\.?[\\/])/.test(value) && !/[\n\r]|\s(?:--?|&&|\|)/.test(value)
+              && (!/\s/.test(value) || /\.[A-Za-z0-9]{1,10}(?::\d+(?::\d+)?|#.*)?$/.test(value));
+            const wrapped = (exact || rooted) ? wrapFileLinkTarget(value, true) : undefined;
+            if (wrapped !== undefined) return [{ type: 'link', url: wrapped, children: [child] }];
+          }
+          if (child.type !== 'text' || child.value === undefined) { visit(child); return [child]; }
+          const value = child.value;
+          let refs = [...findFileReferences(value)];
+          const startOffset = child.position?.start?.offset;
+          const endOffset = child.position?.end?.offset;
+          if (source !== undefined && startOffset !== undefined && endOffset !== undefined) {
+            // CommonMark unescapes \. and \_ in prose; those slashes are real Windows separators.
+            let cursor = 0;
+            for (const original of findFileReferences(source.slice(startOffset, endOffset))) {
+              if (!/^[A-Za-z]:\\/.test(original.target)) continue;
+              const interpreted = original.target.replaceAll(/\\([!-/:-@[-`{-~])/g, '$1');
+              const start = value.indexOf(interpreted, cursor);
+              if (start < 0) continue;
+              const end = start + interpreted.length;
+              cursor = end;
+              refs = refs.filter((ref) => ref.end <= start || ref.start >= end);
+              refs.push({ start, end, target: original.target });
+            }
+            refs.sort((a, b) => a.start - b.start);
+          }
+          const nodes: MdastLike[] = [];
+          let offset = 0;
+          for (const ref of refs) {
+            if (ref.start > offset) nodes.push({ type: 'text', value: value.slice(offset, ref.start) });
+            nodes.push({ type: 'link', url: wrapFileLinkTarget(ref.target, true) ?? ref.target, children: [{ type: 'text', value: ref.target }] });
+            offset = ref.end;
+          }
+          if (offset < value.length) nodes.push({ type: 'text', value: value.slice(offset) });
+          return nodes;
+        });
+      }
     };
     visit(tree);
   };
@@ -274,8 +319,8 @@ const DOCUMENT_REMARK_PLUGINS = [
  * Right-click raises a small menu (G-1): file links get preview/copy-path/
  * copy-absolute plus the desktop opener pair; external links get open/copy.
  */
-function MarkdownAnchor({ href, children, documentDirectory }: {
-  href?: string; children?: ReactNode; documentDirectory?: string;
+function MarkdownAnchor({ href, children, documentDirectory, documentPath }: {
+  href?: string; children?: ReactNode; documentDirectory?: string; documentPath?: string;
 }) {
   const host = useHost();
   const { t } = useI18n();
@@ -283,8 +328,10 @@ function MarkdownAnchor({ href, children, documentDirectory }: {
   const remoteScope = useOptionalConnection()?.scopeId.startsWith('ssh:') ?? false;
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const target = href === undefined ? undefined : (unwrapFileLinkTarget(href) ?? href);
-  const fileReference = preview !== null && target !== undefined
-    ? resolveFileReference(target, documentDirectory ?? preview.cwd) : undefined;
+  const sameDocument = target?.startsWith('#') === true && documentPath !== undefined;
+  const resolved = preview !== null && target !== undefined
+    ? resolveFileReference(sameDocument ? `document.md${target}` : target, documentDirectory ?? preview.cwd, href?.startsWith(FILE_TEXT_REFERENCE_SENTINEL)) : undefined;
+  const fileReference = sameDocument && resolved !== undefined ? { ...resolved, path: documentPath! } : resolved;
   const filePath = fileReference?.path;
 
   const openMenu = (event: React.MouseEvent) => {
@@ -393,6 +440,9 @@ export const Markdown = memo(function Markdown({
   text,
   mode = 'streaming',
   documentDirectory,
+  documentPath,
+  headingNavigation,
+  onHeadingResult,
   preserveEdgeMargins = false,
   annotationTargets,
   sourceBlockId,
@@ -400,6 +450,9 @@ export const Markdown = memo(function Markdown({
   text: string;
   mode?: 'streaming' | 'static';
   documentDirectory?: string;
+  documentPath?: string;
+  headingNavigation?: import('@kiki/session-core/composer/media').FileReference;
+  onHeadingResult?: (found: boolean) => void;
   sourceBlockId?: string;
   /** Streaming-prefix chunks keep their natural first/last block margins so
    * adjacent chunks' margins collapse like a single parse; standalone usage
@@ -412,7 +465,30 @@ export const Markdown = memo(function Markdown({
    */
   annotationTargets?: readonly TimelineAnnotation[];
 }) {
-  const plain = isPlainProse(text);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const headingResultRef = useRef(onHeadingResult);
+  headingResultRef.current = onHeadingResult;
+  useEffect(() => {
+    const root = rootRef.current;
+    if (root === null || documentPath === undefined) return;
+    let applied = false;
+    let frame = 0;
+    const locate = () => {
+      const headings = indexMarkdownHeadings(root);
+      if (headingNavigation?.heading === undefined || applied) return;
+      const target = headings.get(headingNavigation.heading);
+      headingResultRef.current?.(target !== undefined);
+      if (target !== undefined) {
+        applied = true;
+        frame = requestAnimationFrame(() => { target.scrollIntoView({ block: 'start' }); });
+      }
+    };
+    locate();
+    const observer = new MutationObserver(locate);
+    observer.observe(root, { childList: true, subtree: true });
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
+  }, [documentPath, headingNavigation, text]);
+  const plain = isPlainProse(text) && findFileReferences(text).length === 0;
   const plugins = useStreamdownPlugins(plain ? null : text);
   const className = preserveEdgeMargins ? 'kiki-md kiki-md--edges' : 'kiki-md';
   // The mark plugin runs after the default sanitize/harden pair, so neither
@@ -434,15 +510,15 @@ export const Markdown = memo(function Markdown({
   const renderers = useMemo<Components>(() => {
     const next: Components = { ...components };
     if (documentDirectory !== undefined) {
-      next.a = (props) => <MarkdownAnchor {...props} documentDirectory={documentDirectory} />;
+      next.a = (props) => <MarkdownAnchor {...props} documentDirectory={documentDirectory} documentPath={documentPath} />;
       next.img = (props) => <MarkdownFileImage {...props} documentDirectory={documentDirectory} />;
     }
     if (annotationTargets?.length) next.code = ({ children, className }) => <code className={className}>{children}</code>;
     return next;
-  }, [documentDirectory, annotationTargets]);
+  }, [documentDirectory, documentPath, annotationTargets]);
   if (plain) {
     return (
-      <div className={className} data-source-block-id={sourceBlockId} data-source-version={sourceBlockId === undefined ? undefined : sourceTextVersion(text)}>
+      <div ref={rootRef} className={className} data-source-block-id={sourceBlockId} data-source-version={sourceBlockId === undefined ? undefined : sourceTextVersion(text)}>
         <p>
           {annotationTargets === undefined || annotationTargets.length === 0
             ? text
@@ -452,7 +528,7 @@ export const Markdown = memo(function Markdown({
     );
   }
   return (
-    <div className={className} data-source-block-id={sourceBlockId} data-source-version={sourceBlockId === undefined ? undefined : sourceTextVersion(text)}>
+    <div ref={rootRef} className={className} data-source-block-id={sourceBlockId} data-source-version={sourceBlockId === undefined ? undefined : sourceTextVersion(text)}>
       <Streamdown
         key={annotationKey}
         mode={annotationTargets?.length ? 'static' : mode}

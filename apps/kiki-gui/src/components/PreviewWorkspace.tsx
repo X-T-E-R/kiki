@@ -1154,7 +1154,7 @@ const PREVIEW_SCROLL_SELECTOR = '.cm-scroller, [data-preview-scroll], [data-imag
 type PreviewScrollPosition = { readonly top: number; readonly left?: number };
 
 function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPosition | undefined,
-  onScrollPosition: ((position: { top: number; left?: number }) => void) | undefined) {
+  onScrollPosition: ((position: { top: number; left?: number }) => void) | undefined, navigation?: FileReference) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const visitId = useNavVisitId();
   const positionRef = useRef(position);
@@ -1187,7 +1187,7 @@ function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPositi
   }, [onReadingReady]);
   useEffect(() => {
     if (!visible) { appliedRef.current = null; return; }
-    if (ready === 0) return;
+    if (ready === 0 || navigation?.line !== undefined || navigation?.heading !== undefined) return;
     const identity = `${visitId ?? 'embedded'}\0${ready}`;
     if (appliedRef.current === identity) {
       const equal = (value: PreviewScrollPosition | undefined) => value?.top === position?.top && value?.left === position?.left;
@@ -1199,7 +1199,7 @@ function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPositi
     // Ready comes from the renderer, not a DOM polling deadline. One layout
     // frame also lets a resident provider commit this visit's saved positions.
     const frame = requestAnimationFrame(() => {
-      const scroller = panelRef.current?.querySelector<HTMLElement>(PREVIEW_SCROLL_SELECTOR);
+      const scroller = Array.from(panelRef.current?.querySelectorAll<HTMLElement>(PREVIEW_SCROLL_SELECTOR) ?? []).find((element) => element.closest('[hidden]') === null);
       const saved = positionRef.current;
       if (scroller !== undefined && scroller !== null && saved !== undefined) {
         scroller.scrollTop = saved.top;
@@ -1210,7 +1210,7 @@ function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPositi
       pendingRef.current = false;
     });
     return () => { cancelAnimationFrame(frame); pendingRef.current = false; };
-  }, [visible, visitId, ready, position?.top, position?.left]);
+  }, [visible, visitId, ready, position?.top, position?.left, navigation]);
   return { panelRef, onReadingReady };
 }
 
@@ -1239,7 +1239,7 @@ function PreviewTabView({
   const host = useHost();
   const connection = useOptionalConnection();
   const openers = useFileOpeners();
-  const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition);
+  const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition, navigation);
   return (
     <div
       ref={panelRef}
@@ -1554,8 +1554,10 @@ function TextTabView({
   const [fullError, setFullError] = useState(false);
   const fullLoadId = useRef(0);
   const fullReadController = useRef<AbortController | null>(null);
+  const [headingFound, setHeadingFound] = useState(true);
   useEffect(() => {
     if (navigation?.line !== undefined) setMode('source');
+    else if (navigation?.heading !== undefined) setMode('rendered');
   }, [navigation]);
 
   useEffect(() => {
@@ -1602,9 +1604,17 @@ function TextTabView({
   const name = basenameOf(path);
   const editable = controller?.editable ?? false;
   const showEditor = !markdown || mode === 'source';
+  const [sourceMounted, setSourceMounted] = useState(!markdown);
+  useEffect(() => { if (showEditor) setSourceMounted(true); }, [showEditor]);
   const fullText = fullMarkdown?.controller === controller && fullMarkdown.client === client &&
     fullMarkdown.path === path && fullMarkdown.generation === snap.generation
     ? fullMarkdown.text : undefined;
+  const referenceOutside = useMemo(() => {
+    if (navigation?.line === undefined) return false;
+    const lines = (fullText ?? snap.draft).split('\n');
+    return navigation.line > lines.length || (navigation.endLine ?? navigation.line) > lines.length ||
+      (navigation.column ?? 1) > (lines[navigation.line - 1]?.length ?? 0) + 1;
+  }, [navigation, fullText, snap.draft]);
   // The renderer, not a frame deadline, says when this tab's text is on screen.
   useEffect(() => {
     if (snap.status === 'ready') onReadingReady();
@@ -1746,22 +1756,26 @@ function TextTabView({
           </p>
         ) : snap.status === 'error' ? (
           <p className="p-3 text-[12.5px] text-danger">{t('preview.failed')}</p>
-        ) : showEditor ? (
-          <CodeEditor
-            key={fullText !== undefined ? `${path}:full` : path}
-            path={path}
-            value={fullText ?? snap.draft}
-            generation={snap.generation}
-            navigation={navigation}
-            readOnly={!editable}
-            onChange={(text) => { controller?.setDraft(text); }}
-            onSaveShortcut={() => { void controller?.saveNow(); }}
-            ariaLabel={t('preview.openFile', { name })}
-          />
         ) : (
-          <div data-preview-scroll className="min-h-0 flex-1 overflow-auto p-4">
-            <Markdown mode="static" text={fullText ?? snap.draft} documentDirectory={documentDirectory} />
-          </div>
+          <>
+            {navigation?.invalidTarget || (navigation?.heading !== undefined && !headingFound) || referenceOutside ? <p role="status" className="px-3 py-2 text-[12px] text-ink-soft">{t(referenceOutside ? 'preview.referenceClamped' : 'preview.referenceMissing')}</p> : null}
+            {sourceMounted || showEditor ? <div hidden={!showEditor} className={`min-h-0 flex-1 flex-col ${showEditor ? 'flex' : 'hidden'}`}>
+              <CodeEditor
+                key={fullText !== undefined ? `${path}:full` : path}
+                path={path}
+                value={fullText ?? snap.draft}
+                generation={snap.generation}
+                navigation={showEditor ? navigation : undefined}
+                readOnly={!editable}
+                onChange={(text) => { controller?.setDraft(text); }}
+                onSaveShortcut={() => { void controller?.saveNow(); }}
+                ariaLabel={t('preview.openFile', { name })}
+              />
+            </div> : null}
+            {markdown ? <div hidden={showEditor} data-preview-scroll className={`min-h-0 flex-1 overflow-auto p-4 ${showEditor ? 'hidden' : ''}`}>
+              <Markdown mode="static" text={fullText ?? snap.draft} documentDirectory={documentDirectory} documentPath={path} headingNavigation={showEditor ? undefined : navigation} onHeadingResult={setHeadingFound} />
+            </div> : null}
+          </>
         )}
       </div>
     </>

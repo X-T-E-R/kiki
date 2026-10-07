@@ -223,28 +223,103 @@ export function extractToolOutputMedia(output: unknown): ToolOutputMedia | undef
 // ---------------------------------------------------------------------------
 
 const WINDOWS_ABS_RE = /^[A-Za-z]:[\\/]/;
+const WINDOWS_ROOTED_RE = /^\/[A-Za-z]:[\\/]/;
 const UNC_RE = /^\\\\/;
 const SCHEME_RE = /^[a-z][a-z\d+.-]*:/i;
+const EXTERNAL_SCHEME_RE = /^(?:https?|ftp|mailto|ms|app|blob|data|javascript|file):/i;
 /** Bare or ./ ../-prefixed relative tokens that look like files (have an extension). */
-const RELATIVE_FILE_RE = /^\.?\.?[\\/]|^(?:[^/\\]+[/\\])*[^/\\]+\.[A-Za-z0-9]{1,10}$/;
+const RELATIVE_FILE_RE = /^\.?\.?[\\/]|^(?:[^/\\]+[/\\])*[^/\\]+\.[A-Za-z0-9]{1,10}(?:$|[^A-Za-z0-9])/u;
+const FILE_EXTENSION_RE = /(?:^|[\\/])[^/\\\s.][^/\\\s]*\.[A-Za-z][A-Za-z0-9]{0,9}(?:$|[^A-Za-z0-9])/u;
 
 export interface FileReference {
   readonly path: string;
   /** One-based source position, separate from the filesystem path. */
   readonly line?: number;
   readonly column?: number;
+  /** Inclusive one-based end line for a line range citation. */
+  readonly endLine?: number;
+  /** A Markdown heading fragment, without the leading hash. */
+  readonly heading?: string;
+  /** The target named a position that could not be represented safely. */
+  readonly invalidTarget?: boolean;
+}
+
+function isExternalReferenceScheme(path: string): boolean {
+  if (!SCHEME_RE.test(path) || WINDOWS_ABS_RE.test(path)) return false;
+  if (/^file:\/\//i.test(path)) return false;
+  return path.includes('://') || EXTERNAL_SCHEME_RE.test(path);
+}
+
+function isFileLookingPath(path: string): boolean {
+  return /^file:\/\//i.test(path)
+    || WINDOWS_ABS_RE.test(path)
+    || UNC_RE.test(path)
+    || path.startsWith('/')
+    || path.startsWith('./')
+    || path.startsWith('../')
+    || /[\\/]/u.test(path)
+    || RELATIVE_FILE_RE.test(path);
+}
+
+function isMarkdownPath(path: string): boolean {
+  const base = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
+  return /\.(?:md|markdown|mdx)$/i.test(base);
+}
+
+function decodeReferencePart(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function positiveReferenceNumber(value: string): number | undefined {
+  if (!/^\d+$/u.test(value)) return undefined;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : undefined;
+}
+
+function positionReference(
+  path: string,
+  lineText: string,
+  columnText: string | undefined,
+  endLineText?: string,
+): FileReference {
+  const line = positiveReferenceNumber(lineText);
+  const column = columnText === undefined ? undefined : positiveReferenceNumber(columnText);
+  const endLine = endLineText === undefined ? undefined : positiveReferenceNumber(endLineText);
+  if (line === undefined || (columnText !== undefined && column === undefined) ||
+      (endLineText !== undefined && (endLine === undefined || endLine < line))) {
+    return { path, invalidTarget: true };
+  }
+  if (endLineText === undefined) return { path, line, column };
+  return { path, line, column, endLine };
 }
 
 function splitFilePosition(value: string): FileReference {
-  const match = /^(.*?)(?::([1-9]\d*)(?::([1-9]\d*))?|#L([1-9]\d*)(?:C([1-9]\d*))?)$/.exec(value);
-  if (match === null) return { path: value };
-  const path = match[1]!;
-  const line = Number(match[2] ?? match[4]);
-  const column = match[3] === undefined && match[5] === undefined ? undefined : Number(match[3] ?? match[5]);
-  if (!Number.isSafeInteger(line) || (column !== undefined && !Number.isSafeInteger(column))) return { path: value };
-  // Bare scheme names and arbitrary colon-bearing filenames are not citations.
-  if (!RELATIVE_FILE_RE.test(path) && !/[\\/]/.test(path)) return { path: value };
-  return { path, line, column };
+  if (isExternalReferenceScheme(value)) return { path: value };
+  const colonPosition = /^(.*?):(\d+)(?::(\d+))?$/u.exec(value);
+  if (colonPosition !== null && isFileLookingPath(colonPosition[1]!)) {
+    return positionReference(colonPosition[1]!, colonPosition[2]!, colonPosition[3]);
+  }
+
+  const hashIndex = value.indexOf('#');
+  if (hashIndex === -1) return { path: value };
+  const path = value.slice(0, hashIndex);
+  const fragment = value.slice(hashIndex + 1);
+  if (!isFileLookingPath(path)) return { path: value };
+
+  const lineRange = /^L(\d+)-L(\d+)$/u.exec(fragment);
+  if (lineRange !== null) return positionReference(path, lineRange[1]!, undefined, lineRange[2]!);
+  const hashPosition = /^L(\d+)(?:C(\d+))?$/u.exec(fragment);
+  if (hashPosition !== null) return positionReference(path, hashPosition[1]!, hashPosition[2]);
+
+  if (isMarkdownPath(path) && fragment !== '') return { path, heading: decodeReferencePart(fragment) };
+  if (/^L(?:\d|$)/u.test(fragment)) return { path, invalidTarget: true };
+  // A non-Markdown hash is potentially a literal filename character. Keep it
+  // intact unless it was an explicit line citation handled above.
+  return { path: value };
 }
 
 /**
@@ -255,34 +330,37 @@ function splitFilePosition(value: string): FileReference {
  * component unwraps it back to the original target. See Markdown.tsx.
  */
 export const FILE_LINK_SENTINEL = '/__kiki-file/';
+export const FILE_TEXT_REFERENCE_SENTINEL = '/__kiki-reference/';
 
 /** True when a markdown link target names a local file (any platform form). */
 export function isLocalFileLinkTarget(url: string): boolean {
   const path = splitFilePosition(url).path;
-  if (SCHEME_RE.test(path) && !WINDOWS_ABS_RE.test(path)) return /^file:\/\//i.test(path);
+  if (/^file:\/\//i.test(path)) return true;
+  if (isExternalReferenceScheme(path)) return false;
   if (WINDOWS_ABS_RE.test(path) || UNC_RE.test(path) || /^\/[A-Za-z]:[\\/]/.test(path)) return true;
   if (path.startsWith('/')) return false; // posix absolute passes sanitize untouched
   return RELATIVE_FILE_RE.test(path);
 }
 
 /** Wrap a local-file link target in the sentinel, undefined when not a file. */
-export function wrapFileLinkTarget(url: string): string | undefined {
+export function wrapFileLinkTarget(url: string, literalPath = false): string | undefined {
   return isLocalFileLinkTarget(url)
-    ? `${FILE_LINK_SENTINEL}${encodeURIComponent(url)}`
+    ? `${literalPath ? FILE_TEXT_REFERENCE_SENTINEL : FILE_LINK_SENTINEL}${encodeURIComponent(url)}`
     : undefined;
 }
 
 /** Unwrap a sentinel href back to the original link target. */
 export function unwrapFileLinkTarget(href: string): string | undefined {
-  if (!href.startsWith(FILE_LINK_SENTINEL)) return undefined;
+  const prefix = href.startsWith(FILE_TEXT_REFERENCE_SENTINEL) ? FILE_TEXT_REFERENCE_SENTINEL : FILE_LINK_SENTINEL;
+  if (!href.startsWith(prefix)) return undefined;
   try {
-    return decodeURIComponent(href.slice(FILE_LINK_SENTINEL.length));
+    return decodeURIComponent(href.slice(prefix.length));
   } catch {
     return undefined;
   }
 }
 
-const APP_ROUTE_PREFIXES = ['/new', '/s', '/settings', '/usage', '/capabilities'];
+const APP_ROUTE_PREFIXES = ['/new', '/s', '/r', '/rooms', '/board', '/cron', '/memory', '/activity', '/personas', '/settings', '/usage', '/capabilities'];
 
 /** Href targets react-router should keep handling (app routes, not files). */
 export function isAppRouteHref(href: string): boolean {
@@ -291,15 +369,20 @@ export function isAppRouteHref(href: string): boolean {
   return APP_ROUTE_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 }
 
-function parseFileUrl(value: string): string | undefined {
+function parseFileUrl(value: string): { readonly path: string; readonly suffix: string } | undefined {
   if (!/^file:\/\//i.test(value)) return undefined;
+  const hashIndex = value.indexOf('#');
+  const queryIndex = value.indexOf('?');
+  const suffixIndex = [hashIndex, queryIndex].filter((index) => index >= 0).toSorted((a, b) => a - b)[0];
+  const urlValue = suffixIndex === undefined ? value : value.slice(0, suffixIndex);
+  const suffix = suffixIndex === undefined ? '' : value.slice(suffixIndex);
   try {
-    const url = new URL(value);
+    const url = new URL(urlValue);
     let path = decodeURIComponent(url.pathname);
     // file:///C:/work/x → C:/work/x
     if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
     if (url.hostname !== '' && url.hostname !== 'localhost') path = `//${url.hostname}${path}`;
-    return path === '' ? undefined : path;
+    return path === '' ? undefined : { path, suffix };
   } catch {
     return undefined;
   }
@@ -326,22 +409,23 @@ export function joinPath(base: string, relative: string): string {
 /**
  * Resolve a markdown link target to an absolute host file path, or undefined
  * when the href is not a file reference (external URL, app route, anchor).
- * Relative references need the session cwd to anchor against.
+ * Relative references need the session cwd or document directory to anchor against.
+ * Use literalPath for prose/inline-code citations: their percent characters are
+ * filename bytes, unlike URL-encoded hrefs. Explicit file:// URIs decode once.
  */
-export function resolveFileReference(href: string, cwd: string | undefined): FileReference | undefined {
+export function resolveFileReference(href: string, cwd: string | undefined, literalPath = false): FileReference | undefined {
   const value = href.trim();
   if (value === '' || value.startsWith('#') || value.startsWith('//') || isAppRouteHref(value)) return undefined;
   // Split before URL decoding: %3A and %23 can name literal filename characters.
-  const reference = splitFilePosition(value);
+  let reference = splitFilePosition(value);
   let path = reference.path;
   const fileUrl = parseFileUrl(path);
-  if (fileUrl !== undefined) return { ...reference, path: fileUrl };
-  if (SCHEME_RE.test(path) && !WINDOWS_ABS_RE.test(path)) return undefined;
-  try {
-    path = decodeURIComponent(path);
-  } catch {
-    // A literal percent is a valid host filename character.
+  if (fileUrl !== undefined) {
+    path = fileUrl.path;
+    if (fileUrl.suffix !== '') reference = splitFilePosition(`${path}${fileUrl.suffix}`);
   }
+  if (isExternalReferenceScheme(path)) return undefined;
+  if (fileUrl === undefined && !literalPath) path = decodeReferencePart(path);
   // Only the explicit slash + drive-root form is Windows, not arbitrary POSIX paths.
   if (/^\/[A-Za-z]:[\\/]/.test(path)) path = path.slice(1);
   if (WINDOWS_ABS_RE.test(path) || UNC_RE.test(path)) return { ...reference, path };
@@ -349,6 +433,68 @@ export function resolveFileReference(href: string, cwd: string | undefined): Fil
   if (cwd === undefined || cwd.trim() === '' || !RELATIVE_FILE_RE.test(path)) return undefined;
   const base = /^\/[A-Za-z]:[\\/]/.test(cwd) ? cwd.slice(1) : cwd;
   return { ...reference, path: joinPath(base, path) };
+}
+
+function codeSpanRanges(text: string): readonly (readonly [number, number])[] {
+  const ranges: Array<readonly [number, number]> = [];
+  const delimiters = /`+/gu;
+  let opening: { readonly start: number; readonly length: number } | undefined;
+  for (const match of text.matchAll(delimiters)) {
+    const start = match.index ?? 0;
+    const length = match[0].length;
+    if (opening === undefined) {
+      opening = { start, length };
+    } else if (length === opening.length) {
+      ranges.push([opening.start, start + length]);
+      opening = undefined;
+    }
+  }
+  if (opening !== undefined) ranges.push([opening.start, text.length]);
+  return ranges;
+}
+
+function overlapsCodeSpan(start: number, end: number, ranges: readonly (readonly [number, number])[]): boolean {
+  return ranges.some(([spanStart, spanEnd]) => start < spanEnd && end > spanStart);
+}
+
+function trimReferencePunctuation(value: string): { readonly start: number; readonly end: number } {
+  let start = 0;
+  let end = value.length;
+  while (start < end && /[<([{"'“‘*_（【]/u.test(value[start]!)) start += 1;
+  while (end > start && /[)\]}>.,;:!?"'”’*_，。；：！？、）】]/u.test(value[end - 1]!)) end -= 1;
+  return { start, end };
+}
+
+function isScannableFileReference(target: string): boolean {
+  if (target === '' || target.startsWith('-') || target.includes('@') || target.includes('=')) return false;
+  if (target.startsWith('//') || target.startsWith('/') && !WINDOWS_ABS_RE.test(target) && !WINDOWS_ROOTED_RE.test(target)) return false;
+  if (isExternalReferenceScheme(target)) return false;
+  const path = splitFilePosition(target).path;
+  if (isExternalReferenceScheme(path)) return false;
+  return FILE_EXTENSION_RE.test(path);
+}
+
+/**
+ * Find file-looking references in Markdown plain prose without parsing links or
+ * inline code. Returned offsets are JavaScript string offsets and target keeps
+ * the original spelling for the resolver to interpret later.
+ */
+export function findFileReferences(text: string): readonly { start: number; end: number; target: string }[] {
+  const references: Array<{ start: number; end: number; target: string }> = [];
+  const codeSpans = codeSpanRanges(text);
+  const tokens = /[^\s<>"'()`\u005B\u005D{},;!?]+/gu;
+  for (const token of text.matchAll(tokens)) {
+    const tokenStart = token.index ?? 0;
+    const tokenText = token[0];
+    const trimmed = trimReferencePunctuation(tokenText);
+    const start = tokenStart + trimmed.start;
+    const end = tokenStart + trimmed.end;
+    if (start >= end || overlapsCodeSpan(start, end, codeSpans)) continue;
+    const target = text.slice(start, end);
+    if (!isScannableFileReference(target)) continue;
+    references.push({ start, end, target });
+  }
+  return references;
 }
 
 /** Path-only compatibility helper for filesystem operations. */

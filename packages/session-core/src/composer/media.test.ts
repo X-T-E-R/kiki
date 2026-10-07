@@ -7,6 +7,7 @@ import {
   documentPreviewFormatOf,
   extOf,
   extractToolOutputMedia,
+  findFileReferences,
   formatBytes,
   isAppRouteHref,
   joinPath,
@@ -197,15 +198,65 @@ describe('file reference positions', () => {
     for (const path of ['/C:/work/中 dir', '/C:\\work\\dir']) {
       expect(resolveFileHref(path, undefined)).toBe(path.slice(1));
     }
-    for (const path of ['/var/a:b.ts', '/work/a.ts:notes', '/C:relative', '/work/a.ts:0']) {
+    for (const path of ['/var/a:b.ts', '/work/a.ts:notes', '/C:relative']) {
       expect(resolveFileReference(path, undefined)).toEqual({ path });
     }
+    expect(resolveFileReference('/work/a.ts:0', undefined)).toEqual({ path: '/work/a.ts', invalidTarget: true });
     expect(resolveFileReference('file:///work/a.ts%3A12', undefined)).toEqual({ path: '/work/a.ts:12' });
     expect(resolveFileReference('/work/a.ts%2312', undefined)).toEqual({ path: '/work/a.ts#12' });
   });
 
   it.each(['https://example.test/a.ts:12', '//example.test/a.ts:12', 'mailto:a@example.test', 'ms://file/a.ts:12', '/s/session/file.ts:12', '/settings/general', '/settings?tab=general', '/usage#today', '#L12'])('does not capture %s', (href) => {
     expect(resolveFileReference(href, '/work')).toBeUndefined();
+  });
+});
+
+describe('extended file reference targets', () => {
+  it('keeps line ranges and Markdown headings separate from the path', () => {
+    expect(resolveFileReference('src/app.ts#L309-L320', '/work')).toEqual({
+      path: '/work/src/app.ts', line: 309, column: undefined, endLine: 320,
+    });
+    expect(resolveFileReference('docs/说明.md#%E8%AF%BB%E5%8F%96', '/work')).toEqual({
+      path: '/work/docs/说明.md', heading: '读取',
+    });
+    expect(resolveFileReference('file:///C:/work/docs/readme.md#%E4%B8%AD%E6%96%87', undefined)).toEqual({
+      path: 'C:/work/docs/readme.md', heading: '中文',
+    });
+  });
+
+  it('decodes literal path escapes only after splitting a citation suffix', () => {
+    expect(resolveFileReference('docs/foo%23bar%3Abaz.ts:12', '/work')).toEqual({
+      path: '/work/docs/foo#bar:baz.ts', line: 12, column: undefined,
+    });
+    expect(resolveFileReference('foo#bar.txt', '/work')).toEqual({ path: '/work/foo#bar.txt' });
+    expect(resolveFileReference('foo:bar.txt', '/work')).toEqual({ path: '/work/foo:bar.txt' });
+  });
+
+  it('degrades malformed positions to a path-only target with an invalid marker', () => {
+    expect(resolveFileReference('src/app.ts:0', '/work')).toEqual({ path: '/work/src/app.ts', invalidTarget: true });
+    expect(resolveFileReference('src/app.ts#L0', '/work')).toEqual({ path: '/work/src/app.ts', invalidTarget: true });
+    expect(resolveFileReference('src/app.ts#L320-L309', '/work')).toEqual({ path: '/work/src/app.ts', invalidTarget: true });
+    expect(resolveFileReference('src/app.ts#section', '/work')).toEqual({ path: '/work/src/app.ts#section' });
+  });
+});
+
+describe('findFileReferences', () => {
+  it('finds Windows and workspace-relative files while preserving source offsets', () => {
+    const text = 'See src/app.ts:12:3, C:\\work\\lib\\file.ts#L4, docs/说明.md。 `inline.ts:9` /settings/app.ts https://example.test/app.ts --file=ignored.ts';
+    const references = findFileReferences(text);
+    expect(references.map(({ target }) => target)).toEqual([
+      'src/app.ts:12:3',
+      'C:\\work\\lib\\file.ts#L4',
+      'docs/说明.md',
+    ]);
+    for (const reference of references) expect(text.slice(reference.start, reference.end)).toBe(reference.target);
+  });
+
+  it('does not split hash filenames or linkify command and app tokens', () => {
+    expect(findFileReferences('foo#bar.txt foo:bar.txt --path=ignored.ts /new/session app://route.ts')).toEqual([
+      { start: 0, end: 11, target: 'foo#bar.txt' },
+      { start: 12, end: 23, target: 'foo:bar.txt' },
+    ]);
   });
 });
 
@@ -331,4 +382,22 @@ describe('file link sentinel (markdown sanitize bypass)', () => {
     const wrapped = wrapFileLinkTarget('./config/app.toml')!;
     expect(resolveFileHref(unwrapFileLinkTarget(wrapped)!, '/work/app')).toBe('/work/app/config/app.toml');
   });
+});
+
+
+it('keeps literal citation paths distinct from URL-encoded Markdown hrefs', () => {
+  const path = 'C:/example/a%3A%23%20.md';
+  const wrapped = wrapFileLinkTarget(`${path}:309`, true)!;
+  expect(unwrapFileLinkTarget(wrapped)).toBe(`${path}:309`);
+  expect(resolveFileReference(unwrapFileLinkTarget(wrapped)!, undefined, true)).toEqual({ path, line: 309, column: undefined });
+  expect(resolveFileReference('file:///C:/example/a%253A%2523%2520.md:309', undefined)).toEqual({ path, line: 309, column: undefined });
+});
+
+
+it('keeps registered app routes and prose version numbers out of file navigation', () => {
+  for (const route of ['/r/example', '/rooms/example', '/board/example.md', '/cron', '/memory', '/activity', '/personas/example']) {
+    expect(isAppRouteHref(route)).toBe(true);
+    expect(resolveFileReference(route, '/work')).toBeUndefined();
+  }
+  expect(findFileReferences('Version 0.3.3 and 1.2 are available.')).toEqual([]);
 });

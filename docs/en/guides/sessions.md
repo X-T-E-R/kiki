@@ -105,7 +105,9 @@ Resolved questions, approvals, markers and finished background tasks stay in the
 
 Images in sent attachments and in tool results appear as soon as they scroll into view — you do not click to load them. Clicking one opens it full size, and a real failure offers a retry. The viewer keeps its own **Download**; there is no second download link under each image.
 
-Markdown previews open rendered. **Source** shows the text, and in the desktop app you can edit it there when a write channel is available. The rendered view handles tables, math, diagrams and images linked relative to the Markdown file. A file above roughly 512 KB starts as its opening portion and keeps loading the rest in the background; it stays read-only at that size, so use **Source** to read it but edit smaller files. If the background read fails, the view says so and offers a retry.
+Click a file citation such as `src/example.ts:12:7` or `docs/example.md#L12-L20` in a message to open its tab at that source location. References in inline code and ordinary text are clickable too. Markdown line citations open **Source**; a link such as `[section](docs/example.md#heading)` opens the rendered heading. Inside a Markdown document, `#heading` stays in that document and relative links start from its directory. Reopening a citation reuses the tab and keeps unsaved edits. A missing or out-of-range target leaves the file open with a location notice.
+
+Markdown previews otherwise open rendered. **Source** shows the text, and in the desktop app you can edit it there when a write channel is available. The rendered view handles tables, math, diagrams and images linked relative to the Markdown file. A file above roughly 512 KB starts as its opening portion and keeps loading the rest in the background; it stays read-only at that size, so use **Source** to read it but edit smaller files. If the background read fails, the view says so and offers a retry.
 
 ## GUI usage statistics
 

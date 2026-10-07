@@ -486,6 +486,51 @@ describe('PreviewWorkspace', () => {
     expect(editor.dataset['line']).toBe('3');
   });
 
+  it('reuses an existing Windows file tab across slash spelling and citation targets', async () => {
+    const path = 'C:\\Example\\notes.md';
+    FILES[path] = '# Example\n\nSource text.\n';
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MediaPreviewProvider cwd="C:/Example">
+      <Markdown text={'See `C:\\Example\\notes.md:3` and `c:/example/notes.md:1`'} />
+    </MediaPreviewProvider>);
+    const links = probe.container.querySelectorAll('a');
+    await act(async () => { links[0]!.click(); });
+    const editor = workspace().querySelector<HTMLElement>('[data-testid="editor"]')!;
+    await act(async () => { links[1]!.click(); });
+    expect(tabs()).toEqual([path]);
+    expect(workspace().querySelector('[data-testid="editor"]')).toBe(editor);
+    expect(editor.dataset['line']).toBe('1');
+    delete FILES[path];
+  });
+
+  it('switches line citations to source and headings to rendered without discarding the source editor', async () => {
+    const probe = makeRoot();
+    const scroll = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      await renderSettled(probe.root, <MediaPreviewProvider cwd="/work">
+        <Markdown text={'[line](docs/design.md:3) [heading](docs/design.md#design) [missing](docs/design.md#absent) [outside](docs/design.md:999) [invalid](docs/design.md:0)'} />
+      </MediaPreviewProvider>);
+      const links = probe.container.querySelectorAll('a');
+      await act(async () => { links[0]!.click(); });
+      const editor = workspace().querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!;
+      await act(async () => { links[1]!.click(); });
+      expect(editor.closest('[hidden]')).not.toBeNull();
+      expect(workspace().querySelector('h1')?.textContent).toBe('Design');
+      expect(workspace().querySelector('h1')!.closest('[hidden]')).toBeNull();
+      await act(async () => { links[2]!.click(); });
+      expect(workspace().textContent).toContain('File opened, but the cited location was not found.');
+      await act(async () => { links[3]!.click(); });
+      expect(workspace().querySelector('[data-testid="editor"]')).toBe(editor);
+      expect(editor.closest('[hidden]')).toBeNull();
+      expect(workspace().textContent).toContain('Showing the nearest available position.');
+      await act(async () => { links[4]!.click(); });
+      expect(tabs()).toEqual(['/work/docs/design.md']);
+      expect(workspace().textContent).toContain('File opened, but the cited location was not found.');
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
+
   it('opens files as tabs and activates the newest one', async () => {
     const probe = makeRoot();
     await renderSettled(

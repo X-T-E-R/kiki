@@ -1561,6 +1561,8 @@ export const en = {
   'preview.openFile': 'Preview {name}',
   'preview.loading': 'Loading…',
   'preview.failed': 'Could not load this file',
+  'preview.referenceMissing': 'File opened, but the cited location was not found.',
+  'preview.referenceClamped': 'The cited position is outside this file. Showing the nearest available position.',
   'preview.truncated': 'Large file — showing the first part only.',
   'preview.loadFullFile': 'Load full file',
   'preview.unsupported': 'No preview available for this file type.',

@@ -182,6 +182,7 @@ export function MediaPreviewProvider({
     ready: sessionId !== undefined,
     capture: () => ({ tabsState, panelOpen, positions }),
     restore: (snapshot) => {
+      setNavigation(undefined);
       setTabsState((current) => {
         const kept = current.tabs.filter((tab) => tab.kind === 'file' && dirtyPaths.has(tab.path) &&
           !snapshot.tabsState.tabs.some((candidate) => previewTabKey(candidate) === previewTabKey(tab)));
@@ -203,11 +204,14 @@ export function MediaPreviewProvider({
   const [navigation, setNavigation] = useState<FileReference | undefined>();
   const openFile = useCallback((input: string | FileReference) => {
     const raw = typeof input === 'string' ? { path: input } : input;
-    const reference = { ...raw, path: normalizeRawPath(raw.path) };
+    const path = normalizeRawPath(raw.path);
+    const identity = (value: string) => /^[A-Za-z]:[\\/]|^\\\\/.test(value) ? value.replaceAll('\\', '/').toLowerCase() : value;
+    const existing = tabsState.tabs.find((tab) => tab.kind === 'file' && identity(tab.path) === identity(path));
+    const reference = { ...raw, path: existing?.kind === 'file' ? existing.path : path };
     setTabsState((state) => openPreviewTab(state, reference.path));
     setNavigation(reference);
     revealPreview();
-  }, [revealPreview]);
+  }, [revealPreview, tabsState.tabs]);
 
   const openAgentPanel = useCallback((agentId: string, title?: string) => {
     setTabsState((state) => openPreviewTab(state, { kind: 'panel', agentId, title }));
@@ -351,7 +355,7 @@ export function MediaPreviewProvider({
       workspaceNavigation={workspaceNavigation}
       onCancelTask={onCancelTask}
       onStopAgentTask={onStopAgentTask}
-      onActivate={(key) => { setTabsState((state) => ({ ...state, active: key })); }}
+      onActivate={(key) => { setNavigation(undefined); setTabsState((state) => ({ ...state, active: key })); }}
       onClose={(key) => { requestClose({ kind: 'tab', key }); }}
       onCloseOthers={(key) => { requestClose({ kind: 'others', key }); }}
       onCloseAll={() => { requestClose({ kind: 'all' }); }}

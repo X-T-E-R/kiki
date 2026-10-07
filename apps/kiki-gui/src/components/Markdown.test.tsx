@@ -436,3 +436,68 @@ describe('Markdown annotation marks', () => {
     expect(probe.container.querySelector('[data-streamdown="strong"]')?.textContent).toBe('marked');
   });
 });
+
+
+describe('file citation entrances', () => {
+  function api(openFile = vi.fn()): MediaPreviewApi {
+    return { cwd: 'C:/work', sessionId: undefined, openFile, openImage: vi.fn(), openAttachment: vi.fn(), previewTabCount: 0, previewPanelOpen: false, togglePreviewPanel: vi.fn(), openAgentPanel: vi.fn(), openBuiltinSkill: vi.fn(), activeAgentPanelId: undefined };
+  }
+  it.each([
+    ['See C:\\Example\\analyses\\pending-decisions.md:309', 'C:\\Example\\analyses\\pending-decisions.md', 309, undefined],
+    ['See C:/Example/analyses/pending-decisions.md:309', 'C:/Example/analyses/pending-decisions.md', 309, undefined],
+    ['See C:\\Example\\.tmp\\_notes.md:309', 'C:\\Example\\.tmp\\_notes.md', 309, undefined],
+    ['See `src/example.ts:12:7`', 'C:/work/src/example.ts', 12, 7],
+    ['See src/example.ts:12:7', 'C:/work/src/example.ts', 12, 7],
+    ['See `C:/Example/a b.md:3`', 'C:/Example/a b.md', 3, undefined],
+    ['See `src/a%3A%23.ts:12`', 'C:/work/src/a%3A%23.ts', 12, undefined],
+    ['See src/a%20b.ts:12', 'C:/work/src/a%20b.ts', 12, undefined],
+  ])('renders and opens %s as a path and position', async (text, path, line, column) => {
+    const preview = api();
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MediaPreviewContext.Provider value={preview}><Markdown text={text} /></MediaPreviewContext.Provider>);
+    const link = probe.container.querySelector('a')!;
+    expect(link).not.toBeNull();
+    await act(async () => { link.click(); });
+    expect(preview.openFile).toHaveBeenLastCalledWith(expect.objectContaining({ path, line, column }));
+  });
+  it('does not linkify commands, fenced code, app routes or external URLs', async () => {
+    const preview = api();
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><MediaPreviewContext.Provider value={preview}><Markdown text={'`cat src/example.ts`\n\n`./script.sh argument`\n\n```sh\ncat src/example.ts:12\n```\n\n[settings](/settings/models) [external](https://example.test/file.md#L12)'} /></MediaPreviewContext.Provider></MemoryRouter>);
+    const links = probe.container.querySelectorAll('a');
+    expect(links).toHaveLength(2);
+    expect([...links].some((link) => link.href.includes('__kiki-'))).toBe(false);
+  });
+  it('opens document-local and cross-file heading references relative to the document', async () => {
+    const preview = api();
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MediaPreviewContext.Provider value={preview}><Markdown mode="static" documentDirectory="C:/other/docs" documentPath="C:/other/docs/current%23.md" text={'[here](#%E4%B8%AD%E6%96%87) [other](./a%20b.md#hello-world) [range](a.md#L3-L7)'} /></MediaPreviewContext.Provider>);
+    const links = probe.container.querySelectorAll('a');
+    expect(links).toHaveLength(3);
+    await act(async () => { links[0]!.click(); });
+    expect(preview.openFile).toHaveBeenLastCalledWith(expect.objectContaining({ path: 'C:/other/docs/current%23.md', heading: '中文' }));
+    await act(async () => { links[1]!.click(); });
+    expect(preview.openFile).toHaveBeenLastCalledWith(expect.objectContaining({ path: 'C:/other/docs/a b.md', heading: 'hello-world' }));
+    await act(async () => { links[2]!.click(); });
+    expect(preview.openFile).toHaveBeenLastCalledWith(expect.objectContaining({ path: 'C:/other/docs/a.md', line: 3, endLine: 7 }));
+  });
+  it('indexes actual rendered headings with stable duplicate slugs and locates each new request', async () => {
+    const probe = makeRoot();
+    const result = vi.fn();
+    const scroll = vi.fn();
+    const originalScroll = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { callback(0); return 0; });
+    try {
+      const render = async (heading: string) => renderSettled(probe.root, <Markdown mode="static" text={'# Hello **World**!\n\n## 中文\n\n## 中文\n\n## 中文-1'} documentPath="C:/work/example.md" headingNavigation={{ path: 'C:/work/example.md', heading }} onHeadingResult={result} />);
+      await render('中文-1');
+      expect([...probe.container.querySelectorAll<HTMLElement>('[data-markdown-heading]')].map((element) => element.dataset['markdownHeading'])).toEqual(['hello-world', '中文', '中文-1', '中文-1-1']);
+      expect(result).toHaveBeenLastCalledWith(true);
+      expect(scroll.mock.instances.at(-1)).toBe(probe.container.querySelectorAll('h2')[1]);
+      await render('hello-world');
+      expect(scroll.mock.instances.at(-1)).toBe(probe.container.querySelector('h1'));
+      await render('missing');
+      expect(result).toHaveBeenLastCalledWith(false);
+    } finally { raf.mockRestore(); HTMLElement.prototype.scrollIntoView = originalScroll; }
+  });
+});

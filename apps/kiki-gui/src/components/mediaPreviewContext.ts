@@ -16,8 +16,9 @@ export interface MediaPreviewApi {
   /** Open the fullscreen image lightbox for a ready URL (data:/blob:/http). */
   readonly openImage: (src: string, name?: string) => void;
   /** Open a raw filesystem path or an already-resolved FileReference. Strings
-   * are never URI-decoded or stripped of citation suffixes; Markdown resolves
-   * its href before calling this API. */
+   * are never URI-decoded or stripped of citation suffixes. Citation entrances
+   * resolve text or hrefs to FileReference first; navigation never enters a
+   * filesystem request, and every new reference repositions the existing tab. */
   readonly openFile: (reference: string | FileReference) => void;
   /** Open a subagent panel tab in the preview workspace. */
   readonly openAgentPanel: (agentId: string, title?: string) => void;

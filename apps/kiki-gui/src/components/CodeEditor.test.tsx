@@ -54,4 +54,10 @@ it.each([true, false])('moves the live editor without replacing its buffer (read
   expect(view.state.selection.main.head).toBe(0);
   expect(view.state.doc.toString()).toBe(dirtyText);
   expect(onChange).toHaveBeenCalledTimes(changesBeforeNavigation);
+  await render({ path: '/work/example.txt', line: 2, endLine: 3 });
+  expect(view.state.selection.main.anchor).toBe(6);
+  expect(view.state.selection.main.head).toBe(22);
+  expect(scroll).toHaveBeenLastCalledWith(6, { y: 'center' });
+  expect(view.state.doc.toString()).toBe(dirtyText);
+  expect(onChange).toHaveBeenCalledTimes(changesBeforeNavigation);
 });

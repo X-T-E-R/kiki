@@ -1544,6 +1544,8 @@ export const zh = {
   'preview.openFile': '预览 {name}',
   'preview.loading': '加载中…',
   'preview.failed': '无法读取该文件',
+  'preview.referenceMissing': '文件已打开，但未找到引用的位置。',
+  'preview.referenceClamped': '引用位置超出文件范围，已定位到最近的有效位置。',
   'preview.truncated': '文件较大，仅显示前面一部分。',
   'preview.loadFullFile': '加载完整文件',
   'preview.unsupported': '该文件类型暂不支持预览。',
