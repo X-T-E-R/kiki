@@ -48,6 +48,8 @@ interface ActiveTurn {
   readonly seenMessageDeltas: Set<string>;
   readonly seenReasoningSummaryDeltas: Set<string>;
   usage?: CodexTurnCompletion['usage'];
+  usageBaseline?: CodexTurnCompletion['usage'];
+  terminalError?: unknown;
   interruption?: Promise<boolean>;
   interruptTimer?: NodeJS.Timeout;
 }
@@ -490,6 +492,12 @@ export class CodexAppServerClient {
       void Promise.resolve(this.options.onNotification?.(notification)).catch(() => undefined);
     } catch {}
     const active = this.#activeTurn;
+    if (active !== undefined) {
+      const threadId = notificationThreadId(notification.params);
+      if (threadId !== undefined && threadId !== active.threadId) return;
+      const turnId = isObject(notification.params) ? optionalString(notification.params['turnId']) : undefined;
+      if (turnId !== undefined && turnId !== active.turnId) return;
+    }
     if (active === undefined) {
       if (this.#startingTurnThreadId !== undefined) {
         if (this.#earlyNotifications.length >= MAX_EARLY_NOTIFICATIONS) {
@@ -530,13 +538,24 @@ export class CodexAppServerClient {
         return;
       }
     }
-    if (mapped.usage !== undefined) active.usage = mapped.usage;
+    if (mapped.usage !== undefined && mapped.cumulativeUsage !== undefined) {
+      active.usageBaseline ??= subtractUsage(mapped.cumulativeUsage, mapped.usage);
+      active.usage = active.usageBaseline === undefined
+        ? undefined : subtractUsage(mapped.cumulativeUsage, active.usageBaseline);
+    }
+    if (mapped.terminalError !== undefined) active.terminalError = mapped.terminalError;
     if (
       mapped.completion !== undefined &&
       mapped.completion.threadId === active.threadId &&
       mapped.completion.turnId === active.turnId
     ) {
-      this.#finishActiveTurn({ ...mapped.completion, stderrTail: this.stderrTail(), usage: active.usage });
+      this.#finishActiveTurn({
+        ...mapped.completion,
+        status: active.terminalError === undefined ? mapped.completion.status : 'failed',
+        error: active.terminalError ?? mapped.completion.error,
+        stderrTail: this.stderrTail(),
+        usage: active.usage,
+      });
     }
   }
 
@@ -727,6 +746,22 @@ function assertHostOwnedArgs(args: readonly string[]): void {
   if (args.some((arg) => arg === '--listen' || arg.startsWith('--listen='))) {
     throw new CodexClientError('protocol', 'Codex descriptor args cannot override host-owned --listen');
   }
+}
+
+function subtractUsage(
+  total: NonNullable<CodexTurnCompletion['usage']>,
+  baseline: NonNullable<CodexTurnCompletion['usage']>,
+): CodexTurnCompletion['usage'] {
+  const inputTokens = total.inputTokens - baseline.inputTokens;
+  const cachedInputTokens = total.cachedInputTokens - baseline.cachedInputTokens;
+  const outputTokens = total.outputTokens - baseline.outputTokens;
+  return inputTokens >= 0 && cachedInputTokens >= 0 && outputTokens >= 0
+    ? { inputTokens, cachedInputTokens, outputTokens, contextWindow: total.contextWindow }
+    : undefined;
+}
+
+function notificationThreadId(value: unknown): string | undefined {
+  return isObject(value) && typeof value['threadId'] === 'string' ? value['threadId'] : undefined;
 }
 
 function object(value: unknown, name: string): JsonObject {

@@ -92,6 +92,8 @@ interface ActiveCodexTurn {
 interface OpenedThread {
   readonly threadId: string;
   readonly mode: ExecutorResumeMode;
+  readonly actualModel?: string;
+  readonly modelProvider?: string;
   readonly handoff?: { readonly text: string; readonly truncated: boolean };
 }
 
@@ -259,6 +261,16 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       },
     );
     await recorder.begin(prompt, origin, externalAttachments(request), request.kind === 'prompt' ? request.promptId : undefined);
+    if (opened.actualModel !== undefined || opened.modelProvider !== undefined) {
+      await recorder.record({
+        type: 'session.info',
+        meta: {
+          source: 'codex-app-server',
+          actualModel: opened.actualModel,
+          modelProvider: opened.modelProvider,
+        },
+      });
+    }
 
     const ready = createControlledPromise<void>();
     const result = createControlledPromise<TurnResult>();
@@ -552,21 +564,43 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           ...this.#instructions(),
         }, signal);
         this.#threadId = resumed.thread.id;
-        return { threadId: resumed.thread.id, mode: 'resume' };
+        return {
+          threadId: resumed.thread.id,
+          mode: 'resume',
+          actualModel: resumed.model,
+          modelProvider: resumed.modelProvider,
+        };
       } catch (error) {
         if (state.sessionRef?.ref['localSource'] !== undefined || !isResumeProtocolFailure(error)) throw error;
         const handoff = this.context.binding.execution === undefined ? buildHandoff(this.#memory.get()) : undefined;
         const fresh = await this.#startFreshThread(roots, signal);
-        return { threadId: fresh.thread.id, mode: handoff === undefined ? 'new' : 'handoff', handoff };
+        return {
+          threadId: fresh.thread.id,
+          mode: handoff === undefined ? 'new' : 'handoff',
+          actualModel: fresh.model,
+          modelProvider: fresh.modelProvider,
+          handoff,
+        };
       }
     }
     if (this.context.binding.execution === undefined && state.sessionRef !== undefined && !reusable) {
       const handoff = buildHandoff(this.#memory.get());
       const fresh = await this.#startFreshThread(roots, signal);
-      return { threadId: fresh.thread.id, mode: 'handoff', handoff };
+      return {
+        threadId: fresh.thread.id,
+        mode: 'handoff',
+        actualModel: fresh.model,
+        modelProvider: fresh.modelProvider,
+        handoff,
+      };
     }
     const fresh = await this.#startFreshThread(roots, signal);
-    return { threadId: fresh.thread.id, mode: 'new' };
+    return {
+      threadId: fresh.thread.id,
+      mode: 'new',
+      actualModel: fresh.model,
+      modelProvider: fresh.modelProvider,
+    };
   }
 
   async #startFreshThread(

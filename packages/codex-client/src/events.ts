@@ -16,6 +16,8 @@ export interface CodexMappedNotification {
     readonly outputTokens: number;
     readonly contextWindow?: number;
   };
+  readonly cumulativeUsage?: CodexMappedNotification['usage'];
+  readonly terminalError?: unknown;
 }
 
 export function mapCodexNotification(
@@ -77,18 +79,66 @@ export function mapCodexNotification(
   }
   if (method === 'thread/tokenUsage/updated') {
     const tokenUsage = record(params['tokenUsage'], `${method}.tokenUsage`);
+    const last = record(tokenUsage['last'], `${method}.tokenUsage.last`);
     const total = record(tokenUsage['total'], `${method}.tokenUsage.total`);
-    const inputTokens = finite(total['inputTokens'], `${method}.inputTokens`);
-    const cachedInputTokens = finite(total['cachedInputTokens'], `${method}.cachedInputTokens`);
-    const outputTokens = finite(total['outputTokens'], `${method}.outputTokens`);
+    const inputTokens = finite(last['inputTokens'], `${method}.inputTokens`);
+    const cachedInputTokens = finite(last['cachedInputTokens'], `${method}.cachedInputTokens`);
+    const outputTokens = finite(last['outputTokens'], `${method}.outputTokens`);
     const contextWindow = optionalFinite(tokenUsage['modelContextWindow']);
     return {
       events: [{
         type: 'usage',
-        used: finite(total['totalTokens'], `${method}.totalTokens`),
+        used: finite(last['totalTokens'], `${method}.totalTokens`),
         size: contextWindow ?? 0,
       }],
       usage: { inputTokens, cachedInputTokens, outputTokens, contextWindow },
+      cumulativeUsage: {
+        inputTokens: finite(total['inputTokens'], `${method}.total.inputTokens`),
+        cachedInputTokens: finite(total['cachedInputTokens'], `${method}.total.cachedInputTokens`),
+        outputTokens: finite(total['outputTokens'], `${method}.total.outputTokens`),
+        contextWindow,
+      },
+    };
+  }
+  if (method === 'turn/started') {
+    const turn = record(params['turn'], `${method}.turn`);
+    return {
+      events: [{
+        type: 'session.info',
+        meta: {
+          source: 'codex-app-server',
+          updateType: method,
+          status: 'running',
+          turnId: optionalString(turn['id']),
+        },
+      }],
+    };
+  }
+  if (method === 'thread/status/changed') {
+    return {
+      events: [{
+        type: 'session.info',
+        meta: {
+          source: 'codex-app-server',
+          updateType: method,
+          status: optionalString(params['status']) ?? optionalString(objectOptional(params['status'])?.['type']),
+        },
+      }],
+    };
+  }
+  if (method === 'error') {
+    const error = record(params['error'], `${method}.error`);
+    return {
+      events: [{
+        type: 'session.info',
+        meta: {
+          source: 'codex-app-server',
+          updateType: method,
+          error: optionalString(error['message']) ?? optionalString(params['message']),
+          willRetry: params['willRetry'] === true,
+        },
+      }],
+      terminalError: params['willRetry'] === true ? undefined : error,
     };
   }
   if (method === 'turn/completed') {
@@ -277,6 +327,12 @@ function requiredString(value: unknown, name: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function objectOptional(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : undefined;
 }
 
 function finite(value: unknown, name: string): number {

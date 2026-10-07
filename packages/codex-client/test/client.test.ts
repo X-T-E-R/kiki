@@ -213,6 +213,59 @@ describe('Codex turn settlement', () => {
     expect(fixture.dispose).toHaveBeenCalledOnce();
   });
 
+  it('ignores notifications from a different Codex thread', async () => {
+    const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }));
+    const client = turnClient(fixture);
+    await client.connect();
+    const handle = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal);
+    fixture.stdout.write(`${JSON.stringify({ method: 'item/agentMessage/delta', params: {
+      threadId: 'other-thread', turnId: 'other-turn', itemId: 'other-message', delta: 'wrong',
+    } })}\n`);
+    fixture.stdout.write(`${JSON.stringify({ method: 'item/agentMessage/delta', params: {
+      threadId: 'thread-1', turnId: 'turn-1', itemId: 'message-1', delta: 'right',
+    } })}\n`);
+    completeTurn(fixture.stdout);
+    const events: unknown[] = [];
+    for await (const event of handle.events) events.push(event);
+    await handle.completion;
+    expect(events).toEqual([{
+      type: 'message.delta', role: 'assistant', messageId: 'message-1',
+      content: { type: 'text', text: 'right' },
+    }]);
+    await client.shutdown();
+  });
+
+  it('accumulates usage within a turn without charging prior turns', async () => {
+    const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }));
+    const client = turnClient(fixture);
+    await client.connect();
+    const handle = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal);
+    const usage = (inputTokens: number, outputTokens: number) => ({ inputTokens, cachedInputTokens: 0, outputTokens, totalTokens: inputTokens + outputTokens });
+    for (const [last, total] of [[usage(10, 2), usage(110, 22)], [usage(20, 3), usage(130, 25)]]) {
+      fixture.stdout.write(`${JSON.stringify({ method: 'thread/tokenUsage/updated', params: {
+        threadId: 'thread-1', tokenUsage: { last, total, modelContextWindow: 200000 },
+      } })}\n`);
+    }
+    completeTurn(fixture.stdout);
+    await expect(handle.completion).resolves.toMatchObject({ usage: {
+      inputTokens: 30, cachedInputTokens: 0, outputTokens: 5, contextWindow: 200000,
+    } });
+    await client.shutdown();
+  });
+
+  it.each([false, true])('requires failed completion after a non-retry error, willRetry=%s', async (willRetry) => {
+    const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }));
+    const client = turnClient(fixture);
+    await client.connect();
+    const handle = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal);
+    fixture.stdout.write(`${JSON.stringify({ method: 'error', params: {
+      threadId: 'thread-1', turnId: 'turn-1', error: { message: 'provider failed' }, willRetry,
+    } })}\n`);
+    completeTurn(fixture.stdout);
+    await expect(handle.completion).resolves.toMatchObject({ status: willRetry ? 'completed' : 'failed' });
+    await client.shutdown();
+  });
+
   it('sends one interrupt during repeated active shutdown and settles after process exit', async () => {
     const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }), true);
     const client = turnClient(fixture);

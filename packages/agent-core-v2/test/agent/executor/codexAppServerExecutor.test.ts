@@ -34,6 +34,7 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { CodexAppServerExecutorSession } from '#/agent/execution/codexAppServerExecutorSession';
 import {
+  ExecutorRuntimeUpdate,
   ExecutorSessionUpdated,
   ExecutorTurnMetadata,
   externalExecutorKey,
@@ -68,6 +69,8 @@ const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
 interface HarnessOptions {
   readonly models?: readonly string[];
+  readonly actualModel?: string;
+  readonly modelProvider?: string;
   readonly modelReasoningEfforts?: readonly string[];
   readonly modelAlias?: string;
   readonly unpinModel?: boolean;
@@ -294,7 +297,7 @@ function createHarness(options: HarnessOptions = {}) {
     },
     startThread: async (params: Readonly<Record<string, unknown>>) => {
       starts.push(params);
-      return { thread: { id: 'thread-new' } };
+      return { thread: { id: 'thread-new' }, model: options.actualModel, modelProvider: options.modelProvider };
     },
     resumeThread: async (params: Readonly<Record<string, unknown>>) => {
       resumes.push(params);
@@ -303,7 +306,11 @@ function createHarness(options: HarnessOptions = {}) {
           ? options.resumeError
           : new Error('Configured resume failure');
       }
-      return { thread: { id: String(params['threadId']) } };
+      return {
+        thread: { id: String(params['threadId']) },
+        model: options.actualModel,
+        modelProvider: options.modelProvider,
+      };
     },
     startTurn: async (params: Readonly<Record<string, unknown>>): Promise<CodexTurnHandle> => {
       prompts.push(params);
@@ -577,6 +584,29 @@ describe('Codex app-server external executor', () => {
         executorId: 'codex-app-server',
       },
     ]]);
+    await harness.session.shutdown();
+  });
+
+  it('records Codex app-server actual model metadata without changing the binding', async () => {
+    const harness = createHarness({ actualModel: 'gpt-5-codex', modelProvider: 'openai-codex' });
+    const handle = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await handle.completion;
+
+    const runtime = harness.events.filter((event) => event instanceof ExecutorRuntimeUpdate);
+    expect(runtime).toContainEqual(expect.objectContaining({
+      kind: 'session',
+      value: {
+        meta: {
+          source: 'codex-app-server',
+          actualModel: 'gpt-5-codex',
+          modelProvider: 'openai-codex',
+        },
+      },
+    }));
+    expect(harness.context.binding.modelAlias).toBe('gpt-test');
     await harness.session.shutdown();
   });
 

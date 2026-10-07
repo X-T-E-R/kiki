@@ -734,6 +734,22 @@ describe('ACP external executor', () => {
     expect(AcpAgentExecutorProvider.validateOptions({})).toEqual({});
   });
 
+  it('records Claude ACP negotiated model metadata as a runtime fact', async () => {
+    const harness = createHarness({ executorId: 'claude-acp', modelAlias: 'model-a' });
+    const handle = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await handle.completion;
+
+    expect(harness.events).toContainEqual(expect.objectContaining({
+      type: 'executor.runtime.update',
+      kind: 'session',
+      value: { meta: { source: 'claude-acp', actualModel: 'model-a', agentVersion: undefined } },
+    }));
+    await harness.session.shutdown();
+  });
+
   it('keeps the generic recorder free of ACP-specific losses and durable wording', async () => {
     const loopEvents: unknown[] = [];
     const dispatcher = {

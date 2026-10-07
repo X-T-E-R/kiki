@@ -333,6 +333,21 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       },
     );
     await recorder.begin(prompt, origin, externalAttachments(request), request.kind === 'prompt' ? request.promptId : undefined);
+    if (this.context.descriptor.id === 'claude-acp') {
+      const actualModel = configured.configOptions.find((option) =>
+        option.category === 'model' && typeof option.currentValue === 'string')?.currentValue;
+      const agentVersion = opened.initialize.agentInfo?.version;
+      if (actualModel !== undefined || agentVersion !== undefined) {
+        await recorder.record({
+          type: 'session.info',
+          meta: {
+            source: 'claude-acp',
+            actualModel,
+            agentVersion,
+          },
+        });
+      }
+    }
 
     const controller = new AbortController();
     const relayAbort = (): void => controller.abort(options.signal.reason);
