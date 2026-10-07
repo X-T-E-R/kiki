@@ -64,7 +64,8 @@ import {
 import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
 import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
-import { worktreeRemovalOutcomeSchema } from '@kiki/protocol';
+import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, worktreeRemovalOutcomeSchema } from '@kiki/protocol';
+import { deleteArchivedSessions } from '../services/archivedSessionDeletion';
 import { toRestContextBreakdown } from '../protocol/context-usage';
 import { ErrorCode } from '../protocol/error-codes';
 import { pageResponseSchema } from '../protocol/pagination';
@@ -159,6 +160,7 @@ const sessionsListQueryCoercion = z
     include_ephemeral: booleanQueryParam,
     exclude_empty: booleanQueryParam,
     archived_only: booleanQueryParam,
+    q: z.string().max(500).optional(),
     workspace_id: workspaceIdSchema.optional(),
     persona: z.string().min(1).optional(),
   })
@@ -546,6 +548,7 @@ export function registerSessionsRoutes(
         }
       }
       const archivedOnly = raw.archived_only === true;
+      const needle = raw.q?.trim().toLocaleLowerCase();
 
       const workspaces = await core.accessor.get(IWorkspaceService).list();
       const roots = new Map(workspaces.map((w) => [w.id, w.root]));
@@ -615,8 +618,9 @@ export function registerSessionsRoutes(
               exhausted = true;
               break;
             }
-            const cwd = summary.cwd ?? roots.get(summary.workspaceId);
+            const cwd = summary.cwd ?? roots.get(summary.workspaceId) ?? (archivedOnly ? '' : undefined);
             if (cwd === undefined) continue;
+            if (needle && ![summary.title ?? '', cwd, summary.workspaceId].some((value) => value.toLocaleLowerCase().includes(needle))) continue;
             if (raw.persona !== undefined && !(await core.accessor.get(IBotService).sessionBelongsToPersona(summary, raw.persona))) continue;
             if (raw.exclude_empty === true && (summary.lastPrompt ?? '').length === 0) continue;
             if (archivedOnly && !summary.archived) continue;
@@ -956,6 +960,20 @@ export function registerSessionsRoutes(
     app.post(route.path, route.options, route.handler as Parameters<SessionRouteHost['post']>[2]);
   }
 
+  const deleteAllArchivedRoute = defineRoute(
+    {
+      method: 'POST', path: '/sessions::delete-archived',
+      body: z.object({}).strict(),
+      success: { data: deleteArchivedSessionsResponseSchema },
+      description: 'Permanently delete all archived conversations in the connected home',
+      tags: ['sessions'],
+    },
+    async (req, reply) => {
+      reply.send(okEnvelope(await deleteArchivedSessions(core), req.id));
+    },
+  );
+  app.post(deleteAllArchivedRoute.path, deleteAllArchivedRoute.options, deleteAllArchivedRoute.handler as Parameters<SessionRouteHost['post']>[2]);
+
   const sessionActionRoute = defineRoute(
     {
       method: 'POST',
@@ -970,6 +988,7 @@ export function registerSessionsRoutes(
           sessionAbortResponseSchema,
           startBtwSessionResponseSchema,
           archiveSessionResponseSchema,
+          deleteArchivedSessionsResponseSchema,
         ]),
       },
       errors: {
@@ -991,12 +1010,18 @@ export function registerSessionsRoutes(
         const { tail } = req.params;
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['fork', 'compact', 'undo', 'abort', 'btw', 'archive', 'restore'] as const,
+          allowedActions: ['fork', 'compact', 'undo', 'abort', 'btw', 'archive', 'restore', 'delete-archived'] as const,
           resourceLabel: 'session',
         });
         if (parsed.kind !== 'action') {
           const message = parsed.kind === 'invalid' ? parsed.reason : `unsupported action: ${tail}`;
           reply.send(buildValidationEnvelope([{ path: 'session_id', message }], req.id));
+          return;
+        }
+
+        if (parsed.action === 'delete-archived') {
+          const body = deleteArchivedSessionRequestSchema.parse(req.body);
+          reply.send(okEnvelope(await deleteArchivedSessions(core, parsed.id, body.exclude_session_ids), req.id));
           return;
         }
 

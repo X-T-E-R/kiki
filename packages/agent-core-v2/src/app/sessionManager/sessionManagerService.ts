@@ -294,6 +294,7 @@ export class SessionManager implements ISessionManager {
       work({
         archive: () => this.archiveInner(sessionId),
         restore: () => this.restoreInner(sessionId),
+        delete: () => this.deleteInner(sessionId),
       }),
     );
   }
@@ -406,21 +407,23 @@ export class SessionManager implements ISessionManager {
   }
 
   async delete(sessionId: string): Promise<void> {
-    await this.serializeLifecycle(sessionId, async () => {
-      const temporary = this.ephemeral.get(sessionId);
-      const target = temporary === undefined ? await this.controllerForSession(sessionId) : { ...temporary, release: undefined };
-      if (target === undefined) {
-        throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
-      }
-      await this.runWorkspaceOperation(
-        target.workspaceId,
-        () => target.controller.delete(sessionId, () => {
-          this.ephemeral.delete(sessionId);
-          this.didDeleteEmitter.fire({ sessionId });
-        }),
-        target.release,
-      );
-    });
+    await this.serializeLifecycle(sessionId, () => this.deleteInner(sessionId));
+  }
+
+  private async deleteInner(sessionId: string): Promise<void> {
+    const temporary = this.ephemeral.get(sessionId);
+    const target = temporary === undefined ? await this.controllerForSession(sessionId) : { ...temporary, release: undefined };
+    if (target === undefined) {
+      throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+    }
+    await this.runWorkspaceOperation(
+      target.workspaceId,
+      () => target.controller.delete(sessionId, () => {
+        this.ephemeral.delete(sessionId);
+        this.didDeleteEmitter.fire({ sessionId });
+      }),
+      target.release,
+    );
   }
 
   async fork(options: ForkSessionOptions): Promise<ISessionScopeHandle> {

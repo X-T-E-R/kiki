@@ -162,6 +162,8 @@ Open **Dispatch capabilities** — next to the new-session workspace selector, o
 
 ## Session controls
 
+**Settings → Sessions → Manage archived conversations** opens a separate page for browsing, searching and reading archived conversations. It also offers permanent deletion of one conversation or all archives in the current connection's home, with confirmation and per-item failure recovery. See [Archive management](./sessions.md#gui-session-recovery-and-activity) for deletion scope.
+
 **Settings → Sessions → Session titles** also edits the instruction used to write automatic titles. The card names whether the built-in or custom instruction is active; **Show** reveals the server's built-in text as a read-only reference. Edit **Your instruction** and save, or choose **Restore the built-in default** to remove your override. Saving an empty instruction also restores the default. A failed save keeps your draft. These actions preserve the title model, selected moments and automatic-title switch, affect the next title request, and leave existing titles unchanged. See [`session_title`](../configuration/config-files.md#session-title).
 
 ### Effective prompts

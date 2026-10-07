@@ -110,7 +110,7 @@ function createAppScheduler(
     withLifecycleSerialization: async <T,>(
       _id: string,
       work: Parameters<SessionManager['withLifecycleSerialization']>[1],
-    ): Promise<T> => work({ archive: async () => {}, restore: async () => handle }) as Promise<T>,
+    ): Promise<T> => work({ archive: async () => {}, restore: async () => handle, delete: async () => {} }) as Promise<T>,
   } as unknown as SessionManager;
   const services = createServices(disposables, {
     additionalServices: (reg) => {

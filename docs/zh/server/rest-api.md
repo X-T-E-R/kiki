@@ -176,11 +176,13 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | 方法与路径 | 说明 |
 | --- | --- |
 | `POST /api/sessions` | 创建会话；同时省略 `workspace_id` 与 `metadata.cwd` 时自动分配新工作区 |
-| `GET /api/sessions` | 列出会话，游标分页，支持 `busy` / `archived_only` 等过滤 |
+| `GET /api/sessions` | 列出会话，游标分页，支持 `busy` / `archived_only` 和标题、工作区搜索 `q` |
 | `GET /api/sessions/{session_id}` | 读取单个会话 |
 | `GET /api/sessions/{session_id}/profile` | 读取会话档案 |
 | `POST /api/sessions/{session_id}/profile` | 更新标题、元数据、agent 配置 |
 | `POST /api/sessions/{session_id}:{action}` | 会话动作：`fork` / `compact` / `undo` / `abort` / `btw` / `archive` / `restore` |
+| `POST /api/sessions/{session_id}:delete-archived` | 永久删除已归档对话及仍附属的归档对话 |
+| `POST /api/sessions:delete-archived` | 永久删除当前连接 home 中全部归档对话 |
 | `GET /api/sessions/{session_id}/children` | 列出子会话 |
 | `POST /api/sessions/{session_id}/children` | 创建子会话（fork 并打标） |
 | `GET /api/sessions/{session_id}/status` | 实时状态汇总 |
@@ -210,6 +212,14 @@ Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客�
 空请求体保留单会话归档行为。发送 `{ "include_attached": true, "exclude_session_ids": ["independent-thread-id"] }` 可归档仍附属的整组对话。服务器跨所有工作区读取持久元数据，不依赖客户端已加载的页面。`created_by_session_id` 表示创建的线程；`parent_session_id` 只有同时带 `child_session_kind: "child"` 才算附属，普通 fork 不包含在内。排除某个线程会排除其整棵子树；排除请求中的根线程 ID 不会排除根自身。
 
 整组请求返回 `data: { archived, outcomes }`。`archived: true` 确认全部目标已归档；每项结果为 `{ id, ok: true }` 或 `{ id, ok: false, reason, message }`。部分失败时，即使信封 code 为 `0`，`archived` 仍为 `false`；保留成功项，重试完成未归档项。归属发现失败会在任何归档改动之前返回错误。无论成功或失败，都应刷新列表。旧服务器未返回 `outcomes` 时不能确认整组归档。归档不删除历史或 worktree；`:restore` 只恢复请求中的会话。既有批量归档端点仍只操作传入的 ID。
+
+#### 归档对话管理
+
+使用 `GET /api/sessions?archived_only=true`，配合既有 `page_size` 和 `before_id` 游标读取归档。`q` 最多接受 500 个字符，在各页中按标题、工作区路径或工作区 ID 匹配不区分大小写的子串，不搜索消息正文。读取已归档对话的消息不会将其恢复为未归档。
+
+`POST /api/sessions/{session_id}:delete-archived` 接受 `{}` 或 `{ "exclude_session_ids": ["independent-thread-id"] }`。它按[会话归档](#会话)相同的附属关系发现整组对话，排除指定的整棵子树，只删除其中已归档的成员。请求的根对话须仍为已归档；目标在删除前被恢复时会保留。`POST /api/sessions:delete-archived` 接受 `{}`，先发现当前连接 home 中全部已归档对话，再执行删除；搜索、工作区筛选和已加载页面均不收窄范围。独立显示的已归档顶层线程也包含在全部删除中。
+
+两项操作都会永久移除已保存的对话数据，返回 `data: { deleted_ids, failed }`。每个失败项为 `{ id, title?, message }`；`failed` 非空时，信封 code 为 `0` 不代表全部成功。成功、部分失败或请求报错后都须刷新归档列表，按最新状态决定重试。发现目标失败会在删除前返回错误。客户端须在发送请求前取得确认，取消确认不得发送删除请求。
 
 #### `POST /api/sessions/{session_id}:compact`
 

@@ -3519,10 +3519,38 @@ class FixtureServer {
         source: 'index',
       });
     }
+    // Clearing the archive: every archived conversation on this connection,
+    // across pages and outside whatever the client last listed. Unarchived
+    // conversations are never in scope, and the report is partial by design.
+    if (path === '/sessions:delete-archived' && body !== undefined) {
+      const failedId = this.deleteAllArchivedFailNext;
+      this.deleteAllArchivedFailNext = undefined;
+      const deleted = [];
+      const failed = [];
+      for (const [id, member] of [...this.sessions]) {
+        if (member.record.archived !== true) continue;
+        if (id === failedId) {
+          failed.push({ id, title: member.record.title, message: 'Conversation is still attached to a live run' });
+          continue;
+        }
+        this.sessions.delete(id);
+        deleted.push(id);
+      }
+      return this.envelope(res, { deleted_ids: deleted, failed });
+    }
     if (path === '/sessions' && body === undefined) {
       let items = sessions.map((s) => s.record);
-      if (query.get('include_archive') !== 'true') items = items.filter((s) => s.archived !== true);
+      // `archived_only` is its own scope, not a narrowing of the default one:
+      // kap-server rejects it together with `include_archive`, so the archived
+      // list is served without being asked to include archived rows first.
       if (query.get('archived_only') === 'true') items = items.filter((s) => s.archived === true);
+      else if (query.get('include_archive') !== 'true') items = items.filter((s) => s.archived !== true);
+      // The needle is the same three fields kap-server matches: the title,
+      // the conversation's cwd and its workspace id. A workspace *name* is not
+      // searched, so the fixture must not pretend it is.
+      const term = query.get('q')?.toLowerCase() ?? '';
+      if (term !== '') items = items.filter((s) => [s.title, s.metadata?.cwd, s.workspace_id]
+        .some((value) => typeof value === 'string' && value.toLowerCase().includes(term)));
       const workspaceId = query.get('workspace_id');
       if (workspaceId !== null && workspaceId !== '') {
         items = items.filter((s) => s.workspace_id === workspaceId);
@@ -3727,6 +3755,39 @@ class FixtureServer {
     if (tail === ':restore') {
       session.record.archived = false;
       return this.envelope(res, session.record);
+    }
+    if (tail === ':delete-archived') {
+      // Permanent removal of one archived conversation and its archived
+      // family. An unarchived conversation is never in scope, and whatever the
+      // caller excluded stays archived — the same hold-back the family archive
+      // takes, so a promoted top-level row survives its parent's deletion. The
+      // result is a partial report, never a verdict.
+      const excluded = new Set(Array.isArray(body?.exclude_session_ids) ? body.exclude_session_ids : []);
+      const doomed = familyMembersOf(session.record.id)
+        .filter((id) => !excluded.has(id))
+        .filter((id) => this.sessions.get(id)?.record.archived === true);
+      const failedId = this.deleteArchivedFailNext;
+      this.deleteArchivedFailNext = undefined;
+      // A list of refusals, not a single one: a family delete that loses two
+      // members must show both, which is the case the page has to survive.
+      const failedIds = new Set(typeof this.deleteArchivedFailIds === 'string'
+        ? JSON.parse(this.deleteArchivedFailIds)
+        : Array.isArray(this.deleteArchivedFailIds) ? this.deleteArchivedFailIds : []);
+      if (failedId !== undefined) failedIds.add(failedId);
+      this.deleteArchivedFailIds = undefined;
+      const deleted = [];
+      const failed = [];
+      for (const id of doomed) {
+        const member = this.sessions.get(id);
+        if (member === undefined) continue;
+        if (failedIds.has(id)) {
+          failed.push({ id, title: member.record.title, message: 'Conversation is still attached to a live run' });
+          continue;
+        }
+        this.sessions.delete(id);
+        deleted.push(id);
+      }
+      return this.envelope(res, { deleted_ids: deleted, failed });
     }
     if (tail === '/snapshot') {
       return this.envelope(res, {
@@ -4586,6 +4647,19 @@ class FixtureServer {
         return this.envelope(res, { armed: true });
       case 'archive_partial_fail_next':
         this.archivePartialFailNext = body.session_id;
+        return this.envelope(res, { armed: true });
+      case 'delete_archived_fail_next':
+        // Arms a one-shot partial result: this conversation is reported as
+        // undeletable, so the page's failure reporting is walkable on screen
+        // rather than asserted in the abstract.
+        this.deleteArchivedFailNext = body.session_id;
+        return this.envelope(res, { armed: true });
+      case 'delete_archived_fail_list':
+        // Arms several refusals at once, so a multi-entry result is walkable.
+        this.deleteArchivedFailIds = body.session_ids;
+        return this.envelope(res, { armed: true });
+      case 'delete_all_archived_fail_next':
+        this.deleteAllArchivedFailNext = body.session_id;
         return this.envelope(res, { armed: true });
       case 'list': {        const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
         const files = await readdir(dir);

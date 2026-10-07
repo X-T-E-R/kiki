@@ -177,3 +177,86 @@ test('archive fixture requires the explicit family body and retains partial outc
     assert.equal(server.sessions.get(other).record.archived, true);
   } finally { await server.stop(); }
 });
+
+test('archive fixture deletes one archived family, holds back the excluded, and clears the rest on request', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'archived-conversations' });
+  const origin = `http://127.0.0.1:${server.http.address().port}`;
+  const root = 'session_fixture_arch_root';
+  const attached = 'session_fixture_arch_attached';
+  const secondChild = 'session_fixture_arch_second_child';
+  const promoted = 'session_fixture_arch_promoted';
+  const live = 'session_fixture_arch_live';
+  const liveChild = 'session_fixture_arch_live_child';
+  const releases = 'session_fixture_arch_releases';
+  const late = 'session_fixture_arch_late';
+  const stuck = 'session_fixture_arch_stuck';
+  const headers = { authorization: 'Bearer kiki-fixture-token', 'content-type': 'application/json' };
+  const post = async (path, body) => (await fetch(`${origin}${path}`, { method: 'POST', headers, body: JSON.stringify(body) })).json();
+  const get = async (path) => (await fetch(`${origin}${path}`, { headers })).json();
+  try {
+    // The archive page's read: only archived rows, and `q` is the server's.
+    const listed = await get('/api/sessions?archived_only=true&page_size=50');
+    const ids = listed.data.items.map((session) => session.id);
+    assert.ok(ids.includes(root) && ids.includes(promoted) && ids.includes(releases));
+    assert.ok(!ids.includes(live) && !ids.includes(liveChild));
+    // The needle is title + cwd + workspace_id, never the workspace name.
+    const byTitle = await get(`/api/sessions?archived_only=true&q=${encodeURIComponent('Release notes')}`);
+    assert.deepEqual(byTitle.data.items.map((session) => session.id), [releases]);
+    const byCwd = await get('/api/sessions?archived_only=true&q=fixture/releases');
+    assert.ok(byCwd.data.items.some((session) => session.id === late),
+      'a cwd match is a match, like the real route');
+    const byWorkspaceId = await get('/api/sessions?archived_only=true&q=archive_review');
+    assert.ok(byWorkspaceId.data.items.length > 0, 'a workspace id match is a match');
+    const byWorkspaceName = await get('/api/sessions?archived_only=true&q=review%20desk');
+    assert.deepEqual(byWorkspaceName.data.items, [], 'the workspace name is not searched');
+
+    // A single delete takes the archived family with it and holds back the row
+    // the caller excluded.
+    const one = await post(`/api/sessions/${root}:delete-archived`, { exclude_session_ids: [promoted] });
+    assert.equal(one.code, 0);
+    assert.deepEqual(one.data.deleted_ids, [root, attached, secondChild]);
+    assert.deepEqual(one.data.failed, []);
+    assert.equal(server.sessions.has(root), false);
+    assert.equal(server.sessions.has(attached), false);
+    assert.equal(server.sessions.has(secondChild), false);
+    assert.equal(server.sessions.get(promoted).record.archived, true);
+    assert.notEqual(server.sessions.get(live).record.archived, true);
+
+    // A refused member is reported, not silently dropped.
+    await post('/__control', { action: 'delete_archived_fail_next', session_id: releases });
+    const partial = await post(`/api/sessions/${releases}:delete-archived`, {});
+    assert.equal(partial.code, 0);
+    assert.deepEqual(partial.data.deleted_ids, []);
+    assert.equal(partial.data.failed.length, 1);
+    assert.equal(partial.data.failed[0].id, releases);
+    assert.equal(server.sessions.has(releases), true);
+
+    // Clearing the archive reaches every archived conversation on the
+    // connection and never an unarchived one.
+    await post('/__control', { action: 'delete_all_archived_fail_next', session_id: stuck });
+    const all = await post('/api/sessions:delete-archived', {});
+    assert.equal(all.code, 0);
+    assert.ok(!all.data.deleted_ids.includes(stuck));
+    assert.ok(!all.data.deleted_ids.includes(live) && !all.data.deleted_ids.includes(liveChild));
+    assert.deepEqual(all.data.failed.map((entry) => entry.id), [stuck]);
+
+    // Several refusals at once: each is reported, not folded into one count.
+    const partialFamily = await startFixtureServer({ port: 0, scenario: 'archived-conversations' });
+    try {
+      const partialOrigin = `http://127.0.0.1:${partialFamily.http.address().port}`;
+      const partialPost = async (route, body) => (await fetch(`${partialOrigin}${route}`, {
+        method: 'POST', headers: { authorization: 'Bearer kiki-fixture-token', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })).json();
+      await partialPost('/__control', { action: 'delete_archived_fail_list', session_ids: [attached, secondChild] });
+      const many = await partialPost(`/api/sessions/${root}:delete-archived`, {});
+      assert.deepEqual(many.data.deleted_ids, [root]);
+      assert.deepEqual(many.data.failed.map((entry) => entry.id).sort(), [attached, secondChild].sort());
+      assert.ok(many.data.failed.every((entry) => entry.message !== ''), 'every refusal carries a reason');
+      assert.ok(many.data.failed.every((entry) => entry.title !== ''), 'every refusal carries a name');
+    } finally { await partialFamily.stop(); }
+
+    const left = await get('/api/sessions?include_archive=true&page_size=100');
+    assert.deepEqual(left.data.items.map((session) => session.id).sort(), [live, liveChild, stuck].sort());
+  } finally { await server.stop(); }
+});

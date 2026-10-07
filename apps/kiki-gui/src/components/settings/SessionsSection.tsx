@@ -396,6 +396,38 @@ function ImportHistoryCard() {
 }
 
 /**
+ * The archive, as the first thing this section offers.
+ *
+ * Archived conversations are native sessions that have been set aside, and
+ * clearing them is a separate operation from anything else on the page. It
+ * therefore gets its own card at the top with a plain action into its own
+ * page, rather than a control folded into the title or session cards: nothing
+ * on this page deletes conversations, and the entry says so once, here.
+ */
+function ArchivedConversationsCard() {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  return (
+    <SectionCard id="st-card-archived" title={t('st.sessions.archivedTitle')}>
+      <p className="mt-1 max-w-[62ch] text-[13px] leading-5 text-ink-soft">
+        {t('st.sessions.archivedHint')}
+      </p>
+      <div className="mt-3">
+        <button
+          type="button"
+          data-settings-open-archived
+          className="inline-flex h-9 items-center gap-2 rounded-lg border border-hairline-strong px-3 text-[13px] font-medium text-ink transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
+          onClick={() => { void navigate('/archived'); }}
+        >
+          <Icon name="thread" size={16} className="text-ink-faint" />
+          {t('st.sessions.archivedOpen')}
+        </button>
+      </div>
+    </SectionCard>
+  );
+}
+
+/**
  * Sessions: what a new session looks like and how agents behave inside one.
  * Everything here is stored on the server and instant-apply, except the
  * plan-approval timeout, which is a typed number and keeps its own Save.
@@ -403,6 +435,7 @@ function ImportHistoryCard() {
 export function SessionsSection() {
   return (
     <>
+      <ArchivedConversationsCard />
       <PlanSettings />
       <ImportHistoryCard />
       <QuestionsCard />

@@ -10,6 +10,7 @@
  *   /board, /cron    → task board / scheduled tasks (`?workspace=` scopes them)
  *   /memory          → memory console, or its turn-on guide while memory is off
  *   /usage           → usage dashboard
+ *   /archived        → archived conversations: read one, or clear the archive
  *
  * Global actions: Ctrl+N / the sidebar button navigate to the /new draft page
  * from any route, Ctrl+K opens the QuickSwitcher, Ctrl+Tab / Ctrl+Shift+Tab
@@ -46,6 +47,7 @@ import {
   subscribeOnboardingOpenRequests,
 } from './components/OnboardingWizard';
 import { ActivityPage } from './components/ActivityPage';
+import { ArchivedSessionsPage } from './components/ArchivedSessionsPage';
 import { useConversationList } from './lib/useConversationList';
 import { RoomLinkRedirect } from './lib/conversationRoutes';
 import { CapabilitiesPage } from './components/capabilities/CapabilitiesPage';
@@ -709,6 +711,10 @@ export function App() {
                 onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
               />
             }
+          />
+          <Route
+            path="/archived"
+            element={<ArchivedSessionsPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
           <Route
             path="/personas"

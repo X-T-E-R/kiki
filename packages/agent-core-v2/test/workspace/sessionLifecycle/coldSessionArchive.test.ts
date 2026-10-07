@@ -56,7 +56,7 @@ function coldPathAccessor(options: ColdPathOptions): ServicesAccessor {
         withLifecycleSerialization: <T>(
           _id: string,
           work: (unguarded: UnguardedSessionLifecycle) => Promise<T>,
-        ): Promise<T> => work({ archive: async () => {}, restore: async () => undefined }),
+        ): Promise<T> => work({ archive: async () => {}, restore: async () => undefined, delete: async () => {} }),
         whenResumeSettled: async () => {
           if (options.resumeError !== undefined) throw options.resumeError;
         },

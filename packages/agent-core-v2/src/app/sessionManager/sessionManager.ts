@@ -23,6 +23,7 @@ export interface CreateManagedSessionOptions extends CreateSessionOptions {
 export interface UnguardedSessionLifecycle {
   archive(): Promise<void>;
   restore(): Promise<ISessionScopeHandle | undefined>;
+  delete(): Promise<void>;
 }
 
 export interface SessionLease extends IDisposable {

@@ -45,7 +45,7 @@ import type {
   PersonaSnapshot,
   PersonaSummary,
 } from '@kiki/protocol';
-import { MEDIA_PREVIEW_MAX_BYTES } from '@kiki/protocol';
+import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, MEDIA_PREVIEW_MAX_BYTES } from '@kiki/protocol';
 
 export interface HttpRestJsonOptions extends HttpRestRequestOptions {
   readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -193,6 +193,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
           include_archive: query.include_archive,
           include_ephemeral: query.include_ephemeral,
           archived_only: query.archived_only,
+          q: query.q,
           exclude_empty: query.exclude_empty,
           workspace_id: query.workspace_id,
           persona: query.persona,
@@ -236,6 +237,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       restore: (sessionId: string) => transport.json('/sessions/' + encodeURIComponent(sessionId) + ':restore', {
         method: 'POST', body: {},
       }),
+      deleteArchived: async (sessionId: string, options = {}) => deleteArchivedSessionsResponseSchema.parse(await transport.json('/sessions/' + encodeURIComponent(sessionId) + ':delete-archived', {
+        method: 'POST', body: deleteArchivedSessionRequestSchema.parse(options), timeoutMs: 0,
+      })),
+      deleteAllArchived: async () => deleteArchivedSessionsResponseSchema.parse(await transport.json('/sessions:delete-archived', { method: 'POST', body: {}, timeoutMs: 0 })),
       goal: (sessionId: string) => transport.json('/sessions/' + encodeURIComponent(sessionId) + '/goal'),
       listMessages: (sessionId: string, query = {}) => transport.json<PageResponse<Message>>(
         `/sessions/${encodeURIComponent(sessionId)}/messages`,

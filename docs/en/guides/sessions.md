@@ -97,6 +97,10 @@ A thread created by another thread nests under its creator by default. **Show at
 
 Archiving a thread also archives its attached conversations, including deeper descendants and conversations not loaded in the sidebar. A thread explicitly shown at top level, together with its descendants, stays independent when its ancestor is archived; archiving that top-level thread itself still includes its attached conversations. A filter or workspace group that merely displays a child as a top-level row does not make it independent. Archive preserves history and does not remove worktrees. If only some conversations are archived, retry to finish the remaining ones. Restoring a thread restores only that thread, not every previously archived descendant.
 
+Open **Settings → Sessions → Manage archived conversations** to browse saved archives by title, workspace and time. Search matches titles and workspaces across pages; opening a conversation reads its history without restoring it. Return to the archive manager to continue browsing.
+
+**Delete** permanently removes that conversation and its still-attached archived descendants; explicitly top-level threads remain independent, and unarchived conversations are kept. **Delete all archived conversations** covers every archive in the current connection's home, across all pages and regardless of the search. Both actions ask for confirmation; cancelling leaves the data unchanged. Deletion cannot be undone. The page stays pending until the operation finishes, then refreshes the list. If some items fail, it lists those items rather than reporting complete success; check the refreshed list before retrying.
+
 The sidebar sorts threads by their own update time. A thread shown at top level keeps its own position and time group: activity in it does not move its parent, and activity in the parent does not carry it along. Nested threads still follow their creator's row.
 
 If session recovery fails, the GUI keeps whatever history it had already loaded and shows the error, with a request ID when there is one. **Retry now** next to it reruns the recovery.

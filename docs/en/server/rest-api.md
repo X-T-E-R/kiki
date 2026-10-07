@@ -176,11 +176,13 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | Method and path | Description |
 | --- | --- |
 | `POST /api/sessions` | Create a session; omit both `workspace_id` and `metadata.cwd` to allocate a new workspace |
-| `GET /api/sessions` | List sessions; cursor pagination with filters such as `busy` and `archived_only` |
+| `GET /api/sessions` | List sessions; cursor pagination with `busy`, `archived_only` and title/workspace search `q` |
 | `GET /api/sessions/{session_id}` | Read one session |
 | `GET /api/sessions/{session_id}/profile` | Read the session profile |
 | `POST /api/sessions/{session_id}/profile` | Update title, metadata, agent config |
 | `POST /api/sessions/{session_id}:{action}` | Session actions: `fork` / `compact` / `undo` / `abort` / `btw` / `archive` / `restore` |
+| `POST /api/sessions/{session_id}:delete-archived` | Permanently delete an archived conversation and its attached archived family |
+| `POST /api/sessions:delete-archived` | Permanently delete all archived conversations in the connected home |
 | `GET /api/sessions/{session_id}/children` | List child sessions |
 | `POST /api/sessions/{session_id}/children` | Create a child session (fork with a tag) |
 | `GET /api/sessions/{session_id}/status` | Realtime status rollup |
@@ -210,6 +212,14 @@ Session reads return the committed `agent_config.execution` binding as `{ versio
 An empty body keeps the single-session behavior. Send `{ "include_attached": true, "exclude_session_ids": ["independent-thread-id"] }` to archive the attached family. The server reads persisted metadata across all workspaces, not the client's loaded page. `created_by_session_id` records a created thread; `parent_session_id` counts only with `child_session_kind: "child"`, so ordinary forks are not included. Each excluded thread cuts its whole subtree; excluding the requested root does not exclude that root.
 
 Family requests return `data: { archived, outcomes }`. `archived: true` confirms all target sessions; each outcome is `{ id, ok: true }` or `{ id, ok: false, reason, message }`. Partial failure returns `archived: false` even when the envelope code is `0`; keep the successful items and retry the unfinished ones. Discovery failure returns an error before any archive mutation. Refresh the list after either result. Older servers without `outcomes` cannot confirm a family archive. Archive does not delete history or worktrees; `:restore` restores only the requested session. The existing batch archive endpoint still acts only on its supplied IDs.
+
+#### Archived conversation management
+
+Use `GET /api/sessions?archived_only=true` with the existing `page_size` and `before_id` cursor parameters to read archives. `q` accepts up to 500 characters and matches a case-insensitive substring of the title, workspace path or workspace ID, across pages; it does not search message contents. Reading an archived conversation's messages does not restore it.
+
+`POST /api/sessions/{session_id}:delete-archived` accepts `{}` or `{ "exclude_session_ids": ["independent-thread-id"] }`. It discovers the same attached family as [session archive](#sessions), excludes whole specified subtrees, and deletes only archived members. The requested root must still be archived; restoring a target before its deletion keeps it. `POST /api/sessions:delete-archived` accepts `{}` and discovers all archived conversations in the connected home before deleting; search, workspace filters and the loaded page do not narrow its scope. Independently displayed archived threads are included in this all-archives operation.
+
+Both calls permanently remove saved conversation data and return `data: { deleted_ids, failed }`. Each failed item has `{ id, title?, message }`; an envelope code of `0` is not complete success when `failed` is nonempty. Refresh the archive list after success, partial failure or a request error, and use the fresh state before retrying. Discovery failure occurs before deletion. Clients must obtain confirmation before sending either request; cancelling that confirmation must not send a delete request.
 
 #### `POST /api/sessions/{session_id}:compact`
 

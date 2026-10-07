@@ -23,6 +23,43 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('lists and permanently deletes archives through the authenticated native home routes', async () => {
+    const calls: { path: string; query: string; method: string; body: unknown }[] = [];
+    const result = { deleted_ids: ['saved'], failed: [{ id: 'blocked', title: 'Retained', message: 'Deletion failed' }] };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      calls.push({ path: url.pathname, query: url.search, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      return envelope(url.pathname.endsWith('/sessions') ? { items: [], has_more: false } : result);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await channel.rest.sessions.list({ archived_only: true, q: 'Saved', before_id: 'cursor', page_size: 2 });
+      expect(await channel.rest.sessions.deleteArchived('saved/id', { exclude_session_ids: ['independent'] })).toEqual(result);
+      expect(await channel.rest.sessions.deleteAllArchived()).toEqual(result);
+      expect(calls).toEqual([
+        { path: '/api/sessions', query: '?page_size=2&before_id=cursor&archived_only=true&q=Saved', method: 'GET', body: undefined },
+        { path: '/api/sessions/saved%2Fid:delete-archived', query: '', method: 'POST', body: { exclude_session_ids: ['independent'] } },
+        { path: '/api/sessions:delete-archived', query: '', method: 'POST', body: {} },
+      ]);
+    } finally { await channel.close(); }
+  });
+  it('keeps permanent archive deletion pending beyond the ordinary call deadline', async () => {
+    vi.useFakeTimers();
+    let finish!: (response: Response) => void;
+    let signal: AbortSignal | null | undefined;
+    const channel = new HttpChannel({ endpoint: 'http://example.test', timeoutMs: 10, fetch: ((_input, init) => {
+      signal = init?.signal;
+      return new Promise<Response>((resolve) => { finish = resolve; });
+    }) as typeof fetch });
+    try {
+      const pending = channel.rest.sessions.deleteAllArchived();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(signal?.aborted).not.toBe(true);
+      finish(envelope({ deleted_ids: ['saved'], failed: [] }));
+      expect(await pending).toEqual({ deleted_ids: ['saved'], failed: [] });
+    } finally { await channel.close(); vi.useRealTimers(); }
+  });
   it('sends workspace plugin selection and panel or command targets over authenticated REST', async () => {
     const calls: { path: string; query: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {

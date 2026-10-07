@@ -899,7 +899,7 @@ function registerSessionExportServices(
     withLifecycleSerialization: async <T>(
       _sessionId: string,
       work: (unguarded: UnguardedSessionLifecycle) => Promise<T>,
-    ): Promise<T> => work({ archive: async () => {}, restore: async () => undefined }),
+    ): Promise<T> => work({ archive: async () => {}, restore: async () => undefined, delete: async () => {} }),
     list: () => (options.lifecycleHandle === undefined ? [] : [options.lifecycleHandle]),
     listEphemeral: () => [],
     isEphemeral: () => false,

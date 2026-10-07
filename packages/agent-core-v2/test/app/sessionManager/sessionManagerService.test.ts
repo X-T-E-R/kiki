@@ -203,6 +203,8 @@ describe('SessionManager', () => {
     releaseSection();
     await Promise.all([section, deletePromise]);
     expect(order).toEqual(['section:start', 'section:end', 'delete']);
+    await manager.withLifecycleSerialization('session-1', (lifecycle) => lifecycle.delete());
+    expect(order).toEqual(['section:start', 'section:end', 'delete', 'delete']);
     await manager.dispose();
   });
 

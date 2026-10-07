@@ -190,6 +190,70 @@ describe('server-v2 /api/sessions', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
+  it('reads archived messages without restore and permanently deletes only the attached archived family', async () => {
+    const core = server!.core.accessor;
+    const manager = core.get(ISessionManager);
+    const root = await manager.create({ sessionId: 'archive-readable', workDir: home! });
+    const agent = await root.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
+    agent.accessor.get(IAgentContextMemoryService).append({ role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Saved archive message' }], toolCalls: [] });
+    await agent.accessor.get(IWireService).flush();
+    const attached = await manager.create({ sessionId: 'archive-attached', workDir: home! });
+    const promoted = await manager.create({ sessionId: 'archive-independent', workDir: home! });
+    const neighbor = await manager.create({ sessionId: 'archive-unarchived', workDir: home! });
+    for (const handle of [attached, promoted, neighbor]) await handle.accessor.get(ISessionMetadata).update({ custom: { created_by_session_id: root.id } });
+    await postJson(`/api/sessions/${root.id}:archive`, { include_attached: true, exclude_session_ids: [promoted.id, neighbor.id] });
+    await manager.archive(promoted.id);
+    const restore = vi.spyOn(manager, 'restore');
+    const messages = await getJson<{ items: { content: unknown }[] }>(`/api/sessions/${root.id}/messages`);
+    expect(messages.body.code).toBe(0);
+    expect(JSON.stringify(messages.body.data)).toContain('Saved archive message');
+    expect((await core.get(ISessionIndex).get(root.id))?.archived).toBe(true);
+    expect(restore).not.toHaveBeenCalled();
+    const deleted = await postJson<import('@kiki/protocol').DeleteArchivedSessionsResponse>(`/api/sessions/${root.id}:delete-archived`, { exclude_session_ids: [promoted.id] });
+    expect(deleted.body.code).toBe(0);
+    expect(deleted.body.data.deleted_ids.toSorted()).toEqual([root.id, attached.id].toSorted());
+    expect(deleted.body.data.failed).toEqual([]);
+    expect(await core.get(ISessionIndex).get(root.id)).toBeUndefined();
+    expect(await core.get(ISessionIndex).get(promoted.id)).toMatchObject({ archived: true });
+    expect(await core.get(ISessionIndex).get(neighbor.id)).toMatchObject({ archived: false });
+    const refused = await postJson<import('@kiki/protocol').DeleteArchivedSessionsResponse>(`/api/sessions/${neighbor.id}:delete-archived`, {});
+    expect(refused.body.data.failed).toHaveLength(1);
+    expect(await core.get(ISessionIndex).get(neighbor.id)).toBeDefined();
+  });
+
+  it('deletes every archived page with partial failure and preserves restored and newly created unarchived sessions', async () => {
+    const core = server!.core.accessor;
+    const manager = core.get(ISessionManager);
+    const index = core.get(ISessionIndex);
+    const registry = core.get(IWorkspaceService);
+    const workspace = await registry.createOrTouch(home!);
+    const docs = core.get(IAtomicDocumentStore);
+    for (let i = 0; i < 105; i++) await docs.set(`sessions/${workspace.id}/archive-page-${i}`, 'state.json', {
+      version: 2, id: `archive-page-${i}`, cwd: home, title: `Saved ${i}`, createdAt: i + 1, updatedAt: i + 1, archived: true,
+    });
+    await index.prepare();
+    const page = await getJson<PageWire>('/api/sessions?archived_only=true&page_size=50');
+    expect(page.body.data.items).toHaveLength(50);
+    expect(page.body.data.has_more).toBe(true);
+    const searched = await getJson<PageWire>('/api/sessions?archived_only=true&q=Saved%20104');
+    expect(searched.body.data.items.map((item) => item.id)).toEqual(['archive-page-104']);
+    const original = manager.withLifecycleSerialization.bind(manager);
+    vi.spyOn(manager, 'withLifecycleSerialization').mockImplementation((id, work) => original(id, async (lifecycle) => {
+      if (id === 'archive-page-10') throw new Error('fixture deletion blocked');
+      if (id === 'archive-page-11') await lifecycle.restore();
+      return work(lifecycle);
+    }));
+    await manager.create({ sessionId: 'archive-new-active', workDir: home! });
+    const result = await postJson<import('@kiki/protocol').DeleteArchivedSessionsResponse>('/api/sessions:delete-archived', {});
+    expect(result.body.code).toBe(0);
+    expect(result.body.data.deleted_ids).toHaveLength(103);
+    expect(result.body.data.failed.map((item) => item.id).toSorted()).toEqual(['archive-page-10', 'archive-page-11']);
+    expect(await index.get('archive-new-active')).toMatchObject({ archived: false });
+    expect(await index.get('archive-page-11')).toMatchObject({ archived: false });
+    const fresh = await getJson<PageWire>('/api/sessions?archived_only=true');
+    expect(fresh.body.data.items.map((item) => item.id)).toEqual(['archive-page-10']);
+  });
+
   it('archives the authoritative attached family across cold pages and workspaces while preserving promoted subtrees', async () => {
     const core = server!.core.accessor;
     const manager = core.get(ISessionManager);

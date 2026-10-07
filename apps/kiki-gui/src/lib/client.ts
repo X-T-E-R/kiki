@@ -1379,6 +1379,32 @@ export class KikiClient {
     return this.run(() => this.rest.sessions.restore(sessionId));
   }
 
+  /**
+   * Permanently remove one archived conversation, its attached archived family
+   * members included. `exclude_session_ids` is the same hold-back the family
+   * archive takes: the conversations the user explicitly promoted to the top
+   * level stay archived and listed.
+   *
+   * The response is a partial result, not a verdict, so it is handed back as
+   * it came: the caller lists what is still there. Only a rejected request
+   * throws, because that is the case where nothing is known.
+   */
+  deleteArchivedSession(
+    sessionId: string,
+    options: import('@kiki/protocol').DeleteArchivedSessionRequest = {},
+  ): Promise<import('@kiki/protocol').DeleteArchivedSessionsResponse> {
+    return this.run(() => this.rest.sessions.deleteArchived(sessionId, options));
+  }
+
+  /**
+   * Every archived conversation this connection holds, on every page and
+   * outside the current search. Unarchived conversations and room scope are
+   * the server's to keep; this names no filters because it asks for none.
+   */
+  deleteAllArchivedSessions(): Promise<import('@kiki/protocol').DeleteArchivedSessionsResponse> {
+    return this.run(() => this.rest.sessions.deleteAllArchived());
+  }
+
   getSessionGoal(sessionId: string): Promise<GoalSnapshot | null> {
     return this.run(() => this.rest.sessions.goal(sessionId));
   }
