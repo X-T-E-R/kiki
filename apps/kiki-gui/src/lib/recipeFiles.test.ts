@@ -14,6 +14,8 @@ import {
   writeField,
   writeModel,
   writeSlot,
+  writeSteeringSource,
+  deleteSteeringSource,
 } from './recipeFiles';
 import type { PromptGroupDeclaration } from './recipeFiles';
 
@@ -214,5 +216,86 @@ describe('manifestWouldReformat', () => {
 
   it('detects comments the serializer drops', () => {
     expect(manifestWouldReformat('schema_version = 1 # keep me\n', 'schema_version = 1\n')).toBe(true);
+  });
+});
+
+describe('steering_sources declarations', () => {
+  const SOURCES_TOML = `schema_version = 1
+id = "clear-work"
+
+[prompts]
+steering = { text = "Own words." }
+
+[prompts.steering_sources.thread]
+mode = "inherit"
+
+[prompts.steering_sources.cron]
+mode = "custom"
+custom = { steering = { file = "reminders/cron.md" }, steering_on_turn = false, steering_interval_steps = 3 }
+
+[prompts.steering_sources.room]
+mode = "custom"
+custom = { steering = [{ text = "first" }, { file = "reminders/room.md" }] }
+`;
+
+  it('reads a source whose private words survive it being switched off', () => {
+    const off = writeSteeringSource(parseRecipeManifest(SOURCES_TOML), 'prompts', 'cron', { mode: 'off' });
+    // `off` hides the source, not its draft: the engine resolves a switched-off
+    // source's stored body, so a reader that dropped it here would lose the
+    // words the moment the author switched the source back on.
+    expect(readDeclaration(off).prompts?.steering_sources?.['cron']).toEqual({
+      mode: 'off',
+      steering: { kind: 'file', file: 'reminders/cron.md' },
+      steering_on_turn: false,
+      steering_interval_steps: 3,
+    });
+  });
+
+  it('reads a source that inherits and a source that carries its own words', () => {
+    const declared = readDeclaration(parseRecipeManifest(SOURCES_TOML)).prompts?.steering_sources;
+    expect(declared?.['thread']).toEqual({ mode: 'inherit' });
+    expect(declared?.['cron']).toEqual({
+      mode: 'custom',
+      steering: { kind: 'file', file: 'reminders/cron.md' },
+      steering_on_turn: false,
+      steering_interval_steps: 3,
+    });
+    // A source's prose takes the same four shapes as any other slot.
+    expect(declared?.['room']?.steering).toEqual({
+      kind: 'segments',
+      parts: [{ kind: 'inline', text: 'first' }, { kind: 'file', file: 'reminders/room.md' }],
+    });
+  });
+
+  it('writes one source without disturbing the others or the group prose', () => {
+    const next = writeSteeringSource(parseRecipeManifest(SOURCES_TOML), 'prompts', 'agent', { mode: 'custom', steering: { kind: 'inline', text: 'Agent words.' } });
+    const declared = readDeclaration(next).prompts;
+    expect(declared?.steering_sources?.['agent']).toEqual({ mode: 'custom', steering: { kind: 'inline', text: 'Agent words.' } });
+    expect(declared?.steering_sources?.['thread'], 'a sibling source survives').toEqual({ mode: 'inherit' });
+    expect(declared?.steering, 'the group prose is not rewritten').toEqual({ kind: 'inline', text: 'Own words.' });
+  });
+
+  it('writes cadence false and interval 0 as real values rather than dropping them', () => {
+    const next = writeSteeringSource(parseRecipeManifest(TOML), 'prompts', 'task', { mode: 'custom', steering_on_turn: false, steering_on_input: true, steering_interval_steps: 0 });
+    expect(readDeclaration(next).prompts?.steering_sources?.['task']).toEqual({ mode: 'custom', steering_on_turn: false, steering_on_input: true, steering_interval_steps: 0 });
+    expect(renderManifest(next)).toContain('steering_on_turn = false');
+    expect(renderManifest(next)).toContain('steering_interval_steps = 0');
+  });
+
+  it('removes one source declaration and leaves the rest alone', () => {
+    const next = deleteSteeringSource(parseRecipeManifest(SOURCES_TOML), 'prompts', 'thread');
+    const declared = readDeclaration(next).prompts?.steering_sources;
+    expect(declared?.['thread']).toBeUndefined();
+    expect(declared?.['cron']).toBeDefined();
+  });
+
+  it('counts a source file as referenced, so a rename follows it', () => {
+    const names = referencedFiles(readDeclaration(parseRecipeManifest(SOURCES_TOML)));
+    expect(names).toContain('reminders/cron.md');
+    expect(names).toContain('reminders/room.md');
+  });
+
+  it('leaves a package that says nothing about sources reading as none', () => {
+    expect(readDeclaration(parseRecipeManifest(TOML)).prompts?.steering_sources).toBeUndefined();
   });
 });

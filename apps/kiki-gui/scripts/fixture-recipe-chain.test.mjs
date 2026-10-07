@@ -40,7 +40,7 @@ test('a Recipe package is browsed, forked and exported without touching the mode
   const server = await startFixtureServer({ port: 0, scenario: 'recipe-model' });
   try {
     const installed = call(server, 'recipeService', 'list', []);
-    assert.equal(installed.length, 2);
+    assert.equal(installed.length, 3);
     // A package that cannot be updated stays selectable and says why, instead of
     // disappearing or being presented as broken.
     const stale = installed.find((entry) => entry.installation_id === 'inst-review-only');
@@ -188,6 +188,217 @@ test('binding or detaching a Recipe never touches a body the package does not de
       'detaching a package must not clear what the person saved');
     assert.equal(detached.cognition_bodies.branches.common.slots.overlay.source, 'files',
       'detaching a package must not convert an author reference');
+  } finally {
+    await server.stop();
+  }
+});
+
+/**
+ * Script hooks, through the real procedure channel.
+ *
+ * These are the claims the whole GUI surface rests on, stated where they can be
+ * checked without a browser: an untrusted package is refused until one request
+ * carries the consent; a trusted one installs without being asked; a refused
+ * save leaves the package exactly as it was; and previewing installs nothing.
+ */
+test('script hooks are authorized once, by the install that carries the consent', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'recipe-model' });
+  try {
+    const HOOK_SOURCE = 'https://example.com/recipes/review-hooks/recipe.toml';
+
+    // Already trusted on this machine: the commands are shown and nothing is asked.
+    const known = call(server, 'recipeService', 'preview', [{ source: { locator: HOOK_SOURCE } }]);
+    assert.ok(known.hooks !== undefined, 'a package that declares hooks must preview them');
+    assert.equal(known.hooks.scripts.length, 2);
+    assert.equal(known.hooks.consent_required, false, 'already-trusted execution content asks for nothing');
+    assert.match(known.hooks.scripts[0].command, /scripts\/stamp\.mjs/u);
+    assert.equal(known.hooks.scripts[0].files[0].path, 'scripts/stamp.mjs');
+    assert.ok(known.hooks.scripts[0].files[0].bytes > 0);
+
+    // An untrusted package is refused, and refusing is the same request the GUI
+    // already knew how to send.
+    server.trustedHookFingerprints.clear();
+    const fresh = call(server, 'recipeService', 'preview', [{ source: { locator: HOOK_SOURCE } }]);
+    assert.equal(fresh.hooks.consent_required, true);
+    const before = call(server, 'recipeService', 'list', []).map((entry) => entry.installation_id);
+    assert.throws(
+      () => call(server, 'recipeService', 'install', [{ preview_id: fresh.preview_id }]),
+      /recipe-hook-consent-required|Confirm installation/iu,
+      'installing untrusted scripts without consent must be refused',
+    );
+    assert.deepEqual(
+      call(server, 'recipeService', 'list', []).map((entry) => entry.installation_id), before,
+      'a refused install writes nothing',
+    );
+
+    // With the consent in the same request it installs.
+    const done = call(server, 'recipeService', 'install', [{ preview_id: fresh.preview_id, consent: true }]);
+    assert.equal(done.hooks_fingerprint, fresh.hooks.fingerprint);
+    assert.ok(server.trustedHookFingerprints.has(fresh.hooks.fingerprint),
+      'installing is what makes the content trusted here');
+
+    // And now it is not asked again.
+    const again = call(server, 'recipeService', 'preview', [{ source: { locator: HOOK_SOURCE } }]);
+    assert.equal(again.hooks.consent_required, false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('a save that would publish new script commands is refused and keeps the package', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'recipe-model' });
+  try {
+    const HOOKS = 'inst-review-hooks';
+    const installed = call(server, 'recipeService', 'list', []).find((entry) => entry.installation_id === HOOKS);
+    const detail = call(server, 'recipeService', 'get', [HOOKS]);
+    // This machine has not authorized these commands.
+    server.trustedHookFingerprints.clear();
+
+    const edited = detail.files['recipe.toml'].replace('node scripts/report.mjs', 'node scripts/report.mjs --verbose');
+    assert.notEqual(edited, detail.files['recipe.toml'], 'the edited manifest really does change a command');
+    assert.throws(
+      () => call(server, 'recipeService', 'saveLocal', [{
+        installation_id: HOOKS, expected_revision: installed.revision, files: { ...detail.files, 'recipe.toml': edited },
+      }]),
+      /recipe-hook-consent-required|Confirm installation/iu,
+      'a save that changes an untrusted command must be refused',
+    );
+    const after = call(server, 'recipeService', 'get', [HOOKS]);
+    assert.equal(after.files['recipe.toml'], detail.files['recipe.toml'], 'a refused save changed nothing');
+    assert.equal(after.summary.revision, installed.revision, 'a refused save did not move the revision');
+
+    // Editing prose only is still an ordinary save: nothing about it is
+    // executable, so nothing about it needs authorizing.
+    const prose = call(server, 'recipeService', 'saveLocal', [{
+      installation_id: HOOKS,
+      expected_revision: installed.revision,
+      files: { ...detail.files, 'main.md': 'Prose only, no command changed.\n' },
+    }]);
+    assert.match(prose.files['main.md'], /Prose only/u);
+    assert.notEqual(prose.summary.revision, installed.revision, 'prose changed, so the revision moved');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('a package arriving from a market carries its commands but not the machine trust', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'recipe-model' });
+  try {
+    const SHARED = 'https://example.com/recipes/shared-review-hooks/recipe.toml';
+    // The installed hook package is trusted here; the shared one is not, because
+    // trust is per machine and per exact content, and this machine never saw it.
+    const previewed = call(server, 'recipeService', 'preview', [{ source: { locator: SHARED } }]);
+    assert.ok(previewed.hooks !== undefined, 'a shared package with scripts must preview them');
+    assert.equal(previewed.hooks.fingerprint, undefined, 'a shared export carries no machine trust');
+    assert.equal(previewed.hooks.consent_required, true, 'so the first install asks');
+    assert.equal(previewed.hooks.scripts.length, 2);
+    assert.ok(previewed.hooks.scripts[0].files.every((file) => /^[a-f0-9]{64}$/u.test(file.sha256) && file.bytes > 0),
+      'each resource file is reported with its digest and real size');
+
+    assert.throws(
+      () => call(server, 'recipeService', 'install', [{ preview_id: previewed.preview_id }]),
+      /Confirm installation/iu,
+      'a shared package cannot install itself',
+    );
+    call(server, 'recipeService', 'install', [{ preview_id: previewed.preview_id, consent: true }]);
+    assert.equal(server.trustedHookFingerprints.size, 1, 'the agreeing install is what records the trust');
+  } finally {
+    await server.stop();
+  }
+});
+
+/**
+ * One press, one candidate.
+ *
+ * The consent path is three round trips, and a fixture that answered them
+ * instantly would not show what the GUI has to survive: a chain still in flight
+ * while the person is looking at the page. A second press in that window would
+ * be a second preview of the same draft and a second authorization nobody could
+ * name, so these delays are what make the single-flight claim observable.
+ */
+const delay = (ms) => ({ __deferred: true, delayMs: ms, settled: undefined });
+
+test('a delayed preview and install stay one candidate, and one consent', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'recipe-model' });
+  try {
+    const HOOKS = 'inst-review-hooks';
+    const detail = call(server, 'recipeService', 'get', [HOOKS]);
+    server.trustedHookFingerprints.clear();
+
+    const previews = [];
+    const installs = [];
+    const originalPreview = server.klient.callGlobal.bind(server.klient);
+    server.klient.callGlobal = (procedure, params) => {
+      if (procedure.service === 'recipeService' && procedure.method === 'preview') previews.push(params);
+      if (procedure.service === 'recipeService' && procedure.method === 'install') installs.push(params);
+      return originalPreview(procedure, params);
+    };
+
+    // The refused save, then the preview that answers it.
+    const refused = (files) => call(server, 'recipeService', 'saveLocal', [{
+      installation_id: HOOKS, expected_revision: detail.summary.revision, files,
+    }]);
+
+    assert.throws(() => refused({ ...detail.files, 'recipe.toml': detail.files['recipe.toml'].replace('report.mjs', 'report.mjs --now') }),
+      /Confirm installation/iu);
+
+    const previewed = call(server, 'recipeService', 'preview', [{
+      source: { locator: `installation:${HOOKS}` },
+      installation_id: HOOKS,
+      expected_revision: detail.summary.revision,
+      files: { ...detail.files, 'recipe.toml': detail.files['recipe.toml'].replace('report.mjs', 'report.mjs --now') },
+    }]);
+    assert.equal(previewed.hooks.consent_required, true, 'the re-preview of the refused draft still asks');
+
+    // One preview produces one candidate; installing twice from the same id is
+    // not possible, because the candidate is consumed.
+    call(server, 'recipeService', 'install', [{ preview_id: previewed.preview_id, consent: true }]);
+    assert.equal(installs.length, 1, 'one consent, one publish');
+    assert.throws(() => call(server, 'recipeService', 'install', [{ preview_id: previewed.preview_id, consent: true }]),
+      /no longer available/iu,
+      'a consumed candidate cannot publish a second time');
+    assert.equal(server.recipes.filter((entry) => entry.summary.installation_id === HOOKS).length, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('a save that committed keeps its package when the read-back fails, and a retry only reads', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'recipe-model' });
+  try {
+    const HOOKS = 'inst-review-hooks';
+    const before = call(server, 'recipeService', 'get', [HOOKS]);
+    server.trustedHookFingerprints.clear();
+    // A real save changes bytes, so this one does too: what is under test is a
+    // commit that moved the revision and then could not be read back.
+    const edited = { ...before.files, 'main.md': 'The saved body.\n' };
+
+    const previewed = call(server, 'recipeService', 'preview', [{
+      source: { locator: `installation:${HOOKS}` },
+      installation_id: HOOKS,
+      expected_revision: before.summary.revision,
+      files: edited,
+    }]);
+    // Armed for the read-back, not for the install: the commit must land.
+    server.recipeReadFailures = 1;
+    call(server, 'recipeService', 'install', [{ preview_id: previewed.preview_id, consent: true }]);
+
+    // The write landed. Only the read that would bring an editor up to date
+    // failed, so the package is at a new revision the reader has not seen.
+    assert.throws(() => call(server, 'recipeService', 'get', [HOOKS]), /could not be read/iu);
+    assert.equal(server.recipeReadFailures, 0, 'the armed failure was the read-back, not the install');
+    const after = call(server, 'recipeService', 'get', [HOOKS]);
+    assert.notEqual(after.summary.revision, before.summary.revision, 'the commit survived the failed read');
+    assert.equal(after.files['main.md'], edited['main.md']);
+
+    // A retry reads the published package from its own source. It must not
+    // publish again, and it must not ask again: the fingerprint the consent
+    // recorded is the one this machine now trusts. (A targeted re-preview of an
+    // edited draft is a different thing and still asks — that is what makes it
+    // able to report a command the installed copy no longer has.)
+    const retry = call(server, 'recipeService', 'preview', [{ source: after.summary.source }]);
+    assert.equal(retry.hooks?.consent_required, false, 'an already-authorized package is not asked twice');
+    assert.equal(retry.hooks?.fingerprint, before.hooks.fingerprint, 'and it reports the trusted fingerprint');
   } finally {
     await server.stop();
   }

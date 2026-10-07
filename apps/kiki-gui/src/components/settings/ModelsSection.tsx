@@ -7,6 +7,7 @@ import type {
   ModelCatalogItem,
   ModelEntity,
   ModelGenerationMigrationPreviewResponse,
+  ModelSteeringSource,
 } from '@kiki/protocol';
 
 import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
@@ -71,6 +72,12 @@ import { ModelEditScopeSwitch } from './ModelEditScopeSwitch';
 import { ModelRecipeField } from './ModelRecipeField';
 import { ModelPromptBodies } from './ModelPromptBodies';
 import { branchSelectionFor, modelPromptsDraft, modelPromptsEqual, modelPromptsPatch, type ModelPromptsDraft } from './modelPromptsDraft';
+import { ModelSteerSources } from './ModelSteerSources';
+import {
+  modelSteerSourcesDraft, steerCadenceProblem, steerScopeFor, steerSourceDraft, steerSourcesEqual, steerSourcesPatch,
+  STEER_SCOPES, STEER_SOURCES,
+  type ModelSteerSourcesDraft, type SteerSourceDraft,
+} from './modelSteerSourceDraft';
 import { scopeDifferenceSummary, type EditScope } from './modelEditScope';
 import { cognitionSlotPatchAtScope, initialSlotText, slotView, type CognitionSlot } from './modelCognitionBodies';
 import {
@@ -1289,6 +1296,45 @@ function ModelCatalogRowEditor({
     }
   }, [entity, promptsDirty, promptsBaseline]);
 
+  /**
+   * The per-source steer draft.
+   *
+   * It gets its own draft rather than folding into `prompts` for one reason:
+   * a source keeps its private words while its mode is `off` or `inherit`, and a
+   * draft rebuilt from the stored object on every render would drop them the
+   * moment the row was not in `custom`. The draft therefore holds all nine
+   * sources for all three levels and only compares against the baseline when
+   * it is about to become a patch.
+   */
+  const [steerSources, setSteerSources] = useState<ModelSteerSourcesDraft | null>(null);
+  const [steerSourcesBaseline, setSteerSourcesBaseline] = useState<ModelSteerSourcesDraft | null>(null);
+  const [steerIssue, setSteerIssue] = useState<ModelSteeringSource | undefined>(undefined);
+  const steerSourcesDirty = steerSources !== null && steerSourcesBaseline !== null && !steerSourcesEqual(steerSources, steerSourcesBaseline);
+
+  useEffect(() => {
+    if (entity === undefined || steerSourcesDirty) return;
+    const next = modelSteerSourcesDraft(entity);
+    if (steerSourcesBaseline === null || !steerSourcesEqual(next, steerSourcesBaseline)) {
+      setSteerSources(next);
+      setSteerSourcesBaseline(next);
+    }
+  }, [entity, steerSourcesDirty, steerSourcesBaseline]);
+
+  /**
+   * One source changed at the level on screen.
+   *
+   * The row owns the shape of its own change — it builds the next draft from
+   * the one it is showing — so this only has to place it. Both intents arrive
+   * here: choosing a mode never rewrites words, and typing words never changes
+   * what the source currently does.
+   */
+  const setSteerSource = (source: ModelSteeringSource, next: SteerSourceDraft) => {
+    if (steerSources === null) return;
+    const scope = steerScopeFor(editScope);
+    if (steerSources[scope][source] === undefined) return;
+    setSteerSources({ ...steerSources, [scope]: { ...steerSources[scope], [source]: next } });
+  };
+
   // Prompt prose for the scope on screen. Kept as text rather than written
   // straight into cognition: converting a file-backed slot into model-owned
   // text is a one-way move, so it waits for an explicit save.
@@ -1440,7 +1486,7 @@ function ModelCatalogRowEditor({
   const [recipeDraftDirty, setRecipeDraftDirty] = useState(false);
   const modelDirty = (draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline))
     || compactDirty || engineDirty || usageDirty || sharedGenerationDirty || behaviorDirty
-    || promptsDirty || bodySavesDirty;
+    || promptsDirty || bodySavesDirty || steerSourcesDirty;
   const dirty = modelDirty || recipeDraftDirty;
   useDirtyReporter(`catalog-model:${item.id}`, dirty);
   // The row owns the collapse/close decision, and the draft stays dirty while
@@ -1581,10 +1627,24 @@ function ModelCatalogRowEditor({
         return;
       }
       const behaviorPatch = questionGuardModelPatch(behavior, behaviorBaseline);
+      // A source's repeat count is checked before anything leaves the page, for
+      // the same reason the usage row above refuses a half-typed token count: a
+      // `NaN` that reached the model would be stored as this source's timing.
+      const steerProblem = steerSources === null || steerSourcesBaseline === null
+        ? undefined
+        : STEER_SOURCES.find((source) => STEER_SCOPES.some((scope) => {
+          const draft = steerSourceDraft(steerSources, scope, source);
+          return draft.mode === 'custom' && steerCadenceProblem(draft.custom.cadence.intervalSteps) !== undefined;
+        }));
+      setSteerIssue(steerProblem);
+      if (steerProblem !== undefined) {
+        if (recipeReference !== undefined) throw new Error(t('st.steerSource.cadenceCount'));
+        return;
+      }
       const fieldPatch = modelPatchBody(draft, baseline);
       if (fieldPatch === null && !compactDirty && Object.keys(enginePatch).length === 0
         && Object.keys(usagePatch).length === 0 && generationPatch === null
-        && behaviorPatch === undefined && !promptsDirty && !bodySavesDirty && recipeReference === undefined) return;
+        && behaviorPatch === undefined && !promptsDirty && !bodySavesDirty && !steerSourcesDirty && recipeReference === undefined) return;
       // A changed Advanced object is the complete target, including deletions
       // and null clears. Otherwise the stored object is the base. The prompt
       // editor contributes only fields changed against its own baseline.
@@ -1614,6 +1674,14 @@ function ModelCatalogRowEditor({
       };
       if (bodySavesDirty) patch.cognition = cognition;
       if (recipeReference !== undefined) patch.recipe = recipeReference;
+      // The source declarations travel in the same transaction and under the
+      // same revision, as their own field rather than folded into `cognition`:
+      // the server merges a source entry field by field, so a whole-object
+      // cognition write would either drop the change or be dropped by it.
+      const steerPatch = steerSources === null || steerSourcesBaseline === null
+        ? undefined
+        : steerSourcesPatch(steerSources, steerSourcesBaseline);
+      if (steerPatch !== undefined) patch.steering_sources_patch = steerPatch;
       const saved = await client.updateModel(entity.id, { ...patch, base_revision: entity.revision });
       // Drafts and baselines advance together to the accepted entity before a
       // refresh can replace them. Never restore pre-save closure values after
@@ -1640,6 +1708,10 @@ function ModelCatalogRowEditor({
       setBehaviorBaseline(savedBehavior);
       setBodyDraft({});
       setBodySaves({});
+      const savedSteerSources = modelSteerSourcesDraft(saved);
+      setSteerSources(savedSteerSources);
+      setSteerSourcesBaseline(savedSteerSources);
+      setSteerIssue(undefined);
       queryClient.setQueryData(['model-entity', item.id], saved);
       await onSaved();
       await entityQuery.refetch();
@@ -1739,6 +1811,31 @@ function ModelCatalogRowEditor({
           disabled={saving}
         />
       </div>
+      {/*
+        The sources that can start a turn without a person typing. They sit
+        under their own Advanced disclosure rather than beside the user's own
+        steering above, because for most models every one of them is simply off
+        and an always-open list of nine rows would push the configuration people
+        do use to the bottom of the page. The body stays mounted so an edit
+        survives collapsing it.
+      */}
+      <AdvancedDisclosure id={`model-steer-${entity.id}`} summary={t('st.steerSource.summary')}>
+        <div className="space-y-3">
+          <ModelSteerSources
+            bodies={entity.cognition_bodies}
+            scope={editScope}
+            draft={steerSources}
+            branchOff={branchSelectionFor(editScope, prompts) === 'off'}
+            onDraftChange={setSteerSource}
+            disabled={saving}
+          />
+          {steerIssue !== undefined ? (
+            <p role="alert" className="text-[12px] leading-5 text-danger" data-steer-source-issue>
+              {t('st.steerSource.cadenceCount')}
+            </p>
+          ) : null}
+        </div>
+      </AdvancedDisclosure>
       {usage !== null ? (
         <MainUsagePolicyFields
           modelId={entity.id}

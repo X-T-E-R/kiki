@@ -578,7 +578,7 @@ export class FixtureKlient {
       } };
       return server.route(response, `/sessions/${encodeURIComponent(sessionId)}/${suffix}`, query, undefined, 'GET');
     } catch (error) {
-      return server.envelope(res, null, error.code ?? 50001, error.message);
+      return server.envelope(res, null, error.code ?? 50001, error.message, error.details);
     }
   }
 
@@ -978,18 +978,28 @@ export class FixtureKlient {
         const [installationId] = args;
         const found = server.recipes.find((entry) => entry.summary.installation_id === installationId);
         if (found === undefined) return undefined;
+        /*
+          A read that fails on request. This is the one failure mode a save has
+          to be able to survive on its own: the write landed, and only the read
+          that would bring the editor up to date did not.
+        */
+        if (server.recipeReadFailures > 0) {
+          server.recipeReadFailures -= 1;
+          throw Object.assign(new Error('The recipe could not be read right now.'), { code: 50001 });
+        }
         const usedBy = server.models.filter((model) => model.recipe === installationId).map((model) => model.id);
         return { ...structuredClone(found), used_by: usedBy };
       }
       case 'recipeService.preview': {
-        const [{ source }] = args;
+        const [{ source, installation_id: targetId, expected_revision: expectedRevision, files }] = args;
         const match = server.recipes.find((entry) => entry.summary.source.locator === source.locator);
+        const shared = match === undefined ? server.sharedHookPackages.get(source.locator) : undefined;
         // A preview of something not installed yet still resolves: it reports
         // what the source would provide, which is what the import screen shows.
         const summary = match?.summary ?? {
           installation_id: `preview-${fixtureHash(source.locator)}`,
           manifest_id: source.locator.split('/').pop()?.replace(/\.toml$/u, '') ?? 'recipe',
-          name: source.locator.split('/').pop()?.replace(/\.toml$/u, '') ?? 'Recipe',
+          name: shared?.name ?? source.locator.split('/').pop()?.replace(/\.toml$/u, '') ?? 'Recipe',
           version: '1.0.0',
           revision: `sha256:${'0'.repeat(64)}`,
           source,
@@ -1008,11 +1018,82 @@ export class FixtureKlient {
           model: {},
           model_origins: {},
         };
-        return { preview_id: `preview-${fixtureHash(JSON.stringify(source))}`, digest: summary.revision, summary, resolved, diagnostics: [] };
+        /*
+          Script hooks are the one thing a preview has to decide about. A package
+          whose commands this machine already trusts reports the fingerprint it
+          matched and asks for nothing; anything else reports the commands with
+          their sizes and digests, and asks for consent.
+        */
+        const declared = match?.hooks ?? shared?.hooks;
+        /*
+          A targeted preview carries the edited files, so what it reports has to
+          come from those files rather than from what is installed. Editing a
+          command changes what would run, which is the whole reason this path
+          exists at all — a preview that answered from the installed copy would
+          ask about commands the person is not trying to save.
+        */
+        const targeted = targetId === undefined ? undefined : server.recipes.find((entry) => entry.summary.installation_id === targetId);
+        const baseScripts = targeted?.hooks?.scripts ?? declared?.scripts;
+        const hooks = baseScripts === undefined
+          ? undefined
+          : {
+            // A targeted preview is asking about content that is not installed
+            // yet, so it has no fingerprint to match against this machine's
+            // trust and always asks. Trust is what the install records, not
+            // something a preview can claim on the package's behalf.
+            fingerprint: targetId === undefined ? declared.fingerprint : undefined,
+            // Trust is keyed on the exact execution content. Content this machine
+            // has a fingerprint for and trusts is silent; content it has never
+            // authorized — including a shared package, which arrives with no
+            // fingerprint at all — is what has to ask.
+            consent_required: targetId !== undefined
+              ? true
+              : declared.fingerprint !== undefined
+                ? !server.trustedHookFingerprints.has(declared.fingerprint)
+                : true,
+            scripts: baseScripts,
+          };
+        const candidate = {
+          preview_id: `preview-${fixtureHash(JSON.stringify({ source, targetId, files: files ?? null }))}`,
+          digest: summary.revision,
+          summary: targetId === undefined ? summary : { ...summary, installation_id: targetId },
+          resolved,
+          diagnostics: [],
+          ...(hooks === undefined ? {} : { hooks }),
+        };
+        /*
+          The whole candidate is cached, not just its id: installing publishes
+          the bytes that were previewed, so nothing is re-resolved and no new
+          content is fetched at install time.
+        */
+        server.recipePreviews.set(candidate.preview_id, { candidate, match, files, expectedRevision, targetId });
+        return structuredClone(candidate);
       }
       case 'recipeService.install': {
-        const [{ preview_id: previewId }] = args;
-        const existing = server.recipes.find((entry) => entry.summary.revision === previewId || entry.previewId === previewId);
+        const [{ preview_id: previewId, consent }] = args;
+        const cached = server.recipePreviews.get(previewId);
+        // A candidate is consumed when it publishes. Replaying one must fail
+        // rather than resolve: a second publish of the same candidate is exactly
+        // the duplicate authorization this path is shaped to prevent, and an
+        // unknown id must not quietly mint another installation either.
+        if (cached === undefined && previewId.startsWith('preview-')) {
+          throw Object.assign(new Error('That preview is no longer available.'), { code: 40001 });
+        }
+        if (cached?.candidate.hooks?.consent_required === true && consent !== true) {
+          // The rule the whole surface exists for: untrusted execution content is
+          // refused until the same request carries the explicit agreement.
+          throw Object.assign(new Error('Confirm installation to authorize new Recipe scripts'), {
+            code: 40001, details: { code: 'recipe-hook-consent-required', path: 'hooks' },
+          });
+        }
+        // A targeted preview names the installation it publishes into; anything
+        // else resolves through the source the candidate was read from. Looking
+        // the target up by id is what makes an edited local package update in
+        // place instead of appearing as a second installation.
+        const existing = (cached?.targetId === undefined
+          ? cached?.match
+          : server.recipes.find((entry) => entry.summary.installation_id === cached.targetId))
+          ?? server.recipes.find((entry) => entry.summary.revision === previewId || entry.previewId === previewId);
         const summary = existing?.summary ?? {
           installation_id: `inst-${fixtureHash(previewId)}`,
           manifest_id: 'imported-recipe',
@@ -1025,9 +1106,44 @@ export class FixtureKlient {
         };
         if (existing === undefined) {
           server.recipes.push({ previewId, summary, resolved: fixtureRecipeResolved(summary), files: { 'recipe.toml': fixtureRecipeToml(summary) }, history: [], editable: true });
+        } else if (cached?.targetId !== undefined) {
+          // A targeted install publishes in place: the same installation, at the
+          // revision the candidate resolved, with the files that were previewed.
+          if (cached.expectedRevision !== undefined && cached.expectedRevision !== existing.summary.revision) {
+            throw Object.assign(new Error('That revision is no longer the installed one.'), { code: 40001 });
+          }
+          if (cached.files !== undefined) {
+            existing.files = structuredClone(cached.files);
+            // Content revision follows the files, exactly as a real publish does:
+            // a save that changed bytes moves the installation to a new revision.
+            const digest = `sha256:${fixtureHash(JSON.stringify(cached.files))}`;
+            existing.summary = { ...existing.summary, revision: digest };
+            existing.resolved = { ...existing.resolved, revision: digest };
+            existing.history = [...new Set([...existing.history, digest])];
+          }
         }
+        /*
+          Consent is what makes execution content trusted on this machine, so it
+          is recorded for whichever installation the candidate resolved to. A
+          targeted candidate has no fingerprint of its own — it is asking about
+          content that is not installed — so what gets trusted is the fingerprint
+          of the content that was actually published, which is the only thing a
+          later preview of that installation can match against.
+        */
+        if (consent === true) {
+          const fingerprint = cached?.candidate.hooks?.fingerprint
+            ?? (existing !== undefined ? existing.hooks?.fingerprint : undefined);
+          if (fingerprint !== undefined) {
+            server.trustedHookFingerprints.add(fingerprint);
+            if (existing !== undefined && existing.hooks !== undefined) {
+              existing.summary = { ...existing.summary, hooks_fingerprint: fingerprint };
+            }
+          }
+        }
+        server.recipePreviews.delete(previewId);
         return structuredClone(summary);
       }
+
       case 'recipeService.checkUpdates': {
         return structuredClone(server.recipes.map((entry) => entry.summary));
       }
@@ -1081,6 +1197,27 @@ export class FixtureKlient {
         const [{ installation_id: installationId, files }] = args;
         const found = server.recipes.find((entry) => entry.summary.installation_id === installationId);
         if (found === undefined) return undefined;
+        /*
+          A save that would publish script content this machine has not
+          authorized is refused, exactly as the real service refuses it: the
+          draft is left alone, and the GUI has to come back through the same
+          preview and confirmation rather than writing around the question.
+        */
+        const manifest = files['recipe.toml'];
+        if (typeof manifest === 'string' && found.hooks !== undefined && !server.trustedHookFingerprints.has(found.hooks.fingerprint)) {
+          // Compare decoded commands, not their TOML spelling: `\"` in the file is
+          // one quote in the command, and a refusal that turned on quoting style
+          // would block a save that changed nothing executable.
+          const commands = [...manifest.matchAll(/^command\s*=\s*"((?:[^"\\]|\\.)*)"/gmu)]
+            .map((match) => match[1].replaceAll('\\"', '"').replaceAll('\\\\', '\\'));
+          const unchanged = commands.length === found.hooks.scripts.length
+            && commands.every((command, index) => command === found.hooks.scripts[index].command);
+          if (commands.length > 0 && (!unchanged || server.forceHookConsentRefusal)) {
+            throw Object.assign(new Error('Confirm installation to authorize new Recipe scripts'), {
+              code: 40001, details: { code: 'recipe-hook-consent-required', path: 'hooks' },
+            });
+          }
+        }
         found.files = structuredClone(files);
         found.summary.revision = `sha256:${fixtureHash(JSON.stringify(files))}`;
         found.resolved = fixtureRecipeResolved(found.summary);

@@ -808,6 +808,18 @@ class FixtureServer {
     this.plugins = []; // mutable /plugins catalog
     this.recipes = []; // installed Recipe packages; mutable through recipeService
     this.recipeMarkets = [];
+    // Frozen preview candidates and the script fingerprints this machine trusts.
+    // Both are per-run state, never scenario data: a shared package must arrive
+    // untrusted to the machine that receives it.
+    this.recipePreviews = new Map();
+    this.trustedHookFingerprints = new Set();
+    this.sharedHookPackages = new Map();
+    // Remaining forced read failures, so a save can be watched surviving one.
+    this.recipeReadFailures = 0;
+    // Forces the consent refusal. Stands in for changing a command line, which
+    // lives in TOML inside the CodeMirror editor and cannot be typed by a
+    // browser fill; it exercises the same refusal from the same place.
+    this.forceHookConsentRefusal = false;
     this.autoCompactOverrides = new Map(); // `${sessionId}:${agentId}` → { [modelId]: tokens }
     this.oauthOverride = null; // mutable OAuth flow state (POST/DELETE /oauth/login)
     this.providerHealth = null; // persisted /providers/{id}:test results (null = scenario seed)
@@ -838,6 +850,16 @@ class FixtureServer {
     }
     this.recipes = structuredClone(data.recipes ?? []);
     this.recipeMarkets = structuredClone(data.recipeMarkets ?? []);
+    this.recipePreviews = new Map();
+    // A scenario may say which packages this machine already trusts. The default
+    // is none, because trust is what the first install is being asked about.
+    this.trustedHookFingerprints = new Set(data.trustedHookFingerprints ?? []);
+    // Packages a market offers that are not installed here. A locator in this
+    // map still resolves to a real candidate, so the confirmation can be read
+    // against a package whose commands this machine has never authorized.
+    this.sharedHookPackages = new Map(Object.entries(data.sharedHookPackages ?? {}));
+    this.recipeReadFailures = 0;
+    this.forceHookConsentRefusal = false;
     this.providers = structuredClone(data.providers ?? []);
     this.models = structuredClone(data.models ?? []).map(normalizeFixtureModel);
     // A scenario that declares `models: []` means an unconfigured server, not

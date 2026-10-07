@@ -274,7 +274,7 @@ function RecipeAuthorRoute({ installationId, onSaved, onBack, onDirtyChange, onF
   return (
     <RecipeAuthorWorkbench
       detail={detail}
-      onApplied={(saved) => { onSaved(saved.summary.installation_id); }}
+      onApplied={(saved, hasDraft) => { if (!hasDraft) onSaved(saved.summary.installation_id); }}
       onBack={onBack}
       onDirtyChange={onDirtyChange}
     />

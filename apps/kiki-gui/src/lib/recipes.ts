@@ -14,6 +14,7 @@ import type {
   RecipeDiagnostic,
   RecipeMarket,
   RecipePreview,
+  RecipeScriptHook,
   RecipeSummary,
   RecipeUpdateMode,
   RecipeValueOrigin,
@@ -26,12 +27,24 @@ export type {
   RecipeDiagnostic,
   RecipeMarket,
   RecipePreview,
+  RecipeScriptHook,
   RecipeSummary,
   RecipeUpdateMode,
   RecipeValueOrigin,
   ResolvedRecipe,
   ResolvedRecipeBranch,
 };
+
+/**
+ * The script-hook projection a preview carries.
+ *
+ * Derived from `RecipePreview` rather than imported under a name of its own: the
+ * contract exports the hook schema and the preview that embeds it, and a second
+ * exported alias for the same shape would be a second thing to keep in step.
+ */
+export type RecipeHookPreview = NonNullable<RecipePreview['hooks']>;
+/** One script inside that projection, as the confirmation has to render it. */
+export type RecipeScriptPreview = RecipeHookPreview['scripts'][number];
 
 /** The three identity branches a resolved Recipe can speak for. */
 export const RECIPE_POSITIONS = ['main', 'sub', 'independent'] as const;

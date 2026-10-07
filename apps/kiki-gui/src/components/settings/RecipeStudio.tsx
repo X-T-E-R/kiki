@@ -18,15 +18,18 @@ import { useQuery } from '@tanstack/react-query';
 
 import { errorText, type Locale } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
+import { recipeConsentField, recipePreviewNeedsConsent } from '../../lib/recipeHooks';
 import { useRecipeList, useRecipeMarkets, useRecipeMutation } from '../../lib/recipeQueries';
 import {
-  recipeIsSelectable, recipeRevisionShort,
+  recipeIsSelectable, recipeRevisionShort, type RecipePreview,
 } from '../../lib/recipes';
 import { useConnection } from '../../state/connection';
+import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
 import { FORM_LABEL, SettingsDetailLayout } from './SettingsPrimitives';
 import { DownloadZipButton } from './DownloadZipButton';
 import { RecipeDetailBody } from './RecipeDetailBody';
+import { RecipeHookConsentBody, RecipeHookScripts } from './RecipeHookScripts';
 import { SMALL_INPUT } from '../ui';
 
 type PickerTab = 'installed' | 'market' | 'import';
@@ -325,14 +328,42 @@ function RecipeMarketList({ onPicked }: { onPicked: (installationId: string) => 
                   <span className="block truncate text-[13px] text-ink">{entry.displayName}</span>
                   <span className="block truncate text-[11px] text-ink-faint">{entry.version}</span>
                 </span>
-                <button type="button" className={SECONDARY} disabled={install.isPending}
+                <button type="button" className={SECONDARY} disabled={install.install.isPending || install.previewAndInstall.isPending}
                   data-recipe-market-install={entry.id}
-                  onClick={() => { install.mutate({ locator: entry.source, sha256: entry.sha256 }); }}>
+                  onClick={() => { install.previewAndInstall.mutate({ locator: entry.source, sha256: entry.sha256 }); }}>
                   {t('st.recipe.installOnly')}
                 </button>
               </li>
             ))}
           </ul>}
+      {/*
+        A market row has no room to show a command next to its name, so a package
+        that needs authorizing opens the same confirmation the import tab uses,
+        with the very same single install button.
+      */}
+      <ConfirmDialog
+        open={install.awaitingConsent !== null}
+        stacked
+        overlayId="recipe-market-hook-consent"
+        title={t('st.recipeHook.consentTitle')}
+        confirmLabel={t('st.recipe.installOnly')}
+        cancelLabel={t('st.recipeHook.cancelInstall')}
+        tone="default"
+        busy={install.install.isPending}
+        onCancel={() => { install.setAwaitingConsent(null); }}
+        onConfirm={() => {
+          const candidate = install.awaitingConsent;
+          if (candidate !== null) install.install.mutate({ preview: candidate });
+        }}>
+        {install.awaitingConsent?.hooks === undefined
+          ? null
+          : (
+            <RecipeHookConsentBody
+              hooks={install.awaitingConsent.hooks}
+              name={install.awaitingConsent.summary.name}
+            />
+          )}
+      </ConfirmDialog>
       {failure !== null ? <p role="alert" className="text-[12px] leading-5 text-danger">{failure}</p> : null}
     </div>
   );
@@ -345,21 +376,51 @@ function useRecipeMarketInstall(
 ) {
   const { t } = useI18n();
   const { client } = useConnection();
-  return useRecipeMutation(
-    async (input: { locator: string; sha256?: string }) => {
-      // One candidate: the preview is what the person is about to install, and
-      // installing that same candidate is what keeps the two from disagreeing.
-      const preview = await client.previewRecipe({ source: { locator: input.locator, sha256: input.sha256 } });
-      return client.installRecipe({ preview_id: preview.preview_id });
-    },
+  const [awaitingConsent, setAwaitingConsent] = useState<RecipePreview | null>(null);
+  const install = useRecipeMutation(
+    async (input: { preview: RecipePreview }) =>
+      client.installRecipe({ preview_id: input.preview.preview_id, ...recipeConsentField(input.preview) }),
     {
-      onSuccess: (summary) => { setFailure(null); onPicked(summary.installation_id); },
+      onSuccess: (summary) => {
+        setAwaitingConsent(null);
+        setFailure(null);
+        onPicked(summary.installation_id);
+      },
+      onError: (error) => { setAwaitingConsent(null); setFailure(t('st.recipe.installFailed', { detail: errorText(locale, error) })); },
+    },
+  );
+  // A market row is one button, so a package carrying scripts cannot be
+  // installed from behind a sheet nobody asked for: the catalog row opens the
+  // preview inline and installs from there, which is the same place every other
+  // package is confirmed.
+  const previewAndInstall = useRecipeMutation(
+    async (input: { locator: string; sha256?: string }) => client.previewRecipe({ source: { locator: input.locator, sha256: input.sha256 } }),
+    {
+      onSuccess: (previewed) => {
+        setFailure(null);
+        if (recipePreviewNeedsConsent(previewed)) setAwaitingConsent(previewed);
+        else install.mutate({ preview: previewed });
+      },
       onError: (error) => { setFailure(t('st.recipe.installFailed', { detail: errorText(locale, error) })); },
     },
   );
+  return { previewAndInstall, install, awaitingConsent, setAwaitingConsent };
 }
 
-/** Import by link or local path; a ZIP additionally carries its digest. */
+/**
+ * Import by link or local path; a ZIP additionally carries its digest.
+ *
+ * The preview is the frozen candidate: it is what the person reads, and it is
+ * what gets installed. Nothing is re-resolved at install time, so a command
+ * shown in the confirmation is the command that runs.
+ *
+ * When that candidate declares script hooks the confirmation grows the commands,
+ * their events, their sources and their resource files, and says plainly what
+ * agreeing authorizes. The button is still "Install and apply", and pressing it
+ * is still one decision — there is no second dialog and no separate approval
+ * step. `consent` is sent only for a candidate that asked for it, so an ordinary
+ * package keeps sending exactly the request it always sent.
+ */
 function RecipeImportForm({ onInstalled, onApply }: {
   onInstalled: (installationId: string) => void;
   onApply: (installationId: string) => Promise<void>;
@@ -367,7 +428,7 @@ function RecipeImportForm({ onInstalled, onApply }: {
   const { t, locale } = useI18n();
   const [locator, setLocator] = useState('');
   const [sha256, setSha256] = useState('');
-  const [previewed, setPreviewed] = useState<Awaited<ReturnType<ReturnType<typeof useConnection>['client']['previewRecipe']>> | null>(null);
+  const [previewed, setPreviewed] = useState<RecipePreview | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const { client } = useConnection();
 
@@ -376,7 +437,8 @@ function RecipeImportForm({ onInstalled, onApply }: {
     { onSuccess: setPreviewed, onError: (error) => { setPreviewed(null); setFailure(t('st.recipe.previewFailed', { detail: errorText(locale, error) })); } },
   );
   const install = useRecipeMutation(
-    async (input: { previewId: string; applyAfterInstall: boolean }) => client.installRecipe({ preview_id: input.previewId }),
+    async (input: { preview: RecipePreview; applyAfterInstall: boolean }) =>
+      client.installRecipe({ preview_id: input.preview.preview_id, ...recipeConsentField(input.preview) }),
     {
       onSuccess: (summary, input) => {
         setFailure(null);
@@ -389,6 +451,8 @@ function RecipeImportForm({ onInstalled, onApply }: {
   );
 
   const isZip = locator.trim().toLowerCase().endsWith('.zip');
+  const hooks = previewed?.hooks;
+  const needsConsent = previewed !== null && recipePreviewNeedsConsent(previewed);
 
   return (
     <form className="min-w-0 space-y-3" data-recipe-import
@@ -427,6 +491,19 @@ function RecipeImportForm({ onInstalled, onApply }: {
           {previewed.summary.description !== undefined ? (
             <p className="text-[12px] leading-5 text-ink-soft">{previewed.summary.description}</p>
           ) : null}
+          {/*
+            A candidate that has not been authorized here gets the whole argument
+            inline, above the same two buttons that were always there. Pressing
+            "Install and apply" *is* the consent — there is no second dialog and
+            no separate approval step, because a person who was shown a command
+            and what it can reach has nothing left to confirm.
+          */}
+          {needsConsent && hooks !== undefined ? (
+            <RecipeHookConsentBody hooks={hooks} name={previewed.summary.name} />
+          ) : hooks === undefined || hooks.scripts.length === 0 ? null : (
+            /* Already trusted on this machine: shown, but with nothing to decide. */
+            <RecipeHookScripts hooks={hooks} />
+          )}
           {previewed.diagnostics.length === 0 ? null : (
             <ul className="space-y-1" data-recipe-preview-diagnostics>
               {previewed.diagnostics.map((diagnostic, index) => (
@@ -439,12 +516,12 @@ function RecipeImportForm({ onInstalled, onApply }: {
           <div className="flex flex-wrap gap-2">
             <button type="button" className={PRIMARY} disabled={install.isPending}
               data-recipe-install-apply
-              onClick={() => { install.mutate({ previewId: previewed.preview_id, applyAfterInstall: true }); }}>
+              onClick={() => { install.mutate({ preview: previewed, applyAfterInstall: true }); }}>
               {t('st.recipe.installAndApply')}
             </button>
             <button type="button" className={SECONDARY} disabled={install.isPending}
               data-recipe-install-only
-              onClick={() => { install.mutate({ previewId: previewed.preview_id, applyAfterInstall: false }); }}>
+              onClick={() => { install.mutate({ preview: previewed, applyAfterInstall: false }); }}>
               {t('st.recipe.installOnly')}
             </button>
           </div>

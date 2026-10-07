@@ -54,6 +54,24 @@ export interface PromptGroupDeclaration {
   steering_on_turn?: boolean;
   steering_on_input?: boolean;
   steering_interval_steps?: number;
+  steering_sources?: Record<string, SteeringSourceDeclaration>;
+}
+
+/**
+ * One message source's declaration, in the package's own words.
+ *
+ * `steering` is a slot like any other, so a package can put inline prose there,
+ * point at a file it owns, use a segment array, or write `off` — the same four
+ * answers every other slot has. The mode stays separate from the prose, exactly
+ * as it does on a model, so a source can follow the user's setting while the
+ * package still carries its own draft to return to.
+ */
+export interface SteeringSourceDeclaration {
+  readonly mode: 'off' | 'inherit' | 'custom';
+  readonly steering?: SlotDeclaration;
+  readonly steering_on_turn?: boolean;
+  readonly steering_on_input?: boolean;
+  readonly steering_interval_steps?: number;
 }
 
 export interface RecipeDeclarationView {
@@ -68,6 +86,30 @@ export interface RecipeDeclarationView {
   prompts?: PromptGroupDeclaration;
   main?: PromptGroupDeclaration | 'same' | 'off';
   independent?: PromptGroupDeclaration | 'same' | 'off';
+  /**
+   * The package's own script hooks, or `'off'` when it drops inherited ones.
+   *
+   * Read for display and for finding the resource files to edit. The GUI never
+   * synthesises a hook from this — the command, event and resource set are the
+   * server's to validate — and nothing here rewrites the manifest for it, so a
+   * hand-typed hook passes through the raw editor exactly as typed.
+   */
+  hooks?: HookDeclaration[] | 'off';
+}
+
+/** One `[[hooks]]` table, as far as the editor needs to describe it. */
+export interface HookDeclaration {
+  readonly event?: string;
+  readonly command?: string;
+  readonly matcher?: string;
+  readonly timeout?: number;
+  /**
+   * Where the command's files are read from, relative to the package. Held
+   * verbatim: it is the author's own choice of layout and the host resolves it,
+   * so the editor reports it and never rewrites it into a different directory.
+   */
+  readonly root?: string;
+  readonly files?: string[];
 }
 
 /** Parse failure carries the parser's own message and, when it has one, a path. */
@@ -98,6 +140,7 @@ export function readDeclaration(manifest: TomlTable): RecipeDeclarationView {
       system?: SlotDeclaration; steering?: SlotDeclaration; anchor?: SlotDeclaration;
       fields?: Record<string, string | false>;
       steering_on_turn?: boolean; steering_on_input?: boolean; steering_interval_steps?: number;
+      steering_sources?: Record<string, SteeringSourceDeclaration>;
     } = {};
     const slot = (value: unknown, name: string): SlotDeclaration | undefined => {
       if (value === 'off') return { kind: 'off' };
@@ -121,6 +164,7 @@ export function readDeclaration(manifest: TomlTable): RecipeDeclarationView {
     if (typeof raw['steering_on_turn'] === 'boolean') out.steering_on_turn = raw['steering_on_turn'];
     if (typeof raw['steering_on_input'] === 'boolean') out.steering_on_input = raw['steering_on_input'];
     if (typeof raw['steering_interval_steps'] === 'number') out.steering_interval_steps = raw['steering_interval_steps'];
+    if (isTable(raw['steering_sources'])) out.steering_sources = readSteeringSources(raw['steering_sources'], slot);
     return out;
   };
   const branch = (value: unknown, name: string): PromptGroupDeclaration | 'same' | 'off' | undefined => {
@@ -146,7 +190,31 @@ export function readDeclaration(manifest: TomlTable): RecipeDeclarationView {
     prompts: group(prompts),
     main: branch(prompts?.['main'], 'prompts.main'),
     independent: branch(prompts?.['independent'], 'prompts.independent'),
+    hooks: hooks(manifest['hooks']),
   };
+}
+
+/**
+ * The declared hooks, read for display only.
+ *
+ * A `root` is kept exactly as written. It is where the host will look for the
+ * resource files, and moving it here would silently change which bytes a
+ * command runs against — the one thing a hook package cannot have changed on
+ * its way through an editor.
+ */
+function hooks(value: unknown): HookDeclaration[] | 'off' | undefined {
+  if (value === 'off') return 'off';
+  if (!Array.isArray(value)) return undefined;
+  return value.filter(isTable).map((hook) => ({
+    event: typeof hook['event'] === 'string' ? hook['event'] : undefined,
+    command: typeof hook['command'] === 'string' ? hook['command'] : undefined,
+    matcher: typeof hook['matcher'] === 'string' ? hook['matcher'] : undefined,
+    timeout: typeof hook['timeout'] === 'number' ? hook['timeout'] : undefined,
+    root: typeof hook['root'] === 'string' ? hook['root'] : undefined,
+    files: Array.isArray(hook['files'])
+      ? hook['files'].filter((file): file is string => typeof file === 'string')
+      : undefined,
+  }));
 }
 
 /** Which files a declaration references, so a rename can follow its reference. */
@@ -154,18 +222,21 @@ export function referencedFiles(declaration: RecipeDeclarationView): string[] {
   const names = new Set<string>();
   const walk = (group: PromptGroupDeclaration | 'same' | 'off' | undefined): void => {
     if (group === undefined || group === 'same' || group === 'off') return;
-    for (const slot of [group.system, group.steering, group.anchor]) {
-      if (slot?.kind === 'file') names.add(slot.file);
-      if (slot?.kind === 'segments') {
-        for (const part of slot.parts) {
-          if (part.kind === 'file' && part.file !== undefined) names.add(part.file);
-        }
-      }
-    }
+    for (const slot of [group.system, group.steering, group.anchor]) collectSlotFiles(names, slot);
+    // A source's own prose is a slot like any other, so a rename that missed it
+    // would leave the package pointing at a file it no longer ships.
+    for (const source of Object.values(group.steering_sources ?? {})) collectSlotFiles(names, source.steering);
   };
   walk(declaration.prompts);
   walk(declaration.main);
   walk(declaration.independent);
+  // Hook resources join the same list: one file map, one save, and a file that
+  // feeds both a prompt and a command is still one file to edit.
+  if (Array.isArray(declaration.hooks)) {
+    for (const hook of declaration.hooks) {
+      for (const file of hook.files ?? []) names.add(hook.root === undefined ? file : `${hook.root}/${file}`);
+    }
+  }
   return [...names].toSorted();
 }
 
@@ -347,9 +418,102 @@ function slotToToml(value: SlotDeclaration): unknown {
   }
 }
 
+/** Every file one slot declaration refers to, however it spells the reference. */
+function collectSlotFiles(names: Set<string>, slot: SlotDeclaration | undefined): void {
+  if (slot?.kind === 'file') names.add(slot.file);
+  if (slot?.kind === 'segments') {
+    for (const part of slot.parts) {
+      if (part.kind === 'file' && part.file !== undefined) names.add(part.file);
+    }
+  }
+}
+
 function segment(value: unknown, path: string): SegmentDeclaration {
   if (!isTable(value)) throw new RecipeManifestError('Expected a segment table', path);
   if (typeof value['text'] === 'string') return { kind: 'inline', text: value['text'] };
   if (typeof value['file'] === 'string') return { kind: 'file', file: value['file'] };
   throw new RecipeManifestError('A segment needs text or file', path);
+}
+
+/**
+ * Read one prompt group's source declarations.
+ *
+ * A source with no mode is off, which is the same answer a reader of the model
+ * gets, so an author who never wrote about a source sees the same list of nine
+ * rows they would see on a model. The slot reader is passed in rather than
+ * reimplemented: a source's prose has the same four shapes as any other slot,
+ * and one reader is the only way they stay the same four.
+ */
+function readSteeringSources(
+  raw: TomlTable,
+  slot: (value: unknown, name: string) => SlotDeclaration | undefined,
+): Record<string, SteeringSourceDeclaration> {
+  const out: Record<string, SteeringSourceDeclaration> = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (!isTable(value)) continue;
+    const entry = value as TomlTable;
+    const mode = entry['mode'];
+    if (mode !== 'off' && mode !== 'inherit' && mode !== 'custom') continue;
+    // The prose and its timing live under `custom`, which is where the schema
+    // keeps them and where the engine merges them field by field. A source that
+    // is `off` or `inherit` still carries its own `custom`, so an author who
+    // switches a source off and later back on finds their words still here.
+    const custom = isTable(entry['custom']) ? entry['custom'] as TomlTable : {};
+    const steering = slot(custom['steering'], `steering_sources.${id}.steering`);
+    out[id] = {
+      mode,
+      ...(steering !== undefined ? { steering } : {}),
+      ...(typeof custom['steering_on_turn'] === 'boolean' ? { steering_on_turn: custom['steering_on_turn'] } : {}),
+      ...(typeof custom['steering_on_input'] === 'boolean' ? { steering_on_input: custom['steering_on_input'] } : {}),
+      ...(typeof custom['steering_interval_steps'] === 'number' ? { steering_interval_steps: custom['steering_interval_steps'] } : {}),
+    };
+  }
+  return out;
+}
+
+/** Write one source's mode and its prose, leaving every other source alone. */
+export function writeSteeringSource(
+  manifest: TomlTable,
+  groupKey: 'prompts' | 'main' | 'independent',
+  source: string,
+  declaration: SteeringSourceDeclaration,
+): TomlTable {
+  const next = cloneManifest(manifest);
+  const { root, group } = promptGroups(next, groupKey);
+  const sources = isTable(group['steering_sources']) ? { ...(group['steering_sources'] as TomlTable) } : {};
+  // Only the fields the author actually declared are written, so switching a
+  // source's mode never invents a cadence it does not have, and the schema sees
+  // the same two keys it declares for: the mode, and the private draft.
+  const entry: TomlTable = { mode: declaration.mode };
+  // A source switched off or set to follow still carries the draft it had. The
+  // engine keeps resolving an off source's stored body, so dropping it here
+  // would discard the author's words on a change of mind about the mode alone.
+  const stored = isTable(sources[source]) ? sources[source] as TomlTable : undefined;
+  const kept = isTable(stored?.['custom']) ? stored!['custom'] as TomlTable : {};
+  const custom: TomlTable = { ...kept };
+  if (declaration.steering !== undefined) custom['steering'] = slotToToml(declaration.steering);
+  if (declaration.steering_on_turn !== undefined) custom['steering_on_turn'] = declaration.steering_on_turn;
+  if (declaration.steering_on_input !== undefined) custom['steering_on_input'] = declaration.steering_on_input;
+  if (declaration.steering_interval_steps !== undefined) custom['steering_interval_steps'] = declaration.steering_interval_steps;
+  if (Object.keys(custom).length > 0) entry['custom'] = custom;
+  sources[source] = entry;
+  group['steering_sources'] = sources;
+  next['prompts'] = root;
+  return next;
+}
+
+/** Remove one source's declaration, so the package stops speaking for it. */
+export function deleteSteeringSource(
+  manifest: TomlTable,
+  groupKey: 'prompts' | 'main' | 'independent',
+  source: string,
+): TomlTable {
+  const next = cloneManifest(manifest);
+  const { root, group } = promptGroups(next, groupKey);
+  if (!isTable(group['steering_sources'])) return next;
+  const sources = { ...(group['steering_sources'] as TomlTable) };
+  delete sources[source];
+  group['steering_sources'] = sources;
+  next['prompts'] = root;
+  return next;
 }

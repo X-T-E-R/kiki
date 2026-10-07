@@ -6,6 +6,11 @@
   "compilerOptions": {
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["node", "vite/client"],
+    // `zod` belongs to `@kiki/protocol`, which this program already includes.
+    // One test checks a Recipe manifest against the real protocol schema, so
+    // the types resolve from the package that owns the dependency rather than
+    // from a copy added here.
+    "paths": { "zod": ["../../packages/protocol/node_modules/zod"] },
     "noEmit": true
   },
   "include": [
