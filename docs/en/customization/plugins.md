@@ -131,11 +131,13 @@ Auto processing stays local: nothing is uploaded and no OCR runs. An empty or im
 
 ## Media Sources
 
-A media plugin contributes one or more *sources* — a named provider for images, video or speech. Once installed, its sources appear together under **Capabilities → Plugins → Media sources** as one searchable list.
+Install and enable **Kiki Media** (`kiki-media`) once, then open **Capabilities → Plugins → Media sources**. Version 0.2.0 includes OpenAI, Google, Ark, xAI, MiniMax, StepFun, Novita, Agnes, NewAPI and ComfyUI sources for images, video and speech; you do not need a separate package for each vendor. Your own local commands can join the same list as script sources.
+
+The unified package needs a Kiki host with grouped media sources and script-source management. If your build has no **Add script source** action or rejects unknown manifest fields, update the host first. The package's plugin-engine requirement `>=0.4.0` is a protocol version, not a CLI release number; the [package README](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media#configure-a-source) gives the host contract.
 
 ### Turning generation on
 
-Starting a new generation is experimental and **off by default**. Everything else here — installing sources, filling in settings, choosing defaults, reading past generations — works either way.
+Starting a new generation is experimental and **off by default**. Everything else here — installing the plugin, filling in source settings, choosing defaults, reading past generations — works either way.
 
 Three ways to enable it, in the order Kiki reads them:
 
@@ -145,39 +147,57 @@ Three ways to enable it, in the order Kiki reads them:
 
 ### The list
 
-Each row says which provider it is, which package it came from, and whether it can be used now. The status on the right is one of:
+Each row identifies a source and its owning package, with its configuration and enabled state. Open a source marked **Needs setup** to fill in missing settings. A disabled or removed source stays visible so you can restore it; a package that did not load must be repaired before its sources can generate. A blocked job is kept rather than discarded.
 
-- **Ready** — installed, enabled, and its configuration checks out.
-- **Needs setup** — a required setting is missing. Open the row to fill it in.
-- **Not checked** — installed and enabled, but its settings have not been read. Kiki does not read every source just to draw the list, so this is neither a green light nor a warning; open the row to see its settings.
-- **Unavailable** — the package did not load, or you switched it off. Nothing in this row generates until that is fixed.
-- **Blocked** — a job for this provider could not proceed because the package is not loaded. The job is kept, not discarded.
-
-Filter by modality (image, video, speech) or status, or type to search. The count beside each band is the whole list, not the filtered one, so a filter never hides how much sits behind it.
+Filter by modality (image, video, speech) or status, or type to search. The count beside each band is the whole list, not the filtered one, so a filter never hides how much sits behind it. Model and voice discovery runs when requested in a source's detail, not just because the list opened.
 
 ### Configuring a source
 
-Open a row for its settings form, which is the package's own settings page: same fields, same secret handling, same save path. A provider's key is a plugin's key.
+Open a row, edit that source's settings, and save. Built-in sources share one plugin but have separate endpoints, keys and enabled states; saving one does not overwrite the others. A rejected save keeps your draft and displays the error.
 
-Secrets are write-only. Kiki shows whether a key is stored and never shows the value again; replacing or clearing one is an ordinary edit.
+API keys and script environment values are write-only in these forms. Kiki shows whether a value is stored without returning its contents; replacing or clearing it is an ordinary edit. They use the existing plugin configuration storage, not a separate encrypted vault.
 
-A source is configured one of three ways, and the form says which applies:
+A source is configured one of three ways:
 
-- **Its own settings.** You supply an API key and, if the provider needs one, a base URL. These are required only while no connection is selected.
-- **An existing Kiki connection.** If the package declares a connection setting, the form offers the connections you already have. Selecting one is enough — the package's own key and endpoint are then neither required nor used. The connection you select has to resolve; Kiki does not fall back to a previously stored key if it cannot.
-- **Self-managed.** A script manages its own credentials through its settings, environment variables or an external file. That is a supported arrangement, and the absence of a key is not a broken provider. Nothing Kiki stores is shown back to you in logs, previews or reports.
+- **Its own settings.** Supply an API key and, if required, a base URL. These are required only while no connection is selected.
+- **An existing Kiki connection.** Select a connection in the source form to reuse its endpoint and authentication, including Kiki's existing OAuth refresh. The source's own key and endpoint are then neither required nor used. The selected connection must resolve; Kiki does not fall back to a previously stored key if it cannot.
+- **Self-managed.** A script can use its own environment variables or an external credentials file. The absence of a Kiki-managed key does not make that source broken.
 
-An existing connection does not promise that the account behind it can do media work. Kiki shows what the provider reports and keeps no allowlist of which connections support which modality.
+A text subscription or OAuth login does not by itself grant media API access. Check the service's media access and charges before generating. ComfyUI needs your running endpoint, workflow and installed models; Kiki does not install a GPU engine or model files for it.
+
+### Adding a script source
+
+Choose **Add script source**, give it a unique lowercase id and label, choose its modalities, and enter the command you already run locally. Supply one argument per line, an optional working directory, and optional environment variables as a JSON object. Install the command's own runtime and dependencies first. It can read external files and run independently of Kiki; no Kiki API import is required.
+
+For **file output**, the command writes the filename supplied by `{output}`. Use `{prompt}` for an image/video prompt or `{text}` for speech, and set the output extension and MIME type if they differ from PNG, MP4 or MP3. For example, a command `node speech.mjs "Hello" out.mp3` can use command `node` and these arguments:
+
+```text
+/path/to/speech.mjs
+{text}
+{output}
+```
+
+Choose **JSON bridge** for asynchronous handles, polling, cancellation or multiple files. It passes input and result-file paths to the command; the [package README](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media#add-your-own-script) specifies the placeholders and result format. A poll must continue its accepted handle, not submit another paid job.
+
+The command runs under your account after the plugin's installation trust decision, not in a sandbox or behind a new per-run approval. Script output can appear in Task output, so do not print credentials. A saved source id cannot be reused; restore a removed source instead of replacing its saved handles.
+
+### Source lifecycle and upgrades
+
+Disable or remove a source in its detail without uninstalling Kiki Media. Other sources, saved settings, jobs and completed files remain intact. Removal is reversible: restore that row to use it again. Restoring the original compatible endpoint and credentials lets a saved unified-source handle continue polling or downloading, never submit a new generation.
+
+Installed legacy `kiki-media-<vendor>` packages remain installed after upgrading. Their settings and keys supply defaults for the matching built-in source until you override or clear a field. A previously disabled legacy source stays disabled unless you explicitly enable its built-in replacement. New requests use the unified adapter without a duplicate vendor row.
+
+Existing jobs keep their original provider package, configuration and accepted handle. Keep that original package enabled and compatible while its jobs need it; disabling or removing the unified source does not change the legacy package's state. Upgrade does not copy or delete OAuth refresh tokens, and completed original files remain available.
 
 ### Per-modality defaults
 
-Three settings on the media entry package pick the default source for images, video and speech. They are ordinary plugin settings stored with the rest of that package's configuration, and a default source says so on its row.
+Three settings on Kiki Media pick the default source for images, video and speech. They are ordinary plugin settings stored with the rest of the package's configuration, and a default source says so on its row.
 
-When a modality has no default and exactly one source could serve it, Kiki uses that one. If several could, Kiki asks you to choose rather than picking one and charging you for it.
+When a modality has no default and exactly one enabled source could serve it, Kiki uses that one. If several could, Kiki asks you to choose rather than picking one and charging you for it.
 
 ### Recent generations
 
-The same page lists this session's recent media jobs and keeps listing them when generation is off. Each shows its state, and each file that landed has a preview, a download or an in-page player. Two states are worth reading carefully:
+The same page lists this session's recent media jobs and keeps listing them when generation is off. Jobs use the existing session-owned Task and completion notification path. Each delivered original file has a preview, download or in-page player; speech returns a finite audio file, not a bidirectional live voice session. Two states are worth reading carefully:
 
 - **Outcome unknown** — Kiki cannot confirm whether the vendor accepted the submission, so it may still be generating and charging. Nothing is regenerated and no retry is offered, because a retry is a second charge.
 - **Stopped** — Kiki stopped waiting locally. Whether the vendor also stopped, and whether it is still charging, is what the vendor reports, and the row says which.
@@ -186,15 +206,15 @@ A job that partly finished keeps the files that landed. **Keep fetching** contin
 
 ### Discovery sources
 
-Where new providers can be discovered from is a different question from which ones are installed, so it has its own folded section at the bottom. Adding, pausing or removing a discovery source changes nothing about already-installed packages, keys or past jobs.
+Where new plugins can be discovered from is different from which media sources are configured, so catalog subscriptions have their own folded section at the bottom. Adding, pausing or removing a discovery source changes nothing about already-installed packages, keys or past jobs.
 
 ## Official Plugins
 
-The **Official** tab holds seventeen entries. Fifteen are Kiki's own, built in the [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins) and documented on this page:
+The **Official** tab holds seven entries. Five are Kiki's own, built in the [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins) and documented on this page:
 
 - **[Kiki Writing](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-writing)**, **[Kiki Extract](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-extract)** and **[Kiki Office Suite](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-office)** — the document and writing tools described in [Local document extraction](#local-document-extraction) and below
 - **[Kiki Notion](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)** — connect to Notion's hosted MCP service (see [Notion material and write-back](#notion-material-and-write-back))
-- **[Kiki Media](#media-sources)** and its ten provider plugins — one per image, video and speech provider
+- **[Kiki Media](#media-sources)** — one package with ten built-in service sources and your own scripts
 
 The two Kimi entries are maintained by Kimi and published on Kimi's own CDN rather than the plugin repository:
 

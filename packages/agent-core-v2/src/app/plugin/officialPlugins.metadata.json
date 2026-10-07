@@ -47,392 +47,56 @@
     {
       "id": "kiki-media",
       "tier": "official",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "displayName": "Kiki Media",
-      "description": "The media surface: image, video and speech providers, their credentials, and the per-modality defaults. Install a provider package for each service you use.",
+      "description": "One media plugin with OpenAI, Google, Ark, xAI, MiniMax, StepFun, Novita, Agnes, NewAPI and ComfyUI sources. Configure or disable each service inside Media, or add your own local script. Requires a Kiki host with grouped media sources and script-source management. Cloud generation requires media API access and can incur charges.",
       "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media",
       "keywords": [
         "media",
         "image",
         "video",
-        "speech"
+        "speech",
+        "tts",
+        "scripts",
+        "openai",
+        "google",
+        "ark",
+        "xai",
+        "minimax",
+        "stepfun",
+        "novita",
+        "agnes",
+        "newapi",
+        "comfyui"
       ],
       "group": "media",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media/icon-0.1.1.svg",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media/icon-0.2.0.svg",
       "engines": {
         "kiki": ">=0.4.0"
       },
-      "license": "MIT",
-      "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-0.1.1.zip",
-      "sha256": "94cc3bb6146dd5aa6337b6dbfc9613f6d6b73f81274cc733d4d010226fa671a2",
-      "localizations": {
-        "zh": {
-          "description": "媒体生成入口：图像、视频与语音 provider、它们的凭据，以及各模态的默认设置。用到哪家的服务，就安装对应的 provider 包。",
-          "keywords": [
-            "媒体",
-            "图像",
-            "视频",
-            "语音",
-            "生成"
-          ]
-        }
-      }
-    },
-    {
-      "id": "kiki-media-agnes",
-      "tier": "official",
-      "version": "0.1.1",
-      "displayName": "Agnes Video",
-      "description": "Optional Agnes 2.5, Flash and V2.0 video endpoint adapter with explicit frame and reference roles. Configure a compatible endpoint.",
-      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-agnes",
-      "keywords": [
-        "media",
-        "agnes",
-        "video",
-        "endpoint"
-      ],
-      "group": "media",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-agnes/icon-0.1.1.svg",
-      "engines": {
-        "kiki": "^0.4.0"
-      },
-      "license": "MIT",
-      "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-agnes-0.1.1.zip",
-      "sha256": "8af06811f65c01a25e2fcc289255b82730d62d9fcf349f1b5cdb3eec7edc8ad0",
-      "localizations": {
-        "zh": {
-          "description": "可选的 Agnes 2.5、Flash 与 V2.0 视频端点适配，明确区分首帧与参考素材角色。需配置兼容端点。",
-          "keywords": [
-            "媒体",
-            "agnes",
-            "视频",
-            "端点"
-          ]
-        }
-      }
-    },
-    {
-      "id": "kiki-media-ark",
-      "tier": "official",
-      "version": "0.1.1",
-      "displayName": "Ark Media",
-      "description": "Ark Seedream images and the Seedance 2.0 video protocol. Configure an entitled endpoint and model; no implicit OSS upload and no Seedance 2.5.",
-      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-ark",
-      "keywords": [
-        "media",
-        "ark",
-        "seedream",
-        "seedance",
-        "image",
-        "video"
-      ],
-      "group": "media",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-ark/icon-0.1.1.svg",
-      "engines": {
-        "kiki": "^0.4.0"
-      },
-      "license": "MIT",
-      "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-ark-0.1.1.zip",
-      "sha256": "85d5c1cc9028f4c8b15f094b4d1fd27e9bfd010a8786ee9b0e9cd1b2db716dd7",
-      "localizations": {
-        "zh": {
-          "description": "Ark Seedream 图像与 Seedance 2.0 视频协议。需配置你有权使用的端点与模型；不会隐式上传素材，也不支持 Seedance 2.5。",
-          "keywords": [
-            "媒体",
-            "ark",
-            "seedream",
-            "seedance",
-            "图像",
-            "视频"
-          ]
-        }
-      }
-    },
-    {
-      "id": "kiki-media-comfyui",
-      "tier": "official",
-      "version": "0.1.1",
-      "displayName": "ComfyUI Workflow",
-      "description": "Optional ComfyUI API-format image and video workflows using your running endpoint and installed models. No engine, GPU runtime or models are bundled.",
-      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-comfyui",
-      "keywords": [
-        "media",
-        "comfyui",
-        "image",
-        "video",
-        "workflow",
-        "local"
-      ],
-      "group": "media",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-comfyui/icon-0.1.1.svg",
-      "engines": {
-        "kiki": "^0.4.0"
-      },
-      "license": "MIT",
-      "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-comfyui-0.1.1.zip",
-      "sha256": "0d7729146c64dc127ea7860e70fa6a7120605b60cf1488419f43e0e9f08d1dab",
-      "localizations": {
-        "zh": {
-          "description": "可选的 ComfyUI API 格式图像与视频工作流，使用你已运行的端点与已安装的模型。不附带引擎、GPU 运行环境或模型。",
-          "keywords": [
-            "媒体",
-            "comfyui",
-            "图像",
-            "视频",
-            "工作流",
-            "本地"
-          ]
-        }
-      }
-    },
-    {
-      "id": "kiki-media-google",
-      "tier": "official",
-      "version": "0.1.1",
-      "displayName": "Google Media",
-      "description": "Google Gemini native images and Veo asynchronous video. Needs the corresponding media API access.",
-      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-google",
-      "keywords": [
-        "media",
-        "google",
-        "gemini",
-        "veo",
-        "image",
-        "video"
-      ],
-      "group": "media",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-google/icon-0.1.1.svg",
-      "engines": {
-        "kiki": "^0.4.0"
-      },
-      "license": "MIT",
-      "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-google-0.1.1.zip",
-      "sha256": "cd5fc37f6d2c2cfea3a044c89ea9f7a521dd866af98714591b1b0743fb88ecc9",
-      "localizations": {
-        "zh": {
-          "description": "Google Gemini 原生图像，以及异步生成的 Veo 视频。需对应的媒体 API 权限。",
-          "keywords": [
-            "媒体",
-            "google",
-            "gemini",
-            "veo",
-            "图像",
-            "视频"
-          ]
-        }
-      }
-    },
-    {
-      "id": "kiki-media-minimax",
-      "tier": "official",
-      "version": "0.1.1",
-      "displayName": "MiniMax Media",
-      "description": "MiniMax portrait-reference images, H3 and H3-Max video, and HTTP/SSE file speech with optional subtitles. Needs media API access; long text is not split into paid jobs automatically.",
-      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-minimax",
-      "keywords": [
-        "media",
-        "minimax",
-        "image",
-        "video",
-        "tts",
-        "subtitles"
-      ],
-      "group": "media",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-minimax/icon-0.1.1.svg",
-      "engines": {
-        "kiki": "^0.4.0"
-      },
-      "license": "MIT",
-      "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-minimax-0.1.1.zip",
-      "sha256": "7940f96780769a67cc0845af2334182fc3c363506a286c3bd1e8900ee8985f85",
-      "localizations": {
-        "zh": {
-          "description": "MiniMax 人像参考图、H3 与 H3-Max 视频，以及带可选字幕的 HTTP/SSE 语音文件。需媒体 API 权限；超长文本不会自动拆分成多次付费任务。",
-          "keywords": [
-            "媒体",
-            "minimax",
-            "图像",
-            "视频",
-            "语音",
-            "字幕"
-          ]
-        }
-      }
-    },
-    {
-      "id": "kiki-media-newapi",
-      "tier": "official",
-      "version": "0.1.1",
-      "displayName": "NewAPI Compatible Video",
-      "description": "Optional NewAPI /video/generations gateway profile. Model availability and audio generation depend on your configured endpoint.",
-      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-newapi",
-      "keywords": [
-        "media",
-        "newapi",
-        "video",
-        "gateway"
-      ],
-      "group": "media",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-newapi/icon-0.1.1.svg",
-      "engines": {
-        "kiki": "^0.4.0"
-      },
-      "license": "MIT",
-      "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-newapi-0.1.1.zip",
-      "sha256": "28f0946f85512a0a9576838298bc7ade9a99e93e4dbced4efc70a4590c4c4de1",
-      "localizations": {
-        "zh": {
-          "description": "可选的 NewAPI /video/generations 网关配置。可用模型与是否生成音频，取决于你配置的端点。",
-          "keywords": [
-            "媒体",
-            "newapi",
-            "视频",
-            "网关"
-          ]
-        }
-      }
-    },
-    {
-      "id": "kiki-media-novita",
-      "tier": "official",
-      "version": "0.1.1",
-      "displayName": "Novita Compatible Video",
-      "description": "Optional Novita /video/create and task-result compatibility profile. Configure your endpoint and the actual model; not every Novita API is supported.",
-      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-novita",
-      "keywords": [
-        "media",
-        "novita",
-        "video",
-        "endpoint"
-      ],
-      "group": "media",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-novita/icon-0.1.1.svg",
-      "engines": {
-        "kiki": "^0.4.0"
-      },
-      "license": "MIT",
-      "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-novita-0.1.1.zip",
-      "sha256": "09bd84d530773adb6e3bfd82c209ada40efaff459c388a614c7b952ad3c1af2a",
-      "localizations": {
-        "zh": {
-          "description": "可选的 Novita /video/create 与任务结果兼容配置。需配置你的端点与实际模型；并非 Novita API 的全部能力。",
-          "keywords": [
-            "媒体",
-            "novita",
-            "视频",
-            "端点"
-          ]
-        }
-      }
-    },
-    {
-      "id": "kiki-media-openai",
-      "tier": "official",
-      "version": "0.1.1",
-      "displayName": "OpenAI Media",
-      "description": "OpenAI image generation and editing, and file speech synthesis. Needs a media-capable API connection or key; cloud generation can incur charges.",
-      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-openai",
-      "keywords": [
-        "media",
-        "openai",
-        "image",
-        "tts"
-      ],
-      "group": "media",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-openai/icon-0.1.1.svg",
-      "engines": {
-        "kiki": "^0.4.0"
-      },
-      "license": "MIT",
-      "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-openai-0.1.1.zip",
-      "sha256": "bdbbc8e5d6091a1c06cd9c3976f2872ad9545ce9095391c80412a224113bf7d2",
-      "localizations": {
-        "zh": {
-          "description": "OpenAI 图像生成与编辑，以及语音合成文件。需具备媒体权限的 API 连接或 key；云端生成可能产生费用。",
-          "keywords": [
-            "媒体",
-            "openai",
-            "图像",
-            "语音合成"
-          ]
-        }
-      }
-    },
-    {
-      "id": "kiki-media-stepfun",
-      "tier": "official",
-      "version": "0.1.1",
-      "displayName": "StepFun Speech",
-      "description": "StepFun HTTP binary and SSE file speech through a TTS-capable API endpoint. Not a WebSocket live-session runtime.",
-      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-stepfun",
-      "keywords": [
-        "media",
-        "stepfun",
-        "tts",
-        "speech"
-      ],
-      "group": "media",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-stepfun/icon-0.1.1.svg",
-      "engines": {
-        "kiki": "^0.4.0"
-      },
       "license": "MIT AND Apache-2.0",
       "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-stepfun-0.1.1.zip",
-      "sha256": "cdb3ff3b50c597511b2c52594e69af78d8e5279703ae5785cbb7cdf5acb5be9b",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-media-20261007.1/kiki-media-0.2.0.zip",
+      "sha256": "5fb452b70650a8772f4750730e3b38c985247794d9478ecc7448b3a2a1db9aea",
       "localizations": {
         "zh": {
-          "description": "通过支持 TTS 的 API 端点，以 HTTP 二进制或 SSE 合成语音文件。不是 WebSocket 实时语音运行时。",
+          "description": "一个媒体插件，内置 OpenAI、Google、Ark、xAI、MiniMax、StepFun、Novita、Agnes、NewAPI 和 ComfyUI 来源。可在媒体页分别配置、启停或移除，也可添加自己的本地脚本。需要支持媒体来源分组及脚本来源管理的 Kiki 宿主。云端生成需媒体 API 权限，并可能产生费用。",
           "keywords": [
             "媒体",
-            "stepfun",
-            "语音合成",
-            "语音"
-          ]
-        }
-      }
-    },
-    {
-      "id": "kiki-media-xai",
-      "tier": "official",
-      "version": "0.1.1",
-      "displayName": "xAI Media",
-      "description": "xAI image generation and editing, and asynchronous video. API media access is required; a Grok web subscription is not assumed compatible.",
-      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media-xai",
-      "keywords": [
-        "media",
-        "xai",
-        "grok",
-        "image",
-        "video"
-      ],
-      "group": "media",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media-xai/icon-0.1.1.svg",
-      "engines": {
-        "kiki": "^0.4.0"
-      },
-      "license": "MIT",
-      "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-media-xai-0.1.1.zip",
-      "sha256": "8c300f6109efd5d397b33216e9d633b06fa81d53e7c4c54183380227b6b90e43",
-      "localizations": {
-        "zh": {
-          "description": "xAI 图像生成与编辑，以及异步视频。需 API 媒体权限；不假定 Grok 网页订阅即可使用。",
-          "keywords": [
-            "媒体",
-            "xai",
-            "grok",
             "图像",
-            "视频"
+            "视频",
+            "语音",
+            "脚本",
+            "openai",
+            "google",
+            "ark",
+            "xai",
+            "minimax",
+            "stepfun",
+            "novita",
+            "agnes",
+            "newapi",
+            "comfyui"
           ]
         }
       }
