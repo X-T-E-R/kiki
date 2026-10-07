@@ -55,6 +55,7 @@ interface Fixture {
   readonly terminals: { live: number };
   readonly mirror: { hold(): void; release(): void };
   readonly drainRetirements: { fail: boolean };
+  readonly cleanupStages: Array<{ operationId: string; sessionId: string; stage: string }>;
 }
 
 interface FactoryDependencies {
@@ -66,6 +67,7 @@ interface FactoryDependencies {
 function fixture(terminalService?: ISessionTerminalService, agentAccessor?: ServicesAccessor, factory?: FactoryDependencies): Fixture {
   const terminals = { live: 0 };
   const drainRetirements = { fail: false };
+  const cleanupStages: Fixture['cleanupStages'] = [];
   const closed: SessionClosedEvent[] = [];
   const dispose = vi.fn<() => Promise<void>>(() => Promise.resolve());
   let releaseMirror: () => void = () => {};
@@ -119,7 +121,9 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
     },
     { get: async () => undefined },
     { acquireLock: factory?.acquireLock ?? (async () => ({ release: async () => {} })) },
-    { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} },
+    { error: () => {}, warn: () => {}, info: (message: string, payload: Fixture['cleanupStages'][number]) => {
+      if (message === 'session cleanup waiting') cleanupStages.push(payload);
+    }, debug: () => {} },
     { remove: async () => {}, readdir: async () => [], stat: async () => { throw Object.assign(new Error('missing session'), { code: 'ENOENT' }); } },
     { publish: () => {} },
     { track2: () => {}, withContext: () => ({ track2: () => {} }) },
@@ -144,7 +148,7 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
   service.onDidCloseSession((event) => closed.push(event));
   const sessions = (service as unknown as { sessions: Map<string, ISessionScopeHandle> }).sessions;
   sessions.set(handle.id, handle);
-  return { service, handle, dispose, closed, terminals, mirror, drainRetirements };
+  return { service, handle, dispose, closed, terminals, mirror, drainRetirements, cleanupStages };
 }
 
 describe('SessionLifecycleService factory ownership', () => {
@@ -337,6 +341,66 @@ describe('SessionLifecycleService unload', () => {
       sessionId: 'session-1', reason: 'exit', callerOutcome: 'resolved',
       terminalOwner: 'session', cleanupOutcome: 'closed', resourcesBefore: 1, resourcesAfter: 0,
     }));
+  });
+
+  it('identifies the awaited session tail after agent disposal without announcing premature close', async () => {
+    const remove = vi.fn(async () => {});
+    const agentAccessor = Object.assign(accessor([
+      [IEventDispatcher, { saveReplayCheckpoint: async () => true }],
+    ]), { remove });
+    const fx = fixture(undefined, agentAccessor);
+    let releaseScope!: () => void;
+    let releaseLock!: () => void;
+    const scopeGate = new Promise<void>((resolve) => { releaseScope = resolve; });
+    const lockGate = new Promise<void>((resolve) => { releaseLock = resolve; });
+    fx.dispose.mockReturnValue(scopeGate);
+    const release = vi.fn(() => lockGate);
+    const internals = fx.service as unknown as { sessionLocks: Map<string, { release(): Promise<void> }> };
+    internals.sessionLocks.set('session-1', { release });
+    const receipts: unknown[] = [];
+    fx.service.onDidCleanup!((receipt) => receipts.push(receipt));
+    fx.mirror.hold();
+    let settled = false;
+    const closing = fx.service.close('session-1').then(() => { settled = true; });
+    try {
+      await drainMicrotasks();
+      expect(remove).toHaveBeenCalledOnce();
+      expect(fx.cleanupStages.at(-1)?.stage).toBe('index_mirror');
+      expect(fx.dispose).not.toHaveBeenCalled();
+      expect(release).not.toHaveBeenCalled();
+      expect(settled).toBe(false);
+      expect(fx.closed).toEqual([]);
+      expect(receipts).toEqual([]);
+      fx.mirror.release();
+      await drainMicrotasks();
+      expect(fx.cleanupStages.at(-1)?.stage).toBe('session_scope');
+      expect(fx.dispose).toHaveBeenCalledOnce();
+      expect(release).not.toHaveBeenCalled();
+      releaseScope();
+      await drainMicrotasks();
+      expect(fx.cleanupStages.at(-1)?.stage).toBe('session_lock');
+      expect(release).toHaveBeenCalledOnce();
+      expect(settled).toBe(false);
+      expect(fx.closed).toEqual([]);
+      releaseLock();
+      await closing;
+      const operationId = fx.cleanupStages[0]!.operationId;
+      expect(operationId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(fx.cleanupStages.every((stage) => stage.operationId === operationId && stage.sessionId === 'session-1')).toBe(true);
+      expect(fx.cleanupStages.map((entry) => entry.stage)).toEqual([
+        'will_close', 'replay_checkpoints', 'checkpoint_scheduling', 'usage_snapshot',
+        'agents', 'usage_persistence', 'append_retirements', 'metadata_writes',
+        'index_mirror', 'session_scope', 'log_closes', 'session_lock',
+      ]);
+      expect(receipts).toContainEqual(expect.objectContaining({ operationId, callerOutcome: 'resolved', resourcesAfter: 0 }));
+      expect(fx.closed).toEqual([{ sessionId: 'session-1', reason: 'exit' }]);
+    } finally {
+      fx.mirror.release();
+      releaseScope();
+      releaseLock();
+      await closing;
+      await fx.service.dispose();
+    }
   });
 
   it('closes all resources when the preliminary replay checkpoint fails', async () => {

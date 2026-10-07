@@ -697,28 +697,33 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   async close(sessionId: string, mode: AgentRemovalMode = 'preserve-pending'): Promise<void> {
     const handle = this.sessions.get(sessionId);
     if (handle === undefined) return;
+    const operationId = randomUUID();
+    const cleanupReason = mode === 'cancel' ? 'delete' : 'exit';
     let sessionDisposed = false;
     let lockReleased = false;
     let failureDomain: SessionCleanupReceipt['failureDomain'];
     try {
       const failures: Array<{ readonly error: unknown; readonly domain: SessionCleanupReceipt['failureDomain'] }> = [];
       const collect = async (
+        stage: string,
         operation: () => void | Promise<void>,
         domain: SessionCleanupReceipt['failureDomain'],
       ): Promise<void> => {
+        this.log.info('session cleanup waiting', { operationId, sessionId, reason: cleanupReason, stage });
         try {
           await operation();
         } catch (error) {
           failures.push({ error, domain });
+          this.log.warn('session cleanup stage rejected', { operationId, sessionId, stage, failureDomain: domain });
         }
       };
-      await collect(() => this.announceWillClose({ sessionId, handle, reason: 'exit' }), 'cleanup');
-      await collect(async () => { await this.saveReplayCheckpoints(sessionId, handle); }, 'persistence');
-      await collect(() => this.disposeCheckpointScheduling(sessionId), 'cleanup');
+      await collect('will_close', () => this.announceWillClose({ sessionId, handle, reason: 'exit' }), 'cleanup');
+      await collect('replay_checkpoints', async () => { await this.saveReplayCheckpoints(sessionId, handle); }, 'persistence');
+      await collect('checkpoint_scheduling', () => this.disposeCheckpointScheduling(sessionId), 'cleanup');
       let usageFallback: SessionUsageSummary | undefined;
-      await collect(() => { usageFallback = aggregateSessionUsage(handle); }, 'cleanup');
+      await collect('usage_snapshot', () => { usageFallback = aggregateSessionUsage(handle); }, 'cleanup');
       this.sessions.delete(sessionId);
-      await collect(() => this.drainAgents(handle, mode), undefined);
+      await collect('agents', () => this.drainAgents(handle, mode), undefined);
       if (failures.length > 0 && failures.at(-1)?.domain === undefined) {
         const failure = failures.at(-1)!;
         failures[failures.length - 1] = {
@@ -726,20 +731,19 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           domain: isPersistenceFailure(failure.error) ? 'persistence' : 'cleanup',
         };
       }
-      await collect(() => this.persistUsage(handle, usageFallback), 'persistence');
-      await collect(() => this.appendLogStore.drainRetirements(), 'persistence');
-      await collect(() => drainSessionMetadataWrites(false), 'persistence');
-      await collect(() => this.indexMirror.drain(), 'persistence');
-      await collect(async () => {
+      await collect('usage_persistence', () => this.persistUsage(handle, usageFallback), 'persistence');
+      await collect('append_retirements', () => this.appendLogStore.drainRetirements(), 'persistence');
+      await collect('metadata_writes', () => drainSessionMetadataWrites(false), 'persistence');
+      await collect('index_mirror', () => this.indexMirror.drain(), 'persistence');
+      await collect('session_scope', async () => {
         await handle.dispose();
         sessionDisposed = true;
       }, 'cleanup');
-      await collect(() => drainLogCloses(), 'cleanup');
-      await collect(async () => {
+      await collect('log_closes', () => drainLogCloses(), 'cleanup');
+      await collect('session_lock', async () => {
         await this.releaseSessionLock(sessionId);
         lockReleased = true;
       }, 'cleanup');
-      const cleanupReason = mode === 'cancel' ? 'delete' : 'exit';
       this._onDidCloseSession.fire({ sessionId, reason: 'exit' });
       if (failures.length > 0) {
         const persistenceFailure = failures.find((failure) => failure.domain === 'persistence');
@@ -747,16 +751,17 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         failureDomain = primary.domain;
         throw primary.error;
       }
-      this.emitCleanupReceipt(sessionId, cleanupReason, 'resolved', 'closed');
+      this.emitCleanupReceipt(sessionId, cleanupReason, 'resolved', 'closed', undefined, undefined, 0, operationId);
     } catch (error) {
       this.emitCleanupReceipt(
         sessionId,
-        mode === 'cancel' ? 'delete' : 'exit',
+        cleanupReason,
         'rejected',
         'cleanup_failed',
         error,
         failureDomain ?? (isPersistenceFailure(error) ? 'persistence' : 'cleanup'),
         sessionDisposed && lockReleased ? 0 : 1,
+        operationId,
       );
       throw error;
     }
@@ -921,11 +926,13 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     error?: unknown,
     failureDomain?: SessionCleanupReceipt['failureDomain'],
     resourcesAfter = cleanupOutcome === 'closed' ? 0 : 1,
+    operationId = randomUUID(),
   ): void {
     const normalized = error instanceof Error ? error : undefined;
     const errorCode = normalized === undefined ? undefined : (normalized as { readonly code?: unknown }).code;
+    this.log.info('session cleanup settled', { operationId, sessionId, reason, callerOutcome, cleanupOutcome, resourcesAfter });
     this._onDidCleanup.fire({
-      operationId: randomUUID(),
+      operationId,
       sessionId,
       reason,
       callerOutcome,
