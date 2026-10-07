@@ -555,8 +555,8 @@ describe('server-v2 /api prompts', () => {
       release();
       await main.accessor.get(IAgentLoopService).settled();
       expect(bodies).toHaveLength(2);
-      expect(bodies.map(body => body.model)).toEqual(['stub', change === 'model' ? 'stub-alt' : 'stub']);
-      expect(bodies.map(body => body.reasoning_effort)).toEqual(['low', 'high']);
+      expect(bodies.map(body => body['model'])).toEqual(['stub', change === 'model' ? 'stub-alt' : 'stub']);
+      expect(bodies.map(body => body['reasoning_effort'])).toEqual(['low', 'high']);
       expect(JSON.stringify(bodies[1])).toContain('Unique original GUI question after selection.');
       const journal = [];
       for await (const record of main.accessor.get(IWireService).readJournal()) journal.push(record);
