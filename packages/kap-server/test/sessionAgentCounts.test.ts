@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { IAtomicDocumentStore, ISessionIndex, ISessionManager, IWorkspaceService, type AgentMeta, type Scope } from '@kiki/agent-core-v2';
+import { IAppendLogStore, IFileSystemStorageService, IAtomicDocumentStore, ISessionIndex, ISessionManager, IWorkspaceService, type AgentMeta, type Scope } from '@kiki/agent-core-v2';
 import { sessionSnapshotResponseSchema, type SnapshotSubagent } from '@kiki/protocol';
 import { assembleBrowseSnapshot } from '../src/routes/snapshot';
 import { sessionAgentCounts } from '../src/routes/sessionAgentCounts';
@@ -12,16 +12,20 @@ const row = (id: string, status: SnapshotSubagent['status'], live = true): Snaps
 });
 
 describe('session agent metadata counts', () => {
-  it('retains 300 cold agents outside the bounded roster without loading any agent body', async () => {
-    const agents: Record<string, AgentMeta> = { main: { type: 'main' } };
+  it('retains 300 cold agents without loading child bodies and restores the main binding', async () => {
+    const execution = { version: 1 as const, selection: { executor: 'native' }, effective: { kiki_context: [], allow_kiki_subagents: true }, sources: {}, generation: 1 };
+    const agents: Record<string, AgentMeta> = { main: { type: 'main', model: 'example/model', thinkingEffort: 'max', labels: { profileName: 'example-profile' }, execution } };
     for (let i = 0; i < 300; i += 1) agents[`child-${i}`] = {
       type: 'sub', parentAgentId: 'main', status: i < 280 ? 'completed' : i < 290 ? 'failed' : undefined,
       resultSummary: 'historical result'.repeat(100),
     };
     const meta = { id: 'fixture-session', createdAt: 1, updatedAt: 2, archived: false, agents };
     const readMetadata = vi.fn(async () => meta);
-    const manager = { get: vi.fn(() => undefined) };
+    const manager = { get: vi.fn(() => undefined), acquire: vi.fn() };
+    const bindingReads: string[] = [];
     const services = new Map<unknown, unknown>([
+      [IFileSystemStorageService, { size: async () => 0, mtime: async () => 0 }],
+      [IAppendLogStore, { read: async function* (scope: string) { bindingReads.push(scope); } }],
       [ISessionManager, manager], [ISessionIndex, { get: async () => ({ ...meta, workspaceId: 'wd_fixture_000000000000' }) }],
       [IAtomicDocumentStore, { get: readMetadata }], [IWorkspaceService, { get: async () => ({ root: 'C:/fixture' }) }],
     ]);
@@ -36,6 +40,9 @@ describe('session agent metadata counts', () => {
     const parsed = sessionSnapshotResponseSchema.safeParse(snapshot);
     expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
     expect(readMetadata).toHaveBeenCalledTimes(1);
+    expect(parsed.data?.session.agent_config).toMatchObject({ model: 'example/model', profile: 'example-profile', execution });
+    expect(bindingReads).toEqual([expect.stringMatching(/agents\/main$/)]);
+    expect(manager.acquire).not.toHaveBeenCalled();
     expect(snapshot.messages.items).toEqual([]);
   });
 

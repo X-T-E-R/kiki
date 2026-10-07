@@ -3,6 +3,7 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { deferred } from '../../deferred';
 import { runAgentTurn } from '#/session/subagent/runAgentTurn';
 import { userCancellationReason } from '#/_base/utils/abort';
+import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '#/_base/errors/unexpectedError';
 
 import { Readable } from 'node:stream';
 
@@ -15,6 +16,7 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { ContentPart } from '#/kosong/contract/message';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { turnPromptText } from '#/agent/loop/turnEvents';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { ExecutorHintDelivery } from '#/agent/execution/externalExecutorOps';
@@ -259,6 +261,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
       registerStateServices(reg);
       reg.defineInstance(IAgentContextMemoryService, context);
       reg.defineInstance(IAgentLoopService, loop);
+      reg.definePartialInstance(IAgentLLMRequesterService, { invalidatePromptSnapshots: vi.fn() });
       reg.definePartialInstance(IAgentTaskService, taskService);
       reg.definePartialInstance(IAgentProfileService, profile);
       reg.definePartialInstance(IAgentPermissionModeService, permissionMode);
@@ -735,6 +738,56 @@ describe('AgentPromptService', () => {
     expect(profile.setThinking).not.toHaveBeenCalled();
     expect(permissionMode.mode).toBe('manual');
     expect(plan.planGate).toBe('free');
+  });
+
+  it.each([false, true])('consumes prompt-bound model and effort only at its safe boundary; cancel=%s', async (cancel) => {
+    const { prompt, profile, loop, target } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ message: message('active') });
+    const queued = await prompt.enqueue({ id: 'bound-message', message: message('continue'), execution: { model: 'example/new', thinking: 'max' } });
+    const boundary = deferred<void>();
+    const original = loop.atStepBoundary.bind(loop);
+    vi.spyOn(loop, 'atStepBoundary').mockImplementation(async run => { await boundary.promise; return original(run); });
+    await expect(prompt.steer([queued.id])).resolves.toEqual([queued]);
+    expect(profile.setModel).not.toHaveBeenCalled();
+    expect(profile.setThinking).not.toHaveBeenCalled();
+    expect(prompt.listModelSwitches()).toEqual([]);
+    expect(loop.launches).toHaveLength(1);
+    if (cancel) prompt.abort(queued.id);
+    boundary.resolve();
+    await vi.waitFor(() => expect(queued.state).toBe(cancel ? 'cancelled' : 'steered'));
+    if (cancel) {
+      expect(profile.setModel).not.toHaveBeenCalled();
+      expect(profile.setThinking).not.toHaveBeenCalled();
+    } else {
+      expect(profile.data()).toMatchObject({ modelAlias: 'example/new', thinkingLevel: 'max' });
+      expect(profile.setModel).toHaveBeenCalledTimes(1);
+      expect(target.accessor.get(IAgentLLMRequesterService).invalidatePromptSnapshots).toHaveBeenCalledTimes(1);
+      const consumed: ContextMessage[] = [];
+      while (loop.drainNextBatch({ append: (...messages) => consumed.push(...messages) }) !== undefined) {}
+      expect(consumed.filter(message => message.id === queued.id)).toHaveLength(1);
+    }
+    expect(loop.launches).toHaveLength(1);
+  });
+
+  it('keeps the same prompt retryable when its boundary model preparation fails', async () => {
+    const { prompt, profile, loop } = harness({ manualTurnResult: true });
+    const reported = vi.fn();
+    setUnexpectedErrorHandler(reported);
+    onTestFinished(resetUnexpectedErrorHandler);
+    await prompt.enqueue({ message: message('active') });
+    const queued = await prompt.enqueue({ id: 'bound-retry', message: message('continue'), execution: { model: 'example/new', thinking: 'max' } });
+    profile.setModel.mockRejectedValueOnce(new Error('model unavailable'));
+    await prompt.steer([queued.id]);
+    await vi.waitFor(() => expect(reported).toHaveBeenCalledOnce());
+    expect(queued.state).toBe('pending');
+    expect(prompt.list().pending.map(item => item.id)).toContain(queued.id);
+    expect(profile.data()).toMatchObject({ modelAlias: 'initial-model', thinkingLevel: 'initial-thinking' });
+    expect(profile.setThinking).not.toHaveBeenCalled();
+    expect(prompt.listModelSwitches()).toEqual([]);
+    await prompt.steer([queued.id]);
+    await vi.waitFor(() => expect(queued.state).toBe('steered'));
+    expect(profile.data()).toMatchObject({ modelAlias: 'example/new', thinkingLevel: 'max' });
+    expect(loop.launches).toHaveLength(1);
   });
 
   it('steers a queued prompt whose model, profile, thinking and policy already match the active turn', async () => {
@@ -1442,8 +1495,8 @@ describe('AgentPromptService', () => {
       model: 'replacement-model',
       thinking: undefined,
       strictThinking: false,
-    });
-    expect(profile.setModel).toHaveBeenCalledWith('replacement-model');
+    }, undefined);
+    expect(profile.setModel).toHaveBeenCalledWith('replacement-model', undefined);
     expect(inputs[1]).toEqual([{ type: 'text', text: 'new text' }]);
   });
 
@@ -1543,7 +1596,7 @@ describe('AgentPromptService', () => {
     const [selected] = await prompt.steer([selectedId]);
     expect((await selected!.launched)?.id).toBe(0);
     expect(loop.launches).toEqual([0]);
-    expect(profile.bind).toHaveBeenCalledWith(expect.objectContaining({ profile: `profile-${count - 1}` }));
+    expect(profile.bind).toHaveBeenCalledWith(expect.objectContaining({ profile: `profile-${count - 1}` }), undefined);
     expect(prompt.list().active?.id).toBe(selectedId);
     expect(states.get(promptQueueKey).order).not.toContain(selectedId);
     expect(prompt.list().pending).toHaveLength(count - 1);
@@ -1743,7 +1796,7 @@ describe('AgentPromptService', () => {
       model: undefined,
       thinking: undefined,
       strictThinking: false,
-    });
+    }, undefined);
     expect(loop.launches).toEqual([0]);
   });
 
@@ -1765,7 +1818,7 @@ describe('AgentPromptService', () => {
     await queued.launched;
 
     expect(profile.bind).not.toHaveBeenCalled();
-    expect(profile.setModel).toHaveBeenCalledWith('override-model');
+    expect(profile.setModel).toHaveBeenCalledWith('override-model', undefined);
     expect(profile.setThinking).toHaveBeenCalledWith('override-thinking');
     expect(profile.data()).toMatchObject({
       profileName: 'initial',
@@ -1936,8 +1989,8 @@ describe('AgentPromptService', () => {
       model: 'later-model',
       thinking: 'later-thinking',
       strictThinking: true,
-    });
-    expect(profile.setModel).toHaveBeenCalledWith('later-model');
+    }, undefined);
+    expect(profile.setModel).toHaveBeenCalledWith('later-model', undefined);
     expect(toolPolicy.setSessionDisabledTools).toHaveBeenCalledExactlyOnceWith(['Write']);
   });
 

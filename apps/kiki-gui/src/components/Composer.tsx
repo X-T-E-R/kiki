@@ -133,6 +133,11 @@ import {
 } from './ComposerControls';
 import { TIMING_HINT_KEY, TIMING_SHORT_KEY } from './QueueStrip';
 
+export interface PendingRuntimeControls {
+  readonly model?: string;
+  readonly profile?: string;
+  readonly thinking?: string;
+}
 
 /** Localized descriptions for the client-side slash shortcuts (skills carry server text). */
 /** `/btw` is listed only where a side question can be opened (not in a side agent's own composer). */
@@ -291,6 +296,8 @@ export function Composer({
   serverDefaultModel,
   modelSource,
   pendingModelSwitch,
+  pendingRuntimeControls,
+  onCancelRuntimeControls,
   modelSwitchError,
   agentProfile,
   execution,
@@ -393,6 +400,10 @@ export function Composer({
    * target is visible without pretending the actual model already changed.
    */
   pendingModelSwitch?: PendingModelSwitch;
+  /** Controls captured for the next real prompt, not a separate queue item. */
+  pendingRuntimeControls?: PendingRuntimeControls;
+  /** Clears the pending prompt controls without touching the live binding. */
+  onCancelRuntimeControls?: () => void;
   /**
    * A failed read of the queued switch list. Known operations are kept, so this
    * is reported quietly with a retry instead of pretending the queue is empty.
@@ -2135,6 +2146,11 @@ export function Composer({
     : `modelSwitch.pendingChipPrefix.${pendingSwitchChange}` as I18nKey;
   const pendingSwitchLine = pendingSwitchChange === 'model' ? 'modelSwitch.pendingLine'
     : `modelSwitch.pendingLine.${pendingSwitchChange}` as I18nKey;
+  const pendingRuntimeControlParts = pendingRuntimeControls === undefined ? [] : [
+    pendingRuntimeControls.profile,
+    pendingRuntimeControls.model === undefined ? undefined : resolveCatalogModel(models, pendingRuntimeControls.model)?.display_name ?? pendingRuntimeControls.model,
+    pendingRuntimeControls.thinking,
+  ].filter((value): value is string => value !== undefined && value !== '');
 
   // Focus continuity across a busy flip: becoming `disabled` force-blurs the
   // textarea (platform behavior), which used to be invisible because the
@@ -2313,6 +2329,35 @@ export function Composer({
             {t(pendingSwitchPrefix)}
             {pendingSwitchLabel}
           </span>
+        </span>
+      ),
+    });
+  }
+  if (pendingRuntimeControls !== undefined && pendingRuntimeControlParts.length > 0) {
+    const label = pendingRuntimeControlParts.join(' · ');
+    statusSegments.push({
+      key: 'runtime-controls-pending',
+      node: (
+        <span
+          data-runtime-controls-pending
+          title={pendingRuntimeControls.model !== undefined || pendingRuntimeControls.thinking !== undefined
+            ? t('modelSwitch.pendingChipTitle')
+            : t('composer.execution.pendingTitle')}
+          className="flex h-7 max-w-64 min-w-0 items-center gap-1 px-1.5 text-[12px] font-medium text-accent-ink"
+        >
+          <span className="min-w-0 truncate">{t('composer.execution.pendingSuffix', { name: label })}</span>
+          {onCancelRuntimeControls !== undefined ? (
+            <button
+              type="button"
+              data-runtime-controls-cancel
+              aria-label={t('modelSwitch.action.cancel')}
+              title={t('modelSwitch.action.cancel')}
+              onClick={onCancelRuntimeControls}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8 pointer-coarse:w-8"
+            >
+              <Icon name="close" size={12} />
+            </button>
+          ) : null}
         </span>
       ),
     });

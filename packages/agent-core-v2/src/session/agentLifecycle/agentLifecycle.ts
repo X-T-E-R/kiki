@@ -40,6 +40,8 @@ export interface AgentListFilter {
   readonly prefix?: string;
 }
 
+export type AgentRemovalMode = 'cancel' | 'preserve-pending';
+
 export interface IAgentLifecycleService {
   readonly _serviceBrand: undefined;
 
@@ -66,7 +68,7 @@ export interface IAgentLifecycleService {
   countPendingBackgroundTasks(): number;
   /** Suppress terminal notifications and drain live tasks within the supplied deadline. */
   drainBackgroundTasks(timeoutMs: number): Promise<void>;
-  remove(agentId: string): Promise<void>;
+  remove(agentId: string, mode?: AgentRemovalMode): Promise<void>;
 }
 
 export const IAgentLifecycleService: ServiceIdentifier<IAgentLifecycleService> =

@@ -449,6 +449,7 @@ export function liveSourcesFromAgentSnapshots(
 export function sessionAgentForestFromAgentSnapshots(
   snapshots: ReadonlyMap<string, AgentState | AgentTranscriptSnapshot>,
   snapshotSubagents?: readonly SnapshotSubagent[],
+  coldAgents?: ReadonlySet<string>,
 ): AgentForest {
   const live = overlayLiveSourcesWithSnapshotSubagents(
     liveSourcesFromAgentSnapshots(snapshots),
@@ -509,6 +510,18 @@ export function sessionAgentForestFromAgentSnapshots(
     const endedAt = Date.parse(outcome.endedAt ?? '');
     if (Number.isFinite(nodeStartedAt) && Number.isFinite(endedAt) && nodeStartedAt > endedAt) continue;
     byId[agentId] = { ...node, turnOutcome: outcome };
+  }
+  const coldEvidence = new Set(coldAgents);
+  for (const agentId of coldAgents ?? []) {
+    const snapshot = snapshots.get(agentId);
+    if (snapshot === undefined) continue;
+    const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()];
+    for (const task of tasks) if (task.agentId !== undefined) coldEvidence.add(task.agentId);
+  }
+  for (const agentId of coldEvidence) {
+    const node = byId[agentId];
+    if (node === undefined || snapshotSubagents?.some(row => snapshotSubagentAgentId(row) === agentId && row.live === true)) continue;
+    byId[agentId] = { ...node, busy: false, status: node.status === 'running' || node.status === 'suspended' ? 'unknown' : node.status };
   }
   return { byId, roots: forest.roots.map((node) => byId[node.agentId]!) };
 }

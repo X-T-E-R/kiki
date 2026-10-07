@@ -1605,15 +1605,16 @@ export interface SessionFacts {
   readonly live?: boolean;
 }
 
-async function resolveSessionBindingFacts(
+export async function resolveSessionBindingFacts(
   core: Scope,
   sessionId: string,
   workspaceId: string,
   persistedUsage?: SessionUsageSummary,
+  metadata?: AgentMeta,
 ): Promise<SessionFacts> {
   const facts = resolveSessionFacts(core, sessionId, persistedUsage);
   if (facts.live) return facts;
-  const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, undefined);
+  const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, metadata);
   if (profile === undefined) return facts;
   const persona = profile.persona?.definition;
   return { ...facts, executorId: profile.executorId ?? 'native', agentConfig: {

@@ -318,6 +318,15 @@ describe('SessionLifecycleService unload', () => {
     expect(fx.service.get('session-1')).toBe(fx.handle);
   });
 
+  it.each(['close', 'archive', 'delete'] as const)('preserves durable pending only for normal exit, not %s cancellation', async (operation) => {
+    const fx = fixture();
+    const owner = fx.service as unknown as { drainAgents(handle: ISessionScopeHandle, mode?: 'cancel' | 'preserve-pending'): Promise<void> };
+    const drain = vi.spyOn(owner, 'drainAgents');
+    await fx.service[operation]('session-1');
+    expect(drain).toHaveBeenCalledWith(fx.handle, ...(operation === 'archive' ? [] : [operation === 'close' ? 'preserve-pending' : 'cancel']));
+    await fx.service.dispose();
+  });
+
   it.each(['unload', 'close', 'archive'] as const)('does not wait for activity propagation behind the lifecycle lock during %s', async (operation) => {
     const fx = fixture();
     let release!: () => void;

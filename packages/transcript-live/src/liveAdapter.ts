@@ -1553,6 +1553,7 @@ export class AgentTranscriptLiveAdapter {
     const prompt = this.upsertPrompt(event.promptId, (prev) => ({
       promptId: event.promptId,
       status: prev !== undefined && isTerminalPromptStatus(prev.status) ? prev.status : event.status,
+      runtimeControls: prev?.runtimeControls,
       userMessageId: event.userMessageId,
       content: projectPromptContentParts(event.content),
       createdAt: prev?.createdAt ?? event.createdAt,
@@ -1737,7 +1738,9 @@ export class AgentTranscriptLiveAdapter {
     build: (prev: TranscriptPrompt | undefined) => TranscriptPrompt,
   ): TranscriptPrompt {
     const previous = this.prompts.get(promptId);
-    const next = build(previous);
+    const built = build(previous);
+    const next = built.runtimeControls !== undefined || previous?.runtimeControls === undefined
+      ? built : { ...built, runtimeControls: previous.runtimeControls };
     const prompt = previous?.originKind === undefined ? next : {
       ...next,
       originKind: previous.originKind,

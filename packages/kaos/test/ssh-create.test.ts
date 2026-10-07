@@ -95,6 +95,8 @@ async function loadSSHModule(options: CreateHarnessOptions = {}): Promise<{
       });
     }
 
+    destroy(): void { this.end(); }
+
     sftp(callback: (err?: Error, sftp?: SFTPWrapper) => void): void {
       if (options.sftpError) {
         callback(options.sftpError);
@@ -143,6 +145,40 @@ afterEach(() => {
 });
 
 describe('SSHKaos.create()', () => {
+  it('rejects a close before readiness and releases the failed client', async () => {
+    const { SSHKaos } = await loadSSHModule({
+      onConnect(client) { queueMicrotask(() => { client.emit('close'); }); },
+    });
+    await expect(SSHKaos.create({ host: 'example.test', username: 'tester' })).rejects.toThrow('closed before becoming ready');
+  });
+
+  it.each(['error', 'throw'] as const)('releases the client when connect fails by %s', async (failure) => {
+    const { SSHKaos, state } = await loadSSHModule({
+      onConnect(client) {
+        if (failure === 'throw') throw new Error('connect failed');
+        client.emit('error', new Error('connect failed'));
+      },
+    });
+    await expect(SSHKaos.create({ host: 'example.test', username: 'tester' })).rejects.toThrow('connect failed');
+    expect(state.endCalls).toBe(1);
+  });
+
+  it('aborts a pending handshake and releases the client', async () => {
+    const { SSHKaos, state } = await loadSSHModule({ onConnect() {} });
+    const controller = new AbortController();
+    const opening = SSHKaos.create({ host: 'example.test', username: 'tester', signal: controller.signal });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    controller.abort(new Error('connection cancelled'));
+    await expect(opening).rejects.toThrow('connection cancelled');
+    expect(state.endCalls).toBe(1);
+  });
+
+  it('rejects malformed key paths before reading or connecting', async () => {
+    const { SSHKaos, state } = await loadSSHModule();
+    await expect(SSHKaos.create({ host: 'example.test', username: 'tester', keyPaths: [null] as unknown as string[] })).rejects.toThrow('private key path must be a non-empty string');
+    expect(state.readFileCalls).toEqual([]);
+    expect(state.connectConfigs).toEqual([]);
+  });
   it('initializes cwd equal to gethome() when no cwd option is passed', async () => {
     // Pins the Python test_ssh_kaos.py::test_pathclass_home_and_cwd invariant:
     // on a fresh SSH connection without an explicit cwd, `getcwd()` must equal

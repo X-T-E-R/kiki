@@ -574,6 +574,7 @@ describe('AgentLifecycleService', () => {
       compacting: null,
     } as unknown as IAgentFullCompactionService);
     ix.set(IAgentLifecycleService, new SyncDescriptor(AgentLifecycleService));
+    disposables.add(ix.get(IAgentLifecycleService).onWillCreate(handle => { handle.accessor.get(IAgentProfileService); }));
   }
 
   beforeEach(createTestHost);
@@ -796,7 +797,16 @@ describe('AgentLifecycleService', () => {
     await svc.remove('main');
 
     expect(stopAllOnExit).toHaveBeenCalledWith('Session closed');
-    expect(promptDrain).toHaveBeenCalledOnce();
+    expect(promptDrain).toHaveBeenCalledWith(expect.any(Error), 'cancel');
+  });
+
+  it('preserves only pending prompts when removal explicitly requests shutdown mode', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    await svc.create({ agentId: 'main' });
+    await svc.remove('main', 'preserve-pending');
+    expect(promptDrain).toHaveBeenCalledWith(expect.any(Error), 'preserve-pending');
+    expect(stopAllOnExit).toHaveBeenCalledWith('Session closed');
+    expect(svc.get('main')).toBeUndefined();
   });
 
   it('remove awaits asynchronous scope disposal once before emitting onDidDispose', async () => {

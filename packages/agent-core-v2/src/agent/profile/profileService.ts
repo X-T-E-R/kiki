@@ -1509,9 +1509,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       parameters.maxCompletionTokens ?? record.maxOutputSize ?? 0) };
   }
 
-  async setModel(alias: string): Promise<ProfileSetModelResult> {
+  async setModel(alias: string, assertCurrent?: () => void): Promise<ProfileSetModelResult> {
     if (this.profileState.execution !== undefined && this.isExternalExecutor) {
-      await this.bind({ execution: this.profileState.execution.selection, model: alias });
+      await this.bind({ execution: this.profileState.execution.selection, model: alias }, assertCurrent);
       return { model: this.modelAlias! };
     }
     await this.ensureDelegationPosition();
@@ -1524,6 +1524,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       if (changed) {
         const profile = this.resolveActiveProfile();
         if (profile !== undefined) await this.resolvePromptFieldSnapshot(profile, externalAlias);
+        assertCurrent?.();
         this.update({ modelAlias: externalAlias });
         this.telemetry.track2('model_switch', { model: externalAlias });
         await this.refreshSystemPrompt(true);
@@ -1547,11 +1548,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         profile: DEFAULT_AGENT_PROFILE_NAME,
         model: canonicalAlias,
         bindingSelection: { model: { source: 'runtime-explicit', requestedValue: alias } },
-      });
+      }, assertCurrent);
       this.telemetry.track2('model_switch', { model: canonicalAlias });
     } else if (changed) {
       const prepared = await this.prepareModelSwitchBinding(canonicalAlias);
       prepared.assertCurrent();
+      assertCurrent?.();
       await this.dispatcher.dispatch(new ConfigUpdate(prepared.config));
       await prepared.syncMetadata();
       this.telemetry.track2('model_switch', { model: canonicalAlias });

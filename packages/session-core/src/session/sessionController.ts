@@ -2366,6 +2366,7 @@ export class SessionController {
         : { ...previousBase, snapshotSubagents: this.state.snapshotSubagents };
     let next = projectAgentTranscriptView(previous, agentId, snapshot, {
       retainPendingPrompts: options?.retainPendingPrompts,
+      cold: this.transcriptCursors.get(agentId)?.epoch?.startsWith('cold:') === true,
     });
     if (agentId === MAIN_AGENT_ID) {
       for (const prompt of snapshot.prompts) this.unprojectedQueueReceipts.delete(prompt.promptId);
@@ -2429,7 +2430,8 @@ export class SessionController {
       snapshots.set(agentId, this.composeAgentSnapshot(agentId));
     }
     const previous = this.publishedForest;
-    this.publishedForest = stabilizeAgentForest(previous, sessionAgentForestFromAgentSnapshots(snapshots, this.state.snapshotSubagents));
+    const coldAgents = new Set([...this.transcriptCursors].filter(([, cursor]) => cursor.epoch?.startsWith('cold:') === true).map(([agentId]) => agentId));
+    this.publishedForest = stabilizeAgentForest(previous, sessionAgentForestFromAgentSnapshots(snapshots, this.state.snapshotSubagents, coldAgents));
     this.forestPublishCount += 1;
     return previous !== this.publishedForest;
   }

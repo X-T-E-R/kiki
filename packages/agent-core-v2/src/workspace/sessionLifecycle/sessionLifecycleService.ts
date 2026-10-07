@@ -45,7 +45,7 @@ import {
   IFileSystemStorageService,
   type IStorageLock,
 } from '#/persistence/interface/storage';
-import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
+import { IAgentLifecycleService, MAIN_AGENT_ID, type AgentRemovalMode } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
@@ -674,7 +674,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     this.checkpointSubscriptions.delete(sessionId);
   }
 
-  async close(sessionId: string): Promise<void> {
+  async close(sessionId: string, mode: AgentRemovalMode = 'preserve-pending'): Promise<void> {
     const handle = this.sessions.get(sessionId);
     if (handle === undefined) return;
     await this.announceWillClose({ sessionId, handle, reason: 'exit' });
@@ -682,7 +682,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     this.disposeCheckpointScheduling(sessionId);
     const usageFallback = aggregateSessionUsage(handle);
     this.sessions.delete(sessionId);
-    await this.drainAgents(handle);
+    await this.drainAgents(handle, mode);
     await this.persistUsage(handle, usageFallback);
     await this.appendLogStore.drainRetirements();
     await drainSessionMetadataWrites(false);
@@ -820,7 +820,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (handle === undefined && !persistedHere && !ephemeral) {
       throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
     }
-    if (handle !== undefined) await this.close(sessionId);
+    if (handle !== undefined) await this.close(sessionId, 'cancel');
     if (ephemeral) await this.retainedUsage.retainEphemeralUsage?.(this.sessionScope(sessionId), this.workspaceId);
     else await this.retainedUsage.retainDeletedSession((await this.index.get(sessionId))!);
     await this.hostFs.remove(join(this.bootstrap.homeDir, this.sessionScope(sessionId)));
@@ -857,10 +857,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await metadata.update({ usage }, { touchUpdatedAt: false });
   }
 
-  private async drainAgents(handle: ISessionScopeHandle): Promise<void> {
+  private async drainAgents(handle: ISessionScopeHandle, mode: AgentRemovalMode = 'cancel'): Promise<void> {
     const agentLifecycle = handle.accessor.get(IAgentLifecycleService);
     for (const agent of agentLifecycle.list()) {
-      await agentLifecycle.remove(agent.id);
+      await agentLifecycle.remove(agent.id, mode);
     }
   }
 

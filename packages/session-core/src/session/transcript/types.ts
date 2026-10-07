@@ -24,6 +24,7 @@ import type { ContextBreakdown, WireTokenUsage } from '../../wire';
 
 export interface UserBlock {
   readonly kind: 'user';
+  readonly runtimeControls?: import('@kiki/transcript').TranscriptPromptRuntimeControls;
   readonly contentSource?: import('@kiki/transcript').ContentSource;
   readonly id: string;
   readonly text: string;
@@ -733,6 +734,7 @@ export interface FloorEntry {
 }
 
 export interface QueuedPromptMeta {
+  readonly runtimeControls?: import('@kiki/transcript').TranscriptPromptRuntimeControls;
   readonly appendTiming: DeferredAppendTiming;
   readonly revision?: number;
   readonly originKind?: 'cron_job';
@@ -751,6 +753,7 @@ export interface QueuedPromptMeta {
 }
 
 export interface QueuedPromptPreview {
+  readonly runtimeControls?: import('@kiki/transcript').TranscriptPromptRuntimeControls;
   readonly promptId: string;
   readonly text: string;
   readonly originKind?: 'cron_job';

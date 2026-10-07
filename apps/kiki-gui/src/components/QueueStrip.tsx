@@ -55,6 +55,8 @@ import type { QueuedModelSwitch } from '../lib/client';
 import { ContinuationRow } from './ContentContinuation';
 import { Icon } from './icons';
 
+export type QueueRuntimeControls = NonNullable<QueuedPromptPreview['runtimeControls']>;
+
 /** The armed remove falls back to idle after this long without the second click. */
 const REMOVE_ARM_TIMEOUT_MS = 5_000;
 
@@ -443,6 +445,15 @@ export function QueueStrip({
     // Queued behind the prompt being edited: holds its place until the edit ends.
     const waitsForEdit = editIndex >= 0 && index > editIndex;
     const timing = item.appendTiming ?? 'agent_idle';
+    const controls = item.runtimeControls;
+    const controlProfile = controls?.profile ?? controls?.execution?.profile;
+    const controlModel = controls?.model ?? (typeof controls?.execution?.overrides?.model === 'string' ? controls.execution.overrides.model : undefined);
+    const controlThinking = controls?.thinking ?? (typeof controls?.execution?.overrides?.thinking === 'string' ? controls.execution.overrides.thinking : undefined);
+    const controlParts = controls === undefined ? [] : [
+      controlProfile,
+      controlModel === undefined ? undefined : resolveModelId?.(controlModel) ?? controlModel,
+      controlThinking,
+    ].filter((value): value is string => value !== undefined);
     // A scheduled prompt the engine holds outside the ordinary send order:
     // `idle` and `steer`. Its row is here so its text is readable, not because
     // it is one of the messages the user is waiting to send — so it carries
@@ -532,6 +543,11 @@ export function QueueStrip({
             </span>
           );
         })}
+        {controlParts.length > 0 ? (
+          <span data-queue-runtime-controls className="min-w-0 max-w-64 shrink-0 truncate rounded-[4px] bg-accent/[0.08] px-1.5 py-0.5 text-[11px] text-accent-ink" title={controlParts.join(' · ')}>
+            {controlParts.join(' · ')}
+          </span>
+        ) : null}
         {isEditing ? (
           <span data-queue-edit-status className="shrink-0 text-[12px] text-ink-soft">
             {/* The edited prompt's own start condition, so a met condition

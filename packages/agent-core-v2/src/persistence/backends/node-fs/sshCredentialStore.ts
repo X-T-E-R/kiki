@@ -24,7 +24,7 @@ async function restrictWindowsAcl(path: string): Promise<void> {
 
 interface SecretEntry {
   setPassword(value: string): Promise<void>;
-  getPassword(): Promise<string | undefined>;
+  getPassword(): Promise<string | null | undefined>;
   deleteCredential(): Promise<boolean>;
 }
 
@@ -135,7 +135,7 @@ export class SshCredentialStore {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     try {
-      return await (await this.entryFactory(account)).getPassword();
+      return (await (await this.entryFactory(account)).getPassword()) ?? undefined;
     } catch {
       return undefined;
     }

@@ -4,7 +4,7 @@ import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin 
 import { projectTranscriptUserOrigin } from '../contract/origin';
 import { contentTextPresentation, readTextPresentation } from '../contract/presentation';
 import { sessionMediaIdFromBlobUrl } from '../contract/mediaRef';
-import { todoNotesUpdateSchema, transcriptTaskSchema } from '../contract/schema';
+import { todoNotesUpdateSchema, transcriptPromptRuntimeControlsSchema, transcriptTaskSchema } from '../contract/schema';
 import type { AttachmentSource } from '../model/attachment';
 import { releaseFramePayload, releaseToolFramePayload, type MessageDelivery, type ToolCallFrame } from '../model/frame';
 import { projectInteractionEndState, type TranscriptInteraction } from '../model/interaction';
@@ -412,14 +412,24 @@ export class TranscriptWireAdapter {
         : thinking !== undefined && this.#thinkingEffort !== undefined && thinking !== this.#thinkingEffort ? 'effort'
         : operationId.startsWith('resume:') ? 'resume' : 'binding');
       this.#modelSwitchChanges.set(operationId, change);
+      const operations: TranscriptOperation[] = [];
       if (committed || state === 'completed') {
-        if (to !== undefined) this.#modelAlias = to;
-        if (thinking !== undefined) this.#thinkingEffort = thinking;
+        const agent: { model?: string; thinkingEffort?: string } = {};
+        if (to !== undefined) {
+          this.#modelAlias = to;
+          agent.model = to;
+        }
+        if (thinking !== undefined) {
+          this.#thinkingEffort = thinking;
+          agent.thinkingEffort = thinking;
+        }
+        if (Object.keys(agent).length > 0) operations.push({ op: 'meta.merge', meta: { agent } });
       }
-      return [{ op: 'marker.upsert', item: { kind: 'marker', markerId: `model-switch:${operationId}`, marker: 'model.switch', at: isoOf(record.time),
+      operations.push({ op: 'marker.upsert', item: { kind: 'marker', markerId: `model-switch:${operationId}`, marker: 'model.switch', at: isoOf(record.time),
         payload: { operationId, from, to, state, mode, change,
           windowEpoch: committed ? record['newEpoch'] : receipt?.['windowEpoch'],
-          summaryGenerated: committed ? record['summaryGenerated'] : receipt?.['summaryGenerated'], error: receipt?.['error'] } } }];
+          summaryGenerated: committed ? record['summaryGenerated'] : receipt?.['summaryGenerated'], error: receipt?.['error'] } } });
+      return operations;
     }
     if (record.type === 'profile.bind' || record.type === 'config.update') {
       const model = stringOf(record['modelAlias']);
@@ -478,8 +488,10 @@ export class TranscriptWireAdapter {
       }
       this.#hiddenPromptIds.delete(promptId);
       const origin = objectOf(message?.['origin']);
+      const controls = transcriptPromptRuntimeControlsSchema.safeParse(record['execution']);
       const prompt: TranscriptPrompt = {
         promptId,
+        runtimeControls: controls.success && Object.keys(controls.data).length > 0 ? controls.data : undefined,
         originKind: originKind === 'cron_job' ? originKind : undefined,
         originDeliveryMode: originKind === 'cron_job' ? cronDeliveryModeOf(origin?.['deliveryMode']) : undefined,
         status: 'queued',

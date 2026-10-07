@@ -39,7 +39,8 @@ interface ConnectionSlot {
   current?: SSHKaos;
   pending?: Promise<SSHKaos>;
   unsubscribe?: () => void;
-  proxy?: ChildProcessWithoutNullStreams;
+  proxy?: { dispose(): void };
+  controller?: AbortController;
   retryAfter: number;
   failures: number;
 }
@@ -51,7 +52,7 @@ function sshAgent(explicit?: string): string | undefined {
   return explicit ?? process.env['SSH_AUTH_SOCK'] ?? (process.platform === 'win32' ? '\\\\.\\pipe\\openssh-ssh-agent' : undefined);
 }
 
-function openProxy(host: SshConnectionHost): { proxy: ChildProcessWithoutNullStreams; socket: Duplex } | undefined {
+function openProxy(host: SshConnectionHost): { socket: Duplex; dispose(): void } | undefined {
   let proxy: ChildProcessWithoutNullStreams;
   if (host.proxyCommand && host.proxyCommand !== 'none') {
     const values: Record<string, string> = { h: host.hostname, p: String(host.port), r: host.username };
@@ -76,10 +77,23 @@ function openProxy(host: SshConnectionHost): { proxy: ChildProcessWithoutNullStr
     proxy = spawn('ssh', args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   }
   const socket = Duplex.from({ readable: proxy.stdout, writable: proxy.stdin });
+  socket.on('error', () => undefined);
+  proxy.stderr.on('error', (error) => { socket.destroy(error); });
   proxy.stderr.resume();
+  let disposed = false;
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    socket.destroy();
+    proxy.stdin.destroy();
+    proxy.stdout.destroy();
+    proxy.stderr.destroy();
+    proxy.kill();
+  };
+  socket.once('close', dispose);
   proxy.once('exit', () => { socket.destroy(); });
   proxy.once('error', (error) => { socket.destroy(error); });
-  return { proxy, socket };
+  return { socket, dispose };
 }
 
 export class SshConnectionManager {
@@ -136,14 +150,18 @@ export class SshConnectionManager {
   }
 
   private async connect(hostId: string, slot: ConnectionSlot): Promise<SSHKaos> {
-    let proxy: ChildProcessWithoutNullStreams | undefined;
+    const controller = new AbortController();
+    slot.controller = controller;
+    let proxy: ReturnType<typeof openProxy>;
     try {
       const host = await this.resolveHost(hostId);
+      controller.signal.throwIfAborted();
       const knownHosts = new SshKnownHosts(host.knownHostsFiles);
-      const jump = openProxy(host);
-      proxy = jump?.proxy;
+      proxy = openProxy(host);
+      slot.proxy = proxy;
       let verificationError: Error | undefined;
       const connection = await SSHKaos.create({
+        signal: controller.signal,
         host: host.hostname,
         port: host.port,
         username: host.username,
@@ -163,7 +181,7 @@ export class SshConnectionManager {
         }) satisfies HostVerifier,
         extraOptions: {
           agent: sshAgent(host.agent),
-          sock: jump?.socket,
+          sock: proxy?.socket,
           keepaliveInterval: 15_000,
           keepaliveCountMax: 3,
           readyTimeout: 15_000,
@@ -187,14 +205,15 @@ export class SshConnectionManager {
         slot.current = undefined;
         slot.unsubscribe?.();
         slot.unsubscribe = undefined;
-        slot.proxy?.kill();
+        slot.proxy?.dispose();
         slot.proxy = undefined;
         this.emit(hostId, slot, 'disconnected');
       });
       this.emit(hostId, slot, 'ready');
       return connection;
     } catch (error) {
-      proxy?.kill();
+      proxy?.dispose();
+      if (slot.proxy === proxy) slot.proxy = undefined;
       if (this.slots.get(hostId) === slot && !this.disposed) {
         slot.failures += 1;
         const message = error instanceof Error ? error.message : String(error);
@@ -220,8 +239,9 @@ export class SshConnectionManager {
     const slot = this.slots.get(hostId);
     if (!slot) return;
     this.slots.delete(hostId);
+    slot.controller?.abort(new Error(`SSH host ${hostId} was disconnected`));
     slot.unsubscribe?.();
-    slot.proxy?.kill();
+    slot.proxy?.dispose();
     await slot.current?.close();
     this.emit(hostId, slot, 'idle');
   }

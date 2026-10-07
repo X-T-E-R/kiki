@@ -1033,6 +1033,16 @@ export function defineKlientConformance(
           name: 'RPCError',
           code: 40404,
         });
+        await session.agent('main').setModel(initialModel);
+        await session.close();
+        expect(getLiveSessionById(target.app.accessor, created.id)).toBeUndefined();
+        await expect(session.agent('main').getModel()).rejects.toMatchObject({ name: 'RPCError', code: 40404 });
+        expect(getLiveSessionById(target.app.accessor, created.id)).toBeUndefined();
+        await expect(session.agent('main').setModel(targetModel)).resolves.toMatchObject({ model: targetModel });
+        await expect(session.agent('main').getModel()).resolves.toBe(targetModel);
+        await session.close();
+        await expect(session.agent(child.id).setEffort('off')).resolves.toEqual({ effort: 'off' });
+        await expect(session.agent(child.id).getModel()).resolves.toBe(targetModel);
       } finally {
         await session.close();
         await kosong.removeProvider(initialModel);

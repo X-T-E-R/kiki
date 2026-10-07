@@ -51,6 +51,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import {
   type AgentListFilter,
+  type AgentRemovalMode,
   type AgentRestoreBinding,
   type CreateAgentOptions,
   type ForkAgentOptions,
@@ -705,7 +706,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     }
   }
 
-  async remove(agentId: string): Promise<void> {
+  async remove(agentId: string, mode: AgentRemovalMode = 'cancel'): Promise<void> {
     const slot = this.slots.get(agentId);
     if (slot === undefined) return;
     if (slot.removing !== undefined) return slot.removing;
@@ -714,7 +715,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const handle = slot.handle;
     const creating = slot.creating?.pending;
     slot.handle = undefined;
-    const removal = this.finishRemoval(agentId, handle, creating).finally(() => {
+    const removal = this.finishRemoval(agentId, handle, creating, mode).finally(() => {
       if (slot.removing === removal) slot.removing = undefined;
       this.releaseSlot(agentId, slot);
     });
@@ -726,13 +727,14 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     agentId: string,
     handle: IAgentScopeHandle | undefined,
     creating: Promise<IAgentScopeHandle> | undefined,
+    mode: AgentRemovalMode,
   ): Promise<void> {
     if (creating !== undefined) await creating.then(() => undefined, () => undefined);
     if (handle === undefined) return;
-    await this.doRemove(agentId, handle);
+    await this.doRemove(agentId, handle, mode);
   }
 
-  private async doRemove(agentId: string, handle: IAgentScopeHandle): Promise<void> {
+  private async doRemove(agentId: string, handle: IAgentScopeHandle, mode: AgentRemovalMode): Promise<void> {
     await handle.accessor.get(IAgentTaskService).stopAllOnExit('Session closed');
     const execution = handle.accessor.get(IAgentExecutionService);
     const compaction = handle.accessor.get(IAgentFullCompactionService).compacting;
@@ -742,7 +744,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const loop = handle.accessor.get(IAgentLoopService);
     for (const turnId of loop.status().pendingTurnIds) loop.cancel(turnId, reason);
     loop.cancel(undefined, reason);
-    const promptDrain = handle.accessor.get(IAgentPromptService).drain(reason);
+    const promptDrain = handle.accessor.get(IAgentPromptService).drain(reason, mode);
     if (compaction !== null && !compaction.abortController.signal.aborted) {
       compaction.abortController.abort(reason);
     }

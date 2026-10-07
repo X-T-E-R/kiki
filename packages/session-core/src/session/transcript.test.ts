@@ -686,6 +686,17 @@ describe('transcript authority projection', () => {
     expect(first.attachments.map((attachment) => attachment.attachmentId)).toEqual(['a1', 'a2']);
   });
 
+  it('restores message-bound model controls without an independent queue item', () => {
+    const runtimeControls = { model: 'example/model', thinking: 'max', profile: 'example-profile', execution: { executor: 'native' } };
+    const prompt = { promptId: 'bound-message', userMessageId: 'bound-message', status: 'queued' as const, content: [{ type: 'text' as const, text: 'continue' }], createdAt: FIXED_AT, runtimeControls, queuePosition: 0 };
+    const state = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ prompts: [prompt] }));
+    expect(state.queuedPromptIds).toEqual(['bound-message']);
+    expect(queuedPromptPreviews(state)).toEqual([expect.objectContaining({ promptId: 'bound-message', text: 'continue', runtimeControls })]);
+    expect(state.blocks.filter(block => block.kind === 'user')).toEqual([expect.objectContaining({ runtimeControls })]);
+    const restored = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ prompts: [prompt] }));
+    expect(queuedPromptPreviews(restored)[0]?.runtimeControls).toEqual(runtimeControls);
+  });
+
   it('covers a readonly queue lifecycle and reaches the delivered row through an older page', () => {
     const promptId = 'p-queue';
     const userMessageId = 'um-queue';

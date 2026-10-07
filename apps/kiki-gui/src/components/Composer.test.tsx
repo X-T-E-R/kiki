@@ -3613,6 +3613,20 @@ describe('session SSH stays resident and rides no message', () => {
     expect(line.textContent).not.toContain('Switching to');
   });
 
+  it('shows next-message runtime controls as one cancellable prompt chip', async () => {
+    const onCancel = vi.fn();
+    const { container } = await renderComposer({
+      pendingRuntimeControls: { profile: 'reviewer', model: 'fixture/kiki-lite', thinking: 'max' },
+      onCancelRuntimeControls: onCancel,
+    });
+    const chip = container.querySelector<HTMLElement>('[data-runtime-controls-pending]')!;
+    expect(chip.textContent).toContain('reviewer');
+    expect(chip.textContent).toContain('fixture/kiki-lite');
+    expect(chip.textContent).toContain('max');
+    await click(container.querySelector<HTMLButtonElement>('[data-runtime-controls-cancel]')!);
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
+
   it('reports a failed switch-list read next to the input and retries on demand', async () => {
     const onRetry = vi.fn();
     const { container } = await renderComposer({ modelSwitchError: { detail: 'socket closed', onRetry } });

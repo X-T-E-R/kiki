@@ -25,6 +25,7 @@ export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPr
       text: scheduled === undefined ? block?.text ?? '' : classifyTranscriptText({ text: scheduled.text, origin: { kind: 'cron_job' } }).text,
       media: scheduled?.media ?? block?.media,
       content: meta?.content ?? block?.queuedContent,
+      runtimeControls: meta?.runtimeControls ?? block?.runtimeControls,
       appendTiming: meta?.appendTiming ?? 'agent_idle',
       revision: meta?.revision,
       queuePosition: meta?.queuePosition,

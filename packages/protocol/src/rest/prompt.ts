@@ -34,6 +34,7 @@
  */
 
 import { z } from 'zod';
+import { transcriptPromptRuntimeControlsSchema } from '@kiki/transcript';
 
 import { messageContentSchema } from '../message';
 import { executionSelectionSchema } from '../execution';
@@ -116,6 +117,7 @@ export const promptStatusSchema = z.enum(['running', 'queued', 'blocked']);
 export type PromptStatus = z.infer<typeof promptStatusSchema>;
 
 export const promptItemSchema = z.object({
+  runtime_controls: transcriptPromptRuntimeControlsSchema.optional(),
   prompt_id: z.string().min(1),
   user_message_id: z.string().min(1),
   status: promptStatusSchema,

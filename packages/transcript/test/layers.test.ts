@@ -3029,6 +3029,35 @@ describe('TranscriptWireAdapter', () => {
     expect(countResult.changedIds).toEqual(new Set(['toolCallCount']));
   });
 
+  it('retains prompt-bound controls on the same message through queue moves and cold replay', () => {
+    const runtimeControls = { model: 'example/new', thinking: 'max', profile: 'example-profile', execution: { executor: 'native', profile: 'example-profile' }, planMode: false };
+    const transcript = replay([
+      { type: 'prompt.enqueued', promptId: 'bound-message', userMessageId: 'bound-message', message: { id: 'bound-message', origin: { kind: 'user' }, content: [{ type: 'text', text: 'continue' }] }, execution: { ...runtimeControls, goalObjective: 'not a public binding field' }, queueIndex: 0, time: 1000 },
+      { type: 'prompt.moved', queuedPromptIds: ['bound-message'], time: 1001 },
+      { type: 'prompt.launch_committed', promptId: 'bound-message', time: 1002 },
+    ]);
+    expect(transcript.getPrompts()).toHaveLength(1);
+    expect(transcript.getPrompt('bound-message')).toMatchObject({ runtimeControls, status: 'running' });
+    expect(transcript.getPrompt('bound-message')?.runtimeControls).not.toHaveProperty('goalObjective');
+    expect(transcript.getItems()).toEqual([]);
+  });
+
+  it('keeps message-bound controls with separate request identity and presentation across replacement', () => {
+    const runtimeControls = { model: 'example/new', thinking: 'max', execution: { executor: 'native' } };
+    const presentation = { spans: [{ start: 0, end: 8, kind: 'selection' as const, quote: 'continue' }] };
+    const content = [{ type: 'text' as const, text: 'continue', presentation }];
+    const transcript = replay([
+      { type: 'prompt.enqueued', promptId: 'retry-request', userMessageId: 'logical-message', message: { id: 'logical-message', origin: { kind: 'user' }, content }, execution: runtimeControls, queueIndex: 0, revision: 0, time: 1000 },
+      { type: 'prompt.replaced', promptId: 'retry-request', content, revision: 1, time: 1001 },
+      { type: 'prompt.launch_committed', promptId: 'retry-request', userMessageId: 'logical-message', time: 1002 },
+    ]);
+    expect(transcript.getPrompts()).toHaveLength(1);
+    expect(transcript.getPrompt('retry-request')).toMatchObject({
+      userMessageId: 'logical-message', content, runtimeControls, revision: 1, status: 'running',
+    });
+    expect(transcript.getPrompt('logical-message')).toBeUndefined();
+  });
+
   it('recovers the prompt queue content, timing and order from durable wire facts', () => {
     const transcript = replay([
       {
@@ -4213,6 +4242,17 @@ describe('AgentTranscriptDraft differential replay', () => {
 });
 
 describe('wire model binding facts', () => {
+  it('projects a canonical committed binding immediately without reviving a pending selection', () => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main');
+    reducer.apply(adapter.add({ type: 'profile.bind', modelAlias: 'example/old', thinkingEffort: 'high' }));
+    reducer.apply(adapter.add({ type: 'prompt.model_switch_queued', entry: { receipt: { operationId: 'switch-binding', fromModel: 'example/old', toModel: 'example/new', state: 'pending', mode: 'direct' } } }));
+    expect(transcript.getMeta().agent).toEqual({ model: 'example/old', thinkingEffort: 'high' });
+    reducer.apply(adapter.add({ type: 'agent.model_switch', operationId: 'switch-binding', fromModel: 'example/old', toModel: 'example/new', thinking: 'max', mode: 'direct' }));
+    expect(transcript.getMeta().agent).toEqual({ model: 'example/new', thinkingEffort: 'max' });
+    expect(transcript.getItems()[0]).toMatchObject({ marker: 'model.switch', payload: { state: 'preparing' } });
+  });
   it('restores model and effort metadata while marking only alias changes and never copying configuration prompts', () => {
     const adapter = new TranscriptWireAdapter('main');
     const transcript = new AgentTranscript('main');

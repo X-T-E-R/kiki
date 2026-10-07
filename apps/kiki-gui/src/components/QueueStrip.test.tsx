@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
-import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
+import { QueueHeaderSummary, QueueStrip, type QueueRuntimeControls } from './QueueStrip';
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -655,6 +655,18 @@ describe('QueueStrip timing picker', () => {
       gate.resolve();
     });
     expect(picker.disabled).toBe(false);
+  });
+});
+
+describe('QueueStrip runtime controls attached to messages', () => {
+  it('shows frozen controls on the real queued message without creating a switch row', async () => {
+    const item = {
+      ...ITEMS[0],
+      runtimeControls: { profile: 'reviewer', model: 'example/new', thinking: 'max' },
+    } as Parameters<typeof QueueStrip>[0]['items'][number] & { readonly runtimeControls: QueueRuntimeControls };
+    const { container } = await renderStrip({ items: [item] });
+    expect(container.querySelector('[data-queue-runtime-controls]')?.textContent).toBe('reviewer · example/new · max');
+    expect(container.querySelector('[data-queue-model-switch]')).toBeNull();
   });
 });
 

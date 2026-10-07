@@ -19,6 +19,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import type { Session } from '@kiki/protocol';
 import { clearComposerState, clearStoredDrafts, resetComposerMemoryForTests, resetDraftMemoryForTests } from '@kiki/session-core/composer';
+import { settingsSnapshot } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { ConversationShell } from './ConversationShell';
@@ -356,6 +357,27 @@ describe('switching profile while a turn is running', () => {
     // Pending is settled: the chip names the new profile with no pending mark.
     expect(profileTrigger(container)?.textContent).toContain('reviewer');
     expect(profileTrigger(container)?.textContent).not.toContain('next message');
+  });
+
+  it('keeps confirmed profile controls on their own message turn even with Send now', async () => {
+    const { container } = await mount();
+    await click(profileTrigger(container));
+    await settle();
+    await click(profileRow(container, 'reviewer'));
+    await click(dialogButton(container, 'Switch engine'));
+    await type('continue with the chosen profile', container);
+    await act(async () => {
+      composerInput(container)?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter', ctrlKey: true, shiftKey: settingsSnapshot().sendShortcut !== 'enter', bubbles: true,
+      }));
+    });
+    await settle();
+    await settle();
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ execution: { executor: 'native', profile: 'reviewer' } });
+    expect(sendPromptNow).not.toHaveBeenCalled();
+    expect(steerQueued).not.toHaveBeenCalled();
+    expect(abort).not.toHaveBeenCalled();
   });
 
   it('does not steer a queued switch message into the running turn', async () => {

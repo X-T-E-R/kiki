@@ -1805,8 +1805,7 @@ export class AgentPromptService implements IAgentPromptService {
           }
           if (!this.isDependencyReady(item.execution)) return;
           const execution = this.resolveExecutionBinding(item.execution);
-          if (execution !== undefined && (operationId === undefined ? this.hasExecutionBindingChange(execution) :
-            this.hasExecutionBindingChange({ ...execution, afterModelSwitch: undefined, model: undefined, thinking: undefined }))) {
+          if (execution !== undefined && this.hasExecutionBindingChange({ ...execution, afterModelSwitch: undefined, model: undefined, thinking: undefined })) {
             this.immediatePromptIds.add(item.id);
             void this.startNext();
             continue;
@@ -1815,7 +1814,22 @@ export class AgentPromptService implements IAgentPromptService {
             const lease = this.loop.tryAcquireQuiescence({ pendingSteps: 'preserve', boundary });
             if (lease === undefined) return;
             try {
-              await this.applyExecutionBinding(execution);
+              const changed = this.instantiation.invokeFunction(accessor => readPromptRuntimeControlChanges(accessor, execution));
+              if (await changed()) return;
+              const { message: rerouted } = this.extractCompressionCaptions(mergeSteerMessages([item]));
+              await this.materializeDaemonRefs(rerouted);
+              if (!this.pending.includes(item)) continue;
+              let bindingCommitted = false;
+              const assertCurrent = () => {
+                if (bindingCommitted) return;
+                if (!this.pending.includes(item)) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${item.id} was cancelled before binding commit`);
+                bindingCommitted = true;
+              };
+              try { await this.applyExecutionBinding(execution, assertCurrent); }
+              catch (error) {
+                if (!bindingCommitted && !this.pending.includes(item)) continue;
+                throw error;
+              }
               this.instantiation.invokeFunction(accessor => accessor.get(IAgentLLMRequesterService)).invalidatePromptSnapshots();
             } finally { await lease.dispose(); }
           }
@@ -1845,7 +1859,10 @@ export class AgentPromptService implements IAgentPromptService {
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are not pending');
     }
     const selected = this.pending.filter((item) => ids.has(item.id));
-    if (selected.some(item => item.execution?.afterModelSwitch !== undefined && !this.boundarySteeringIds.has(item.id))) {
+    const directBindingBoundary = targetTurnId !== undefined && selected.some(item =>
+      !this.boundarySteeringIds.has(item.id) && this.hasExecutionBindingChange(item.execution)) &&
+      selected.every(item => item.execution === undefined || !this.hasExecutionBindingChange({ ...item.execution, model: undefined, thinking: undefined }));
+    if (directBindingBoundary || selected.some(item => item.execution?.afterModelSwitch !== undefined && !this.boundarySteeringIds.has(item.id))) {
       for (const item of selected) this.acceptedBoundaryPromptIds.add(item.id);
       void this.scheduleSwitchBoundary(selected);
       return selected.map(item => item.handle);
@@ -2331,7 +2348,7 @@ export class AgentPromptService implements IAgentPromptService {
       (execution.planGate !== undefined && execution.planGate !== this.plan.planGate);
   }
 
-  private async applyExecutionBinding(execution: PromptExecutionBinding | undefined): Promise<void> {
+  private async applyExecutionBinding(execution: PromptExecutionBinding | undefined, assertCurrent?: () => void): Promise<void> {
     const binding = this.profile.data();
     if (
       execution?.execution === undefined &&
@@ -2346,7 +2363,7 @@ export class AgentPromptService implements IAgentPromptService {
         model: execution?.model,
         thinking: execution?.thinking,
         strictThinking: execution?.thinking !== undefined,
-      });
+      }, assertCurrent);
       await this.syncProfileBindingMetadata();
       return;
     }
@@ -2355,7 +2372,7 @@ export class AgentPromptService implements IAgentPromptService {
       await this.profile.bind({ execution: { ...execution.execution, overrides: {
         ...execution.execution.overrides,
         permission_mode: execution.permissionMode ?? execution.execution.overrides?.permission_mode,
-      } }, model: execution.model, thinking: execution.thinking });
+      } }, model: execution.model, thinking: execution.thinking }, assertCurrent);
       const permission = this.profile.data().execution?.effective.permission_mode;
       if (permission !== undefined) this.permissionMode.setMode(permission);
       await this.syncProfileBindingMetadata();
@@ -2363,7 +2380,7 @@ export class AgentPromptService implements IAgentPromptService {
     }
     const currentExecution = this.profile.data().execution;
     if (currentExecution !== undefined && execution.profile === undefined && (execution.model !== undefined || execution.thinking !== undefined)) {
-      await this.profile.bind({ execution: currentExecution.selection, model: execution.model, thinking: execution.thinking });
+      await this.profile.bind({ execution: currentExecution.selection, model: execution.model, thinking: execution.thinking }, assertCurrent);
       await this.syncProfileBindingMetadata();
       return;
     }
@@ -2378,15 +2395,16 @@ export class AgentPromptService implements IAgentPromptService {
         model: execution.model,
         thinking: execution.thinking,
         strictThinking: execution.thinking !== undefined,
-      });
+      }, assertCurrent);
       profileChanged = true;
       thinkingConsumed = execution.thinking !== undefined;
     }
-    if (execution.model !== undefined) await this.profile.setModel(execution.model);
+    if (execution.model !== undefined) await this.profile.setModel(execution.model, assertCurrent);
     if (execution.thinking !== undefined && !thinkingConsumed) {
+      assertCurrent?.();
       this.profile.setThinking(execution.thinking);
     }
-    if (profileChanged) await this.syncProfileBindingMetadata();
+    if (profileChanged || execution.thinking !== undefined) await this.syncProfileBindingMetadata();
   }
 
   private async syncProfileBindingMetadata(): Promise<void> {

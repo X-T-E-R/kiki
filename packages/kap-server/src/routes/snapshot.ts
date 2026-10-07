@@ -35,7 +35,7 @@ import {
 import { loadCapturedMessageHistoryTail } from '../services/messages/messageHistory';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import { readAgentRuntimeControls } from './sessionAgentConfig';
-import { resolveSessionFacts, toWireSession } from './sessions';
+import { resolveSessionBindingFacts, resolveSessionFacts, toWireSession } from './sessions';
 import { boundedEntity } from '../transport/klient/boundedContent';
 import { sessionAgentCounts } from './sessionAgentCounts';
 import { sessionAgentRoster } from './sessionAgentRoster';
@@ -138,8 +138,7 @@ export async function assembleBrowseSnapshotSource(
   return {
     as_of_seq: cursor.seq, epoch: cursor.epoch || `cold:${sessionId}`,
     session: toWireSession({ ...meta, workspaceId: summary.workspaceId }, workspace?.root ?? meta.cwd ?? '',
-      { ...resolveSessionFacts(core, sessionId, summary.usage),
-        agentConfig: { model: meta.agents?.['main']?.model ?? '' } }, cursor.seq),
+      await resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main']), cursor.seq),
     messages: { items: [], has_more: false }, in_flight_turn: null,
     subagents, agent_counts: sessionAgentCounts(meta.agents, subagents),
     pending_approvals: [], pending_questions: [],

@@ -1805,6 +1805,7 @@ describe('bindSessionTranscript', () => {
         pending: [
           {
             id: 'p-queue',
+            execution: { model: 'example/model', thinking: 'max', profile: 'example-profile', execution: { executor: 'native' } },
             userMessageId: 'm-queue',
             createdAt: '2026-01-01T00:00:01.000Z',
             state: 'pending',
@@ -1831,6 +1832,7 @@ describe('bindSessionTranscript', () => {
     expect(store.getAgent('main')?.getPrompt('p-queue')).toMatchObject({
       promptId: 'p-queue',
       status: 'queued',
+      runtimeControls: { model: 'example/model', thinking: 'max', profile: 'example-profile', execution: { executor: 'native' } },
       appendTiming: 'tasks_done',
       revision: 2,
     });
@@ -1838,6 +1840,22 @@ describe('bindSessionTranscript', () => {
       reason: 'recovery',
       count: 1,
     });
+    await binding.dispose();
+  });
+
+  it('keeps live prompt-bound controls through submitted and queued events on one message', async () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
+    const content = [{ type: 'text', text: 'continue' }];
+    const runtimeControls = { model: 'example/model', thinking: 'max' };
+    main.bus.emit(ev({ type: 'prompt.enqueued', promptId: 'bound-message', userMessageId: 'bound-message', execution: runtimeControls, message: { role: 'user', origin: { kind: 'user' }, content }, queueIndex: 0, time: 1 }));
+    main.bus.emit(ev({ type: 'prompt.submitted', promptId: 'bound-message', userMessageId: 'bound-message', content, status: 'queued', createdAt: '2026-01-01T00:00:00.000Z' }));
+    main.bus.emit(ev({ type: 'prompt.queued', promptId: 'bound-message', content }));
+    expect(store.getAgent('main')?.getPrompt('bound-message')).toMatchObject({ runtimeControls, status: 'queued' });
+    expect(store.getAgent('main')?.getPrompts()).toHaveLength(1);
+    expect(store.getAgent('main')?.getItems()).toEqual([]);
     await binding.dispose();
   });
 

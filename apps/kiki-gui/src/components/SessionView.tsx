@@ -16,7 +16,7 @@ import { AgentWorkspace, HEADER_ICON_BUTTON, PanelIcon, ResyncStatusBanner, Work
 import { ConfirmDialog } from './ConfirmDialog';
 import { NavBackButton } from './NavBackButton';
 import { useGuardedNavigate } from './dirtyGuard';
-import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort, type ComposerEngine } from './Composer';
+import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort, type ComposerEngine, type PendingRuntimeControls } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { useCompactionProgress } from './useCompactionProgress';
 import { useLastResponseAt } from './composerWorking';
@@ -2214,8 +2214,11 @@ export function SessionView({
     () => boundExecutionChoice(executionBinding, state.session?.agent_config.profile),
     [executionBinding, state.session],
   );
-  const shownExecution = pendingExecution ?? boundExecution;
-  const executionPending = pendingExecution !== undefined && !sameExecutionChoice(pendingExecution, boundExecution);
+  const profilePending = pendingProfile !== undefined && pendingProfile !== boundProfile;
+  const shownExecution = pendingExecution ?? (profilePending
+    ? { ...boundExecution, profile: pendingProfile }
+    : boundExecution);
+  const executionPending = profilePending || (pendingExecution !== undefined && !sameExecutionChoice(pendingExecution, boundExecution));
   // Engine names for the confirmation, from the same catalog the panel reads.
   const executorCatalog = useExecutorCatalog();
   const executorLabels = useMemo(() => ({
@@ -2261,10 +2264,15 @@ export function SessionView({
     effectiveModel === sessionModel ? state.thinkingEffort : undefined,
     catalogItem?.default_effort,
   ) : state.thinkingEffort);
+  const modelControlPending = modelTouched && composerSelection.modelChoice === modelChoice && composerSelection.modelOverride !== undefined;
+  const effortControlPending = effortTouched && composerSelection.effortChoice === effortChoice && composerSelection.effortOverride !== undefined;
+  const pendingRuntimeControls: PendingRuntimeControls | undefined = modelControlPending || effortControlPending ? {
+    model: modelControlPending ? effectiveModel : undefined,
+    thinking: effortControlPending ? effectiveEffort : undefined,
+  } : undefined;
   const composerEngine = useMemo<ComposerEngine | undefined>(() => harness === undefined ? undefined : {
     label: harness.label, fork: !harnessDenies(harness, 'fork'), images: !harnessDenies(harness, 'image'),
   }, [harness]);
-  const profilePending = pendingProfile !== undefined && pendingProfile !== boundProfile;
 
   // ---- model switching: three-mode confirm + queued control item ----
   // Preferences are the space's server config (the GUI only caches the query,
@@ -2366,29 +2374,28 @@ export function SessionView({
     }
     void submitModelSwitch({ fromModel, toModel, mode: resolved.mode, remember: false });
   }, [currentBoundModel, modelSwitchPrefs, submitModelSwitch]);
-  // A model/effort pick made while a profile switch is pending is explicit:
-  // it overrides the incoming profile's pins on the switch prompt. The same
-  // pick with nothing pending is what says "send this one", so it counts as
-  // touched too — otherwise a bare engine would swallow the user's own pick
-  // along with the display value it is withholding.
+  // A model pick is a control on the next real prompt. It never rebinds the
+  // live agent or creates a control-only queue row. The binding snapshot kept
+  // beside the choice prevents a later session refresh from making an old
+  // display value look like a new user selection.
   const handleModelChange = useCallback((model: string | undefined) => {
-    // An empty conversation has nothing to hand over: the pick rides the next
-    // prompt as before, exactly like a pick made while a profile is pending.
-    if (pendingProfile !== undefined || executionPending || !conversationStarted) {
-      setModelOverride(model);
-      setModelChoice({ model: sessionModel, thinking: state.thinkingEffort });
-      setModelTouched(true);
+    if (model === undefined) {
+      setModelOverride(undefined);
+      setModelChoice(undefined);
+      setModelTouched(false);
       return;
     }
-    // A live conversation switches the bound model instead: the pick is a
-    // queue control item, so the model on screen stays the actual one.
-    setModelOverride(undefined);
-    setModelChoice(undefined);
-    setModelTouched(false);
-    const target = canonicalModel(model ?? inheritedDefault);
-    if (target === undefined || target === currentBoundModel) return;
-    openModelSwitchPanel(target);
-  }, [canonicalModel, conversationStarted, currentBoundModel, inheritedDefault, openModelSwitchPanel, pendingProfile, executionPending, sessionModel, state.thinkingEffort]);
+    const target = canonicalModel(model);
+    if (target === undefined || target === currentBoundModel && pendingProfile === undefined && !executionPending) {
+      setModelOverride(undefined);
+      setModelChoice(undefined);
+      setModelTouched(false);
+      return;
+    }
+    setModelOverride(model);
+    setModelChoice({ model: sessionModel, thinking: state.thinkingEffort });
+    setModelTouched(true);
+  }, [canonicalModel, currentBoundModel, executionPending, pendingProfile, sessionModel, state.thinkingEffort]);
 
   const runModelSwitchAction = useCallback((
     operationId: string,
@@ -2477,6 +2484,11 @@ export function SessionView({
     setModelChoice(undefined);
     setEffortChoice(undefined);
   }, []);
+  const cancelPendingRuntimeControls = useCallback(() => {
+    setModelOverride(undefined);
+    setEffortOverride(undefined);
+    clearTouchedControls();
+  }, [clearTouchedControls]);
 
   const applyPendingProfile = useCallback((name: string) => {
     const defaults = composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], name);
@@ -2530,10 +2542,12 @@ export function SessionView({
   // reachable without reopening the panel.
   const cancelPendingExecution = useCallback(() => {
     setPendingExecution(undefined);
+    setPendingProfile(undefined);
     clearTouchedControls();
   }, [clearTouchedControls]);
   const handleExecutionChange = useCallback((next: ExecutionChoice) => {
-    if (sameExecutionChoice(next, pendingExecution ?? boundExecution)) return;
+    const shown = pendingExecution ?? (profilePending ? shownExecution : boundExecution);
+    if (sameExecutionChoice(next, shown)) return;
     if (sameExecutionChoice(next, boundExecution)) {
       cancelPendingExecution();
       return;
@@ -2543,7 +2557,7 @@ export function SessionView({
       return;
     }
     setExecutionSwitchConfirm(next);
-  }, [applyPendingExecution, boundExecution, cancelPendingExecution, pendingExecution, state.blocks, state.loaded]);
+  }, [applyPendingExecution, boundExecution, cancelPendingExecution, pendingExecution, profilePending, shownExecution, state.blocks, state.loaded]);
   const confirmExecutionSwitchRun = useCallback(() => {
     if (executionSwitchConfirm === undefined) return;
     applyPendingExecution(executionSwitchConfirm);
@@ -2672,11 +2686,13 @@ export function SessionView({
             : composerAttachments.some((item) => item.kind === 'upload')
               ? t('sv.fileEcho')
               : t('sv.imageEcho');
+        const modelControlTouched = modelTouched && composerSelection.modelChoice === modelChoice;
+        const effortControlTouched = effortTouched && composerSelection.effortChoice === effortChoice;
         const profileSwitch = resolveProfileSwitchSubmission({
           pendingProfile,
           boundProfile,
-          modelTouched: modelTouched && composerSelection.modelChoice === modelChoice,
-          effortTouched: effortTouched && composerSelection.effortChoice === effortChoice,
+          modelTouched: modelControlTouched,
+          effortTouched: effortControlTouched,
           model: effectiveModel,
           thinking: effectiveEffort,
           permissionTouched: permissionTouchedRef.current,
@@ -2685,12 +2701,8 @@ export function SessionView({
           boundExecution,
         });
         pendingSendRef.current = true;
-        // "Send now" into the running turn: the controller's steer ledger
-        // owns the echo from this frame until the delivered frame replaces
-        // it (no local pending bubble, so nothing to clear early). A profile
-        // or engine switch has to open its own turn, so it keeps the ordinary
-        // path: a steered message runs inside the ACTIVE turn, which cannot
-        // change the binding.
+        // Model and effort can join at a safe step boundary. A profile or engine
+        // selection stays on the ordinary own-turn path for this same message.
         const rebindsAgent = profileSwitch.profile !== undefined || profileSwitch.execution !== undefined;
         if (options?.now === true && !rebindsAgent) {
           const sentAnnotationsNow = annotations;
@@ -2710,6 +2722,8 @@ export function SessionView({
             .sendPromptNow({
               text: echoText,
               content,
+              profile: profileSwitch.profile,
+              execution: profileSwitch.execution,
               model: profileSwitch.model,
               thinking: profileSwitch.thinking,
               // The steer runs inside the ACTIVE turn, which cannot rebind, so it
@@ -2728,6 +2742,14 @@ export function SessionView({
             .then((result) => {
               releaseComposition();
               setQuote(null);
+              if (rebindsAgent || modelControlTouched || effortControlTouched) {
+                setPendingProfile(undefined);
+                setPendingExecution(undefined);
+                setModelOverride(undefined);
+                setEffortOverride(undefined);
+                clearTouchedControls();
+                void controller.refreshSession();
+              }
               if (result.outcome === 'queued') {
                 // The turn ended while it was on the way: it runs next, from
                 // the queue — say so instead of letting it look lost.
@@ -2779,7 +2801,6 @@ export function SessionView({
           planGate,
           goalObjective: promptGoalObjective(options),
           appendTiming: options?.appendTiming ?? liveSettings.defaultAppendTiming,
-          afterModelSwitch: modelSwitches.dependency?.input.operationId,
           personaGreetingReply: options?.personaGreetingReply,
         };
         let accepted = false;
@@ -2828,12 +2849,14 @@ export function SessionView({
                 });
               });
             }
-            if (rebindsAgent) {
+            if (rebindsAgent || modelControlTouched || effortControlTouched) {
               setPendingProfile(undefined);
               setPendingExecution(undefined);
+              setModelOverride(undefined);
+              setEffortOverride(undefined);
               clearTouchedControls();
-              // No WS frame carries the binding — re-read the record so the
-              // chip shows the new engine and profile immediately.
+              // No WS frame carries every binding control — re-read the record
+              // so the chip settles without carrying a consumed pick forward.
               void controller.refreshSession();
             }
           })
@@ -3067,7 +3090,6 @@ boundExecution,
     planMode,
     planGate,
     liveSettings.defaultAppendTiming,
-    modelSwitches.dependency,
     modelSwitches.switches,
     modelSwitches.refresh,
     quote,
@@ -4205,6 +4227,8 @@ boundExecution,
               originalThinking: modelSwitches.active.originalBinding.thinking,
               targetThinking: modelSwitches.active.input.thinking,
             }}
+            pendingRuntimeControls={pendingRuntimeControls}
+            onCancelRuntimeControls={cancelPendingRuntimeControls}
             modelSwitchError={modelSwitches.error === undefined ? undefined : {
               detail: modelSwitches.error.message,
               onRetry: modelSwitches.refresh,
@@ -4298,6 +4322,8 @@ boundExecution,
     modelSource,
     modelSwitches.active,
     modelSwitches.error,
+    pendingRuntimeControls,
+    cancelPendingRuntimeControls,
     pendingProfile,
     boundProfile,
     profilePending,

@@ -3038,7 +3038,7 @@ export function projectAgentTranscriptView(
   previous: SessionViewState,
   agentId: string,
   snapshot: AgentState | AgentTranscriptSnapshot,
-  options: { readonly retainPendingPrompts?: boolean } = {},
+  options: { readonly retainPendingPrompts?: boolean; readonly cold?: boolean } = {},
 ): SessionViewState {
   const source = agentStateToProjectionSource(agentId, snapshot);
   const projected = agentTranscriptToBlocks(source, previous.blocks);
@@ -3060,7 +3060,18 @@ export function projectAgentTranscriptView(
     : withoutRemovedQueuedPrompts.filter((block) =>
       block.kind !== 'user' || block.turnId !== undefined ||
       block.promptId === undefined || !completedSteerIds.has(block.promptId));
-  const blocks = settleCompletedPrompts(deliveredOnly, prompts);
+  const controlsByMessage = new Map<string, NonNullable<TranscriptPrompt['runtimeControls']>>();
+  for (const prompt of prompts) {
+    if (prompt.runtimeControls === undefined) continue;
+    controlsByMessage.set(prompt.promptId, prompt.runtimeControls);
+    if (prompt.userMessageId !== undefined) controlsByMessage.set(prompt.userMessageId, prompt.runtimeControls);
+  }
+  const blocks = settleCompletedPrompts(deliveredOnly, prompts).map((block) => {
+    if (block.kind !== 'user') return block;
+    const runtimeControls = controlsByMessage.get(block.promptId ?? '')
+      ?? controlsByMessage.get(block.userMessageId ?? block.id) ?? block.runtimeControls;
+    return runtimeControls === block.runtimeControls ? block : { ...block, runtimeControls };
+  });
   const withSnapshotFields = overlaySnapshotSubagentFields(blocks, previous.snapshotSubagents);
   const stableBlocks = stabilizeProjectedBlocks(previous.blocks, withSnapshotFields);
   let firstTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
@@ -3102,13 +3113,14 @@ export function projectAgentTranscriptView(
     const appendTiming = prompt.appendTiming ?? existing?.appendTiming ?? 'agent_idle';
     const revision = prompt.revision ?? existing?.revision;
     const queuePosition = prompt.queuePosition ?? existing?.queuePosition;
+    const runtimeControls = prompt.runtimeControls ?? existing?.runtimeControls;
     if (prompt.originKind === 'cron_job') {
-      queuedPromptMeta[prompt.promptId] = { appendTiming, revision, queuePosition, originKind: prompt.originKind, content: promptContentParts(prompt.content), cronDeliveryMode: prompt.originDeliveryMode ?? existing?.cronDeliveryMode };
+      queuedPromptMeta[prompt.promptId] = { appendTiming, revision, queuePosition, runtimeControls, originKind: prompt.originKind, content: promptContentParts(prompt.content), cronDeliveryMode: prompt.originDeliveryMode ?? existing?.cronDeliveryMode };
     } else {
       queuedPromptMeta[prompt.promptId] =
-        existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision && existing.queuePosition === queuePosition
+        existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision && existing.queuePosition === queuePosition && existing.runtimeControls === runtimeControls
           ? existing
-          : { appendTiming, revision, queuePosition };
+          : { appendTiming, revision, queuePosition, runtimeControls };
     }
   }
   let running: TranscriptPrompt | undefined;
@@ -3139,8 +3151,8 @@ export function projectAgentTranscriptView(
     loaded: true,
     transcriptReady: true,
     loadError: undefined,
-    busy: agentBusyFromMeta(source) === true,
-    turnStartedAt: Number.isNaN(parsedTurnStartedAt) ? undefined : parsedTurnStartedAt,
+    busy: options.cold !== true && agentBusyFromMeta(source) === true,
+    turnStartedAt: options.cold === true || Number.isNaN(parsedTurnStartedAt) ? undefined : parsedTurnStartedAt,
     model: meta?.model ?? previous.model,
     thinkingEffort: meta?.thinkingEffort,
     contextTokens: meta?.contextTokens,
@@ -3151,11 +3163,11 @@ export function projectAgentTranscriptView(
     queuedPromptIds,
     promptQueueHold: snapshot.meta.promptQueueHold,
     queuedPromptMeta,
-    activePromptId: running?.promptId,
-    abortablePromptId: runningTurn === undefined
+    activePromptId: options.cold === true ? undefined : running?.promptId,
+    abortablePromptId: options.cold === true ? undefined : runningTurn === undefined
       ? running?.promptId
       : runningTurn.promptId ?? (runningTurn.origin.kind === 'user' ? running?.promptId : undefined),
-    abortableTurnId: runningTurn?.ordinal,
+    abortableTurnId: options.cold === true ? undefined : runningTurn?.ordinal,
     pendingInteraction,
     todos: todos.at(-1)?.items ?? [],
     todoNotes: agentTodo?.notes,
