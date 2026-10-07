@@ -2,6 +2,7 @@ import {
   Error2,
   ErrorCodes,
   IAgentProfileService,
+  IAgentPromptService,
   IAgentSkillService,
   IBootstrapService,
   IBuiltinSkillSource,
@@ -17,6 +18,7 @@ import {
   isError2,
   isUserActivatableSkillType,
   normalizeSkillName,
+  promptRetryFor,
   sessionMediaOriginalsDir,
   type ContentPart,
   type ISessionScopeHandle,
@@ -24,6 +26,7 @@ import {
   type SkillDefinition,
 } from '@kiki/agent-core-v2';
 import { KIKI_AS_SUBAGENT_SKILL } from '@kiki/agent-core-v2/app/skillCatalog/builtin/kiki-as-subagent';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 
@@ -114,6 +117,20 @@ async function resolveActivatedSession(
 }
 
 const HOST_SKILL_TEXT = `---\nname: kiki-as-subagent\ndescription: ${JSON.stringify(KIKI_AS_SUBAGENT_SKILL.description)}\n---\n\n${KIKI_AS_SUBAGENT_SKILL.content}\n`;
+
+function skillActivationFingerprint(name: string, input: z.infer<typeof activateSkillRequestSchema>): string {
+  const canonical = JSON.stringify({ name, args: input.args, user_input: input.user_input, attachments: input.attachments }, (_key, value: unknown) =>
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).toSorted(([left], [right]) => left < right ? -1 : left > right ? 1 : 0))
+      : value,
+  );
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+function activatedSkillName(receipt: import('@kiki/agent-core-v2').PromptRetryReceipt, fallback: string): string {
+  const origin = receipt.message?.origin;
+  return origin?.kind === 'skill_activation' ? origin.skillName : fallback;
+}
 
 export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
   const hostPreviewRoute = defineRoute(
@@ -302,6 +319,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
         [ErrorCode.SESSION_NOT_FOUND]: {},
         [ErrorCode.SKILL_NOT_FOUND]: {},
         [ErrorCode.SKILL_NOT_ACTIVATABLE]: {},
+        [ErrorCode.PROMPT_ID_CONFLICT]: {},
         [ErrorCode.FILE_NOT_FOUND]: {},
       },
       description: 'Activate a skill in a session (REST analogue of the /<skill> slash command)',
@@ -334,51 +352,69 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
 
       let preparedMedia: PromptMediaPreparation | undefined;
       try {
-        const attachments = req.body.attachments ?? [];
-        const attachmentParts: ContentPart[] = [];
+        const promptId = req.body.prompt_id;
+        const fingerprint = promptId === undefined ? undefined : skillActivationFingerprint(parsed.id, req.body);
         const agent = await ensureMainAgent(resolved.handle);
-        if (attachments.length > 0) {
-          const catalog = resolved.handle.accessor.get(ISessionSkillCatalog);
-          await catalog.ready;
-          const skill = catalog.catalog.getSkill(parsed.id);
-          if (skill === undefined) {
-            throw new Error2(ErrorCodes.SKILL_NOT_FOUND, `Skill "${parsed.id}" was not found`);
+        const prompt = agent.accessor.get(IAgentPromptService);
+        const runActivation = async (): Promise<string> => {
+          if (promptId !== undefined && fingerprint !== undefined) {
+            const receipt = await promptRetryFor(prompt).lookup(promptId, fingerprint);
+            if (receipt !== undefined) return activatedSkillName(receipt, parsed.id);
           }
-          if (!isUserActivatableSkillType(skill.metadata.type)) {
-            throw new Error2(
-              ErrorCodes.SKILL_TYPE_UNSUPPORTED,
-              `Skill "${skill.name}" cannot be activated by the user`,
+          const attachments = req.body.attachments ?? [];
+          const attachmentParts: ContentPart[] = [];
+          if (attachments.length > 0) {
+            const catalog = resolved.handle.accessor.get(ISessionSkillCatalog);
+            await catalog.ready;
+            const skill = catalog.catalog.getSkill(parsed.id);
+            if (skill === undefined) {
+              throw new Error2(ErrorCodes.SKILL_NOT_FOUND, `Skill "${parsed.id}" was not found`);
+            }
+            if (!isUserActivatableSkillType(skill.metadata.type)) {
+              throw new Error2(
+                ErrorCodes.SKILL_TYPE_UNSUPPORTED,
+                `Skill "${skill.name}" cannot be activated by the user`,
+              );
+            }
+            await assertPromptFileRefs(attachments, core.accessor.get(IFileService));
+            const submittedAttachments = await resolvePromptSessionMediaRefs(
+              attachments,
+              resolved.handle.accessor.get(ISessionMediaStore),
             );
+            const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
+            const sessionDir = resolved.handle.accessor.get(ISessionContext).sessionDir;
+            preparedMedia = await resolvePromptMediaFiles(
+              submittedAttachments,
+              core.accessor.get(IFileService),
+              core.accessor.get(IBootstrapService).cacheDir,
+              {
+                telemetry,
+                providerType: agent.accessor
+                  .get(IAgentProfileService)
+                  .getModelProviderType(),
+                resolveOriginalsDir: async () => sessionMediaOriginalsDir(sessionDir),
+                resolveAttachmentsDir: async () => join(sessionDir, 'attachments'),
+              },
+            );
+            attachmentParts.push(...contentToCoreParts(preparedMedia.content));
           }
-          await assertPromptFileRefs(attachments, core.accessor.get(IFileService));
-          const submittedAttachments = await resolvePromptSessionMediaRefs(
-            attachments,
-            resolved.handle.accessor.get(ISessionMediaStore),
-          );
-          const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
-          const sessionDir = resolved.handle.accessor.get(ISessionContext).sessionDir;
-          preparedMedia = await resolvePromptMediaFiles(
-            submittedAttachments,
-            core.accessor.get(IFileService),
-            core.accessor.get(IBootstrapService).cacheDir,
-            {
-              telemetry,
-              providerType: agent.accessor
-                .get(IAgentProfileService)
-                .getModelProviderType(),
-              resolveOriginalsDir: async () => sessionMediaOriginalsDir(sessionDir),
-              resolveAttachmentsDir: async () => join(sessionDir, 'attachments'),
-            },
-          );
-          attachmentParts.push(...contentToCoreParts(preparedMedia.content));
-        }
-        await agent.accessor
-          .get(IAgentSkillService)
-          .activate({ name: parsed.id, args: req.body.args, userInput: req.body.user_input, content: attachmentParts });
-        await preparedMedia?.discard();
-        preparedMedia = undefined;
-        requestLog(req)?.info({ session_id, skill_name: parsed.id }, 'skill activated');
-        reply.send(okEnvelope({ activated: true, skill_name: parsed.id }, req.id));
+          await agent.accessor.get(IAgentSkillService).activate({
+            name: parsed.id,
+            args: req.body.args,
+            userInput: req.body.user_input,
+            content: attachmentParts,
+            promptId,
+            retryFingerprint: fingerprint,
+          });
+          await preparedMedia?.discard();
+          preparedMedia = undefined;
+          return parsed.id;
+        };
+        const skillName = promptId === undefined || fingerprint === undefined
+          ? await runActivation()
+          : await promptRetryFor(prompt).run(promptId, fingerprint, runActivation);
+        requestLog(req)?.info({ session_id, skill_name: skillName }, 'skill activated');
+        reply.send(okEnvelope({ activated: true, skill_name: skillName }, req.id));
       } catch (err) {
         await preparedMedia?.discard();
         sendMappedError(reply, req.id, err);
@@ -444,6 +480,9 @@ function sendMappedError(
         return;
       case ErrorCodes.VALIDATION_FAILED:
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
+        return;
+      case ErrorCodes.PROMPT_ID_CONFLICT:
+        reply.send(errEnvelope(ErrorCode.PROMPT_ID_CONFLICT, err.message, requestId, err.stack));
         return;
     }
   }

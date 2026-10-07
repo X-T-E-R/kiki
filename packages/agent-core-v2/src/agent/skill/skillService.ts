@@ -21,7 +21,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { Service } from '#/_base/di/service';
 import { ErrorCodes, Error2 } from '#/errors';
 import { isUserActivatableSkillType, type SkillDefinition } from '#/app/skillCatalog/types';
-import { IAgentPromptService, reservePrompt, type PromptLaunchResult, type PromptReservation } from '#/agent/prompt/prompt';
+import { IAgentPromptService, promptRetryFor, reservePrompt, type PromptLaunchResult, type PromptReservation } from '#/agent/prompt/prompt';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentLoopService, type Turn } from '#/agent/loop/loop';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -65,6 +65,14 @@ export class AgentSkillService extends Service implements IAgentSkillService {
   }
 
   async activate(input: SkillActivationInput): Promise<PromptLaunchResult> {
+    if (input.promptId !== undefined && input.retryFingerprint !== undefined) {
+      const receipt = await promptRetryFor(this.prompt).lookup(input.promptId, input.retryFingerprint);
+      if (receipt !== undefined) {
+        const turnId = this.prompt.lookup(input.promptId)?.turnId;
+        if (turnId === undefined) throw new Error2(ErrorCodes.INTERNAL, `Prompt "${input.promptId}" has no assigned turn`);
+        return { turn_id: turnId };
+      }
+    }
     await this.skillCatalog.ready;
     const skill = this.skillCatalog.catalog.getSkill(input.name);
     if (skill === undefined) {
@@ -107,6 +115,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
         userInput: input.userInput ?? `/${input.name}${skillArgs === '' ? '' : ` ${skillArgs}`}`,
       },
       content,
+      input,
     );
     if (turn === undefined) {
       throw new Error2(
@@ -262,6 +271,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
   private async recordActivation(
     origin: SkillActivationOrigin,
     input?: readonly ContentPart[],
+    activation?: SkillActivationInput,
   ): Promise<Turn | undefined> {
     await this.dispatcher.dispatch(new SkillActivate({ origin }));
     this.publishActivation(origin);
@@ -274,9 +284,18 @@ export class AgentSkillService extends Service implements IAgentSkillService {
       origin,
     };
     if (this.loop.status().state === 'running') {
-      return this.prompt.inject(message);
+      return this.prompt.inject(message, activation?.promptId === undefined ? undefined : {
+        promptId: activation.promptId,
+        userMessageId: activation.promptId,
+        retryFingerprint: activation.retryFingerprint,
+      });
     }
-    return (await this.prompt.enqueue({ message })).launched;
+    return (await this.prompt.enqueue({
+      id: activation?.promptId,
+      userMessageId: activation?.promptId,
+      retryFingerprint: activation?.retryFingerprint,
+      message,
+    })).launched;
   }
 
   private renderSkillPrompt(skill: SkillDefinition, rawArgs: string): string {

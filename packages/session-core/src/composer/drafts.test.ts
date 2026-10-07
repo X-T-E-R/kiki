@@ -68,6 +68,27 @@ describe('composer model selection ownership', () => {
     expect(resolve(draft)).toMatchObject({ modelOverride: 'example/old-model', effortOverride: 'high' });
     expect(resolve({ ...draft, binding: { ...binding, thinking: 'high' } })).toMatchObject({ modelOverride: undefined, effortOverride: undefined });
   });
+  it('rebases only a matching accepted transition, not queued or unrelated binding changes', () => {
+    const previous = { model: 'example/old', thinking: 'low' };
+    const next = { model: 'example/accepted', thinking: 'high' };
+    const draft = { modelOverride: 'example/newer-pick', effortOverride: 'max', modelChoice: previous, effortChoice: previous,
+      conversationStarted: true, pendingBinding: false, acceptedBindingChange: { previous, next } };
+    expect(resolve({ ...draft, binding: previous })).toMatchObject({ modelChoice: previous, effortChoice: previous });
+    const rebased = resolve({ ...draft, binding: next });
+    expect(rebased).toEqual({ modelOverride: 'example/newer-pick', effortOverride: 'max', modelChoice: next, effortChoice: next });
+    expect(resolve({ ...draft, binding: next, modelChoice: undefined, effortChoice: { model: 'example/unrelated' } }))
+      .toMatchObject({ modelOverride: undefined, effortOverride: undefined });
+    expect(resolve({ ...draft, binding: { model: 'example/foreign', thinking: 'high' } }))
+      .toMatchObject({ modelOverride: undefined, effortOverride: undefined });
+    writeComposerState('accepted-choice', emptyState(rebased));
+    resetComposerMemoryForTests();
+    const restored = readComposerState('accepted-choice');
+    expect(restored).not.toHaveProperty('acceptedBindingChange');
+    expect(resolve({ ...restored, conversationStarted: true, pendingBinding: false, binding: next }))
+      .toMatchObject({ modelOverride: 'example/newer-pick', effortOverride: 'max' });
+    expect(resolve({ ...restored, conversationStarted: true, pendingBinding: false, binding: previous }))
+      .toMatchObject({ modelOverride: undefined, effortOverride: undefined });
+  });
   it('persists per-control choice provenance across restart without persisting attachments or run controls', () => {
     writeComposerState('model-choice', emptyState({ modelOverride: 'example/old-model', modelChoice: binding, effortOverride: 'high' }));
     resetComposerMemoryForTests();

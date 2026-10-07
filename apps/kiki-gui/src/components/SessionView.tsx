@@ -87,6 +87,8 @@ import {
   writeComposerState,
   writeDraft,
   type ComposerAttachment,
+  type ComposerModelChoice,
+  type ComposerModelBindingChange,
   type FileMention,
   type SelectionAnnotation,
   type SelectionSourceAnchor,
@@ -1228,6 +1230,41 @@ export function resolveControlledSkillSubmission(input: Parameters<typeof resolv
   };
 }
 
+export function captureSkillRequest<T extends object>(request: T): T & { prompt_id: string } {
+  return { ...structuredClone(request), prompt_id: crypto.randomUUID() };
+}
+
+type SkillControlSelection = Pick<ReturnType<typeof readComposerState>, 'modelOverride' | 'effortOverride' | 'modelChoice' | 'effortChoice'> & {
+  readonly pendingProfile?: string;
+  readonly pendingExecution?: ExecutionChoice;
+  readonly permissionOverride?: PermissionMode;
+};
+
+export function skillControlSelectionKey(input: SkillControlSelection): string {
+  const { pendingProfile, pendingExecution, modelOverride, effortOverride, modelChoice, effortChoice, permissionOverride } = input;
+  return JSON.stringify({ pendingProfile, pendingExecution, modelOverride, effortOverride, modelChoice, effortChoice, permissionOverride });
+}
+
+export function completeSkillControlSelection(input: {
+  readonly controlled: import('@kiki/protocol').PromptSubmission;
+  readonly capturedSelection: string;
+  readonly currentSelection: string;
+  readonly clear: () => void;
+  readonly refresh: () => void;
+  readonly binding?: ComposerModelChoice;
+  readonly preserveBindingChange?: (change: ComposerModelBindingChange) => void;
+}): void {
+  if (input.controlled.profile !== undefined || input.controlled.execution !== undefined ||
+    input.controlled.model !== undefined || input.controlled.thinking !== undefined) {
+    if (input.currentSelection === input.capturedSelection) input.clear();
+    else if (input.binding !== undefined && input.controlled.profile === undefined && input.controlled.execution === undefined) {
+      input.preserveBindingChange?.({ previous: input.binding,
+        next: { model: input.controlled.model ?? input.binding.model, thinking: input.controlled.thinking ?? input.binding.thinking } });
+    }
+    input.refresh();
+  }
+}
+
 /**
  * How a pending engine switch names itself in the confirmation: the engine's
  * catalog label where one is known, the raw id otherwise. A switch to the
@@ -2245,16 +2282,27 @@ export function SessionView({
   const sessionModel = state.model;
   const inheritedDefault = harness === undefined ? serverDefaultModel ?? liveSettings.defaultModel : undefined;
   const conversationStarted = state.loaded && sessionHasStartedConversation(state.blocks);
+  const skillBindingChangeRef = useRef<ComposerModelBindingChange | undefined>(undefined);
   const composerSelection = resolveComposerModelOverrides({ modelOverride, effortOverride, modelChoice, effortChoice,
     conversationStarted, pendingBinding: pendingProfile !== undefined || executionPending,
-    binding: { model: sessionModel, thinking: state.thinkingEffort } });
+    binding: { model: sessionModel, thinking: state.thinkingEffort }, acceptedBindingChange: skillBindingChangeRef.current });
   useEffect(() => {
     if (composerSelection.modelOverride !== modelOverride) setModelOverride(composerSelection.modelOverride);
     if (composerSelection.effortOverride !== effortOverride) setEffortOverride(composerSelection.effortOverride);
-    if (composerSelection.modelChoice !== modelChoice) { setModelChoice(composerSelection.modelChoice); setModelTouched(false); }
-    if (composerSelection.effortChoice !== effortChoice) { setEffortChoice(composerSelection.effortChoice); setEffortTouched(false); }
+    if (composerSelection.modelChoice !== modelChoice) {
+      setModelChoice(composerSelection.modelChoice);
+      if (composerSelection.modelChoice === undefined) setModelTouched(false);
+    }
+    if (composerSelection.effortChoice !== effortChoice) {
+      setEffortChoice(composerSelection.effortChoice);
+      if (composerSelection.effortChoice === undefined) setEffortTouched(false);
+    }
+    const change = skillBindingChangeRef.current;
+    if (change !== undefined && (change.previous.model !== sessionModel || change.previous.thinking !== state.thinkingEffort)) {
+      skillBindingChangeRef.current = undefined;
+    }
   }, [composerSelection.modelOverride, composerSelection.effortOverride, composerSelection.modelChoice, composerSelection.effortChoice,
-    modelOverride, effortOverride, modelChoice, effortChoice]);
+    modelOverride, effortOverride, modelChoice, effortChoice, sessionModel, state.thinkingEffort]);
   const effectiveModel = resolveEffectiveModel(composerSelection.modelOverride, sessionModel, inheritedDefault);
   const catalogItem = harness === undefined
     ? (modelsQuery.data?.items ?? []).find((item) => item.id === effectiveModel) : undefined;
@@ -2664,6 +2712,11 @@ export function SessionView({
     return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [controller, t, terminalOpen, selectedAgentId, railIsOverlay]);
 
+  const skillSelection = skillControlSelectionKey({ pendingProfile, pendingExecution, modelOverride, effortOverride,
+    modelChoice, effortChoice, permissionOverride });
+  const skillSelectionRef = useRef(skillSelection);
+  skillSelectionRef.current = skillSelection;
+
   const actions = useMemo(() => {
     if (controller === null) return null;
     return {
@@ -2919,7 +2972,7 @@ export function SessionView({
           draft: userInput ?? draftRef.current,
           attachments: composerAttachments,
         };
-        const controlled = resolveControlledSkillSubmission({
+        const resolvedSkill = resolveControlledSkillSubmission({
           name, args, userInput: userInput ?? `/${name} ${args}`.trim(), attachments: composerAttachments,
           pendingProfile, boundProfile, pendingExecution, boundExecution,
           modelTouched: modelTouched && composerSelection.modelChoice === modelChoice,
@@ -2928,66 +2981,73 @@ export function SessionView({
           permissionTouched: permissionTouchedRef.current,
           permissionMode: permissionOverride ?? state.permissionMode,
         });
-        // Returned for the composer's send latch, same contract as `send`.
-        return activateSkillWithConditionalClear({
-          prepare:
-            goalObjectiveOverride !== undefined && goalObjectiveOverride !== ''
-              ? () =>
-                  client.updateSessionProfile(sessionId, {
-                    agent_config: { goal_objective: goalObjectiveOverride },
-                  })
-              : undefined,
-          activate: () => controlled === undefined
-            ? client.activateSkill(sessionId, name, {
-                args: activation.args === '' ? undefined : activation.args,
-                user_input: userInput,
-                attachments: activation.attachments,
-              })
-            : client.submitPrompt(sessionId, controlled).then((result) => {
-                if (controlled.profile !== undefined || controlled.execution !== undefined) {
-                  setPendingProfile(undefined);
-                  setPendingExecution(undefined);
-                  clearTouchedControls();
-                  void controller.refreshSession();
-                }
-                return result;
-              }),
-          submitted,
-          current: () => ({
-            draft: draftRef.current,
-            attachments: attachmentsRef.current,
-          }),
-          clear: () => {
-            const emptyAttachments: readonly ComposerAttachment[] = [];
-            draftRef.current = '';
-            attachmentsRef.current = emptyAttachments;
-            writeDraft(sessionId, '');
-            setDraft('');
-            setAttachments(emptyAttachments);
-          },
-        }).catch((error: unknown) => {
-          const isApi = error instanceof ApiError;
-          const text =
-            error instanceof ApiError && error.code === API_CODES.SKILL_NOT_FOUND
-              ? t('sv.skillGone', { name })
-              : error instanceof ApiError && error.code === API_CODES.SKILL_NOT_ACTIVATABLE
-                ? t('sv.skillReference', { name })
-                : error instanceof Error
-                  ? error.message
-                  : String(error);
-          pushToast({
-            tone: 'error',
-            text,
-            code: isApi ? error.code : undefined,
-            requestId: isApi ? error.requestId : undefined,
-            detail: error instanceof Error ? error.stack : undefined,
-            retry: {
-              run: () => {
-                void actions?.activateSkill(name, args, composerAttachments, goalObjectiveOverride, submitted.draft);
-              },
+        const controlled = resolvedSkill === undefined ? undefined : captureSkillRequest(resolvedSkill);
+        const legacy = captureSkillRequest({ args: activation.args === '' ? undefined : activation.args,
+          user_input: userInput, attachments: activation.attachments });
+        let accepted = false;
+        let prepared = false;
+        let flight: Promise<void> | undefined;
+        const submitCapturedSkill = (): Promise<void> | undefined => {
+          if (!composerOwnerActive.current || accepted) return;
+          if (flight !== undefined) return flight;
+          flight = activateSkillWithConditionalClear({
+            prepare: async () => {
+              if (!prepared && goalObjectiveOverride !== undefined && goalObjectiveOverride !== '') {
+                await client.updateSessionProfile(sessionId, { agent_config: { goal_objective: goalObjectiveOverride } });
+              }
+              prepared = true;
             },
-          });
-        });
+            activate: async () => {
+              if (controlled === undefined) await client.activateSkill(sessionId, name, legacy);
+              else {
+                await controller.sendPrompt({ promptId: controlled.prompt_id, text: submitted.draft,
+                  content: controlled.content, skills: controlled.skills, profile: controlled.profile,
+                  execution: controlled.execution, model: controlled.model, thinking: controlled.thinking,
+                  permissionMode: controlled.permission_mode });
+                completeSkillControlSelection({ controlled, capturedSelection: skillSelection,
+                  currentSelection: skillSelectionRef.current, binding: { model: sessionModel, thinking: state.thinkingEffort },
+                  preserveBindingChange: (change) => { skillBindingChangeRef.current = change; },
+                  clear: () => {
+                    setPendingProfile(undefined);
+                    setPendingExecution(undefined);
+                    setModelOverride(undefined);
+                    setEffortOverride(undefined);
+                    clearTouchedControls();
+                  },
+                  refresh: () => { void controller.refreshSession(); },
+                });
+              }
+              accepted = true;
+            },
+            submitted,
+            current: () => ({ draft: draftRef.current, attachments: attachmentsRef.current }),
+            clear: () => {
+              const emptyAttachments: readonly ComposerAttachment[] = [];
+              draftRef.current = '';
+              attachmentsRef.current = emptyAttachments;
+              writeDraft(sessionId, '');
+              setDraft('');
+              setAttachments(emptyAttachments);
+            },
+          }).catch((error: unknown) => {
+            const isApi = error instanceof ApiError;
+            const text =
+              error instanceof ApiError && error.code === API_CODES.SKILL_NOT_FOUND
+                ? t('sv.skillGone', { name })
+                : error instanceof ApiError && error.code === API_CODES.SKILL_NOT_ACTIVATABLE
+                  ? t('sv.skillReference', { name })
+                  : error instanceof Error ? error.message : String(error);
+            pushToast({
+              tone: 'error', text,
+              code: isApi ? error.code : undefined,
+              requestId: isApi ? error.requestId : undefined,
+              detail: error instanceof Error ? error.stack : undefined,
+              retry: { run: () => { void submitCapturedSkill(); } },
+            });
+          }).finally(() => { flight = undefined; });
+          return flight;
+        };
+        return submitCapturedSkill();
       },
       abort: () =>
         controller.abortActive().catch((error: unknown) => {
@@ -3086,7 +3146,10 @@ pendingExecution,
 boundExecution,
     permissionOverride,
     state.permissionMode,
+    sessionModel,
+    state.thinkingEffort,
     clearTouchedControls,
+    skillSelection,
     planMode,
     planGate,
     liveSettings.defaultAppendTiming,

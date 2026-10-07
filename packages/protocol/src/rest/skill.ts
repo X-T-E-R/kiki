@@ -38,6 +38,7 @@ export const activateSkillAttachmentSchema = z.discriminatedUnion('type', [
 export type ActivateSkillAttachment = z.infer<typeof activateSkillAttachmentSchema>;
 
 export const activateSkillRequestSchema = z.object({
+  prompt_id: z.string().min(1).optional(),
   /** Raw argument string appended after the slash command, e.g. `/review --fix` → `--fix`. */
   args: z.string().optional(),
   /** Author's slash submission, kept separately from the expanded skill instructions. */

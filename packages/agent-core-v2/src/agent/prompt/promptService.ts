@@ -64,6 +64,7 @@ import {
   type PromptExecutionBinding,
   type PromptHandle,
   type PromptInput,
+  type PromptInjectOptions,
   type PromptLaunchResult,
   type PromptPayload,
   type PromptQueueHold,
@@ -527,6 +528,10 @@ export const promptIdentityKey = defineState('prompt.identity', (): Map<string, 
     if (entry !== undefined) state.set(event.promptId, { ...entry, phase: 'launched' });
   })
   .on(TurnPrompt, (state, event) => {
+    const entry = event.promptId === undefined ? undefined : state.get(event.promptId);
+    if (entry !== undefined) state.set(entry.promptId, { ...entry, phase: 'launched', turnId: event.turnId });
+  })
+  .on(TurnSteer, (state, event) => {
     const entry = event.promptId === undefined ? undefined : state.get(event.promptId);
     if (entry !== undefined) state.set(entry.promptId, { ...entry, phase: 'launched', turnId: event.turnId });
   })
@@ -2148,10 +2153,39 @@ export class AgentPromptService implements IAgentPromptService {
     }
   }
 
-  async inject(message: ContextMessage): Promise<Turn | undefined> {
+  async inject(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined> {
     const { message: rerouted, captions } = this.extractCompressionCaptions(message);
     await this.materializeDaemonRefs(rerouted);
-    const request = new SteerStepRequest(rerouted, captions, this.reminders, this.providerType(), (materialized) => {
+    const managed = options?.promptId !== undefined && options.retryFingerprint !== undefined;
+    const userMessageId = options?.userMessageId ?? options?.promptId;
+    const managedMessage = managed && userMessageId !== undefined ? { ...rerouted, id: userMessageId } : rerouted;
+    if (managed && options !== undefined && userMessageId !== undefined) {
+      await this.dispatcher.dispatch(new PromptEnqueued({
+        schemaVersion: 1,
+        promptId: options.promptId!,
+        userMessageId,
+        createdAt: new Date().toISOString(),
+        message: managedMessage,
+        execution: undefined,
+        goalId: undefined,
+        deferredDisabledTools: undefined,
+        alreadyMaterialized: false,
+        appendTiming: 'agent_idle',
+        revision: 0,
+        queueIndex: this.queueOrder.length,
+        retryFingerprint: options.retryFingerprint,
+        retryStatus: 'running',
+      }));
+      await this.wire.flush();
+      await this.dispatcher.dispatch(new PromptLaunchCommitted({
+        launchId: randomUUID(),
+        promptId: options.promptId!,
+        revision: 0,
+        committedAt: new Date().toISOString(),
+      }));
+      await this.wire.flush();
+    }
+    const request = new SteerStepRequest(managedMessage, captions, this.reminders, this.providerType(), (materialized) => {
       void this.dispatcher.dispatch(
         new TurnSteer({
           turnId: this.loop.status().activeTurnId ?? this.active?.turn.id ?? 0,

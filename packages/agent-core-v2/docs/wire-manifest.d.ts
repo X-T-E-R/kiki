@@ -108,7 +108,7 @@
 //   turn.cancel                        turn                                                                                                                                                                                 src/agent/loop/turnOps.ts
 //   turn.ended                         turn                                                                                                                                                                                 src/agent/loop/turnOps.ts
 //   turn.prompt                        prompt.identity, todo.continuityClock, turn                                                                                                                                          src/agent/loop/turnOps.ts
-//   turn.steer                         todo.continuityClock, turn                                                                                                                                                           src/agent/loop/turnOps.ts
+//   turn.steer                         prompt.identity, todo.continuityClock, turn                                                                                                                                          src/agent/loop/turnOps.ts
 //   turn.step.interrupted              (none)                                                                                                                                                                               src/agent/loop/turnEvents.ts
 //   turn.step.retrying                 (none)                                                                                                                                                                               src/agent/stepRetry/stepRetryService.ts
 //   usage.record                       usage, usage.panelAccounting                                                                                                                                                         src/agent/usage/usageOps.ts
@@ -1525,7 +1525,7 @@ interface TurnPromptPayload {
 }
 
 /**
- * states: todo.continuityClock, turn
+ * states: prompt.identity, todo.continuityClock, turn
  * owner: src/agent/loop/turnOps.ts
  */
 interface TurnSteerPayload {

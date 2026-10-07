@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@kiki/protocol';
+import { resolveComposerModelOverrides, type ComposerModelBindingChange, type PersistedComposerScalars } from '@kiki/session-core/composer';
 
 import {
   assistantMessageIdFromBlock,
@@ -57,6 +58,9 @@ import {
   NOT_FOUND_FALLBACK_MS,
 
   activateSkillWithConditionalClear,
+  captureSkillRequest,
+  completeSkillControlSelection,
+  skillControlSelectionKey,
   agentDetailPath,
   agentOlderErrorText,
   agentTranscriptPoll,
@@ -100,7 +104,7 @@ import {
   shouldHandleApprovalShortcut,
   isTerminalShortcut,
 } from './SessionView';
-import { API_CODES, ApiError } from '../lib/client';
+import { API_CODES, ApiError, KikiClient } from '../lib/client';
 
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
 // The 286 header test surface opens this dialog lazily; keep the test harness
@@ -650,6 +654,198 @@ describe('resolveControlledSkillSubmission', () => {
 });
 
 describe('activateSkillWithConditionalClear', () => {
+  it.each(['model', 'effort'] as const)('retains a newer %s pick through accepted skill binding refresh and the real resolver', async (control) => {
+    const binding = { model: 'example/old', thinking: 'low' };
+    let selection: PersistedComposerScalars = { modelOverride: control === 'model' ? 'example/A' : undefined,
+      effortOverride: control === 'effort' ? 'high' : undefined,
+      modelChoice: control === 'model' ? binding : undefined,
+      effortChoice: control === 'effort' ? binding : undefined };
+    const capturedSelection = skillControlSelectionKey(selection);
+    const controlled = { content: [{ type: 'text' as const, text: '/review' }],
+      model: selection.modelOverride, thinking: selection.effortOverride };
+    let acceptedBindingChange: ComposerModelBindingChange | undefined;
+    let finish!: () => void;
+    const held = new Promise<void>((resolve) => { finish = resolve; });
+    const clear = vi.fn();
+    const composition = { draft: '/review', attachments: [] };
+    const acceptedBinding = { model: controlled.model ?? binding.model, thinking: controlled.thinking ?? binding.thinking };
+    const refresh = vi.fn(() => {
+      selection = resolveComposerModelOverrides({ ...selection, conversationStarted: true, pendingBinding: false,
+        binding: acceptedBinding, acceptedBindingChange });
+    });
+    const pending = activateSkillWithConditionalClear({ activate: async () => {
+      await held;
+      completeSkillControlSelection({ controlled, binding, capturedSelection,
+        currentSelection: skillControlSelectionKey(selection), clear, refresh,
+        preserveBindingChange: (change) => { acceptedBindingChange = change; },
+      });
+    }, submitted: composition, current: () => composition, clear: vi.fn() });
+    selection = { ...selection, modelOverride: control === 'model' ? 'example/B' : undefined,
+      effortOverride: control === 'effort' ? 'max' : undefined };
+    finish();
+    await pending;
+    expect(clear).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(control === 'model' ? selection.modelOverride : selection.effortOverride)
+      .toBe(control === 'model' ? 'example/B' : 'max');
+    expect(control === 'model' ? selection.modelChoice : selection.effortChoice).toEqual(acceptedBinding);
+    expect(resolveComposerModelOverrides({ ...selection, conversationStarted: true, pendingBinding: false,
+      binding: { model: 'example/foreign', thinking: 'low' }, acceptedBindingChange }))
+      .toMatchObject({ modelOverride: undefined, effortOverride: undefined });
+  });
+
+  it.each(['model', 'effort'] as const)('preserves a newer %s pick when an older controlled skill succeeds', async (control) => {
+    const boundChoice = { model: 'bound-model', thinking: 'low' };
+    let selection = { pendingProfile: 'review-profile', pendingExecution: undefined,
+      modelOverride: 'model-A', effortOverride: 'high', modelChoice: boundChoice, effortChoice: boundChoice };
+    const capturedSelection = skillControlSelectionKey(selection);
+    const controlled = { prompt_id: 'old-skill', content: [{ type: 'text' as const, text: '/review' }],
+      profile: 'review-profile', model: 'model-A', thinking: 'high' };
+    const clear = vi.fn();
+    const refresh = vi.fn();
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const held = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    const activate = vi.fn().mockReturnValueOnce(held).mockResolvedValue(undefined);
+    const composition = { draft: '/review', attachments: [] };
+    const run = () => activateSkillWithConditionalClear({
+      activate: async () => {
+        await activate(controlled);
+        completeSkillControlSelection({ controlled, capturedSelection,
+          currentSelection: skillControlSelectionKey(selection), clear, refresh });
+      },
+      submitted: composition, current: () => composition, clear: vi.fn(),
+    });
+    const pending = run();
+    if (control === 'effort') {
+      const failed = expect(pending).rejects.toThrow('unknown response');
+      reject(new TypeError('unknown response'));
+      await failed;
+      selection = { ...selection, effortOverride: 'max' };
+      await run();
+    } else {
+      selection = { ...selection, modelOverride: 'model-B' };
+      resolve();
+      await pending;
+    }
+    expect(selection.modelChoice).toEqual(boundChoice);
+    expect(selection.effortChoice).toEqual(boundChoice);
+    expect(clear).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(activate.mock.calls.at(-1)?.[0]).toBe(controlled);
+  });
+
+  it.each(['model', 'effort'] as const)('consumes a matching %s-only skill selection and refreshes after acceptance', async (control) => {
+    const boundChoice = { model: 'bound-model', thinking: 'low' };
+    const selection = { pendingProfile: undefined, pendingExecution: undefined,
+      modelOverride: control === 'model' ? 'model-A' : undefined,
+      effortOverride: control === 'effort' ? 'high' : undefined,
+      modelChoice: control === 'model' ? boundChoice : undefined,
+      effortChoice: control === 'effort' ? boundChoice : undefined };
+    const controlled = resolveControlledSkillSubmission({ name: 'review', args: '', userInput: '/review', attachments: [],
+      pendingProfile: undefined, boundProfile: 'default', model: selection.modelOverride, thinking: selection.effortOverride,
+      modelTouched: control === 'model', effortTouched: control === 'effort' })!;
+    expect(controlled.profile).toBeUndefined();
+    expect(controlled.execution).toBeUndefined();
+    const clear = vi.fn(() => {
+      selection.modelOverride = undefined;
+      selection.effortOverride = undefined;
+      selection.modelChoice = undefined;
+      selection.effortChoice = undefined;
+    });
+    const refresh = vi.fn();
+    const capturedSelection = skillControlSelectionKey(selection);
+    const composition = { draft: '/review', attachments: [] };
+    await activateSkillWithConditionalClear({ activate: async () => {
+      completeSkillControlSelection({ controlled, capturedSelection,
+        currentSelection: skillControlSelectionKey(selection), clear, refresh });
+    }, submitted: composition, current: () => composition, clear: vi.fn() });
+    expect(clear).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(selection).toMatchObject({ modelOverride: undefined, effortOverride: undefined,
+      modelChoice: undefined, effortChoice: undefined });
+  });
+
+  it('captures one controlled skill identity across an accepted unknown response and manual retry', async () => {
+    const attachments = [{ kind: 'file' as const, path: 'note.md', name: 'note.md', isDir: false }];
+    const selection = { name: 'review', args: '--fix', userInput: '/review --fix\nOriginal task.', attachments,
+      pendingProfile: 'review-profile', boundProfile: 'default',
+      pendingExecution: { executor: 'native', profile: undefined, overrides: undefined }, boundExecution: undefined,
+      modelTouched: true, effortTouched: true, model: 'selected-model', thinking: 'high',
+      permissionTouched: true, permissionMode: 'manual' as const };
+    const captured = captureSkillRequest(resolveControlledSkillSubmission(selection)!);
+    const submitted = { draft: selection.userInput, attachments };
+    let current = submitted;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const requests: unknown[] = [];
+    const accepted = new Set<string>();
+    let executions = 0;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.procedure?.method === 'resume') {
+        return Response.json({ code: 0, msg: 'ok', data: { id: 'session_test', kind: 'session' } });
+      }
+      requests.push(body);
+      const id = body.prompt_id ?? `unkeyed-${requests.length}`;
+      if (!accepted.has(id)) { accepted.add(id); executions++; }
+      if (requests.length === 1) { await held; throw new TypeError('accepted response unavailable'); }
+      return Response.json({ code: 0, msg: 'ok', data: { prompt_id: id, user_message_id: id,
+        status: 'running', content: body.content, created_at: '2026-01-01T00:00:00Z' } });
+    }));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    const clear = vi.fn();
+    const run = () => activateSkillWithConditionalClear({ activate: () => client.submitPrompt('session_test', captured),
+      submitted, current: () => current, clear });
+    try {
+      const first = run();
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
+      current = { draft: 'new task while waiting', attachments: [] };
+      selection.model = 'new-model';
+      selection.thinking = 'low';
+      const rejected = expect(first).rejects.toThrow('accepted response unavailable');
+      release();
+      await rejected;
+      await run();
+      expect(captured.prompt_id).toEqual(expect.any(String));
+      expect(requests[1]).toEqual(requests[0]);
+      expect(requests[1]).toMatchObject({ skills: [{ name: 'review', args: '--fix' }],
+        profile: 'review-profile', model: 'selected-model', thinking: 'high', permission_mode: 'manual' });
+      expect(executions).toBe(1);
+      expect(clear).not.toHaveBeenCalled();
+      expect(current.draft).toBe('new task while waiting');
+      const next = captureSkillRequest(resolveControlledSkillSubmission(selection)!);
+      expect(next.prompt_id).not.toBe(captured.prompt_id);
+      expect(next.model).toBe('new-model');
+    } finally { await client.klient.close(); vi.unstubAllGlobals(); }
+  });
+
+  it('retains a legacy skill request body and identity for a manual response-loss retry', async () => {
+    const body = captureSkillRequest({ args: '--fix', user_input: '/review --fix',
+      attachments: [{ type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/legacy.png' } }] });
+    const requests: unknown[] = [];
+    const fetch = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)));
+      if (requests.length === 1) throw new TypeError('activation response unavailable');
+      return Response.json({ code: 0, msg: 'ok', data: { activated: true, skill_name: 'review' } });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    const submitted = { draft: body.user_input, attachments: [] };
+    let current = submitted;
+    const clear = vi.fn();
+    const run = () => activateSkillWithConditionalClear({ activate: () => client.activateSkill('session_test', 'review', body),
+      submitted, current: () => current, clear });
+    try {
+      await expect(run()).rejects.toThrow('activation response unavailable');
+      current = { draft: 'new task', attachments: [] };
+      await run();
+      expect(requests).toEqual([body, body]);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(clear).not.toHaveBeenCalled();
+    } finally { await client.klient.close(); vi.unstubAllGlobals(); }
+  });
+
   it('retains the full submission on failure for a retry', async () => {
     const attachments = [{ kind: 'file' as const, path: 'note.md', name: 'note.md', isDir: false }];
     const submitted = { draft: '/review --fix\nKeep this line.', attachments };

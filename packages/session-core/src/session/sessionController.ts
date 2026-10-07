@@ -2481,6 +2481,7 @@ export class SessionController {
      */
     afterModelSwitch?: string;
     promptId?: string;
+    skills?: import('@kiki/protocol').PromptSubmission['skills'];
     personaGreetingReply?: boolean;
     onPreservation?: (persisted: boolean) => void;
     onAcknowledged?: () => void;
@@ -2507,6 +2508,7 @@ export class SessionController {
       append_timing: input.appendTiming,
       after_model_switch: input.afterModelSwitch,
       prompt_id: promptId,
+      skills: input.skills,
       persona_greeting_reply: input.personaGreetingReply,
     });
     preservation.acknowledge();

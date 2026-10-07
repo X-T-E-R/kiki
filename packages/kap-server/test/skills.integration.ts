@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 import {
   IAgentLifecycleService,
+  IAgentLoopService,
+  IAgentSkillService,
   ISessionManager,
   ISessionSkillCatalog,
   KIKI_OPS_SKILL,
@@ -302,6 +304,45 @@ describe('server-v2 /api skills', () => {
         activated: true,
         skill_name: 'kiki-ops',
       });
+    });
+
+    it('replays a client prompt_id skill activation and rejects a changed body without a second run', async () => {
+      const id = await createSession();
+      await createMainAgent(id);
+      const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+      const activation = vi.spyOn(main.accessor.get(IAgentSkillService), 'activate');
+      const noteBytes = Buffer.from('legacy skill retry attachment');
+      const form = new FormData();
+      form.set('file', new Blob([Uint8Array.from(noteBytes).buffer], { type: 'text/plain' }), 'retry.txt');
+      const upload = await fetch(`${base}/api/files`, {
+        method: 'POST', headers: authHeaders(server as RunningServer), body: form,
+      } as never);
+      const uploaded = (await upload.json()) as Envelope<{ id: string; size: number }>;
+      expect(uploaded.code).toBe(0);
+      const body = {
+        prompt_id: 'legacy-skill-retry', args: '--help', user_input: '/kiki-ops --help',
+        attachments: [{ type: 'file' as const, file_id: uploaded.data.id, name: 'retry.txt', media_type: 'text/plain', size: noteBytes.length }],
+      };
+      try {
+        const first = await postJson<{ activated: boolean; skill_name: string }>(`/api/sessions/${id}/skills/kiki-ops:activate`, body);
+        expect(first.body.code, first.body.msg).toBe(0);
+        await main.accessor.get(IAgentLoopService).settled();
+        const deleted = await fetch(`${base}/api/files/${uploaded.data.id}`, {
+          method: 'DELETE', headers: authHeaders(server as RunningServer),
+        } as never);
+        expect((await deleted.json() as Envelope<{ deleted: boolean }>).data.deleted).toBe(true);
+        const replay = await postJson<{ activated: boolean; skill_name: string }>(`/api/sessions/${id}/skills/kiki-ops:activate`, body);
+        expect(replay.body.data).toEqual(first.body.data);
+        const changed = await postJson<null>(`/api/sessions/${id}/skills/kiki-ops:activate`, {
+          ...body,
+          args: '--different',
+          user_input: '/kiki-ops --different',
+        });
+        expect(changed.body.code).toBe(40938);
+        expect(activation).toHaveBeenCalledTimes(1);
+      } finally {
+        activation.mockRestore();
+      }
     });
 
     it('carries the exact slash input through REST into the saved activation origin', async () => {

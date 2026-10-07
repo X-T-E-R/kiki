@@ -7180,7 +7180,7 @@ export interface AgentStateSnapshot {
     };
   }>;
   // src/agent/prompt/promptService.ts
-  // replayable · durable — folds: PromptEnqueued, ContextUndo, PromptReplaced, PromptTimingChanged, PromptLaunchCommitted, TurnPrompt, PromptOutcomeCommitted
+  // replayable · durable — folds: PromptEnqueued, ContextUndo, PromptReplaced, PromptTimingChanged, PromptLaunchCommitted, TurnPrompt, TurnSteer, PromptOutcomeCommitted
   'prompt.identity': Map<string, /* PromptIdentity — packages/agent-core-v2/src/agent/prompt/promptReplay.ts */ {
     readonly fingerprint: string;
     readonly currentRequest?: /* PromptRequestFingerprint — packages/agent-core-v2/src/agent/prompt/promptReplay.ts */ {
