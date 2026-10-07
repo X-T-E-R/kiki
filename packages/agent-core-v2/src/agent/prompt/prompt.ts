@@ -146,6 +146,11 @@ export interface PromptInjectOptions {
 
 export interface PromptLaunchResult {
   readonly turn_id: number;
+  readonly prompt_id?: string;
+  readonly created_at?: string;
+  readonly state?: 'running' | 'queued' | 'blocked';
+  readonly append_timing?: DeferredAppendTiming;
+  readonly revision?: number;
 }
 
 /** A serializable terminal receipt for this submission, including prompts that never launch. */

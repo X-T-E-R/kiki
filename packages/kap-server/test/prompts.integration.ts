@@ -274,13 +274,17 @@ describe('server-v2 /api prompts', () => {
       const prompts = main.accessor.get(IAgentPromptService);
       if (source === 'onboarding-welcome-skill') {
         const args = 'Say in two or three sentences what you can do, then ask what I most want to get done and take me through doing it once: set up whatever that step needs and leave what already works alone. One question at a time.';
+        const requestBody = { args, user_input: `/kiki-ops ${args}`, prompt_id: 'welcome-helper-retry' };
         const startedAt = Date.now();
-        const activated = await call('POST', `/api/sessions/${session.id}/skills/kiki-ops:activate`, { args, user_input: `/kiki-ops ${args}` });
+        const activated = await call('POST', `/api/sessions/${session.id}/skills/kiki-ops:activate`, requestBody);
         expect(activated.body.code, activated.body.msg).toBe(0);
         const acceptedAt = Date.now();
         const loop = main.accessor.get(IAgentLoopService);
         await loop.settled();
         expect(loop.status()).toMatchObject({ state: 'idle', lastTurnResult: 'completed' });
+        const replay = await call('POST', `/api/sessions/${session.id}/skills/kiki-ops:activate`, requestBody);
+        expect(replay.body.code, JSON.stringify(replay.body)).toBe(0);
+        expect(replay.body.data).toMatchObject({ activated: true, skill_name: 'kiki-ops', prompt_id: 'welcome-helper-retry' });
         console.log(JSON.stringify({ route: 'skills/kiki-ops:activate', request_id: activated.body.request_id, remote_model: requests[0], bound_model: main.accessor.get(IAgentProfileService).getModel(), turn_result: loop.status().lastTurnResult, accepted_ms: acceptedAt - startedAt, finished_ms: Date.now() - startedAt }));
       } else {
         const userInput = '/kiki-ops Help me start.';
@@ -289,11 +293,12 @@ describe('server-v2 /api prompts', () => {
           pendingProfile: undefined, boundProfile: 'agent', modelTouched: true, effortTouched: true,
           model: 'stub', thinking: 'high', permissionTouched: false,
         }) : undefined;
-        const startedAt = Date.now();
-        const submitted = await call<PromptItemWire>('POST', `/api/sessions/${session.id}/prompts`, {
+        const requestBody = {
           ...(controlled ?? { content: [{ type: 'text', text: 'Introduce Kiki and help me choose my first task.' }] }),
-          prompt_id: controlled === undefined ? 'welcome-first-use' : undefined,
-        });
+          prompt_id: controlled === undefined ? 'welcome-first-use' : 'welcome-controlled-retry',
+        };
+        const startedAt = Date.now();
+        const submitted = await call<PromptItemWire>('POST', `/api/sessions/${session.id}/prompts`, requestBody);
         const acceptedAt = Date.now();
         expect(submitted.body.code, JSON.stringify(submitted.body)).toBe(0);
         const submittedId = submitted.body.data.prompt_id;
@@ -308,6 +313,9 @@ describe('server-v2 /api prompts', () => {
           await vi.waitFor(() => expect(prompts.lookup(submittedId)?.phase).toBe('terminal'));
           expect(prompts.lookup(submittedId)?.terminal).toMatchObject({ state: 'completed' });
         }
+        const replay = await call<PromptItemWire>('POST', `/api/sessions/${session.id}/prompts`, requestBody);
+        expect(replay.body.code, JSON.stringify(replay.body)).toBe(0);
+        expect(replay.body.data).toMatchObject({ prompt_id: submittedId, user_message_id: submittedId });
       }
       expect(requests).toEqual(['stub']);
       expect(main.accessor.get(IAgentProfileService).getModel()).toBe(expectedModel);

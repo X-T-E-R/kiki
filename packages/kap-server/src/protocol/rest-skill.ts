@@ -36,5 +36,10 @@ export type ActivateSkillRequest = z.infer<typeof activateSkillRequestSchema>;
 export const activateSkillResultSchema = z.object({
   activated: z.literal(true),
   skill_name: z.string().min(1),
+  prompt_id: z.string().min(1).optional(),
+  status: z.enum(['running', 'queued', 'blocked']).optional(),
+  created_at: z.string().optional(),
+  append_timing: z.enum(['agent_idle', 'subagents_done', 'tasks_done']).optional(),
+  revision: z.number().int().nonnegative().optional(),
 });
 export type ActivateSkillResult = z.infer<typeof activateSkillResultSchema>;

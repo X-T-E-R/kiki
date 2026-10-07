@@ -422,7 +422,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope, transcri
           ? await runActivation()
           : await promptRetryFor(prompt).run(promptId, fingerprint, runActivation);
         requestLog(req)?.info({ session_id, skill_name: skillName }, 'skill activated');
-        reply.send(okEnvelope({ activated: true, skill_name: skillName }, req.id));
+        reply.send(okEnvelope({ activated: true, skill_name: skillName, prompt_id: promptId }, req.id));
       } catch (error) {
         await preparedMedia?.discard();
         sendMappedError(reply, req.id, error);
