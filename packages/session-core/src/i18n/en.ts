@@ -1316,7 +1316,7 @@ export const en = {
   'transcript.editTitle': 'Edit this message and resend it',
   'transcript.editSubmit': 'Resend',
   'transcript.editSubmitTitle': 'Replace the original message and rerun from here',
-  'transcript.editAttachmentsNote': 'Keep or change attachments. Resend replaces this message and reruns from here.',
+  'transcript.editAttachmentsLoadFailed': "This message's attachments did not load.",
   'transcript.regenerate': 're-run',
   'transcript.regenerateTitle': 'Re-run this turn: context is rewound to here and the turn runs again. Files and external actions already taken are not undone.',
   'transcript.fork': 'fork',

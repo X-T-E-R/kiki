@@ -1302,7 +1302,7 @@ export const zh = {
   'transcript.editTitle': '编辑此消息并重新发送',
   'transcript.editSubmit': '重发',
   'transcript.editSubmitTitle': '替换原消息并从此处重新运行',
-  'transcript.editAttachmentsNote': '附件已保留，可增删；重发会替换原消息并从此处重新运行。',
+  'transcript.editAttachmentsLoadFailed': '原消息的附件没能载入。',
   'transcript.regenerate': '重新执行这一轮',
   'transcript.regenerateTitle': '重新执行这一轮：从此处撤回上下文并重新运行。已发生的文件和外部操作不会撤回。',
   'transcript.fork': '分叉',

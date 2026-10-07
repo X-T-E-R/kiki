@@ -458,8 +458,43 @@ export function UserMessageEditor({
     return () => { active = false; };
   }, [attempt]);
   const cancel = () => { if (!submitting) onCancel(); };
+  /* The editor IS the composer: it takes the bubble's place at the message's
+     own width and alignment, so the card the user is typing into is the same
+     object the real composer is. No accent frame, no second card, no prose
+     under it — the resend semantics already ride the send button's title.
+     The dock padding belongs to the bottom dock, so it is dropped here. */
   return (
-    <div data-edit-editor className="w-full max-w-[85%] rounded-2xl rounded-br-md border border-accent/40 bg-panel p-2">
+    <div data-edit-editor className="w-full max-w-[85%] [&>div]:px-0 [&>div]:pb-0">
+      {/* One quiet row, in the same band and voice as the row's meta line:
+          dismiss on the trailing edge, and the attachment-load recovery only
+          when it is actually needed. A failed load keeps send shut (resending
+          then would drop the attachments silently), so the retry here is the
+          way back in. */}
+      <div className="mb-1 flex min-h-[18px] items-baseline justify-end gap-3 pr-1">
+        {loadError ? (
+          <button
+            type="button"
+            data-edit-retry
+            onClick={() => { setAttempt((value) => value + 1); }}
+            title={t('transcript.detail.retry')}
+            className="min-w-0 truncate text-[11px] text-danger transition-colors hover:text-danger/80 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+          >
+            {t('transcript.editAttachmentsLoadFailed')}
+            <span className="ml-2 underline underline-offset-2">{t('transcript.detail.retry')}</span>
+          </button>
+        ) : null}
+        <button
+          type="button"
+          data-edit-cancel
+          disabled={submitting}
+          onClick={cancel}
+          title={t('common.cancel')}
+          aria-label={t('common.cancel')}
+          className="shrink-0 text-[11px] text-ink-faint transition-colors hover:text-ink-soft disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+        >
+          {t('common.cancel')}
+        </button>
+      </div>
       <Composer
         busy={false} disabled={loading} sendDisabled={loadError}
         variant="subagent" messageEditing autoFocus
@@ -477,11 +512,6 @@ export function UserMessageEditor({
           try { await onSubmit(body, media); } finally { setSubmitting(false); }
         }}
       />
-      <div className="mt-2 flex items-center justify-between gap-3 px-1">
-        {loadError ? <button type="button" onClick={() => { setAttempt((value) => value + 1); }} className="text-[11px] text-danger">{t('preview.failed')} · {t('transcript.detail.retry')}</button> :
-          <span className="text-[11px] leading-snug text-ink-faint">{t('transcript.editAttachmentsNote')}</span>}
-        <button type="button" data-edit-cancel disabled={submitting} onClick={cancel} className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-soft hover:border-hairline-strong disabled:opacity-40">{t('common.cancel')}</button>
-      </div>
     </div>
   );
 }

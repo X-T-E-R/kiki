@@ -2138,10 +2138,12 @@ describe('message row actions', () => {
     });
     const textarea = container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea');
     expect(textarea?.value).toBe('original text');
-    // The attachment note explains the full-replacement semantics.
-    expect(container.querySelector('[data-edit-editor]')?.textContent).toContain(
+    // The composer itself is the only input object: no accent frame, and no
+    // prose wall restating what Resend already says in its own title.
+    expect(container.querySelector('[data-edit-editor]')?.textContent).not.toContain(
       'Keep or change attachments',
     );
+    expect(container.querySelector('[data-edit-editor] [data-composer-card]')).not.toBeNull();
     await act(async () => {
       flushSync(() => {
         const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;

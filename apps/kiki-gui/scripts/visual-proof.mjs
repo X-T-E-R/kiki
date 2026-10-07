@@ -379,7 +379,6 @@ const LITERALS = {
   capEmptyFilter: { en: 'No capabilities match', zh: '没有匹配', anchor: 'cap.emptyFilter' },
   capNoWorkspace: { en: 'No workspace to show skills for yet', zh: '还没有可查看技能的工作区', anchor: 'cap.noWorkspace' },
   queueEditBanner: { en: 'Editing a queued message', zh: '正在编辑排队消息', anchor: 'composer.queueEditBanner' },
-  editNote: { en: 'Keep or change attachments', zh: '附件已保留，可增删', anchor: 'transcript.editAttachmentsNote' },
   compactionRequested: { en: 'Compaction requested', zh: '已请求压缩', anchor: 'context.strategy.compactRequested.summarize' },
   exportArchive: { en: 'Export archive', zh: '导出归档', anchor: 'menu.export' },
   undoLastTurn: { en: 'Undo last turn', zh: '撤销最后一轮', anchor: 'menu.undo' },
@@ -681,7 +680,7 @@ async function scenarioRewriteFlow() {
   await firstRow.locator('[data-row-action="edit"]').click();
   const editor = page.locator('[data-edit-editor]');
   await editor.waitFor({ timeout: 5_000 });
-  await waitForText(S.editNote);
+  await editor.locator('textarea').waitFor({ state: 'visible', timeout: 5_000 });
   await shot('rewrite-flow-editing');
   await editor.locator('textarea').fill('First fixture question — edited resend.');
   await editor.locator('[data-edit-submit]').click();
