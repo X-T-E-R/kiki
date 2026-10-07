@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
 import { act } from 'react';
-import { createRoot } from 'react-dom/client';
+import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
-import { applyCompactionProgress, type CompactionProgress } from './useCompactionProgress';
+import type { KikiClient } from '../lib/client';
+import { applyCompactionProgress, useCompactionProgress, type CompactionProgress, type CompactionProgressEvent } from './useCompactionProgress';
 import {
   CONTEXT_DANGER_RATIO,
   CONTEXT_WARN_RATIO,
@@ -436,6 +437,123 @@ describe('ContextMeter interaction', () => {
     expect(breakdown?.textContent).toContain('Messages');
     expect(breakdown?.textContent).toContain('60.0k');
     await act(async () => { root.unmount(); });
+  });
+});
+
+describe('compaction progress lifetime', () => {
+  let root: Root;
+  let container: HTMLDivElement;
+  let client: KikiClient;
+  let listeners: Map<string, Map<string, (event: CompactionProgressEvent) => void>>;
+  let disposals: ReturnType<typeof vi.fn>[];
+  let mounted: boolean;
+
+  function Probe({ sessionId, currentClient, used }: { sessionId?: string; currentClient: KikiClient; used: number }) {
+    const progress = useCompactionProgress(currentClient, sessionId);
+    return <I18nProvider><ContextBreakdownProvider value={undefined} compaction={progress}><ContextMeter used={used} limit={100_000} /></ContextBreakdownProvider></I18nProvider>;
+  }
+  async function draw(sessionId: string | undefined = 'session-a', currentClient = client, used = 80_000) {
+    await act(async () => { root.render(<Probe sessionId={sessionId} currentClient={currentClient} used={used} />); });
+  }
+  async function emit(event: CompactionProgressEvent, sessionId = 'session-a') {
+    await act(async () => { listeners.get(sessionId)!.get(event.type)!(event); });
+  }
+  async function advance(ms: number) {
+    await act(async () => { vi.advanceTimersByTime(ms); });
+  }
+  function completed(trigger: 'manual' | 'auto'): CompactionProgressEvent {
+    return { type: 'compaction.completed', trigger, result: { summary: 'summary', compactedCount: 2, tokensBefore: 30, tokensAfter: 10 } };
+  }
+  const hint = () => container.querySelector('[data-compaction-progress]');
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    listeners = new Map();
+    disposals = [];
+    client = { klient: { session: (id: string) => ({ agent: () => ({ events: {
+      on: (type: string, listener: (event: CompactionProgressEvent) => void) => {
+        if (!listeners.has(id)) listeners.set(id, new Map());
+        listeners.get(id)!.set(type, listener);
+        const dispose = vi.fn(() => { listeners.get(id)!.delete(type); });
+        disposals.push(dispose);
+        return { ready: Promise.resolve(), dispose };
+      },
+    } }) }) } } as unknown as KikiClient;
+    container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    root = createRoot(container);
+    mounted = true;
+  });
+  afterEach(async () => {
+    if (mounted) await act(async () => { root.unmount(); });
+    vi.useRealTimers();
+  });
+
+  it.each(['auto', 'manual'] as const)('hides %s completion after three seconds without extending it on rerender', async (source) => {
+    await draw();
+    await emit(completed(source));
+    expect(hint()?.textContent).toBe(source === 'auto' ? 'Automatic compaction complete' : 'Manual compaction complete');
+    await advance(2_000);
+    await draw('session-a', client, 20_000);
+    await advance(999);
+    expect(hint()?.getAttribute('data-compaction-progress')).toBe('completed');
+    await advance(1);
+    expect(hint()).toBeNull();
+    expect(container.querySelector('[data-context-meter]')).not.toBeNull();
+  });
+
+  it.each(['queued', 'running'] as const)('keeps new %s progress past the previous success deadline', async (phase) => {
+    await draw();
+    await emit(completed('auto'));
+    await advance(2_999);
+    await act(async () => {
+      listeners.get('session-a')!.get('compaction.started')!({ type: 'compaction.started', trigger: 'manual', phase });
+      vi.advanceTimersByTime(1);
+    });
+    if (phase === 'queued') await emit(completed('auto'));
+    expect(hint()?.getAttribute('data-compaction-progress')).toBe(phase);
+    await advance(5_000);
+    expect(hint()?.textContent).toBe(`Manual compaction ${phase === 'queued' ? 'queued' : 'running'}`);
+  });
+
+  it('keeps running and a readable failure reason longer than three seconds', async () => {
+    await draw();
+    await emit({ type: 'compaction.started', trigger: 'auto' });
+    await advance(5_000);
+    expect(hint()?.getAttribute('data-compaction-progress')).toBe('running');
+    await emit({ type: 'compaction.cancelled', trigger: 'auto', reason: 'No safe prefix' });
+    await advance(5_000);
+    expect(hint()?.getAttribute('data-compaction-progress')).toBe('failed');
+    expect(hint()?.getAttribute('title')).toBe('No safe prefix');
+  });
+
+  it.each(['session', 'client'] as const)('cancels old completion on %s change without clearing the new hint', async (change) => {
+    await draw();
+    await emit(completed('auto'));
+    const oldListener = listeners.get('session-a')!.get('compaction.completed')!;
+    await advance(2_000);
+    const sessionId = change === 'session' ? 'session-b' : 'session-a';
+    await draw(sessionId, change === 'client' ? Object.create(client) as KikiClient : client);
+    expect(hint()).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(disposals.slice(0, 3).every((dispose) => dispose.mock.calls.length === 1)).toBe(true);
+    await emit(completed('manual'), sessionId);
+    await act(async () => { oldListener(completed('auto')); });
+    await advance(1_000);
+    expect(hint()?.textContent).toBe('Manual compaction complete');
+    await advance(2_000);
+    expect(hint()).toBeNull();
+  });
+
+  it('cancels the success timer and event subscriptions on unmount', async () => {
+    await draw();
+    await emit(completed('manual'));
+    expect(vi.getTimerCount()).toBe(1);
+    await act(async () => { root.unmount(); });
+    mounted = false;
+    expect(vi.getTimerCount()).toBe(0);
+    expect(disposals.every((dispose) => dispose.mock.calls.length === 1)).toBe(true);
   });
 });
 
