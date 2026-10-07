@@ -29,6 +29,13 @@ export async function ensurePromptAuthReady(
       model = selected.modelAlias;
     } else if (overrides.execution === undefined) {
       model = profile.getModel() || undefined;
+      if (model === undefined && profile.data().profileName === undefined) {
+        const catalog = session.accessor.get(ISessionAgentProfileCatalog);
+        await catalog.ready;
+        const selected = catalog.getDefault();
+        if ((selected.executor ?? 'native') !== 'native') return;
+        model = selected.modelAlias;
+      }
     }
   }
   await accessor.get(IAuthSummaryService).ensureReady(model);

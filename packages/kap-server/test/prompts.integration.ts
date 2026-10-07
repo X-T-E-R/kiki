@@ -28,6 +28,7 @@ import {
   IWireService,
   IFileService,
   IModelCatalogMutationService,
+  IConfigService,
   ISessionIndex,
   ISessionContext,
   ISessionMetadata,
@@ -224,6 +225,84 @@ describe('server-v2 /api prompts', () => {
     if (session === undefined) throw new Error(`session ${sessionId} not found`);
     await session.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
   }
+
+  it.each(['configured-default', 'onboarding-provider', 'profile-default'] as const)('runs the welcome first message from an empty workspace without a client model pin (%s)', async (source) => {
+    const requests: string[] = [];
+    const provider = createHttpServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        requests.push((JSON.parse(body) as { model: string }).model);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify({ id: 'welcome-response', choices: [{ index: 0, delta: { content: 'Welcome.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+      });
+    });
+    await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    try {
+      const mutations = server!.core.accessor.get(IModelCatalogMutationService);
+      let expectedModel = 'stub';
+      if (source === 'onboarding-provider') {
+        await writeConfigToml(home!, PROMPT_TOML.replace('default_model = "stub"', ''));
+        await server!.core.accessor.get(IConfigService).reload();
+        const saved = await call('POST', '/api/providers', {
+          id: 'welcome', type: 'openai', base_url: `http://127.0.0.1:${address.port}/v1`, api_key: 'fixture',
+          models: [{ remote_id: 'stub', max_context_size: 100000 }],
+        });
+        expect(saved.body.code, saved.body.msg).toBe(0);
+        expectedModel = 'welcome/stub';
+      } else {
+        await mutations.updateProvider('stub', { base_url: `http://127.0.0.1:${address.port}/v1` });
+        await mutations.updateModel('stub', { max_context_size: 100000 });
+        if (source === 'profile-default') {
+          await writeConfigToml(home!, (await readFile(join(home!, 'config.toml'), 'utf8')).replace('default_model = "stub"', ''));
+          await mkdir(join(home!, 'agents'), { recursive: true });
+          await writeFile(join(home!, 'agents', 'agent.md'), '---\nname: agent\ndescription: Fixture main profile\nmodel_alias: stub\nthinking_effort: high\n---\nHelp the user.\n');
+        }
+      }
+      const created = await call<{ id: string; agent_config: { model?: string } }>('POST', '/api/sessions', {});
+      expect(created.body.code).toBe(0);
+      const session = getLiveSessionById(server!.core.accessor, created.body.data.id)!;
+      const main = await ensureMainAgent(session);
+      expect(main.accessor.get(IAgentProfileService).getModel()).toBe('');
+      const submitted = await call<PromptItemWire>('POST', `/api/sessions/${session.id}/prompts`, {
+        prompt_id: 'welcome-first-use', content: [{ type: 'text', text: 'Introduce Kiki and help me choose my first task.' }],
+      });
+      expect(submitted.body.code).toBe(0);
+      const prompts = main.accessor.get(IAgentPromptService);
+      await vi.waitFor(() => expect(prompts.lookup('welcome-first-use')?.phase).toBe('terminal'));
+      expect(prompts.lookup('welcome-first-use')?.terminal).toMatchObject({ state: 'completed' });
+      expect(requests).toEqual(['stub']);
+      expect(main.accessor.get(IAgentProfileService).getModel()).toBe(expectedModel);
+    } finally {
+      await new Promise<void>((resolve, reject) => provider.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('rejects a welcome first message without a model before enqueue and accepts the preserved prompt after model selection', async () => {
+    await writeConfigToml(home!, PROMPT_TOML.replace('default_model = "stub"', ''));
+    const created = await call<{ id: string }>('POST', '/api/sessions', {});
+    expect(created.body.code, created.body.msg).toBe(0);
+    const session = getLiveSessionById(server!.core.accessor, created.body.data.id)!;
+    const main = await ensureMainAgent(session);
+    const content = [{ type: 'text', text: 'Keep this welcome draft.' }];
+    const rejected = await call('POST', `/api/sessions/${session.id}/prompts`, { prompt_id: 'welcome-preserved', content });
+    expect(rejected.body.code).toBe(40113);
+    expect(main.accessor.get(IAgentPromptService).lookup('welcome-preserved')).toBeUndefined();
+    expect(main.accessor.get(IAgentProfileService).getModel()).toBe('');
+    main.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-selected-welcome', async ctx => {
+      await new Promise<void>(resolve => {
+        if (ctx.signal.aborted) resolve();
+        else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      ctx.signal.throwIfAborted();
+    }, { before: 'context-injector' });
+    const accepted = await call<PromptItemWire>('POST', `/api/sessions/${session.id}/prompts`, { prompt_id: 'welcome-preserved', content, model: 'stub' });
+    expect(accepted.body.code, accepted.body.msg).toBe(0);
+    expect(main.accessor.get(IAgentProfileService).getModel()).toBe('stub');
+    main.accessor.get(IAgentPromptService).abort('welcome-preserved');
+  });
 
   it('creates a direct executor over HTTP and commits queued execution overrides only at the next user turn', async () => {
     const bindings: ProfileBindingSnapshot[] = [];

@@ -1194,6 +1194,8 @@ export const zh = {
   'composer.profileSearchPlaceholder': '搜索配置档…',
   'composer.profileEffortBadge': '思考强度 · {effort}',
   'composer.modelSearchPlaceholder': '搜索模型…',
+  'composer.chooseModel': '选择模型',
+  'composer.configureModels': '连接提供方或添加模型',
   'composer.modelCompactAt': '{tokens} 自动压缩',
   'composer.modelNoVision': '不支持视觉',
   'composer.placeholder': '让 kiki 做点什么…',

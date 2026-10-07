@@ -2220,6 +2220,24 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private async applyExecutionBinding(execution: PromptExecutionBinding | undefined): Promise<void> {
+    const binding = this.profile.data();
+    if (
+      execution?.execution === undefined &&
+      binding.driver !== 'external' &&
+      (binding.executorId ?? 'native') === 'native' &&
+      binding.execution === undefined &&
+      binding.profileName === undefined &&
+      binding.modelAlias === undefined
+    ) {
+      await this.profile.bind({
+        profile: execution?.profile,
+        model: execution?.model,
+        thinking: execution?.thinking,
+        strictThinking: execution?.thinking !== undefined,
+      });
+      await this.syncProfileBindingMetadata();
+      return;
+    }
     if (execution === undefined) return;
     if (execution.execution !== undefined) {
       await this.profile.bind({ execution: { ...execution.execution, overrides: {

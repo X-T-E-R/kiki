@@ -2829,6 +2829,27 @@ describe('Composer skill preview card', () => {
 });
 
 describe('Composer restored selection diagnostics', () => {
+  it('keeps the model selector and provider setup reachable with an empty catalog while preserving the draft', async () => {
+    listModels.mockResolvedValue({ items: [] });
+    const onChange = vi.fn();
+    const { container } = await renderComposer({ value: 'Keep this welcome draft.', serverDefaultModel: undefined, onChange });
+    const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
+    expect(trigger.textContent).toContain('Choose a model');
+    await click(trigger);
+    expect(container.querySelector('[data-model-configure]')?.textContent).toBe('Connect a provider or add models');
+    expect(composerTextarea(container).value).toBe('Keep this welcome draft.');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('can pick a native model when no default is configured without discarding the welcome draft', async () => {
+    const onChangeModel = vi.fn();
+    const { container } = await renderComposer({ value: 'Keep this welcome draft.', serverDefaultModel: undefined, onChangeModel });
+    await click(container.querySelector('#composer-model-select')!);
+    await click(container.querySelector('[data-option-value="fixture/kiki-pro"]')!);
+    expect(onChangeModel).toHaveBeenCalledWith('fixture/kiki-pro');
+    expect(composerTextarea(container).value).toBe('Keep this welcome draft.');
+  });
+
   it.each([undefined, 'saved-session'])('sends immediately while catalogs and frozen details are pending (%s)', async (sessionId) => {
     listModels.mockReturnValue(new Promise(() => {}));
     listNamedAgentProfiles.mockReturnValue(new Promise(() => {}));

@@ -1208,6 +1208,8 @@ export const en = {
   'composer.profileSearchPlaceholder': 'Search profiles…',
   'composer.profileEffortBadge': 'effort · {effort}',
   'composer.modelSearchPlaceholder': 'Search models…',
+  'composer.chooseModel': 'Choose a model',
+  'composer.configureModels': 'Connect a provider or add models',
   'composer.modelCompactAt': 'auto-compact {tokens}',
   'composer.modelNoVision': 'no vision',
   'composer.placeholder': 'Ask kiki anything…',

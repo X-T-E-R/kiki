@@ -3455,9 +3455,8 @@ function ExternalModelChoice({ choice, engineLabel, onChange }: {
  * so the two facts never squeeze each other out. The agent profile is a
  * separate toolbar control, not part of this panel.
  *
- * With an empty catalog the trigger degrades to the read-only effective model
- * (nothing to pick) while the panel still carries the effort row; with neither
- * available it is inert text.
+ * Native sessions keep the panel available even without a catalog so setup
+ * remains reachable. External engines keep their own read-only model label.
  */
 function ModelChip({
   modelOptions,
@@ -3493,6 +3492,7 @@ function ModelChip({
   readonly onChangeEffort: (effort: string) => void;
 }) {
   const { t } = useI18n();
+  const navigate = useNavigate();
   const displayEfforts = sortThinkingEffortsForDisplay(efforts ?? []);
   const showEffort = displayEfforts.length > 0 && effort !== undefined;
   const sourceTitle = t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) });
@@ -3502,7 +3502,7 @@ function ModelChip({
     ? t('composer.engineModelTitle', { model: effectiveModel ?? t('composer.engineModelDefault'), engine: engineLabel })
     : effectiveModel !== undefined ? `${effectiveModel} — ${sourceTitle}` : sourceTitle;
 
-  if (engineLabel !== undefined || (!hasCatalog && !showEffort)) {
+  if (engineLabel !== undefined) {
     return (
       <span
         data-composer-engine-model={engineLabel}
@@ -3555,7 +3555,7 @@ function ModelChip({
         modelSource === 'override' ? STATUS_SEGMENT_SET : ''
       } disabled:cursor-not-allowed disabled:opacity-60`}
       triggerIcon={<EffortGauge efforts={displayEfforts} effort={showEffort ? effort : undefined} />}
-      triggerLabel={shortLabel}
+      triggerLabel={shortLabel ?? (effectiveModel === undefined ? t('composer.chooseModel') : undefined)}
       triggerSuffix={
         showEffort ? (
           // Same segment, same quiet gap: the gauge already draws the depth,
@@ -3585,7 +3585,8 @@ function ModelChip({
         </div>
       }
       panelFooter={
-        showEffort ? (
+        <>
+        {showEffort ? (
           <div className="flex items-center gap-2 border-t border-hairline px-3 py-2">
             <span className="shrink-0 text-[12px] font-medium text-ink-faint">
               {t('composer.effortHeading')}
@@ -3615,7 +3616,16 @@ function ModelChip({
               ))}
             </div>
           </div>
-        ) : null
+        ) : null}
+        <button
+          type="button"
+          data-model-configure
+          onClick={() => { void navigate('/settings/ai?tab=providers#st-card-providers-add'); }}
+          className="w-full border-t border-hairline px-3 py-2 text-left text-[12px] font-medium text-ink-soft hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+        >
+          {t('composer.configureModels')}
+        </button>
+        </>
       }
     />
     </ComposerPanelOrigin>
