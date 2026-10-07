@@ -29,7 +29,7 @@ import type { GoalFollowUpTiming, GoalSnapshot } from '@kiki/protocol';
 import { API_CODES, ApiError } from '../lib/client';
 import type { UpdateAgentGoalInput } from '../lib/client';
 import { useI18n } from '../i18n';
-import { Icon } from './icons';
+import { Icon, Spinner } from './icons';
 import { InlineEditor } from './InlineEditor';
 import { LifeMark } from './LifeMark';
 
@@ -73,6 +73,35 @@ export function GoalHeaderSummary({ goal }: { readonly goal: GoalSnapshot }) {
 
 function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function GoalPauseButton({ onPause }: { readonly onPause: () => Promise<unknown> }) {
+  const { t } = useI18n();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      <button
+        type="button"
+        data-goal-pause
+        disabled={pending}
+        aria-busy={pending}
+        title={t('goal.pauseTitle')}
+        className="h-6 shrink-0 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+        onClick={() => {
+          if (pending) return;
+          setPending(true);
+          setError(null);
+          void onPause().catch((cause: unknown) => {
+            setError(errorDetail(cause));
+          }).finally(() => { setPending(false); });
+        }}
+      >
+        <span className="flex items-center gap-1">{pending ? <Spinner label={t('goal.pause')} size={12} /> : null}{t('goal.pause')}</span>
+      </button>
+      {error === null ? null : <span role="alert" data-goal-error className="max-w-56 text-[12px] text-danger">{t('goal.actionFailed', { detail: error })}</span>}
+    </span>
+  );
 }
 
 export function GoalCard({
@@ -260,10 +289,11 @@ export function GoalCard({
             ) : null}
           </p>
         </div>
-        {editing ? null : (
+        {(
           <span data-goal-actions className="ml-auto flex shrink-0 items-center gap-0.5">
             <button
               type="button"
+              hidden={editing}
               disabled={busy}
               onClick={openEditor}
               title={t('goal.editTitle')}
@@ -271,17 +301,7 @@ export function GoalCard({
             >
               {t('goal.edit')}
             </button>
-            {goal.status === 'active' ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => { act('pause', onPause); }}
-                title={t('goal.pauseTitle')}
-                className={actionClass}
-              >
-                {t('goal.pause')}
-              </button>
-            ) : null}
+            {goal.status === 'active' ? <GoalPauseButton onPause={onPause} /> : null}
             {goal.status === 'paused' || goal.status === 'blocked' ? (
               <button
                 type="button"

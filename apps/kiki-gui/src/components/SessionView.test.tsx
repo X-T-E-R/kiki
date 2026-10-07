@@ -43,6 +43,8 @@ vi.mock('./rail-variants/DefaultSections', async (importOriginal) => ({
   CapabilitiesBlock: () => null,
 }));
 
+vi.mock('./capabilities/WorkspacePluginsSection', () => ({ WorkspacePluginsSection: () => null }));
+
 vi.mock('./AgentPanelContainer', () => ({
   AgentPanelContainer: ({ state }: { state: { todos: readonly { title: string }[] } }) =>
     <div data-panel-props>{state.todos.map((todo) => todo.title).join('\n')}</div>,
@@ -84,6 +86,8 @@ import {
   withoutQueuedAttachment,
   resolveSessionCreateSubmission,
   resolveSessionSeatPhase,
+  resolveSessionSendReady,
+  sessionIdForSendReadyRead,
   sessionAgentProfileWorkspaceId,
   SessionRouteView,
   shouldClearModeOverride,
@@ -434,6 +438,32 @@ describe('conversation shell phase (session side)', () => {
     // The session is known blank-about-to-run: no hidden-seat settle beat.
     expect(resolveSessionSeatPhase({ loaded: false, hasInitialPrompt: true })).toBe('active');
     expect(resolveSessionSeatPhase({ loaded: true, hasInitialPrompt: true })).toBe('active');
+  });
+});
+
+describe('session send readiness', () => {
+  const shellReady = {
+    leaseReady: true,
+    loaded: true,
+    loadError: undefined,
+    resyncing: false,
+    resyncFailed: false,
+  };
+
+  it('allows send once the shell snapshot lease settles, before transcript seed', () => {
+    expect(resolveSessionSendReady(shellReady)).toBe(true);
+    expect(resolveSessionSendReady({ ...shellReady, leaseReady: false })).toBe(false);
+  });
+
+  it('keeps send paused through load and resync failures', () => {
+    expect(resolveSessionSendReady({ ...shellReady, loadError: 'snapshot failed' })).toBe(false);
+    expect(resolveSessionSendReady({ ...shellReady, resyncing: true })).toBe(false);
+    expect(resolveSessionSendReady({ ...shellReady, resyncFailed: true })).toBe(false);
+  });
+
+  it('does not start session-operation reads before the snapshot lease is settled', () => {
+    expect(sessionIdForSendReadyRead('session-a', false)).toBeUndefined();
+    expect(sessionIdForSendReadyRead('session-a', true)).toBe('session-a');
   });
 });
 

@@ -599,9 +599,18 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         `Cannot pause a goal in status "${state.status}"`,
       );
     }
-    return this.applyLifecycle(state, 'paused', input.reason, actor, {
-      preserveLiveContinuation: true,
+    const liveTurnId = this.liveTurnId;
+    const pendingTurnId = this.pendingContinuation?.turnId;
+    const snapshot = this.applyLifecycle(state, 'paused', input.reason, actor, {
+      preserveLiveContinuation: actor !== 'user',
     });
+    if (
+      actor === 'user' && liveTurnId !== undefined && liveTurnId !== pendingTurnId &&
+      this.goalTurnTarget(liveTurnId) === state.goalId
+    ) {
+      this.loopService.cancel(liveTurnId, abortError('Goal paused'));
+    }
+    return snapshot;
   }
 
   async pauseActiveGoal(

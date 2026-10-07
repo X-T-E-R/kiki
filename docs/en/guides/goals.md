@@ -80,13 +80,15 @@ A goal can stop in three ways:
 
 Put your stop conditions in the objective itself — there is no separate stop-limit flag.
 
-A blocked goal does not cancel work it already started. When a task launched for it finishes, the result wakes the main agent to process that one completion; the goal itself stays blocked until you resume it. The same result is held for your next message if you pause or cancel the goal, or if the budget runs out.
+Pausing a goal stops its current goal-driven turn and automatic follow-up turns without deleting the objective. Background tasks already launched continue; their results wait for your next message. You can send ordinary messages while the goal is paused. Reopening a session after a restart pauses an active goal; a goal you already paused or cancelled stays stopped until you explicitly resume or create one.
+
+A blocked goal does not cancel work it already started. When a task launched for it finishes, the result wakes the main agent to process that one completion; the goal itself stays blocked until you resume it. If you cancel the goal or its budget runs out, that result waits for your next message.
 
 ## Manage goals in the web UI
 
-The web UI shows the current goal in a strip below the conversation. Select the strip to expand or collapse its details. When a token budget (a cap on how many tokens the agent may spend on this goal) is configured, the header shows its progress; goals without a token budget do not show a progress bar.
+The web UI shows the current goal above the composer. The Pause button remains visible beside an active goal, even when its details are collapsed. Select the goal title to expand its objective, completion criterion, follow-up timing and other controls; editing or loading those details does not disable Pause.
 
-Use the strip actions to pause an active goal, resume a paused or blocked goal, or cancel the current goal. Selecting Resume starts the next goal turn so the agent continues the work. Cancellation requires confirmation because it cannot be resumed afterwards.
+Use Resume to continue a paused or blocked goal, or Cancel to remove it. Selecting Resume starts the next goal turn. Cancellation requires confirmation because it cannot be resumed afterwards.
 
 ## Queue upcoming goals
 

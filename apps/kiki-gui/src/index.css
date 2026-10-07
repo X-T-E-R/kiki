@@ -1164,7 +1164,7 @@ body[data-pane-resizing='true'] {
 }
 /* Narrow stacks drop the first prompt's inline actions (the detail has them). */
 @container (max-width: 30rem) {
-  .composer-header-actions {
+  .composer-header-queue .composer-header-actions {
     display: none;
   }
   .composer-header-sheet {

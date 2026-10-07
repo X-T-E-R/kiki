@@ -1,3 +1,5 @@
+import { createServer } from 'node:http';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import type { MessageContent, Session, SessionSnapshotResponse } from '@kiki/protocol';
@@ -365,6 +367,184 @@ describe('SessionController prompt runtime projection', () => {
 });
 
 describe('SessionController pipeline', () => {
+  it('keeps the shell snapshot separate from transcript readiness before sending', async () => {
+    const client = {
+      snapshot: vi.fn(async () => snapshot()),
+      submitPrompt: vi.fn(async () => ({
+        prompt_id: 'p-ready', user_message_id: 'm-ready', status: 'running' as const,
+        content: [{ type: 'text' as const, text: 'ready' }], created_at: '2026-01-01T00:00:02.000Z',
+      })),
+    };
+    const controller = new SessionController(
+      client as unknown as KikiClient,
+      fakeView(client, {}),
+      'session_test',
+    );
+
+    await controller.open();
+    expect(controller.getState()).toMatchObject({ loaded: true, transcriptReady: false });
+
+    controller.handleTranscript(resetEvent('main', emptySnapshot(), 11));
+    controller.flushFrames();
+    expect(controller.getState().transcriptReady).toBe(true);
+
+    await controller.sendPrompt({ text: 'ready' });
+    expect(client.submitPrompt).toHaveBeenCalledExactlyOnceWith('session_test', expect.objectContaining({
+      content: [{ type: 'text', text: 'ready' }],
+    }));
+
+    await controller.resync();
+    expect(controller.getState().transcriptReady).toBe(false);
+    controller.handleTranscript(resetEvent('main', emptySnapshot(), 12));
+    controller.flushFrames();
+    expect(controller.getState().transcriptReady).toBe(true);
+    controller.close();
+  });
+
+  it('records serialized HTTP operation phases before and after the lease gate', async () => {
+    type Stage = { readonly name: string; readonly at: number };
+    type Result = { readonly stages: readonly Stage[]; readonly requests: Readonly<Record<string, number>> };
+    const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    const run = async (preflightBeforeOpen: boolean): Promise<Result> => {
+      const stages: Stage[] = [];
+      const requests: Record<string, number> = {};
+      let operationTail = Promise.resolve();
+      const mark = (name: string) => { stages.push({ name, at: performance.now() }); };
+      const count = (path: string) => { requests[path] = (requests[path] ?? 0) + 1; };
+      const respond = (response: import('node:http').ServerResponse, body: unknown) => {
+        response.statusCode = 200;
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify(body));
+      };
+      const operate = async (name: string, work: () => Promise<void>): Promise<void> => {
+        const previous = operationTail;
+        let release!: () => void;
+        operationTail = new Promise<void>((resolve) => { release = resolve; });
+        await previous;
+        mark(`${name}:start`);
+        try { await work(); }
+        finally { mark(`${name}:end`); release(); }
+      };
+      const server = createServer((request, response) => {
+        const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+        count(path);
+        request.resume();
+        if (path === '/snapshot') {
+          void operate('snapshot', async () => { await delay(2); respond(response, snapshot()); });
+          return;
+        }
+        if (path === '/auto-compact') {
+          void operate('preflight', async () => { await delay(40); respond(response, { tokens: 80 }); });
+          return;
+        }
+        if (path === '/prompt') {
+          void operate('prompt', async () => {
+            await delay(2);
+            respond(response, {
+              prompt_id: 'http-prompt', user_message_id: 'http-message', status: 'running',
+              content: [{ type: 'text', text: 'http send' }], created_at: '2026-01-01T00:00:02.000Z',
+            });
+          });
+          return;
+        }
+        response.statusCode = 404;
+        response.end();
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => resolve());
+      });
+      const address = server.address();
+      if (address === null || typeof address === 'string') throw new Error('HTTP harness did not bind a port');
+      const endpoint = `http://127.0.0.1:${address.port}`;
+      const requestJson = async (path: string, init: RequestInit = {}): Promise<unknown> => {
+        const response = await fetch(`${endpoint}${path}`, init);
+        if (!response.ok) throw new Error(`HTTP ${response.status} for ${path}`);
+        return response.json();
+      };
+      const scheduled: (() => void)[] = [];
+      const view = {
+        snapshot: async ({ signal }: { signal?: AbortSignal } = {}) =>
+          await requestJson('/snapshot', { signal }) as SessionSnapshotResponse,
+        transcript: {
+          page: async () => { throw new Error('history page is not part of this fixture'); },
+          catchUp: async () => { throw new Error('catch-up is not part of this fixture'); },
+        },
+        subscribe: (_input: unknown, onSignal: Parameters<SessionViewFacade['subscribe']>[1]) => {
+          let closed = false;
+          queueMicrotask(() => {
+            if (closed) return;
+            onSignal({ type: 'transcript', event: resetEvent('main', emptySnapshot(), 11), generation: 0 });
+            onSignal({ type: 'ready', currentSessionCursor: { seq: 10, epoch: 'epoch-1' }, reconnected: false, generation: 0 });
+          });
+          return {
+            updateSessionCursor: () => {}, setTranscriptGrades: () => {}, updateTranscriptCursor: () => {},
+            restart: () => {}, nudge: () => {}, close: () => { closed = true; },
+          };
+        },
+      } as unknown as SessionViewFacade;
+      const transport = {
+        submitPrompt: (_sessionId: string, body: unknown) => requestJson('/prompt', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+        }),
+      } as unknown as KikiClient;
+      const controller = new SessionController(transport, view, 'session_test', {
+        scheduler: {
+          schedule: (callback) => { scheduled.push(callback); return callback; },
+          cancel: (handle) => {
+            const index = scheduled.indexOf(handle as () => void);
+            if (index >= 0) scheduled.splice(index, 1);
+          },
+        },
+      });
+      const drain = () => { while (scheduled.length > 0) scheduled.shift()!(); controller.flushFrames(); };
+      try {
+        const started = performance.now();
+        mark('scenario:start');
+        let preflight: Promise<unknown> | undefined;
+        if (preflightBeforeOpen) {
+          preflight = requestJson('/auto-compact');
+          await waitFor(() => stages.some((stage) => stage.name === 'preflight:start'));
+        }
+        await controller.open();
+        mark('shell');
+        mark('send');
+        await controller.sendPrompt({ text: 'http send' });
+        await waitFor(() => { drain(); return controller.getState().transcriptReady; });
+        mark('seed:after-send');
+        if (!preflightBeforeOpen) await requestJson('/auto-compact');
+        await preflight;
+        mark('scenario:end');
+        return { stages: stages.map((stage) => ({ ...stage, at: stage.at - started })), requests };
+      } finally {
+        controller.close();
+        await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+      }
+    };
+
+    const before = await run(true);
+    const after = await run(false);
+    const beforeNames = before.stages.map((stage) => stage.name);
+    const afterNames = after.stages.map((stage) => stage.name);
+    expect(before.requests).toEqual({ '/auto-compact': 1, '/snapshot': 1, '/prompt': 1 });
+    expect(after.requests).toEqual(before.requests);
+    expect(beforeNames).toEqual([
+      'scenario:start', 'preflight:start', 'preflight:end', 'snapshot:start', 'snapshot:end',
+      'shell', 'send', 'prompt:start', 'prompt:end', 'seed:after-send', 'scenario:end',
+    ]);
+    expect(afterNames).toEqual([
+      'scenario:start', 'snapshot:start', 'snapshot:end', 'shell', 'send',
+      'prompt:start', 'prompt:end', 'seed:after-send', 'preflight:start', 'preflight:end', 'scenario:end',
+    ]);
+    const beforeShell = before.stages.find((stage) => stage.name === 'shell')!;
+    const afterShell = after.stages.find((stage) => stage.name === 'shell')!;
+    const beforePreflightEnd = before.stages.find((stage) => stage.name === 'preflight:end')!;
+    const afterPreflightStart = after.stages.find((stage) => stage.name === 'preflight:start')!;
+    expect(beforeShell.at).toBeGreaterThan(beforePreflightEnd.at);
+    expect(afterShell.at).toBeLessThan(afterPreflightStart.at);
+  });
+
   it('aborts the in-flight snapshot when the session closes', async () => {
     let signal: AbortSignal | undefined;
     const view: SessionViewFacade = {

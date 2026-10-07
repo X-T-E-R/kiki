@@ -29,7 +29,7 @@ import {
   type ConversationSeat,
 } from './ConversationShell';
 import { ComposerHeader, type ComposerHeaderSection } from './ComposerHeader';
-import { GoalCard, GoalHeaderSummary, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
+import { GoalCard, GoalHeaderSummary, GoalPauseButton, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
 import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
 import { SubmissionRecovery } from './SubmissionRecovery';
@@ -215,14 +215,17 @@ function MoreIcon({ className = '' }: { className?: string }) {
 function useActiveController(
   sessionId: string | undefined,
   focusedAgentId?: string,
-): SessionController | null {
+): { controller: SessionController | null; leaseReady: boolean } {
   const { client } = useConnection();
   const registry = useControllerRegistry();
-  const [controller, setController] = useState<SessionController | null>(null);
+  const [active, setActive] = useState<{ controller: SessionController | null; leaseReady: boolean }>({
+    controller: null,
+    leaseReady: false,
+  });
 
   useEffect(() => {
     if (sessionId === undefined) {
-      setController(null);
+      setActive({ controller: null, leaseReady: false });
       return;
     }
     // The registry keeps a recently left view parked (bounded LRU), so coming
@@ -233,19 +236,27 @@ function useActiveController(
       () => new SessionController(client.sessions, client.sessionView(sessionId), sessionId),
     );
     const next = lease.controller;
+    let activeLease = true;
     next.setFocusedAgent(focusedAgentId);
-    setController(next);
-    void lease.ready.catch(() => {
-      // snapshot failure leaves the controller unloaded; the transcript shows
-      // "Opening session…" until a resync succeeds
-    });
+    setActive({ controller: next, leaseReady: false });
+    void lease.ready.then(
+      () => {
+        if (activeLease) setActive({ controller: next, leaseReady: true });
+      },
+      () => {
+        // Snapshot failure leaves the controller unloaded; the transcript shows
+        // "Opening session…" until a resync succeeds, but the lease is settled.
+        if (activeLease) setActive({ controller: next, leaseReady: true });
+      },
+    );
     return () => {
+      activeLease = false;
       lease.release();
-      setController(null);
+      setActive({ controller: null, leaseReady: false });
     };
   }, [client, sessionId, registry]);
 
-  return controller;
+  return active;
 }
 
 function Header({
@@ -847,6 +858,26 @@ export function resolveSessionSeatPhase(input: {
   hasInitialPrompt: boolean;
 }): ConversationPhase {
   return !input.loaded && !input.hasInitialPrompt ? 'settling' : 'active';
+}
+
+/**
+ * A shell snapshot is enough to send once its operation lease has settled;
+ * transcript seed is independent presentation work.
+ */
+export function resolveSessionSendReady(input: {
+  leaseReady: boolean;
+  loaded: boolean;
+  loadError?: string;
+  resyncing: boolean;
+  resyncFailed: boolean;
+}): boolean {
+  return input.leaseReady && input.loaded &&
+    input.loadError === undefined && !input.resyncing && !input.resyncFailed;
+}
+
+/** Session-operation reads start only after the snapshot operation lease settles. */
+export function sessionIdForSendReadyRead(sessionId: string | undefined, sendReady: boolean): string | undefined {
+  return sendReady ? sessionId : undefined;
 }
 
 interface SessionCreateHandoff {
@@ -1672,7 +1703,7 @@ export function SessionView({
     setAnnotations((current) => current.map((annotation) => (annotation.id === id ? { ...annotation, comment } : annotation)));
   }, []);
 
-  const controller = useActiveController(sessionId, selectedAgentId);
+  const { controller, leaseReady } = useActiveController(sessionId, selectedAgentId);
   const queryClient = useQueryClient();
 
   // Embedded terminal panel: per-session manager (terminal list + attach
@@ -1903,6 +1934,18 @@ export function SessionView({
     controller?.subscribe ?? noopSubscribe,
     controller?.getState ?? emptyState,
   );
+  const sessionSendReady = resolveSessionSendReady({
+    leaseReady,
+    loaded: state.loaded,
+    loadError: state.loadError,
+    resyncing: state.resyncing,
+    resyncFailed: state.resyncFailed,
+  });
+  const [railReady, setRailReady] = useState(false);
+  useEffect(() => {
+    if (sessionSendReady) setRailReady(true);
+  }, [sessionSendReady]);
+  const railMountReady = railReady || sessionSendReady;
 
   // Which projection of the timeline this session shows (remembered per
   // session; a `message` delivery opens in the message view) and the delivery
@@ -3562,9 +3605,7 @@ boundExecution,
     if (
       controller === null ||
       actions === null ||
-      !state.loaded ||
-      state.resyncing ||
-      state.resyncFailed
+      !sessionSendReady
     ) {
       return;
     }
@@ -3607,9 +3648,7 @@ boundExecution,
   }, [
     controller,
     actions,
-    state.loaded,
-    state.resyncing,
-    state.resyncFailed,
+    sessionSendReady,
     location.pathname,
     navigate,
     updateDraft,
@@ -3643,12 +3682,7 @@ boundExecution,
     reportAttention([{ sessionId, kind: turnTail.state, title: sessionTitle }]);
   }, [sessionId, sessionTitle, state.transcriptReady, turnTail]);
 
-  const composerDisabled =
-    controller === null ||
-    !state.loaded ||
-    state.loadError !== undefined ||
-    state.resyncing ||
-    state.resyncFailed;
+  const composerDisabled = controller === null || !sessionSendReady;
   const modelSource: ModelSource = resolveModelSource(
     composerSelection.modelOverride,
     sessionModel,
@@ -3666,7 +3700,7 @@ boundExecution,
   // meter's adjustable track (absent on engines that do not report one).
   const compactionProgress = useCompactionProgress(client, sessionId);
   const contextAutoCompact = useContextMeterAutoCompact({
-    sessionId,
+    sessionId: sessionIdForSendReadyRead(sessionId, sessionSendReady),
     agentId: MAIN_AGENT_ID,
     modelId: sessionModel,
     modelLabel: catalogItem?.display_name ?? sessionModel,
@@ -3743,6 +3777,7 @@ boundExecution,
       summary: <GoalHeaderSummary goal={headerGoal} />,
       ariaLabel: t('goal.cardAria'),
       title: headerGoal.objective,
+      actions: headerGoal.status === 'active' ? <GoalPauseButton onPause={handleGoalPause} /> : undefined,
       panel: (
         <GoalCard goal={headerGoal} onRefresh={handleGoalRefresh} onUpdate={handleGoalUpdate}
           onPause={handleGoalPause} onResume={handleGoalResume} onCancel={handleGoalCancel} />
@@ -4286,7 +4321,10 @@ boundExecution,
               />
             ) : null}
           </>,
-          rail: <RightRail
+          // The inspector's session-operation reads wait until the first
+          // snapshot lease settles; after that, resyncs keep the mounted rail
+          // and its drafts instead of tearing the surface down.
+          rail: railMountReady ? <RightRail
             className={`app-rail ${railOpen ? 'open' : ''}`}
             state={focusState} forest={forest} selectedAgentId={panelFocusAgent}
             subagent={focusSubagent} taskOwnerAgentId={focusTaskOwner}
@@ -4295,7 +4333,7 @@ boundExecution,
             onInspectMain={inspectMain} onOpenFile={openFileInPreview}
             onReviewPending={reviewPending}
             sessionPending={trayItems} onResolveApproval={handleResolveApproval}
-          />,
+          /> : null,
         }}
       />
       </InteractionPlacementContext.Provider>

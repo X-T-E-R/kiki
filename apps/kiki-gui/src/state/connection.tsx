@@ -152,7 +152,7 @@ interface ConnectionValue {
 
 export interface ControllerLease {
   readonly controller: SessionController;
-  /** Initial open has settled; failures remain in the controller's load state. */
+  /** Initial open or cache resume has settled; failures remain in the controller's load state. */
   readonly ready: Promise<void>;
   /** Idempotent; the last lease closes and unregisters its controller. */
   release(): void;
@@ -276,8 +276,7 @@ export class LiveControllerRegistry implements ControllerRegistry {
       // Cache hit: the retained view repaints now and catches up behind it.
       this.unpark(entry);
       entry.references = 1;
-      entry.ready = Promise.resolve();
-      entry.controller.resume();
+      entry.ready = entry.controller.resume();
       this.add(entry.controller);
     } else {
       entry.references += 1;

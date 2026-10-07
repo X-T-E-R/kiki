@@ -1180,7 +1180,7 @@ export const en = {
   'goal.edit': 'Edit',
   'goal.editTitle': 'Edit the objective, completion criterion, or follow-up timing',
   'goal.pause': 'Pause',
-  'goal.pauseTitle': 'Pause the goal — follow-up turns stop until it resumes',
+  'goal.pauseTitle': 'Pause the goal — stop its current turn and automatic follow-ups',
   'goal.resume': 'Resume',
   'goal.resumeTitle': 'Resume the goal and continue working',
   'goal.resumeBlockedTitle': 'Resume this blocked goal and start another continuation',

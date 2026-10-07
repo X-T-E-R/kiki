@@ -1166,7 +1166,7 @@ export const zh = {
   'goal.edit': '编辑',
   'goal.editTitle': '编辑目标、完成条件或追加时机',
   'goal.pause': '暂停',
-  'goal.pauseTitle': '暂停目标——恢复前不再发起后续轮次',
+  'goal.pauseTitle': '暂停目标——停止当前目标轮次和自动续轮',
   'goal.resume': '继续',
   'goal.resumeTitle': '恢复目标并继续执行',
   'goal.resumeBlockedTitle': '恢复受阻目标并发起新的后续轮次',

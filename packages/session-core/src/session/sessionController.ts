@@ -570,23 +570,18 @@ export class SessionController {
   /**
    * Re-attach a suspended view. The retained window renders immediately; the
    * subscription resumes from the last applied session and transcript
-   * cursors, and a fresh snapshot shell refreshes session-level fields.
+   * cursors, and the returned promise settles after the fresh snapshot shell
+   * refreshes session-level fields.
    */
-  resume(): void {
-    if (this.closed || !this.isSuspended) return;
+  resume(): Promise<void> {
+    if (this.closed || !this.isSuspended) return Promise.resolve();
     this.isSuspended = false;
-    if (!this.state.loaded) {
-      void this.open();
-      return;
-    }
-    if (this.state.resyncFailed) {
-      void this.resync();
-      return;
-    }
+    if (!this.state.loaded) return this.open();
+    if (this.state.resyncFailed) return this.resync();
     this.transcriptGrades = this.requestedTranscriptGrades();
     this.attachView(this.state.cursor);
     void this.pumpContentReads();
-    void this.refreshShell();
+    return this.refreshShell();
   }
 
   private async refreshShell(): Promise<void> {
@@ -1091,6 +1086,7 @@ export class SessionController {
         setResyncing(
           {
             ...applyTranscriptShell(this.sessionId, snapshot, this.state),
+            transcriptReady: false,
             loadingOlder: false,
             olderError: undefined,
           },

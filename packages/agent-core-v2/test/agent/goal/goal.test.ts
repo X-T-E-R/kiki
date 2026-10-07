@@ -735,6 +735,19 @@ describe('AgentGoalService', () => {
       expect(goals.getGoal().goal?.budget.turnBudget).toBe(2);
     });
 
+    it.each(['paused', 'cancelled'] as const)('preserves a user %s goal on restart without restarting work', async (status) => {
+      const enqueue = vi.spyOn(ctx.get(IAgentLoopService), 'enqueue');
+      await restoreGoalRecords(ctx, goals, [
+        { type: 'goal.create', goalId: 'g1', objective: 'finish work' },
+        status === 'paused'
+          ? { type: 'goal.update', status: 'paused', reason: 'User paused' }
+          : { type: 'goal.clear' },
+      ]);
+      if (status === 'paused') expect(goals.getGoal().goal).toMatchObject({ status: 'paused', terminalReason: 'User paused' });
+      else expect(goals.getGoal().goal).toBeNull();
+      expect(enqueue).not.toHaveBeenCalled();
+    });
+
     it('normalizes active replayed goals to paused', async () => {
       records.length = 0;
       await restoreGoalRecords(ctx, goals, [
@@ -991,10 +1004,22 @@ describe('AgentGoalService core workflow hooks', () => {
     });
   });
 
-  it('preserves a live continuation while preventing future turns when the user pauses the goal', async () => {
+  it('aborts a live continuation and prevents future turns when the user pauses the goal', async () => {
     const abort = await startLiveContinuation();
 
     await goals.pauseGoal();
+
+    expect(abort).toHaveBeenCalledOnce();
+    expect(goals.getGoal().goal?.status).toBe('paused');
+    endTurn(eventBus, makeTurn(41), { reason: 'cancelled' });
+    await Promise.resolve();
+    expect(loopService.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('preserves the current turn when the runtime pauses future goal continuation', async () => {
+    const abort = await startLiveContinuation();
+
+    await goals.pauseGoal({ reason: 'runtime hold' }, 'runtime');
 
     expect(abort).not.toHaveBeenCalled();
     expect(goals.getGoal().goal?.status).toBe('paused');
@@ -1981,6 +2006,46 @@ describe('goal pause classification on provider errors', () => {
       status: 'paused',
       terminalReason: 'Paused after provider safety policy block',
     });
+  });
+});
+
+describe('AgentGoalService user pause recovery', () => {
+  it('interrupts an in-flight goal tool and accepts an ordinary message without cron', async () => {
+    const started = deferred();
+    let toolSignal: AbortSignal | undefined;
+    const ctx = createTestAgent(permissionModeServices('yolo'));
+    try {
+      ctx.get(IAgentToolRegistryService).register({
+        name: 'SlowWork',
+        description: 'Wait for cancellation.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        resolveExecution: () => ({
+          approvalRule: 'SlowWork', accesses: [],
+          execute: async ({ signal }) => {
+            toolSignal = signal;
+            started.resolve();
+            return waitForAbort(signal);
+          },
+        }),
+      });
+      ctx.configure({ tools: ['SlowWork'] });
+      await ctx.rpc.createGoal({ objective: 'finish work' });
+      ctx.mockNextResponse({ type: 'function', id: 'slow-work', name: 'SlowWork', arguments: '{}' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start' }] });
+      await started.promise;
+      await ctx.rpc.pauseGoal({});
+      expect(toolSignal?.aborted).toBe(true);
+      await ctx.untilTurnEnd();
+      await ctx.get(IAgentLoopService).settled();
+      expect(ctx.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false });
+      ctx.mockNextResponse({ type: 'text', text: 'Ordinary reply' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'answer this instead' }] });
+      const events = await ctx.untilTurnEnd();
+      expect(events).toContainEqual(expect.objectContaining({ event: 'turn.ended', args: expect.objectContaining({ reason: 'completed' }) }));
+      expect((await ctx.rpc.getGoal({})).goal?.status).toBe('paused');
+    } finally {
+      await ctx.dispose();
+    }
   });
 });
 

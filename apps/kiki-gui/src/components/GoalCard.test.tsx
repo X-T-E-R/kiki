@@ -12,7 +12,8 @@ import type { GoalSnapshot } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
 import { ApiError } from '../lib/client';
-import { GoalCard, GoalHeaderSummary, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
+import { GoalCard, GoalHeaderSummary, GoalPauseButton, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
+import { ComposerHeader } from './ComposerHeader';
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -120,6 +121,20 @@ describe('GoalCard', () => {
     expect(card.querySelector('[data-goal-actions] button[title^="Pause the goal"]')).not.toBeNull();
     expect(card.querySelector('.dock-reveal')).toBeNull();
     expect(card.textContent).toContain('follow-up · Subagents done');
+  });
+
+  it('keeps pause usable while the editor waits for its authoritative read', async () => {
+    let finishRead!: (value: GoalSnapshot) => void;
+    const onRefresh = vi.fn(() => new Promise<GoalSnapshot>((resolve) => { finishRead = resolve; }));
+    const onPause = vi.fn(() => Promise.resolve());
+    const { container } = await renderCard({ onRefresh, onPause });
+    await click(container.querySelector('button[title^="Edit the objective"]')!);
+    const pause = container.querySelector<HTMLButtonElement>('[data-goal-pause]')!;
+    expect(pause).not.toBeNull();
+    expect(pause.disabled).toBe(false);
+    await click(pause);
+    expect(onPause).toHaveBeenCalledOnce();
+    await act(async () => { finishRead(goalFixture({ status: 'paused' })); });
   });
 
   it('offers resume instead of pause for a paused goal', async () => {
@@ -231,6 +246,38 @@ describe('GoalCard', () => {
     await settle();
     expect(container.querySelector('[data-goal-error]')?.textContent).toContain('engine busy');
     expect(container.querySelector('[data-goal-card]')).not.toBeNull();
+  });
+});
+
+describe('GoalPauseButton', () => {
+  it('pauses from the collapsed header and reports a pending or failed request', async () => {
+    let rejectPause!: (error: Error) => void;
+    const onPause = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectPause = reject; }));
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<I18nProvider><ComposerHeader settled={false} goal={{
+        summary: <GoalHeaderSummary goal={goalFixture()} />,
+        ariaLabel: 'Goal',
+        panel: <div>Details</div>,
+        actions: <GoalPauseButton onPause={onPause} />,
+      }} /></I18nProvider>);
+    });
+    expect(container.querySelector('[data-header-toggle]')?.getAttribute('aria-expanded')).toBe('false');
+    const pause = container.querySelector<HTMLButtonElement>('[data-goal-pause]')!;
+    expect(pause.closest('[inert]')).toBeNull();
+    await click(pause);
+    expect(onPause).toHaveBeenCalledOnce();
+    expect(pause.disabled).toBe(true);
+    expect(pause.getAttribute('aria-busy')).toBe('true');
+    await click(pause);
+    expect(onPause).toHaveBeenCalledOnce();
+    await act(async () => { rejectPause(new Error('Connection closed')); });
+    expect(pause.disabled).toBe(false);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Connection closed');
+    await act(async () => { root.unmount(); });
   });
 });
 
