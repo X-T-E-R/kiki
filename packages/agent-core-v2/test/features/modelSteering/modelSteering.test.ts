@@ -9,6 +9,8 @@ import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInj
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { TurnStarted } from '#/agent/loop/turnEvents';
+import { IEventBus } from '#/app/event/eventBus';
 import { ContinuationStepRequest } from '#/agent/loop/stepRequest';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -75,6 +77,7 @@ describe('AgentModelSteeringService', () => {
     ctx.get(IAgentModelSteeringService);
     const loop = ctx.get(IAgentLoopService);
     const memory = ctx.get(IAgentContextMemoryService);
+    memory.append({ role: 'user', content: [{ type: 'text', text: 'Initial user request' }], toolCalls: [], origin: { kind: 'user' } });
     for (let step = 1; step <= 4; step++) {
       await runWillBeginStepHooks(loop, step === 1);
       expect(steeringMessages(memory)).toHaveLength(Math.floor(step / 2));
@@ -180,6 +183,7 @@ describe('AgentModelSteeringService', () => {
 
     const loop = ctx.get(IAgentLoopService);
     const memory = ctx.get(IAgentContextMemoryService);
+    memory.append({ role: 'user', content: [{ type: 'text', text: 'Initial user request' }], toolCalls: [], origin: { kind: 'user' } });
 
     await runWillBeginStepHooks(loop, true);
     expect(steeringMessages(memory)).toHaveLength(1);
@@ -201,6 +205,7 @@ describe('AgentModelSteeringService', () => {
     await bindModel();
     const loop = ctx.get(IAgentLoopService);
     const memory = ctx.get(IAgentContextMemoryService);
+    memory.append({ role: 'user', content: [{ type: 'text', text: 'Initial user request' }], toolCalls: [], origin: { kind: 'user' } });
     await runWillBeginStepHooks(loop, true);
     const nonHumanOrigins: ContextMessage['origin'][] = [
       undefined,
@@ -301,6 +306,7 @@ describe('AgentModelSteeringService', () => {
     await bindModel(true, { steeringOnTurn: false, steeringOnInput: false, steeringIntervalSteps: 2 });
     const loop = ctx.get(IAgentLoopService);
     const memory = ctx.get(IAgentContextMemoryService);
+    memory.append({ role: 'user', content: [{ type: 'text', text: 'Initial user request' }], toolCalls: [], origin: { kind: 'user' } });
     const step = (turnId: number, stepId: string) => loop.hooks.onWillBeginStep.run({
       turnId, step: 1, stepId, firstStepOfTurn: true, signal: new AbortController().signal,
     });
@@ -318,6 +324,100 @@ describe('AgentModelSteeringService', () => {
     expect(steeringMessages(memory)).toHaveLength(1);
     await step(3, 'fourth-step');
     expect(steeringMessages(memory)).toHaveLength(2);
+  });
+
+  it.each([false, true])('retains all mixed Send now sources in actual requests without inheriting user cadence (enabled=%s)', async (enabled) => {
+    ctx = createTestAgent(homeDirServices(homeDir), permissionModeServices('manual'));
+    await bindModel(true, { steeringIntervalSteps: 1, steeringSources: enabled ? { agent: { mode: 'custom', custom: { steering: { text: 'AGENT CUE' } } }, task: { mode: 'inherit' } } : undefined });
+    const agent = ctx; const loop = agent.get(IAgentLoopService); const prompts = agent.get(IAgentPromptService);
+    const hook = loop.hooks.onDidFinishStep.register('test.mixed-sources', async ({ step }, next) => {
+      if (step === 1) {
+        const handles = [];
+        for (const origin of [{ kind: 'agent_message', messageId: 'example-agent', senderAgentId: 'example-child', senderTaskName: 'example' }, { kind: 'task', taskId: 'example-task', notificationId: 'example-notice', status: 'completed' }] satisfies ContextMessage['origin'][]) handles.push(await prompts.enqueue({ message: { role: 'user', toolCalls: [], content: [{ type: 'text', text: `Input ${origin.kind}` }], origin } }));
+        await prompts.steer(handles.map((handle) => handle.id));
+      }
+      if (step === 2) loop.enqueue(new ContinuationStepRequest());
+      await next();
+    });
+    for (let index = 0; index < 3; index++) agent.mockNextResponse({ type: 'text', text: `Answer ${index}` });
+    try { await agent.rpc.prompt({ input: [{ type: 'text', text: 'Initial human' }] }); await loop.settled(); }
+    finally { await hook.dispose(); }
+    expect(agent.llmCalls).toHaveLength(3);
+    const cues = agent.llmCalls.map((call) => call.history.flatMap((message) => message.content).filter((part) => part.type === 'text' && part.text === 'CLASSIFY THEN ACT').length);
+    expect(cues).toEqual(enabled ? [1, 2, 3] : [1, 1, 1]);
+    const second = agent.llmCalls[1]!.history.flatMap((message) => message.content).filter((part) => part.type === 'text').map((part) => part.text);
+    expect(second).toEqual(expect.arrayContaining(['Input agent_message', 'Input task']));
+    expect(second.filter((text) => text === 'AGENT CUE')).toHaveLength(enabled ? 1 : 0);
+    expect(agent.get(IAgentContextMemoryService).get().find((message) => message.origin?.kind === 'merged')?.origin).toMatchObject({ kind: 'merged', origins: [{ kind: 'agent_message', senderAgentId: 'example-child' }, { kind: 'task', taskId: 'example-task' }] });
+  });
+
+  it.each(['off', 'inherit', 'custom'] as const)('gates real peer turns and interval/compaction by source mode %s', async (mode) => {
+    ctx = createTestAgent(homeDirServices(homeDir), permissionModeServices('manual'));
+    await bindModel(true, { steeringIntervalSteps: 1, steeringSources: { thread: { mode, custom: { steering: { text: 'PEER CUE' }, steering_interval_steps: 1 } } } });
+    const agent = ctx;
+    const loop = agent.get(IAgentLoopService);
+    const memory = agent.get(IAgentContextMemoryService);
+    const prompts = agent.get(IAgentPromptService);
+    agent.mockNextResponse({ type: 'text', text: 'peer answer' });
+    agent.mockNextResponse({ type: 'text', text: 'peer continuation' });
+    const continuePeer = loop.hooks.onDidFinishStep.register('test.peer-continue', async ({ step }, next) => {
+      if (step === 1) loop.enqueue(new ContinuationStepRequest());
+      await next();
+    });
+    try {
+      const handle = await prompts.enqueue({ message: { role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Peer request' }], origin: { kind: 'peer_thread', source: { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-session' }, messageId: 'example-peer', acceptedAt: 1 } } });
+      await handle.completion;
+      await loop.settled();
+    } finally { await continuePeer.dispose(); }
+    expect(agent.llmCalls).toHaveLength(2);
+    const cue = mode === 'custom' ? 'PEER CUE' : 'CLASSIFY THEN ACT';
+    expect(agent.llmCalls.map((call) => call.history.flatMap((message) => message.content).filter((part) => part.type === 'text' && part.text === cue).length)).toEqual(mode === 'off' ? [0, 0] : [1, 2]);
+    memory.applyCompaction({ summary: 'Peer compacted', compactedCount: memory.get().length, tokensBefore: 100 });
+    await runWillBeginStepHooks(loop, false);
+    expect(steeringMessages(memory)).toHaveLength(mode === 'off' ? 0 : 1);
+  });
+
+  it.each([
+    undefined,
+    { kind: 'agent_message', messageId: 'example-agent', senderAgentId: 'example-child', senderTaskName: 'example' },
+    { kind: 'task', taskId: 'example-task', notificationId: 'example-task-notice', status: 'completed' },
+    { kind: 'cron_job', jobId: 'example-cron', cron: '* * * * *', recurring: true, coalescedCount: 1, stale: false },
+    { kind: 'system_trigger', name: 'unrecognized-future-source' },
+  ] satisfies ContextMessage['origin'][])('does not inherit user cadence on an unconfigured input %j', async (origin) => {
+    ctx = createTestAgent(homeDirServices(homeDir));
+    await bindModel(true, { steeringIntervalSteps: 1 });
+    const memory = ctx.get(IAgentContextMemoryService);
+    const loop = ctx.get(IAgentLoopService);
+    memory.append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Unconfigured input' }], origin });
+    await runWillBeginStepHooks(loop, true);
+    await runWillBeginStepHooks(loop, false);
+    expect(steeringMessages(memory)).toHaveLength(0);
+  });
+
+  it.each(['user', 'external_thread'] as const)('recovers the last real %s input for a cold retry without adopting user provenance', async (kind) => {
+    ctx = createTestAgent(homeDirServices(homeDir));
+    await bindModel(true);
+    const memory = ctx.get(IAgentContextMemoryService);
+    const loop = ctx.get(IAgentLoopService);
+    memory.append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Original input' }], origin: kind === 'user' ? { kind } : { kind, messageId: 'example-external', acceptedAt: 1 }, source: { turnId: 0, step: 1 } });
+    memory.append({ role: 'assistant', toolCalls: [], content: [{ type: 'text', text: 'Previous answer' }] });
+    await ctx.get(IEventBus).publish(new TurnStarted({ turnId: 1, origin: { kind: 'retry' } }));
+    await runWillBeginStepHooks(loop, true);
+    expect(steeringMessages(memory)).toHaveLength(kind === 'user' ? 1 : 0);
+  });
+
+  it('deduplicates inherited mixed-source cues and freezes source custom text across file changes', async () => {
+    ctx = createTestAgent(homeDirServices(homeDir));
+    await bindModel(true, { steeringSources: { agent: { mode: 'inherit' }, task: { mode: 'custom', custom: { steering: 'cognition/steering.md' } } } });
+    const memory = ctx.get(IAgentContextMemoryService);
+    const loop = ctx.get(IAgentLoopService);
+    for (const origin of [{ kind: 'user' }, { kind: 'agent_message', messageId: 'example-agent', senderAgentId: 'example-child', senderTaskName: 'example' }, { kind: 'task', taskId: 'example-task', notificationId: 'example-notice', status: 'completed' }] satisfies ContextMessage['origin'][]) memory.append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Mixed input' }], origin });
+    await runWillBeginStepHooks(loop, true);
+    expect(steeringMessages(memory)[0]!.content).toEqual([{ type: 'text', text: 'CLASSIFY THEN ACT' }]);
+    await writeFile(join(homeDir, 'cognition/steering.md'), 'CHANGED SOURCE FILE');
+    memory.append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Task update' }], origin: { kind: 'task', taskId: 'example-task', notificationId: 'example-new-notice', status: 'completed' } });
+    await runWillBeginStepHooks(loop, false);
+    expect(steeringMessages(memory).at(-1)!.content).toEqual([{ type: 'text', text: 'CLASSIFY THEN ACT' }]);
   });
 
   it('does not inject when the bound model has no steering slot', async () => {

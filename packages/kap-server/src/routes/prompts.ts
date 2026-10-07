@@ -53,6 +53,7 @@ import { turnAbortResponseSchema } from '@kiki/protocol';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
 import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
 import { promptLaunchFailure } from '@kiki/agent-core-v2/agent/prompt/promptFailure';
+import { bundledSkillActivations } from '@kiki/agent-core-v2/agent/prompt/promptService';
 import { delegatorRef } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
 import { ErrorCode } from '../protocol/error-codes';
 import { ensurePromptAuthReady } from '../lib/promptAuth';
@@ -903,12 +904,13 @@ export function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][num
     ? 'running'
     : prompt.state === 'blocked' ? 'blocked' : 'queued';
   const origin = prompt.message.origin;
-  const bundled = origin?.kind === 'user' ? (origin.skillActivations?.length ?? 0) : 0;
+  const bundled = bundledSkillActivations(origin).length;
   const content = bundled === 0 ? prompt.message.content : prompt.message.content.slice(bundled);
   return {
     prompt_id: prompt.id,
     user_message_id: prompt.userMessageId,
     status,
+    origin,
     content: projectPromptContentParts(content),
     created_at: prompt.createdAt,
     append_timing: prompt.appendTiming ?? 'agent_idle',

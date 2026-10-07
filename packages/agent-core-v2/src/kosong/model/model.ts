@@ -56,6 +56,7 @@ export interface CognitionContent {
   steeringOnTurn?: boolean;
   steeringOnInput?: boolean;
   steeringIntervalSteps?: number;
+  steeringSources?: import('@kiki/protocol').ModelSteeringSources<CognitionSlotContent>;
   anchor?: CognitionSlotContent;
   overlayMode?: 'append' | 'prepend' | 'wrap' | 'persona' | 'replace';
   anchorSteps?: number;

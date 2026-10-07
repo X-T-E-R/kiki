@@ -120,6 +120,19 @@ describe('Recipe accepted revisions', () => {
     expect(await service.resolve(installed.installation_id)).toEqual(before);
     sources.clear(); expect(await service.resolve(installed.installation_id)).toEqual(before);
   });
+  it('resolves, merges, copies and exports source modes without discarding dormant custom bodies', async () => {
+    sources.set(parent, { 'recipe.toml': manifest('parent', { steering: { text: 'USER' }, steering_sources: { thread: { mode: 'custom', custom: { steering: { file: 'thread.md' }, steering_on_turn: false, steering_interval_steps: 3 } }, task: { mode: 'inherit' } } }), 'thread.md': 'THREAD FILE' });
+    sources.set(child, { 'recipe.toml': manifest('child', { steering_sources: { thread: { mode: 'off' }, task: { mode: 'custom', custom: { steering: 'off' } } } }, parent) });
+    const installed = await install(child);
+    const resolved = await service.resolve(installed.installation_id);
+    expect(resolved.branches.main.steering_sources).toEqual({ thread: { mode: 'off', custom: { steering: 'THREAD FILE', steering_on_turn: false, steering_interval_steps: 3 } }, task: { mode: 'custom', custom: { steering: '' } } });
+    const copy = await service.fork({ installation_id: installed.installation_id, mode: 'copy', id: 'copy', name: 'Copy' });
+    expect(copy.resolved.branches.main.steering_sources).toEqual(resolved.branches.main.steering_sources);
+    const exported = await service.export(copy.summary.installation_id);
+    sources.set('https://example.test/source-export/recipe.toml', exported.files);
+    const preview = await service.preview({ source: { locator: 'https://example.test/source-export/recipe.toml' } });
+    expect(preview.resolved.branches.main.steering_sources).toEqual(resolved.branches.main.steering_sources);
+  });
   it('copy stops following, inheritance preserves local slots, pinned mode freezes the complete dependency result, and off never falls back', async () => {
     const installed = await install(child);
     const copy = await service.fork({ installation_id: installed.installation_id, mode: 'copy', id: 'copy', name: 'Copy' });

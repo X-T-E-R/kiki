@@ -1,4 +1,5 @@
 import { captureProfileModelMenu } from '@kiki/agent-profiles/agentProfile';
+import { loadSteeringSources } from '#/agent/cognition/steeringBinding';
 import { composeRecipeLayers, recipeReferences } from '#/app/recipes/recipeOverlay';
 import { snapshotRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
 import type { AgentPromptDiagnostics, ExecutionSelection } from '@kiki/protocol';
@@ -2388,16 +2389,18 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     try {
       const nativeSlots = await loadCognitionSlots(this.hostFs, this.bootstrap.homeDir, config, this.hostEnv.pathClass);
       const slots = { ...nativeSlots, steering: branch?.steering ?? nativeSlots.steering, anchor: branch?.anchor?.content ?? nativeSlots.anchor };
+      const steeringSources = await loadSteeringSources(this.hostFs, this.bootstrap.homeDir, config, branch, this.hostEnv.pathClass);
       const modelSettings = recipe === undefined ? undefined : snapshotRecipeModelSettings(this.models.get(modelAlias)!, recipe.model);
       this.cognitionBinding = {
         position: this.delegationPosition,
         modelAlias,
         revision: ++this.cognitionRevision,
-        contentRevision: createHash('sha256').update(JSON.stringify({ alias: this.models.resolveId(modelAlias) ?? modelAlias, position: this.delegationPosition, config, slots, recipe, modelSettings })).digest('hex'),
+        contentRevision: createHash('sha256').update(JSON.stringify({ alias: this.models.resolveId(modelAlias) ?? modelAlias, position: this.delegationPosition, config, slots, steeringSources, recipe, modelSettings })).digest('hex'),
         config: config === undefined ? undefined : structuredClone(config),
         modelSettings,
         recipe: recipe === undefined ? undefined : { installation_id: recipe.layers?.at(-1)?.installation_id ?? this.models.get(modelAlias)?.recipe ?? '', resolved: recipe },
         anchor: slots.anchor,
+        steeringSources,
         slots,
       };
       const withNative = applyOverlay(base, slots.overlay, config?.overlayMode ?? 'append');

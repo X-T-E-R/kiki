@@ -64,7 +64,7 @@ Peer thread 通信让 main agent 协调同一台本地主机上的其他 Kiki �
 
 Thread 引用标识主机、工作区和会话。`ThreadList` 返回后续调用所需的引用；`ThreadRead` 读取已完成的主 Agent turn，不恢复冷会话；`ThreadSend` 从当前主 Agent 会话派生来源；`ThreadWait` 最多等待 8 条 thread 的活动，最长 60 秒。消息不能跨主机。
 
-只有来源 thread 的主 Agent 调用 `ThreadSend` 才会记为 peer 来源。REST 和 Klient 的 `global.threads` facade 只接受目标 thread，消息记为 user 来源，外部客户端不能自行声明来源。
+只有来源 thread 的主 Agent 调用 `ThreadSend` 才会记为 peer 来源。REST 和 Klient 的 `global.threads` facade 只接受目标 thread，消息记为外部客户端输入，不能自行声明来源 thread 或直接人类来源。
 
 在 `config.toml` 中设 `[thread_communication] enabled = true` 全局启用。发送消息可能恢复冷会话并消耗模型额度。工作区可以持久设置启用或禁用覆盖值，但全局开关关闭时无法反向启用。接口见 [服务 API](../server/rest-api.md#会话租约与-peer-thread)。
 

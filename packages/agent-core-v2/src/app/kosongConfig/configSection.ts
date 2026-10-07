@@ -1,5 +1,5 @@
 import { PromptOverridesSchema } from '@kiki/agent-profiles/promptOverrides';
-import { modelBehaviorConfigSchema, modelSteeringCadenceSchema } from '@kiki/protocol';
+import { modelBehaviorConfigSchema, modelSteeringCadenceSchema, modelSteeringSourcesSchema } from '@kiki/protocol';
 import { OAuthRefSchema } from '#/kosong/provider/oauthRef';
 import { z } from 'zod';
 
@@ -331,6 +331,7 @@ const CognitionContentSchema = z.object({
   steeringOnTurn: modelSteeringCadenceSchema.shape.steering_on_turn,
   steeringOnInput: modelSteeringCadenceSchema.shape.steering_on_input,
   steeringIntervalSteps: modelSteeringCadenceSchema.shape.steering_interval_steps,
+  steeringSources: modelSteeringSourcesSchema(CognitionPathRefSchema).optional(),
 }).strict();
 const CognitionBranchSchema = z.union([
   z.enum(['same', 'off']),

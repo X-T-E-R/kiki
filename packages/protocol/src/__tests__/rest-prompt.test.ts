@@ -251,6 +251,19 @@ describe('promptSubmitResultSchema', () => {
 });
 
 describe('promptListResponseSchema', () => {
+  it('preserves opaque source origins without widening submission authority', () => {
+    const origins = [
+      { kind: 'merged', origins: [{ kind: 'user', skillActivations: [{ skillName: 'review' }] }, { kind: 'task_notification', taskId: 'example-task' }] },
+      { kind: 'unknown' }, { kind: 'external_thread', messageId: 'example-message' },
+      { kind: 'system_trigger', name: 'thread_create' }, { kind: 'future_source', opaque: true },
+    ];
+    for (const origin of origins) {
+      const item = { prompt_id: 'p-source', user_message_id: 'm-source', status: 'queued', origin, content: [{ type: 'text', text: 'payload' }], created_at: '2026-06-09T00:00:00.000Z' };
+      expect(promptListResponseSchema.parse({ active: null, queued: [item] }).queued[0]?.origin).toEqual(origin);
+      expect(promptSubmissionSchema.parse({ content: item.content, origin })).not.toHaveProperty('origin');
+    }
+  });
+
   it('parses active and queued prompts', () => {
     const parsed = promptListResponseSchema.parse({
       active: {

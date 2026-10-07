@@ -118,6 +118,7 @@ export const promptItemSchema = z.object({
   prompt_id: z.string().min(1),
   user_message_id: z.string().min(1),
   status: promptStatusSchema,
+  origin: z.unknown().optional(),
   content: z.array(messageContentSchema).min(1),
   created_at: isoDateTimeSchema,
   // Always populated by a server that supports deferred-append timing; absent

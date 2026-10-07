@@ -1,4 +1,4 @@
-import type { RecipeResolvedLayer, ResolvedRecipe, ResolvedRecipeBranch } from '@kiki/protocol';
+import { mergeModelSteeringSources, type RecipeResolvedLayer, type ResolvedRecipe, type ResolvedRecipeBranch } from '@kiki/protocol';
 import type { ModelOverride } from '#/kosong/model/model';
 import { resolveGenerationParameters } from '#/kosong/model/parameters';
 import { mergeRecipeModelSettings, recipeModelLeaves } from './recipeModelSettings';
@@ -22,7 +22,8 @@ export function composeRecipeLayers(layers: RecipeResolvedLayer[], overrides?: M
     const result: ResolvedRecipeBranch = { fields: {} };
     for (const layer of layers) {
       const value = layer.resolved.branches[position];
-      for (const [key, content] of Object.entries(value)) if (content !== undefined && key !== 'fields') Object.assign(result, { [key]: structuredClone(content) });
+      for (const [key, content] of Object.entries(value)) if (content !== undefined && key !== 'fields' && key !== 'steering_sources') Object.assign(result, { [key]: structuredClone(content) });
+      result.steering_sources = mergeModelSteeringSources(result.steering_sources, value.steering_sources);
       Object.assign(result.fields, value.fields);
     }
     return result;

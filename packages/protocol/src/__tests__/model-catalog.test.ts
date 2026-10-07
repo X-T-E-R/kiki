@@ -113,7 +113,7 @@ describe('model catalog schemas', () => {
       steering: 'cognition/example.md', steering_on_turn: false, steering_on_input: true, steering_interval_steps: 0,
       main: { steering: 'cognition/main.md', steering_on_turn: true, steering_interval_steps: 4 }, independent: 'same',
     };
-    expect(patchModelRequestSchema.parse({ cognition })).toEqual({ cognition });
+    expect(patchModelRequestSchema.parse({ cognition, base_revision: 'example-revision' })).toEqual({ cognition, base_revision: 'example-revision' });
     expect(modelEntitySchema.parse({ ...model, provider_source: 'provider', cognition, effective_parameters: {}, parameter_sources: {}, revision: 'example-revision', issues: [] }).cognition).toEqual(cognition);
     for (const steering_interval_steps of [-1, 1.5, '2']) {
       expect(patchModelRequestSchema.safeParse({ cognition: { steering_interval_steps } }).success).toBe(false);

@@ -1348,6 +1348,19 @@ describe('server-v2 /api prompts', () => {
     expect(plain.revision).toBe(0);
   });
 
+  it('projects original mixed sources and their bundled skills without inventing user provenance', () => {
+    const origin = { kind: 'merged' as const, origins: [
+      { kind: 'user' as const, skillActivations: [{ activationId: 'a-source', skillName: 'review' }] },
+      { kind: 'system_trigger' as const, name: 'thread_create' },
+    ] };
+    const projected = projectPromptSnapshot({
+      id: 'p-source', userMessageId: 'm-source', createdAt: '2026-01-01T00:00:00.000Z', state: 'pending',
+      message: { role: 'user', toolCalls: [], origin, content: [{ type: 'text', text: 'bundled skill block' }, { type: 'text', text: 'mixed task' }] },
+    });
+    expect(projected.origin).toEqual(origin);
+    expect(projected.content).toEqual([{ type: 'text', text: 'mixed task' }]);
+  });
+
   it('projects the effective scheduling revision captured on the prompt snapshot', () => {
     const scheduled = projectPromptSnapshot({
       id: 'msg_3',

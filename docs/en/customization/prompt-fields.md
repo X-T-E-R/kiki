@@ -107,7 +107,20 @@ A package can declare one parent with `extends = { source = "https://example.com
 
 `prompts` is the common branch used by subagents. A `[prompts.main]` or `[prompts.independent]` table selects a whole position-specific branch; it does not implicitly fill missing slots from common. Set `main = "same"` or `independent = "same"` inside `[prompts]` to explicitly use common, or use `"off"` to disable the whole branch. Text slots accept `{ text = "..." }`, `{ file = "prompt.md" }`, or an array of those sources. An anchor uses `{ content = { text = "..." }, steps = 1, scope = "session" }`; `scope` also accepts `"turn"`.
 
-Steering cadence belongs to the selected branch; an omitted key retains the lower layer's value. With no declaration, `steering_on_turn` defaults to `true` for new turns and rearming after compaction, `steering_on_input` defaults to `true` for materialized human input, and `steering_interval_steps` defaults to `0` (no additional periodic injection). A positive interval counts this agent's actual model loop steps since the last injection, not seconds or tool calls.
+Steering cadence belongs to the selected branch; an omitted key retains the lower layer's value. The ordinary steering body and cadence apply to direct user input. With no declaration, `steering_on_turn` and `steering_on_input` default to `true`, while `steering_interval_steps` defaults to `0` (no periodic injection). A positive interval counts this agent's model steps driven by that source, not seconds or tool calls; off sources stay off after compaction too.
+
+Use `steering_sources` in that same branch to enable another source: `mode = "inherit"` follows the final user body and cadence at binding, while `mode = "custom"` uses its own `custom` body and cadence. Sources and custom fields merge by declared leaf across parent, model and profile Recipe layers, then freeze with the binding; changing user settings does not rewrite existing sessions. Source keys and defaults are listed under [Model cognition](../configuration/config-files.md#model-cognition). For example:
+
+```toml
+[prompts.steering_sources.thread]
+mode = "inherit"
+
+[prompts.steering_sources.task]
+mode = "custom"
+custom = { steering = { file = "task-cue.md" }, steering_interval_steps = 2 }
+```
+
+A custom Recipe body accepts the normal text/file/array forms or `"off"`; the latter suppresses lower-layer custom text. Off and inherit modes keep any saved custom draft.
 
 `global.recipes.fork` creates either an independent `copy` or an `extend` child; `saveLocal` edits the resulting local package with an `expected_revision` guard. Installed packages lock the complete dependency chain and work offline. `follow` checks updates daily; `pinned` keeps the accepted revision. Invalid updates leave the whole last accepted revision active. HTTPS ZIP sources require `sha256`; an inherited ZIP source can supply it in `extends`. Preview and install accept the same inspected snapshot, with no second source download at install time.
 

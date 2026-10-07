@@ -144,7 +144,23 @@ export interface RoomMessageOrigin {
   readonly generation?: number;
 }
 
+export interface MergedPromptOrigin {
+  readonly kind: 'merged';
+  readonly origins: readonly PromptOrigin[];
+}
+
+export interface UnknownPromptOrigin { readonly kind: 'unknown' }
+
+export interface ExternalThreadOrigin {
+  readonly kind: 'external_thread';
+  readonly messageId: string;
+  readonly acceptedAt: number;
+}
+
 export type PromptOrigin =
+  | MergedPromptOrigin
+  | UnknownPromptOrigin
+  | ExternalThreadOrigin
   | UserPromptOrigin
   | SkillActivationOrigin
   | PluginCommandOrigin

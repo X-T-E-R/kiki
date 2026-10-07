@@ -30,6 +30,7 @@ export interface UserBlock {
   readonly presentation?: import('@kiki/transcript').TextPresentation;
   readonly media?: readonly MediaRef[];
   readonly queuedContent?: Message['content'];
+  readonly sourceOrigin?: unknown;
   readonly createdAt: string;
   readonly turnId?: string;
   readonly promptId?: string;

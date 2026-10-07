@@ -2,7 +2,7 @@ import { recipeDigest, recipeFailure, validateRecipePath } from './recipePrimiti
 import { parse } from 'smol-toml';
 import { valid } from 'semver';
 import { z } from 'zod';
-import { recipeBranchSchema, recipeSourceSchema, type RecipeSource, type RecipeValueOrigin, type ResolvedRecipe, type ResolvedRecipeBranch, type RecipeLockEntry } from '@kiki/protocol';
+import { modelSteeringSourceIds, modelSteeringSourcesSchema, mergeModelSteeringSources, type ModelSteeringSources, recipeBranchSchema, recipeSourceSchema, type RecipeSource, type RecipeValueOrigin, type ResolvedRecipe, type ResolvedRecipeBranch, type RecipeLockEntry } from '@kiki/protocol';
 import type { IPromptFieldRegistry } from '#/app/promptField/promptFieldRegistry';
 import type { RecipePackageReader } from './recipes';
 import { Error2, ErrorCodes } from '#/errors';
@@ -15,6 +15,7 @@ const slotSchema = z.union([sourceSchema, z.array(sourceSchema).min(1).max(64), 
 const cadenceSchema = recipeBranchSchema.pick({ steering_on_turn: true, steering_on_input: true, steering_interval_steps: true });
 const contentSchema = cadenceSchema.extend({
   system: slotSchema.optional(), steering: slotSchema.optional(),
+  steering_sources: modelSteeringSourcesSchema(slotSchema).optional(),
   anchor: z.union([z.literal('off'), z.object({ content: slotSchema, steps: z.number().int().positive().max(1000).default(1), scope: z.enum(['session', 'turn']).default('session') }).strict()]).optional(),
   fields: z.record(z.string(), z.union([z.string(), z.literal(false)])).optional(),
 }).strict();
@@ -31,6 +32,7 @@ export type Origin = Omit<RecipeValueOrigin, 'position' | 'slot'>;
 export interface TextValue { text: string; origins: Origin[] }
 export interface RecipeContent extends z.infer<typeof cadenceSchema> {
   system?: TextValue | 'off'; steering?: TextValue | 'off';
+  steering_sources?: ModelSteeringSources<TextValue | 'off'>;
   anchor?: { content: TextValue | 'off'; steps: number; scope: 'session' | 'turn' } | 'off';
   fields?: Record<string, { value: string | false; origin: Origin }>;
   cadenceOrigins?: Record<string, Origin>;
@@ -78,7 +80,12 @@ export async function parseRecipe(reader: RecipePackageReader, registry: IPrompt
       fields[id] = { value, origin: base };
     }
     const cadence = cadenceSchema.parse(raw);
-    return { ...cadence, cadenceOrigins: Object.fromEntries(Object.keys(cadence).map((key) => [key, base])),
+    const steering_sources: RecipeContent['steering_sources'] = raw.steering_sources === undefined ? undefined : {};
+    for (const source of modelSteeringSourceIds) {
+      const setting = raw.steering_sources?.[source];
+      if (setting !== undefined) steering_sources![source] = { mode: setting.mode, custom: setting.custom === undefined ? undefined : { ...setting.custom, steering: setting.custom.steering === undefined ? undefined : await text(setting.custom.steering) } };
+    }
+    return { ...cadence, steering_sources, cadenceOrigins: Object.fromEntries(Object.keys(cadence).map((key) => [key, base])),
       system: raw.system === undefined ? undefined : await text(raw.system), steering: raw.steering === undefined ? undefined : await text(raw.steering),
       anchor: raw.anchor === undefined || raw.anchor === 'off' ? raw.anchor : { ...raw.anchor, content: await text(raw.anchor.content) }, fields };
   };
@@ -106,6 +113,7 @@ export async function parseRecipe(reader: RecipePackageReader, registry: IPrompt
 export function mergeRecipe(parent: RecipeDeclaration, child: RecipeDeclaration): RecipeDeclaration {
   const content = (a: RecipeContent, b: RecipeContent): RecipeContent => ({
     system: b.system ?? a.system, steering: b.steering ?? a.steering, anchor: b.anchor ?? a.anchor, fields: { ...a.fields, ...b.fields },
+    steering_sources: mergeModelSteeringSources(a.steering_sources, b.steering_sources),
     steering_on_turn: b.steering_on_turn ?? a.steering_on_turn, steering_on_input: b.steering_on_input ?? a.steering_on_input,
     steering_interval_steps: b.steering_interval_steps ?? a.steering_interval_steps, cadenceOrigins: { ...a.cadenceOrigins, ...b.cadenceOrigins },
   });
@@ -131,7 +139,12 @@ export function resolveRecipe(declaration: RecipeDeclaration, dependencies: Reci
     for (const [id, origin] of Object.entries(content.cadenceOrigins ?? {})) origins.push({ ...origin, position, slot: id });
     const anchor = content.anchor;
     const anchorText = anchor === undefined || anchor === 'off' ? undefined : slot('anchor', anchor.content);
-    return { ...cadence, system: slot('system', content.system), steering: slot('steering', content.steering), anchor: anchorText === undefined || anchor === undefined || anchor === 'off' ? undefined : { content: anchorText, steps: anchor.steps, scope: anchor.scope }, fields };
+    const steering_sources: ResolvedRecipeBranch['steering_sources'] = content.steering_sources === undefined ? undefined : {};
+    for (const source of modelSteeringSourceIds) {
+      const setting = content.steering_sources?.[source];
+      if (setting !== undefined) steering_sources![source] = { mode: setting.mode, custom: setting.custom === undefined ? undefined : { ...setting.custom, steering: setting.custom.steering === 'off' ? '' : slot(`steering_sources.${source}`, setting.custom.steering) } };
+    }
+    return { ...cadence, steering_sources, system: slot('system', content.system), steering: slot('steering', content.steering), anchor: anchorText === undefined || anchor === undefined || anchor === 'off' ? undefined : { content: anchorText, steps: anchor.steps, scope: anchor.scope }, fields };
   };
   const branches = { main: resolve('main'), sub: resolve('sub'), independent: resolve('independent') };
   const model = typeof declaration.model === 'object' ? declaration.model : {};

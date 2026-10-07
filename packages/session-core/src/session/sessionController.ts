@@ -2362,7 +2362,7 @@ export class SessionController {
         const projection = projectMessageContent(receipt.content);
         next = appendLocalUserMessage(next, { userMessageId: receipt.user_message_id, promptId: receipt.prompt_id,
           text: projection.text, media: projection.media, content: receipt.content, createdAt: receipt.created_at,
-          status: receipt.status, appendTiming: receipt.append_timing });
+          status: receipt.status, origin: receipt.origin, appendTiming: receipt.append_timing });
         next = { ...next, queuedPromptMeta: { ...next.queuedPromptMeta,
           [receipt.prompt_id]: { appendTiming: receipt.append_timing ?? 'agent_idle', revision: receipt.revision, queuePosition: previous.queuedPromptMeta[receipt.prompt_id]?.queuePosition } } };
       }
@@ -2509,6 +2509,7 @@ export class SessionController {
         text: projection.text === '' ? input.text : projection.text,
         createdAt: result.created_at,
         status: result.status,
+        origin: result.origin,
         media: projection.media,
         content: result.content,
         appendTiming: result.append_timing ?? input.appendTiming,
@@ -2691,6 +2692,7 @@ export class SessionController {
         text: projection.text,
         createdAt: result.created_at,
         status: result.status,
+        origin: result.origin,
         media: projection.media,
         content: result.content,
       }),

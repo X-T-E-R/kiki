@@ -62,7 +62,7 @@ The server exposes these routes under `/api`:
 | Set a workspace override | `PUT /api/workspaces/{workspace_id}/thread-communication` |
 | Clear a workspace override | `DELETE /api/workspaces/{workspace_id}/thread-communication` |
 
-`POST /api/threads:send` accepts `target`, `content`, and `idempotency_key`. It rejects `source` and records user-origin input. `GET /openapi.json` provides schemas; `GET /api/meta` advertises `capabilities.thread_communication: true`.
+`POST /api/threads:send` accepts `target`, `content`, and `idempotency_key`. It rejects `source` and records `external_thread` input rather than user or peer provenance. `GET /openapi.json` provides schemas; `GET /api/meta` advertises `capabilities.thread_communication: true`.
 
 Klient exposes `global.threads.hostId`, `list`, `read`, `send`, `wait`, `getWorkspaceOverride`, `setWorkspaceOverride`, `clearWorkspaceOverride`, and `isWorkspaceEnabled`. Send with `global.threads.send({ target, content, idempotencyKey })`. Extra lower-level transport fields cannot create peer attribution; true peer sends use the source agent's `ThreadSend` tool, which derives the source identity itself.
 

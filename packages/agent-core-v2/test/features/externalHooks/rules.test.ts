@@ -265,6 +265,35 @@ describe('hooks v2 session workspace loading', () => {
 });
 
 describe('hooks v2 completed-step engine contract', () => {
+  it('runs Send now guidance once at safe materialization while retaining user/mailbox source identity', async () => {
+    const observed: HookEvent[] = [];
+    const ctx = agentWithRules(() => snapshot([
+      rule({ id: 'human', event: 'prompt.submit', cadence: undefined, match: {}, action: { type: 'inject', text: 'USER GUIDANCE' } }),
+      rule({ id: 'steer', event: 'prompt.submit', cadence: undefined, match: { sources: ['steering'] }, action: { type: 'inject', text: 'STEER GUIDANCE' } }),
+      rule({ id: 'mailbox', event: 'prompt.submit', cadence: undefined, match: { sources: ['mailbox'] }, action: { type: 'observe' } }),
+    ]), (event) => observed.push(event));
+    const loop = ctx.get(IAgentLoopService);
+    const prompts = ctx.get(IAgentPromptService);
+    const subscription = loop.hooks.onDidFinishStep.register('test.sendnow-hooks', async ({ step }, next) => {
+      if (step === 1) {
+        const human = await prompts.enqueue({ message: { role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Human correction' }], origin: { kind: 'user' } } });
+        const peer = await prompts.enqueue({ message: { role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Peer correction' }], origin: { kind: 'agent_message', messageId: 'example-message', senderAgentId: 'example-child', senderTaskName: 'example' } } });
+        await prompts.steer([human.id, peer.id]);
+        expect(injections(ctx)).toHaveLength(1);
+      }
+      await next();
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Initial answer' });
+    ctx.mockNextResponse({ type: 'text', text: 'Corrected answer' });
+    try { await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Initial user input' }] }); await loop.settled(); }
+    finally { await subscription.dispose(); }
+    expect(ctx.llmCalls).toHaveLength(2);
+    const text = ctx.llmCalls[1]!.history.flatMap((message) => message.content).filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+    expect(text.match(/USER GUIDANCE/g)).toHaveLength(2);
+    expect(text.match(/STEER GUIDANCE/g)).toHaveLength(2);
+    expect(observed.some((event) => event.source === 'mailbox' && event.delivery === 'steering')).toBe(true);
+    expect(ctx.get(IAgentContextMemoryService).get().some((message) => message.origin?.kind === 'merged' && message.origin.origins.map((origin) => origin.kind).join(',') === 'user,agent_message')).toBe(true);
+  });
   it.each([1, 5])('injects only after %s committed steps, on the next request, including across naturally-ended turns', async (n) => {
     const config = snapshot([rule({ cadence: { everyCompletedSteps: n, counterScope: 'agent', partitionBy: 'model' } })]);
     const ctx = agentWithRules(() => config);

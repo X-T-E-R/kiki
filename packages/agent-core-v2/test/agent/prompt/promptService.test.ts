@@ -15,6 +15,7 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { ContentPart } from '#/kosong/contract/message';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { turnPromptText } from '#/agent/loop/turnEvents';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { ExecutorHintDelivery } from '#/agent/execution/externalExecutorOps';
 import { IAgentPromptService, PROMPT_EDIT_HOLD_TTL_MS, reservePrompt } from '#/agent/prompt/prompt';
@@ -1783,6 +1784,40 @@ describe('AgentPromptService', () => {
     await expect(handle.completion).resolves.toMatchObject({ state: 'blocked' });
   });
 
+  it('keeps blocked Send now feedback out of the in-flight context until the owned boundary', async () => {
+    const { prompt, context, loop } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ message: message('active') });
+    await active.launched;
+    const queued = await prompt.enqueue({ message: message('blocked correction') });
+    const feedback = { ...message('Blocked feedback'), origin: { kind: 'hook_result' as const, event: 'UserPromptSubmit' as const, blocked: true } };
+    prompt.hooks.onBeforeSubmitPrompt.register('block-steer', async (ctx, next) => { if (ctx.isSteer) { ctx.block = true; ctx.appendMessage!(feedback); } await next(); });
+    let boundary: (() => Promise<void>) | undefined;
+    vi.spyOn(loop, 'atStepBoundary').mockImplementation((run) => { boundary = () => run(undefined); return Promise.resolve(); });
+    await prompt.steer([queued.id]);
+    expect((await queued.completion).state).toBe('blocked');
+    expect(context.get()).not.toContainEqual(feedback);
+    expect(loop.queue.pendingKinds()).not.toContain('steer');
+    expect(boundary).toBeDefined();
+    await boundary!();
+    expect(context.get()).toContainEqual(feedback);
+  });
+
+  it('drops collected Send now output when cancelled before materialization', async () => {
+    const { prompt, context, loop } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ message: message('active') });
+    await active.launched;
+    loop.drainNextBatch(context);
+    const queued = await prompt.enqueue({ message: message('correction') });
+    const feedback = { ...message('Steer guidance'), origin: { kind: 'injection' as const, variant: 'test-steer', ownerPromptId: queued.id } };
+    prompt.hooks.onBeforeSubmitPrompt.register('collect-steer', async (ctx, next) => { if (ctx.isSteer) ctx.appendMessage!(feedback); await next(); });
+    await prompt.steer([queued.id]);
+    const request = loop.queue.takeNextBatch()!;
+    request.driver.abort();
+    for (const merged of request.merged) merged.abort();
+    expect(context.get()).not.toContainEqual(feedback);
+    expect(context.get().some((item) => item.content.some((part) => part.type === 'text' && part.text === 'correction'))).toBe(false);
+  });
+
   it('delivers a blocked prompt’s marked compression captions right after their host message', async () => {
     const { prompt, context } = harness();
     prompt.hooks.onBeforeSubmitPrompt.register('block', async (ctx, next) => { ctx.block = true; await next(); });
@@ -1983,9 +2018,11 @@ describe('AgentPromptService', () => {
     const active = await prompt.enqueue({ message: message('active') });
     await active.launched;
     let releaseIntake!: () => void;
+    const enteredIntake = deferred<void>();
     intake.get.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
+          enteredIntake.resolve();
           releaseIntake = () =>
             resolve({
               meta: {
@@ -2008,13 +2045,15 @@ describe('AgentPromptService', () => {
     await prompt.enqueue({ id: 'b', message: message('b') });
 
     const steerPromise = prompt.steer(['a', 'b']);
+    const rejected = expect(steerPromise).rejects.toMatchObject({ code: 'prompt.not_found' });
+    await enteredIntake.promise;
     expect(() => prompt.replace('a', [{ type: 'text', text: 'replacement' }])).toThrowError(
       expect.objectContaining({ code: ErrorCodes.PROMPT_NOT_FOUND }),
     );
     prompt.abort('a');
     releaseIntake();
 
-    await expect(steerPromise).rejects.toMatchObject({ code: 'prompt.not_found' });
+    await rejected;
     expect(prompt.list().pending.map((item) => item.id)).toEqual(['b']);
   });
 
@@ -2057,26 +2096,31 @@ describe('AgentPromptService', () => {
     expect(merged?.origin).toEqual(peerMessage('peer-1', 'one').origin);
   });
 
-  it('falls back to the user origin when steered records mix origins', async () => {
-    const { prompt, context, loop } = harness();
+  it('retains complete mixed origins and bundled skill prefixes when steering', async () => {
+    const { prompt, context, loop, eventBus } = harness();
+    const steered: ContentPart[][] = [];
+    eventBus.subscribe(PromptSteered, (event) => steered.push(event.content));
     const active = await prompt.enqueue({ message: message('active') });
     await active.launched;
-    const one = await prompt.enqueue({ message: peerMessage('peer-1', 'one') });
-    const two = await prompt.enqueue({ message: message('user two') });
+    const peer = peerMessage('peer-1', 'one');
+    const human = bundledMessage('review', 'user two');
+    const one = await prompt.enqueue({ message: peer });
+    const two = await prompt.enqueue({ message: human });
 
     await prompt.steer([one.id, two.id]);
     loop.drainNextBatch(context);
 
-    const merged = context
-      .get()
-      .filter(
-        (entry) => entry.origin?.kind === 'user' && entry.origin.skillActivations === undefined,
-      )
-      .at(-1);
+    const merged = context.get().findLast((entry) => entry.origin?.kind === 'merged');
+    expect(merged?.origin).toEqual({ kind: 'merged', origins: [peer.origin, human.origin] });
     expect(merged?.content).toEqual([
+      { type: 'text', text: '<skill>review</skill>' },
       { type: 'text', text: 'one' },
       { type: 'text', text: 'user two' },
     ]);
+    expect(turnPromptText(merged!.content, merged!.origin)).toBe('oneuser two');
+    const replay = await prompt.enqueue({ message: { ...merged!, id: undefined } });
+    await prompt.steer([replay.id]);
+    expect(steered.at(-1)).toEqual([{ type: 'text', text: 'one' }, { type: 'text', text: 'user two' }]);
   });
 
   it('restarts the queue after restoring a steer raced by the active turn settling', async () => {

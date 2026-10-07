@@ -533,6 +533,7 @@ merge_all_available_skills = true
     # steering_on_turn: boolean
     # steering_on_input: boolean
     # steering_interval_steps: integer
+    # steering_sources: record<string, object>
     # main: "same" | "off" | object
     # independent: "same" | "off" | object
   # prompt_overrides: object

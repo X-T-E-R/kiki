@@ -43,7 +43,7 @@ export interface ThreadTurn {
   readonly startedAt?: number;
   readonly endedAt: number;
   readonly reason: 'completed' | 'cancelled' | 'failed' | 'blocked';
-  readonly origin: 'user' | 'peer' | 'bridged_peer';
+  readonly origin: 'user' | 'peer' | 'bridged_peer' | 'external' | 'mixed' | 'unknown' | 'thread_created';
   readonly bridgedPeer?: import('./threadMailboxStore').BridgedThreadMetadata & { readonly messageId: string };
   readonly peer?: {
     readonly source: ThreadRef;

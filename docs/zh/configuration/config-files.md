@@ -347,9 +347,10 @@ display_name = "Kimi for Coding (custom)"
 | `overlay` | `{text: string}`、`string` 或 `array<string>` | — | 合并进所绑定模型系统提示词的正文。多条文件路径按声明顺序以空行拼接 |
 | `overlay_mode` | `string` | `append` | `overlay` 与 profile 提示词的组合方式：`append`、`prepend`、`wrap`、`persona` 或 `replace` |
 | `steering` | `{text: string}`、`string` 或 `array<string>` | — | 在启用的 steering 触发时机作为普通 User 消息注入的正文 |
-| `steering_on_turn` | `boolean` | `true` | 在每个新轮次及压缩后重新装填上下文时注入 |
+| `steering_on_turn` | `boolean` | `true` | 在用户来源的新轮次及其压缩后重新装填上下文时注入 |
 | `steering_on_input` | `boolean` | `true` | 在新接纳的人类输入后注入，包括轮内「立即发送」的纠偏 |
-| `steering_interval_steps` | `integer` | `0` | 每隔本 Agent 的 N 个模型步骤重复注入；必须非负，`0` 关闭定期 steering |
+| `steering_interval_steps` | `integer` | `0` | 每隔用户输入驱动的 N 个模型步骤重复注入；必须非负，`0` 关闭定期 steering |
+| `steering_sources` | `table` | 其他来源关闭 | 按来源选择 `mode`：`off`、`inherit`（沿用用户设置）或 `custom`（单独正文与节奏） |
 | `anchor` | `{text: string}`、`string` 或 `array<string>` | — | 用作一轮开头若干步的完整系统提示词的正文，会替换 profile 提示词以及任何 `overlay` |
 | `anchor_steps` | `integer` | `1` | 被锚定的一轮开头有多少次模型请求使用 `anchor` 正文；必须至少为 1 |
 | `anchor_scope` | `string` | `session` | `session` 只锚定会话的第一轮；`turn` 锚定每一轮的开头若干步 |
@@ -369,17 +370,28 @@ await klient.global.kosong.updateModel(baseline.id, {
 });
 ```
 
-写入 `cognition` 或 `prompt_overrides`（包括用 `null` 清除）必须带 `base_revision`。两者均整对象写入：保留 baseline 中未改的槽、分支选择、模式和注入节奏。遇到 `model_catalog.revision_conflict` 时保留草稿，重新读取模型，合并编辑后再试。
+写入 `cognition` 或 `prompt_overrides`（包括用 `null` 清除）必须带 `base_revision`。两者均整对象写入：保留 baseline 中未改的槽、分支选择、模式和注入节奏。遇到 `model_catalog.revision_conflict` 时保留草稿，重新读取模型，合并编辑后再试。只编辑来源时，可带 `base_revision` 使用 `steering_sources_patch: { common: { thread: { mode: 'inherit' } } }`；它增量合并指定来源及 custom 字段，不替换无关 cognition 或模型设置。`main` 与 `independent` patch 各自对应所在分支；编辑继承中的分支时，先把 common 快照到该分支。
 
-`cognition_bodies` 返回共享、main、independent 已保存的手调正文与来源，不是 Recipe 或 profile 覆盖后的最终合成提示词。文件槽按声明顺序返回每个引用文件的完整原文，以及运行时裁去首尾空白、以空行拼接的正文。`source_read_only: true` 保护作者文件，不妨碍另存为模型正文；读取失败或该槽文件超过 2 MiB 编辑读取上限时，槽会返回错误及 `writable: false`，不会冒充空正文。
+`cognition_bodies.branches.<scope>.steering_sources.<source>` 也返回已保存的 custom 草稿，即使当前模式为 off 或 inherit。`cognition_bodies` 返回共享、main、independent 已保存的手调正文与来源，不是 Recipe 或 profile 覆盖后的最终合成提示词。文件槽按声明顺序返回每个引用文件的完整原文，以及运行时裁去首尾空白、以空行拼接的正文。`source_read_only: true` 保护作者文件，不妨碍另存为模型正文；读取失败或该槽文件超过 2 MiB 编辑读取上限时，槽会返回错误及 `writable: false`，不会冒充空正文。
 
 路径相对于 [数据根目录](./data-locations.md#数据根目录)（默认为 `~/.kiki`）。绝对路径、解析后落到数据根之外的路径（包括经由符号链接）以及缺失的文件，会在 profile 绑定时被拒绝，错误信息会标出字段和路径。已声明且存在但内容为空的文件会被跳过；某个字段声明的文件全部为空时，该字段视为未设置。读取模型不改变这些文件。明确把编辑后的文件槽保存为 `{text}` 时，正文改存到模型中，原文件保持不变；要再次使用原文件，恢复原路径引用即可。已有会话保留冻结正文，直到显式重建上下文或换模。
 
-三个正文槽离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前读取。`steering` 作为普通 User 消息跟在你的提示词之后注入，不包装成 `<system-reminder>`。默认在每个新轮次及压缩后重新装填上下文时追加；这个轮次触发也包括重试、peer 消息触发的轮次和自主唤醒，不只限于人类输入，设置 `steering_on_turn = false` 可关闭它。
+三个正文槽离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前读取。`steering` 作为普通 User 消息跟在输入之后注入，不包装成 `<system-reminder>`。它的正文与节奏适用于直接用户消息，包括排队输入、「立即发送」、用户斜杠激活的 Skill 和插件命令。其他来源默认关闭，需在 `steering_sources` 中启用；重试沿用原输入来源。
 
-启用 `steering_on_input = true` 时，运行中通过「立即发送」追加的纠偏会进入下一个安全的模型请求，后面跟一份已绑定的 steering 正文。同一批送达的多条纠偏共用这一份正文；正在流出的请求不会被改写。用户通过斜杠激活的 Skill 和插件命令也算人类输入，但 peer 消息和后台通知不会触发这次额外的轮内注入。间隔保持默认 `0` 时，仅有工具继续执行不会再次追加正文。
+选 `mode = "inherit"` 沿用最终用户正文与节奏，选 `mode = "custom"` 则使用 `custom.steering`、`custom.steering_on_turn`、`custom.steering_on_input` 和 `custom.steering_interval_steps`。单独正文接受相同的内联、路径及路径数组形式；缺正文时不会继承用户文本。`off` 和 `inherit` 都保留已保存的 custom 草稿。来源键包括 `thread`（peer 消息和模型创建的 thread）、`room`、`agent`（子 Agent 消息与父级通知）、`task`、`cron`、`hook`、`automation`（goal 自动继续）、`skill`（模型工具激活）及 `external`（外部客户端 thread 输入）。未知来源保持关闭；通过「立即发送」投递不会把其他来源变成用户输入。
 
-设置 `steering_interval_steps = N` 后，每经过 N 个模型步骤就会再次注入，只计本 Agent，并跨轮次累计。任何一次 steering 注入都会重新开始间隔；轮次、输入和间隔同时命中时只追加一份。例如 N = 2 且第 1 步已有注入时，不间断继续执行会在第 3、5 步再次注入。工具结果、空闲时的状态协调和其他 Agent 的步骤都不计数。把两个布尔值设为 `false` 可只按间隔注入（第一份在第 N 步出现）；再把间隔设为 `0` 可完全关闭 steering。
+```toml
+[models."example-model".cognition.steering_sources.thread]
+mode = "inherit"
+
+[models."example-model".cognition.steering_sources.task]
+mode = "custom"
+custom = { steering = { text = "先核结果，再继续。" }, steering_on_turn = true, steering_on_input = true, steering_interval_steps = 0 }
+```
+
+启用 `steering_on_input = true` 时，新物化的输入会在下一个安全请求中跟上其已启用来源的 steering；正在流出的请求不会被改写。同一批送达的多条输入保留各自来源，相同正文只注入一份。`steering_on_turn` 也控制压缩后的重新注入，但轮次或间隔触发都不会开启已关闭的来源。
+
+设置 `steering_interval_steps = N` 后，每经过该来源驱动的 N 个模型步骤就会再次注入，只计本 Agent，并跨轮次累计。该来源的一次 steering 注入会重新开始其间隔；轮次、输入和间隔同时命中时只追加一份。例如 N = 2 且第 1 步已有注入时，不间断继续执行会在第 3、5 步再次注入。工具结果、空闲时的状态协调和其他 Agent 的步骤都不计数。把两个布尔值设为 `false` 可只按间隔注入（第一份在第 N 步出现）；再把间隔设为 `0` 可完全关闭该来源的 steering。
 
 正文与触发参数在绑定时一起保存；恢复时继续使用冻结值，即使配置或文件已经修改。新绑定或冷恢复会重新开始间隔计数。subagent 使用公共 cognition 配置；`main` 和 `independent` 省略或设为 `"same"` 时共用公共配置，设为 `"off"` 时关闭 cognition，改为子表时则替换整个 cognition 对象。替换不会继承缺失的公共字段，因此需在子表中同时写明 `steering` 路径和非默认触发参数。
 

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { recipeModelBindingSchema } from './recipe';
-import { modelSteeringCadenceSchema } from './modelSteering';
+import { modelSteeringCadenceSchema, modelSteeringSourcesSchema } from './modelSteering';
 import { modelBehaviorWireSchema, modelBehaviorPatchSchema } from './questionGuard';
 export * from './questionGuard';
 
@@ -310,6 +310,12 @@ const cognitionPathSchema = z.string().min(1).refine((ref) => {
 }, { message: 'Cognition paths must stay inside the Kiki home directory' });
 export const cognitionSlotSchema = z.union([cognitionInlineTextSchema, cognitionPathSchema, z.array(cognitionPathSchema).min(1)]);
 const cognitionPathRefSchema = cognitionSlotSchema;
+export const modelSteeringSourcesWireSchema = modelSteeringSourcesSchema(cognitionSlotSchema);
+export const modelSteeringSourcesPatchSchema = z.object({
+  common: modelSteeringSourcesWireSchema.nullable().optional(),
+  main: modelSteeringSourcesWireSchema.nullable().optional(),
+  independent: modelSteeringSourcesWireSchema.nullable().optional(),
+}).strict();
 const modelCognitionContentSchema = z
   .object({
     overlay: cognitionPathRefSchema.optional(),
@@ -319,6 +325,7 @@ const modelCognitionContentSchema = z
     anchor_steps: z.number().int().min(1).optional(),
     anchor_scope: z.enum(['session', 'turn']).optional(),
     ...modelSteeringCadenceSchema.shape,
+    steering_sources: modelSteeringSourcesWireSchema.optional(),
   })
   .strict();
 const modelCognitionBranchSchema = z.union([
@@ -352,6 +359,7 @@ const modelCognitionBodyBranchSchema = z.object({
   selection: z.enum(['common', 'custom', 'off']),
   source_scope: z.enum(['common', 'main', 'independent']),
   slots: z.object({ overlay: modelCognitionBodySchema, steering: modelCognitionBodySchema, anchor: modelCognitionBodySchema }),
+  steering_sources: z.record(z.string(), modelCognitionBodySchema).optional(),
 });
 export const modelCognitionBodiesSchema = z.object({
   revision: z.string().min(1),
@@ -464,11 +472,12 @@ export const patchModelRequestSchema = z
     request_params: modelRequestParamsSchema.nullable().optional(),
     recipe: z.string().min(1).nullable().optional(),
     cognition: modelCognitionSchema.nullable().optional(),
+    steering_sources_patch: modelSteeringSourcesPatchSchema.optional(),
     prompt_overrides: modelPromptOverridesSchema.nullable().optional(),
     overrides: modelOverridesSchema.nullable().optional(),
   })
   .strict().superRefine((value, ctx) => {
-    if ((value.cognition !== undefined || value.prompt_overrides !== undefined) && value.base_revision === undefined) {
+    if ((value.cognition !== undefined || value.steering_sources_patch !== undefined || value.prompt_overrides !== undefined) && value.base_revision === undefined) {
       ctx.addIssue({ code: 'custom', path: ['base_revision'], message: 'Model prompt edits require base_revision' });
     }
   });

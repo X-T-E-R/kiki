@@ -62,7 +62,7 @@ Peer thread 通信默认关闭，通过 [`[thread_communication] enabled = true`
 | 设置工作区覆盖值 | `PUT /api/workspaces/{workspace_id}/thread-communication` |
 | 清除工作区覆盖值 | `DELETE /api/workspaces/{workspace_id}/thread-communication` |
 
-`POST /api/threads:send` 接受 `target`、`content` 和 `idempotency_key`，拒绝 `source`，并记为 user 来源输入。Schema 见 `GET /openapi.json`；`GET /api/meta` 通过 `capabilities.thread_communication: true` 声明支持。
+`POST /api/threads:send` 接受 `target`、`content` 和 `idempotency_key`，拒绝 `source`，并记为 `external_thread` 输入，而非 user 或 peer 来源。Schema 见 `GET /openapi.json`；`GET /api/meta` 通过 `capabilities.thread_communication: true` 声明支持。
 
 Klient 提供 `global.threads.hostId`、`list`、`read`、`send`、`wait`、`getWorkspaceOverride`、`setWorkspaceOverride`、`clearWorkspaceOverride` 和 `isWorkspaceEnabled`。发送时使用 `global.threads.send({ target, content, idempotencyKey })`。底层传输附加的字段不能生成 peer 归属；真实 peer 发送须使用来源 Agent 的 `ThreadSend` 工具，由工具派生来源身份。
 
