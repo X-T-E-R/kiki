@@ -76,6 +76,7 @@ import {
   resolveControlledValue,
   resolvePlanGate,
   resolveProfileSwitchSubmission,
+  resolveControlledSkillSubmission,
   executionSwitchName,
   sessionHasStartedConversation,
   withOptimisticUserBlock,
@@ -626,6 +627,25 @@ describe('promptGoalObjective', () => {
     expect(promptGoalObjective()).toBeUndefined();
     expect(promptGoalObjective({})).toBeUndefined();
     expect(promptGoalObjective({ goalObjective: 'ship safely' })).toBe('ship safely');
+  });
+});
+
+describe('resolveControlledSkillSubmission', () => {
+  const input = { name: 'kiki-ops', args: 'Help me start.', userInput: '/kiki-ops Help me start.', attachments: [], pendingProfile: undefined, boundProfile: 'agent', boundExecution: { executor: 'native', profile: 'agent', overrides: undefined }, modelTouched: false, effortTouched: false, model: 'example/model', thinking: 'high', permissionTouched: false };
+  it('keeps the existing skill REST route when no control was chosen', () => {
+    expect(resolveControlledSkillSubmission(input)).toBeUndefined();
+  });
+  it('carries the chosen model and effort with the exact welcome presentation and attachments', () => {
+    const request = resolveControlledSkillSubmission({ ...input, modelTouched: true, effortTouched: true, attachments: [{ kind: 'file', path: 'note.md', name: 'note.md', isDir: false }] });
+    expect(request).toMatchObject({ model: 'example/model', thinking: 'high', skills: [{ name: 'kiki-ops', args: 'Help me start.' }] });
+    expect(request?.content[0]).toEqual({ type: 'text', text: '@note.md\n\n/kiki-ops Help me start.' });
+    expect(JSON.stringify(request?.content)).toContain('note.md');
+  });
+  it('carries a pending bare execution without leaking native model or effort', () => {
+    const request = resolveControlledSkillSubmission({ ...input, pendingExecution: { executor: 'claude-acp', profile: undefined, overrides: undefined } });
+    expect(request?.execution).toEqual({ executor: 'claude-acp' });
+    expect(request?.model).toBeUndefined();
+    expect(request?.thinking).toBeUndefined();
   });
 });
 

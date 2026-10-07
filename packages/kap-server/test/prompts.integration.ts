@@ -45,7 +45,7 @@ import { TaskNotificationStepRequest } from '@kiki/agent-core-v2/agent/task/task
 import { createHooks } from '@kiki/agent-core-v2/hooks';
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
 import { buildNewSessionCreate } from '../../../apps/kiki-gui/src/components/NewSessionDraft';
-import { resolveProfileSwitchSubmission } from '../../../apps/kiki-gui/src/components/SessionView';
+import { resolveProfileSwitchSubmission, resolveControlledSkillSubmission } from '../../../apps/kiki-gui/src/components/SessionView';
 import { executionChoice } from '../../session-core/src/composer/executionSelection';
 import { SessionController } from '../../session-core/src/session/sessionController';
 import { applyCompactionProgress, type CompactionProgress } from '../../../apps/kiki-gui/src/components/useCompactionProgress';
@@ -226,7 +226,7 @@ describe('server-v2 /api prompts', () => {
     await session.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
   }
 
-  it.each(['configured-default', 'onboarding-provider', 'profile-default'] as const)('runs the welcome first message from an empty workspace without a client model pin (%s)', async (source) => {
+  it.each(['configured-default', 'onboarding-provider', 'profile-default', 'onboarding-welcome-skill', 'welcome-selected-model'] as const)('runs the welcome first message from an empty workspace with the configured or selected model (%s)', async (source) => {
     const requests: string[] = [];
     const provider = createHttpServer((request, response) => {
       let body = '';
@@ -243,7 +243,7 @@ describe('server-v2 /api prompts', () => {
     try {
       const mutations = server!.core.accessor.get(IModelCatalogMutationService);
       let expectedModel = 'stub';
-      if (source === 'onboarding-provider') {
+      if (source === 'onboarding-provider' || source === 'onboarding-welcome-skill') {
         await writeConfigToml(home!, PROMPT_TOML.replace('default_model = "stub"', ''));
         await server!.core.accessor.get(IConfigService).reload();
         const saved = await call('POST', '/api/providers', {
@@ -261,18 +261,53 @@ describe('server-v2 /api prompts', () => {
           await writeFile(join(home!, 'agents', 'agent.md'), '---\nname: agent\ndescription: Fixture main profile\nmodel_alias: stub\nthinking_effort: high\n---\nHelp the user.\n');
         }
       }
+      if (source === 'welcome-selected-model') {
+        await writeConfigToml(home!, (await readFile(join(home!, 'config.toml'), 'utf8')).replace('default_model = "stub"', ''));
+        await server!.core.accessor.get(IConfigService).reload();
+      }
       const created = await call<{ id: string; agent_config: { model?: string } }>('POST', '/api/sessions', {});
       expect(created.body.code).toBe(0);
       const session = getLiveSessionById(server!.core.accessor, created.body.data.id)!;
       const main = await ensureMainAgent(session);
       expect(main.accessor.get(IAgentProfileService).getModel()).toBe('');
-      const submitted = await call<PromptItemWire>('POST', `/api/sessions/${session.id}/prompts`, {
-        prompt_id: 'welcome-first-use', content: [{ type: 'text', text: 'Introduce Kiki and help me choose my first task.' }],
-      });
-      expect(submitted.body.code).toBe(0);
       const prompts = main.accessor.get(IAgentPromptService);
-      await vi.waitFor(() => expect(prompts.lookup('welcome-first-use')?.phase).toBe('terminal'));
-      expect(prompts.lookup('welcome-first-use')?.terminal).toMatchObject({ state: 'completed' });
+      if (source === 'onboarding-welcome-skill') {
+        const args = 'Say in two or three sentences what you can do, then ask what I most want to get done and take me through doing it once: set up whatever that step needs and leave what already works alone. One question at a time.';
+        const startedAt = Date.now();
+        const activated = await call('POST', `/api/sessions/${session.id}/skills/kiki-ops:activate`, { args, user_input: `/kiki-ops ${args}` });
+        expect(activated.body.code, activated.body.msg).toBe(0);
+        const acceptedAt = Date.now();
+        const loop = main.accessor.get(IAgentLoopService);
+        await loop.settled();
+        expect(loop.status()).toMatchObject({ state: 'idle', lastTurnResult: 'completed' });
+        console.log(JSON.stringify({ route: 'skills/kiki-ops:activate', request_id: activated.body.request_id, remote_model: requests[0], bound_model: main.accessor.get(IAgentProfileService).getModel(), turn_result: loop.status().lastTurnResult, accepted_ms: acceptedAt - startedAt, finished_ms: Date.now() - startedAt }));
+      } else {
+        const userInput = '/kiki-ops Help me start.';
+        const controlled = source === 'welcome-selected-model' ? resolveControlledSkillSubmission({
+          name: 'kiki-ops', args: 'Help me start.', userInput, attachments: [],
+          pendingProfile: undefined, boundProfile: 'agent', modelTouched: true, effortTouched: true,
+          model: 'stub', thinking: 'high', permissionTouched: false,
+        }) : undefined;
+        const startedAt = Date.now();
+        const submitted = await call<PromptItemWire>('POST', `/api/sessions/${session.id}/prompts`, {
+          ...(controlled ?? { content: [{ type: 'text', text: 'Introduce Kiki and help me choose my first task.' }] }),
+          prompt_id: controlled === undefined ? 'welcome-first-use' : undefined,
+        });
+        const acceptedAt = Date.now();
+        expect(submitted.body.code, JSON.stringify(submitted.body)).toBe(0);
+        const submittedId = submitted.body.data.prompt_id;
+        if (source === 'welcome-selected-model') {
+          const loop = main.accessor.get(IAgentLoopService);
+          await loop.settled();
+          expect(loop.status()).toMatchObject({ state: 'idle', lastTurnResult: 'completed' });
+          expect(controlled).toMatchObject({ model: 'stub', thinking: 'high', skills: [{ name: 'kiki-ops', args: 'Help me start.' }] });
+          expect(controlled?.content[0]).toEqual({ type: 'text', text: userInput });
+          console.log(JSON.stringify({ route: 'prompts', request_id: submitted.body.request_id, remote_model: requests[0], bound_model: main.accessor.get(IAgentProfileService).getModel(), turn_result: loop.status().lastTurnResult, accepted_ms: acceptedAt - startedAt, completed_ms: Date.now() - startedAt }));
+        } else {
+          await vi.waitFor(() => expect(prompts.lookup(submittedId)?.phase).toBe('terminal'));
+          expect(prompts.lookup(submittedId)?.terminal).toMatchObject({ state: 'completed' });
+        }
+      }
       expect(requests).toEqual(['stub']);
       expect(main.accessor.get(IAgentProfileService).getModel()).toBe(expectedModel);
     } finally {

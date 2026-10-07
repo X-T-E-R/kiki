@@ -28,6 +28,13 @@ describe('promptSubmissionSchema', () => {
     expect(parsed.plan_mode).toBeUndefined();
   });
 
+  it('preserves bundled skill input with its selected model and effort', () => {
+    const body = { content: [{ type: 'text', text: '/kiki-ops Help me start.' }], model: 'example/model', thinking: 'high', skills: [{ name: 'kiki-ops', args: 'Help me start.' }] };
+    expect(promptSubmissionSchema.parse(body)).toEqual(body);
+    expect(promptSubmissionSchema.safeParse({ ...body, skills: [] }).success).toBe(false);
+    expect(promptSubmissionSchema.safeParse({ ...body, skills: [{ name: '' }] }).success).toBe(false);
+  });
+
   it('preserves after_model_switch and rejects an empty dependency id', () => {
     const parsed = promptSubmissionSchema.parse({
       content: [{ type: 'text', text: 'continue' }],
