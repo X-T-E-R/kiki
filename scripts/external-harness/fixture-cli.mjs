@@ -23,6 +23,12 @@ for await (const line of createInterface({ input: process.stdin })) {
     process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
       step_update: { step_type: 'tool', step_index: turns, tool_name: 'run_command', state: 'ACTIVE', tool_info: { parameters: { command: 'example' } } } }) + '\n');
   }
+  if (input.message.content === 'missing-file' || input.message.content === 'unfinished-tool') {
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'tool', step_index: turns, tool_name: 'view_file', state: 'ACTIVE', tool_info: { parameters: { AbsolutePath: 'example-missing.txt' } } } }) + '\n');
+    if (input.message.content === 'missing-file') process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { step_type: 'tool', step_index: turns, tool_name: 'view_file', state: 'ERROR', error: 'failed to read file: example-missing.txt: file does not exist' } }) + '\n');
+  }
   const response = `turn-${turns}`;
   process.stdout.write(JSON.stringify({ event: 'step_update', step_update: { step_type: 'agent_response',
     step_index: turns * 2, state: 'ACTIVE', text_delta: response.slice(0, 3) } }) + '\n');

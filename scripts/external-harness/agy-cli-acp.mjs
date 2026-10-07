@@ -180,12 +180,17 @@ export class AgyBridge {
           await active.client.notify('session/update', { sessionId: session.id, update: { sessionUpdate: 'tool_call',
             toolCallId: id, title: step.tool_name ?? step.tool_info?.name ?? 'AGY tool', kind: 'other', status: 'in_progress', rawInput: step.tool_info?.parameters } });
         }
-        if (step.state === 'DONE' && session.toolIds.get(id) === 'pending') {
-          session.toolIds.set(id, 'settled');
+        await this.audit(session, 'tool_state', { toolCallId: id, name: step.tool_name ?? step.tool_info?.name, state: step.state });
+        if ((step.state === 'DONE' || step.state === 'ERROR') && session.toolIds.get(id) === 'pending') {
+          const failed = step.state === 'ERROR' || Boolean(step.tool_info?.error);
+          const error = step.tool_info?.error ?? step.error;
+          const errorText = typeof error === 'string' ? error : error?.message;
+          const output = step.tool_info?.output ?? errorText ?? (failed ? 'AGY tool reported an error' : undefined);
           await active.client.notify('session/update', { sessionId: session.id,
-            update: { sessionUpdate: 'tool_call_update', toolCallId: id, status: step.tool_info?.error ? 'failed' : 'completed',
-              rawOutput: step.tool_info?.output, content: typeof step.tool_info?.output === 'string'
-                ? [{ type: 'content', content: { type: 'text', text: step.tool_info.output } }] : undefined } });
+            update: { sessionUpdate: 'tool_call_update', toolCallId: id, status: failed ? 'failed' : 'completed',
+              rawOutput: output, content: typeof output === 'string'
+                ? [{ type: 'content', content: { type: 'text', text: output } }] : undefined } });
+          session.toolIds.set(id, 'settled');
         }
       }
       return;
@@ -257,24 +262,29 @@ export class AgyBridge {
     active?.resolve({ stopReason: 'cancelled' });
   }
 
-  async close() {
-    await Promise.all([...this.sessions.values()].map(async session => {
+  close() {
+    this.closePromise ??= Promise.all([...this.sessions.values()].map(async session => {
       const active = session.active; session.active = undefined; session.broken = true;
-      active?.reject(new Error('ACP connection closed'));
-      if (session.child && session.child.exitCode === null && session.child.signalCode === null) {
-        session.child.stdin.end();
-        const timer = setTimeout(() => { void this.stopProcess(session.child); }, 3000);
-        await session.exited;
-        clearTimeout(timer);
+      try {
+        if (active) await this.settlePendingTools(session, active, 'failed', 'ACP connection closed');
+      } finally {
+        active?.reject(new Error('ACP connection closed'));
+        if (session.child && session.child.exitCode === null && session.child.signalCode === null) {
+          session.child.stdin.end();
+          const timer = setTimeout(() => { void this.stopProcess(session.child); }, 3000);
+          try { await session.exited; } finally { clearTimeout(timer); }
+        }
+        await this.audit(session, 'close', { pid: session.child?.pid, processEnded: true });
       }
     }));
+    return this.closePromise;
   }
 }
 
-export async function runBridge({ sdkPath, cliPath, auditDir, model = DEFAULT } = {}) {
+export async function runBridge({ sdkPath, cliPath, cliPrefix = [], auditDir, model = DEFAULT } = {}) {
   if (!isAbsolute(sdkPath ?? '')) throw new Error('Pass an installed ACP SDK absolute path');
   const acp = await import(pathToFileURL(sdkPath).href);
-  const bridge = new AgyBridge({ cliPath, auditDir, model });
+  const bridge = new AgyBridge({ cliPath, cliPrefix, auditDir, model });
   const connection = acp.agent({ name: 'agy-cli-acp', version: '0.1.0' })
     .onRequest('initialize', () => bridge.initialize(acp.PROTOCOL_VERSION))
     .onRequest('session/new', ctx => bridge.newSession(ctx.params))
@@ -282,17 +292,21 @@ export async function runBridge({ sdkPath, cliPath, auditDir, model = DEFAULT } 
     .onRequest('session/prompt', async ctx => {
       try { return await bridge.prompt(ctx.params, ctx.client); }
       catch (error) {
-        if (error?.code === 'AGY_PERMISSION_DENIED') throw new acp.RequestError(-32000, error.message);
-        throw error;
+        throw new acp.RequestError(-32000, error instanceof Error ? error.message : String(error));
       }
     })
     .onNotification('session/cancel', ctx => bridge.cancel(ctx.params))
     .connect(acp.ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin)));
-  const shutdown = () => { void bridge.close().finally(() => process.exit(0)); };
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void bridge.close().then(() => process.exit(0), error => { console.error(error.message); process.exit(1); });
+  };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
-  await connection.closed;
-  await bridge.close();
+  process.stdin.once('end', shutdown);
+  try { await connection.closed; } finally { await bridge.close(); }
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
