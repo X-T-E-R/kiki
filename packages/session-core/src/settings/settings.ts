@@ -22,6 +22,7 @@ import {
   type SessionTitleTrigger,
 } from '@kiki/protocol';
 
+import type { DiscoveryState } from '../discovery/state';
 import { LocalizedError, type I18nKey, type ValidationIssue } from '../i18n/locale';
 import { spaceStorage } from '../storage/spaceStorage';
 import type { KikiConfigPatch, KikiConfigResponse } from '../transport';
@@ -91,6 +92,8 @@ export interface DesktopSettings {
    * these narrow it per kind.
    */
   awayNotifications: AwayNotificationKinds;
+  /** Device-only learning progress, partitioned by home and connection, never portably synced. */
+  featureDiscovery?: Readonly<Record<string, DiscoveryState>>;
 }
 
 /** Per-kind switches for notifications while the window is in the background. */

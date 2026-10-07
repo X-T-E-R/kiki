@@ -1,4 +1,5 @@
 export * from './commands';
+export * from './discovery';
 export * from './composer';
 export * from './i18n';
 export * from './session';
