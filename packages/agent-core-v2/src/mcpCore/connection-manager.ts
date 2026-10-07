@@ -37,6 +37,7 @@ interface InternalEntry {
   error?: string;
   client?: RuntimeMcpClient;
   connectedAt?: number;
+  toolRefresh?: { queued: boolean };
 }
 
 export type McpStatusListener = (entry: McpServerEntry) => void;
@@ -303,6 +304,7 @@ export class McpConnectionManager implements McpConnectionView {
     entry.tools = undefined;
     entry.enabledNames = undefined;
     entry.rawTools = undefined;
+    entry.toolRefresh = undefined;
     entry.error = undefined;
     this.emit(entry);
     await this.connectOne(entry, attemptId);
@@ -407,6 +409,7 @@ export class McpConnectionManager implements McpConnectionView {
       entry.status = 'connected';
       entry.connectedAt = this.oauthService?.now() ?? Date.now();
       this.watchForUnexpectedClose(entry, startupClient, attemptId);
+      this.watchForToolsChanged(entry, startupClient, attemptId);
     } catch (error) {
       if (!this.isCurrent(entry, attemptId)) {
         if (client !== undefined) {
@@ -446,6 +449,56 @@ export class McpConnectionManager implements McpConnectionView {
       void this.closeRuntimeClient(client);
       this.emit(entry);
     });
+  }
+
+  private watchForToolsChanged(
+    entry: InternalEntry,
+    client: RuntimeMcpClient,
+    attemptId: number,
+  ): void {
+    client.onToolsListChanged?.(() => this.scheduleToolsRefresh(entry, client, attemptId));
+  }
+
+  private scheduleToolsRefresh(
+    entry: InternalEntry,
+    client: RuntimeMcpClient,
+    attemptId: number,
+  ): void {
+    if (!this.isCurrent(entry, attemptId) || entry.client !== client || entry.status !== 'connected') return;
+    const pending = entry.toolRefresh;
+    if (pending !== undefined) {
+      pending.queued = true;
+      return;
+    }
+    const next = { queued: false };
+    entry.toolRefresh = next;
+    void this.refreshTools(entry, client, attemptId)
+      .catch((error: unknown) => {
+        this.log.warn('mcp tool list refresh failed', {
+          server: entry.name,
+          errorType: error instanceof Error ? error.name : typeof error,
+        });
+      })
+      .finally(() => {
+        if (entry.toolRefresh !== next) return;
+        entry.toolRefresh = undefined;
+        if (next.queued) this.scheduleToolsRefresh(entry, client, attemptId);
+      });
+  }
+
+  private async refreshTools(
+    entry: InternalEntry,
+    client: RuntimeMcpClient,
+    attemptId: number,
+  ): Promise<void> {
+    const discovered = await this.discoverTools(client);
+    if (!this.isCurrent(entry, attemptId) || entry.client !== client || entry.status !== 'connected') return;
+    const enabledNames = computeEnabledNames(entry.config, discovered.tools);
+    const changed = !sameToolSnapshot(entry.rawTools, discovered.rawTools, entry.enabledNames, enabledNames);
+    entry.tools = discovered.tools;
+    entry.rawTools = discovered.rawTools;
+    entry.enabledNames = enabledNames;
+    if (changed) this.emit(entry);
   }
 
   private beginConnectAttempt(entry: InternalEntry): number {
@@ -529,6 +582,12 @@ export class McpConnectionManager implements McpConnectionView {
       });
       return { rawTools: [], tools: [] };
     }
+    return this.discoverTools(client);
+  }
+
+  private async discoverTools(
+    client: RuntimeMcpClient,
+  ): Promise<{ tools: Tool[]; rawTools: MCPToolDefinition[] }> {
     const mcpTools = await client.listTools();
     return {
       rawTools: mcpTools,
@@ -596,6 +655,17 @@ function toPublicEntry(entry: InternalEntry): McpServerEntry {
         : 0,
     error: entry.error,
   };
+}
+
+function sameToolSnapshot(
+  previousRawTools: readonly MCPToolDefinition[] | undefined,
+  nextRawTools: readonly MCPToolDefinition[],
+  previousEnabledNames: ReadonlySet<string> | undefined,
+  nextEnabledNames: ReadonlySet<string>,
+): boolean {
+  if (previousRawTools === undefined || previousEnabledNames === undefined) return false;
+  return stableConfigJson(previousRawTools) === stableConfigJson(nextRawTools) &&
+    stableConfigJson([...previousEnabledNames].toSorted()) === stableConfigJson([...nextEnabledNames].toSorted());
 }
 
 function computeEnabledNames(config: McpServerConfig, tools: readonly Tool[]): Set<string> {

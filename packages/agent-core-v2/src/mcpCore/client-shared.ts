@@ -1,5 +1,5 @@
 import { getCoreVersion } from '#/_base/version';
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { ErrorCode, McpError, ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
 import type { MCPClient, MCPToolDefinition, MCPToolResult } from './types';
@@ -13,6 +13,36 @@ export interface UnexpectedCloseReason {
 }
 
 export type UnexpectedCloseListener = (reason: UnexpectedCloseReason) => void;
+
+export class McpToolsListChanged {
+  private readonly listeners = new Set<() => void>();
+  private pending = false;
+  private closed = false;
+
+  constructor(client: Client) {
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      if (this.closed) return;
+      if (this.listeners.size === 0) this.pending = true;
+      for (const listener of this.listeners) listener();
+    });
+  }
+
+  subscribe(listener: () => void): () => void {
+    if (this.closed) return () => {};
+    this.listeners.add(listener);
+    if (this.pending) {
+      this.pending = false;
+      listener();
+    }
+    return () => { this.listeners.delete(listener); };
+  }
+
+  close(): void {
+    this.closed = true;
+    this.pending = false;
+    this.listeners.clear();
+  }
+}
 
 export function isMcpConnectionClosedError(error: unknown): boolean {
   return (

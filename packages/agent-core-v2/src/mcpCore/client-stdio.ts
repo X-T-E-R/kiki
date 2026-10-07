@@ -16,6 +16,7 @@ import {
   KIMI_MCP_CLIENT_NAME,
   KIMI_MCP_CLIENT_VERSION,
   MCP_LIVENESS_PROBE_TIMEOUT_MS,
+  McpToolsListChanged,
   listAllMcpTools,
   toMcpToolResult,
   type UnexpectedCloseListener,
@@ -74,6 +75,7 @@ export function captureComputerMcpStop(name: string, config: McpServerStdioConfi
 }
 
 export class StdioMcpClient implements MCPClient {
+  private readonly toolsListChanged: McpToolsListChanged;
   private readonly client: Client;
   private readonly transport: RuntimeStdioTransport;
   private readonly startupTimeoutMs?: number;
@@ -119,6 +121,7 @@ export class StdioMcpClient implements MCPClient {
       name: options.clientName ?? KIMI_MCP_CLIENT_NAME,
       version: options.clientVersion ?? KIMI_MCP_CLIENT_VERSION,
     });
+    this.toolsListChanged = new McpToolsListChanged(this.client);
     this.startupTimeoutMs = options.startupTimeoutMs;
     this.toolCallTimeoutMs = options.toolCallTimeoutMs;
   }
@@ -148,6 +151,7 @@ export class StdioMcpClient implements MCPClient {
 
   blockCalls(): void {
     this.closed = true;
+    this.toolsListChanged.close();
     if (this.computerControl && this.started && (this.directlyOwned || computerOwner?.client === this)) {
       unconfirmedComputerClients.add(this);
     }
@@ -179,6 +183,10 @@ export class StdioMcpClient implements MCPClient {
 
   async listTools(): Promise<MCPToolDefinition[]> {
     return listAllMcpTools(this.client, this.startupTimeoutMs);
+  }
+
+  onToolsListChanged(listener: () => void): () => void {
+    return this.toolsListChanged.subscribe(listener);
   }
 
   async callTool(
@@ -231,6 +239,7 @@ export class StdioMcpClient implements MCPClient {
     if (this.hooksInstalled) return;
     this.hooksInstalled = true;
     this.client.onclose = () => {
+      this.toolsListChanged.close();
       if (this.closed) return;
       if (!this.ready) return;
       const stderr = this.stderrBuffer.snapshot();

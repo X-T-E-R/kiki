@@ -1,5 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { ErrorCode, McpError, type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { HttpMcpClient } from '#/mcpCore/client-http';
@@ -20,6 +21,60 @@ const clients: readonly [string, () => MCPClient][] = [
 ];
 
 afterEach(() => vi.restoreAllMocks());
+
+type TestClient = MCPClient & {
+  connect(): Promise<void>;
+  close(): Promise<void>;
+  getServerCapabilities(): unknown;
+};
+
+describe('tools/list_changed notification bridge', () => {
+  it('consumes transport notifications without advertised listChanged capability and drops them after close', async () => {
+    const transports: Transport[] = [];
+    const connect = vi.spyOn(Client.prototype, 'connect').mockImplementation(async function (this: Client, transport) {
+      transports.push(transport);
+      transport.onmessage = (message: JSONRPCMessage) => {
+        (this as unknown as { _onnotification(message: JSONRPCMessage): void })._onnotification(message);
+      };
+    });
+    const instances = clients.map(([, createClient]) => createClient() as TestClient);
+    const counts = [0, 0, 0];
+    const notification = { jsonrpc: '2.0' as const, method: 'notifications/tools/list_changed' };
+    try {
+      await Promise.all(instances.map((client) => client.connect()));
+      expect(transports).toHaveLength(3);
+      expect(instances.map((client) => client.getServerCapabilities())).toEqual([
+        undefined,
+        undefined,
+        undefined,
+      ]);
+
+      for (const transport of transports) transport.onmessage?.(notification);
+      await Promise.resolve();
+      const unsubscribe = instances.map((client, index) => client.onToolsListChanged!(() => {
+        counts[index] = counts[index]! + 1;
+      }));
+      expect(counts).toEqual([1, 1, 1]);
+
+      for (const transport of transports) transport.onmessage?.(notification);
+      await Promise.resolve();
+      expect(counts).toEqual([2, 2, 2]);
+
+      unsubscribe[1]!();
+      transports[1]!.onmessage?.(notification);
+      await Promise.resolve();
+      expect(counts).toEqual([2, 2, 2]);
+
+      await instances[0]!.close();
+      transports[0]!.onmessage?.(notification);
+      await Promise.resolve();
+      expect(counts).toEqual([2, 2, 2]);
+    } finally {
+      await Promise.all(instances.map((client) => client.close()));
+      connect.mockRestore();
+    }
+  });
+});
 
 describe.each(clients)('%s tools/list pagination', (_name, createClient) => {
   it('keeps the no-cursor result and original initial SDK request', async () => {
