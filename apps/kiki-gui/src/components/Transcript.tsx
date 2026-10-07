@@ -170,7 +170,7 @@ import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaParts';
 import { RelativeTime } from './RelativeTime';
-import { NestedFoldContext, NestedFoldStore, useNestedFold } from './timeline/nestedFold';
+import { NestedFoldContext, NestedFoldStore, countFoldedDescendants, groupDescendantsByDispatch, useDispatchGroup, useNestedFold } from './timeline/nestedFold';
 import { InvocationContext, useInvocationDetails } from './timeline/SubagentInvocationView';
 import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
 import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink, useMessageRowTapActions } from './RowActions';
@@ -1291,6 +1291,60 @@ function SubagentCompactCard({
   );
 }
 
+/**
+ * The descendants this dispatch did not create: one quiet line carrying how
+ * many they are and whether any still run or failed, opened by the reader. It
+ * says nothing about their age and removes nothing — it exists only so a
+ * whole subtree does not fill the timeline before it is asked for. It sits
+ * inside the card that owns them rather than beside it, because it groups that
+ * card's own children — the same hairline spine the history fold and the
+ * subagent group use — rather than introducing a new event. Its open state is
+ * the reader's for the rest of the view: a descendant that starts running
+ * later does not unfold a group they closed.
+ */
+function OtherDescendantGroup({
+  groupKey,
+  members,
+  renderMember,
+}: {
+  groupKey: string;
+  members: readonly AgentTreeNode[];
+  renderMember: (member: AgentTreeNode) => ReactNode;
+}) {
+  const { t, tp } = useI18n();
+  const { open, toggle } = useDispatchGroup(groupKey);
+  const counts = countFoldedDescendants(members);
+  const summary = [
+    tp('subagent.otherGroupCount', counts.total),
+    counts.running > 0 ? t('subagent.otherGroupRunning', { count: counts.running }) : null,
+    counts.failed > 0 ? t('subagent.otherGroupFailed', { count: counts.failed }) : null,
+  ].filter((part): part is string => part !== null).join(' · ');
+  return (
+    <ActivityRow
+      className="ml-4"
+      attrs={{ 'data-other-descendants': counts.total, 'data-other-descendants-open': open || undefined }}
+      glyph={<DisclosureChevron open={open} className="text-ink-faint" />}
+      chevronInGlyph
+      label={t('subagent.otherGroup')}
+      detail={<span className="text-ink-faint">{summary}</span>}
+      status={counts.failed > 0
+        ? <OutcomeMark state="failed" labels={activityOutcomeLabels(t)} />
+        : counts.running > 0
+          ? <OutcomeMark state="running" labels={activityOutcomeLabels(t)} />
+          : undefined}
+      expanded={open}
+      onToggle={toggle}
+      ariaLabel={t('subagent.otherGroupAria', { summary })}
+    >
+      {open ? (
+        <div className="space-y-1">
+          {members.map((member) => renderMember(member))}
+        </div>
+      ) : undefined}
+    </ActivityRow>
+  );
+}
+
 const SubagentCard = memo(function SubagentCard({
   block,
   forest,
@@ -1343,6 +1397,35 @@ const SubagentCard = memo(function SubagentCard({
   }, [active]);
   const childCount = node?.childIds.length ?? children.length;
   const toolCalls = resolveSubagentToolCalls(block, node);
+    // Membership is a DESCENDANT's immutable birth against THIS CARD's own run
+  // window, and the card supplies both ends of that window. The live node is
+  // deliberately NOT consulted: it tracks the agent's newest run, so filling a
+  // missing window from it would slide this card's boundary onto a later
+  // resume and reopen exactly the descendants it must fold. Nothing here is a
+  // confirmed same-dispatch record, so it is not a substitute. A card with no
+  // window of its own therefore folds every descendant.
+  const descendantGroups = groupDescendantsByDispatch(
+    { startedAt: block.startedAt, endedAt: block.endedAt, status: block.status },
+    children,
+  );
+  // This card is one AgentRun call, so the call that dispatched it identifies
+  // the fold group's open/closed state. Keying on the agent would make two
+  // cards for one resumed agent share a single choice, and opening the older
+  // card's group would open the newer one's too. The block id is derived from
+  // the agent and cannot separate them, so the dispatch call is used, with the
+  // block id as the fallback for a card that never recorded one.
+  const dispatchGroupKey = `${block.parentToolCallId ?? block.id}`;
+  const renderChildCard = (child: AgentTreeNode): ReactNode => (
+    <SubagentCard
+      key={child.agentId}
+      block={childBlocks?.get(child.agentId) ?? syntheticChildBlock(child)}
+      forest={forest}
+      depth={depth + 1}
+      childBlocks={childBlocks}
+      onOpenAgent={onOpenAgent}
+      displayStatus={child.status}
+    />
+  );
   if (!full) {
     return (
       <SubagentCompactCard
@@ -1448,20 +1531,18 @@ const SubagentCard = memo(function SubagentCard({
           ) : null}
           {expanded && children.length > 0 ? (
             <div className="mt-1 space-y-1">
-              {children.map((child) => {
-                const nested = childBlocks?.get(child.agentId) ?? syntheticChildBlock(child);
-                return (
-                  <SubagentCard
-                    key={child.agentId}
-                    block={nested}
-                    forest={forest}
-                    depth={depth + 1}
-                    childBlocks={childBlocks}
-                    onOpenAgent={onOpenAgent}
-                    displayStatus={child.status}
-                  />
-                );
-              })}
+              {/* The descendants this dispatch provably created lay out; every
+                  other one folds into one line, including any this view cannot
+                  place. Folding is a default, not a deletion and not a claim
+                  about age — the reader opens it and finds the same subtree. */}
+              {descendantGroups.current.map((child) => renderChildCard(child))}
+              {descendantGroups.other.length > 0 ? (
+                <OtherDescendantGroup
+                  groupKey={dispatchGroupKey}
+                  members={descendantGroups.other}
+                  renderMember={renderChildCard}
+                />
+              ) : null}
             </div>
           ) : null}
         </div>

@@ -554,6 +554,13 @@ class FixtureSession {
     this.pendingQuestions = [...(scenarioData.pending_questions ?? [])];
     this.inFlightTurn = scenarioData.in_flight_turn ?? null;
     this.subagents = [...(scenarioData.subagents ?? [])];
+    // A scenario may declare each agent's immutable birth time on its roster
+    // row; the transcript's `agents` array mirrors it onto the wire.
+    this.subagentBirths = new Map(
+      this.subagents
+        .filter((entry) => typeof entry?.created_at === 'string')
+        .map((entry) => [entry.agent_id, entry.created_at]),
+    );
     // Bounded structures the window did not carry: the snapshot's own fields
     // (a cut title) and roster entries. Served on `/snapshot` exactly as the real
     // route does, so the remainder outlet reads real refs, not fixture-shaped
@@ -3910,7 +3917,15 @@ class FixtureServer {
         todos: snapshot.todos,
         prompts: snapshot.prompts,
         meta: snapshot.meta,
-        agents: [...session.transcript.agents.keys()].map((id) => ({ agentId: id, type: id === 'main' ? 'main' : 'sub' })),
+        agents: [...session.transcript.agents.keys()].map((id) => ({
+          agentId: id,
+          type: id === 'main' ? 'main' : 'sub',
+          // The roster entry a scenario declared, when it declared one. A
+          // subagent's immutable birth time is what places it inside the
+          // dispatch that created it, so a scenario that omits it simply
+          // leaves those descendants unplaced.
+          ...(session.subagentBirths.get(id) === undefined ? undefined : { createdAt: session.subagentBirths.get(id) }),
+        })),
         pending_interactions: snapshot.interactions.filter((i) => i.state === 'pending').map((i) => i.interactionId),
         seq: session.transcript.latestSeq(agentId),
       });

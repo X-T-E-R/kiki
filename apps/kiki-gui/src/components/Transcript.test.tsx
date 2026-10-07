@@ -49,6 +49,7 @@ import {
   projectAgentTranscriptView,
   sessionAgentForestFromAgentSnapshots,
   type AgentForest,
+  type AgentTreeNode,
   type Block,
   type DisplayNode,
   type SessionViewState,
@@ -3753,6 +3754,21 @@ describe('subagent timeline dual form (G-4)', () => {
     };
   }
 
+  /**
+   * Stamp birth times onto a built forest the way the engine will once it
+   * records one per agent: an immutable fact on the node itself, which no
+   * later run start can move. Applied after the build because the roster
+   * descriptor does not carry it yet.
+   */
+  function born(forest: AgentForest, births: Readonly<Record<string, string>>): AgentForest {
+    const byId: Record<string, AgentTreeNode> = { ...forest.byId };
+    for (const [agentId, createdAt] of Object.entries(births)) {
+      const node = byId[agentId];
+      if (node !== undefined) byId[agentId] = { ...node, createdAt } as AgentTreeNode;
+    }
+    return { roots: forest.roots.map((root) => byId[root.agentId] ?? root), byId };
+  }
+
   async function renderWithAgents(
     blocks: Block[],
     opened: string[],
@@ -4133,16 +4149,25 @@ describe('subagent timeline dual form (G-4)', () => {
   });
 
   describe('nested subagents that finished before the view opened', () => {
-    const tree = (grandStatus: Record<string, 'completed' | 'running' | 'suspended' | 'failed'>) => buildAgentForest(
-      [],
-      [
-        { agentId: 'main', name: 'Main' },
-        { agentId: 'lead', parentAgentId: 'main', name: 'Lead', status: 'running', toolCallCount: 1 },
-        ...Object.entries(grandStatus).map(([agentId, status]) => ({
-          agentId, parentAgentId: 'lead', name: agentId, status, toolCallCount: 2, summary: `${agentId} result. More detail.`,
-          startedAt: '2026-01-01T00:00:00.000Z', endedAt: status === 'completed' || status === 'failed' ? '2026-01-01T00:02:00.000Z' : undefined,
-        })),
-      ],
+    // Every agent is born just after the one that dispatched it, so all of
+    // them lay out and these cases stay about the settled-vs-live fold rule.
+    const tree = (grandStatus: Record<string, 'completed' | 'running' | 'suspended' | 'failed'>) => born(
+      buildAgentForest(
+        [],
+        [
+          { agentId: 'main', name: 'Main' },
+          { agentId: 'lead', parentAgentId: 'main', name: 'Lead', status: 'running', toolCallCount: 1 },
+          ...Object.entries(grandStatus).map(([agentId, status], index) => ({
+            agentId, parentAgentId: 'lead', name: agentId, status, toolCallCount: 2, summary: `${agentId} result. More detail.`,
+            startedAt: '2026-01-01T00:00:00.000Z', endedAt: status === 'completed' || status === 'failed' ? '2026-01-01T00:02:00.000Z' : undefined,
+          })),
+        ],
+      ),
+      {
+        'main': '2026-01-01T00:00:00.000Z',
+        'lead': '2026-01-01T00:00:01.000Z',
+        ...Object.fromEntries(Object.keys(grandStatus).map((agentId, index) => [agentId, `2026-01-01T00:00:0${index + 2}.000Z`])),
+      },
     );
     const leadBlock = lifecycleSubagentBlock('lead', { status: 'running', name: 'Lead' });
     const card = (container: Element, id: string) => container.querySelector(`[data-subagent-id="${id}"]`);
@@ -4187,7 +4212,7 @@ describe('subagent timeline dual form (G-4)', () => {
 
     it('tracks running agents even before their collapsed parent mounts them', async () => {
       const { root, container } = makeRoot();
-      const render = (status: 'running' | 'completed') => renderSettled(root, <Transcript state={transcriptState([lifecycleSubagentBlock('lead', { name: 'Lead' })])} forest={buildAgentForest([], [{ agentId: 'main' }, { agentId: 'lead', parentAgentId: 'main', status: 'completed' }, { agentId: 'worker', parentAgentId: 'lead', status }])} onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />);
+      const render = (status: 'running' | 'completed') => renderSettled(root, <Transcript state={transcriptState([lifecycleSubagentBlock('lead', { name: 'Lead' })])} forest={born(buildAgentForest([], [{ agentId: 'main' }, { agentId: 'lead', parentAgentId: 'main', status: 'completed' }, { agentId: 'worker', parentAgentId: 'lead', status }]), { main: '2026-01-01T00:00:00.000Z', lead: '2026-01-01T00:00:01.000Z', worker: '2026-01-01T00:00:02.000Z' })} onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />);
       await render('running');
       expect(card(container, 'worker')).toBeNull();
       await render('completed');
@@ -4216,6 +4241,248 @@ describe('subagent timeline dual form (G-4)', () => {
     });
   });
 
+describe('a dispatch card lays out only the descendants it provably created', () => {
+    const card = (container: Element, id: string) => container.querySelector(`[data-subagent-id="${id}"]`);
+    const group = (container: Element) => container.querySelector('[data-other-descendants]');
+    const page_groups = (container: Element): Element[] => [...container.querySelectorAll('[data-other-descendants]')];
+    const groupToggle = (container: Element) => container.querySelector<HTMLButtonElement>('[data-other-descendants] [data-activity-toggle]')!;
+    const BORN = (minute: number) => `2026-01-01T00:${String(minute).padStart(2, '0')}:00.000Z`;
+
+    // The counterexample, in the shape the page actually shows. `lead`
+    // (agent-2) was BORN at 00:10 and already owned agent-1, born 00:20; the
+    // dispatch this card represents is a LATER run of lead, from 00:40. Only
+    // agent-3, born 00:50, belongs to that dispatch. Comparing descendants
+    // against lead's own birth would wrongly expand agent-1.
+    const tree = (extra: readonly { agentId: string; parentAgentId: string; status: string }[] = []) => born(
+      buildAgentForest(
+        [],
+        [
+          { agentId: 'main', name: 'Main' },
+          { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running', toolCallCount: 1 },
+          { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'completed', toolCallCount: 2, summary: 'Old result.' },
+          { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'running', toolCallCount: 1 },
+          ...extra,
+        ],
+      ),
+      { 'agent-2': BORN(10), 'agent-1': BORN(20), 'agent-3': BORN(50), 'agent-4': BORN(25), 'agent-5': BORN(51) },
+    );
+    const leadBlock = lifecycleSubagentBlock('agent-2', {
+      status: 'running', name: 'Lead', startedAt: BORN(40), endedAt: undefined,
+    });
+
+    it('shows this dispatch’s descendant and folds the rest behind one line', async () => {
+      const container = await renderWithAgents([leadBlock], [], tree());
+      expect(card(container, 'agent-3')).not.toBeNull();
+      expect(card(container, 'agent-1')).toBeNull();
+      const folded = group(container)!;
+      expect(folded.getAttribute('data-other-descendants')).toBe('1');
+      expect(folded.textContent).toContain('Other subagents');
+      expect(groupToggle(container).getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('folds an old descendant that is only being resumed, and opens a new birth', async () => {
+      // The contrast that matters: `agent-1` is running again right now, and
+      // that is not why it folds — it was BORN at 00:20, before this dispatch
+      // at 00:40, and a resume never moves a birth. `agent-3` was born at
+      // 00:50, inside the dispatch, and opens even while still queued.
+      const container = await renderWithAgents(
+        [leadBlock],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+              { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'running' },
+              { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'idle' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-1': BORN(20), 'agent-3': BORN(50) },
+        ),
+      );
+      expect(card(container, 'agent-1')).toBeNull();
+      expect(card(container, 'agent-3')).not.toBeNull();
+      expect(group(container)?.textContent).toContain('1 running');
+    });
+
+    it('opens a descendant born this dispatch that has not started running yet', async () => {
+      // A queued birth is still a birth: membership never waits on a run.
+      const container = await renderWithAgents(
+        [leadBlock],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+              { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'Queued', status: 'idle' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-3': BORN(50) },
+        ),
+      );
+      expect(card(container, 'agent-3')).not.toBeNull();
+      expect(group(container)).toBeNull();
+    });
+
+    it('folds every descendant when the records carry no birth time', async () => {
+      // Nothing is proven, so nothing is expanded — and nothing is lost.
+      const container = await renderWithAgents([leadBlock], [], buildAgentForest(
+        [],
+        [
+          { agentId: 'main', name: 'Main' },
+          { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+          { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'running' },
+          { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'running' },
+        ],
+      ));
+      expect(card(container, 'agent-1')).toBeNull();
+      expect(card(container, 'agent-3')).toBeNull();
+      expect(group(container)?.getAttribute('data-other-descendants')).toBe('2');
+      await act(async () => { groupToggle(container).click(); });
+      expect(card(container, 'agent-1')).not.toBeNull();
+      expect(card(container, 'agent-3')).not.toBeNull();
+    });
+
+    it('folds every descendant when the card has no window, even with a later run on the node', async () => {
+      // The live node here reports a run that started at 00:55, well after
+      // any birth in this tree, so borrowing it would let agent-3 through. It
+      // is not a confirmed record of THIS dispatch — it is the agent's newest
+      // run — so the card's missing window stays missing and everything folds.
+      const container = await renderWithAgents(
+        [lifecycleSubagentBlock('agent-2', { status: 'running', name: 'Lead', startedAt: undefined, endedAt: undefined })],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running', startedAt: BORN(55) },
+              { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'completed' },
+              { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'running' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-1': BORN(20), 'agent-3': BORN(50) },
+        ),
+      );
+      expect(card(container, 'agent-1')).toBeNull();
+      expect(card(container, 'agent-3')).toBeNull();
+      expect(group(container)?.getAttribute('data-other-descendants')).toBe('2');
+    });
+
+    it('keeps two dispatch cards for one agent independent, so opening one group opens only that one', async () => {
+      // One agent, dispatched twice: the OLDER card and the NEWER card each
+      // fold their own descendants. They must not share one open/closed
+      // choice, or opening the older card's group would open the newer one's
+      // as well. The two blocks differ only in the call that dispatched them.
+      const OLD_START = BORN(30);
+      const NEW_START = BORN(45);
+      const cardFor = (id: string, call: string, startedAt: string): Block => {
+        const base = lifecycleSubagentBlock('agent-2', { status: 'running', name: 'Lead', startedAt, endedAt: undefined });
+        if (base.kind !== 'subagent') throw new Error('the fixture block is not a subagent card');
+        return { ...base, id, parentToolCallId: call };
+      };
+      const older = cardFor('subagent-agent-2-old', 'call-lead-older', OLD_START);
+      const newer = cardFor('subagent-agent-2-new', 'call-lead-newer', NEW_START);
+      // A notice between the cards keeps both of them individually in view.
+      const container = await renderWithAgents(
+        [older, { kind: 'notice', id: 'between', text: 'boundary', tone: 'danger' }, newer],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+              { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'completed' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-1': BORN(20) },
+        ),
+      );
+      // Both cards fold the same historical descendant, so both groups exist.
+      const groups = page_groups(container);
+      expect(groups.length).toBe(2);
+      expect(groups.every((row) => row.getAttribute('data-other-descendants') === '1')).toBe(true);
+
+      // Opening the first group's group must not open the second's.
+      await act(async () => {
+        const first = groups[0]!.querySelector<HTMLButtonElement>('[data-activity-toggle]')!;
+        first.click();
+      });
+      const after = page_groups(container);
+      expect(after[0]?.hasAttribute('data-other-descendants-open')).toBe(true);
+      expect(after[1]?.hasAttribute('data-other-descendants-open')).toBe(false);
+    });
+
+    it('keeps a grandchild of a folded descendant folded, and lays out this run’s own', async () => {
+      // Membership is per direct child. `agent-1` is the folded one, and its
+      // child `agent-4` is reached only through it, so it is folded too.
+      // `agent-3` is this dispatch's and lays out; its own child `agent-5` is
+      // inside that card and is governed by that card's own children row.
+      const container = await renderWithAgents(
+        [leadBlock],
+        [],
+        tree([
+          { agentId: 'agent-4', parentAgentId: 'agent-1', status: 'completed' },
+          { agentId: 'agent-5', parentAgentId: 'agent-3', status: 'completed' },
+        ]),
+      );
+      expect(group(container)?.getAttribute('data-other-descendants')).toBe('1');
+      expect(card(container, 'agent-1')).toBeNull();
+      expect(card(container, 'agent-4')).toBeNull();
+      expect(card(container, 'agent-3')).not.toBeNull();
+    });
+
+    it('renders no fold group when every descendant belongs to this dispatch', async () => {
+      const container = await renderWithAgents(
+        [leadBlock],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+              { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'running' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-3': BORN(50) },
+        ),
+      );
+      expect(card(container, 'agent-3')).not.toBeNull();
+      expect(group(container)).toBeNull();
+    });
+
+    it('opens the folded descendants on click, and keeps the reader’s close', async () => {
+      const { root, container } = makeRoot();
+      const render = () => renderSettled(
+        root,
+        <Transcript
+          state={transcriptState([leadBlock])}
+          onLoadOlder={() => Promise.resolve(false)}
+          onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()}
+          onDismissQuestion={() => noopActions()}
+          forest={tree()}
+          onOpenAgent={() => {}}
+        />,
+      );
+      await render();
+      await act(async () => { groupToggle(container).click(); });
+      expect(group(container)?.getAttribute('data-other-descendants-open')).toBe('true');
+      expect(card(container, 'agent-1')).not.toBeNull();
+
+      // A status update must not reopen what the reader closed.
+      await act(async () => { groupToggle(container).click(); });
+      expect(group(container)?.hasAttribute('data-other-descendants-open')).toBe(false);
+      expect(card(container, 'agent-1')).toBeNull();
+      await render();
+      expect(group(container)?.hasAttribute('data-other-descendants-open')).toBe(false);
+    });
+  });
   it('renders a suspended card compact and a completed parent does not inflate for a running child', async () => {
     const forest = buildAgentForest(
       [],
