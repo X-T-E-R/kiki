@@ -1153,22 +1153,30 @@ describe('OnboardingWizard', () => {
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 
-  it('"Set up with Kiki" opens the guided setup session with a short request waiting, and sends nothing', async () => {
+  it('"Get started with Kiki" opens the guided first-run session with a short request waiting, and sends nothing', async () => {
     const onClose = vi.fn();
     await mount(onClose);
     await toCapabilitiesStep();
     expect(dialog().querySelector('[data-workspace-choice]')).toBeNull();
-    await click(buttonByText('Set up with Kiki'));
+    await click(buttonByText('Get started with Kiki'));
     await flush();
     // No workspace address: the server gives the session a new folder in Kiki Home.
     expect(createSession).toHaveBeenCalledWith({});
     expect(createSession).toHaveBeenCalledTimes(1);
     const draft = readDraft('s_onboarding_1');
     // The composer is what the user reads before sending, so it names the skill
-    // and the three asks; the details live in the skill, not in the draft.
+    // and asks for one thing at a time; the rest lives in the skill, not here.
     expect(draft).toMatch(/^\/kiki-ops /);
     expect(draft).toMatch(/one question at a time/i);
-    expect(draft).toMatch(/keep things as they are or turn Explore off/i);
+    // The first run is about the user's task, not about Kiki's settings: the
+    // request asks what they want done, and only says what the run may set up.
+    expect(draft).toMatch(/what I most want to get done/i);
+    expect(draft).toMatch(/set up whatever that step needs/i);
+    expect(draft).toMatch(/leave what already works alone/i);
+    // Explore's model and agent profiles are the skill's job, asked at the
+    // moment the run needs them — never part of the opening request.
+    expect(draft).not.toMatch(/explore/i);
+    expect(draft).not.toMatch(/agent profile|first agent/i);
     expect(draft.length).toBeLessThan(260);
     expect(navigate).toHaveBeenCalledWith('/s/s_onboarding_1');
     expect(onClose).toHaveBeenCalledTimes(1);
@@ -1181,7 +1189,7 @@ describe('OnboardingWizard', () => {
     writeDraft('s_other', 'another session in progress');
     await mount();
     await toCapabilitiesStep();
-    await click(buttonByText('Set up with Kiki'));
+    await click(buttonByText('Get started with Kiki'));
     await flush();
     expect(readDraft('new')).toBe('half-typed thought');
     expect(readDraft('s_other')).toBe('another session in progress');
@@ -1192,7 +1200,7 @@ describe('OnboardingWizard', () => {
     const onClose = vi.fn();
     await mount(onClose);
     await toCapabilitiesStep();
-    await click(buttonByText('Set up with Kiki'));
+    await click(buttonByText('Get started with Kiki'));
     await flush();
     expect(onClose).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
@@ -1201,7 +1209,7 @@ describe('OnboardingWizard', () => {
     expect(localStorage.getItem('kiki.onboarding')).toBeNull();
     expect(dialog().textContent).toContain('server offline');
     // The same button retries, and one success is one session.
-    await click(buttonByText('Set up with Kiki'));
+    await click(buttonByText('Get started with Kiki'));
     await flush();
     expect(createSession).toHaveBeenCalledTimes(2);
     expect(readDraft('s_onboarding_1')).toMatch(/^\/kiki-ops /);
@@ -1322,7 +1330,7 @@ describe('OnboardingWizard', () => {
     const onClose = vi.fn();
     await mount(onClose);
     await toCapabilitiesStep();
-    await click(buttonByText('Set up with Kiki'));
+    await click(buttonByText('Get started with Kiki'));
     await flush();
     expect(previewHostSkillInstall).not.toHaveBeenCalled();
     expect(installHostSkill).not.toHaveBeenCalled();

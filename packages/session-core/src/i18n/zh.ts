@@ -5758,8 +5758,8 @@ export const zh = {
   'onboarding.caps.openPersonas': '角色',
   'onboarding.caps.bots.prompt': '/kiki-ops 帮我设置一个 Bot：先说明开启 Bot 模式会做什么，再帮我挑选或新建一个角色，并把它设为 Bot。',
   'onboarding.caps.firstRun.prompt':
-    '/kiki-ops 用简短问答帮我完善配置：先了解我主要用它做什么，再按需创建第一份智能体配置，然后选 Explore 的低成本模型和思考强度。也可以保持原样，或把 Explore 关掉。一次只问一个问题。',
-  'onboarding.finishFirstRun': '让 Kiki 帮我配置',
+    '/kiki-ops 用两三句话告诉我你能做什么，再问我现在最想完成哪件事，带我真做一次：这一步需要哪个能力就顺手配上，已经能用的设置保持原样。一次只问一个问题。',
+  'onboarding.finishFirstRun': '让 Kiki 带你上手',
   // 排队条与输入框的排队消息编辑往返（拖拽调序、二次确认移除）。
   'queue.editTitle': '放回输入框编辑 — 确认后回到原排队位置',
   'queue.editingBadge': '正在输入框中编辑',

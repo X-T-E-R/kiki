@@ -983,11 +983,10 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   };
 
   // Finish: open the guided first-run conversation. The wizard has done what a
-  // form can — look, a model connection, the permission default — and the rest
-  // (what you use Kiki for, your first agent, Explore's model and effort) needs
-  // real answers, so the same hand-off the capability rows use carries the
-  // request into a new session. Nothing is sent: the user reads it and presses
-  // send.
+  // form can — look, a model connection, the permission default — and what
+  // remains is the user saying what they want done and Kiki doing it once, so
+  // the same hand-off the capability rows use carries that request into a new
+  // session. Nothing is sent: the user reads it and presses send.
   //
   // A rejected create leaves the wizard open with the reason, and since
   // `askKiki` marks completion only after the session exists, the run is still
@@ -1013,9 +1012,11 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     navigate(href);
   };
 
-  // "Let Kiki set it up": a fresh session (no workspace → a new folder in Kiki
-  // Home, like /new's automatic choice) with the /kiki-ops request waiting in
-  // its composer. Nothing is sent; the user reads it and presses send.
+  // A hand-off into a conversation: a fresh session (no workspace → a new
+  // folder in Kiki Home, like /new's automatic choice) with the /kiki-ops
+  // request waiting in its composer. The capability rows and the wizard's last
+  // button differ only in the request. Nothing is sent; the user reads it and
+  // presses send.
   const askKiki = async (prompt: string) => {
     const session = await client.createSession({});
     writeDraft(session.id, prompt);

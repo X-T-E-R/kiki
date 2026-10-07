@@ -13,7 +13,7 @@ subagent 收到任务描述后在自己的上下文里工作，最后把结论�
 - **`general`** —— 默认 subagent，可以读写文件、执行命令、搜索代码，不继续派发子 Agent。
 - **`explore`** —— 只读，用于探索代码库、搜索和总结。
 
-另有两个按需创建、并非预装的角色：`implementer` 负责一项工程任务直到验证与交付，`reviewer` 作为只读叶子独立审查决策或已完成的工作。在对话中提出即可（GUI 首次启动后的 `/kiki-ops` 会主动询问），`kiki-profile` skill 会把完整模板写到 `$KIKI_HOME/agents/<角色>.md`（默认 `~/.kiki/agents/`），已存在的文件不会被覆盖。两个模板都写有 `model_alias: inherit`，因此角色跟随父 Agent 当时使用的模型；模板不设置 `thinking_effort`，以后可在设置里固定模型。
+另有两个按需创建、并非预装的角色：`implementer` 负责一项工程任务直到验证与交付，`reviewer` 作为只读叶子独立审查决策或已完成的工作。在对话中提出即可（GUI 首次启动后的 `/kiki-ops` 会在你眼前这件事正好缺一个角色时才提），`kiki-profile` skill 会把完整模板写到 `$KIKI_HOME/agents/<角色>.md`（默认 `~/.kiki/agents/`），已存在的文件不会被覆盖。两个模板都写有 `model_alias: inherit`，因此角色跟随父 Agent 当时使用的模型；模板不设置 `thinking_effort`，以后可在设置里固定模型。
 
 顶层配置 [`skip_builtin_profile_installation`](../configuration/config-files.md#顶层字段) 会跳过向 `agents/builtin/` 安装指定的内置模板，已有的副本不受影响。要从 subagent 的发现与派发列表中隐藏已安装的 profile，用 `disabled_named_profiles`；main `agent` 绑定始终可用。
 

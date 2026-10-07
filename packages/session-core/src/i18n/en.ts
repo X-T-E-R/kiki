@@ -5828,8 +5828,8 @@ export const en = {
   'onboarding.caps.openPersonas': 'Personas',
   'onboarding.caps.bots.prompt': '/kiki-ops Help me set up a bot: explain what bot mode turns on, help me pick or create a persona, and make it a bot.',
   'onboarding.caps.firstRun.prompt':
-    '/kiki-ops Help me finish setting up with a few short questions: what I use Kiki for, my first agent if I want one, then a low-cost model and effort for Explore. I can also keep things as they are or turn Explore off. One question at a time.',
-  'onboarding.finishFirstRun': 'Set up with Kiki',
+    '/kiki-ops Say in two or three sentences what you can do, then ask what I most want to get done and take me through doing it once: set up whatever that step needs and leave what already works alone. One question at a time.',
+  'onboarding.finishFirstRun': 'Get started with Kiki',
   // Queue strip + composer queue-edit round-trip (drag reorder, armed remove).
   'queue.editTitle': 'Edit in the composer — confirming puts it back at the same queue position',
   'queue.editingBadge': 'Editing in the composer',

@@ -334,8 +334,7 @@ describe('BuiltinSkillSource product-skill switch', () => {
     }
     expect(profile?.content).toContain('Both templates set `model_alias: inherit`');
     expect(profile?.content).toContain('leave `thinking_effort` unset');
-    expect(ops?.content).toContain('Ask whether to create `implementer`');
-    expect(ops?.content).toContain('ask separately about `reviewer`');
+    expect(ops?.content).toContain('offer `implementer` or `reviewer`');
     expect(ops?.content).toContain('Copy the template with its `model_alias: inherit` frontmatter unchanged');
   });
 
@@ -348,6 +347,16 @@ describe('BuiltinSkillSource product-skill switch', () => {
     for (const trigger of KIKI_OPS_TRIGGERS) {
       expect(listing).toContain(trigger);
     }
+  });
+
+  it('runs the first-run request around the user\'s first task, with setup as a side effect', () => {
+    const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops')!.content;
+    expect(ops).toContain('The first-run request is not a configuration interview');
+    expect(ops).toContain('Do that first thing, for real');
+    expect(ops).toContain('only when the first run shows the need');
+    expect(ops).toContain('only when the work needs read-only searching');
+    expect(ops).toContain('Never open with roles');
+    expect(ops).toContain('not a question to ask unprompted');
   });
 
   it('guides first-run web search without a credential gate or silent fallback', () => {
