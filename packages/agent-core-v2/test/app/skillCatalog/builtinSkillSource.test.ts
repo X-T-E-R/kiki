@@ -334,7 +334,8 @@ describe('BuiltinSkillSource product-skill switch', () => {
     }
     expect(profile?.content).toContain('Both templates set `model_alias: inherit`');
     expect(profile?.content).toContain('leave `thinking_effort` unset');
-    expect(ops?.content).toContain('offer `implementer` or `reviewer`');
+    expect(ops?.content).toContain('`implementer` for an engineering task');
+    expect(ops?.content).toContain('`reviewer` for a decision that needs an independent read-only check');
     expect(ops?.content).toContain('Copy the template with its `model_alias: inherit` frontmatter unchanged');
   });
 
@@ -354,7 +355,10 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(ops).toContain('The first-run request is not a configuration interview');
     expect(ops).toContain('Do that first thing, for real');
     expect(ops).toContain('only when the first run shows the need');
-    expect(ops).toContain('only when the work needs read-only searching');
+    expect(ops).toContain('The test is the task in front of them, not whether they code');
+    expect(ops).toContain('offer a profile shaped to what they are actually doing, or none');
+    expect(ops).toContain('only when the work needs read-only research');
+    expect(ops).toContain('or the sources and material a task has to check');
     expect(ops).toContain('Never open with roles');
     expect(ops).toContain('not a question to ask unprompted');
   });
