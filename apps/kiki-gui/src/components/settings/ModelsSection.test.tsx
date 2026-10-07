@@ -590,7 +590,7 @@ describe('ModelCatalogRowEditor request identity save guard', () => {
       const identityLabel = translate(locale as 'en' | 'zh', 'st.models.requestIdentity');
       const select = container.querySelector(`[data-model-row-editor] button[aria-label="${identityLabel}"]`)!;
       await pickValue(select, 'data-request-identity-choice', 'custom_overrides');
-      const textarea = container.querySelector<HTMLTextAreaElement>('[data-model-row-editor] textarea')!;
+      const textarea = container.querySelector<HTMLTextAreaElement>('[data-request-identity-overrides]')!;
       await act(async () => { setTextareaValue(textarea, text); });
       const saveLabel = translate(locale as 'en' | 'zh', 'common.save');
       const save = [...container.querySelectorAll('button')].find((button) => button.textContent === saveLabel)!;
@@ -969,8 +969,10 @@ describe('ModelCatalogRowEditor usage policy', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   };
 
+  // The scope switch is owned by the page, not by the usage group: one switch
+  // decides which layer every overridable group on the page is editing.
   const scopeButton = (container: HTMLElement, scope: string) =>
-    container.querySelector<HTMLButtonElement>('[data-main-usage-policy] [data-usage-scope-choice="' + scope + '"]');
+    container.querySelector<HTMLButtonElement>(`[data-model-scope-choice="${scope}"]`);
 
   it('is editable on a model that has never configured a difference', async () => {
     // Absent `usage` is the ordinary case, not a missing feature: the block
@@ -986,9 +988,10 @@ describe('ModelCatalogRowEditor usage policy', () => {
     // The shared scope writes the model's own parameters, through the same rows.
     expect(block.querySelector<HTMLInputElement>('[data-usage-value="thinking_effort"]')!.value).toBe('medium');
     // The shared layer states it is the default, not that it overrides every
-    // use: an identity may still set its own value on top of it.
-    expect(block.textContent).toContain('The defaults: anywhere nothing is set separately uses these');
-    expect(block.textContent).toContain('subagents included');
+    // use: an identity may still set its own value on top of it. That sentence
+    // belongs to the page-level scope switch now, which owns the layer.
+    expect(container.querySelector('[data-model-edit-scope="shared"]')?.textContent)
+      .toContain(translate('en', 'st.modelScope.sharedHint'));
     // No difference row and no restore action while editing the shared layer.
     expect(block.querySelector('[data-usage-restore]')).toBeNull();
     setInputValue(block.querySelector<HTMLInputElement>('[data-usage-value="thinking_effort"]')!, 'low');
@@ -1016,7 +1019,7 @@ describe('ModelCatalogRowEditor usage policy', () => {
     const container = await openRow(usageEntity({ main: { thinking_effort: 'high', auto_compact: 160000 } }));
     await act(async () => { scopeButton(container, 'main')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.querySelector('[data-usage-differences]')?.textContent).toBe('2 differences from shared');
+    expect(container.querySelector('[data-model-scope-differences]')?.textContent).toBe('2');
     expect(container.querySelector('[data-usage-value="thinking_effort"]')).not.toBeNull();
   });
 
@@ -1245,7 +1248,7 @@ describe('ModelCatalogRowEditor usage policy', () => {
     expect(container.querySelector('[data-main-usage-policy]')).not.toBeNull();
     await act(async () => { scopeButton(container, 'main')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.querySelector('[data-usage-differences]')?.textContent).toBe('Same as shared');
+    expect(container.querySelector('[data-model-scope-differences]')).toBeNull();
     const compact = container.querySelector<HTMLInputElement>('[data-compact-point-field="model:kimi-code/kimi-k2"] input')!;
     await act(async () => { compact.focus(); setInputValue(compact, '120000'); });
     await act(async () => { compact.blur(); });
@@ -1256,10 +1259,11 @@ describe('ModelCatalogRowEditor usage policy', () => {
     }));
   });
 
-  it('offers the independent position only when the server carries it', async () => {
+  it('offers every identity, including one the server has no branch for', async () => {
     const without = await openRow(usageEntity({ main: {} }));
-    expect(scopeButton(without, 'independent')).toBeNull();
+    expect(scopeButton(without, 'independent')).not.toBeNull();
     expect(scopeButton(without, 'main')).not.toBeNull();
+    expect(scopeButton(without, 'shared')).not.toBeNull();
   });
 
   it('offers the independent position once a branch exists for it', async () => {

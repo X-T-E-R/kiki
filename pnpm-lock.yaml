@@ -170,6 +170,9 @@ importers:
       diff:
         specifier: ^8.0.2
         version: 8.0.4
+      fflate:
+        specifier: ^0.8.2
+        version: 0.8.2
       katex:
         specifier: ^0.16.47
         version: 0.16.47
@@ -185,6 +188,9 @@ importers:
       react-router-dom:
         specifier: ^7.14.1
         version: 7.14.1(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      smol-toml:
+        specifier: ^1.6.1
+        version: 1.6.1
       streamdown:
         specifier: ^2.2.0
         version: 2.5.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)

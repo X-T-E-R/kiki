@@ -3,10 +3,11 @@
  *
  * One model, one set of shared values. An identity may carry a difference on a
  * handful of those fields, and only those fields; everything else keeps
- * inheriting. The scope switch therefore sits *on the parameter group itself*
- * rather than beside a second copy of it: switching scopes re-points the same
- * rows at a different layer, so there is one place to read a value, one place
- * to write it, and one Save.
+ * inheriting. The scope switch lives on the model editor itself and is passed
+ * down here: switching scopes re-points the same rows at a different layer, so
+ * there is one place to read a value, one place to write it, and one Save.
+ * This component used to own a second switch; two switches for one scope is
+ * how the same value ended up editable from two directions.
  *
  * Three states a field can be in, and they stay three because the engine reads
  * them apart:
@@ -33,14 +34,13 @@ import { formatCompactTokens, parseCompactInput } from '../../lib/autoCompact';
 import { Hint } from '../controls';
 import { SMALL_INPUT } from '../ui';
 import { SettingField } from './fields';
-import { SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
+import { SettingsSelect } from './SettingsPrimitives';
 import {
   COUNT_USAGE_FIELDS,
   EMPTY_USAGE_BRANCH,
   USAGE_POLICY_FIELDS,
   USAGE_SERVICE_TIERS,
   clearUsageField,
-  countUsageDifferences,
   setUsageText,
   usageFieldValue,
   type TierDraft,
@@ -93,13 +93,11 @@ export interface UsagePolicyView {
 export type SharedUsageEdit = Readonly<Partial<Record<UsagePolicyField, string>>>;
 
 export function MainUsagePolicyFields({
-  modelId, scope, showIndependent, onScopeChange, view, onSharedChange, onChange, compaction, compactionControl,
+  modelId, scope, view, onSharedChange, onChange, compaction, compactionControl,
 }: {
   modelId: string;
+  /** The page's own scope selector; this group only reads through it. */
   scope: UsageScope;
-  /** Only when the server carries an independent branch worth showing. */
-  showIndependent: boolean;
-  onScopeChange: (scope: UsageScope) => void;
   view: UsagePolicyView;
   onSharedChange: (next: SharedUsageEdit) => void;
   onChange: (next: UsagePolicyDraft) => void;
@@ -111,37 +109,9 @@ export function MainUsagePolicyFields({
 }) {
   const { t } = useI18n();
   const branch = scope === 'shared' ? undefined : (view.draft[scope] ?? EMPTY_USAGE_BRANCH);
-  const differences = countUsageDifferences(branch ?? EMPTY_USAGE_BRANCH);
   return (
     <div data-main-usage-policy={modelId} data-usage-scope={scope}
       className="min-w-0 space-y-2 border-t border-hairline pt-4 disabled:opacity-60">
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
-        <SettingsSegmented<UsageScope>
-          ariaLabel={t('st.usagePolicy.scopeAria')}
-          value={scope}
-          dataAttr="data-usage-scope-choice"
-          onChange={onScopeChange}
-          choices={[
-            { value: 'shared', label: t('st.usagePolicy.shared') },
-            { value: 'main', label: t('st.usagePolicy.main') },
-            // Independent appears only when the server carries a branch for it;
-            // a position nobody uses is not offered a control it has no use for.
-            ...(showIndependent ? [{ value: 'independent' as const, label: t('st.promptIdentity.independent') }] : []),
-          ]}
-        />
-        {scope === 'shared' ? null : (
-          <span className="text-[12px] text-ink-faint" data-usage-differences={String(differences)}>
-            {differences === 0 ? t('st.usagePolicy.noDifferences')
-              : differences === 1 ? t('st.usagePolicy.differencesOne')
-              : t('st.usagePolicy.differences', { count: String(differences) })}
-          </span>
-        )}
-      </div>
-      <Hint>
-        {scope === 'shared'
-          ? t('st.usagePolicy.sharedHint')
-          : t(scope === 'main' ? 'st.usagePolicy.mainHint' : 'st.usagePolicy.independentHint')}
-      </Hint>
       <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2" data-usage-fields={scope}>
         {USAGE_POLICY_FIELDS.map((field) => (
           <div

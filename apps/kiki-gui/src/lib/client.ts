@@ -90,6 +90,18 @@ import type {
   QuestionResolveRequest,
   QuestionResolveResult,
   RefreshProviderModelsResponse,
+  RecipeDetail,
+  RecipeExport,
+  RecipeForkInput,
+  RecipeInstallInput,
+  RecipeMarket,
+  RecipeMarketInput,
+  RecipePreview,
+  RecipePreviewInput,
+  RecipeRemoveInput,
+  RecipeSaveLocalInput,
+  RecipeSummary,
+  RecipeUpdateInput,
   RestartMcpServerResult,
   RestoreSessionResponse,
   Session,
@@ -2085,6 +2097,63 @@ export class KikiClient {
 
   deleteModel(modelId: string, options?: { readonly baseRevision?: string }): Promise<void> {
     return this.run(this.klient.global.kosong.deleteModel(modelId, options));
+  }
+
+  listRecipes(): Promise<RecipeSummary[]> {
+    return this.run(this.klient.global.recipes.list());
+  }
+
+  getRecipe(installationId: string): Promise<RecipeDetail | undefined> {
+    return this.run(this.klient.global.recipes.get(installationId));
+  }
+
+  previewRecipe(input: RecipePreviewInput): Promise<RecipePreview> {
+    return this.run(this.klient.global.recipes.preview(input));
+  }
+
+  installRecipe(input: RecipeInstallInput): Promise<RecipeSummary> {
+    return this.run(this.klient.global.recipes.install(input));
+  }
+
+  checkRecipeUpdates(): Promise<RecipeSummary[]> {
+    return this.run(this.klient.global.recipes.checkUpdates());
+  }
+
+  updateRecipe(input: RecipeUpdateInput): Promise<RecipeSummary> {
+    return this.run(this.klient.global.recipes.update(input));
+  }
+
+  forkRecipe(input: RecipeForkInput): Promise<RecipeDetail> {
+    return this.run(this.klient.global.recipes.fork(input));
+  }
+
+  saveLocalRecipe(input: RecipeSaveLocalInput): Promise<RecipeDetail> {
+    return this.run(this.klient.global.recipes.saveLocal(input));
+  }
+
+  removeRecipe(input: RecipeRemoveInput): Promise<void> {
+    return this.run(this.klient.global.recipes.remove(input));
+  }
+
+  listRecipeMarkets(): Promise<RecipeMarket[]> {
+    return this.run(this.klient.global.recipes.markets.list());
+  }
+
+  addRecipeMarket(input: RecipeMarketInput): Promise<RecipeMarket> {
+    return this.run(this.klient.global.recipes.markets.add(input));
+  }
+
+  updateRecipeMarket(input: RecipeMarketInput): Promise<RecipeMarket> {
+    return this.run(this.klient.global.recipes.markets.update(input));
+  }
+
+  removeRecipeMarket(id: string): Promise<void> {
+    return this.run(this.klient.global.recipes.markets.remove(id));
+  }
+
+  /** A self-contained snapshot: canonical files, inheritance already resolved. */
+  exportRecipe(installationId: string): Promise<RecipeExport> {
+    return this.run(this.klient.global.recipes.export(installationId));
   }
 
   /** One connection plus the revision its next patch must carry. */

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { tsImport } from 'tsx/esm/api';
 import { filterOpsForGrade, gradeFor, redactSnapshotForGrade } from './fixture-transcript.mjs';
 import { browseFolder } from './fixture-worktrees.mjs';
@@ -7,6 +8,42 @@ import { callAgentMediaService, callMediaService } from './fixture-media.mjs';
 function now() { return new Date().toISOString(); }
 
 // Load the production wire validators, not the engine/dispatcher or a user home.
+/** Stable digest for the ids and revisions the fixture mints. */
+const fixtureHash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+/** The resolved projection a fixture package reports; prose lives in the files map. */
+const fixtureRecipeResolved = (summary) => ({
+  revision: summary.revision,
+  branches: {
+    main: { system: 'Ship the result and name the evidence.', steering: 'Take the next useful step.', steering_on_turn: true, steering_on_input: true, steering_interval_steps: 0, fields: {} },
+    sub: { system: 'Ship the result and name the evidence.', steering: 'Take the next useful step.', fields: {} },
+    independent: { fields: {} },
+  },
+  dependencies: [],
+  origins: [
+    { position: 'main', slot: 'system', source: summary.source.locator, manifest_id: summary.manifest_id, version: summary.version, file: 'main.md' },
+    { position: 'main', slot: 'steering', source: summary.source.locator, manifest_id: summary.manifest_id, version: summary.version, file: 'steer.md' },
+  ],
+  model: { temperature: 0.2 },
+  model_origins: { temperature: { source: summary.source.locator, manifest_id: summary.manifest_id, version: summary.version } },
+});
+
+/** A minimal canonical manifest, so the author workbench has real TOML to edit. */
+const fixtureRecipeToml = (summary) => [
+  'schema_version = 1',
+  `id = "${summary.manifest_id}"`,
+  `name = "${summary.name}"`,
+  `version = "${summary.version}"`,
+  '',
+  '[prompts]',
+  'system = { file = "main.md" }',
+  'steering = { file = "steer.md" }',
+  '',
+  '[model]',
+  'temperature = 0.2',
+  '',
+].join('\n');
+
 const codec = await tsImport('../../../packages/klient/src/transports/codec.ts', import.meta.url);
 const view = await tsImport('../../../packages/klient/src/contract/session/view.ts', import.meta.url);
 const { globalContract } = await tsImport('../../../packages/klient/src/contract/index.ts', import.meta.url);
@@ -177,7 +214,143 @@ function mergeUsagePolicy(model, patch) {
   model.usage = usage;
 }
 
+/**
+ * The two prompt objects are whole objects with a branch per identity, and the
+ * engine reads four states apart. A patch therefore replaces the object it
+ * names and leaves the other one alone; a `null` clears only what it names.
+ */
+function applyPromptObjects(model, patch) {
+  for (const key of ['cognition', 'prompt_overrides']) {
+    if (patch[key] === undefined) continue;
+    if (patch[key] === null) delete model[key];
+    else model[key] = structuredClone(patch[key]);
+  }
+}
+
+const COGNITION_SLOTS = ['overlay', 'steering', 'anchor'];
+const COGNITION_CHANNELS = {
+  overlay: 'cognition_overlay',
+  steering: 'cognition_steering',
+  anchor: 'cognition_anchor',
+};
+
+/** The author files a fixture model already refers to; a real home reads them. */
+function fixtureCognitionFileSources(model) {
+  return model.__cognition_files ?? {};
+}
+
+function cognitionSlotBody(slot, value, files) {
+  const channel = COGNITION_CHANNELS[slot];
+  if (value === undefined) {
+    return { channel, source: 'unset', writable: true, source_read_only: false };
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    // `{text}` is a body stored on the model; an empty string is an explicit
+    // empty body, not an absent one.
+    return { channel, source: 'inline', text: value.text, writable: true, source_read_only: false };
+  }
+  const refs = Array.isArray(value) ? value : [value];
+  const resolved = refs.map((ref) => {
+    const file = files[ref];
+    return file === undefined
+      ? { path: ref, text: '', error: 'The referenced file could not be read.' }
+      : { path: ref, text: file };
+  });
+  const failed = resolved.some((file) => file.error !== undefined);
+  return {
+    channel,
+    source: 'files',
+    text: resolved.map((file) => file.text).join('\n'),
+    files: resolved,
+    // `writable` means "may be edited into a body stored on the model", not
+    // "the referenced file may be written" — that stays read-only always. A
+    // slot whose file could not be read is never a save target, because an
+    // empty box would look like a decision the person made.
+    writable: !failed,
+    source_read_only: true,
+    ...(failed ? { error: 'The referenced file could not be read.' } : {}),
+  };
+}
+
+/**
+ * The manual prompt bodies, projected from what the model stores.
+ *
+ * This is the saved manual text, not the aggregate a Recipe or a profile
+ * produces: the effective source of a channel is the resolver's answer, not this
+ * projection's. Each identity picks a declared source — its own content, the
+ * shared level, or nothing — and the identity that was actually chosen is what
+ * `source_scope` reports.
+ */
+function projectCognitionBodies(model) {
+  const files = fixtureCognitionFileSources(model);
+  const cognition = model.cognition ?? {};
+  const common = {};
+  for (const slot of COGNITION_SLOTS) {
+    common[slot] = cognitionSlotBody(slot, cognition[slot], files);
+  }
+  const branches = { common: { selection: 'common', source_scope: 'common', slots: common } };
+  for (const position of ['main', 'independent']) {
+    const branch = cognition[position];
+    if (branch === 'off' || branch === undefined && !hasCommonSlot(cognition)) {
+      branches[position] = {
+        selection: 'off',
+        source_scope: position,
+        slots: Object.fromEntries(COGNITION_SLOTS.map((slot) => [slot, cognitionSlotBody(slot, undefined, files)])),
+      };
+      continue;
+    }
+    if (branch === undefined) {
+      branches[position] = { selection: 'common', source_scope: 'common', slots: common };
+      continue;
+    }
+    // A custom branch is a whole object: a slot it does not declare stays unset
+    // rather than quietly falling back to the shared value.
+    branches[position] = {
+      selection: 'custom',
+      source_scope: position,
+      slots: Object.fromEntries(COGNITION_SLOTS.map((slot) => [slot, cognitionSlotBody(slot, branch[slot], files)])),
+    };
+  }
+  return { revision: revisionOf(model), branches };
+}
+
+const hasCommonSlot = (cognition) => COGNITION_SLOTS.some((slot) => cognition[slot] !== undefined);
+
+/**
+ * A Recipe binding is a reference plus the snapshot that reference resolved to.
+ *
+ * `null` removes the reference and the snapshot with it: turning a recipe off
+ * withdraws that package's contribution and nothing else, so any value the model
+ * saved itself is left exactly as it was.
+ */
+function applyRecipeBinding(model, recipe, recipes) {
+  if (recipe === undefined) return;
+  if (recipe === null) {
+    delete model.recipe;
+    delete model.recipe_model_binding;
+    return;
+  }
+  const found = recipes.find((entry) => entry.summary.installation_id === recipe);
+  if (found === undefined) throw invalid('recipe.not_installed', 40414);
+  model.recipe = recipe;
+  model.recipe_model_binding = {
+    installation_id: recipe,
+    revision: found.resolved.revision,
+    model: structuredClone(found.resolved.model),
+    model_origins: structuredClone(found.resolved.model_origins),
+    references: [{ surface: 'model', installation_id: recipe, revision: found.resolved.revision }],
+  };
+}
+
 function revisionOf(value) {
+  // Derived projections are the server's own answer rather than stored state, so
+  // they must not move the revision: two reads of the same model have to produce
+  // the same base_revision or every CAS would conflict with itself.
+  const { usage_effective: _effective, usage_sources: _sources, revision: _revision, ...stored } = value;
+  return revisionOfValue(stored);
+}
+
+function revisionOfValue(value) {
   const canonical = (entry) => {
     if (Array.isArray(entry)) return `[${entry.map(canonical).join(',')}]`;
     if (entry !== null && typeof entry === 'object') {
@@ -623,6 +796,7 @@ export class FixtureKlient {
           issues: [],
           revision: revisionOf(item),
           provider_source: 'provider',
+          cognition_bodies: projectCognitionBodies(item),
         };
       }
       case 'modelCatalogMutation.updateModel': {
@@ -645,6 +819,8 @@ export class FixtureKlient {
           else next.auto_compact = patch.auto_compact;
         }
         mergeUsagePolicy(next, patch.usage);
+        applyPromptObjects(next, patch);
+        applyRecipeBinding(next, patch.recipe, server.recipes);
         // The resolved projection is the server's own answer, so it has to move
         // with the branch that was just saved. Leaving the seeded value in place
         // makes a correct write look like it did not take.
@@ -652,7 +828,7 @@ export class FixtureKlient {
         items[index] = next;
         server.models = items;
         server.modelsDeclared = true;
-        return { effective_parameters: {}, parameter_sources: {}, ...next, issues: [], revision: revisionOf(next), provider_source: 'provider' };
+        return { effective_parameters: {}, parameter_sources: {}, ...next, issues: [], revision: revisionOf(next), provider_source: 'provider', cognition_bodies: projectCognitionBodies(next) };
       }
       case 'modelCatalogMutation.createModel': {
         const [input] = args;
@@ -791,6 +967,169 @@ export class FixtureKlient {
           };
           return base;
         });
+      }
+      // Recipe packages: the installed set is scenario data, and every write
+      // here goes through the same list the GUI reads back, so browsing a
+      // package cannot drift from what a later apply would send.
+      case 'recipeService.list': {
+        return structuredClone(server.recipes.map((entry) => entry.summary));
+      }
+      case 'recipeService.get': {
+        const [installationId] = args;
+        const found = server.recipes.find((entry) => entry.summary.installation_id === installationId);
+        if (found === undefined) return undefined;
+        const usedBy = server.models.filter((model) => model.recipe === installationId).map((model) => model.id);
+        return { ...structuredClone(found), used_by: usedBy };
+      }
+      case 'recipeService.preview': {
+        const [{ source }] = args;
+        const match = server.recipes.find((entry) => entry.summary.source.locator === source.locator);
+        // A preview of something not installed yet still resolves: it reports
+        // what the source would provide, which is what the import screen shows.
+        const summary = match?.summary ?? {
+          installation_id: `preview-${fixtureHash(source.locator)}`,
+          manifest_id: source.locator.split('/').pop()?.replace(/\.toml$/u, '') ?? 'recipe',
+          name: source.locator.split('/').pop()?.replace(/\.toml$/u, '') ?? 'Recipe',
+          version: '1.0.0',
+          revision: `sha256:${'0'.repeat(64)}`,
+          source,
+          update_mode: 'follow',
+          health: 'ready',
+        };
+        const resolved = match?.resolved ?? {
+          revision: summary.revision,
+          branches: {
+            main: { fields: {}, steering_on_turn: true, steering_on_input: true, steering_interval_steps: 0 },
+            sub: { fields: {} },
+            independent: { fields: {} },
+          },
+          dependencies: [],
+          origins: [],
+          model: {},
+          model_origins: {},
+        };
+        return { preview_id: `preview-${fixtureHash(JSON.stringify(source))}`, digest: summary.revision, summary, resolved, diagnostics: [] };
+      }
+      case 'recipeService.install': {
+        const [{ preview_id: previewId }] = args;
+        const existing = server.recipes.find((entry) => entry.summary.revision === previewId || entry.previewId === previewId);
+        const summary = existing?.summary ?? {
+          installation_id: `inst-${fixtureHash(previewId)}`,
+          manifest_id: 'imported-recipe',
+          name: 'Imported recipe',
+          version: '1.0.0',
+          revision: `sha256:${'1'.repeat(64)}`,
+          source: { locator: 'https://example.com/recipes/imported/recipe.toml' },
+          update_mode: 'follow',
+          health: 'ready',
+        };
+        if (existing === undefined) {
+          server.recipes.push({ previewId, summary, resolved: fixtureRecipeResolved(summary), files: { 'recipe.toml': fixtureRecipeToml(summary) }, history: [], editable: true });
+        }
+        return structuredClone(summary);
+      }
+      case 'recipeService.checkUpdates': {
+        return structuredClone(server.recipes.map((entry) => entry.summary));
+      }
+      case 'recipeService.update': {
+        const [input] = args;
+        const found = server.recipes.find((entry) => entry.summary.installation_id === input.installation_id);
+        if (found === undefined) return undefined;
+        // A failed update keeps the accepted copy: the summary stays usable and
+        // records why, which is exactly what the row has to render.
+        if (input.revision !== undefined && input.revision !== found.summary.revision) {
+          found.summary.last_error = { code: 'recipe.update_unavailable', message: 'That revision is not available from the source.' };
+          return structuredClone(found.summary);
+        }
+        if (input.update_mode !== undefined) found.summary.update_mode = input.update_mode;
+        delete found.summary.last_error;
+        return structuredClone(found.summary);
+      }
+      case 'recipeService.fork': {
+        const [{ installation_id: installationId, mode, id, name }] = args;
+        const source = server.recipes.find((entry) => entry.summary.installation_id === installationId);
+        if (source === undefined) return undefined;
+        const summary = {
+          ...structuredClone(source.summary),
+          installation_id: `inst-${fixtureHash(id + mode)}`,
+          manifest_id: id,
+          name,
+          revision: `sha256:${fixtureHash(id + mode)}`,
+          source: { locator: `installation:${fixtureHash(id + mode)}` },
+          copied_from: source.summary.manifest_id,
+        };
+        delete summary.update_available;
+        delete summary.last_error;
+        const resolved = fixtureRecipeResolved(summary);
+        // A copy is self-contained; an extend keeps the parent's chain, which is
+        // the difference a reader has to be able to see. The chain belongs to
+        // the resolved content, matching the detail schema the GUI reads.
+        resolved.dependencies = mode === 'extend'
+          ? [{ source: source.summary.source, manifest_id: source.summary.manifest_id, version: source.summary.version, revision: source.summary.revision }]
+          : [];
+        const forked = {
+          summary,
+          resolved,
+          files: { 'recipe.toml': fixtureRecipeToml(summary) },
+          history: [],
+          editable: true,
+        };
+        server.recipes.push(forked);
+        return { ...structuredClone(forked), used_by: [] };
+      }
+      case 'recipeService.saveLocal': {
+        const [{ installation_id: installationId, files }] = args;
+        const found = server.recipes.find((entry) => entry.summary.installation_id === installationId);
+        if (found === undefined) return undefined;
+        found.files = structuredClone(files);
+        found.summary.revision = `sha256:${fixtureHash(JSON.stringify(files))}`;
+        found.resolved = fixtureRecipeResolved(found.summary);
+        found.history = [...found.history, found.summary.revision];
+        return { ...structuredClone(found), used_by: [] };
+      }
+      case 'recipeService.remove': {
+        const [{ installation_id: installationId, disable_models: disableModels }] = args;
+        const index = server.recipes.findIndex((entry) => entry.summary.installation_id === installationId);
+        if (index >= 0) server.recipes.splice(index, 1);
+        // Removing a package a model still points at would leave a dangling
+        // reference; the caller says explicitly whether to detach first.
+        if (disableModels === true) {
+          for (const model of server.models) {
+            if (model.recipe === installationId) delete model.recipe;
+          }
+        }
+        return undefined;
+      }
+      case 'recipeService.export': {
+        const [installationId] = args;
+        const found = server.recipes.find((entry) => entry.summary.installation_id === installationId);
+        if (found === undefined) return undefined;
+        return {
+          name: `${found.summary.manifest_id}-${found.summary.version}`,
+          revision: found.summary.revision,
+          files: structuredClone(found.files),
+        };
+      }
+      case 'recipeService.listMarkets': {
+        return structuredClone(server.recipeMarkets);
+      }
+      case 'recipeService.addMarket': {
+        const [input] = args;
+        const market = { ...input, offline: false };
+        server.recipeMarkets.push(market);
+        return structuredClone(market);
+      }
+      case 'recipeService.updateMarket': {
+        const [input] = args;
+        const index = server.recipeMarkets.findIndex((entry) => entry.id === input.id);
+        if (index < 0) return undefined;
+        server.recipeMarkets[index] = { ...server.recipeMarkets[index], ...input };
+        return structuredClone(server.recipeMarkets[index]);
+      }
+      case 'recipeService.removeMarket': {
+        const [id] = args;
+        server.recipeMarkets = server.recipeMarkets.filter((entry) => entry.id !== id);
+        return undefined;
       }
       // Config service: only the domains the Defaults card writes directly
       // (`subagent.defaultModel`, `fastModel`), mirrored into the REST config

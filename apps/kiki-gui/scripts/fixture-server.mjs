@@ -799,6 +799,8 @@ class FixtureServer {
     this.shippedAgentProfiles = []; // shipped (built-in) template status rows
     this.mcpManaged = []; // mutable /mcp/servers management catalog
     this.plugins = []; // mutable /plugins catalog
+    this.recipes = []; // installed Recipe packages; mutable through recipeService
+    this.recipeMarkets = [];
     this.autoCompactOverrides = new Map(); // `${sessionId}:${agentId}` → { [modelId]: tokens }
     this.oauthOverride = null; // mutable OAuth flow state (POST/DELETE /oauth/login)
     this.providerHealth = null; // persisted /providers/{id}:test results (null = scenario seed)
@@ -827,6 +829,8 @@ class FixtureServer {
       const target = fixtureSearchCredentialBinding(this.config, instanceId);
       if (target !== null) this.nbSearchCredentials.set(slotId, { value, binding: target.binding, version: fixtureHash({ value, binding: target.binding }) });
     }
+    this.recipes = structuredClone(data.recipes ?? []);
+    this.recipeMarkets = structuredClone(data.recipeMarkets ?? []);
     this.providers = structuredClone(data.providers ?? []);
     this.models = structuredClone(data.models ?? []).map(normalizeFixtureModel);
     // A scenario that declares `models: []` means an unconfigured server, not

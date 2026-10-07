@@ -67,11 +67,18 @@ import {
   type ModelEngineDraft,
 } from './ModelEngineFields';
 import { MainUsagePolicyFields, type SharedUsageEdit, type UsagePolicyView } from './MainUsagePolicyFields';
+import { ModelEditScopeSwitch } from './ModelEditScopeSwitch';
+import { ModelRecipeField } from './ModelRecipeField';
+import { ModelPromptBodies } from './ModelPromptBodies';
+import { branchSelectionFor, modelPromptsDraft, modelPromptsEqual, modelPromptsPatch, type ModelPromptsDraft } from './modelPromptsDraft';
+import { scopeDifferenceSummary, type EditScope } from './modelEditScope';
+import { cognitionSlotPatchAtScope, initialSlotText, slotView, type CognitionSlot } from './modelCognitionBodies';
 import {
   EMPTY_USAGE_BRANCH,
   USAGE_POLICY_FIELDS,
   USAGE_POSITIONS,
   usageBranchDraft,
+  countUsageDifferences,
   usageBranchProblem,
   usageEffectiveFor,
   setUsageText,
@@ -1261,6 +1268,69 @@ function ModelCatalogRowEditor({
   const [usageBaseline, setUsageBaseline] = useState<UsagePolicyDraft | null>(null);
   const [usageIssue, setUsageIssue] = useState<{ position: UsagePosition; field: UsagePolicyField } | null>(null);
   const [usageScope, setUsageScope] = useState<'shared' | UsagePosition>('shared');
+  // One scope for the page. The two prompt groups and the usage group all have
+  // a real per-identity layer on the wire; the rest of the model does not, and
+  // stays a single set of shared values whichever tab is open.
+  const [editScope, setEditScope] = useState<EditScope>('shared');
+  // The prompt groups get their own draft rather than riding the engine draft,
+  // because they are whole objects with a branch each: rebuilding them from the
+  // entity on every render would drop an explicit `same` nobody touched.
+  const [prompts, setPrompts] = useState<ModelPromptsDraft | null>(null);
+  const [promptsBaseline, setPromptsBaseline] = useState<ModelPromptsDraft | null>(null);
+  const promptsDirty = prompts !== null && promptsBaseline !== null && !modelPromptsEqual(prompts, promptsBaseline);
+
+  useEffect(() => {
+    if (entity === undefined || promptsDirty) return;
+    const next = modelPromptsDraft(entity);
+    if (promptsBaseline === null || !modelPromptsEqual(next, promptsBaseline)) {
+      setPrompts(next);
+      setPromptsBaseline(next);
+    }
+  }, [entity, promptsDirty, promptsBaseline]);
+
+  // Prompt prose for the scope on screen. Kept as text rather than written
+  // straight into cognition: converting a file-backed slot into model-owned
+  // text is a one-way move, so it waits for an explicit save.
+  //
+  // The draft is keyed by scope and slot together, because the same slot means
+  // a different thing per identity: `shared` is the model's own declaration and
+  // `main` is a difference that replaces the whole object for that identity.
+  // Keying by slot alone carried one identity's words into another's on save.
+  const [bodyDraft, setBodyDraft] = useState<Record<string, string>>({});
+  const [bodySaves, setBodySaves] = useState<Record<string, string>>({});
+  const bodyKey = (scope: EditScope, slot: CognitionSlot) => `${scope}:${slot}`;
+  // A draft is only pending once it differs from what the stored value was; an
+  // editor that opens on a body and is closed untouched must not dirty the page.
+  const bodySavesDirty = Object.keys(bodySaves).length > 0;
+  /**
+   * The drafts for the scope on screen, keyed by slot alone again.
+   *
+   * Switching scope must show what that identity stores, not the words typed
+   * into another one, so each scope's slots are projected out of the shared map.
+   */
+  const scopedBodyDraft: Record<string, string> = {};
+  for (const [key, text] of Object.entries(bodyDraft)) {
+    if (key.startsWith(`${editScope}:`)) scopedBodyDraft[key.slice(editScope.length + 1)] = text;
+  }
+  /**
+   * What this identity actually differs on, in words. Naming the groups beats a
+   * badge per field: the reader learns which group to go to instead of decoding
+   * a colour.
+   */
+  const scopeBranch = editScope === 'shared' ? undefined : prompts === null ? undefined : {
+    cognition: prompts.cognition[editScope],
+    fields: prompts.fields[editScope],
+  };
+  const scopeDifferences = editScope === 'shared' || scopeBranch === undefined || usage === null
+    ? 0
+    : countUsageDifferences(usage[editScope] ?? EMPTY_USAGE_BRANCH);
+  const scopeSummary = editScope === 'shared' || scopeBranch === undefined
+    ? undefined
+    : scopeDifferenceSummary({
+      usageFields: countUsageDifferences(usage?.[editScope] ?? EMPTY_USAGE_BRANCH),
+      promptsCustom: scopeBranch.cognition.kind === 'custom' || scopeBranch.fields.kind === 'custom',
+      promptsOff: scopeBranch.cognition.kind === 'off' || scopeBranch.fields.kind === 'off',
+    });
   // The shared scope of the parameter group writes the model's own generation
   // parameters, which live in `parameters` rather than on the entity root.
   const [sharedGeneration, setSharedGeneration] = useState<GenerationParametersWire>({});
@@ -1364,8 +1434,13 @@ function ModelCatalogRowEditor({
     loopControl: configQuery.data?.loop_control,
   });
 
-  const dirty = (draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline))
-    || compactDirty || engineDirty || usageDirty || sharedGenerationDirty || behaviorDirty;
+  // A package being authored is a draft too: leaving the panel with words typed
+  // and unsaved would lose them exactly as the model's own fields would.
+  const [recipeDraftDirty, setRecipeDraftDirty] = useState(false);
+  const modelDirty = (draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline))
+    || compactDirty || engineDirty || usageDirty || sharedGenerationDirty || behaviorDirty
+    || promptsDirty || bodySavesDirty;
+  const dirty = modelDirty || recipeDraftDirty;
   useDirtyReporter(`catalog-model:${item.id}`, dirty);
   // The row owns the collapse/close decision, and the draft stays dirty while
   // the editor is hidden, so the parent needs this flag either way.
@@ -1494,15 +1569,36 @@ function ModelCatalogRowEditor({
       const behaviorPatch = questionGuardModelPatch(behavior, behaviorBaseline);
       const fieldPatch = modelPatchBody(draft, baseline);
       if (fieldPatch === null && !compactDirty && Object.keys(enginePatch).length === 0
-        && Object.keys(usagePatch).length === 0 && generationPatch === null && behaviorPatch === undefined) return;
+        && Object.keys(usagePatch).length === 0 && generationPatch === null
+        && behaviorPatch === undefined && !promptsDirty && !bodySavesDirty) return;
+      // A changed Advanced object is the complete target, including deletions
+      // and null clears. Otherwise the stored object is the base. The prompt
+      // editor contributes only fields changed against its own baseline.
+      const promptBase = {
+        ...entity,
+        cognition: enginePatch.cognition === undefined ? entity.cognition : enginePatch.cognition ?? undefined,
+        prompt_overrides: enginePatch.prompt_overrides === undefined ? entity.prompt_overrides : enginePatch.prompt_overrides ?? undefined,
+      };
+      const promptPatch = modelPromptsPatch(promptBase, prompts ?? modelPromptsDraft(entity), promptsBaseline ?? modelPromptsDraft(entity));
+      // Prose has the final say on its explicit scope and slot, not on an entire
+      // identity. Carry the accumulating object forward for multi-slot saves.
+      let cognition = promptPatch.cognition ?? promptBase.cognition;
+      for (const [key, text] of Object.entries(bodySaves)) {
+        const separator = key.indexOf(':');
+        const scope = key.slice(0, separator) as EditScope;
+        const slot = key.slice(separator + 1) as CognitionSlot;
+        cognition = cognitionSlotPatchAtScope({ ...entity, cognition }, scope, slot, text).cognition;
+      }
       const patch = {
         ...fieldPatch,
         ...(compactDirty ? { auto_compact: autoCompact ?? null } : {}),
         ...enginePatch,
         ...usagePatch,
+        ...promptPatch,
         ...(generationPatch === null ? {} : { parameters: generationPatch }),
         ...(behaviorPatch === undefined ? {} : { behavior: behaviorPatch }),
       };
+      if (bodySavesDirty) patch.cognition = cognition;
       await client.updateModel(entity.id, { ...patch, base_revision: entity.revision });
       await onSaved();
       await entityQuery.refetch();
@@ -1512,6 +1608,10 @@ function ModelCatalogRowEditor({
       setUsageBaseline(usage);
       setSharedGenerationBaseline(sharedGeneration);
       setBehaviorBaseline(behavior);
+      // Only now is the prose stored: a rejected write above keeps every draft,
+      // because the person would otherwise have to retype it.
+      setBodyDraft({});
+      setBodySaves({});
       pingDetailSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -1567,12 +1667,51 @@ function ModelCatalogRowEditor({
         loopControl={configQuery.data?.loop_control}
         hideCompaction
       />
+      {/*
+        One scope for the page. It sits above the two groups that have a real
+        per-identity layer on the wire, so switching to  re-points those
+        rows instead of showing a second copy of the form.
+      */}
+      <ModelEditScopeSwitch
+        scope={editScope}
+        summary={scopeSummary}
+        differences={scopeDifferences}
+        onScopeChange={(next) => { setEditScope(next); setUsageScope(next); }}
+      />
+      {/*
+        The prompt prose, always open and at the top of the identity section.
+        What a model is told is the reason to open this page. Editing a readable
+        file-backed slot saves its text onto the model without touching the file.
+      */}
+      <div className="border-t border-hairline pt-4">
+        <p className="mb-2 text-[13px] font-medium text-ink">{t('st.modelPrompt.promptWords')}</p>
+        <ModelPromptBodies
+          modelId={entity.id}
+          bodies={entity.cognition_bodies}
+          scope={editScope}
+          branchSelection={branchSelectionFor(editScope, prompts)}
+          draft={scopedBodyDraft}
+          // Typing is the decision. A slot backed by an author file converts to
+          // a body on the model when this page saves, exactly like any other
+          // field; asking again per slot made the one confirmation the page did
+          // offer easy to miss and easy to skip by accident.
+          onDraftChange={(slot, text) => {
+            const key = bodyKey(editScope, slot);
+            setBodyDraft((current) => ({ ...current, [key]: text }));
+            setBodySaves((current) => {
+              const next = { ...current };
+              if (text === initialSlotText(slotView(entity.cognition_bodies, editScope, slot))) delete next[key];
+              else next[key] = text;
+              return next;
+            });
+          }}
+          disabled={saving}
+        />
+      </div>
       {usage !== null ? (
         <MainUsagePolicyFields
           modelId={entity.id}
           scope={usageScope}
-          showIndependent={entity.usage?.independent !== undefined}
-          onScopeChange={setUsageScope}
           view={usagePolicyView(entity, usage, usageDirty, usageIssue, autoCompact, engine, sharedGeneration)}
           onSharedChange={applySharedUsageEdit}
           onChange={(next) => { setUsage(next); setUsageIssue(null); }}
@@ -1614,6 +1753,19 @@ function ModelCatalogRowEditor({
         />
         <Hint>{t('st.models.capabilitiesHint')}</Hint>
       </div>
+      {/*
+        The Recipe row sits above the scope switch on purpose. Which recipe a
+        model uses is a decision about the model as a whole, so putting it under
+        an identity tab would read as "this recipe is for the main agent only".
+      */}
+      <ModelRecipeField
+        modelId={entity.id}
+        modelName={draft.displayName.trim() === '' ? entity.id : draft.displayName.trim()}
+        modelRevision={entity.revision}
+        appliedId={entity.recipe}
+        disabled={saving}
+        onDraftChange={setRecipeDraftDirty}
+      />
       <AdvancedDisclosure id={`model-${entity.id}`} summary={t('st.models.advancedSummary')}>
         <label className={FORM_LABEL}>
           {t('st.models.remoteIdLabel')}
@@ -1655,7 +1807,7 @@ function ModelCatalogRowEditor({
         </div>
       </AdvancedDisclosure>
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
+        <button type="button" className={PRIMARY_BUTTON} disabled={saving || !modelDirty} onClick={() => void save()}>
           {saving ? t('common.saving') : t('common.save')}
         </button>
         <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={onClose}>
@@ -1673,8 +1825,6 @@ function ModelCatalogRowEditor({
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
-
-
 
 /** A stored identity value, or undefined when it inherits. */
 function identityUsageNumber(value: string | undefined): number | undefined {
