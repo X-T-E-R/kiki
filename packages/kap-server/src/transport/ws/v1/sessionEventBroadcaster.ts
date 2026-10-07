@@ -52,6 +52,8 @@ import {
   type TranscriptOpsEvent,
   type TranscriptResetEvent,
   type TranscriptStore,
+  transcriptReadForCoverage,
+  jsonBytes,
 } from '@kiki/transcript';
 
 import { toWireApproval } from '../../../routes/approvals';
@@ -62,7 +64,6 @@ import { readLegacyStatus, toLegacyPhase } from '../../../services/legacyStatus/
 import type { TranscriptService } from '../../../services/transcript/transcriptService';
 import { recordSessionViewTiming } from '../../klient/sessionViewTiming';
 import { boundedTranscriptOps, boundedTranscriptSnapshot, TRANSCRIPT_WINDOW_BYTES } from '../../klient/boundedTranscript';
-import { jsonBytes } from '@kiki/transcript';
 import { InFlightTurnTracker } from './inFlightTurnTracker';
 import { SubagentRosterTracker } from './subagentRosterTracker';
 import { TurnUsageTracker } from './turnUsageTracker';
@@ -814,6 +815,7 @@ export class SessionEventBroadcaster {
         grade,
         coverage,
         cursor,
+        read: transcriptReadForCoverage('live', coverage, { transcript: cursor }),
       }),
       generation,
     );

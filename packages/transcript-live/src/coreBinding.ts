@@ -257,7 +257,7 @@ export function bindSessionTranscript(
       return;
     }
     const liveOwned =
-      (event.type.startsWith('prompt.') && !event.type.startsWith('prompt.model_switch_')) ||
+      (event.type.startsWith('prompt.') && !event.type.startsWith('prompt.model_switch_') && event.type !== 'prompt.outcome_committed') ||
       event.type === 'subagent.spawned' ||
       event.type === 'subagent.started' ||
       event.type === 'subagent.completed' ||

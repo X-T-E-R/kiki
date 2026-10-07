@@ -24,6 +24,7 @@ export function degradeUnconfirmedTranscriptSignal(data: unknown): unknown {
       event: {
         ...event,
         coverage: UNKNOWN_TRANSCRIPT_COVERAGE,
+        read: degradedRead((event as { read?: unknown }).read),
         snapshot: unknownToolCallCountSnapshot((event as { snapshot?: unknown }).snapshot),
       },
     };
@@ -38,7 +39,7 @@ export function degradeUnconfirmedTranscriptSignal(data: unknown): unknown {
 
 export function degradeUnconfirmedTranscriptPage(data: unknown): unknown {
   if (data === null || typeof data !== 'object') return data;
-  return { ...data, coverage: UNKNOWN_TRANSCRIPT_COVERAGE, tool_call_count: undefined };
+  return { ...data, coverage: UNKNOWN_TRANSCRIPT_COVERAGE, read: degradedRead((data as { read?: unknown }).read), tool_call_count: undefined };
 }
 
 export function degradeUnconfirmedTranscriptCatchUp(data: unknown): unknown {
@@ -57,11 +58,12 @@ function degradeUnconfirmedBatch(batch: unknown): unknown {
 
 function degradeUnconfirmedOp(op: unknown): unknown {
   if (op === null || typeof op !== 'object') return op;
-  const record = op as { op?: unknown; snapshot?: unknown };
+  const record = op as { op?: unknown; snapshot?: unknown; read?: unknown };
   if (record.op === 'reset') {
     return {
       ...record,
       coverage: UNKNOWN_TRANSCRIPT_COVERAGE,
+      read: degradedRead(record.read),
       snapshot: unknownToolCallCountSnapshot(record.snapshot),
     };
   }
@@ -69,6 +71,13 @@ function degradeUnconfirmedOp(op: unknown): unknown {
     return { ...record, count: undefined };
   }
   return op;
+}
+
+function degradedRead(read: unknown): unknown {
+  const source = read !== null && typeof read === 'object' &&
+    ((read as { source?: unknown }).source === 'live' || (read as { source?: unknown }).source === 'cold' || (read as { source?: unknown }).source === 'derived')
+    ? (read as { source: 'live' | 'cold' | 'derived' }).source : 'derived';
+  return { source, readiness: 'partial', reason: 'source_unverified' };
 }
 
 function unknownToolCallCountSnapshot(snapshot: unknown): unknown {

@@ -1925,8 +1925,8 @@ describe('bindSessionTranscript', () => {
     expect(store.getAgent('main')?.getPrompt('scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'queued', queuePosition: 1 });
     main.bus.emit(ev({ type: 'prompt.launch_committed', promptId: 'scheduled-1' }));
     expect(store.getAgent('main')?.getPrompt('scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'running' });
-    main.bus.emit(ev({ type: 'prompt.completed', promptId: 'scheduled-1', reason: 'completed', finishedAt: '2026-01-01T00:00:02.000Z' }));
-    expect(store.getAgent('main')?.getPrompt('scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'completed' });
+    main.bus.emit(ev({ type: 'prompt.outcome_committed', time: Date.parse('2026-01-01T00:00:02.000Z'), terminal: { promptId: 'scheduled-1', state: 'completed' } }));
+    expect(store.getAgent('main')?.getPrompt('scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'completed', finishedAt: '2026-01-01T00:00:02.000Z' });
     await binding.dispose();
   });
 

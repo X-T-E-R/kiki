@@ -29,6 +29,7 @@ import {
   type TranscriptGrade,
   type TranscriptGradeSpec,
   type TranscriptOperation,
+  type TranscriptRead,
 } from '@kiki/transcript';
 import type { SessionViewTranscriptDetail } from '@kiki/klient/session-view';
 
@@ -256,6 +257,7 @@ export class SessionController {
   private readonly agentTranscripts = new Map<string, AgentTranscript>();
   private readonly olderPages = new Map<string, AgentTranscriptSnapshot>();
   private readonly transcriptCursors = new Map<string, TranscriptCursor>();
+  private readonly historyReads = new Map<string, TranscriptRead>();
   private readonly appliedTranscriptGrades = new Map<string, TranscriptGrade>();
   private readonly publishedTranscriptCursors = new Map<string, TranscriptCursor>();
   private readonly toolCountObservations = new Map<string, ToolCountObservation>();
@@ -737,7 +739,7 @@ export class SessionController {
           (event.cursor.seq < seenThrough ||
             (event.cursor.seq === seenThrough && appliedGrade !== undefined &&
               GRADE_RANK[event.grade] <= GRADE_RANK[appliedGrade]))) return;
-      this.applyTranscriptReset(event.agent_id, event.snapshot, event.coverage, event.cursor, event.grade);
+      this.applyTranscriptReset(event.agent_id, event.snapshot, event.coverage, event.cursor, event.grade, event.read);
       return;
     }
     if (hold !== undefined && event.agent_id === MAIN_AGENT_ID) {
@@ -1365,12 +1367,15 @@ export class SessionController {
         return false;
       }
       const nextTurn = page.items.find((item) => item.kind === 'turn')?.turnId;
-      if (page.agent_id !== agentId || (page.has_more &&
+      const pageReadiness = page.read?.readiness;
+      const readIsPreparing = page.items.length === 0 && (pageReadiness === 'preparing' || pageReadiness === 'partial');
+      if (page.agent_id !== agentId || (page.has_more && !readIsPreparing &&
           (page.next_cursor !== undefined ? page.next_cursor === beforeItem : nextTurn === undefined || nextTurn === beforeTurn))) {
         this.historyReadBlocked.add(agentId);
         throw new Error('History page did not advance its cursor');
       }
       this.historyReadFailures.delete(agentId);
+      if (page.read !== undefined) this.historyReads.set(agentId, page.read);
       if (this.flushPendingTranscriptBatch(agentId)) this.observeToolCount(agentId, page);
       const older: AgentTranscriptSnapshot = {
         items: page.items as AgentTranscriptSnapshot['items'],
@@ -1380,7 +1385,7 @@ export class SessionController {
         todos: currentSnapshot.todos,
         prompts: currentSnapshot.prompts,
         meta: currentSnapshot.meta,
-        hasMoreOlder: page.has_more,
+        hasMoreOlder: page.coverage?.kind === 'unknown' ? true : page.has_more,
       };
       const merged = prependOlderTranscriptSnapshot(this.olderPages.get(agentId) ?? emptyOlderSnapshot(), older);
       this.olderPages.set(agentId, merged);
@@ -1431,6 +1436,7 @@ export class SessionController {
     coverage: TranscriptCoverage,
     cursor: TranscriptCursor,
     grade: TranscriptGrade,
+    read?: TranscriptRead,
   ): void {
     this.pendingTranscriptBatches.delete(agentId);
     this.pendingTranscriptAgents.delete(agentId);
@@ -1470,6 +1476,8 @@ export class SessionController {
       else this.contentBodies.set(key, { ...entry, base: snapshotContentEntity(snapshot, entry.source) ?? entry.base, bytes: estimateJsonBytes(entity) });
     }
     this.transcriptCursors.set(agentId, cursor);
+    if (read !== undefined) this.historyReads.set(agentId, read);
+    else this.historyReads.delete(agentId);
     this.appliedTranscriptGrades.set(agentId, grade);
     if (this.hasTranscriptBaseline(agentId)) this.viewHandle?.updateTranscriptCursor(agentId, cursor);
     this.forestDirtyAgents.add(agentId);
@@ -2399,7 +2407,7 @@ export class SessionController {
           };
     const globalCoverage = this.globalCoverage.get(agentId);
     const contentRefs = [...collectTranscriptContentRefs(snapshot), ...(agentId === MAIN_AGENT_ID ? this.latestSnapshot?.contentRefs ?? [] : [])];
-    const withCoverage = { ...projected, globalCoverage, contentRefs, transcriptReady: this.hasTranscriptBaseline(agentId) };
+    const withCoverage = { ...projected, globalCoverage, contentRefs, historyRead: this.historyReads.get(agentId), transcriptReady: this.hasTranscriptBaseline(agentId) };
     const forestChanged = this.forestDirtyAgents.delete(agentId) || this.publishedForest === undefined
       ? this.publishForest()
       : false;

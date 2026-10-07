@@ -762,6 +762,7 @@ export class AgentPromptService implements IAgentPromptService {
   private steering = 0;
   private waitingForLoop = false;
   private recoveryHold = false;
+  private recoveryFlight: Promise<void> | undefined;
   /** The single queued prompt a client is editing; it and everything after it wait. */
   private editHold: { readonly promptId: string; timer: ReturnType<typeof setTimeout> } | undefined;
   private fullCompactionService: IAgentFullCompactionService | undefined;
@@ -1530,6 +1531,10 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   resumeRecoveredQueue(): void {
+    if (this.recoveryFlight !== undefined) {
+      void this.recoveryFlight.then(() => this.resumeRecoveredQueue(), onUnexpectedError);
+      return;
+    }
     if (!this.recoveryHold) return;
     this.recoveryHold = false;
     this.publishQueueHoldChanged();
@@ -1593,8 +1598,16 @@ export class AgentPromptService implements IAgentPromptService {
     void this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal }));
   }
 
-  private async restorePendingQueue(): Promise<void> {
-    if (this.closing !== undefined) return;
+  private restorePendingQueue(): Promise<void> {
+    if (this.closing !== undefined) return Promise.resolve();
+    this.recoveryFlight ??= this.restorePendingEntries().finally(() => {
+      this.recoveryFlight = undefined;
+      this.syncRecoveryHold();
+    });
+    return this.recoveryFlight;
+  }
+
+  private async restorePendingEntries(): Promise<void> {
     const persisted = this.states.get(promptQueueKey);
     const identities = this.states.get(promptIdentityKey);
     const liveIds = new Set(this.pending.map((item) => item.id));
@@ -1625,8 +1638,16 @@ export class AgentPromptService implements IAgentPromptService {
         launchedDeferred,
         completionDeferred,
       } as Record;
-      record.handle = this.createHandle(record);
+      this.recoveryHold = true;
       await this.rememberOriginalPromptMessage(record.id, record.originalMessage);
+      if (this.closing !== undefined) {
+        if (this.closing === 'preserve-pending') this.detachPendingForClose(record);
+        else this.cancelUnlaunched(record, true);
+        continue;
+      }
+      const current = this.states.get(promptIdentityKey).get(record.id);
+      if (current?.phase !== 'pending' || current.currentRequest !== identity.currentRequest) continue;
+      record.handle = this.createHandle(record);
       this.pending.push(record);
       this.recoveryPendingIds.add(record.id);
       liveIds.add(record.id);
@@ -2123,7 +2144,7 @@ export class AgentPromptService implements IAgentPromptService {
   private syncRecoveryHold(): void {
     this.syncEditHold();
     if (!this.recoveryHold) return;
-    if (this.recoveryQueueCount() === 0) this.recoveryHold = false;
+    if (this.recoveryQueueCount() === 0 && this.recoveryFlight === undefined) this.recoveryHold = false;
     this.publishQueueHoldChanged();
   }
 
@@ -2175,6 +2196,7 @@ export class AgentPromptService implements IAgentPromptService {
       this.abort(active.id, reason);
       await active.turn.result;
     }
+    await this.recoveryFlight;
   }
 
   async inject(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined> {

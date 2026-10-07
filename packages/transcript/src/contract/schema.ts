@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { contentWindowSchema } from './content';
 import { textPresentationSchema } from './presentation';
+import { transcriptReadSchema } from './read';
 
 export const turnIdSchema = z.string().min(1);
 export const stepIdSchema = z.string().min(1);
@@ -809,6 +810,7 @@ export const transcriptResponseSchema = z.object({
   pending_interactions: z.array(z.string()),
   cursor: transcriptCursorSchema.optional(),
   coverage: transcriptCoverageSchema,
+  read: transcriptReadSchema.optional(),
 });
 export type TranscriptResponse = z.infer<typeof transcriptResponseSchema>;
 
@@ -825,6 +827,7 @@ export const transcriptOpsCatchupResponseSchema = z.object({
   through_seq: transcriptSeqSchema,
   complete: z.boolean(),
   has_more: z.boolean().optional(),
+  read: transcriptReadSchema.optional(),
 });
 export type TranscriptOpsCatchupResponse = z.infer<typeof transcriptOpsCatchupResponseSchema>;
 
@@ -923,18 +926,21 @@ export const transcriptDetailResponseSchema = z.discriminatedUnion('kind', [
     agent_id: agentIdSchema,
     kind: z.literal('task'),
     task: transcriptTaskSchema,
+    read: transcriptReadSchema.optional(),
   }),
   z.object({
     session_id: z.string().min(1),
     agent_id: agentIdSchema,
     kind: z.literal('attachment'),
     attachment: attachmentSchema,
+    read: transcriptReadSchema.optional(),
   }),
   z.object({
     session_id: z.string().min(1),
     agent_id: agentIdSchema,
     kind: z.literal('prompt'),
     prompt: transcriptPromptSchema,
+    read: transcriptReadSchema.optional(),
   }),
   z.object({
     session_id: z.string().min(1),
@@ -945,6 +951,7 @@ export const transcriptDetailResponseSchema = z.discriminatedUnion('kind', [
       z.object({ status: z.literal('preparing') }),
       z.object({ status: z.literal('not_found') }),
     ]),
+    read: transcriptReadSchema.optional(),
   }),
 ]);
 
@@ -971,6 +978,7 @@ const transcriptDetailListBaseSchema = z.object({
   has_more: z.boolean(),
   next_cursor: z.string().min(1).optional(),
   total: z.number().int().nonnegative().optional(),
+  read: transcriptReadSchema.optional(),
 });
 
 export const transcriptDetailListResponseSchema = z.discriminatedUnion('kind', [
@@ -990,6 +998,7 @@ export const transcriptResetPayloadSchema = z.object({
   snapshot: agentTranscriptSnapshotSchema,
   grade: z.enum(['turn', 'block', 'delta']),
   coverage: transcriptCoverageSchema,
+  read: transcriptReadSchema.optional(),
   cursor: transcriptCursorSchema,
 });
 

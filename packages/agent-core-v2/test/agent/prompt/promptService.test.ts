@@ -1036,6 +1036,91 @@ describe('AgentPromptService', () => {
     await active.completion;
   });
 
+  it('holds recovered entries while a later blob hydration is pending', async () => {
+    const { prompt, dispatcher, loop, target } = harness({ manualTurnResult: true });
+    const bytes = await new Jimp({ width: 2, height: 2, color: 0xff0000ff }).getBuffer('image/png');
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    vi.spyOn(target.accessor.get(IBlobStore), 'get').mockImplementation(async () => {
+      entered.resolve();
+      await release.promise;
+      return bytes;
+    });
+    const entryFor = (id: string, content: ContentPart[], queueIndex: number): PromptEnqueuedPayload => ({
+      schemaVersion: 1, promptId: id, userMessageId: `${id}-message`,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      message: { ...message(id), content },
+      alreadyMaterialized: false, appendTiming: 'agent_idle', revision: 0, queueIndex,
+    });
+    await dispatcher.dispatch(new PromptEnqueued(entryFor('recovered-a', [{ type: 'text', text: 'first' }], 0)));
+    await dispatcher.dispatch(new PromptEnqueued(entryFor('recovered-b', [{ type: 'image_url', imageUrl: { url: `blobref:main/${'a'.repeat(64)}` } }], 1)));
+    const active = await prompt.enqueue({ id: 'runtime-active', message: message('active') });
+    await active.launched;
+    const restore = dispatcher.hooks.onDidRestore.run({});
+    try {
+      await entered.promise;
+      loop.settleActive();
+      await active.completion;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(loop.launches).toEqual([0]);
+      expect(prompt.list().pending.map((item) => item.id)).toEqual(['recovered-a']);
+      expect(prompt.list().hold).toEqual({ reason: 'recovery', count: 1 });
+    } finally {
+      release.resolve();
+      await restore;
+    }
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['recovered-a', 'recovered-b']);
+    expect(prompt.list().hold).toEqual({ reason: 'recovery', count: 2 });
+    expect(loop.launches).toEqual([0]);
+    prompt.resumeRecoveredQueue();
+    await vi.waitFor(() => expect(loop.launches).toEqual([0, 1]));
+    expect(prompt.list().active?.id).toBe('recovered-a');
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['recovered-b']);
+    prompt.abort('recovered-b');
+    loop.settleActive();
+  });
+
+  it.each(['cancel', 'preserve-pending'] as const)('settles recovery hydration before close completes in %s mode', async (mode) => {
+    const { prompt, dispatcher, loop, target } = harness({ manualTurnResult: true });
+    const bytes = await new Jimp({ width: 2, height: 2, color: 0xff0000ff }).getBuffer('image/png');
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    vi.spyOn(target.accessor.get(IBlobStore), 'get').mockImplementation(async () => {
+      entered.resolve();
+      await release.promise;
+      return bytes;
+    });
+    const entryFor = (id: string, content: ContentPart[], queueIndex: number): PromptEnqueuedPayload => ({
+      schemaVersion: 1, promptId: id, userMessageId: `${id}-message`,
+      createdAt: '2026-01-01T00:00:00.000Z', message: { ...message(id), content },
+      alreadyMaterialized: false, appendTiming: 'agent_idle', revision: 0, queueIndex,
+    });
+    await dispatcher.dispatch(new PromptEnqueued(entryFor('closing-a', [{ type: 'text', text: 'first' }], 0)));
+    await dispatcher.dispatch(new PromptEnqueued(entryFor('closing-b', [{ type: 'image_url', imageUrl: { url: `blobref:main/${'a'.repeat(64)}` } }], 1)));
+    const active = await prompt.enqueue({ id: 'runtime-active', message: message('active') });
+    await active.launched;
+    const restore = dispatcher.hooks.onDidRestore.run({});
+    await entered.promise;
+    let closed = false;
+    const closing = prompt.drain(new Error('test close'), mode).then(() => { closed = true; });
+    loop.settleActive();
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(closed).toBe(false);
+      expect(loop.launches).toEqual([0]);
+    } finally {
+      release.resolve();
+      await Promise.all([restore, closing]);
+    }
+    expect(prompt.list().pending).toEqual([]);
+    for (const id of ['closing-a', 'closing-b']) {
+      expect(prompt.lookup(id)).toMatchObject(mode === 'preserve-pending'
+        ? { phase: 'pending' }
+        : { phase: 'terminal', terminal: { state: 'cancelled' } });
+    }
+    expect(loop.launches).toEqual([0]);
+  });
+
   it('does not revive launched, terminal, or unknown canonical queue entries', async () => {
     const { prompt, dispatcher, states } = harness({ manualTurnResult: true });
     const entryFor = (promptId: string): PromptEnqueuedPayload => ({

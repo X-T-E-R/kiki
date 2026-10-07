@@ -16,7 +16,7 @@ import type {
   ToolInputDisplay,
   UsageStatus,
 } from '@kiki/protocol';
-import type { TranscriptGlobalCoverage, TranscriptTodoNotes, TranscriptTodoNotesMeta, TranscriptTodoNotesStatus } from '@kiki/transcript';
+import type { TranscriptGlobalCoverage, TranscriptRead, TranscriptTodoNotes, TranscriptTodoNotesMeta, TranscriptTodoNotesStatus } from '@kiki/transcript';
 
 import type { I18nKey, I18nParams } from '../../i18n/locale';
 import type { MediaRef } from '../../composer/media';
@@ -667,6 +667,7 @@ export interface SessionViewState {
   readonly loadError: string | undefined;
   readonly hasMoreHistory: boolean;
   readonly historyCoverageKind: 'full' | 'tail' | 'unknown' | undefined;
+  readonly historyRead: TranscriptRead | undefined;
   readonly oldestMessageId: string | undefined;
   readonly loadingOlder: boolean;
   readonly fetchedOlder: boolean;
@@ -721,6 +722,7 @@ export function createViewState(sessionId: string): SessionViewState {
     loadError: undefined,
     hasMoreHistory: false,
     historyCoverageKind: undefined,
+    historyRead: undefined,
     oldestMessageId: undefined,
     loadingOlder: false,
     fetchedOlder: false,

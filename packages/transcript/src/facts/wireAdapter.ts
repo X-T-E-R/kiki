@@ -477,7 +477,8 @@ export class TranscriptWireAdapter {
   }
 
   private promptRecord(record: TranscriptWireRecord): TranscriptOperation[] {
-    const promptId = stringOf(record['promptId']) ?? stringOf(record['activePromptId']);
+    const terminal = objectOf(record['terminal']);
+    const promptId = stringOf(record['promptId']) ?? stringOf(record['activePromptId']) ?? stringOf(terminal?.['promptId']);
     if (promptId === undefined) return [];
     if (record.type === 'prompt.enqueued') {
       const message = objectOf(record['message']);
@@ -550,6 +551,23 @@ export class TranscriptWireAdapter {
           status: 'running',
           queuePosition: undefined,
           revision: numberOf(record['revision']) ?? previous?.revision,
+        }),
+      ];
+    }
+    if (record.type === 'prompt.outcome_committed') {
+      const terminal = objectOf(record['terminal']);
+      const terminalPromptId = stringOf(terminal?.['promptId']);
+      if (terminalPromptId === undefined) return [];
+      const state = stringOf(terminal?.['state']);
+      const status: TranscriptPrompt['status'] = state === 'cancelled' ? 'aborted'
+        : state === 'failed' ? 'failed' : 'completed';
+      const prior = this.#prompts.get(terminalPromptId);
+      return [
+        this.storePrompt({
+          ...promptOrMinimal(prior, terminalPromptId, record),
+          status,
+          finishedAt: isoOf(record.time) ?? previous?.finishedAt,
+          abortedBeforeStart: status === 'aborted' ? previous?.abortedBeforeStart : undefined,
         }),
       ];
     }
@@ -2382,6 +2400,7 @@ function durableRecord(type: string): boolean {
     type === 'prompt.timing_changed' ||
     type === 'prompt.moved' ||
     type === 'prompt.launch_committed' ||
+    type === 'prompt.outcome_committed' ||
     type === 'prompt.completed' ||
     type === 'prompt.aborted' ||
     type === 'prompt.steered' ||

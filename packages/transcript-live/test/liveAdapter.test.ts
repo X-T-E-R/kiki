@@ -1983,6 +1983,13 @@ describe('AgentTranscriptLiveAdapter', () => {
     });
   });
 
+  it('settles prompts from the durable outcome receipt', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    tx.apply(liveAdapter.map(ev({ type: 'prompt.outcome_committed', time: Date.parse('2026-01-01T00:00:01.000Z'), terminal: { promptId: 'p-outcome', state: 'cancelled' } })));
+    expect(tx.getPrompt('p-outcome')).toMatchObject({ status: 'aborted', finishedAt: '2026-01-01T00:00:01.000Z' });
+  });
+
   it('projects prompt moves as queue positions and preserves before-start aborts', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');

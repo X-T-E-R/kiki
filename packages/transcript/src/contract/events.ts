@@ -6,6 +6,7 @@ import type {
   TranscriptOperation,
 } from '../ops/operation';
 import { transcriptOpsPayloadSchema, transcriptResetPayloadSchema } from './schema';
+import type { TranscriptRead } from './read';
 
 export const transcriptResetEventSchema = transcriptResetPayloadSchema.extend({
   type: z.literal('transcript.reset'),
@@ -38,6 +39,7 @@ export interface TranscriptResetEvent {
   readonly grade: 'turn' | 'block' | 'delta';
   readonly coverage: TranscriptCoverage;
   readonly cursor: TranscriptCursor;
+  readonly read?: TranscriptRead;
 }
 
 export interface TranscriptOpsEvent {

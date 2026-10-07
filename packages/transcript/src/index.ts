@@ -32,3 +32,4 @@ export * from './contract/events';
 export * from './contract/mediaRef';
 export * from './contract/origin';
 export * from './contract/presentation';
+export * from './contract/read';

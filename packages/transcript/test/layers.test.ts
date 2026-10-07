@@ -683,6 +683,15 @@ describe('TranscriptWireAdapter', () => {
     ]);
   });
 
+  it('replays a durable prompt outcome without requiring a legacy completion record', () => {
+    const cold = replay([
+      { type: 'prompt.enqueued', promptId: 'p-outcome', userMessageId: 'm-outcome', message: { id: 'm-outcome', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'hello' }] }, time: 1_000 },
+      { type: 'prompt.launch_committed', promptId: 'p-outcome', time: 1_100 },
+      { type: 'prompt.outcome_committed', terminal: { promptId: 'p-outcome', turnId: 2, state: 'failed', result: { type: 'failed', steps: 1, error: { name: 'Error', message: 'failed' } } }, time: 1_200 },
+    ]);
+    expect(cold.getPrompt('p-outcome')).toMatchObject({ status: 'failed', finishedAt: new Date(1_200).toISOString(), userMessageId: 'm-outcome' });
+  });
+
   it('carries validated text presentation through queue replacement, delivery, steer, and cold replay', () => {
     const selection = { spans: [{ start: 0, end: 5, kind: 'selection' as const, quote: 'hello' }] };
     const replacement = { spans: [{ start: 0, end: 7, kind: 'source' as const, quote: 'replaced' }] };

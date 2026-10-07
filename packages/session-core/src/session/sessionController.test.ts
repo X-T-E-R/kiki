@@ -2284,20 +2284,25 @@ describe('SessionController transcript authority', () => {
     const older = { kind: 'turn' as const, turnId: 't1', ordinal: 1, state: 'completed' as const,
       origin: { kind: 'user' as const }, prompt: 'older', steps: [] };
     controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [newer] }), 1, true));
-    client.getAgentTranscript.mockResolvedValueOnce({
-      agent_id: 'main', items: [older], has_more: false,
-      coverage: { kind: 'unknown', hasMoreOlder: true },
-    });
+    client.getAgentTranscript
+      .mockResolvedValueOnce({
+        agent_id: 'main', items: [older], has_more: false,
+        coverage: { kind: 'unknown', hasMoreOlder: true },
+      })
+      .mockResolvedValueOnce({
+        agent_id: 'main', items: [], has_more: false,
+        coverage: { kind: 'full', hasMoreOlder: false },
+      });
     await expect(controller.loadOlderMessages()).resolves.toBe(true);
-    expect(controller.getState()).toMatchObject({ historyCoverageKind: 'unknown', hasMoreHistory: false });
+    expect(controller.getState()).toMatchObject({ historyCoverageKind: 'unknown', hasMoreHistory: true });
     await expect(controller.loadOlderMessages()).resolves.toBe(false);
-    expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
+    expect(client.getAgentTranscript).toHaveBeenCalledTimes(2);
     const unknownReset = resetEvent('main', emptySnapshot({ items: [] }), 2, true);
     if (unknownReset.type !== 'transcript.reset') throw new Error('Expected transcript reset');
     const beforeResetVersion = controller.getState().transcriptResetVersion;
     controller.handleTranscript({ ...unknownReset, coverage: { kind: 'unknown', hasMoreOlder: true } });
     expect(controller.getState()).toMatchObject({
-      historyCoverageKind: 'unknown', hasMoreHistory: false, transcriptResetVersion: beforeResetVersion,
+      historyCoverageKind: 'unknown', hasMoreHistory: true, transcriptResetVersion: beforeResetVersion,
     });
     expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'older')).toBe(true);
     controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [newer] }), 3, true));

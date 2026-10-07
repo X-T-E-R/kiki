@@ -21,6 +21,8 @@ import type { TurnEnded } from '@kiki/agent-core-v2/agent/loop/turnOps';
 import type { AgentErrorEvent } from '@kiki/agent-core-v2/agent/mcp/mcpEvents';
 import type { PluginCommandActivated } from '@kiki/agent-core-v2/agent/pluginCommand/pluginCommand';
 import type { WarningIssued } from '@kiki/agent-core-v2/agent/profile/profileOps';
+import type { PromptTerminalResult } from '@kiki/agent-core-v2/agent/prompt/prompt';
+import type { PromptOutcomeCommitted } from '@kiki/agent-core-v2/agent/prompt/promptReplay';
 import type {
   PromptAborted,
   PromptCompleted,
@@ -109,6 +111,7 @@ type PromptSubmittedEvent = { readonly type: 'prompt.submitted' } & PromptSubmit
 type PromptStartedEvent = { readonly type: 'prompt.started' } & PromptStarted;
 type PromptCompletedEvent = { readonly type: 'prompt.completed' } & PromptCompleted;
 type PromptAbortedEvent = { readonly type: 'prompt.aborted' } & PromptAborted;
+type PromptOutcomeCommittedEvent = { readonly type: 'prompt.outcome_committed'; readonly terminal: PromptTerminalResult; readonly time?: number } & PromptOutcomeCommitted;
 type PromptSteeredEvent = { readonly type: 'prompt.steered' } & PromptSteered;
 type PromptQueuedEvent = { readonly type: 'prompt.queued' } & PromptQueued & PromptSchedulingFields;
 type PromptQueueHoldChangedEvent = {
@@ -165,6 +168,7 @@ export type LiveAdapterBusEvent =
   | PromptStartedEvent
   | PromptCompletedEvent
   | PromptAbortedEvent
+  | PromptOutcomeCommittedEvent
   | PromptSteeredEvent
   | PromptQueuedEvent
   | PromptQueueHoldChangedEvent
@@ -391,6 +395,8 @@ export class AgentTranscriptLiveAdapter {
         return this.onPromptTimingChanged(event);
       case 'prompt.completed':
         return this.onPromptCompleted(event);
+      case 'prompt.outcome_committed':
+        return this.onPromptOutcomeCommitted(event);
       case 'prompt.aborted':
         return this.onPromptAborted(event);
       case 'prompt.steered':
@@ -1671,6 +1677,25 @@ export class AgentTranscriptLiveAdapter {
       content: prev?.content,
       createdAt: prev?.createdAt ?? event.finishedAt,
       finishedAt: event.finishedAt,
+      steeredAt: prev?.steeredAt,
+      appendTiming: prev?.appendTiming,
+      revision: prev?.revision,
+    }));
+    return [{ op: 'prompt.upsert', prompt }];
+  }
+
+  private onPromptOutcomeCommitted(event: PromptOutcomeCommittedEvent): TranscriptOperation[] {
+    const terminal = event.terminal;
+    const status: TranscriptPrompt['status'] = terminal.state === 'cancelled' ? 'aborted' : terminal.state;
+    const finishedAt = epochMsToIso(event.time ?? Date.now());
+    const prompt = this.upsertPrompt(terminal.promptId, (prev) => ({
+      promptId: terminal.promptId,
+      status,
+      userMessageId: prev?.userMessageId,
+      content: prev?.content,
+      createdAt: prev?.createdAt ?? finishedAt,
+      finishedAt,
+      abortedBeforeStart: status === 'aborted' ? prev?.abortedBeforeStart : undefined,
       steeredAt: prev?.steeredAt,
       appendTiming: prev?.appendTiming,
       revision: prev?.revision,
