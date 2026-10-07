@@ -7,7 +7,7 @@ export const sessionIdleEvictionFlag: FlagDefinitionInput = {
   title: 'session idle eviction',
   description: 'Unload eligible idle session runtimes while preserving their durable history.',
   env: 'KIKI_EXPERIMENTAL_SESSION_IDLE_EVICTION',
-  default: false,
+  default: true,
   surface: 'core',
 };
 

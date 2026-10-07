@@ -335,7 +335,7 @@ Frontmatter 字段是封闭的：出现 Kiki 不认识的字段时文件加载�
 
 ### 具名 profile route（实验功能）
 
-具名 route 在现有 Agent 上增加专用运行方式，但不创建新的权限身份。启动时在 `config.toml` 中设置 `[experimental] agent-profile-routes = true`，或设置 `KIKI_EXPERIMENTAL_AGENT_PROFILE_ROUTES=1`。
+具名 route 在现有 Agent 上增加专用运行方式，但不创建新的权限身份。发现功能默认开启。要为新派遣关闭它，在 `config.toml` 中设置 `[experimental] agent-profile-routes = false`，或设置 `KIKI_EXPERIMENTAL_AGENT_PROFILE_ROUTES=0`，然后重启服务器。
 
 基础 profile 仍放在 `agents/<role>.md`，route 放在 `agents/.routes/<role>/<route>.md`，规范 id 为 `<role>.<route>`，route 段使用 kebab-case。例如 `agents/.routes/reviewer/ui-k3.md` 定义 `reviewer.ui-k3`：
 

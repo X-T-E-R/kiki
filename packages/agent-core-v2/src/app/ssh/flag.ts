@@ -7,6 +7,6 @@ registerFlagDefinition({
   title: 'native SSH hosts',
   description: 'Use SSH hosts from local or remote workspaces.',
   env: 'KIKI_EXPERIMENTAL_NATIVE_SSH',
-  default: false,
+  default: true,
   surface: 'core',
 });

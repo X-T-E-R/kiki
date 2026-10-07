@@ -2240,6 +2240,11 @@ export const EXPERIMENTAL_FLAG_HOMES: readonly ExperimentalFlagHome[] = [
   { id: 'native_browser', section: 'developer', labelKey: 'st.exp.nativeBrowser.name', descriptionKey: 'st.exp.nativeBrowser.desc', effect: 'newSessions' },
   { id: 'persistence_minidb_readmodel', section: 'developer', labelKey: 'st.exp.readModel.name', descriptionKey: 'st.exp.readModel.desc', effect: 'now' },
   { id: 'local_session_resume', section: 'sessions', labelKey: 'st.exp.localSessionResume.name', descriptionKey: 'st.exp.localSessionResume.desc', effect: 'now' },
+  { id: 'recipes', section: 'ai', labelKey: 'st.exp.recipes.name', descriptionKey: 'st.exp.recipes.desc', effect: 'now' },
+  { id: 'plugin_workspace_usage', section: 'plugins', labelKey: 'st.exp.pluginWorkspaceUsage.name', descriptionKey: 'st.exp.pluginWorkspaceUsage.desc', effect: 'now' },
+  { id: 'plugin_app_lifecycle', section: 'plugins', labelKey: 'st.exp.pluginAppLifecycle.name', descriptionKey: 'st.exp.pluginAppLifecycle.desc', effect: 'restart' },
+  { id: 'work_presets', section: 'spaces', labelKey: 'st.exp.workPresets.name', descriptionKey: 'st.exp.workPresets.desc', effect: 'now' },
+  { id: 'external_clients', section: 'external-clients', labelKey: 'st.exp.externalClients.name', descriptionKey: 'st.exp.externalClients.desc', effect: 'restart' },
 ];
 
 /** Leaf that hosts flags nobody else claims (server-specific extensions). */

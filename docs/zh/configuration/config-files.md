@@ -741,15 +741,15 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 ## `experimental`
 
-`experimental` 以 flag id 为 key，存放实验功能 flag 的持久化覆盖。每个 flag 的优先级从高到低：对应的 `KIKI_EXPERIMENTAL_<NAME>` 环境变量、本节、`KIKI_EXPERIMENTAL_FLAG` 总开关，最后是 flag 的内置默认值。
+`experimental` 以 flag id 为 key，存放内置功能的发布与回退开关覆盖。内置功能默认可用；显式设为 `false` 仍会关闭。每个 flag 的优先级从高到低：对应的 `KIKI_EXPERIMENTAL_<NAME>` 环境变量、本节、真值的 `KIKI_EXPERIMENTAL_FLAG` 总开关，最后是 flag 的内置默认值。总开关为假值时视为未设置，不会全局关闭功能。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `auto_session_title` | `boolean` | `true` | 是否自动生成会话标题；见 [`session_title`](#session-title) |
-| `native_browser` | `boolean` | `false` | 经由受管浏览器后端运行已保存的浏览器连接；未开启时连接会被拒绝，Agent 也拿不到[浏览器工具](../reference/tools.md#浏览器类) |
+| `native_browser` | `boolean` | `true` | 经由受管浏览器后端运行已保存的浏览器连接；未开启时连接会被拒绝，Agent 也拿不到[浏览器工具](../reference/tools.md#浏览器类) |
 | `local_session_resume` | `boolean` | `true` | 接续本机已有的 Claude Code 和 Codex 会话；在「设置 → 会话」管理，每次新接续时读取 |
 
-任何已注册的 flag 都可以按 id 用布尔值在这里覆盖。带有自己控件的 flag 在对应功能页开关；没有的会出现在 **Settings → 开发者 → 实验性**，该页按 id 列出服务器上报的 flag。
+任何已注册的 flag 都可以按 id 用布尔值在这里覆盖。每个内置开关都在相关设置页提供名称与说明；**设置 → 实验性**链接到对应页面，并显示更改何时生效。未知的扩展开关按 id 显示在**设置 → 开发者**中。功能可用不代表会安装插件、授权脚本或连接未配置的外部目的端。
 
 ## `browser_control`
 

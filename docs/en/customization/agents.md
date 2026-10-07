@@ -335,7 +335,7 @@ Frontmatter keys are closed: an unrecognized field makes the file fail to load w
 
 ### Named profile routes (experimental)
 
-A named route specializes an existing agent without creating a new permission identity. Enable discovery at startup with `[experimental] agent-profile-routes = true` in `config.toml`, or set `KIKI_EXPERIMENTAL_AGENT_PROFILE_ROUTES=1`.
+A named route specializes an existing agent without creating a new permission identity. Discovery is on by default. To turn it off for new dispatches, set `[experimental] agent-profile-routes = false` in `config.toml`, or `KIKI_EXPERIMENTAL_AGENT_PROFILE_ROUTES=0`, and restart the server.
 
 Keep the base profile at `agents/<role>.md` and put routes under `agents/.routes/<role>/<route>.md`, which gives the canonical id `<role>.<route>`. Route segments are kebab-case. For example, `agents/.routes/reviewer/ui-k3.md` defines `reviewer.ui-k3`:
 

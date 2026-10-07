@@ -5,7 +5,7 @@ export const imageFormatConversionFlag: FlagDefinitionInput = {
   title: 'Image format conversion',
   description: 'Convert unsupported image formats before model requests.',
   env: 'KIKI_EXPERIMENTAL_IMAGE_FORMAT_CONVERSION',
-  default: false,
+  default: true,
   surface: 'both',
 };
 

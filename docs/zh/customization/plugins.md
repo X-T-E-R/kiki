@@ -78,7 +78,7 @@ Plugin 的大部分内容是声明式的：Skills、Agent、提示词文本、�
 
 ### 为工作区选择插件（实验功能）
 
-GUI 右栏可以选择一个工作区的会话使用哪些已安装插件，不影响同一空间中其他工作区的选择。启动服务器时设置 `KIKI_EXPERIMENTAL_PLUGIN_WORKSPACE_USAGE=1` 即可开启。面板显示服务器从当前会话解析出的工作区；这不是只针对这段对话或某个 profile 的开关。
+GUI 右栏可以选择一个工作区的会话使用哪些已安装插件，不影响同一空间中其他工作区的选择。这项能力默认可用；显式设置 `[experimental] plugin_workspace_usage = false` 或 `KIKI_EXPERIMENTAL_PLUGIN_WORKSPACE_USAGE=0` 仍可关闭。面板显示服务器从当前会话解析出的工作区；这不是只针对这段对话或某个 profile 的开关。
 
 在这里关闭插件，会从本工作区移除其工具、Skills、命令、插件 Agent、hooks 和工作区面板。新调用不能借旧的工具或面板缓存继续使用它，已经获准开始的调用可以完成。插件指令在下一安全步骤或 Agent 空闲时刷新，因此「正在应用」表示选择已保存，不代表当前请求已经采用它。过去的消息保持原样。
 
@@ -135,15 +135,9 @@ Auto 默认本地处理，不上传也不做 OCR。空内容或只有图像的�
 
 统一包需要支持媒体来源分组及脚本来源管理的 Kiki 宿主。如果当前版本没有**添加脚本来源**操作，或报告未知 manifest 字段，请先更新宿主。包声明的插件引擎要求 `>=0.4.0` 是协议版本，不是 CLI 发行版本号；具体宿主接口见[插件 README](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media#configure-a-source)。
 
-### 开启生成
+### 发起生成
 
-发起新的生成是实验性功能，**默认关闭**。本页其它部分——安装插件、填写来源设置、选择默认项、查看历史生成——都照常可用。
-
-按 Kiki 读取的顺序，有三种开启方式：
-
-- 在环境变量里设置 `KIKI_EXPERIMENTAL_MEDIA_GENERATION=1`。
-- 在 `config.toml` 的 `[experimental]` 下写 `media_generation = true`。
-- 在**设置 → 实验**里打开**媒体生成插件**。
+媒体生成没有实验总开关。安装并启用插件，配置一个已启用的来源，再按需发起生成。打开列表或保存设置不会开始任务；来源的访问要求、费用和脚本授权仍然适用。
 
 ### 列表
 
@@ -616,7 +610,7 @@ plugin hooks 与全局 hooks 机制相同——事件列表、stdin JSON 载荷�
 
 Kiki 可以把另一个工具的文字对话导入为**可以接着聊的 Kiki 会话**，或只读归档。Claude Code、Codex、Pi、Grok Build、OpenCode 导出文件以及你自己的 JSON／脚本都不需要安装、信任或启用 plugin。导入在 Kiki 服务端运行，不需要模型，也不会改动来源文件。
 
-导入默认开启，但启动时不会扫描任何目录。需要关闭时用 `KIKI_EXPERIMENTAL_PLUGIN_IMPORT=false` 启动 Kiki，或在 `config.toml` 的 [`[experimental]`](../configuration/config-files.md#experimental) 下设置 `plugin_import = false`。
+历史导入无需实验开关即可使用。启动时不会扫描任何目录；选择来源、预览和确认导入都由你显式发起。
 
 ### 导入一段对话
 

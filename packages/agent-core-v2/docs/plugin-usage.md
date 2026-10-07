@@ -1,6 +1,6 @@
 # Workspace plugin usage
 
-Plugin installation, consent and the home master switch remain App-owned. `IPluginUsageService` adds a default-off workspace use policy; it does not create another DI scope, an installation identity or a per-session switch. Enable `plugin_workspace_usage` through `IFlagService` (`KIKI_EXPERIMENTAL_PLUGIN_WORKSPACE_USAGE=1`).
+Plugin installation, consent and the home master switch remain App-owned. `IPluginUsageService` adds a workspace use policy available by default; it does not create another DI scope, an installation identity or a per-session switch. The `plugin_workspace_usage` rollback flag preserves an explicit config `false` or `KIKI_EXPERIMENTAL_PLUGIN_WORKSPACE_USAGE=0`.
 
 ## Identity and effective state
 

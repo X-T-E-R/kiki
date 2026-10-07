@@ -72,7 +72,8 @@ function ExperimentalRow({ id, override, effective }: { id: string; override: bo
       const echoed = await client.patchConfig({ experimental, replace_domains: ['experimental'] });
       queryClient.setQueryData<KikiConfigResponse>(['config'], mergeConfigEcho(latest, echoed));
       await queryClient.invalidateQueries({ queryKey: ['meta'] });
-      if (home?.effect === 'restart' && next === 'on') markRestartRequired([id]);
+      const resolved = queryClient.getQueryData<Awaited<ReturnType<typeof client.meta>>>(['meta']);
+      if (home?.effect === 'restart' && (next === 'on' || (next === 'default' && resolved?.experimental_flags?.[id] === true))) markRestartRequired([id]);
       ping();
     } catch (cause) {
       setError(errorText(locale, cause));

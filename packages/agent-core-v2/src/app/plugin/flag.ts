@@ -5,7 +5,7 @@ export const pluginAppLifecycleFlag: FlagDefinitionInput = {
   title: 'App plugin lifecycle',
   description: 'Start explicitly App-activated plugins with Kiki and stop their owned services on shutdown.',
   env: 'KIKI_EXPERIMENTAL_PLUGIN_APP_LIFECYCLE',
-  default: false,
+  default: true,
   surface: 'both',
 };
 

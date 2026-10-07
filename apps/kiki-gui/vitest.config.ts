@@ -23,7 +23,21 @@ const protocolZod = createRequire(import.meta.url).resolve('zod', {
 
 export default defineConfig({
   plugins: [pdfAssetsPlugin()],
-  resolve: { alias: { zod: protocolZod } },
+  resolve: {
+    alias: {
+      zod: protocolZod,
+      '@kiki/protocol': fileURLToPath(new URL('../../packages/protocol/src/index.ts', import.meta.url)),
+      '@kiki/plugin-sdk/media': fileURLToPath(new URL('../../packages/plugin-sdk/src/media.ts', import.meta.url)),
+      '@kiki/plugin-sdk/media-download': fileURLToPath(new URL('../../packages/plugin-sdk/src/media-download.ts', import.meta.url)),
+      '@kiki/plugin-sdk/session-import': fileURLToPath(new URL('../../packages/plugin-sdk/src/session-import.ts', import.meta.url)),
+      '@kiki/plugin-sdk': fileURLToPath(new URL('../../packages/plugin-sdk/src/index.ts', import.meta.url)),
+    },
+  },
+  server: {
+    deps: {
+      inline: ['@kiki/protocol', '@kiki/plugin-sdk'],
+    },
+  },
   test: {
     include: ['src/**/*.{test,integration,e2e}.ts', 'src/**/*.{test,integration,e2e}.tsx'],
   },

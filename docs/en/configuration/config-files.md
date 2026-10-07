@@ -755,15 +755,15 @@ Automatic title generation is on by default. Turn it off in the GUI, with `auto_
 
 ## `experimental`
 
-`experimental` stores persistent overrides for experimental-feature flags, keyed by flag id. Each flag's precedence, highest first: its `KIKI_EXPERIMENTAL_<NAME>` environment variable, this section, the `KIKI_EXPERIMENTAL_FLAG` master switch, then the flag's built-in default.
+`experimental` stores persistent overrides for built-in rollout and rollback flags, keyed by flag id. Built-in features are available by default; an explicit `false` remains off. Each flag's precedence, highest first: its `KIKI_EXPERIMENTAL_<NAME>` environment variable, this section, a truthy `KIKI_EXPERIMENTAL_FLAG` master switch, then the flag's built-in default. A falsy master switch is treated as unset, not as a global off command.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `auto_session_title` | `boolean` | `true` | Whether an AI session title is generated automatically; see [`session_title`](#session-title) |
-| `native_browser` | `boolean` | `false` | Run saved browser connections through the managed browser backend; without it a connection cannot connect and agents get no [browser tools](../reference/tools.md#browser-tools) |
+| `native_browser` | `boolean` | `true` | Run saved browser connections through the managed browser backend; without it a connection cannot connect and agents get no [browser tools](../reference/tools.md#browser-tools) |
 | `local_session_resume` | `boolean` | `true` | Continue existing local Claude Code and Codex sessions; managed under Settings → Sessions and checked on each new attachment |
 
-Any registered flag can be overridden here by id, with a boolean value. A flag that has its own control on a feature page is switched there; a flag that does not appears under **Settings → Developer → Experimental**, which lists server-reported flags by id.
+Any registered flag can be overridden here by id, with a boolean value. Every built-in switch is named and explained on its related Settings page; **Settings → Experimental** links to those homes and shows when a change applies. Unknown extension flags appear under **Settings → Developer** by id. Availability does not install a plugin, authorize a script or connect an unconfigured external destination.
 
 ## `browser_control`
 

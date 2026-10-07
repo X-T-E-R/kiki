@@ -19,7 +19,7 @@ export class WorkPresetManager {
     private readonly documents: Pick<IAtomicDocumentStore, 'get' | 'set'>,
     private readonly plugins: Pick<IPluginService, 'listPlugins' | 'previewPlugin' | 'installPlugin' | 'setPluginEnabled'>,
     private readonly host: Pick<IPluginHostService, 'installPrerequisite'>,
-    private readonly sources: () => Promise<ReadonlyMap<string, PresetPluginSource>>,
+    private readonly sources: (published?: boolean) => Promise<ReadonlyMap<string, PresetPluginSource>>,
     readonly homeId: string,
   ) {}
 
@@ -42,7 +42,7 @@ export class WorkPresetManager {
   enable(id: string, prerequisites: boolean): Promise<WorkPresetMutationResponse> {
     return this.serialize(async () => {
       const definition = this.definition(id);
-      const sources = await this.sources();
+      const sources = await this.sources(true);
       const installed = new Map((await this.plugins.listPlugins()).map((plugin) => [plugin.id, plugin]));
       const completed: string[] = [];
       const failures: WorkPresetMutationResponse['failures'] = [];

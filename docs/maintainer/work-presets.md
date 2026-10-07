@@ -1,12 +1,12 @@
 # Work modes and document preview
 
-Work modes add a window-local entry and view to an existing Kiki space. They do not create another session authority or change an existing session's profile, model, permissions, runtime, or workspace binding. The feature is experimental and defaults off; enable `KIKI_EXPERIMENTAL_WORK_PRESETS=true` in the server environment or set `[experimental] work_presets = true`.
+Work modes add a window-local entry and view to an existing Kiki space. They do not create another session authority or change an existing session's profile, model, permissions, runtime, or workspace binding. The mode entry is available by default; explicit `KIKI_EXPERIMENTAL_WORK_PRESETS=false` or `[experimental] work_presets = false` still disables it. Availability does not install packages or prerequisites.
 
 ## Space and window ownership
 
 `GET /api/work-presets` reads the active server's home. Preferences and enabled/removed mode state use `IAtomicDocumentStore` under `work-presets/modes`. The built-in Kiki mode remains available. Work enablement explicitly previews, consents to, installs and enables the Office, Writing, Extract and optional Table checks packages. Failed packages are reported while successful items are retained for a retry. Reading, customizing, disabling or removing a mode never installs or re-enables a package. Removing Work retains shared packages, sessions and files.
 
-`KIKI_WORK_PLUGIN_ROOT` is a development source override containing directories named `kiki-office`, `kiki-writing`, `kiki-extract` and `kiki-work`. Without it, the existing default plugin catalog supplies available sources; an unpublished Table checks package remains unavailable rather than being silently substituted.
+`KIKI_WORK_PLUGIN_ROOT` is a development source override containing directories named `kiki-office`, `kiki-writing`, `kiki-extract` and `kiki-work`. Without it, background mode reads use bundled catalog metadata without a network request. Explicit enablement reads the user's configured marketplace or the published default catalog; an unavailable catalog reports a retryable failure instead of silently substituting bundled sources. An unpublished Table checks package remains unavailable. Ordinary manual marketplace browsing retains its existing published-catalog and bundled-metadata behavior.
 
 Desktop `--home <path> --preset <id>` selects one space × mode window identity. `desktop_window_mode` exposes `{presetId, windowId}` and `open_mode_window` launches a peer window without writing home settings. Native window IDs use a `w-` prefix, which the GUI's window ID validator accepts.
 

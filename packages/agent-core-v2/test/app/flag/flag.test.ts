@@ -10,7 +10,7 @@ import {
   EXPERIMENTAL_SECTION,
   IFlagService,
 } from '#/app/flag/flag';
-import { IFlagRegistry, type FlagDefinitionInput } from '#/app/flag/flagRegistry';
+import { getContributedFlags, IFlagRegistry, type FlagDefinitionInput } from '#/app/flag/flagRegistry';
 import { FlagRegistryService } from '#/app/flag/flagRegistryService';
 import { FlagService, MASTER_ENV } from '#/app/flag/flagService';
 import { ILogService } from '#/_base/log/log';
@@ -223,5 +223,25 @@ describe('FlagService', () => {
 
     expect(flags.snapshot()).toEqual({ example_flag: false });
     expect(flags.explain('obsolete_flag')).toBeUndefined();
+  });
+
+  it('resolves builtin leaf defaults through the real registry and honors explicit false', async () => {
+    await Promise.all([
+      import('#/app/browser/flag'),
+      import('#/app/ssh/flag'),
+      import('#/app/agentProfileCatalog/flag'),
+      import('#/app/plugin/flag'),
+      import('#/app/pluginUsage/flag'),
+      import('#/app/sessionManager/flag'),
+      import('#/agent/media/flag'),
+    ]);
+    const ids = ['native_browser', 'native_ssh', 'agent-profile-routes', 'plugin_app_lifecycle', 'plugin_workspace_usage', 'session_idle_eviction', 'image_format_conversion'];
+    expect(ids.every((id) => getContributedFlags().some((definition) => definition.id === id))).toBe(true);
+    const defaults = makeFlags().flags;
+    for (const id of ids) {
+      expect(defaults.explain(id), id).toMatchObject({ enabled: true, source: 'default', defaultEnabled: true });
+    }
+    const forcedOff = makeFlags({ KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'false' }).flags;
+    expect(forcedOff.explain('native_browser')).toMatchObject({ enabled: false, source: 'env', defaultEnabled: true });
   });
 });

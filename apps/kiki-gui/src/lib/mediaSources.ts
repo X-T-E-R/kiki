@@ -470,31 +470,6 @@ export function schemaOf(raw: unknown): MediaSettingSchema {
   return { schema: { properties } };
 }
 
-/**
- * Whether media *generation* is enabled on this server.
- *
- * Read from `/meta` the same way the import-history and native-SSH flags are
- * read, so there is one place a flag is looked up rather than one per feature.
- *
- * What this flag does and does not mean, read off the service rather than
- * assumed: `providers()`, `sources()`, `jobs()` and the rest of the management
- * surface are registered unconditionally, so they keep answering while this is
- * off. Only `start()` refuses. So this flag is never a reason to hide the list,
- * a source, a past job or a form — it is only the reason a *new* generation
- * cannot be started, which is what the view says when it is off.
- *
- * `undefined` means not known yet, which is not the same as off.
- */
-export const MEDIA_GENERATION_FLAG = 'media_generation';
-
-export function useMediaGenerationEnabled(client: KikiClient): { enabled: boolean | undefined; loading: boolean } {
-  const meta = useQuery({ queryKey: ['meta'], queryFn: () => client.meta(), staleTime: 15_000 });
-  return {
-    enabled: meta.data === undefined ? undefined : meta.data.experimental_flags?.[MEDIA_GENERATION_FLAG] === true,
-    loading: meta.isLoading,
-  };
-}
-
 export function useMediaJobs(client: KikiClient, sessionId: string, limit = 20) {
   const api = mediaApi(client);
   return useQuery({

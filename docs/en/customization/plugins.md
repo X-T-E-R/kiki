@@ -78,7 +78,7 @@ You are approving the source, not the exact bytes: Kiki fingerprints the plugin 
 
 ### Choose plugins for a workspace (experimental)
 
-The GUI right rail can choose which installed plugins a workspace's sessions use, independently of other workspaces in the same space. Enable `KIKI_EXPERIMENTAL_PLUGIN_WORKSPACE_USAGE=1` when starting the server. The section names the workspace resolved from the current session; it is not a switch for just that conversation or profile.
+The GUI right rail can choose which installed plugins a workspace's sessions use, independently of other workspaces in the same space. This capability is available by default; an explicit `[experimental] plugin_workspace_usage = false` or `KIKI_EXPERIMENTAL_PLUGIN_WORKSPACE_USAGE=0` keeps it off. The section names the workspace resolved from the current session; it is not a switch for just that conversation or profile.
 
 Turning a plugin off here removes its tools, Skills, commands, plugin agents, hooks and workspace panels from this workspace. New calls cannot use an old cached tool or panel; calls already admitted may finish. Plugin instructions refresh at the next safe step or while the agent is idle, so **Applying** means the choice is saved but the current request has not necessarily adopted it. Past messages stay intact.
 
@@ -135,15 +135,9 @@ Install and enable **Kiki Media** (`kiki-media`) once, then open **Capabilities 
 
 The unified package needs a Kiki host with grouped media sources and script-source management. If your build has no **Add script source** action or rejects unknown manifest fields, update the host first. The package's plugin-engine requirement `>=0.4.0` is a protocol version, not a CLI release number; the [package README](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media#configure-a-source) gives the host contract.
 
-### Turning generation on
+### Starting generation
 
-Starting a new generation is experimental and **off by default**. Everything else here — installing the plugin, filling in source settings, choosing defaults, reading past generations — works either way.
-
-Three ways to enable it, in the order Kiki reads them:
-
-- Set `KIKI_EXPERIMENTAL_MEDIA_GENERATION=1` in the environment.
-- Put `media_generation = true` under `[experimental]` in `config.toml`.
-- Turn on **Media generation plugins** in **Settings → Experimental**.
+Media generation has no experimental master switch. Install and enable the plugin, configure an enabled source, then request a generation. Opening the list or saving settings does not start a job; the source's access requirements, charges and script authorization still apply.
 
 ### The list
 
@@ -615,7 +609,7 @@ Installing a plugin does not run its hooks; they fire when a matching event occu
 
 Kiki can import another tool's text conversation as a **Kiki session you keep working in**, or as a read-only archive. Claude Code, Codex, Pi, Grok Build, OpenCode exports and your own JSON or script need no plugin, no trust and no activation. The import runs on the Kiki server without a model and never modifies the source files.
 
-Import is on by default but scans nothing at startup. To turn it off, start Kiki with `KIKI_EXPERIMENTAL_PLUGIN_IMPORT=false`, or set `plugin_import = false` under [`[experimental]`](../configuration/config-files.md#experimental) in `config.toml`.
+History import is available without an experimental switch. It scans nothing at startup; choosing a source, previewing and committing an import are explicit actions.
 
 ### Importing a conversation
 

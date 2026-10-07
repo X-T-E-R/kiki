@@ -63,6 +63,7 @@ it('keeps a real resident App host alive when one workspace closes its contribut
   await hosts.ready;
   const plan = await plugins.previewPlugin({ source });
   await plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
+  expect(hosts.running('fixture-resident')).toBe(false);
   await plugins.setPluginEnabled({ id: 'fixture-resident', enabled: true });
   const before = await hosts.requestPanel('fixture-resident', 'status', 'status', {}) as { pid: number; ticks: number };
   expect(hosts.running('fixture-resident')).toBe(true);

@@ -61,14 +61,21 @@ export interface DefaultCatalogResult {
 export async function readDefaultPluginCatalog(
   options: { readonly fetchImpl?: typeof fetch; readonly url?: string } = {},
 ): Promise<DefaultCatalogResult> {
-  const published = await readPublishedCatalog(options.fetchImpl ?? fetch, options.url ?? OFFICIAL_PLUGIN_CATALOG_URL);
-  if (published !== undefined) {
-    return {
-      marketplace: { source: OFFICIAL_PLUGIN_CATALOG_SOURCE, plugins: published },
-      installable: published.filter((entry) => entry.source !== '').length,
-    };
-  }
+  return await readPublishedPluginCatalog(options) ?? readBundledPluginCatalog();
+}
 
+export async function readPublishedPluginCatalog(
+  options: { readonly fetchImpl?: typeof fetch; readonly url?: string } = {},
+): Promise<DefaultCatalogResult | undefined> {
+  const published = await readPublishedCatalog(options.fetchImpl ?? fetch, options.url ?? OFFICIAL_PLUGIN_CATALOG_URL);
+  if (published === undefined) return undefined;
+  return {
+    marketplace: { source: OFFICIAL_PLUGIN_CATALOG_SOURCE, plugins: published },
+    installable: published.filter((entry) => entry.source !== '').length,
+  };
+}
+
+export function readBundledPluginCatalog(): DefaultCatalogResult {
   const entries: PluginMarketplaceEntry[] = bundled.official.map((plugin) => ({
     id: plugin.id,
     tier: 'official',

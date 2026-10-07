@@ -66,6 +66,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   query.clear();
+  localStorage.removeItem('kiki.locale');
 });
 
 describe('ExperimentalRows', () => {
@@ -100,6 +101,31 @@ describe('ExperimentalRows', () => {
     await render('developer');
     const row = container.querySelector('[data-experimental-row="vendor_extension"]')!;
     expect(row.textContent).toContain('Server-specific feature');
+  });
+
+  it.each(['en', 'zh'] as const)('renders new builtins on their owning pages without unknown copy (%s)', async (locale) => {
+    localStorage.setItem('kiki.locale', locale);
+    const flags = ['recipes', 'plugin_workspace_usage', 'plugin_app_lifecycle', 'work_presets', 'external_clients'];
+    client.getConfig.mockResolvedValue({ experimental: {} });
+    client.meta.mockResolvedValue({ experimental_flags: Object.fromEntries([...flags, 'vendor_extension'].map((id) => [id, true])) });
+    const names = locale === 'en'
+      ? ['Model Recipes', 'Workspace plugin selection', 'App plugin services', 'Space work modes', 'External MCP clients']
+      : ['模型 Recipe', '工作区插件选择', '应用级插件服务', '空间工作模式', '外部 MCP 客户端'];
+    const sections = ['ai', 'plugins', 'plugins', 'spaces', 'external-clients'];
+    for (const [index, id] of flags.entries()) {
+      await render(sections[index]!);
+      const row = container.querySelector(`[data-experimental-row="${id}"]`)!;
+      expect(row).not.toBeNull();
+      expect(row.textContent).toContain(names[index]);
+      expect(row.textContent).not.toContain(locale === 'en' ? 'Server-specific feature' : '此服务器特有的功能');
+      expect(row.querySelector('[data-experimental-choice="default"]')?.getAttribute('aria-pressed')).toBe('true');
+      expect(row.querySelector('[data-experimental-choice="default"]')?.textContent).toBe(locale === 'en' ? 'Default (on)' : '默认（开启）');
+    }
+    await render('developer');
+    for (const id of flags) expect(container.querySelector(`[data-experimental-row="${id}"]`)).toBeNull();
+    expect(container.querySelector('[data-experimental-row="vendor_extension"]')?.textContent)
+      .toContain(locale === 'en' ? 'Server-specific feature' : '此服务器特有的功能');
+    localStorage.removeItem('kiki.locale');
   });
 
   it.each([true, false])('does not recreate a retired usage export switch from saved config (%s)', async (value) => {
@@ -147,6 +173,18 @@ describe('ExperimentalRows', () => {
     await act(async () => { again.click(); });
     await flush();
     expect(restartRequirementSnapshot().fields).toContain('search_worker');
+  });
+
+  it.each([true, false])('marks a restart only when restoring Default resolves on (%s)', async (enabled) => {
+    client.getConfig.mockResolvedValue({ experimental: { external_clients: false } });
+    client.meta.mockResolvedValueOnce({ experimental_flags: { external_clients: false } })
+      .mockResolvedValue({ experimental_flags: { external_clients: enabled } });
+    await render('external-clients');
+    const button = container.querySelector<HTMLButtonElement>('[data-experimental-row="external_clients"] [data-experimental-choice="default"]')!;
+    await act(async () => { button.click(); });
+    await flush();
+    expect(client.patchConfig).toHaveBeenCalledWith({ experimental: {}, replace_domains: ['experimental'] });
+    expect(restartRequirementSnapshot().required).toBe(enabled);
   });
 
   it('rolls the choice back and explains the failure when the save fails', async () => {

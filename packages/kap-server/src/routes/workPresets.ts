@@ -1,8 +1,8 @@
 import { join } from 'node:path';
 import { access } from 'node:fs/promises';
-import { IAtomicDocumentStore, IBootstrapService, IConfigService, IFlagService, IPluginService, IPluginHostService, type Scope } from '@kiki/agent-core-v2';
+import { IAtomicDocumentStore, IBootstrapService, IConfigService, IFlagService, IPluginService, IPluginHostService, nonemptyMarketplaceSource, parsePluginMarketplace, readPluginMarketplace, type PluginMarketplace, type Scope } from '@kiki/agent-core-v2';
 import { WORK_PRESETS_FLAG } from '../services/workPresets/flag';
-import { readDefaultPluginCatalog } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
+import { readBundledPluginCatalog, readPublishedPluginCatalog } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
 import { enableWorkPresetRequestSchema, updateWorkPresetRequestSchema, workPresetMutationResponseSchema, workPresetParamsSchema, workPresetsResponseSchema } from '@kiki/protocol';
 import { defineRoute } from '../middleware/defineRoute';
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -16,10 +16,18 @@ interface Host {
   delete(path: string, options: { schema?: Record<string, unknown> }, handler: (...args: never[]) => unknown): unknown;
 }
 
-export function registerWorkPresetRoutes(app: Host, scope: Scope): void {
+interface WorkPresetRouteOptions {
+  readonly marketplaceUrl?: () => string | undefined;
+}
+
+function presetSources(marketplace: PluginMarketplace): ReadonlyMap<string, PresetPluginSource> {
+  return new Map(marketplace.plugins.filter((entry) => entry.source !== '').map((entry) => [entry.id, { source: entry.source, sha256: entry.sha256 }]));
+}
+
+export function registerWorkPresetRoutes(app: Host, scope: Scope, options: WorkPresetRouteOptions = {}): void {
   const bootstrap = scope.accessor.get(IBootstrapService);
   let published: Promise<ReadonlyMap<string, PresetPluginSource>> | undefined;
-  const sources = async (): Promise<ReadonlyMap<string, PresetPluginSource>> => {
+  const sources = async (usePublished = false): Promise<ReadonlyMap<string, PresetPluginSource>> => {
     const local = bootstrap.getEnv('KIKI_WORK_PLUGIN_ROOT');
     if (local !== undefined) {
       const result = new Map<string, PresetPluginSource>();
@@ -29,7 +37,20 @@ export function registerWorkPresetRoutes(app: Host, scope: Scope): void {
       }
       return result;
     }
-    published ??= readDefaultPluginCatalog().then(({ marketplace }) => new Map(marketplace.plugins.filter((entry) => entry.source !== '').map((entry) => [entry.id, { source: entry.source, sha256: entry.sha256 }])));
+    if (!usePublished) return presetSources(readBundledPluginCatalog().marketplace);
+    const configured = nonemptyMarketplaceSource(options.marketplaceUrl?.());
+    if (configured !== undefined) {
+      const { raw, location } = await readPluginMarketplace({ source: configured, workDir: process.cwd() });
+      return presetSources(parsePluginMarketplace(raw, location, true));
+    }
+    published ??= (async () => {
+      const result = await readPublishedPluginCatalog();
+      if (result === undefined) throw new Error('Published plugin catalog is unavailable.');
+      return presetSources(result.marketplace);
+    })().catch((error) => {
+      published = undefined;
+      throw error;
+    });
     return published;
   };
   const manager = new WorkPresetManager(scope.accessor.get(IAtomicDocumentStore), scope.accessor.get(IPluginService), scope.accessor.get(IPluginHostService), sources, bootstrap.spaceId ?? 'main');

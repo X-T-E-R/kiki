@@ -190,7 +190,7 @@ export async function registerApiV1Routes(
       registerOAuthRoutes(apiV1 as unknown as Parameters<typeof registerOAuthRoutes>[0], core);
       registerConfigRoutes(apiV1 as unknown as Parameters<typeof registerConfigRoutes>[0], core);
       registerHomesRoutes(apiV1 as unknown as Parameters<typeof registerHomesRoutes>[0], core);
-      registerWorkPresetRoutes(apiV1 as unknown as Parameters<typeof registerWorkPresetRoutes>[0], core);
+      registerWorkPresetRoutes(apiV1 as unknown as Parameters<typeof registerWorkPresetRoutes>[0], core, { marketplaceUrl: opts.pluginMarketplaceUrl });
       registerNbSearchRoutes(apiV1 as unknown as Parameters<typeof registerNbSearchRoutes>[0], core);
       registerRequestIdentityRoutes(apiV1 as unknown as Parameters<typeof registerRequestIdentityRoutes>[0], core);
       registerSecretsRoutes(apiV1 as unknown as Parameters<typeof registerSecretsRoutes>[0], core, opts.notifications);

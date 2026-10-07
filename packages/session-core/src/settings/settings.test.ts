@@ -1,3 +1,6 @@
+import { globSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -96,6 +99,8 @@ import {
 } from './settings';
 import { clearStoredDrafts, flushDrafts, readDraft, resetDraftMemoryForTests, writeDraft } from '../composer/drafts';
 import { translate, type I18nKey } from '../i18n/locale';
+import { en } from '../i18n/en';
+import { zh } from '../i18n/zh';
 import { parseNamedAgentTools } from './agentSettings';
 import { mcpConfigFromDraft } from './mcp';
 
@@ -1142,7 +1147,83 @@ describe('remote /models probe', () => {
   });
 });
 
+function registeredBuiltinFlags(): { id: string; defaultEnabled: boolean; owner: string }[] {
+  const root = new URL('../../../../', import.meta.url);
+  const flags: { id: string; defaultEnabled: boolean; owner: string }[] = [];
+  for (const owner of globSync('packages/{agent-core-v2,kap-server}/src/**/*.ts', { cwd: fileURLToPath(root) })) {
+    const source = readFileSync(new URL(owner.replaceAll('\\', '/'), root), 'utf8');
+    if (!source.includes('registerFlagDefinition')) continue;
+    const file = ts.createSourceFile(owner, source, ts.ScriptTarget.Latest, true);
+    const variables = new Map<string, ts.Expression>();
+    const registrations = new Set<string>(['registerFlagDefinition']);
+    const calls: ts.CallExpression[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer !== undefined) {
+        variables.set(node.name.text, node.initializer);
+      }
+      if (ts.isImportSpecifier(node) && node.propertyName?.text === 'registerFlagDefinition') registrations.add(node.name.text);
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) calls.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    const resolve = (expression: ts.Expression | undefined): ts.Expression | undefined => {
+      if (expression === undefined) return undefined;
+      if (ts.isIdentifier(expression)) {
+        const value = variables.get(expression.text);
+        return value === expression ? undefined : resolve(value);
+      }
+      if (ts.isAsExpression(expression) || ts.isSatisfiesExpression(expression) || ts.isParenthesizedExpression(expression)) return resolve(expression.expression);
+      return expression;
+    };
+    for (const call of calls.filter((node) => registrations.has((node.expression as ts.Identifier).text))) {
+      const definition = resolve(call.arguments[0]);
+      if (definition === undefined || !ts.isObjectLiteralExpression(definition)) throw new Error(`Cannot inspect flag registration in ${owner}`);
+      const property = (name: string) => resolve(definition.properties.find((node): node is ts.PropertyAssignment =>
+        ts.isPropertyAssignment(node) && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) && node.name.text === name)?.initializer);
+      const id = property('id');
+      const defaultEnabled = property('default');
+      if (id === undefined || !ts.isStringLiteral(id) || defaultEnabled === undefined ||
+        (defaultEnabled.kind !== ts.SyntaxKind.TrueKeyword && defaultEnabled.kind !== ts.SyntaxKind.FalseKeyword)) throw new Error(`Cannot inspect flag id/default in ${owner}`);
+      flags.push({ id: id.text, defaultEnabled: defaultEnabled.kind === ts.SyntaxKind.TrueKeyword, owner });
+    }
+  }
+  return flags;
+}
+
 describe('experimental flag homes', () => {
+  it('covers every distributed builtin registration with bilingual copy and a default-on capability', () => {
+    const flags = registeredBuiltinFlags();
+    expect(flags.length).toBeGreaterThan(0);
+    expect(new Set(flags.map((flag) => flag.id)).size).toBe(flags.length);
+    expect(EXPERIMENTAL_FLAG_HOMES.map((home) => home.id).toSorted()).toEqual(flags.map((flag) => flag.id).toSorted());
+    for (const flag of flags) {
+      const home = experimentalFlagHome(flag.id)!;
+      expect(flag.defaultEnabled, `${flag.id} in ${flag.owner}: default off needs an explicit human requirement`).toBe(true);
+      for (const locale of ['en', 'zh'] as const) {
+        for (const key of [home.labelKey, home.descriptionKey]) {
+          expect(Object.hasOwn(locale === 'en' ? en : zh, key), `${locale}: ${flag.id} ${key}`).toBe(true);
+          const text = translate(locale, key);
+          expect(text, `${locale}: ${flag.id}`).not.toBe(key);
+          expect(text.trim(), `${locale}: ${flag.id}`).not.toBe('');
+          expect(text).not.toBe(translate(locale, 'st.exp.unknown.name'));
+          expect(text).not.toBe(translate(locale, 'st.exp.unknown.desc'));
+        }
+      }
+    }
+  });
+
+  it('describes indexing and Recipes without promising replay, role permissions or a fixed build time', () => {
+    for (const locale of ['en', 'zh'] as const) {
+      const search = translate(locale, 'st.exp.desktopSearch.desc');
+      expect(search).toContain('2 GiB');
+      expect(search).not.toMatch(/20[–-]30/);
+      expect(translate(locale, 'st.exp.readModel.name')).toBe(locale === 'en' ? 'Session list index' : '会话列表索引');
+      expect(translate(locale, 'st.exp.readModel.desc')).not.toMatch(/replay|回放/);
+      expect(translate(locale, 'st.exp.recipes.desc')).toContain(locale === 'en' ? 'model prompts and parameters' : '模型提示与参数');
+      expect(translate(locale, 'st.exp.recipes.desc')).toContain(locale === 'en' ? 'confirmation once during installation' : '安装时确认一次');
+    }
+  });
+
   it('homes each flag on a real settings page, with the owners the IA asked for', () => {
     const sections = new Set(SETTINGS_SECTIONS.map((section) => section.id));
     for (const home of EXPERIMENTAL_FLAG_HOMES) {

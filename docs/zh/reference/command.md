@@ -223,7 +223,7 @@ Network 目标先用 `target --input <file>` 登记 `{label,endpoint,target}`，
 
 ### `kiki usage-export`
 
-将一个本地 Kiki home 的无正文用量导出到 vibe-usage/vibecafe、标准 Webhook 或已批准脚本。实验功能默认关闭：启动后端时设置 `KIKI_EXPERIMENTAL_USAGE_EXPORT=true`。只在后来运行的 CLI 进程中设置变量，不会启用已经运行的后端。管理操作要求该 home 的本地所有者凭证；远程连接 token 和危险鉴权绕过模式都不授予此权限。
+将一个本地 Kiki home 的无正文用量导出到 vibe-usage/vibecafe、标准 Webhook 或已批准脚本。命令无需实验开关即可使用；未配置或已禁用的目的端不发送任何数据。管理操作要求该 home 的本地所有者凭证；远程连接 token 和危险鉴权绕过模式都不授予此权限。
 
 先保存草稿、查看准确范围和字段，再一次性批准这个目的端：
 

@@ -223,7 +223,7 @@ The [thread tools](./tools.md#collaboration-tools) use these policies and preser
 
 ### `kiki usage-export`
 
-Export content-free usage from one local Kiki home to vibe-usage/vibecafe, a standard Webhook, or an approved script. This experimental feature is off by default: start the backend with `KIKI_EXPERIMENTAL_USAGE_EXPORT=true`. Setting it only in a later CLI process does not enable an already-running backend. Management requires this home's local-owner credential; remote connection tokens and dangerous authentication-bypass mode do not grant access.
+Export content-free usage from one local Kiki home to vibe-usage/vibecafe, a standard Webhook, or an approved script. The command is available without an experimental switch; an unconfigured or disabled destination sends nothing. Management requires this home's local-owner credential; remote connection tokens and dangerous authentication-bypass mode do not grant access.
 
 Save a draft, inspect its exact range and fields, then approve that destination once:
 

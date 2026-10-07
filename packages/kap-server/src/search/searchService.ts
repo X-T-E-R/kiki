@@ -114,7 +114,7 @@ registerFlagDefinition({
   title: 'desktop content search',
   description: 'Enable the SQLite content search index in the desktop runtime after its selfcheck.',
   env: 'KIKI_EXPERIMENTAL_DESKTOP_SEARCH',
-  default: false,
+  default: true,
   surface: 'core',
 });
 
