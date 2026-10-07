@@ -563,6 +563,8 @@ export interface HttpRestFacade {
 
   readonly executors: {
     list(): Promise<import('@kiki/protocol').ListExecutorsResponse>;
+    getModels(executorId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').GetExecutorModelsResponse>;
+    refreshModels(executorId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').RefreshExecutorModelsResponse>;
     listLocalSessions(executorId: string, query?: { readonly limit?: number }, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').LocalSessionDirectory>;
     getLocalSession(executorId: string, localSessionId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').LocalSessionDetail>;
     /** Attaches without sending a prompt; duplicate calls return the existing Kiki session. */

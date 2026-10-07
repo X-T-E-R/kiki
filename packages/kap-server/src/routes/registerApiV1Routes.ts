@@ -215,7 +215,7 @@ export async function registerApiV1Routes(
         core,
         { hostIdentity: opts.hostIdentity },
       );
-      registerSkillsRoutes(apiV1 as unknown as Parameters<typeof registerSkillsRoutes>[0], core);
+      registerSkillsRoutes(apiV1 as unknown as Parameters<typeof registerSkillsRoutes>[0], core, opts.transcriptService);
       registerSkinsRoutes(
         apiV1 as unknown as Parameters<typeof registerSkinsRoutes>[0],
         core,

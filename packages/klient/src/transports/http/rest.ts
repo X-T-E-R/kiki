@@ -554,6 +554,12 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     executors: {
       list: () => transport.json('/executors'),
+      getModels: (executorId, options) => transport.json<import('@kiki/protocol').GetExecutorModelsResponse>(
+        `/executors/${encodeURIComponent(executorId)}/models`, options,
+      ),
+      refreshModels: (executorId, options) => transport.json<import('@kiki/protocol').RefreshExecutorModelsResponse>(
+        `/executors/${encodeURIComponent(executorId)}/models:refresh`, { ...options, method: 'POST', body: {} },
+      ),
       listLocalSessions: (executorId, query, options) => transport.json(
         `/executors/${encodeURIComponent(executorId)}/local-sessions`, { ...options, query },
       ),

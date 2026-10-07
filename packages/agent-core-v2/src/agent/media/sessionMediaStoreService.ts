@@ -1,5 +1,6 @@
 import { extname } from 'node:path';
 
+
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { isFileId } from '#/app/file/fileService';
@@ -13,6 +14,7 @@ import {
   AUDIO_MIME_BY_SUFFIX,
   IMAGE_MIME_BY_SUFFIX,
   mediaExtensionForMime,
+  parseAgentMediaBlobRef,
   VIDEO_MIME_BY_SUFFIX,
 } from './mediaRef';
 import {
@@ -28,22 +30,7 @@ interface SessionMediaMetadata {
   readonly mediaType: string;
 }
 
-interface AgentBlobRef {
-  readonly agentId: string;
-  readonly hash: string;
-}
-
-function parseAgentBlobRef(fileId: string): AgentBlobRef | undefined {
-  if (!fileId.startsWith('blobref:')) return undefined;
-  const raw = fileId.slice('blobref:'.length);
-  const separator = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf(':'));
-  if (separator <= 0) return undefined;
-  const agentId = raw.slice(0, separator);
-  const hash = raw.slice(separator + 1);
-  return /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(agentId) && /^[a-f0-9]{64}$/u.test(hash)
-    ? { agentId, hash }
-    : undefined;
-}
+const parseAgentBlobRef = parseAgentMediaBlobRef;
 
 export class ScopedMediaStore implements ISessionMediaStore {
   declare readonly _serviceBrand: undefined;

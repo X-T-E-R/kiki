@@ -6,11 +6,18 @@ import Fastify from 'fastify';
 import { createKlient } from '@kiki/klient/http';
 import { AgentTranscript, contentOriginalFileId, jsonBytes, type TranscriptAttachment, transcriptTurnSchema } from '@kiki/transcript';
 import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
-import type { Scope } from '@kiki/agent-core-v2';
+import { IAgentProfileService, IAgentPromptService, IAgentSkillService, IBootstrapService, IFileService, ISessionContext, ISessionMediaStore as SessionMediaStoreToken, ISessionSkillCatalog, ITelemetryService, type Scope } from '@kiki/agent-core-v2';
+import * as mainAgent from '../src/transport/mainAgent';
+import * as promptMedia from '../src/lib/promptMedia';
+import { registerSkillsRoutes } from '../src/routes/skills';
 import { registerSessionMediaRoutes } from '../src/routes/sessionMedia';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 import { boundedTranscriptOps, boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
-import { inlineMediaFile } from '../src/services/inlineMedia';
+import { inlineMediaFile, parseInlineMediaIdentity } from '../src/services/inlineMedia';
+import { publishedInlineMediaReader } from '../src/services/publishedMedia';
+import { resolvePromptSessionMediaRefs } from '../src/lib/promptMedia';
+import type { ISessionMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
+import type { PromptSubmission } from '../src/protocol/rest-prompt';
 
 function bitmap(): Buffer {
   const bytes = Buffer.alloc(54 + 800 * 3 * 600);
@@ -24,6 +31,98 @@ const servers: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => { for (const server of servers.splice(0)) await server.close(); });
 
 describe('canonical inline media original', () => {
+  it('activates a skill with its retained canonical original and rejects a replaced revision without activating again', async () => {
+    const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+    const { picture } = await import(fixture);
+    const original: Buffer = picture(80, 60, [140, 50, 20]);
+    const image = { type: 'image' as const, name: 'ordinary.png', source: { kind: 'base64' as const, media_type: 'image/png', data: original.toString('base64') } };
+    const prompt = { promptId: 'published', status: 'completed' as const, createdAt: '2026-01-01T00:00:00.000Z', content: [image] };
+    const transcript = new AgentTranscript('main');
+    transcript.apply([{ op: 'prompt.upsert', prompt }]);
+    const forSessionLive = vi.fn(() => ({ getAgent: () => transcript }));
+    const service = { forSessionLive, ensureAgentHistory: async () => transcript } as unknown as TranscriptService;
+    const projected = (boundedTranscriptSnapshot(transcript.snapshot(), 'main').prompts[0]! as { content: PromptSubmission['content'] }).content;
+    const draft = structuredClone(projected);
+    const before = JSON.stringify(draft);
+    const store = { open: vi.fn(async () => undefined) };
+    const activate = vi.fn(async () => {});
+    const dispose = vi.fn(async () => {});
+    const sessionServices = new Map<unknown, unknown>([
+      [SessionMediaStoreToken, store], [ISessionContext, { sessionDir: 'unused' }],
+      [ISessionSkillCatalog, { ready: Promise.resolve(), catalog: { getSkill: () => ({ name: 'welcome', metadata: {} }) } }],
+    ]);
+    const agentServices = new Map<unknown, unknown>([
+      [IAgentPromptService, {}], [IAgentSkillService, { activate }],
+      [IAgentProfileService, { getModelProviderType: () => 'kimi' }],
+    ]);
+    const coreServices = new Map<unknown, unknown>([
+      [IFileService, {}], [IBootstrapService, { cacheDir: 'unused' }],
+      [ITelemetryService, { withContext: () => ({}) }],
+    ]);
+    const acquire = vi.spyOn(sessionOperation, 'acquireSessionOperation').mockResolvedValue({
+      handle: { accessor: { get: (token: unknown) => sessionServices.get(token) } }, dispose,
+    } as unknown as sessionOperation.SessionOperationLease);
+    const ensure = vi.spyOn(mainAgent, 'ensureMainAgent').mockResolvedValue({ accessor: { get: (token: unknown) => agentServices.get(token) } } as unknown as Awaited<ReturnType<typeof mainAgent.ensureMainAgent>>);
+    const prepare = vi.spyOn(promptMedia, 'resolvePromptMediaFiles').mockImplementation(async (content) => ({ content, discard: async () => {} } as promptMedia.PromptMediaPreparation));
+    const app = Fastify(); servers.push(app);
+    installErrorHandler(app);
+    app.setSerializerCompiler(() => (data) => JSON.stringify(data));
+    registerSkillsRoutes(app as unknown as Parameters<typeof registerSkillsRoutes>[0], { accessor: { get: (token: unknown) => coreServices.get(token) } } as unknown as Scope, service);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/sessions/fixture/skills/welcome:activate', payload: { attachments: draft } });
+      expect(response.json()).toMatchObject({ code: 0, data: { activated: true, skill_name: 'welcome' } });
+      expect(activate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ content: [{ type: 'image_url', imageUrl: { url: `data:image/png;base64,${original.toString('base64')}`, name: 'ordinary.png' } }] }));
+      expect(forSessionLive).toHaveBeenCalledWith('fixture');
+      expect(store.open).not.toHaveBeenCalled();
+      expect(JSON.stringify(draft)).toBe(before);
+      transcript.apply([{ op: 'prompt.upsert', prompt: { ...prompt, content: [{ ...image, source: { ...image.source, data: original.subarray(0, 32).toString('base64') } }] } }]);
+      const stale = await app.inject({ method: 'POST', url: '/sessions/fixture/skills/welcome:activate', payload: { attachments: draft } });
+      expect(stale.json()).toMatchObject({ code: 40407 });
+      expect(activate).toHaveBeenCalledTimes(1);
+      expect(dispose).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(draft)).toBe(before);
+    } finally { acquire.mockRestore(); ensure.mockRestore(); prepare.mockRestore(); }
+  });
+  it('resolves an edited retained handle from the published original across queued, running and completed without changing the draft', async () => {
+    const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+    const { picture } = await import(fixture);
+    const original: Buffer = picture(80, 60, [140, 50, 20]);
+    const image = { type: 'image' as const, name: 'ordinary.png', source: { kind: 'base64' as const, media_type: 'image/png', data: original.toString('base64') } };
+    let prompt = { promptId: 'published', userMessageId: 'logical', status: 'queued' as 'queued' | 'running' | 'completed', createdAt: '2026-01-01T00:00:00.000Z', content: [image] };
+    const transcript = new AgentTranscript('main');
+    const service = { forSessionLive: () => ({ getAgent: () => transcript }), ensureAgentHistory: async () => transcript } as unknown as TranscriptService;
+    const reader = publishedInlineMediaReader(service, 'fixture');
+    const store = { open: vi.fn(async () => undefined) } as unknown as ISessionMediaStore;
+    let stableId: string | undefined;
+    let draft!: PromptSubmission['content'];
+    for (const status of ['queued', 'running', 'completed'] as const) {
+      prompt = { ...prompt, status };
+      transcript.apply([{ op: 'prompt.upsert', prompt }]);
+      const projectedPrompt = boundedTranscriptSnapshot(transcript.snapshot(), 'main').prompts[0]! as { content: readonly unknown[] };
+      const projected = projectedPrompt.content[0] as { type: 'image' | 'video'; source: { kind: 'session_media'; file_id: string }; name?: string };
+      if (projected.type !== 'image' || projected.source.kind !== 'session_media') throw new Error('Expected typed media');
+      stableId ??= projected.source.file_id;
+      expect(projected.source.file_id).toBe(stableId);
+      if (stableId === undefined) throw new Error('Expected stable media id');
+      expect(parseInlineMediaIdentity(stableId)).toMatchObject({ kind: 'content', agentId: 'main', source: { kind: 'prompt', id: 'published' }, path: ['content', 0] });
+      const text = { type: 'text' as const, text: 'Edited text', presentation: { spans: [{ kind: 'selection' as const, start: 0, end: 6, quote: 'Edited' }] } };
+      draft = [text, { ...projected, opaque: { keep: ['original'] } } as unknown as PromptSubmission['content'][number]];
+      const before = JSON.stringify(draft);
+      const resolved = await resolvePromptSessionMediaRefs(draft, store, reader);
+      expect(resolved[0]).toBe(text);
+      expect(resolved[1]).toMatchObject({ ...image, opaque: { keep: ['original'] } });
+      expect(Buffer.from((resolved[1] as typeof image).source.data, 'base64')).toEqual(original);
+      expect(JSON.stringify(draft)).toBe(before);
+      expect(transcript.getPrompt('published')!.content).toEqual([image]);
+    }
+    expect(store.open).not.toHaveBeenCalled();
+    const before = JSON.stringify(draft);
+    transcript.apply([{ op: 'prompt.upsert', prompt: { ...prompt, content: [{ ...image, source: { ...image.source, data: original.subarray(0, 32).toString('base64') } }] } }]);
+    await expect(resolvePromptSessionMediaRefs(draft, store, reader)).rejects.toMatchObject({ code: 'file.not_found' });
+    expect(JSON.stringify(draft)).toBe(before);
+    await expect(resolvePromptSessionMediaRefs(draft, store)).rejects.toMatchObject({ code: 'file.not_found' });
+    expect(store.open).not.toHaveBeenCalled();
+  });
   it('closes a cancelled session preview source and releases its operation without affecting the next download', async () => {
     const app = Fastify(); servers.push(app);
     installErrorHandler(app);

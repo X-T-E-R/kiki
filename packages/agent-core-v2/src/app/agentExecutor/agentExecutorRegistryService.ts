@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { normalize } from 'pathe';
 import type {
   ExecutorBinding,
+  ExecutorCapabilityCatalog,
+  ExecutorCapabilityDimension,
   ExecutorValidationResult,
 } from '@kiki/agent-profiles/ports';
 
@@ -31,10 +33,11 @@ import {
 } from './agentExecutor';
 import {
   discoverExecutorSources,
+  probeExecutorModelCatalog,
   resolveExecutorSource,
 } from './binaryDiscovery';
 import { BUILTIN_AGENT_EXECUTORS } from './builtinDescriptors';
-import type { NegotiatedExecutorCapabilities } from './capabilities';
+import { executorControlCapabilities, type NegotiatedExecutorCapabilities } from './capabilities';
 import {
   AGENT_EXECUTOR_OVERRIDES_SECTION,
   applyExecutorOverride,
@@ -51,6 +54,8 @@ import { wrapWindowsNodeShims } from './windowsNodeShim';
 import { ANTIGRAVITY_CACHE_SCOPE, type AntigravityCacheState } from './antigravityService';
 import { antigravityCacheRoot, antigravityRelease } from './antigravityDistribution';
 import { join } from 'pathe';
+
+const CAPABILITY_CACHE_MAX_AGE_MS = 60_000;
 
 const NATIVE_DESCRIPTOR: AgentExecutorDescriptor = {
   id: 'native',
@@ -75,6 +80,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     readonly revision: string;
     readonly version: string | undefined;
     readonly capabilities: NegotiatedExecutorCapabilities;
+    readonly catalog?: ExecutorCapabilityCatalog;
   }>();
 
   constructor(
@@ -110,9 +116,147 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
 
   recordNegotiated(id: string, version: string | undefined, capabilities: NegotiatedExecutorCapabilities): void {
     const descriptor = this.get(id);
-    if (descriptor !== undefined) this.negotiatedById.set(id, {
-      revision: descriptor.revision, version, capabilities,
+    if (descriptor === undefined) return;
+    this.negotiatedById.set(id, {
+      revision: descriptor.revision,
+      version,
+      capabilities,
+      catalog: {
+        executorId: id,
+        descriptorRevision: descriptor.revision,
+        version,
+        source: 'negotiated',
+        provenance: 'acp_negotiation',
+        observedAt: Date.now(),
+        models: capabilityDimension(capabilities.models),
+        thinkingLevels: capabilityDimension(capabilities.thinkingLevels),
+        context: contextCapabilities(capabilities),
+        controls: executorControlCapabilities(descriptor),
+      },
     });
+  }
+
+  async refreshExecutorCapabilityCatalog(id: string): Promise<ExecutorCapabilityCatalog> {
+    const descriptor = this.get(id);
+    if (descriptor === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, `Unknown agent executor "${id}"`);
+    if (descriptor.modelProbe === undefined) {
+      const existing = this.negotiatedById.get(id)?.catalog;
+      if (existing !== undefined) return existing;
+      const unknown = {
+        executorId: id,
+        descriptorRevision: descriptor.revision,
+        source: 'negotiated' as const,
+        provenance: 'acp_negotiation' as const,
+        observedAt: 0,
+        models: { state: 'unknown' as const, diagnostic: 'Executor has no model catalog probe' },
+        thinkingLevels: { state: 'unknown' as const, diagnostic: 'Executor has no model catalog probe' },
+        context: unknownContextCapabilities(),
+        controls: executorControlCapabilities(descriptor),
+      };
+      this.recordExecutorCapabilityCatalog(unknown);
+      return unknown;
+    }
+    this.recordExecutorCapabilityCatalog({
+      executorId: id,
+      descriptorRevision: descriptor.revision,
+      version: descriptor.version,
+      source: 'cli_probe',
+      provenance: 'read_only_cli_probe',
+      observedAt: Date.now(),
+      models: { state: 'loading' },
+      thinkingLevels: { state: 'unknown', diagnostic: 'Thinking levels require executor negotiation' },
+      context: unknownContextCapabilities(),
+      controls: executorControlCapabilities(descriptor),
+    });
+    try {
+      const managed = await this.#withManagedSource(descriptor);
+      const probes = await resolveExecutorSource(
+        managed,
+        this.#probeProcessService(),
+        this.fs,
+        this.bootstrap,
+      );
+      const selected = probes.find((probe) => probe.available);
+      const catalog = await probeExecutorModelCatalog(
+        managed,
+        selected,
+        this.#probeProcessService(),
+        this.fs,
+        this.bootstrap,
+      );
+      const snapshot: ExecutorCapabilityCatalog = {
+        executorId: id,
+        descriptorRevision: descriptor.revision,
+        version: selected?.version,
+        catalogProgramVersion: catalog.programVersion,
+        catalogCommand: catalog.command,
+        source: 'cli_probe',
+        provenance: 'read_only_cli_probe',
+        observedAt: Date.now(),
+        models: catalog.models,
+        thinkingLevels: { state: 'unknown', diagnostic: 'Thinking levels require executor negotiation' },
+        context: unknownContextCapabilities(),
+        controls: executorControlCapabilities(descriptor),
+      };
+      this.recordExecutorCapabilityCatalog(snapshot);
+      return snapshot;
+    } catch {
+      const snapshot: ExecutorCapabilityCatalog = {
+        executorId: id,
+        descriptorRevision: descriptor.revision,
+        version: descriptor.version,
+        source: 'cli_probe',
+        provenance: 'read_only_cli_probe',
+        observedAt: Date.now(),
+        models: { state: 'unavailable', diagnostic: 'Model catalog probe failed' },
+        thinkingLevels: { state: 'unknown', diagnostic: 'Thinking levels require executor negotiation' },
+        context: unknownContextCapabilities(),
+        controls: executorControlCapabilities(descriptor),
+      };
+      this.recordExecutorCapabilityCatalog(snapshot);
+      return snapshot;
+    }
+  }
+
+  recordExecutorCapabilityCatalog(catalog: ExecutorCapabilityCatalog): void {
+    const descriptor = this.get(catalog.executorId);
+    if (descriptor === undefined || descriptor.revision !== catalog.descriptorRevision) return;
+    const current = this.negotiatedById.get(catalog.executorId);
+    this.negotiatedById.set(catalog.executorId, {
+      revision: catalog.descriptorRevision,
+      version: catalog.version,
+      capabilities: current?.capabilities ?? {},
+      catalog,
+    });
+  }
+
+  getExecutorCapabilityCatalog(
+    id: string,
+    expected?: { readonly descriptorRevision?: string; readonly version?: string; readonly programVersion?: string },
+  ): ExecutorCapabilityCatalog | undefined {
+    const cached = this.negotiatedById.get(id);
+    const revision = this.get(id)?.revision;
+    if (cached === undefined || revision === undefined || cached.revision !== revision || cached.catalog === undefined) return undefined;
+    if (expected?.descriptorRevision !== undefined && cached.catalog.descriptorRevision !== expected.descriptorRevision) return undefined;
+    if (expected?.version !== undefined && cached.catalog.version !== expected.version) return undefined;
+    if (expected?.programVersion !== undefined && cached.catalog.catalogProgramVersion !== expected.programVersion) return undefined;
+    const stale = cached.catalog.observedAt > 0 && Date.now() - cached.catalog.observedAt > CAPABILITY_CACHE_MAX_AGE_MS;
+    if (expected?.version === undefined && cached.catalog.version !== undefined) {
+      return {
+        ...cached.catalog,
+        models: { state: 'unknown', diagnostic: 'Executor version has not been revalidated' },
+        thinkingLevels: { state: 'unknown', diagnostic: 'Executor version has not been revalidated' },
+      };
+    }
+    if (stale) {
+      return {
+        ...cached.catalog,
+        models: { state: 'unknown', diagnostic: 'Capability observation is stale; refresh the executor catalog' },
+        thinkingLevels: { state: 'unknown', diagnostic: 'Capability observation is stale; refresh the executor catalog' },
+        context: { state: 'unknown', diagnostic: 'Capability observation is stale; refresh the executor catalog' },
+      };
+    }
+    return cached.catalog;
   }
 
   negotiated(id: string, version: string | undefined): NegotiatedExecutorCapabilities | undefined {
@@ -187,6 +331,29 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
         }
       }
       const descriptor = resolved.descriptor;
+      const cached = this.negotiatedById.get(id);
+      const observedVersion = cached?.version;
+      const catalog = this.getExecutorCapabilityCatalog(id, {
+        descriptorRevision: descriptor.revision,
+        version: observedVersion,
+        programVersion: cached?.catalog?.catalogProgramVersion,
+      });
+      const modelCatalog = catalog?.models;
+      if (result.binding.modelAlias !== undefined && modelCatalog?.state === 'ready' &&
+          !(modelCatalog.values ?? []).includes(result.binding.modelAlias)) {
+        return {
+          ok: false,
+          diagnostic: `External executor "${id}" does not advertise model "${result.binding.modelAlias}"; select one of ${(modelCatalog.values ?? []).join(', ') || '(none)'}`,
+        };
+      }
+      const effortCatalog = catalog?.thinkingLevels;
+      if (result.binding.thinkingEffort !== undefined && effortCatalog?.state === 'ready' &&
+          !(effortCatalog.values ?? []).includes(result.binding.thinkingEffort)) {
+        return {
+          ok: false,
+          diagnostic: `External executor "${id}" does not advertise thinking effort "${result.binding.thinkingEffort}"; select one of ${(effortCatalog.values ?? []).join(', ') || '(none)'}`,
+        };
+      }
       const observed = this.negotiatedById.get(id);
       const negotiated = observed?.revision === descriptor.revision ? observed.capabilities : undefined;
       const fields = {
@@ -318,6 +485,7 @@ function descriptorFromConfig(
     sources: config.sources,
     source: config.source,
     versionProbe: config.versionProbe,
+    modelProbe: config.modelProbe,
     diagnostics: config.diagnostics,
     auth: config.auth,
     args: [...config.args],
@@ -329,6 +497,7 @@ function descriptorFromConfig(
     modelArgs: config.modelArgs,
     modelConfigCategory: config.modelConfigCategory,
     modelConfigId: config.modelConfigId,
+    controlCapabilities: config.controlCapabilities,
     thoughtConfigCategory: config.thoughtConfigCategory,
     thoughtConfigId: config.thoughtConfigId,
     permissionModeMapping: config.permissionModeMapping,
@@ -381,6 +550,7 @@ export function descriptorRevisionFromConfig(config: AgentExecutorConfig): strin
     sources: config.sources,
     source: config.source,
     versionProbe: config.versionProbe,
+    modelProbe: config.modelProbe,
     args: config.args,
     env,
     startupTimeoutMs: config.startupTimeoutMs,
@@ -389,12 +559,37 @@ export function descriptorRevisionFromConfig(config: AgentExecutorConfig): strin
     modelArgs: config.modelArgs,
     modelConfigCategory: config.modelConfigCategory,
     modelConfigId: config.modelConfigId,
+    controlCapabilities: config.controlCapabilities,
     thoughtConfigCategory: config.thoughtConfigCategory,
     thoughtConfigId: config.thoughtConfigId,
     permissionModeMapping: config.permissionModeMapping,
     declaredRevision: config.revision,
   });
   return createHash('sha256').update(canonical).digest('hex');
+}
+
+function capabilityDimension(values: readonly string[] | undefined): ExecutorCapabilityDimension {
+  if (values === undefined) return { state: 'unknown' };
+  const unique = [...new Set(values.filter((value) => value.trim() !== ''))];
+  return unique.length === 0
+    ? { state: 'unknown', diagnostic: 'Executor did not advertise any values' }
+    : { state: 'ready', values: unique };
+}
+
+function unknownContextCapabilities() {
+  return { state: 'unknown' as const };
+}
+
+function contextCapabilities(capabilities: NegotiatedExecutorCapabilities) {
+  const values = [capabilities.contextWindow, capabilities.maxInputTokens, capabilities.maxOutputTokens,
+    capabilities.compactionThreshold].filter((value): value is number => value !== undefined && Number.isFinite(value));
+  return {
+    state: values.length === 0 ? 'unknown' as const : values.length === 4 ? 'ready' as const : 'partial' as const,
+    contextWindow: capabilities.contextWindow,
+    maxInputTokens: capabilities.maxInputTokens,
+    maxOutputTokens: capabilities.maxOutputTokens,
+    compactionThreshold: capabilities.compactionThreshold,
+  };
 }
 
 function scalarOptions(value: unknown, executorId: string): AgentExecutorOptions {

@@ -11,6 +11,7 @@ import {
   type AgentExecutorDescriptor,
   type AgentExecutorSourceProbe,
 } from './agentExecutor';
+import type { ExecutorCapabilityDimension } from '@kiki/agent-profiles/ports';
 import { executorProcessEnv } from './executorOverrides';
 
 interface ProbeResult {
@@ -18,6 +19,7 @@ interface ProbeResult {
   readonly version?: string;
   readonly code?: number;
   readonly output: string;
+  readonly truncated?: boolean;
 }
 
 export async function discoverExecutorSources(
@@ -63,6 +65,96 @@ export function selectExecutorSource(
 ): AgentExecutorSourceProbe | undefined {
   if (descriptor.source === undefined) return probes.find((probe) => probe.available);
   return probes.find((probe) => probe.id === descriptor.source && probe.available);
+}
+
+export interface ExecutorModelProbeResult {
+  readonly models: ExecutorCapabilityDimension;
+  readonly programVersion?: string;
+  readonly command?: string;
+}
+
+export async function probeExecutorModelCatalog(
+  descriptor: AgentExecutorDescriptor,
+  selected: AgentExecutorSourceProbe | undefined,
+  processService: IHostProcessService,
+  fs: IHostFileSystem,
+  bootstrap: IBootstrapService,
+): Promise<ExecutorModelProbeResult> {
+  const probe = descriptor.modelProbe;
+  if (probe === undefined) return { models: { state: 'unknown', diagnostic: 'No model probe is configured' } };
+  const configuredCommand = probe.command ?? selected?.command ?? descriptor.command;
+  if (configuredCommand === undefined) {
+    return { models: { state: 'unavailable', diagnostic: 'No executable is available for the model probe' } };
+  }
+  const command = await locateCommand(configuredCommand, fs, bootstrap);
+  if (command === undefined) {
+    return { models: { state: 'unavailable', diagnostic: 'Model probe executable is unavailable' }, command: configuredCommand };
+  }
+  const launchPrefix = probe.command === undefined ? [...selected?.launchArgs ?? []] : [];
+  const programVersion = probe.versionProbe === undefined ? undefined : await probeProgramVersion(
+    processService,
+    command,
+    [...launchPrefix, ...probe.versionProbe.args],
+    executorProcessEnv(descriptor),
+    probe.timeoutMs,
+    probe.maxOutputBytes,
+  );
+  const args = [...launchPrefix, ...probe.args];
+  const result = await probeCommand(
+    processService,
+    command,
+    args,
+    executorProcessEnv(descriptor),
+    { timeoutMs: probe.timeoutMs, maxOutputBytes: probe.maxOutputBytes, stdoutOnly: true },
+  );
+  if (!result.available) return { models: { state: 'unavailable', diagnostic: 'Model probe could not start' }, command, programVersion };
+  if (result.code !== 0) {
+    return { models: { state: 'unavailable', diagnostic: `Model probe exited with code ${String(result.code)}` }, command, programVersion };
+  }
+  const values = parseModelProbeOutput(result.output, probe.format);
+  if (values.length === 0) {
+    return {
+      models: { state: 'partial', diagnostic: result.truncated === true ? 'Model probe output was truncated' : 'Model probe returned no model identifiers' },
+      command,
+      programVersion,
+    };
+  }
+  return {
+    models: {
+      state: result.truncated === true ? 'partial' : 'ready',
+      values,
+      diagnostic: result.truncated === true ? 'Model probe output was truncated' : undefined,
+    },
+    command,
+    programVersion,
+  };
+}
+
+async function probeProgramVersion(
+  processService: IHostProcessService,
+  command: string,
+  args: readonly string[],
+  env: Readonly<Record<string, string>> | undefined,
+  timeoutMs: number | undefined,
+  maxOutputBytes: number | undefined,
+): Promise<string | undefined> {
+  const result = await probeCommand(processService, command, args, env, {
+    timeoutMs,
+    maxOutputBytes,
+    stdoutOnly: true,
+  });
+  return result.available && result.code === 0 ? firstLine(result.output) : undefined;
+}
+
+function parseModelProbeOutput(output: string, format: 'lines' | 'tab'): readonly string[] {
+  const values = new Set<string>();
+  for (const line of output.split(/\r?\n/u)) {
+    const first = (format === 'tab' ? line.split('\t', 1)[0] ?? '' : line).trim();
+    if (first === '' || first.startsWith('#') || /^(?:id|model|models|name)$/iu.test(first)) continue;
+    if (first.length > 256 || /\s/u.test(first)) continue;
+    values.add(first);
+  }
+  return [...values];
 }
 
 async function probeDescriptorCommand(
@@ -306,6 +398,7 @@ async function probeCommand(
   command: string,
   args: readonly string[],
   env: Readonly<Record<string, string>> | undefined,
+  limits: { readonly timeoutMs?: number; readonly maxOutputBytes?: number; readonly stdoutOnly?: boolean } = {},
 ): Promise<ProbeResult> {
   let child: IHostProcess;
   try {
@@ -318,13 +411,25 @@ async function probeCommand(
   } catch {
     return { available: false, output: '' };
   }
+  const maxOutputBytes = limits.maxOutputBytes ?? 64 * 1024;
   let output = '';
+  let truncated = false;
   const append = (chunk: Buffer | string): void => {
-    if (output.length >= 64 * 1024) return;
-    output += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk;
+    const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const remaining = maxOutputBytes - Buffer.byteLength(output);
+    if (remaining <= 0) {
+      truncated = true;
+      return;
+    }
+    if (value.length > remaining) {
+      output += value.subarray(0, remaining).toString('utf8');
+      truncated = true;
+      return;
+    }
+    output += value.toString('utf8');
   };
   child.stdout.on('data', append);
-  child.stderr.on('data', append);
+  if (limits.stdoutOnly !== true) child.stderr.on('data', append);
   let timer: NodeJS.Timeout | undefined;
   try {
     const code = await Promise.race([
@@ -332,11 +437,11 @@ async function probeCommand(
       new Promise<number>((resolve) => {
         timer = setTimeout(() => {
           resolve(-1);
-        }, 10_000);
+        }, limits.timeoutMs ?? 10_000);
       }),
     ]);
     if (code === -1 && child.exitCode === null) await child.kill('SIGTERM').catch(() => undefined);
-    return { available: true, code, output: output.trim() };
+    return { available: true, code, output: output.trim(), truncated };
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     await child.dispose();

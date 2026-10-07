@@ -83,8 +83,39 @@ export function daemonFileRefFromPairingPart(
   return { kind: part.type === 'image_url' ? 'image' : 'video', ref };
 }
 
+export type MediaBlobRef =
+  | { readonly kind: 'agent'; readonly agentId: string; readonly hash: string }
+  | { readonly kind: 'mime'; readonly mime: string; readonly hash: string };
+
+export function parseMediaBlobRef(url: string): MediaBlobRef | undefined {
+  const agent = /^blobref:([A-Za-z0-9][A-Za-z0-9_-]{0,255})[/:]([0-9a-f]{64})$/u.exec(url);
+  if (agent !== null) return { kind: 'agent', agentId: agent[1]!, hash: agent[2]! };
+  const mime = /^blobref:((?:image|video)\/[A-Za-z0-9.+_*-]+);([0-9a-f]{64})$/u.exec(url);
+  return mime === null ? undefined : { kind: 'mime', mime: mime[1]!, hash: mime[2]! };
+}
+
+export function mediaUrlFromPart(part: unknown): { readonly kind: 'image' | 'video'; readonly url: string } | undefined {
+  if (part === null || typeof part !== 'object' || Array.isArray(part)) return undefined;
+  const value = part as Record<string, unknown>;
+  for (const kind of ['image', 'video'] as const) {
+    if (value['type'] === `${kind}_url`) {
+      for (const key of [`${kind}Url`, `${kind}_url`]) {
+        const container = value[key] as { url?: unknown } | undefined;
+        if (typeof container?.url === 'string' && container.url !== '') return { kind, url: container.url };
+      }
+    }
+    if (value['type'] === kind) {
+      const source = value['source'] as { kind?: unknown; url?: unknown; media_type?: unknown; data?: unknown } | undefined;
+      if (source?.kind === 'url' && typeof source.url === 'string') return { kind, url: source.url };
+      if (source?.kind === 'base64' && typeof source.data === 'string' && typeof source.media_type === 'string')
+        return { kind, url: `data:${source.media_type};base64,${source.data}` };
+    }
+  }
+  return undefined;
+}
+
 /** Preserve an explicitly agent-scoped durable blob URL as the existing session-media file id. */
 export function sessionMediaIdFromBlobUrl(url: string): string | undefined {
-  const match = /^blobref:([A-Za-z0-9][A-Za-z0-9_-]{0,255})[/:]([0-9a-f]{64})$/u.exec(url);
-  return match === null ? undefined : `blobref:${match[1]}:${match[2]}`;
+  const ref = parseMediaBlobRef(url);
+  return ref?.kind === 'agent' ? `blobref:${ref.agentId}:${ref.hash}` : undefined;
 }

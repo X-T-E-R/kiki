@@ -96,6 +96,30 @@ describe('subagent capability final bindings', () => {
     expect(projectProfileModelMenu(helper({ restrictModelsToMenu: true, modelAlias: undefined }), services.models, services.config, 'main').effectiveModelAliases).toEqual([]);
   });
 
+  it('uses only a confirmed external catalog without dropping saved declarations when capability state is unknown', () => {
+    const profile = helper({
+      executor: 'agy-cli-909', modelAlias: 'saved-invalid',
+      modelProfiles: [{ alias: 'gemini-3.8-flash-medium', when: 'Confirmed model' }, { alias: 'saved-invalid', when: 'Retain binding' }],
+    });
+    const catalog = {
+      executorId: 'agy-cli-909', descriptorRevision: 'r1', version: '0.1.0', catalogProgramVersion: '1.3.1', source: 'cli_probe' as const,
+      provenance: 'read_only_cli_probe' as const,
+      observedAt: 1, models: { state: 'ready' as const, values: ['gemini-3.8-flash-medium'] },
+      thinkingLevels: { state: 'unknown' as const },
+      context: { state: 'unknown' as const },
+      controls: { modelSwitch: { applicability: 'unknown' as const, applyState: 'unknown' as const }, thinkingSwitch: { applicability: 'unknown' as const, applyState: 'unknown' as const }, manualCompact: { applicability: 'unknown' as const, applyState: 'unknown' as const } },
+    };
+    const confirmed = projectProfileModelMenu(profile, services.models, services.config, 'main', {
+      executorCapabilityCatalog: catalog,
+    });
+    expect(confirmed.effectiveModelAliases).toEqual(['gemini-3.8-flash-medium']);
+    expect(confirmed.declaredModelMenu.identities).toEqual(['gemini-3.8-flash-medium', 'saved-invalid']);
+    const unknown = projectProfileModelMenu(profile, services.models, services.config, 'main', {
+      executorCapabilityCatalog: { ...catalog, models: { state: 'unknown' as const } },
+    });
+    expect(unknown.effectiveModelAliases).toEqual(['gemini-3.8-flash-medium', 'saved-invalid']);
+  });
+
   it('keeps the original menu distinct from effective candidates under lease and route replacement', () => {
     services.models.list = () => ({ example: {}, cheap: {}, outside: {} });
     const profile = helper({ restrictModelsToMenu: true, modelProfiles: [{ alias: 'cheap', when: 'Never evaluated' }] });

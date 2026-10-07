@@ -14,7 +14,8 @@
  *       { type: 'image_url', imageUrl: { url: 'data:…' } }, …]`.
  */
 
-import type { Message } from '@kiki/protocol';
+import { type Message } from '@kiki/protocol';
+import { mediaUrlFromPart, parseMediaBlobRef } from '@kiki/transcript';
 
 /** A renderable (or at least describable) media reference from a message part. */
 export interface MediaRef {
@@ -64,7 +65,6 @@ function refFromSource(
   }
 }
 
-const USER_BLOBREF_RE = /^blobref:((?:image|video)\/[A-Za-z0-9.+_*-]+);([0-9a-f]{64})$/;
 const DAEMON_FILE_RE = /^kimi-file:\/\/([^?]*)/;
 
 /**
@@ -81,9 +81,9 @@ export function mediaRefFromUrl(
   url: string,
   extra?: Pick<MediaRef, 'name' | 'mime' | 'size'>,
 ): MediaRef {
-  const blobref = USER_BLOBREF_RE.exec(url);
-  if (blobref !== null) {
-    return { kind, name: extra?.name, size: extra?.size, mime: blobref[1], blobHash: blobref[2] };
+  const blobref = parseMediaBlobRef(url);
+  if (blobref?.kind === 'mime') {
+    return { kind, name: extra?.name, size: extra?.size, mime: blobref.mime, blobHash: blobref.hash };
   }
   const daemon = DAEMON_FILE_RE.exec(url);
   if (daemon !== null) {
@@ -125,15 +125,14 @@ export interface ToolOutputMedia {
 
 const MEDIA_TAG_RE = /<(\/?)(image|video)\b([^>]*)>/gi;
 const MEDIA_PATH_RE = /\bpath=(?:"([^"]*)"|'([^']*)')/i;
-const BLOBREF_RE = /^blobref:((?:image|video)\/[A-Za-z0-9.+_-]+);([0-9a-f]{64})$/;
 const BROWSER_MEDIA_URL_RE = /^(?:data:|blob:|https?:\/\/)/i;
 
 function toolMediaRef(ref: MediaRef, path: string | undefined): MediaRef {
   const url = ref.url;
   if (url?.startsWith('blobref:')) {
-    const match = BLOBREF_RE.exec(url);
-    if (match !== null && match[1]?.startsWith(`${ref.kind}/`)) {
-      return { ...ref, url: undefined, path, mime: match[1], blobHash: match[2] };
+    const match = parseMediaBlobRef(url);
+    if (match?.kind === 'mime' && match.mime.startsWith(`${ref.kind}/`)) {
+      return { ...ref, url: undefined, path, mime: match.mime, blobHash: match.hash };
     }
     return { ...ref, url: undefined, path: undefined, name: path, mime: undefined };
   }
@@ -144,24 +143,7 @@ function toolMediaRef(ref: MediaRef, path: string | undefined): MediaRef {
   };
 }
 
-function engineMediaUrl(part: Record<string, unknown>): { url: string; kind: 'image' | 'video' } | undefined {
-  for (const [type, keys] of [
-    ['image_url', ['imageUrl', 'image_url']],
-    ['video_url', ['videoUrl', 'video_url']],
-  ] as const) {
-    if (part['type'] !== type) continue;
-    for (const key of keys) {
-      const container = part[key];
-      if (typeof container === 'object' && container !== null) {
-        const url = (container as { url?: unknown }).url;
-        if (typeof url === 'string' && url !== '') {
-          return { url, kind: type === 'image_url' ? 'image' : 'video' };
-        }
-      }
-    }
-  }
-  return undefined;
-}
+
 
 /**
  * Split a tool result output into renderable text + media when it carries
@@ -193,7 +175,7 @@ export function extractToolOutputMedia(output: unknown): ToolOutputMedia | undef
       if (cleaned !== '') texts.push(cleaned);
       continue;
     }
-    const engineRef = engineMediaUrl(part);
+    const engineRef = part['type'] === 'image_url' || part['type'] === 'video_url' ? mediaUrlFromPart(part) : undefined;
     if (engineRef !== undefined) {
       media.push(toolMediaRef({
         kind: engineRef.kind,

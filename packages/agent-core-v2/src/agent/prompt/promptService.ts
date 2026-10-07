@@ -8,7 +8,7 @@ import { renderCronFireXml } from '#/app/cron/format';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
-import { extractImageCompressionCaptions, validateImageDataUrl } from '#/agent/media/image-compress';
+import { extractImageCompressionCaptions } from '#/agent/media/image-compress';
 import { abortable, abortError, userCancellationReason } from '#/_base/utils/abort';
 import { toErrorPayload, type ErrorPayload } from '#/_base/errors/serialize';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
@@ -35,7 +35,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { IFileService } from '#/app/file/fileService';
-import { detectFileType, MEDIA_SNIFF_BYTES } from '#/agent/media/file-type';
+import { resolveOriginalImagePart } from '#/agent/media/originalImage';
 import type { ContentPart } from '#/kosong/contract/message';
 import { IEventService } from '#/app/event/event';
 import { IEventBus } from '#/app/event/eventBus';
@@ -90,7 +90,6 @@ import {
   INVALID_IMAGE_DATA_URL_MESSAGE,
   isDataUrl,
   matchesKnownTruncatedImageDataUrl,
-  normalizeImageMime,
   parseCompleteImageDataUrl,
 } from '#/agent/media/image-format-policy';
 import { materializePromptDaemonRefs } from '#/agent/media/promptMediaIntake';
@@ -1676,45 +1675,9 @@ export class AgentPromptService implements IAgentPromptService {
     if (changed) this.originalPromptMessages.set(promptId, { ...message, content });
   }
 
-  private async canonicalStableImage(part: ContentPart): Promise<ContentPart | undefined> {
-    if (part.type !== 'image_url') return undefined;
-    const daemon = daemonFileRefFromPart(part);
-    const fileId = part.imageUrl.url.startsWith('blobref:')
-      ? part.imageUrl.url
-      : daemon?.kind === 'image'
-        ? daemon.ref.fileId
-        : undefined;
-    if (fileId === undefined || !fileId.startsWith('blobref:')) return undefined;
-    const raw = fileId.slice('blobref:'.length);
-    const legacySeparator = raw.lastIndexOf(';');
-    const separator = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf(':'));
-    const agentId = legacySeparator >= 0 ? this.scopeContext.agentId : separator < 0 ? '' : raw.slice(0, separator);
-    const hash = legacySeparator >= 0 ? raw.slice(legacySeparator + 1) : separator < 0 ? '' : raw.slice(separator + 1);
-    if (agentId !== this.scopeContext.agentId || !/^[a-f0-9]{64}$/u.test(hash)) {
-      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The image attachment blob reference is invalid. Reattach the original image and retry.');
-    }
-    const bytes = await this.blobs.get(this.scopeContext.scope('blobs'), hash);
-    if (bytes === undefined) {
-      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The original image attachment is unavailable. Reattach the original image and retry.');
-    }
-    const source = Buffer.from(bytes);
-    const fileType = detectFileType('image', source.subarray(0, MEDIA_SNIFF_BYTES), 'media');
-    if (fileType.kind !== 'image') {
-      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The original image attachment is invalid. Reattach the original image and retry.');
-    }
-    const mimeType = normalizeImageMime(fileType.mimeType);
-    const restoredUrl = `data:${mimeType};base64,${source.toString('base64')}`;
-    const validated = await validateImageDataUrl(restoredUrl);
-    if (validated === null) {
-      throw new Error2(ErrorCodes.REQUEST_INVALID, INVALID_IMAGE_DATA_URL_MESSAGE);
-    }
-    return {
-      type: 'image_url',
-      imageUrl: {
-        ...part.imageUrl,
-        url: restoredUrl,
-      },
-    };
+  private canonicalStableImage(part: ContentPart): Promise<ContentPart | undefined> {
+    return resolveOriginalImagePart(part, this.scopeContext.agentId,
+      (hash) => this.blobs.get(this.scopeContext.scope('blobs'), hash));
   }
 
   private repairKnownTruncatedImages(

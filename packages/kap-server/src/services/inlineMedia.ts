@@ -1,7 +1,8 @@
 import type { SessionMediaFile } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
 import { parseImageDataUrl } from '@kiki/agent-core-v2/agent/media/image-format-policy';
 import { validateImageDataUrl } from '@kiki/agent-core-v2/agent/media/image-compress';
-import type { ContentRef, ContentSource, TranscriptAttachment, TranscriptTurn } from '@kiki/transcript';
+import { isPlainAgentId, mediaUrlFromPart, type ContentRef, type ContentSource, type TranscriptAttachment, type TranscriptTurn } from '@kiki/transcript';
+import { z } from 'zod';
 import { contentRevision } from '../transport/klient/contentRevision';
 
 export function inlineMediaId(attachment: TranscriptAttachment, agentId: string): string | undefined {
@@ -10,24 +11,62 @@ export function inlineMediaId(attachment: TranscriptAttachment, agentId: string)
   return `inline:${agentId}:${Buffer.from(attachment.attachmentId).toString('base64url')}:${contentRevision(source.url)}`;
 }
 
-export function inlineToolMedia(part: unknown): { kind: 'image' | 'video'; url: string } | undefined {
-  if (part === null || typeof part !== 'object' || Array.isArray(part)) return undefined;
-  const value = part as Record<string, unknown>;
-  for (const kind of ['image', 'video'] as const) {
-    if (value['type'] === `${kind}_url`) {
-      for (const key of [`${kind}Url`, `${kind}_url`]) {
-        const container = value[key] as { url?: unknown } | undefined;
-        if (typeof container?.url === 'string' && container.url.startsWith(`data:${kind}/`)) return { kind, url: container.url };
-      }
-    }
-    if (value['type'] === kind) {
-      const source = value['source'] as { kind?: unknown; url?: unknown; media_type?: unknown; data?: unknown } | undefined;
-      if (source?.kind === 'url' && typeof source.url === 'string' && source.url.startsWith(`data:${kind}/`)) return { kind, url: source.url };
-      if (source?.kind === 'base64' && typeof source.data === 'string' && typeof source.media_type === 'string' && source.media_type.startsWith(`${kind}/`))
-        return { kind, url: `data:${source.media_type};base64,${source.data}` };
-    }
+export function inlineToolMedia(part: unknown): { readonly kind: 'image' | 'video'; readonly url: string } | undefined {
+  const media = mediaUrlFromPart(part);
+  return media?.url.startsWith(`data:${media.kind}/`) ? media : undefined;
+}
+
+const inlineAddressSchema = z.object({
+  source: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('frame'), id: z.string().min(1).max(256), turnId: z.string().min(1).max(256), stepId: z.string().min(1).max(256) }).strict(),
+    z.object({ kind: z.literal('prompt'), id: z.string().min(1).max(256) }).strict(),
+  ]),
+  path: z.array(z.union([z.string().max(256), z.number().int().nonnegative()])).min(1).max(16),
+}).strict();
+
+export type InlineMediaIdentity = {
+  readonly agentId: string;
+  readonly revision: string;
+} & (
+  | { readonly kind: 'attachment'; readonly attachmentId: string }
+  | { readonly kind: 'content'; readonly source: ContentSource; readonly path: ContentRef['path'] }
+);
+
+export type PublishedMediaEntityReader = (agentId: string, source: ContentSource) => Promise<unknown>;
+
+export function parseInlineMediaIdentity(fileId: string): InlineMediaIdentity | undefined {
+  const [kind, agentId, address, revision, extra] = fileId.split(':');
+  if ((kind !== 'inline' && kind !== 'inline-content') || agentId === undefined || !isPlainAgentId(agentId) ||
+    address === undefined || address.length > 8192 || !/^[A-Za-z0-9_-]+$/u.test(address) ||
+    revision === undefined || !/^[0-9a-f]{64}$/u.test(revision) || extra !== undefined) return undefined;
+  if (kind === 'inline') {
+    const attachmentId = Buffer.from(address, 'base64url').toString('utf8');
+    return attachmentId.length > 0 ? { kind: 'attachment', agentId, attachmentId, revision } : undefined;
   }
-  return undefined;
+  let decoded: unknown;
+  try { decoded = JSON.parse(Buffer.from(address, 'base64url').toString('utf8')); }
+  catch { return undefined; }
+  const parsed = inlineAddressSchema.safeParse(decoded);
+  if (!parsed.success || !isInlineMediaAddress(parsed.data.source, parsed.data.path)) return undefined;
+  return { kind: 'content', agentId, ...parsed.data, revision };
+}
+
+export async function openPublishedInlineMedia(fileId: string, readEntity: PublishedMediaEntityReader): Promise<SessionMediaFile | undefined> {
+  const identity = parseInlineMediaIdentity(fileId);
+  if (identity === undefined) return undefined;
+  if (identity.kind === 'attachment') {
+    const attachment = await readEntity(identity.agentId, { kind: 'attachment', id: identity.attachmentId }) as TranscriptAttachment | undefined;
+    return attachment === undefined || inlineMediaId(attachment, identity.agentId) !== fileId ? undefined : inlineMediaFile(attachment);
+  }
+  let selected = await readEntity(identity.agentId, identity.source);
+  for (const key of identity.path) {
+    if (selected === null || typeof selected !== 'object' || !Object.hasOwn(selected, key)) return undefined;
+    selected = (selected as Record<string | number, unknown>)[key];
+  }
+  const media = inlineToolMedia(selected);
+  if (media === undefined || contentRevision(media.url) !== identity.revision) return undefined;
+  const name = (selected as { name?: unknown }).name;
+  return inlineDataMediaFile(media.url, typeof name === 'string' && name.length > 0 ? name : `${identity.source.id}.${media.kind}`);
 }
 
 export function projectInlineToolMedia(value: unknown, path: ContentRef['path'], source: ContentSource, entity: object, agentId: string): object | undefined {

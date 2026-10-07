@@ -78,6 +78,14 @@ export const AgentExecutorConfigSchema = z
     sources: z.array(AgentExecutorSourceSchema).min(1).optional(),
     source: sourceId.optional(),
     versionProbe: z.object({ args: z.array(z.string()).min(1) }).strict().optional(),
+    modelProbe: z.object({
+      command: z.string().trim().min(1).optional(),
+      args: z.array(z.string()).min(1),
+      format: z.enum(['lines', 'tab']).default('lines'),
+      versionProbe: z.object({ args: z.array(z.string()).min(1) }).strict().optional(),
+      timeoutMs: z.number().int().positive().max(90_000).optional(),
+      maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
+    }).strict().optional(),
     diagnostics: z.array(z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('message'), severity: z.enum(['info', 'warning']), message: z.string() }).strict(),
       z.object({ kind: z.literal('env'), name: sourceId, present: z.string(), absent: z.string() }).strict(),
@@ -106,6 +114,11 @@ export const AgentExecutorConfigSchema = z
     modelArgs: z.array(z.string()).optional(),
     modelConfigCategory: z.string().trim().min(1).optional(),
     modelConfigId: sourceId.optional(),
+    controlCapabilities: z.object({
+      modelSwitch: z.enum(['live', 'next_binding', 'fresh_binding', 'unsupported', 'unknown']).optional(),
+      thinkingSwitch: z.enum(['live', 'next_binding', 'fresh_binding', 'unsupported', 'unknown']).optional(),
+      manualCompact: z.enum(['live', 'next_binding', 'fresh_binding', 'unsupported', 'unknown']).optional(),
+    }).strict().optional(),
     thoughtConfigCategory: z.string().trim().min(1).optional(),
     thoughtConfigId: sourceId.optional(),
     permissionModeMapping: AgentExecutorPermissionModeMappingSchema.optional(),
@@ -154,6 +167,7 @@ const TOML_TO_RUNTIME = {
   model_args: 'modelArgs',
   model_config_category: 'modelConfigCategory',
   model_config_id: 'modelConfigId',
+  control_capabilities: 'controlCapabilities',
   thought_config_category: 'thoughtConfigCategory',
   thought_config_id: 'thoughtConfigId',
   permission_mode_mapping: 'permissionModeMapping',
@@ -169,6 +183,7 @@ const TOML_TO_RUNTIME = {
   steer_delivery: 'steerDelivery',
   profile_delivery: 'profileDelivery',
   version_probe: 'versionProbe',
+  model_probe: 'modelProbe',
 } as const;
 
 const RUNTIME_TO_TOML = {
@@ -178,6 +193,7 @@ const RUNTIME_TO_TOML = {
   modelArgs: 'model_args',
   modelConfigCategory: 'model_config_category',
   modelConfigId: 'model_config_id',
+  controlCapabilities: 'control_capabilities',
   thoughtConfigCategory: 'thought_config_category',
   thoughtConfigId: 'thought_config_id',
   permissionModeMapping: 'permission_mode_mapping',
@@ -193,6 +209,7 @@ const RUNTIME_TO_TOML = {
   steerDelivery: 'steer_delivery',
   profileDelivery: 'profile_delivery',
   versionProbe: 'version_probe',
+  modelProbe: 'model_probe',
 } as const;
 
 export function agentExecutorsFromToml(value: unknown): unknown {
@@ -235,6 +252,16 @@ export function agentExecutorsFromToml(value: unknown): unknown {
       }
       descriptor['permission'] = permission;
     }
+    if (isPlainObject(descriptor['controlCapabilities'])) {
+      const controls = { ...descriptor['controlCapabilities'] } as Record<string, unknown>;
+      for (const [wire, runtime] of [['model_switch', 'modelSwitch'], ['thinking_switch', 'thinkingSwitch'], ['manual_compact', 'manualCompact']] as const) {
+        if (Object.hasOwn(controls, wire)) {
+          controls[runtime] = controls[wire];
+          delete controls[wire];
+        }
+      }
+      descriptor['controlCapabilities'] = controls;
+    }
     if (isPlainObject(descriptor['auth']) && Object.hasOwn(descriptor['auth'], 'logged_in_key')) {
       const auth: Record<string, unknown> = { ...descriptor['auth'], loggedInKey: descriptor['auth']['logged_in_key'] };
       delete auth['logged_in_key'];
@@ -258,6 +285,14 @@ export function agentExecutorsFromToml(value: unknown): unknown {
         }
         return mapped;
       });
+    }
+    if (isPlainObject(descriptor['modelProbe'])) {
+      const mapped = renameKey(renameKey(descriptor['modelProbe'], 'timeout_ms', 'timeoutMs'), 'max_output_bytes', 'maxOutputBytes');
+      if (Object.hasOwn(mapped, 'version_probe')) {
+        mapped['versionProbe'] = mapped['version_probe'];
+        delete mapped['version_probe'];
+      }
+      descriptor['modelProbe'] = mapped;
     }
     result[id] = descriptor;
   }
@@ -304,6 +339,16 @@ export function agentExecutorsToToml(value: unknown): unknown {
       }
       descriptor['permission'] = permission;
     }
+    if (isPlainObject(descriptor['control_capabilities'])) {
+      const controls = { ...descriptor['control_capabilities'] } as Record<string, unknown>;
+      for (const [runtime, wire] of [['modelSwitch', 'model_switch'], ['thinkingSwitch', 'thinking_switch'], ['manualCompact', 'manual_compact']] as const) {
+        if (Object.hasOwn(controls, runtime)) {
+          controls[wire] = controls[runtime];
+          delete controls[runtime];
+        }
+      }
+      descriptor['control_capabilities'] = controls;
+    }
     if (isPlainObject(descriptor['auth']) && Object.hasOwn(descriptor['auth'], 'loggedInKey')) {
       const auth: Record<string, unknown> = { ...descriptor['auth'], logged_in_key: descriptor['auth']['loggedInKey'] };
       delete auth['loggedInKey'];
@@ -327,6 +372,14 @@ export function agentExecutorsToToml(value: unknown): unknown {
         }
         return mapped;
       });
+    }
+    if (isPlainObject(descriptor['model_probe'])) {
+      const mapped = renameKey(renameKey(descriptor['model_probe'], 'timeoutMs', 'timeout_ms'), 'maxOutputBytes', 'max_output_bytes');
+      if (Object.hasOwn(mapped, 'versionProbe')) {
+        mapped['version_probe'] = mapped['versionProbe'];
+        delete mapped['versionProbe'];
+      }
+      descriptor['model_probe'] = mapped;
     }
     result[id] = descriptor;
   }

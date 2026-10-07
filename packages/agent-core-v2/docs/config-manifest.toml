@@ -118,6 +118,14 @@
   # source: string
   # version_probe: object
     # args: string[]
+  # model_probe: object
+    # command: string
+    # args: string[]
+    # format: "lines" | "tab" (default: "lines")
+    # version_probe: object
+      # args: string[]
+    # timeout_ms: integer
+    # max_output_bytes: integer
   # diagnostics: object | object | object | object | object | object[]
   # auth: object | object | object
   # args: string[] (default: [])
@@ -129,6 +137,10 @@
   # model_args: string[]
   # model_config_category: string
   # model_config_id: string
+  # control_capabilities: object
+    # model_switch: "live" | "next_binding" | "fresh_binding" | "unsupported" | "unknown"
+    # thinking_switch: "live" | "next_binding" | "fresh_binding" | "unsupported" | "unknown"
+    # manual_compact: "live" | "next_binding" | "fresh_binding" | "unsupported" | "unknown"
   # thought_config_category: string
   # thought_config_id: string
   # permission_mode_mapping: object

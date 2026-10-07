@@ -26,6 +26,7 @@ import {
   ISessionManager,
   IWorkspaceInstanceManager,
   IWorkspaceService,
+  executorControlCapabilities,
   isError2,
   type AgentProfile,
   type AgentProfileCatalogSnapshot,
@@ -36,6 +37,7 @@ import {
   type Scope,
   type ScopedAgentProfileBinding,
 } from '@kiki/agent-core-v2';
+import type { ExecutorCapabilityCatalog } from '@kiki/agent-profiles/ports';
 import {
   agentCapabilitiesQuerySchema,
   agentCapabilitiesResponseSchema,
@@ -47,6 +49,8 @@ import {
   listExecutorsResponseSchema,
   executorDetailResponseSchema,
   executorCheckResponseSchema,
+  getExecutorModelsResponseSchema,
+  refreshExecutorModelsResponseSchema,
   executorPromptPreviewRequestSchema,
   executorPromptPreviewResponseSchema,
   localSessionDirectorySchema,
@@ -245,6 +249,52 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   });
   app.post(executorCheckRoute.path, executorCheckRoute.options,
     executorCheckRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
+
+  const executorModelsRoute = defineRoute({
+    method: 'GET', path: '/executors/{id}/models', params: executorParams,
+    success: { data: getExecutorModelsResponseSchema },
+    errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
+    description: 'Read the cached external executor model catalog without launching a probe', tags: ['agents'],
+  }, async (req, reply) => {
+    await core.accessor.get(IConfigService).ready;
+    const registry = core.accessor.get(IAgentExecutorRegistry);
+    const descriptor = registry.get(req.params.id);
+    if (descriptor === undefined || descriptor.protocol === 'native') {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'External executor model catalog is unavailable', req.id));
+      return;
+    }
+    const check = core.accessor.get(IAgentExecutorPreflightService).lastCheck(descriptor.id);
+    const expectedVersion = check?.version ?? descriptor.version;
+    const catalog = registry.getExecutorCapabilityCatalog?.(descriptor.id,
+      expectedVersion === undefined ? undefined : { version: expectedVersion });
+    reply.send(okEnvelope(projectExecutorModelCatalog(catalog ?? unknownExecutorModelCatalog(descriptor)), req.id));
+  });
+  app.get(executorModelsRoute.path, executorModelsRoute.options,
+    executorModelsRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
+
+  const refreshExecutorModelsRoute = defineRoute({
+    method: 'POST', path: '/executors/{id}/models:refresh', params: executorParams,
+    success: { data: refreshExecutorModelsResponseSchema },
+    errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
+    description: 'Explicitly refresh one external executor model catalog through its bounded read-only probe', tags: ['agents'],
+  }, async (req, reply) => {
+    await core.accessor.get(IConfigService).ready;
+    const registry = core.accessor.get(IAgentExecutorRegistry);
+    const descriptor = registry.get(req.params.id);
+    if (descriptor === undefined || descriptor.protocol === 'native') {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'External executor model catalog is unavailable', req.id));
+      return;
+    }
+    const catalog = await registry.refreshExecutorCapabilityCatalog?.(descriptor.id);
+    if (catalog === undefined) {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'External executor model catalog is unsupported', req.id));
+      return;
+    }
+    await core.accessor.get(IAgentExecutorPreflightService).run([descriptor.id]);
+    reply.send(okEnvelope(projectExecutorModelCatalog(catalog), req.id));
+  });
+  app.post(refreshExecutorModelsRoute.path, refreshExecutorModelsRoute.options,
+    refreshExecutorModelsRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
 
   const installationsRoute = defineRoute({
     method: 'GET', path: '/executors/installations',
@@ -1155,6 +1205,77 @@ function executorOverrideProjection(descriptor: AgentExecutorDescriptor) {
     args: [...descriptor.extraArgs ?? []],
     env_keys: Object.keys(descriptor.env ?? {}),
   };
+}
+
+function unknownExecutorModelCatalog(descriptor: AgentExecutorDescriptor): ExecutorCapabilityCatalog {
+  return {
+    executorId: descriptor.id,
+    descriptorRevision: descriptor.revision,
+    source: descriptor.modelProbe === undefined ? 'negotiated' : 'cli_probe',
+    provenance: descriptor.modelProbe === undefined ? 'acp_negotiation' : 'read_only_cli_probe',
+    observedAt: 0,
+    models: { state: 'unknown', diagnostic: 'No current executor catalog observation is available' },
+    thinkingLevels: { state: 'unknown', diagnostic: 'No current executor catalog observation is available' },
+    context: { state: 'unknown' },
+    controls: executorControlCapabilities(descriptor),
+    catalogCommand: descriptor.modelProbe?.command ?? descriptor.command,
+  };
+}
+
+function projectExecutorModelCatalog(catalog: ExecutorCapabilityCatalog) {
+  return {
+    executor_id: catalog.executorId,
+    source: catalog.source,
+    provenance: catalog.provenance,
+    revision: catalog.descriptorRevision,
+    apply_state: catalogApplyState(catalog),
+    observed_at: catalog.observedAt,
+    executor_version: catalog.version,
+    catalog_program_version: catalog.catalogProgramVersion,
+    catalog_command: catalog.catalogCommand,
+    effective: {
+      models: projectCapabilityDimension(catalog.models),
+      thinking_levels: projectCapabilityDimension(catalog.thinkingLevels),
+      context: {
+        state: catalog.context.state,
+        context_window: catalog.context.contextWindow,
+        max_input_tokens: catalog.context.maxInputTokens,
+        max_output_tokens: catalog.context.maxOutputTokens,
+        compaction_threshold: catalog.context.compactionThreshold,
+        diagnostic: catalog.context.diagnostic,
+      },
+      controls: {
+        model_switch: projectCapabilityControl(catalog.controls.modelSwitch),
+        thinking_switch: projectCapabilityControl(catalog.controls.thinkingSwitch),
+        manual_compact: projectCapabilityControl(catalog.controls.manualCompact),
+      },
+    },
+  };
+}
+
+function projectCapabilityDimension(dimension: ExecutorCapabilityCatalog['models']) {
+  return {
+    state: dimension.state,
+    values: dimension.values === undefined ? undefined : [...dimension.values],
+    diagnostic: dimension.diagnostic,
+  };
+}
+
+function projectCapabilityControl(control: ExecutorCapabilityCatalog['controls']['modelSwitch']) {
+  return {
+    advertised: control.advertised,
+    applicability: control.applicability,
+    apply_state: control.applyState,
+    diagnostic: control.diagnostic,
+  };
+}
+
+function catalogApplyState(catalog: ExecutorCapabilityCatalog) {
+  if (catalog.models.state === 'loading' || catalog.thinkingLevels.state === 'loading') return 'loading' as const;
+  if (catalog.models.state === 'unavailable') return 'unavailable' as const;
+  if (catalog.models.state === 'partial') return 'partial' as const;
+  if (catalog.models.state === 'ready') return 'ready' as const;
+  return 'unknown' as const;
 }
 
 async function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentExecutorRegistry,

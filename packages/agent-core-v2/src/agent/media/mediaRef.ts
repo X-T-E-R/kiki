@@ -2,6 +2,22 @@ import { join } from 'node:path';
 
 import type { ContentPart } from '#/kosong/contract/message';
 
+export type MediaBlobRef =
+  | { readonly kind: 'agent'; readonly agentId: string; readonly hash: string }
+  | { readonly kind: 'mime'; readonly mime: string; readonly hash: string };
+
+export function parseMediaBlobRef(url: string): MediaBlobRef | undefined {
+  const agent = /^blobref:([A-Za-z0-9][A-Za-z0-9_-]{0,255})[/:]([0-9a-f]{64})$/u.exec(url);
+  if (agent !== null) return { kind: 'agent', agentId: agent[1]!, hash: agent[2]! };
+  const mime = /^blobref:((?:image|video)\/[A-Za-z0-9.+_*-]+);([0-9a-f]{64})$/u.exec(url);
+  return mime === null ? undefined : { kind: 'mime', mime: mime[1]!, hash: mime[2]! };
+}
+
+export function parseAgentMediaBlobRef(url: string): Extract<MediaBlobRef, { kind: 'agent' }> | undefined {
+  const ref = parseMediaBlobRef(url);
+  return ref?.kind === 'agent' ? ref : undefined;
+}
+
 export type MediaKind = 'image' | 'video' | 'audio' | 'file';
 
 export const IMAGE_MIME_BY_SUFFIX: Readonly<Record<string, string>> = Object.freeze({

@@ -454,6 +454,37 @@ describe('HTTP REST domains', () => {
     } finally { await channel.close(); }
   });
 
+  it('reads cached executor models and explicitly refreshes through typed REST endpoints', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    const catalog = {
+      executor_id: 'agy-cli-909', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: 'r1',
+      apply_state: 'ready', observed_at: 1, executor_version: '0.1.0', catalog_program_version: '1.3.1',
+      effective: {
+        models: { state: 'ready', values: ['gemini-3.8-flash-medium'] },
+        thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: { advertised: true, applicability: 'next_binding', apply_state: 'pending' },
+          thinking_switch: { advertised: true, applicability: 'next_binding', apply_state: 'pending' },
+          manual_compact: { advertised: false, applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ path: url.pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      return envelope(catalog);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.executors.getModels('agy-cli-909')).resolves.toMatchObject({ catalog_program_version: '1.3.1' });
+      await expect(channel.rest.executors.refreshModels('agy-cli-909')).resolves.toMatchObject({ effective: { models: { values: ['gemini-3.8-flash-medium'] } } });
+      expect(calls).toEqual([
+        { path: '/api/executors/agy-cli-909/models', method: 'GET', body: undefined },
+        { path: '/api/executors/agy-cli-909/models:refresh', method: 'POST', body: {} },
+      ]);
+    } finally { await channel.close(); }
+  });
+
   it('posts typed rendered-prompt previews to an encoded agent profile path', async () => {
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       expect(new URL(String(input)).pathname).toBe('/api/agents/reviewer%2Fcodex/executor-prompt:preview');

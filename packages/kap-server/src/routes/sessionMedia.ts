@@ -19,7 +19,7 @@ import {
   workspacePersistenceScope,
 } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import type { Scope } from '@kiki/agent-core-v2/_base/di/scope';
-import { isPlainAgentId } from '@kiki/transcript';
+import { parseMediaBlobRef } from '@kiki/transcript';
 import { z } from 'zod';
 
 import { buildContentDisposition } from '../lib/contentDisposition';
@@ -32,12 +32,10 @@ import { ErrorCode } from '../protocol/error-codes';
 import { envelopeSchema, errEnvelope } from '../protocol/envelope';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { createMediaPreview, MediaPreviewUnavailableError } from '../services/mediaPreview';
-import { inlineDataMediaFile, inlineMediaFile, inlineMediaId, inlineToolMedia, isInlineMediaAddress } from '../services/inlineMedia';
+import { publishedInlineMediaReader } from '../services/publishedMedia';
 import type { TranscriptService } from '../services/transcript/transcriptService';
-import { readSessionViewCanonicalEntity } from '../transport/klient/sessionViewReads';
-import type { TranscriptAttachment } from '@kiki/transcript';
 import { openContentOriginal } from '../services/contentOriginal';
-import { ContentChangedError, contentRevision } from '../transport/klient/boundedContent';
+import { ContentChangedError } from '../transport/klient/boundedContent';
 
 interface SessionMediaRouteHost {
   get(
@@ -217,39 +215,8 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
 
 async function openSessionMedia(core: Scope, sessionId: string, fileId: string, service?: TranscriptService): Promise<{ readonly sessionExists: boolean; readonly file?: SessionMediaFile; readonly operation?: SessionOperationLease }> {
   if (fileId.startsWith('raw:')) return { sessionExists: true, file: service === undefined ? undefined : await openContentOriginal(service, sessionId, fileId) };
-  if (fileId.startsWith('inline-content:')) {
-    const parts = fileId.split(':');
-    if (service === undefined || parts.length !== 4 || !isPlainAgentId(parts[1]!) || parts[2]!.length > 8192 ||
-      !/^[A-Za-z0-9_-]+$/u.test(parts[2]!) || !/^[0-9a-f]{64}$/u.test(parts[3]!)) return { sessionExists: true };
-    let address: unknown;
-    try { address = JSON.parse(Buffer.from(parts[2]!, 'base64url').toString('utf8')); }
-    catch { return { sessionExists: true }; }
-    const parsed = z.object({
-      source: z.discriminatedUnion('kind', [
-        z.object({ kind: z.literal('frame'), id: z.string().min(1).max(256), turnId: z.string().min(1).max(256), stepId: z.string().min(1).max(256) }).strict(),
-        z.object({ kind: z.literal('prompt'), id: z.string().min(1).max(256) }).strict(),
-      ]),
-      path: z.array(z.union([z.string().max(256), z.number().int().nonnegative()])).min(1).max(16),
-    }).strict().safeParse(address);
-    if (!parsed.success || !isInlineMediaAddress(parsed.data.source, parsed.data.path)) return { sessionExists: true };
-    const entity = await readSessionViewCanonicalEntity(service, sessionId, { agentId: parts[1]!, ref: { source: parsed.data.source } });
-    let selected: unknown = entity;
-    for (const key of parsed.data.path) {
-      if (selected === null || typeof selected !== 'object' || !Object.hasOwn(selected, key)) return { sessionExists: true };
-      selected = (selected as Record<string | number, unknown>)[key];
-    }
-    const media = inlineToolMedia(selected);
-    const name = selected !== null && typeof selected === 'object' ? (selected as { name?: unknown }).name : undefined;
-    return { sessionExists: true, file: media === undefined || contentRevision(media.url) !== parts[3]
-      ? undefined : await inlineDataMediaFile(media.url, typeof name === 'string' && name.length > 0 ? name : `${parsed.data.source.id}.${media.kind}`) };
-  }
-  if (fileId.startsWith('inline:')) {
-    const parts = fileId.split(':');
-    if (service === undefined || parts.length !== 4 || !isPlainAgentId(parts[1]!) || !/^[A-Za-z0-9_-]+$/u.test(parts[2]!) || !/^[0-9a-f]{64}$/u.test(parts[3]!)) return { sessionExists: true };
-    const attachmentId = Buffer.from(parts[2]!, 'base64url').toString('utf8');
-    const entity = await readSessionViewCanonicalEntity(service, sessionId, { agentId: parts[1]!, ref: { source: { kind: 'attachment', id: attachmentId } } });
-    const attachment = entity as TranscriptAttachment | undefined;
-    return { sessionExists: true, file: attachment === undefined || inlineMediaId(attachment, parts[1]!) !== fileId ? undefined : await inlineMediaFile(attachment) };
+  if (fileId.startsWith('inline-content:') || fileId.startsWith('inline:')) {
+    return { sessionExists: true, file: service === undefined ? undefined : await publishedInlineMediaReader(service, sessionId)(fileId) };
   }
   if (fileId.startsWith('blobref:')) {
     const summary = await core.accessor.get(ISessionIndex).get(sessionId);
@@ -272,23 +239,23 @@ async function openPersistedToolMedia(
   workspaceId: string,
   fileId: string,
 ): Promise<SessionMediaFile | undefined> {
-  const match = /^blobref:([A-Za-z0-9._-]{1,128}):([0-9a-f]{64})$/.exec(fileId);
-  if (match === null || !isPlainAgentId(match[1]!)) return undefined;
+  const ref = parseMediaBlobRef(fileId);
+  if (ref?.kind !== 'agent') return undefined;
   const sessionScope = sessionScopeOf(
     workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), workspaceId),
     sessionId,
   );
   const blobs = core.accessor.get(IBlobStore);
-  const scope = `${agentScopeOf(sessionScope, match[1]!)}/blobs`;
-  const bytes = blobs.size === undefined ? await blobs.get(scope, match[2]!) : undefined;
-  const size = blobs.size === undefined ? bytes?.byteLength : await blobs.size(scope, match[2]!);
+  const scope = `${agentScopeOf(sessionScope, ref.agentId)}/blobs`;
+  const bytes = blobs.size === undefined ? await blobs.get(scope, ref.hash) : undefined;
+  const size = blobs.size === undefined ? bytes?.byteLength : await blobs.size(scope, ref.hash);
   if (size === undefined) return undefined;
   return {
     name: 'tool-result.bin',
     mediaType: 'application/octet-stream',
     size,
     stream: bytes === undefined
-      ? (range) => blobs.getStream(scope, match[2]!, range)
+      ? (range) => blobs.getStream(scope, ref.hash, range)
       : async function* (range) {
           yield range === undefined ? bytes : bytes.subarray(range.start, range.end + 1);
         },

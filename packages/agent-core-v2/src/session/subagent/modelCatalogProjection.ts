@@ -1,4 +1,4 @@
-import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
+import { modelAliasResolverForExecutor, type ExecutorCapabilityCatalog } from '@kiki/agent-profiles/ports';
 import { captureProfileModelMenu } from '@kiki/agent-profiles/agentProfile';
 import { resolveProfileThinkingDefault } from '#/app/agentProfileCatalog/modelProfileOverlay';
 
@@ -22,16 +22,26 @@ export function projectProfileModelMenu(
   models: IModelService,
   config: IConfigService,
   position: 'main' | 'sub',
-  options: { readonly frozen?: boolean; readonly modelAlias?: string } = {},
+  options: {
+    readonly frozen?: boolean;
+    readonly modelAlias?: string;
+    readonly executorCapabilityCatalog?: ExecutorCapabilityCatalog;
+  } = {},
 ) {
   const native = (input.executor ?? 'native') === 'native';
   const resolver = modelAliasResolverForExecutor(input.executor, models);
+  const executorModels = !native && (options.executorCapabilityCatalog?.models.state === 'ready' ||
+      options.executorCapabilityCatalog?.models.state === 'partial')
+    ? new Set(options.executorCapabilityCatalog.models.values ?? [])
+    : undefined;
   const profile = options.frozen === true ? input : captureProfileModelMenu(input, (alias) => resolver.resolveId(alias));
   const menu = profile.modelMenuConstraint;
   const declared = menu ?? captureProfileModelMenu({ ...profile, restrictModelsToMenu: false }, (alias) => resolver.resolveId(alias)).modelMenuConstraint!;
   const nativeModels = native ? models.list() : undefined;
   const candidates = [...new Set([
-    ...(nativeModels === undefined ? [...(profile.allowedModels ?? []), ...declared.identities] : Object.keys(nativeModels)),
+    ...(nativeModels === undefined
+      ? executorModels === undefined ? [...(profile.allowedModels ?? []), ...declared.identities] : [...executorModels]
+      : Object.keys(nativeModels)),
     ...declared.aliases,
     ...(profile.modelProfiles ?? []).map((entry) => entry.alias),
     ...(options.modelAlias === undefined ? [] : [options.modelAlias]),
@@ -42,6 +52,7 @@ export function projectProfileModelMenu(
       if (alias === INHERIT_MODEL_ALIAS || alias.trim() === '') return false;
       const identity = resolver.resolveId(alias);
       if (nativeModels !== undefined && (identity === undefined || !Object.hasOwn(nativeModels, identity))) return false;
+      if (executorModels !== undefined && (identity === undefined || !executorModels.has(identity))) return false;
       if (!roleModelAllowed(alias, constraints, native ? models : undefined)) return false;
       if (position === 'sub') assertSubagentModelNotDenied(config, alias, native ? models : undefined);
       return true;

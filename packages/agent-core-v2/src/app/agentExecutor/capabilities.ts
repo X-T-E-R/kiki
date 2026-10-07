@@ -1,4 +1,8 @@
 import type { ProfileBindingSnapshot } from '#/agent/profile/profile';
+import type {
+  ExecutorControlApplicability,
+  ExecutorCapabilityControls,
+} from '@kiki/agent-profiles/ports';
 import type { AgentExecutorDescriptor, ExecutorPromptDelivery } from './agentExecutor';
 
 export interface ExecutorCapabilities {
@@ -19,10 +23,38 @@ export interface NegotiatedExecutorCapabilities {
   readonly planApproval?: boolean;
   readonly models?: readonly string[];
   readonly thinkingLevels?: readonly string[];
+  readonly contextWindow?: number;
+  readonly maxInputTokens?: number;
+  readonly maxOutputTokens?: number;
+  readonly compactionThreshold?: number;
+  readonly controls?: {
+    readonly modelSwitch?: boolean;
+    readonly thinkingSwitch?: boolean;
+    readonly manualCompact?: boolean;
+  };
   readonly authMethods?: readonly string[];
   readonly resume?: boolean;
   readonly load?: boolean;
   readonly permissionModes?: readonly string[];
+}
+
+export function executorControlCapabilities(descriptor: AgentExecutorDescriptor): ExecutorCapabilityControls {
+  const declared = descriptor.controlCapabilities;
+  const control = (applicability: ExecutorControlApplicability | undefined, argvFallback = false) => {
+    const effective = applicability ?? (argvFallback ? 'fresh_binding' : undefined);
+    if (effective === undefined || effective === 'unknown') {
+      return { applicability: 'unknown' as const, applyState: 'unknown' as const };
+    }
+    if (effective === 'unsupported') {
+      return { advertised: false, applicability: effective, applyState: 'unsupported' as const };
+    }
+    return { advertised: true, applicability: effective, applyState: 'unknown' as const };
+  };
+  return {
+    modelSwitch: control(declared?.modelSwitch, descriptor.modelBinding === 'argv'),
+    thinkingSwitch: control(declared?.thinkingSwitch),
+    manualCompact: control(declared?.manualCompact),
+  };
 }
 
 export function executorCapabilities(descriptor: AgentExecutorDescriptor): ExecutorCapabilities {
