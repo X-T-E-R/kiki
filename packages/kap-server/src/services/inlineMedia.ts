@@ -31,7 +31,6 @@ export function inlineToolMedia(part: unknown): { kind: 'image' | 'video'; url: 
 }
 
 export function projectInlineToolMedia(value: unknown, path: ContentRef['path'], source: ContentSource, entity: object, agentId: string): object | undefined {
-  if (source.kind === 'prompt' && (entity as { status?: string }).status !== 'completed') return undefined;
   let frameSource = source;
   let framePath = path;
   if (source.kind === 'turn' && path[0] === 'steps' && typeof path[1] === 'number' && path[2] === 'frames' && typeof path[3] === 'number') {
@@ -47,7 +46,8 @@ export function projectInlineToolMedia(value: unknown, path: ContentRef['path'],
   if (media === undefined) return undefined;
   const address = Buffer.from(JSON.stringify({ source: frameSource, path: framePath })).toString('base64url');
   const fileId = `inline-content:${agentId}:${address}:${contentRevision(media.url)}`;
-  return { type: media.kind, source: { kind: 'session_media', file_id: fileId } };
+  const name = source.kind === 'prompt' ? (value as { name?: unknown }).name : undefined;
+  return { type: media.kind, source: { kind: 'session_media', file_id: fileId }, name: typeof name === 'string' ? name : undefined };
 }
 
 export function isInlineMediaAddress(source: ContentSource, path: ContentRef['path']): boolean {

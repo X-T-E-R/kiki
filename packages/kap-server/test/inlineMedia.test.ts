@@ -80,12 +80,12 @@ describe('canonical inline media original', () => {
     const { pictures } = await import(fixture);
     const original: Buffer = pictures[1].bytes;
     const prompt = { promptId: 'image-prompt', userMessageId: 'image-prompt', status: 'completed' as const, createdAt: '2026-01-01T00:00:00.000Z',
-      content: [{ type: 'text' as const, text: 'Example feedback' }, { type: 'image' as const, source: { kind: 'base64' as const, media_type: 'image/png', data: original.toString('base64') } }] };
+      content: [{ type: 'text' as const, text: 'Example feedback' }, { type: 'image' as const, name: 'ordinary.png', source: { kind: 'base64' as const, media_type: 'image/png', data: original.toString('base64') } }] };
     const transcript = new AgentTranscript('child');
     transcript.apply([{ op: 'reset', agentId: 'child', snapshot: { items: [], tasks: [], attachments: [], prompts: [prompt], interactions: [], todos: [], meta: {} } }]);
     const snapshot = boundedTranscriptSnapshot(transcript.snapshot(), 'child');
     const media = (snapshot.prompts[0]!.content as { type: string; source: { kind: string; file_id: string } }[])[1]!;
-    expect(media).toMatchObject({ type: 'image', source: { kind: 'session_media' } });
+    expect(media).toMatchObject({ type: 'image', name: 'ordinary.png', source: { kind: 'session_media' } });
     const op = boundedTranscriptOps([{ op: 'prompt.upsert', prompt }], transcript)[0]!;
     expect(op).toMatchObject({ op: 'prompt.upsert', prompt: { content: [prompt.content[0], media] } });
     const preview = boundedEntity(prompt, { kind: 'prompt', id: prompt.promptId }, 512);
@@ -94,12 +94,18 @@ describe('canonical inline media original', () => {
     expect(continuation.value).toEqual([prompt.content[0], media]);
     expect(continuation.contentRefs).toEqual([]);
     expect(prompt.content[1]!.source?.data).toBe(original.toString('base64'));
-    const queued = { ...prompt, status: 'queued' as const };
-    const queuedPreview = boundedEntity(queued, { kind: 'prompt', id: queued.promptId }, 512, 'child');
-    const queuedRef = queuedPreview.contentRefs!.find((ref) => ref.path.length === 1 && ref.path[0] === 'content')!;
-    const queuedSegment = readContentSegment(queued, queuedRef, false, 'child');
-    expect(queuedSegment.value).toMatchObject([prompt.content[0], { type: 'image', source: { kind: 'base64' } }]);
-    expect(queuedSegment.contentRefs).toContainEqual(expect.objectContaining({ path: ['content', 1, 'source', 'data'], total: original.toString('base64').length }));
+    for (const status of ['queued', 'running'] as const) {
+      const active = { ...prompt, status };
+      const activeSnapshot = boundedTranscriptSnapshot({ ...transcript.snapshot(), prompts: [active] }, 'child');
+      expect(activeSnapshot.prompts[0]!.content).toEqual([prompt.content[0], media]);
+      expect(jsonBytes(activeSnapshot)).toBeLessThan(4096);
+      expect(boundedTranscriptOps([{ op: 'prompt.upsert', prompt: active }], transcript)[0]).toMatchObject({ op: 'prompt.upsert', prompt: { content: [prompt.content[0], media] } });
+      const activePreview = boundedEntity(active, { kind: 'prompt', id: active.promptId }, 512);
+      const activeRef = activePreview.contentRefs!.find((ref) => ref.path.length === 1 && ref.path[0] === 'content')!;
+      const activeSegment = readContentSegment(active, activeRef, false, 'child');
+      expect(activeSegment.value).toEqual([prompt.content[0], media]);
+      expect(activeSegment.contentRefs).toEqual([]);
+    }
     let changed = false;
     const service = { forSessionLive: () => undefined, readColdSnapshot: async (session: string, agent: string) =>
       session === 'fixture-session' && agent === 'child' ? { ...transcript.snapshot(), prompts: changed ? [] : [prompt] } : undefined,
@@ -107,7 +113,9 @@ describe('canonical inline media original', () => {
     const app = Fastify(); servers.push(app);
     await app.register(async (router) => { registerSessionMediaRoutes(router as unknown as Parameters<typeof registerSessionMediaRoutes>[0], {} as Scope, service); }, { prefix: '/api' });
     const path = `/api/sessions/fixture-session/media/${encodeURIComponent(media.source.file_id)}`;
-    expect((await app.inject({ url: path })).rawPayload).toEqual(original);
+    const downloaded = await app.inject({ url: path });
+    expect(downloaded.rawPayload).toEqual(original);
+    expect(downloaded.headers['content-disposition']).toContain('ordinary.png');
     expect((await app.inject({ url: `${path}/preview` })).statusCode).toBe(200);
     expect((await app.inject({ url: path.replace('fixture-session', 'wrong-session') })).statusCode).toBe(404);
     expect((await app.inject({ url: path.replace('child', 'other') })).statusCode).toBe(404);

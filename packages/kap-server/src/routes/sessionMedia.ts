@@ -239,8 +239,9 @@ async function openSessionMedia(core: Scope, sessionId: string, fileId: string, 
       selected = (selected as Record<string | number, unknown>)[key];
     }
     const media = inlineToolMedia(selected);
+    const name = selected !== null && typeof selected === 'object' ? (selected as { name?: unknown }).name : undefined;
     return { sessionExists: true, file: media === undefined || contentRevision(media.url) !== parts[3]
-      ? undefined : await inlineDataMediaFile(media.url, `${parsed.data.source.id}.${media.kind}`) };
+      ? undefined : await inlineDataMediaFile(media.url, typeof name === 'string' && name.length > 0 ? name : `${parsed.data.source.id}.${media.kind}`) };
   }
   if (fileId.startsWith('inline:')) {
     const parts = fileId.split(':');

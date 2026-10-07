@@ -17,16 +17,14 @@ describe('bounded canonical content', () => {
     expect(completed).toMatchObject({ prompt: turn.prompt });
     expect(turn.prompt).toBe('raw'.repeat(10_000));
   });
-  it('marks the exact queued base64 preview as incomplete before an editor can rebuild a truncated image URL', () => {
-    const original = { promptId: 'queued-image', status: 'queued', content: [{ type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'A'.repeat(10_000) } }] };
-    const preview = boundedEntity(original, { kind: 'prompt', id: original.promptId });
-    const data = preview.content[0]!.source.data;
-    expect(data).toHaveLength(1022);
-    expect(`data:image/png;base64,${data}`).toHaveLength(1044);
-    expect(preview.contentRefs).toContainEqual(expect.objectContaining({ path: ['content', 0, 'source', 'data'], offset: 1022, total: 10_000 }));
-    let completed = preview;
-    while (completed.contentRefs?.length) completed = applyContentSegment(completed, readContentSegment(original, completed.contentRefs[0]!, false, 'main', 48 * 1024));
-    expect(completed.content).toEqual(original.content);
+  it.each(['queued', 'running', 'completed'])('keeps %s prompt image previews revision-addressed without shipping truncated base64', (status) => {
+    const original = { promptId: 'sent-image', status, content: [{ type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'A'.repeat(10_000) } }] };
+    const preview = boundedEntity(original, { kind: 'prompt', id: original.promptId }, 2048, 'main');
+    expect(preview.content[0]).toMatchObject({ type: 'image', source: { kind: 'session_media', file_id: expect.stringMatching(/^inline-content:main:/u) } });
+    expect(JSON.stringify(preview)).not.toContain('base64');
+    expect(preview.contentRefs).toBeUndefined();
+    expect(jsonBytes(preview)).toBeLessThan(2048);
+    expect(original.content[0]!.source.data).toHaveLength(10_000);
   });
   it('projects the real external text marker shape and reads its exact saved body through marker content refs', () => {
     const text = 'START saved material\n' + '汉😀 native body\n'.repeat(4000) + 'END saved material';
