@@ -2357,6 +2357,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return binding !== undefined && binding.modelAlias === alias ? binding.modelSettings ?? binding.recipe?.resolved.model : undefined;
   }
 
+  async getRecipeScriptHooks(): Promise<readonly import('#/features/externalHooks/internal/types').HookDef[]> {
+    if (this.isExternalExecutor) return [];
+    const recipe = (await this.getCognitionBinding()).recipe?.resolved;
+    if (recipe === undefined || (recipe.hooks?.length ?? 0) === 0) return [];
+    if (this.recipes === undefined) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'Recipe service is unavailable');
+    return this.recipes.scriptHooks(structuredClone(recipe) as import('@kiki/protocol').ResolvedRecipe);
+  }
+
   async getCognitionBinding(): Promise<CognitionBinding> {
     await this.restoreCommittedPromptProjections();
     await this.ensureDelegationPosition();

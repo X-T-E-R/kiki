@@ -102,6 +102,10 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
         indexed.hook.pluginId === undefined || workspaceId !== undefined && await this.usage!.allows(workspaceId, indexed.hook.pluginId) ? indexed : undefined));
       byEvent = new Map([[event, hooks.filter((indexed) => indexed !== undefined)]]);
     }
+    if (args.additionalHooks !== undefined) {
+      const additional = indexHooks(await args.additionalHooks());
+      byEvent = new Map([[event, [...byEvent.get(event) ?? [], ...additional.get(event) ?? []]]]);
+    }
     return runMatchedHooks(
       this.hostProcess,
       byEvent,

@@ -62,6 +62,39 @@ The result is a `hook.result` diagnostic event (`hookEvent = "hooks.inspect"`) a
 
 TOML cannot declare both `[[hooks]]` and `[hooks]` under the same key, and an existing array keeps working as it is. To keep legacy commands inside a v2 document, move them explicitly to `[[hooks.legacy]]`, keeping their `event`, `matcher`, `command` and seconds-based `timeout`; they still run under the legacy runner and output protocol.
 
+## Recipe script hooks
+
+A [Recipe model preset](./prompt-fields.md#recipe-model-presets) can carry scripts for its native model or profile binding. Add the hook to `recipe.toml` and list every UTF-8 script or support file the command needs:
+
+```toml
+[[hooks]]
+event = "UserPromptSubmit"
+command = "node hooks/cue.mjs"
+files = ["hooks/cue.mjs"]
+timeout = 5
+```
+
+`hooks/cue.mjs` reads the event JSON from standard input and returns guidance using the existing [script response protocol](#return-values):
+
+```js
+let input = '';
+for await (const part of process.stdin) input += part;
+const event = JSON.parse(input);
+if (event.hook_event_name === 'UserPromptSubmit') {
+  console.log(JSON.stringify({ message: 'Check the goal and available evidence before answering.' }));
+}
+```
+
+Preview lists the actual commands, events, sources and resource fingerprints. Installing a script-bearing package requires one explicit confirmation for that executable content. Scripts run as the Kiki server's OS user and can access that host's files and network; they are not sandboxed and do not change the agent's tool permissions. Previewing, opening an editor or cancelling installation runs nothing. A package without scripts needs no script confirmation, and an accepted binding or resumed session does not ask again on each trigger.
+
+The command runs in a managed directory containing the accepted resource snapshot, not in the author's live source directory. `KIKI_RECIPE_ROOT` names that resource directory; the event JSON's `cwd` still names the session workspace. Use your host's existing interpreter and quote shell paths normally. `matcher` and `timeout` retain the legacy fields below (timeout defaults to 30 seconds, integer range 1–600). Paths must stay relative to the package; each referenced text file is limited to 256 KiB. An optional `root` selects a package-relative directory for the listed `files`, which is useful for exported packages containing same-named inherited scripts.
+
+Parent and child hooks append; top-level `hooks = "off"` removes inherited scripts. Model and profile references contribute independently. Disabling a reference stops that layer on the next binding or context rebuild, leaving its package and saved configuration intact. Existing sessions keep their frozen scripts until an explicit rebuild, even after the installation accepts an update.
+
+Changing a command, script resource or execution source needs the same preview-and-confirm workflow before publishing. Prompt-only updates with unchanged executable content do not ask again. Automatic `follow` updates leave the old revision active when new scripts need confirmation. Copying or inheriting an accepted Recipe reuses its unchanged script authorization; exporting shares resources, not authorization, so a recipient confirms their first installation.
+
+Recipe scripts support the Agent-bound events in the [event reference](#event-reference). `SessionStart`, `SessionEnd`, `SessionHeartbeat`, `SubagentStart` and `SubagentStop` are not valid Recipe events; existing user and plugin hooks for those events keep working. External executors do not run Recipe scripts. The declarative `hooks-inspect` view does not certify script execution; verify the script result and the target event instead.
+
 ## Legacy command hooks
 
 Everything below describes the legacy contract: a rule names an event, targets to match, and a shell command to run.

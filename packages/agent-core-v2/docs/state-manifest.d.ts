@@ -2121,6 +2121,18 @@ export interface AgentStateSnapshot {
             file?: string;
           };
           };
+          hooks?: readonly {
+            event: string;
+            command: string;
+            source: string;
+            manifest_id: string;
+            files: {
+              [key: string]: string;
+            };
+            matcher?: string;
+            timeout?: number;
+          }[];
+          hooks_fingerprint?: string;
           layers?: readonly {
             surface: 'profile' | 'model';
             installation_id: string;
@@ -2201,6 +2213,18 @@ export interface AgentStateSnapshot {
                 file?: string;
               };
               };
+              hooks?: readonly {
+                event: string;
+                command: string;
+                source: string;
+                manifest_id: string;
+                files: {
+                  [key: string]: string;
+                };
+                matcher?: string;
+                timeout?: number;
+              }[];
+              hooks_fingerprint?: string;
             };
           }[];
         };
@@ -5263,6 +5287,18 @@ export interface AgentStateSnapshot {
                   file?: string;
                 };
                 };
+                hooks?: readonly {
+                  event: string;
+                  command: string;
+                  source: string;
+                  manifest_id: string;
+                  files: {
+                    [key: string]: string;
+                  };
+                  matcher?: string;
+                  timeout?: number;
+                }[];
+                hooks_fingerprint?: string;
                 layers?: readonly {
                   surface: 'profile' | 'model';
                   installation_id: string;
@@ -5343,6 +5379,18 @@ export interface AgentStateSnapshot {
                       file?: string;
                     };
                     };
+                    hooks?: readonly {
+                      event: string;
+                      command: string;
+                      source: string;
+                      manifest_id: string;
+                      files: {
+                        [key: string]: string;
+                      };
+                      matcher?: string;
+                      timeout?: number;
+                    }[];
+                    hooks_fingerprint?: string;
                   };
                 }[];
               };
@@ -6003,7 +6051,7 @@ export interface AgentStateSnapshot {
       readonly title: string;
       readonly status: /* TodoStatus — packages/agent-core-v2/src/session/todo/todoItem.ts */ 'pending' | 'in_progress' | 'done';
     }[];
-    readonly notes?: Partial<Record<'goal' | 'directives' | 'decided' | 'rejected' | 'evidence' | 'files' | 'next' | 'open', string>>;
+    readonly notes?: Partial<Record<'goal' | 'files' | 'directives' | 'decided' | 'rejected' | 'evidence' | 'next' | 'open', string>>;
     readonly notesMeta?: /* NotesMeta — packages/agent-core-v2/src/session/todo/todoNotes.ts */ {
       readonly rev: number;
       readonly hash: string;

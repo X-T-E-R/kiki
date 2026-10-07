@@ -18,9 +18,10 @@ import { Emitter } from '#/_base/event';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { Error2, ErrorCodes } from '#/errors';
+import { hookExecution, recipeHookFingerprint, recipeHookPreview } from './recipeHooks';
 
-interface Installation { summary: RecipeSummary; history: string[]; editable: boolean; checked_at?: number }
-interface Candidate { preview: RecipePreview; snapshot: RecipeSnapshot; expires: number }
+interface Installation { summary: RecipeSummary; history: string[]; editable: boolean; checked_at?: number; trustedHooks?: string[] }
+interface Candidate { preview: RecipePreview; snapshot: RecipeSnapshot; expires: number; installation_id?: string; expected_revision?: string }
 export class RecipeService extends Disposable implements IRecipeService {
   declare readonly _serviceBrand: undefined;
   private readonly changed = this._register(new Emitter<void>());
@@ -61,8 +62,26 @@ export class RecipeService extends Disposable implements IRecipeService {
     const snapshot = await this.snapshot(record.summary.revision);
     return { summary: record.summary, resolved: snapshot.resolved, files: snapshot.files, history: record.history, editable: record.editable, used_by: this.usedBy(id) };
   }
-  async resolve(id: string): Promise<ResolvedRecipe> { this.enabled(); return structuredClone((await this.snapshot((await this.record(id)).summary.revision)).resolved); }
-  private async prepare(source: RecipeSource, chain: string[] = [], files?: Record<string, string>): Promise<RecipeSnapshot> {
+  private consentFailure(): never {
+    throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Confirm installation to authorize new Recipe scripts', { details: { code: 'recipe-hook-consent-required', path: 'hooks' } });
+  }
+  async resolve(id: string): Promise<ResolvedRecipe> {
+    this.enabled(); const record = await this.record(id);
+    const resolved = structuredClone((await this.snapshot(record.summary.revision)).resolved);
+    const fingerprint = recipeHookFingerprint(resolved.hooks);
+    if (fingerprint !== undefined && !record.trustedHooks?.includes(fingerprint)) this.consentFailure();
+    return { ...resolved, hooks_fingerprint: fingerprint };
+  }
+  async scriptHooks(recipe: ResolvedRecipe): Promise<readonly import('#/features/externalHooks/internal/types').HookDef[]> {
+    this.enabled(); const hooks: NonNullable<ResolvedRecipe['hooks']> = [];
+    for (const layer of recipe.layers?.map((layer) => layer.resolved) ?? [recipe]) {
+      const fingerprint = recipeHookFingerprint(layer.hooks);
+      if (fingerprint !== undefined && layer.hooks_fingerprint !== fingerprint) this.consentFailure();
+      hooks.push(...layer.hooks ?? []);
+    }
+    return hooks.length === 0 ? [] : this.sources.materializeHooks(hooks);
+  }
+  private async prepare(source: RecipeSource, chain: string[] = [], files?: Record<string, string>, forkParent?: RecipeSnapshot): Promise<RecipeSnapshot> {
     let reader: RecipePackageReader;
     if (files !== undefined) reader = this.fileReader(source, files);
     else if (source.locator.startsWith('installation:')) {
@@ -77,9 +96,9 @@ export class RecipeService extends Disposable implements IRecipeService {
     let declaration = parsed.declaration; const dependencies: ResolvedRecipe['dependencies'] = [];
     if (parsed.manifest.extends !== undefined) {
       const parentSource = { locator: parsed.manifest.extends.source, sha256: parsed.manifest.extends.sha256 };
-      if (/^https:/u.test(locator) && !/^https:|^installation:/u.test(parentSource.locator)) recipeFailure('Remote Recipe cannot inherit a local path', locator, 'extends.source');
-      const parent = parsed.manifest.extends.revision === undefined
-        ? await this.prepare(parentSource, [...chain, locator]) : await this.snapshot(parsed.manifest.extends.revision);
+      if (locator.startsWith('https:') && !parentSource.locator.startsWith('https:') && !parentSource.locator.startsWith('installation:')) recipeFailure('Remote Recipe cannot inherit a local path', locator, 'extends.source');
+      const parent = forkParent ?? (parsed.manifest.extends.revision === undefined
+        ? await this.prepare(parentSource, [...chain, locator]) : await this.snapshot(parsed.manifest.extends.revision));
       if (parsed.manifest.extends.revision !== undefined && parent.source.locator !== parentSource.locator && parent.requestedSource.locator !== parentSource.locator) recipeFailure('Pinned parent source does not match revision', locator, 'extends');
       declaration = mergeRecipe(parent.declaration, declaration);
       dependencies.push(...parent.resolved.dependencies, { source: parent.source, manifest_id: parent.manifest.id, version: parent.manifest.version, revision: parent.resolved.revision });
@@ -102,7 +121,7 @@ export class RecipeService extends Disposable implements IRecipeService {
     return { source, read: async (file) => { const text = files[validateRecipePath(file)]; if (text === undefined) recipeFailure('Recipe referenced file is missing', source.locator, file); return text; } };
   }
   private async persistSnapshot(snapshot: RecipeSnapshot): Promise<void> {
-    for (const [file, text] of Object.entries(snapshot.files)) await this.blobs.put(this.scope, `recipes/content/${recipeDigest(text).slice(7)}`, new TextEncoder().encode(text));
+    for (const text of Object.values(snapshot.files)) await this.blobs.put(this.scope, `recipes/content/${recipeDigest(text).slice(7)}`, new TextEncoder().encode(text));
     await this.documents.set(this.scope, this.key(snapshot.resolved.revision), snapshot);
   }
   private summary(snapshot: RecipeSnapshot, id: string, mode: RecipeSummary['update_mode']): RecipeSummary {
@@ -111,27 +130,40 @@ export class RecipeService extends Disposable implements IRecipeService {
   async preview(input: RecipePreviewInput): Promise<RecipePreview> {
     this.enabled(); for (const [id, candidate] of this.candidates) if (candidate.expires < Date.now()) this.candidates.delete(id);
     if (this.candidates.size >= 32) recipeFailure('Too many pending Recipe previews; install or wait for expiry');
-    const snapshot = await this.prepare(input.source);
-    const preview_id = randomUUID(); const id = randomUUID();
+    const old = input.installation_id === undefined ? undefined : await this.record(input.installation_id);
+    if (input.files !== undefined && (old === undefined || !old.editable)) recipeFailure('Recipe files can only preview an editable installation');
+    if (old !== undefined && input.expected_revision !== undefined && old.summary.revision !== input.expected_revision) recipeFailure('Recipe changed; reload before saving');
+    if (old !== undefined && input.source.locator !== old.summary.source.locator) recipeFailure('Update preview must retain the installation source');
+    const snapshot = await this.prepare(input.source, [], input.files);
+    const preview_id = randomUUID(); const id = input.installation_id ?? randomUUID();
     const pinned = input.source.sha256 !== undefined || /\/commit\/|\/tree\/[a-f0-9]{40}$/u.test(input.source.locator);
-    const preview: RecipePreview = { preview_id, digest: snapshot.resolved.revision, summary: this.summary(snapshot, id, pinned ? 'pinned' : 'follow'), resolved: snapshot.resolved, diagnostics: [] };
-    this.candidates.set(preview_id, { preview, snapshot, expires: Date.now() + 15 * 60_000 });
+    const preview: RecipePreview = { preview_id, digest: snapshot.resolved.revision, summary: this.summary(snapshot, id, old?.summary.update_mode ?? (pinned ? 'pinned' : 'follow')), resolved: snapshot.resolved, diagnostics: [], hooks: recipeHookPreview(snapshot.resolved, old?.trustedHooks) };
+    this.candidates.set(preview_id, { preview, snapshot, expires: Date.now() + 15 * 60_000, installation_id: input.installation_id, expected_revision: old?.summary.revision });
     return structuredClone(preview);
   }
   async install(input: RecipeInstallInput): Promise<RecipeSummary> {
     this.enabled(); const candidate = this.candidates.get(input.preview_id);
     if (candidate === undefined || candidate.expires < Date.now()) recipeFailure('Recipe preview expired; preview the source again');
-    const summary = { ...candidate.preview.summary, update_mode: input.update_mode ?? candidate.preview.summary.update_mode };
-    await this.documents.update<Record<string, Installation>>(this.scope, 'recipes/installations', (records) => ({ ...records, [summary.installation_id]: { summary, history: [summary.revision], editable: false } }));
+    if (candidate.preview.hooks?.consent_required && input.consent !== true) this.consentFailure();
+    const fingerprint = candidate.preview.hooks?.fingerprint;
+    let summary: RecipeSummary;
+    if (candidate.installation_id !== undefined) summary = await this.publish(candidate.installation_id, candidate.snapshot, candidate.expected_revision, input.update_mode, input.consent);
+    else {
+      summary = { ...candidate.preview.summary, update_mode: input.update_mode ?? candidate.preview.summary.update_mode, hooks_fingerprint: fingerprint };
+      await this.documents.update<Record<string, Installation>>(this.scope, 'recipes/installations', (records) => ({ ...records, [summary.installation_id]: { summary, history: [summary.revision], editable: false, trustedHooks: fingerprint === undefined ? [] : [fingerprint] } }));
+    }
     this.candidates.delete(input.preview_id); this.changed.fire(); return summary;
   }
-  private async publish(id: string, snapshot: RecipeSnapshot, expected?: string, mode?: RecipeSummary['update_mode']): Promise<RecipeSummary> {
+  private async publish(id: string, snapshot: RecipeSnapshot, expected?: string, mode?: RecipeSummary['update_mode'], consent?: boolean): Promise<RecipeSummary> {
     let result: RecipeSummary | undefined;
     await this.documents.update<Record<string, Installation>>(this.scope, 'recipes/installations', (records) => {
       const old = records?.[id]; if (old === undefined) recipeFailure('Recipe installation not found', id);
       if (expected !== undefined && old.summary.revision !== expected) recipeFailure('Recipe changed; reload before saving', id, 'expected_revision');
-      result = { ...this.summary(snapshot, id, mode ?? old.summary.update_mode), copied_from: old.summary.copied_from };
-      return { ...records, [id]: { ...old, summary: result, checked_at: Date.now(), history: [...new Set([...old.history, snapshot.resolved.revision])] } };
+      const fingerprint = recipeHookFingerprint(snapshot.resolved.hooks);
+      if (fingerprint !== undefined && !old.trustedHooks?.includes(fingerprint) && consent !== true) this.consentFailure();
+      const trustedHooks = [...new Set([...(old.trustedHooks ?? []), ...(fingerprint === undefined ? [] : [fingerprint])])];
+      result = { ...this.summary(snapshot, id, mode ?? old.summary.update_mode), copied_from: old.summary.copied_from, hooks_fingerprint: fingerprint };
+      return { ...records, [id]: { ...old, summary: result, trustedHooks, checked_at: Date.now(), history: [...new Set([...old.history, snapshot.resolved.revision])] } };
     });
     this.changed.fire(); return result!;
   }
@@ -166,10 +198,11 @@ export class RecipeService extends Disposable implements IRecipeService {
       if (record.summary.update_mode === 'pinned' || accept && Date.now() - (record.checked_at ?? 0) < 24 * 60 * 60_000) continue;
       try {
         const next = await this.prepare(record.summary.source);
-        if (accept) await this.publish(id, next, record.summary.revision);
+        const consentRequired = recipeHookPreview(next.resolved, record.trustedHooks).consent_required;
+        if (accept && !consentRequired) await this.publish(id, next, record.summary.revision);
         else await this.documents.update<Record<string, Installation>>(this.scope, 'recipes/installations', (records) => {
           const current = records?.[id]; if (current === undefined || current.summary.revision !== record.summary.revision) return records;
-          return { ...records, [id]: { ...current, summary: { ...current.summary, update_available: next.resolved.revision !== current.summary.revision, last_error: undefined } } };
+          return { ...records, [id]: { ...current, checked_at: Date.now(), summary: { ...current.summary, update_available: next.resolved.revision !== current.summary.revision, hook_consent_required: consentRequired, last_error: undefined } } };
         });
       } catch (error) { await this.reportError(id, error); }
     }
@@ -182,7 +215,13 @@ export class RecipeService extends Disposable implements IRecipeService {
   private copyFiles(snapshot: RecipeSnapshot, identity: { id: string; name: string; version: string; description?: string }): Record<string, string> {
     const prompts = Object.fromEntries(Object.entries(snapshot.resolved.branches).filter(([position]) => position !== 'sub').map(([position, branch]) => [position, this.branchManifest(branch)]));
     const common = this.branchManifest(snapshot.resolved.branches.sub);
-    return { 'recipe.toml': stringify({ schema_version: 1, id: identity.id, name: identity.name, version: identity.version, description: identity.description,
+    const files: Record<string, string> = {};
+    const hooks = snapshot.resolved.hooks?.map((hook, index) => {
+      const root = `hooks/${index}`;
+      for (const [file, text] of Object.entries(hook.files)) files[`${root}/${file}`] = text;
+      return { event: hook.event, command: hook.command, matcher: hook.matcher, timeout: hook.timeout, root, files: Object.keys(hook.files) };
+    });
+    return { ...files, 'recipe.toml': stringify({ schema_version: 1, id: identity.id, name: identity.name, version: identity.version, description: identity.description, hooks,
       prompts: { ...common, ...prompts }, model: (modelsToToml({ recipe: snapshot.resolved.model }, {}) as Record<string, unknown>)['recipe'] }) };
   }
   async fork(input: RecipeForkInput): Promise<RecipeDetail> {
@@ -191,8 +230,13 @@ export class RecipeService extends Disposable implements IRecipeService {
     const files = input.mode === 'copy' ? this.copyFiles(snapshot, { id: input.id, name: input.name, version: '1.0.0' })
       : { 'recipe.toml': stringify({ schema_version: 1, id: input.id, name: input.name, version: '1.0.0',
         extends: { source: old.summary.source.locator, sha256: old.summary.source.sha256, revision: old.summary.update_mode === 'pinned' ? old.summary.revision : undefined } }) };
-    const next = await this.prepare(source, [], files); const summary = { ...this.summary(next, id, input.mode === 'extend' ? 'follow' : 'pinned'), copied_from: old.summary.source.locator };
-    await this.documents.update<Record<string, Installation>>(this.scope, 'recipes/installations', (records) => ({ ...records, [id]: { summary, history: [summary.revision], editable: true } }));
+    const next = await this.prepare(source, [], files, input.mode === 'extend' ? snapshot : undefined);
+    const previousFingerprint = recipeHookFingerprint(snapshot.resolved.hooks);
+    if (previousFingerprint !== undefined && !old.trustedHooks?.includes(previousFingerprint)) this.consentFailure();
+    if (recipeDigest((next.resolved.hooks ?? []).map(hookExecution)) !== recipeDigest((snapshot.resolved.hooks ?? []).map(hookExecution))) this.consentFailure();
+    const fingerprint = recipeHookFingerprint(next.resolved.hooks);
+    const summary = { ...this.summary(next, id, input.mode === 'extend' ? 'follow' : 'pinned'), copied_from: old.summary.source.locator, hooks_fingerprint: fingerprint };
+    await this.documents.update<Record<string, Installation>>(this.scope, 'recipes/installations', (records) => ({ ...records, [id]: { summary, history: [summary.revision], editable: true, trustedHooks: fingerprint === undefined ? [] : [fingerprint] } }));
     this.changed.fire(); return (await this.get(id))!;
   }
   private branchManifest(branch: ResolvedRecipe['branches']['main']): Record<string, unknown> {
@@ -242,7 +286,7 @@ export class RecipeService extends Disposable implements IRecipeService {
   private async writeMarket(input: RecipeMarketInput, exists: boolean): Promise<RecipeMarket> {
     this.enabled(); const before = this.config.get<RecipesConfig>(RECIPES_SECTION);
     if (before.markets.some((market) => market.id === input.id) !== exists) recipeFailure(exists ? 'Recipe market not found' : 'Recipe market already exists', input.id);
-    if (!/^https:\/\//u.test(input.url)) recipeFailure('Recipe market requires HTTPS', input.url);
+    if (!input.url.startsWith('https://')) recipeFailure('Recipe market requires HTTPS', input.url);
     await this.config.replaceSections({ [RECIPES_SECTION]: { markets: [...before.markets.filter((market) => market.id !== input.id), input] } }, undefined, { [RECIPES_SECTION]: before });
     this.changed.fire(); return { ...input, offline: false };
   }

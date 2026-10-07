@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, writeFile, rm, symlink } from 'node:fs/promises';
+import { access, mkdtemp, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { ZipFile } from 'yazl';
 import { RecipeSourceReader } from '#/os/backends/node-fs/recipeSourceReader';
 import { stringify } from 'smol-toml';
 import { createServices } from '#/_base/di/test';
@@ -24,6 +26,7 @@ import { FlagService } from '#/app/flag/flagService';
 import { Event } from '#/_base/event';
 import { IModelService } from '#/kosong/model/model';
 import { IPromptFieldRegistry, type PromptFieldDefinition } from '#/app/promptField/promptFieldRegistry';
+import { makeHookRunner, nodeCommand } from '../../features/externalHooks/runner-stub';
 
 const parent = 'https://example.test/parent/recipe.toml';
 const child = 'https://example.test/child/recipe.toml';
@@ -45,7 +48,7 @@ describe('Recipe accepted revisions', () => {
       reg.definePartialInstance(IConfigService, {
         ready: new Promise<void>(() => {}),
         get: <T>(domain: string) => (domain === 'experimental' ? (flagInputs?.recipes === undefined ? {} : { recipes: flagInputs.recipes }) : { markets: [] }) as T,
-        onDidChangeConfiguration: Event.None, replaceSections: modelWrites,
+        onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'], replaceSections: modelWrites,
       });
       if (flagInputs === undefined) reg.definePartialInstance(IFlagService, { enabled: () => true });
       else { reg.define(IFlagRegistry, FlagRegistryService); reg.define(IFlagService, FlagService); }
@@ -84,11 +87,11 @@ describe('Recipe accepted revisions', () => {
     expect((await recipes.get(installed.installation_id))?.summary.revision).toBe(installed.revision);
     expect((await recipes.resolve(installed.installation_id)).branches.main.system).toBe('PARENT FILE');
   });
-  it.each([
+  it.each<{ env: Record<string, string>; recipes: boolean; source: string }>([
     { env: { KIKI_EXPERIMENTAL_FLAG: 'true' }, recipes: false, source: 'config' },
     { env: { KIKI_EXPERIMENTAL_RECIPES: 'false', KIKI_EXPERIMENTAL_FLAG: 'true' }, recipes: true, source: 'env' },
   ])('keeps explicit $source false above the released Recipe default', async ({ env, recipes, source }) => {
-    const ix = newStore({ env, recipes });
+    const ix = newStore({ env: env ?? {}, recipes });
     expect(ix.get(IFlagService).explain('recipes')).toMatchObject({ enabled: false, source });
     const disabled = ix.get(IRecipeService);
     await expect(disabled.list()).rejects.toThrow('Enable experimental recipes');
@@ -193,12 +196,234 @@ describe('Recipe accepted revisions', () => {
 });
 
 
+describe('Recipe script hooks', () => {
+  let disposables: DisposableStore;
+  let readerDisposables: DisposableStore;
+  let service: IRecipeService;
+  let sources: Map<string, Record<string, string>>;
+  let hookHome: string;
+  let resourceReader: IRecipeSourceReader;
+  let materializations: number;
+  const pending = new Promise<void>(() => {});
+  const hookCommand = nodeCommand("const fs = require('node:fs'); process.stdout.write(process.env.KIKI_RECIPE_ROOT + '|' + fs.readFileSync(process.env.KIKI_RECIPE_ROOT + '/hook.js', 'utf8'));");
+  const hook = (command: string, root = 'resources') => [{ event: 'Stop', command, root, files: ['hook.js'], timeout: 5 }];
+  const packageManifest = (id: string, options: { hooks?: unknown; prompts?: unknown; extendsSource?: string; version?: string } = {}) => stringify({
+    schema_version: 1, id, name: id, version: options.version ?? '1.0.0',
+    ...(options.extendsSource === undefined ? {} : { extends: { source: options.extendsSource } }),
+    ...(options.hooks === undefined ? {} : { hooks: options.hooks }), prompts: options.prompts ?? {},
+  });
+  function putPackage(locator: string, id: string, options: { hooks?: unknown; prompts?: unknown; extendsSource?: string; version?: string; files?: Record<string, string> } = {}): void {
+    const files: Record<string, string> = { 'recipe.toml': packageManifest(id, options) };
+    Object.assign(files, options.files);
+    sources.set(locator, files);
+  }
+  function newStore(ready: Promise<void> = pending) {
+    return createServices(disposables, { additionalServices: (reg) => {
+      reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
+      reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore); reg.define(IBlobStore, BlobStoreService);
+      reg.definePartialInstance(IBootstrapService, { scope: () => 'store', getEnv: () => undefined });
+      reg.definePartialInstance(IConfigService, {
+        ready,
+        get: <T>(domain: string) => (domain === 'experimental' ? {} : { markets: [] }) as T,
+        onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+        replaceSections: async () => undefined,
+      });
+      reg.definePartialInstance(IFlagService, { enabled: () => true });
+      reg.definePartialInstance(IModelService, { list: () => ({}) });
+      reg.definePartialInstance(IPromptFieldRegistry, { get: () => ({ readonly: false }) as PromptFieldDefinition, validate: () => ({ values: {}, fields: [] }) });
+      reg.definePartialInstance(IRecipeSourceReader, {
+        open: async (source) => {
+          const files = sources.get(source.locator); if (files === undefined) throw new Error('source unavailable');
+          return { source, read: async (file) => files[file] ?? (() => { throw new Error(`missing file: ${file}`); })() };
+        },
+        catalog: async () => ({ version: 1, recipes: [] }),
+        materializeHooks: async (hooks) => { materializations++; return resourceReader.materializeHooks(hooks); },
+      });
+      reg.define(IRecipeService, RecipeService);
+    } });
+  }
+  async function install(source: string, consent = true): Promise<{ preview: Awaited<ReturnType<IRecipeService['preview']>>; summary: Awaited<ReturnType<IRecipeService['install']>> }> {
+    const preview = await service.preview({ source: { locator: source } });
+    const summary = await service.install({ preview_id: preview.preview_id, consent });
+    return { preview, summary };
+  }
+  beforeEach(async () => {
+    disposables = new DisposableStore(); readerDisposables = new DisposableStore(); sources = new Map(); materializations = 0;
+    hookHome = await mkdtemp(path.join(tmpdir(), 'recipe-hook-home-'));
+    const readerServices = createServices(readerDisposables, { additionalServices: (reg) => {
+      reg.definePartialInstance(IBootstrapService, { homeDir: hookHome });
+      reg.define(IRecipeSourceReader, RecipeSourceReader);
+    } });
+    resourceReader = readerServices.get(IRecipeSourceReader);
+    service = newStore().get(IRecipeService);
+  });
+  afterEach(async () => { await disposables.dispose(); await readerDisposables.dispose(); await rm(hookHome, { recursive: true, force: true }); });
+  it.each(['SessionStart', 'SessionEnd', 'SessionHeartbeat', 'SubagentStart', 'SubagentStop'])('rejects unbound Recipe event %s with an actionable diagnostic', async (event) => {
+    putPackage(child, 'child', { hooks: [{ ...hook(hookCommand)[0], event }], files: { 'resources/hook.js': 'SCRIPT' } });
+    await expect(service.preview({ source: { locator: child } })).rejects.toMatchObject({
+      message: expect.stringContaining('Recipe hooks require an Agent-bound event'), details: { path: 'hooks.0.event' },
+    });
+    expect(await service.list()).toEqual([]); expect(materializations).toBe(0);
+  });
+  it('previews command and resources and isolates same-named parent and child scripts', async () => {
+    putPackage(parent, 'parent', { hooks: hook(hookCommand), files: { 'resources/hook.js': 'PARENT' } });
+    putPackage(child, 'child', { extendsSource: parent, hooks: hook(hookCommand), files: { 'resources/hook.js': 'CHILD' } });
+    const preview = await service.preview({ source: { locator: child } });
+    expect(preview.hooks).toMatchObject({ consent_required: true, scripts: [
+      { event: 'Stop', command: hookCommand, source: parent, files: [{ path: 'hook.js', bytes: 6, sha256: `sha256:${createHash('sha256').update('PARENT').digest('hex')}` }] },
+      { event: 'Stop', command: hookCommand, source: child, files: [{ path: 'hook.js', bytes: 5 }] },
+    ] });
+    expect(preview.resolved.hooks?.map((item) => ({ source: item.source, files: item.files }))).toEqual([
+      { source: parent, files: { 'hook.js': 'PARENT' } }, { source: child, files: { 'hook.js': 'CHILD' } },
+    ]);
+    const installed = await service.install({ preview_id: preview.preview_id, consent: true });
+    const resolved = await service.resolve(installed.installation_id);
+    const hooks = await service.scriptHooks(resolved);
+    expect(hooks).toHaveLength(2);
+    expect(new Set(hooks.map((item) => item.cwd)).size).toBe(2);
+    expect(hooks.every((item) => item.env?.['KIKI_RECIPE_ROOT'] === item.cwd)).toBe(true);
+    for (const item of hooks) expect(await readFile(path.join(item.cwd!, 'hook.js'), 'utf8')).toBe(item.cwd === hooks[0]?.cwd ? 'PARENT' : 'CHILD');
+    const runner = makeHookRunner([]);
+    const results = await runner.trigger('Stop', { additionalHooks: async () => hooks });
+    expect(results).toMatchObject([{ action: 'allow' }, { action: 'allow' }]);
+    expect(results.map((result) => result.stdout?.split('|')[1]?.trim()).sort()).toEqual(['CHILD', 'PARENT']);
+    await writeFile(path.join(hooks[0]!.cwd!, 'hook.js'), 'CORRUPT');
+    await expect(service.scriptHooks(resolved)).rejects.toThrow('corrupt');
+    await runner.dispose();
+  });
+  it('requires one explicit consent, leaves a declined install inert, and allows old hook-free packages without consent', async () => {
+    const marker = path.join(hookHome, 'executed');
+    const command = nodeCommand(`require("node:fs").writeFileSync(${JSON.stringify(marker)}, "executed");`);
+    putPackage(parent, 'hooked', { hooks: hook(command), files: { 'resources/hook.js': 'resource' } });
+    const preview = await service.preview({ source: { locator: parent } });
+    expect(preview.hooks?.consent_required).toBe(true);
+    await expect(service.install({ preview_id: preview.preview_id, consent: false })).rejects.toMatchObject({ details: { code: 'recipe-hook-consent-required' } });
+    expect(await service.list()).toEqual([]);
+    expect(materializations).toBe(0);
+    await expect(access(marker)).rejects.toThrow();
+    const accepted = await service.install({ preview_id: preview.preview_id, consent: true });
+    expect(accepted.hooks_fingerprint).toBeDefined();
+    const plain = 'https://example.test/plain/recipe.toml';
+    putPackage(plain, 'plain', { prompts: { system: { text: 'NO HOOK' } } });
+    const plainPreview = await service.preview({ source: { locator: plain } });
+    expect(plainPreview.hooks).toEqual({ fingerprint: undefined, consent_required: false, scripts: [] });
+    const plainInstall = await service.install({ preview_id: plainPreview.preview_id });
+    expect(plainInstall.hooks_fingerprint).toBeUndefined();
+  });
+  it('does not repeat consent when only prompt content changes', async () => {
+    putPackage(parent, 'same-hook', { hooks: hook(hookCommand), prompts: { system: { text: 'V1' } }, files: { 'resources/hook.js': 'same' } });
+    const first = await install(parent);
+    putPackage(parent, 'same-hook', { hooks: hook(hookCommand), prompts: { system: { text: 'V2' } }, files: { 'resources/hook.js': 'same' } });
+    const preview = await service.preview({ source: { locator: parent }, installation_id: first.summary.installation_id, expected_revision: first.summary.revision });
+    expect(preview.hooks?.consent_required).toBe(false);
+    const updated = await service.install({ preview_id: preview.preview_id });
+    expect(updated.revision).not.toBe(first.summary.revision);
+    expect((await service.resolve(updated.installation_id)).branches.main.system).toBe('V2');
+  });
+  it('preserves the old pointer when a command or resource changes without consent', async () => {
+    putPackage(parent, 'changed-hook', { hooks: hook(hookCommand), files: { 'resources/hook.js': 'OLD' } });
+    const first = await install(parent);
+    const newCommand = nodeCommand('process.stdout.write("new");');
+    putPackage(parent, 'changed-hook', { hooks: hook(newCommand, 'new-resources'), files: { 'new-resources/hook.js': 'NEW' } });
+    const preview = await service.preview({ source: { locator: parent }, installation_id: first.summary.installation_id, expected_revision: first.summary.revision });
+    expect(preview.hooks?.consent_required).toBe(true);
+    await expect(service.install({ preview_id: preview.preview_id })).rejects.toMatchObject({ details: { code: 'recipe-hook-consent-required' } });
+    expect((await service.get(first.summary.installation_id))?.summary.revision).toBe(first.summary.revision);
+    expect((await service.resolve(first.summary.installation_id)).hooks?.[0]).toMatchObject({ command: hookCommand, files: { 'hook.js': 'OLD' }, source: parent });
+  });
+  it('treats a new hook source as consent-requiring while preserving the installed source pointer', async () => {
+    const parentTwo = 'https://example.test/parent-two/recipe.toml';
+    putPackage(parent, 'parent', { hooks: hook(hookCommand), files: { 'resources/hook.js': 'OLD' } });
+    putPackage(child, 'child', { extendsSource: parent });
+    const first = await install(child);
+    putPackage(parentTwo, 'parent-two', { hooks: hook(hookCommand), files: { 'resources/hook.js': 'OLD' } });
+    putPackage(child, 'child', { extendsSource: parentTwo });
+    const preview = await service.preview({ source: { locator: child }, installation_id: first.summary.installation_id, expected_revision: first.summary.revision });
+    expect(preview.resolved.hooks?.[0]?.source).toBe(parentTwo);
+    expect(preview.hooks?.consent_required).toBe(true);
+    await expect(service.install({ preview_id: preview.preview_id })).rejects.toMatchObject({ details: { code: 'recipe-hook-consent-required' } });
+    expect((await service.get(first.summary.installation_id))?.summary.source.locator).toBe(child);
+    expect((await service.resolve(first.summary.installation_id)).hooks?.[0]?.source).toBe(parent);
+  });
+  it('does not silently publish a new hook during automatic follow checks', async () => {
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => { release = resolve; });
+    service = newStore(ready).get(IRecipeService);
+    putPackage(parent, 'followed', { hooks: hook(hookCommand), files: { 'resources/hook.js': 'OLD' } });
+    const first = await install(parent);
+    putPackage(parent, 'followed', { hooks: hook(nodeCommand('process.stdout.write("new");')), files: { 'resources/hook.js': 'NEW' } });
+    release();
+    await vi.waitFor(async () => expect((await service.get(first.summary.installation_id))?.summary).toMatchObject({ revision: first.summary.revision, update_available: true, hook_consent_required: true }));
+    expect((await service.get(first.summary.installation_id))?.summary.revision).toBe(first.summary.revision);
+    expect((await service.resolve(first.summary.installation_id)).hooks?.[0]?.files).toEqual({ 'hook.js': 'OLD' });
+  });
+  it('forks trusted hook content in copy and extend modes without another confirmation', async () => {
+    putPackage(parent, 'forked', { hooks: hook(hookCommand), files: { 'resources/hook.js': 'FORK' } });
+    const first = await install(parent);
+    const copy = await service.fork({ installation_id: first.summary.installation_id, mode: 'copy', id: 'copy-hooks', name: 'Copy hooks' });
+    const extended = await service.fork({ installation_id: first.summary.installation_id, mode: 'extend', id: 'extend-hooks', name: 'Extend hooks' });
+    expect(copy.resolved.hooks?.map((item) => ({ command: item.command, files: item.files }))).toEqual([{ command: hookCommand, files: { 'hook.js': 'FORK' } }]);
+    expect(extended.resolved.hooks?.map((item) => ({ command: item.command, files: item.files }))).toEqual([{ command: hookCommand, files: { 'hook.js': 'FORK' } }]);
+    await expect(service.resolve(copy.summary.installation_id)).resolves.toMatchObject({ hooks: [{ files: { 'hook.js': 'FORK' } }] });
+    await expect(service.resolve(extended.summary.installation_id)).resolves.toMatchObject({ hooks: [{ files: { 'hook.js': 'FORK' } }] });
+  });
+  it('binds preview target, expected revision, and files to an install CAS', async () => {
+    const base = 'https://example.test/base/recipe.toml';
+    putPackage(base, 'base', { prompts: { system: { text: 'BASE' } } });
+    const installed = await install(base, false);
+    const editable = await service.fork({ installation_id: installed.summary.installation_id, mode: 'copy', id: 'editable-hooks', name: 'Editable hooks' });
+    const editedManifest = packageManifest('editable-hooks', { hooks: hook(hookCommand, 'resources'), prompts: { system: { text: 'EDITED' } } });
+    const preview = await service.preview({ source: editable.summary.source, installation_id: editable.summary.installation_id, expected_revision: editable.summary.revision,
+      files: { 'recipe.toml': editedManifest, 'resources/hook.js': 'EDITED RESOURCE' } });
+    expect(preview.summary.installation_id).toBe(editable.summary.installation_id);
+    expect(preview.resolved.hooks?.[0]?.files).toEqual({ 'hook.js': 'EDITED RESOURCE' });
+    const changed = await service.saveLocal({ installation_id: editable.summary.installation_id, expected_revision: editable.summary.revision,
+      files: { 'recipe.toml': packageManifest('editable-hooks', { prompts: { system: { text: 'CONCURRENT' } } }) } });
+    await expect(service.install({ preview_id: preview.preview_id, consent: true })).rejects.toThrow('changed');
+    expect((await service.get(editable.summary.installation_id))?.summary.revision).toBe(changed.summary.revision);
+    expect((await service.get(editable.summary.installation_id))?.resolved.branches.main.system).toBe('CONCURRENT');
+  });
+  it('exports hook resources and requires first consent when reinstalling the package', async () => {
+    putPackage(parent, 'exported-hooks', { hooks: hook(hookCommand), files: { 'resources/hook.js': 'EXPORTED' } });
+    const first = await install(parent);
+    const exported = await service.export(first.summary.installation_id);
+    expect(exported.files['hooks/0/hook.js']).toBe('EXPORTED');
+    expect(exported.files['recipe.toml']).toContain('hooks/0');
+    const portable = 'https://example.test/portable-hooks/recipe.toml';
+    sources.set(portable, exported.files);
+    const fresh = newStore().get(IRecipeService);
+    const preview = await fresh.preview({ source: { locator: portable } });
+    expect(preview.hooks?.consent_required).toBe(true);
+    await expect(fresh.install({ preview_id: preview.preview_id })).rejects.toMatchObject({ details: { code: 'recipe-hook-consent-required' } });
+    const imported = await fresh.install({ preview_id: preview.preview_id, consent: true });
+    const resolved = await fresh.resolve(imported.installation_id);
+    expect(resolved.hooks?.[0]?.files).toEqual({ 'hook.js': 'EXPORTED' });
+    const hooks = await fresh.scriptHooks(resolved);
+    expect(await readFile(path.join(hooks[0]!.cwd!, 'hook.js'), 'utf8')).toBe('EXPORTED');
+    const runner = makeHookRunner([]);
+    const result = await runner.trigger('Stop', { additionalHooks: async () => hooks });
+    expect(result).toMatchObject([{ action: 'allow' }]);
+    expect(result[0]?.stdout).toContain('EXPORTED');
+    await runner.dispose();
+  });
+});
+
 describe('Recipe package boundaries', () => {
   let root: string;
-  const reader = new RecipeSourceReader();
+  let reader: IRecipeSourceReader;
+  let disposables: DisposableStore;
   let fetchMock: ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
-  beforeEach(async () => { root = await mkdtemp(path.join(tmpdir(), 'recipe-boundary-')); fetchMock = vi.fn<typeof globalThis.fetch>(); vi.stubGlobal('fetch', fetchMock); });
-  afterEach(async () => { vi.unstubAllGlobals(); await rm(root, { recursive: true, force: true }); });
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'recipe-boundary-'));
+    disposables = new DisposableStore();
+    const ix = createServices(disposables, { additionalServices: (reg) => {
+      reg.definePartialInstance(IBootstrapService, { homeDir: root });
+      reg.define(IRecipeSourceReader, RecipeSourceReader);
+    } });
+    reader = ix.get(IRecipeSourceReader);
+    fetchMock = vi.fn<typeof globalThis.fetch>(); vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(async () => { vi.unstubAllGlobals(); await disposables.dispose(); await rm(root, { recursive: true, force: true }); });
   it('reads package files but rejects traversal and oversized text', async () => {
     await writeFile(path.join(root, 'recipe.toml'), 'schema_version = 1');
     await writeFile(path.join(root, 'prompt.md'), 'PACKAGE TEXT');
@@ -219,6 +444,22 @@ describe('Recipe package boundaries', () => {
       const packageReader = await reader.open({ locator: root });
       await expect(packageReader.read('linked/prompt.md')).rejects.toThrow('escapes package root');
     } finally { await rm(outside, { recursive: true, force: true }); }
+  });
+  it('retains arbitrary script resources in a guarded ZIP package', async () => {
+    const zip = new ZipFile();
+    const chunks: Buffer[] = [];
+    const archive = new Promise<Buffer>((resolve) => {
+      zip.outputStream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      zip.outputStream.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    zip.addBuffer(Buffer.from('schema_version = 1'), 'package/recipe.toml');
+    zip.addBuffer(Buffer.from('process.stdout.write("ZIP SCRIPT")'), 'package/hooks/hook.js');
+    zip.end();
+    const bytes = await archive;
+    const locator = 'https://93.184.216.34/package.zip';
+    fetchMock.mockResolvedValueOnce(new Response(bytes));
+    const packageReader = await reader.open({ locator, sha256: createHash('sha256').update(bytes).digest('hex') });
+    expect(await packageReader.read('hooks/hook.js')).toBe('process.stdout.write("ZIP SCRIPT")');
   });
   it('rejects credentials and private URLs before any request, including GitHub shortcuts', async () => {
     for (const locator of ['http://example.test/recipe.toml', 'https://user:password@example.test/recipe.toml', 'https://user:password@github.com/example/recipes', 'https://localhost/recipe.toml', 'https://127.0.0.1/recipe.toml', 'https://[::1]/recipe.toml']) {

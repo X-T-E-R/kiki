@@ -316,6 +316,7 @@ export interface IAgentProfileService {
   getCognitionBinding(): Promise<import('#/agent/cognition/cognitionConfig').CognitionBinding>;
   getCognitionSnapshot(): import('#/agent/cognition/cognitionConfig').CognitionBinding | undefined;
   getRecipeModelSettings(alias?: string): Record<string, unknown> | undefined;
+  getRecipeScriptHooks(): Promise<readonly import('#/features/externalHooks/internal/types').HookDef[]>;
   getPromptDiagnostics(options?: { readonly checkAllPromptFiles?: boolean }): Promise<import('@kiki/protocol').AgentPromptDiagnostics>;
   getAgentsMdWarning(): string | undefined;
   data(): ProfileData;

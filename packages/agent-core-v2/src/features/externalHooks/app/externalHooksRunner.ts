@@ -8,6 +8,7 @@ export interface ExternalHooksRunnerTriggerArgs {
   readonly signal?: AbortSignal;
   readonly cwd?: string;
   readonly sessionId?: string;
+  readonly additionalHooks?: () => Promise<readonly import('../internal/types').HookDef[]>;
 }
 
 export type ExternalHooksRunnerFailureMode = 'empty' | 'block';

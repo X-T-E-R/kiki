@@ -69,6 +69,8 @@ steering_interval_steps = 0
 
 `prompts.fields` 接受所有已注册且可写的提示词字段，复用原有变量与空值校验。`model` 复用 [逐模型配置](../configuration/config-files.md#models) 的语法与校验，承载参数、usage 预算和 behavior 等调教设置；不能更改供应商路由、凭据、请求身份或权限。参数和 behavior 仍跨 Agent 位置共享；原有 main/independent usage 预算保留各自含义。
 
+包还可携带 [脚本 hooks](./hooks.md#recipe-脚本-hooks)。检查 `preview.hooks`，取得用户明确的安装同意后，才能为含脚本包发送 `consent: true`；不能根据 `consent_required` 自动同意。下例没有脚本，不增加脚本确认。
+
 已有客户端连接时，安装并选择本地包：
 
 ```ts
