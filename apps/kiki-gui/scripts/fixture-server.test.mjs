@@ -132,3 +132,30 @@ test('usage export fixture exposes an empty ordinary capability without an exper
     assert.deepEqual(status.data.destinations, []);
   } finally { await server.stop(); }
 });
+
+test('archive fixture requires the explicit family body and retains partial outcomes', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'thread-relations' });
+  const root = 'session_fixture_release';
+  const child = 'session_fixture_docs_thread';
+  const other = 'session_fixture_changelog_thread';
+  const request = async (path, body) => (await fetch(`http://127.0.0.1:${server.http.address().port}${path}`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer kiki-fixture-token', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })).json();
+  try {
+    const single = await request(`/api/sessions/${root}:archive`, {});
+    assert.deepEqual(single.data.outcomes, [{ id: root, ok: true }]);
+    assert.notEqual(server.sessions.get(child).record.archived, true);
+    await request('/__control', { action: 'archive_partial_fail_next', session_id: child });
+    const partial = await request(`/api/sessions/${root}:archive`, { include_attached: true, exclude_session_ids: [] });
+    assert.equal(partial.code, 0);
+    assert.equal(partial.data.archived, false);
+    assert.deepEqual(partial.data.outcomes.map(({ id, ok }) => ({ id, ok })), [
+      { id: root, ok: true }, { id: child, ok: false }, { id: other, ok: true },
+    ]);
+    assert.equal(server.sessions.get(root).record.archived, true);
+    assert.notEqual(server.sessions.get(child).record.archived, true);
+    assert.equal(server.sessions.get(other).record.archived, true);
+  } finally { await server.stop(); }
+});

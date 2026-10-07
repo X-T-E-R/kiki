@@ -22,7 +22,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
 
 import type { RoomListItem, Session, Workspace } from '@kiki/protocol';
@@ -57,6 +57,7 @@ import {
   type ActivityTask,
   type MatchRange,
   type SessionGroup,
+  type SessionListData,
   type SessionSortOrder,
 } from '@kiki/session-core/sessions';
 import {
@@ -76,6 +77,7 @@ import { copyTextToClipboard } from '../lib/clipboard';
 import { useLayoutPreferences, useMediaQuery, usePaneResize } from '../lib/layoutHooks';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { readExternalClientMark } from '../lib/externalClients';
+import { ROOM_ITEMS_QUERY_KEY } from '../lib/useConversationList';
 import { useSessionSearch, type SessionSearchState } from '../lib/sessionSearch';
 import { SESSION_SEARCH_EVENT } from '../lib/sidebarSearch';
 import { lifeOf, type LifeState } from '../lib/motion';
@@ -93,7 +95,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { LifeMark } from './LifeMark';
-import { DisclosureChevron, Icon } from './icons';
+import { DisclosureChevron, Icon, Spinner } from './icons';
 import { SpaceSwitcher } from './SpaceSwitcher';
 import { SidebarPersonaSection } from './persona/SidebarPersonaSection';
 import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
@@ -143,6 +145,14 @@ function sessionLabel(session: Session, untitled: string): string {
     return session.last_prompt;
   }
   return untitled;
+}
+
+/** Only a fresh, active list can still carry the failure on the clicked row.
+ * Inactive caches may retain an archived root; other session queries may have no pages. */
+function isSessionStillListed(queryClient: QueryClient, sessionId: string): boolean {
+  return queryClient.getQueryCache().findAll({ queryKey: ['sessions'], type: 'active' })
+    .some(({ state }) => !state.isInvalidated && (state.data as SessionListData | undefined)?.pages?.some((page) =>
+      page.items.some((item) => item.id === sessionId && item.archived !== true)) === true);
 }
 
 /** Text with highlighted ranges (search matches). */
@@ -511,6 +521,47 @@ export function Sidebar({
     setTopLevelThreads(readTopLevelThreads(scopeId));
   }, [scopeId]);
 
+  // One archive in flight per conversation, keyed by the row's own
+  // `ConversationListItem.key` (`session:<id>` / `room:<id>`), so a thread and a
+  // room say the same thing while they archive and neither can be asked twice.
+  // The map is what the row reads, what the menu disables against, and what
+  // clears on its own: an entry lives exactly as long as its request does.
+  const [pendingArchives, setPendingArchives] = useState<ReadonlySet<string>>(() => new Set());
+  // Why an archive failed, per conversation: the row keeps its place in the
+  // list and says so in place, so a refusal is never a row that vanished and
+  // came back.
+  const [archiveErrors, setArchiveErrors] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const beginArchive = (key: string) => {
+    setPendingArchives((current) => new Set(current).add(key));
+    setArchiveErrors((current) => {
+      if (!current.has(key)) return current;
+      const next = new Map(current);
+      next.delete(key);
+      return next;
+    });
+  };
+  const endArchive = (key: string, error?: string) => {
+    setPendingArchives((current) => {
+      if (!current.has(key)) return current;
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
+    setArchiveErrors((current) => {
+      const had = current.has(key);
+      if (!had && error === undefined) return current;
+      const next = new Map(current);
+      if (error === undefined) next.delete(key);
+      else next.set(key, error);
+      return next;
+    });
+  };
+  // A space switch must not carry one space's in-flight row into the next.
+  useEffect(() => {
+    setPendingArchives(new Set());
+    setArchiveErrors(new Map());
+  }, [scopeId]);
+
   const toggleThreadDisplay = (id: string) => {
     const next = new Set(topLevelThreads);
     if (next.has(id)) next.delete(id);
@@ -753,7 +804,31 @@ export function Sidebar({
     }
   };
 
-  const archive = (session: Session) => {
+  // The authoritative answer, not an optimistic guess: the archived fact goes
+  // into the loaded pages so the ordinary list (archived: hide) drops the row
+  // and the archived view keeps it, with no second wait on the network. The
+  // invalidation after it only reconciles anything the server also archived.
+  const markSessionsArchived = (ids: ReadonlySet<string>) => {
+    if (ids.size === 0) return;
+    // Non-paginated session views keep their own shape and refetch below.
+    queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => old === undefined || !Array.isArray(old.pages) ? old : {
+      ...old,
+      pages: old.pages.map((page) => ({
+        ...page,
+        items: page.items.map((session) => ids.has(session.id) ? { ...session, archived: true } : session),
+      })),
+    });
+    refreshSessions();
+  };
+  const markRoomsArchived = (ids: ReadonlySet<string>) => {
+    if (ids.size === 0) return;
+    queryClient.setQueryData<RoomListItem[]>(ROOM_ITEMS_QUERY_KEY, (old) => old === undefined ? old : old.map((room) => (
+      ids.has(room.id) ? { ...room, archived: true } : room
+    )));
+    refreshRooms();
+  };
+
+  const archive = (session: Session, key: string) => {
     setMenu(null);
     setActionError(null);
     // A worktree session asks once whether its checkout goes too.
@@ -761,11 +836,59 @@ export function Sidebar({
       setConfirmArchiveWorktree(session);
       return;
     }
+    if (pendingArchives.has(key)) return;
+    beginArchive(key);
+    // Archiving a parent takes its attached conversations with it. The only
+    // rows held back are the ones explicitly promoted to the top level — that
+    // preference, read from this space's display memory, and nothing derived
+    // from what happens to be loaded, filtered, grouped or paged in.
+    const exclude = [...topLevelThreads].filter((id) => id !== session.id);
     void client
-      .archiveSession(session.id)
-      .then(() => { refreshSessions(); })
+      .archiveSession(session.id, { include_attached: true, exclude_session_ids: exclude })
+      .then((result) => {
+        // Only what the server confirmed leaves the list. A response without
+        // outcomes is not a family success and is never read as one: the list
+        // is re-read instead, which is also what repairs the case where the
+        // archived set includes conversations this view never loaded.
+        const confirmed = new Set(
+          (result.outcomes ?? []).filter((outcome) => outcome.ok).map((outcome) => outcome.id),
+        );
+        if (confirmed.size === 0) refreshSessions();
+        else markSessionsArchived(confirmed);
+        endArchive(key);
+      })
       .catch((error: unknown) => {
-        setActionError(error instanceof Error ? error.message : String(error));
+        // Partial success is retained by the server. Refresh without restoring
+        // anything; if the clicked root is gone, keep the failed ids and reason
+        // in the existing sidebar alert so surviving children can be retried.
+        const reason = error instanceof Error ? error.message : String(error);
+        void queryClient
+          .invalidateQueries({ queryKey: ['sessions'] })
+          .catch(() => undefined)
+          .then(() => {
+            if (!isSessionStillListed(queryClient, session.id)) setActionError(reason);
+          });
+        endArchive(key, reason);
+      });
+  };
+
+  const archiveRoom = (room: Extract<ConversationListItem, { kind: 'room' }>, key: string) => {
+    setMenu(null);
+    setActionError(null);
+    if (pendingArchives.has(key)) return;
+    beginArchive(key);
+    void roomApi
+      .updateRoom(room.id, { archived: true })
+      .then((document) => {
+        queryClient.setQueryData(roomQueryKey(room.id), document);
+        markRoomsArchived(new Set([room.id]));
+        endArchive(key);
+      })
+      .catch((error: unknown) => {
+        // The room's own archive changed nothing else: its members keep their
+        // own archived state, so only this row waits on the server.
+        refreshRooms();
+        endArchive(key, error instanceof Error ? error.message : String(error));
       });
   };
 
@@ -1368,6 +1491,8 @@ export function Sidebar({
                         toggle && current?.item.key === item.key ? null : { item, x, y });
                     }}
                     onTogglePin={() => { toggleRoomPin(item); }}
+                    archiving={pendingArchives.has(item.key)}
+                    archiveError={archiveErrors.get(item.key)}
                   />
                 </div>
               );
@@ -1400,6 +1525,8 @@ export function Sidebar({
                   }}
                   onTogglePin={() => { togglePin(session); }}
                   seen={seen}
+                  archiving={pendingArchives.has(item.key)}
+                  archiveError={archiveErrors.get(item.key)}
                 />
                 {threads.length > 0 ? (
                   // Children follow their parent directly: the indent lives in
@@ -1587,8 +1714,9 @@ export function Sidebar({
           }}
           onTogglePin={() => { togglePin(menuItem.session); }}
           onAction={(action) => { runAction(menuItem.session, action); }}
-          onArchive={() => { archive(menuItem.session); }}
+          onArchive={() => { archive(menuItem.session, menuItem.key); }}
           onRestore={() => { restore(menuItem.session); }}
+          archiving={pendingArchives.has(menuItem.key)}
           threadCommsEnabled={threadCommsEnabled}
           onJoinRoom={() => {
             const ids = selected.has(menuItem.id) && selected.size >= 2 ? selected : new Set([menuItem.id]);
@@ -1609,8 +1737,9 @@ export function Sidebar({
             setRenaming(menuItem);
             setMenu(null);
           }}
-          onArchive={(room) => { patchRoom(room.id, { archived: true }); }}
+          onArchive={(room) => { archiveRoom(room, menuItem.key); }}
           onRestore={(room) => { patchRoom(room.id, { archived: false }); }}
+          archiving={pendingArchives.has(menuItem.key)}
           onDelete={(room) => {
             setDeletingRoom(room);
             setMenu(null);
@@ -1697,7 +1826,9 @@ export function Sidebar({
       {confirmArchiveWorktree?.worktree !== undefined ? (
         <WorktreeArchiveDialog
           session={{ ...confirmArchiveWorktree, worktree: confirmArchiveWorktree.worktree }}
+          excludeSessionIds={[...topLevelThreads].filter((id) => id !== confirmArchiveWorktree.id)}
           onClose={() => { setConfirmArchiveWorktree(null); }}
+          onArchiveFailed={() => { refreshSessions(); }}
           onArchived={(result) => {
             setConfirmArchiveWorktree(null);
             refreshSessions();
@@ -1736,6 +1867,8 @@ function SessionRow({
   temporary = false,
   selected = false,
   onToggleSelect,
+  archiving = false,
+  archiveError,
 }: {
   session: Session;
   active: boolean;
@@ -1764,6 +1897,10 @@ function SessionRow({
   selected?: boolean;
   /** Ctrl/⌘-click toggles selection; absent for rows that cannot join a room. */
   onToggleSelect?: () => void;
+  /** Its archive is in flight: the row keeps its place and says so. */
+  archiving?: boolean;
+  /** The last archive refusal, said in place until the next attempt. */
+  archiveError?: string;
 }) {
   const { t, tp } = useI18n();
   const archived = session.archived === true;
@@ -1796,8 +1933,19 @@ function SessionRow({
   // An unseen run that did not complete says so in words, so failure never
   // rests on the mark's colour alone.
   const failedUnseen = rowState === 'unread' && lifeOf(session) === 'failed';
-  const fact: { kind: 'needs-you' | 'failed' | 'live' | 'relation' | 'location'; text: string } | undefined = nested
-    ? undefined
+  // Archiving outranks the row's standing facts: it is what the row is doing
+  // right now, and it lasts only as long as the request. A refusal sits in the
+  // same slot, so the row that explains itself is the row that never left.
+  // Nested rows also need this fact; keep their title and time unobstructed.
+  const archiveStatus = archiving
+    ? { kind: 'archiving' as const, text: t('sidebar.archiving') }
+    : archiveError !== undefined
+      ? { kind: 'archive-error' as const, text: archiveError }
+      : undefined;
+  const fact: { kind: 'needs-you' | 'failed' | 'live' | 'archiving' | 'archive-error' | 'relation' | 'location'; text: string } | undefined = archiveStatus !== undefined
+    ? archiveStatus
+    : nested
+      ? undefined
     : status === 'needs-me'
       ? { kind: 'needs-you', text: session.pending_interaction === 'question' ? t('sidebar.statusTag.question') : t('sidebar.statusTag.approval') }
       : failedUnseen
@@ -1823,12 +1971,15 @@ function SessionRow({
       })
     : undefined;
   const emphasis = active || rowState === 'needs-me' || rowState === 'unread';
+  const archiveState = archiveError !== undefined ? 'failed' : archiving ? 'archiving' : undefined;
   return (
     <div
       className="group relative"
       data-session-row={session.id}
       data-session-row-state={rowState}
       data-session-selected={selected || undefined}
+      data-session-archive={archiveState}
+      aria-busy={archiving || undefined}
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu(event.clientX, event.clientY, false);
@@ -1921,6 +2072,17 @@ function SessionRow({
                 </span>
               ) : fact.kind === 'live' ? (
                 <span data-session-live className="min-w-0 truncate text-ink-soft tabular-nums">{fact.text}</span>
+              ) : fact.kind === 'archiving' ? (
+                // The one place a row says what it is waiting for, in the same
+                // quiet second line as every other row fact.
+                <span data-session-archiving role="status" className="flex min-w-0 items-center gap-1 truncate text-ink-soft">
+                  <Spinner label={t('sidebar.archivingAria', { title: label })} size={12} />
+                  <span className="truncate">{fact.text}</span>
+                </span>
+              ) : fact.kind === 'archive-error' ? (
+                // Said in place, next to the row it belongs to. Not red: the
+                // row is intact and usable, this one attempt did not land.
+                <span data-session-archive-error className="min-w-0 truncate" title={fact.text}>{fact.text}</span>
               ) : fact.kind === 'relation' ? (
                 // Could not nest (the creator is filtered out or not loaded).
                 <span data-session-relation-note={relation?.kind} className="min-w-0 truncate">{fact.text}</span>
@@ -1948,13 +2110,14 @@ function SessionRow({
           <button
             type="button"
             data-session-pin-toggle
+            disabled={archiving}
             aria-label={pinned ? t('sidebar.unpinSessionFor', { title: label }) : t('sidebar.pinSessionFor', { title: label })}
             title={pinned ? t('menu.unpin') : t('menu.pin')}
             onClick={(event) => {
               event.stopPropagation();
               onTogglePin();
             }}
-            className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.06] ${
+            className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
               pinned ? 'text-ink-soft' : 'text-ink-faint hover:text-ink'
             }`}
           >
@@ -1995,6 +2158,8 @@ function RoomConversationRow({
   onOpen,
   onMenu,
   onTogglePin,
+  archiving = false,
+  archiveError,
 }: {
   item: Extract<ConversationListItem, { kind: 'room' }>;
   active: boolean;
@@ -2008,6 +2173,11 @@ function RoomConversationRow({
   onOpen: () => void;
   onMenu: (x: number, y: number, toggle: boolean) => void;
   onTogglePin: () => void;
+  /** Its archive is in flight: the row keeps its place and says so, in the
+      same words a thread row uses. */
+  archiving?: boolean;
+  /** The last archive refusal, said in place until the next attempt. */
+  archiveError?: string;
 }) {
   const { t } = useI18n();
   const archived = item.archived === true;
@@ -2020,8 +2190,14 @@ function RoomConversationRow({
       // needs_you without a pending interaction is the budget pause.
       : t('activity.reason.budget');
   const failedUnseen = state === 'unread' && item.failed;
-  const fact: { kind: 'needs-you' | 'failed' | 'location'; text: string } | undefined =
-    state === 'needs-me'
+  // A room archives the same way a thread does, so it says the same things:
+  // the in-flight state and the refusal outrank the row's standing facts.
+  const fact: { kind: 'needs-you' | 'failed' | 'archiving' | 'archive-error' | 'location'; text: string } | undefined =
+    archiving
+      ? { kind: 'archiving', text: t('sidebar.archiving') }
+    : archiveError !== undefined
+      ? { kind: 'archive-error', text: archiveError }
+    : state === 'needs-me'
       ? { kind: 'needs-you', text: needsYouText }
       : failedUnseen
         ? { kind: 'failed', text: t('sidebar.rowState.failed') }
@@ -2037,11 +2213,14 @@ function RoomConversationRow({
           ? (item.failed ? t('sidebar.rowState.failed') : t('sidebar.rowState.unread'))
           : undefined;
   const emphasis = active || state === 'needs-me' || state === 'unread';
+  const archiveState = archiveError !== undefined ? 'failed' : archiving ? 'archiving' : undefined;
   return (
     <div
       className="group relative"
       data-room-row={item.id}
       data-room-row-state={state}
+      data-room-archive={archiveState}
+      aria-busy={archiving || undefined}
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu(event.clientX, event.clientY, false);
@@ -2098,6 +2277,13 @@ function RoomConversationRow({
                 <span data-room-needs-you className="min-w-0 truncate font-medium text-attention">{fact.text}</span>
               ) : fact.kind === 'failed' ? (
                 <span data-room-failed className="min-w-0 truncate text-ink-soft">{fact.text}</span>
+              ) : fact.kind === 'archiving' ? (
+                <span data-room-archiving role="status" className="flex min-w-0 items-center gap-1 truncate text-ink-soft">
+                  <Spinner label={t('sidebar.archivingAria', { title: item.title })} size={12} />
+                  <span className="truncate">{fact.text}</span>
+                </span>
+              ) : fact.kind === 'archive-error' ? (
+                <span data-room-archive-error className="min-w-0 truncate" title={fact.text}>{fact.text}</span>
               ) : (
                 <span data-room-location className="min-w-0 truncate" title={location}>{fact.text}</span>
               )}
@@ -2118,13 +2304,14 @@ function RoomConversationRow({
           <button
             type="button"
             data-room-pin-toggle
+            disabled={archiving}
             aria-label={item.pinned ? t('sidebar.unpinSessionFor', { title: item.title }) : t('sidebar.pinSessionFor', { title: item.title })}
             title={item.pinned ? t('menu.unpin') : t('menu.pin')}
             onClick={(event) => {
               event.stopPropagation();
               onTogglePin();
             }}
-            className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.06] ${
+            className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
               item.pinned ? 'text-ink-soft' : 'text-ink-faint hover:text-ink'
             }`}
           >
@@ -2167,6 +2354,7 @@ function RoomListMenu({
   onArchive,
   onRestore,
   onDelete,
+  archiving = false,
 }: {
   item: Extract<ConversationListItem, { kind: 'room' }>;
   x: number;
@@ -2179,6 +2367,9 @@ function RoomListMenu({
   onArchive: (room: Extract<ConversationListItem, { kind: 'room' }>) => void;
   onRestore: (room: Extract<ConversationListItem, { kind: 'room' }>) => void;
   onDelete: (room: Extract<ConversationListItem, { kind: 'room' }>) => void;
+  /** Its archive is in flight: only the entries that would race it go quiet;
+      reading the room and copying its link stay available. */
+  archiving?: boolean;
 }) {
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
@@ -2300,7 +2491,14 @@ function RoomListMenu({
             {t('menu.copyLink')}
           </button>
           <div className="mx-1 my-1 border-t border-hairline" />
-          <button type="button" role="menuitem" data-menu-item="pin" className={itemClass} onClick={() => { onTogglePin(item); }}>
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="pin"
+            disabled={archiving}
+            className={`${itemClass} disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent`}
+            onClick={() => { onTogglePin(item); }}
+          >
             {item.pinned ? t('menu.unpin') : t('menu.pin')}
           </button>
           <button type="button" role="menuitem" data-menu-item="rename" className={itemClass} onClick={onRename}>
@@ -2310,10 +2508,11 @@ function RoomListMenu({
             type="button"
             role="menuitem"
             data-menu-item="archive"
-            className={`${itemClass} hover:text-danger`}
+            disabled={archiving}
+            className={`${itemClass} hover:text-danger disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent`}
             onClick={() => { onArchive(item); }}
           >
-            {t('menu.archive')}
+            {archiving ? t('sidebar.archiving') : t('menu.archive')}
           </button>
           <div className="mx-1 my-1 border-t border-hairline" />
           <button
@@ -2961,6 +3160,7 @@ function SessionMenu({
   onRestore,
   threadCommsEnabled,
   onJoinRoom,
+  archiving = false,
 }: {
   session: Session;
   topLevel: boolean;
@@ -2979,6 +3179,8 @@ function SessionMenu({
   /** `[thread_communication].enabled`; undefined while the config loads. */
   threadCommsEnabled: boolean | undefined;
   onJoinRoom: () => void;
+  /** Its archive is in flight: only the entries that would race it go quiet. */
+  archiving?: boolean;
 }) {
   const host = useHost();
   const { t } = useI18n();
@@ -3151,7 +3353,13 @@ function SessionMenu({
             </button>
           ) : null}
           <div className="mx-1 my-1 border-t border-hairline" />
-          <button type="button" role="menuitem" className={itemClass} onClick={onTogglePin}>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={archiving}
+            className={`${itemClass} disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent`}
+            onClick={onTogglePin}
+          >
             {isPinnedSession(session) ? t('menu.unpin') : t('menu.pin')}
           </button>
           <button type="button" role="menuitem" className={itemClass} onClick={onRename}>
@@ -3160,10 +3368,12 @@ function SessionMenu({
           <button
             type="button"
             role="menuitem"
-            className={`${itemClass} hover:text-danger`}
+            data-menu-item="archive"
+            disabled={archiving}
+            className={`${itemClass} hover:text-danger disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent`}
             onClick={onArchive}
           >
-            {t('menu.archive')}
+            {archiving ? t('sidebar.archiving') : t('menu.archive')}
           </button>
         </>
       )}

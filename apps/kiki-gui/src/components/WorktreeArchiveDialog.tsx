@@ -26,12 +26,21 @@ export interface WorktreeArchiveResult {
 
 export function WorktreeArchiveDialog({
   session,
+  excludeSessionIds,
   onClose,
   onArchived,
+  onArchiveFailed,
 }: {
   session: Session & { readonly worktree: NonNullable<Session['worktree']> };
+  /** Explicitly promoted-to-top-level threads to hold back; the caller owns
+   *  that preference for the current space. */
+  excludeSessionIds: readonly string[];
   onClose: () => void;
   onArchived: (result: WorktreeArchiveResult | null) => void;
+  /** A partial failure may have archived part of the family before rejecting,
+   *  so the list behind the dialog is re-read from the source of truth. The
+   *  dialog stays open with its checkbox, because the archive did not finish. */
+  onArchiveFailed?: () => void;
 }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -55,7 +64,10 @@ export function WorktreeArchiveDialog({
   const confirm = () => {
     setBusy(true);
     setError(null);
-    void client.archiveSession(session.id)
+    // Same family archive as every other thread, with the same explicit
+    // exclusions. Archiving the conversation never removes a checkout on its
+    // own: the checkbox below is still the only thing that can.
+    void client.archiveSession(session.id, { include_attached: true, exclude_session_ids: [...excludeSessionIds] })
       .then(async () => {
         if (!removeWorktree) return null;
         try {
@@ -67,8 +79,11 @@ export function WorktreeArchiveDialog({
       })
       .then(onArchived)
       .catch((cause: unknown) => {
+        // Refresh any partial success behind the dialog, retaining its choice
+        // and retry path. Checkout removal only runs after a full archive.
         setBusy(false);
         setError(errorText(locale, cause));
+        onArchiveFailed?.();
       });
   };
 

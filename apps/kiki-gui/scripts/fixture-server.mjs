@@ -3577,6 +3577,32 @@ class FixtureServer {
     if (session === undefined) {
       return this.envelope(res, null, 40401, 'session.not_found');
     }
+    // Every conversation attached to this one, at any depth, read from the
+    // stored creator metadata rather than from what any client has loaded —
+    // the same rule the real server applies to a family archive.
+    const familyMembersOf = (rootId) => {
+      const childrenOf = new Map();
+      for (const [id, member] of this.sessions) {
+        const creator = member.record.metadata?.created_by_session_id ?? member.record.metadata?.parent_session_id;
+        if (typeof creator !== 'string' || creator === '') continue;
+        const list = childrenOf.get(creator) ?? [];
+        list.push(id);
+        childrenOf.set(creator, list);
+      }
+      const found = [rootId];
+      const queue = [rootId];
+      const seen = new Set([rootId]);
+      while (queue.length > 0) {
+        const current = queue.shift();
+        for (const child of childrenOf.get(current) ?? []) {
+          if (seen.has(child)) continue;
+          seen.add(child);
+          found.push(child);
+          queue.push(child);
+        }
+      }
+      return found;
+    };
     if (tail === '' ) return this.envelope(res, session.record);
     if (tail === '/profile' && body !== undefined) {
       if (typeof body.title === 'string') session.record.title = body.title;
@@ -3629,8 +3655,45 @@ class FixtureServer {
       });
     }
     if (tail === ':archive') {
-      session.record.archived = true;
-      return this.envelope(res, { archived: true });
+      // A refusal is answered before anything is marked, so a failed archive
+      // leaves the list exactly as it was.
+      if (this.consumeScenarioFlag('archiveFailNext')) {
+        return this.envelope(res, null, 40001, 'Archive refused: this conversation has uncommitted drafts');
+      }
+      // The family archive: the thread and its attached conversations, minus
+      // whatever the caller explicitly held back. The outcome list names every
+      // conversation the server actually touched, which is what the GUI moves
+      // out of the list. REST omitting include_attached keeps the old single-
+      // thread shape; the GUI adapter must explicitly opt into the family.
+      const requested = body?.include_attached !== true
+        ? [session.record.id]
+        : familyMembersOf(session.record.id);
+      const excluded = new Set(Array.isArray(body?.exclude_session_ids) ? body.exclude_session_ids : []);
+      const failedId = this.archivePartialFailNext;
+      this.archivePartialFailNext = undefined;
+      const finish = () => {
+        const outcomes = [];
+        for (const id of requested) {
+          if (excluded.has(id)) continue;
+          const member = this.sessions.get(id);
+          if (member === undefined) {
+            outcomes.push({ id, ok: false, reason: 'not_found', message: 'No such conversation' });
+          } else if (id === failedId) {
+            outcomes.push({ id, ok: false, reason: 'failed', message: 'Archive refused: this conversation has uncommitted drafts' });
+          } else {
+            member.record.archived = true;
+            outcomes.push({ id, ok: true });
+          }
+        }
+        return this.envelope(res, { archived: outcomes.every((outcome) => outcome.ok), outcomes });
+      };
+      // Hold the operation, not just its response: polling still sees the
+      // unarchived conversation while the fixture is waiting to execute it.
+      if (this.consumeScenarioFlag('archiveStallNext')) {
+        this.archiveStallResolve = () => { this.archiveStallResolve = undefined; finish(); };
+        return undefined;
+      }
+      return finish();
     }
     if (tail === ':restore') {
       session.record.archived = false;
@@ -4470,6 +4533,22 @@ class FixtureServer {
         // panel's real-failure path (draft kept, panel open) is walkable
         // against the mock rather than asserted in the abstract.
         this.cronFailNextWrite = true;
+        return this.envelope(res, { armed: true });
+      case 'archive_stall_next':
+        // Holds the next thread archive open, so the row's in-flight state is
+        // observable on screen instead of being over before a shot can see it.
+        this.archiveStallNext = true;
+        return this.envelope(res, { armed: true });
+      case 'archive_release':
+        // Lets the stalled archive finish.
+        this.archiveStallResolve?.();
+        return this.envelope(res, { released: true });
+      case 'archive_fail_next':
+        // Refuses the next archive, so the row's refusal path is walkable.
+        this.archiveFailNext = true;
+        return this.envelope(res, { armed: true });
+      case 'archive_partial_fail_next':
+        this.archivePartialFailNext = body.session_id;
         return this.envelope(res, { armed: true });
       case 'list': {        const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
         const files = await readdir(dir);

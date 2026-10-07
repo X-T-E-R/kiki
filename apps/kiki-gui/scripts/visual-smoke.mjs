@@ -2,12 +2,14 @@
  * kiki-gui visual smoke (prototype) — a handful of key screens against a
  * static production build, one locale / theme / width, in parallel browser
  * contexts. Every context gets its own fixture server, so scenarios never
- * share server state. No vite dev server, so no HMR reload when other owners
- * edit sources mid-run.
+ * share server state. By default no vite dev server runs, so other owners'
+ * source edits cannot trigger HMR. --web-url uses an existing preview instead;
+ * keep its sources stable during capture and stop that preview separately.
  *
  *   node scripts/visual-smoke.mjs                  # build + all smoke scenarios
  *   node scripts/visual-smoke.mjs --no-build       # reuse the last smoke build
  *   node scripts/visual-smoke.mjs --only=hero-shell,settings
+ *   node scripts/visual-smoke.mjs --only=archive-nested --web-url=http://127.0.0.1:5197
  *
  * Env: KIKI_SMOKE_OUTPUT_DIR (default .tmp/visual-smoke/<run-id>),
  *      KIKI_SMOKE_DIST (default .tmp/visual-smoke/dist),
@@ -704,6 +706,37 @@ const SCENARIOS = [
       return walkRowActions(page, link, control, 'zh');
     },
   },
+  {
+    name: 'archive-thread',
+    fixture: 'thread-relations',
+    tags: ['smoke', 'sidebar', 'i18n'],
+    async run(page, link, control) {
+      return archiveThreadWalk(page, link, control, 'en');
+    },
+  },
+  {
+    name: 'archive-thread-zh',
+    fixture: 'thread-relations',
+    locale: 'zh',
+    tags: ['smoke', 'sidebar', 'i18n'],
+    async run(page, link, control) {
+      return archiveThreadWalk(page, link, control, 'zh');
+    },
+  },
+  {
+    name: 'archive-nested',
+    fixture: 'thread-relations',
+    tags: ['smoke', 'sidebar'],
+    async run(page, link, control) {
+      return archiveNestedWalk(page, link, control);
+    },
+  },
+  {
+    name: 'archive-worktree-recovery',
+    fixture: 'worktrees',
+    tags: ['smoke', 'sidebar', 'worktrees'],
+    run: archiveWorktreeRecoveryWalk,
+  },
 ];
 
 /**
@@ -819,6 +852,197 @@ async function walkRowActions(page, link, control, localeSuffix) {
   return shots;
 }
 
+/**
+ * Archiving from the sidebar, walked against the family response. A parent
+ * with two attached conversations is archived: the row says it is archiving
+ * while the request is open, keeps its title and its place, and refuses a
+ * second attempt; other rows stay operable throughout; a released archive
+ * takes the parent and its children out of the ordinary list; and a refused
+ * archive leaves every row standing with the reason said in place.
+ */
+async function archiveThreadWalk(page, link, control, locale) {
+  const parentId = 'session_fixture_release';
+  const childId = 'session_fixture_docs_thread';
+  const bystander = 'session_fixture_spike';
+  const prefix = `archive-thread-${locale}`;
+  const archivingText = locale === 'zh' ? '归档中…' : 'Archiving…';
+  const refusedText = 'Archive refused: this conversation has uncommitted drafts';
+
+  await openSession(page, link, childId);
+  const parentRow = page.locator(`[data-session-row="${parentId}"]`);
+  await parentRow.waitFor({ timeout: 20_000 });
+
+  // The archive is held open on the server, so the pending state is on screen
+  // rather than over before the shot can reach it.
+  await control({ action: 'archive_stall_next' });
+  await parentRow.locator('[data-session-title]').click({ button: 'right' });
+  await page.locator('[data-session-menu] [data-menu-item="archive"]').click();
+  const pending = parentRow.locator('[data-session-archiving]');
+  await pending.waitFor({ timeout: 10_000 });
+  if ((await pending.textContent())?.trim() !== archivingText) {
+    throw new Error(`the archiving row does not say "${archivingText}"`);
+  }
+  if (await parentRow.locator('[data-session-title]').textContent() === null) {
+    throw new Error('the archiving row lost its title');
+  }
+  const shots = [await shot(page, `${prefix}-1-archiving-desktop`)];
+
+  // The menu closed with the request, and the same object cannot be asked
+  // twice while its own archive is in flight.
+  if (await page.locator('[data-session-menu]').count() !== 0) {
+    throw new Error('the menu stayed open after archiving started');
+  }
+  // The same object refuses a second archive while its own is in flight.
+  await parentRow.locator('[data-session-title]').click({ button: 'right' });
+  await page.locator('[data-session-menu] [data-menu-item="archive"]').waitFor({ timeout: 10_000 });
+  if (!(await page.locator('[data-session-menu] [data-menu-item="archive"]').isDisabled())) {
+    throw new Error('the archiving row can still be asked to archive again');
+  }
+  await page.keyboard.press('Escape');
+
+  // A row that is not archiving is untouched: still operable, no state on it.
+  const other = page.locator(`[data-session-row="${bystander}"]`);
+  if (await other.getAttribute('aria-busy') !== null) {
+    throw new Error('an unrelated row claims to be archiving');
+  }
+
+  // At phone width the list is a drawer, so the archiving row is opened before
+// it can be looked at — the state has to hold there too, not just at desktop.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('[data-sidebar-menu]').click();
+  await parentRow.locator('[data-session-archiving]').waitFor({ timeout: 10_000 });
+  shots.push(await shot(page, `${prefix}-2-archiving-390`));
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  await control({ action: 'archive_release' });
+  await parentRow.waitFor({ state: 'detached', timeout: 20_000 });
+  // The attached conversation went with its parent, not just the row clicked.
+  await page.locator(`[data-session-row="${childId}"]`).waitFor({ state: 'detached', timeout: 20_000 });
+  if (await page.locator(`[data-session-row="${bystander}"]`).count() !== 1) {
+    throw new Error('archiving one conversation removed an unrelated one');
+  }
+  shots.push(await shot(page, `${prefix}-3-after-success`));
+
+  // A refused archive: the row stays, says why, and can be tried again.
+  await control({ action: 'archive_fail_next' });
+  const spikeRow = page.locator(`[data-session-row="${bystander}"]`);
+  await spikeRow.locator('[data-session-title]').click({ button: 'right' });
+  await page.locator('[data-session-menu] [data-menu-item="archive"]').click();
+  const refusal = spikeRow.locator('[data-session-archive-error]');
+  await refusal.waitFor({ timeout: 15_000 });
+  // The row says why in words, not only by colour; the server's code suffix is
+// appended to its own message, so the reason is matched, not the exact string.
+if (!(await refusal.textContent())?.includes(refusedText)) {
+    throw new Error(`the refused row does not say why: ${await refusal.textContent()}`);
+  }
+  if (await spikeRow.count() !== 1) {
+    throw new Error('the refused row left the list');
+  }
+  shots.push(await shot(page, `${prefix}-4-refused-desktop`));
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  shots.push(await shot(page, `${prefix}-5-refused-390`));
+  return shots;
+}
+
+/** Narrow recovery walk against mock HTTP, never injected component state. */
+async function archiveNestedWalk(page, link, control) {
+  const rootId = 'session_fixture_release';
+  const childId = 'session_fixture_docs_thread';
+  const failedId = 'session_fixture_changelog_thread';
+  const archiveRow = async (id) => {
+    await page.locator(`[data-session-row="${id}"] [data-session-title]`).click({ button: 'right' });
+    await page.locator('[data-session-menu] [data-menu-item="archive"]').click();
+  };
+  await openSession(page, link, childId);
+  const nested = page.locator(`[data-session-threads="${rootId}"] [data-session-row="${childId}"]`);
+  await nested.waitFor({ timeout: 20_000 });
+  await control({ action: 'archive_stall_next' });
+  const archiveRequest = page.waitForRequest((request) => request.method() === 'POST' && new URL(request.url()).pathname === `/api/sessions/${childId}:archive`);
+  await archiveRow(childId);
+  const request = await archiveRequest;
+  if (request.postDataJSON()?.include_attached !== true) {
+    throw new Error(`nested archive request mismatch: ${request.postData()}`);
+  }
+  console.log(`[archive-nested] matched POST ${new URL(request.url()).pathname}, family=true`);
+  const status = nested.locator('[data-session-archiving]');
+  await status.waitFor({ timeout: 10_000 });
+  if (!(await status.textContent())?.includes('Archiving') || !(await nested.locator('[data-session-title]').textContent())?.includes('Docs pass')) {
+    throw new Error('nested archive lost its status or title');
+  }
+  const shots = [await shot(page, 'archive-nested-1-archiving')];
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('[data-sidebar-menu]').click();
+  await status.waitFor();
+  shots.push(await shot(page, 'archive-nested-2-archiving-390'));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await control({ action: 'archive_release' });
+  await nested.waitFor({ state: 'detached', timeout: 20_000 });
+  // Chromium may withhold sensitive header details until the stalled response
+  // finishes; collecting them before the shot would wait out the HTTP deadline.
+  if ((await request.allHeaders()).authorization !== `Bearer ${FIXTURE_TOKEN}`) {
+    throw new Error('nested archive did not authenticate to the fixture');
+  }
+
+  await control({ action: 'archive_fail_next' });
+  await archiveRow(failedId);
+  const other = page.locator(`[data-session-row="${failedId}"]`);
+  await other.locator('[data-session-archive-error]').waitFor({ timeout: 10_000 });
+  shots.push(await shot(page, 'archive-nested-3-refused'));
+
+  // The HTTP adapter rejects archived:false even though the root succeeded.
+  await control({ action: 'archive_partial_fail_next', session_id: failedId });
+  await archiveRow(rootId);
+  await page.locator(`[data-session-row="${rootId}"]`).waitFor({ state: 'detached', timeout: 20_000 });
+  const banner = page.locator('[role="alert"]').filter({ hasText: 'Some conversations could not be archived' });
+  await banner.waitFor({ timeout: 10_000 });
+  if (!(await banner.textContent())?.includes(failedId) || await other.count() !== 1) {
+    throw new Error('partial failure lost its unfinished conversation or recovery reason');
+  }
+  if ((await control({ action: 'session', session_id: rootId })).data.record.archived !== true ||
+      (await control({ action: 'session', session_id: failedId })).data.record.archived === true) {
+    throw new Error('partial fixture outcomes did not match the refreshed UI');
+  }
+  shots.push(await shot(page, 'archive-nested-4-partial-recovery'));
+  await archiveRow(failedId);
+  await other.waitFor({ state: 'detached', timeout: 20_000 });
+  console.log('[archive-nested] release removed child; refusal retained row; partial removed root and retained reason + child; retry removed unfinished child');
+  return shots;
+}
+
+async function archiveWorktreeRecoveryWalk(page, link, control) {
+  const id = 'session_fixture_wt_active';
+  await openSession(page, link, id);
+  const row = page.locator(`[data-session-row="${id}"]`);
+  let removalRequests = 0;
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && /\/worktrees\/[^/]+:remove$/.test(new URL(request.url()).pathname)) removalRequests++;
+  });
+  await row.locator('[data-session-title]').click({ button: 'right' });
+  await page.locator('[data-session-menu] [data-menu-item="archive"]').click();
+  const confirm = page.locator('[data-archive-confirm]');
+  const checkbox = page.locator('[data-archive-remove-worktree] input');
+  await confirm.waitFor();
+  if (await checkbox.isChecked()) throw new Error('checkout removal must start unchecked');
+  await checkbox.check();
+  await control({ action: 'archive_fail_next' });
+  const freshRead = page.waitForRequest((request) => request.method() === 'GET' && new URL(request.url()).pathname === '/api/sessions');
+  await confirm.click();
+  await page.locator('[role="alert"]').filter({ hasText: 'Archive refused' }).waitFor();
+  await freshRead;
+  if (!(await checkbox.isChecked()) || await confirm.isDisabled() || removalRequests !== 0) {
+    throw new Error('failed worktree archive lost its choice, retry or checkout');
+  }
+  const shots = [await shot(page, 'archive-worktree-1-refused')];
+  await checkbox.uncheck();
+  await confirm.click();
+  await confirm.waitFor({ state: 'detached', timeout: 20_000 });
+  await row.waitFor({ state: 'detached', timeout: 20_000 });
+  if (removalRequests !== 0) throw new Error('unchecked archive deleted the checkout');
+  console.log('[archive-worktree] refusal refreshed sessions and retained checked confirmation; unchecked retry archived without checkout removal');
+  return shots;
+}
+
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2',
@@ -918,9 +1142,10 @@ async function main() {
 
   mkdirSync(OUT, { recursive: true });
   const t0 = Date.now();
-  const buildMs = argv.includes('--no-build') && existsSync(join(DIST, 'index.html')) ? 0 : build();
-  const web = await startStatic(DIST);
-  const webUrl = `http://127.0.0.1:${web.address().port}`;
+  const previewUrl = argv.find((arg) => arg.startsWith('--web-url='))?.slice('--web-url='.length);
+  const buildMs = previewUrl !== undefined || (argv.includes('--no-build') && existsSync(join(DIST, 'index.html'))) ? 0 : build();
+  const web = previewUrl === undefined ? await startStatic(DIST) : undefined;
+  const webUrl = previewUrl ?? `http://127.0.0.1:${web.address().port}`;
   const t1 = Date.now();
   const browser = await chromium.launch({ args: ['--no-proxy-server'] });
   const launchMs = Date.now() - t1;
@@ -937,7 +1162,7 @@ async function main() {
     await Promise.all(Array.from({ length: Math.min(WORKERS, selected.length) }, worker));
   } finally {
     await browser.close().catch(() => undefined);
-    await new Promise((done) => web.close(done));
+    if (web !== undefined) await new Promise((done) => web.close(done));
   }
   const failed = results.filter((r) => !r.ok);
   const shots = results.reduce((n, r) => n + (r.shots?.length ?? 0), 0);

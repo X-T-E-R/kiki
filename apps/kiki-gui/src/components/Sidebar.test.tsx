@@ -48,6 +48,16 @@ const listPersonas = vi.fn(async (): Promise<readonly unknown[]> => []);
 const connectionScope = vi.hoisted(() => ({ id: 'local' }));
 const listTasks = vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] }));
 const listPrompts = vi.fn(async (): Promise<unknown> => ({ active: null, queued: [] }));
+// The row menu's archive call; held back by a test to read the pending state.
+// The shape is the family response the backend contract defines: a per
+// conversation outcome list, never a bare "archived".
+type ArchiveFamilyResponse = { archived: boolean; outcomes: { id: string; ok: true }[] };
+const archiveSession = vi.fn<(
+  id: string,
+  options?: { include_attached?: boolean; exclude_session_ids?: string[] },
+) => Promise<ArchiveFamilyResponse>>();
+/** A family archive that confirmed exactly one conversation. */
+const archived = (id: string): ArchiveFamilyResponse => ({ archived: true, outcomes: [{ id, ok: true }] });
 // The room rows' lifecycle calls; wired into the mocked client's klient.rest.
 const roomRest = vi.hoisted(() => ({
   list: vi.fn(),
@@ -74,6 +84,8 @@ vi.mock('../state/connection', () => ({
       listTasks,
       listPrompts,
       listPersonas,
+      archiveSession,
+      restoreSession: vi.fn(async () => { throw new Error('not stubbed'); }),
       klient: { rest: { rooms: roomRest } },
     },
     scopeId: connectionScope.id,
@@ -195,6 +207,8 @@ beforeEach(() => {
   listEphemeralSessions.mockResolvedValue({ items: [] });
   listPersonas.mockReset();
   listPersonas.mockResolvedValue([]);
+  archiveSession.mockReset();
+  archiveSession.mockImplementation(async (id: string) => archived(id));
   for (const fn of Object.values(roomRest)) fn.mockReset();
   connectionScope.id = 'local';
   // Workspace folds and the list scroll persist across mounts.
@@ -682,6 +696,293 @@ describe('Sidebar session row states', () => {
     });
     expect(mixed.container.querySelector('[data-session-row="s-both"]')?.getAttribute('data-session-row-state'))
       .toBe('needs-me');
+  });
+});
+
+describe('Sidebar archive feedback', () => {
+  /** The pending state a slow archive puts on one row, and nothing else. */
+  function pendingRow(container: HTMLDivElement, id: string): HTMLElement | null {
+    return container.querySelector(`[data-session-row="${id}"] [data-session-archiving]`);
+  }
+
+  async function openMenuFor(container: HTMLDivElement, id: string): Promise<HTMLElement> {
+    const row = container.querySelector(`[data-session-row="${id}"] [data-session-title]`);
+    if (row === null) throw new Error('session row not rendered');
+    await act(async () => { row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })); });
+    const menu = container.querySelector<HTMLElement>('[data-session-menu]');
+    if (menu === null) throw new Error('session menu did not open');
+    return menu;
+  }
+
+  it('says the row is archiving at once, keeps it readable, and never asks twice', async () => {
+    const target = { ...session('s-target'), title: 'Release notes' };
+    const other = session('s-other');
+    let release!: () => void;
+    archiveSession.mockReturnValue(new Promise((resolve) => {
+      release = () => { resolve(archived('s-target')); };
+    }));
+    const { container } = await mount({
+      sessions: [target, other],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [target, other] }],
+    });
+
+    const menu = await openMenuFor(container, 's-target');
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+
+    // The menu is gone and the row is still exactly where it was.
+    expect(container.querySelector('[data-session-menu]')).toBeNull();
+    expect(container.querySelector('[data-session-row="s-target"]')).not.toBeNull();
+    // It says what it is doing, in the row's own second line.
+    const pending = pendingRow(container, 's-target');
+    expect(pending?.textContent).toBe('Archiving…');
+    expect(pending?.getAttribute('role')).toBe('status');
+    expect(container.querySelector('[data-session-row="s-target"]')?.getAttribute('aria-busy')).toBe('true');
+    // The title is still readable — the row did not become a placeholder.
+    expect(container.querySelector('[data-session-row="s-target"] [data-session-title]')?.textContent).toContain('Release notes');
+    // Only the conflicting management action goes quiet on that row.
+    expect(container.querySelector<HTMLButtonElement>('[data-session-row="s-target"] [data-session-pin-toggle]')?.disabled).toBe(true);
+    // Every other row is untouched and still fully operable.
+    expect(container.querySelector('[data-session-row="s-other"]')?.getAttribute('aria-busy')).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('[data-session-row="s-other"] [data-session-pin-toggle]')?.disabled).toBe(false);
+
+    // A second attempt on the same object is refused, not sent twice.
+    const again = await openMenuFor(container, 's-target');
+    await act(async () => { again.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    expect(archiveSession).toHaveBeenCalledTimes(1);
+
+    await act(async () => { release(); await settle(); });
+  });
+
+  it('drops the row from the ordinary list on success and keeps it in the cache as archived', async () => {
+    const target = session('s-gone');
+    const other = session('s-stays');
+    archiveSession.mockResolvedValue(archived('s-gone'));
+    const { container, queryClient } = await mount({
+      sessions: [target, other],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [target, other] }],
+    }, browserHost, [target, other]);
+
+    const menu = await openMenuFor(container, 's-gone');
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    await settle();
+
+    expect(pendingRow(container, 's-gone')).toBeNull();
+    expect(container.querySelector('[data-session-row="s-stays"]')).not.toBeNull();
+    // The authoritative answer is in the loaded pages, not just a refetch away.
+    const cached = queryClient.getQueryData<{ pages: { items: { id: string; archived?: boolean }[] }[] }>(['sessions', 'cached']);
+    expect(cached?.pages[0]?.items.find((entry) => entry.id === 's-gone')?.archived).toBe(true);
+  });
+
+  it('keeps the row, the title and its actions on a refusal, and says why in place', async () => {
+    const target = { ...session('s-refused'), title: 'Kept thread' };
+    archiveSession.mockRejectedValue(new Error('Archive refused: the thread has uncommitted drafts'));
+    const { container } = await mount({
+      sessions: [target],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [target] }],
+    });
+
+    const menu = await openMenuFor(container, 's-refused');
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    await settle();
+
+    // The row never left: a refusal is not a row that vanishes and returns.
+    const row = container.querySelector('[data-session-row="s-refused"]');
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute('data-session-archive')).toBe('failed');
+    expect(row?.getAttribute('aria-busy')).toBeNull();
+    expect(row?.textContent).toContain('Kept thread');
+    expect(row?.querySelector('[data-session-archive-error]')?.textContent)
+      .toBe('Archive refused: the thread has uncommitted drafts');
+    // Readable and actionable again — the next attempt can be made from here.
+    expect(row?.querySelector<HTMLButtonElement>('[data-session-pin-toggle]')?.disabled).toBe(false);
+    archiveSession.mockResolvedValue(archived('s-refused'));
+    const retry = await openMenuFor(container, 's-refused');
+    await act(async () => { retry.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    await settle();
+    expect(archiveSession).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-session-archive-error]')).toBeNull();
+  });
+
+  it('asks the server to take the attached conversations, excluding only the promoted ones', async () => {
+    // The explicit top-level preference for this space: s-promoted was promoted
+    // by the user, and nothing else is exempt.
+    configureSpaceStorage(null);
+    localStorage.setItem('kiki.sidebar.topLevelThreads', JSON.stringify({ local: ['s-promoted'] }));
+    const parent = session('s-parent');
+    const promoted = session('s-promoted');
+    archiveSession.mockResolvedValue(archived('s-parent'));
+    const { container } = await mount({
+      sessions: [parent, promoted],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [parent, promoted] }],
+    });
+
+    const menu = await openMenuFor(container, 's-parent');
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    await settle();
+
+    expect(archiveSession).toHaveBeenCalledWith('s-parent', { include_attached: true, exclude_session_ids: ['s-promoted'] });
+
+    // Archiving the promoted row itself excludes nothing: it is the row being
+    // archived, not a bystander, and its own children still go with it.
+    archiveSession.mockClear();
+    const own = await openMenuFor(container, 's-promoted');
+    await act(async () => { own.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    await settle();
+    expect(archiveSession).toHaveBeenCalledWith('s-promoted', { include_attached: true, exclude_session_ids: [] });
+  });
+
+  it('moves only the conversations the server confirmed, not the whole target set', async () => {
+    const parent = session('s-parent');
+    const child = { ...session('s-child'), metadata: { ...session('s-child').metadata, created_by_session_id: 's-parent' } };
+    archiveSession.mockResolvedValue({ archived: false, outcomes: [{ id: 's-parent', ok: true }] });
+    const { container, queryClient } = await mount({
+      sessions: [parent, child],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [parent, child] }],
+    }, browserHost, [parent, child]);
+
+    const menu = await openMenuFor(container, 's-parent');
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    await settle();
+
+    const cached = queryClient.getQueryData<{ pages: { items: { id: string; archived?: boolean }[] }[] }>(['sessions', 'cached']);
+    const archivedFlag = (id: string) => cached?.pages[0]?.items.find((entry) => entry.id === id)?.archived;
+    expect(archivedFlag('s-parent')).toBe(true);
+    // The child the server did not confirm is not declared archived by the GUI.
+    expect(archivedFlag('s-child')).toBeUndefined();
+  });
+
+  it('archives successfully without overwriting restart PageResponse or array caches', async () => {
+    const parent = session('s-parent');
+    const other = session('s-other');
+    const { container, queryClient } = await mount({
+      sessions: [parent, other],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [parent, other] }],
+    }, browserHost, [parent, other]);
+    const restartPage = { items: [parent, other], has_more: true, busy_count: 1 };
+    const arrayCache = [parent, other];
+    await act(async () => {
+      queryClient.setQueryData(['sessions', 'restart-confirm'], restartPage);
+      queryClient.setQueryData(['sessions', 'array-view'], arrayCache);
+    });
+
+    const menu = await openMenuFor(container, 's-parent');
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    await settle();
+
+    expect(archiveSession).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-session-archiving], [data-session-archive-error], [role="alert"]')).toBeNull();
+    const paginated = queryClient.getQueryData<{ pages: { items: Session[] }[] }>(['sessions', 'cached']);
+    expect(paginated?.pages[0]?.items.find((entry) => entry.id === parent.id)?.archived).toBe(true);
+    expect(paginated?.pages[0]?.items.find((entry) => entry.id === other.id)?.archived).toBeUndefined();
+    // Preserve records and non-paginated metadata; invalidation gives each
+    // consumer its authoritative refresh instead of inventing a new shape.
+    expect(queryClient.getQueryData(['sessions', 'restart-confirm'])).toBe(restartPage);
+    expect(queryClient.getQueryData(['sessions', 'array-view'])).toBe(arrayCache);
+    expect(queryClient.getQueryState(['sessions', 'restart-confirm'])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(['sessions', 'array-view'])?.isInvalidated).toBe(true);
+  });
+
+  it('shows a nested thread archive status without obscuring its title', async () => {
+    const parent = session('s-parent');
+    const child = { ...session('s-child'), title: 'Docs pass', metadata: { ...session('s-child').metadata, created_by_session_id: 's-parent' } };
+    let release!: () => void;
+    archiveSession.mockReturnValue(new Promise((resolve) => { release = () => { resolve(archived('s-child')); }; }));
+    const { container } = await mount({
+      sessions: [parent, child],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [parent, child] }],
+    });
+
+    const nested = container.querySelector('[data-session-threads="s-parent"] [data-session-row="s-child"]');
+    expect(nested).not.toBeNull();
+    const menu = await openMenuFor(container, 's-child');
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    await settle();
+
+    const status = nested?.querySelector('[data-session-archiving]');
+    expect(status?.textContent).toContain('Archiving…');
+    expect(status?.getAttribute('role')).toBe('status');
+    expect(nested?.getAttribute('aria-busy')).toBe('true');
+    expect(nested?.querySelector('[data-session-title]')?.textContent).toContain('Docs pass');
+
+    await act(async () => { release(); await settle(); });
+    expect(nested?.querySelector('[data-session-archiving]')).toBeNull();
+  });
+
+  it('keeps a refused nested thread in place with its reason', async () => {
+    const parent = session('s-parent');
+    const child = { ...session('s-child'), title: 'Docs pass', metadata: { ...session('s-child').metadata, created_by_session_id: 's-parent' } };
+    archiveSession.mockRejectedValue(new Error('Archive refused: drafts were not saved'));
+    // The re-read still finds the child: nothing was archived, so the reason
+    // belongs on the row that is still standing.
+    const { container } = await mount({
+      sessions: [parent, child],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [parent, child] }],
+    }, browserHost, [parent, child]);
+
+    const menu = await openMenuFor(container, 's-child');
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    await settle();
+
+    const nested = container.querySelector('[data-session-threads="s-parent"] [data-session-row="s-child"]');
+    const status = nested?.querySelector('[data-session-archive-error]');
+    expect(status?.textContent).toContain('Archive refused: drafts were not saved');
+    // The row is still there and still says what it is.
+    expect(nested?.getAttribute('aria-busy')).toBeNull();
+    expect(nested?.querySelector('[data-session-title]')?.textContent).toContain('Docs pass');
+  });
+
+  it('keeps an unfinished archive failure visible despite inactive caches', async () => {
+    const root = { ...session('s-root'), title: 'Release coordination' };
+    const child = { ...session('s-child'), title: 'Docs pass', metadata: { ...session('s-child').metadata, created_by_session_id: 's-root' } };
+    archiveSession.mockRejectedValue(new Error('Some conversations could not be archived. Retry to finish archiving: s-child: drafts were not saved'));
+    const { container, queryClient } = await mount({
+      sessions: [root, child],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [root, child] }],
+    }, browserHost, [root, child]);
+    // An inactive old list and a non-paginated restart cache must not
+    // suppress the stable failure banner or break the rejection handler.
+    await act(async () => { queryClient.setQueryData(['sessions', 'restart-confirm'], [child]); });
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+
+    const menu = await openMenuFor(container, 's-root');
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    // The banner is said after the refreshed list has been read, so it
+    // reflects what the server holds rather than what was on screen.
+    await settle();
+
+    const banner = container.querySelector('[role="alert"]');
+    expect(banner?.textContent).toContain('Some conversations could not be archived');
+    expect(banner?.textContent).toContain('s-child');
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions'] });
+    expect(container.querySelector('[data-session-row="s-child"]')).not.toBeNull();
+  });
+
+  it('refreshes the list behind an unfinished worktree archive and keeps the dialog', async () => {
+    const worktree = { worktree_id: 'wt_1', branch: 'feat/notes', source_root: 'C:/repo', base_ref: 'refs/heads/main' } as NonNullable<Session['worktree']>;
+    const target = { ...session('s-wt'), title: 'Worktree thread', worktree } as Session & { worktree: NonNullable<Session['worktree']> };
+    archiveSession.mockRejectedValue(new Error('Some conversations could not be archived. Retry to finish archiving: s-child: busy'));
+    const { container, queryClient } = await mount({
+      sessions: [target],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [target] }],
+    });
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+
+    const menu = await openMenuFor(container, 's-wt');
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    await settle();
+    // The worktree dialog renders through a body portal, like every dialog here.
+    const confirm = document.body.querySelector<HTMLButtonElement>('[data-archive-confirm]');
+    expect(confirm).not.toBeNull();
+
+    const checkbox = document.body.querySelector<HTMLInputElement>('[data-archive-remove-worktree] input')!;
+    await act(async () => { checkbox.click(); confirm!.click(); });
+    await settle();
+    expect(archiveSession).toHaveBeenCalledWith('s-wt', { include_attached: true, exclude_session_ids: [] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions'] });
+    expect(document.body.querySelector('[data-archive-confirm]')).not.toBeNull();
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('could not be archived');
+    expect(checkbox.checked).toBe(true);
+    expect(confirm!.disabled).toBe(false);
   });
 });
 
@@ -1955,6 +2256,61 @@ describe('Sidebar room rows', () => {
       [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((node) => node.textContent === 'Restore')!.click();
     });
     expect(roomRest.update).toHaveBeenCalledWith('room_1', { archived: false });
+  });
+
+  it('says a slow room archive is archiving, in the same words a thread uses', async () => {
+    const room = roomSummary({ id: 'room_1', title: 'Release room' });
+    roomRest.get.mockResolvedValue(roomDocument(room, false));
+    let release!: () => void;
+    roomRest.update.mockReturnValue(new Promise((resolve) => {
+      release = () => { resolve(roomDocument({ ...room, archived: true })); };
+    }));
+    const { container } = await mount(listedRoom(room));
+
+    const menu = await openRoomMenu(container);
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+
+    expect(container.querySelector('[data-room-menu]')).toBeNull();
+    const row = container.querySelector('[data-room-row="room_1"]');
+    expect(row).not.toBeNull();
+    // The room's own copy, in its own second line, identical to a thread's.
+    const pending = row?.querySelector('[data-room-archiving]');
+    expect(pending?.textContent).toBe('Archiving…');
+    expect(pending?.getAttribute('role')).toBe('status');
+    expect(row?.getAttribute('aria-busy')).toBe('true');
+    expect(row?.querySelector('[data-room-title]')?.textContent).toContain('Release room');
+    // The archive entry itself is disabled for as long as it is in flight.
+    const reopen = await openRoomMenu(container);
+    expect(reopen.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')?.disabled).toBe(true);
+    await act(async () => { reopen.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    expect(roomRest.update).toHaveBeenCalledTimes(1);
+
+    await act(async () => { release(); await settle(); });
+    expect(container.querySelector('[data-room-archiving]')).toBeNull();
+  });
+
+  it('keeps a refused room in place, with the reason, and lets the archive be retried', async () => {
+    const room = roomSummary({ id: 'room_1', title: 'Release room' });
+    roomRest.get.mockResolvedValue(roomDocument(room, false));
+    roomRest.update.mockRejectedValueOnce(new Error('Room archive refused: members are still active'));
+    const { container } = await mount(listedRoom(room));
+
+    const menu = await openRoomMenu(container);
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    await settle();
+
+    const row = container.querySelector('[data-room-row="room_1"]');
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute('data-room-archive')).toBe('failed');
+    expect(row?.textContent).toContain('Release room');
+    expect(row?.querySelector('[data-room-archive-error]')?.textContent)
+      .toBe('Room archive refused: members are still active');
+    roomRest.update.mockResolvedValueOnce(roomDocument({ ...room, archived: true }));
+    const retry = await openRoomMenu(container);
+    await act(async () => { retry.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!.click(); });
+    await settle();
+    expect(roomRest.update).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-room-archive-error]')).toBeNull();
   });
 
   it('shows the rooms fetch failure instead of an empty list', async () => {
