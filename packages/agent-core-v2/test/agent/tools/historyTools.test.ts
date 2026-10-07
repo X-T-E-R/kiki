@@ -56,7 +56,7 @@ interface HistoryToolData {
   };
 }
 
-async function run(tool: Pick<HistorySearchTool | HistoryReadTool, 'resolveExecution'>, input: Record<string, unknown>) {
+async function run(tool: { resolveExecution(input: never): import('../../../src/tool/toolContract').ToolExecution | Promise<import('../../../src/tool/toolContract').ToolExecution> }, input: Record<string, unknown>) {
   const execution = await tool.resolveExecution(input as never);
   if (!('execute' in execution)) throw new Error('Expected executable tool');
   const result = await execution.execute({ signal: new AbortController().signal, turnId: 1, toolCallId: 'c' });
